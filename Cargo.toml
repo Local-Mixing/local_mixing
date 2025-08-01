@@ -1,0 +1,16 @@
+[package]
+name = "local_mixing"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4.22"
+log4rs = "1.3.0"
+rand = "0.9.0"
+rand_chacha = "0.9.0"
+rayon = "1.10.0"
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.138"
+bincode = "1.3.3"
+rusqlite = { version = "0.33.0", features = ["bundled"] }
+sha2 = "0.10.8"
