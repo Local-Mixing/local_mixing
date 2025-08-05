@@ -42,6 +42,7 @@ impl Gate {
         let index = ((self.control_function as usize) << 2) 
                         | ((wires[self.pins[1]] as usize) << 1)
                         | ((wires[self.pins[2]] as usize));
+        println!("{}{}",index, CONTROL_FUNC_TABLE[index]);
         wires[self.pins[0]] ^= CONTROL_FUNC_TABLE[index];
     }
 
@@ -59,6 +60,10 @@ impl Gate {
 }
 
 impl Circuit{
+    pub fn new(num_wires:usize, gates: Vec<Gate>) -> Self {
+        Self{num_wires, gates}
+    }
+
     pub fn random_circuit<R: Rng>(
         num_wires: usize,
         num_gates: usize,
@@ -83,18 +88,45 @@ impl Circuit{
         Self{num_wires, gates}
     }
     pub fn to_string(&self) -> String{
-        to_string(&self.gates)
+        //to_string(&self.gates)
+        let mut result = String::new();
+        for wire in (0..self.num_wires) {
+            result += &(wire.to_string() + "  --");
+            for gate in &self.gates {
+                if gate.pins[0] == wire {
+                    result+="( )";
+                } else if gate.pins[1] == wire {
+                    result+="-●-";
+                } else if gate.pins[2] == wire {
+                    result+="-○-";
+                } else {
+                    result+="-|-";
+                }
+                result.push_str("---");
+            }
+            result.push_str("\n");
+            }
+           
+        let control_fn_strings: Vec<String> = self.gates
+            .iter()
+            .map(|gate| Gate_Control_Func::from_u8(gate.control_function).to_string())
+            .collect();
+        result.push_str("\ncfs: ");
+        result.push_str(&control_fn_strings.join(", "));
+        result
     }
 
+    //THIS IS BUGGY
     pub fn probably_equal(&self, other_circuit: &Self, num_inputs: usize) -> Result<(), String> {
         if self.num_wires != other_circuit.num_wires {
             return Err("The circuits do not have the same number of wires".to_string());
         }
         let random_inputs: Vec<Vec<bool>> = (0..num_inputs)
-            .map(|_| (0..num_inputs)
+            .map(|_| (0..self.num_wires)
                 .map(|_| rand::rng().random_bool(0.5)).collect())
             .collect();
         random_inputs.iter().try_for_each(|random_input| {
+            //THIS IS THE BUDDY PART
             if Gate::evaluate_gate_list(&self.gates, random_input) != Gate::evaluate_gate_list(&other_circuit.gates, random_input) {
                 return Err("Circuits are not equal".to_string());
             }
@@ -102,44 +134,77 @@ impl Circuit{
         })
     }
 
+    // CAN TWO CIRCUITS WITH DIFFERENT NUMBER OF WIRES BE FUNCTIONALLY EQUIVALENT?????
     // pub fn functionally_equal()(&self, other_circuit: &Self, num_inputs: usize) -> Result<(), String> {
-
+    //     let least_num_wires = min(self.num_wires, other_circuit.num_wires);
+    //     if num_inputs > 
     // }
 }
 
-pub fn to_string(circuit_gates: &Vec<Gate>) -> String {
-    let mut wires: HashSet<usize> = HashSet::new();
-    for gate in circuit_gates {
-        wires.extend(gate.pins.iter());
-    }
-    let mut wire_list: Vec<usize> = wires.into_iter().collect();
-    wire_list.sort();
+// pub fn to_string(circuit_gates: &Vec<Gate>) -> String {
+//     let mut wires: HashSet<usize> = HashSet::new();
+//     for gate in circuit_gates {
+//         wires.extend(gate.pins.iter());
+//     }
+//     let mut wire_list: Vec<usize> = wires.into_iter().collect();
+//     wire_list.sort();
 
-    let mut result = String::new();
-    for (i, wire) in wire_list.iter().enumerate() {
-        result.push_str(&format!("{:<2} ", wire));
-        for gate in circuit_gates {
-            if gate.pins[0] == *wire {
-                result+="( )";
-            } else if gate.pins[1] == *wire {
-                result+=" ● ";
-            } else if gate.pins[2] == *wire {
-                result+=" ○ ";
-            } else {
-                result+=" - ";
-            }
-            result.push_str(" - ");
-        }
-        if i != wire_list.len() - 1 {
-            result.push_str("\n");
-        }
-    }
+//     let mut result = String::new();
+//     for (i, wire) in wire_list.iter().enumerate() {
+//         result.push_str(&format!("{:<2} ", wire));
+//         for gate in circuit_gates {
+//             if gate.pins[0] == *wire {
+//                 result+="( )";
+//             } else if gate.pins[1] == *wire {
+//                 result+="-●-";
+//             } else if gate.pins[2] == *wire {
+//                 result+="-○-";
+//             } else {
+//                 result+="-|-";
+//             }
+//             result.push_str("---");
+//         }
+//         if i != wire_list.len() - 1 {
+//             result.push_str("\n");
+//         }
+//     }
 
-    let control_fn_strings: Vec<String> = circuit_gates
-        .iter()
-        .map(|gate| Gate_Control_Func::from_u8(gate.control_function).to_string())
-        .collect();
-    result.push_str("\ncfs: ");
-    result.push_str(&control_fn_strings.join(", "));
-    result
-}
+//     let control_fn_strings: Vec<String> = circuit_gates
+//         .iter()
+//         .map(|gate| Gate_Control_Func::from_u8(gate.control_function).to_string())
+//         .collect();
+//     result.push_str("\ncfs: ");
+//     result.push_str(&control_fn_strings.join(", "));
+//     result
+// }
+
+// pub fn to_string(circuit: Circuit) {
+//     let num_wires = circuit.num_wires;
+//     let gates_list = circuit.gates;
+//     let result = String::new();
+//     for wire in range (0..num_wires) {
+//         for gate in gates_list {
+//             if gate.pins[0] == *wire {
+//                 result+="( )";
+//             } else if gate.pins[1] == *wire {
+//                 result+="-●-";
+//             } else if gate.pins[2] == *wire {
+//                 result+="-○-";
+//             } else {
+//                 result+="-|-";
+//             }
+//             result.push_str("---");
+//         }
+//         result.push_str("---");
+//         }
+//         if i != wire_list.len() - 1 {
+//             result.push_str("\n");
+//         }
+//     let control_fn_strings: Vec<String> = circuit_gates
+//         .iter()
+//         .map(|gate| Gate_Control_Func::from_u8(gate.control_function).to_string())
+//         .collect();
+//     result.push_str("\ncfs: ");
+//     result.push_str(&control_fn_strings.join(", "));
+//     result
+// }
