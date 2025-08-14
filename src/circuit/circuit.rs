@@ -1,9 +1,13 @@
+//Basic implementation for circuit, gate, and permutations
+
 use crate::rainbow::constants::CONTROL_FUNC_TABLE;
 use rand::seq::IndexedRandom;
 use rand::Rng;
 use rand::rng;
+use rand::seq::SliceRandom; // for shuffle
+use rand::thread_rng;  
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use std::fmt::Write;
+use std::fmt::{self, Write};
 use std::{collections::HashSet, path::Path};
 use crate::circuit::control_functions::Gate_Control_Func;
 
@@ -18,6 +22,14 @@ pub struct Circuit{
     pub num_wires: usize,
     pub gates: Vec<Gate>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Permutation {
+    pub data: Vec<usize>,
+}
+
+
+
 
 impl Gate {
     pub fn new(active: usize, first_control: usize, second_control: usize, control_function: u8) -> Self {
@@ -57,7 +69,35 @@ impl Gate {
                  .for_each(|gate| gate.evaluate_gate(&mut current_wires));
         current_wires
     }
+
+    //give ordering to gates for later canonicalization
+    pub fn ordered(&self, other: &Self) -> bool {
+        if self.pins[0] > other.pins[0] {
+            return false
+        }
+        else if self.pins[0] == other.pins[0]{
+            if self.pins[1] > other.pins[1] {
+                return false
+            }
+            else if self.pins[1] == other.pins[1] {
+                return self.pins[2] < other.pins[2]
+            }
+        }
+        true
+    }
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 impl Circuit{
     pub fn new(num_wires:usize, gates: Vec<Gate>) -> Self {
@@ -79,7 +119,8 @@ impl Circuit{
                 if active != first_control && active != second_control && first_control != second_control {
                     gates.push(Gate {
                         pins: [active, first_control, second_control],
-                        control_function: (rng.random_range(0..16) as u8),
+                        //control_function: (rng.random_range(0..16) as u8), any control
+                        control_function: 2, //r57
                     });
                     break;
                 }
@@ -141,8 +182,153 @@ impl Circuit{
         circuit.gates.len()
     }
 
-    
+    pub fn evaluate(&self, input_wires: &Vec<bool>) -> Vec<bool> {
+        Gate::evaluate_gate_list(&self.gates, &input_wires)
+    }
+
+    // pub fn permuation(&self) -> Permutation {
+
+    // }
 }
+
+impl Permutation {
+    pub fn new(data: Vec<usize>) -> Permutation {
+        Permutation {
+            data,
+        }
+    }
+    pub fn is_perm(&self) -> bool {
+        let mut temp_perm = self.clone();
+        temp_perm.data.sort_unstable();
+        temp_perm == Permutation::id_perm(self.data.len())
+    }
+
+    pub fn id_perm(n:usize) -> Permutation {
+        let temp_data = (0..n).collect();
+        Permutation { 
+            data: temp_data, 
+        }
+    }
+
+    pub fn rand_perm(n:usize) -> Permutation {
+        let mut p = Permutation::id_perm(n);
+        let mut rng = thread_rng();
+        p.data.shuffle(&mut rng);
+        p
+    }
+
+    pub fn invert(&self) -> Permutation {
+        let mut inv = vec![0; self.data.len()];
+        self.data.iter().enumerate().for_each(|(i, &val)| inv[val] = i);
+        Permutation { 
+            data: inv, 
+        }
+    }
+
+    //come back to this. should be used for cache later when we create a rainbow
+    pub fn repr(&self) -> Vec<u8> {
+        let n = self.data.len();
+
+        if n > 256 {
+            // Two-byte encoding (little-endian)
+            let mut bytes = vec![0u8; 2 * n];
+            for (i, &val) in self.data.iter().enumerate() {
+                bytes[2 * i..2 * i + 2].copy_from_slice(&(val as u16).to_le_bytes());
+            }
+            bytes
+        } else {
+            // Single-byte encoding (0..=255)
+            self.data.iter().map(|&x| x as u8).collect()
+        }
+    }
+
+    pub fn bits(&self) -> u32 {
+        let n = self.data.len();
+        ((n - 1) as u32).ilog2() + 1
+    }
+
+    pub fn to_string(&self) -> String {
+        const MAX_LEN: isize = -1;
+
+        // Format the inner vector as a string
+        let s = format!("{:?}", self.data);
+
+        //In case we deal with very long permutations
+        if MAX_LEN > 0 && (s.len() as isize) > MAX_LEN {
+            // Truncate and append "...]"
+            let end = (MAX_LEN - 5) as usize;
+            let mut truncated = s[..end].to_string();
+            truncated.push_str("...]");
+            truncated
+        } else {
+            s
+        }
+    }
+
+    pub fn to_cycle(&self) -> Vec<Vec<usize>> {
+        let n = self.data.len();
+        let mut visited = vec![false; n];
+        let mut cycles = Vec::new();
+
+        for i in 0..n {
+            if visited[i] {
+                continue;
+            }
+            let mut j = self.data[i];
+            visited[i] = true;
+
+            // Skip fixed points
+            if i == j {
+                continue;
+            }
+
+            let mut c = vec![i];
+            loop {
+                visited[j] = true;
+                c.push(j);
+                j = self.data[j];
+                if j == c[0] {
+                    break;
+                }
+            }
+            cycles.push(c);
+        }
+
+        cycles
+    }
+
+    pub fn bit_shuffle(&self, shuf: &[usize]) -> Permutation {
+        let n = self.data.len();
+        let mut q_raw = vec![0; n];
+        let mut idx = vec![0; n];
+
+        for (s, &d) in shuf.iter().enumerate() {
+            for i in 0..n {
+                q_raw[i] |= ((self.data[i] >> s) & 1) << d;
+                idx[i] |= ((i >> s) & 1) << d;
+            }
+        }
+
+        let mut q = vec![0; n];
+        for i in 0..n {
+            q[idx[i]] = q_raw[i];
+        }
+
+        Permutation { data: q }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
 // Alex's to_string based on gate inputs
 // pub fn to_string(circuit_gates: &Vec<Gate>) -> String {
 //     let mut wires: HashSet<usize> = HashSet::new();

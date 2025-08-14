@@ -5,7 +5,7 @@ use std::error::Error;
 pub enum Gate_Control_Func {
     F = 0,     // false,
     AND = 1,   // a & b,
-    ANDNB = 2, // a & (!b),
+    ANDNB = 2, // a & (!b), this is r57
     A = 3,     // a,
     ANDNA = 4, // (!a) & b,
     B = 5,     // b,

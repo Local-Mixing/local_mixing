@@ -1,12 +1,20 @@
 use local_mixing::{
                 rainbow::constants::{self, CONTROL_FUNC_TABLE},
-                circuit::{Circuit, Gate},
+                circuit::{Circuit, Gate, Permutation},
                 };
 
+    
 fn main() {
-    //println!("{}", Circuit::random_circuit(5,5,&mut rand::rng()).to_string());
-    find_circuit_no_pin_last_wire(1);
+    let perm = Permutation { data: vec![5, 2, 7, 0, 1, 4, 6, 3] };
+    let shuf = vec![2, 1, 0]; // bit shuffle
+
+    let shuffled = perm.bit_shuffle(&shuf);
+
+    println!("Original: {:?}", perm.data);
+    println!("Shuffled: {:?}", shuffled.data);
+
 }
+
 
 fn find_circuit_no_pin_last_wire(n: usize) -> () {
     let mut count = 0;
