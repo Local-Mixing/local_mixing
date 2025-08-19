@@ -5,13 +5,12 @@ use local_mixing::{
 
     
 fn main() {
-    let perm = Permutation { data: vec![5, 2, 7, 0, 1, 4, 6, 3] };
-    let shuf = vec![2, 1, 0]; // bit shuffle
-
-    let shuffled = perm.bit_shuffle(&shuf);
-
-    println!("Original: {:?}", perm.data);
-    println!("Shuffled: {:?}", shuffled.data);
+    let c = Circuit::random_circuit(4,3, &mut rand::rng());
+    let perm = c.permutation();
+    println!("{}", c.to_string());
+    for n in &perm.data {
+        println!("{:0width$b}", n, width = c.num_wires); // pad to num_wires bits
+    }
 
 }
 

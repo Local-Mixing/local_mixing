@@ -3,7 +3,6 @@
 use crate::rainbow::constants::CONTROL_FUNC_TABLE;
 use rand::seq::IndexedRandom;
 use rand::Rng;
-use rand::rng;
 use rand::seq::SliceRandom; // for shuffle
 use rand::thread_rng;  
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
@@ -49,22 +48,29 @@ impl Gate {
 
     //to evaluate a gate, we use the control function table we built in constants.rs
     #[inline]
-    pub fn evaluate_gate(&self, wires: &mut Vec<bool>) {
-        //use the fact that the index to the control function table is built from the control function, a, and b
-        let index = ((self.control_function as usize) << 2) 
-                        | ((wires[self.pins[1]] as usize) << 1)
-                        | ((wires[self.pins[2]] as usize));
-        println!("{}{}",index, CONTROL_FUNC_TABLE[index]);
-        wires[self.pins[0]] ^= CONTROL_FUNC_TABLE[index];
+    pub fn evaluate_gate(&self, state: &mut usize) {
+        let index = ((self.control_function as usize) << 2)
+                    | (((*state >> self.pins[1]) & 1) << 1)
+                    | (((*state >> self.pins[2])) & 1);
+        *state ^= (CONTROL_FUNC_TABLE[index] as usize) << self.pins[0];
     }
+    // pub fn evaluate_gate(&self, wires: &mut Vec<bool>) {
+    //     //use the fact that the index to the control function table is built from the control function, a, and b
+    //     let index = ((self.control_function as usize) << 2) 
+    //                     | ((wires[self.pins[1]] as usize) << 1)
+    //                     | ((wires[self.pins[2]] as usize));
+    //     //println!("{}{}",index, CONTROL_FUNC_TABLE[index]);
+    //     wires[self.pins[0]] ^= CONTROL_FUNC_TABLE[index];
+    // }
+
 
     pub fn equal(&self, other: &Self) -> bool {
         self.pins == other.pins && self.control_function == other.control_function
     }
 
-    pub fn evaluate_gate_list(gate_list: &Vec<Gate>, input_wires: &Vec<bool>) -> Vec<bool> {
+    pub fn evaluate_gate_list(gate_list: &Vec<Gate>, input_wires: usize) -> usize {
         //first clone the input_wires and then iterate through all the gates using the original evaluate_gate function
-        let mut current_wires = input_wires.to_vec();
+        let mut current_wires = input_wires;
         gate_list.iter()
                  .for_each(|gate| gate.evaluate_gate(&mut current_wires));
         current_wires
@@ -130,14 +136,14 @@ impl Circuit{
     }
     pub fn to_string(&self) -> String{
         let mut result = String::new();
-        for wire in (0..self.num_wires) {
+        for wire in 0..self.num_wires {
             result += &(wire.to_string() + "  --");
             for gate in &self.gates {
                 if gate.pins[0] == wire {
                     result+="( )";
-                } else if gate.pins[1] == wire {
+                } else if gate.pins[1] == wire { //a
                     result+="-●-";
-                } else if gate.pins[2] == wire {
+                } else if gate.pins[2] == wire { //b
                     result+="-○-";
                 } else {
                     result+="-|-";
@@ -160,17 +166,25 @@ impl Circuit{
         if self.num_wires != other_circuit.num_wires {
             return Err("The circuits do not have the same number of wires".to_string());
         }
-        let random_inputs: Vec<Vec<bool>> = (0..num_inputs)
-            .map(|_| (0..self.num_wires)
-                .map(|_| rand::rng().random_bool(0.5)).collect())
-            .collect();
-        random_inputs.iter().try_for_each(|random_input| {
-            if Gate::evaluate_gate_list(&self.gates, random_input) != Gate::evaluate_gate_list(&other_circuit.gates, random_input) {
+
+        let mut rng = rand::thread_rng();
+        let mask = (1 << self.num_wires) - 1;
+
+        for _ in 0..num_inputs {
+            // generate u64, then mask to get the lower num_wires bits
+            let random_input = (rng.r#gen::<u64>() as usize) & mask;
+
+            let self_output = Gate::evaluate_gate_list(&self.gates, random_input);
+            let other_output = Gate::evaluate_gate_list(&other_circuit.gates,random_input);
+
+            if self_output != other_output {
                 return Err("Circuits are not equal".to_string());
             }
+        }
+
         Ok(())
-        })
     }
+
 
     // CAN TWO CIRCUITS WITH DIFFERENT NUMBER OF WIRES BE FUNCTIONALLY EQUIVALENT?????
     // pub fn functionally_equal()(&self, other_circuit: &Self, num_inputs: usize) -> Result<(), String> {
@@ -182,14 +196,47 @@ impl Circuit{
         circuit.gates.len()
     }
 
-    pub fn evaluate(&self, input_wires: &Vec<bool>) -> Vec<bool> {
-        Gate::evaluate_gate_list(&self.gates, &input_wires)
+    pub fn evaluate(&self, input_wires: usize) -> usize {
+        Gate::evaluate_gate_list(&self.gates, input_wires)
     }
 
-    // pub fn permuation(&self) -> Permutation {
+    pub fn permutation(&self) -> Permutation {
+        let size = 1 << self.num_wires;
+        let mut output = vec![0; size]; // initialize with zeros
 
-    // }
+        for i in 0..size {
+            output[i] = self.evaluate(i);
+        }
+
+        Permutation { data: output }
+    }
+
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 impl Permutation {
     pub fn new(data: Vec<usize>) -> Permutation {
@@ -226,21 +273,23 @@ impl Permutation {
     }
 
     //come back to this. should be used for cache later when we create a rainbow
-    pub fn repr(&self) -> Vec<u8> {
-        let n = self.data.len();
-
-        if n > 256 {
+    pub fn repr(&self) -> String {
+        let bytes: Vec<u8> = if self.data.len() > 256 {
             // Two-byte encoding (little-endian)
-            let mut bytes = vec![0u8; 2 * n];
+            let mut b = vec![0u8; 2 * self.data.len()];
             for (i, &val) in self.data.iter().enumerate() {
-                bytes[2 * i..2 * i + 2].copy_from_slice(&(val as u16).to_le_bytes());
+                b[2 * i..2 * i + 2].copy_from_slice(&(val as u16).to_le_bytes());
             }
-            bytes
+            b
         } else {
-            // Single-byte encoding (0..=255)
+            // Single-byte encoding
             self.data.iter().map(|&x| x as u8).collect()
-        }
+        };
+
+        // Convert bytes to a string safely
+        String::from_utf8_lossy(&bytes).into_owned()
     }
+
 
     pub fn bits(&self) -> u32 {
         let n = self.data.len();
