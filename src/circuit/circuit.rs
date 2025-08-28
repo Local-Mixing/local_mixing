@@ -1,19 +1,30 @@
 //Basic implementation for circuit, gate, and permutations
 
 use crate::rainbow::constants::CONTROL_FUNC_TABLE;
-use rand::seq::IndexedRandom;
-use rand::Rng;
-use rand::seq::SliceRandom; // for shuffle
-use rand::thread_rng;  
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use std::fmt::{self, Write};
-use std::{collections::HashSet, path::Path};
 use crate::circuit::control_functions::Gate_Control_Func;
+use crate::rainbow::database::PersistPermStore;
+
+use crossbeam::channel::{unbounded, Receiver};
+use itertools::max;
+use rand::{seq::SliceRandom, Rng, thread_rng};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use serde::{Deserialize, Serialize};
+use std::{
+    cmp::max as std_max,
+    collections::{HashSet, HashMap},
+    fmt::{self, Write},
+    path::Path,
+    sync::Arc,
+    thread,
+};
+
+
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Gate{
-    pub pins: [usize;3], //one active wire and two control wires
+    pub pins: [usize;3], //one active wire (0) and two control wires (1,2)
     pub control_function: u8,
+    pub id: usize
 }
 
 #[derive(Clone, Debug, Default)]
@@ -22,22 +33,29 @@ pub struct Circuit{
     pub gates: Vec<Gate>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+//Permutations are all the possible outputs of a circuit
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Permutation {
     pub data: Vec<usize>,
 }
 
-
-
-
 impl Gate {
-    pub fn new(active: usize, first_control: usize, second_control: usize, control_function: u8) -> Self {
+    pub fn new(active: usize, first_control: usize, second_control: usize, control_function: u8, id:usize) -> Self {
         Self {
             pins: [active, first_control, second_control],
             control_function,
+            id,
         }
     }
     
+    //currenlty doesn't use n
+    pub fn repr(&self, n: usize) -> String {
+        // Convert the gate id to a char if valid, otherwise fallback
+        std::char::from_u32(self.id as u32)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| format!("{}", self.id))
+    }
+
     //two gates collide if an active and a control pins are on the same wire
     pub fn collides(&self, other_gate: &Self) -> bool {
         self.pins[0] == other_gate.pins[1] 
@@ -91,49 +109,58 @@ impl Gate {
         }
         true
     }
+
+    pub fn bottom(&self) -> usize {
+        std_max((std_max(self.pins[0], self.pins[1])), self.pins[2])
+    }
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 impl Circuit{
     pub fn new(num_wires:usize, gates: Vec<Gate>) -> Self {
         Self{num_wires, gates}
     }
 
-    pub fn random_circuit<R: Rng>(
-        num_wires: usize,
-        num_gates: usize,
-        rng: &mut R
-    ) -> Self {
-        let mut gates = vec![];
-        for _ in 0..num_gates {
-            loop{
-                let active = rng.random_range(0..num_wires);
-                let first_control = rng.random_range(0..num_wires);
-                let second_control = rng.random_range(0..num_wires);
+    pub fn random_circuit(num_wires:usize, num_gates: usize) -> Circuit {
+        let base_gates = base_gates(num_wires); //Vec<[usize;3]>
+        let mut gates = Vec::with_capacity(num_gates);
+        let mut last = usize::MAX;
 
-                if active != first_control && active != second_control && first_control != second_control {
-                    gates.push(Gate {
-                        pins: [active, first_control, second_control],
-                        //control_function: (rng.random_range(0..16) as u8), any control
-                        control_function: 2, //r57
-                    });
-                    break;
-                }
+        let mut rng = rand::thread_rng();
+        for _ in 0..num_gates {
+            let mut j = last;
+            while j == last{
+                j = rng.gen_range(0..base_gates.len());
             }
+            let g = base_gates[j];
+            gates.push(Gate { pins: g, control_function: 2, id: j});
+            last = j;
         }
-        Self{num_wires, gates}
-    }
+        Self::new(num_wires, gates)
+    } 
+    // pub fn random_circuit<R: Rng>(
+    //     num_wires: usize,
+    //     num_gates: usize,
+    //     rng: &mut R
+    // ) -> Self {
+    //     let mut gates = vec![];
+    //     for _ in 0..num_gates {
+    //         loop{
+    //             let active = rng.random_range(0..num_wires);
+    //             let first_control = rng.random_range(0..num_wires);
+    //             let second_control = rng.random_range(0..num_wires);
+
+    //             if active != first_control && active != second_control && first_control != second_control {
+    //                 gates.push(Gate {
+    //                     pins: [active, first_control, second_control],
+    //                     //control_function: (rng.random_range(0..16) as u8), any control
+    //                     control_function: 2, //r57
+    //                 });
+    //                 break;
+    //             }
+    //         }
+    //     }
+    //     Self{num_wires, gates}
+    // }
     pub fn to_string(&self) -> String{
         let mut result = String::new();
         for wire in 0..self.num_wires {
@@ -161,6 +188,7 @@ impl Circuit{
         result.push_str(&control_fn_strings.join(", "));
         result
     }
+
 
     pub fn probably_equal(&self, other_circuit: &Self, num_inputs: usize) -> Result<(), String> {
         if self.num_wires != other_circuit.num_wires {
@@ -211,32 +239,31 @@ impl Circuit{
         Permutation { data: output }
     }
 
+    pub fn from_gates(gates: Vec<Gate>) -> Circuit {
+        let mut w = 0;
+        for g in &gates {
+            w = std_max(w, g.bottom());
+        }
+        Circuit { num_wires: w, gates, }
+    }
+
+    pub fn adjacent_id(&self) -> bool {
+        for i in 0..(self.gates.len()-1) {
+            if self.gates[i] == self.gates[i+1] {
+                return true
+            }
+        }
+        false
+    }
+
+    pub fn repr(&self) -> String {
+        let mut sb = String::new();
+        for g in &self.gates {
+            sb.push_str(&g.repr(self.num_wires));
+        }
+        sb
+    }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 impl Permutation {
     pub fn new(data: Vec<usize>) -> Permutation {
@@ -346,7 +373,7 @@ impl Permutation {
         cycles
     }
 
-    pub fn bit_shuffle(&self, shuf: &[usize]) -> Permutation {
+    pub fn bit_shuffle(&self, shuf: &Vec<usize>) -> Permutation {
         let n = self.data.len();
         let mut q_raw = vec![0; n];
         let mut idx = vec![0; n];
@@ -367,18 +394,20 @@ impl Permutation {
     }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-// Alex's to_string based on gate inputs
+pub fn base_gates(n: usize) -> Vec<[usize; 3]> {
+    let mut gates = Vec::new();
+    for a in 0..n {
+        for b in 0..n {
+            if b == a { continue; }
+            for c in 0..n {
+                if c == a || c == b { continue; }
+                gates.push([a, b, c]);
+            }
+        }
+    }
+    gates
+}
+// Old to_string based on gate inputs
 // pub fn to_string(circuit_gates: &Vec<Gate>) -> String {
 //     let mut wires: HashSet<usize> = HashSet::new();
 //     for gate in circuit_gates {
@@ -447,3 +476,94 @@ impl Permutation {
 //     result
 // }
 
+pub fn par_all_circuits(wires: usize, gates: usize) -> Receiver<Vec<usize>> {
+    let (tx,rx) = unbounded();
+    let base_gates = base_gates(wires);
+    let z = base_gates.len() as i64;
+    let total = (0..gates).fold(1i64, |acc, _| acc * z);
+
+    thread::spawn(move || {
+        const WORKERS: usize = 1;
+        let (work_tx, work_rx) = unbounded::<i64>();
+
+        //shadow for new threads
+        let tx = Arc::new(tx);
+        let mut handles = vec![];
+
+        for _ in 0..WORKERS {
+            let work_rx = work_rx.clone();
+            let tx = Arc::clone(&tx);
+            let handle = thread::spawn(move || {
+                for mut i in work_rx.iter() {
+                    let mut send = true;
+                    let mut s = vec![0;gates];
+
+                    for j in 0..gates {
+                        s[j] = (i%z) as usize;
+                        i /= z;
+                        if j > 0 && s[j] == s[j-1] {
+                            send = false;
+                            break;
+                        }
+                    }
+                    if send {
+                        tx.send(s).unwrap();
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+        //send
+        for i in 0..total {
+            work_tx.send(i).unwrap();
+        }
+
+        //close
+        drop(work_tx);
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
+    rx
+}
+
+pub fn build_from(num_wires: usize, num_gates: usize, 
+    store: &Arc<HashMap<String, PersistPermStore>>
+) -> Receiver<Vec<usize>> {
+    let (tx, rx) = unbounded::<Vec<usize>>();
+    let base_gates = base_gates(num_wires);
+    let store = Arc::clone(store);
+    thread::spawn(move || {
+        for perm in store.values() {
+            //prefix circuit length gates-1
+            let mut s = vec![0usize;num_gates-1];
+
+            for circuits in &perm.circuits {
+                for (i,g) in circuits.bytes().enumerate() {
+                    s[i] = g as usize;
+                }
+
+                for g in 0..base_gates.len() {
+                    //no duplicates 
+                    if g == s[s.len() - 1] {
+                        continue;
+                    }
+
+                    let mut q1 = s.clone();
+                    q1.push(g);
+                    tx.send(q1).unwrap();
+
+                    let mut q2 = vec![g];
+                    q2.extend_from_slice(&s);
+                    tx.send(q2).unwrap();
+
+                    //TODO: also send reverse circuit?
+                }
+            }
+        }
+        drop(tx);
+    });
+
+    rx
+}
