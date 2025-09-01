@@ -8,7 +8,7 @@ use bincode;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    fs::File,
+    fs::{self, File},
     io::{BufReader, BufWriter},
     path::Path,
 };
@@ -59,17 +59,45 @@ impl Persist {
             .expect("Failed to serialize Persist");
     }
 
+    // pub fn load(n: usize, m: usize, path: &str) -> HashMap<String, PersistPermStore> {
+    //     let file = File::open(path).expect("Failed to open file");
+    //     let reader = BufReader::new(file);
+    //     let persist: Persist = bincode::deserialize_from(reader)
+    //         .expect("Failed to deserialize Persist");
+    //     if persist.gates != m-1 || persist.wires != n {
+    //         panic!(
+    //             "Database size does not match: load has n={}, m={}; requested n={}, m={}",
+    //             persist.wires, persist.gates, n, m
+    //         );
+    //     }
+    //     persist.store
+    // }
+
+    //correctly loads the file for m-1 db
     pub fn load(n: usize, m: usize, path: &str) -> HashMap<String, PersistPermStore> {
-        let file = File::open(path).expect("Failed to open file");
+        let mut filename = path.to_string();
+
+        // If path is a directory, build the file name with m-1
+        if let Ok(info) = fs::metadata(path) {
+            if info.is_dir() {
+                filename = format!("{}/n{}m{}.bin", path, n, m - 1);
+            }
+        }
+
+        let file = File::open(&filename)
+            .unwrap_or_else(|_| panic!("Failed to open file: {}", filename));
         let reader = BufReader::new(file);
+
         let persist: Persist = bincode::deserialize_from(reader)
             .expect("Failed to deserialize Persist");
-        if persist.gates != m || persist.wires != n {
+
+        if persist.gates != m - 1 || persist.wires != n {
             panic!(
                 "Database size does not match: load has n={}, m={}; requested n={}, m={}",
                 persist.wires, persist.gates, n, m
             );
         }
+
         persist.store
     }
 }

@@ -29,7 +29,7 @@ static SKIP_ID: AtomicI64 = AtomicI64::new(0);
 static OWN_INV_COUNT: AtomicI64 = AtomicI64::new(0);
 
 #[derive(Clone)]
-struct PR {
+pub struct PR {
     p: Permutation,
     r: String,
     canonical: bool,

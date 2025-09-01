@@ -108,8 +108,8 @@ impl Permutation {
     //Eli note, this needs t work in weight-class order
     pub fn brute_canonical(&self) -> Canonicalization {
         let n = self.data.len();
-        let b = (n as u32 - 1).next_power_of_two().trailing_zeros() as usize;
-
+        //let b = (n as u32 - 1).next_power_of_two().trailing_zeros() as usize;
+        let b = 32 - ((n as u32 - 1).leading_zeros() as usize);
         // store minimal bit permutation in here
         let mut m = self.clone().data;
         // temporary to reconstruct shuffled bits
@@ -241,7 +241,7 @@ impl Permutation {
         let n = self.bits();
         let mut cand = CandSet::new(n.try_into().unwrap());
         let mut identity = false;
-        for weight in 0..n/2 {
+        for weight in 0..=n/2 {
             let s = index_set(weight.try_into().unwrap(),n.try_into().unwrap()); //a Vec<usize>
             for &w in &s {
                 let p = cand.preimages(w);
@@ -648,3 +648,22 @@ impl PermStore {
         self.count += 1;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_from_string_brute() {
+        let mut c: Circuit = Circuit::from_string("0 1 2; 3 2 1; 0 2 1".to_string());
+        println!("Circuit data: \n{}", c.to_string());
+        let perm = c.permutation();
+        println!("Permutation: \n{:?}", perm.data);
+        c.canonicalize();
+        let canon = perm.brute_canonical();
+        println!("Canonical perm: \n {:?}", canon.perm);
+        println!("Shuffle: \n{:?}", canon.shuffle);
+        println!("Canonical circuit: \n{}", c.to_string());
+    }
+}
+

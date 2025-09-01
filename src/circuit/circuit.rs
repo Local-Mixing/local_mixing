@@ -65,12 +65,21 @@ impl Gate {
     }
 
     //to evaluate a gate, we use the control function table we built in constants.rs
+    // #[inline]
+    // pub fn evaluate_gate(&self, state: &mut usize) {
+    //     let index = ((self.control_function as usize) << 2)
+    //                 | (((*state >> self.pins[1]) & 1) << 1)
+    //                 | (((*state >> self.pins[2])) & 1);
+    //     *state ^= (CONTROL_FUNC_TABLE[index] as usize) << self.pins[0];
+    //}
+
+    //only consider r57
     #[inline]
-    pub fn evaluate_gate(&self, state: &mut usize) {
-        let index = ((self.control_function as usize) << 2)
-                    | (((*state >> self.pins[1]) & 1) << 1)
-                    | (((*state >> self.pins[2])) & 1);
-        *state ^= (CONTROL_FUNC_TABLE[index] as usize) << self.pins[0];
+    pub fn evaluate_gate(&self, state: &mut usize) -> usize {
+        let c1 = (*state >> self.pins[1]) & 1;
+        let c2 = (*state >> self.pins[2]) & 1;
+        *state ^= (c1 | ((!c2) & 1)) << self.pins[0];
+        *state
     }
     // pub fn evaluate_gate(&self, wires: &mut Vec<bool>) {
     //     //use the fact that the index to the control function table is built from the control function, a, and b
@@ -87,12 +96,14 @@ impl Gate {
     }
 
     pub fn evaluate_gate_list(gate_list: &Vec<Gate>, input_wires: usize) -> usize {
-        //first clone the input_wires and then iterate through all the gates using the original evaluate_gate function
-        let mut current_wires = input_wires;
-        gate_list.iter()
-                 .for_each(|gate| gate.evaluate_gate(&mut current_wires));
-        current_wires
+    let mut current_wires = input_wires;
+
+    for gate in gate_list {
+        gate.evaluate_gate(&mut current_wires);
     }
+
+    current_wires
+}
 
     //give ordering to gates for later canonicalization
     pub fn ordered(&self, other: &Self) -> bool {
@@ -111,6 +122,7 @@ impl Gate {
     }
 
     pub fn bottom(&self) -> usize {
+        // println!("bottom is {}", std_max((std_max(self.pins[0], self.pins[1])), self.pins[2]));
         std_max((std_max(self.pins[0], self.pins[1])), self.pins[2])
     }
 }
@@ -213,16 +225,11 @@ impl Circuit{
         Ok(())
     }
 
-
     // CAN TWO CIRCUITS WITH DIFFERENT NUMBER OF WIRES BE FUNCTIONALLY EQUIVALENT?????
     // pub fn functionally_equal()(&self, other_circuit: &Self, num_inputs: usize) -> Result<(), String> {
     //     let least_num_wires = min(self.num_wires, other_circuit.num_wires);
     //     if num_inputs > 
     // }
-
-    pub fn len(circuit: Circuit) -> usize {
-        circuit.gates.len()
-    }
 
     pub fn evaluate(&self, input_wires: usize) -> usize {
         Gate::evaluate_gate_list(&self.gates, input_wires)
@@ -244,7 +251,7 @@ impl Circuit{
         for g in &gates {
             w = std_max(w, g.bottom());
         }
-        Circuit { num_wires: w, gates, }
+        Circuit { num_wires: w+1, gates, }
     }
 
     pub fn adjacent_id(&self) -> bool {
@@ -263,6 +270,91 @@ impl Circuit{
         }
         sb
     }
+
+    //converts from strings of the form " a b c; a' b' c'; ...; a'' b'' c'' "
+    pub fn from_string(str: String) -> Circuit {
+        let mut gates = Vec::<Gate>::new();
+        for gate_slice in str.split(';') {
+            if gate_slice.trim().is_empty() {
+                continue;
+            }
+            
+            let mut pins = [0usize;3]; 
+            
+            for (i, wire) in gate_slice.split_whitespace().enumerate() {
+                // println!("i: {}, wire: {}", i, wire);
+                if i > 2 {
+                    panic!("Expected 3 pins per gate");
+                }
+                pins[i] = wire.parse()
+                    .expect(&format!("Failed to parse pin {} in gate '{}'", i, gate_slice));
+            }
+            // println!("pins: {:?}", pins);
+            let gate = Gate {pins, control_function: 2, id: 0};
+
+            gates.push(gate);
+        }
+        Self::from_gates(gates)
+    }
+
+    pub fn len(&self) -> usize {
+        self.gates.len()
+    }
+
+    pub fn used_wires(&self) -> Vec<usize> {
+        let mut used: HashSet<usize> = HashSet::new();
+        for gates in &self.gates {
+            used.insert(gates.pins[0]);
+            used.insert(gates.pins[1]);
+            used.insert(gates.pins[2]);
+        }
+        used.into_iter().collect()
+    }
+
+    pub fn count_used_wires(&self) -> usize {
+        self.used_wires().len()
+    }
+
+    pub fn minimize_wires(&self) -> Circuit {
+        // Collect and sort used wire indices
+        let mut used = self.used_wires();
+        used.sort_unstable();
+        // Build mapping: old wire index -> new wire index
+        let mut wire_map = HashMap::new();
+        for (new_index, old_index) in used.iter().enumerate() {
+            wire_map.insert(*old_index, new_index);
+        }
+        // Remap all gates
+        let new_gates: Vec<Gate> = self.gates
+            .iter()
+            .map(|g| {
+                let pins = [
+                    *wire_map.get(&g.pins[0]).unwrap(),
+                    *wire_map.get(&g.pins[1]).unwrap(),
+                    *wire_map.get(&g.pins[2]).unwrap(),
+                ];
+                Gate {
+                    pins,
+                    control_function: g.control_function, // keep original. For now, this will always be r57
+                    id: g.id,
+                }
+            })
+            .collect();
+        Self::from_gates(new_gates)
+    }
+
+    //converts from a compressed string
+    pub fn from_string_compressed(n: usize, s: &str) -> Circuit {
+        let base_gates = base_gates(n);
+        let mut gates = Vec::<Gate>::new();
+        for ch in s.chars() {
+            let gi = ch as usize;
+            let pins = &base_gates[gi];
+            gates.push(Gate { pins: *pins, control_function: 2,id: gi});
+        }
+        Circuit {num_wires: n, gates,}
+    }
+    
 }
 
 impl Permutation {
@@ -540,8 +632,10 @@ pub fn build_from(num_wires: usize, num_gates: usize,
             let mut s = vec![0usize;num_gates-1];
 
             for circuits in &perm.circuits {
-                for (i,g) in circuits.bytes().enumerate() {
+                let mut i = 0;
+                for g in circuits.bytes() {
                     s[i] = g as usize;
+                    i += 1;
                 }
 
                 for g in 0..base_gates.len() {

@@ -3,14 +3,88 @@ use local_mixing::{
                 circuit::{Circuit, Gate, Permutation},
                 };
 use local_mixing::rainbow::rainbow::main_rainbow;
-fn main () {
-    // Example arguments
-    let n = 4;
-    let m = 6;
-    let load = None; // or Some("db_file".to_string())
-    let fresh = true;
+use local_mixing::rainbow::explore::explore_db;
+use clap::{Arg, Command};
 
-    main_rainbow(n, m, load, fresh);
+fn main() {
+    let matches = Command::new("rainbow")
+        .about("Rainbow circuit generator")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(
+            Command::new("new")
+                .about("Build a new database")
+                .arg(
+                    Arg::new("n")
+                        .short('n')
+                        .long("n")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize)),
+                )
+                .arg(
+                    Arg::new("m")
+                        .short('m')
+                        .long("m")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize)),
+                ),
+        )
+        .subcommand(
+            Command::new("load")
+                .about("Load an existing database")
+                .arg(
+                    Arg::new("n")
+                        .short('n')
+                        .long("n")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize)),
+                )
+                .arg(
+                    Arg::new("m")
+                        .short('m')
+                        .long("m")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize)),
+                ),
+        )
+        .subcommand(
+            Command::new("explore")
+                .about("Explore an existing database")
+                .arg(
+                    Arg::new("n")
+                        .short('n')
+                        .long("n")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize)),
+                )
+                .arg(
+                    Arg::new("m")
+                        .short('m')
+                        .long("m")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize)),
+                ),
+        )
+        .get_matches();
+
+    match matches.subcommand() {
+        Some(("new", sub)) => {
+            let n: usize = *sub.get_one("n").unwrap();
+            let m: usize = *sub.get_one("m").unwrap();
+            main_rainbow(n, m, None, true);
+        }
+        Some(("load", sub)) => {
+            let n: usize = *sub.get_one("n").unwrap();
+            let m: usize = *sub.get_one("m").unwrap();
+            main_rainbow(n, m, Some("./db".to_string()), true);
+        }
+        Some(("explore", sub)) => {
+            let n: usize = *sub.get_one("n").unwrap();
+            let m: usize = *sub.get_one("m").unwrap();
+            explore_db(n, m);
+        }
+        _ => unreachable!(),
+    }
 }
 
 
