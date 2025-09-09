@@ -12,7 +12,7 @@ use std::{
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PersistPermStore {
     pub perm: Permutation,
-    pub circuits: Vec<String>,
+    pub circuits: Vec<Vec<u8>>,
     pub count: usize,
 }
 
@@ -33,7 +33,7 @@ impl PersistPermStore {
         }
 
         for c in &self.circuits {
-            let circuit = Circuit::from_string_compressed(w, c);
+            let circuit = Circuit::from_bytes_compressed(w, c);
             s.push_str(&format!("{}\n", circuit.to_string()));
         }
         s
@@ -53,20 +53,6 @@ impl Persist {
         bincode::serialize_into(writer, &persist)
             .expect("Failed to serialize Persist");
     }
-
-    // pub fn load(n: usize, m: usize, path: &str) -> HashMap<String, PersistPermStore> {
-    //     let file = File::open(path).expect("Failed to open file");
-    //     let reader = BufReader::new(file);
-    //     let persist: Persist = bincode::deserialize_from(reader)
-    //         .expect("Failed to deserialize Persist");
-    //     if persist.gates != m-1 || persist.wires != n {
-    //         panic!(
-    //             "Database size does not match: load has n={}, m={}; requested n={}, m={}",
-    //             persist.wires, persist.gates, n, m
-    //         );
-    //     }
-    //     persist.store
-    // }
 
     //correctly loads the file for m-1 db
     pub fn load(n: usize, m: usize) -> HashMap<String, PersistPermStore> {
@@ -90,7 +76,7 @@ impl Persist {
     }
 }
 
-pub fn make_persist(perm: Permutation, circuits: HashMap<String, bool>, count: usize) -> PersistPermStore {
-    let keys: Vec<String> = circuits.into_keys().collect();
+pub fn make_persist(perm: Permutation, circuits: HashMap<Vec<u8>, bool>, count: usize) -> PersistPermStore {
+    let keys: Vec<Vec<u8>> = circuits.into_keys().collect();
     PersistPermStore{ perm, circuits: keys, count, }
 }

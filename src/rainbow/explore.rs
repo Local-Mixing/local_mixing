@@ -77,7 +77,6 @@ pub fn min_rot(x: &Vec<usize>) -> Vec<usize> {
 }
 
 //find min rotation of hamming distances between each element in each row
-//TODO LOOK AT THIS AGAIN
 pub fn ham_diff(input: &Vec<Vec<usize>>) -> Vec<Vec<usize>> {
     let mut result = Vec::with_capacity(input.len());
 
@@ -153,12 +152,12 @@ pub fn explore_db(n:usize, m:usize) {
             saw_id = true;
             println!("{} id circuit", val.circuits.len());
             for circ in &val.circuits {
-                println!("{}", Circuit::from_string_compressed(n,&circ).to_string().as_str());
+                println!("{}", Circuit::from_bytes_compressed(n,&circ).to_string().as_str());
             }   
         }
 
         for circ in &val.circuits {
-            println!("{}", Circuit::from_string_compressed(n,&circ).to_string().as_str());
+            println!("{}", Circuit::from_bytes_compressed(n,&circ).to_string().as_str());
         }   
 
         let pop = val.circuits.len();

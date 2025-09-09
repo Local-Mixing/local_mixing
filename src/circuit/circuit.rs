@@ -13,7 +13,7 @@ use std::{
 };
 use rayon::prelude::*;
 use smallvec::SmallVec;
-
+use std::sync::atomic::Ordering;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Gate{
@@ -26,6 +26,11 @@ pub struct Gate{
 pub struct Circuit{
     pub num_wires: usize,
     pub gates: Vec<Gate>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CircuitSeq {
+    pub gates: Vec<usize>,
 }
 
 //Permutations are all the possible outputs of a circuit
@@ -76,15 +81,6 @@ impl Gate {
         *state ^= (c1 | ((!c2) & 1)) << self.pins[0];
         *state
     }
-    // pub fn evaluate_gate(&self, wires: &mut Vec<bool>) {
-    //     //use the fact that the index to the control function table is built from the control function, a, and b
-    //     let index = ((self.control_function as usize) << 2) 
-    //                     | ((wires[self.pins[1]] as usize) << 1)
-    //                     | ((wires[self.pins[2]] as usize));
-    //     //println!("{}{}",index, CONTROL_FUNC_TABLE[index]);
-    //     wires[self.pins[0]] ^= CONTROL_FUNC_TABLE[index];
-    // }
-
 
     pub fn equal(&self, other: &Self) -> bool {
         self.pins == other.pins && self.control_function == other.control_function
@@ -119,6 +115,45 @@ impl Gate {
     pub fn bottom(&self) -> usize {
         // println!("bottom is {}", std_max((std_max(self.pins[0], self.pins[1])), self.pins[2]));
         std_max(std_max(self.pins[0], self.pins[1]), self.pins[2])
+    }
+
+    pub fn collides_index(a: usize, b:usize, base_gates: &Vec<[usize;3]>) -> bool {
+        base_gates[a][0] == base_gates[b][1]
+            || base_gates[a][0] == base_gates[b][2] 
+            || base_gates[a][1] == base_gates[b][0] 
+            || base_gates[a][2] == base_gates[b][0]
+    }
+    //b is "larger"
+    pub fn ordered_index(a: usize, b:usize, base_gates: &Vec<[usize;3]>) -> bool {
+        if base_gates[a][0] > base_gates[b][0] {
+            return false
+        }
+        else if base_gates[a][0] == base_gates[b][0]{
+            if base_gates[a][1] > base_gates[b][1] {
+                return false
+            }
+            else if base_gates[a][1] == base_gates[b][1] {
+                return base_gates[a][2] < base_gates[b][2]
+            }
+        }
+        true
+    }
+
+    #[inline(always)]
+    pub fn evaluate_index(state: usize, gate: usize, base_gates: &Vec<[usize;3]>) -> usize {
+        let pins = base_gates[gate];
+        let c1 = (state >> pins[1]) & 1;
+        let c2 = (state >> pins[2]) & 1;
+        state ^ (c1 | ((!c2) & 1)) << pins[0]
+    }
+
+    #[inline(always)]
+    pub fn evaluate_index_list(state: usize, gates: &Vec<usize>, base_gates: &Vec<[usize;3]>) -> usize {
+        let mut current_wires = state;
+        for g in gates {
+            current_wires = Self::evaluate_index(current_wires, *g, base_gates);
+        }
+        current_wires
     }
 }
 
@@ -338,18 +373,22 @@ impl Circuit{
         Self::from_gates(&new_gates)
     }
 
-    //converts from a compressed string
-    pub fn from_string_compressed(n: usize, s: &str) -> Circuit {
+    //converts from a compressed string (gates are represented by chars)
+    pub fn from_bytes_compressed(n: usize, bytes: &Vec<u8>) -> Circuit {
         let base_gates = base_gates(n);
-        let mut gates = Vec::<Gate>::new();
-        for ch in s.chars() {
-            let gi = ch as usize;
-            let pins = &base_gates[gi];
-            gates.push(Gate { pins: *pins, control_function: 2,id: gi});
+        let mut gates = Vec::with_capacity(bytes.len());
+
+        for &gi in bytes {
+            let pins = &base_gates[gi as usize];
+            gates.push(Gate {
+                pins: *pins,
+                control_function: 2,
+                id: gi as usize,
+            });
         }
-        Circuit {num_wires: n, gates,}
+
+        Circuit { num_wires: n, gates }
     }
-    
 }
 
 impl Permutation {
@@ -481,6 +520,56 @@ impl Permutation {
     }
 }
 
+impl CircuitSeq {
+    pub fn adjacent_id(&self) -> bool {
+        for i in 0..(self.gates.len()-1) {
+            if self.gates[i] == self.gates[i+1] {
+                return true
+            }
+        }
+        false
+    }
+
+    pub fn evaluate(&self, input: usize, base_gates: &Vec<[usize;3]>) -> usize {
+        Gate::evaluate_index_list(input, &self.gates, base_gates)
+    }
+
+    pub fn permutation(&self, num_wires: usize, base_gates: &Vec<[usize;3]>) -> Permutation {
+        let size = 1 << num_wires;
+        //TODO: the size could be over 64, so is small vec a bad choice?
+        let mut output = vec![0; size];
+
+        for input in 0..size {
+            output[input] = self.evaluate(input, base_gates);
+        }
+
+        Permutation { data: output }
+    }
+
+    pub fn repr(&self) -> String {
+        self.gates.iter().map(|&id| {
+            std::char::from_u32(id as u32)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| id.to_string())
+            }).collect()
+    }
+    
+    pub fn repr_bytes(&self) -> Vec<u8> {
+        // just store each usize as a byte if it's <= 255
+        // or u16 if larger
+        if self.gates.iter().all(|&x| x <= 255) {
+            self.gates.iter().map(|&x| x as u8).collect()
+        } else {
+            // fallback to 2-byte encoding
+            let mut buf = Vec::with_capacity(self.gates.len() * 2);
+            for &x in &self.gates {
+                buf.extend_from_slice(&(x as u16).to_le_bytes());
+            }
+            buf
+        }
+    }
+}
+
 pub fn base_gates(n: usize) -> Vec<[usize; 3]> {
     let mut gates = Vec::new();
     for a in 0..n {
@@ -494,134 +583,17 @@ pub fn base_gates(n: usize) -> Vec<[usize; 3]> {
     }
     gates
 }
-// Old to_string based on gate inputs
-// pub fn to_string(circuit_gates: &Vec<Gate>) -> String {
-//     let mut wires: HashSet<usize> = HashSet::new();
-//     for gate in circuit_gates {
-//         wires.extend(gate.pins.iter());
-//     }
-//     let mut wire_list: Vec<usize> = wires.into_iter().collect();
-//     wire_list.sort();
-
-//     let mut result = String::new();
-//     for (i, wire) in wire_list.iter().enumerate() {
-//         result.push_str(&format!("{:<2} ", wire));
-//         for gate in circuit_gates {
-//             if gate.pins[0] == *wire {
-//                 result+="( )";
-//             } else if gate.pins[1] == *wire {
-//                 result+="-●-";
-//             } else if gate.pins[2] == *wire {
-//                 result+="-○-";
-//             } else {
-//                 result+="-|-";
-//             }
-//             result.push_str("---");
-//         }
-//         if i != wire_list.len() - 1 {
-//             result.push_str("\n");
-//         }
-//     }
-
-//     let control_fn_strings: Vec<String> = circuit_gates
-//         .iter()
-//         .map(|gate| Gate_Control_Func::from_u8(gate.control_function).to_string())
-//         .collect();
-//     result.push_str("\ncfs: ");
-//     result.push_str(&control_fn_strings.join(", "));
-//     result
-// }
-
-// pub fn to_string(circuit: Circuit) {
-//     let num_wires = circuit.num_wires;
-//     let gates_list = circuit.gates;
-//     let result = String::new();
-//     for wire in range (0..num_wires) {
-//         for gate in gates_list {
-//             if gate.pins[0] == *wire {
-//                 result+="( )";
-//             } else if gate.pins[1] == *wire {
-//                 result+="-●-";
-//             } else if gate.pins[2] == *wire {
-//                 result+="-○-";
-//             } else {
-//                 result+="-|-";
-//             }
-//             result.push_str("---");
-//         }
-//         result.push_str("---");
-//         }
-//         if i != wire_list.len() - 1 {
-//             result.push_str("\n");
-//         }
-//     let control_fn_strings: Vec<String> = circuit_gates
-//         .iter()
-//         .map(|gate| Gate_Control_Func::from_u8(gate.control_function).to_string())
-//         .collect();
-//     result.push_str("\ncfs: ");
-//     result.push_str(&control_fn_strings.join(", "));
-//     result
-// }
-
-// pub fn par_all_circuits(wires: usize, gates: usize) -> Receiver<Vec<usize>> {
-//     let (tx,rx) = unbounded();
-//     let base_gates = base_gates(wires);
-//     let z = base_gates.len() as i64;
-//     let total = (0..gates).fold(1i64, |acc, _| acc * z);
-
-//     thread::spawn(move || {
-//         const WORKERS: usize = 1;
-//         let (work_tx, work_rx) = unbounded::<i64>();
-//         println!("Launching {} build workers", WORKERS);
-//         //shadow for new threads
-//         let tx = Arc::new(tx);
-//         let mut handles = vec![];
-
-//         for _ in 0..WORKERS {
-//             let work_rx = work_rx.clone();
-//             let tx = Arc::clone(&tx);
-//             let handle = thread::spawn(move || {
-//                 for mut i in work_rx.iter() {
-//                     let mut send = true;
-//                     let mut s = vec![0;gates];
-
-//                     for j in 0..gates {
-//                         s[j] = (i%z) as usize;
-//                         i /= z;
-//                         if j > 0 && s[j] == s[j-1] {
-//                             send = false;
-//                             break;
-//                         }
-//                     }
-//                     if send {
-//                         tx.send(s).unwrap();
-//                     }
-//                 }
-//             });
-//             handles.push(handle);
-//         }
-//         //send
-//         for i in 0..total {
-//             work_tx.send(i).unwrap();
-//         }
-
-//         //close
-//         drop(work_tx);
-
-//         for handle in handles {
-//             handle.join().unwrap();
-//         }
-//     });
-//     rx
-// }
 
 //threads work independently, so use Rayon instead of Receiver
+//This returns an iterator for Vec<usize>, which represents a circuit.
+//[0,2,1] would correspond to a circuit with 3 gates, index 0, 2, and 1, in base_gates(3)
 pub fn par_all_circuits(wires: usize, gates: usize) -> impl ParallelIterator<Item = Vec<usize>>{
     //keep as usize for now
     let base_gates = base_gates(wires);
     let z = base_gates.len();
     let total = z.pow(gates as u32);
 
+    //TODO: (J: chunk total. don't spawn millions of threads)
     (0..total).into_par_iter().filter_map(move |mut i| {
         // use a stack array to avoid heap allocations
         // more efficient for filter_map
@@ -631,6 +603,7 @@ pub fn par_all_circuits(wires: usize, gates: usize) -> impl ParallelIterator<Ite
         let mut skip = false;
 
         for j in 0..gates {
+            //TODO: These are very expensive
             stack_buf[j] = i % z;
             i /= z;
 
@@ -649,48 +622,6 @@ pub fn par_all_circuits(wires: usize, gates: usize) -> impl ParallelIterator<Ite
     })
 }
 
-// pub fn build_from(num_wires: usize, num_gates: usize, 
-//     store: &Arc<HashMap<String, PersistPermStore>>
-// ) -> Receiver<Vec<usize>> {
-//     let (tx, rx) = unbounded::<Vec<usize>>();
-//     let base_gates = base_gates(num_wires);
-//     let store = Arc::clone(store);
-//     thread::spawn(move || {
-//         for perm in store.values() {
-//             //prefix circuit length gates-1
-//             let mut s = vec![0usize;num_gates-1];
-
-//             for circuits in &perm.circuits {
-//                 let mut i = 0;
-//                 for g in circuits.bytes() {
-//                     s[i] = g as usize;
-//                     i += 1;
-//                 }
-
-//                 for g in 0..base_gates.len() {
-//                     //no duplicates 
-//                     if g == s[s.len() - 1] {
-//                         continue;
-//                     }
-
-//                     let mut q1 = s.clone();
-//                     q1.push(g);
-//                     tx.send(q1).unwrap();
-
-//                     let mut q2 = vec![g];
-//                     q2.extend_from_slice(&s);
-//                     tx.send(q2).unwrap();
-
-//                     //TODO: also send reverse circuit?
-//                 }
-//             }
-//         }
-//         drop(tx);
-//     });
-
-//     rx
-// }
-
 //ordering of the vector will differ from the channel version
 //this shouldn't matter
 pub fn build_from(
@@ -708,7 +639,7 @@ pub fn build_from(
                 // allocate prefix on stack (max 64 gates, adjust if needed)
                 // use smallvec for stack efficiency
                 let mut prefix: SmallVec<[usize; 64]> = SmallVec::with_capacity(num_gates);
-                for b in circuit.bytes() { // fix: bytes() yields u8 directly
+                for &b in circuit.iter() { 
                     prefix.push(b as usize);
                 }
 
@@ -737,3 +668,4 @@ pub fn build_from(
             })
         })
 }
+
