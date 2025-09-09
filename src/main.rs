@@ -76,7 +76,7 @@ fn main() {
         Some(("load", sub)) => {
             let n: usize = *sub.get_one("n").unwrap();
             let m: usize = *sub.get_one("m").unwrap();
-            main_rainbow(n, m, Some("./db".to_string()), true);
+            main_rainbow(n, m, Some("./db".to_string()), false);
         }
         Some(("explore", sub)) => {
             let n: usize = *sub.get_one("n").unwrap();
