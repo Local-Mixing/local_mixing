@@ -1,6 +1,7 @@
 use local_mixing::{
                 rainbow::constants::{self, CONTROL_FUNC_TABLE},
                 circuit::{Circuit, Gate, Permutation},
+                random::random_data::main_random,
                 };
 use local_mixing::rainbow::rainbow::{main_rainbow_generate, main_rainbow_load};
 use local_mixing::rainbow::explore::explore_db;
@@ -65,6 +66,31 @@ fn main() {
                         .value_parser(clap::value_parser!(usize)),
                 ),
         )
+        .subcommand(
+            Command::new("random")
+                .about("Generate random circuits and store in DB")
+                .arg(
+                    Arg::new("n")
+                        .short('n')
+                        .long("n")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize)),
+                )
+                .arg(
+                    Arg::new("m")
+                        .short('m')
+                        .long("m")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize)),
+                )
+                .arg(
+                    Arg::new("count")
+                        .short('c')
+                        .long("count")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize)),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -82,6 +108,12 @@ fn main() {
             let n: usize = *sub.get_one("n").unwrap();
             let m: usize = *sub.get_one("m").unwrap();
             explore_db(n, m);
+        }
+        Some(("random", sub)) => {
+            let n: usize = *sub.get_one("n").unwrap();
+            let m: usize = *sub.get_one("m").unwrap();
+            let count: usize = *sub.get_one("count").unwrap();
+            main_random(n, m, count);
         }
         _ => unreachable!(),
     }

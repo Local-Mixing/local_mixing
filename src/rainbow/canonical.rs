@@ -64,7 +64,7 @@ pub fn init(n: usize) {
     *CACHE.lock().unwrap() = LruCache::new(NonZeroUsize::new(CACHE_SIZE).unwrap());
 }
 
-fn strings_of_weight(w: usize, n: usize) -> Vec<usize> {
+pub fn strings_of_weight(w: usize, n: usize) -> Vec<usize> {
     let n_total = 1usize << n;
 
     // Compute the next integer after x with the same Hamming weight
@@ -89,7 +89,7 @@ fn strings_of_weight(w: usize, n: usize) -> Vec<usize> {
     result
 }
 
-fn index_set(s: usize, n: usize) -> Vec<usize> {
+pub fn index_set(s: usize, n: usize) -> Vec<usize> {
     // "light" strings
     let mut p = strings_of_weight(s, n);
 
@@ -180,77 +180,77 @@ impl Permutation {
     }
     
     pub fn brute_canonical(&self) -> Canonicalization {
-    let bit_shuf_global = BIT_SHUF.lock().unwrap();
-    // Panic if BIT_SHUF hasn't been initialized
-    if bit_shuf_global.is_empty() {
-        panic!("Call init() first!");
-    }
-    
-    // num wires
-    let n = self.data.len();
-
-    // num bits that we can shuffle for relabeling
-    // wires are 0..n-1
-    let num_b = std::mem::size_of::<usize>() * 8 - (n - 1).leading_zeros() as usize;
-
-    // store the minimal bit permutation
-    let mut min_perm: SmallVec<[usize; 64]> = SmallVec::from_slice(&self.data);
-
-    // store the shuffled bits according to the potential bit_shuf
-    let mut bits: SmallVec<[usize; 64]> = SmallVec::from_elem(0, n);
-
-    // Vector to hold where old indices moved
-    let mut index_shuf: SmallVec<[usize; 64]> = SmallVec::from_elem(0, n);
-
-    // Vector to hold the perm after bit shuffling and index shuffling
-    let mut perm_shuf: SmallVec<[usize; 64]> = SmallVec::from_elem(0, n);
-
-    // hold our current best_shuffle
-    let mut best_shuffle = Permutation::id_perm(num_b);
-
-    for r in bit_shuf_global.iter() {
-        for (src, &dst) in r.iter().enumerate() {
-            for (i, &val) in self.data.iter().enumerate() {
-                bits[i] |= ((val >> src) & 1) << dst;
-                index_shuf[i] |= ((i >> src) & 1) << dst;
-            }
+        let bit_shuf_global = BIT_SHUF.lock().unwrap();
+        // Panic if BIT_SHUF hasn't been initialized
+        if bit_shuf_global.is_empty() {
+            panic!("Call init() first!");
         }
+        
+        // num wires
+        let n = self.data.len();
 
-        for (i, &val) in bits.iter().enumerate() {
-            perm_shuf[index_shuf[i]] = val;
-        }
+        // num bits that we can shuffle for relabeling
+        // wires are 0..n-1
+        let num_b = std::mem::size_of::<usize>() * 8 - (n - 1).leading_zeros() as usize;
 
-        // lexicographical sort in weight-order 
-        // Only consider b/2 since the "light" and "heavy" are just complements of each other
-        // See index_set
-        for weight in 0..=num_b / 2 {
-            let mut done = false;
-            for i in index_set(weight, num_b) {
-                if perm_shuf[i] == min_perm[i] {
-                    continue;
+        // store the minimal bit permutation
+        let mut min_perm: SmallVec<[usize; 64]> = SmallVec::from_slice(&self.data);
+
+        // store the shuffled bits according to the potential bit_shuf
+        let mut bits: SmallVec<[usize; 64]> = SmallVec::from_elem(0, n);
+
+        // Vector to hold where old indices moved
+        let mut index_shuf: SmallVec<[usize; 64]> = SmallVec::from_elem(0, n);
+
+        // Vector to hold the perm after bit shuffling and index shuffling
+        let mut perm_shuf: SmallVec<[usize; 64]> = SmallVec::from_elem(0, n);
+
+        // hold our current best_shuffle
+        let mut best_shuffle = Permutation::id_perm(num_b);
+
+        for r in bit_shuf_global.iter() {
+            for (src, &dst) in r.iter().enumerate() {
+                for (i, &val) in self.data.iter().enumerate() {
+                    bits[i] |= ((val >> src) & 1) << dst;
+                    index_shuf[i] |= ((i >> src) & 1) << dst;
                 }
-                if perm_shuf[i] < min_perm[i] {
-                    min_perm.copy_from_slice(&perm_shuf);
-                    best_shuffle.data.copy_from_slice(&r);
+            }
+
+            for (i, &val) in bits.iter().enumerate() {
+                perm_shuf[index_shuf[i]] = val;
+            }
+
+            // lexicographical sort in weight-order 
+            // Only consider b/2 since the "light" and "heavy" are just complements of each other
+            // See index_set
+            for weight in 0..=num_b / 2 {
+                let mut done = false;
+                for i in index_set(weight, num_b) {
+                    if perm_shuf[i] == min_perm[i] {
+                        continue;
+                    }
+                    if perm_shuf[i] < min_perm[i] {
+                        min_perm.copy_from_slice(&perm_shuf);
+                        best_shuffle.data.copy_from_slice(&r);
+                    }
+                    done = true;
+                    break;
                 }
-                done = true;
-                break;
+                if done {
+                    break;
+                }
             }
-            if done {
-                break;
-            }
+
+            // clear the temp vectors to check the next bit_shuf
+            bits.fill(0);
+            index_shuf.fill(0);
         }
 
-        // clear the temp vectors to check the next bit_shuf
-        bits.fill(0);
-        index_shuf.fill(0);
+        Canonicalization {
+            perm: Permutation { data: min_perm.into_vec() },
+            shuffle: best_shuffle,
+        }
     }
-
-    Canonicalization {
-        perm: Permutation { data: min_perm.into_vec() },
-        shuffle: best_shuffle,
-    }
-}
 
     //Goal of fast canon is to produce small snippets of the best permutation (by lexi order) and determine which in canonical
     //If we can't decide between multiple, for now, we just ignore and will do brute force

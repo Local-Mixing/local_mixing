@@ -425,23 +425,12 @@ impl Permutation {
         }
     }
 
-    //come back to this. should be used for cache later when we create a rainbow
     pub fn repr(&self) -> String {
-        let bytes: Vec<u8> = if self.data.len() > 256 {
-            // Two-byte encoding (little-endian)
-            let mut b = vec![0u8; 2 * self.data.len()];
-            for (i, &val) in self.data.iter().enumerate() {
-                b[2 * i..2 * i + 2].copy_from_slice(&(val as u16).to_le_bytes());
-            }
-            b
-        } else {
-            // Single-byte encoding
-            self.data.iter().map(|&x| x as u8).collect()
-        };
-
-        // Convert bytes to a string safely
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
+    self.data.iter()
+        .map(|&x| x.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
 
 
     pub fn bits(&self) -> usize {
@@ -547,11 +536,11 @@ impl CircuitSeq {
     }
 
     pub fn repr(&self) -> String {
-        self.gates.iter().map(|&id| {
-            std::char::from_u32(id as u32)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| id.to_string())
-            }).collect()
+        // Join all gates as decimal numbers separated by commas
+        self.gates.iter()
+            .map(|&id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
     }
     
     pub fn repr_bytes(&self) -> Vec<u8> {
