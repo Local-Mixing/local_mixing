@@ -1,8 +1,4 @@
-use local_mixing::{
-                rainbow::constants::{self, CONTROL_FUNC_TABLE},
-                circuit::{Circuit, Gate, Permutation},
-                random::random_data::main_random,
-                };
+use local_mixing::random::random_data::main_random;
 use local_mixing::rainbow::rainbow::{main_rainbow_generate, main_rainbow_load};
 use local_mixing::rainbow::explore::explore_db;
 use clap::{Arg, Command};

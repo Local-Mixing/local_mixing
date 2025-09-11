@@ -1,7 +1,7 @@
 use crate::circuit::{self, Permutation, CircuitSeq};
 use crate::rainbow::canonical::{self, Canonicalization, CandSet};
 use rand::Rng;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result};
 use smallvec::SmallVec;
 use itertools::Itertools;
 

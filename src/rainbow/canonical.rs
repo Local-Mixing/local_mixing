@@ -1,5 +1,4 @@
-use crate::circuit::{self, Circuit, Gate, Permutation, CircuitSeq};
-use crate::circuit::par_all_circuits;
+use crate::circuit::{Circuit, Gate, Permutation, CircuitSeq};
 use smallvec::SmallVec;
 use itertools::Itertools;
 use lru::LruCache;
@@ -727,7 +726,7 @@ impl CircuitSeq {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use crate::circuit::par_all_circuits;
     #[test]
     fn test_from_string_brute() {
         init(4);
@@ -750,7 +749,7 @@ mod tests {
         }
 
         let now = std::time::Instant::now();
-        let _ = circuit::par_all_circuits(3,3);
+        let _ = par_all_circuits(3,3);
         println!("Time: {:?}", now.elapsed());
     }
 

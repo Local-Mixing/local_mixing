@@ -1,6 +1,6 @@
 use crate::circuit::circuit;
 use crate::{
-    circuit::{CircuitSeq, Gate, Permutation},
+    circuit::{CircuitSeq, Permutation},
     rainbow::canonical::PermStore,
 };
 use crate::rainbow::canonical;

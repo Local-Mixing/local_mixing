@@ -557,6 +557,25 @@ impl CircuitSeq {
             buf
         }
     }
+
+    pub fn to_circuit(&self, base_gates: &Vec<[usize; 3]>) -> Circuit {
+        // `self.gates` holds indices into base_gates
+        let gates: Vec<Gate> = self.gates.iter().enumerate().map(|(i, &idx)| {
+            if idx >= base_gates.len() {
+                panic!("Invalid gate index {} for base_gates of length {}", idx, base_gates.len());
+            }
+
+            let pins = base_gates[idx];
+            Gate {
+                pins,
+                control_function: 2,
+                id: 0, 
+            }
+        }).collect();
+
+        let n = base_gates.iter().flat_map(|g| g.iter()).max().unwrap() + 1;
+        Circuit { num_wires: n, gates }
+    }
 }
 
 pub fn base_gates(n: usize) -> Vec<[usize; 3]> {
@@ -658,3 +677,29 @@ pub fn build_from(
         })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rainbow::init;
+    #[test]
+    fn test_to_circuit_and_canon() {
+        init(3);
+        let mut circuit1: Vec<usize> = Vec::new();
+        circuit1.push(2);
+        circuit1.push(1);
+        circuit1.push(1);
+        let circuit1 = CircuitSeq { gates: circuit1 };
+        let base_gates = base_gates(3);
+        let circuit1 = circuit1.to_circuit(&base_gates);
+
+        let mut circuit2: Vec<usize> = Vec::new();
+        circuit2.push(0);
+        circuit2.push(0);
+        circuit2.push(1);
+        let circuit2 = CircuitSeq { gates: circuit2 };
+        let circuit2 = circuit2.to_circuit(&base_gates);
+
+        println!("{:?}", circuit1.permutation().canonical());
+        println!("{:?}", circuit2.permutation().canonical());
+    } 
+}
