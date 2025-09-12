@@ -1,7 +1,7 @@
 use local_mixing::random::random_data::main_random;
 use local_mixing::rainbow::rainbow::{main_rainbow_generate, main_rainbow_load};
 use local_mixing::rainbow::explore::explore_db;
-use clap::{Arg, Command};
+use clap::{Arg, ArgAction, Command};
 
 fn main() {
     let matches = Command::new("rainbow")
@@ -11,80 +11,39 @@ fn main() {
         .subcommand(
             Command::new("new")
                 .about("Build a new database")
-                .arg(
-                    Arg::new("n")
-                        .short('n')
-                        .long("n")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize)),
-                )
-                .arg(
-                    Arg::new("m")
-                        .short('m')
-                        .long("m")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize)),
-                ),
+                .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize))),
         )
         .subcommand(
             Command::new("load")
                 .about("Load an existing database")
-                .arg(
-                    Arg::new("n")
-                        .short('n')
-                        .long("n")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize)),
-                )
-                .arg(
-                    Arg::new("m")
-                        .short('m')
-                        .long("m")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize)),
-                ),
+                .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize))),
         )
         .subcommand(
             Command::new("explore")
                 .about("Explore an existing database")
-                .arg(
-                    Arg::new("n")
-                        .short('n')
-                        .long("n")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize)),
-                )
-                .arg(
-                    Arg::new("m")
-                        .short('m')
-                        .long("m")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize)),
-                ),
+                .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize))),
         )
         .subcommand(
             Command::new("random")
                 .about("Generate random circuits and store in DB")
-                .arg(
-                    Arg::new("n")
-                        .short('n')
-                        .long("n")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize)),
-                )
-                .arg(
-                    Arg::new("m")
-                        .short('m')
-                        .long("m")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize)),
-                )
+                .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize)))
                 .arg(
                     Arg::new("count")
                         .short('c')
                         .long("count")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize)),
+                        .value_parser(clap::value_parser!(usize))
+                        .conflicts_with("sliding"),
+                )
+                .arg(
+                    Arg::new("sliding")
+                        .short('C')
+                        .long("sliding")
+                        .action(ArgAction::SetTrue)
+                        .conflicts_with("count"),
                 ),
         )
         .get_matches();
@@ -108,12 +67,21 @@ fn main() {
         Some(("random", sub)) => {
             let n: usize = *sub.get_one("n").unwrap();
             let m: usize = *sub.get_one("m").unwrap();
-            let count: usize = *sub.get_one("count").unwrap();
-            main_random(n, m, count);
+
+            if let Some(count) = sub.get_one::<usize>("count") {
+                // Fixed-count mode
+                main_random(n, m, *count, false);
+            } else if sub.get_flag("sliding") {
+                // Sliding-window fail-rate mode
+                main_random(n, m, 0, true);
+            } else {
+                panic!("You must provide either -c <count> or -C for sliding-window mode");
+            }
         }
         _ => unreachable!(),
     }
 }
+
 
 
 // fn main() {

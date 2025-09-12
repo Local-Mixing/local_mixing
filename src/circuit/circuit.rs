@@ -13,7 +13,6 @@ use std::{
 };
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use std::sync::atomic::Ordering;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Gate{
@@ -560,7 +559,7 @@ impl CircuitSeq {
 
     pub fn to_circuit(&self, base_gates: &Vec<[usize; 3]>) -> Circuit {
         // `self.gates` holds indices into base_gates
-        let gates: Vec<Gate> = self.gates.iter().enumerate().map(|(i, &idx)| {
+        let gates: Vec<Gate> = self.gates.iter().enumerate().map(|(_, &idx)| {
             if idx >= base_gates.len() {
                 panic!("Invalid gate index {} for base_gates of length {}", idx, base_gates.len());
             }
@@ -685,17 +684,17 @@ mod tests {
     fn test_to_circuit_and_canon() {
         init(3);
         let mut circuit1: Vec<usize> = Vec::new();
-        circuit1.push(2);
-        circuit1.push(1);
-        circuit1.push(1);
+        circuit1.push(3);
+        circuit1.push(5);
+        circuit1.push(0);
         let circuit1 = CircuitSeq { gates: circuit1 };
         let base_gates = base_gates(3);
         let circuit1 = circuit1.to_circuit(&base_gates);
 
         let mut circuit2: Vec<usize> = Vec::new();
+        circuit2.push(4);
         circuit2.push(0);
-        circuit2.push(0);
-        circuit2.push(1);
+        circuit2.push(3);
         let circuit2 = CircuitSeq { gates: circuit2 };
         let circuit2 = circuit2.to_circuit(&base_gates);
 

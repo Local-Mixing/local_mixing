@@ -4,21 +4,32 @@ use rand::Rng;
 use rusqlite::{Connection, Result};
 use smallvec::SmallVec;
 use itertools::Itertools;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
-pub fn random_circuit(base_gates: &Vec<[usize;3]>, m:usize) -> CircuitSeq {
+pub fn random_circuit(base_gates: &Vec<[usize; 3]>, m: usize) -> CircuitSeq {
     let mut rng = rand::rng();
     let mut circuit = Vec::with_capacity(m);
+    let n = base_gates.len();
+    let mut last = None;
+
     for _ in 0..m {
-        let rand = rng.random_range(0..base_gates.len());
-        circuit.push(rand);
+        let mut candidate;
+        loop {
+            candidate = rng.random_range(0..n);
+            if Some(candidate) != last { 
+                break; 
+            }
+        }
+        last = Some(candidate);
+        circuit.push(candidate);
     }
-    CircuitSeq{ gates: circuit, }
+    CircuitSeq {gates: circuit }
 }
 
-pub fn create_table(conn: &Connection, n: usize, m: usize) -> Result<()> {
+pub fn create_table(conn: &Connection, table_name: &str) -> Result<()> {
     // Table name includes n and m
-    let table_name = format!("n{}m{}", n, m);
-
     let sql = format!(
         "CREATE TABLE IF NOT EXISTS {} (
             circuit TEXT UNIQUE,
@@ -33,19 +44,49 @@ pub fn create_table(conn: &Connection, n: usize, m: usize) -> Result<()> {
 }
 
 pub fn insert_circuit(
-    conn: &Connection,
-    n: usize,
-    m: usize,
+    conn: &mut Connection,
     circuit: &CircuitSeq, 
     canon: &Canonicalization,
+    table_name: &str
 ) -> Result<()> {
-    let table_name = format!("n{}m{}", n, m);
     let key = circuit.repr();
     let perm = canon.perm.repr();
     let shuf = canon.shuffle.repr();
     let sql = format!("INSERT INTO {} (circuit, perm, shuf) VALUES (?1, ?2, ?3)", table_name);
     conn.execute(&sql, &[&key, &perm, &shuf])?;
     Ok(())
+}
+
+pub fn insert_circuits_batch(
+    conn: &mut Connection,
+    table_name: &str,
+    circuits: &[(CircuitSeq, Canonicalization)],
+) -> Result<usize> {
+    // Start a single transaction for all inserts
+    let tx = conn.transaction()?;
+
+    // Prepare the SQL once
+    let sql = format!(
+        "INSERT OR IGNORE INTO {} (circuit, perm, shuf) VALUES (?1, ?2, ?3)",
+        table_name
+    );
+
+    let mut inserted = 0;
+
+    for (circuit, canon) in circuits {
+        let key = circuit.repr();
+        let perm = canon.perm.repr();
+        let shuf = canon.shuffle.repr();
+
+        if tx.execute(&sql, &[&key, &perm, &shuf])? > 0 {
+            inserted += 1;
+        }
+    }
+
+    // Commit all inserts at once
+    tx.commit()?;
+
+    Ok(inserted)
 }
 
 impl Permutation {
@@ -254,39 +295,130 @@ impl Permutation {
             shuffle: final_shuffle,
         }
     }
+
+    pub fn from_string(s: &str) -> Self {
+        let data = s
+            .split(',')
+            .map(|x| x.trim().parse::<usize>().expect("Invalid number in permutation"))
+            .collect();
+
+        Permutation { data }
+    }
 }
 
-pub fn main_random(n: usize, m: usize, count: usize) {
-    let conn = match Connection::open("circuits.db") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Failed to open DB: {}", e);
-            return
-        }
-    };
+pub fn check_cycles(n: usize, m: usize) -> Result<()> {
+    // Open the database
+    let conn = Connection::open("circuits.db")?;
+    let table_name = format!("n{}m{}", n, m);
 
-    if let Err(e) = create_table(&conn, n, m) {
-        eprintln!("Failed to create table: {}", e);
-        return
+    // Build the query string with the table name
+    let query = format!("SELECT DISTINCT perm FROM {}", table_name);
+    let mut stmt = conn.prepare(&query)?;
+
+    // Query all distinct perms
+    let perm_iter = stmt.query_map([], |row| {
+        let perm_str: String = row.get(0)?; // now as String
+        Ok(perm_str)
+    })?;
+
+    println!("Distinct permutations in {}:", table_name);
+
+    for perm_str_result in perm_iter {
+        let perm_str = perm_str_result?;
+
+        // Convert the string into a Permutation
+        let perm = Permutation::from_string(&perm_str);
+        let cycles = perm;
+
+        println!("{:?}", cycles);
     }
+
+    Ok(())
+}
+
+pub fn count_distinct(n: usize, m: usize) -> Result<usize> {
+    let conn = Connection::open("circuits.db")?;
+    let table_name = format!("n{}m{}", n, m);
+    
+    let query = format!("SELECT COUNT(DISTINCT perm) FROM {}", table_name);
+    let count: usize = conn.query_row(&query, [], |row| row.get(0))?;
+    
+    println!("Number of distinct permutations in {}: {}", table_name, count);
+    Ok(count)
+}
+
+pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
+    let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
+    let table_name = format!("n{}m{}", n, m);
+    create_table(&mut conn, &table_name).expect("Failed to create table");
 
     let base_gates = circuit::base_gates(n);
     let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
     let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
+
     let mut inserted = 0;
-    while inserted < count {
+    let mut total_attempts = 0;
+    let mut recent = 0;
+
+    let batch_size = 5_000;
+    let mut batch: Vec<(CircuitSeq, Canonicalization)> = Vec::with_capacity(batch_size);
+
+    // Atomic flag for Ctrl+C
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
+
+    while running.load(Ordering::SeqCst) && (!stop && inserted < count || stop) {
+        total_attempts += 1;
         let mut circuit = random_circuit(&base_gates, m);
         circuit.canonicalize(&base_gates);
 
-        let perm = circuit
-            .permutation(n, &base_gates)
-            .canon_simple(&bit_shuf);
+        let perm = circuit.permutation(n, &base_gates).canon_simple(&bit_shuf);
+        batch.push((circuit, perm));
 
-        if insert_circuit(&conn, n, m, &circuit, &perm).is_ok() {
-            inserted += 1; // only increment if insert succeeds
-        } else {
-            println!("Failed to add number {}", inserted);
+        if batch.len() >= batch_size {
+            let success_count = insert_circuits_batch(&mut conn, &table_name, &batch)
+                .unwrap_or(0);
+            inserted += success_count;
+            recent += success_count;
+            batch.clear();
         }
-        // otherwise, skip and try a new circuit
+
+        if total_attempts % 50_000 == 0 {
+            println!("Attempts: {}, inserted: {}", total_attempts, recent);
+            recent = 0;
+        }
+
+        // Stop for non-stop mode
+        if !stop && inserted >= count {
+            break;
+        }
+    }
+
+    // Insert remaining circuits before exiting
+    if !batch.is_empty() {
+        let success_count = insert_circuits_batch(&mut conn, &table_name, &batch)
+            .unwrap_or(0);
+        inserted += success_count;
+    }
+
+    println!(
+        "Finished: inserted {} circuits after {} attempts",
+        inserted, total_attempts
+    );
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_check_cycles_n3m3() -> Result<()> {
+        // Call check_cycles for n=3, m=3
+        count_distinct(5, 5)?;
+        Ok(())
     }
 }

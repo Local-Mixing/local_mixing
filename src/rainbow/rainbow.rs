@@ -37,7 +37,7 @@ static CKT_I: AtomicI64 = AtomicI64::new(0);
 //TODO: (J: Canonicalises the circuit ( i.e. runs fast canon, brute force canon etc. ). Fix the parallel part.)
 pub fn build_circuit_rayon(
     n: usize,
-    m: usize,
+    _m: usize,
     circuits: impl ParallelIterator<Item = Vec<usize>> + Send,
     base_gates: Arc<Vec<[usize;3]>>,
 ) -> impl ParallelIterator<Item = PR> + Send {
@@ -82,7 +82,7 @@ fn process_pr(pr: PR, circuit_store: &DashMap<String, PermStore>) {
     if own_inv { OWN_INV_COUNT.fetch_add(1, Ordering::Relaxed); }
 
     let mut store = circuit_store.entry(ph.clone())
-        .or_insert_with(|| PermStore::NewPermStore(p.clone()));
+        .or_insert_with(|| PermStore::new_perm_store(p.clone()));
 
     if pr.canonical {
         if store.contains_canonical { store.add_circuit(&pr.r); }
@@ -170,7 +170,7 @@ pub fn main_rainbow_generate(n: usize, m: usize) {
 }
 
 /// Main entry for loading existing circuits
-pub fn main_rainbow_load(n: usize, m: usize, load: &str) {
+pub fn main_rainbow_load(n: usize, m: usize, _load: &str) {
     assert!(n >= 3 && m >= 1, "Invalid circuit size");
 
     let base_gates = Arc::new(circuit::base_gates(n));

@@ -143,22 +143,27 @@ pub fn explore_db(n:usize, m:usize) {
     let mut singles = 0;
 
     for val in persist.store.values() {
-        let cyc = val.perm.to_cycle();
-        let order = order(&cyc);
+    let cyc = val.perm.to_cycle();
+    let order = order(&cyc);
 
-        diff_hamming.insert(format!("{:?}", ham_diff(&cyc)), true);
+    // Print the canonical permutation
+    println!("Permutation: {:?}", val.perm.data);
+    // Print its cycles
+    println!("Cycles: {:?}", cyc);
 
-        if cyc.len() == 0 {
-            saw_id = true;
-            println!("{} id circuit", val.circuits.len());
-            for circ in &val.circuits {
-                println!("{}", Circuit::from_bytes_compressed(n,&circ).to_string().as_str());
-            }   
-        }
+    diff_hamming.insert(format!("{:?}", ham_diff(&cyc)), true);
 
+    if cyc.len() == 0 {
+        saw_id = true;
+        println!("{} id circuit", val.circuits.len());
         for circ in &val.circuits {
             println!("{}", Circuit::from_bytes_compressed(n,&circ).to_string().as_str());
         }   
+    }
+
+    for circ in &val.circuits {
+        println!("{}", Circuit::from_bytes_compressed(n,&circ).to_string().as_str());
+    }   
 
         let pop = val.circuits.len();
         if pop > most_stored {

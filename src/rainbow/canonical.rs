@@ -669,7 +669,7 @@ impl CandSet {
 }
 
 impl PermStore {
-    pub fn NewPermStore(perm: Permutation) -> Self {
+    pub fn new_perm_store(perm: Permutation) -> Self {
         Self {
             perm,
             circuits: HashMap::new(),
