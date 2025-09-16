@@ -588,6 +588,18 @@ impl CircuitSeq {
         Circuit{ num_wires: max, gates, }
     }
 
+    pub fn num_wires(&self) -> usize {
+        let mut max = 0;
+        for g in &self.gates {
+            for &p in g {
+                if p as usize > max {
+                    max = p as usize;
+                }
+            }
+        }
+        max
+    }
+
     /// Reconstruct CircuitSeq from a BLOB
     pub fn from_blob(blob: &[u8]) -> Self {
         assert!(blob.len() % 3 == 0, "Invalid blob length");
@@ -596,6 +608,70 @@ impl CircuitSeq {
             .map(|chunk| [chunk[0], chunk[1], chunk[2]])
             .collect();
         CircuitSeq { gates }
+    }
+
+    // wire i -> perm[i]
+    pub fn rewire(&mut self, perm: &Permutation) {
+        if perm.data.is_empty() {
+            return;
+        }
+
+        let n = self.num_wires() as usize;
+        if perm.data.len() != n {
+            panic!(
+                "wrong size perm! got {}, have {} wires",
+                perm.data.len(),
+                n
+            );
+        }
+
+        if !perm.is_perm() {
+            panic!("{:?} is not a permutation!", perm);
+        }
+
+        for gate in &mut self.gates {
+            *gate = [
+                perm.data[gate[0] as usize] as u8,
+                perm.data[gate[1] as usize] as u8,
+                perm.data[gate[2] as usize] as u8,
+            ];
+        }
+    }
+
+    // Rewires the first gate to match `gate`, and adjusts remaining wires to a valid permutation
+    pub fn rewire_first_gate(&mut self, target_gate: [u8; 3]) {
+        if self.gates.is_empty() {
+            return
+        }
+
+        let first_gate = self.gates[0];
+        let num_wires = self.num_wires();
+
+        // use usize::MAX to mark unused slots
+        let mut perm: Vec<usize> = vec![usize::MAX; num_wires];
+
+        // Map first gate wires -> target gate wires
+        perm[first_gate[0] as usize] = target_gate[0] as usize;
+        perm[first_gate[1] as usize] = target_gate[1] as usize;
+        perm[first_gate[2] as usize] = target_gate[2] as usize;
+
+        // Fill in remaining wires sequentially
+        let mut next_free = 0;
+        for slot in perm.iter_mut() {
+            if *slot != usize::MAX {
+                continue;
+            }
+            while next_free == target_gate[0] as usize
+                || next_free == target_gate[1] as usize
+                || next_free == target_gate[2] as usize
+            {
+                next_free += 1;
+            }
+            *slot = next_free;
+            next_free += 1;
+        }
+
+        self.rewire(&Permutation { data: perm });
     }
 }
 

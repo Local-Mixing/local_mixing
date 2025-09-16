@@ -1,4 +1,4 @@
-use crate::circuit::{self, Permutation, CircuitSeq};
+use crate::circuit::{Permutation, CircuitSeq};
 use crate::rainbow::canonical::{self, Canonicalization, CandSet};
 use rusqlite::{Connection, Result};
 use smallvec::SmallVec;
@@ -13,26 +13,39 @@ pub fn random_circuit(n: u8, m: usize) -> CircuitSeq {
     let mut circuit = Vec::with_capacity(m);
 
     for _ in 0..m {
-        let mut set = [false; 16]; // mask for used pins. for now, we don't expect to go past 16 wires
-        for i in n..16 { set[i as usize] = true; } // disable pins >= n
+        loop {
+            // mask for used pins
+            let mut set = [false; 16];
+            for i in n..16 {
+                set[i as usize] = true; // disable pins >= n
+            }
 
-        let mut gate = [0u8; 3];
-        for j in 0..3 {
-            loop {
-                let v = fastrand::u8(..16);
-                if !set[v as usize] {
-                    set[v as usize] = true;
-                    gate[j] = v;
-                    break;
+            // pick 3 distinct pins
+            let mut gate = [0u8; 3];
+            for j in 0..3 {
+                loop {
+                    let v = fastrand::u8(..16);
+                    if !set[v as usize] {
+                        set[v as usize] = true;
+                        gate[j] = v;
+                        break;
+                    }
                 }
             }
-        }
 
-        circuit.push(gate);
+            // check against last gate to avoid duplicates
+            if circuit.last() == Some(&gate) {
+                continue; 
+            } else {
+                circuit.push(gate);
+                break;
+            }
+        }
     }
 
     CircuitSeq { gates: circuit }
 }
+
 
 pub fn create_table(conn: &Connection, table_name: &str) -> Result<()> {
     // Table name includes n and m
@@ -505,7 +518,7 @@ mod tests {
         let now = std::time::Instant::now();
         // Call check_cycles for n=3, m=3
         let _ = check_cycles(3, 3);
-        count_distinct(3, 3)?;
+        print_all("n3m3")?;
         println!("Time: {:?}", now.elapsed());
         Ok(())
     }
