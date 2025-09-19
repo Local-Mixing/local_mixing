@@ -423,6 +423,20 @@ impl Permutation {
         }
     }
 
+    pub fn compose(&self, other: &Permutation) -> Permutation {
+        if self.data.len() != other.data.len() {
+            panic!("Permutation length mismatch in compose");
+        }
+
+        let data = self.data
+            .iter()
+            .enumerate()
+            .map(|(i, &_x)| self.data[other.data[i]])
+            .collect();
+
+        Permutation { data }
+    }
+
     pub fn repr(&self) -> String {
         self.data.iter()
             .map(|&x| x.to_string())
@@ -541,29 +555,6 @@ impl CircuitSeq {
         Permutation { data: output }
     }
 
-    // pub fn repr(&self) -> String {
-    //     // Join all gates as decimal numbers separated by commas
-    //     self.gates.iter()
-    //         .map(|&id| id.to_string())
-    //         .collect::<Vec<_>>()
-    //         .join(",")
-    // }
-    
-    // pub fn repr_bytes(&self) -> Vec<u8> {
-    //     // just store each usize as a byte if it's <= 255
-    //     // or u16 if larger
-    //     if self.gates.iter().all(|&x| x <= 255) {
-    //         self.gates.iter().map(|&x| x as u8).collect()
-    //     } else {
-    //         // fallback to 2-byte encoding
-    //         let mut buf = Vec::with_capacity(self.gates.len() * 2);
-    //         for &x in &self.gates {
-    //             buf.extend_from_slice(&(x as u16).to_le_bytes());
-    //         }
-    //         buf
-    //     }
-    // }
-
     pub fn repr_blob(&self) -> Vec<u8> {
         let mut blob = Vec::with_capacity(self.gates.len() * 3);
         for &gate in &self.gates {
@@ -588,17 +579,17 @@ impl CircuitSeq {
         Circuit{ num_wires: max, gates, }
     }
 
-    pub fn num_wires(&self) -> usize {
-        let mut max = 0;
-        for g in &self.gates {
-            for &p in g {
-                if p as usize > max {
-                    max = p as usize;
-                }
-            }
-        }
-        max + 1
-    }
+    // pub fn num_wires(&self) -> usize {
+    //     let mut max = 0;
+    //     for g in &self.gates {
+    //         for &p in g {
+    //             if p as usize > max {
+    //                 max = p as usize;
+    //             }
+    //         }
+    //     }
+    //     max + 1
+    // }
 
     /// Reconstruct CircuitSeq from a BLOB
     pub fn from_blob(blob: &[u8]) -> Self {
@@ -611,12 +602,11 @@ impl CircuitSeq {
     }
 
     // wire i -> perm[i]
-    pub fn rewire(&mut self, perm: &Permutation) {
+    pub fn rewire(&mut self, perm: &Permutation, n: usize) {
         if perm.data.is_empty() {
             return;
         }
 
-        let n = self.num_wires() as usize;
         if perm.data.len() != n {
             panic!(
                 "wrong size perm! got {}, have {} wires",
@@ -639,13 +629,12 @@ impl CircuitSeq {
     }
 
     // Rewires the first gate to match `gate`, and adjusts remaining wires to a valid permutation
-    pub fn rewire_first_gate(&mut self, target_gate: [u8; 3]) {
+    pub fn rewire_first_gate(&mut self, target_gate: [u8; 3], num_wires: usize) {
         if self.gates.is_empty() {
             return
         }
 
         let first_gate = self.gates[0];
-        let num_wires = self.num_wires();
 
         // use usize::MAX to mark unused slots
         let mut perm: Vec<usize> = vec![usize::MAX; num_wires];
@@ -671,7 +660,102 @@ impl CircuitSeq {
             next_free += 1;
         }
 
-        self.rewire(&Permutation { data: perm });
+        self.rewire(&Permutation { data: perm }, num_wires);
+    }
+
+    pub fn repr(&self) -> String {
+        fn wire_to_char(w: u8) -> char {
+            match w {
+                0..=9 => (b'0' + w) as char,
+                10..=35 => (b'a' + (w - 10)) as char,
+                36..=61 => (b'A' + (w - 36)) as char,
+                _ => panic!("Invalid wire index: {}", w),
+            }
+        }
+
+        let mut s = String::new();
+        for gate in &self.gates {
+            for &wire in gate {
+                s.push(wire_to_char(wire));
+            }
+            s.push(';');
+        }
+        s
+    }
+
+    pub fn from_string(s: &str) -> Self {
+        fn char_to_wire(c: char) -> u8 {
+            match c {
+                '0'..='9' => c as u8 - b'0',
+                'a'..='z' => c as u8 - b'a' + 10,
+                'A'..='Z' => c as u8 - b'A' + 36,
+                _ => panic!("Invalid wire char: {}", c),
+            }
+        }
+
+        let gates: Vec<[u8; 3]> = s
+            .trim()
+            .split(';')
+            .filter(|part| !part.is_empty())
+            .map(|gate_str| {
+                let chars = gate_str.chars().map(char_to_wire).collect::<Vec<_>>();
+                if chars.len() != 3 {
+                    panic!("Each gate must have exactly 3 wires: {:?}", gate_str);
+                }
+                [chars[0], chars[1], chars[2]]
+            })
+            .collect();
+
+        CircuitSeq { gates }
+    }
+
+    pub fn to_string(&self, num_wires: usize) -> String {
+        let mut result = String::new();
+
+        // Local character map (0-9, a-z, A-Z)
+        let wire_map_chars: Vec<char> = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            .chars()
+            .collect();
+
+        // --- Pretty circuit diagram ---
+        for wire in 0..num_wires {
+            result += &format!("{:<2} --", wire);
+            for gate in &self.gates {
+                if gate[0] == wire as u8 {
+                    result += "( )";
+                } else if gate[1] == wire as u8{
+                    result += "-●-";
+                } else if gate[2] == wire as u8 {
+                    result += "-○-";
+                } else {
+                    result += "-|-";
+                }
+                result.push_str("---");
+            }
+            result.push('\n');
+        }
+
+        // --- Compact circuit string (like "123;124;213;") ---
+        let compact: String = self
+            .gates
+            .iter()
+            .map(|g| {
+                g.iter()
+                    .map(|&x| {
+                        wire_map_chars
+                            .get(x as usize)
+                            .unwrap_or(&'?')
+                            .to_string()
+                    })
+                    .collect::<String>()
+                    + ";"
+            })
+            .collect();
+
+        result.push_str("\n");
+        result.push_str(&compact);
+
+        result
     }
 }
 
@@ -799,4 +883,16 @@ mod tests {
     //     println!("{:?}", circuit1.permutation().canonical());
     //     println!("{:?}", circuit2.permutation().canonical());
     // } 
+
+    #[test]
+    fn test_from_string() {
+        let s = "032;123;234;";
+        println!("{}", CircuitSeq::from_string(s).to_string(5),);
+    }
+
+    // #[test]
+    // fn test_circuit_string() {
+    //     let s = "012;123;234";
+    //     println!("{}", Circuit::from_string(s.to_string()).to_string());
+    // }
 }

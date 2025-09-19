@@ -728,7 +728,7 @@ mod tests {
     use super::*;
     use crate::circuit::par_all_circuits;
     #[test]
-    fn test_from_string_brute() {
+    fn test_from_sbrute() {
         init(4);
         let mut c: Circuit = Circuit::from_string("0 1 2; 3 2 1; 0 2 1".to_string());
         println!("Circuit data: \n{}", c.to_string());

@@ -3,6 +3,7 @@ use local_mixing::rainbow::rainbow::{main_rainbow_generate, main_rainbow_load};
 use local_mixing::rainbow::explore::explore_db;
 use local_mixing::replace::mixing::main_mix;
 use local_mixing::replace::replace::random_id;
+use local_mixing::replace::replace::random_canonical_id;
 use local_mixing::circuit::CircuitSeq;
 use clap::{Arg, ArgAction, Command};
 use rusqlite::Connection;
@@ -99,35 +100,21 @@ fn main() {
             let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
 
             if data.trim().is_empty() {
-                // Fallback when file is empty
-                let (mut c1,c2) = random_id(4,2);
-                c1.gates.extend(c2.gates);
-
                 // Open DB connection
                 let conn = Connection::open("circuits.db").expect("Failed to open DB");
                 
-                main_mix(&c1, rounds, &conn);
+                // Fallback when file is empty
+                let c1= random_canonical_id(&conn, 5).unwrap();
+                println!("{:?} Starting Len: {}", c1.permutation(5).data, c1.gates.len());
+                main_mix(&c1, rounds, &conn, 5);
             } else {
-                // Parse into CircuitSeq
-                let gates: Vec<[u8; 3]> = data
-                    .trim()
-                    .split("],[") // split by "],["
-                    .map(|s| s.trim_matches(&['[', ']'][..]))
-                    .map(|s| {
-                        let nums: Vec<u8> = s
-                            .split(',')
-                            .map(|x| x.parse::<u8>().expect("Invalid number"))
-                            .collect();
-                        [nums[0], nums[1], nums[2]]
-                    })
-                    .collect();
-
-                let c = CircuitSeq { gates };
+                
+                let c = CircuitSeq::from_string(&data);
 
                 // Open DB connection
                 let conn = Connection::open("circuits.db").expect("Failed to open DB");
 
-                main_mix(&c, rounds, &conn);
+                main_mix(&c, rounds, &conn, 5);
             }
         }
         _ => unreachable!(),
