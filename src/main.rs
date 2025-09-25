@@ -87,6 +87,15 @@ fn main() {
             
             // Open DB connection
             let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
+            conn.execute_batch(
+                    "
+                    PRAGMA synchronous = OFF;
+                    PRAGMA journal_mode = WAL;
+                    PRAGMA temp_store = MEMORY;
+                    PRAGMA cache_size = -200000;
+                    PRAGMA locking_mode = EXCLUSIVE;
+                    "
+                ).unwrap();
             let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
             let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
             build_from_sql(&mut conn, n,m, &bit_shuf).expect("Unknown error occured");
@@ -121,7 +130,15 @@ fn main() {
             if data.trim().is_empty() {
                 // Open DB connection
                 let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
-                
+                conn.execute_batch(
+                    "
+                    PRAGMA synchronous = OFF;
+                    PRAGMA journal_mode = WAL;
+                    PRAGMA temp_store = MEMORY;
+                    PRAGMA cache_size = -200000;
+                    PRAGMA locking_mode = EXCLUSIVE;
+                    "
+                ).unwrap();
                 // Fallback when file is empty
                 let c1= random_canonical_id(&conn, 5).unwrap();
                 println!("{:?} Starting Len: {}", c1.permutation(5).data, c1.gates.len());
@@ -132,7 +149,15 @@ fn main() {
 
                 // Open DB connection
                 let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
-
+                conn.execute_batch(
+                    "
+                    PRAGMA synchronous = OFF;
+                    PRAGMA journal_mode = WAL;
+                    PRAGMA temp_store = MEMORY;
+                    PRAGMA cache_size = -200000;
+                    PRAGMA locking_mode = EXCLUSIVE;
+                    "
+                ).unwrap();
                 main_mix(&c, rounds, &mut conn, 5, seed);
             }
         }
