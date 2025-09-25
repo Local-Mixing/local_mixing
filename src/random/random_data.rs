@@ -10,6 +10,7 @@ use rayon::slice::ParallelSlice;
 use rayon::iter::ParallelIterator;
 use rusqlite::{params, Connection, Result};
 use smallvec::SmallVec;
+use rayon::iter::IntoParallelRefIterator;
 
 use std::{
     fs::OpenOptions,
@@ -461,29 +462,140 @@ pub fn base_gates(n: usize) -> Vec<[u8; 3]> {
 }
 
 // TODO: parallelize. Use ChunkParllelIterator (chunk before in batches)
+// pub fn build_from_sql(
+//     conn: &mut Connection,
+//     n: usize,
+//     m: usize,
+//     bit_shuf: &Vec<Vec<usize>>,
+// ) -> Result<()> {
+//     println!("Running build");
+//     let old_table = format!("n{}m{}", n, m - 1);
+//     let new_table = format!("n{}m{}", n, m);
+
+//     // Create the new table if it doesn't exist
+//     create_table(conn, &new_table)?;
+
+//     // Precompute base gates
+//     let base_gates: Vec<[u8; 3]> = base_gates(n);
+
+//     // Get total number of rows in old table once
+//     // let total_rows: i64 = conn.query_row(
+//     //     &format!("SELECT COUNT(*) FROM {}", old_table),
+//     //     [],
+//     //     |row| row.get(0),
+//     // )?;
+
+//     let total_rows: i64 = conn.query_row(
+//         &format!("SELECT MAX(rowid) FROM {}", old_table),
+//         [],
+//         |row| row.get(0),
+//     )?;
+//     println!("Total rows in {}: {}", old_table, total_rows);
+
+//     let mut last_rowid: i64 = 0;
+//     let chunk_size = 1000; // number of rows to pull from SQL at once
+//     let par_chunk_size = 100; // rows per Rayon task
+
+//     loop {
+//         // Read a batch of old circuits
+//         let rows: Vec<(i64, Vec<u8>)> = {
+//             let mut stmt = conn.prepare(&format!(
+//                 "SELECT rowid, circuit FROM {} WHERE rowid > ? ORDER BY rowid LIMIT ?",
+//                 old_table
+//             ))?;
+//             stmt.query_map(params![last_rowid, chunk_size], |row| {
+//                 Ok((row.get(0)?, row.get(1)?))
+//             })?
+//             .collect::<Result<_, _>>()?
+//         };
+
+//         if rows.is_empty() {
+//             break; // Finished reading all old circuits
+//         }
+
+//         // Update last_rowid (so next SQL batch continues)
+//         last_rowid = rows.last().unwrap().0;
+
+//         // Process in parallel by chunks
+//         let results: Vec<(CircuitSeq, Canonicalization)> = rows
+//             .par_chunks(par_chunk_size)
+//             .flat_map(|chunk| {
+//                 let mut local_results = Vec::new();
+//                 for (_rowid, blob) in chunk {
+//                     let old_circuit = CircuitSeq::from_blob(blob);
+//                     let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
+//                     prefix.extend_from_slice(&old_circuit.gates);
+
+//                     for g in &base_gates {
+//                         // q1 = prefix + g
+//                         let mut q1 = prefix.clone();
+//                         q1.push(*g);
+
+//                         // q2 = g + prefix
+//                         let mut q2 = SmallVec::<[[u8; 3]; 64]>::with_capacity(m + 1);
+//                         q2.push(*g);
+//                         q2.extend_from_slice(&prefix);
+
+//                         // Canonicalize
+//                         let mut c1 = CircuitSeq { gates: q1.to_vec() };
+//                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
+//                         c1.canonicalize();
+//                         c2.canonicalize();
+
+//                         let canon1 = c1.permutation(n).canon_simple(&bit_shuf);
+//                         let canon2 = c2.permutation(n).canon_simple(&bit_shuf);
+
+//                         local_results.push((c1, canon1));
+//                         local_results.push((c2, canon2));
+//                     }
+//                 }
+//                 local_results
+//             })
+//             .collect();
+
+//         // Insert results in a single batch
+//         if !results.is_empty() {
+//             insert_circuits_batch(conn, &new_table, &results)?;
+//         }
+
+//         if last_rowid % 50_000 == 0 {
+//             println!(
+//                 "Sampled: {}. Progress: {:.1}%",
+//                 last_rowid,
+//                 (last_rowid as f64 / total_rows as f64) * 100.0
+//             );
+//         }
+
+//         // println!(
+//         //         "Sampled: {}. Progress: {:.1}%",
+//         //         last_rowid,
+//         //         (last_rowid as f64 / total_rows as f64) * 100.0
+//         //     );
+//     }
+
+//     Ok(())
+// }
+
 pub fn build_from_sql(
     conn: &mut Connection,
     n: usize,
     m: usize,
     bit_shuf: &Vec<Vec<usize>>,
 ) -> Result<()> {
-    println!("Running build");
+    use rayon::prelude::*;
+    use std::sync::Arc;
+
+    println!("Running build (max CPU)");
+
     let old_table = format!("n{}m{}", n, m - 1);
     let new_table = format!("n{}m{}", n, m);
 
-    // Create the new table if it doesn't exist
     create_table(conn, &new_table)?;
 
-    // Precompute base gates
-    let base_gates: Vec<[u8; 3]> = base_gates(n);
+    let base_gates: Arc<Vec<[u8; 3]>> = Arc::new(base_gates(n));
+    let bit_shuf = Arc::new(bit_shuf.clone());
 
-    // Get total number of rows in old table once
-    // let total_rows: i64 = conn.query_row(
-    //     &format!("SELECT COUNT(*) FROM {}", old_table),
-    //     [],
-    //     |row| row.get(0),
-    // )?;
-
+    // Get max rowid for total rows
     let total_rows: i64 = conn.query_row(
         &format!("SELECT MAX(rowid) FROM {}", old_table),
         [],
@@ -491,12 +603,13 @@ pub fn build_from_sql(
     )?;
     println!("Total rows in {}: {}", old_table, total_rows);
 
-    let mut last_rowid: i64 = 0;
-    let chunk_size = 1000; // number of rows to pull from SQL at once
-    let par_chunk_size = 100; // rows per Rayon task
+    let chunk_size: i64 = 50_000; // bigger chunk size for better parallelism
+    let batch_size = 10_000;      // batch insert size
 
-    loop {
-        // Read a batch of old circuits
+    let mut last_rowid: i64 = 0;
+
+    while last_rowid < total_rows {
+        // Read a chunk from SQLite
         let rows: Vec<(i64, Vec<u8>)> = {
             let mut stmt = conn.prepare(&format!(
                 "SELECT rowid, circuit FROM {} WHERE rowid > ? ORDER BY rowid LIMIT ?",
@@ -509,67 +622,58 @@ pub fn build_from_sql(
         };
 
         if rows.is_empty() {
-            break; // Finished reading all old circuits
+            break;
         }
 
-        // Update last_rowid (so next SQL batch continues)
         last_rowid = rows.last().unwrap().0;
 
-        // Process in parallel by chunks
+        // Process rows in parallel (outer loop only)
         let results: Vec<(CircuitSeq, Canonicalization)> = rows
-            .par_chunks(par_chunk_size)
-            .flat_map(|chunk| {
-                let mut local_results = Vec::new();
-                for (_rowid, blob) in chunk {
+            .par_chunks(5000) // split into big enough chunks for each thread
+            .flat_map(|row_chunk| {
+                let mut local_results = Vec::with_capacity(row_chunk.len() * base_gates.len() * 2);
+
+                for (_rowid, blob) in row_chunk {
                     let old_circuit = CircuitSeq::from_blob(blob);
                     let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
                     prefix.extend_from_slice(&old_circuit.gates);
 
-                    for g in &base_gates {
+                    // Process base_gates sequentially (avoid nested parallelism)
+                    for g in base_gates.iter() {
                         // q1 = prefix + g
                         let mut q1 = prefix.clone();
                         q1.push(*g);
+                        let mut c1 = CircuitSeq { gates: q1.to_vec() };
+                        c1.canonicalize();
+                        let canon1 = c1.permutation(n).canon_simple(&bit_shuf);
 
                         // q2 = g + prefix
                         let mut q2 = SmallVec::<[[u8; 3]; 64]>::with_capacity(m + 1);
                         q2.push(*g);
                         q2.extend_from_slice(&prefix);
-
-                        // Canonicalize
-                        let mut c1 = CircuitSeq { gates: q1.to_vec() };
                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
-                        c1.canonicalize();
                         c2.canonicalize();
-
-                        let canon1 = c1.permutation(n).canon_simple(&bit_shuf);
                         let canon2 = c2.permutation(n).canon_simple(&bit_shuf);
 
                         local_results.push((c1, canon1));
                         local_results.push((c2, canon2));
                     }
                 }
+
                 local_results
             })
             .collect();
 
-        // Insert results in a single batch
-        if !results.is_empty() {
-            insert_circuits_batch(conn, &new_table, &results)?;
+        // Insert results in batches
+        for batch_chunk in results.chunks(batch_size) {
+            insert_circuits_batch(conn, &new_table, batch_chunk)?;
         }
 
-        if last_rowid % 50_000 == 0 {
-            println!(
-                "Sampled: {}. Progress: {:.1}%",
-                last_rowid,
-                (last_rowid as f64 / total_rows as f64) * 100.0
-            );
-        }
-
-        // println!(
-        //         "Sampled: {}. Progress: {:.1}%",
-        //         last_rowid,
-        //         (last_rowid as f64 / total_rows as f64) * 100.0
-        //     );
+        println!(
+            "Processed up to rowid {}. Progress: {:.2}%",
+            last_rowid,
+            (last_rowid as f64 / total_rows as f64) * 100.0
+        );
     }
 
     Ok(())
