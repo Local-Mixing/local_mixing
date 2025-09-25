@@ -606,7 +606,7 @@ pub fn build_from_sql(
     let chunk_size: i64 = 50_000; // bigger chunk size for better parallelism
     let batch_size = 10_000;      // batch insert size
 
-    let mut last_rowid: i64 = 6150000;
+    let mut last_rowid: i64 = 0;
 
     while last_rowid < total_rows {
         // Read a chunk from SQLite
