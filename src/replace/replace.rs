@@ -182,6 +182,7 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
         let sub_perm = subcircuit.permutation(n);
         let canon_perm = sub_perm.canon_simple(&bit_shuf);
         let perm_blob = canon_perm.perm.repr_blob();
+        let shuf_blob = canon_perm.shuffle.repr_blob();
 
         let sub_m = subcircuit.gates.len();
         let mut replaced = false;
@@ -232,8 +233,8 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
             create_table(conn, &table).expect("Failed to create table");
 
             conn.execute(
-                &format!("INSERT INTO {} (circuit, perm) VALUES (?1, ?2)", table),
-                params![sub_blob, perm_blob],
+                &format!("INSERT INTO {} (circuit, perm, shuf) VALUES (?1, ?2)", table),
+                params![sub_blob, perm_blob, shuf_blob],
             )
             .expect("Insert failed");
         }

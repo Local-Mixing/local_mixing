@@ -195,6 +195,7 @@ fn main() {
                     "
                 ).unwrap();
                 // Fallback when file is empty
+                println!("Generating random");
                 let c1= random_canonical_id(&conn, 5).unwrap();
                 println!("{:?} Starting Len: {}", c1.permutation(5).data, c1.gates.len());
                 main_butterfly(&c1, rounds, &mut conn, 5);
