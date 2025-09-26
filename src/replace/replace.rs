@@ -3,6 +3,8 @@ use crate::{
     random::random_data::{create_table, random_circuit, seeded_random_circuit},
 };
 
+use crate::random::random_data::insert_circuit;
+
 use rand::{prelude::IndexedRandom, Rng};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -18,58 +20,73 @@ pub fn random_canonical_id(
     conn: &Connection,
     wires: usize,
 ) -> Result<CircuitSeq, Box<dyn std::error::Error>> {
+    // Pattern to match all tables for this wire count (all m values)
     let pattern = format!("n{}%m%", wires);
 
-    // Get all tables matching pattern (all m values)
+    // Get all tables matching pattern
     let tables: Vec<String> = conn
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?1")?
         .query_map([&pattern], |row| row.get(0))?
         .map(|r| r.unwrap())
         .collect();
 
+    // Need at least 2 tables to combine circuits
     if tables.len() < 2 {
         return Err(format!("Need at least 2 tables matching {}", pattern).into());
     }
 
-    let mut rng = rand::rng();
+    let mut rng = rand::thread_rng();
 
     loop {
         // Pick two random tables (can be different m values)
-        let table_a = tables[rng.random_range(1..tables.len())].clone();
-        let table_b = tables[rng.random_range(1..tables.len())].clone();
+        let table_a = tables[rng.gen_range(0..tables.len())].clone();
+        let table_b = tables[rng.gen_range(0..tables.len())].clone();
 
-        // Find a permutation that exists in both tables
-        let perm_opt: Option<Vec<u8>> = conn.query_row(
+        // Count how many perms exist in both tables
+        let count: i64 = conn.query_row(
             &format!(
-                "SELECT a.perm
-                 FROM {} a
-                 JOIN {} b ON a.perm = b.perm
-                 ORDER BY RANDOM() LIMIT 1",
-                table_a, table_b
+                "SELECT COUNT(*) FROM {a} a JOIN {b} b ON a.perm = b.perm",
+                a = table_a,
+                b = table_b
             ),
             [],
             |row| row.get(0),
-        ).optional()?;
+        )?;
 
-        let perm = match perm_opt {
-            Some(p) => p,
-            None => continue, // Retry with new tables
-        };
+        // If none, retry with new tables
+        if count == 0 {
+            continue;
+        }
 
-        // Get circuits from table_a
+        // Pick a random offset within the count
+        let offset = rng.gen_range(0..count);
+
+        // Select one perm at that offset
+        let perm: Vec<u8> = conn.query_row(
+            &format!(
+                "SELECT a.perm FROM {a} a JOIN {b} b ON a.perm = b.perm LIMIT 1 OFFSET ?",
+                a = table_a,
+                b = table_b
+            ),
+            [offset],
+            |row| row.get(0),
+        )?;
+
+        // Fetch circuits from table_a with this perm
         let blobs_a: Vec<[Vec<u8>; 2]> = conn
             .prepare(&format!("SELECT circuit, shuf FROM {} WHERE perm = ?", table_a))?
             .query_map([&perm], |row| Ok([row.get(0)?, row.get(1)?]))?
             .map(|r| r.unwrap())
             .collect();
 
-        // Get circuits from table_b
+        // Fetch circuits from table_b with this perm
         let blobs_b: Vec<[Vec<u8>; 2]> = conn
             .prepare(&format!("SELECT circuit, shuf FROM {} WHERE perm = ?", table_b))?
             .query_map([&perm], |row| Ok([row.get(0)?, row.get(1)?]))?
             .map(|r| r.unwrap())
             .collect();
 
+        // Skip if either table has no circuits for this perm
         if blobs_a.is_empty() || blobs_b.is_empty() {
             continue;
         }
@@ -82,8 +99,6 @@ pub fn random_canonical_id(
         let mut ca = CircuitSeq::from_blob(&a_blob[0]);
         let mut cb = CircuitSeq::from_blob(&b_blob[0]);
 
-        //println!("{}\n{}", ca.repr(), cb.repr());
-
         // Rewire cb to align with ca
         cb.rewire(&Permutation::from_blob(&b_blob[1]), wires);
         cb.rewire(&Permutation::from_blob(&a_blob[1]).invert(), wires);
@@ -92,6 +107,7 @@ pub fn random_canonical_id(
         cb.gates.reverse();
         ca.gates.extend(cb.gates);
 
+        // Return the combined circuit
         return Ok(ca);
     }
 }
@@ -182,7 +198,7 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
         let sub_perm = subcircuit.permutation(n);
         let canon_perm = sub_perm.canon_simple(&bit_shuf);
         let perm_blob = canon_perm.perm.repr_blob();
-        let shuf_blob = canon_perm.shuffle.repr_blob();
+        // let shuf_blob = canon_perm.shuffle.repr_blob();
 
         let sub_m = subcircuit.gates.len();
         let mut replaced = false;
@@ -228,15 +244,15 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
         // If not replaced, insert the subcircuit into its own table immediately
         if !replaced {
             let table = format!("n{}m{}", n, sub_m);
-            let sub_blob = subcircuit.repr_blob();
+            //let sub_blob = subcircuit.repr_blob();
 
             create_table(conn, &table).expect("Failed to create table");
-
-            conn.execute(
-                &format!("INSERT INTO {} (circuit, perm, shuf) VALUES (?1, ?2, ?3)", table),
-                params![sub_blob, perm_blob, shuf_blob],
-            )
-            .expect("Insert failed");
+            insert_circuit(&mut conn, &subcircuit, &canon_perm, &table);
+            // conn.execute(
+            //     &format!("INSERT INTO {} (circuit, perm, shuf) VALUES (?1, ?2, ?3)", table),
+            //     params![sub_blob, perm_blob, shuf_blob],
+            // )
+            // .expect("Insert failed");
         }
     }
     //writeln!(file, "Permutation after replacement is: \n{:?}", compressed.permutation(n).data).unwrap();
