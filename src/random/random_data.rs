@@ -583,7 +583,7 @@ pub fn build_from_sql(
     bit_shuf: &Vec<Vec<usize>>,
 ) -> Result<()> {
     use rayon::prelude::*;
-    use std::sync::Arc;
+    use std::sync::Mutex;
 
     println!("Running build (max CPU)");
 
@@ -595,7 +595,6 @@ pub fn build_from_sql(
     let base_gates: Arc<Vec<[u8; 3]>> = Arc::new(base_gates(n));
     let bit_shuf = Arc::new(bit_shuf.clone());
 
-    // Get max rowid for total rows
     let total_rows: i64 = conn.query_row(
         &format!("SELECT MAX(rowid) FROM {}", old_table),
         [],
@@ -603,13 +602,27 @@ pub fn build_from_sql(
     )?;
     println!("Total rows in {}: {}", old_table, total_rows);
 
-    let chunk_size: i64 = 50_000; // bigger chunk size for better parallelism
-    let batch_size = 10_000;      // batch insert size
+    let chunk_size: i64 = 50_000;
+    let batch_size = 10_000;
 
     let mut last_rowid: i64 = 0;
 
+    // Atomic flag for CTRL+C
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    {
+        let stop_flag = stop_flag.clone();
+        ctrlc::set_handler(move || {
+            println!("CTRL+C detected! Finishing current batch...");
+            stop_flag.store(true, Ordering::SeqCst);
+        }).expect("Error setting CTRL+C handler");
+    }
+
     while last_rowid < total_rows {
-        // Read a chunk from SQLite
+        if stop_flag.load(Ordering::SeqCst) {
+            println!("Stopping early due to CTRL+C...");
+            break;
+        }
+
         let rows: Vec<(i64, Vec<u8>)> = {
             let mut stmt = conn.prepare(&format!(
                 "SELECT rowid, circuit FROM {} WHERE rowid > ? ORDER BY rowid LIMIT ?",
@@ -627,9 +640,8 @@ pub fn build_from_sql(
 
         last_rowid = rows.last().unwrap().0;
 
-        // Process rows in parallel (outer loop only)
         let results: Vec<(CircuitSeq, Canonicalization)> = rows
-            .par_chunks(5000) // split into big enough chunks for each thread
+            .par_chunks(5000)
             .flat_map(|row_chunk| {
                 let mut local_results = Vec::with_capacity(row_chunk.len() * base_gates.len() * 2);
 
@@ -638,16 +650,13 @@ pub fn build_from_sql(
                     let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
                     prefix.extend_from_slice(&old_circuit.gates);
 
-                    // Process base_gates sequentially (avoid nested parallelism)
                     for g in base_gates.iter() {
-                        // q1 = prefix + g
                         let mut q1 = prefix.clone();
                         q1.push(*g);
                         let mut c1 = CircuitSeq { gates: q1.to_vec() };
                         c1.canonicalize();
                         let canon1 = c1.permutation(n).canon_simple(&bit_shuf);
 
-                        // q2 = g + prefix
                         let mut q2 = SmallVec::<[[u8; 3]; 64]>::with_capacity(m + 1);
                         q2.push(*g);
                         q2.extend_from_slice(&prefix);
@@ -664,9 +673,13 @@ pub fn build_from_sql(
             })
             .collect();
 
-        // Insert results in batches
+        // Insert batches, stop if CTRL+C
         for batch_chunk in results.chunks(batch_size) {
             insert_circuits_batch(conn, &new_table, batch_chunk)?;
+            if stop_flag.load(Ordering::SeqCst) {
+                println!("Flushed remaining batch after CTRL+C.");
+                break;
+            }
         }
 
         println!(
@@ -674,8 +687,13 @@ pub fn build_from_sql(
             last_rowid,
             (last_rowid as f64 / total_rows as f64) * 100.0
         );
+
+        if stop_flag.load(Ordering::SeqCst) {
+            break;
+        }
     }
 
+    println!("Build finished (or stopped early).");
     Ok(())
 }
 
