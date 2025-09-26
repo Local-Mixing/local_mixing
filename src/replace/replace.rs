@@ -233,7 +233,7 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
             create_table(conn, &table).expect("Failed to create table");
 
             conn.execute(
-                &format!("INSERT INTO {} (circuit, perm, shuf) VALUES (?1, ?2)", table),
+                &format!("INSERT INTO {} (circuit, perm, shuf) VALUES (?1, ?2, ?3)", table),
                 params![sub_blob, perm_blob, shuf_blob],
             )
             .expect("Insert failed");
