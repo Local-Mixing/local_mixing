@@ -12,7 +12,8 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
 };
-
+use rusqlite::OpenFlags;
+use rayon::prelude::*;
 use crate::replace::replace::outward_compress;
 
 fn obfuscate_and_target_compress(c: &CircuitSeq, conn: &mut Connection, bit_shuf: &Vec<Vec<usize>>, n: usize) -> CircuitSeq {
@@ -81,40 +82,73 @@ pub fn butterfly(
     println!("Butterfly start: {} gates", c.gates.len());
 
     // Build blocks: [R* gᵢ R]
-    let mut blocks: Vec<CircuitSeq> = Vec::new();
-    // for (i, g) in c.gates.iter().enumerate() {
-    //     let gi = CircuitSeq { gates: vec![*g] };   // wrap gate as circuit
-    //     let block = r_inv.clone()
-    //         .concat(&gi)
-    //         .concat(&r.clone());
+    // let mut blocks: Vec<CircuitSeq> = Vec::new();
+    // // for (i, g) in c.gates.iter().enumerate() {
+    // //     let gi = CircuitSeq { gates: vec![*g] };   // wrap gate as circuit
+    // //     let block = r_inv.clone()
+    // //         .concat(&gi)
+    // //         .concat(&r.clone());
 
-    //     let compressed_block = compress(&block, 100_000, conn, bit_shuf, n);
+    // //     let compressed_block = compress(&block, 100_000, conn, bit_shuf, n);
+
+    // //     println!(
+    // //         "  Block {}: before {} gates → after {} gates",
+    // //         i,
+    // //         block.gates.len(),
+    // //         compressed_block.gates.len()
+    // //     );
+
+    // //     blocks.push(compressed_block);
+    // // }
+
+    // for (i, g) in c.gates.iter().enumerate() {
+    //     let gi = CircuitSeq { gates: vec![*g] }; // wrap the single gate as a CircuitSeq
+
+    //     // Outward compression with r and gi
+    //     let compressed_block = outward_compress(&gi, &r, 100_000, conn, bit_shuf, n);
 
     //     println!(
     //         "  Block {}: before {} gates → after {} gates",
     //         i,
-    //         block.gates.len(),
+    //         r_inv.gates.len() * 2 + 1, // approximate size before compress
     //         compressed_block.gates.len()
     //     );
 
     //     blocks.push(compressed_block);
     // }
 
-    for (i, g) in c.gates.iter().enumerate() {
-        let gi = CircuitSeq { gates: vec![*g] }; // wrap the single gate as a CircuitSeq
+    let r = &r;           // reference is enough; read-only
+let r_inv = &r_inv;   // same
+let bit_shuf = &bit_shuf;
 
-        // Outward compression with r and gi
-        let compressed_block = outward_compress(&gi, &r, 100_000, conn, bit_shuf, n);
+// Parallel processing of gates
+let blocks: Vec<_> = c.gates
+    .par_iter()
+    .enumerate()
+    .map(|(i, &g)| {
+        // wrap single gate as CircuitSeq
+        let gi = CircuitSeq { gates: vec![g] };
+
+        // create a read-only connection per thread
+        let mut conn = Connection::open_with_flags(
+        "circuits.db",
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ).expect("Failed to open read-only connection");
+
+        // compress the block
+        let compressed_block = outward_compress(&gi, r, 100_000, &mut conn, bit_shuf, n);
 
         println!(
             "  Block {}: before {} gates → after {} gates",
             i,
-            r_inv.gates.len() * 2 + 1, // approximate size before compress
+            r_inv.gates.len() * 2 + 1, // approximate size
             compressed_block.gates.len()
         );
 
-        blocks.push(compressed_block);
-    }
+        compressed_block
+    })
+    .collect();
+
     // Combine blocks hierarchically
     let mut acc = blocks[0].clone();
     println!("Start combining: {}", acc.gates.len());

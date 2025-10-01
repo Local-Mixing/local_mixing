@@ -203,6 +203,9 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
             i += 1;
         }
     }
+    if c.gates.len() == 0 {
+        return CircuitSeq{ gates: Vec::new() } 
+    }
     //writeln!(file, "Permutation after remove identities 1 is: \n{:?}", compressed.permutation(n).data).unwrap();
 
     // Find a random subcircuit to (attempt to) replace some number of times
