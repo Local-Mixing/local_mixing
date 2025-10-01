@@ -196,12 +196,12 @@ fn main() {
                 ).unwrap();
                 // Fallback when file is empty
                 println!("Generating random");
-                let c1= random_canonical_id(&conn, 5).unwrap();
+                let c1= random_canonical_id(&conn, 6).unwrap();
                 // let perms: Vec<Vec<usize>> = (0..5).permutations(5).collect();
                 // let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
                 // let c1 = compress(&random_circuit(5,128), 100_000, &mut conn, &bit_shuf,5 );
-                println!("{:?} Starting Len: {}", c1.permutation(5).data, c1.gates.len());
-                main_butterfly(&c1, rounds, &mut conn, 5);
+                println!("{:?} Starting Len: {}", c1.permutation(6).data, c1.gates.len());
+                main_butterfly(&c1, rounds, &mut conn, 6);
             } else {
                 
                 let c = CircuitSeq::from_string(&data);
@@ -217,7 +217,7 @@ fn main() {
                     PRAGMA locking_mode = EXCLUSIVE;
                     "
                 ).unwrap();
-                main_butterfly(&c, rounds, &mut conn, 5);
+                main_butterfly(&c, rounds, &mut conn, 6);
             }
         }
         _ => unreachable!(),

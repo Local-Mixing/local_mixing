@@ -104,7 +104,7 @@ pub fn butterfly(
         let gi = CircuitSeq { gates: vec![*g] }; // wrap the single gate as a CircuitSeq
 
         // Outward compression with r and gi
-        let compressed_block = outward_compress(&gi, &r, 1_000_000, conn, bit_shuf, n);
+        let compressed_block = outward_compress(&gi, &r, 100_000, conn, bit_shuf, n);
 
         println!(
             "  Block {}: before {} gates → after {} gates",
@@ -122,7 +122,7 @@ pub fn butterfly(
     for (i, b) in blocks.into_iter().skip(1).enumerate() {
         let combined = acc.concat(&b);
         let before = combined.gates.len();
-        acc = compress(&combined, 100_000, conn, bit_shuf, n);
+        acc = compress(&combined, 500_000, conn, bit_shuf, n);
         let after = acc.gates.len();
 
         println!(
@@ -142,7 +142,7 @@ pub fn butterfly(
     let mut stable_count = 0;
     while stable_count < 3 {
         let before = acc.gates.len();
-        acc = compress(&acc, 100_000, conn, bit_shuf, n);
+        acc = compress(&acc, 1_000_000, conn, bit_shuf, n);
         let after = acc.gates.len();
 
         if after == before {
