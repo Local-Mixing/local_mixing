@@ -262,18 +262,18 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
                 
         }
         // If not replaced, insert the subcircuit into its own table immediately
-        if !replaced {
-            let table = format!("n{}m{}", n, sub_m);
-            //let sub_blob = subcircuit.repr_blob();
+        // if !replaced {
+        //     let table = format!("n{}m{}", n, sub_m);
+        //     //let sub_blob = subcircuit.repr_blob();
 
-            create_table(conn, &table).expect("Failed to create table");
-            insert_circuit(conn, &subcircuit, &canon_perm, &table).expect("insertion failed");
-            // conn.execute(
-            //     &format!("INSERT INTO {} (circuit, perm, shuf) VALUES (?1, ?2, ?3)", table),
-            //     params![sub_blob, perm_blob, shuf_blob],
-            // )
-            // .expect("Insert failed");
-        }
+        //     create_table(conn, &table).expect("Failed to create table");
+        //     insert_circuit(conn, &subcircuit, &canon_perm, &table).expect("insertion failed");
+        //     // conn.execute(
+        //     //     &format!("INSERT INTO {} (circuit, perm, shuf) VALUES (?1, ?2, ?3)", table),
+        //     //     params![sub_blob, perm_blob, shuf_blob],
+        //     // )
+        //     // .expect("Insert failed");
+        // }
     }
     //writeln!(file, "Permutation after replacement is: \n{:?}", compressed.permutation(n).data).unwrap();
 
