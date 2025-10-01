@@ -191,18 +191,18 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
     //     .open("test.txt")
     //     .expect("Cannot open test.txt");
     //writeln!(file, "Permutation is initially: \n{:?}", compressed.permutation(n).data).unwrap();
-    // let mut i = 0;
-    // while i < compressed.gates.len().saturating_sub(1) {
-    //     if compressed.gates[i] == compressed.gates[i + 1] {
-    //         // remove elements at i and i+1
-    //         compressed.gates.drain(i..=i + 1);
+    let mut i = 0;
+    while i < compressed.gates.len().saturating_sub(1) {
+        if compressed.gates[i] == compressed.gates[i + 1] {
+            // remove elements at i and i+1
+            compressed.gates.drain(i..=i + 1);
 
-    //         // step back up to 2 indices, but not below 0
-    //         i = i.saturating_sub(2);
-    //     } else {
-    //         i += 1;
-    //     }
-    // }
+            // step back up to 2 indices, but not below 0
+            i = i.saturating_sub(2);
+        } else {
+            i += 1;
+        }
+    }
     //writeln!(file, "Permutation after remove identities 1 is: \n{:?}", compressed.permutation(n).data).unwrap();
 
     // Find a random subcircuit to (attempt to) replace some number of times
@@ -272,18 +272,18 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
     }
     //writeln!(file, "Permutation after replacement is: \n{:?}", compressed.permutation(n).data).unwrap();
 
-    // let mut i = 0;
-    // while i < compressed.gates.len().saturating_sub(1) {
-    //     if compressed.gates[i] == compressed.gates[i + 1] {
-    //         // remove elements at i and i+1
-    //         compressed.gates.drain(i..=i + 1);
+    let mut i = 0;
+    while i < compressed.gates.len().saturating_sub(1) {
+        if compressed.gates[i] == compressed.gates[i + 1] {
+            // remove elements at i and i+1
+            compressed.gates.drain(i..=i + 1);
 
-    //         // step back up to 2 indices, but not below 0
-    //         i = i.saturating_sub(2);
-    //     } else {
-    //         i += 1;
-    //     }
-    // }
+            // step back up to 2 indices, but not below 0
+            i = i.saturating_sub(2);
+        } else {
+            i += 1;
+        }
+    }
     //writeln!(file, "Permutation after remove identities 2 is: \n{:?}", compressed.permutation(n).data).unwrap();
     //println!("Compressed len: {}", compressed.gates.len());
     compressed
