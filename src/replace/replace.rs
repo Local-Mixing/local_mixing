@@ -86,6 +86,10 @@ pub fn random_canonical_id(
             |row| Ok([row.get(0)?, row.get(1)?]),
         )?;
 
+        if b_blob[0] == circuit_blob {
+            continue;
+        }
+
         // Deserialize circuits
         let mut ca = CircuitSeq::from_blob(&circuit_blob);
         let mut cb = CircuitSeq::from_blob(&b_blob[0]);
