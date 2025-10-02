@@ -605,7 +605,7 @@ pub fn build_from_sql(
     let chunk_size: i64 = 50_000;
     let batch_size = 10_000;
 
-    let mut last_rowid: i64 = 2950000;
+    let mut last_rowid: i64 = 0;
 
     // Atomic flag for CTRL+C
     let stop_flag = Arc::new(AtomicBool::new(false));
