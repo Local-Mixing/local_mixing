@@ -506,7 +506,7 @@ pub fn build_from_sql(
     }
 
     // Setup insertion queue
-    let (tx, rx) = bounded::<Vec<(CircuitSeq, Canonicalization)>>(100);
+    let (tx, rx) = bounded::<Vec<(CircuitSeq, Canonicalization)>>(1000);
     let new_table_clone = new_table.clone();
     let stop_flag_clone = stop_flag.clone();
 
