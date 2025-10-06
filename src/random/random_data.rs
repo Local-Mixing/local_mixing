@@ -498,11 +498,12 @@ pub fn build_from_sql(
         ctrlc::set_handler(move || {
             println!("CTRL+C detected! Finishing current batch...");
             stop_flag.store(true, Ordering::SeqCst);
-        }).expect("Error setting CTRL+C handler");
+        })
+        .expect("Error setting CTRL+C handler");
     }
 
     // Create a bounded channel
-    let (tx, rx) = bounded::<(CircuitSeq, Canonicalization)>(max_queue_items);
+    let (tx, rx) = crossbeam::channel::bounded::<(CircuitSeq, Canonicalization)>(max_queue_items);
 
     // Inserter thread
     let mut inserter_conn = Connection::open("circuits.db").expect("Failed to open DB");
@@ -564,7 +565,8 @@ pub fn build_from_sql(
                     let mut c1 = CircuitSeq { gates: q1.to_vec() };
                     c1.canonicalize();
                     let canon1 = c1.permutation(n).canon_simple(&bit_shuf);
-                    tx.send((c1, canon1)).expect("Channel closed");
+                    // Panic if send fails
+                    tx.send((c1, canon1)).expect("Channel closed unexpectedly");
 
                     // Variant 2
                     let mut q2 = SmallVec::<[[u8; 3]; 64]>::with_capacity(m + 1);
@@ -573,7 +575,8 @@ pub fn build_from_sql(
                     let mut c2 = CircuitSeq { gates: q2.to_vec() };
                     c2.canonicalize();
                     let canon2 = c2.permutation(n).canon_simple(&bit_shuf);
-                    tx.send((c2, canon2)).expect("Channel closed");
+                    // Panic if send fails
+                    tx.send((c2, canon2)).expect("Channel closed unexpectedly");
                 }
             }
         });
@@ -585,12 +588,14 @@ pub fn build_from_sql(
         );
     }
 
-    drop(tx); // Close channel to signal inserter
+    // Only drop tx after all canonicalization threads are done
+    drop(tx);
     inserter_handle.join().unwrap();
 
     println!("Build finished (or stopped early).");
     Ok(())
 }
+
 
 //TODO: benchmark to see which part is taking the most time and what exactly can be sped up
 //Speed up SQL queries
