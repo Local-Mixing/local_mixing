@@ -515,18 +515,27 @@ pub fn build_from_sql(
         let mut insert_conn =
             Connection::open("./db/circuits.db").expect("Failed to open DB in insert thread");
 
+        let mut total_inserted: usize = 0;
+
         while let Ok(batch) = rx.recv() {
             if stop_flag_clone.load(Ordering::SeqCst) {
                 println!("Insertion thread stopping early...");
                 break;
             }
 
-            if let Err(e) = insert_circuits_batch(&mut insert_conn, &new_table_clone, &batch) {
-                eprintln!("Error inserting batch: {:?}", e);
+            match insert_circuits_batch(&mut insert_conn, &new_table_clone, &batch) {
+                Ok(inserted) => {
+                    total_inserted += inserted;
+                    // Print insertion progress every batch
+                    println!("Inserted batch: total inserted so far = {}", total_inserted);
+                }
+                Err(e) => {
+                    eprintln!("Error inserting batch: {:?}", e);
+                }
             }
         }
 
-        println!("Insertion thread finished.");
+        println!("Insertion thread finished. Total inserted: {}", total_inserted);
     });
 
     // Main loop: fetch old table in chunks
