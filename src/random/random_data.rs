@@ -209,7 +209,7 @@ pub fn find_convex_subcircuit<R: RngCore>(
                         break;
                     }
 
-                    if curr_idx == selected_gate_idx[selected_gates_seen] {
+                    if  selected_gates_seen < selected_gate_ctr && curr_idx == selected_gate_idx[selected_gates_seen] {
                         selected_gates_seen += 1;
                         continue;
                     }
