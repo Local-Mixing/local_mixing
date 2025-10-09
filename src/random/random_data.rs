@@ -180,6 +180,7 @@ pub fn find_convex_subcircuit<R: RngCore>(
     let num_gates = circuit.gates.len();
     let mut search_attempts = 0;
     let max_attempts = 10_000;
+
     loop {
         search_attempts += 1;
         if search_attempts > max_attempts {
@@ -280,7 +281,8 @@ pub fn find_convex_subcircuit<R: RngCore>(
                         let mut repeat_wires = false;
 
                         for i in 0..selected_gates_seen {
-                            if Gate::collides_index(&curr_gate,
+                            if Gate::collides_index(
+                                &curr_gate,
                                 &circuit.gates[selected_gate_idx[selected_gate_ctr - 1 - i]],
                             ) {
                                 collides_with_prev_selected = true;
@@ -324,7 +326,17 @@ pub fn find_convex_subcircuit<R: RngCore>(
                 break;
             }
 
-            let next_candidate = candidates.choose(rng).copied().unwrap();
+            let next_candidate = *candidates.choose(rng).unwrap();
+
+            // Prevent adding gate if it would exceed wire limit
+            let num_new_wires = circuit.gates[next_candidate]
+                .iter()
+                .filter(|&w| !curr_wires.contains(w))
+                .count();
+
+            if curr_wires.len() + num_new_wires > max_wires {
+                break;
+            }
 
             // Insert next_candidate in sorted order
             let mut insert_pos = selected_gate_ctr;
@@ -344,8 +356,7 @@ pub fn find_convex_subcircuit<R: RngCore>(
         }
 
         // if !is_convex(num_wires, &circuit.gates, &selected_gate_idx) {
-        //     continue;
-        // }
+        //     continue
 
         return (selected_gate_idx, search_attempts);
     }
