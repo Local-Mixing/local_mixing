@@ -337,8 +337,21 @@ pub fn find_convex_subcircuit<R: RngCore>(
                 break;
             }
 
-            // Pick a random next gate
-            let next_candidate = candidates.choose(rng).copied().unwrap();
+            // Pick a random next gate that hasn’t been used
+            let mut next_candidate = None;
+            for _ in 0..candidates.len() {
+                let cand = *candidates.choose(rng).unwrap();
+                if !selected_gate_idx[..selected_gate_ctr].contains(&cand) {
+                    next_candidate = Some(cand);
+                    break;
+                }
+            }
+
+            // Stop if no unused candidate left
+            let next_candidate = match next_candidate {
+                Some(x) => x,
+                None => break,
+            };
 
             // --- NEW: check if adding this gate would exceed max_wires ---
             let mut new_wires = curr_wires.clone();
@@ -365,9 +378,10 @@ pub fn find_convex_subcircuit<R: RngCore>(
             continue;
         }
 
-        return (selected_gate_idx, search_attempts);
+        return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
     }
 }
+
 
 
 pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
@@ -1101,7 +1115,7 @@ mod tests {
                 wire_set.insert(w);
             }
         }
-        // assert!(wire_set.len() <= max_wires, "Subcircuit uses too many wires");
+        assert!(wire_set.len() <= max_wires, "Subcircuit uses too many wires");
         println!("Wires used: {:?}", wire_set);
     }
 }
