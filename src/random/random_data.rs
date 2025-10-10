@@ -1178,6 +1178,9 @@ mod tests {
         let subcircuit = CircuitSeq { gates };
         println!("{}", subcircuit.to_string(16));
         println!("{:?}", subcircuit.used_wires());
+        let sub = CircuitSeq::rewire_subcircuit(&c, &subcircuit_gates, &subcircuit.used_wires());
+        println!("{}", sub.to_string(sub.count_used_wires()));
+        println!("{}", CircuitSeq::unrewire_subcircuit(&sub, &subcircuit.used_wires()).to_string(16));
         assert!(convex_ok, "Selected subcircuit is not convex");
         println!("Convexity check passed");
     }

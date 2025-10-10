@@ -779,6 +779,58 @@ impl CircuitSeq {
     pub fn count_used_wires(&self) -> usize {
         Self::used_wires(&self).len()
     }
+
+    // Take subcircuit on X wires and rewire to x wires
+    pub fn rewire_subcircuit(
+        circuit: &CircuitSeq,
+        subcircuit_gates: &[usize],
+        used_wires: &[u8],
+    ) -> CircuitSeq {
+        // Build a mapping from old wire -> new wire (0..num_wires-1)
+        let wire_map: HashMap<u8, u8> = used_wires
+            .iter()
+            .enumerate()
+            .map(|(new_idx, &old_wire)| (old_wire, new_idx as u8))
+            .collect();
+
+        // Build new gates with remapped wires
+        let new_gates: Vec<[u8; 3]> = subcircuit_gates
+            .iter()
+            .map(|&idx| {
+                let [t, c1, c2] = circuit.gates[idx];
+                [
+                    *wire_map.get(&t).unwrap(),
+                    *wire_map.get(&c1).unwrap(),
+                    *wire_map.get(&c2).unwrap(),
+                ]
+            })
+            .collect();
+
+        CircuitSeq { gates: new_gates }
+    }
+
+    // Undo rewiring. Note: Recall that the number of wires in CircuitSeq is not stored
+    pub fn unrewire_subcircuit(subcircuit: &CircuitSeq, used_wires: &[u8]) -> CircuitSeq {
+        // Build a mapping from new wire -> original wire
+        let wire_map: HashMap<u8, u8> = used_wires
+            .iter()
+            .enumerate()
+            .map(|(new_idx, &orig_wire)| (new_idx as u8, orig_wire))
+            .collect();
+
+        // Replace wires in each gate with original wires
+        let new_gates: Vec<[u8; 3]> = subcircuit
+            .gates
+            .iter()
+            .map(|&[t, c1, c2]| [
+                *wire_map.get(&t).unwrap(),
+                *wire_map.get(&c1).unwrap(),
+                *wire_map.get(&c2).unwrap(),
+            ])
+            .collect();
+
+        CircuitSeq { gates: new_gates }
+    }
 }
 
 pub fn base_gates(n: usize) -> Vec<[usize; 3]> {
