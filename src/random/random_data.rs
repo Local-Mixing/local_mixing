@@ -132,6 +132,57 @@ pub fn seeded_random_circuit(n: u8, m: usize, seed: u64) -> CircuitSeq {
     CircuitSeq { gates: circuit }
 }
 
+pub fn is_convex(num_wires: usize, circuit: &CircuitSeq, convex_gate_ids: &[usize]) -> bool {
+    // early exit for too few gates
+    if convex_gate_ids.len() < 2 {
+        return false;
+    }
+
+    let mut is_convex = true;
+
+    // track gates outside the convex set that interfere with its paths
+    let mut colliding_set = vec![];
+    let mut path_colliding_targets = vec![false; num_wires];
+    let mut path_colliding_controls = vec![false; num_wires];
+
+    // iterate through gates between first and last of convex set
+    'outer: for i in convex_gate_ids[0]..=*convex_gate_ids.last().unwrap() {
+        if convex_gate_ids.contains(&i) {
+            // gate is inside convex set
+            let selected_gate = circuit.gates[i];
+
+            // check no collision with colliding_set
+            for c_gate in colliding_set.iter() {
+                if Gate::collides_index(&selected_gate, &c_gate) {
+                    is_convex = false;
+                    break 'outer;
+                }
+            }
+
+            let [t, c0, c1] = selected_gate;
+            path_colliding_targets[t as usize] = true;
+            path_colliding_controls[c0 as usize] = true;
+            path_colliding_controls[c1 as usize] = true;
+        } else {
+            // gate outside convex set
+            let g = circuit.gates[i];
+            let [t, c0, c1] = g;
+
+            if path_colliding_targets[c0 as usize]
+                || path_colliding_targets[c1 as usize]
+                || path_colliding_controls[t as usize]
+            {
+                colliding_set.push(g.clone());
+                path_colliding_targets[t as usize] = true;
+                path_colliding_controls[c0 as usize] = true;
+                path_colliding_controls[c1 as usize] = true;
+            }
+        }
+    }
+
+    is_convex
+}
+
 pub fn find_random_subcircuit<R: Rng>(
     circuit: &CircuitSeq,
     min_wires: usize,
@@ -1117,5 +1168,10 @@ mod tests {
         }
         assert!(wire_set.len() <= max_wires, "Subcircuit uses too many wires");
         println!("Wires used: {:?}", wire_set);
+
+        // Check that the selected subcircuit is actually convex
+        let convex_ok = is_convex(16, &c, &subcircuit_gates);
+        assert!(convex_ok, "Selected subcircuit is not convex");
+        println!("Convexity check passed");
     }
 }
