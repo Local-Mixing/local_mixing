@@ -433,7 +433,81 @@ pub fn find_convex_subcircuit<R: RngCore>(
     }
 }
 
+// Rearranges circuit to put the convex subcircuit in a contiguous manner. Do this via outward expansion
+pub fn contiguous_convex(circuit: &mut CircuitSeq, ordered_convex_gates: &mut Vec<usize>) {
+    // This should never run
+    if ordered_convex_gates.len() < 2 {
+        return
+    }
 
+    // Keep track of convex positions
+    let mut is_convex = vec![false; circuit.gates.len()];
+    for &idx in ordered_convex_gates.iter() {
+        is_convex[idx] = true;
+    }
+
+    // Bubble boundaries
+    let mut start = *ordered_convex_gates.first().unwrap();
+    let mut end = *ordered_convex_gates.last().unwrap();
+
+    let mut non_convex: Vec<usize> = (start..=end)
+        .filter(|&i| !is_convex[i])
+        .collect();
+    
+    // Left pass
+    while !non_convex.is_empty() {
+        let leftmost = non_convex[0];
+        if leftmost <= start {
+            break;
+        }
+
+        let can_shift = (start..leftmost)
+            .all(|i| !Gate::collides_index(&circuit.gates[i], &circuit.gates[leftmost]));
+
+        if can_shift {
+            let gate = circuit.gates.remove(leftmost);
+            circuit.gates.insert(start, gate);
+
+            for idx in ordered_convex_gates.iter_mut() {
+                if *idx >= start && *idx < leftmost { *idx += 1; }
+            }
+            for i in 0..non_convex.len() {
+                if non_convex[i] >= start && non_convex[i] < leftmost { non_convex[i] += 1; }
+            }
+            start += 1;
+            non_convex.remove(0);
+        } else {
+            break;
+        }
+    }
+
+    // Right pass
+    while !non_convex.is_empty() {
+        let rightmost = *non_convex.last().unwrap();
+        if rightmost >= end {
+            break;
+        }
+
+        let can_shift = ((rightmost + 1)..=end)
+            .all(|i| !Gate::collides_index(&circuit.gates[i], &circuit.gates[rightmost]));
+
+        if can_shift {
+            let gate = circuit.gates.remove(rightmost);
+            circuit.gates.insert(end, gate);
+
+            for idx in ordered_convex_gates.iter_mut() {
+                if *idx > rightmost && *idx <= end { *idx -= 1; }
+            }
+            for i in 0..non_convex.len() {
+                if non_convex[i] > rightmost && non_convex[i] <= end { non_convex[i] -= 1; }
+            }
+            end -= 1;
+            non_convex.pop();
+        } else {
+            break;
+        }
+    }
+}
 
 pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
     // Table name includes n and m
@@ -1175,7 +1249,8 @@ mod tests {
         for (i, g) in subcircuit_gates.iter().enumerate() {
             gates[i] = c.gates[*g];
         }
-        let subcircuit = CircuitSeq { gates };
+        let mut subcircuit = CircuitSeq { gates };
+        subcircuit_gates.sort();
         println!("{}", subcircuit.to_string(16));
         println!("{:?}", subcircuit.used_wires());
         let sub = CircuitSeq::rewire_subcircuit(&c, &subcircuit_gates, &subcircuit.used_wires());
@@ -1183,5 +1258,8 @@ mod tests {
         println!("{}", CircuitSeq::unrewire_subcircuit(&sub, &subcircuit.used_wires()).to_string(16));
         assert!(convex_ok, "Selected subcircuit is not convex");
         println!("Convexity check passed");
+        let mut circ = c.clone();
+        contiguous_convex(&mut circ,  &mut subcircuit_gates);
+        println!("The rearranged are equal: {}", c.permutation(16).data == circ.permutation(16).data)
     }
 }

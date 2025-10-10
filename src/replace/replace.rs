@@ -306,6 +306,9 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
     compressed
 }
 
+// pub fn compress_big(circuit: &CircuitSeq, num_wires: usize, conn: &mut Connection, bit_shuf: &Vec<Vec<usize>>) -> CircuitSeq {
+
+// }
 // inflate. u8 is the size of the random circuit used to obfuscate over 2 
 // This tries to mix and hide original gate
 // pub fn obfuscate(c: &CircuitSeq) -> (CircuitSeq, Vec<usize>) {
