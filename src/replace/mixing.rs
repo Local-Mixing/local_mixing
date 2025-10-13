@@ -240,7 +240,7 @@ pub fn butterfly_big(
         ).expect("Failed to open read-only connection");
 
         // compress the block
-        let compressed_block = compress_big(&gi, 100_000, n, &mut conn);
+        let compressed_block = compress_big(&gi, 100, n, &mut conn);
 
         println!(
             "  Block {}: before {} gates → after {} gates",
