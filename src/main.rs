@@ -12,7 +12,7 @@ use local_mixing::{
 };
 
 use local_mixing::replace::mixing::main_butterfly;
-
+use local_mixing::replace::mixing::main_butterfly_big;
 use clap::{Arg, ArgAction, Command};
 use itertools::Itertools;
 use rand::rngs::OsRng;
@@ -85,6 +85,18 @@ fn main() {
                         .value_parser(clap::value_parser!(usize))
                 ),
         )
+        .subcommand(
+        Command::new("bbutterfly")
+            .about("Obfuscate and compress an existing circuit via butterfly_big method")
+            .arg(
+                Arg::new("rounds")
+                    .short('r')
+                    .long("rounds")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+            ),
+    )
+
         .get_matches();
 
     match matches.subcommand() {
@@ -220,6 +232,32 @@ fn main() {
                 main_butterfly(&c, rounds, &mut conn, 6);
             }
         }
+        Some(("bbutterfly", sub)) => {
+        let rounds: usize = *sub.get_one("rounds").unwrap();
+
+        let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
+
+        let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
+        conn.execute_batch(
+            "
+            PRAGMA synchronous = NORMAL;
+            PRAGMA journal_mode = WAL;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA cache_size = -200000;
+            PRAGMA locking_mode = EXCLUSIVE;
+            "
+        ).unwrap();
+
+        if data.trim().is_empty() {
+            println!("Generating random");
+            let c1 = random_circuit(16,30);
+            println!("{:?} Starting Len: {}", c1.permutation(16).data, c1.gates.len());
+            main_butterfly_big(&c1, rounds, &mut conn, 16);
+        } else {
+            let c = CircuitSeq::from_string(&data);
+            main_butterfly_big(&c, rounds, &mut conn, 16);
+        }
+    }
         _ => unreachable!(),
     }
 }

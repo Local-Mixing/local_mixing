@@ -15,6 +15,7 @@ use std::{
 use rusqlite::OpenFlags;
 use rayon::prelude::*;
 use crate::replace::replace::outward_compress;
+use crate::replace::replace::compress_big;
 
 fn obfuscate_and_target_compress(c: &CircuitSeq, conn: &mut Connection, bit_shuf: &Vec<Vec<usize>>, n: usize) -> CircuitSeq {
     // Obfuscate circuit, get positions of inverses
@@ -211,6 +212,109 @@ pub fn butterfly(
     acc
 }
 
+pub fn butterfly_big(
+    c: &CircuitSeq,
+    conn: &mut Connection,
+    n: usize,
+) -> CircuitSeq {
+    // Pick one random R
+    let mut rng = rand::rng();
+    let (r, r_inv) = random_id(n as u8, rng.random_range(3..=25)); 
+
+    println!("Butterfly start: {} gates", c.gates.len());
+
+    let r = &r;           // reference is enough; read-only
+    let r_inv = &r_inv;   // same
+
+    // Parallel processing of gates
+    let blocks: Vec<_> = c.gates
+        .par_iter()
+        .enumerate()
+        .map(|(i, &g)| {
+            // wrap single gate as CircuitSeq
+            let gi = r_inv.concat(&CircuitSeq { gates: vec![g] }).concat(&r);
+            // create a read-only connection per thread
+            let mut conn = Connection::open_with_flags(
+            "circuits.db",
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).expect("Failed to open read-only connection");
+
+        // compress the block
+        let compressed_block = compress_big(&gi, 100_000, n, &mut conn);
+
+        println!(
+            "  Block {}: before {} gates → after {} gates",
+            i,
+            r_inv.gates.len() * 2 + 1, // approximate size
+            compressed_block.gates.len()
+        );
+
+        println!("  {}", compressed_block.repr());
+
+        compressed_block
+    })
+    .collect();
+
+    // Combine blocks hierarchically
+    let mut acc = blocks[0].clone();
+    println!("Start combining: {}", acc.gates.len());
+
+    for (i, b) in blocks.into_iter().skip(1).enumerate() {
+        let combined = acc.concat(&b);
+        let before = combined.gates.len();
+        acc = compress_big(&combined, 500_000, n, conn);
+        let after = acc.gates.len();
+
+        println!(
+            "  Combine step {}: {} → {} gates",
+            i + 1,
+            before,
+            after
+        );
+    }
+
+    // Add bookends: R ... R*
+    acc = r.concat(&acc).concat(&r_inv);
+    println!("After adding bookends: {} gates", acc.gates.len());
+
+    // Final global compression (until stable 3x)
+    let mut prev_len = acc.gates.len();
+    let mut stable_count = 0;
+    while stable_count < 3 {
+        let before = acc.gates.len();
+        acc = compress_big(&acc, 1_000_000, n, conn);
+        let after = acc.gates.len();
+
+        if after == before {
+            stable_count += 1;
+            println!("  Final compression stable {}/3 at {} gates", stable_count, after);
+        } else {
+            println!("  Final compression reduced: {} → {} gates", before, after);
+            prev_len = after;
+            stable_count = 0;
+        }
+    }
+
+    let mut i = 0;
+    while i < acc.gates.len().saturating_sub(1) {
+        if acc.gates[i] == acc.gates[i + 1] {
+            // remove elements at i and i+1
+            acc.gates.drain(i..=i + 1);
+
+            // step back up to 2 indices, but not below 0
+            i = i.saturating_sub(2);
+        } else {
+            i += 1;
+        }
+    }
+    //writeln!(file, "Permutation after remove identities 2 is: \n{:?}", acc.permutation(n).data).unwrap();
+    println!("Compressed len: {}", acc.gates.len());
+
+    println!("Butterfly done: {} gates", acc.gates.len());
+
+    acc
+}
+
 pub fn main_mix(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize) {
     // Start with the input circuit
     println!("Starting len: {}", c.gates.len());
@@ -293,6 +397,84 @@ pub fn main_butterfly(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: u
     let mut count = 0;
     for _ in 0..rounds {
         circuit = butterfly(&circuit, conn, &bit_shuf, n);
+        if circuit.gates.len() == 0 {
+            break;
+        }
+        
+        if circuit.gates.len() == post_len {
+            count += 1;
+        } else {
+            post_len = circuit.gates.len();
+            count = 0;
+        }
+
+        if count > 2 {
+            break;
+        }
+        let mut i = 0;
+        while i < circuit.gates.len().saturating_sub(1) {
+            if circuit.gates[i] == circuit.gates[i + 1] {
+                // remove elements at i and i+1
+                circuit.gates.drain(i..=i + 1);
+
+                // step back up to 2 indices, but not below 0
+                i = i.saturating_sub(2);
+            } else {
+                i += 1;
+            }
+        }
+    }
+    println!("Final len: {}", circuit.gates.len());
+    println!("Final cycle: {:?}", circuit.permutation(n).to_cycle());
+    // Convert the final circuit to string
+    let circuit_str = circuit.to_string(n);
+    println!("Final Permutation: {:?}", circuit.permutation(n).data);
+    if circuit.permutation(n).data != c.permutation(n).data {
+        panic!(
+            "The permutation differs from the original.\nOriginal: {:?}\nNew: {:?}",
+            c.permutation(n).data,
+            circuit.permutation(n).data
+        );
+    }
+    // Write to file
+    let mut file = File::create("recent_circuit.txt").expect("Failed to create file");
+    file.write_all(circuit_str.as_bytes())
+        .expect("Failed to write circuit to file");
+
+    let circuit_str = circuit.repr(); // or however you stringify your circuit
+
+    if !circuit.gates.is_empty() {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true) // append instead of overwriting
+            .open("good_id.txt")
+            .expect("Failed to open good_id.txt");
+
+        let line = format!("{} : {}\n", circuit.gates.len(), circuit_str);
+
+        file.write_all(line.as_bytes())
+            .expect("Failed to write circuit to good_ids.txt");
+
+        println!("Wrote good circuit to good_id.txt");
+    }
+
+    if circuit.gates == c.gates {
+        println!("The obfuscation didn't do anything");
+    }
+
+    println!("Final circuit written to recent_circuit.txt");
+}
+
+pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize) {
+    // Start with the input circuit
+    println!("Starting len: {}", c.gates.len());
+    let mut circuit = c.clone();
+    // Repeat obfuscate + compress 'rounds' times
+    let mut post_len = 0;
+    let mut count = 0;
+    for _ in 0..rounds {
+        circuit = butterfly_big(&circuit, conn, n);
         if circuit.gates.len() == 0 {
             break;
         }

@@ -307,7 +307,7 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
     compressed
 }
 
-pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Connection, bit_shuf: &Vec<Vec<usize>>) -> CircuitSeq {
+pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Connection) -> CircuitSeq {
     let mut circuit = circuit.clone();
     let mut rng = rand::rng();
     for _ in 0..trials {
@@ -337,6 +337,9 @@ pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn:
 
         let used_wires = subcircuit.used_wires();
         subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
+        let num_wires = used_wires.len();
+        let perms: Vec<Vec<usize>> = (0..num_wires).permutations(num_wires).collect();
+        let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
         subcircuit = compress(&subcircuit, 100_000, conn, &bit_shuf, subcircuit.count_used_wires());
         subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
         circuit.gates.splice(start..end+1, subcircuit.gates);
@@ -448,6 +451,7 @@ pub fn outward_compress(g: &CircuitSeq, r: &CircuitSeq, trials: usize, conn: &mu
     }
     g
 }
+
 
 #[cfg(test)]
 mod tests {
