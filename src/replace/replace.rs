@@ -453,7 +453,6 @@ pub fn outward_compress(g: &CircuitSeq, r: &CircuitSeq, trials: usize, conn: &mu
     g
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

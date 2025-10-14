@@ -935,7 +935,7 @@ pub fn build_from_sql(
     }
 
     // Setup bounded channel for insertion
-    let (tx, rx) = bounded::<Vec<(CircuitSeq, Canonicalization)>>(50000);
+    let (tx, rx) = bounded::<Vec<(CircuitSeq, Canonicalization)>>(25000);
     let new_table_clone = new_table.clone();
     let stop_flag_clone = stop_flag.clone();
 
