@@ -908,6 +908,7 @@ pub fn build_from_sql(
     create_table(conn, &new_table)?;
 
     let base_gates: Arc<Vec<[u8; 3]>> = Arc::new(base_gates(n));
+    let base_gates_for_thread = Arc::clone(&base_gates);
     let bit_shuf = Arc::new(bit_shuf.clone());
 
     let total_rows: i64 = conn.query_row(
@@ -943,27 +944,31 @@ pub fn build_from_sql(
         let mut insert_conn =
             Connection::open("./db/circuits.db").expect("Failed to open DB in insert thread");
 
-        let mut total_inserted: usize = 0;
-
+        let total_circuits: usize = (total_rows as usize) * base_gates_for_thread.len() * 2; // total circuits to process
+        let mut attempted_inserts = 0;
         while let Ok(batch) = rx.recv() {
             if stop_flag_clone.load(Ordering::SeqCst) {
                 println!("Insertion thread stopping early...");
                 break;
             }
 
-            match insert_circuits_batch(&mut insert_conn, &new_table_clone, &batch) {
-                Ok(inserted) => {
-                    total_inserted += inserted;
-                    // Print insertion progress every batch
-                    println!("Inserted batch: total inserted so far = {}", total_inserted);
-                }
-                Err(e) => {
-                    eprintln!("Error inserting batch: {:?}", e);
-                }
+            // Attempt insertion (success or not, we count as attempted)
+            if let Err(e) = insert_circuits_batch(&mut insert_conn, &new_table_clone, &batch) {
+                eprintln!("Error inserting batch: {:?}", e);
             }
+
+            attempted_inserts += batch.len();
+
+            // Print attempted insert progress every batch
+            println!(
+                "Attempted inserts: {} / {} ({:.2}%)",
+                attempted_inserts,
+                total_circuits,
+                (attempted_inserts as f64 / total_circuits as f64) * 100.0
+            );
         }
 
-        println!("Insertion thread finished. Total inserted: {}", total_inserted);
+        println!("Insertion thread finished");
     });
 
     // Main loop: fetch old table in chunks
