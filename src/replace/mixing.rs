@@ -262,7 +262,7 @@ pub fn butterfly_big(
     for (i, b) in blocks.into_iter().skip(1).enumerate() {
         let combined = acc.concat(&b);
         let before = combined.gates.len();
-        acc = compress_big(&combined, 500, n, conn);
+        acc = compress_big(&combined, 200, n, conn);
         let after = acc.gates.len();
 
         println!(
@@ -282,7 +282,7 @@ pub fn butterfly_big(
     let mut stable_count = 0;
     while stable_count < 3 {
         let before = acc.gates.len();
-        acc = compress_big(&acc, 1_000, n, conn);
+        acc = compress_big(&acc, 300, n, conn);
         let after = acc.gates.len();
 
         if after == before {
