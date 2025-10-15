@@ -329,26 +329,28 @@ pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn:
         }
 
         if subcircuit_gates.is_empty() {
-            return circuit;
+            return circuit
         }
-
+        
         let mut gates: Vec<[u8;3]> = vec![[0,0,0]; subcircuit_gates.len()];
         for (i, g) in subcircuit_gates.iter().enumerate() {
             gates[i] = circuit.gates[*g];
         }
 
+        println!("Sorting...");
+        
         subcircuit_gates.sort();
         let t0 = Instant::now();
         let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates).unwrap();
         let t_convex = t0.elapsed();
-        println!("contiguous_convex: {:?} ms", t_convex);
+        println!("contiguous_convex: {:?}", t_convex);
         let mut subcircuit = CircuitSeq { gates };
 
         let t1 = Instant::now();
         let used_wires = subcircuit.used_wires();
         subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
         let t_rewire = t1.elapsed();
-        println!("rewire_subcircuit: {:?} ms", t_rewire);
+        println!("rewire_subcircuit: {:?}", t_rewire);
 
         let num_wires = used_wires.len();
         let perms: Vec<Vec<usize>> = (0..num_wires).permutations(num_wires).collect();
@@ -358,12 +360,12 @@ pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn:
         let t2 = Instant::now();
         subcircuit = compress(&subcircuit, 50_000, conn, &bit_shuf, subcircuit.count_used_wires());
         let t_compress = t2.elapsed();
-        println!("compress(): {:?} ms", t_compress);
+        println!("compress(): {:?}", t_compress);
 
         let t3 = Instant::now();
         subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
         let t_unrewire = t3.elapsed();
-        println!("unrewire_subcircuit: {:?} ms", t_unrewire);
+        println!("unrewire_subcircuit: {:?}", t_unrewire);
 
         circuit.gates.splice(start..end+1, subcircuit.gates);
     }
