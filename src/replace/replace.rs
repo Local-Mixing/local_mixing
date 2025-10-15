@@ -434,9 +434,9 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
         // println!("unrewire_subcircuit: {:?}", t_unrewire);
 
         circuit.gates.splice(start..end+1, subcircuit.gates);
-    }
-    if c.permutation(num_wires).data != circuit.permutation(num_wires).data {
-        panic!("compression changed something");
+        if c.permutation(num_wires).data != circuit.permutation(num_wires).data {
+            panic!("compression changed something");
+        }
     }
     circuit
 }
