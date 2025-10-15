@@ -1289,50 +1289,19 @@ mod tests {
         println!("The rearranged are equal: {}", c.permutation(16).data == circ.permutation(16).data);
         println!("{}", circ.to_string(16));
     }
-
+    use crate::replace::replace::compress;
     #[test]
     fn test_hardcoded_circuit_profiling() {
         // Hard-coded random circuit
-        let c = CircuitSeq {
-            gates: vec![
-                [0, 1, 2],
-                [3, 4, 5],
-                [6, 7, 8],
-                [9, 10, 11],
-                [12, 13, 14],
-                [1, 5, 9],
-                [2, 6, 10],
-                [3, 7, 11],
-                [4, 8, 12],
-                [5, 9, 13],
-                [6, 10, 14],
-                [7, 11, 15],
-                [0, 2, 4],
-                [1, 3, 5],
-                [2, 4, 6],
-                [3, 5, 7],
-                [4, 6, 8],
-                [5, 7, 9],
-                [6, 8, 10],
-                [7, 9, 11],
-                [8, 10, 12],
-                [9, 11, 13],
-                [10, 12, 14],
-                [11, 13, 15],
-                [0, 5, 10],
-                [1, 6, 11],
-                [2, 7, 12],
-                [3, 8, 13],
-                [4, 9, 14],
-                [5, 10, 15],
-            ],
-        };
+        let c = random_circuit(7,30);
 
         let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
 
         // Run the profiling version of compress_big
+        let perms: Vec<Vec<usize>> = (0..7).permutations(7).collect();
+        let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
         let start = std::time::Instant::now();
-        let _result = compress_big(&c, 100, 16, &mut conn);
+        let _result = compress(&c, 100000, &mut conn, &bit_shuf, 7);
         let total_time = start.elapsed();
 
         println!("Total compress_big runtime: {:?} ms", total_time);
