@@ -218,17 +218,17 @@ pub fn compress(
     }
 
     // open log files once
-    let mut canon_log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("canon_time.txt")
-        .expect("Failed to open canon_time.txt");
+    // let mut canon_log = OpenOptions::new()
+    //     .create(true)
+    //     .append(true)
+    //     .open("canon_time.txt")
+    //     .expect("Failed to open canon_time.txt");
 
-    let mut lookup_log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("lookup_time.txt")
-        .expect("Failed to open lookup_time.txt");
+    // let mut lookup_log = OpenOptions::new()
+    //     .create(true)
+    //     .append(true)
+    //     .open("lookup_time.txt")
+    //     .expect("Failed to open lookup_time.txt");
 
     // cumulative timers
     // let mut canon_total = Duration::ZERO;
@@ -288,9 +288,9 @@ pub fn compress(
             // let lookup_start = Instant::now();
             let mut stmt = match conn.prepare(&query) {
                 Ok(s) => s,
-                Err(e) => {
-                    writeln!(lookup_log, "Failed to prepare {}: {}", table, e).unwrap();
-                    lookup_log.flush().unwrap();
+                Err(_e) => {
+                    // writeln!(lookup_log, "Failed to prepare {}: {}", table, _e).unwrap();
+                    // lookup_log.flush().unwrap();
                     continue;
                 }
             };
@@ -311,7 +311,7 @@ pub fn compress(
                     let blob: Vec<u8> = row.get(0).expect("Failed to get blob");
                     let mut repl = CircuitSeq::from_blob(&blob);
 
-                    if repl.gates.len() < subcircuit.gates.len() {
+                    if repl.gates.len() <= subcircuit.gates.len() {
                         let rc = repl.permutation(n).canon_simple(&bit_shuf);
                         if !rc.shuffle.data.is_empty() {
                             repl.rewire(&rc.shuffle, n);

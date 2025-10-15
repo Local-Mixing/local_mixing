@@ -513,33 +513,16 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
     // println!("Final Permutation: {:?}", circuit.permutation(n).data);
     if circuit.permutation(n).data != c.permutation(n).data {
         panic!(
-            "The permutation differs from the original.\nOriginal: {:?}\nNew: {:?}",
-            c.permutation(n).data,
-            circuit.permutation(n).data
+            // "The permutation differs from the original.\nOriginal: {:?}\nNew: {:?}",
+            // c.permutation(n).data,
+            // circuit.permutation(n).data
+            "The permutation differs from the original"
         );
     }
     // Write to file
     let mut file = File::create("recent_circuit.txt").expect("Failed to create file");
     file.write_all(circuit_str.as_bytes())
         .expect("Failed to write circuit to file");
-
-    let circuit_str = circuit.repr(); // or however you stringify your circuit
-
-    if !circuit.gates.is_empty() {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .append(true) // append instead of overwriting
-            .open("good_id.txt")
-            .expect("Failed to open good_id.txt");
-
-        let line = format!("{} : {}\n", circuit.gates.len(), circuit_str);
-
-        file.write_all(line.as_bytes())
-            .expect("Failed to write circuit to good_ids.txt");
-
-        println!("Wrote good circuit to good_id.txt");
-    }
 
     if circuit.gates == c.gates {
         println!("The obfuscation didn't do anything");

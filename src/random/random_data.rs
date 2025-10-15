@@ -1306,4 +1306,48 @@ mod tests {
 
         println!("Total compress_big runtime: {:?} ms", total_time);
     }
+
+    #[test]
+    fn test_compression_big() {
+        // Dummy 16-wire circuit with 30 gates
+        let c = CircuitSeq {
+            gates: vec![
+                [0, 1, 2],
+                [3, 4, 5],
+                [6, 7, 8],
+                [9, 10, 11],
+                [12, 13, 14],
+                [1, 5, 9],
+                [2, 6, 10],
+                [3, 7, 11],
+                [4, 8, 12],
+                [5, 9, 13],
+                [6, 10, 14],
+                [7, 11, 15],
+                [0, 2, 4],
+                [1, 3, 5],
+                [2, 4, 6],
+                [3, 5, 7],
+                [4, 6, 8],
+                [5, 7, 9],
+                [6, 8, 10],
+                [7, 9, 11],
+                [8, 10, 12],
+                [9, 11, 13],
+                [10, 12, 14],
+                [11, 13, 15],
+                [0, 5, 10],
+                [1, 6, 11],
+                [2, 7, 12],
+                [3, 8, 13],
+                [4, 9, 14],
+                [5, 10, 15],
+            ],
+        };
+
+        let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
+
+        let com = compress_big(&c, 10, 16, &mut conn);
+        println!("compression is okay: {}", com.gates == c.gates);
+    }
 }
