@@ -470,6 +470,10 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
     // Start with the input circuit
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
+    let circuit_str = circuit.to_string(n);
+    let mut file = File::create("start.txt").expect("Failed to create file");
+    file.write_all(circuit_str.as_bytes())
+        .expect("Failed to write circuit to file");
     // Repeat obfuscate + compress 'rounds' times
     let mut post_len = 0;
     let mut count = 0;
