@@ -237,7 +237,7 @@ fn main() {
 
         let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
 
-       let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
+        let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
         conn.execute_batch(
             "
             PRAGMA temp_store = MEMORY;

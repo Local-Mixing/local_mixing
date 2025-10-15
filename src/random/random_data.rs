@@ -429,11 +429,11 @@ pub fn find_convex_subcircuit<R: RngCore>(
             continue;
         }
 
-        println!(
-            "convex subcircuit found! {} wires {} gates",
-            curr_wires.len(),
-            selected_gate_ctr
-        );
+        // println!(
+        //     "convex subcircuit found! {} wires {} gates",
+        //     curr_wires.len(),
+        //     selected_gate_ctr
+        // );
         return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
     }
 }
@@ -1180,6 +1180,9 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
+    use std::fs::OpenOptions;
+    use crate::replace::replace::compress_big;
     #[test]
     fn test_check_cycles_n3m3() -> Result<()> {
         let now = std::time::Instant::now();
@@ -1285,5 +1288,53 @@ mod tests {
         contiguous_convex(&mut circ,  &mut subcircuit_gates);
         println!("The rearranged are equal: {}", c.permutation(16).data == circ.permutation(16).data);
         println!("{}", circ.to_string(16));
+    }
+
+    #[test]
+    fn test_hardcoded_circuit_profiling() {
+        // Hard-coded random circuit
+        let c = CircuitSeq {
+            gates: vec![
+                [0, 1, 2],
+                [3, 4, 5],
+                [6, 7, 8],
+                [9, 10, 11],
+                [12, 13, 14],
+                [1, 5, 9],
+                [2, 6, 10],
+                [3, 7, 11],
+                [4, 8, 12],
+                [5, 9, 13],
+                [6, 10, 14],
+                [7, 11, 15],
+                [0, 2, 4],
+                [1, 3, 5],
+                [2, 4, 6],
+                [3, 5, 7],
+                [4, 6, 8],
+                [5, 7, 9],
+                [6, 8, 10],
+                [7, 9, 11],
+                [8, 10, 12],
+                [9, 11, 13],
+                [10, 12, 14],
+                [11, 13, 15],
+                [0, 5, 10],
+                [1, 6, 11],
+                [2, 7, 12],
+                [3, 8, 13],
+                [4, 9, 14],
+                [5, 10, 15],
+            ],
+        };
+
+        let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
+
+        // Run the profiling version of compress_big
+        let start = std::time::Instant::now();
+        let _result = compress_big(&c, 100, 16, &mut conn);
+        let total_time = start.elapsed();
+
+        println!("Total compress_big runtime: {:?} ms", total_time);
     }
 }

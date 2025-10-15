@@ -197,6 +197,7 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
         return CircuitSeq { gates: Vec::new() };
     }
 
+    // Remove adjacent identical gates
     let mut i = 0;
     while i < compressed.gates.len().saturating_sub(1) {
         if compressed.gates[i] == compressed.gates[i + 1] {
@@ -227,46 +228,55 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
     for _ in 0..trials {
         let (mut subcircuit, start, end) = random_subcircuit(&compressed);
 
-        subcircuit.canonicalize();
-
-        let sub_perm = subcircuit.permutation(n);
         // time canonicalization
         let t0 = Instant::now();
-        let canon_perm = sub_perm.canon_simple(&bit_shuf);
+        subcircuit.canonicalize();
         let canon_time = t0.elapsed();
-        writeln!(canon_log, "Num wires: {}. Time: {:?}", n, canon_time).unwrap();
-        let perm_blob = canon_perm.perm.repr_blob();
+        writeln!(canon_log, "Num wires: {}. Gates: {}. canonicalize(): {:?}", n, subcircuit.gates.len(), canon_time).unwrap();
 
+        // time canon_simple
+        let t1 = Instant::now();
+        let sub_perm = subcircuit.permutation(n);
+        let canon_perm = sub_perm.canon_simple(&bit_shuf);
+        let canon_simple_time = t1.elapsed();
+        writeln!(canon_log, "Num wires: {}. Gates: {}. canon_simple(): {:?}", n, subcircuit.gates.len(), canon_simple_time).unwrap();
+
+        let perm_blob = canon_perm.perm.repr_blob();
         let sub_m = subcircuit.gates.len();
 
         for smaller_m in 1..=sub_m {
             let table = format!("n{}m{}", n, smaller_m);
-            let query = format!(
-                "SELECT circuit FROM {} WHERE perm = ?1 ORDER BY RANDOM() LIMIT 1",
-                table
-            );
+            let query = format!("SELECT circuit FROM {} WHERE perm = ?1 ORDER BY RANDOM() LIMIT 1", table);
 
-            let lookup_start = Instant::now();
-
+            // prepare stmt
+            let t2 = Instant::now();
             let mut stmt = match conn.prepare(&query) {
                 Ok(s) => s,
-                Err(e)=>{
+                Err(e) => {
                     writeln!(lookup_log, "Failed to prepare {}: {}", table, e).unwrap();
-                    lookup_log.flush().unwrap(); // ensure it's written immediately
+                    lookup_log.flush().unwrap();
                     continue;
                 }
             };
-            let rows = stmt.query([&perm_blob]);
+            let prep_time = t2.elapsed();
+            writeln!(lookup_log, "Table: {}. prepare(): {:?}", table, prep_time).unwrap();
 
-            // measure query duration
-            let lookup_time = lookup_start.elapsed();
-            writeln!(lookup_log, "Table: n{}m{}. Time: {:?}", n, smaller_m, lookup_time).unwrap();
+            // execute query
+            let t3 = Instant::now();
+            let rows = stmt.query([&perm_blob]);
+            let query_time = t3.elapsed();
+            writeln!(lookup_log, "Table: {}. query(): {:?}", table, query_time).unwrap();
 
             if let Ok(mut r) = rows {
+                let t4 = Instant::now();
                 if let Some(row) = r.next().unwrap() {
+                    let row_time = t4.elapsed();
+                    writeln!(lookup_log, "Table: {}. first row retrieval: {:?}", table, row_time).unwrap();
+
                     let blob: Vec<u8> = row.get(0).expect("Failed to get blob");
                     let mut repl = CircuitSeq::from_blob(&blob);
 
+                    let t5 = Instant::now();
                     if repl.gates.len() < subcircuit.gates.len() {
                         let rc = repl.permutation(n).canon_simple(&bit_shuf);
                         if !rc.shuffle.data.is_empty() {
@@ -280,13 +290,15 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
 
                         compressed.gates.splice(start..end, repl.gates);
                         println!("A replacement was found!");
-                        break;
+                        let replace_time = t5.elapsed();
+                        writeln!(lookup_log, "Table: {}. replacement(): {:?}", table, replace_time).unwrap();
                     }
                 }
             }
         }
     }
 
+    // final cleanup of adjacent identical gates
     let mut i = 0;
     while i < compressed.gates.len().saturating_sub(1) {
         if compressed.gates[i] == compressed.gates[i + 1] {
@@ -303,13 +315,13 @@ pub fn compress(c: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: 
 pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Connection) -> CircuitSeq {
     let mut circuit = circuit.clone();
     let mut rng = rand::rng();
+
     for _ in 0..trials {
         let mut subcircuit_gates = vec![];
 
         for set_size in (3..=16).rev() {
             let random_max_wires = rng.random_range(3..=7);
             let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
-
             if !gates.is_empty() {
                 subcircuit_gates = gates;
                 break;
@@ -317,29 +329,48 @@ pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn:
         }
 
         if subcircuit_gates.is_empty() {
-            return circuit
+            return circuit;
         }
 
-        let mut gates: Vec<[u8;3]> = vec![[0,0,0];subcircuit_gates.len()];
+        let mut gates: Vec<[u8;3]> = vec![[0,0,0]; subcircuit_gates.len()];
         for (i, g) in subcircuit_gates.iter().enumerate() {
             gates[i] = circuit.gates[*g];
         }
 
         subcircuit_gates.sort();
+        let t0 = Instant::now();
         let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates).unwrap();
+        let t_convex = t0.elapsed();
+        println!("contiguous_convex: {:?} ms", t_convex);
         let mut subcircuit = CircuitSeq { gates };
 
+        let t1 = Instant::now();
         let used_wires = subcircuit.used_wires();
         subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
+        let t_rewire = t1.elapsed();
+        println!("rewire_subcircuit: {:?} ms", t_rewire);
+
         let num_wires = used_wires.len();
         let perms: Vec<Vec<usize>> = (0..num_wires).permutations(num_wires).collect();
         let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
+
+        // compress logs everything inside compress now
+        let t2 = Instant::now();
         subcircuit = compress(&subcircuit, 50_000, conn, &bit_shuf, subcircuit.count_used_wires());
+        let t_compress = t2.elapsed();
+        println!("compress(): {:?} ms", t_compress);
+
+        let t3 = Instant::now();
         subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
+        let t_unrewire = t3.elapsed();
+        println!("unrewire_subcircuit: {:?} ms", t_unrewire);
+
         circuit.gates.splice(start..end+1, subcircuit.gates);
     }
+
     circuit
 }
+
 
 // inflate. u8 is the size of the random circuit used to obfuscate over 2 
 // This tries to mix and hide original gate
