@@ -416,6 +416,9 @@ pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn:
         if circuit.gates[start..end+1] != subcircuit.gates {
             panic!("sanity check failed");
         }
+        else {
+            panic!("sanity check passed");
+        }
         //let t1 = Instant::now();
         let used_wires = subcircuit.used_wires();
         subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
