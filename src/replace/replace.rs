@@ -378,8 +378,8 @@ pub fn compress(
 }
 
 
-pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Connection) -> CircuitSeq {
-    let mut circuit = circuit.clone();
+pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Connection) -> CircuitSeq {
+    let mut circuit = c.clone();
     let mut rng = rand::rng();
 
     for _ in 0..trials {
@@ -412,13 +412,6 @@ pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn:
         // println!("contiguous_convex: {:?}", t_convex);
         let mut subcircuit = CircuitSeq { gates };
 
-        // sanity check
-        if circuit.gates[start..end+1] != subcircuit.gates {
-            panic!("sanity check failed");
-        }
-        else {
-            panic!("sanity check passed");
-        }
         //let t1 = Instant::now();
         let used_wires = subcircuit.used_wires();
         subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
@@ -431,7 +424,7 @@ pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn:
 
         // compress logs everything inside compress now
         //let t2 = Instant::now();
-        subcircuit = compress(&subcircuit, 25_000, conn, &bit_shuf, subcircuit.count_used_wires());
+        subcircuit = compress(&subcircuit, 25_000, conn, &bit_shuf, used_wires.len());
         // let t_compress = t2.elapsed();
         // println!("compress(): {:?}", t_compress);
 
@@ -442,7 +435,9 @@ pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn:
 
         circuit.gates.splice(start..end+1, subcircuit.gates);
     }
-
+    if c.permutation(num_wires).data != circuit.permutation(num_wires).data {
+        panic!("compression changed something");
+    }
     circuit
 }
 
