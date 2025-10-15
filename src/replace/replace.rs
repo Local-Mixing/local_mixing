@@ -413,7 +413,7 @@ pub fn compress_big(circuit: &CircuitSeq, trials: usize, num_wires: usize, conn:
         let mut subcircuit = CircuitSeq { gates };
 
         // sanity check
-        if circuit.gates[start..end+1] != subcircuit {
+        if circuit.gates[start..end+1] != subcircuit.gates {
             panic!("sanity check failed");
         }
         //let t1 = Instant::now();
