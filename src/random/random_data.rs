@@ -1293,15 +1293,15 @@ mod tests {
     #[test]
     fn test_hardcoded_circuit_profiling() {
         // Hard-coded random circuit
-        let c = random_circuit(7,30);
+        let c = random_circuit(6,30);
 
         let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
 
         // Run the profiling version of compress_big
-        let perms: Vec<Vec<usize>> = (0..7).permutations(7).collect();
+        let perms: Vec<Vec<usize>> = (0..6).permutations(6).collect();
         let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
         let start = std::time::Instant::now();
-        let _result = compress(&c, 100000, &mut conn, &bit_shuf, 7);
+        let _result = compress(&c, 100000, &mut conn, &bit_shuf, 6);
         let total_time = start.elapsed();
 
         println!("Total compress_big runtime: {:?} ms", total_time);
