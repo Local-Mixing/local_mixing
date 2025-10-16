@@ -1299,7 +1299,7 @@ mod tests {
     }
     use crate::replace::replace::compress;
     #[test]
-    fn test_hardcoded_circuit_profiling() {
+    fn test_compression_speed() {
         // Hard-coded random circuit
         let c = random_circuit(7,30);
 
@@ -1318,7 +1318,7 @@ mod tests {
     #[test]
     fn test_compression_big() {
         // Dummy 16-wire circuit with 30 gates
-        let c = random_circuit(6,30);
+        let c = random_circuit(16,30);
 
         let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
 

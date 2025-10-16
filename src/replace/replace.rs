@@ -196,15 +196,15 @@ pub fn compress(
     bit_shuf: &Vec<Vec<usize>>,
     n: usize,
 ) -> CircuitSeq {
-    // fn pct(part: Duration, total: Duration) -> f64 {
-    //     if total.as_secs_f64() == 0.0 {
-    //         0.0
-    //     } else {
-    //         100.0 * part.as_secs_f64() / total.as_secs_f64()
-    //     }
-    // }
+    fn pct(part: Duration, total: Duration) -> f64 {
+        if total.as_secs_f64() == 0.0 {
+            0.0
+        } else {
+            100.0 * part.as_secs_f64() / total.as_secs_f64()
+        }
+    }
 
-    // let full_start = Instant::now();
+    let full_start = Instant::now();
 
     let id = Permutation::id_perm(n);
 
@@ -217,7 +217,7 @@ pub fn compress(
         return CircuitSeq { gates: Vec::new() };
     }
 
-    // let cleanup_start = Instant::now();
+    let cleanup_start = Instant::now();
     let mut i = 0;
     while i < compressed.gates.len().saturating_sub(1) {
         if compressed.gates[i] == compressed.gates[i + 1] {
@@ -227,43 +227,43 @@ pub fn compress(
             i += 1;
         }
     }
-    // let cleanup_time = cleanup_start.elapsed();
-    // println!("Initial cleanup took {:?}", cleanup_time);
+    let cleanup_time = cleanup_start.elapsed();
+    println!("Initial cleanup took {:?}", cleanup_time);
 
     if compressed.gates.is_empty() {
         return CircuitSeq { gates: Vec::new() };
     }
 
-    // let mut total_random_sub = Duration::ZERO;
-    // let mut total_canonicalize = Duration::ZERO;
-    // let mut total_canon_simple = Duration::ZERO;
-    // let mut total_lookup = Duration::ZERO;
-    // let mut total_from_blob = Duration::ZERO;
-    // let mut total_rewire = Duration::ZERO;
-    // let mut total_splice = Duration::ZERO;
-    // let mut total_no_replacement = Duration::ZERO;
+    let mut total_random_sub = Duration::ZERO;
+    let mut total_canonicalize = Duration::ZERO;
+    let mut total_canon_simple = Duration::ZERO;
+    let mut total_lookup = Duration::ZERO;
+    let mut total_from_blob = Duration::ZERO;
+    let mut total_rewire = Duration::ZERO;
+    let mut total_splice = Duration::ZERO;
+    let mut total_no_replacement = Duration::ZERO;
 
     for trial in 0..trials {
-        // let random_start = Instant::now();
+        let random_start = Instant::now();
         let (mut subcircuit, start, end) = random_subcircuit(&compressed);
-        // total_random_sub += random_start.elapsed();
+        total_random_sub += random_start.elapsed();
 
         // canonicalize
-        // let canon_start = Instant::now();
+        let canon_start = Instant::now();
         subcircuit.canonicalize();
-        // total_canonicalize += canon_start.elapsed();
+        total_canonicalize += canon_start.elapsed();
 
         // canon_simple
-        // let canon_simple_start = Instant::now();
+        let canon_simple_start = Instant::now();
         let sub_perm = subcircuit.permutation(n);
         let canon_perm = get_canonical(&sub_perm, &bit_shuf);
-        // total_canon_simple += canon_simple_start.elapsed();
+        total_canon_simple += canon_simple_start.elapsed();
 
         let perm_blob = canon_perm.perm.repr_blob();
         let sub_m = subcircuit.gates.len();
 
         let mut found_replacement = false;
-        // let no_replacement_start = Instant::now();
+        let no_replacement_start = Instant::now();
 
         for smaller_m in 1..=sub_m {
             let table = format!("n{}m{}", n, smaller_m);
@@ -272,14 +272,14 @@ pub fn compress(
                 table
             );
 
-            // let lookup_start = Instant::now();
+            let lookup_start = Instant::now();
             let mut stmt = match conn.prepare(&query) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
 
             let rows = stmt.query([&perm_blob]);
-            // total_lookup += lookup_start.elapsed();
+            total_lookup += lookup_start.elapsed();
 
             if let Ok(mut r) = rows {
                 if let Some(row) = r.next().unwrap() {
@@ -287,28 +287,28 @@ pub fn compress(
                     let from_blob_start = Instant::now();
                     let blob: Vec<u8> = row.get(0).expect("Failed to get blob");
                     let mut repl = CircuitSeq::from_blob(&blob);
-                    // total_from_blob += from_blob_start.elapsed();
+                    total_from_blob += from_blob_start.elapsed();
 
                     if repl.gates.len() <= subcircuit.gates.len() {
                         let repl_perm = repl.permutation(n);
-                        // let canon_start = Instant::now();
+                        let canon_start = Instant::now();
                         let rc = get_canonical(&repl_perm, &bit_shuf);
-                        // total_canonicalize += canon_start.elapsed();
-                        // let rewire_start = Instant::now();
+                        total_canonicalize += canon_start.elapsed();
+                        let rewire_start = Instant::now();
                         if !rc.shuffle.data.is_empty() {
                             repl.rewire(&rc.shuffle, n);
                         }
                         repl.rewire(&canon_perm.shuffle.invert(), n);
-                        // total_rewire += rewire_start.elapsed();
+                        total_rewire += rewire_start.elapsed();
 
                         if repl.permutation(n) != sub_perm {
                             panic!("Replacement permutation mismatch!");
                         }
 
                         // splice
-                        // let splice_start = Instant::now();
+                        let splice_start = Instant::now();
                         compressed.gates.splice(start..end, repl.gates);
-                        // total_splice += splice_start.elapsed();
+                        total_splice += splice_start.elapsed();
 
                         found_replacement = true;
                         break;
@@ -317,12 +317,12 @@ pub fn compress(
             }
         }
 
-        // if !found_replacement {
-        //     total_no_replacement += no_replacement_start.elapsed();
-        // }
+        if !found_replacement {
+            total_no_replacement += no_replacement_start.elapsed();
+        }
     }
 
-    // let final_cleanup_start = Instant::now();
+    let final_cleanup_start = Instant::now();
     let mut i = 0;
     while i < compressed.gates.len().saturating_sub(1) {
         if compressed.gates[i] == compressed.gates[i + 1] {
@@ -332,62 +332,62 @@ pub fn compress(
             i += 1;
         }
     }
-    // let final_cleanup_time = final_cleanup_start.elapsed();
+    let final_cleanup_time = final_cleanup_start.elapsed();
 
-    // let full_time = full_start.elapsed();
+    let full_time = full_start.elapsed();
 
-    // println!("\n=== Compress Timing Summary ===");
-    // println!("Total runtime: {:?} (100%)", full_time);
-    // println!(
-    //     "  Random subcircuit: {:?} ({:.2}%)",
-    //     total_random_sub,
-    //     pct(total_random_sub, full_time)
-    // );
-    // println!(
-    //     "  Canonicalize: {:?} ({:.2}%)",
-    //     total_canonicalize,
-    //     pct(total_canonicalize, full_time)
-    // );
-    // println!(
-    //     "  Canon simple: {:?} ({:.2}%)",
-    //     total_canon_simple,
-    //     pct(total_canon_simple, full_time)
-    // );
-    // println!(
-    //     "  DB lookup: {:?} ({:.2}%)",
-    //     total_lookup,
-    //     pct(total_lookup, full_time)
-    // );
-    // println!(
-    //     "  Deserialization (from_blob): {:?} ({:.2}%)",
-    //     total_from_blob,
-    //     pct(total_from_blob, full_time)
-    // );
-    // println!(
-    //     "  Rewire: {:?} ({:.2}%)",
-    //     total_rewire,
-    //     pct(total_rewire, full_time)
-    // );
-    // println!(
-    //     "  Splice: {:?} ({:.2}%)",
-    //     total_splice,
-    //     pct(total_splice, full_time)
-    // );
-    // println!(
-    //     "  No replacement loops: {:?} ({:.2}%)",
-    //     total_no_replacement,
-    //     pct(total_no_replacement, full_time)
-    // );
-    // println!(
-    //     "  Initial cleanup: {:?} ({:.2}%)",
-    //     cleanup_time,
-    //     pct(cleanup_time, full_time)
-    // );
-    // println!(
-    //     "  Final cleanup: {:?} ({:.2}%)",
-    //     final_cleanup_time,
-    //     pct(final_cleanup_time, full_time)
-    // );
+    println!("\n=== Compress Timing Summary ===");
+    println!("Total runtime: {:?} (100%)", full_time);
+    println!(
+        "  Random subcircuit: {:?} ({:.2}%)",
+        total_random_sub,
+        pct(total_random_sub, full_time)
+    );
+    println!(
+        "  Canonicalize: {:?} ({:.2}%)",
+        total_canonicalize,
+        pct(total_canonicalize, full_time)
+    );
+    println!(
+        "  Canon simple: {:?} ({:.2}%)",
+        total_canon_simple,
+        pct(total_canon_simple, full_time)
+    );
+    println!(
+        "  DB lookup: {:?} ({:.2}%)",
+        total_lookup,
+        pct(total_lookup, full_time)
+    );
+    println!(
+        "  Deserialization (from_blob): {:?} ({:.2}%)",
+        total_from_blob,
+        pct(total_from_blob, full_time)
+    );
+    println!(
+        "  Rewire: {:?} ({:.2}%)",
+        total_rewire,
+        pct(total_rewire, full_time)
+    );
+    println!(
+        "  Splice: {:?} ({:.2}%)",
+        total_splice,
+        pct(total_splice, full_time)
+    );
+    println!(
+        "  No replacement loops: {:?} ({:.2}%)",
+        total_no_replacement,
+        pct(total_no_replacement, full_time)
+    );
+    println!(
+        "  Initial cleanup: {:?} ({:.2}%)",
+        cleanup_time,
+        pct(cleanup_time, full_time)
+    );
+    println!(
+        "  Final cleanup: {:?} ({:.2}%)",
+        final_cleanup_time,
+        pct(final_cleanup_time, full_time)
+    );
 
     compressed
 }
