@@ -448,6 +448,10 @@ pub fn contiguous_convex(
         return None;
     }
 
+    if !is_convex(16, circuit, &ordered_convex_gates) {
+        panic!("not convex");
+    }
+
     // Keep track of convex positions
     let mut is_convex = vec![false; circuit.gates.len()];
     for &idx in ordered_convex_gates.iter() {
