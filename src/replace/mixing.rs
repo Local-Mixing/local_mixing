@@ -212,6 +212,34 @@ pub fn butterfly(
     acc
 }
 
+fn merge_combine_blocks(
+    blocks: &[CircuitSeq],
+    n: usize,
+    db_path: &str,
+) -> CircuitSeq {
+    if blocks.is_empty() {
+        return CircuitSeq { gates: vec![] };
+    }
+    if blocks.len() == 1 {
+        return blocks[0].clone();
+    }
+
+    let mid = blocks.len() / 2;
+
+    let (left, right) = rayon::join(
+        || merge_combine_blocks(&blocks[..mid], n, db_path),
+        || merge_combine_blocks(&blocks[mid..], n, db_path),
+    );
+
+    let mut conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("Failed to open read-only DB");
+
+    let combined = left.concat(&right);
+    let acc = compress_big(&combined, 200, n, &mut conn);
+
+    acc
+}
+
 pub fn butterfly_big(
     c: &CircuitSeq,
     conn: &mut Connection,
@@ -227,7 +255,7 @@ pub fn butterfly_big(
     let r_inv = &r_inv;   // same
 
     // Parallel processing of gates
-    let blocks: Vec<_> = c.gates
+    let blocks: Vec<CircuitSeq> = c.gates
         .par_iter()
         .enumerate()
         .map(|(i, &g)| {
@@ -255,30 +283,13 @@ pub fn butterfly_big(
     })
     .collect();
 
-    // Combine blocks hierarchically
-    let mut acc = blocks[0].clone();
-    println!("Start combining: {}", acc.gates.len());
-
-    for (i, b) in blocks.into_iter().skip(1).enumerate() {
-        let combined = acc.concat(&b);
-        let before = combined.gates.len();
-        acc = compress_big(&combined, 200, n, conn);
-        let after = acc.gates.len();
-
-        println!(
-            "  Combine step {}: {} → {} gates",
-            i + 1,
-            before,
-            after
-        );
-    }
+    let mut acc = merge_combine_blocks(&blocks, n, "./circuits.db");
 
     // Add bookends: R ... R*
     acc = r.concat(&acc).concat(&r_inv);
     println!("After adding bookends: {} gates", acc.gates.len());
 
     // Final global compression (until stable 3x)
-    let mut prev_len = acc.gates.len();
     let mut stable_count = 0;
     while stable_count < 3 {
         let before = acc.gates.len();
@@ -290,7 +301,6 @@ pub fn butterfly_big(
             println!("  Final compression stable {}/3 at {} gates", stable_count, after);
         } else {
             println!("  Final compression reduced: {} → {} gates", before, after);
-            prev_len = after;
             stable_count = 0;
         }
     }
