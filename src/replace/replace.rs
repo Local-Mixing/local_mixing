@@ -16,7 +16,7 @@ use std::{
     io::Write,
     time::{Instant, Duration},
 };
-
+use crate::random::random_data::is_convex;
 // Returns a nontrivial identity circuit built from two "friend" circuits
 pub fn random_canonical_id(
     conn: &Connection,
@@ -421,14 +421,25 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
 
         let actual_slice = &circuit.gates[start..=end];
 
-        if actual_slice != &expected_slice[..] {
+        if actual_slice != &expected_slice[..]
+        {
             panic!(
-                "contiguous_convex produced a non-matching contiguous segment!
+                "❌ contiguous_convex verification failed!
+        --------------------------------
+        Convex before: {}
         Start: {start}, End: {end}
         Subcircuit gate indices: {:?}
+
         Expected slice ({} gates): {:?}
         Actual slice ({} gates): {:?}
-        Full circuit ({} gates): {:?}",
+
+        Circuit length: {}
+        Circuit gates: {:?}
+        --------------------------------
+        Convex after recheck: {}
+        Re-run range changed: {:?}
+        ",
+                is_convex(16, &circuit, &subcircuit_gates),
                 subcircuit_gates,
                 expected_slice.len(),
                 expected_slice,
@@ -436,6 +447,8 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
                 actual_slice,
                 circuit.gates.len(),
                 circuit.gates,
+                is_convex(16, &circuit, &subcircuit_gates),
+                contiguous_convex(&mut circuit.clone(), &mut subcircuit_gates.clone()),
             );
         }
 
