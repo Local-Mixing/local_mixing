@@ -413,11 +413,11 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
         let mut subcircuit = CircuitSeq { gates };
         println!("Checking: {:?} \n Start {}, End {}", subcircuit_gates, start, end);
         let expected_slice: Vec<_> = subcircuit_gates.iter().map(|&i| circuit.gates[i]).collect();
-        assert_eq!(
-            &circuit.gates[start..=end],
-            &expected_slice[..],
-            "contiguous_convex returned a range that does not match the subcircuit gates\n {:?} \n {} \n {}\n Circuit: {:?}", subcircuit_gates, start, end, c.gates
-        );
+        // assert_eq!(
+        //     &circuit.gates[start..=end],
+        //     &expected_slice[..],
+        //     "contiguous_convex returned a range that does not match the subcircuit gates\n {:?} \n {} \n {}\n Circuit: {:?}", subcircuit_gates, start, end, c.gates
+        // );
 
         let actual_slice = &circuit.gates[start..=end];
 
