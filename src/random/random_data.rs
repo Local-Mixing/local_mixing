@@ -1301,15 +1301,15 @@ mod tests {
     #[test]
     fn test_hardcoded_circuit_profiling() {
         // Hard-coded random circuit
-        let c = random_circuit(6,30);
+        let c = random_circuit(7,30);
 
         let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
 
         // Run the profiling version of compress_big
-        let perms: Vec<Vec<usize>> = (0..6).permutations(6).collect();
+        let perms: Vec<Vec<usize>> = (0..7).permutations(6).collect();
         let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
         let start = std::time::Instant::now();
-        let _result = compress(&c, 100000, &mut conn, &bit_shuf, 6);
+        let _result = compress(&c, 100000, &mut conn, &bit_shuf, 7);
         let total_time = start.elapsed();
 
         println!("Total compress_big runtime: {:?} ms", total_time);
@@ -1328,55 +1328,62 @@ mod tests {
 
     #[test]
     fn test_convexity() {
-    // Dummy 16-wire circuit with 30 gates
-    let gates: Vec<[u8; 3]> = vec!
-        [[13, 6, 5], [7, 10, 1], [8, 12, 7], [5, 1, 11], [10, 5, 3], [1, 5, 9], [1, 15, 9], [14, 7, 10], [4, 9, 14], [14, 13, 9], [10, 12, 6], [5, 7, 13], [2, 1, 10], [11, 12, 6], [12, 9, 10], [8, 0, 9], [5, 3, 4], [2, 8, 10], [11, 10, 2], [9, 5, 12], [11, 1, 15], [14, 2, 3], [11, 1, 15], [9, 5, 12], [11, 10, 2], [2, 8, 10], [5, 3, 4], [8, 0, 9], [12, 9, 10], [11, 12, 6], [2, 1, 10], [1, 15, 9], [5, 7, 13], [10, 12, 6], [14, 13, 9], [1, 5, 9], [4, 9, 14], [14, 7, 10], [10, 5, 3], [5, 1, 11], [8, 12, 7], [7, 10, 1], [13, 6, 5]]
-    ;
+        // Dummy 16-wire circuit with 30 gates
+        let gates: Vec<[u8; 3]> = vec!
+            [[13, 6, 5], [7, 10, 1], [8, 12, 7], [5, 1, 11], [10, 5, 3], [1, 5, 9], [1, 15, 9], [14, 7, 10], [4, 9, 14], [14, 13, 9], [10, 12, 6], [5, 7, 13], [2, 1, 10], [11, 12, 6], [12, 9, 10], [8, 0, 9], [5, 3, 4], [2, 8, 10], [11, 10, 2], [9, 5, 12], [11, 1, 15], [14, 2, 3], [11, 1, 15], [9, 5, 12], [11, 10, 2], [2, 8, 10], [5, 3, 4], [8, 0, 9], [12, 9, 10], [11, 12, 6], [2, 1, 10], [1, 15, 9], [5, 7, 13], [10, 12, 6], [14, 13, 9], [1, 5, 9], [4, 9, 14], [14, 7, 10], [10, 5, 3], [5, 1, 11], [8, 12, 7], [7, 10, 1], [13, 6, 5]]
+        ;
 
-    let mut c = CircuitSeq { gates };
-    let mut subcircuit_gates = vec![1, 4, 5, 6];
+        let mut c = CircuitSeq { gates };
+        let mut subcircuit_gates = vec![1, 4, 5, 6];
 
-    println!("==================== TEST CONVEXITY ====================");
-    println!("Total gates in circuit: {}", c.gates.len());
-    println!("Original gate list:");
-    for (i, g) in c.gates.iter().enumerate() {
-        println!("  {:>2}: {:?}", i, g);
-    }
-
-    println!("\nSelected subcircuit gate indices: {:?}", subcircuit_gates);
-    println!("Selected subcircuit gates:");
-    for &i in &subcircuit_gates {
-        println!("  {:>2}: {:?}", i, c.gates[i]);
-    }
-
-    let convex = is_convex(16, &c, &subcircuit_gates);
-    println!("\nConvex before contiguous_convex? {}", convex);
-
-    let (start, end) = contiguous_convex(&mut c, &mut subcircuit_gates).unwrap();
-    println!("\nAfter contiguous_convex:");
-    println!("Start index: {}", start);
-    println!("End index:   {}", end);
-    println!("New subcircuit indices: {:?}", subcircuit_gates);
-
-    println!("\nSegment of circuit after adjustment:");
-    for (i, g) in c.gates[start..=end].iter().enumerate() {
-        println!("  {:>2}: {:?}", start + i, g);
-    }
-
-    println!("\nSanity check (should be true):");
-    let mut all_match = true;
-    for (i, &gate_idx) in subcircuit_gates.iter().enumerate() {
-        if c.gates[start + i] != c.gates[gate_idx] {
-            println!(
-                "Mismatch at position {} (circuit idx {})",
-                start + i, gate_idx
-            );
-            all_match = false;
+        println!("==================== TEST CONVEXITY ====================");
+        println!("Total gates in circuit: {}", c.gates.len());
+        println!("Original gate list:");
+        for (i, g) in c.gates.iter().enumerate() {
+            println!("  {:>2}: {:?}", i, g);
         }
+
+        println!("\nSelected subcircuit gate indices: {:?}", subcircuit_gates);
+        println!("Selected subcircuit gates:");
+        for &i in &subcircuit_gates {
+            println!("  {:>2}: {:?}", i, c.gates[i]);
+        }
+
+        let convex = is_convex(16, &c, &subcircuit_gates);
+        println!("\nConvex before contiguous_convex? {}", convex);
+
+        let (start, end) = contiguous_convex(&mut c, &mut subcircuit_gates).unwrap();
+        println!("\nAfter contiguous_convex:");
+        println!("Start index: {}", start);
+        println!("End index:   {}", end);
+        println!("New subcircuit indices: {:?}", subcircuit_gates);
+
+        println!("\nSegment of circuit after adjustment:");
+        for (i, g) in c.gates[start..=end].iter().enumerate() {
+            println!("  {:>2}: {:?}", start + i, g);
+        }
+
+        println!("\nSanity check (should be true):");
+        let mut all_match = true;
+        for (i, &gate_idx) in subcircuit_gates.iter().enumerate() {
+            if c.gates[start + i] != c.gates[gate_idx] {
+                println!(
+                    "Mismatch at position {} (circuit idx {})",
+                    start + i, gate_idx
+                );
+                all_match = false;
+            }
+        }
+        if all_match {
+            println!("All gates in contiguous range match subcircuit order");
+        }
+        println!("========================================================\n");
     }
-    if all_match {
-        println!("All gates in contiguous range match subcircuit order");
+
+    #[test]
+    fn verify_butterfly() {
+        let original = CircuitSeq::from_string("851;ba5;f92;936;a4f;890;217;fac;540;e08;bf3;fdc;8bf;d03;43c;305;49d;ac1;b0a;14f;20e;07d;f2d;8b6;1dc;86c;24c;296;853;301;");
+        let new = CircuitSeq::from_string("851;4cd;cf0;d57;a91;768;ad2;640;1f0;fd1;d32;6a0;1f6;1d7;b78;d07;1f6;b78;6a0;640;d07;1d7;d32;fd1;768;1f0;a91;ad2;ba5;a91;768;b78;640;1f0;fd1;ad2;6a0;1f6;d32;1d7;d07;b78;1f6;6a0;640;d07;1d7;d32;fd1;1f0;cf0;ad2;768;a91;d57;4cd;f92;4cd;d57;a91;768;ad2;1f0;cf0;fd1;640;6a0;d32;1d7;d07;b78;8f7;1f6;d07;1d7;d32;1f6;640;6a0;ad2;8f7;fd1;1f0;a91;b78;ad2;936;a91;6a0;1f0;fd1;640;fd1;6a0;1f0;a91;cf0;640;ad2;768;d57;4cd;a4f;4cd;cf0;d57;768;640;a91;1f0;fd1;ad2;d32;6a0;1f6;1d7;b78;d07;8f7;d07;1d7;1f6;6a0;d32;8f7;b78;fd1;1f0;cf0;640;768;ad2;a91;d57;4cd;890;4cd;cf0;d57;a91;1f0;fd1;768;ad2;640;d32;6a0;1d7;b78;d07;1f6;d07;b78;1d7;1f6;6a0;d32;fd1;1f0;cf0;640;ad2;768;a91;d57;4cd;217;4cd;d57;cf0;a91;ad2;768;640;6a0;1f0;fd1;b78;8f7;1f6;d32;1d7;d07;1f6;d07;6a0;640;8f7;1d7;d32;fd1;ad2;1f0;b78;768;a91;d57;cf0;d57;fac;cf0;a91;768;ad2;640;1f0;fd1;d32;6a0;1f6;1d7;b78;d07;8f7;1f6;d07;1d7;6a0;d32;640;ad2;8f7;fd1;b78;768;1f0;a91;d57;cf0;4cd;540;4cd;cf0;d57;a91;768;ad2;640;6a0;b78;1f0;fd1;d32;1d7;d07;1f6;d07;b78;1d7;d32;1f6;fd1;1f0;6a0;640;cf0;ad2;768;d57;4cd;e08;4cd;cf0;d57;1f0;fd1;768;ad2;640;d32;6a0;1d7;b78;d07;b78;6a0;d07;1d7;d32;640;768;ad2;fd1;1f0;a91;d57;cf0;4cd;bf3;4cd;d57;a91;1f0;cf0;fd1;768;ad2;640;d32;6a0;1d7;b78;d07;1f6;8f7;1f6;6a0;d07;1d7;d32;640;ad2;8f7;b78;fd1;768;1f0;a91;d57;cf0;4cd;fdc;4cd;cf0;d57;a91;ad2;768;640;6a0;b78;1f0;fd1;d32;1d7;b78;1d7;6a0;d32;640;ad2;768;fd1;1f0;d57;cf0;4cd;8bf;4cd;cf0;d57;a91;768;ad2;a91;640;6a0;1f0;fd1;d32;1f6;1d7;b78;d07;8f7;1f6;d07;1d7;6a0;d32;640;ad2;8f7;fd1;b78;768;1f0;a91;d57;cf0;4cd;d03;4cd;cf0;d57;a91;1f0;fd1;768;ad2;640;d32;6a0;1d7;b78;d07;1f6;b78;1f6;6a0;640;d07;1d7;d32;fd1;1f0;cf0;ad2;768;a91;d57;4cd;43c;4cd;d57;a91;768;ad2;cf0;1f0;fd1;640;d32;6a0;1f6;1d7;b78;d07;8f7;d07;1d7;1f6;6a0;d32;640;8f7;b78;768;fd1;1f0;ad2;a91;d57;cf0;4cd;305;4cd;d57;ad2;cf0;a91;1f0;fd1;768;640;d32;6a0;1d7;b78;d07;1f6;8f7;d07;8f7;b78;1d7;d32;1f6;fd1;6a0;1f0;a91;ad2;640;a91;768;d57;cf0;4cd;49d;4cd;cf0;d57;768;ad2;6a0;1f0;fd1;640;1f6;d32;1d7;b78;d07;b78;d07;1d7;d32;1f6;6a0;fd1;640;ad2;768;1f0;cf0;a91;768;ad2;640;ac1;a91;6a0;cf0;1f0;fd1;d32;1f6;1d7;b78;8f7;d07;8f7;1f6;d07;b78;1d7;6a0;d32;640;ad2;768;fd1;1f0;a91;d57;cf0;4cd;b0a;4cd;cf0;d57;a91;768;ad2;640;1f0;6a0;fd1;1f6;d32;1d7;b78;d07;1f6;d07;b78;1d7;6a0;d32;640;ad2;768;fd1;1f0;a91;d57;cf0;4cd;14f;4cd;cf0;d57;a91;1f0;ad2;fd1;d32;768;640;b78;6a0;1f6;1d7;b78;1d7;1f6;6a0;d32;640;fd1;1f0;cf0;ad2;768;a91;d57;4cd;20e;4cd;cf0;d57;a91;768;ad2;640;1f0;fd1;6a0;d32;1d7;b78;d07;1f6;8f7;d07;1d7;1f6;6a0;d32;640;ad2;8f7;fd1;1f0;b78;768;a91;d57;cf0;4cd;07d;4cd;cf0;d57;a91;768;ad2;640;1f0;fd1;b78;8f7;d32;6a0;1d7;d07;1f6;8f7;1f6;d07;b78;1d7;6a0;d32;640;ad2;768;fd1;1f0;a91;d57;cf0;4cd;f2d;4cd;cf0;d57;a91;1f0;fd1;768;ad2;640;d32;6a0;1d7;b78;d07;1f6;d07;1f6;1d7;d32;fd1;6a0;ad2;1f0;a91;b78;640;768;8b6;a91;1f0;fd1;ad2;768;b78;640;d32;6a0;1d7;d07;1f6;8f7;1f6;6a0;640;d07;1d7;d32;8f7;fd1;b78;768;1f0;ad2;a91;d57;cf0;4cd;1dc;4cd;d57;a91;768;ad2;cf0;640;1f0;fd1;d32;6a0;1f6;1d7;b78;d07;1f6;d07;b78;1d7;d32;640;6a0;ad2;768;fd1;1f0;a91;d57;cf0;4cd;86c;4cd;cf0;d57;a91;1f0;fd1;768;ad2;640;d32;6a0;1d7;b78;d07;1f6;d07;b78;1d7;1f6;6a0;640;768;d32;fd1;1f0;cf0;ad2;a91;d57;4cd;24c;4cd;cf0;d57;a91;768;ad2;1f0;fd1;640;d32;6a0;1f6;1d7;b78;d07;8f7;d07;1d7;d32;1f6;6a0;640;ad2;8f7;fd1;1f0;b78;768;a91;d57;cf0;4cd;296;4cd;cf0;d57;a91;1f0;fd1;768;ad2;640;d32;6a0;1d7;b78;d07;1f6;8f7;d07;1d7;d32;1f6;6a0;8f7;b78;fd1;1f0;640;768;ad2;a91;d57;cf0;4cd;853;4cd;d57;a91;768;ad2;cf0;640;1f0;fd1;d32;6a0;1f6;1d7;b78;d07;1f6;d07;b78;1d7;d32;640;fd1;1f0;6a0;a91;ad2;768;a91;ad2;768;640;b78;301;1f0;6a0;fd1;8f7;1f6;d32;1d7;d07;8f7;1f6;d07;b78;1d7;6a0;d32;640;ad2;768;fd1;1f0;a91;d57;cf0;4cd;");
+        println!("Are they equal? {}", original.gates == new.gates);
     }
-    println!("========================================================\n");
-}
 }
