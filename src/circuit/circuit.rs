@@ -735,7 +735,7 @@ impl CircuitSeq {
             result.push('\n');
         }
 
-        // --- Compact circuit string (like "123;124;213;") ---
+        // Compact circuit string (like "123;124;213;")
         let compact: String = self
             .gates
             .iter()
@@ -831,6 +831,19 @@ impl CircuitSeq {
 
         CircuitSeq { gates: new_gates }
     }
+
+    pub fn evaluate_evolution(&self, input: usize) -> Vec<usize> {
+        let mut state = input;
+        let mut evolution = vec![state];
+
+        for gate in &self.gates {
+            state = Gate::evaluate_index(state, *gate);
+            evolution.push(state);
+        }
+
+        evolution
+    }
+
 }
 
 pub fn base_gates(n: usize) -> Vec<[usize; 3]> {

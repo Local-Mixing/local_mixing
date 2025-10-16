@@ -18,7 +18,11 @@ use itertools::Itertools;
 use rand::rngs::OsRng;
 use rand::TryRngCore;
 use rusqlite::Connection;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
+use std::time::Instant;
+use serde_json::json;
+use rand::Rng;
 
 fn main() {
     let matches = Command::new("rainbow")
@@ -95,8 +99,19 @@ fn main() {
                     .required(true)
                     .value_parser(clap::value_parser!(usize))
             ),
-    )
-
+        )
+        .subcommand(
+            Command::new("heatmap")
+                .about("Run the circuit distinguisher and produce a heatmap")
+                .arg(
+                    Arg::new("inputs")
+                        .short('i')
+                        .long("inputs")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of random inputs to test"),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -233,28 +248,92 @@ fn main() {
             }
         }
         Some(("bbutterfly", sub)) => {
-        let rounds: usize = *sub.get_one("rounds").unwrap();
+            let rounds: usize = *sub.get_one("rounds").unwrap();
 
-        let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
+            let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
 
-        let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
-        conn.execute_batch(
-            "
-            PRAGMA temp_store = MEMORY;
-            PRAGMA cache_size = -200000;
-            "
-        ).unwrap();
+            let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
+            conn.execute_batch(
+                "
+                PRAGMA temp_store = MEMORY;
+                PRAGMA cache_size = -200000;
+                "
+            ).unwrap();
 
-        if data.trim().is_empty() {
-            println!("Generating random");
-            let c1 = random_circuit(16,30);
-            println!("{:?} Starting Len: {}", c1.permutation(16).data, c1.gates.len());
-            main_butterfly_big(&c1, rounds, &mut conn, 16);
-        } else {
-            let c = CircuitSeq::from_string(&data);
-            main_butterfly_big(&c, rounds, &mut conn, 16);
+            if data.trim().is_empty() {
+                println!("Generating random");
+                let c1 = random_circuit(16,30);
+                println!("{:?} Starting Len: {}", c1.permutation(16).data, c1.gates.len());
+                main_butterfly_big(&c1, rounds, &mut conn, 16);
+            } else {
+                let c = CircuitSeq::from_string(&data);
+                main_butterfly_big(&c, rounds, &mut conn, 16);
+            }
         }
-    }
+        Some(("heatmap", sub)) => {
+            let num_inputs: usize = *sub.get_one("inputs").unwrap();
+            println!("Running distinguisher with {} inputs...", num_inputs);
+            heatmap(num_inputs);
+        }
         _ => unreachable!(),
     }
+}
+
+pub fn heatmap(num_inputs: usize) {
+    // Load circuits from fixed paths
+    let data1 = fs::read_to_string("circuit1.txt")
+        .expect("Failed to read file circuit1.txt");
+    let mut circuit_one = CircuitSeq::from_string(&data1);
+
+    let data2 = fs::read_to_string("circuit2.txt")
+        .expect("Failed to read file circuit2.txt");
+    let mut circuit_two = CircuitSeq::from_string(&data2);
+    circuit_one.canonicalize();
+    circuit_two.canonicalize();
+    let num_wires = 16; // adjust if needed
+    let circuit_one_len = circuit_one.gates.len();
+    let circuit_two_len = circuit_two.gates.len();
+
+    let mut average = vec![[0f64, 0f64, 0f64]; (circuit_one_len + 1) * (circuit_two_len + 1)];
+    let mut rng = rand::rng();
+    let start_time = Instant::now();
+
+    for i in 0..num_inputs {
+        if i % 10 == 0 {
+            println!("{}/{}", i, num_inputs);
+        }
+
+        let input_bits: usize = rng.random_range(0..(1 << num_wires));
+
+        let evolution_one = circuit_one.evaluate_evolution(input_bits);
+        let evolution_two = circuit_two.evaluate_evolution(input_bits);
+
+        for i1 in 0..=circuit_one_len {
+            for i2 in 0..=circuit_two_len {
+                let diff = evolution_one[i1] ^ evolution_two[i2];
+                let hamming_dist = diff.count_ones() as f64;
+                let overlap = (2.0 * hamming_dist / num_wires as f64) - 1.0;
+                let abs_overlap = overlap.abs();
+
+                let index = i1 * (circuit_two_len + 1) + i2;
+                average[index][0] = i1 as f64;
+                average[index][1] = i2 as f64;
+                average[index][2] += abs_overlap / num_inputs as f64;
+            }
+        }
+    }
+
+    println!("Time elapsed: {:?}", Instant::now() - start_time);
+
+    // Write JSON
+    let output_json = json!({
+        "circuit-one-len": circuit_one_len,
+        "circuit-two-len": circuit_two_len,
+        "results": average,
+    });
+
+    let mut file = File::create("heatmap.json")
+        .expect("Failed to create heatmap.json");
+    file.write_all(output_json.to_string().as_bytes())
+        .expect("Failed to write JSON");
 }
