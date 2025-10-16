@@ -1255,12 +1255,14 @@ mod tests {
         let sub = CircuitSeq::rewire_subcircuit(&c, &subcircuit_gates, &subcircuit.used_wires());
         let undo =  CircuitSeq::unrewire_subcircuit(&sub, &subcircuit.used_wires());
         println!("Rewire and unrewire is ok: {}", subcircuit.permutation(wire_set.len()) == undo.permutation(wire_set.len()));
-        // assert!(convex_ok, "Selected subcircuit is not convex");
-        // println!("Convexity check passed");
-        // let mut circ = c.clone();
-        // contiguous_convex(&mut circ,  &mut subcircuit_gates);
-        // println!("The rearranged are equal: {}", c.permutation(16).data == circ.permutation(16).data);
-        // println!("{}", circ.to_string(16));
+        assert!(convex_ok, "Selected subcircuit is not convex");
+        println!("Convexity check passed");
+        let mut circ = c.clone();
+        let (start, end) = contiguous_convex(&mut circ,  &mut subcircuit_gates).unwrap();
+        println!("The rearranged are equal: {}", c.permutation(16).data == circ.permutation(16).data);
+        println!("New circuit {}", circ.to_string(16));
+        println!("start and end designated: {:?}", &circ.gates[start..end+1]);
+        println!("Desired sub: {:?}", subcircuit.gates);
     }
     use crate::replace::replace::compress;
     #[test]
