@@ -235,28 +235,28 @@ pub fn compress(
     //     .expect("Failed to open lookup_time.txt");
 
     // cumulative timers
-    let mut canon_total = Duration::ZERO;
-    let mut canon_max = Duration::ZERO;
-    let mut canon_count = 0;
+    // let mut canon_total = Duration::ZERO;
+    // let mut canon_max = Duration::ZERO;
+    // let mut canon_count = 0;
 
-    let mut lookup_total = Duration::ZERO;
-    let mut lookup_max = Duration::ZERO;
-    let mut lookup_count = 0;
+    // let mut lookup_total = Duration::ZERO;
+    // let mut lookup_max = Duration::ZERO;
+    // let mut lookup_count = 0;
 
-    let mut splice_total = Duration::ZERO;
-    let mut splice_max = Duration::ZERO;
-    let mut splice_count = 0;
+    // let mut splice_total = Duration::ZERO;
+    // let mut splice_max = Duration::ZERO;
+    // let mut splice_count = 0;
 
     for trial in 0..trials {
         let (mut subcircuit, start, end) = random_subcircuit(&compressed);
 
         // canonicalize
-        let t0 = Instant::now();
+        // let t0 = Instant::now();
         subcircuit.canonicalize();
-        let canon_time = t0.elapsed();
-        canon_total += canon_time;
-        canon_max = canon_max.max(canon_time);
-        canon_count += 1;
+        // let canon_time = t0.elapsed();
+        // canon_total += canon_time;
+        // canon_max = canon_max.max(canon_time);
+        // canon_count += 1;
         // writeln!(
         //     canon_log,
         //     "Trial {}: Num wires: {}. canonicalize(): {:?}",
@@ -265,13 +265,13 @@ pub fn compress(
         // .unwrap();
 
         // canon_simple
-        let t1 = Instant::now();
+        // let t1 = Instant::now();
         let sub_perm = subcircuit.permutation(n);
         let canon_perm = get_canonical(&sub_perm, &bit_shuf);
-        let canon_simple_time = t1.elapsed();
-        canon_total += canon_simple_time;
-        canon_max = canon_max.max(canon_simple_time);
-        canon_count += 1;
+        // let canon_simple_time = t1.elapsed();
+        // canon_total += canon_simple_time;
+        // canon_max = canon_max.max(canon_simple_time);
+        // canon_count += 1;
         // writeln!(
         //     canon_log,
         //     "Trial {}: Num wires: {}. canon_simple(): {:?}",
@@ -289,7 +289,7 @@ pub fn compress(
                 table
             );
 
-            let lookup_start = Instant::now();
+            // let lookup_start = Instant::now();
             let mut stmt = match conn.prepare(&query) {
                 Ok(s) => s,
                 Err(_e) => {
@@ -299,10 +299,10 @@ pub fn compress(
                 }
             };
             let rows = stmt.query([&perm_blob]);
-            let lookup_time = lookup_start.elapsed();
-            lookup_total += lookup_time;
-            lookup_max = lookup_max.max(lookup_time);
-            lookup_count += 1;
+            // let lookup_time = lookup_start.elapsed();
+            // lookup_total += lookup_time;
+            // lookup_max = lookup_max.max(lookup_time);
+            // lookup_count += 1;
             // writeln!(
             //     lookup_log,
             //     "Trial {}: Table: {}. Time: {:?}",
@@ -327,12 +327,12 @@ pub fn compress(
                             panic!("Replacement permutation mismatch!");
                         }
 
-                        let splice_start = Instant::now();
+                        // let splice_start = Instant::now();
                         compressed.gates.splice(start..end, repl.gates);
-                        let splice_time = splice_start.elapsed();
-                        splice_total += splice_time;
-                        splice_max = splice_max.max(splice_time);
-                        splice_count += 1;
+                        // let splice_time = splice_start.elapsed();
+                        // splice_total += splice_time;
+                        // splice_max = splice_max.max(splice_time);
+                        // splice_count += 1;
 
                         // println!("A replacement was found!");
                         break;
@@ -353,31 +353,31 @@ pub fn compress(
         }
     }
 
-    println!("=== Compress Timing Summary ===");
-    if canon_count > 0 {
-        println!(
-            "Canonicalization total: {:?}, max: {:?}, average: {:?}",
-            canon_total,
-            canon_max,
-            canon_total / canon_count as u32
-        );
-    }
-    if lookup_count > 0 {
-        println!(
-            "Lookup total: {:?}, max: {:?}, average: {:?}",
-            lookup_total,
-            lookup_max,
-            lookup_total / lookup_count as u32
-        );
-    }
-    if splice_count > 0 {
-        println!(
-            "Splice total: {:?}, max: {:?}, average: {:?}",
-            splice_total,
-            splice_max,
-            splice_total / splice_count as u32
-        );
-    }
+    // println!("=== Compress Timing Summary ===");
+    // if canon_count > 0 {
+    //     println!(
+    //         "Canonicalization total: {:?}, max: {:?}, average: {:?}",
+    //         canon_total,
+    //         canon_max,
+    //         canon_total / canon_count as u32
+    //     );
+    // }
+    // if lookup_count > 0 {
+    //     println!(
+    //         "Lookup total: {:?}, max: {:?}, average: {:?}",
+    //         lookup_total,
+    //         lookup_max,
+    //         lookup_total / lookup_count as u32
+    //     );
+    // }
+    // if splice_count > 0 {
+    //     println!(
+    //         "Splice total: {:?}, max: {:?}, average: {:?}",
+    //         splice_total,
+    //         splice_max,[]
+    //         splice_total / splice_count as u32
+    //     );
+    // }
 
     compressed
 }
