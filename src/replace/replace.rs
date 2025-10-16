@@ -424,7 +424,11 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
 
         // compress logs everything inside compress now
         //let t2 = Instant::now();
-        subcircuit = compress(&subcircuit, 25_000, conn, &bit_shuf, used_wires.len());
+        let subcircuit_temp = compress(&subcircuit, 25_000, conn, &bit_shuf, num_wires);
+        if subcircuit.permutation(num_wires) != subcircuit_temp.permutation(num_wires) {
+            panic!("Compress changed something");
+        }
+        subcircuit = subcircuit_temp;
         // let t_compress = t2.elapsed();
         // println!("compress(): {:?}", t_compress);
 
@@ -435,7 +439,7 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
 
         circuit.gates.splice(start..end+1, subcircuit.gates);
         if c.permutation(num_wires).data != circuit.permutation(num_wires).data {
-            panic!("compression changed something");
+            panic!("splice changed something");
         }
     }
     circuit
