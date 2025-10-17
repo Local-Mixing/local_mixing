@@ -1413,8 +1413,9 @@ mod tests {
     fn test_print() {
         let t = Instant::now();
         let c = random_circuit(32,30);
+        let c1 = random_circuit(32,30);
         c
-            .probably_equal(&c, 32, 150_000)
+            .probably_equal(&c1, 32, 150_000)
             .expect("The circuits differ somewhere!");
         println!("Time to compute permutation on 32 wires: {:?}", t.elapsed());
     }
