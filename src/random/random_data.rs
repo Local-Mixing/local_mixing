@@ -70,8 +70,8 @@ pub fn random_circuit(n: u8, m: usize) -> CircuitSeq {
     for _ in 0..m {
         loop {
             // mask for used pins
-            let mut set = [false; 16];
-            for i in n..16 {
+            let mut set = [false; 64];
+            for i in n..64 {
                 set[i as usize] = true; // disable pins >= n
             }
 
@@ -79,7 +79,7 @@ pub fn random_circuit(n: u8, m: usize) -> CircuitSeq {
             let mut gate = [0u8; 3];
             for j in 0..3 {
                 loop {
-                    let v = fastrand::u8(..16);
+                    let v = fastrand::u8(..64);
                     if !set[v as usize] {
                         set[v as usize] = true;
                         gate[j] = v;
@@ -90,45 +90,7 @@ pub fn random_circuit(n: u8, m: usize) -> CircuitSeq {
 
             // check against last gate to avoid duplicates
             if circuit.last() == Some(&gate) {
-                continue; 
-            } else {
-                circuit.push(gate);
-                break;
-            }
-        }
-    }
-
-    CircuitSeq { gates: circuit }
-}
-
-pub fn seeded_random_circuit(n: u8, m: usize, seed: u64) -> CircuitSeq {
-    let mut rng = StdRng::seed_from_u64(seed);
-    let mut circuit = Vec::with_capacity(m);
-
-    for _ in 0..m {
-        loop {
-            // mask for used pins
-            let mut set = [false; 16];
-            for i in n..16 {
-                set[i as usize] = true; // disable pins >= n
-            }
-
-            // pick 3 distinct pins
-            let mut gate = [0u8; 3];
-            for j in 0..3 {
-                loop {
-                    let v: u8 = rng.random_range(0..16);
-                    if !set[v as usize] {
-                        set[v as usize] = true;
-                        gate[j] = v;
-                        break;
-                    }
-                }
-            }
-
-            // check against last gate to avoid duplicates
-            if circuit.last() == Some(&gate) {
-                continue; 
+                continue;
             } else {
                 circuit.push(gate);
                 break;

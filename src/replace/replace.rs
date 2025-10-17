@@ -1,6 +1,6 @@
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation},
-    random::random_data::{create_table, random_circuit, seeded_random_circuit},
+    random::random_data::{create_table, random_circuit},
 };
 
 use crate::random::random_data::insert_circuit;
