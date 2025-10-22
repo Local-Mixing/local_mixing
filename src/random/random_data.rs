@@ -1421,7 +1421,7 @@ mod tests {
             .iter()
             .map(|s| {
                 let c = CircuitSeq::from_string(s);
-                let len = c.len();
+                let len = c.gates.len();
                 (s.clone(), len)
             })
             .collect();
@@ -1449,7 +1449,7 @@ mod tests {
         for ((circuit_str, _), filename) in circuits.iter().zip(filenames.iter()) {
             let circuit = CircuitSeq::from_string(circuit_str);
             fs::write(filename, circuit.repr())?;
-            println!("✅ Wrote {} (len = {})", filename, circuit.len());
+            println!(" Wrote {} (len = {})", filename, circuit.gates.len());
         }
 
         Ok(())
