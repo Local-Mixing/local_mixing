@@ -299,11 +299,7 @@ pub fn butterfly_big(
         .collect();
 
     let progress = Arc::new(AtomicUsize::new(0));
-<<<<<<< HEAD
     let total = 2 * blocks.len() - 1;
-=======
-    let total = blocks.len().saturating_sub(1);
->>>>>>> d0df9ef (asymmetric testing and faster compression)
 
     println!("Beginning merge");
 
