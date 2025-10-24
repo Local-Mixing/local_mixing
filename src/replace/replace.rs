@@ -450,7 +450,7 @@ pub fn compress_exhaust(
         let len = compressed.gates.len();
         // loop over all subcircuit start and end indices
         'outer: for start in 0..len {
-            for end in (start + 3)..=len { // skip lengths 1 and 2
+            for end in (start + 2)..=len { // skip lengths 1
                 let mut subcircuit = CircuitSeq {
                     gates: compressed.gates[start..end].to_vec(),
                 };
