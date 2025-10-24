@@ -429,6 +429,7 @@ pub fn compress_exhaust(
         return CircuitSeq { gates: Vec::new() };
     }
 
+    // Initial cleanup of consecutive duplicates
     let mut i = 0;
     while i < compressed.gates.len().saturating_sub(1) {
         if compressed.gates[i] == compressed.gates[i + 1] {
@@ -446,9 +447,8 @@ pub fn compress_exhaust(
     let mut changed = true;
     while changed {
         changed = false;
-
         let len = compressed.gates.len();
-        // loop over all subcircuit start and end indices
+
         'outer: for start in 0..len {
             for end in (start + 2)..=len { // skip lengths 1
                 let mut subcircuit = CircuitSeq {
@@ -492,10 +492,15 @@ pub fn compress_exhaust(
                                     panic!("Replacement permutation mismatch!");
                                 }
 
-                                compressed.gates.splice(start..end, repl.gates);
-                                changed = true;
-                                // restart from beginning
-                                break 'outer;
+                                // Only restart from beginning if length decreased
+                                if repl.gates.len() < subcircuit.gates.len() {
+                                    compressed.gates.splice(start..end, repl.gates);
+                                    changed = true;
+                                    break 'outer;
+                                } else {
+                                    // Otherwise, just replace in place without restarting
+                                    compressed.gates.splice(start..end, repl.gates);
+                                }
                             }
                         }
                     }
@@ -504,6 +509,7 @@ pub fn compress_exhaust(
         }
     }
 
+    // Final cleanup of consecutive duplicates
     let mut i = 0;
     while i < compressed.gates.len().saturating_sub(1) {
         if compressed.gates[i] == compressed.gates[i + 1] {
