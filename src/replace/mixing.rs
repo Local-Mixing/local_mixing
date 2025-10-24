@@ -636,8 +636,8 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
     .expect("The circuits differ somewhere!");
 
     // Write to file
-    let c_str = c.to_string(n);
-    let circuit_str = circuit.to_string(n);
+    let c_str = c.repr();
+    let circuit_str = circuit.repr();
     let long_str = format!("{}:{}", c.repr(), circuit.repr());
     let good_str = format!("{}: {}", good_id.gates.len(), good_id.repr());
     // Write start.txt
