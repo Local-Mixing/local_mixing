@@ -275,7 +275,7 @@ fn main() {
         }
         Some(("bbutterfly", sub)) => {
             let rounds: usize = *sub.get_one("rounds").unwrap();
-            let path : &str = *sub.get_one("path").unwrap();
+            let path: &str = sub.get_one::<String>("path").unwrap().as_str();
             let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
 
             let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
@@ -298,7 +298,7 @@ fn main() {
         }
         Some(("abbutterfly", sub)) => {
             let rounds: usize = *sub.get_one("rounds").unwrap();
-            let path : &str = *sub.get_one("path").unwrap();
+            let path: &str = sub.get_one::<String>("path").unwrap().as_str();
             let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
 
             let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
