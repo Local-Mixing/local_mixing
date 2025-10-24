@@ -439,13 +439,12 @@ pub fn compress_exhaust(
             i += 1;
         }
     }
+
     if compressed.gates.is_empty() {
         return CircuitSeq { gates: Vec::new() };
     }
 
     let mut changed = true;
-    let mut swap_streak = 0; // track consecutive equal-length replacements
-
     while changed {
         changed = false;
         let len = compressed.gates.len();
@@ -493,24 +492,14 @@ pub fn compress_exhaust(
                                     panic!("Replacement permutation mismatch!");
                                 }
 
-                                let repl_len = repl.gates.len();
-                                compressed.gates.splice(start..end, repl.gates);
-
-                                if repl_len < subcircuit.gates.len() {
-                                    // Shorter replacement: reset swap streak & restart
-                                    swap_streak = 0;
+                                // Only restart from beginning if length decreased
+                                if repl.gates.len() < subcircuit.gates.len() {
+                                    compressed.gates.splice(start..end, repl.gates);
                                     changed = true;
                                     break 'outer;
                                 } else {
-                                    // Equal-length replacement: allow up to 3
-                                    swap_streak += 1;
-                                    if swap_streak <= 3 {
-                                        changed = true;
-                                        break 'outer;
-                                    } else {
-                                        // Exceeded 3 swaps, reset streak but don't restart
-                                        swap_streak = 0;
-                                    }
+                                    // Otherwise, just replace in place without restarting
+                                    compressed.gates.splice(start..end, repl.gates);
                                 }
                             }
                         }
