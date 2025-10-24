@@ -311,7 +311,7 @@ pub fn butterfly_big(
     let mut stable_count = 0;
     while stable_count < 3 {
         let before = acc.gates.len();
-        acc = compress_big(&acc, 300, n, conn);
+        acc = compress_big(&acc, 1_000, n, conn);
         let after = acc.gates.len();
 
         if after == before {
