@@ -257,58 +257,65 @@ pub fn butterfly_big(
     c: &CircuitSeq,
     conn: &mut Connection,
     n: usize,
+    asymmetric: bool,
 ) -> CircuitSeq {
-    // Pick one random R
+    // Create one base R and R_inv
     let mut rng = rand::rng();
-    let (r, r_inv) = random_id(n as u8, rng.random_range(15..=25)); 
+    let (base_r, base_r_inv) = random_id(n as u8, rng.random_range(15..=25)); 
 
     println!("Butterfly start: {} gates", c.gates.len());
-
-    let r = &r;           // reference is enough; read-only
-    let r_inv = &r_inv;   // same
 
     // Parallel processing of gates
     let blocks: Vec<CircuitSeq> = c.gates
         .par_iter()
         .enumerate()
         .map(|(i, &g)| {
-            // wrap single gate as CircuitSeq
-            let gi = r_inv.concat(&CircuitSeq { gates: vec![g] }).concat(&r);
-            // create a read-only connection per thread
+            let mut thread_rng = rand::rng();
             let mut conn = Connection::open_with_flags(
-            "circuits.db",
-            OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ).expect("Failed to open read-only connection");
+                "circuits.db",
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            ).expect("Failed to open read-only connection");
 
-        // compress the block
-        let compressed_block = compress_big(&gi, 100, n, &mut conn);
+            let (r, r_inv) = if asymmetric {
+                random_id(n as u8, thread_rng.random_range(15..=25))
+            } else {
+                (base_r.clone(), base_r_inv.clone())
+            };
 
-        println!(
-            "  Block {}: before {} gates → after {} gates",
-            i,
-            r_inv.gates.len() * 2 + 1, // approximate size
-            compressed_block.gates.len()
-        );
+            let gi = r_inv.concat(&CircuitSeq { gates: vec![g] }).concat(&r);
 
-        println!("  {}", compressed_block.repr());
+            let compressed_block = compress_big(&gi, 100, n, &mut conn);
 
-        compressed_block
-    })
-    .collect();
+            println!(
+                "  Block {}: before {} gates → after {} gates",
+                i,
+                r_inv.gates.len() * 2 + 1,
+                compressed_block.gates.len()
+            );
+            println!("  {}", compressed_block.repr());
+
+            compressed_block
+        })
+        .collect();
 
     let progress = Arc::new(AtomicUsize::new(0));
+<<<<<<< HEAD
     let total = 2 * blocks.len() - 1;
+=======
+    let total = blocks.len().saturating_sub(1);
+>>>>>>> d0df9ef (asymmetric testing and faster compression)
 
     println!("Beginning merge");
-    
+
     let mut acc = merge_combine_blocks(&blocks, n, "./circuits.db", &progress, total);
 
     // Add bookends: R ... R*
-    acc = r.concat(&acc).concat(&r_inv);
+    acc = base_r.clone().concat(&acc).concat(&base_r_inv.clone());
     println!("After adding bookends: {} gates", acc.gates.len());
 
-    // Final global compression (until stable 3x)
+    // Final global compression (until stable 3×)
     let mut stable_count = 0;
+    let mut acc = acc;
     while stable_count < 3 {
         let before = acc.gates.len();
         acc = compress_big(&acc, 300, n, conn);
@@ -323,23 +330,8 @@ pub fn butterfly_big(
         }
     }
 
-    // let mut i = 0;
-    // while i < acc.gates.len().saturating_sub(1) {
-    //     if acc.gates[i] == acc.gates[i + 1] {
-    //         // remove elements at i and i+1
-    //         acc.gates.drain(i..=i + 1);
-
-    //         // step back up to 2 indices, but not below 0
-    //         i = i.saturating_sub(2);
-    //     } else {
-    //         i += 1;
-    //     }
-    // }
-    //writeln!(file, "Permutation after remove identities 2 is: \n{:?}", acc.permutation(n).data).unwrap();
     println!("Compressed len: {}", acc.gates.len());
-
     println!("Butterfly done: {} gates", acc.gates.len());
-
     acc
 }
 
@@ -494,7 +486,7 @@ pub fn main_butterfly(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: u
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize) {
+pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, asymmetric: bool) {
     // Start with the input circuit
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
@@ -502,7 +494,7 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
     let mut post_len = 0;
     let mut count = 0;
     for _ in 0..rounds {
-        circuit = butterfly_big(&circuit, conn, n);
+        circuit = butterfly_big(&circuit, conn, n, asymmetric);
         if circuit.gates.len() == 0 {
             break;
         }

@@ -413,6 +413,109 @@ pub fn compress(
     compressed
 }
 
+pub fn compress_exhaust(
+    c: &CircuitSeq,
+    conn: &mut Connection,
+    bit_shuf: &Vec<Vec<usize>>,
+    n: usize,
+) -> CircuitSeq {
+    let id = Permutation::id_perm(n);
+    if c.permutation(n) == id {
+        return CircuitSeq { gates: Vec::new() };
+    }
+
+    let mut compressed = c.clone();
+    if compressed.gates.is_empty() {
+        return CircuitSeq { gates: Vec::new() };
+    }
+
+    let mut i = 0;
+    while i < compressed.gates.len().saturating_sub(1) {
+        if compressed.gates[i] == compressed.gates[i + 1] {
+            compressed.gates.drain(i..=i + 1);
+            i = i.saturating_sub(2);
+        } else {
+            i += 1;
+        }
+    }
+
+    if compressed.gates.is_empty() {
+        return CircuitSeq { gates: Vec::new() };
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+
+        let len = compressed.gates.len();
+        // loop over all subcircuit start and end indices
+        'outer: for start in 0..len {
+            for end in (start + 3)..=len { // skip lengths 1 and 2
+                let mut subcircuit = CircuitSeq {
+                    gates: compressed.gates[start..end].to_vec(),
+                };
+
+                subcircuit.canonicalize();
+                let sub_perm = subcircuit.permutation(n);
+                let canon_perm = get_canonical(&sub_perm, bit_shuf);
+                let perm_blob = canon_perm.perm.repr_blob();
+                let sub_m = subcircuit.gates.len();
+
+                for smaller_m in 1..=sub_m {
+                    let table = format!("n{}m{}", n, smaller_m);
+                    let query = format!(
+                        "SELECT circuit FROM {} WHERE perm = ?1 ORDER BY RANDOM() LIMIT 1",
+                        table
+                    );
+
+                    let mut stmt = match conn.prepare(&query) {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    let rows = stmt.query([&perm_blob]);
+
+                    if let Ok(mut r) = rows {
+                        if let Some(row) = r.next().unwrap() {
+                            let blob: Vec<u8> = row.get(0).expect("Failed to get blob");
+                            let mut repl = CircuitSeq::from_blob(&blob);
+
+                            if repl.gates.len() <= subcircuit.gates.len() {
+                                let repl_perm = repl.permutation(n);
+                                let rc = get_canonical(&repl_perm, bit_shuf);
+
+                                if !rc.shuffle.data.is_empty() {
+                                    repl.rewire(&rc.shuffle, n);
+                                }
+                                repl.rewire(&canon_perm.shuffle.invert(), n);
+
+                                if repl.permutation(n) != sub_perm {
+                                    panic!("Replacement permutation mismatch!");
+                                }
+
+                                compressed.gates.splice(start..end, repl.gates);
+                                changed = true;
+                                // restart from beginning
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut i = 0;
+    while i < compressed.gates.len().saturating_sub(1) {
+        if compressed.gates[i] == compressed.gates[i + 1] {
+            compressed.gates.drain(i..=i + 1);
+            i = i.saturating_sub(2);
+        } else {
+            i += 1;
+        }
+    }
+
+    compressed
+}
 
 pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Connection) -> CircuitSeq {
     let mut circuit = c.clone();
@@ -509,7 +612,11 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
 
         // compress logs everything inside compress now
         //let t2 = Instant::now();
-        let subcircuit_temp = compress(&subcircuit, 25_000, conn, &bit_shuf, num_wires);
+        let subcircuit_temp = if subcircuit.gates.len() <= 100 {
+            compress_exhaust(&subcircuit, conn, &bit_shuf, num_wires)
+        } else {
+            compress(&subcircuit, 25_000, conn, &bit_shuf, num_wires)
+        };
         if subcircuit.permutation(num_wires) != subcircuit_temp.permutation(num_wires) {
             panic!("Compress changed something");
         }

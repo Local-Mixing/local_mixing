@@ -101,6 +101,17 @@ fn main() {
             ),
         )
         .subcommand(
+        Command::new("abbutterfly")
+            .about("Obfuscate and compress an existing circuit via asymmetric butterfly_big method")
+            .arg(
+                Arg::new("rounds")
+                    .short('r')
+                    .long("rounds")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+            ),
+        )
+        .subcommand(
             Command::new("heatmap")
                 .about("Run the circuit distinguisher and produce a heatmap")
                 .arg(
@@ -264,10 +275,33 @@ fn main() {
                 println!("Generating random");
                 let c1 = random_circuit(16,30);
                 println!("Starting Len: {}", c1.gates.len());
-                main_butterfly_big(&c1, rounds, &mut conn, 16);
+                main_butterfly_big(&c1, rounds, &mut conn, 16, false);
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_butterfly_big(&c, rounds, &mut conn, 32);
+                main_butterfly_big(&c, rounds, &mut conn, 32, false);
+            }
+        }
+        Some(("abbutterfly", sub)) => {
+            let rounds: usize = *sub.get_one("rounds").unwrap();
+
+            let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
+
+            let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
+            conn.execute_batch(
+                "
+                PRAGMA temp_store = MEMORY;
+                PRAGMA cache_size = -200000;
+                "
+            ).unwrap();
+
+            if data.trim().is_empty() {
+                println!("Generating random");
+                let c1 = random_circuit(16,30);
+                println!("Starting Len: {}", c1.gates.len());
+                main_butterfly_big(&c1, rounds, &mut conn, 16, true);
+            } else {
+                let c = CircuitSeq::from_string(&data);
+                main_butterfly_big(&c, rounds, &mut conn, 32, true);
             }
         }
         Some(("heatmap", sub)) => {
