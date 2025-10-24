@@ -573,7 +573,7 @@ pub fn main_butterfly(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: u
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, asymmetric: bool) {
+pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, asymmetric: bool, save: &str) {
     // Start with the input circuit
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
@@ -650,6 +650,10 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
         .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
         .expect("Failed to write recent_circuit.txt");
 
+    File::create(save)
+        .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
+        .expect("Failed to write recent_circuit.txt");
+
     // Write butterfly_recent.txt (overwrite)
     File::create("butterfly_recent.txt")
         .and_then(|mut f| f.write_all(long_str.as_bytes()))
@@ -661,13 +665,6 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
         .create(true)
         .open("butterfly.txt")
         .and_then(|mut f| writeln!(f, "{}", long_str))
-        .expect("Failed to append to butterfly.txt");
-
-    OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open("good_id.txt")
-        .and_then(|mut f| writeln!(f, "{}", good_str))
         .expect("Failed to append to butterfly.txt");
     if circuit.gates == c.gates {
         println!("The obfuscation didn't do anything");
