@@ -1528,7 +1528,7 @@ mod tests {
 
     #[test]
     fn generate_random_equivalent_circuits() {
-        let n: u8 = 8; // example number of pins
+        let n: u8 = 32; // example number of pins
         let pool_size = 100_000; // example pool size
 
         // Generate two equivalent circuits
