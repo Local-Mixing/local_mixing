@@ -116,7 +116,7 @@ pub fn random_equivalent_circuits(n: u8, pool_size: usize) -> (CircuitSeq, Circu
             pool.push(random_circuit(n, m2));
             count += 1;
 
-            if count % 10_000 == 0 {
+            if count % 100_000 == 0 {
                 println!("Generated {} candidate circuits so far...", count);
             }
         }
@@ -1536,7 +1536,7 @@ mod tests {
     #[test]
     fn generate_random_equivalent_circuits() {
         let n: u8 = 32; // example number of pins
-        let pool_size = 100_000; // example pool size
+        let pool_size = 10_000_000; // example pool size
 
         // Generate two equivalent circuits
         let (c1, c2) = random_equivalent_circuits(n, pool_size);
