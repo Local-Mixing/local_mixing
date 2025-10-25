@@ -101,6 +101,34 @@ pub fn random_circuit(n: u8, m: usize) -> CircuitSeq {
     CircuitSeq { gates: circuit }
 }
 
+
+pub fn random_equivalent_circuits(n: u8, pool_size: usize) -> (CircuitSeq, CircuitSeq) {
+    // Generate c1 with its own random length
+    let m1 = fastrand::usize(10..=30);
+    let c1 = random_circuit(n, m1);
+
+    loop {
+        // Generate a pool of candidate circuits for c2
+        let mut pool = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            let m2 = fastrand::usize(10..=30); // independent random length for each candidate
+            pool.push(random_circuit(n, m2));
+        }
+
+        // Filter candidates for circuits probably equal to c1
+        let mut matches: Vec<_> = pool.into_iter()
+            .filter(|c| c1.probably_equal(c, n as usize, 150_000).is_ok())
+            .collect();
+
+        if !matches.is_empty() {
+            // Pick one randomly from matches
+            let index = fastrand::usize(..matches.len());
+            let c2 = matches.swap_remove(index);
+            return (c1, c2);
+        }
+    }
+}
+
 pub fn is_convex(num_wires: usize, circuit: &CircuitSeq, convex_gate_ids: &[usize]) -> bool {
     // early exit for too few gates
     if convex_gate_ids.len() < 2 {
@@ -1492,5 +1520,31 @@ mod tests {
 
         println!(" All sanity checks passed.");
         Ok(())
+    }
+
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+
+    #[test]
+    fn generate_random_equivalent_circuits() {
+        let n: u8 = 8; // example number of pins
+        let pool_size = 100_000; // example pool size
+
+        // Generate two equivalent circuits
+        let (c1, c2) = random_equivalent_circuits(n, pool_size);
+
+        if c1.probably_equal(&c2, n as usize, 1_000_000).is_ok() {
+           println!("Looks good");
+        }
+        // Write c1 to c1.txt
+        let mut file1 = File::create("c1.txt").expect("Failed to create c1.txt");
+        writeln!(file1, "{:?}", c1).expect("Failed to write c1.txt");
+
+        // Write c2 to c2.txt
+        let mut file2 = File::create("c2.txt").expect("Failed to create c2.txt");
+        writeln!(file2, "{:?}", c2).expect("Failed to write c2.txt");
+
+        println!("Generated circuits written to c1.txt and c2.txt");
     }
 }
