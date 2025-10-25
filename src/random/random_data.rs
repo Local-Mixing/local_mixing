@@ -103,35 +103,37 @@ pub fn random_circuit(n: u8, m: usize) -> CircuitSeq {
 
 
 pub fn random_equivalent_circuits(n: u8) -> (CircuitSeq, CircuitSeq) {
-    // Generate c1 with its own random length
-    let m1 = fastrand::usize(10..=30);
-    let c1 = random_circuit(n, m1);
-
     let mut pool: Vec<CircuitSeq> = Vec::new();
     let mut count = 0;
 
     loop {
-        // Generate a new random candidate for c2
-        let m2 = fastrand::usize(10..=30);
-        let c2_candidate = random_circuit(n, m2);
-        pool.push(c2_candidate);
+        // Generate a new random circuit
+        let m = fastrand::usize(10..=30);
+        let new_circuit = random_circuit(n, m);
         count += 1;
 
-        if count % 100_000 == 0 {
-            println!("Generated {} candidate circuits so far...", count);
+        if count % 10_000 == 0 {
+            println!("Generated {} circuits so far...", count);
         }
 
-        // Check all candidates in the pool for equivalence
-        for (i, candidate) in pool.iter().enumerate() {
-            if c1.probably_equal(candidate, n as usize, 150_000).is_ok() {
-                println!("Found equivalent circuit after {} candidates", count);
-                // Remove candidate from pool to return
-                let c2 = pool.swap_remove(i);
+        // Compare the new circuit against all previous ones
+        for (i, existing) in pool.iter().enumerate() {
+            if new_circuit.probably_equal(existing, n as usize, 150_000).is_ok() {
+                println!(
+                    "Found equivalent circuits after {} total candidates!",
+                    count
+                );
+                let c1 = pool.swap_remove(i);
+                let c2 = new_circuit;
                 return (c1, c2);
             }
         }
+
+        // Add new circuit to pool after checking
+        pool.push(new_circuit);
     }
 }
+
 
 pub fn is_convex(num_wires: usize, circuit: &CircuitSeq, convex_gate_ids: &[usize]) -> bool {
     // early exit for too few gates
