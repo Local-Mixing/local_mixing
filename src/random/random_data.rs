@@ -101,50 +101,43 @@ pub fn random_circuit(n: u8, m: usize) -> CircuitSeq {
     CircuitSeq { gates: circuit }
 }
 
+use std::collections::HashMap;
+use rayon::prelude::*;
+
 pub fn random_equivalent_circuits_until_found(n: u8) -> (CircuitSeq, CircuitSeq) {
-    let mut pool: Vec<CircuitSeq> = Vec::new();
-    let mut total_generated = 0;
-    let batch_size = 100_000;
+    // final_state → list of circuits producing that state
+    let mut state_map: HashMap<u64, Vec<CircuitSeq>> = HashMap::new();
+    let mut total_generated = 0usize;
 
     loop {
-        println!("Generating {} new circuits...", batch_size);
+        let m = fastrand::usize(10..=30);
+        let circuit = random_circuit(n, m);
+        total_generated += 1;
 
-        // Generate a new batch of random circuits
-        let new_batch: Vec<CircuitSeq> = (0..batch_size)
-            .map(|_| {
-                let m = fastrand::usize(10..=30);
-                random_circuit(n, m)
-            })
-            .collect();
-
-        total_generated += new_batch.len();
-        println!("Total circuits so far: {}", total_generated);
-
-        // Combine old + new for searching
-        let combined: Vec<&CircuitSeq> = pool.iter().chain(new_batch.iter()).collect();
-
-        // Parallel comparison among all pairs (old+new)
-        if let Some((i, j)) = combined
-            .par_iter()
-            .enumerate()
-            .find_map_any(|(i, &c1)| {
-                for (j, &c2) in combined.iter().enumerate().skip(i + 1) {
-                    if c1.probably_equal(c2, n as usize, 150_000).is_ok() {
-                        return Some((i, j));
-                    }
-                }
-                None
-            })
-        {
-            println!("Found equivalent circuits after generating {} total!", total_generated);
-
-            let c1 = combined[i].clone();
-            let c2 = combined[j].clone();
-            return (c1, c2);
+        if total_generated % 10_000 == 0 {
+            println!("Generated {} circuits so far...", total_generated);
         }
 
-        // No match found, extend the pool and repeat
-        pool.extend(new_batch);
+        // Compute final state starting from 0
+        let mut state = Gate::evaluate_index_list(0, &circuit.gates);
+
+        // Check if we’ve seen this state before
+        if let Some(existing_list) = state_map.get_mut(&(state as u64)) {
+            // Compare against all circuits with this same state
+            if let Some(existing) = existing_list
+                .par_iter()
+                .find_any(|other| circuit.probably_equal(other, n as usize, 150_000).is_ok())
+            {
+                println!("Found equivalent circuits after {} total!", total_generated);
+                return (existing.clone(), circuit);
+            }
+
+            // No match; store this circuit under the same state
+            existing_list.push(circuit);
+        } else {
+            // First circuit for this state
+            state_map.insert(state as u64, vec![circuit]);
+        }
     }
 }
 
