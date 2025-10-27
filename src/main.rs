@@ -113,7 +113,7 @@ fn main() {
                     .long("n")
                     .required(false)
                     .default_value("32")
-                    .value_parser(clap::value_parser!(u8))
+                    .value_parser(clap::value_parser!(usize))
                     .help("Number of wires (default: 32)"),
             ),
     )
@@ -141,7 +141,7 @@ fn main() {
                     .long("n")
                     .required(false)
                     .default_value("32")
-                    .value_parser(clap::value_parser!(u8))
+                    .value_parser(clap::value_parser!(usize))
                     .help("Number of wires (default: 32)"),
             ),
     )
