@@ -1,33 +1,35 @@
 use crate::{
-    circuit::{CircuitSeq, Permutation, Gate},
-    rainbow::canonical::{self, Canonicalization, CandSet},
+    circuit::{CircuitSeq, Gate, Permutation},
+    rainbow::canonical::{self, CandSet, Canonicalization},
 };
 
+use crossbeam::channel::{bounded, unbounded, Sender};
+use dashmap::DashMap;
 use itertools::Itertools;
-use rand::{Rng, SeedableRng, RngCore};
-use rand::rngs::StdRng;
-use rayon::slice::ParallelSlice;
-use rayon::iter::ParallelIterator;
+use once_cell::sync::Lazy;
+use rand::{
+    prelude::IndexedRandom,
+    rngs::StdRng,
+    Rng, RngCore, SeedableRng,
+};
+use rayon::{
+    iter::{IntoParallelRefIterator, ParallelIterator},
+    prelude::*,
+    slice::ParallelSlice,
+};
 use rusqlite::{params, Connection, Result};
 use smallvec::SmallVec;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::prelude::*;
-use std::thread;
-use std::collections::HashSet;
-use crossbeam::channel::{bounded, unbounded, Sender};
-use rand::prelude::IndexedRandom;
-use dashmap::DashMap;
 use std::{
+    collections::HashSet,
     fs::OpenOptions,
     io::Write,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
+    thread,
 };
 use lru::LruCache;
-use once_cell::sync::Lazy;
-use std::sync::Mutex;
 
 pub static CANON_CACHE: Lazy<DashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>> = Lazy::new(|| DashMap::new());
 

@@ -1,3 +1,17 @@
+use clap::{Arg, ArgAction, Command};
+use colorgrad;
+use itertools::Itertools;
+use plotters::prelude::*;
+use rand::{rngs::OsRng, Rng, TryRngCore};
+use rusqlite::{Connection, OpenFlags};
+use serde_json::json;
+use std::{
+    fs::{self, File},
+    io::Write,
+    path::Path,
+    time::Instant,
+};
+
 use local_mixing::{
     circuit::CircuitSeq,
     rainbow::{
@@ -6,29 +20,10 @@ use local_mixing::{
     },
     random::random_data::{build_from_sql, main_random, random_circuit},
     replace::{
-        mixing::main_mix,
-        replace::{random_canonical_id, random_id, compress},
+        mixing::{main_butterfly, main_butterfly_big, main_mix},
+        replace::{compress, random_canonical_id, random_id},
     },
 };
-use rusqlite::OpenFlags;
-use local_mixing::replace::mixing::main_butterfly;
-use local_mixing::replace::mixing::main_butterfly_big;
-use clap::{Arg, ArgAction, Command};
-use itertools::Itertools;
-use rand::rngs::OsRng;
-use rand::TryRngCore;
-use rusqlite::Connection;
-use std::fs::{self, File};
-use std::io::Write;
-use std::time::Instant;
-use serde_json::json;
-use rand::Rng;
-use plotters::prelude::*;
-use colorgrad;
-use rand::Rng;
-use std::fs;
-use std::time::Instant;
-use std::path::Path;
 
 fn main() {
     let matches = Command::new("rainbow")

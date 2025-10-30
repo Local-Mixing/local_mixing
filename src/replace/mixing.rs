@@ -1,23 +1,20 @@
 use crate::{
     circuit::circuit::CircuitSeq,
-    replace::replace::{compress, obfuscate},
+    replace::replace::{compress, compress_big, obfuscate, outward_compress, random_id},
 };
 
-use crate::replace::replace::random_id;
-
 use itertools::Itertools;
-use rusqlite::Connection;
 use rand::Rng;
+use rayon::prelude::*;
+use rusqlite::{Connection, OpenFlags};
 use std::{
     fs::{File, OpenOptions},
     io::Write,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
-use rusqlite::OpenFlags;
-use rayon::prelude::*;
-use crate::replace::replace::outward_compress;
-use crate::replace::replace::compress_big;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 fn obfuscate_and_target_compress(c: &CircuitSeq, conn: &mut Connection, bit_shuf: &Vec<Vec<usize>>, n: usize) -> CircuitSeq {
     // Obfuscate circuit, get positions of inverses

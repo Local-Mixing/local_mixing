@@ -1,26 +1,23 @@
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation},
-    random::random_data::{create_table, random_circuit},
+    random::random_data::{
+        contiguous_convex, create_table, find_convex_subcircuit, get_canonical, insert_circuit,
+        is_convex, random_circuit,
+    },
 };
 
-use crate::random::random_data::insert_circuit;
-use crate::random::random_data::find_convex_subcircuit;
-use crate::random::random_data::contiguous_convex;
+use dashmap::DashMap;
+use itertools::Itertools;
 use rand::{prelude::IndexedRandom, Rng};
 use rusqlite::{params, Connection, OptionalExtension};
-use itertools::Itertools;
-use std::collections::{HashMap, HashSet};
 use std::{
     cmp::{max, min},
-    // used for testing
-    fs::OpenOptions,
+    collections::{HashMap, HashSet},
+    fs::OpenOptions, // used for testing
     io::Write,
-    time::{Instant, Duration},
+    sync::Arc,
+    time::{Duration, Instant},
 };
-use crate::random::random_data::get_canonical;
-use crate::random::random_data::is_convex;
-use dashmap::DashMap;
-use std::sync::Arc;
 
 // Returns a nontrivial identity circuit built from two "friend" circuits
 pub fn random_canonical_id(
