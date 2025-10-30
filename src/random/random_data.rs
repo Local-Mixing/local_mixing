@@ -1617,7 +1617,7 @@ mod tests {
             .expect("Failed to write test_start.txt");
         shoot_random_gate(&mut id, 100000);
         let mut conn = Connection::open_with_flags("./db/circuits.db",OpenFlags::SQLITE_OPEN_READ_ONLY,).expect("Failed to open DB (read-only)");
-        compress_big(&mut id, 1_000, 32, &mut conn);
+        compress_big(&mut id, 1_000, 64, &mut conn);
         assert!(id.probably_equal(&CircuitSeq::from_string("123;123;"), 32, 100000).is_ok());
         println!("Len: {}", id.gates.len());
         let c_str = id.repr();
