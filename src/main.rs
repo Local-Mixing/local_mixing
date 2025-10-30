@@ -464,7 +464,7 @@ pub fn heatmap(num_wires: usize, num_inputs: usize, xlabel: &str, ylabel: &str) 
     });
 
     // Call Python script directly
-    let mut child = std::process::Command::new("python")
+    let mut child = std::process::Command::new("python3")
         .arg("./heatmap/heatmap.py") 
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::inherit())
