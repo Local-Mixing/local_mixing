@@ -548,6 +548,51 @@ pub fn contiguous_convex(
     Some((start, end))
 }
 
+/// Shoots a random gate left or right as far as possible without colliding
+pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
+    let mut rng = rand::rng();
+    let len = circuit.gates.len();
+
+    if len == 0 {
+        return
+    }
+
+    for _ in 0..rounds {
+        let gate_idx = rng.random_range(0..len);
+        let go_left: bool = rng.random_bool(0.5);
+
+        if go_left {
+            // Shoot left
+            let mut target = gate_idx;
+            while target > 0 {
+                if Gate::collides_index(&circuit.gates[target - 1], &circuit.gates[gate_idx]) {
+                    break;
+                }
+                target -= 1;
+            }
+
+            if target != gate_idx {
+                let gate = circuit.gates.remove(gate_idx);
+                circuit.gates.insert(target, gate);
+            }
+        } else {
+            // Shoot right
+            let mut target = gate_idx;
+            while target + 1 < len {
+                if Gate::collides_index(&circuit.gates[target + 1], &circuit.gates[gate_idx]) {
+                    break;
+                }
+                target += 1;
+            }
+
+            if target != gate_idx {
+                let gate = circuit.gates.remove(gate_idx);
+                circuit.gates.insert(target, gate);
+            }
+        }
+    }
+}
+
 pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
     // Table name includes n and m
     let sql = format!(
@@ -1559,5 +1604,29 @@ mod tests {
         writeln!(file2, "{:?}", c2).expect("Failed to write c2.txt");
 
         println!("Generated circuits written to c1.txt and c2.txt");
+    }
+    use crate::replace::replace::random_id;
+    #[test]
+    fn test_shooting() {
+        let (c, c_rev) = random_id(6,20);
+        let mut id = c.concat(&c_rev);
+        let c_str = id.repr();
+        File::create("test_start.txt")
+            .and_then(|mut f| f.write_all(c_str.as_bytes()))
+            .expect("Failed to write test_start.txt");
+        shoot_random_gate(&mut id, 100000);
+        let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
+        let perms: Vec<Vec<usize>> = (0..7).permutations(7).collect();
+        let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
+        compress(&mut id, 1_000_000, &mut conn, &bit_shuf, 7);
+        println!("{:?}", id.permutation(7).data);
+        println!("Len: {}", id.gates.len());
+        let c_str = id.repr();
+        File::create("test_start.txt")
+            .and_then(|mut f| f.write_all(c_str.as_bytes()))
+            .expect("Failed to write test_start.txt");
+        File::create("test_compression.txt")
+            .and_then(|mut f| f.write_all(c_str.as_bytes()))
+            .expect("Failed to write test_compression.txt");
     }
 }

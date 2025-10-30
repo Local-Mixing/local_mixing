@@ -621,12 +621,12 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
     //         "The permutation differs from the original"
     //     );
     // }
-    let mut rev_gates = Vec::with_capacity(c.gates.len());
-    for g in c.gates.iter().rev() {
-        rev_gates.push(*g); // copy [u8;3]
-    }
-    let rev = CircuitSeq { gates: rev_gates };
-    let good_id = circuit.concat(&rev);
+    // let mut rev_gates = Vec::with_capacity(c.gates.len());
+    // for g in c.gates.iter().rev() {
+    //     rev_gates.push(*g); // copy [u8;3]
+    // }
+    // let rev = CircuitSeq { gates: rev_gates };
+    // let good_id = circuit.concat(&rev);
 
     circuit
     .probably_equal(&c, n, 150_000)
@@ -636,7 +636,97 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
     let c_str = c.repr();
     let circuit_str = circuit.repr();
     let long_str = format!("{}:{}", c.repr(), circuit.repr());
-    let good_str = format!("{}: {}", good_id.gates.len(), good_id.repr());
+    // let good_str = format!("{}: {}", good_id.gates.len(), good_id.repr());
+    // Write start.txt
+    File::create("start.txt")
+        .and_then(|mut f| f.write_all(c_str.as_bytes()))
+        .expect("Failed to write start.txt");
+
+    // Write recent_circuit.txt
+    File::create("recent_circuit.txt")
+        .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
+        .expect("Failed to write recent_circuit.txt");
+
+    File::create(save)
+        .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
+        .expect("Failed to write recent_circuit.txt");
+
+    // Write butterfly_recent.txt (overwrite)
+    File::create("butterfly_recent.txt")
+        .and_then(|mut f| f.write_all(long_str.as_bytes()))
+        .expect("Failed to write butterfly_recent.txt");
+
+    // Append to butterfly.txt
+    OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open("butterfly.txt")
+        .and_then(|mut f| writeln!(f, "{}", long_str))
+        .expect("Failed to append to butterfly.txt");
+    if circuit.gates == c.gates {
+        println!("The obfuscation didn't do anything");
+    }
+
+    println!("Final circuit written to recent_circuit.txt");
+}
+
+//do targeted compression
+pub fn main_compression(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str) {
+    // Start with the input circuit
+    println!("Starting len: {}", c.gates.len());
+    let mut circuit = c.clone();
+    // Repeat obfuscate + compress 'rounds' times
+    let mut post_len = 0;
+    let mut count = 0;
+    for _ in 0..rounds {
+            butterfly_big(&circuit,conn,n);
+        if circuit.gates.len() == 0 {
+            break;
+        }
+        
+        if circuit.gates.len() == post_len {
+            count += 1;
+        } else {
+            post_len = circuit.gates.len();
+            count = 0;
+        }
+
+        if count > 2 {
+            break;
+        }
+        let mut i = 0;
+        while i < circuit.gates.len().saturating_sub(1) {
+            if circuit.gates[i] == circuit.gates[i + 1] {
+                // remove elements at i and i+1
+                circuit.gates.drain(i..=i + 1);
+
+                // step back up to 2 indices, but not below 0
+                i = i.saturating_sub(2);
+            } else {
+                i += 1;
+            }
+        }
+    }
+    println!("Final len: {}", circuit.gates.len());
+    // println!("Final cycle: {:?}", circuit.permutation(n).to_cycle());
+    // println!("Final Permutation: {:?}", circuit.permutation(n).data);
+    // if circuit.permutation(n).data != c.permutation(n).data {
+    //     panic!(
+    //         // "The permutation differs from the original.\nOriginal: {:?}\nNew: {:?}",
+    //         // c.permutation(n).data,
+    //         // circuit.permutation(n).data
+    //         "The permutation differs from the original"
+    //     );
+    // }
+
+    circuit
+    .probably_equal(&c, n, 150_000)
+    .expect("The circuits differ somewhere!");
+
+    // Write to file
+    let c_str = c.repr();
+    let circuit_str = circuit.repr();
+    let long_str = format!("{}:{}", c.repr(), circuit.repr());
     // Write start.txt
     File::create("start.txt")
         .and_then(|mut f| f.write_all(c_str.as_bytes()))
