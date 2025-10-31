@@ -2,20 +2,12 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-import argparse
-from matplotlib.colors import LinearSegmentedColormap
 import sys 
-def plot_heatmap(results, save_path, xlabel="X-axis", ylabel="Y-axis", vmin=-3, vmax=3):
+
+def plot_heatmap(results, save_path, xlabel="X-axis", ylabel="Y-axis", vmin=None, vmax=None):
     plt.clf()
     points = np.array(results)
     x, y, values = points[:, 0], points[:, 1], points[:, 2]
-
-    # Compute z-scores
-    mean = np.mean(values)
-    std = np.std(values)
-    if std == 0:
-        std = 1
-    z_values = (values - mean) / std
 
     x_unique = np.unique(x)
     y_unique = np.unique(y)
@@ -23,8 +15,8 @@ def plot_heatmap(results, save_path, xlabel="X-axis", ylabel="Y-axis", vmin=-3, 
     y_indices = {val: idx for idx, val in enumerate(y_unique)}
 
     heatmap = np.full((len(y_unique), len(x_unique)), np.nan)
-    for xi, yi, z in zip(x, y, z_values):
-        heatmap[y_indices[yi], x_indices[xi]] = z
+    for xi, yi, v in zip(x, y, values):
+        heatmap[y_indices[yi], x_indices[xi]] = v
 
     plt.imshow(
         heatmap,
@@ -36,13 +28,13 @@ def plot_heatmap(results, save_path, xlabel="X-axis", ylabel="Y-axis", vmin=-3, 
         vmax=vmax
     )
 
-    plt.colorbar(label='Standard deviations from mean')
+    plt.colorbar(label='Average raw hamming diff')
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
 
     plt.text(
         0.98, 0.02,
-        f"Std Dev = {np.std(values):.3f}",
+        f"Mean = {np.mean(values):.3f}",
         ha='right', va='bottom',
         transform=plt.gca().transAxes,
         fontsize=9,
@@ -60,7 +52,7 @@ if __name__ == "__main__":
         try:
             data = json.load(sys.stdin)
 
-            xlabel = data.get('xlabel', 'X-axis')  # use provided label or default
+            xlabel = data.get('xlabel', 'X-axis')
             ylabel = data.get('ylabel', 'Y-axis')
 
             plot_heatmap(

@@ -177,6 +177,12 @@ fn main() {
                         .long("ylabel")
                         .value_parser(clap::value_parser!(String))
                         .help("Label for Y axis"),
+                )
+                .arg(
+                    Arg::new("std")
+                        .short('s')
+                        .help("Use standard deviation (if given) or raw otherwise")
+                        .action(ArgAction::SetTrue)
                 ),
         )
         .subcommand(
@@ -395,11 +401,13 @@ fn main() {
                 .map(|s| s.as_str())
                 .unwrap_or("Circuit 2 gate index");
 
+            let flag = sub.get_flag("std"); // true if -s was given
+
             println!(
                 "Running distinguisher with {} inputs...",
                 num_inputs
             );
-            heatmap(n, num_inputs, xlabel, ylabel);
+            heatmap(n, num_inputs, xlabel, ylabel, flag);
         }
         Some(("reverse", sub)) => {
             let from_path = sub.get_one::<String>("source").unwrap();
@@ -410,7 +418,8 @@ fn main() {
     }
 }
 
-pub fn heatmap(num_wires: usize, num_inputs: usize, xlabel: &str, ylabel: &str) {
+
+pub fn heatmap(num_wires: usize, num_inputs: usize, xlabel: &str, ylabel: &str, flag: bool) {
     // Load circuits
     let contents = fs::read_to_string("butterfly_recent.txt")
         .expect("Failed to read butterfly_recent.txt");
@@ -463,12 +472,18 @@ pub fn heatmap(num_wires: usize, num_inputs: usize, xlabel: &str, ylabel: &str) 
         "ylabel": ylabel
     });
 
-    // Call Python script directly
+    // Choose Python script based on flag
+    let script_path = if flag {
+        "./heatmap/heatmap.py"       // std dev version
+    } else {
+        "./heatmap/heatmap_raw.py"   // raw values version
+    };
+
     let mut child = std::process::Command::new("python3")
-        .arg("./heatmap/heatmap.py") 
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
+        .arg(script_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("Failed to spawn Python script");
 

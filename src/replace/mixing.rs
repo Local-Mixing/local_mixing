@@ -2,7 +2,7 @@ use crate::{
     circuit::circuit::CircuitSeq,
     replace::replace::{compress, compress_big, obfuscate, outward_compress, random_id},
 };
-
+use crate::random::random_data::shoot_random_gate;
 use itertools::Itertools;
 use rand::Rng;
 use rayon::prelude::*;
@@ -239,7 +239,8 @@ fn merge_combine_blocks(
     let mut conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .expect("Failed to open read-only DB");
 
-    let combined = left.concat(&right);
+    let mut combined = left.concat(&right);
+    shoot_random_gate(&mut combined, 100_000);
     let acc = compress_big(&combined, 200, n, &mut conn);
 
     let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
@@ -270,13 +271,13 @@ pub fn butterfly_big(
         .enumerate()
         .map(|(i, &g)| {
             // wrap single gate as CircuitSeq
-            let gi = r_inv.concat(&CircuitSeq { gates: vec![g] }).concat(&r);
+            let mut gi = r_inv.concat(&CircuitSeq { gates: vec![g] }).concat(&r);
             // create a read-only connection per thread
             let mut conn = Connection::open_with_flags(
             "circuits.db",
             OpenFlags::SQLITE_OPEN_READ_ONLY,
         ).expect("Failed to open read-only connection");
-
+        shoot_random_gate(&mut gi, 100_000);
         // compress the block
         let compressed_block = compress_big(&gi, 100, n, &mut conn);
 
@@ -308,6 +309,7 @@ pub fn butterfly_big(
     let mut stable_count = 0;
     while stable_count < 3 {
         let before = acc.gates.len();
+        shoot_random_gate(&mut acc, 100_000);
         acc = compress_big(&acc, 1_000, n, conn);
         let after = acc.gates.len();
 
@@ -354,7 +356,8 @@ pub fn abutterfly_big(
 
     for &g in &c.gates {
         let (r, r_inv) = random_id(n as u8, rng.random_range(15..=25));
-        let block = prev_r_inv.clone().concat(&CircuitSeq { gates: vec![g] }).concat(&r);
+        let mut block = prev_r_inv.clone().concat(&CircuitSeq { gates: vec![g] }).concat(&r);
+        shoot_random_gate(&mut block, 1_000);
         pre_blocks.push(block);
         prev_r_inv = r_inv;
     }
@@ -401,6 +404,7 @@ pub fn abutterfly_big(
     let mut stable_count = 0;
     while stable_count < 3 {
         let before = acc.gates.len();
+        shoot_random_gate(&mut acc, 100_000);
         acc = compress_big(&acc, 1_000, n, conn);
         let after = acc.gates.len();
 
