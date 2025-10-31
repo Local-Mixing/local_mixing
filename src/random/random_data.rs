@@ -1642,7 +1642,7 @@ mod tests {
             OpenFlags::SQLITE_OPEN_READ_ONLY,
         ).expect("Failed to open DB (read-only)");
 
-        compress_big(&mut id, 1_000, 64, &mut conn);
+        compress_big(&mut id, 100_000, 64, &mut conn);
         assert!(id.probably_equal(&CircuitSeq::from_string("123;123;"), 64, 100000).is_ok());
         println!("Len: {}", id.gates.len());
 
