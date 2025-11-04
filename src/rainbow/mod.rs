@@ -5,5 +5,4 @@ pub mod database;
 pub mod explore;
 pub use canonical::{Canonicalization, CandSet, init};
 pub use database::{Persist, PersistPermStore};
-pub use self::rainbow::{main_rainbow_generate, main_rainbow_load};
-pub use self::explore::explore_db;  
+pub use self::rainbow::{main_rainbow_load};

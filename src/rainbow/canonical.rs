@@ -1,4 +1,4 @@
-use crate::circuit::{Circuit, Gate, Permutation, CircuitSeq};
+use crate::circuit::{Gate, Permutation, CircuitSeq};
 use smallvec::SmallVec;
 use itertools::Itertools;
 use lru::LruCache;
@@ -376,35 +376,6 @@ impl Permutation {
     }
 }
 
-
-impl Circuit {
-    pub fn canonicalize(&mut self) {
-        // Insertion-sort-based canonicalization
-        for i in 1..self.gates.len() {
-            let gi = self.gates[i].clone(); // copy for checking
-            let mut to_swap: Option<usize> = None;
-
-            let mut j = i;
-            while j > 0 {
-                j -= 1;
-                if self.gates[j].collides(&gi) {
-                    break;
-                } else if !self.gates[j].ordered(&gi) {
-                    to_swap = Some(j);
-                }
-            }
-
-            if let Some(pos) = to_swap {
-                let g = self.gates[i].clone(); // copy for insertion
-                // Remove the gate at i
-                self.gates.remove(i);
-                // Insert at the new position
-                self.gates.insert(pos, g);
-            }
-        }
-    }
-}
-
 impl CandSet {
     pub fn new(n: usize) -> CandSet {
         //build n x n candidate set, initialize with true
@@ -722,46 +693,3 @@ impl CircuitSeq {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::circuit::par_all_circuits;
-    #[test]
-    fn test_from_sbrute() {
-        init(4);
-        let mut c: Circuit = Circuit::from_string("0 1 2; 3 2 1; 0 2 1".to_string());
-        println!("Circuit data: \n{}", c.to_string());
-        let perm = c.permutation();
-        println!("Permutation: \n{:?}", perm.data);
-        c.canonicalize();
-        let canon = perm.fast_canon();
-        println!("Canonical perm: \n {:?}", canon.perm);
-        println!("Shuffle: \n{:?}", canon.shuffle);
-        println!("Canonical circuit: \n{}", c.to_string());
-    }
-
-    #[test]
-    fn test_par() {
-        //warmpup if getting unstable performance times
-        for _ in 0..10 {
-            let _ = par_all_circuits(2,2);
-        }
-
-        let now = std::time::Instant::now();
-        let _ = par_all_circuits(3,3);
-        println!("Time: {:?}", now.elapsed());
-    }
-
-    #[test]
-    fn test_brute_canon() {
-        let mut c: Circuit = Circuit::from_string("0 1 2; 3 2 1; 0 2 1".to_string());
-        let p = c.permutation();
-        for _ in 0..10 {
-            let _ = p.brute_canonical();
-        }
-        let now = std::time::Instant::now();
-        //TODO
-    }
-}
-

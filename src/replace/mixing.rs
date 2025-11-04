@@ -240,7 +240,7 @@ fn merge_combine_blocks(
         .expect("Failed to open read-only DB");
 
     let mut combined = left.concat(&right);
-    shoot_random_gate(&mut combined, 100_000);
+    // shoot_random_gate(&mut combined, 100_000);
     let acc = compress_big(&combined, 200, n, &mut conn);
 
     let done = progress.fetch_add(1, Ordering::Relaxed) + 1;

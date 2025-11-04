@@ -16,7 +16,7 @@ use local_mixing::{
     circuit::CircuitSeq,
     rainbow::{
         explore::explore_db,
-        rainbow::{main_rainbow_generate, main_rainbow_load},
+        rainbow::{main_rainbow_load},
     },
     random::random_data::{build_from_sql, main_random, random_circuit},
     replace::{
@@ -205,14 +205,29 @@ fn main() {
                         .help("Path to write the reversed circuit file"),
                 ),
         )
+        .subcommand(
+            Command::new("binload")
+                .about("Load a binary circuit file")
+                .arg(
+                    Arg::new("n")
+                        .short('n')
+                        .long("n")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of wires in the circuit"),
+                )
+                .arg(
+                    Arg::new("m")
+                        .short('m')
+                        .long("m")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of gates in the circuit"),
+                )
+        )
         .get_matches();
 
     match matches.subcommand() {
-        Some(("new", sub)) => {
-            let n: usize = *sub.get_one("n").unwrap();
-            let m: usize = *sub.get_one("m").unwrap();
-            main_rainbow_generate(n, m);
-        }
         Some(("load", sub)) => {
             let n: usize = *sub.get_one("n").unwrap();
             let m: usize = *sub.get_one("m").unwrap();
@@ -232,6 +247,11 @@ fn main() {
             let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
             let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
             build_from_sql(&mut conn, n,m, &bit_shuf).expect("Unknown error occured");
+        }
+        Some(("binload", sub)) => {
+            let n: usize = *sub.get_one("n").unwrap();
+            let m: usize = *sub.get_one("m").unwrap();
+            main_rainbow_load(n, m, "./db");
         }
         Some(("explore", sub)) => {
             let n: usize = *sub.get_one("n").unwrap();

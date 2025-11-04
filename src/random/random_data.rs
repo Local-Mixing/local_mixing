@@ -1151,7 +1151,6 @@ pub fn build_from_sql(
     Ok(())
 }
 
-//TODO: benchmark to see which part is taking the most time and what exactly can be sped up
 //Speed up SQL queries
 //Should not see for a particular size query, the speed should not vary across multiple runs
 pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {

@@ -1,5 +1,5 @@
 use crate::circuit::circuit;
-use crate::circuit::Circuit;
+use crate::circuit::CircuitSeq;
 use std::collections::HashMap;
 use std::cmp::min as std_min;
 use std::cmp::max as std_max;
@@ -46,13 +46,13 @@ pub fn order(cycle: &Vec<Vec<usize>>) -> usize {
     lcm_list(&len_list)
 }
 
-pub fn subcircuits(circuit: &Circuit, sub_size: usize) -> Vec<Circuit> {
-    let mut list = Vec::<Circuit>::new();
+pub fn subcircuits(circuit: &CircuitSeq, sub_size: usize) -> Vec<CircuitSeq> {
+    let mut list = Vec::<CircuitSeq>::new();
     if sub_size == 0 || sub_size > circuit.gates.len() {
         panic!("Can't find subcircuit larger than the original circuit");
     }
-    for i in 0..circuit.len() - sub_size{
-        let new_circ = Circuit::from_gates(&circuit.gates[i..i+sub_size].to_vec());
+    for i in 0..circuit.gates.len() - sub_size{
+        let new_circ = CircuitSeq{ gates: circuit.gates[i..i+sub_size].to_vec() };
         list.push(new_circ);
     }
     list
@@ -143,27 +143,22 @@ pub fn explore_db(n:usize, m:usize) {
     let mut singles = 0;
 
     for val in persist.store.values() {
-    let cyc = val.perm.to_cycle();
-    let order = order(&cyc);
+        let cyc = val.perm.to_cycle();
+        let order = order(&cyc);
 
-    // Print the canonical permutation
-    println!("Permutation: {:?}", val.perm.data);
-    // Print its cycles
-    println!("Cycles: {:?}", cyc);
+        diff_hamming.insert(format!("{:?}", ham_diff(&cyc)), true);
 
-    diff_hamming.insert(format!("{:?}", ham_diff(&cyc)), true);
+        if cyc.len() == 0 {
+            saw_id = true;
+            println!("{} id circuit", val.circuits.len());
+            for circ in &val.circuits {
+                println!("{}", CircuitSeq::from_blob(&circ).to_string(n));
+            }   
+        }
 
-    if cyc.len() == 0 {
-        saw_id = true;
-        println!("{} id circuit", val.circuits.len());
         for circ in &val.circuits {
-            println!("{}", Circuit::from_bytes_compressed(n,&circ).to_string().as_str());
+            println!("{}", CircuitSeq::from_blob(&circ).to_string(n));
         }   
-    }
-
-    for circ in &val.circuits {
-        println!("{}", Circuit::from_bytes_compressed(n,&circ).to_string().as_str());
-    }   
 
         let pop = val.circuits.len();
         if pop > most_stored {

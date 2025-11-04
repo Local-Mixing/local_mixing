@@ -3,7 +3,7 @@ use crate::{
     circuit::{CircuitSeq, Permutation},
     rainbow::canonical::PermStore,
 };
-use crate::rainbow::canonical;
+use crate::rainbow::{PersistPermStore, canonical};
 use crate::rainbow::database::{self, Persist};
 
 use rayon::prelude::*;
@@ -16,7 +16,8 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant};
-
+use crate::random::random_data::base_gates;
+use smallvec::SmallVec;
 // PR struct
 #[derive(Clone)]
 pub struct PR {
@@ -36,56 +37,91 @@ static CKT_I: AtomicI64 = AtomicI64::new(0);
 /// Parallel circuit builder returning a ParallelIterator of PR
 //TODO: (J: Canonicalises the circuit ( i.e. runs fast canon, brute force canon etc. ). Fix the parallel part.)
 
+pub fn build_from(
+    num_wires: usize,
+    num_gates: usize,
+    store: &Arc<HashMap<Vec<u8>, PersistPermStore>>,
+) -> impl ParallelIterator<Item = Vec<usize>>{
+    let n_base = base_gates(num_wires).len();
+
+    store
+        .par_iter() // parallelize over each stored permutation since threads are independent
+        .flat_map_iter(move |(_key, perm)| {
+            // iterator over the circuits for a given perm
+            perm.circuits.iter().flat_map(move |circuit| { // use iter to avoid using more threads than the max
+                // allocate prefix on stack (max 64 gates, adjust if needed)
+                // use smallvec for stack efficiency
+                let mut prefix: SmallVec<[usize; 64]> = SmallVec::with_capacity(num_gates);
+                for &b in circuit.iter() { 
+                    prefix.push(b as usize);
+                }
+
+                // iterator over base_gates, yielding q1 and q2
+                (0..n_base).flat_map(move |idx| {
+                        // skip consecutive duplicate
+                        // before, we had s-1, but s was already num_gates - 1
+                        if num_gates >= 2 && idx == prefix[num_gates - 2] {
+                            return None;
+                        }
+
+                        // q1 = prefix + g
+                        let mut q1 = SmallVec::<[usize; 64]>::with_capacity(num_gates);
+                        q1.extend_from_slice(&prefix[..num_gates - 1]);
+                        q1.push(idx);
+
+                        // q2 = g + prefix
+                        let mut q2 = SmallVec::<[usize; 64]>::with_capacity(num_gates);
+                        q2.push(idx);
+                        q2.extend_from_slice(&prefix[..num_gates - 1]);
+
+                        // yield both q1 and q2 as Vec<usize>
+                        Some([q1.into_vec(), q2.into_vec()])
+                    })
+                    .flatten() // flatten the array of Vecs into iterator
+            })
+        })
+}
+
 pub fn build_circuit_rayon(
     n: usize,
-    _m: usize,
+    m: usize,
     circuits: impl ParallelIterator<Item = Vec<usize>> + Send,
-    base_gates: Arc<Vec<[usize; 3]>>,
+    base_gates: Arc<Vec<[u8;3]>>,
 ) -> impl ParallelIterator<Item = PR> + Send {
-    circuits.filter_map(move |circuit| {
+    circuits.flat_map(move |cc| {
         CKT_CHECK.fetch_add(1, Ordering::Relaxed);
 
-        // Convert indices → gates ([usize;3] → [u8;3])
-        let mut c = CircuitSeq {
-            gates: circuit
-                .iter()
-                .map(|&i| {
-                    let gate = base_gates[i];
-                    [gate[0] as u8, gate[1] as u8, gate[2] as u8]
-                })
-                .collect(),
-        };
+        let mut ckt_buffer = vec![[0;3]; m];
+        for (i, &g) in cc.iter().enumerate() {
+            ckt_buffer[i] = base_gates[g].clone();
+        }
 
+        let mut c = CircuitSeq { gates: ckt_buffer };
         c.canonicalize();
 
         if c.adjacent_id() {
             SKIP_ID.fetch_add(1, Ordering::Relaxed);
-            return None;
+            return vec![].into_par_iter();
         }
 
         let per = c.permutation(n);
         let can_per = per.canonical();
         let is_canonical = per == can_per.perm;
 
-        Some(PR {
-            p: can_per.perm,
-            r: c.repr_blob(),
-            canonical: is_canonical,
-        })
+        vec![PR { p: can_per.perm, r: c.repr_blob(), canonical: is_canonical }].into_par_iter()
     })
 }
 
-
 /// Process a single PR and update DashMap store
-fn process_pr(pr: PR, circuit_store: &DashMap<String, PermStore>) {
+fn process_pr(pr: PR, circuit_store: &DashMap<Vec<u8>, PermStore>) {
     CKT_I.fetch_add(1, Ordering::Relaxed);
 
     let p = &pr.p;
-    let ph = p.repr();
+    let ph = p.repr_blob();
     let ip = p.invert();
     let own_inv = *p == ip;
 
-    if !own_inv && circuit_store.contains_key(&ip.repr()) {
+    if !own_inv && circuit_store.contains_key(&ip.repr_blob()) {
         SKIP_INV.fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -107,7 +143,7 @@ fn process_pr(pr: PR, circuit_store: &DashMap<String, PermStore>) {
 }
 
 /// Convert DashMap into HashMap and save
-fn save_circuit_store(n: usize, m: usize, circuit_store: &DashMap<String, PermStore>) {
+fn save_circuit_store(n: usize, m: usize, circuit_store: &DashMap<Vec<u8>, PermStore>) {
     let mut save_map = HashMap::new();
     for r in circuit_store.iter() {
         let v = r.value();
@@ -155,31 +191,6 @@ fn spawn_progress_tracker(total_circuits: i64, done: Arc<AtomicI64>) {
     });
 }
 
-/// Main entry for generating new circuits
-pub fn main_rainbow_generate(n: usize, m: usize) {
-    assert!(n >= 3 && m >= 1, "Invalid circuit size");
-
-    let base_gates = Arc::new(circuit::base_gates(n));
-
-    canonical::init(n);
-
-    let total_circuits = (base_gates.len() as i64) * ((base_gates.len() - 1) as i64).pow((m-1) as u32);
-    let circuits = circuit::par_all_circuits(n, m);
-
-    let circuit_store: Arc<DashMap<String, PermStore>> = Arc::new(DashMap::new());
-    let done = Arc::new(AtomicI64::new(0));
-
-    spawn_progress_tracker(total_circuits, Arc::clone(&done));
-
-    // Parallel processing
-    build_circuit_rayon(n, m, circuits, base_gates)
-        .for_each(|pr| process_pr(pr, &circuit_store));
-
-    done.store(1, Ordering::Relaxed);
-
-    save_circuit_store(n, m, &circuit_store);
-}
-
 /// Main entry for loading existing circuits
 pub fn main_rainbow_load(n: usize, m: usize, _load: &str) {
     assert!(n >= 3 && m >= 1, "Invalid circuit size");
@@ -193,9 +204,9 @@ pub fn main_rainbow_load(n: usize, m: usize, _load: &str) {
     let prev_count: i64 = store_arc.values().map(|p| p.circuits.len() as i64).sum();
     let total_circuits = 2 * prev_count * (base_gates.len() as i64);
 
-    let circuits = circuit::build_from(n, m, &store_arc);
+    let circuits = build_from(n, m, &store_arc);
 
-    let circuit_store: Arc<DashMap<String, PermStore>> = Arc::new(DashMap::new());
+    let circuit_store: Arc<DashMap<Vec<u8>, PermStore>> = Arc::new(DashMap::new());
     let done = Arc::new(AtomicI64::new(0));
 
     spawn_progress_tracker(total_circuits, Arc::clone(&done));

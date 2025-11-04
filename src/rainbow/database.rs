@@ -1,4 +1,4 @@
-use crate::circuit::{Circuit, Permutation};
+use crate::circuit::{CircuitSeq, Permutation};
 
 use bincode;
 use serde::{Deserialize, Serialize};
@@ -20,28 +20,11 @@ pub struct PersistPermStore {
 pub struct Persist {
     pub wires: usize,
     pub gates: usize,
-    pub store: HashMap<String, PersistPermStore>,
-}
-
-impl PersistPermStore {
-    pub fn to_string(&self, w: usize) -> String {
-        let mut s = format!("Perm: {:?}\n", self.perm.to_cycle());
-        if self.count == 1 {
-            s.push_str( "1 circuit\n");
-        } else {
-            s.push_str(&format!(" {} circuits, {} unique\n", self.count, self.circuits.len()));
-        }
-
-        for c in &self.circuits {
-            let circuit = Circuit::from_bytes_compressed(w, c);
-            s.push_str(&format!("{}\n", circuit.to_string()));
-        }
-        s
-    }
+    pub store: HashMap<Vec<u8>, PersistPermStore>,
 }
 
 impl Persist {
-    pub fn save(n: usize, m: usize, store: &HashMap<String, PersistPermStore>) {
+    pub fn save(n: usize, m: usize, store: &HashMap<Vec<u8>, PersistPermStore>) {
         let file = File::create(format!("./db/n{}m{}.bin", n, m))
             .expect("Failed to create file");
         let writer = BufWriter::new(file);
@@ -55,7 +38,7 @@ impl Persist {
     }
 
     //correctly loads the file for m-1 db
-    pub fn load(n: usize, m: usize) -> HashMap<String, PersistPermStore> {
+    pub fn load(n: usize, m: usize) -> HashMap<Vec<u8>, PersistPermStore> {
         let filename = format!("./db/n{}m{}.bin", n, m - 1);
 
         let file = File::open(&filename)
