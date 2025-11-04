@@ -494,18 +494,44 @@ pub fn compress_exhaust(
                                 if repl.permutation(n) != sub_perm {
                                     panic!("Replacement permutation mismatch!");
                                 }
-                                
-                                let repl_len = repl.gates.len();
 
                                 // Only perform replacement if it actually changes the gates
                                 if repl.gates != subcircuit.gates {
+                                    let old_len = end - start;
+                                    let repl_len = repl.gates.len();
+                                    let delta = repl_len as isize - old_len as isize; // ≤ 0 always
+
                                     compressed.gates.splice(start..end, repl.gates);
 
-                                    if repl_len < subcircuit.gates.len() {
-                                        seen_positions.clear(); // reset all positions if we shrink
-                                    } else {
-                                        seen_positions.insert((start, end)); // otherwise mark this position
+                                    let r_start = start;
+                                    let r_end = start + repl_len;
+
+                                    // Update seen_positions
+                                    let mut updated = HashSet::new();
+
+                                    for &(a, b) in &seen_positions {
+                                        // If it overlaps the replaced region, discard it
+                                        if !(b <= r_start || a >= end) {
+                                            continue;
+                                        }
+
+                                        // If it comes after the replaced region, shift back
+                                        if a >= end {
+                                            let new_a = (a as isize + delta) as usize;
+                                            let new_b = (b as isize + delta) as usize;
+                                            if new_a < new_b {
+                                                updated.insert((new_a, new_b));
+                                            }
+                                        } else {
+                                            // Unaffected before the replacement
+                                            updated.insert((a, b));
+                                        }
                                     }
+
+                                    seen_positions = updated;
+
+                                    // Mark the new replaced range
+                                    seen_positions.insert((r_start, r_end));
 
                                     changed = true;
                                     break 'outer;

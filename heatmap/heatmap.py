@@ -28,6 +28,7 @@ def plot_heatmap(results, save_path, xlabel="X-axis", ylabel="Y-axis", vmin=-3, 
 
     plt.imshow(
         heatmap,
+        interpolation='nearest',
         cmap="Spectral_r",
         aspect='auto',
         origin='lower',
