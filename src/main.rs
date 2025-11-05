@@ -523,6 +523,7 @@ pub fn heatmap(num_wires: usize, num_inputs: usize, xlabel: &str, ylabel: &str, 
                 for i2 in 0..=circuit_two_len {
                     let diff = evolution_one[i1] ^ evolution_two[i2];
                     let hamming_dist = diff.count_ones() as f64;
+                    let overlap = hamming_dist / num_wires as f64;
 
                     let index = i1 * (circuit_two_len + 1) + i2;
                     average[index][0] = i1 as f64;
