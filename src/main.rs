@@ -477,7 +477,7 @@ fn main() {
             .expect("Failed to open ./circuits.db in read-only mode");
 
             // Call your compression logic
-            let compressed = compress_big(&expand_big(&circuit, r, n, &mut conn), r, n, &mut conn);
+            let compressed = compress_big(&expand_big(&circuit, r/100, n, &mut conn), r, n, &mut conn);
 
             let mut file = fs::File::create("compressed.txt")
                 .expect("Failed to create compressed.txt");
