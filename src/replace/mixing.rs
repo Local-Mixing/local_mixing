@@ -277,7 +277,7 @@ pub fn butterfly_big(
             "circuits.db",
             OpenFlags::SQLITE_OPEN_READ_ONLY,
         ).expect("Failed to open read-only connection");
-        shoot_random_gate(&mut gi, 100_000);
+        //shoot_random_gate(&mut gi, 100_000);
         // compress the block
         let compressed_block = compress_big(&gi, 100, n, &mut conn);
 
@@ -309,7 +309,7 @@ pub fn butterfly_big(
     let mut stable_count = 0;
     while stable_count < 3 {
         let before = acc.gates.len();
-        shoot_random_gate(&mut acc, 100_000);
+        //shoot_random_gate(&mut acc, 100_000);
         acc = compress_big(&acc, 1_000, n, conn);
         let after = acc.gates.len();
 
@@ -357,7 +357,7 @@ pub fn abutterfly_big(
     for &g in &c.gates {
         let (r, r_inv) = random_id(n as u8, rng.random_range(15..=25));
         let mut block = prev_r_inv.clone().concat(&CircuitSeq { gates: vec![g] }).concat(&r);
-        shoot_random_gate(&mut block, 1_000);
+        //shoot_random_gate(&mut block, 1_000);
         pre_blocks.push(block);
         prev_r_inv = r_inv;
     }
@@ -404,7 +404,7 @@ pub fn abutterfly_big(
     let mut stable_count = 0;
     while stable_count < 3 {
         let before = acc.gates.len();
-        shoot_random_gate(&mut acc, 100_000);
+        //shoot_random_gate(&mut acc, 100_000);
         acc = compress_big(&acc, 1_000, n, conn);
         let after = acc.gates.len();
 

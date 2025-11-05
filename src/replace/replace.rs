@@ -411,6 +411,86 @@ pub fn compress(
     compressed
 }
 
+pub fn expand(
+    c: &CircuitSeq,
+    trials: usize,
+    conn: &mut Connection,
+    bit_shuf: &Vec<Vec<usize>>,
+    n: usize,
+) -> CircuitSeq {
+    let mut expanded = c.clone();
+    if expanded.gates.is_empty() {
+        return CircuitSeq { gates: Vec::new() };
+    }
+    
+    let max = if n == 7 {
+        4
+    } else if n == 6 || n == 5{
+        5
+    } else if n == 4 {
+        6
+    } else if n == 3 {
+        12
+    } else {
+        0
+    };
+
+    for _ in 0..trials {
+        let (mut subcircuit, start, end) = random_subcircuit(&expanded);
+
+        subcircuit.canonicalize();
+
+        let sub_perm = subcircuit.permutation(n);
+        let canon_perm = get_canonical(&sub_perm, &bit_shuf);
+
+        let perm_blob = canon_perm.perm.repr_blob();
+        let sub_m = subcircuit.gates.len();
+        let mut found_replacement = false;
+
+        for smaller_m in (sub_m..=max).rev() {
+            let table = format!("n{}m{}", n, smaller_m);
+            let query = format!(
+                "SELECT circuit FROM {} WHERE perm = ?1 ORDER BY RANDOM() LIMIT 1",
+                table
+            );
+
+            let mut stmt = match conn.prepare(&query) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let rows = stmt.query([&perm_blob]);
+
+            if let Ok(mut r) = rows {
+                if let Some(row) = r.next().unwrap() {
+                    let blob: Vec<u8> = row.get(0).expect("Failed to get blob");
+                    let mut repl = CircuitSeq::from_blob(&blob);
+
+                    if repl.gates.len() <= subcircuit.gates.len() {
+                        let repl_perm = repl.permutation(n);
+                        let rc = get_canonical(&repl_perm, &bit_shuf);
+
+                        if !rc.shuffle.data.is_empty() {
+                            repl.rewire(&rc.shuffle, n);
+                        }
+                        repl.rewire(&canon_perm.shuffle.invert(), n);
+
+                        if repl.permutation(n) != sub_perm {
+                            panic!("Replacement permutation mismatch!");
+                        }
+
+                        expanded.gates.splice(start..end, repl.gates);
+
+                        found_replacement = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    expanded
+}
+
 pub fn compress_exhaust(
     c: &CircuitSeq,
     conn: &mut Connection,
@@ -570,7 +650,10 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
             i += 1;
         }
     }
-    for _ in 0..trials {
+    for i in 0..trials {
+        if i % 20 == 0 {
+            println!("{} trials so far, {} more to go", i, trials - i);
+        }
         let mut subcircuit_gates = vec![];
 
         for set_size in (3..=16).rev() {

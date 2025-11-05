@@ -103,17 +103,6 @@ pub fn hamming_dist(x: usize, y: usize) -> usize {
     (x^y).count_ones() as usize
 }
 
-// pub fn try_reduce() {
-//     // base := "0 1 2; 1 2 0; 2 0 1; 2 3 4; 3 4 2; 4 2 3; 4 5 0; 5 0 4; 0 4 5;"
-
-// 	// q := strings.Repeat(base, 4)
-// 	// Short identity
-// 	// q := "0 2 3; 1 3 2; 0 2 1; 0 1 2; 1 3 2; 0 1 3; 0 3 1"
-
-// 	// double := ckt.FromString(q)
-    
-// }
-
 pub fn explore_db(n:usize, m:usize) {
     let filename = format!("./db/n{}m{}.bin", n, m);
     let file = File::open(&filename).expect("Could not open file");
