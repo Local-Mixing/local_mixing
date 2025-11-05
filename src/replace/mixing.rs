@@ -242,7 +242,7 @@ fn merge_combine_blocks(
     let mut combined = left.concat(&right);
     // shoot_random_gate(&mut combined, 100_000);
     
-    let acc = compress_big(&expand_big(&combined, 100, n, &mut conn), 200, n, &mut conn);
+    let acc = compress_big(&expand_big(&combined, 20, n, &mut conn), 200, n, &mut conn);
 
     let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
     if done % 10 == 0 || done == total {
@@ -280,7 +280,7 @@ pub fn butterfly_big(
         ).expect("Failed to open read-only connection");
         //shoot_random_gate(&mut gi, 100_000);
         // compress the block
-        let compressed_block = compress_big(&expand_big(&gi, 50, n, &mut conn), 100, n, &mut conn);
+        let compressed_block = compress_big(&expand_big(&gi, 10, n, &mut conn), 100, n, &mut conn);
 
         println!(
             "  Block {}: before {} gates → after {} gates",
@@ -375,7 +375,7 @@ pub fn abutterfly_big(
             .expect("Failed to open read-only connection");
 
             let before_len = block.gates.len();
-            let compressed_block = compress_big(&expand_big(&block, 50, n, &mut thread_conn), 100, n, &mut thread_conn);
+            let compressed_block = compress_big(&expand_big(&block, 10, n, &mut thread_conn), 100, n, &mut thread_conn);
 
             println!(
                 "  Block {}: before {} gates → after {} gates",

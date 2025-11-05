@@ -448,7 +448,7 @@ pub fn expand(
         let sub_m = subcircuit.gates.len();
         let mut found_replacement = false;
 
-        for smaller_m in (sub_m..=max).rev() {
+        for smaller_m in (sub_m..=sub_m+1).rev() {
             let table = format!("n{}m{}", n, smaller_m);
             let query = format!(
                 "SELECT circuit FROM {} WHERE perm = ?1 ORDER BY RANDOM() LIMIT 1",
