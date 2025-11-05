@@ -456,7 +456,7 @@ pub fn expand(
     } else if n == 4 {
         6
     } else if n == 3 {
-        12
+        7
     } else {
         0
     };
