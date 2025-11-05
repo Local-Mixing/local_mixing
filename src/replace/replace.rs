@@ -186,6 +186,33 @@ pub fn random_subcircuit(circuit: &CircuitSeq) -> (CircuitSeq, usize, usize) {
     // (CircuitSeq { gates: subcircuit }, start, end)
 }
 
+pub fn random_subcircuit_max(circuit: &CircuitSeq, max_len: usize) -> (CircuitSeq, usize, usize) {
+    let len = circuit.gates.len();
+    if len == 0 {
+        return (CircuitSeq { gates: Vec::new() }, 0, 0);
+    }
+
+    let mut rng = rand::rng();
+
+    let start = rng.random_range(0..len);
+
+    let remaining = len - start;
+    let allowed_len = remaining.min(max_len);
+
+    let shift = rng.random_range(0..4); // 0..3
+    let mut sub_len = 1 << shift;        // 1,2,4,8
+    if sub_len > allowed_len {
+        sub_len = allowed_len;
+    }
+
+    sub_len = sub_len.max(1);
+
+    let end = start + sub_len;
+    let subcircuit = circuit.gates[start..end].to_vec();
+
+    (CircuitSeq { gates: subcircuit }, start, end)
+}
+
 pub fn compress(
     c: &CircuitSeq,
     trials: usize,
@@ -435,7 +462,7 @@ pub fn expand(
     };
 
     for _ in 0..trials {
-        let (mut subcircuit, start, end) = random_subcircuit(&expanded);
+        let (mut subcircuit, start, end) = random_subcircuit_max(&expanded, max);
         if subcircuit.gates.len() >= max {
             break;
         }
