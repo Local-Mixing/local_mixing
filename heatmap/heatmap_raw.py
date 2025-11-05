@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import os
 import sys 
 
-def plot_heatmap(results, save_path, xlabel="X-axis", ylabel="Y-axis", vmin=-0, vmax=NONE):
+def plot_heatmap(results, save_path, xlabel="X-axis", ylabel="Y-axis", vmin=-0, vmax=None):
     plt.clf()
     points = np.array(results)
     x, y, values = points[:, 0], points[:, 1], points[:, 2]
