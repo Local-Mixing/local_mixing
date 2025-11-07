@@ -280,7 +280,7 @@ pub fn butterfly_big(
         ).expect("Failed to open read-only connection");
         //shoot_random_gate(&mut gi, 100_000);
         // compress the block
-        let compressed_block = compress_big(&expand_big(&gi, 20, n, &mut conn), 100, n, &mut conn);
+        let compressed_block = compress_big(&expand_big(&gi, 10, n, &mut conn), 100, n, &mut conn);
 
         println!(
             "  Block {}: before {} gates → after {} gates",
@@ -375,7 +375,7 @@ pub fn abutterfly_big(
             .expect("Failed to open read-only connection");
 
             let before_len = block.gates.len();
-            let compressed_block = compress_big(&expand_big(&block, 20, n, &mut thread_conn), 100, n, &mut thread_conn);
+            let compressed_block = compress_big(&expand_big(&block, 10, n, &mut thread_conn), 100, n, &mut thread_conn);
 
             println!(
                 "  Block {}: before {} gates → after {} gates",
