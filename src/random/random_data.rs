@@ -1630,10 +1630,6 @@ mod tests {
 
         // Proceed as before
         shoot_random_gate(&mut circuit_a, 100000);
-        let mut conn = Connection::open_with_flags(
-            "./db/circuits.db",
-            OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ).expect("Failed to open DB (read-only)");
 
         let c_str = circuit_a.repr();
         File::create("circuitshooted.txt")
