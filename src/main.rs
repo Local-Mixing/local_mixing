@@ -254,6 +254,31 @@ fn main() {
                         .help("Number of wires in the circuit"),
                 ),
         )
+        .subcommand(
+            Command::new("wiredot")
+                .about("Run the circuit counter and produce a dotplot")
+                .arg(
+                    Arg::new("num_wires")
+                        .short('n')
+                        .long("num_wires")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize)),
+                )
+                .arg(
+                    Arg::new("xlabel")
+                        .short('x')
+                        .long("xlabel")
+                        .value_parser(clap::value_parser!(String))
+                        .help("Label for X axis"),
+                )
+                .arg(
+                    Arg::new("path")
+                        .short('p')
+                        .long("path")
+                        .value_parser(clap::value_parser!(String))
+                        .help("Circuit to analyze path"),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -486,6 +511,26 @@ fn main() {
 
             println!("Compressed circuit written to compressed.txt");
         }
+        Some(("wiredot", sub)) => {
+            let n: usize = *sub.get_one("num_wires").unwrap();
+            
+            let path = sub
+                .get_one::<String>("path")
+                .map(|s| s.as_str())
+                .unwrap();
+
+            let xlabel = sub
+                .get_one::<String>("xlabel")
+                .map(|s| s.as_str())
+                .unwrap_or("Circuit 1 gate index");
+
+            let e = format!("Failed to read {}", path);
+            let c = fs::read_to_string(path)
+                .expect(&e);
+            let c = CircuitSeq::from_string(&c);
+
+            analyze_gate_to_wires(&c, n, xlabel).unwrap();
+        }
         _ => unreachable!(),
     }
 }
@@ -607,4 +652,47 @@ pub fn reverse(from_path: &str, dest_path: &str) {
         .unwrap_or_else(|e| panic!("Failed to write {}: {}", dest_path, e));
 
     println!("Reversed circuit written to {}", dest_path);
+}
+
+pub fn analyze_gate_to_wires(circuit: &CircuitSeq, num_wires: usize, x: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut wire_counts = vec![0u32; num_wires];
+    for gate in &circuit.gates {
+        for &w in gate {
+            wire_counts[w as usize] += 1;
+        }
+    }
+
+    let mut points = Vec::new();
+    for gate in &circuit.gates {
+        for (i, &w) in gate.iter().enumerate() {
+            points.push((w as f64, wire_counts[w as usize] as f64, i == 0));
+        }
+    }
+
+    let root = BitMapBackend::new("wire_plot.png", (800, 600)).into_drawing_area();
+    root.fill(&WHITE)?;
+
+    let max_count = *wire_counts.iter().max().unwrap_or(&1);
+
+    let mut chart = ChartBuilder::on(&root)
+        .caption("Gate Touches per Wire", ("sans-serif, 24"))
+        .margin(20)
+        .x_label_area_size(40)
+        .y_label_area_size(40)
+        .build_cartesian_2d(0f64..num_wires as f64, 0f64..(max_count as f64 + 1.0))?;
+
+    let x_label = format!("Wire Index ({})", x);
+    chart.configure_mesh()
+        .x_desc(x)
+        .y_desc("Gate Touch Count")
+        .draw();
+
+    chart.draw_series(points.iter().map(|(x, y, active)| {
+        let color = if *active { &RED } else { &BLUE };
+        Circle::new((*x, *y), 5, color.filled())
+    }))?;
+
+    root.present()?;
+    println!("Saved to wire_plot.png");
+    Ok(())
 }

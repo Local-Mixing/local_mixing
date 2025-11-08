@@ -67,7 +67,7 @@ pub fn instruction_butterfly(
     })
     .collect();
 
-    let mut acc = r;
+    let mut acc = r.clone();
     for block in blocks {
         acc = acc.concat(&block);
     }
