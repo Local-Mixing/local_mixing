@@ -655,27 +655,24 @@ pub fn reverse(from_path: &str, dest_path: &str) {
 }
 
 pub fn analyze_gate_to_wires(circuit: &CircuitSeq, num_wires: usize, x: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut wire_counts = vec![0u32; num_wires];
-    for gate in &circuit.gates {
-        for &w in gate {
-            wire_counts[w as usize] += 1;
-        }
-    }
-
-    let mut points = Vec::new();
+    let mut total_counts = vec![0u32; num_wires];
+    let mut active_counts = vec![0u32; num_wires];
     for gate in &circuit.gates {
         for (i, &w) in gate.iter().enumerate() {
-            points.push((w as f64, wire_counts[w as usize] as f64, i == 0));
+            total_counts[w as usize] += 1;
+            if i == 0 {
+                active_counts[w as usize] += 1;
+            }
         }
     }
 
     let root = BitMapBackend::new("wire_plot.png", (800, 600)).into_drawing_area();
     root.fill(&WHITE)?;
 
-    let max_count = *wire_counts.iter().max().unwrap_or(&1);
+    let max_count = *total_counts.iter().max().unwrap_or(&1);
 
     let mut chart = ChartBuilder::on(&root)
-        .caption("Gate Touches per Wire", ("sans-serif, 24"))
+        .caption("Gate Touches per Wire", "sans-serif, 24")
         .margin(20)
         .x_label_area_size(40)
         .y_label_area_size(40)
@@ -687,10 +684,19 @@ pub fn analyze_gate_to_wires(circuit: &CircuitSeq, num_wires: usize, x: &str) ->
         .y_desc("Gate Touch Count")
         .draw();
 
-    chart.draw_series(points.iter().map(|(x, y, active)| {
-        let color = if *active { &RED } else { &BLUE };
-        Circle::new((*x, *y), 5, color.filled())
-    }))?;
+    chart.draw_series(
+        (0..num_wires).map(|i| Circle::new((i as f64, total_counts[i] as f64), 6, BLUE.filled())),
+
+    )?
+    .label("Total gate count")
+    .legend(|(x,y)| Circle::new((x,y), 5, BLUE.filled()));
+
+    chart.draw_series(
+        (0..num_wires).map(|i| Circle::new((i as f64, active_counts[i] as f64), 6, RED.filled())),
+
+    )?
+    .label("Active gate count")
+    .legend(|(x,y)| Circle::new((x,y), 5, BLUE.filled()));
 
     root.present()?;
     println!("Saved to wire_plot.png");
