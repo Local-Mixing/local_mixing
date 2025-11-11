@@ -322,6 +322,95 @@ pub fn abutterfly_big(
     let mut rng = rand::rng();
     let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
 
+    let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(10..=15));
+    let mut prev_r_inv = first_r_inv.clone();
+
+    for &g in &c.gates {
+        let (r, r_inv) = random_id(n as u8, rng.random_range(10..=15));
+        let block = prev_r_inv.clone().concat(&CircuitSeq { gates: vec![g] }).concat(&r);
+        //shoot_random_gate(&mut block, 1_000);
+        pre_blocks.push(block);
+        prev_r_inv = r_inv;
+    }
+
+    // Parallel compression of each block
+    let compressed_blocks: Vec<CircuitSeq> = pre_blocks
+        .into_par_iter()
+        .enumerate()
+        .map(|(i, block)| {
+            let mut thread_conn = Connection::open_with_flags(
+                "circuits.db",
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .expect("Failed to open read-only connection");
+
+            let before_len = block.gates.len();
+            let compressed_block = compress_big(&block, 100, n, &mut thread_conn);
+            let after_len = compressed_block.gates.len();
+            
+            let color_line = if after_len < before_len {
+                "\x1b[32m──────────────\x1b[0m" // green
+                } else if after_len > before_len {
+                    "\x1b[31m──────────────\x1b[0m" // red
+                } else {
+                    "\x1b[90m──────────────\x1b[0m" // gray
+            };
+
+            println!(
+                "  Block {}: before {} gates → after {} gates  {}",
+                i, before_len, after_len, color_line
+            );
+            //println!("  {}", compressed_block.repr());
+
+            compressed_block
+        })
+        .collect();
+
+    let progress = Arc::new(AtomicUsize::new(0));
+    let total = 2 * compressed_blocks.len() - 1;
+
+    println!("Beginning merge");
+    let mut acc =
+        merge_combine_blocks(&compressed_blocks, n, "./circuits.db", &progress, total);
+
+    // Add global bookends: first_r ... last_r_inv
+    acc = first_r.concat(&acc).concat(&prev_r_inv);
+
+    println!("After adding bookends: {} gates", acc.gates.len());
+
+    // Final global compression until stable 3×
+    let mut stable_count = 0;
+    while stable_count < 3 {
+        let before = acc.gates.len();
+        //shoot_random_gate(&mut acc, 100_000);
+        acc = compress_big(&acc, 1_000, n, conn);
+        let after = acc.gates.len();
+
+        if after == before {
+            stable_count += 1;
+            println!("  Final compression stable {}/3 at {} gates", stable_count, after);
+        } else {
+            println!("  Final compression reduced: {} → {} gates", before, after);
+            stable_count = 0;
+        }
+    }
+
+    println!("Compressed len: {}", acc.gates.len());
+    println!("Butterfly done: {} gates", acc.gates.len());
+
+    acc
+}
+
+//TODO
+pub fn abutterfly_big_delay_bookends(
+    c: &CircuitSeq,
+    conn: &mut Connection,
+    n: usize,
+) -> CircuitSeq {
+    println!("Butterfly start: {} gates", c.gates.len());
+    let mut rng = rand::rng();
+    let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
+
     let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(150..=225));
     let mut prev_r_inv = first_r_inv.clone();
 
