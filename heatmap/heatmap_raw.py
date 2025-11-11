@@ -57,7 +57,7 @@ if __name__ == "__main__":
     output = "./heatmap.png"
 
     args = parser.parse_args()
-
+    print(f" Generating results")
     results = heatmap_rust.heatmap(args.n, args.i, flag)
 
     plot_heatmap(results, output, xlabel=args.x, ylabel=args.y)
