@@ -3,6 +3,14 @@ name = "local_mixing"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "local_mixing"            # <— change back to this
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "local_mixing_bin"        # <— rename binary so it doesn’t conflict
+path = "src/main.rs"
+
 [dependencies]
 log = "0.4.22"
 log4rs = "1.3.0"
@@ -27,3 +35,5 @@ ctrlc = "3.2"
 fastrand = "2.3.0"
 colorgrad = "0.6"
 plotters = "0.3"
+pyo3 = { version = "0.27.1", features = ["extension-module"] }
+numpy = "0.27.0"

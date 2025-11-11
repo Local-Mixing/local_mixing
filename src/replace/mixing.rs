@@ -221,7 +221,7 @@ pub fn butterfly_big(
 ) -> CircuitSeq {
     // Pick one random R
     let mut rng = rand::rng();
-    let (r, r_inv) = random_id(n as u8, rng.random_range(100..=200)); 
+    let (r, r_inv) = random_id(n as u8, rng.random_range(200..=300)); 
 
     println!("Butterfly start: {} gates", c.gates.len());
 
@@ -242,7 +242,7 @@ pub fn butterfly_big(
         ).expect("Failed to open read-only connection");
         //shoot_random_gate(&mut gi, 100_000);
         // compress the block
-        let compressed_block = compress_big(&expand_big(&gi, 10, n, &mut conn), 100, n, &mut conn);
+        let compressed_block = compress_big(&gi, 100, n, &mut conn);
         let before_len = r_inv.gates.len() * 2 + 1;
         let after_len = compressed_block.gates.len();
             
@@ -322,7 +322,7 @@ pub fn abutterfly_big(
     let mut rng = rand::rng();
     let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
 
-    let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(100..=200));
+    let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(200..=300));
     let mut prev_r_inv = first_r_inv.clone();
 
     for &g in &c.gates {
@@ -345,7 +345,7 @@ pub fn abutterfly_big(
             .expect("Failed to open read-only connection");
 
             let before_len = block.gates.len();
-            let compressed_block = compress_big(&expand_big(&block, 10, n, &mut thread_conn), 100, n, &mut thread_conn);
+            let compressed_block = compress_big(&block, 100, n, &mut thread_conn);
             let after_len = compressed_block.gates.len();
             
             let color_line = if after_len < before_len {

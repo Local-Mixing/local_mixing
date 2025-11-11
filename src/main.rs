@@ -24,6 +24,7 @@ use local_mixing::{
         replace::{random_canonical_id},
     },
 };
+
 use local_mixing::replace::replace::compress_big;
 fn main() {
     let matches = Command::new("rainbow")
@@ -560,7 +561,12 @@ pub fn heatmap(num_wires: usize, num_inputs: usize, xlabel: &str, ylabel: &str, 
             println!("{}/{}", i, num_inputs);
         }
 
-        let input_bits: usize = rng.random_range(0..(1 << num_wires));
+        let input_bits: usize = if num_wires < usize::BITS as usize {
+            rng.random_range(0..(1usize << num_wires))
+        } else {
+            rng.random_range(0..=usize::MAX)
+        };
+        
         let evolution_one = circuit_one.evaluate_evolution(input_bits);
         let evolution_two = circuit_two.evaluate_evolution(input_bits);
         if !flag {
