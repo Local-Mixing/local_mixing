@@ -32,13 +32,16 @@ fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool) -> P
     let mut rng = rand::rng();
     let start_time = Instant::now();
 
-    for _ in 0..num_inputs {
+    for i in 0..num_inputs {
+        if i % 10 == 0 {
+            println!("{}/{}", i, num_inputs);
+        }
         let input_bits: usize = if num_wires < usize::BITS as usize {
             rng.random_range(0..(1usize << num_wires))
         } else {
             rng.random_range(0..=usize::MAX)
         };
-        
+
         let evolution_one = circuit_one.evaluate_evolution(input_bits);
         let evolution_two = circuit_two.evaluate_evolution(input_bits);
 
