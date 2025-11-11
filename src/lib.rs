@@ -9,11 +9,12 @@ use crate::circuit::CircuitSeq;
 use std::time::Instant;
 use rand::Rng;
 use numpy::ndarray::Array2;
+use std::io::{self, Write};
 
 #[pyfunction]
 fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
-    
+    io::stdout().flush().unwrap();
     // Load circuits
     let contents = fs::read_to_string("butterfly_recent.txt")
         .expect("Failed to read butterfly_recent.txt");
@@ -37,6 +38,7 @@ fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool) -> P
     for i in 0..num_inputs {
         if i % 10 == 0 {
             println!("{}/{}", i, num_inputs);
+            io::stdout().flush().unwrap();
         }
         let input_bits: usize = if num_wires < usize::BITS as usize {
             rng.random_range(0..(1usize << num_wires))
