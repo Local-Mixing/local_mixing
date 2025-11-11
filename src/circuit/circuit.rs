@@ -286,9 +286,10 @@ impl CircuitSeq {
         Gate::evaluate_index_list(input, &self.gates)
     }
 
+    //small vec is okay since this is never called for num > 32
     pub fn permutation(&self, num_wires: usize) -> Permutation {
         let size = 1 << num_wires;
-        //TODO: the size could be over 64, so is small vec a bad choice?
+        
         let mut output = vec![0; size];
 
         for input in 0..size {
@@ -646,8 +647,11 @@ impl CircuitSeq {
     //no check on num_wires
     pub fn probably_equal(&self, other_circuit: &Self, num_wires: usize, num_inputs: usize) -> Result<(), String> {
         let mut rng = rand::rng();
-        let mask = (1 << num_wires) - 1;
-
+        let mask: usize = if num_wires < usize::BITS as usize {
+            (1 << num_wires) - 1
+        } else {
+            usize::MAX - 1
+        };
         for _ in 0..num_inputs {
             // generate u64, then mask to get the lower num_wires bits
             let random_input = (rng.random::<u64>() as usize) & mask;
