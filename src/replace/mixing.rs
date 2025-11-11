@@ -221,7 +221,7 @@ pub fn butterfly_big(
 ) -> CircuitSeq {
     // Pick one random R
     let mut rng = rand::rng();
-    let (r, r_inv) = random_id(n as u8, rng.random_range(200..=300)); 
+    let (r, r_inv) = random_id(n as u8, rng.random_range(150..=225)); 
 
     println!("Butterfly start: {} gates", c.gates.len());
 
@@ -322,11 +322,11 @@ pub fn abutterfly_big(
     let mut rng = rand::rng();
     let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
 
-    let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(200..=300));
+    let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(150..=225));
     let mut prev_r_inv = first_r_inv.clone();
 
     for &g in &c.gates {
-        let (r, r_inv) = random_id(n as u8, rng.random_range(100..=200));
+        let (r, r_inv) = random_id(n as u8, rng.random_range(150..=225));
         let block = prev_r_inv.clone().concat(&CircuitSeq { gates: vec![g] }).concat(&r);
         //shoot_random_gate(&mut block, 1_000);
         pre_blocks.push(block);
