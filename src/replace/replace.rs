@@ -846,7 +846,7 @@ mod tests {
 
         // ---------- SECOND TEST ----------
         let t2_start = Instant::now();
-        let str2 = "circuitF.txt";
+        let str2 = "circuitOA_64.txt";
         let data2 = fs::read_to_string(str2).expect("Failed to read circuitF.txt");
         let mut stable_count = 0;
         let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
