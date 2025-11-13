@@ -173,45 +173,122 @@ pub fn butterfly(
     acc
 }
 
-fn merge_combine_blocks(
+//TODO change this so its faster. just do less merging
+// fn merge_combine_blocks(
+//     blocks: &[CircuitSeq],
+//     n: usize,
+//     db_path: &str,
+//     progress: &Arc<AtomicUsize>,
+//     total: usize,
+// ) -> CircuitSeq {
+//     if blocks.is_empty() {
+//         return CircuitSeq { gates: vec![] };
+//     }
+//     if blocks.len() == 1 {
+//         let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
+//         if done % 10 == 0 || done == total {
+//             println!("Progress: {}/{}", done, total);
+//         }
+//         return blocks[0].clone();
+//     }
+
+//     let mid = blocks.len() / 2;
+
+//     let (left, right) = rayon::join(
+//         || merge_combine_blocks(&blocks[..mid], n, db_path, progress, total),
+//         || merge_combine_blocks(&blocks[mid..], n, db_path, progress, total),
+//     );
+
+//     let mut conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+//         .expect("Failed to open read-only DB");
+
+//     let combined = left.concat(&right);
+//     // shoot_random_gate(&mut combined, 100_000);
+    
+//     let acc = compress_big(&combined, 200, n, &mut conn);
+
+//     let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
+//     if done % 10 == 0 || done == total {
+//         println!("Progress: {}/{}", done, total);
+//     }
+
+//     acc
+// }
+
+pub fn merge_combine_blocks(
     blocks: &[CircuitSeq],
     n: usize,
     db_path: &str,
     progress: &Arc<AtomicUsize>,
-    total: usize,
 ) -> CircuitSeq {
-    if blocks.is_empty() {
-        return CircuitSeq { gates: vec![] };
-    }
-    if blocks.len() == 1 {
-        let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
-        if done % 10 == 0 || done == total {
-            println!("Progress: {}/{}", done, total);
-        }
-        return blocks[0].clone();
-    }
+    println!("Phase 1: Pairwise merge");
+    let total_1 = (blocks.len()+1)/2;
+    let pairs: Vec<CircuitSeq> = blocks
+        .par_chunks(2)
+        .map(|chunk| {
+            let mut conn = Connection::open_with_flags(
+                db_path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .expect("Failed to open DB");
 
-    let mid = blocks.len() / 2;
+            let combined = if chunk.len() == 2 {
+                chunk[0].concat(&chunk[1])
+            } else {
+                chunk[0].clone()
+            };
 
-    let (left, right) = rayon::join(
-        || merge_combine_blocks(&blocks[..mid], n, db_path, progress, total),
-        || merge_combine_blocks(&blocks[mid..], n, db_path, progress, total),
-    );
+            let compressed = compress_big(&combined, 200, n, &mut conn);
 
+            let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
+            if done % 10 == 0 {
+                println!("Phase 1 progress: {}/{}", done, total_1);
+            }
+
+            compressed
+        })
+        .collect();
+
+    println!("Phase 2: 4-way merge");
+    progress.store(0, Ordering::Relaxed);
+    let chunk_size = (pairs.len() + 3) / 4;
+    let phase2_results: Vec<CircuitSeq> = pairs
+        .par_chunks(chunk_size)
+        .map(|chunk| {
+            let mut conn = Connection::open_with_flags(
+                db_path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .expect("Failed to open DB");
+
+            let mut combined = CircuitSeq { gates: vec![] };
+            for block in chunk {
+                combined = combined.concat(block);
+            }
+
+            let compressed = compress_big(&combined, 400, n, &mut conn);
+
+            let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
+            println!("Phase 2 partial done: {}/4", done);
+
+            compressed
+        })
+        .collect();
+
+    println!("Phase 3: Final merge");
+    // Final combination and compression
     let mut conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .expect("Failed to open read-only DB");
+        .expect("Failed to open DB");
 
-    let combined = left.concat(&right);
-    // shoot_random_gate(&mut combined, 100_000);
-    
-    let acc = compress_big(&combined, 200, n, &mut conn);
-
-    let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
-    if done % 10 == 0 || done == total {
-        println!("Progress: {}/{}", done, total);
+    let mut final_combined = CircuitSeq { gates: vec![] };
+    for part in phase2_results {
+        final_combined = final_combined.concat(&part);
     }
 
-    acc
+    let final_compressed = compress_big(&final_combined, 1_000, n, &mut conn);
+
+    println!("All phases complete");
+    final_compressed
 }
 
 pub fn butterfly_big(
@@ -268,11 +345,11 @@ pub fn butterfly_big(
     .collect();
 
     let progress = Arc::new(AtomicUsize::new(0));
-    let total = 2 * blocks.len() - 1;
+    let _total = 2 * blocks.len() - 1;
 
     println!("Beginning merge");
     
-    let mut acc = merge_combine_blocks(&blocks, n, "./circuits.db", &progress, total);
+    let mut acc = merge_combine_blocks(&blocks, n, "./circuits.db", &progress);
 
     // Add bookends: R ... R*
     acc = r.concat(&acc).concat(&r_inv);
@@ -371,11 +448,11 @@ pub fn abutterfly_big(
         .collect();
 
     let progress = Arc::new(AtomicUsize::new(0));
-    let total = 2 * compressed_blocks.len() - 1;
+    let _total = 2 * compressed_blocks.len() - 1;
 
     println!("Beginning merge");
     let mut acc =
-        merge_combine_blocks(&compressed_blocks, n, "./circuits.db", &progress, total);
+        merge_combine_blocks(&compressed_blocks, n, "./circuits.db", &progress);
 
     // Add global bookends: first_r ... last_r_inv
     acc = first_r.concat(&acc).concat(&prev_r_inv);
@@ -461,11 +538,11 @@ pub fn abutterfly_big_delay_bookends(
         .collect();
 
     let progress = Arc::new(AtomicUsize::new(0));
-    let total = 2 * compressed_blocks.len() - 1;
+    let _total = 2 * compressed_blocks.len() - 1;
 
     println!("Beginning merge");
     let mut acc =
-        merge_combine_blocks(&compressed_blocks, n, "./circuits.db", &progress, total);
+        merge_combine_blocks(&compressed_blocks, n, "./circuits.db", &progress);
 
     println!("After merging: {} gates", acc.gates.len());
 
