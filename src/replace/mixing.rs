@@ -424,7 +424,7 @@ pub fn abutterfly_big(
             .expect("Failed to open read-only connection");
 
             let before_len = block.gates.len();
-            let compressed_block = compress_big(&block, 100, n, &mut thread_conn);
+            let compressed_block = compress_big(&block, 10, n, &mut thread_conn);
             let after_len = compressed_block.gates.len();
             
             let color_line = if after_len < before_len {
@@ -514,7 +514,7 @@ pub fn abutterfly_big_delay_bookends(
             .expect("Failed to open read-only connection");
 
             let before_len = block.gates.len();
-            let compressed_block = compress_big(&block, 100, n, &mut thread_conn);
+            let compressed_block = compress_big(&block, 10, n, &mut thread_conn);
             let after_len = compressed_block.gates.len();
             
             let color_line = if after_len < before_len {
