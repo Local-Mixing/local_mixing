@@ -561,12 +561,12 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
             let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
             if !gates.is_empty() {
                 subcircuit_gates = gates;
-                break;
+                break
             }
         }
 
         if subcircuit_gates.is_empty() {
-            return circuit
+            continue
         }
         
         let mut gates: Vec<[u8;3]> = vec![[0,0,0]; subcircuit_gates.len()];
@@ -586,24 +586,24 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
 
         if actual_slice != &expected_slice[..]
         {
-            break;
+            continue
         }
 
         let used_wires = subcircuit.used_wires();
         subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
 
-        let num_wires = used_wires.len();
-        let perms: Vec<Vec<usize>> = (0..num_wires).permutations(num_wires).collect();
+        let sub_num_wires = used_wires.len();
+        let perms: Vec<Vec<usize>> = (0..sub_num_wires).permutations(sub_num_wires).collect();
         let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
 
         let subcircuit_temp = if subcircuit.gates.len() <= 200 {
             // compress_exhaust(&subcircuit, conn, &bit_shuf, num_wires)
-            compress(&subcircuit, 200, conn, &bit_shuf, num_wires)
+            compress(&subcircuit, 200, conn, &bit_shuf, sub_num_wires)
         } else {
             println!("Too big for exhaust: Len = {}", subcircuit.gates.len());
-            compress(&subcircuit, 25_000, conn, &bit_shuf, num_wires)
+            compress(&subcircuit, 25_000, conn, &bit_shuf, sub_num_wires)
         };
-        if subcircuit.permutation(num_wires) != subcircuit_temp.permutation(num_wires) {
+        if subcircuit.permutation(sub_num_wires) != subcircuit_temp.permutation(sub_num_wires) {
             panic!("Compress changed something");
         }
         subcircuit = subcircuit_temp;
@@ -611,10 +611,11 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
         subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
 
         circuit.gates.splice(start..end+1, subcircuit.gates);
-        if c.permutation(num_wires).data != circuit.permutation(num_wires).data {
-            panic!("splice changed something");
+
+        circuit
+        .probably_equal(&c, num_wires, 150_000)
+        .expect("Splice changed something");
         }
-    }
     let mut i = 0;
     while i < circuit.gates.len().saturating_sub(1) {
         if circuit.gates[i] == circuit.gates[i + 1] {
