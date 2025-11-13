@@ -538,24 +538,23 @@ pub fn compress_exhaust(
     compressed
 }
 
-
 pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Connection) -> CircuitSeq {
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
     // Accumulators for timing
-    let mut time_dedup_init = 0;
-    let mut time_convex_find = 0;
-    let mut time_contiguous = 0;
-    let mut time_rewire = 0;
-    let mut time_permutations = 0;
-    let mut time_compress = 0;
-    let mut time_unrewire = 0;
-    let mut time_replace = 0;
-    let mut time_check_eq = 0;
+    // let mut time_dedup_init = 0;
+    // let mut time_convex_find = 0;
+    // let mut time_contiguous = 0;
+    // let mut time_rewire = 0;
+    // let mut time_permutations = 0;
+    // let mut time_compress = 0;
+    // let mut time_unrewire = 0;
+    // let mut time_replace = 0;
+    // let mut time_check_eq = 0;
 
     // Initial deduplication
-    let start_time = Instant::now();
+    // let start_time = Instant::now();
     let mut i = 0;
     while i < circuit.gates.len().saturating_sub(1) {
         if circuit.gates[i] == circuit.gates[i + 1] {
@@ -565,12 +564,12 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
             i += 1;
         }
     }
-    time_dedup_init += start_time.elapsed().as_millis();
+    // time_dedup_init += start_time.elapsed().as_millis();
 
     for _ in 0..trials {
         let mut subcircuit_gates = vec![];
 
-        let convex_find_start = Instant::now();
+        // let convex_find_start = Instant::now();
         for set_size in (3..=20).rev() {
             let random_max_wires = rng.random_range(3..=7);
             let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
@@ -579,7 +578,7 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
                 break;
             }
         }
-        time_convex_find += convex_find_start.elapsed().as_millis();
+        // time_convex_find += convex_find_start.elapsed().as_millis();
 
         if subcircuit_gates.is_empty() {
             continue;
@@ -588,9 +587,9 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
         let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
         subcircuit_gates.sort();
 
-        let contiguous_start = Instant::now();
+        // let contiguous_start = Instant::now();
         let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
-        time_contiguous += contiguous_start.elapsed().as_millis();
+        // time_contiguous += contiguous_start.elapsed().as_millis();
 
         let mut subcircuit = CircuitSeq { gates };
 
@@ -600,25 +599,25 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
             continue;
         }
 
-        let rewire_start = Instant::now();
+        // let rewire_start = Instant::now();
         let used_wires = subcircuit.used_wires();
         subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
-        time_rewire += rewire_start.elapsed().as_millis();
+        // time_rewire += rewire_start.elapsed().as_millis();
 
-        let perm_start = Instant::now();
+        // let perm_start = Instant::now();
         let sub_num_wires = used_wires.len();
         let perms: Vec<Vec<usize>> = (0..sub_num_wires).permutations(sub_num_wires).collect();
         let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
-        time_permutations += perm_start.elapsed().as_millis();
+        // time_permutations += perm_start.elapsed().as_millis();
 
-        let compress_start = Instant::now();
+        // let compress_start = Instant::now();
         let subcircuit_temp = if subcircuit.gates.len() <= 200 {
             compress(&subcircuit, 100, conn, &bit_shuf, sub_num_wires)
         } else {
             println!("Too big for exhaust: Len = {}", subcircuit.gates.len());
             compress(&subcircuit, 25_000, conn, &bit_shuf, sub_num_wires)
         };
-        time_compress += compress_start.elapsed().as_millis();
+        // time_compress += compress_start.elapsed().as_millis();
 
         if subcircuit.permutation(sub_num_wires) != subcircuit_temp.permutation(sub_num_wires) {
             panic!("Compress changed something");
@@ -626,11 +625,11 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
 
         subcircuit = subcircuit_temp;
 
-        let unrewire_start = Instant::now();
+        // let unrewire_start = Instant::now();
         subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
-        time_unrewire += unrewire_start.elapsed().as_millis();
+        // time_unrewire += unrewire_start.elapsed().as_millis();
 
-        let replace_start = Instant::now();
+        // let replace_start = Instant::now();
         let repl_len = subcircuit.gates.len();
         let old_len = end - start + 1;
 
@@ -649,16 +648,16 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
         } else {
             panic!("Replacement grew, which is not allowed");
         }
-        time_replace += replace_start.elapsed().as_millis();
+        // time_replace += replace_start.elapsed().as_millis();
 
-        let check_start = Instant::now();
+        // let check_start = Instant::now();
         // circuit
         //     .probably_equal(&c, num_wires, 150_000)
         //     .expect("Splice changed something");
-        time_check_eq += check_start.elapsed().as_millis();
+        // time_check_eq += check_start.elapsed().as_millis();
     }
 
-    let final_dedup_start = Instant::now();
+    // let final_dedup_start = Instant::now();
     let mut i = 0;
     while i < circuit.gates.len().saturating_sub(1) {
         if circuit.gates[i] == circuit.gates[i + 1] {
@@ -668,22 +667,21 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
             i += 1;
         }
     }
-    time_dedup_init += final_dedup_start.elapsed().as_millis();
+    // time_dedup_init += final_dedup_start.elapsed().as_millis();
 
-    println!("Timing summary (ms):");
-    println!("Initial + final dedup: {}", time_dedup_init);
-    println!("Finding convex subcircuit: {}", time_convex_find);
-    println!("Contiguous convex: {}", time_contiguous);
-    println!("Rewire subcircuit: {}", time_rewire);
-    println!("Permutations: {}", time_permutations);
-    println!("Compression: {}", time_compress);
-    println!("Unrewire: {}", time_unrewire);
-    println!("Replacement: {}", time_replace);
-    println!("Equality check: {}", time_check_eq);
+    // println!("Timing summary (ms):");
+    // println!("Initial + final dedup: {}", time_dedup_init);
+    // println!("Finding convex subcircuit: {}", time_convex_find);
+    // println!("Contiguous convex: {}", time_contiguous);
+    // println!("Rewire subcircuit: {}", time_rewire);
+    // println!("Permutations: {}", time_permutations);
+    // println!("Compression: {}", time_compress);
+    // println!("Unrewire: {}", time_unrewire);
+    // println!("Replacement: {}", time_replace);
+    // println!("Equality check: {}", time_check_eq);
 
     circuit
 }
-
 
 pub fn expand_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Connection) -> CircuitSeq {
     let mut circuit = c.clone();

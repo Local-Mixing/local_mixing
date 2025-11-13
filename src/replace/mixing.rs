@@ -238,7 +238,7 @@ pub fn merge_combine_blocks(
                 chunk[0].clone()
             };
 
-            let compressed = compress_big(&combined, 20, n, &mut conn);
+            let compressed = compress_big(&combined, 30, n, &mut conn);
 
             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
             if done % 10 == 0 {
@@ -266,7 +266,7 @@ pub fn merge_combine_blocks(
                 combined = combined.concat(block);
             }
 
-            let compressed = compress_big(&combined, 40, n, &mut conn);
+            let compressed = compress_big(&combined, 100, n, &mut conn);
 
             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
             println!("Phase 2 partial done: {}/4", done);
@@ -285,7 +285,7 @@ pub fn merge_combine_blocks(
         final_combined = final_combined.concat(&part);
     }
 
-    let final_compressed = compress_big(&final_combined, 100, n, &mut conn);
+    let final_compressed = compress_big(&final_combined, 1000, n, &mut conn);
 
     println!("All phases complete");
     final_compressed
