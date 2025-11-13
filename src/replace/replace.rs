@@ -594,7 +594,7 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
         let t2 = Instant::now();
         let mut subcircuit = CircuitSeq { gates };
         let used_wires = subcircuit.used_wires();
-        println!("Used wires: {}", used_wires);
+        println!("Used wires: {}", used_wires.len());
         subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
         let local_wires = used_wires.len();
         t_rewire += t2.elapsed().as_secs_f64();
