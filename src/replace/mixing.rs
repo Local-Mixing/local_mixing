@@ -493,12 +493,12 @@ pub fn abutterfly_big_delay_bookends(
     let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
     let mut c = c.clone();
     // let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(20..=100));
-    let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(20..=30));
+    let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(20..=70));
     let mut prev_r_inv = first_r_inv.clone();
     shoot_random_gate(&mut c, 100_000);
     for &g in &c.gates {
         // let (r, r_inv) = random_id(n as u8, rng.random_range(20..=100));
-        let (r, r_inv) = random_id(n as u8, rng.random_range(20..=30));
+        let (r, r_inv) = random_id(n as u8, rng.random_range(20..=70));
         let mut block = prev_r_inv.clone().concat(&CircuitSeq { gates: vec![g] }).concat(&r);
         shoot_random_gate(&mut block, 1_000);
         pre_blocks.push(block);
@@ -554,10 +554,17 @@ pub fn abutterfly_big_delay_bookends(
     while stable_count < 3 {
         let before = acc.gates.len();
 
-        let min_size = 100;
-        let mut k = (acc.gates.len() + min_size - 1) / min_size;
-        k = std::cmp::max(1, k);  
-        k = std::cmp::min(k, 30);
+        let k = if before > 10_000 {
+            16
+        } else if before > 5_000 {
+            8
+        } else if before > 1_000 {
+            4
+        } else if before > 500 {
+            2
+        } else {
+            1
+        };
 
         let mut rng = rand::rng();
 
