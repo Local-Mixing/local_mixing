@@ -554,15 +554,10 @@ pub fn abutterfly_big_delay_bookends(
     while stable_count < 3 {
         let before = acc.gates.len();
 
-        let k = if before > 10_000 {
-            8
-        } else if before > 1_000 {
-            4
-        } else if before > 500 {
-            2
-        } else {
-            1
-        };
+        let min_size = 100;
+        let mut k = (acc.gates.len() + min_size - 1) / min_size;
+        k = std::cmp::max(1, k);  
+        k = std::cmp::min(k, 30);
 
         let mut rng = rand::rng();
 
