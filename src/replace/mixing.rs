@@ -377,12 +377,10 @@ pub fn butterfly_big(
         let mut rng = rand::rng();
 
         let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
-        println!("{} Chuknks", chunks.len());
         let compressed_chunks: Vec<Vec<[u8;3]>> =
         chunks
             .into_par_iter()
             .map(|chunk| {
-                println!("Inside block: rayon threads = {}", rayon::current_num_threads());
                 let sub = CircuitSeq { gates: chunk };
                 let mut thread_conn = Connection::open_with_flags(
                     "circuits.db",
