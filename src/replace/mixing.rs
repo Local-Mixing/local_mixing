@@ -361,8 +361,40 @@ pub fn butterfly_big(
     let mut stable_count = 0;
     while stable_count < 3 {
         let before = acc.gates.len();
-        //shoot_random_gate(&mut acc, 100_000);
-        acc = compress_big(&acc, 1_000, n, conn);
+
+        let k = if before > 10_000 {
+            16
+        } else if before > 5_000 {
+            8
+        } else if before > 1_000 {
+            4
+        } else if before > 500 {
+            2
+        } else {
+            1
+        };
+
+        let mut rng = rand::rng();
+
+        let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
+
+        let compressed_chunks: Vec<Vec<[u8;3]>> =
+        chunks
+            .into_par_iter()
+            .map(|chunk| {
+                let sub = CircuitSeq { gates: chunk };
+                let mut thread_conn = Connection::open_with_flags(
+                    "circuits.db",
+                    OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .expect("Failed to open read-only connection");
+                compress_big(&sub, 1_000, n, &mut thread_conn).gates
+            })
+            .collect();
+
+        let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
+        acc.gates = new_gates;
+
         let after = acc.gates.len();
 
         if after == before {
@@ -466,8 +498,40 @@ pub fn abutterfly_big(
     let mut stable_count = 0;
     while stable_count < 3 {
         let before = acc.gates.len();
-        //shoot_random_gate(&mut acc, 100_000);
-        acc = compress_big(&acc, 1_000, n, conn);
+
+        let k = if before > 10_000 {
+            16
+        } else if before > 5_000 {
+            8
+        } else if before > 1_000 {
+            4
+        } else if before > 500 {
+            2
+        } else {
+            1
+        };
+
+        let mut rng = rand::rng();
+
+        let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
+
+        let compressed_chunks: Vec<Vec<[u8;3]>> =
+        chunks
+            .into_par_iter()
+            .map(|chunk| {
+                let sub = CircuitSeq { gates: chunk };
+                let mut thread_conn = Connection::open_with_flags(
+                    "circuits.db",
+                    OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .expect("Failed to open read-only connection");
+                compress_big(&sub, 1_000, n, &mut thread_conn).gates
+            })
+            .collect();
+
+        let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
+        acc.gates = new_gates;
+
         let after = acc.gates.len();
 
         if after == before {
