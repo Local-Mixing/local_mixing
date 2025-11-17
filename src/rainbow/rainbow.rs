@@ -83,40 +83,31 @@ pub fn build_from(
 
 pub fn build_circuit_rayon(
     n: usize,
-    _m: usize,
+    m: usize,
     circuits: impl ParallelIterator<Item = Vec<usize>> + Send,
-    base_gates: Arc<Vec<[u8; 3]>>,
+    base_gates: Arc<Vec<[u8;3]>>,
 ) -> impl ParallelIterator<Item = PR> + Send {
-    circuits.filter_map(move |circuit| {
-        CKT_CHECK.fetch_add(1, Ordering::Relaxed);
+    circuits.map(move |circuit| CircuitSeq { gates: circuit.iter().map(|&i| { base_gates[i]}).collect(), })
+        .flat_map(move |mut c| {
+            CKT_CHECK.fetch_add(1, Ordering::Relaxed);
 
-        // Convert indices → gates ([usize;3] → [u8;3])
-        let mut c = CircuitSeq {
-            gates: circuit
-                .iter()
-                .map(|&i| {
-                    base_gates[i]
-                })
-                .collect(),
-        };
+            c.canonicalize();
 
-        c.canonicalize();
+            if c.adjacent_id() {
+                SKIP_ID.fetch_add(1, Ordering::Relaxed);
+                return vec![].into_par_iter();
+            }
 
-        if c.adjacent_id() {
-            SKIP_ID.fetch_add(1, Ordering::Relaxed);
-            return None;
-        }
+            let per = c.permutation(n);
+            let can_per = per.canonical();
+            let is_canonical = per == can_per.perm;
 
-        let per = c.permutation(n);
-        let can_per = per.canonical();
-        let is_canonical = per == can_per.perm;
-
-        Some(PR {
-            p: can_per.perm,
-            r: c.repr_blob(),
-            canonical: is_canonical,
+            vec![PR {
+                p: can_per.perm,
+                r: c.repr_blob(),
+                canonical: is_canonical,
+            }].into_par_iter()
         })
-    })
 }
 
 /// Process a single PR and update DashMap store
