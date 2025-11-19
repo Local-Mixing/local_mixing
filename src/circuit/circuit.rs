@@ -720,4 +720,22 @@ mod tests {
     //     let s = "012;123;234";
     //     println!("{}", Circuit::from_string(s.to_string()).to_string());
     // }
+
+    use std::fs;
+    use std::fs::File;
+    use std::io::Write;
+    #[test]
+    pub fn test_canonicalization() {
+        let contents = fs::read_to_string("before_canon.txt")
+            .expect("Failed to read");
+        let mut circuit_a = CircuitSeq::from_string(&contents);
+
+        // Proceed as before
+        circuit_a.canonicalize();
+
+        let c_str = circuit_a.repr();
+        File::create("after_canon.txt")
+            .and_then(|mut f| f.write_all(c_str.as_bytes()))
+            .expect("Failed to write test_compression.txt");
+    }
 }
