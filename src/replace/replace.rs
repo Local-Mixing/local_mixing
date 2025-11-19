@@ -850,6 +850,7 @@ mod tests {
         assert!(found, "Permutation not found in any table!");
     }
     use std::fs;
+    use std::fs::File;
     #[test]
     fn test_compression_big_time() {
         let total_start = Instant::now();
@@ -898,6 +899,10 @@ mod tests {
                 stable_count = 0;
             }
         }
+
+        File::create("compressed.txt")
+        .and_then(|mut f| f.write_all(acc.repr().as_bytes()))
+        .expect("Failed to write butterfly_recent.txt");
         let t2_duration = t2_start.elapsed();
         println!(" Second compression finished in {:.2?}", t2_duration);
 
