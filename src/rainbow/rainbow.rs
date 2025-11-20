@@ -166,13 +166,14 @@ pub fn expand_m1(
 }
 
 pub fn build_and_process_all(
+    n: usize,
     persist_map: &Arc<std::collections::HashMap<Vec<u8>, HashSet<Vec<u8>>>>,
     circuit_store: &DashMap<Vec<u8>, HashSet<Vec<u8>>>,
     base_gates: Arc<Vec<[u8; 3]>>,
 ) {
     persist_map
         .par_iter()
-        .for_each(|(perm_blob, circuits_list)| {
+        .for_each(|(_perm_blob, circuits_list)| {
             circuits_list
                 .par_iter()
                 .for_each(|circuit| {
@@ -182,23 +183,30 @@ pub fn build_and_process_all(
                             let mut prepend_version = Vec::with_capacity(3 + circuit.len());
                             prepend_version.extend_from_slice(base_gate);
                             prepend_version.extend_from_slice(circuit);
+                            let mut q1 = CircuitSeq::from_blob(&prepend_version);
+                            q1.canonicalize();
+                            let c1_blob = q1.repr_blob();
+                            let q1_blob = q1.permutation(n).repr_blob(); 
 
                             let mut append_version = Vec::with_capacity(circuit.len() + 3);
                             append_version.extend_from_slice(circuit);
                             append_version.extend_from_slice(base_gate);
-
+                            let mut q2 = CircuitSeq::from_blob(&append_version);
+                            q2.canonicalize();
+                            let c2_blob = q2.repr_blob();
+                            let q2_blob = q2.permutation(n).repr_blob();
                             {
                                 let mut entry = circuit_store
-                                    .entry(perm_blob.clone())
+                                    .entry(q1_blob.clone())
                                     .or_insert(HashSet::new());
-                                entry.insert(prepend_version);
+                                entry.insert(c1_blob);
                             }
 
                             {
                                 let mut entry = circuit_store
-                                    .entry(perm_blob.clone())
+                                    .entry(q2_blob.clone())
                                     .or_insert(HashSet::new());
-                                entry.insert(append_version);
+                                entry.insert(c2_blob);
                             }
                         });
                 });
@@ -231,7 +239,7 @@ fn spawn_progress_tracker(total_circuits: i64, done: Arc<AtomicI64>) {
         let mut last_count = 0;
         loop {
             thread::sleep(Duration::from_secs(1));
-            if done.load(Ordering::Relaxed) != 0 { break; }
+            if done.load(Ordering::Relaxed) != 0 { break }
 
             let elapsed = start.elapsed().as_secs_f64();
             let ci = CKT_I.load(Ordering::Relaxed) as f64;
