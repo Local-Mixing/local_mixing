@@ -147,52 +147,23 @@ fn process_pr(pr: PR, circuit_store: &DashMap<Vec<u8>, PermStore>) {
 //add to dashmap (perm_blob, permstore)
 pub fn expand_m1(
     n: usize,
-    circuit_store: &DashMap<Vec<u8>, PermStore>,
+    circuit_store: &DashMap<Vec<u8>, Vec<Vec<u8>>>,
 ) {
     let gates = base_gates(n);
 
     for &gate in gates.iter() {
         // build circuit length 1
         let mut c = CircuitSeq { gates: vec![gate] };
-
-        CKT_I.fetch_add(1, Ordering::Relaxed);
         c.canonicalize();
 
         // compute permutation
         let p = c.permutation(n);
-        let ph = p.repr_blob();
-        let ip = p.invert().repr_blob();
-        let own_inv = ph == ip;
-
-        OWN_INV_COUNT.fetch_add(1, Ordering::Relaxed);
-
-        if !own_inv && circuit_store.contains_key(&ip) {
-            SKIP_INV.fetch_add(1, Ordering::Relaxed);
-            continue
+        let perm_blob = p.repr_blob();
+        let c_blob = c.repr_blob();
+        let mut entry = circuit_store.entry(perm_blob.clone()).or_insert(Vec::new());
+        if !entry.iter().any(|e| e == &c_blob) {
+            entry.push(c_blob);
         }
-
-        let mut entry = circuit_store
-            .entry(ph.clone())
-            .or_insert_with(|| PermStore::new_perm_store(p.clone()));
-
-        let repr = c.repr_blob();
-        let can_per = p.canonical();
-        let is_canonical = p == can_per.perm;
-
-        if is_canonical {
-            if entry.contains_canonical {
-                entry.add_circuit(&repr);
-            } else {
-                entry.replace(&repr);
-            }
-            entry.contains_canonical = true;
-        } else if !entry.contains_any_circuit {
-            entry.add_circuit(&repr);
-        } else {
-            entry.increment();
-        }
-
-        entry.contains_any_circuit = true;
     }
 }
 
