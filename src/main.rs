@@ -343,7 +343,7 @@ fn main() {
             // println!("Using seed: {}", seed);
             if data.trim().is_empty() {
                 // Open DB connection
-                let mut conn = Connection::open_with_flags("./db/circuits.db",OpenFlags::SQLITE_OPEN_READ_ONLY,).expect("Failed to open DB (read-only)");
+                let mut conn = Connection::open_with_flags("./circuits.db",OpenFlags::SQLITE_OPEN_READ_ONLY,).expect("Failed to open DB (read-only)");
                 conn.execute_batch(
                     "
                     PRAGMA synchronous = NORMAL;
@@ -362,7 +362,7 @@ fn main() {
                 let c = CircuitSeq::from_string(&data);
 
                 // Open DB connection
-                let mut conn = Connection::open_with_flags("./db/circuits.db",OpenFlags::SQLITE_OPEN_READ_ONLY,).expect("Failed to open DB (read-only)");
+                let mut conn = Connection::open_with_flags("./circuits.db",OpenFlags::SQLITE_OPEN_READ_ONLY,).expect("Failed to open DB (read-only)");
                 conn.execute_batch(
                     "
                     PRAGMA synchronous = NORMAL;
