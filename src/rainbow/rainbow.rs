@@ -197,99 +197,44 @@ pub fn expand_m1(
 }
 
 pub fn build_and_process_all(
-    n: usize,   
-    m: usize,                                                              
-    persist_map: &Arc<std::collections::HashMap<Vec<u8>, PersistPermStore>>,
-    circuit_store: &DashMap<Vec<u8>, PermStore>,   
-    base_gates: Arc<Vec<[u8; 3]>>,             
+    persist_map: &Arc<std::collections::HashMap<Vec<u8>, Vec<Vec<u8>>>>,
+    circuit_store: &DashMap<Vec<u8>, Vec<Vec<u8>>>,
+    base_gates: Arc<Vec<[u8; 3]>>,
 ) {
-    persist_map.par_iter().for_each(|(_key, persist)| {
-        // iterate each stored circuit for this persisted permutation
-        let base_gates = base_gates.clone();
+    // Parallel over persist_map, but inner insertions must NOT hold mutable refs across threads.
+    persist_map.par_iter().for_each(|(perm_blob, circuits_list)| {
+        circuits_list.par_iter().for_each(|circuit| {
+            base_gates.par_iter().for_each(|base_gate| {
+                // Prepend
+                let mut prepend_version = Vec::with_capacity(3 + circuit.len());
+                prepend_version.extend_from_slice(&CircuitSeq::repr_blob_gate(base_gate));
+                prepend_version.extend_from_slice(circuit);
 
-        for circuit_blob in &persist.circuits {
-            // reconstruct original circuit
-            let c0 = CircuitSeq::from_blob(circuit_blob);
+                // Append
+                let mut append_version = Vec::with_capacity(circuit.len() + 3);
+                append_version.extend_from_slice(circuit);
+                append_version.extend_from_slice(&CircuitSeq::repr_blob_gate(base_gate));
 
-            let gates0 = &c0.gates;
-
-            for &gate in base_gates.iter() {
-                // Skip if consecutive duplicate
-                if m >= 1 && gates0[m - 2] == gate {
-                    continue
+                let mut entry = circuit_store.entry(perm_blob.clone()).or_insert(Vec::new());
+                if !entry.iter().any(|e| e == &prepend_version) {
+                    entry.push(prepend_version);
                 }
-
-                let mut q1_gates: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
-                q1_gates.extend_from_slice(gates0);
-                q1_gates.push(gate);
-
-                let mut q1 = CircuitSeq { gates: q1_gates.into_vec() };
-
-
-                let mut q2_gates: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
-                q2_gates.push(gate);
-                q2_gates.extend_from_slice(gates0);
-
-                let mut q2 = CircuitSeq { gates: q2_gates.into_vec() };
-
-                for c in [&mut q1, &mut q2] {
-                    CKT_I.fetch_add(1, Ordering::Relaxed);
-                    c.canonicalize();
-
-                    if c.adjacent_id() {
-                        SKIP_ID.fetch_add(1, Ordering::Relaxed);
-                        continue
-                    }
-
-                    let p = c.permutation(n);
-                    let ph = p.repr_blob();
-                    let ip = p.invert().repr_blob();
-                    let own_inv = ph == ip;
-
-                    if own_inv { OWN_INV_COUNT.fetch_add(1, Ordering::Relaxed); }
-
-                    // already contains inverse
-                    if !own_inv && circuit_store.contains_key(&ip) {
-                        SKIP_INV.fetch_add(1, Ordering::Relaxed);
-                        continue
-                    }
-
-                    let mut entry = circuit_store
-                        .entry(ph.clone())
-                        .or_insert_with(|| PermStore::new_perm_store(p.clone()));
-
-                    let repr = c.repr_blob();
-                    let can_per = p.canonical();
-                    let is_canonical = p == can_per.perm;
-
-                    if is_canonical {
-                        if entry.contains_canonical {
-                            entry.add_circuit(&repr);
-                        } else {
-                            entry.replace(&repr);
-                        }
-                        entry.contains_canonical = true;
-                    } else if !entry.contains_any_circuit {
-                        entry.add_circuit(&repr);
-                    } else {
-                        entry.increment();
-                    }
-
-                    entry.contains_any_circuit = true;
+                if !entry.iter().any(|e| e == &append_version) {
+                    entry.push(append_version);
                 }
-            }
-        } //circuit
-    }); // end par_iter for_each
+            });
+        });
+    });
 }
 
 /// Convert DashMap into HashMap and save
-fn save_circuit_store(n: usize, m: usize, circuit_store: &DashMap<Vec<u8>, PermStore>) {
+fn save_circuit_store(n: usize, m: usize, circuit_store: &DashMap<Vec<u8>, Vec<Vec<u8>>>) {
     let mut save_map = HashMap::new();
     for r in circuit_store.iter() {
         let v = r.value();
         save_map.insert(
             r.key().clone(),
-            database::make_persist(v.perm.clone(), v.circuits.clone(), v.count)
+            v.clone(),
         );
     }
     Persist::save(n, m, &save_map);
@@ -340,7 +285,7 @@ pub fn main_rainbow_load(n: usize, m: usize, _load: &str) {
     canonical::init(n);
 
     if m == 1 {
-        let circuit_store: Arc<DashMap<Vec<u8>, PermStore>> = Arc::new(DashMap::new());
+        let circuit_store: Arc<DashMap<Vec<u8>, Vec<Vec<u8>>>> = Arc::new(DashMap::new());
         let done = Arc::new(AtomicI64::new(0));
 
         expand_m1(n, &circuit_store);
@@ -351,15 +296,15 @@ pub fn main_rainbow_load(n: usize, m: usize, _load: &str) {
     } else {
         let store = Persist::load(n, m);
         let store_arc = Arc::new(store);
-        let prev_count: i64 = store_arc.values().map(|p| p.circuits.len() as i64).sum();
+        let prev_count: i64 = store_arc.values().map(|p| p.len() as i64).sum();
         let total_circuits = 2 * prev_count * (base_gates.len() as i64);
 
-        let circuit_store: Arc<DashMap<Vec<u8>, PermStore>> = Arc::new(DashMap::new());
+        let circuit_store: Arc<DashMap<Vec<u8>, Vec<Vec<u8>>>> = Arc::new(DashMap::new());
         let done = Arc::new(AtomicI64::new(0));
 
         spawn_progress_tracker(total_circuits, Arc::clone(&done));
 
-        build_and_process_all(n, m, &store_arc, &circuit_store, base_gates);
+        build_and_process_all(&store_arc, &circuit_store, base_gates);
 
         done.store(1, Ordering::Relaxed);
 

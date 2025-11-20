@@ -8,7 +8,6 @@ use std::{
     io::{BufReader, BufWriter},
 };
 
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PersistPermStore {
     pub perm: Permutation,
@@ -20,11 +19,11 @@ pub struct PersistPermStore {
 pub struct Persist {
     pub wires: usize,
     pub gates: usize,
-    pub store: HashMap<Vec<u8>, PersistPermStore>,
+    pub store: HashMap<Vec<u8>, Vec<Vec<u8>>>,
 }
 
 impl Persist {
-    pub fn save(n: usize, m: usize, store: &HashMap<Vec<u8>, PersistPermStore>) {
+    pub fn save(n: usize, m: usize, store: &HashMap<Vec<u8>, Vec<Vec<u8>>>) {
         let file = File::create(format!("./db/n{}m{}.bin", n, m))
             .expect("Failed to create file");
         let writer = BufWriter::new(file);
@@ -38,7 +37,7 @@ impl Persist {
     }
 
     //correctly loads the file for m-1 db
-    pub fn load(n: usize, m: usize) -> HashMap<Vec<u8>, PersistPermStore> {
+    pub fn load(n: usize, m: usize) -> HashMap<Vec<u8>, Vec<Vec<u8>>> {
         let filename = format!("./db/n{}m{}.bin", n, m - 1);
 
         let file = File::open(&filename)

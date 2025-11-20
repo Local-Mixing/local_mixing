@@ -40,3 +40,4 @@ colorgrad = "0.6"
 plotters = "0.3"
 pyo3 = { version = "0.27.1", features = ["extension-module"] }
 numpy = "0.27.0"
+ahash = { version = "0.8.12", features = ["serde"] }

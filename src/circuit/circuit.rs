@@ -309,6 +309,14 @@ impl CircuitSeq {
         blob
     }
 
+    pub fn repr_blob_gate(gate: &[u8;3]) -> Vec<u8> {
+        let mut blob = Vec::with_capacity(3);
+        blob.push(gate[0] as u8);
+        blob.push(gate[1] as u8);
+        blob.push(gate[2] as u8);
+        blob
+    }
+
     /// Reconstruct CircuitSeq from a BLOB
     pub fn from_blob(blob: &[u8]) -> Self {
         assert!(blob.len() % 3 == 0, "Invalid blob length");

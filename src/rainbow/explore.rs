@@ -5,6 +5,7 @@ use std::cmp::min as std_min;
 use std::cmp::max as std_max;
 use crate::rainbow::database::Persist;
 
+use crate::circuit::Permutation;
 use std::fs::File;
 use std::io::BufReader;
 
@@ -131,25 +132,25 @@ pub fn explore_db(n:usize, m:usize) {
     let mut n_circuits = 0;
     let mut singles = 0;
 
-    for val in persist.store.values() {
-        let cyc = val.perm.to_cycle();
+    for (key, circuits) in &persist.store {
+        let cyc = Permutation::from_blob(&key).to_cycle();
         let order = order(&cyc);
 
         diff_hamming.insert(format!("{:?}", ham_diff(&cyc)), true);
 
         if cyc.len() == 0 {
             saw_id = true;
-            println!("{} id circuit", val.circuits.len());
-            for circ in &val.circuits {
+            println!("{} id circuit", circuits.len());
+            for circ in circuits {
                 println!("{}", CircuitSeq::from_blob(&circ).to_string(n));
             }   
         }
 
-        for circ in &val.circuits {
+        for circ in circuits {
             println!("{}", CircuitSeq::from_blob(&circ).to_string(n));
         }   
 
-        let pop = val.circuits.len();
+        let pop = circuits.len();
         if pop > most_stored {
             popular_perm = cyc;
             with_most_popular = 1;
