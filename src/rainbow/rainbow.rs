@@ -197,7 +197,7 @@ pub fn build_and_process_all(
                             let q2_blob = q2.permutation(n).repr_blob();
 
                             CKT_I.fetch_add(2, Ordering::Relaxed);
-
+                            if !q1.adjacent_id()
                             {
                                 let mut entry = circuit_store
                                     .entry(q1_blob.clone())
@@ -205,6 +205,7 @@ pub fn build_and_process_all(
                                 entry.insert(c1_blob);
                             }
 
+                            if !q2.adjacent_id()
                             {
                                 let mut entry = circuit_store
                                     .entry(q2_blob.clone())
