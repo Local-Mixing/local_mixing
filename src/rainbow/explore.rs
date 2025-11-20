@@ -146,9 +146,9 @@ pub fn explore_db(n:usize, m:usize) {
             }   
         }
 
-        for circ in circuits {
-            println!("{}", CircuitSeq::from_blob(&circ).to_string(n));
-        }   
+        // for circ in circuits {
+        //     println!("{}", CircuitSeq::from_blob(&circ).to_string(n));
+        // }   
 
         let pop = circuits.len();
         if pop > most_stored {
