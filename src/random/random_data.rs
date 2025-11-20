@@ -1022,7 +1022,7 @@ pub fn build_from_sql(
     // Spawn insertion thread
     let insert_handle = thread::spawn(move || {
         let mut insert_conn =
-            Connection::open("./db/circuits.db").expect("Failed to open DB in insert thread");
+            Connection::open("./circuits.db").expect("Failed to open DB in insert thread");
 
         let total_circuits: usize = (total_rows as usize) * base_gates_for_thread.len() * 2; // total circuits to process
         let mut attempted_inserts = 0;
@@ -1148,7 +1148,7 @@ pub fn build_from_sql(
 //Speed up SQL queries
 //Should not see for a particular size query, the speed should not vary across multiple runs
 pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
-    let mut conn = Connection::open("./db/circuits.db").expect("Failed to open DB");
+    let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
     let table_name = format!("n{}m{}", n, m);
     create_table(&mut conn, &table_name).expect("Failed to create table");
 

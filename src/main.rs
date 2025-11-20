@@ -295,7 +295,7 @@ fn main() {
             // main_rainbow_load(n, m, "./db");
             
             // Open DB connection
-            let mut conn = Connection::open("./db/circuits.db").expect("Failed to open DB");
+            let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
             conn.execute_batch(
                     "
                     PRAGMA synchronous = OFF;
