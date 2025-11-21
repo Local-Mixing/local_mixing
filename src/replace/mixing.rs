@@ -381,11 +381,11 @@ pub fn butterfly_big(
     // Add bookends: R ... R*
     acc = r.concat(&acc).concat(&r_inv);
     println!("After adding bookends: {} gates", acc.gates.len());
-
+    let mut milestone = initial_milestone(acc.gates.len());
     // Final global compression (until stable 3x)
     let mut stable_count = 0;
     while stable_count < 3 {
-        let mut milestone = initial_milestone(acc.gates.len());
+        
         if acc.gates.len() <= milestone {
             let mut f = OpenOptions::new()
                 .create(true)
@@ -528,11 +528,10 @@ pub fn abutterfly_big(
     acc = first_r.concat(&acc).concat(&prev_r_inv);
 
     println!("After adding bookends: {} gates", acc.gates.len());
-
+    let mut milestone = initial_milestone(acc.gates.len());
     // Final global compression until stable 3×
     let mut stable_count = 0;
     while stable_count < 3 {
-        let mut milestone = initial_milestone(acc.gates.len());
         if acc.gates.len() <= milestone {
             let mut f = OpenOptions::new()
                 .create(true)
