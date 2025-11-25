@@ -320,6 +320,8 @@ pub fn butterfly_big(
     c: &CircuitSeq,
     conn: &mut Connection,
     n: usize,
+    last: bool,
+    stop: usize,
 ) -> CircuitSeq {
     // Pick one random R
     let mut rng = rand::rng();
@@ -330,7 +332,6 @@ pub fn butterfly_big(
 
     let r = &r;           // reference is enough; read-only
     let r_inv = &r_inv;   // same
-
     // Parallel processing of gates
     let blocks: Vec<CircuitSeq> = c.gates
         .par_iter()
@@ -386,16 +387,16 @@ pub fn butterfly_big(
     let mut stable_count = 0;
     while stable_count < 3 {
         
-        if acc.gates.len() <= milestone {
-            let mut f = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("bcircuitlist.txt")
-                .expect("Could not open bcircuitlist.txt");
+        // if acc.gates.len() <= milestone {
+        //     let mut f = OpenOptions::new()
+        //         .create(true)
+        //         .append(true)
+        //         .open("bcircuitlist.txt")
+        //         .expect("Could not open bcircuitlist.txt");
 
-            writeln!(f, "{}", acc.repr()).unwrap();
-            milestone = next_milestone(milestone);
-        }
+        //     writeln!(f, "{}", acc.repr()).unwrap();
+        //     milestone = next_milestone(milestone);
+        // }
         let before = acc.gates.len();
 
         let k = if before > 10_000 {
@@ -431,7 +432,9 @@ pub fn butterfly_big(
         acc.gates = new_gates;
 
         let after = acc.gates.len();
-
+        if last && acc.gates.len() <= stop {
+            break
+        }
         if after == before {
             stable_count += 1;
             println!("  Final compression stable {}/3 at {} gates", stable_count, after);
@@ -465,6 +468,8 @@ pub fn abutterfly_big(
     c: &CircuitSeq,
     conn: &mut Connection,
     n: usize,
+    last: bool,
+    stop: usize,
 ) -> CircuitSeq {
     println!("Butterfly start: {} gates", c.gates.len());
     let mut rng = rand::rng();
@@ -532,16 +537,16 @@ pub fn abutterfly_big(
     // Final global compression until stable 3×
     let mut stable_count = 0;
     while stable_count < 3 {
-        if acc.gates.len() <= milestone {
-            let mut f = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("circuitlist.txt")
-                .expect("Could not open circuitlist.txt");
+        // if acc.gates.len() <= milestone {
+        //     let mut f = OpenOptions::new()
+        //         .create(true)
+        //         .append(true)
+        //         .open("circuitlist.txt")
+        //         .expect("Could not open circuitlist.txt");
 
-            writeln!(f, "{}", acc.repr()).unwrap();
-            milestone = next_milestone(milestone);
-        }
+        //     writeln!(f, "{}", acc.repr()).unwrap();
+        //     milestone = next_milestone(milestone);
+        // }
 
         let before = acc.gates.len();
 
@@ -578,7 +583,9 @@ pub fn abutterfly_big(
         let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
         acc.gates = new_gates;
         let after = acc.gates.len();
-        
+        if last && acc.gates.len() <= stop {
+            break
+        }
         if after == before {
             stable_count += 1;
             println!("  Final compression stable {}/3 at {} gates", stable_count, after);
@@ -913,11 +920,12 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
     // Repeat obfuscate + compress 'rounds' times
     let mut post_len = 0;
     let mut count = 0;
-    for _ in 0..rounds {
+    for i in 0..rounds {
+        let stop = 1000;
         circuit = if asymmetric {
-            abutterfly_big(&circuit, conn, n)
+            abutterfly_big(&circuit, conn, n, i != rounds-1, stop)
         } else {
-            butterfly_big(&circuit,conn,n)
+            butterfly_big(&circuit,conn,n, i != rounds-1, stop)
         };
         if circuit.gates.len() == 0 {
             break;
@@ -1126,7 +1134,7 @@ pub fn main_compression(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n:
     let mut post_len = 0;
     let mut count = 0;
     for _ in 0..rounds {
-            butterfly_big(&circuit,conn,n);
+            butterfly_big(&circuit,conn,n, false, 0);
         if circuit.gates.len() == 0 {
             break;
         }
