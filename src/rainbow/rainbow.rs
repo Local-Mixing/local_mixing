@@ -238,10 +238,15 @@ pub fn save_circuit_store(
     let mut writer = BufWriter::new(file);
 
     let keys: Vec<Vec<u8>> = store.iter().map(|r| r.key().clone()).collect();
-    for key in keys {
-        if let Some((k, v)) = store.remove(&key) {
-            bincode::serialize_into(&mut writer, &(k, v)).unwrap();
-        }
+
+    let serialized_entries: Vec<Vec<u8>> = keys
+        .into_par_iter()
+        .filter_map(|key| store.remove(&key))
+        .map(|(k, v)| bincode::serialize(&(k, v)).unwrap())
+        .collect();
+
+    for buf in serialized_entries {
+        writer.write_all(&buf).unwrap();
     }
 
     drop(store);
