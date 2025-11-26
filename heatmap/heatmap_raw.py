@@ -65,6 +65,7 @@ if __name__ == "__main__":
     parser.add_argument("--c2", type=str, required=False, help="Path to second circuit file")
     parser.add_argument("--chunk", type=int, default=10_000, help="Size of each chunk (default 10000)")
     parser.add_argument("--path", type=str, default="./heatmap.png", help="Path to the heatmap generation")
+    parser.add_argument("--canonless", action="store_true", help="Don't canonicalize before heatmap")
     args = parser.parse_args()
 
     flag = False
@@ -101,7 +102,7 @@ if __name__ == "__main__":
 
     else:
         print("Generating full heatmap...")
-        results = heatmap_rust.heatmap(args.n, args.i, flag, args.c1, args.c2)
+        results = heatmap_rust.heatmap(args.n, args.i, flag, args.c1, args.c2, not args.canonless)
         output = args.path
         plot_heatmap(results, output, xlabel=args.x, ylabel=args.y)
         print(f"Heatmap saved to {output}")

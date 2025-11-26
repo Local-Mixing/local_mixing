@@ -12,7 +12,7 @@ use numpy::ndarray::Array2;
 use std::io::{self, Write};
 
 #[pyfunction]
-fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: &str, c2: &str) -> Py<PyArray2<f64>> {
+fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: &str, c2: &str, canon: bool) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
     // Load circuits
@@ -22,8 +22,10 @@ fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: 
         .expect("Failed to read butterfly_recent.txt");
     let mut circuit_one = CircuitSeq::from_string(&circuit_one_str);
     let mut circuit_two = CircuitSeq::from_string(&circuit_two_str);
-    circuit_one.canonicalize();
-    circuit_two.canonicalize();
+    if canon {
+        circuit_one.canonicalize();
+        circuit_two.canonicalize();
+    }
     let circuit_one_len = circuit_one.gates.len();
     let circuit_two_len = circuit_two.gates.len();
 
