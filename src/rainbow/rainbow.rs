@@ -155,7 +155,7 @@ fn process_pr(pr: PR, circuit_store: &DashMap<Vec<u8>, PermStore>) {
 //add to dashmap (perm_blob, permstore)
 pub fn expand_m1(
     n: usize,
-    circuit_store: &DashMap<Vec<u8>, HashSet<Vec<u8>>>,
+    circuit_store: &DashMap<Vec<u8>, Vec<Vec<u8>>>,
 ) {
     let gates = base_gates(n);
 
@@ -166,15 +166,15 @@ pub fn expand_m1(
         let p = c.permutation(n);
         let perm_blob = p.repr_blob();
         let c_blob = c.repr_blob();
-        let mut entry = circuit_store.entry(perm_blob.clone()).or_insert(HashSet::new());
-        entry.insert(c_blob);
+        let mut entry = circuit_store.entry(perm_blob.clone()).or_insert(Vec::new());
+        entry.push(c_blob);
     }
 }
 
 pub fn build_and_process_all(
     n: usize,
-    persist_map: &Arc<std::collections::HashMap<Vec<u8>, HashSet<Vec<u8>>>>,
-    circuit_store: &DashMap<Vec<u8>, HashSet<Vec<u8>>>,
+    persist_map: &Arc<std::collections::HashMap<Vec<u8>, Vec<Vec<u8>>>>,
+    circuit_store: &DashMap<Vec<u8>, Vec<Vec<u8>>>,
     base_gates: Arc<Vec<[u8; 3]>>,
 ) {
     persist_map
@@ -209,18 +209,19 @@ pub fn build_and_process_all(
                             CKT_I.fetch_add(2, Ordering::Relaxed);
                             if !q1.adjacent_id() && !circuit_store.contains_key(&q1_inv_blob)
                             {
-                                let mut entry = circuit_store
-                                    .entry(q1_blob.clone())
-                                    .or_insert(HashSet::new());
-                                entry.insert(c1_blob);
+                                let mut entry = circuit_store.entry(q2_blob.clone()).or_insert(Vec::new());
+
+                                if !entry.iter().any(|v| *v == c2_blob) {
+                                    entry.push(c1_blob);
+                                }
                             }
 
-                            if !q2.adjacent_id() && !circuit_store.contains_key(&q2_inv_blob)
-                            {
-                                let mut entry = circuit_store
-                                    .entry(q2_blob.clone())
-                                    .or_insert(HashSet::new());
-                                entry.insert(c2_blob);
+                            if !q2.adjacent_id() && !circuit_store.contains_key(&q2_inv_blob) {
+                                let mut entry = circuit_store.entry(q2_blob.clone()).or_insert(Vec::new());
+
+                                if !entry.iter().any(|v| *v == c2_blob) {
+                                    entry.push(c2_blob);
+                                }
                             }
                         });
                 });
@@ -231,7 +232,7 @@ pub fn build_and_process_all(
 pub fn save_circuit_store(
     n: usize,
     m: usize,
-    store: Arc<DashMap<Vec<u8>, HashSet<Vec<u8>>>>,
+    store: Arc<DashMap<Vec<u8>, Vec<Vec<u8>>>>,
 ) {
     let path = format!("persistn{n}m{m}.bin");
     let file = File::create(&path).unwrap();
@@ -257,7 +258,7 @@ pub fn save_circuit_store(
     let mut result = HashMap::new();
 
     loop {
-        match bincode::deserialize_from::<_, (Vec<u8>, HashSet<Vec<u8>>)>(&mut reader) {
+        match bincode::deserialize_from::<_, (Vec<u8>, Vec<Vec<u8>>)>(&mut reader) {
             Ok((k, v)) => {
                 result.insert(k, v);
             }
@@ -343,7 +344,7 @@ pub fn main_rainbow_load(n: usize, m: usize, _load: &str) {
     canonical::init(n);
 
     if m == 1 {
-        let circuit_store: Arc<DashMap<Vec<u8>, HashSet<Vec<u8>>>> = Arc::new(DashMap::new());
+        let circuit_store: Arc<DashMap<Vec<u8>, Vec<Vec<u8>>>> = Arc::new(DashMap::new());
         let done = Arc::new(AtomicI64::new(0));
 
         expand_m1(n, &circuit_store);
@@ -357,7 +358,7 @@ pub fn main_rainbow_load(n: usize, m: usize, _load: &str) {
         let prev_count: i64 = store_arc.values().map(|p| p.len() as i64).sum();
         let total_circuits = 2 * prev_count * (base_gates.len() as i64);
 
-        let circuit_store: Arc<DashMap<Vec<u8>, HashSet<Vec<u8>>>> = Arc::new(DashMap::new());
+        let circuit_store: Arc<DashMap<Vec<u8>, Vec<Vec<u8>>>> = Arc::new(DashMap::new());
         let done = Arc::new(AtomicI64::new(0));
 
         spawn_progress_tracker(total_circuits, Arc::clone(&done));
