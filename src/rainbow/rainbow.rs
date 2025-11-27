@@ -234,46 +234,14 @@ pub fn save_circuit_store(
     m: usize,
     store: Arc<DashMap<Vec<u8>, Vec<Vec<u8>>>>,
 ) {
-    let path = format!("persistn{n}m{m}.bin");
-    let file = File::create(&path).unwrap();
-    let mut writer = BufWriter::new(file);
-
     let keys: Vec<Vec<u8>> = store.iter().map(|r| r.key().clone()).collect();
 
-    let serialized_entries: Vec<Vec<u8>> = keys
+    let result: HashMap<Vec<u8>, Vec<Vec<u8>>> = keys
         .into_par_iter()
         .filter_map(|key| store.remove(&key))
-        .map(|(k, v)| bincode::serialize(&(k, v)).unwrap())
         .collect();
 
-    for buf in serialized_entries {
-        writer.write_all(&buf).unwrap();
-    }
-
     drop(store);
-    writer.flush().unwrap();
-
-    let file = File::open(&path).unwrap();
-    let mut reader = BufReader::new(file);
-    let mut result = HashMap::new();
-
-    loop {
-        match bincode::deserialize_from::<_, (Vec<u8>, Vec<Vec<u8>>)>(&mut reader) {
-            Ok((k, v)) => {
-                result.insert(k, v);
-            }
-            Err(e) => {
-                if let bincode::ErrorKind::Io(ref io_err) = *e {
-                    if io_err.kind() == std::io::ErrorKind::UnexpectedEof {
-                        break;
-                    }
-                }
-                panic!("Deserialization error: {:?}", e);
-            }
-        }
-    }
-
-    std::fs::remove_file(&path).unwrap();
 
     println!("Loaded {} entries", result.len());
     Persist::save(n, m, result);
