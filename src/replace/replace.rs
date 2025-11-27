@@ -741,9 +741,24 @@ pub fn compress_bin(
 
         let perm_blob = canon_perm.perm.repr_blob();
         let sub_m = subcircuit.gates.len();
-
-        for smaller_m in 1..=sub_m {
-            let list = Persist::load(n, smaller_m);
+        let max = if n == 8 {
+            3
+        } else if n == 7 {
+            3
+        } else if n == 6 {
+            4
+        } else if n == 5 {
+            5
+        } else if n == 4 {
+            6
+        } else if n == 3 {
+            12
+        } else {
+            0
+        };
+        let min = min(max, sub_m);
+        for smaller_m in 1..=min {
+            let list = Persist::load_use(n, smaller_m);
 
             if let Some(rows) = list.get(&perm_blob) {
                 if let Some(blob) = rows.iter().choose(&mut rand::rng()) {
