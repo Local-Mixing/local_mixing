@@ -67,6 +67,37 @@ impl Persist {
         map
     }
 
+    //correctly loads the file for m-1 db
+    pub fn load_use(
+        n: usize,
+        m: usize,
+    ) -> HashMap<Vec<u8>, Vec<Vec<u8>>> {
+        let path = format!("./db/n{n}m{}.bin", m);
+        let mut reader = std::io::BufReader::new(
+            std::fs::File::open(&path).unwrap()
+        );
+
+        let mut map = HashMap::new();
+
+        loop {
+            match bincode::deserialize_from::<_, (Vec<u8>, Vec<Vec<u8>>)>(&mut reader) {
+                Ok((k, v)) => {
+                    map.insert(k, v);
+                }
+                Err(e) => {
+                    if let bincode::ErrorKind::Io(ref io_err) = *e {
+                        if io_err.kind() == std::io::ErrorKind::UnexpectedEof {
+                            break;
+                        }
+                    }
+                    panic!("Deserialization error: {:?}", e);
+                }
+            }
+        }
+
+        map
+    }
+
 }
 
 pub fn make_persist(perm: Permutation, circuits: HashMap<Vec<u8>, bool>, count: usize) -> PersistPermStore {
