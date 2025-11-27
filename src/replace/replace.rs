@@ -613,10 +613,10 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
 
         // let compress_start = Instant::now();
         let subcircuit_temp = if subcircuit.gates.len() <= 200 {
-            compress(&subcircuit, 100, conn, &bit_shuf, sub_num_wires)
+            compress_bin(&subcircuit, 100, &bit_shuf, sub_num_wires)
         } else {
             println!("Too big for exhaust: Len = {}", subcircuit.gates.len());
-            compress(&subcircuit, 25_000, conn, &bit_shuf, sub_num_wires)
+            compress_bin(&subcircuit, 25_000, &bit_shuf, sub_num_wires)
         };
         // time_compress += compress_start.elapsed().as_millis();
 
