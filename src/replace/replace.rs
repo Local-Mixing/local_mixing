@@ -368,7 +368,7 @@ pub fn compress(
                     let final_check = repl.permutation(n);
                     PERMUTATION_TIME.fetch_add(t5.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                    let sub_perm = Permutation::from_blob(&canon_perm_blob).compose(&Permutation::from_blob(&canon_shuf_blob).invert());
+                    let sub_perm = Permutation::from_blob(&canon_perm_blob).bit_shuffle(&Permutation::from_blob(&canon_shuf_blob).invert().data);
 
                     if final_check != sub_perm {
                         panic!("Replacement permutation mismatch!");
@@ -658,10 +658,10 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
             let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
             if !gates.is_empty() {
                 subcircuit_gates = gates;
+                if set_size >= 16 {
+                    println!("Found {}", set_size);
+                }
                 break;
-            }
-            if set_size >= 16 {
-                println!("Found {}", set_size);
             }
         }
         // time_convex_find += convex_find_start.elapsed().as_millis();
