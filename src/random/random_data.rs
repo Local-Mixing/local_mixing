@@ -11,6 +11,8 @@ use rand::{
     prelude::IndexedRandom,
     Rng, RngCore,
 };
+use rayon::prelude::*;
+use std::cell::RefCell;
 use std::ptr;
 use rayon::{
     iter::{IntoParallelRefIterator, ParallelIterator},
@@ -700,71 +702,75 @@ impl Permutation {
         self.canon(bit_shuf, false)
     }
 
+    thread_local! {
+        static BITS: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+        static INDEX_SHUF: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+        static PERM_SHUF: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+    }
+
     pub fn brute(&self, bit_shuf: &[Vec<usize>]) -> Canonicalization {
-        if bit_shuf.is_empty() {
-            panic!("bit_shuf cannot be empty!");
-        }
+        assert!(!bit_shuf.is_empty());
 
         let n = self.data.len();
         let num_b = usize::BITS as usize - (n - 1).leading_zeros() as usize;
+        let data = &self.data;
 
-        let mut min_perm = self.data.clone();
-        let mut bits = vec![0usize; n];
-        let mut index_shuf = vec![0usize; n];
-        let mut perm_shuf = vec![0usize; n];
+        let best = bit_shuf
+            .par_iter()
+            .map(|r| {
+                // thread-local scratch buffers
+                let mut bits_ref = Self::BITS.with(|b| {
+                    let mut v = b.borrow_mut();
+                    if v.len() < n { v.resize(n, 0); }
+                    unsafe { ptr::write_bytes(v.as_mut_ptr(), 0, n); }
+                    v
+                });
 
-        let mut best_shuffle = Permutation::id_perm(num_b);
+                let mut index_ref = Self::INDEX_SHUF.with(|i| {
+                    let mut v = i.borrow_mut();
+                    if v.len() < n { v.resize(n, 0); }
+                    unsafe { ptr::write_bytes(v.as_mut_ptr(), 0, n); }
+                    v
+                });
 
-        for r in bit_shuf.iter() {
-            for (src, &dst) in r.iter().enumerate() {
-                let shift = dst;
+                let mut perm_ref = Self::PERM_SHUF.with(|p| {
+                    let mut v = p.borrow_mut();
+                    if v.len() < n { v.resize(n, 0); }
+                    v
+                });
+
+                // Apply bit shuffle
+                for (src, &dst) in r.iter().enumerate() {
+                    for i in 0..n {
+                        let val = unsafe { *data.get_unchecked(i) };
+                        let bit = (val >> src) & 1;
+                        let idx = (i >> src) & 1;
+
+                        unsafe {
+                            *bits_ref.get_unchecked_mut(i) |= bit << dst;
+                            *index_ref.get_unchecked_mut(i) |= idx << dst;
+                        }
+                    }
+                }
+
                 for i in 0..n {
-                    let val = unsafe { *self.data.get_unchecked(i) };
-                    let bit = (val >> src) & 1;
-                    let idx = (i >> src) & 1;
-                    unsafe {
-                        *bits.get_unchecked_mut(i) |= bit << shift;
-                        *index_shuf.get_unchecked_mut(i) |= idx << shift;
-                    }
+                    let idx = unsafe { *index_ref.get_unchecked(i) };
+                    let v = unsafe { *bits_ref.get_unchecked(i) };
+                    unsafe { *perm_ref.get_unchecked_mut(idx) = v };
                 }
-            }
 
-            for i in 0..n {
-                let idx = unsafe { *index_shuf.get_unchecked(i) };
-                let v = unsafe { *bits.get_unchecked(i) };
-                unsafe { *perm_shuf.get_unchecked_mut(idx) = v };
-            }
-
-            for weight in 0..=num_b / 2 {
-                let mut done = false;
-                for idx in canonical::index_set(weight, num_b) {
-                    let p_val = unsafe { *perm_shuf.get_unchecked(idx) };
-                    let m_val = unsafe { *min_perm.get_unchecked(idx) };
-
-                    if p_val == m_val {
-                        continue;
-                    }
-                    if p_val < m_val {
-                        min_perm.copy_from_slice(&perm_shuf);
-                        best_shuffle.data.copy_from_slice(r);
-                    }
-                    done = true;
-                    break;
-                }
-                if done {
-                    break;
-                }
-            }
-
-            unsafe {
-                ptr::write_bytes(bits.as_mut_ptr(), 0, n);
-                ptr::write_bytes(index_shuf.as_mut_ptr(), 0, n);
-            }
-        }
+                (perm_ref.clone(), r.clone())
+            })
+            .reduce(
+                || (vec![usize::MAX; n], vec![usize::MAX; num_b]),
+                |(perm_a, r_a), (perm_b, r_b)| {
+                    if perm_b < perm_a { (perm_b, r_b) } else { (perm_a, r_a) }
+                },
+            );
 
         Canonicalization {
-            perm: Permutation { data: min_perm },
-            shuffle: best_shuffle,
+            perm: Permutation { data: best.0 },
+            shuffle: Permutation { data: best.1 },
         }
     }
 
