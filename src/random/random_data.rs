@@ -11,8 +11,6 @@ use rand::{
     prelude::IndexedRandom,
     Rng, RngCore,
 };
-use rayon::prelude::*;
-use std::cell::RefCell;
 use std::ptr;
 use rayon::{
     iter::{IntoParallelRefIterator, ParallelIterator},
@@ -702,69 +700,80 @@ impl Permutation {
         self.canon(bit_shuf, false)
     }
 
-    thread_local! {
-        static BITS: RefCell<Vec<usize>> = RefCell::new(Vec::new());
-        static INDEX_SHUF: RefCell<Vec<usize>> = RefCell::new(Vec::new());
-        static PERM_SHUF: RefCell<Vec<usize>> = RefCell::new(Vec::new());
-    }
-
     pub fn brute(&self, bit_shuf: &[Vec<usize>]) -> Canonicalization {
-        assert!(!bit_shuf.is_empty());
+        if bit_shuf.is_empty() {
+            panic!("bit_shuf cannot be empty!");
+        }
 
         let n = self.data.len();
         let num_b = usize::BITS as usize - (n - 1).leading_zeros() as usize;
+
         let data = &self.data;
 
         let best = bit_shuf
             .par_iter()
             .map(|r| {
                 // thread-local scratch buffers
-                let mut bits_ref = Self::BITS.with(|b| {
-                    let mut v = b.borrow_mut();
-                    if v.len() < n { v.resize(n, 0); }
-                    unsafe { ptr::write_bytes(v.as_mut_ptr(), 0, n); }
-                    v
-                });
+                let mut bits = vec![0usize; n];
+                let mut index_shuf = vec![0usize; n];
+                let mut perm_shuf = vec![0usize; n];
 
-                let mut index_ref = Self::INDEX_SHUF.with(|i| {
-                    let mut v = i.borrow_mut();
-                    if v.len() < n { v.resize(n, 0); }
-                    unsafe { ptr::write_bytes(v.as_mut_ptr(), 0, n); }
-                    v
-                });
-
-                let mut perm_ref = Self::PERM_SHUF.with(|p| {
-                    let mut v = p.borrow_mut();
-                    if v.len() < n { v.resize(n, 0); }
-                    v
-                });
-
-                // Apply bit shuffle
+                // apply bit shuffle r
                 for (src, &dst) in r.iter().enumerate() {
+                    let shift = dst;
                     for i in 0..n {
                         let val = unsafe { *data.get_unchecked(i) };
                         let bit = (val >> src) & 1;
                         let idx = (i >> src) & 1;
 
                         unsafe {
-                            *bits_ref.get_unchecked_mut(i) |= bit << dst;
-                            *index_ref.get_unchecked_mut(i) |= idx << dst;
+                            *bits.get_unchecked_mut(i) |= bit << shift;
+                            *index_shuf.get_unchecked_mut(i) |= idx << shift;
                         }
                     }
                 }
 
+                // permute using index_shuf
                 for i in 0..n {
-                    let idx = unsafe { *index_ref.get_unchecked(i) };
-                    let v = unsafe { *bits_ref.get_unchecked(i) };
-                    unsafe { *perm_ref.get_unchecked_mut(idx) = v };
+                    let idx = unsafe { *index_shuf.get_unchecked(i) };
+                    let v = unsafe { *bits.get_unchecked(i) };
+                    unsafe { *perm_shuf.get_unchecked_mut(idx) = v };
                 }
 
-                (perm_ref.clone(), r.clone())
+                // compute minimum comparison result for THIS r
+                let mut is_better = false;
+                for weight in 0..=num_b / 2 {
+                    for idx in canonical::index_set(weight, num_b) {
+                        let p_val = unsafe { *perm_shuf.get_unchecked(idx) };
+                        let m_val = p_val; // we'll compare p_val elsewhere
+                        // We return perm_shuf unconditionally;
+                        // comparison happens globally.
+                        if p_val < m_val {
+                            is_better = true;
+                        }
+                        break;
+                    }
+                    break;
+                }
+
+                // Return pair (perm_shuf, r) for global minimization
+                (perm_shuf, r.to_vec())
             })
             .reduce(
-                || (vec![usize::MAX; n], vec![usize::MAX; num_b]),
+                || {
+                    // identity: "worst possible permutation"
+                    (
+                        vec![usize::MAX; n],
+                        vec![usize::MAX; num_b], // never chosen
+                    )
+                },
                 |(perm_a, r_a), (perm_b, r_b)| {
-                    if perm_b < perm_a { (perm_b, r_b) } else { (perm_a, r_a) }
+                    // lexicographic comparison to choose the smaller permutation
+                    if perm_b < perm_a {
+                        (perm_b, r_b)
+                    } else {
+                        (perm_a, r_a)
+                    }
                 },
             );
 
