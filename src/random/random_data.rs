@@ -11,6 +11,7 @@ use rand::{
     prelude::IndexedRandom,
     Rng, RngCore,
 };
+use std::ptr;
 use rayon::{
     iter::{IntoParallelRefIterator, ParallelIterator},
     slice::ParallelSlice,
@@ -705,36 +706,47 @@ impl Permutation {
         }
 
         let n = self.data.len();
-        let num_b = std::mem::size_of::<usize>() * 8 - (n - 1).leading_zeros() as usize;
+        let num_b = usize::BITS as usize - (n - 1).leading_zeros() as usize;
 
-        let mut min_perm: SmallVec<[usize; 64]> = SmallVec::from_slice(&self.data);
-        let mut bits: SmallVec<[usize; 64]> = SmallVec::from_elem(0, n);
-        let mut index_shuf: SmallVec<[usize; 64]> = SmallVec::from_elem(0, n);
-        let mut perm_shuf: SmallVec<[usize; 64]> = SmallVec::from_elem(0, n);
+        let mut min_perm = self.data.clone();
+        let mut bits = vec![0usize; n];
+        let mut index_shuf = vec![0usize; n];
+        let mut perm_shuf = vec![0usize; n];
 
         let mut best_shuffle = Permutation::id_perm(num_b);
 
         for r in bit_shuf.iter() {
             for (src, &dst) in r.iter().enumerate() {
-                for (i, &val) in self.data.iter().enumerate() {
-                    bits[i] |= ((val >> src) & 1) << dst;
-                    index_shuf[i] |= ((i >> src) & 1) << dst;
+                let shift = dst;
+                for i in 0..n {
+                    let val = unsafe { *self.data.get_unchecked(i) };
+                    let bit = (val >> src) & 1;
+                    let idx = (i >> src) & 1;
+                    unsafe {
+                        *bits.get_unchecked_mut(i) |= bit << shift;
+                        *index_shuf.get_unchecked_mut(i) |= idx << shift;
+                    }
                 }
             }
 
-            for (i, &val) in bits.iter().enumerate() {
-                perm_shuf[index_shuf[i]] = val;
+            for i in 0..n {
+                let idx = unsafe { *index_shuf.get_unchecked(i) };
+                let v = unsafe { *bits.get_unchecked(i) };
+                unsafe { *perm_shuf.get_unchecked_mut(idx) = v };
             }
 
             for weight in 0..=num_b / 2 {
                 let mut done = false;
-                for i in canonical::index_set(weight, num_b) {
-                    if perm_shuf[i] == min_perm[i] {
+                for idx in canonical::index_set(weight, num_b) {
+                    let p_val = unsafe { *perm_shuf.get_unchecked(idx) };
+                    let m_val = unsafe { *min_perm.get_unchecked(idx) };
+
+                    if p_val == m_val {
                         continue;
                     }
-                    if perm_shuf[i] < min_perm[i] {
+                    if p_val < m_val {
                         min_perm.copy_from_slice(&perm_shuf);
-                        best_shuffle.data.copy_from_slice(&r);
+                        best_shuffle.data.copy_from_slice(r);
                     }
                     done = true;
                     break;
@@ -744,12 +756,14 @@ impl Permutation {
                 }
             }
 
-            bits.fill(0);
-            index_shuf.fill(0);
+            unsafe {
+                ptr::write_bytes(bits.as_mut_ptr(), 0, n);
+                ptr::write_bytes(index_shuf.as_mut_ptr(), 0, n);
+            }
         }
 
         Canonicalization {
-            perm: Permutation { data: min_perm.into_vec() },
+            perm: Permutation { data: min_perm },
             shuffle: best_shuffle,
         }
     }

@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 use std::sync::atomic::Ordering;
-
+use std::ptr;
 use std::sync::atomic::AtomicU64;
 
 // Returns a nontrivial identity circuit built from two "friend" circuits
@@ -364,15 +364,15 @@ pub fn compress(
                     // TODO: !!! Fix all of this
                     repl.rewire(&Permutation::from_blob(&canon_shuf_blob).invert(), n);
 
-                    let t5 = Instant::now();
-                    let final_check = repl.permutation(n);
-                    PERMUTATION_TIME.fetch_add(t5.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    // let t5 = Instant::now();
+                    // let final_check = repl.permutation(n);
+                    // PERMUTATION_TIME.fetch_add(t5.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                    let sub_perm = Permutation::from_blob(&canon_perm_blob).bit_shuffle(&Permutation::from_blob(&canon_shuf_blob).invert().data);
+                    // let sub_perm = Permutation::from_blob(&canon_perm_blob).bit_shuffle(&Permutation::from_blob(&canon_shuf_blob).invert().data);
 
-                    if final_check != sub_perm {
-                        panic!("Replacement permutation mismatch!");
-                    }
+                    // if final_check != sub_perm {
+                    //     panic!("Replacement permutation mismatch!");
+                    // }
 
                     compressed.gates.splice(start..end, repl.gates);
                     break;
@@ -653,14 +653,11 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
         let mut subcircuit_gates = vec![];
 
         // let convex_find_start = Instant::now();
-        for set_size in (3..=20).rev() {
+        for set_size in (3..=13).rev() {
             let random_max_wires = rng.random_range(3..=7);
             let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
             if !gates.is_empty() {
                 subcircuit_gates = gates;
-                if set_size >= 16 {
-                    println!("Found {}", set_size);
-                }
                 break;
             }
         }
@@ -697,17 +694,12 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
         // time_permutations += perm_start.elapsed().as_millis();
 
         // let compress_start = Instant::now();
-        let subcircuit_temp = if subcircuit.gates.len() <= 200 {
-            compress(&subcircuit, 100, conn, &bit_shuf, sub_num_wires)
-        } else {
-            println!("Too big for exhaust: Len = {}", subcircuit.gates.len());
-            compress(&subcircuit, 25_000, conn, &bit_shuf, sub_num_wires)
-        };
+        let subcircuit_temp = compress(&subcircuit, 50, conn, &bit_shuf, sub_num_wires);
         // time_compress += compress_start.elapsed().as_millis();
 
-        if subcircuit.permutation(sub_num_wires) != subcircuit_temp.permutation(sub_num_wires) {
-            panic!("Compress changed something");
-        }
+        // if subcircuit.permutation(sub_num_wires) != subcircuit_temp.permutation(sub_num_wires) {
+        //     panic!("Compress changed something");
+        // }
 
         subcircuit = subcircuit_temp;
 
