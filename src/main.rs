@@ -556,7 +556,7 @@ fn main() {
         Some(("lmdb", sub)) => {
             let n: usize = *sub.get_one("n").unwrap();
             let m: usize = *sub.get_one("m").unwrap();
-            sql_to_lmdb("./circuits.db", n, m, "./db");
+            sql_to_lmdb(n, m);
         }
         _ => unreachable!(),
     }
@@ -738,66 +738,86 @@ pub fn analyze_gate_to_wires(circuit: &CircuitSeq, num_wires: usize, x: &str) ->
 use lmdb::{Environment, Database, WriteFlags, Transaction};
 use serde::{Serialize, Deserialize};
 use local_mixing::circuit::Permutation;
+use std::collections::HashMap;
 #[derive(Serialize, Deserialize)]
 struct CircuitList {
     ckts: Vec<Vec<u8>>,   // each entry = circuit blob
 }
 
-pub fn sql_to_lmdb(db_path: &str, n: usize, m: usize, lmdb_path: &str) {
-    let conn = Connection::open(db_path).expect("Failed to open SQLite DB");
+pub fn sql_to_lmdb(
+    n: usize,
+    m: usize,
+) -> Result<(), ()> {
+
+    let sqlite_path = "circuits.db";
+    let lmdb_path = "./db";
+    let map_size_bytes: usize = 800usize * 1024 * 1024 * 1024;
+    let batch_max_entries: usize = 100000;
+    
+    let conn = Connection::open(sqlite_path).expect("Failed to open sqlite database");
     let table = format!("n{}m{}", n, m);
 
-    fs::create_dir_all(lmdb_path).unwrap();
+    let query = format!("SELECT * FROM {}", table);
+    let mut stmt = conn.prepare(&query).expect("Failed to prepare SQLite query");
+    let mut rows = stmt.query([]).expect("Failed to query SQLite rows");
+
+    fs::create_dir_all(lmdb_path).expect("Failed to create LMDB directory");
     let env = Environment::new()
-        .set_max_dbs(33) 
-        .set_map_size(700 * 1024 * 1024 * 1024) 
+        .set_max_dbs(33)
+        .set_map_size(map_size_bytes)
         .open(Path::new(lmdb_path))
-        .unwrap();
+        .expect("Failed to open LMDB environment");
 
-    let db = env.create_db(Some(&table), lmdb::DatabaseFlags::empty()).unwrap();
+    let db = env.create_db(Some(&table), lmdb::DatabaseFlags::empty())
+        .expect("Failed to create LMDB database");
 
-    let mut stmt = conn
-        .prepare(&format!("SELECT * FROM {}", table))
-        .unwrap();
+    // track count per perm
+    let mut perm_counts: HashMap<Vec<u8>, u32> = HashMap::new();
 
-    let mut rows = stmt.query([]).unwrap();
+    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(batch_max_entries);
+    let mut rows_processed: u64 = 0;
 
-    let mut txn = env.begin_rw_txn().unwrap();
-    let mut batch_count = 0;
-    let batch_size = 100_000; 
-    let mut count = 0;
-    while let Some(row_result) = rows.next().unwrap() {
-        count += 1;
-        let circuit: Vec<u8> = row_result.get(0).unwrap();
-        let perm: Vec<u8> = row_result.get(1).unwrap();
-        let shuf: Vec<u8> = row_result.get(2).unwrap();
+    let flush = |env: &Environment, db: Database, batch: &mut Vec<(Vec<u8>, Vec<u8>)>| {
+        if batch.is_empty() { return; }
+        let mut txn = env.begin_rw_txn().expect("Failed to begin LMDB RW transaction");
+        for (key, value) in batch.iter() {
+            txn.put(db, key, value, WriteFlags::empty()).expect("Failed to write LMDB entry");
+        }
+        txn.commit().expect("Failed to commit LMDB transaction");
+        batch.clear();
+    };
 
-        let inv = Permutation::from_blob(&perm).invert().repr_blob();
+    while let Some(row) = rows.next().expect("Failed getting next SQLite row") {
+        rows_processed += 1;
 
-        // Skip if inverse is already in LMDB
-        if txn.get(db, &inv).is_ok() {
-            continue;
+        let circuit: Vec<u8> = row.get(0).expect("Failed to read column 'circuit'");
+        let perm: Vec<u8> = row.get(1).expect("Failed to read column 'perm'");
+        let shuf: Vec<u8> = row.get(2).expect("Failed to read column 'shuf'");
+
+        // get count for this perm
+        let count = perm_counts.entry(perm.clone()).or_insert(0);
+        let key = [perm.clone(), count.to_le_bytes().to_vec()].concat();
+        *count += 1;
+
+        // serialize value (circuit + shuf)
+        let value = bincode::serialize(&(circuit, shuf)).expect("Failed to serialize value");
+
+        batch.push((key, value));
+
+        if batch.len() >= batch_max_entries {
+            flush(&env, db, &mut batch);
         }
 
-        // Fetch existing list 
-        let mut existing: Vec<(Vec<u8>, Vec<u8>)> = match txn.get(db, &perm) {
-            Ok(data) => bincode::deserialize(data).unwrap(),
-            Err(_) => Vec::new(),
-        };
-
-        existing.push((circuit, shuf));
-        let serialized = bincode::serialize(&existing).unwrap();
-        txn.put(db, &perm, &serialized, WriteFlags::empty()).unwrap();
-
-        batch_count += 1;
-        if batch_count % batch_size == 0 {
-            txn.commit().unwrap();
-            txn = env.begin_rw_txn().unwrap(); 
+        if rows_processed % 100_000 == 0 {
+            println!("Processed {} in {}", rows_processed, table);
         }
     }
 
-    // Commit any remaining rows
-    txn.commit().unwrap();
+    if !batch.is_empty() {
+        flush(&env, db, &mut batch);
+    }
 
-    println!("{} Rows. Finished copying table {} into LMDB", count, table);
+    println!("Finished copying {} rows into LMDB table {}", rows_processed, table);
+
+    Ok(())
 }
