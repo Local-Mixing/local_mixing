@@ -794,6 +794,15 @@ pub fn sql_to_lmdb(
         let perm: Vec<u8> = row.get(1).expect("Failed to read column 'perm'");
         let shuf: Vec<u8> = row.get(2).expect("Failed to read column 'shuf'");
 
+        // check inverse
+        let inv = crate::Permutation::from_blob(&perm).invert().repr_blob();
+        let mut inv_key = inv.clone();
+        inv_key.extend_from_slice(&0u32.to_le_bytes()); 
+        let ro_txn = env.begin_ro_txn().expect("Failed to begin LMDB RO txn");
+        if ro_txn.get(db, &inv_key).is_ok() {
+            continue;
+        }
+
         // get count for this perm
         let count = perm_counts.entry(perm.clone()).or_insert(0);
         let key = [perm.clone(), count.to_le_bytes().to_vec()].concat();
