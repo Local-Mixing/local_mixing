@@ -286,6 +286,12 @@ fn main() {
                         .help("Circuit to analyze path"),
                 ),
         )
+        .subcommand(
+            Command::new("lmdb")
+                .about("Explore an existing database")
+                .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize))),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -547,6 +553,11 @@ fn main() {
 
             analyze_gate_to_wires(&c, n, xlabel).unwrap();
         }
+        Some(("lmdb", sub)) => {
+            let n: usize = *sub.get_one("n").unwrap();
+            let m: usize = *sub.get_one("m").unwrap();
+            sql_to_lmdb("./circuits.db", n, m, "./db");
+        }
         _ => unreachable!(),
     }
 }
@@ -722,4 +733,70 @@ pub fn analyze_gate_to_wires(circuit: &CircuitSeq, num_wires: usize, x: &str) ->
     root.present()?;
     println!("Saved to wire_plot.png");
     Ok(())
+}
+
+use lmdb::{Environment, Database, WriteFlags, Transaction};
+use serde::{Serialize, Deserialize};
+use local_mixing::circuit::Permutation;
+#[derive(Serialize, Deserialize)]
+struct CircuitList {
+    ckts: Vec<Vec<u8>>,   // each entry = circuit blob
+}
+
+pub fn sql_to_lmdb(db_path: &str, n: usize, m: usize, lmdb_path: &str) {
+    let conn = Connection::open(db_path).expect("Failed to open SQLite DB");
+    let table = format!("n{}m{}", n, m);
+
+    fs::create_dir_all(lmdb_path).unwrap();
+    let env = Environment::new()
+        .set_max_dbs(33) 
+        .set_map_size(700 * 1024 * 1024 * 1024) 
+        .open(Path::new(lmdb_path))
+        .unwrap();
+
+    let db = env.create_db(Some(&table), lmdb::DatabaseFlags::empty()).unwrap();
+
+    let mut stmt = conn
+        .prepare(&format!("SELECT * FROM {}", table))
+        .unwrap();
+
+    let mut rows = stmt.query([]).unwrap();
+
+    let mut txn = env.begin_rw_txn().unwrap();
+    let mut batch_count = 0;
+    let batch_size = 100_000; 
+
+    while let Some(row_result) = rows.next().unwrap() {
+        let circuit: Vec<u8> = row_result.get(0).unwrap();
+        let perm: Vec<u8> = row_result.get(1).unwrap();
+        let shuf: Vec<u8> = row_result.get(2).unwrap();
+
+        let inv = Permutation::from_blob(&perm).invert().repr_blob();
+
+        // Skip if inverse is already in LMDB
+        if txn.get(db, &inv).is_ok() {
+            continue;
+        }
+
+        // Fetch existing list 
+        let mut existing: Vec<(Vec<u8>, Vec<u8>)> = match txn.get(db, &perm) {
+            Ok(data) => bincode::deserialize(data).unwrap(),
+            Err(_) => Vec::new(),
+        };
+
+        existing.push((circuit, shuf));
+        let serialized = bincode::serialize(&existing).unwrap();
+        txn.put(db, &perm, &serialized, WriteFlags::empty()).unwrap();
+
+        batch_count += 1;
+        if batch_count % batch_size == 0 {
+            txn.commit().unwrap();
+            txn = env.begin_rw_txn().unwrap(); 
+        }
+    }
+
+    // Commit any remaining rows
+    txn.commit().unwrap();
+
+    println!("Finished copying table {} into LMDB", table);
 }
