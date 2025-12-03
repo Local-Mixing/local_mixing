@@ -433,9 +433,8 @@ pub fn find_convex_subcircuit<R: RngCore>(
             curr_wires = new_wires;
         }
 
-        if selected_gate_ctr >= 3 {
-            println!("selected_gate_ctr {}", selected_gate_ctr);
-            return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
+        if selected_gate_ctr >= set_size {
+            continue;
         }
 
         if !is_convex(num_wires, circuit, &selected_gate_idx[..selected_gate_ctr]) {
@@ -447,6 +446,7 @@ pub fn find_convex_subcircuit<R: RngCore>(
         //     curr_wires.len(),
         //     selected_gate_ctr
         // );
+        println!("{}", selected_gate_ctr);
         return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
     }
 }
