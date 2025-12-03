@@ -648,7 +648,6 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
         for set_size in (3..=13).rev() {
             let random_max_wires = rng.random_range(3..=7);
             let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
-            println!("{} found", gates.len());
             if !gates.is_empty() {
                 subcircuit_gates = gates;
                 break;
@@ -659,7 +658,8 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
         if subcircuit_gates.is_empty() {
             continue;
         }
-
+        println!("{} found", subcircuit_gates.len());
+        
         let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
         subcircuit_gates.sort();
 
