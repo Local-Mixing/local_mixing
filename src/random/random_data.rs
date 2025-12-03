@@ -433,7 +433,7 @@ pub fn find_convex_subcircuit<R: RngCore>(
             curr_wires = new_wires;
         }
 
-        if selected_gate_ctr <= set_size {
+        if selected_gate_ctr != set_size {
             continue;
         }
 
