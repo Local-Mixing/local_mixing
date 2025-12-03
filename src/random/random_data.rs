@@ -228,7 +228,7 @@ pub fn find_random_subcircuit<R: Rng>(
     }
 }
 
-// Given a circuit of num_wires, we try to find a convex subcircuit of up to max_wires. We can start in any of hte min_candidates
+// Given a circuit of num_wires, we try to find a convex subcircuit of up to max_wires. We can start in any of the min_candidates
 pub fn find_convex_subcircuit<R: RngCore>(
     set_size: usize,
     max_wires: usize,

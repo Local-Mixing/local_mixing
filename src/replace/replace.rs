@@ -220,6 +220,13 @@ pub fn random_subcircuit_max(circuit: &CircuitSeq, max_len: usize) -> (CircuitSe
 static PERMUTATION_TIME: AtomicU64 = AtomicU64::new(0);
 static SQL_TIME: AtomicU64 = AtomicU64::new(0);
 static CANON_TIME: AtomicU64 = AtomicU64::new(0);
+static CONVEX_FIND_TIME: AtomicU64 = AtomicU64::new(0);
+static CONTIGUOUS_TIME: AtomicU64 = AtomicU64::new(0);
+static REWIRE_TIME: AtomicU64 = AtomicU64::new(0);
+static COMPRESS_TIME: AtomicU64 = AtomicU64::new(0);
+static UNREWIRE_TIME: AtomicU64 = AtomicU64::new(0);
+static REPLACE_TIME: AtomicU64 = AtomicU64::new(0);
+static DEDUP_TIME: AtomicU64 = AtomicU64::new(0);
 
 pub fn compress(
     c: &CircuitSeq,
@@ -625,19 +632,6 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
-    // Accumulators for timing
-    // let mut time_dedup_init = 0;
-    // let mut time_convex_find = 0;
-    // let mut time_contiguous = 0;
-    // let mut time_rewire = 0;
-    // let mut time_permutations = 0;
-    // let mut time_compress = 0;
-    // let mut time_unrewire = 0;
-    // let mut time_replace = 0;
-    // let mut time_check_eq = 0;
-
-    // Initial deduplication
-    // let start_time = Instant::now();
     let mut i = 0;
     while i < circuit.gates.len().saturating_sub(1) {
         if circuit.gates[i] == circuit.gates[i + 1] {
@@ -647,12 +641,10 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
             i += 1;
         }
     }
-    // time_dedup_init += start_time.elapsed().as_millis();
 
     for _ in 0..trials {
+        let t0 = Instant::now();
         let mut subcircuit_gates = vec![];
-
-        // let convex_find_start = Instant::now();
         for set_size in (3..=13).rev() {
             let random_max_wires = rng.random_range(3..=7);
             let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
@@ -661,7 +653,7 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
                 break;
             }
         }
-        // time_convex_find += convex_find_start.elapsed().as_millis();
+        CONVEX_FIND_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         if subcircuit_gates.is_empty() {
             continue;
@@ -670,9 +662,9 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
         let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
         subcircuit_gates.sort();
 
-        // let contiguous_start = Instant::now();
+        let t1 = Instant::now();
         let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
-        // time_contiguous += contiguous_start.elapsed().as_millis();
+        CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let mut subcircuit = CircuitSeq { gates };
 
@@ -682,32 +674,28 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
             continue;
         }
 
-        // let rewire_start = Instant::now();
+        let t2 = Instant::now();
         let used_wires = subcircuit.used_wires();
         subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
-        // time_rewire += rewire_start.elapsed().as_millis();
+        REWIRE_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        // let perm_start = Instant::now();
+        let t3 = Instant::now();
         let sub_num_wires = used_wires.len();
         let perms: Vec<Vec<usize>> = (0..sub_num_wires).permutations(sub_num_wires).collect();
         let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
-        // time_permutations += perm_start.elapsed().as_millis();
+        PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        // let compress_start = Instant::now();
+        let t4 = Instant::now();
         let subcircuit_temp = compress_lmdb(&subcircuit, 50, conn, &bit_shuf, sub_num_wires, env);
-        // time_compress += compress_start.elapsed().as_millis();
-
-        // if subcircuit.permutation(sub_num_wires) != subcircuit_temp.permutation(sub_num_wires) {
-        //     panic!("Compress changed something");
-        // }
+        COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
 
-        // let unrewire_start = Instant::now();
+        let t5 = Instant::now();
         subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
-        // time_unrewire += unrewire_start.elapsed().as_millis();
+        UNREWIRE_TIME.fetch_add(t5.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        // let replace_start = Instant::now();
+        let t6 = Instant::now();
         let repl_len = subcircuit.gates.len();
         let old_len = end - start + 1;
 
@@ -726,16 +714,10 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
         } else {
             panic!("Replacement grew, which is not allowed");
         }
-        // time_replace += replace_start.elapsed().as_millis();
-
-        // let check_start = Instant::now();
-        // circuit
-        //     .probably_equal(&c, num_wires, 150_000)
-        //     .expect("Splice changed something");
-        // time_check_eq += check_start.elapsed().as_millis();
+        REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // let final_dedup_start = Instant::now();
+    let t7 = Instant::now();
     let mut i = 0;
     while i < circuit.gates.len().saturating_sub(1) {
         if circuit.gates[i] == circuit.gates[i + 1] {
@@ -745,18 +727,7 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
             i += 1;
         }
     }
-    // time_dedup_init += final_dedup_start.elapsed().as_millis();
-
-    // println!("Timing summary (ms):");
-    // println!("Initial + final dedup: {}", time_dedup_init);
-    // println!("Finding convex subcircuit: {}", time_convex_find);
-    // println!("Contiguous convex: {}", time_contiguous);
-    // println!("Rewire subcircuit: {}", time_rewire);
-    // println!("Permutations: {}", time_permutations);
-    // println!("Compression: {}", time_compress);
-    // println!("Unrewire: {}", time_unrewire);
-    // println!("Replacement: {}", time_replace);
-    // println!("Equality check: {}", time_check_eq);
+    DEDUP_TIME.fetch_add(t7.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     circuit
 }
@@ -1057,12 +1028,27 @@ pub fn print_compress_timers() {
     let perm = PERMUTATION_TIME.load(Ordering::Relaxed);
     let sql = SQL_TIME.load(Ordering::Relaxed);
     let canon = CANON_TIME.load(Ordering::Relaxed);
+    let compress = COMPRESS_TIME.load(Ordering::Relaxed);
+    let rewire = REWIRE_TIME.load(Ordering::Relaxed);
+    let unrewire = UNREWIRE_TIME.load(Ordering::Relaxed);
+    let convex_find = CONVEX_FIND_TIME.load(Ordering::Relaxed);
+    let contiguous = CONTIGUOUS_TIME.load(Ordering::Relaxed);
+    let replace = REPLACE_TIME.load(Ordering::Relaxed);
+    let dedup = DEDUP_TIME.load(Ordering::Relaxed);
 
-    println!("--- Compression Timing Totals ---");
-    println!("Permutation computation time: {} ms", perm);
-    println!("SQL lookup time: {} ms", sql);
-    println!("Canonicalization time: {} ms", canon);
+    println!("--- Compression Timing Totals (minutes) ---");
+    println!("Permutation computation time: {:.2} min", perm as f64 / 60_000_000_000.0);
+    println!("SQL lookup time: {:.2} min", sql as f64 / 60_000_000_000.0);
+    println!("Canonicalization time: {:.2} min", canon as f64 / 60_000_000_000.0);
+    println!("Compress LMDB time: {:.2} min", compress as f64 / 60_000_000_000.0);
+    println!("Rewire subcircuit time: {:.2} min", rewire as f64 / 60_000_000_000.0);
+    println!("Unrewire subcircuit time: {:.2} min", unrewire as f64 / 60_000_000_000.0);
+    println!("Convex subcircuit find time: {:.2} min", convex_find as f64 / 60_000_000_000.0);
+    println!("Contiguous convex subcircuit time: {:.2} min", contiguous as f64 / 60_000_000_000.0);
+    println!("Replacement time: {:.2} min", replace as f64 / 60_000_000_000.0);
+    println!("Deduplication time: {:.2} min", dedup as f64 / 60_000_000_000.0);
 }
+
 
 #[cfg(test)]
 mod tests {
