@@ -659,6 +659,7 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
             continue;
         }
         
+        println!("{}", subcircuit_gates.len());
         let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
         subcircuit_gates.sort();
 
