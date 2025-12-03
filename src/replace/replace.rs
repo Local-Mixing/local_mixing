@@ -904,8 +904,8 @@ pub fn compress_lmdb(
 
             if let Some((_key, val_blob)) = res {
 
-                let (repl_blob, repl_shuf) =
-                    decode_entry(&val_blob, n); 
+                let (repl_blob, repl_shuf): (Vec<u8>, Vec<u8>) =
+                    bincode::deserialize(&val_blob).expect("Failed to deserialize");
 
                 let mut repl = CircuitSeq::from_blob(&repl_blob);
 
