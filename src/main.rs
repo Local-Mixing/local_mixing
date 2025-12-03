@@ -478,7 +478,7 @@ fn main() {
             std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_readers(100000) 
+                .set_max_readers(10000) 
                 .set_max_dbs(33)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
