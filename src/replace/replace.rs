@@ -838,13 +838,13 @@ pub fn compress_lmdb(
         subcircuit.canonicalize();
 
         let max = if n == 7 {
-            4
+            3
         } else if n == 5 || n == 6 {
-            5
+            4
         } else if n == 4 {
             6
         } else {
-            12
+            10
         };
 
         let sub_m = subcircuit.gates.len();
