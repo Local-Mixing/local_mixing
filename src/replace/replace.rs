@@ -645,7 +645,7 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
     for _ in 0..trials {
         let t0 = Instant::now();
         let mut subcircuit_gates = vec![];
-        for set_size in (3..=5).rev() {
+        for set_size in (3..=13).rev() {
             let random_max_wires = rng.random_range(3..=7);
             let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
             if !gates.is_empty() {
