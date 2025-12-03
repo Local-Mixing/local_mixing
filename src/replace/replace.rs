@@ -766,7 +766,7 @@ fn random_perm_lmdb<'a>(
     db: Database,
     prefix: &[u8],
 ) -> Option<(Vec<u8>, Vec<u8>)> {
-    if txn.get(db, prefix).is_err() {
+    if txn.get(db, &prefix).is_err() {
         return None;
     }
     let mut cursor = txn.open_ro_cursor(db).ok()?;
