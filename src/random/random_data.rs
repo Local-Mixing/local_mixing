@@ -434,7 +434,7 @@ pub fn find_convex_subcircuit<R: RngCore>(
         }
 
         if selected_gate_ctr >= 3 {
-            println!("selected_gate_ctr");
+            println!("selected_gate_ctr {}", selected_gate_ctr);
             return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
         }
 
