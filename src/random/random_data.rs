@@ -446,7 +446,6 @@ pub fn find_convex_subcircuit<R: RngCore>(
         //     curr_wires.len(),
         //     selected_gate_ctr
         // );
-        println!("{}", selected_gate_ctr);
         return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
     }
 }
