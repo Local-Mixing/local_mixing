@@ -805,7 +805,6 @@ pub fn compress_lmdb(
 ) -> CircuitSeq {
 
     let id = Permutation::id_perm(n);
-    let txn = env.begin_ro_txn().expect("txn");
     let t0 = Instant::now();
     let c_perm = c.permutation(n);
     PERMUTATION_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -898,7 +897,7 @@ pub fn compress_lmdb(
         for smaller_m in 1..=sub_m {
             let db_name = format!("n{}m{}", n, smaller_m);
             let db = env.open_db(Some(&db_name)).unwrap();
-
+            let txn = env.begin_ro_txn().expect("txn");
             let t0 = Instant::now();
             let res = random_perm_lmdb(&txn, db, prefix);
             SQL_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
