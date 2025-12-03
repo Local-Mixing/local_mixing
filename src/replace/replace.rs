@@ -787,14 +787,6 @@ fn random_perm_lmdb<'a>(
     Some(matches.swap_remove(idx))
 }
 
-fn decode_entry(blob: &[u8], n: usize) -> (Vec<u8>, Vec<u8>) {
-    assert!(blob.len() >= n, "LMDB entry too small to contain shuf");
-
-    let (circuit_blob, shuf_blob) = blob.split_at(blob.len() - n);
-
-    (circuit_blob.to_vec(), shuf_blob.to_vec())
-}
-
 pub fn compress_lmdb(
     c: &CircuitSeq,
     trials: usize,
@@ -914,6 +906,8 @@ pub fn compress_lmdb(
 
                 compressed.gates.splice(start..end, repl.gates);
                 break;
+            } else {
+                continue;
             }
         }
     }
