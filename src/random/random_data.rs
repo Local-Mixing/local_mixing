@@ -394,11 +394,7 @@ pub fn find_convex_subcircuit<R: RngCore>(
 
             // Stop expanding if no valid candidates
             if candidates.is_empty() {
-                if selected_gate_ctr >= 3 {
-                    return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
-                } else {
-                    break;
-                }
+                break;
             }
 
             // Pick a random next gate that hasn’t been used
