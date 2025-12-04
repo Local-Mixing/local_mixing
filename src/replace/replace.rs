@@ -915,12 +915,19 @@ pub fn compress_lmdb(
                     Err(lmdb::Error::NotFound) => continue,
                     Err(e) => panic!("Failed to open LMDB database {}: {:?}", db_name, e),
                 };
-
+                let mut invert = false;
                 let hit = {
                     let txn = env.begin_ro_txn().expect("txn");
 
                     let t0 = Instant::now();
-                    let res = random_perm_lmdb(&txn, db, prefix);
+                    
+                    let mut res = random_perm_lmdb(&txn, db, prefix);
+                    if res.is_none() {
+                        let prefix_inv_blob = Permutation::from_blob(&prefix).invert().repr_blob();
+                        invert = true;
+                        res = random_perm_lmdb(&txn, db, &prefix_inv_blob);
+                    }
+
                     SQL_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
                     res.map(|(_key, val_blob)| val_blob)
@@ -933,6 +940,11 @@ pub fn compress_lmdb(
                     let mut repl = CircuitSeq::from_blob(&repl_blob);
 
                     repl.rewire(&Permutation::from_blob(&repl_shuf), n);
+
+                    if invert {
+                        repl.gates.reverse();
+                    }
+                    
                     repl.rewire(&Permutation::from_blob(&canon_shuf_blob).invert(), n);
 
                     compressed.gates.splice(start..end, repl.gates);
