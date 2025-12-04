@@ -414,22 +414,14 @@ pub fn find_convex_subcircuit<R: RngCore>(
             // Stop if no unused candidate left
             let next_candidate = match next_candidate {
                 Some(x) => x,
-                None => if selected_gate_ctr >= 3 {
-                            return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
-                        } else {
-                            break;
-                        }
+                None => break,
             };
 
             // check if adding this gate would exceed max_wires
             let mut new_wires = curr_wires.clone();
             new_wires.extend(circuit.gates[next_candidate].iter().copied());
             if new_wires.len() > max_wires {
-                if selected_gate_ctr >= 3 {
-                    return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
-                } else {
-                    break;
-                } // stop expansion if wire limit exceeded
+                break; // stop expansion if wire limit exceeded
             }
 
             // Insert next gate in sorted order
