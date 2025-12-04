@@ -645,13 +645,11 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
     for _ in 0..trials {
         let t0 = Instant::now();
         let mut subcircuit_gates = vec![];
-        for set_size in (3..=13).rev() {
-            let random_max_wires = rng.random_range(3..=7);
-            let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
-            if !gates.is_empty() {
-                subcircuit_gates = gates;
-                break;
-            }
+        let random_max_wires = rng.random_range(3..=7);
+        let (gates, _) = find_convex_subcircuit(15, random_max_wires, num_wires, &circuit, &mut rng);
+        if !gates.is_empty() {
+            subcircuit_gates = gates;
+            continue;
         }
         CONVEX_FIND_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
@@ -944,7 +942,7 @@ pub fn compress_lmdb(
                     if invert {
                         repl.gates.reverse();
                     }
-                    
+
                     repl.rewire(&Permutation::from_blob(&canon_shuf_blob).invert(), n);
 
                     compressed.gates.splice(start..end, repl.gates);
