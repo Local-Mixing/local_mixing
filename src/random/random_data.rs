@@ -592,8 +592,9 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
     let mut circuit = circuit.clone();
     let mut new_gates = CircuitSeq { gates: Vec::new() };
     let mut candidates: Vec<usize> = Vec::new();
-
-    while circuit.gates.is_empty() {
+    let mut count = 0;
+    let len = circuit.gates.len();
+    while count < len {
         for gate in 0..circuit.gates.len() {
             if !candidates.contains(&gate) && candidates.iter().any(|&g| Gate::collides_index(&circuit.gates[gate], &circuit.gates[g])) {
                 break; // stop collecting candidates
@@ -604,8 +605,10 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
 
         if let Some(&next_gate) = candidates.choose(rng) {
             new_gates.gates.push(circuit.gates[next_gate]);
+            let index = candidates.iter().position(|&x| x == next_gate).unwrap();
+            let _ = candidates.remove(index);
             circuit.gates.remove(next_gate);
-
+            count += 1;
             for gate in candidates.iter_mut() {
                 if *gate > next_gate {
                     *gate -= 1;
