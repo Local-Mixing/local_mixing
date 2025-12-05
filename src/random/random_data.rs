@@ -591,33 +591,35 @@ pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
 pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitSeq {
     let mut circuit = circuit.clone();
     let mut new_gates = CircuitSeq { gates: Vec::new() };
+    let mut candidates: Vec<usize> = Vec::new();
 
-    while !circuit.gates.is_empty() {
-        let mut candidates = Vec::new();
-
-        for i in 0..circuit.gates.len() {
-            let gi = &circuit.gates[i];
-            if new_gates.gates.iter().any(|g| Gate::collides_index(g, gi)) {
-                continue;
+    while circuit.gates.is_empty() {
+        for gate in 0..circuit.gates.len() {
+            if !candidates.contains(&gate) && candidates.iter().any(|&g| Gate::collides_index(&circuit.gates[gate], &circuit.gates[g])) {
+                break; // stop collecting candidates
+            } else {
+                candidates.push(gate);
             }
-            if candidates.iter().any(|&j| Gate::collides_index(&circuit.gates[j], gi)) {
-                break;
-            }
-            candidates.push(i);
         }
 
-        let next = if candidates.choose(rng).is_none() {
-            break;
-        } else  {
-            candidates.choose(rng).unwrap()
-        };
-        new_gates.gates.push(circuit.gates[*next]);
-        circuit.gates.remove(*next);
+        if let Some(&next_gate) = candidates.choose(rng) {
+            new_gates.gates.push(circuit.gates[next_gate]);
+            circuit.gates.remove(next_gate);
+
+            for gate in candidates.iter_mut() {
+                if *gate > next_gate {
+                    *gate -= 1;
+                }
+            }
+
+        }
+
     }
 
-    if new_gates.probably_equal(&circuit, 64, 100000).is_err(){
+    if new_gates.probably_equal(&circuit, 64, 100000).is_err() {
         panic!("Changed functionality");
-    }
+    } 
+
     new_gates
 }
 
