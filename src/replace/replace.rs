@@ -1158,65 +1158,78 @@ mod tests {
         // Assert that the permutation exists in at least one table
         assert!(found, "Permutation not found in any table!");
     }
-    // use std::fs;
-    // use std::fs::File;
-    // #[test]
-    // fn test_compression_big_time() {
-    //     let total_start = Instant::now();
+    use std::fs;
+    use std::fs::File;
+    use lmdb::Environment;
+    use std::path::Path;
+    use std::io::Write;
+    #[test]
+    fn test_compression_big_time() {
+        let total_start = Instant::now();
 
-    //     // // ---------- FIRST TEST ----------
-    //     // let t1_start = Instant::now();
-    //     // let n = 64;
-    //     // let str1 = "circuitQQF_64.txt";
-    //     // let data1 = fs::read_to_string(str1).expect("Failed to read circuitQQF_64.txt");
-    //     // let mut stable_count = 0;
-    //     // let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
-    //     // let mut acc = CircuitSeq::from_string(&data1);
-    //     // while stable_count < 3 {
-    //     //     let before = acc.gates.len();
-    //     //     acc = compress_big(&acc, 1_000, n, &mut conn);
-    //     //     let after = acc.gates.len();
+        // // ---------- FIRST TEST ----------
+        // let t1_start = Instant::now();
+        // let n = 64;
+        // let str1 = "circuitQQF_64.txt";
+        // let data1 = fs::read_to_string(str1).expect("Failed to read circuitQQF_64.txt");
+        // let mut stable_count = 0;
+        // let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
+        // let mut acc = CircuitSeq::from_string(&data1);
+        // while stable_count < 3 {
+        //     let before = acc.gates.len();
+        //     acc = compress_big(&acc, 1_000, n, &mut conn);
+        //     let after = acc.gates.len();
 
-    //     //     if after == before {
-    //     //         stable_count += 1;
-    //     //         println!("  Final compression stable {}/3 at {} gates", stable_count, after);
-    //     //     } else {
-    //     //         println!("  Final compression reduced: {} → {} gates", before, after);
-    //     //         stable_count = 0;
-    //     //     }
-    //     // }
-    //     // let t1_duration = t1_start.elapsed();
-    //     // println!(" First compression finished in {:.2?}", t1_duration);
+        //     if after == before {
+        //         stable_count += 1;
+        //         println!("  Final compression stable {}/3 at {} gates", stable_count, after);
+        //     } else {
+        //         println!("  Final compression reduced: {} → {} gates", before, after);
+        //         stable_count = 0;
+        //     }
+        // }
+        // let t1_duration = t1_start.elapsed();
+        // println!(" First compression finished in {:.2?}", t1_duration);
 
-    //     // ---------- SECOND TEST ----------
-    //     let t2_start = Instant::now();
-    //     let str2 = "./old/circuitQQF_64.txt";
-    //     let data2 = fs::read_to_string(str2).expect("Failed to read circuitF.txt");
-    //     let mut stable_count = 0;
-    //     let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
-    //     let mut acc = CircuitSeq::from_string(&data2);
-    //     while stable_count < 3 {
-    //         let before = acc.gates.len();
-    //         acc = compress_big(&acc, 1_000, 64, &mut conn);
-    //         let after = acc.gates.len();
+        // ---------- SECOND TEST ----------
+        let t2_start = Instant::now();
+        let str2 = "./old/circuitQ''Q''A_64.txt";
+        let lmdb = "./db";
+            let _ = std::fs::create_dir_all(lmdb);
 
-    //         if after == before {
-    //             stable_count += 1;
-    //             println!("  Final compression stable {}/3 at {} gates", stable_count, after);
-    //         } else {
-    //             println!("  Final compression reduced: {} → {} gates", before, after);
-    //             stable_count = 0;
-    //         }
-    //     }
+            let env = Environment::new()
+                .set_max_readers(10000) 
+                .set_max_dbs(33)      
+                .set_map_size(700 * 1024 * 1024 * 1024) 
+                .open(Path::new(lmdb))
+                .expect("Failed to open lmdb");
 
-    //     File::create("compressed.txt")
-    //     .and_then(|mut f| f.write_all(acc.repr().as_bytes()))
-    //     .expect("Failed to write butterfly_recent.txt");
-    //     let t2_duration = t2_start.elapsed();
-    //     println!(" Second compression finished in {:.2?}", t2_duration);
+        let data2 = fs::read_to_string(str2).expect("Failed to read circuitF.txt");
+        let mut stable_count = 0;
+        let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
+        let mut acc = CircuitSeq::from_string(&data2);
+        while stable_count < 3 {
+            let before = acc.gates.len();
+            acc = compress_big(&acc, 1_000, 64, &mut conn, &env);
+            let after = acc.gates.len();
 
-    //     // ---------- TOTAL ----------
-    //     let total_duration = total_start.elapsed();
-    //     println!(" Total test duration: {:.2?}", total_duration);
-    // }
+            if after == before {
+                stable_count += 1;
+                println!("  Final compression stable {}/3 at {} gates", stable_count, after);
+            } else {
+                println!("  Final compression reduced: {} → {} gates", before, after);
+                stable_count = 0;
+            }
+        }
+
+        File::create("compressed.txt")
+        .and_then(|mut f| f.write_all(acc.repr().as_bytes()))
+        .expect("Failed to write butterfly_recent.txt");
+        let t2_duration = t2_start.elapsed();
+        println!(" Second compression finished in {:.2?}", t2_duration);
+
+        // ---------- TOTAL ----------
+        let total_duration = total_start.elapsed();
+        println!(" Total test duration: {:.2?}", total_duration);
+    }
 }
