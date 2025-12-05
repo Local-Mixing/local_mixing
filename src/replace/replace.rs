@@ -440,13 +440,13 @@ pub fn expand_lmdb(
         subcircuit.canonicalize();
 
         let max = if n == 7 {
-            3
-        } else if n == 5 || n == 6 {
             4
+        } else if n == 5 || n == 6 {
+            5
         } else if n == 4 {
-            5
+            6
         } else {
-            5
+            10
         };
 
         let sub_m = subcircuit.gates.len();
@@ -929,9 +929,9 @@ pub fn compress_lmdb(
         let max = if n == 7 {
             3
         } else if n == 5 || n == 6 {
-            4
-        } else if n == 4 {
             5
+        } else if n == 4 {
+            6
         } else {
             10
         };
