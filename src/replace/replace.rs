@@ -1145,10 +1145,8 @@ pub fn expand_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Co
         let new_wires = rng.random_range(new_wires..=max);
         let perms: Vec<Vec<usize>> = (0..new_wires).permutations(new_wires).collect();
         let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
-        println!("Made it to expand");
         let subcircuit_temp = expand_lmdb(&subcircuit, 3, conn, &bit_shuf, new_wires, &env, num_wires);
-        println!("Done");
-        if subcircuit.permutation(num_wires) != subcircuit_temp.permutation(num_wires) {
+        if subcircuit.permutation(new_wires) != subcircuit_temp.permutation(new_wires) {
             panic!("Compress changed something");
         }
         subcircuit = subcircuit_temp;
