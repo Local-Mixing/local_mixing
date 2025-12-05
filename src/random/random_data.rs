@@ -589,22 +589,24 @@ pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
 
 // randomizes circuit by walking through, finding candidates before collision, and then selecting a random candidate
 pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitSeq {
+    let mut circuit = circuit.clone();
     let mut new_gates = CircuitSeq { gates: Vec::new() };
     let mut count = 0;
 
     while count < circuit.gates.len() {
-        let mut candidates: Vec<&[u8; 3]> = Vec::new(); // assuming gate type is [u8; 3]
+        let mut candidates: Vec<usize> = Vec::new(); 
 
-        for gate in &circuit.gates {
-            if candidates.iter().any(|&g| Gate::collides_index(gate, g)) {
+        for gate in 0..circuit.gates.len() {
+            if candidates.iter().any(|&g| Gate::collides_index(&circuit.gates[gate], &circuit.gates[g])) {
                 break; // stop collecting candidates
             } else {
-                candidates.push(&gate);
+                candidates.push(gate);
             }
         }
 
         if let Some(&next_gate) = candidates.choose(rng) {
-            new_gates.gates.push(*next_gate);
+            new_gates.gates.push(circuit.gates[next_gate]);
+            circuit.gates.remove(next_gate);
         }
 
         count += 1;
