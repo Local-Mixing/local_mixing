@@ -665,24 +665,37 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
     let orig_circuit = circuit.clone();
     let mut circuit = circuit.clone();
     circuit.canonicalize();
+
     let mut new_gates = CircuitSeq { gates: Vec::new() };
     let skeleton: Skeleton = create_skeleton(&circuit);
+
+    // candidates by node
     let mut candidates: Vec<Node> = skeleton.nodes[0].clone();
 
-    while !candidates.is_empty() {
-        let next = candidates.choose(rng).unwrap();
-        let next = next.clone();
-        new_gates.gates.push(circuit.gates[next.key]);
-        let index = candidates.iter().position(|n| n.key == next.key).unwrap(); 
-        for child in &next.children {
-            let has_parent_in_candidates = child.parents.iter().any(|p| candidates.contains(p));
+    // ALSO track candidate KEYS to avoid O(n²)
+    let mut candidate_keys: HashSet<usize> = candidates.iter().map(|n| n.key).collect();
 
-            if !has_parent_in_candidates {
-                candidates.push(child.clone());
+    while !candidates.is_empty() {
+        let next = candidates.choose(rng).unwrap().clone();
+
+        new_gates.gates.push(circuit.gates[next.key]);
+
+        // remove from candidates
+        let index = candidates.iter().position(|n| n.key == next.key).unwrap();
+        candidates.remove(index);
+        candidate_keys.remove(&next.key);
+
+        // now add children if no parent is in candidate_keys
+        for child in &next.children {
+            let has_parent = child.parents.iter().any(|p| candidate_keys.contains(&p.key));
+
+            if !has_parent {
+                // only push if not already in
+                if candidate_keys.insert(child.key) {
+                    candidates.push(child.clone());
+                }
             }
         }
-
-        candidates.remove(index);
     }
 
     if new_gates.gates.len() != orig_circuit.gates.len() {
