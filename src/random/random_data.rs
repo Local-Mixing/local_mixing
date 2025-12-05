@@ -591,29 +591,35 @@ pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
 pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitSeq {
     let mut circuit = circuit.clone();
     let mut new_gates = CircuitSeq { gates: Vec::new() };
-    let mut count = 0;
 
-    while count < circuit.gates.len() {
-        let mut candidates: Vec<usize> = Vec::new(); 
+    while !circuit.gates.is_empty() {
+        let mut candidates = Vec::new();
 
-        for gate in count..circuit.gates.len() {
-            if candidates.iter().any(|&g| Gate::collides_index(&circuit.gates[gate], &circuit.gates[g])) {
-                break; // stop collecting candidates
-            } else {
-                candidates.push(gate);
+        for i in 0..circuit.gates.len() {
+            if new_gates.gates.iter().any(|g| Gate::collides_index(g, &circuit.gates[i])) {
+                continue;
             }
+            if candidates.iter().any(|&g| Gate::collides_index(&circuit.gates[g], &circuit.gates[i])) {
+                break;
+            }
+            candidates.push(i);
         }
 
         if let Some(&next_gate) = candidates.choose(rng) {
             new_gates.gates.push(circuit.gates[next_gate]);
             circuit.gates.remove(next_gate);
+        } else {
+            break;
         }
+    }
 
-        count += 1;
+    if new_gates.probably_equal(&circuit, 64, 100000).is_err() {
+        panic!("Changed functionality");
     }
 
     new_gates
 }
+
 
 pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
     // Table name includes n and m
