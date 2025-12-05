@@ -594,48 +594,32 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
     let mut new_gates = CircuitSeq { gates: Vec::new() };
     let mut candidates: Vec<usize> = Vec::new();
 
-    while !circuit.gates.is_empty() {
-        let mut added_new_candidate = false;
-
-        for (i, gate) in circuit.gates.iter().enumerate() {
+    while !circuit.gates.is_empty() || !candidates.is_empty() {
+        // try to add new non-colliding gates to candidates
+        for i in 0..circuit.gates.len() {
             if !candidates.contains(&i)
-                && !candidates.iter().any(|&g| Gate::collides_index(gate, &circuit.gates[g]))
+                && !candidates.iter().any(|&g| Gate::collides_index(&circuit.gates[i], &circuit.gates[g]))
             {
                 candidates.push(i);
-                added_new_candidate = true;
             }
         }
 
         if candidates.is_empty() {
-            // nothing left to pick, should not happen unless circuit is empty
             break;
         }
 
         // pick random candidate
-        let next_idx = *candidates.choose(rng).unwrap();
-        new_gates.gates.push(circuit.gates[next_idx].clone());
+        let next_gate = *candidates.choose(rng).unwrap();
+        new_gates.gates.push(circuit.gates[next_gate].clone());
 
         // remove from circuit
-        circuit.gates.remove(next_idx);
+        circuit.gates.remove(next_gate);
 
         // remove from candidates and fix indices
-        candidates.retain(|&x| x != next_idx);
+        candidates.retain(|&x| x != next_gate);
         for g in candidates.iter_mut() {
-            if *g > next_idx {
+            if *g > next_gate {
                 *g -= 1;
-            }
-        }
-
-        // if we didn’t add any new candidates this round, continue randomly picking from remaining candidates
-        if !added_new_candidate && !candidates.is_empty() {
-            while !candidates.is_empty() {
-                let pick = *candidates.choose(rng).unwrap();
-                new_gates.gates.push(circuit.gates[pick].clone());
-                circuit.gates.remove(pick);
-                candidates.retain(|&x| x != pick);
-                for g in candidates.iter_mut() {
-                    if *g > pick { *g -= 1; }
-                }
             }
         }
     }
@@ -646,6 +630,7 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
 
     new_gates
 }
+
 
 pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
     // Table name includes n and m
