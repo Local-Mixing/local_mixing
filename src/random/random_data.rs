@@ -606,9 +606,13 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
             candidates.push(i);
         }
 
-        let next = *candidates.choose(rng).unwrap();
-        new_gates.gates.push(circuit.gates[next]);
-        circuit.gates.remove(next);
+        let next = if candidates.choose(rng).is_none() {
+            break;
+        } else  {
+            candidates.choose(rng).unwrap()
+        };
+        new_gates.gates.push(circuit.gates[*next]);
+        circuit.gates.remove(*next);
     }
 
     if new_gates.probably_equal(&circuit, 64, 100000).is_err(){
@@ -616,8 +620,6 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
     }
     new_gates
 }
-
-
 
 pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
     // Table name includes n and m
