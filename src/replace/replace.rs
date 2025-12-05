@@ -497,8 +497,8 @@ pub fn expand_lmdb(
 
         //     (canon_perm.perm.repr_blob(), canon_perm.shuffle.repr_blob())
         // };
-
-        let canon= get_canonical(&c_perm, &bit_shuf);
+        let sub_perm = subcircuit.permutation(n);
+        let canon= get_canonical(&sub_perm, &bit_shuf);
         
         let (canon_perm_blob, canon_shuf_blob) = (canon.perm.repr_blob(), canon.shuffle.repr_blob());
         let prefix = canon_perm_blob.as_slice();
