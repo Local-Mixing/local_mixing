@@ -3,9 +3,9 @@ use crate::circuit::{Permutation};
 use bincode;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap},
     fs::File,
-    io::{BufReader, BufWriter},
+    io::{BufWriter},
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

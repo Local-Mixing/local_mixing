@@ -4,12 +4,11 @@ use crate::{
     rainbow::canonical::PermStore,
 };
 use crate::rainbow::{PersistPermStore, canonical};
-use crate::rainbow::database::{self, Persist};
+use crate::rainbow::database::{Persist};
 
 use rayon::prelude::*;
 use dashmap::DashMap;
 use std::collections::HashMap;
-use std::collections::HashSet;
 
 use std::sync::{
     Arc,
@@ -20,11 +19,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use crate::random::random_data::base_gates;
 use smallvec::SmallVec;
-use dashmap::DashSet;
-use crate::fs;
-use std::fs::File;
-use std::io::BufWriter;
-use std::io::BufReader;
 
 // PR struct
 #[derive(Clone)]
@@ -91,7 +85,7 @@ pub fn build_from(
 
 pub fn build_circuit_rayon(
     n: usize,
-    m: usize,
+    _m: usize,
     circuits: impl ParallelIterator<Item = Vec<usize>> + Send,
     base_gates: Arc<Vec<[u8;3]>>,
 ) -> impl ParallelIterator<Item = PR> + Send {

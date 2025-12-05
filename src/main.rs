@@ -441,7 +441,7 @@ fn main() {
             ).unwrap();
 
             let lmdb = "./db";
-            std::fs::create_dir_all(lmdb);
+            let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
                 .set_max_dbs(33)      
@@ -475,7 +475,7 @@ fn main() {
                 "
             ).unwrap();
             let lmdb = "./db";
-            std::fs::create_dir_all(lmdb);
+            let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
                 .set_max_readers(10000) 
@@ -541,7 +541,7 @@ fn main() {
             let mut conn = Connection::open_with_flags("./circuits.db",rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,)
             .expect("Failed to open ./circuits.db in read-only mode");
             let lmdb = "./db";
-            std::fs::create_dir_all(lmdb);
+            let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
                 .set_max_dbs(33)      
@@ -581,7 +581,7 @@ fn main() {
         Some(("lmdb", sub)) => {
             let n: usize = *sub.get_one("n").unwrap();
             let m: usize = *sub.get_one("m").unwrap();
-            sql_to_lmdb(n, m);
+            let _ = sql_to_lmdb(n, m);
         }
         _ => unreachable!(),
     }
@@ -761,7 +761,6 @@ pub fn analyze_gate_to_wires(circuit: &CircuitSeq, num_wires: usize, x: &str) ->
 }
 
 use lmdb::{Environment, Database, WriteFlags, Transaction};
-use serde::{Serialize, Deserialize};
 use local_mixing::circuit::Permutation;
 use std::collections::HashMap;
 

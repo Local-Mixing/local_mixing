@@ -11,7 +11,6 @@ use rand::{
     prelude::IndexedRandom,
     Rng, RngCore,
 };
-use std::ptr;
 use rayon::{
     iter::{IntoParallelRefIterator, ParallelIterator},
     slice::ParallelSlice,
@@ -258,7 +257,6 @@ pub fn find_convex_subcircuit<R: RngCore>(
         // Initialize wire set
         let mut curr_wires = HashSet::new();
         curr_wires.extend(circuit.gates[selected_gate_idx[0]].iter().copied());
-        let mut failed = false;
 
         while selected_gate_ctr < set_size {
             let mut candidates: Vec<usize> = vec![];
@@ -587,6 +585,32 @@ pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
             }
         }
     }
+}
+
+// randomizes circuit by walking through, finding candidates before collision, and then selecting a random candidate
+pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitSeq {
+    let mut new_gates = CircuitSeq { gates: Vec::new() };
+    let mut count = 0;
+
+    while count < circuit.gates.len() {
+        let mut candidates: Vec<&[u8; 3]> = Vec::new(); // assuming gate type is [u8; 3]
+
+        for gate in &circuit.gates {
+            if candidates.iter().any(|&g| Gate::collides_index(gate, g)) {
+                break; // stop collecting candidates
+            } else {
+                candidates.push(&gate);
+            }
+        }
+
+        if let Some(&next_gate) = candidates.choose(rng) {
+            new_gates.gates.push(*next_gate);
+        }
+
+        count += 1;
+    }
+
+    new_gates
 }
 
 pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
@@ -1291,7 +1315,6 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
 mod tests {
     use super::*;
     use rusqlite::Connection;
-    use crate::replace::replace::compress_big;
     #[test]
     fn test_check_cycles_n3m3() -> Result<()> {
         let now = std::time::Instant::now();
@@ -1634,12 +1657,27 @@ mod tests {
 
         println!("Generated circuits written to c1.txt and c2.txt");
     }
+
+    #[test]
+    fn generate_random() {
+        let n: u8 = 64;
+
+        let m = 500;
+
+        let c = random_circuit(n,m);
+
+        let c_str = c.repr();
+        File::create("circuit_random.txt")
+            .and_then(|mut f| f.write_all(c_str.as_bytes()))
+            .expect("Failed to write test_random.txt");
+    }
+
     use crate::replace::replace::random_id;
     #[test]
     fn test_shooting() {
         // Start with an initial random identity
         // Load circuitA from file
-        let contents = fs::read_to_string("circuitshoot.txt")
+        let contents = fs::read_to_string("circuit_before_random.txt")
             .expect("Failed to read");
         let mut circuit_a = CircuitSeq::from_string(&contents);
 
@@ -1647,9 +1685,24 @@ mod tests {
         shoot_random_gate(&mut circuit_a, 100000);
 
         let c_str = circuit_a.repr();
-        File::create("circuitshooted.txt")
+        File::create("circuit_shot.txt")
             .and_then(|mut f| f.write_all(c_str.as_bytes()))
             .expect("Failed to write test_compression.txt");
+    }
+    #[test]
+    fn test_walking() {
+        // Start with an initial random identity
+        // Load circuitA from file
+        let contents = fs::read_to_string("circuit_before_random.txt")
+            .expect("Failed to read");
+        let mut circuit_a = CircuitSeq::from_string(&contents);
+        // Proceed as before
+        circuit_a = random_walking(&circuit_a, &mut rand::rng());
+
+        let c_str = circuit_a.repr();
+        File::create("circuit_walked.txt")
+            .and_then(|mut f| f.write_all(c_str.as_bytes()))
+            .expect("Failed to write test_walked.txt");
     }
 
     #[test]

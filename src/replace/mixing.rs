@@ -1,6 +1,6 @@
 use crate::{
     circuit::circuit::CircuitSeq,
-    replace::replace::{compress, compress_big, obfuscate, outward_compress, random_id, expand_big},
+    replace::replace::{compress, compress_big, obfuscate, outward_compress, random_id},
 };
 use crate::random::random_data::shoot_random_gate;
 use itertools::Itertools;

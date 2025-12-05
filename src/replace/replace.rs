@@ -4,23 +4,20 @@ use crate::{
         contiguous_convex, find_convex_subcircuit, get_canonical, 
         random_circuit,
     },
-    rainbow::Persist,
     rainbow::canonical::Canonicalization
 };
-use rand::prelude::IteratorRandom;
 use itertools::Itertools;
 use rand::{Rng};
 use rusqlite::{Connection};
 use std::{
     cmp::{max, min},
     collections::{HashSet},
-    fs::OpenOptions, // used for testing
-    io::Write,
-    sync::Arc,
-    time::{Duration, Instant},
+    // fs::OpenOptions, // used for testing
+    // io::Write,
+    // sync::Arc,
+    time::{Instant},
 };
 use std::sync::atomic::Ordering;
-use std::ptr;
 use std::sync::atomic::AtomicU64;
 use lmdb::{Cursor, Database, Transaction, RoTransaction};
 // Returns a nontrivial identity circuit built from two "friend" circuits
@@ -659,7 +656,6 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
             continue;
         }
 
-        println!("{}", subcircuit_gates.len());
         let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
         subcircuit_gates.sort();
 
@@ -1162,8 +1158,8 @@ mod tests {
         // Assert that the permutation exists in at least one table
         assert!(found, "Permutation not found in any table!");
     }
-    use std::fs;
-    use std::fs::File;
+    // use std::fs;
+    // use std::fs::File;
     // #[test]
     // fn test_compression_big_time() {
     //     let total_start = Instant::now();
