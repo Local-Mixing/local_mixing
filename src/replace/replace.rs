@@ -534,7 +534,7 @@ pub fn expand_lmdb(
                         .get(2)
                         .expect("Failed to get blob");
 
-                    if repl.gates.len() <= subcircuit.gates.len() {
+                    if repl.gates.len() >= subcircuit.gates.len() {
                         let rc = Canonicalization { perm: Permutation::from_blob(&repl_perm), shuffle: Permutation::from_blob(&repl_shuf) };
 
                         if !rc.shuffle.data.is_empty() {
