@@ -661,7 +661,7 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
     let mut candidates: Vec<Node> = skeleton.nodes[0].clone();
     let mut candidate_keys: HashSet<usize> = candidates.iter().map(|n| n.key).collect();
 
-    while new_gates.gates.len() < circuit.gates.len() || !candidates.is_empty() {
+    while !candidates.is_empty() {
         let next = candidates.choose(rng).unwrap().clone();
         new_gates.gates.push(circuit.gates[next.key]);
         let index = candidates.iter().position(|n| n.key == next.key).unwrap();
