@@ -497,7 +497,7 @@ pub fn expand_lmdb(
             (canon_perm.perm.repr_blob(), canon_perm.shuffle.repr_blob())
         };
         let prefix = canon_perm_blob.as_slice();
-        for smaller_m in (sub_m..min).rev() {
+        for smaller_m in (sub_m..=max).rev() {
             let db_name = format!("n{}m{}", n, smaller_m);
             if (n == 7 && smaller_m == 4) || (n == 6 && smaller_m == 5) {
                 let table = format!("n{}m{}", n, smaller_m);
