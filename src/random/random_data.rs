@@ -604,10 +604,6 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
             }
         }
 
-        if candidates.is_empty() {
-            break;
-        }
-
         // pick random candidate
         let next_gate = *candidates.choose(rng).unwrap();
         new_gates.gates.push(circuit.gates[next_gate].clone());
