@@ -590,9 +590,9 @@ pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Node {
     key: usize,
-    val: [u8;3],
-    parents: Vec<Node>,
-    children: Vec<Node>,
+    val: [u8; 3],
+    parents: Vec<usize>,
+    children: Vec<usize>,
     level: usize,
 }
 
@@ -603,26 +603,20 @@ pub struct Skeleton {
 }
 
 pub fn create_skeleton(circuit: &CircuitSeq) -> Skeleton {
-    // clone + canonicalize
     let mut c = circuit.clone();
     c.canonicalize();
-
     let gates = &c.gates;
     let mut skel = Skeleton { nodes: Vec::new(), depth: 0 };
-
     let mut start = 0;
     let mut level = 0;
 
     while start < gates.len() {
         let mut segment = Vec::new();
-
         let mut i = start;
         while i < gates.len() {
-            // stop before i if i is a collision boundary
-            if i > start && !segment.iter().any(|&(_, g)| Gate::collides_index(&c.gates[i], &g)) {
+            if i > start && !segment.iter().any(|&(_, g)| Gate::collides_index(&gates[i], &g)) {
                 break;
             }
-
             segment.push((i, gates[i].clone()));
             i += 1;
         }
@@ -639,11 +633,11 @@ pub fn create_skeleton(circuit: &CircuitSeq) -> Skeleton {
             .collect();
 
         if level > 0 {
-            for node in level_nodes.iter_mut() {
-                for prev_nodes in skel.nodes[level-1].iter_mut() {
-                    if Gate::collides_index(&prev_nodes.val, &node.val) {
-                        node.parents.push(prev_nodes.clone());
-                        prev_nodes.children.push(node.clone());
+            for node in &mut level_nodes {
+                for prev_node in &mut skel.nodes[level - 1] {
+                    if Gate::collides_index(&prev_node.val, &node.val) {
+                        node.parents.push(prev_node.key);
+                        prev_node.children.push(node.key);
                     }
                 }
             }
@@ -651,46 +645,37 @@ pub fn create_skeleton(circuit: &CircuitSeq) -> Skeleton {
 
         skel.nodes.push(level_nodes);
         level += 1;
-        skel.depth = level;
-
-        // move start forward
         start = i;
     }
 
+    skel.depth = level;
     skel
 }
 
-// randomizes circuit by walking through, finding candidates before collision, and then selecting a random candidate
 pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitSeq {
     let orig_circuit = circuit.clone();
     let mut circuit = circuit.clone();
     circuit.canonicalize();
-
     let mut new_gates = CircuitSeq { gates: Vec::new() };
-    let skeleton: Skeleton = create_skeleton(&circuit);
-
-    // candidates by node
+    let skeleton = create_skeleton(&circuit);
     let mut candidates: Vec<Node> = skeleton.nodes[0].clone();
-
     let mut candidate_keys: HashSet<usize> = candidates.iter().map(|n| n.key).collect();
 
     while new_gates.gates.len() < circuit.gates.len() || !candidates.is_empty() {
         let next = candidates.choose(rng).unwrap().clone();
-
         new_gates.gates.push(circuit.gates[next.key]);
-
-        // remove from candidates
         let index = candidates.iter().position(|n| n.key == next.key).unwrap();
         candidates.remove(index);
         candidate_keys.remove(&next.key);
 
-        // now add children if no parent is in candidate_keys
-        for child in &next.children {
-            let has_parent = child.parents.iter().any(|p| candidate_keys.contains(&p.key));
-
-            if !has_parent {
-                // only push if not already in
-                if candidate_keys.insert(child.key) {
+        for &child_key in &next.children {
+            if skeleton.nodes.iter().flat_map(|lvl| lvl).any(|n| n.key == child_key) {
+                let child = skeleton.nodes.iter()
+                    .flat_map(|lvl| lvl)
+                    .find(|n| n.key == child_key)
+                    .unwrap();
+                let has_parent = child.parents.iter().any(|p| candidate_keys.contains(p));
+                if !has_parent && candidate_keys.insert(child.key) {
                     candidates.push(child.clone());
                 }
             }
@@ -707,7 +692,6 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
 
     new_gates
 }
-
 
 pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
     // Table name includes n and m
