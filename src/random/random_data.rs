@@ -589,42 +589,48 @@ pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
 
 // randomizes circuit by walking through, finding candidates before collision, and then selecting a random candidate
 pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitSeq {
+    let orig_circuit = circuit.clone();
     let mut circuit = circuit.clone();
     let mut new_gates = CircuitSeq { gates: Vec::new() };
     let mut candidates: Vec<usize> = Vec::new();
-    let mut count = 0;
-    let len = circuit.gates.len();
-    while count < len {
-        for gate in 0..circuit.gates.len() {
-            if !candidates.contains(&gate) && candidates.iter().any(|&g| Gate::collides_index(&circuit.gates[gate], &circuit.gates[g])) {
-                break; // stop collecting candidates
-            } else {
-                candidates.push(gate);
+
+    while !circuit.gates.is_empty() {
+        // try to add new non-colliding gates to candidates
+        for i in 0..circuit.gates.len() {
+            if !candidates.contains(&i)
+                && !candidates.iter().any(|&g| Gate::collides_index(&circuit.gates[i], &circuit.gates[g]))
+            {
+                candidates.push(i);
             }
         }
 
-        if let Some(&next_gate) = candidates.choose(rng) {
-            new_gates.gates.push(circuit.gates[next_gate]);
-            let index = candidates.iter().position(|&x| x == next_gate).unwrap();
-            let _ = candidates.remove(index);
-            circuit.gates.remove(next_gate);
-            count += 1;
-            for gate in candidates.iter_mut() {
-                if *gate > next_gate {
-                    *gate -= 1;
-                }
-            }
-
+        if candidates.is_empty() {
+            break;
         }
 
+        // pick random candidate
+        let next_gate = *candidates.choose(rng).unwrap();
+        new_gates.gates.push(circuit.gates[next_gate].clone());
+
+        // remove from circuit
+        circuit.gates.remove(next_gate);
+
+        // remove from candidates and fix indices
+        candidates.retain(|&x| x != next_gate);
+        for g in candidates.iter_mut() {
+            if *g > next_gate {
+                *g -= 1;
+            }
+        }
     }
 
-    if new_gates.probably_equal(&circuit, 64, 100000).is_err() {
+    if new_gates.probably_equal(&orig_circuit, 64, 100000).is_err() {
         panic!("Changed functionality");
-    } 
+    }
 
     new_gates
 }
+
 
 pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
     // Table name includes n and m
