@@ -230,224 +230,156 @@ pub fn find_random_subcircuit<R: Rng>(
 
 // Given a circuit of num_wires, we try to find a convex subcircuit of up to max_wires. We can start in any of the min_candidates
 pub fn find_convex_subcircuit<R: RngCore>(
-    set_size: usize,
+    _set_size: usize,
     max_wires: usize,
     num_wires: usize,
     circuit: &CircuitSeq,
     rng: &mut R,
-) -> (Vec<usize>, usize) {
+) -> Vec<usize> {
     let num_gates = circuit.gates.len();
-    let mut search_attempts = 0;
-    let max_attempts = 10;
+
+    // Start with one random gate
+    let mut selected_gate_idx = vec![];
+    let first = rng.random_range(0..num_gates);
+    selected_gate_idx.push(first);
+
+    // Track used wires
+    let mut curr_wires = HashSet::new();
+    curr_wires.extend(circuit.gates[first].iter().copied());
 
     loop {
-        search_attempts += 1;
-        if search_attempts > max_attempts {
-            // eprintln!(
-            //     "No convex subcircuit found after {} attempts (set_size={}, max_wires={})",
-            //     search_attempts, set_size, max_wires
-            // );
-            return (vec![], search_attempts);
-        }
+        let mut candidates: Vec<usize> = vec![];
 
-        // Start with one random gate
-        let mut selected_gate_idx = vec![0; set_size];
-        selected_gate_idx[0] = rng.random_range(0..num_gates);
-        let mut selected_gate_ctr = 1;
+        // go right
+        {
+            let mut path_target = PathConnectedWires::new(num_wires);
+            let mut path_ctrl = PathConnectedWires::new(num_wires);
+            let mut seen = 1;
 
-        // Initialize wire set
-        let mut curr_wires = HashSet::new();
-        curr_wires.extend(circuit.gates[selected_gate_idx[0]].iter().copied());
-        let mut failed = false;
-
-        while selected_gate_ctr < set_size {
-            let mut candidates: Vec<usize> = vec![];
-
-            // Left-most gate, go right
-            let mut path_connected_target_wires = PathConnectedWires::new(num_wires);
-            let mut path_connected_control_wires = PathConnectedWires::new(num_wires);
-            let mut selected_gates_seen = 1;
-
-            if selected_gate_idx[0] != num_gates - 1 {
-                for curr_idx in selected_gate_idx[0] + 1..num_gates {
-                    if path_connected_target_wires.all_wires_hit()
-                        || path_connected_control_wires.all_wires_hit()
-                    {
-                        break;
-                    }
-
-                    if selected_gates_seen < selected_gate_ctr
-                        && curr_idx == selected_gate_idx[selected_gates_seen]
-                    {
-                        selected_gates_seen += 1;
-                    } else {
-                        let curr_gate = circuit.gates[curr_idx];
-                        let mut collides_with_prev_selected = false;
-                        let mut repeat_wires = false;
-
-                        for i in 0..selected_gates_seen {
-                            if Gate::collides_index(
-                                &curr_gate,
-                                &circuit.gates[selected_gate_idx[i]],
-                            ) {
-                                collides_with_prev_selected = true;
-                                break;
-                            }
-                        }
-                        for i in 0..selected_gate_ctr {
-                            if curr_gate == circuit.gates[selected_gate_idx[i]] {
-                                repeat_wires = true;
-                                break;
-                            }
-                        }
-
-                        let [t, c1, c2] = curr_gate;
-                        let indirect_path_connected = path_connected_control_wires.wire_hit(t as usize)
-                            || path_connected_target_wires.wire_hit(c1 as usize)
-                            || path_connected_target_wires.wire_hit(c2 as usize);
-
-                        if collides_with_prev_selected || indirect_path_connected {
-                            path_connected_target_wires.add_wire(t as usize);
-                            path_connected_control_wires.add_wire(c1 as usize);
-                            path_connected_control_wires.add_wire(c2 as usize);
-
-                            let num_new_wires = curr_gate
-                                .iter()
-                                .filter(|&w| !curr_wires.contains(w))
-                                .count();
-
-                            if !indirect_path_connected
-                                && !repeat_wires
-                                && curr_wires.len() + num_new_wires <= max_wires
-                            {
-                                candidates.push(curr_idx);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Right-most gate, go left
-            let mut path_connected_target_wires = PathConnectedWires::new(num_wires);
-            let mut path_connected_control_wires = PathConnectedWires::new(num_wires);
-            let mut selected_gates_seen = 1;
-
-            if selected_gate_idx[selected_gate_ctr - 1] != 0 {
-                for curr_idx in (0..=selected_gate_idx[selected_gate_ctr - 1] - 1).rev() {
-                    if path_connected_target_wires.all_wires_hit()
-                        || path_connected_control_wires.all_wires_hit()
-                    {
-                        break;
-                    }
-
-                    if selected_gates_seen < selected_gate_ctr
-                        && curr_idx
-                            == selected_gate_idx[selected_gate_ctr - 1 - selected_gates_seen]
-                    {
-                        selected_gates_seen += 1;
-                    } else {
-                        let curr_gate = circuit.gates[curr_idx];
-                        let mut collides_with_prev_selected = false;
-                        let mut repeat_wires = false;
-
-                        for i in 0..selected_gates_seen {
-                            if Gate::collides_index(
-                                &curr_gate,
-                                &circuit.gates[selected_gate_idx[selected_gate_ctr - 1 - i]],
-                            ) {
-                                collides_with_prev_selected = true;
-                                break;
-                            }
-                        }
-                        for i in 0..selected_gate_ctr {
-                            if curr_gate == circuit.gates[selected_gate_idx[i]] {
-                                repeat_wires = true;
-                                break;
-                            }
-                        }
-
-                        let [t, c1, c2] = curr_gate;
-                        let indirect_path_connected = path_connected_control_wires.wire_hit(t as usize)
-                            || path_connected_target_wires.wire_hit(c1 as usize)
-                            || path_connected_target_wires.wire_hit(c2 as usize);
-
-                        if collides_with_prev_selected || indirect_path_connected {
-                            path_connected_target_wires.add_wire(t as usize);
-                            path_connected_control_wires.add_wire(c1 as usize);
-                            path_connected_control_wires.add_wire(c2 as usize);
-
-                            let num_new_wires = curr_gate
-                                .iter()
-                                .filter(|&w| !curr_wires.contains(w))
-                                .count();
-
-                            if !indirect_path_connected
-                                && !repeat_wires
-                                && curr_wires.len() + num_new_wires <= max_wires
-                            {
-                                candidates.push(curr_idx);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Stop expanding if no valid candidates
-            if candidates.is_empty() {
-                break;
-            }
-
-            // Pick a random next gate that hasn’t been used
-            let mut next_candidate = None;
-            for _ in 0..candidates.len() {
-                let cand = *candidates.choose(rng).unwrap();
-                if !selected_gate_idx[..selected_gate_ctr].contains(&cand) {
-                    next_candidate = Some(cand);
+            for curr_idx in first+1 .. num_gates {
+                if path_target.all_wires_hit() || path_ctrl.all_wires_hit() {
                     break;
                 }
+
+                if seen < selected_gate_idx.len() && curr_idx == selected_gate_idx[seen] {
+                    seen += 1;
+                    continue;
+                }
+
+                let gate = circuit.gates[curr_idx];
+
+                let mut collides = false;
+                for i in 0..seen {
+                    if Gate::collides_index(&gate, &circuit.gates[selected_gate_idx[i]]) {
+                        collides = true;
+                        break;
+                    }
+                }
+
+                // skip exact repeats
+                if selected_gate_idx.contains(&curr_idx) {
+                    continue;
+                }
+
+                let [t,c1,c2] = gate;
+                let indirect = path_ctrl.wire_hit(t as usize)
+                    || path_target.wire_hit(c1 as usize)
+                    || path_target.wire_hit(c2 as usize);
+
+                if collides || indirect {
+                    path_target.add_wire(t as usize);
+                    path_ctrl.add_wire(c1 as usize);
+                    path_ctrl.add_wire(c2 as usize);
+
+                    let new_wire_count = gate.iter().filter(|w| !curr_wires.contains(w)).count();
+                    if !indirect && curr_wires.len() + new_wire_count <= max_wires {
+                        candidates.push(curr_idx);
+                    }
+                }
             }
-
-            // Stop if no unused candidate left
-            let next_candidate = match next_candidate {
-                Some(x) => x,
-                None => break,
-            };
-
-            // check if adding this gate would exceed max_wires
-            let mut new_wires = curr_wires.clone();
-            new_wires.extend(circuit.gates[next_candidate].iter().copied());
-            if new_wires.len() > max_wires {
-                break; // stop expansion if wire limit exceeded
-            }
-
-            // Insert next gate in sorted order
-            let mut insert_pos = selected_gate_ctr;
-            while insert_pos > 0 && selected_gate_idx[insert_pos - 1] > next_candidate {
-                selected_gate_idx[insert_pos] = selected_gate_idx[insert_pos - 1];
-                insert_pos -= 1;
-            }
-            selected_gate_idx[insert_pos] = next_candidate;
-            selected_gate_ctr += 1;
-
-            // Commit wire update
-            curr_wires = new_wires;
         }
 
-        if selected_gate_ctr != set_size {
-            continue;
+        // left
+        {
+            let mut path_target = PathConnectedWires::new(num_wires);
+            let mut path_ctrl = PathConnectedWires::new(num_wires);
+            let mut seen = 1;
+
+            for curr_idx in (0..first).rev() {
+                if path_target.all_wires_hit() || path_ctrl.all_wires_hit() {
+                    break;
+                }
+
+                if seen < selected_gate_idx.len()
+                    && curr_idx == selected_gate_idx[selected_gate_idx.len()-1 - seen]
+                {
+                    seen += 1;
+                    continue;
+                }
+
+                let gate = circuit.gates[curr_idx];
+
+                let mut collides = false;
+                for i in 0..seen {
+                    if Gate::collides_index(
+                        &gate,
+                        &circuit.gates[selected_gate_idx[selected_gate_idx.len()-1 - i]]
+                    ) {
+                        collides = true;
+                        break;
+                    }
+                }
+
+                if selected_gate_idx.contains(&curr_idx) {
+                    continue;
+                }
+
+                let [t,c1,c2] = gate;
+                let indirect = path_ctrl.wire_hit(t as usize)
+                    || path_target.wire_hit(c1 as usize)
+                    || path_target.wire_hit(c2 as usize);
+
+                if collides || indirect {
+                    path_target.add_wire(t as usize);
+                    path_ctrl.add_wire(c1 as usize);
+                    path_ctrl.add_wire(c2 as usize);
+
+                    let new_wire_count = gate.iter().filter(|w| !curr_wires.contains(w)).count();
+                    if !indirect && curr_wires.len() + new_wire_count <= max_wires {
+                        candidates.push(curr_idx);
+                    }
+                }
+            }
         }
 
-        if !is_convex(num_wires, circuit, &selected_gate_idx[..selected_gate_ctr]) {
-            continue;
+        // no more candidates
+        if candidates.is_empty() {
+            break;
         }
 
-        // println!(
-        //     "convex subcircuit found! {} wires {} gates",
-        //     curr_wires.len(),
-        //     selected_gate_ctr
-        // );
-        return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
+        // pick a random candidate not chosen before
+        let next = *candidates.choose(rng).unwrap();
+
+        // check wire limit
+        let mut new_wires = curr_wires.clone();
+        new_wires.extend(circuit.gates[next].iter().copied());
+        if new_wires.len() > max_wires {
+            break;
+        }
+
+        // sorted insert
+        let pos = selected_gate_idx.binary_search(&next).unwrap_or_else(|e| e);
+        selected_gate_idx.insert(pos, next);
+
+        curr_wires = new_wires;
     }
+
+    // optional convex check
+    if !is_convex(num_wires, circuit, &selected_gate_idx) {
+        panic!("Not convex");
+    }
+
+    selected_gate_idx
 }
 
 // Rearranges circuit to put the convex subcircuit in a contiguous manner. Do this via outward expansion
@@ -1314,8 +1246,7 @@ mod tests {
         let mut attempts = 0;
 
         for set_size in (3..=16).rev() {
-            let (gates, tries) = find_convex_subcircuit(set_size, max_wires, 16, &c, &mut rng);
-            attempts += tries;
+            let (gates) = find_convex_subcircuit(set_size, max_wires, 16, &c, &mut rng);
 
             if !gates.is_empty() {
                 subcircuit_gates = gates;
