@@ -453,50 +453,54 @@ pub fn expand_lmdb(
         let sub_m = subcircuit.gates.len();
         let min = min(sub_m, max);
         
-        let (canon_perm_blob, canon_shuf_blob) = if n == 7 && sub_m <= max {
-            let table = format!("n{}m{}", n, min);
-            let query = format!(
-                "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
-                table
-            );
+        // let (canon_perm_blob, canon_shuf_blob) = if n == 7 && sub_m <= max {
+        //     let table = format!("n{}m{}", n, min);
+        //     let query = format!(
+        //         "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+        //         table
+        //     );
 
-            let sql_t0 = Instant::now();
-            let mut stmt = match conn.prepare(&query) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            let rows = stmt.query([&subcircuit.repr_blob()]);
-            SQL_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        //     let sql_t0 = Instant::now();
+        //     let mut stmt = match conn.prepare(&query) {
+        //         Ok(s) => s,
+        //         Err(_) => continue,
+        //     };
+        //     let rows = stmt.query([&subcircuit.repr_blob()]);
+        //     SQL_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-            let mut r = match rows {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
+        //     let mut r = match rows {
+        //         Ok(r) => r,
+        //         Err(_) => continue,
+        //     };
 
-            if let Some(row_result) = r.next().unwrap() {
+        //     if let Some(row_result) = r.next().unwrap() {
                 
-                (row_result
-                    .get(0)
-                    .expect("Failed to get blob"),
-                row_result
-                    .get(1)
-                    .expect("Failed to get blob"))
+        //         (row_result
+        //             .get(0)
+        //             .expect("Failed to get blob"),
+        //         row_result
+        //             .get(1)
+        //             .expect("Failed to get blob"))
                 
-            } else {
-                continue
-            }
+        //     } else {
+        //         continue
+        //     }
 
-        } else {
-            let t1 = Instant::now();
-            let sub_perm = subcircuit.permutation(n);
-            PERMUTATION_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        // } else {
+        //     let t1 = Instant::now();
+        //     let sub_perm = subcircuit.permutation(n);
+        //     PERMUTATION_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-            let t2 = Instant::now();
-            let canon_perm = get_canonical(&sub_perm, bit_shuf);
-            CANON_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        //     let t2 = Instant::now();
+        //     let canon_perm = get_canonical(&sub_perm, bit_shuf);
+        //     CANON_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-            (canon_perm.perm.repr_blob(), canon_perm.shuffle.repr_blob())
-        };
+        //     (canon_perm.perm.repr_blob(), canon_perm.shuffle.repr_blob())
+        // };
+
+        let canon= get_canonical(&c_perm, &bit_shuf);
+        
+        let (canon_perm_blob, canon_shuf_blob) = (canon.perm.repr_blob(), canon.shuffle.repr_blob());
         let prefix = canon_perm_blob.as_slice();
         for smaller_m in (1..=std::cmp::min(sub_m+2, max)).rev() {
             let db_name = format!("n{}m{}", n, smaller_m);
