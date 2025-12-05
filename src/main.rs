@@ -549,7 +549,7 @@ fn main() {
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
             // Call compression logic
-            let compressed = compress_big(&expand_big(&circuit, r/100, n, &mut conn), r, n, &mut conn, &env);
+            let compressed = compress_big(&expand_big(&circuit, r/100, n, &mut conn, &env), r, n, &mut conn, &env);
 
             let mut file = fs::File::create("compressed.txt")
                 .expect("Failed to create compressed.txt");
