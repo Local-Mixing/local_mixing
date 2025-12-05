@@ -405,6 +405,7 @@ pub fn expand_lmdb(
     bit_shuf: &Vec<Vec<usize>>,
     n: usize,
     env: &lmdb::Environment,
+    old_n: usize
 ) -> CircuitSeq {
 
     let id = Permutation::id_perm(n);
@@ -571,6 +572,9 @@ pub fn expand_lmdb(
                 };
 
                 if let Some(val_blob) = hit {
+                    if old_n > n {
+                        println!("Expand with ancilla :D");
+                    }
                     let (repl_blob, repl_shuf): (Vec<u8>, Vec<u8>) =
                         bincode::deserialize(&val_blob).expect("Failed to deserialize");
 
