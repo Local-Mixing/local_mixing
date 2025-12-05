@@ -611,6 +611,9 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
         circuit.gates.remove(next);
     }
 
+    if new_gates.probably_equal(&circuit, 64, 100000).is_err(){
+        panic!("Changed functionality");
+    }
     new_gates
 }
 
