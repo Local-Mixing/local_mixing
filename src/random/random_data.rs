@@ -616,7 +616,13 @@ pub fn left_ordering(circuit: &CircuitSeq) -> CircuitSeq{
             c.gates.remove(*i);
         }
     }
-    CircuitSeq { gates: new_gates }
+    let new = CircuitSeq { gates: new_gates };
+
+    if new.probably_equal(&circuit, 64, 100000).is_err() {
+        panic!("Left shooting changed functionality");
+    }
+    
+    new
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
