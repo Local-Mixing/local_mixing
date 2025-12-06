@@ -1786,6 +1786,22 @@ mod tests {
     }
 
     #[test]
+    fn test_skeleton() {
+        let contents = fs::read_to_string("circuit_before_random.txt")
+            .expect("Failed to read");
+        let circuit_a = CircuitSeq::from_string(&contents);
+
+        let skeleton = create_skeleton(&circuit_a);
+        for i in 1..skeleton.depth {
+            for node in skeleton.nodes[i].clone().into_iter() {
+                if node.parents.is_empty() {
+                    panic!("Failed");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_build_circuit() {
         let gate = "5hx;";
         let (r, a) = random_id(64, 20);
