@@ -683,40 +683,49 @@ pub fn create_skeleton(circuit: &CircuitSeq) -> Skeleton {
 
 pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitSeq {
     let orig_circuit = circuit.clone();
-    let mut circuit = circuit.clone();
-    circuit = left_ordering(&circuit);
-    let mut new_gates = CircuitSeq { gates: Vec::new() };
+    let circuit = left_ordering(circuit);
     let skeleton = create_skeleton(&circuit);
+
+    let mut new_gates = CircuitSeq { gates: Vec::new() };
+
+    let mut node_map: HashMap<usize, Node> = HashMap::new();
+    for level in &skeleton.nodes {
+        for node in level {
+            node_map.insert(node.key, node.clone());
+        }
+    }
+
     let mut candidates: Vec<Node> = skeleton.nodes[0].clone();
     let mut candidate_keys: HashSet<usize> = candidates.iter().map(|n| n.key).collect();
 
     while !candidates.is_empty() {
-        let next = candidates.choose(rng).unwrap().clone();
-        new_gates.gates.push(circuit.gates[next.key]);
-        let index = candidates.iter().position(|n| n.key == next.key).unwrap();
-        candidates.remove(index);
+        // Pick a random candidate
+        let idx = rng.random_range(0..candidates.len());
+        let next = candidates.swap_remove(idx);
         candidate_keys.remove(&next.key);
 
+        // Add the gate to the new circuit
+        new_gates.gates.push(circuit.gates[next.key]);
+
+        // Process children
         for &child_key in &next.children {
-            if skeleton.nodes.iter().flat_map(|lvl| lvl).any(|n| n.key == child_key) {
-                let child = skeleton.nodes.iter()
-                    .flat_map(|lvl| lvl)
-                    .find(|n| n.key == child_key)
-                    .unwrap();
-                let has_parent = child.parents.iter().any(|p| candidate_keys.contains(p));
-                if !has_parent && candidate_keys.insert(child.key) {
-                    candidates.push(child.clone());
-                }
+            let child = &node_map[&child_key];
+
+            // If all parents are gone, add to candidates
+            if child.parents.iter().all(|p| !candidate_keys.contains(p)) && !candidate_keys.contains(&child.key) {
+                candidates.push(child.clone());
+                candidate_keys.insert(child.key);
             }
         }
     }
 
+    // Sanity checks
     if new_gates.gates.len() != orig_circuit.gates.len() {
-        panic!("Didn't add enough");
+        panic!("Didn't add enough gates!");
     }
 
-    if new_gates.probably_equal(&orig_circuit, 64, 100000).is_err() {
-        panic!("Changed functionality");
+    if new_gates.probably_equal(&orig_circuit, 64, 100_000).is_err() {
+        panic!("Circuit functionality changed!");
     }
 
     new_gates
