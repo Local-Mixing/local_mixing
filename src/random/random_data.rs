@@ -640,7 +640,7 @@ pub struct Skeleton {
     depth: usize,
 }
 
-pub fn create_skeleton(circuit: &CircuitSeq) -> Skeleton {
+pub fn create_skeleton(circuit: &CircuitSeq) -> (CircuitSeq, Skeleton) {
     let c = left_ordering(&circuit);
     let gates = &c.gates;
     let mut skel = Skeleton { nodes: Vec::new(), depth: 0 };
@@ -688,13 +688,12 @@ pub fn create_skeleton(circuit: &CircuitSeq) -> Skeleton {
     }
 
     skel.depth = level;
-    skel
+    (c, skel)
 }
 
 pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitSeq {
     let orig_circuit = circuit.clone();
-    let circuit = left_ordering(circuit);
-    let skeleton = create_skeleton(&circuit);
+    let (circuit, skeleton) = create_skeleton(&circuit);
 
     let mut new_gates = CircuitSeq { gates: Vec::new() };
 
@@ -1839,7 +1838,7 @@ mod tests {
             .expect("Failed to read");
         let circuit_a = CircuitSeq::from_string(&contents);
 
-        let skeleton = create_skeleton(&circuit_a);
+        let (c, skeleton) = create_skeleton(&circuit_a);
         for i in 1..skeleton.depth {
             for node in skeleton.nodes[i].clone().into_iter() {
                 if node.parents.is_empty() {
