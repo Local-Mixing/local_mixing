@@ -663,10 +663,12 @@ pub fn create_skeleton(circuit: &CircuitSeq) -> Skeleton {
 
         if level > 0 {
             for node in &mut level_nodes {
-                for prev_node in &mut skel.nodes[level - 1] {
-                    if Gate::collides_index(&prev_node.val, &node.val) {
-                        node.parents.push(prev_node.key);
-                        prev_node.children.push(node.key);
+                for prev_level in 0..level {
+                    for prev_node in &mut skel.nodes[prev_level] {
+                        if Gate::collides_index(&prev_node.val, &node.val) {
+                            node.parents.push(prev_node.key);
+                            prev_node.children.push(node.key);
+                        }
                     }
                 }
             }
