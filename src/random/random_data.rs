@@ -614,7 +614,7 @@ pub fn create_skeleton(circuit: &CircuitSeq) -> Skeleton {
         let mut segment = Vec::new();
         let mut i = start;
         while i < gates.len() {
-            if i > start && !segment.iter().any(|&(_, g)| Gate::collides_index(&gates[i], &g)) {
+            if i > start && segment.iter().any(|&(_, g)| Gate::collides_index(&gates[i], &g)) {
                 break;
             }
             segment.push((i, gates[i].clone()));
