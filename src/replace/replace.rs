@@ -1140,13 +1140,26 @@ pub fn expand_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Co
             break;
         }
 
-        let used_wires = subcircuit.used_wires();
-        subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
-
+        let mut used_wires = subcircuit.used_wires();
         let n_wires = used_wires.len();
-
         let max = 7;
         let new_wires = rng.random_range(n_wires..=max);
+
+        if new_wires > n_wires {
+            let mut count = n_wires;
+            while count < new_wires {
+                let random = rng.random_range(0..num_wires);
+                if used_wires.contains(&(random as u8)) {
+                    continue
+                }
+                used_wires.push(random as u8);
+                count += 1;
+            }
+        }
+        used_wires.sort();
+        subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
+
+        
         let perms: Vec<Vec<usize>> = (0..new_wires).permutations(new_wires).collect();
         let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
         let subcircuit_temp = expand_lmdb(&subcircuit, 10, conn, &bit_shuf, new_wires, &env, n_wires);
