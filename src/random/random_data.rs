@@ -600,6 +600,8 @@ pub fn is_level_zero(circuit: &CircuitSeq, index: usize) -> bool {
 }
 
 pub fn left_ordering(circuit: &CircuitSeq) -> CircuitSeq{
+    let mut circuit = circuit.clone();
+    circuit.canonicalize();
     let mut new_gates: Vec<[u8;3]> = Vec::new();
     let mut c = circuit.clone();
     while !c.gates.is_empty() {
@@ -633,9 +635,7 @@ pub struct Skeleton {
 }
 
 pub fn create_skeleton(circuit: &CircuitSeq) -> Skeleton {
-    let mut c = circuit.clone();
-    c.canonicalize();
-    let c = left_ordering(&c);
+    let c = left_ordering(&circuit);
     let gates = &c.gates;
     let mut skel = Skeleton { nodes: Vec::new(), depth: 0 };
     let mut start = 0;
@@ -687,9 +687,7 @@ pub fn create_skeleton(circuit: &CircuitSeq) -> Skeleton {
 
 pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitSeq {
     let orig_circuit = circuit.clone();
-    let mut circuit = circuit.clone();
-    circuit.canonicalize();
-    circuit = left_ordering(&circuit);
+    let circuit = left_ordering(circuit);
     let skeleton = create_skeleton(&circuit);
 
     let mut new_gates = CircuitSeq { gates: Vec::new() };
