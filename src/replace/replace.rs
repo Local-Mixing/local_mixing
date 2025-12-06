@@ -473,7 +473,7 @@ pub fn expand_lmdb(
 
         //     (canon_perm.perm.repr_blob(), canon_perm.shuffle.repr_blob())
         // };
-        println!("{}", n != old_n);
+        println!("{}", n - old_n);
         let sub_perm = subcircuit.permutation(n);
         let canon= get_canonical(&sub_perm, &bit_shuf);
         
