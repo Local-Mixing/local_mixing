@@ -751,8 +751,8 @@ pub fn random_walk_no_skeleton<R: RngCore>(
     rng: &mut R,
 ) {
     let new = circuit.clone();
-    circuit.gates = Vec::new();
     let n = circuit.gates.len();
+    circuit.gates = Vec::new();
     let mut remaining: Vec<bool> = vec![true; n];
 
     let mut candidates: Vec<usize> = Vec::new();
