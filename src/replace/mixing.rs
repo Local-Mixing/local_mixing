@@ -548,13 +548,13 @@ pub fn abutterfly_big(
             let after_len = compressed_block.gates.len();
             
             let color_line = if after_len < before_len {
-                "\x1b[32m──────────────\x1b[0m" // green
+                "\x1b[31m──────────────\x1b[0m" // red = decrease
             } else if after_len > before_len {
-                "\x1b[31m──────────────\x1b[0m" // red
+                "\x1b[32m──────────────\x1b[0m" // green = increase
             } else if block.gates != compressed_block.gates {
-                "\x1b[35m──────────────\x1b[0m" // purple
+                "\x1b[34m──────────────\x1b[0m" // blue = changed
             } else {
-                "\x1b[90m──────────────\x1b[0m" // gray
+                "\x1b[90m──────────────\x1b[0m" // gray = no change
             };
 
             println!(
