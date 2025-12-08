@@ -1806,6 +1806,7 @@ mod tests {
     }
 
     use crate::replace::replace::random_id;
+
     #[test]
     fn test_shooting() {
         // Start with an initial random identity
@@ -1822,6 +1823,7 @@ mod tests {
             .and_then(|mut f| f.write_all(c_str.as_bytes()))
             .expect("Failed to write test_compression.txt");
     }
+
     #[test]
     fn test_walking() {
         // Start with an initial random identity
@@ -1836,6 +1838,25 @@ mod tests {
         File::create("circuit_walked.txt")
             .and_then(|mut f| f.write_all(c_str.as_bytes()))
             .expect("Failed to write test_walked.txt");
+    }
+
+    use rand::prelude::SliceRandom;
+
+    #[test]
+    fn test_random_order() {
+        // Start with an initial random identity
+        // Load circuitA from file
+        let contents = fs::read_to_string("circuit_before_random.txt")
+            .expect("Failed to read");
+        let mut circuit_a = CircuitSeq::from_string(&contents);
+
+        // Proceed as before
+        circuit_a.gates.shuffle(&mut rand::rng());
+
+        let c_str = circuit_a.repr();
+        File::create("circuit_randomized.txt")
+            .and_then(|mut f| f.write_all(c_str.as_bytes()))
+            .expect("Failed to write test_compression.txt");
     }
 
     #[test]
