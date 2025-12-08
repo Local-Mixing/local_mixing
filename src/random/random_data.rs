@@ -1878,7 +1878,7 @@ mod tests {
         // Load circuitA from file
         let contents = fs::read_to_string("circuit_before_random.txt")
             .expect("Failed to read");
-        let mut circuit_a = CircuitSeq::from_string(&contents);
+        let circuit_a = CircuitSeq::from_string(&contents);
         // Proceed as before
 
 
@@ -1894,7 +1894,7 @@ mod tests {
 
         let to = Instant::now();
         for _ in 0..100 {
-            circuit_a = random_walk_no_skeleton(&circuit_a, &mut rand::rng());
+            let _ = random_walk_no_skeleton(&circuit_a, &mut rand::rng());
         }
         println!("Time elapsed for walking: {:?}", to.elapsed());
 
