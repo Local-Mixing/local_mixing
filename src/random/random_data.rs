@@ -747,9 +747,9 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
 }
 
 pub fn random_walk_no_skeleton<R: RngCore>(
-    circuit: &CircuitSeq,
+    circuit: &mut CircuitSeq,
     rng: &mut R,
-) -> CircuitSeq {
+) {
 
     let n = circuit.gates.len();
     let mut remaining: Vec<bool> = vec![true; n];
@@ -779,7 +779,7 @@ pub fn random_walk_no_skeleton<R: RngCore>(
         }
     }
 
-    CircuitSeq { gates: out }
+    *circuit = CircuitSeq { gates: out }
 }
 
 fn is_level_zero_raw(c: &CircuitSeq, idx: usize, remaining: &[bool]) -> bool {
@@ -1878,7 +1878,7 @@ mod tests {
         // Load circuitA from file
         let contents = fs::read_to_string("circuit_before_random.txt")
             .expect("Failed to read");
-        let circuit_a = CircuitSeq::from_string(&contents);
+        let mut circuit_a = CircuitSeq::from_string(&contents);
         // Proceed as before
 
 
@@ -1894,7 +1894,7 @@ mod tests {
 
         let to = Instant::now();
         for _ in 0..100 {
-            let _ = random_walk_no_skeleton(&circuit_a, &mut rand::rng());
+            random_walk_no_skeleton(&mut circuit_a, &mut rand::rng());
         }
         println!("Time elapsed for walking: {:?}", to.elapsed());
 
