@@ -747,18 +747,18 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
 }
 
 pub fn random_walk_no_skeleton<R: RngCore>(
-    circuit: &mut CircuitSeq,
+    circuit: &CircuitSeq,
     rng: &mut R,
-) {
-    let new = circuit.clone();
+) -> CircuitSeq {
+
     let n = circuit.gates.len();
-    circuit.gates = Vec::new();
     let mut remaining: Vec<bool> = vec![true; n];
+    let mut out = Vec::with_capacity(n);
 
     let mut candidates: Vec<usize> = Vec::new();
 
     for i in 0..n {
-        if is_level_zero_raw(&new, i, &remaining) {
+        if is_level_zero_raw(circuit, i, &remaining) {
             candidates.push(i);
         }
     }
@@ -768,16 +768,18 @@ pub fn random_walk_no_skeleton<R: RngCore>(
         let idx = rng.random_range(0..candidates.len());
         let g = candidates.swap_remove(idx);
 
-        circuit.gates.push(new.gates[g]);
+        out.push(circuit.gates[g]);
 
         remaining[g] = false;
 
         for j in (g+1)..n {
-            if remaining[j] && is_level_zero_raw(&new, j, &remaining) {
+            if remaining[j] && is_level_zero_raw(circuit, j, &remaining) {
                 candidates.push(j);
             }
         }
     }
+
+    CircuitSeq { gates: out }
 }
 
 fn is_level_zero_raw(c: &CircuitSeq, idx: usize, remaining: &[bool]) -> bool {
@@ -1892,7 +1894,7 @@ mod tests {
 
         let to = Instant::now();
         for _ in 0..100 {
-            random_walk_no_skeleton(&mut circuit_a, &mut rand::rng());
+            circuit_a = random_walk_no_skeleton(&circuit_a, &mut rand::rng());
         }
         println!("Time elapsed for walking: {:?}", to.elapsed());
 
