@@ -335,34 +335,34 @@ pub fn merge_combine_blocks(
     final_compressed
 }
 
-fn initial_milestone(acc: usize) -> usize {
-    if acc >= 10_000 {
-        (acc / 10_000) * 10_000   // nearest 10k below
-    } else if acc >= 5_000 {
-        5_000
-    } else if acc >= 2_000 {
-        2_000
-    } else if acc >= 1_000 {
-        1_000
-    } else {
-        0
-    }
-}
+// fn initial_milestone(acc: usize) -> usize {
+//     if acc >= 10_000 {
+//         (acc / 10_000) * 10_000   // nearest 10k below
+//     } else if acc >= 5_000 {
+//         5_000
+//     } else if acc >= 2_000 {
+//         2_000
+//     } else if acc >= 1_000 {
+//         1_000
+//     } else {
+//         0
+//     }
+// }
 
 /// Given the previous milestone, decide the next lower one
-fn next_milestone(prev: usize) -> usize {
-    match prev {
-        x if x > 10_000 => x - 10_000,
-        10_000 => 5_000,
-        5_000 => 2_000,
-        2_000 => 1_000,
-        _ => 0,
-    }
-}
+// fn next_milestone(prev: usize) -> usize {
+//     match prev {
+//         x if x > 10_000 => x - 10_000,
+//         10_000 => 5_000,
+//         5_000 => 2_000,
+//         2_000 => 1_000,
+//         _ => 0,
+//     }
+// }
 
 pub fn butterfly_big(
     c: &CircuitSeq,
-    conn: &mut Connection,
+    _conn: &mut Connection,
     n: usize,
     last: bool,
     stop: usize,
@@ -427,7 +427,7 @@ pub fn butterfly_big(
     // Add bookends: R ... R*
     acc = r.concat(&acc).concat(&r_inv);
     println!("After adding bookends: {} gates", acc.gates.len());
-    let mut milestone = initial_milestone(acc.gates.len());
+    // let mut milestone = initial_milestone(acc.gates.len());
     // Final global compression (until stable 3x)
     let mut stable_count = 0;
     while stable_count < 3 {
@@ -511,7 +511,7 @@ pub fn butterfly_big(
 
 pub fn abutterfly_big(
     c: &CircuitSeq,
-    conn: &mut Connection,
+    _conn: &mut Connection,
     n: usize,
     last: bool,
     stop: usize,
@@ -653,7 +653,7 @@ pub fn abutterfly_big(
 
 pub fn abutterfly_big_delay_bookends(
     c: &CircuitSeq,
-    conn: &mut Connection,
+    _conn: &mut Connection,
     n: usize,
     env: &lmdb::Environment,
 ) -> (CircuitSeq, CircuitSeq, CircuitSeq) {

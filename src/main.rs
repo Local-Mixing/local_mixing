@@ -3,16 +3,12 @@ use itertools::Itertools;
 use plotters::prelude::*;
 use rand::{Rng};
 use rusqlite::{Connection, OpenFlags};
-use serde_json::json;
 use std::{
     fs::{self},
     io::Write,
     path::Path,
     time::Instant,
-    process::Stdio,
 };
-use local_mixing::replace::replace::expand_big;
-use local_mixing::replace::replace::compress_big;
 use local_mixing::{
     circuit::CircuitSeq,
     rainbow::{
@@ -497,18 +493,18 @@ fn main() {
         }
         Some(("heatmap", sub)) => {
             let num_inputs: usize = *sub.get_one("inputs").unwrap();
-            let n: usize = *sub.get_one("num_wires").unwrap();
+            let _n: usize = *sub.get_one("num_wires").unwrap();
 
-            let xlabel = sub
-                .get_one::<String>("xlabel")
-                .map(|s| s.as_str())
-                .unwrap_or("Circuit 1 gate index");
-            let ylabel = sub
-                .get_one::<String>("ylabel")
-                .map(|s| s.as_str())
-                .unwrap_or("Circuit 2 gate index");
+            // let xlabel = sub
+            //     .get_one::<String>("xlabel")
+            //     .map(|s| s.as_str())
+            //     .unwrap_or("Circuit 1 gate index");
+            // let ylabel = sub
+            //     .get_one::<String>("ylabel")
+            //     .map(|s| s.as_str())
+            //     .unwrap_or("Circuit 2 gate index");
 
-            let flag = sub.get_flag("std"); // true if -s was given
+            // let flag = sub.get_flag("std"); // true if -s was given
 
             println!(
                 "Running distinguisher with {} inputs...",

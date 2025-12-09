@@ -1,7 +1,7 @@
 use crate::circuit::circuit;
 use crate::{
-    circuit::{CircuitSeq, Permutation},
-    rainbow::canonical::PermStore,
+    circuit::{CircuitSeq},
+    // rainbow::canonical::PermStore,
 };
 use crate::rainbow::{PersistPermStore, canonical};
 use crate::rainbow::database::{Persist};
@@ -21,19 +21,19 @@ use crate::random::random_data::base_gates;
 use smallvec::SmallVec;
 
 // PR struct
-#[derive(Clone)]
-pub struct PR {
-    p: Permutation,
-    r: Vec<u8>,
-    canonical: bool,
-}
+// #[derive(Clone)]
+// pub struct PR {
+//     p: Permutation,
+//     r: Vec<u8>,
+//     canonical: bool,
+// }
 
 // Atomic counters
-static N_PERMS: AtomicI64 = AtomicI64::new(0);
-static CKT_CHECK: AtomicI64 = AtomicI64::new(0);
-static SKIP_INV: AtomicI64 = AtomicI64::new(0);
-static SKIP_ID: AtomicI64 = AtomicI64::new(0);
-static OWN_INV_COUNT: AtomicI64 = AtomicI64::new(0);
+static _N_PERMS: AtomicI64 = AtomicI64::new(0);
+static _CKT_CHECK: AtomicI64 = AtomicI64::new(0);
+static _SKIP_INV: AtomicI64 = AtomicI64::new(0);
+static _SKIP_ID: AtomicI64 = AtomicI64::new(0);
+static _OWN_INV_COUNT: AtomicI64 = AtomicI64::new(0);
 static CKT_I: AtomicI64 = AtomicI64::new(0);
 
 /// Parallel circuit builder returning a ParallelIterator of PR
@@ -83,64 +83,64 @@ pub fn build_from(
         })
 }
 
-pub fn build_circuit_rayon(
-    n: usize,
-    _m: usize,
-    circuits: impl ParallelIterator<Item = Vec<usize>> + Send,
-    base_gates: Arc<Vec<[u8;3]>>,
-) -> impl ParallelIterator<Item = PR> + Send {
-    circuits.map(move |circuit| CircuitSeq { gates: circuit.iter().map(|&i| { base_gates[i]}).collect(), })
-        .flat_map(move |mut c| {
-            CKT_CHECK.fetch_add(1, Ordering::Relaxed);
+// pub fn build_circuit_rayon(
+//     n: usize,
+//     _m: usize,
+//     circuits: impl ParallelIterator<Item = Vec<usize>> + Send,
+//     base_gates: Arc<Vec<[u8;3]>>,
+// ) -> impl ParallelIterator<Item = PR> + Send {
+//     circuits.map(move |circuit| CircuitSeq { gates: circuit.iter().map(|&i| { base_gates[i]}).collect(), })
+//         .flat_map(move |mut c| {
+//             CKT_CHECK.fetch_add(1, Ordering::Relaxed);
 
-            c.canonicalize();
+//             c.canonicalize();
 
-            if c.adjacent_id() {
-                SKIP_ID.fetch_add(1, Ordering::Relaxed);
-                return vec![].into_par_iter();
-            }
+//             if c.adjacent_id() {
+//                 SKIP_ID.fetch_add(1, Ordering::Relaxed);
+//                 return vec![].into_par_iter();
+//             }
 
-            let per = c.permutation(n);
-            let can_per = per.canonical();
-            let is_canonical = per == can_per.perm;
+//             let per = c.permutation(n);
+//             let can_per = per.canonical();
+//             let is_canonical = per == can_per.perm;
 
-            vec![PR {
-                p: can_per.perm,
-                r: c.repr_blob(),
-                canonical: is_canonical,
-            }].into_par_iter()
-        })
-}
+//             vec![PR {
+//                 p: can_per.perm,
+//                 r: c.repr_blob(),
+//                 canonical: is_canonical,
+//             }].into_par_iter()
+//         })
+// }
 
 /// Process a single PR and update DashMap store
-fn process_pr(pr: PR, circuit_store: &DashMap<Vec<u8>, PermStore>) {
-    CKT_I.fetch_add(1, Ordering::Relaxed);
+// fn process_pr(pr: PR, circuit_store: &DashMap<Vec<u8>, PermStore>) {
+//     CKT_I.fetch_add(1, Ordering::Relaxed);
 
-    let p = &pr.p;
-    let ph = p.repr_blob();
-    let ip = p.invert();
-    let own_inv = *p == ip;
+//     let p = &pr.p;
+//     let ph = p.repr_blob();
+//     let ip = p.invert();
+//     let own_inv = *p == ip;
 
-    if !own_inv && circuit_store.contains_key(&ip.repr_blob()) {
-        SKIP_INV.fetch_add(1, Ordering::Relaxed);
-        return;
-    }
+//     if !own_inv && circuit_store.contains_key(&ip.repr_blob()) {
+//         SKIP_INV.fetch_add(1, Ordering::Relaxed);
+//         return;
+//     }
 
-    if own_inv { OWN_INV_COUNT.fetch_add(1, Ordering::Relaxed); }
+//     if own_inv { OWN_INV_COUNT.fetch_add(1, Ordering::Relaxed); }
 
-    let mut store = circuit_store.entry(ph.clone())
-        .or_insert_with(|| PermStore::new_perm_store(p.clone()));
+//     let mut store = circuit_store.entry(ph.clone())
+//         .or_insert_with(|| PermStore::new_perm_store(p.clone()));
 
-    if pr.canonical {
-        if store.contains_canonical { store.add_circuit(&pr.r); }
-        else { store.replace(&pr.r); }
-        store.contains_canonical = true;
-    } else if !store.contains_any_circuit { store.add_circuit(&pr.r); }
-    else { store.increment(); }
-    store.contains_any_circuit = true;
+//     if pr.canonical {
+//         if store.contains_canonical { store.add_circuit(&pr.r); }
+//         else { store.replace(&pr.r); }
+//         store.contains_canonical = true;
+//     } else if !store.contains_any_circuit { store.add_circuit(&pr.r); }
+//     else { store.increment(); }
+//     store.contains_any_circuit = true;
 
-    N_PERMS.fetch_add(1, Ordering::Relaxed);
-}
+//     N_PERMS.fetch_add(1, Ordering::Relaxed);
+// }
 
 //scratch
 //load old circuits

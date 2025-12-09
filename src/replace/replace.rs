@@ -405,7 +405,7 @@ pub fn expand_lmdb(
     bit_shuf: &Vec<Vec<usize>>,
     n: usize,
     env: &lmdb::Environment,
-    old_n: usize
+    _old_n: usize
 ) -> CircuitSeq {
     let mut compressed = c.clone();
     if compressed.gates.is_empty() {
@@ -425,9 +425,6 @@ pub fn expand_lmdb(
         } else {
             10
         };
-
-        let sub_m = subcircuit.gates.len();
-        let min = min(sub_m, max);
         
         // let (canon_perm_blob, canon_shuf_blob) = if n == 7 && sub_m <= max {
         //     let table = format!("n{}m{}", n, min);

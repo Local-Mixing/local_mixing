@@ -946,7 +946,7 @@ impl Permutation {
                 }
 
                 // compute minimum comparison result for THIS r
-                let mut is_better = false;
+                let mut _is_better = false;
                 for weight in 0..=num_b / 2 {
                     for idx in canonical::index_set(weight, num_b) {
                         let p_val = unsafe { *perm_shuf.get_unchecked(idx) };
@@ -954,7 +954,7 @@ impl Permutation {
                         // We return perm_shuf unconditionally;
                         // comparison happens globally.
                         if p_val < m_val {
-                            is_better = true;
+                            _is_better = true;
                         }
                         break;
                     }
@@ -1922,7 +1922,7 @@ mod tests {
 
         let mut average = vec![[0f64, 0f64, 0f64]; (circuit_one_len + 1) * (circuit_two_len + 1)];
         let mut rng = rand::rng();
-        let start_time = Instant::now();
+        let _start_time = Instant::now();
 
         for _ in 0..num_inputs {
             let input_bits: usize = if num_wires < usize::BITS as usize {
@@ -1980,7 +1980,7 @@ mod tests {
             .expect("Failed to read");
         let circuit_a = CircuitSeq::from_string(&contents);
 
-        let (c, skel) = create_skeleton(&circuit_a);
+        let (_, skel) = create_skeleton(&circuit_a);
         let mut visited: HashSet<usize> = HashSet::new();
         let mut queue: Vec<usize> = skel.nodes[0].iter().map(|n| n.key).collect();
 
