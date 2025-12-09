@@ -1890,7 +1890,11 @@ mod tests {
         // Proceed as before
 
 
-        circuit_a = random_walk_no_skeleton(&circuit_a, &mut rand::rng());
+        let to = Instant::now();
+        for _ in 0..100{
+            random_walk_no_skeleton(&mut circuit_a, &mut rand::rng());
+        }
+        println!("Time elapsed for shooting: {:?}", to.elapsed());
 
         let c_str = circuit_a.repr();
         File::create("circuit_walked_no_skele.txt")

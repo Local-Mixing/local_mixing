@@ -578,7 +578,7 @@ pub fn abutterfly_big(
     acc = first_r.concat(&acc).concat(&prev_r_inv);
 
     println!("After adding bookends: {} gates", acc.gates.len());
-    let mut milestone = initial_milestone(acc.gates.len());
+    // let mut milestone = initial_milestone(acc.gates.len());
     // Final global compression until stable 3×
     let mut stable_count = 0;
     while stable_count < 3 {
