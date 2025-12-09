@@ -543,7 +543,7 @@ fn main() {
             let mut stable_count = 0;
             while stable_count < 3 {
                 let before = acc.gates.len();
-                acc = compress_big_ancillas(&acc, 100_000, n, &mut conn, &env);
+                acc = compress_big(&acc, 100_000, n, &mut conn, &env);
                 let after = acc.gates.len();
 
                 if after == before {
