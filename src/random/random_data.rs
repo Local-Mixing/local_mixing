@@ -1946,7 +1946,7 @@ mod tests {
             }
         }
 
-        println!("Time elapsed: {:?}", Instant::now() - start_time);
+        // println!("Time elapsed: {:?}", Instant::now() - start_time);
 
         let total_points = average.len();
         let mean_all: f64 = average.iter().map(|p| p[2]).sum::<f64>() / total_points as f64;
