@@ -1889,12 +1889,14 @@ mod tests {
         let mut circuit_b = circuit_a.clone();
         // Proceed as before
 
-
+        for _ in 0..100{
+            random_walk_no_skeleton(&mut circuit_a, &mut rand::rng());
+        }
         let to = Instant::now();
         for _ in 0..100{
             random_walk_no_skeleton(&mut circuit_a, &mut rand::rng());
         }
-        println!("Time elapsed for shooting: {:?}", to.elapsed());
+        println!("Time elapsed for walking: {:?}", to.elapsed());
 
         let c_str = circuit_a.repr();
         File::create("circuit_walked_no_skele.txt")
