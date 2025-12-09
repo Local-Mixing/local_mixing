@@ -25,7 +25,7 @@ use local_mixing::{
     },
 };
 
-use local_mixing::replace::replace::compress_big;
+use local_mixing::replace::replace::compress_big_ancillas;
 fn main() {
     let matches = Command::new("rainbow")
         .about("Rainbow circuit generator")
@@ -529,14 +529,13 @@ fn main() {
             reverse(from_path, dest_path);
         }
         Some(("compress", sub)) => {
-            let r: usize = *sub.get_one("r").expect("Missing -r <trials>");
             let p: &String = sub.get_one("p").expect("Missing -p <path>");
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
 
             let contents = fs::read_to_string(p)
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", p));
 
-            let circuit = CircuitSeq::from_string(&contents);
+            let mut acc = CircuitSeq::from_string(&contents);
 
             let mut conn = Connection::open_with_flags("./circuits.db",rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,)
             .expect("Failed to open ./circuits.db in read-only mode");
@@ -549,11 +548,23 @@ fn main() {
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
             // Call compression logic
-            let compressed = compress_big(&expand_big(&circuit, r/100, n, &mut conn, &env), r, n, &mut conn, &env);
+            let mut stable_count = 0;
+            while stable_count < 3 {
+                let before = acc.gates.len();
+                acc = compress_big_ancillas(&acc, 1_000, n, &mut conn, &env);
+                let after = acc.gates.len();
 
+                if after == before {
+                    stable_count += 1;
+                    println!("  Final compression stable {}/3 at {} gates", stable_count, after);
+                } else {
+                    println!("  Final compression reduced: {} → {} gates", before, after);
+                    stable_count = 0;
+                }
+            }
             let mut file = fs::File::create("compressed.txt")
                 .expect("Failed to create compressed.txt");
-            write!(file, "{}", compressed.repr())
+            write!(file, "{}", acc.repr())
                 .expect("Failed to write compressed circuit to file");
 
             println!("Compressed circuit written to compressed.txt");

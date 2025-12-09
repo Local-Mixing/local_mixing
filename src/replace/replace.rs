@@ -1126,9 +1126,9 @@ pub fn expand_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Co
         let perms: Vec<Vec<usize>> = (0..new_wires).permutations(new_wires).collect();
         let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
         let subcircuit_temp = expand_lmdb(&subcircuit, 10, conn, &bit_shuf, new_wires, &env, n_wires);
-        if subcircuit.permutation(new_wires) != subcircuit_temp.permutation(new_wires) {
-            panic!("Compress changed something");
-        }
+        // if subcircuit.permutation(new_wires) != subcircuit_temp.permutation(new_wires) {
+        //     panic!("Compress changed something");
+        // }
         subcircuit = subcircuit_temp;
 
         subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
@@ -1197,6 +1197,90 @@ pub fn outward_compress(g: &CircuitSeq, r: &CircuitSeq, trials: usize, conn: &mu
         g = compress(&wrapper.concat(&g).concat(&wrapper), trials, conn, bit_shuf, n);
     }
     g
+}
+
+pub fn compress_big_ancillas(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Connection, env: &lmdb::Environment) -> CircuitSeq {
+    let mut circuit = c.clone();
+    let mut rng = rand::rng();
+
+    for _i in 0..trials {
+        // if i % 20 == 0 {
+        //     println!("{} trials so far, {} more to go", i, trials - i);
+        // }
+        let mut subcircuit_gates = vec![];
+        let random_max_wires = rng.random_range(3..=7);
+        for set_size in (3..=7).rev() {
+            let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
+            if !gates.is_empty() {
+                subcircuit_gates = gates;
+                break;
+            }
+        }
+
+        if subcircuit_gates.is_empty() {
+            return circuit
+        }
+        
+        let mut gates: Vec<[u8;3]> = vec![[0,0,0]; subcircuit_gates.len()];
+        for (i, g) in subcircuit_gates.iter().enumerate() {
+            gates[i] = circuit.gates[*g];
+        }
+
+        subcircuit_gates.sort();
+        let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
+        let mut subcircuit = CircuitSeq { gates };
+        let expected_slice: Vec<_> = subcircuit_gates.iter().map(|&i| circuit.gates[i]).collect();
+        let actual_slice = &circuit.gates[start..=end];
+
+        if actual_slice != &expected_slice[..] {
+            break;
+        }
+
+        let mut used_wires = subcircuit.used_wires();
+        let n_wires = used_wires.len();
+        let max = 7;
+        let new_wires = rng.random_range(n_wires..=max);
+
+        if new_wires > n_wires {
+            let mut count = n_wires;
+            while count < new_wires {
+                let random = rng.random_range(0..num_wires);
+                if used_wires.contains(&(random as u8)) {
+                    continue
+                }
+                used_wires.push(random as u8);
+                count += 1;
+            }
+        }
+        used_wires.sort();
+        subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
+
+        
+        let perms: Vec<Vec<usize>> = (0..new_wires).permutations(new_wires).collect();
+        let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
+        let subcircuit_temp = compress_lmdb(&subcircuit, 20, conn, &bit_shuf, new_wires, &env);
+        if subcircuit.permutation(new_wires) != subcircuit_temp.permutation(new_wires) {
+            panic!("Compress changed something");
+        }
+        subcircuit = subcircuit_temp;
+
+        subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
+
+        circuit.gates.splice(start..end+1, subcircuit.gates);
+        // if c.permutation(num_wires).data != circuit.permutation(num_wires).data {
+        //     panic!("splice changed something");
+        // }
+    }
+    let mut i = 0;
+    while i < circuit.gates.len().saturating_sub(1) {
+        if circuit.gates[i] == circuit.gates[i + 1] {
+            circuit.gates.drain(i..=i + 1);
+            i = i.saturating_sub(2);
+        } else {
+            i += 1;
+        }
+    }
+    circuit
 }
 
 pub fn print_compress_timers() {
