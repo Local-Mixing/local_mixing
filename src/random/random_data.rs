@@ -1863,10 +1863,16 @@ mod tests {
         let mut circuit_a = CircuitSeq::from_string(&contents);
 
         // Proceed as before
+        for _ in 0..100{
+            shoot_random_gate(&mut circuit_a, 100_000);
+        }
+
+        let to = Instant::now();
+        for _ in 0..100{
+            shoot_random_gate(&mut circuit_a, 100_000);
+        }
+        println!("Time elapsed for walking: {:?}", to.elapsed());
         
-
-        shoot_random_gate(&mut circuit_a, 10_000_000);
-
         let c_str = circuit_a.repr();
         File::create("circuit_shot.txt")
             .and_then(|mut f| f.write_all(c_str.as_bytes()))
@@ -1883,20 +1889,13 @@ mod tests {
         // Proceed as before
 
 
-        // for _ in 0..1{
-        //     circuit_a = random_walking(&circuit_a, &mut rand::rng());
-        // }
-
-        // let to = Instant::now();
-        // for _ in 0..1 {
-        //     circuit_a = random_walking(&circuit_a, &mut rand::rng());
-        // }
-        // println!("Time elapsed for walking old: {:?}", to.elapsed());
+        for _ in 0..100{
+            circuit_a = random_walking(&circuit_a, &mut rand::rng());
+        }
 
         let to = Instant::now();
         for _ in 0..100 {
             circuit_a = random_walk_no_skeleton(&circuit_a, &mut rand::rng());
-            println!("circuit_a len: {}", circuit_a.gates.len());
         }
         println!("Time elapsed for walking: {:?}", to.elapsed());
 
