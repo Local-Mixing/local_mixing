@@ -1871,8 +1871,8 @@ mod tests {
         for _ in 0..100{
             shoot_random_gate(&mut circuit_a, 100_000);
         }
-        println!("Time elapsed for walking: {:?}", to.elapsed());
-        
+        println!("Time elapsed for shooting: {:?}", to.elapsed());
+
         let c_str = circuit_a.repr();
         File::create("circuit_shot.txt")
             .and_then(|mut f| f.write_all(c_str.as_bytes()))
@@ -1890,7 +1890,7 @@ mod tests {
 
 
         for _ in 0..100{
-            circuit_a = random_walking(&circuit_a, &mut rand::rng());
+            circuit_a = random_walk_no_skeleton(&circuit_a, &mut rand::rng());
         }
 
         let to = Instant::now();
