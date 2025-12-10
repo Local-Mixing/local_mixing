@@ -527,17 +527,17 @@ pub fn abutterfly_big(
     let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(50..=100));
     let mut prev_r_inv = first_r_inv.clone();
     
-    for g in c.gates.iter() {
-        let num = rng.random_range(3..=7);
-        if let Ok(mut id) = random_canonical_id(&_conn, num) {
-            id.rewire_first_gate(*g, num);
-            pre_gates.extend_from_slice(&id.gates);
-        } else {
-            pre_gates.push(*g);
-        }
-    }
+    // for g in c.gates.iter() {
+    //     let num = rng.random_range(3..=7);
+    //     if let Ok(mut id) = random_canonical_id(&_conn, num) {
+    //         id.rewire_first_gate(*g, num);
+    //         pre_gates.extend_from_slice(&id.gates);
+    //     } else {
+    //         pre_gates.push(*g);
+    //     }
+    // }
 
-    c.gates = pre_gates;
+    // c.gates = pre_gates;
 
     let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
 
