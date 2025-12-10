@@ -1,6 +1,6 @@
 use crate::{
     circuit::circuit::CircuitSeq,
-    replace::replace::{compress, compress_big, expand_big, obfuscate, outward_compress, random_id},
+    replace::replace::{compress, compress_big, expand_big, obfuscate, outward_compress, random_canonical_id, random_id},
 };
 use crate::random::random_data::shoot_random_gate;
 use crate::random::random_data::random_walk_no_skeleton;
@@ -519,18 +519,33 @@ pub fn abutterfly_big(
 ) -> CircuitSeq {
     println!("Butterfly start: {} gates", c.gates.len());
     let mut rng = rand::rng();
-    let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
+    let mut pre_gates: Vec<[u8;3]> = Vec::with_capacity(c.gates.len());
+
     let mut c = c.clone();
-    // shoot_random_gate(&mut c, 500_000);
-    c = random_walk_no_skeleton(&c, &mut rng);
+    shoot_random_gate(&mut c, 500_000);
+    // c = random_walk_no_skeleton(&c, &mut rng);
     let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(50..=100));
     let mut prev_r_inv = first_r_inv.clone();
     
+    for g in c.gates.iter() {
+        let num = rng.random_range(3..=7);
+        if let Ok(mut id) = random_canonical_id(&_conn, num) {
+            id.rewire_first_gate(*g, num);
+            pre_gates.extend_from_slice(&id.gates);
+        } else {
+            pre_gates.push(*g);
+        }
+    }
+
+    c.gates = pre_gates;
+
+    let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
+
     for &g in &c.gates {
         let (r, r_inv) = random_id(n as u8, rng.random_range(50..=100));
         let mut block = prev_r_inv.clone().concat(&CircuitSeq { gates: vec![g] }).concat(&r);
-        // shoot_random_gate(&mut block, 1_000);
-        block = random_walk_no_skeleton(&block, &mut rng);
+        shoot_random_gate(&mut block, 1_000);
+        // block = random_walk_no_skeleton(&block, &mut rng);
         pre_blocks.push(block);
         prev_r_inv = r_inv;
     }
