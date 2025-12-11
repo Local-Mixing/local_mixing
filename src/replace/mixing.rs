@@ -4,6 +4,7 @@ use crate::{
 };
 use crate::random::random_data::shoot_random_gate;
 use crate::random::random_data::random_walk_no_skeleton;
+use crate::replace::replace::replace_pairs;
 use itertools::Itertools;
 use rand::Rng;
 use rayon::prelude::*;
@@ -527,33 +528,35 @@ pub fn abutterfly_big(
     let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(50..=100));
     let mut prev_r_inv = first_r_inv.clone();
     
-    for (i, g) in c.gates.iter().enumerate() {
-        let num = rng.random_range(3..=7);
-        if let Ok(mut id) = random_canonical_id(&_conn, num) {
-            let mut used_wires = vec![g[0], g[1], g[2]];
-            let mut count = 3;
-            while count < num {
-                let random = rng.random_range(0..n);
-                if used_wires.contains(&(random as u8)) {
-                    continue
-                }
-                used_wires.push(random as u8);
-                count += 1;
-            }
-            used_wires.sort();
-            let rewired_g = CircuitSeq::rewire_subcircuit(&c, &vec![i], &used_wires);
-            id.rewire_first_gate(rewired_g.gates[0], num);
-            id = CircuitSeq::unrewire_subcircuit(&id, &used_wires);
-            id.gates.remove(0);
-            let g_ref = CircuitSeq { gates: vec![*g] };
-            pre_gates.extend_from_slice(&id.gates);
-        } else {
-            pre_gates.push(*g);
-        }
-    }
+    // for (i, g) in c.gates.iter().enumerate() {
+    //     let num = rng.random_range(3..=7);
+    //     if let Ok(mut id) = random_canonical_id(&_conn, num) {
+    //         let mut used_wires = vec![g[0], g[1], g[2]];
+    //         let mut count = 3;
+    //         while count < num {
+    //             let random = rng.random_range(0..n);
+    //             if used_wires.contains(&(random as u8)) {
+    //                 continue
+    //             }
+    //             used_wires.push(random as u8);
+    //             count += 1;
+    //         }
+    //         used_wires.sort();
+    //         let rewired_g = CircuitSeq::rewire_subcircuit(&c, &vec![i], &used_wires);
+    //         id.rewire_first_gate(rewired_g.gates[0], num);
+    //         id = CircuitSeq::unrewire_subcircuit(&id, &used_wires);
+    //         id.gates.remove(0);
+    //         let g_ref = CircuitSeq { gates: vec![*g] };
+    //         pre_gates.extend_from_slice(&id.gates);
+    //     } else {
+    //         pre_gates.push(*g);
+    //     }
+    // }
 
-    c.gates = pre_gates;
+    // c.gates = pre_gates;
 
+    replace_pairs(&mut c, n, _conn, &env);
+    
     let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
 
     for &g in &c.gates {

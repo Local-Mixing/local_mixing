@@ -11,7 +11,7 @@ use rand::{Rng};
 use rusqlite::{Connection};
 use std::{
     cmp::{max, min},
-    collections::{HashSet},
+    collections::{HashSet, HashMap},
     // fs::OpenOptions, // used for testing
     // io::Write,
     // sync::Arc,
@@ -20,95 +20,87 @@ use std::{
 use std::sync::atomic::Ordering;
 use std::sync::atomic::AtomicU64;
 use lmdb::{Cursor, Database, Transaction, RoTransaction};
+
 // Returns a nontrivial identity circuit built from two "friend" circuits
 pub fn random_canonical_id(
+    env: &lmdb::Environment,
     conn: &Connection,
     wires: usize,
 ) -> Result<CircuitSeq, Box<dyn std::error::Error>> {
-    // Pattern to match all tables for this wire count (all m values)
-    let pattern = format!("n{}%m%", wires);
-
-    // Get all tables matching pattern
-    let tables: Vec<String> = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?1")?
-        .query_map([&pattern], |row| row.get(0))?
-        .map(|r| r.unwrap())
-        .collect();
-
-    // Need at least 2 tables to combine circuits
-    if tables.len() < 2 {
-        return Err(format!("Need at least 2 tables matching {}", pattern).into());
-    }
-
     let mut rng = rand::rng();
 
+    let max_db = if wires == 7 {
+        4
+    } else if wires == 5 || wires == 6 {
+        5
+    } else if wires == 4 {
+        6
+    } else {
+        10
+    };
+
+    let db_names: Vec<String> = (1..=max_db)
+        .map(|m| format!("n{}m{}", wires, m))
+        .collect();
+
     loop {
-        // Pick two random tables
-        let table_a = tables[rng.random_range(2..tables.len())].clone();
-        let table_b = tables[rng.random_range(2..tables.len())].clone();
+        let idx_a = rng.random_range(0..db_names.len());
+        let idx_b = rng.random_range(0..db_names.len());
+        let max = max(idx_a, idx_b);
+        let min = min(idx_a, idx_b);
+        let db_a_name = &db_names[min];
+        let db_b_name = &db_names[max];
 
-        let (small, large) = if table_a < table_b {
-            (table_a, table_b)
-        } else {
-            (table_b, table_a)
-        };
+        let count: i64 = conn.query_row(
+                &format!("SELECT MAX(rowid) FROM {}", db_a_name),
+                [],
+                |row| row.get(0),
+            )?;
 
-        let count_small: i64 = conn.query_row(
-            &format!("SELECT MAX(rowid) FROM {}", small),
-            [],
-            |row| row.get(0),
-        )?;
-        if count_small == 0 {
-            continue; // empty table, retry
-        }
-
-        let random_id = rng.random_range(1..=count_small);
+        let random_id = rng.random_range(1..=count);
         let (circuit_blob, perm_blob, shuf_blob): (Vec<u8>, Vec<u8>, Vec<u8>) = conn.query_row(
-            &format!("SELECT circuit, perm, shuf FROM {} WHERE rowid = ?", small),
-            [random_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        )?;
-
-        let count_large: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM {} WHERE perm = ?", large),
-            [&perm_blob],
-            |row| row.get(0),
-        )?;
-
-        if count_large == 0 {
-            continue; // not in both tables, retry
-        }
-
-        // Pick a random offset
-        let offset = rng.random_range(0..count_large);
-
-        let b_blob: [Vec<u8>; 2] = conn.query_row(
-            &format!(
-                "SELECT circuit, shuf FROM {} WHERE perm = ? LIMIT 1 OFFSET ?",
-                large
-            ),
-            rusqlite::params![&perm_blob, offset],
-            |row| Ok([row.get(0)?, row.get(1)?]),
-        )?;
-
-        if b_blob[0] == circuit_blob {
-            continue;
-        }
-
-        // Deserialize circuits
+                &format!("SELECT circuit, perm, shuf FROM {} WHERE rowid = ?", db_a_name),
+                [random_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            )?;
         let mut ca = CircuitSeq::from_blob(&circuit_blob);
-        let mut cb = CircuitSeq::from_blob(&b_blob[0]);
+        
+        if (wires == 7 && max == 4) || (wires == 6 && max == 5) { //SQL
+            let (circuit2_blob, shuf2_blob): (Vec<u8>, Vec<u8>) = conn.query_row(
+                &format!("SELECT circuit, shuf FROM {} WHERE perm = ?", db_b_name),
+                [perm_blob],
+                |row| Ok((row.get(0)?, row.get(1)?))
+            )?;
 
-        // Rewire cb to align with ca
-        cb.rewire(&Permutation::from_blob(&b_blob[1]), wires);
-        cb.rewire(&Permutation::from_blob(&shuf_blob).invert(), wires);
+            let mut cb = CircuitSeq::from_blob(&circuit2_blob);
+            let (shuf1, shuf2) = (Permutation::from_blob(&shuf_blob), Permutation::from_blob(&shuf2_blob));
+            cb.rewire(&shuf2, wires);
+            cb.rewire(&shuf1.invert(), wires);
+            if ca.gates == cb.gates {
+                continue
+            }
+            cb.gates.reverse();
+            ca.gates.extend(cb.gates);
+            return Ok(ca)
+        } else { 
+            let db_b = env.open_db(Some(db_b_name))?;
+            let txn = env.begin_ro_txn()?;
+            if let Some((circuit2_blob, shuf2_blob)) = random_perm_lmdb(&txn, db_b, &perm_blob) {
+                let mut cb = CircuitSeq::from_blob(&circuit2_blob);
+                let (shuf1, shuf2) = (Permutation::from_blob(&shuf_blob), Permutation::from_blob(&shuf2_blob));
+                cb.rewire(&shuf2, wires);
+                cb.rewire(&shuf1.invert(), wires);
+                if ca.gates == cb.gates {
+                    continue
+                }
+                cb.gates.reverse();
+                ca.gates.extend(cb.gates);
+                return Ok(ca);
+            } else {
+                continue; 
+            }
 
-        // Reverse cb and append to ca
-        cb.gates.reverse();
-        ca.gates.extend(cb.gates);
-
-        // Return the combined circuit
-        return Ok(ca);
+        }
     }
 }
 
@@ -1310,6 +1302,184 @@ pub fn compress_big_ancillas(c: &CircuitSeq, trials: usize, num_wires: usize, co
     DEDUP_TIME.fetch_add(t7.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     circuit
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CollisionType {
+    OnActive,
+    OnCtrl1,
+    OnCtrl2,
+    OnNew,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GatePair {
+    a: CollisionType,
+    c1: CollisionType,
+    c2: CollisionType
+}
+
+impl GatePair {
+    pub fn is_none(gate_pair: &Self) -> bool {
+        gate_pair.a == CollisionType::OnNew && gate_pair.c1 == CollisionType::OnNew && gate_pair.c2 == CollisionType::OnNew
+    }
+}
+
+pub fn get_collision_type(g1: &[u8; 3], pin: u8) -> CollisionType {
+    match pin {
+        x if x == g1[0] => CollisionType::OnActive,
+        x if x == g1[1] => CollisionType::OnCtrl1,
+        x if x == g1[2] => CollisionType::OnCtrl2,
+        _ => CollisionType::OnNew,
+    }
+}
+
+pub fn gate_pair_taxonomy(g1: &[u8;3], g2: &[u8;3]) -> GatePair {
+    GatePair {
+        a: get_collision_type(&g1, g2[0]),
+        c1: get_collision_type(&g1, g2[1]),
+        c2: get_collision_type(&g1, g2[2]),
+    }
+}
+
+pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Connection, env: &lmdb::Environment) {
+    let mut pairs: HashMap<GatePair, Vec<usize>> = HashMap::new();
+    let gates = circuit.gates.clone();
+    let m = circuit.gates.len();
+    let mut to_replace: Vec<Vec<[u8;3]>> = vec![Vec::new();m/2];
+    if m < 2 {
+        return
+    }
+
+    let mut i = 0;
+    while i + 1 < m {
+        let g1 = gates[i];
+        let g2 = gates[i + 1];
+
+        let taxonomy = gate_pair_taxonomy(&g1, &g2);
+
+        if !GatePair::is_none(&taxonomy) {
+            pairs.entry(taxonomy)
+                .or_default()
+                .push(i);
+        }
+        i += 2;
+    }
+    let mut rng = rand::rng();
+    let mut fail = 0;
+    while !pairs.is_empty() && fail < 10 {
+        let n = rng.random_range(3..7);
+        let mut id = match random_canonical_id(&env, conn, n) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let tax = gate_pair_taxonomy(&id.gates[0], &id.gates[1]);
+        if let Some(v) = pairs.get_mut(&tax) {
+            if !v.is_empty() {
+                let idx = fastrand::usize(..v.len());
+                let chosen = v.swap_remove(idx);
+                to_replace[chosen] = id.gates;
+                if v.is_empty() {
+                    pairs.remove(&tax);
+                }
+                continue
+            }
+        }
+        let id_len = id.gates.len();
+        let tax_rev = gate_pair_taxonomy(&id.gates[id_len - 1], &id.gates[id_len - 2]);
+        if let Some(v) = pairs.get_mut(&tax_rev) {
+            if !v.is_empty() {
+                let idx = fastrand::usize(..v.len());
+                let chosen = v.swap_remove(idx);
+                id.gates.reverse();
+                to_replace[chosen] = id.gates;
+                if v.is_empty() {
+                    pairs.remove(&tax_rev);
+                }
+                continue
+            }
+        }
+        fail += 1;
+    }
+
+    for (i,replacement) in to_replace.into_iter().enumerate().rev() {
+        if replacement.is_empty() {
+            continue
+        }
+        let index = 2 * i;
+        let (g1, g2) = (circuit.gates[index], circuit.gates[index+1]);
+        let replacement = CircuitSeq { gates: replacement };
+        let mut used_wires: Vec<u8>  = vec![(num_wires+1) as u8;replacement.used_wires().len()];
+        used_wires[replacement.gates[0][0] as usize] = g1[0];
+        used_wires[replacement.gates[0][1] as usize] = g1[1];
+        used_wires[replacement.gates[0][2] as usize] = g1[2];
+        let tax = gate_pair_taxonomy(&g1, &g2);
+        if tax.a == CollisionType::OnNew {
+            let mut new = false;
+            while !new {
+                let wire = rng.random_range(0..num_wires) as u8;
+                    if used_wires.contains(&wire) {
+                        continue
+                    }
+                for (i, val) in used_wires.iter().enumerate() {
+                    if *val == (num_wires + 1) as u8 {
+                        used_wires[i] = wire;
+                        new = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if tax.c1 == CollisionType::OnNew {
+            let mut new = false;
+            while !new {
+                let wire = rng.random_range(0..num_wires) as u8;
+                    if used_wires.contains(&wire) {
+                        continue
+                    }
+                for (i, val) in used_wires.iter().enumerate() {
+                    if *val == (num_wires + 1) as u8 {
+                        used_wires[i] = wire;
+                        new = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if tax.c2 == CollisionType::OnNew {
+            let mut new = false;
+            while !new {
+                let wire = rng.random_range(0..num_wires) as u8;
+                if used_wires.contains(&wire) {
+                    continue
+                }
+                for (i, val) in used_wires.iter().enumerate() {
+                    if *val == (num_wires + 1) as u8 {
+                        used_wires[i] = wire;
+                        new = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        for (i, val) in used_wires.clone().iter().enumerate() {
+            if *val == (num_wires + 1) as u8 {
+                loop {
+                    let wire = rng.random_range(0..num_wires) as u8;
+                    if used_wires.contains(&wire) {
+                        continue
+                    }
+                    used_wires[i] = wire;
+                    break;
+                }
+            }
+        }
+
+        circuit.gates.splice(index..=index+1, CircuitSeq::unrewire_subcircuit(&replacement, &used_wires).gates);
+    }
 }
 
 pub fn print_compress_timers() {

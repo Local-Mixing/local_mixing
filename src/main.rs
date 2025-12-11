@@ -348,8 +348,15 @@ fn main() {
                     PRAGMA locking_mode = EXCLUSIVE;
                     "
                 ).unwrap();
+                let lmdb = "./db";
+                let env = Environment::new()
+                .set_max_dbs(33)      
+                .set_map_size(700 * 1024 * 1024 * 1024) 
+                .open(Path::new(lmdb))
+                .expect("Failed to open lmdb");
+
                 // Fallback when file is empty
-                let c1= random_canonical_id(&conn, 5).unwrap();
+                let c1= random_canonical_id(&env, &conn, 5).unwrap();
                 println!("{:?} Starting Len: {}", c1.permutation(5).data, c1.gates.len());
                 main_mix(&c1, rounds, &mut conn, 5);
             } else {
