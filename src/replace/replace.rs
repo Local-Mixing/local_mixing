@@ -68,7 +68,7 @@ pub fn random_canonical_id(
             )?;
         let mut ca = CircuitSeq::from_blob(&circuit_blob);
         
-        if (wires == 7 && max == 4) || (wires == 6 && max == 5) { //SQL
+        if wires > 0 || (wires == 7 && max == 4) || (wires == 6 && max == 5) { //SQL
             println!("try sql");
             let (circuit2_blob, shuf2_blob): (Vec<u8>, Vec<u8>) = conn.query_row(
                 &format!("SELECT circuit, shuf FROM {} WHERE perm = ?", db_b_name),
