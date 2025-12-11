@@ -561,7 +561,8 @@ pub fn abutterfly_big(
             }
             id.gates.remove(0);
             pre_gates.extend_from_slice(&id.gates);
-            if rewired_g.probably_equal(&id, num, 100000).is_err() {
+            let ref_g = CircuitSeq { gates: vec![*g]};
+            if ref_g.probably_equal(&id, num, 100000).is_err() {
                 println!("rewired_g = {:?}", &rewired_g);
                 println!("rewired id = {:?}", &id);
                 panic!("The id != gate");
