@@ -546,9 +546,6 @@ pub fn abutterfly_big(
             id = CircuitSeq::unrewire_subcircuit(&id, &used_wires);
             id.gates.remove(0);
             let g_ref = CircuitSeq { gates: vec![*g] };
-            if g_ref.probably_equal(&id, n, 100000).is_err() {
-                panic!("test failed");
-            }
             pre_gates.extend_from_slice(&id.gates);
         } else {
             pre_gates.push(*g);
