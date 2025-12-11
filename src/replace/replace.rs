@@ -1258,7 +1258,7 @@ pub fn compress_big_ancillas(c: &CircuitSeq, trials: usize, num_wires: usize, co
                 count += 1;
             }
         }
-        used_wires.sort();
+        // used_wires.sort();
         subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
         REWIRE_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 

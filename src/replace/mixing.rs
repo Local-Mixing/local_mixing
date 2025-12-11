@@ -537,7 +537,7 @@ pub fn abutterfly_big(
             id.rewire_first_gate(rewired_g.gates[0], num);
             let mut count = 3;
             while count < num {
-                let random = rng.random_range(0..num);
+                let random = rng.random_range(0..n);
                 if used_wires.contains(&(random as u8)) {
                     continue
                 }
