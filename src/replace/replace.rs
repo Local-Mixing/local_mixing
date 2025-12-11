@@ -1343,19 +1343,22 @@ pub fn gate_pair_taxonomy(g1: &[u8;3], g2: &[u8;3]) -> GatePair {
 }
 
 pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Connection, env: &lmdb::Environment) {
+    println!("Starting replace_pairs, circuit length: {}", circuit.gates.len());
+
     let mut pairs: HashMap<GatePair, Vec<usize>> = HashMap::new();
     let gates = circuit.gates.clone();
     let m = circuit.gates.len();
-    let mut to_replace: Vec<Vec<[u8;3]>> = vec![Vec::new();m/2];
+    let mut to_replace: Vec<Vec<[u8;3]>> = vec![Vec::new(); m / 2];
     if m < 2 {
-        return
+        println!("Circuit too small, returning");
+        return;
     }
 
+    println!("Building taxonomy pairs...");
     let mut i = 0;
     while i + 1 < m {
         let g1 = gates[i];
         let g2 = gates[i + 1];
-
         let taxonomy = gate_pair_taxonomy(&g1, &g2);
 
         if !GatePair::is_none(&taxonomy) {
@@ -1365,26 +1368,35 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
         }
         i += 2;
     }
+    println!("Pairs collected: {}", pairs.len());
+
     let mut rng = rand::rng();
     let mut fail = 0;
     while !pairs.is_empty() && fail < 10 {
         let n = rng.random_range(3..7);
         let mut id = match random_canonical_id(&env, conn, n) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(_) => {
+                println!("random_canonical_id failed, continuing");
+                continue;
+            },
         };
+        println!("Generated random canonical id of length {}", id.gates.len());
+
         let tax = gate_pair_taxonomy(&id.gates[0], &id.gates[1]);
         if let Some(v) = pairs.get_mut(&tax) {
             if !v.is_empty() {
                 let idx = fastrand::usize(..v.len());
                 let chosen = v.swap_remove(idx);
-                to_replace[chosen] = id.gates;
+                to_replace[chosen] = id.gates.clone();
+                println!("Replaced pair at index {} with new circuit", chosen);
                 if v.is_empty() {
                     pairs.remove(&tax);
                 }
-                continue
+                continue;
             }
         }
+
         let id_len = id.gates.len();
         let tax_rev = gate_pair_taxonomy(&id.gates[id_len - 1], &id.gates[id_len - 2]);
         if let Some(v) = pairs.get_mut(&tax_rev) {
@@ -1392,94 +1404,86 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
                 let idx = fastrand::usize(..v.len());
                 let chosen = v.swap_remove(idx);
                 id.gates.reverse();
-                to_replace[chosen] = id.gates;
+                to_replace[chosen] = id.gates.clone();
+                println!("Reversed and replaced pair at index {}", chosen);
                 if v.is_empty() {
                     pairs.remove(&tax_rev);
                 }
-                continue
+                continue;
             }
         }
+
         fail += 1;
+        println!("Failed to match pair, fail count: {}", fail);
     }
 
-    for (i,replacement) in to_replace.into_iter().enumerate().rev() {
+    println!("Applying replacements...");
+    for (i, replacement) in to_replace.into_iter().enumerate().rev() {
         if replacement.is_empty() {
-            continue
+            continue;
         }
+
+        println!("Replacing at pair index {}", i);
         let index = 2 * i;
-        let (g1, g2) = (circuit.gates[index], circuit.gates[index+1]);
+        let (g1, g2) = (circuit.gates[index], circuit.gates[index + 1]);
         let replacement = CircuitSeq { gates: replacement };
-        let mut used_wires: Vec<u8>  = vec![(num_wires+1) as u8;replacement.used_wires().len()];
+        let mut used_wires: Vec<u8> = vec![(num_wires + 1) as u8; replacement.used_wires().len()];
+
         used_wires[replacement.gates[0][0] as usize] = g1[0];
         used_wires[replacement.gates[0][1] as usize] = g1[1];
         used_wires[replacement.gates[0][2] as usize] = g1[2];
+
+        println!("Original wires: {:?}, used_wires initialized", used_wires);
+
         let tax = gate_pair_taxonomy(&g1, &g2);
-        if tax.a == CollisionType::OnNew {
-            let mut new = false;
-            while !new {
-                let wire = rng.random_range(0..num_wires) as u8;
+        if tax.a == CollisionType::OnNew || tax.c1 == CollisionType::OnNew || tax.c2 == CollisionType::OnNew {
+            println!("Found OnNew collision, assigning new wires...");
+        }
+
+        // Assign new wires if OnNew
+        for collision in &[tax.a, tax.c1, tax.c2] {
+            if *collision == CollisionType::OnNew {
+                let mut new = false;
+                while !new {
+                    let wire = rng.random_range(0..num_wires) as u8;
                     if used_wires.contains(&wire) {
-                        continue
+                        continue;
                     }
-                for (i, val) in used_wires.iter().enumerate() {
-                    if *val == (num_wires + 1) as u8 {
-                        used_wires[i] = wire;
-                        new = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if tax.c1 == CollisionType::OnNew {
-            let mut new = false;
-            while !new {
-                let wire = rng.random_range(0..num_wires) as u8;
-                    if used_wires.contains(&wire) {
-                        continue
-                    }
-                for (i, val) in used_wires.iter().enumerate() {
-                    if *val == (num_wires + 1) as u8 {
-                        used_wires[i] = wire;
-                        new = true;
-                        break;
+                    for val in used_wires.iter_mut() {
+                        if *val == (num_wires + 1) as u8 {
+                            *val = wire;
+                            new = true;
+                            break;
+                        }
                     }
                 }
             }
         }
 
-        if tax.c2 == CollisionType::OnNew {
-            let mut new = false;
-            while !new {
-                let wire = rng.random_range(0..num_wires) as u8;
-                if used_wires.contains(&wire) {
-                    continue
-                }
-                for (i, val) in used_wires.iter().enumerate() {
-                    if *val == (num_wires + 1) as u8 {
-                        used_wires[i] = wire;
-                        new = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        for (i, val) in used_wires.clone().iter().enumerate() {
+        // Fill any remaining placeholders
+        for val in used_wires.clone().iter_mut() {
             if *val == (num_wires + 1) as u8 {
                 loop {
                     let wire = rng.random_range(0..num_wires) as u8;
                     if used_wires.contains(&wire) {
-                        continue
+                        continue;
                     }
-                    used_wires[i] = wire;
+                    *val = wire;
                     break;
                 }
             }
         }
 
-        circuit.gates.splice(index..=index+1, CircuitSeq::unrewire_subcircuit(&replacement, &used_wires).gates);
+        println!("Final used_wires for this replacement: {:?}", used_wires);
+
+        circuit.gates.splice(
+            index..=index + 1,
+            CircuitSeq::unrewire_subcircuit(&replacement, &used_wires).gates,
+        );
+        println!("Replacement applied at indices {}..{}", index, index + 1);
     }
+
+    println!("Finished replace_pairs");
 }
 
 pub fn print_compress_timers() {
