@@ -544,6 +544,7 @@ pub fn abutterfly_big(
                 used_wires.push(random as u8);
                 count += 1;
             }
+            println!("rewired id = {:?}", &id);
             id = CircuitSeq::unrewire_subcircuit(&id, &used_wires);
             id.gates.remove(0);
             pre_gates.extend_from_slice(&id.gates);
