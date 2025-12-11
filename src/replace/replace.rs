@@ -1117,7 +1117,7 @@ pub fn expand_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut Co
                 count += 1;
             }
         }
-        used_wires.sort();
+        // used_wires.sort();
         subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
 
         
