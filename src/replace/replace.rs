@@ -93,9 +93,22 @@ pub fn random_canonical_id(
                 cb.rewire(&shuf1.invert(), wires);
                 cb.gates.reverse();
                 ca.gates.extend(cb.gates);
-                return Ok(ca);
+                return Ok(ca)
             } else {
-                continue; 
+                let perm_blob_inv = Permutation::from_blob(&perm_blob).invert().repr_blob();
+                if let Some((circuit2_blob, shuf2_blob)) = random_perm_lmdb(&txn, db_b, &perm_blob_inv) {
+                    let mut cb = CircuitSeq::from_blob(&circuit2_blob);
+                    let (shuf1, shuf2) = (Permutation::from_blob(&shuf_blob), Permutation::from_blob(&shuf2_blob));
+                    cb.rewire(&shuf2, wires);
+                    cb.gates.reverse();
+                    cb.rewire(&shuf1.invert(), wires);
+                    cb.gates.reverse();
+                    ca.gates.extend(cb.gates);
+                    return Ok(ca)
+                }
+                else {
+                    continue; 
+                }
             }
 
         }
