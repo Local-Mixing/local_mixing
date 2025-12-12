@@ -1400,7 +1400,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
             if !v.is_empty() {
                 let idx = fastrand::usize(..v.len());
                 let chosen = v.swap_remove(idx);
-                to_replace[chosen] = id.gates.clone();
+                to_replace[chosen/2] = id.gates.clone();
                 println!("Replaced pair at index {} with new circuit", chosen);
                 if v.is_empty() {
                     pairs.remove(&tax);
@@ -1416,7 +1416,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
                 let idx = fastrand::usize(..v.len());
                 let chosen = v.swap_remove(idx);
                 id.gates.reverse();
-                to_replace[chosen] = id.gates.clone();
+                to_replace[chosen/2] = id.gates.clone();
                 println!("Reversed and replaced pair at index {}", chosen);
                 if v.is_empty() {
                     pairs.remove(&tax_rev);
