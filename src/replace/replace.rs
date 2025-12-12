@@ -1360,6 +1360,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
     let mut pairs: HashMap<GatePair, Vec<usize>> = HashMap::new();
     let gates = circuit.gates.clone();
     let m = circuit.gates.len();
+    let mut replaced = 0;
     let mut to_replace: Vec<Vec<[u8;3]>> = vec![Vec::new(); m / 2];
     if m < 2 {
         println!("Circuit too small, returning");
@@ -1380,8 +1381,9 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
         }
         i += 2;
     }
-    println!("Pairs collected: {}", pairs.len());
-
+    let num_pairs = pairs.len();
+    println!("Pairs collected: {}", num_pairs);
+    
     let mut rng = rand::rng();
     let mut fail = 0;
     while !pairs.is_empty() && fail < 100 {
@@ -1401,7 +1403,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
                 let idx = fastrand::usize(..v.len());
                 let chosen = v.swap_remove(idx);
                 to_replace[chosen/2] = id.gates.clone();
-                println!("Replaced pair at index {} with new circuit", chosen);
+                // println!("Replaced pair at index {} with new circuit", chosen);
                 if v.is_empty() {
                     pairs.remove(&tax);
                 }
@@ -1417,7 +1419,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
                 let chosen = v.swap_remove(idx);
                 id.gates.reverse();
                 to_replace[chosen/2] = id.gates.clone();
-                println!("Reversed and replaced pair at index {}", chosen);
+                // println!("Reversed and replaced pair at index {}", chosen);
                 if v.is_empty() {
                     pairs.remove(&tax_rev);
                 }
@@ -1435,7 +1437,8 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
             continue;
         }
 
-        println!("Replacing at pair index {}", i);
+        // println!("Replacing at pair index {}", i);
+        replaced += 1;
         let index = 2 * i;
         let (g1, g2) = (circuit.gates[index], circuit.gates[index + 1]);
         let replacement = CircuitSeq { gates: replacement };
@@ -1481,7 +1484,8 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
             index..=index + 1,
             CircuitSeq::unrewire_subcircuit(&replacement, &used_wires).gates,
         );
-        println!("Replacement applied at indices {}..{}", index, index + 1);
+        // println!("Replacement applied at indices {}..{}", index, index + 1);
+        println!("Replacements so far: {}/{}", replaced, num_pairs);
     }
 
     println!("Finished replace_pairs");
