@@ -1384,8 +1384,8 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
 
     let mut rng = rand::rng();
     let mut fail = 0;
-    while !pairs.is_empty() && fail < 10 {
-        let n = rng.random_range(3..7);
+    while !pairs.is_empty() && fail < 100 {
+        let n = rng.random_range(5..=7);
         let mut id = match random_canonical_id(&env, conn, n) {
             Ok(c) => c,
             Err(_) => {

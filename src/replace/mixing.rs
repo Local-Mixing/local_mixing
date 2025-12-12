@@ -517,7 +517,10 @@ pub fn abutterfly_big(
     last: bool,
     stop: usize,
     env: &lmdb::Environment,
+    curr_round: usize,
+    last_round: usize,
 ) -> CircuitSeq {
+    println!("Current round: {}/{}", curr_round, last_round);
     println!("Butterfly start: {} gates", c.gates.len());
     let mut rng = rand::rng();
     let mut pre_gates: Vec<[u8;3]> = Vec::with_capacity(c.gates.len());
@@ -556,7 +559,7 @@ pub fn abutterfly_big(
     // c.gates = pre_gates;
 
     replace_pairs(&mut c, n, _conn, &env);
-    
+
     let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
 
     for &g in &c.gates {
@@ -671,9 +674,9 @@ pub fn abutterfly_big(
         }
         if after == before {
             stable_count += 1;
-            println!("  Final compression stable {}/3 at {} gates", stable_count, after);
+            println!("  {}/{} Final compression stable {}/3 at {} gates", curr_round, last_round, stable_count, after);
         } else {
-            println!("  Final compression reduced: {} → {} gates", before, after);
+            println!("  {}/{}: {} → {} gates", curr_round, last_round, before, after);
             stable_count = 0;
         }
     }
@@ -1007,7 +1010,7 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
     for i in 0..rounds {
         let stop = 1000;
         circuit = if asymmetric {
-            abutterfly_big(&circuit, conn, n, i != rounds-1, stop*(i+1), env)
+            abutterfly_big(&circuit, conn, n, i != rounds-1, std::cmp::max(stop*(i+1), 10000), env, i, rounds)
         } else {
             butterfly_big(&circuit,conn,n, i != rounds-1, stop*(i+1), env)
         };
