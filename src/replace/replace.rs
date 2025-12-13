@@ -1482,7 +1482,10 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
 
         circuit.gates.splice(
             index..=index + 1,
-            CircuitSeq::unrewire_subcircuit(&replacement, &used_wires).gates,
+            CircuitSeq::unrewire_subcircuit(&replacement, &used_wires)
+                .gates
+                .into_iter()
+                .skip(2),
         );
         // println!("Replacement applied at indices {}..{}", index, index + 1);
         println!("Replacements so far: {}/{}", replaced, num_pairs);
