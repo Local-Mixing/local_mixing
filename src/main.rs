@@ -281,6 +281,10 @@ fn main() {
                 .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
                 .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize))),
         )
+        .subcommand(
+            Command::new("lmdbcounts")
+            .about("Generate table for generating canon ids")
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -350,7 +354,7 @@ fn main() {
                 ).unwrap();
                 let lmdb = "./db";
                 let env = Environment::new()
-                .set_max_dbs(33)      
+                .set_max_dbs(34)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -440,7 +444,7 @@ fn main() {
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_dbs(33)      
+                .set_max_dbs(34)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -475,7 +479,7 @@ fn main() {
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(33)      
+                .set_max_dbs(34)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -539,7 +543,7 @@ fn main() {
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_dbs(33)      
+                .set_max_dbs(34)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -589,6 +593,34 @@ fn main() {
             let n: usize = *sub.get_one("n").unwrap();
             let m: usize = *sub.get_one("m").unwrap();
             let _ = sql_to_lmdb(n, m);
+        }
+        Some(("lmdbcounts", sub)) => {
+            let env_path = "./db";
+
+            let ns_and_ms = vec![
+                (3, 10),
+                (4, 6),
+                (5, 5),
+                (6, 5),
+                (7, 4),
+            ];
+
+            for (n, max_m) in ns_and_ms {
+                let tables: Vec<String> = (1..=max_m)
+                    .map(|m| format!("n{}m{}", n, m))
+                    .collect();
+
+                let env = Environment::new()
+                    .set_max_dbs(50)
+                    .set_map_size(64 * 1024 * 1024 * 1024)
+                    .open(Path::new(env_path)).expect("Failed to open lmdb");
+
+                let perms_to_m = perm_tables_with_duplicates(&env, &tables).expect("Failed to generate hashmap of perm counts");
+                let db_name = format!("perm_tables_n{}", n);
+                save_perm_tables_to_lmdb(env_path, &db_name, &perms_to_m).expect("Failed to save to lmdb");
+
+                println!("Finished saving perm tables for n = {}", n);
+            }
         }
         _ => unreachable!(),
     }
@@ -714,18 +746,14 @@ pub fn analyze_gate_to_wires(circuit: &CircuitSeq, num_wires: usize, x: &str) ->
 
 use lmdb::{Environment, Database, WriteFlags, Transaction};
 use local_mixing::circuit::Permutation;
-use std::collections::HashMap;
+use lmdb::Cursor;
 
-pub fn sql_to_lmdb(
-    n: usize,
-    m: usize,
-) -> Result<(), ()> {
-
+pub fn sql_to_lmdb(n: usize, m: usize) -> Result<(), ()> {
     let sqlite_path = "circuits.db";
     let lmdb_path = "./db";
-    let map_size_bytes: usize = 800usize * 1024 * 1024 * 1024;
-    let batch_max_entries: usize = 100000;
-    
+    let map_size_bytes: usize = 800 * 1024 * 1024 * 1024;
+    let batch_max_entries: usize = 100_000;
+
     let conn = Connection::open(sqlite_path).expect("Failed to open sqlite database");
     let table = format!("n{}m{}", n, m);
 
@@ -735,7 +763,7 @@ pub fn sql_to_lmdb(
 
     fs::create_dir_all(lmdb_path).expect("Failed to create LMDB directory");
     let env = Environment::new()
-        .set_max_dbs(33)
+        .set_max_dbs(34)
         .set_map_size(map_size_bytes)
         .open(Path::new(lmdb_path))
         .expect("Failed to open LMDB environment");
@@ -743,17 +771,15 @@ pub fn sql_to_lmdb(
     let db = env.create_db(Some(&table), lmdb::DatabaseFlags::empty())
         .expect("Failed to create LMDB database");
 
-    // track count per perm
-    let mut perm_counts: HashMap<Vec<u8>, u32> = HashMap::new();
-
-    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(batch_max_entries);
+    let mut batch: Vec<Vec<u8>> = Vec::with_capacity(batch_max_entries);
     let mut rows_processed: u64 = 0;
 
-    let flush = |env: &Environment, db: Database, batch: &mut Vec<(Vec<u8>, Vec<u8>)>| {
+    let flush = |env: &Environment, db: Database, batch: &mut Vec<Vec<u8>>| {
         if batch.is_empty() { return; }
         let mut txn = env.begin_rw_txn().expect("Failed to begin LMDB RW transaction");
-        for (key, value) in batch.iter() {
-            txn.put(db, key, value, WriteFlags::empty()).expect("Failed to write LMDB entry");
+        for key in batch.iter() {
+            txn.put(db, key, &[], WriteFlags::empty())
+                .expect("Failed to write LMDB entry");
         }
         txn.commit().expect("Failed to commit LMDB transaction");
         batch.clear();
@@ -769,21 +795,21 @@ pub fn sql_to_lmdb(
         // check inverse
         let inv = crate::Permutation::from_blob(&perm).invert().repr_blob();
         let mut inv_key = inv.clone();
-        inv_key.extend_from_slice(&0u32.to_le_bytes()); 
+        inv_key.extend_from_slice(&0u32.to_le_bytes());
         let ro_txn = env.begin_ro_txn().expect("Failed to begin LMDB RO txn");
         if ro_txn.get(db, &inv_key).is_ok() {
-            continue;
+            continue
         }
 
-        // get count for this perm
-        let count = perm_counts.entry(perm.clone()).or_insert(0);
-        let key = [perm.clone(), count.to_le_bytes().to_vec()].concat();
-        *count += 1;
+        let mut key = perm.clone();
 
-        // serialize value (circuit + shuf)
-        let value = bincode::serialize(&(circuit, shuf)).expect("Failed to serialize value");
+        let mut circuit_seq = CircuitSeq::from_blob(&circuit);
+        circuit_seq.rewire(&Permutation::from_blob(&shuf), n);
 
-        batch.push((key, value));
+        // compute key = perm || circuit 
+        key.extend_from_slice(&circuit_seq.repr_blob());
+
+        batch.push(key);
 
         if batch.len() >= batch_max_entries {
             flush(&env, db, &mut batch);
@@ -799,6 +825,86 @@ pub fn sql_to_lmdb(
     }
 
     println!("Finished copying {} rows into LMDB table {}", rows_processed, table);
+
+    Ok(())
+}
+
+/// Scans all tables and creates a DB of perms with multiple circuits
+use std::collections::HashMap;
+
+fn perm_tables_with_duplicates(
+    env: &Environment,
+    tables: &[String], // tables like n{num_wires}m{m}
+) -> Result<HashMap<Vec<u8>, Vec<u8>>, lmdb::Error> {
+    let mut perms_to_m: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+
+    for table in tables {
+        // parse num_wires and m from table name
+        let t = table.strip_prefix('n').unwrap();
+        let (n_str, m_str) = t.split_once('m').unwrap();
+        let num_wires: usize = n_str.parse().unwrap();
+        let m: u8 = m_str.parse().unwrap();
+
+        let perm_len = 1usize << num_wires;
+
+        let db = env.open_db(Some(table))?;
+        let ro_txn = env.begin_ro_txn()?;
+        let mut cursor = ro_txn.open_ro_cursor(db)?;
+
+        for (k, _) in cursor.iter() {
+            let perm = &k[..perm_len];
+
+            // push every occurrence of perm, even duplicates in same table
+            perms_to_m
+                .entry(perm.to_vec())
+                .or_default()
+                .push(m);
+        }
+    }
+
+    perms_to_m.retain(|_, ms| ms.len() > 1);
+
+    Ok(perms_to_m)
+}
+
+fn save_perm_tables_to_lmdb(
+    env_path: &str,
+    db_name: &str,
+    perms_to_m: &HashMap<Vec<u8>, Vec<u8>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+
+    std::fs::create_dir_all(env_path)?;
+    let env = Environment::new()
+        .set_max_dbs(10)
+        .set_map_size(64 * 1024 * 1024 * 1024) // 64 GB map size, adjust if needed
+        .open(Path::new(env_path))?;
+
+    let db = env.create_db(Some(db_name), lmdb::DatabaseFlags::empty())?;
+
+    let batch_size = 100_000;
+    let mut batch: Vec<(&Vec<u8>, Vec<u8>)> = Vec::with_capacity(batch_size);
+
+    let flush_batch = |env: &Environment, db: Database, batch: &mut Vec<(&Vec<u8>, Vec<u8>)>| {
+        if batch.is_empty() { return; }
+        let mut txn = env.begin_rw_txn().expect("Failed to begin LMDB txn");
+        for (key, value) in batch.iter() {
+            txn.put(db, key, value, WriteFlags::empty())
+                .expect("Failed to write LMDB entry");
+        }
+        txn.commit().expect("Failed to commit LMDB txn");
+        batch.clear();
+    };
+
+    for (perm, ms) in perms_to_m.iter() {
+        let value = bincode::serialize(ms)?;
+        batch.push((perm, value));
+
+        if batch.len() >= batch_size {
+            flush_batch(&env, db, &mut batch);
+        }
+    }
+
+    flush_batch(&env, db, &mut batch);
 
     Ok(())
 }
