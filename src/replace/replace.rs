@@ -1659,4 +1659,25 @@ mod tests {
         }
         println!("circuit {:?}", circuit.gates);
     }
+
+    #[test]
+    fn print_lmdb_keys() -> Result<(), Box<dyn std::error::Error>> {
+        let env_path = "./db";
+        let db_name = "n6m5";
+
+        let env = Environment::new()
+            .set_max_dbs(50)
+            .open(Path::new(env_path))?;
+
+        let db = env.open_db(Some(db_name))?;
+
+        let txn = env.begin_ro_txn()?;
+        let mut cursor = txn.open_ro_cursor(db)?;
+
+        for (key, _value) in cursor.iter() {
+            println!("{:x?}", key); // prints raw bytes in hex
+        }
+
+        Ok(())
+    }
 }
