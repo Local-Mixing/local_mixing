@@ -88,7 +88,7 @@ pub fn random_canonical_id(
                 continue; 
             }
             Err(e) => {
-                println!("Other error");
+                println!("LMDB DB1 '{}' failed to open: {:?}", db2_name, e);
                 return Err(Box::new(e)); 
             }
         };
@@ -100,7 +100,7 @@ pub fn random_canonical_id(
                 continue; 
             }
             Err(e) => {
-                println!("Other error");
+                println!("LMDB DB2 '{}' failed to open: {:?}", db2_name, e);
                 return Err(Box::new(e));
             }
         };
