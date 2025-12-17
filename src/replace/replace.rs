@@ -21,98 +21,101 @@ use std::sync::atomic::Ordering;
 use std::sync::atomic::AtomicU64;
 use lmdb::{Cursor, Database, Transaction, RoTransaction};
 
+fn random_perm_from_perm_table(
+    txn: &RoTransaction,
+    db: Database,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let mut cursor = txn.open_ro_cursor(db).ok()?;
+    let mut entries = Vec::new();
+
+    for (k, v) in cursor.iter() {
+        entries.push((k.to_vec(), v.to_vec()));
+    }
+
+    if entries.is_empty() {
+        return None;
+    }
+
+    let idx = rand::rng().random_range(0..entries.len());
+    Some(entries.swap_remove(idx))
+}
+
 // Returns a nontrivial identity circuit built from two "friend" circuits
 pub fn random_canonical_id(
     env: &lmdb::Environment,
-    conn: &Connection,
-    wires: usize,
+    _conn: &Connection,
+    min_wires: usize,
 ) -> Result<CircuitSeq, Box<dyn std::error::Error>> {
     let mut rng = rand::rng();
 
-    let max_db = if wires == 7 {
-        4
-    } else if wires == 5 || wires == 6 {
-        5
-    } else if wires == 4 {
-        6
-    } else {
-        10
-    };
-
-    let db_names: Vec<String> = (1..=max_db)
-        .map(|m| format!("n{}m{}", wires, m))
-        .collect();
-
     loop {
-        let idx_a = rng.random_range(0..db_names.len());
-        let idx_b = rng.random_range(0..db_names.len());
-        if idx_a == idx_b {
-            continue
-        }
-        let max = max(idx_a, idx_b);
-        let min = min(idx_a, idx_b);
-        let db_a_name = &db_names[min];
-        let db_b_name = &db_names[max];
+        // pick random n
+        let n = rng.random_range(min_wires..=7);
 
-        let count: i64 = conn.query_row(
-                &format!("SELECT MAX(rowid) FROM {}", db_a_name),
-                [],
-                |row| row.get(0),
-            )?;
+        // open perm_tables_nN
+        let perm_db_name = format!("perm_tables_n{}", n);
+        let perm_db = env.open_db(Some(&perm_db_name))?;
+        let txn = env.begin_ro_txn()?;
 
-        let random_id = rng.random_range(1..=count);
-        let (circuit_blob, perm_blob, shuf_blob): (Vec<u8>, Vec<u8>, Vec<u8>) = conn.query_row(
-                &format!("SELECT circuit, perm, shuf FROM {} WHERE rowid = ?", db_a_name),
-                [random_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            )?;
-        let mut ca = CircuitSeq::from_blob(&circuit_blob);
+        // random perm + ms
+        let (perm_blob, ms_blob) =
+            match random_perm_from_perm_table(&txn, perm_db) {
+                Some(x) => x,
+                None => continue,
+            };
+
+        let ms: Vec<u8> = bincode::deserialize(&ms_blob)?;
         
-        if wires > 0 || (wires == 7 && max == 4) || (wires == 6 && max == 5) { //SQL
-            // println!("try sql");
-            let (circuit2_blob, shuf2_blob): (Vec<u8>, Vec<u8>) = conn.query_row(
-                &format!("SELECT circuit, shuf FROM {} WHERE perm = ?", db_b_name),
-                [perm_blob],
-                |row| Ok((row.get(0)?, row.get(1)?))
-            )?;
-
-            let mut cb = CircuitSeq::from_blob(&circuit2_blob);
-            let (shuf1, shuf2) = (Permutation::from_blob(&shuf_blob), Permutation::from_blob(&shuf2_blob));
-            cb.rewire(&shuf2, wires);
-            cb.rewire(&shuf1.invert(), wires);
-            cb.gates.reverse();
-            ca.gates.extend(cb.gates);
-            return Ok(ca)
-        } else { 
-            // println!("try lmdb");
-            let db_b = env.open_db(Some(db_b_name))?;
-            let txn = env.begin_ro_txn()?;
-            if let Some((circuit2_blob, shuf2_blob)) = random_perm_lmdb(&txn, db_b, &perm_blob) {
-                let mut cb = CircuitSeq::from_blob(&circuit2_blob);
-                let (shuf1, shuf2) = (Permutation::from_blob(&shuf_blob), Permutation::from_blob(&shuf2_blob));
-                cb.rewire(&shuf2, wires);
-                cb.rewire(&shuf1.invert(), wires);
-                cb.gates.reverse();
-                ca.gates.extend(cb.gates);
-                return Ok(ca)
-            } else {
-                let perm_blob_inv = Permutation::from_blob(&perm_blob).invert().repr_blob();
-                if let Some((circuit2_blob, shuf2_blob)) = random_perm_lmdb(&txn, db_b, &perm_blob_inv) {
-                    let mut cb = CircuitSeq::from_blob(&circuit2_blob);
-                    let (shuf1, shuf2) = (Permutation::from_blob(&shuf_blob), Permutation::from_blob(&shuf2_blob));
-                    cb.rewire(&shuf2, wires);
-                    cb.gates.reverse();
-                    cb.rewire(&shuf1.invert(), wires);
-                    cb.gates.reverse();
-                    ca.gates.extend(cb.gates);
-                    return Ok(ca)
-                }
-                else {
-                    continue; 
-                }
-            }
-
+        // this should never run
+        if ms.len() < 2 {
+            continue;
         }
+
+        let i = rng.random_range(0..ms.len());
+        let mut j = rng.random_range(0..ms.len());
+        while j == i {
+            j = rng.random_range(0..ms.len());
+        }
+
+        let m1 = ms[i];
+        let m2 = ms[j];
+
+        let db1_name = format!("n{}m{}", n, m1);
+        let db2_name = format!("n{}m{}", n, m2);
+
+        let db1 = env.open_db(Some(&db1_name))?;
+        let circuit1_blob =
+            match random_perm_lmdb(&txn, db1, &perm_blob) {
+                Some(c) => c,
+                None => continue,
+            };
+
+        let mut ca = CircuitSeq::from_blob(&circuit1_blob);
+
+        let db2 = env.open_db(Some(&db2_name))?;
+        let circuit2_blob =
+            match random_perm_lmdb(&txn, db2, &perm_blob) {
+                Some(c) => c,
+                None => continue,
+            };
+
+        let mut cb = CircuitSeq::from_blob(&circuit2_blob);
+
+        cb.gates.reverse();
+
+        ca.gates.extend(cb.gates);
+        let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
+
+        let shuf = perms
+            .iter()
+            .skip(1)
+            .nth(rng.random_range(0..perms.len() - 1))
+            .unwrap()
+            .clone();
+
+        let bit_shuf = Permutation { data: shuf };
+        ca.rewire(&bit_shuf, n);
+        return Ok(ca);
     }
 }
 
@@ -482,53 +485,53 @@ pub fn expand_lmdb(
         let prefix = canon_perm_blob.as_slice();
         for smaller_m in (1..=max).rev() {
             let db_name = format!("n{}m{}", n, smaller_m);
-            if (n == 7 && smaller_m == 4) || (n == 6 && smaller_m == 5) {
-                let table = format!("n{}m{}", n, smaller_m);
-                let query = format!(
-                    "SELECT * FROM {} WHERE perm = ?1 ORDER BY RANDOM() LIMIT 1",
-                    table
-                );
+            // if (n == 7 && smaller_m == 4) || (n == 6 && smaller_m == 5) {
+            //     let table = format!("n{}m{}", n, smaller_m);
+            //     let query = format!(
+            //         "SELECT * FROM {} WHERE perm = ?1 ORDER BY RANDOM() LIMIT 1",
+            //         table
+            //     );
 
-                let sql_t0 = Instant::now();
-                let mut stmt = match conn.prepare(&query) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                let rows = stmt.query([&canon_perm_blob]);
-                SQL_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            //     let sql_t0 = Instant::now();
+            //     let mut stmt = match conn.prepare(&query) {
+            //         Ok(s) => s,
+            //         Err(_) => continue,
+            //     };
+            //     let rows = stmt.query([&canon_perm_blob]);
+            //     SQL_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                let mut r = match rows {
-                    Ok(r) => r,
-                    Err(_) => continue,
-                };
+            //     let mut r = match rows {
+            //         Ok(r) => r,
+            //         Err(_) => continue,
+            //     };
 
-                if let Some(row_result) = r.next().unwrap() {
-                    let blob: Vec<u8> = row_result
-                        .get(0)
-                        .expect("Failed to get blob");
-                    let mut repl = CircuitSeq::from_blob(&blob);
+            //     if let Some(row_result) = r.next().unwrap() {
+            //         let blob: Vec<u8> = row_result
+            //             .get(0)
+            //             .expect("Failed to get blob");
+            //         let mut repl = CircuitSeq::from_blob(&blob);
 
-                    let repl_perm: Vec<u8> = row_result
-                        .get(1)
-                        .expect("Failed to get blob");
+            //         let repl_perm: Vec<u8> = row_result
+            //             .get(1)
+            //             .expect("Failed to get blob");
 
-                    let repl_shuf: Vec<u8> = row_result
-                        .get(2)
-                        .expect("Failed to get blob");
+            //         let repl_shuf: Vec<u8> = row_result
+            //             .get(2)
+            //             .expect("Failed to get blob");
 
-                    if repl.gates.len() >= subcircuit.gates.len() {
-                        let rc = Canonicalization { perm: Permutation::from_blob(&repl_perm), shuffle: Permutation::from_blob(&repl_shuf) };
+            //         if repl.gates.len() >= subcircuit.gates.len() {
+            //             let rc = Canonicalization { perm: Permutation::from_blob(&repl_perm), shuffle: Permutation::from_blob(&repl_shuf) };
 
-                        if !rc.shuffle.data.is_empty() {
-                            repl.rewire(&rc.shuffle, n);
-                        }
+            //             if !rc.shuffle.data.is_empty() {
+            //                 repl.rewire(&rc.shuffle, n);
+            //             }
                         
-                        repl.rewire(&Permutation::from_blob(&canon_shuf_blob).invert(), n);
-                        compressed.gates.splice(start..end, repl.gates);
-                        break;
-                    }
-                }
-            } else {
+            //             repl.rewire(&Permutation::from_blob(&canon_shuf_blob).invert(), n);
+            //             compressed.gates.splice(start..end, repl.gates);
+            //             break;
+            //         }
+            //     }
+            // } else {
 
                 let db = match env.open_db(Some(&db_name)) {
                     Ok(db) => db,
@@ -550,16 +553,14 @@ pub fn expand_lmdb(
 
                     SQL_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                    res.map(|(_key, val_blob)| val_blob)
+                    res.map(|val_blob| val_blob)
                 };
 
                 if let Some(val_blob) = hit {
-                    let (repl_blob, repl_shuf): (Vec<u8>, Vec<u8>) =
+                    let repl_blob: Vec<u8> =
                         bincode::deserialize(&val_blob).expect("Failed to deserialize");
 
                     let mut repl = CircuitSeq::from_blob(&repl_blob);
-
-                    repl.rewire(&Permutation::from_blob(&repl_shuf), n);
 
                     if invert {
                         repl.gates.reverse();
@@ -570,7 +571,7 @@ pub fn expand_lmdb(
                     compressed.gates.splice(start..end, repl.gates);
 
                     break;
-                }
+                // }
             }
         }
 
@@ -830,32 +831,30 @@ pub fn compress_big(c: &CircuitSeq, trials: usize, num_wires: usize, conn: &mut 
     circuit
 }
 
-fn random_perm_lmdb<'a>(
-    txn: &'a RoTransaction,
+fn random_perm_lmdb(
+    txn: &RoTransaction,
     db: Database,
     prefix: &[u8],
-) -> Option<(Vec<u8>, Vec<u8>)> {
-    if txn.get(db, &prefix).is_err() {
-        return None;
-    }
+) -> Option<Vec<u8>> {
     let mut cursor = txn.open_ro_cursor(db).ok()?;
+    let mut circuits = Vec::new();
 
-    let mut matches = Vec::new();
-
-    for (key, val) in cursor.iter_from(prefix) {
+    for (key, _) in cursor.iter_from(prefix) {
         if !key.starts_with(prefix) {
             break;
         }
-        matches.push((key.to_vec(), val.to_vec()));
+
+        // key = perm || circuit
+        let circuit = key[prefix.len()..].to_vec();
+        circuits.push(circuit);
     }
 
-    if matches.is_empty() {
+    if circuits.is_empty() {
         return None;
     }
 
-    let idx = rand::rng().random_range(0..matches.len());
-
-    Some(matches.swap_remove(idx))
+    let idx = rand::rng().random_range(0..circuits.len());
+    Some(circuits.swap_remove(idx))
 }
 
 pub fn compress_lmdb(
@@ -960,53 +959,53 @@ pub fn compress_lmdb(
         for smaller_m in 1..=sub_m {
             let db_name = format!("n{}m{}", n, smaller_m);
 
-            if (n == 7 && smaller_m == 4) || (n == 6 && smaller_m == 5) {
-                let table = format!("n{}m{}", n, smaller_m);
-                let query = format!(
-                    "SELECT * FROM {} WHERE perm = ?1 ORDER BY RANDOM() LIMIT 1",
-                    table
-                );
+            // if (n == 7 && smaller_m == 4) || (n == 6 && smaller_m == 5) {
+            //     let table = format!("n{}m{}", n, smaller_m);
+            //     let query = format!(
+            //         "SELECT * FROM {} WHERE perm = ?1 ORDER BY RANDOM() LIMIT 1",
+            //         table
+            //     );
 
-                let sql_t0 = Instant::now();
-                let mut stmt = match conn.prepare(&query) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                let rows = stmt.query([&canon_perm_blob]);
-                SQL_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            //     let sql_t0 = Instant::now();
+            //     let mut stmt = match conn.prepare(&query) {
+            //         Ok(s) => s,
+            //         Err(_) => continue,
+            //     };
+            //     let rows = stmt.query([&canon_perm_blob]);
+            //     SQL_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                let mut r = match rows {
-                    Ok(r) => r,
-                    Err(_) => continue,
-                };
+            //     let mut r = match rows {
+            //         Ok(r) => r,
+            //         Err(_) => continue,
+            //     };
 
-                if let Some(row_result) = r.next().unwrap() {
-                    let blob: Vec<u8> = row_result
-                        .get(0)
-                        .expect("Failed to get blob");
-                    let mut repl = CircuitSeq::from_blob(&blob);
+            //     if let Some(row_result) = r.next().unwrap() {
+            //         let blob: Vec<u8> = row_result
+            //             .get(0)
+            //             .expect("Failed to get blob");
+            //         let mut repl = CircuitSeq::from_blob(&blob);
 
-                    let repl_perm: Vec<u8> = row_result
-                        .get(1)
-                        .expect("Failed to get blob");
+            //         let repl_perm: Vec<u8> = row_result
+            //             .get(1)
+            //             .expect("Failed to get blob");
 
-                    let repl_shuf: Vec<u8> = row_result
-                        .get(2)
-                        .expect("Failed to get blob");
+            //         let repl_shuf: Vec<u8> = row_result
+            //             .get(2)
+            //             .expect("Failed to get blob");
 
-                    if repl.gates.len() <= subcircuit.gates.len() {
-                        let rc = Canonicalization { perm: Permutation::from_blob(&repl_perm), shuffle: Permutation::from_blob(&repl_shuf) };
+            //         if repl.gates.len() <= subcircuit.gates.len() {
+            //             let rc = Canonicalization { perm: Permutation::from_blob(&repl_perm), shuffle: Permutation::from_blob(&repl_shuf) };
 
-                        if !rc.shuffle.data.is_empty() {
-                            repl.rewire(&rc.shuffle, n);
-                        }
+            //             if !rc.shuffle.data.is_empty() {
+            //                 repl.rewire(&rc.shuffle, n);
+            //             }
                         
-                        repl.rewire(&Permutation::from_blob(&canon_shuf_blob).invert(), n);
-                        compressed.gates.splice(start..end, repl.gates);
-                        break;
-                    }
-                }
-            } else {
+            //             repl.rewire(&Permutation::from_blob(&canon_shuf_blob).invert(), n);
+            //             compressed.gates.splice(start..end, repl.gates);
+            //             break;
+            //         }
+            //     }
+            // } else {
 
                 let db = match env.open_db(Some(&db_name)) {
                     Ok(db) => db,
@@ -1028,16 +1027,14 @@ pub fn compress_lmdb(
 
                     SQL_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                    res.map(|(_key, val_blob)| val_blob)
+                    res.map(|val_blob| val_blob)
                 };
 
                 if let Some(val_blob) = hit {
-                    let (repl_blob, repl_shuf): (Vec<u8>, Vec<u8>) =
+                    let repl_blob: Vec<u8> =
                         bincode::deserialize(&val_blob).expect("Failed to deserialize");
 
                     let mut repl = CircuitSeq::from_blob(&repl_blob);
-
-                    repl.rewire(&Permutation::from_blob(&repl_shuf), n);
 
                     if invert {
                         repl.gates.reverse();
@@ -1048,7 +1045,7 @@ pub fn compress_lmdb(
                     compressed.gates.splice(start..end, repl.gates);
 
                     break;
-                }
+                // }
             }
         }
 
