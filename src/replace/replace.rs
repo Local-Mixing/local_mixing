@@ -93,14 +93,11 @@ pub fn random_canonical_id(
         let circuit1_blob =
             random_perm_lmdb(&txn, db1, &perm_blob)
                 .unwrap_or_else(|| panic!("perm not found in {}", db1_name));
-        let mut ca = CircuitSeq::from_blob(&circuit1_blob)
-            .unwrap_or_else(|_| panic!("Failed to decode circuit1_blob from {}", db1_name));
-
+        let mut ca = CircuitSeq::from_blob(&circuit1_blob);
         let circuit2_blob =
             random_perm_lmdb(&txn, db2, &perm_blob)
                 .unwrap_or_else(|| panic!("perm not found in {}", db2_name));
-        let mut cb = CircuitSeq::from_blob(&circuit2_blob)
-            .unwrap_or_else(|_| panic!("Failed to decode circuit2_blob from {}", db2_name));
+        let mut cb = CircuitSeq::from_blob(&circuit2_blob);
 
         cb.gates.reverse();
         ca.gates.extend(cb.gates);
