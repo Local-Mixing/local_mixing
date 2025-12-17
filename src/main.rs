@@ -875,8 +875,8 @@ fn save_perm_tables_to_lmdb(
 
     std::fs::create_dir_all(env_path)?;
     let env = Environment::new()
-        .set_max_dbs(10)
-        .set_map_size(64 * 1024 * 1024 * 1024) // 64 GB map size, adjust if needed
+        .set_max_dbs(50)
+        .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
     let db = env.create_db(Some(db_name), lmdb::DatabaseFlags::empty())?;

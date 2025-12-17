@@ -66,6 +66,8 @@ pub fn random_canonical_id(
         let ms: Vec<u8> = bincode::deserialize(&ms_blob)
             .unwrap_or_else(|_| panic!("Failed to deserialize ms_blob for n={}", n));
 
+        println!("ms: {:?}", ms);
+        
         if ms.len() < 2 {
             panic!("ms.len() < 2 for perm in perm_tables_n{}", n);
         }
@@ -115,7 +117,6 @@ pub fn random_canonical_id(
 
         let bit_shuf = Permutation { data: shuf };
         ca.rewire(&bit_shuf, n);
-
         return Ok(ca);
     }
 }
@@ -558,8 +559,7 @@ pub fn expand_lmdb(
                 };
 
                 if let Some(val_blob) = hit {
-                    let repl_blob: Vec<u8> =
-                        bincode::deserialize(&val_blob).expect("Failed to deserialize");
+                    let repl_blob: Vec<u8> = val_blob;
 
                     let mut repl = CircuitSeq::from_blob(&repl_blob);
 
@@ -1032,8 +1032,7 @@ pub fn compress_lmdb(
                 };
 
                 if let Some(val_blob) = hit {
-                    let repl_blob: Vec<u8> =
-                        bincode::deserialize(&val_blob).expect("Failed to deserialize");
+                    let repl_blob: Vec<u8> = val_blob;
 
                     let mut repl = CircuitSeq::from_blob(&repl_blob);
 
