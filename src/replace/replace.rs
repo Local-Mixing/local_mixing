@@ -1657,5 +1657,6 @@ mod tests {
         if circuit.probably_equal(&CircuitSeq { gates: vec![[1,2,3], [1,2,3]]}, 10, 10000).is_err() {
             panic!("Not id");
         }
+        println!("circuit {:?}", circuit.gates);
     }
 }
