@@ -1388,7 +1388,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
         let mut id = match random_canonical_id(&env, conn, n) {
             Ok(c) => c,
             Err(_) => {
-                // println!("random_canonical_id failed, continuing");
+                println!("random_canonical_id failed {}, continuing", fail);
                 continue;
             },
         };
