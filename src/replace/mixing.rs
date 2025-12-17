@@ -557,7 +557,9 @@ pub fn abutterfly_big(
     // }
 
     // c.gates = pre_gates;
-
+    for name in env.get_dbs()? {
+        println!("DB: {:?}", name);
+    }
     replace_pairs(&mut c, n, _conn, &env);
 
     let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
