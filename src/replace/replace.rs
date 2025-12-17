@@ -47,24 +47,6 @@ pub fn random_canonical_id(
     min_wires: usize,
 ) -> Result<CircuitSeq, Box<dyn std::error::Error>> {
     let mut rng = rand::rng();
-    let db_ranges = [
-        (3, 1, 10),
-        (4, 1, 6),
-        (5, 1, 5),
-        (6, 1, 6),
-        (7, 1, 4),
-    ];
-
-    for &(n, start, end) in &db_ranges {
-        for m in start..=end {
-            let name = format!("n{}m{}", n, m);
-            match env.open_db(Some(&name)) {
-                Ok(_) => println!("DB exists: {}", name),
-                Err(lmdb::Error::NotFound) => println!("DB not found: {}", name),
-                Err(e) => println!("Error opening {}: {:?}", name, e),
-            }
-        }
-    }
     loop {
         let n = rng.random_range(min_wires..=7);
 
@@ -99,10 +81,27 @@ pub fn random_canonical_id(
         let db1_name = format!("n{}m{}", n, m1);
         let db2_name = format!("n{}m{}", n, m2);
 
-        let db1 = env.open_db(Some(&db1_name))
-            .unwrap_or_else(|_| panic!("LMDB DB1 '{}' not found", db1_name));
-        let db2 = env.open_db(Some(&db2_name))
-            .unwrap_or_else(|_| panic!("LMDB DB2 '{}' not found", db2_name));
+        let db1 = match env.open_db(Some(&db1_name)) {
+            Ok(db) => db,
+            Err(lmdb::Error::NotFound) => {
+                eprintln!("Warning: LMDB DB1 '{}' not found, skipping", db1_name);
+                continue; 
+            }
+            Err(e) => {
+                return Err(Box::new(e)); 
+            }
+        };
+
+        let db2 = match env.open_db(Some(&db2_name)) {
+            Ok(db) => db,
+            Err(lmdb::Error::NotFound) => {
+                eprintln!("Warning: LMDB DB2 '{}' not found, skipping", db2_name);
+                continue; 
+            }
+            Err(e) => {
+                return Err(Box::new(e));
+            }
+        };
 
         let circuit1_blob =
             random_perm_lmdb(&txn, db1, &perm_blob)
