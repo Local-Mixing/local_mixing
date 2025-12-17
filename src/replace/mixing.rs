@@ -557,7 +557,7 @@ pub fn abutterfly_big(
     // }
 
     // c.gates = pre_gates;
-    // replace_pairs(&mut c, n, _conn, &env);
+    replace_pairs(&mut c, n, _conn, &env);
 
     let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
 
