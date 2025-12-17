@@ -66,8 +66,6 @@ pub fn random_canonical_id(
         let ms: Vec<u8> = bincode::deserialize(&ms_blob)
             .unwrap_or_else(|_| panic!("Failed to deserialize ms_blob for n={}", n));
 
-        println!("perm: {:?}", Permutation::from_blob(&perm_blob)); 
-
         if ms.len() < 2 {
             panic!("ms.len() < 2 for perm in perm_tables_n{}", n);
         }
@@ -855,6 +853,7 @@ fn random_perm_lmdb(
     }
 
     let idx = rand::rng().random_range(0..circuits.len());
+    println!("found");
     Some(circuits.swap_remove(idx))
 }
 
