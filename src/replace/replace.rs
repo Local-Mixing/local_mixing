@@ -88,6 +88,7 @@ pub fn random_canonical_id(
                 continue; 
             }
             Err(e) => {
+                println!("Other error");
                 return Err(Box::new(e)); 
             }
         };
@@ -99,6 +100,7 @@ pub fn random_canonical_id(
                 continue; 
             }
             Err(e) => {
+                println!("Other error");
                 return Err(Box::new(e));
             }
         };
