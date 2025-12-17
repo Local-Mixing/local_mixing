@@ -47,7 +47,24 @@ pub fn random_canonical_id(
     min_wires: usize,
 ) -> Result<CircuitSeq, Box<dyn std::error::Error>> {
     let mut rng = rand::rng();
+    let db_ranges = [
+        (3, 1, 10),
+        (4, 1, 6),
+        (5, 1, 5),
+        (6, 1, 6),
+        (7, 1, 4),
+    ];
 
+    for &(n, start, end) in &db_ranges {
+        for m in start..=end {
+            let name = format!("n{}m{}", n, m);
+            match env.open_db(Some(&name)) {
+                Ok(_) => println!("DB exists: {}", name),
+                Err(lmdb::Error::NotFound) => println!("DB not found: {}", name),
+                Err(e) => println!("Error opening {}: {:?}", name, e),
+            }
+        }
+    }
     loop {
         let n = rng.random_range(min_wires..=7);
 
@@ -1614,7 +1631,7 @@ mod tests {
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(33)      
+                .set_max_dbs(50)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
