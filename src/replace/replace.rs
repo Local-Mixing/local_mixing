@@ -49,26 +49,28 @@ pub fn random_canonical_id(
     let mut rng = rand::rng();
 
     loop {
-        // pick random n
         let n = rng.random_range(min_wires..=7);
+        if n < 2 {
+            panic!("n must be >= 2, got {}", n);
+        }
 
-        // open perm_tables_nN
         let perm_db_name = format!("perm_tables_n{}", n);
-        let perm_db = env.open_db(Some(&perm_db_name))?;
-        let txn = env.begin_ro_txn()?;
+        let perm_db = env.open_db(Some(&perm_db_name))
+            .unwrap_or_else(|_| panic!("LMDB DB '{}' not found", perm_db_name));
+        let txn = env.begin_ro_txn()
+            .unwrap_or_else(|_| panic!("Failed to begin read txn on '{}'", perm_db_name));
 
-        // random perm + ms
         let (perm_blob, ms_blob) =
             match random_perm_from_perm_table(&txn, perm_db) {
                 Some(x) => x,
-                None => continue,
+                None => panic!("perm_tables_n{} is empty or malformed", n),
             };
 
-        let ms: Vec<u8> = bincode::deserialize(&ms_blob)?;
-        
-        // this should never run
+        let ms: Vec<u8> = bincode::deserialize(&ms_blob)
+            .unwrap_or_else(|_| panic!("Failed to deserialize ms_blob for n={}", n));
+
         if ms.len() < 2 {
-            continue;
+            panic!("ms.len() < 2 for perm in perm_tables_n{}", n);
         }
 
         let i = rng.random_range(0..ms.len());
@@ -83,38 +85,44 @@ pub fn random_canonical_id(
         let db1_name = format!("n{}m{}", n, m1);
         let db2_name = format!("n{}m{}", n, m2);
 
-        let db1 = env.open_db(Some(&db1_name))?;
+        let db1 = env.open_db(Some(&db1_name))
+            .unwrap_or_else(|_| panic!("LMDB DB '{}' not found", db1_name));
+        let db2 = env.open_db(Some(&db2_name))
+            .unwrap_or_else(|_| panic!("LMDB DB '{}' not found", db2_name));
+
         let circuit1_blob =
-            match random_perm_lmdb(&txn, db1, &perm_blob) {
-                Some(c) => c,
-                None => continue,
-            };
+            random_perm_lmdb(&txn, db1, &perm_blob)
+                .unwrap_or_else(|| panic!("perm not found in {}", db1_name));
+        let mut ca = CircuitSeq::from_blob(&circuit1_blob)
+            .unwrap_or_else(|_| panic!("Failed to decode circuit1_blob from {}", db1_name));
 
-        let mut ca = CircuitSeq::from_blob(&circuit1_blob);
-
-        let db2 = env.open_db(Some(&db2_name))?;
         let circuit2_blob =
-            match random_perm_lmdb(&txn, db2, &perm_blob) {
-                Some(c) => c,
-                None => continue,
-            };
-
-        let mut cb = CircuitSeq::from_blob(&circuit2_blob);
+            random_perm_lmdb(&txn, db2, &perm_blob)
+                .unwrap_or_else(|| panic!("perm not found in {}", db2_name));
+        let mut cb = CircuitSeq::from_blob(&circuit2_blob)
+            .unwrap_or_else(|_| panic!("Failed to decode circuit2_blob from {}", db2_name));
 
         cb.gates.reverse();
-
         ca.gates.extend(cb.gates);
-        let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
+
+        let perms: Vec<Vec<usize>> = (0..n)
+            .permutations(n)
+            .collect();
+
+        if perms.len() <= 1 {
+            panic!("Failed to generate non-identity permutations for n={}", n);
+        }
 
         let shuf = perms
             .iter()
             .skip(1)
             .nth(rng.random_range(0..perms.len() - 1))
-            .unwrap()
+            .expect("Failed to select a random bit shuffle")
             .clone();
 
         let bit_shuf = Permutation { data: shuf };
         ca.rewire(&bit_shuf, n);
+
         return Ok(ca);
     }
 }
