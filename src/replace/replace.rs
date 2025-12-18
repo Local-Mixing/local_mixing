@@ -103,9 +103,6 @@ pub fn random_canonical_id(
         ca.gates.extend(cb.gates);
 
         let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
-        if perms.len() <= 1 {
-            panic!("Failed to generate non-identity permutations for n={}", n);
-        }
         let shuf = perms
             .iter()
             .skip(1)
