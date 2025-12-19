@@ -2073,7 +2073,7 @@ mod tests {
             }
         }
 
-        for _ in 0..50 {
+        for _ in 0..1000 {
             for &(n, max_m) in &ns_and_ms {
                 for m in 1..=max_m {
                     // Generate a random circuit
