@@ -1634,7 +1634,7 @@ fn random_gate_replacements(c: &mut CircuitSeq, x: usize, n: usize, _conn: &Conn
             }
             used_wires.sort();
             let rewired_g = CircuitSeq::rewire_subcircuit(&c, &vec![i], &used_wires);
-            println!("rewired_g {:?} vs len: {}", rewired_g, num);
+            // println!("rewired_g {:?} vs len: {}", rewired_g, num);
             id.rewire_first_gate(rewired_g.gates[0], num);
             id = CircuitSeq::unrewire_subcircuit(&id, &used_wires);
             id.gates.remove(0);
