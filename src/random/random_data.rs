@@ -2040,4 +2040,83 @@ mod tests {
         file.write_all(id.as_bytes())
             .expect("Failed to write to file");
     }
+    use std::time::Duration;
+    #[test]
+    fn benchmark_sql_vs_canonical() {
+        let conn = Connection::open("circuits.db").expect("Failed to open db");
+        let ns_and_ms = vec![
+            (3, 10),
+            (4, 6),
+            (5, 5),
+            (6, 5),
+            (7, 4),
+        ];
+        let perms: Vec<Vec<usize>> = (0..3).permutations(3).collect();
+        let bit_shuf3 = perms.into_iter().skip(1).collect::<Vec<_>>();
+        let perms: Vec<Vec<usize>> = (0..4).permutations(4).collect();
+        let bit_shuf4 = perms.into_iter().skip(1).collect::<Vec<_>>();
+        let perms: Vec<Vec<usize>> = (0..5).permutations(5).collect();
+        let bit_shuf5 = perms.into_iter().skip(1).collect::<Vec<_>>();
+        let perms: Vec<Vec<usize>> = (0..6).permutations(6).collect();
+        let bit_shuf6 = perms.into_iter().skip(1).collect::<Vec<_>>();
+        let perms: Vec<Vec<usize>> = (0..7).permutations(7).collect();
+        let bit_shuf7 = perms.into_iter().skip(1).collect::<Vec<_>>();
+        // Two hashmaps for timers
+        let mut timer_canonical: HashMap<(usize, usize), Duration> = HashMap::new();
+        let mut timer_sql: HashMap<(usize, usize), Duration> = HashMap::new();
+
+        for &(n, max_m) in &ns_and_ms {
+            for m in 1..=max_m {
+                let key = (n, m);
+                timer_canonical.entry(key).or_insert(Duration::ZERO);
+                timer_sql.entry(key).or_insert(Duration::ZERO);
+            }
+        }
+
+        for _ in 0..50 {
+            for &(n, max_m) in &ns_and_ms {
+                for m in 1..=max_m {
+                    // Generate a random circuit
+                    let mut circuit = random_circuit(n as u8, m);
+
+                    circuit.canonicalize();
+                    let circuit_blob = circuit.repr_blob();
+                    let bit_shuf = match n {
+                        3 => &bit_shuf3,
+                        4 => &bit_shuf4,
+                        5 => &bit_shuf5,
+                        6 => &bit_shuf6,
+                        7 => &bit_shuf7,
+                        _ => panic!("Unsupported n"),
+                    };
+                    // get_canonical timing
+                    let start = Instant::now();
+                    let perm = circuit.permutation(n);
+                    let _p = get_canonical(&perm, &bit_shuf);
+                    timer_canonical
+                        .entry((n, m))
+                        .and_modify(|d| *d += start.elapsed());
+
+                    // SQL timing
+                    let table = format!("n{}m{}", n, m);
+                    let start = Instant::now();
+                    let query = format!("SELECT * FROM {} WHERE circuit = ?", table);
+                    let _res: Option<Vec<u8>> =
+                        conn.query_row(&query, [&circuit_blob], |row| row.get(0)).ok();
+                    timer_sql
+                        .entry((n, m))
+                        .and_modify(|d| *d += start.elapsed());
+                }
+            }
+        }
+
+        // Print results
+        for ((n, m), duration) in &timer_canonical {
+            let sql_duration = timer_sql.get(&(*n, *m)).unwrap_or(&Duration::ZERO);
+            println!(
+                "n={} m={} | get_canonical: {:?} | SQL search: {:?}",
+                n, m, duration, sql_duration
+            );
+        }
+    }
 }
