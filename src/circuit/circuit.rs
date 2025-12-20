@@ -516,12 +516,11 @@ impl CircuitSeq {
         CircuitSeq { gates }
     }
 
-    //outdated
     pub fn to_string(&self, num_wires: usize) -> String {
         let mut result = String::new();
 
         // Local character map (0-9, a-z, A-Z)
-        let wire_map_chars: Vec<char> = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        let wire_map_chars: Vec<char> = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()-_=+[]{}<>?"
             .chars()
             .collect();
 
