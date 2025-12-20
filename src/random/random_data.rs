@@ -2093,7 +2093,7 @@ mod tests {
                     // get_canonical timing
                     let start = Instant::now();
                     let perm = circuit.permutation(n);
-                    let _p = perm.canon_simple(&bit_shuf);
+                    let _p = perm.get_canonical(&bit_shuf);
 
                     // SQL timing
                     let table = format!("n{}m{}", n, m);
