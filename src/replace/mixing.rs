@@ -1,9 +1,9 @@
 use crate::{
     circuit::circuit::CircuitSeq,
-    replace::replace::{compress, compress_big, expand_big, obfuscate, outward_compress, random_canonical_id, random_id},
+    replace::replace::{compress, compress_big, expand_big, obfuscate, outward_compress,random_id},
 };
 use crate::random::random_data::shoot_random_gate;
-use crate::random::random_data::random_walk_no_skeleton;
+// use crate::random::random_data::random_walk_no_skeleton;
 use crate::replace::replace::replace_pairs;
 use itertools::Itertools;
 use rand::Rng;
@@ -523,7 +523,7 @@ pub fn abutterfly_big(
     println!("Current round: {}/{}", curr_round, last_round);
     println!("Butterfly start: {} gates", c.gates.len());
     let mut rng = rand::rng();
-    let mut pre_gates: Vec<[u8;3]> = Vec::with_capacity(c.gates.len());
+    // let mut pre_gates: Vec<[u8;3]> = Vec::with_capacity(c.gates.len());
 
     let mut c = c.clone();
     shoot_random_gate(&mut c, 500_000);
@@ -682,7 +682,7 @@ pub fn abutterfly_big(
 
     println!("Compressed len: {}", acc.gates.len());
     println!("Butterfly done: {} gates", acc.gates.len());
-    crate::replace::replace::print_compress_timers();
+    // crate::replace::replace::print_compress_timers();
     acc
 }
 

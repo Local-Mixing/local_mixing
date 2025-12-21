@@ -2091,13 +2091,13 @@ mod tests {
                         _ => panic!("Unsupported n"),
                     };
                     // get_canonical timing
-                    let start = Instant::now();
+                    // let start = Instant::now();
                     let perm = circuit.permutation(n);
                     let _p = perm.canon_simple(&bit_shuf);
 
                     // SQL timing
                     let table = format!("n{}m{}", n, m);
-                    let start = Instant::now();
+                    // let start = Instant::now();
                     let query = format!("SELECT * FROM {} WHERE circuit = ?", table);
                     let _res: Option<Vec<u8>> =
                         conn.query_row(&query, [&circuit_blob], |row| row.get(0)).ok();

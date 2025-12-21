@@ -518,33 +518,33 @@ impl CandSet {
             }
 
             //try to make this bit zero. else, one
-            let mut max_zero:isize = -1;
-            let mut j:isize = -1;
+            let mut max_zero: isize = -1;
 
             for &b in &i_from {
-                if (x&(1 << b) == 0) && ((b as isize) > max_zero) {
+                if (x & (1 << b) == 0) && (b as isize > max_zero) {
                     max_zero = b as isize;
                 }
             }
 
-            if max_zero >= 0 {
-                j = max_zero;
+            let j: isize = if max_zero >= 0 {
+                max_zero
             } else {
-                //look for min one. default is invalid
+                // look for min one
                 let mut min_one = n as isize + 1;
+
                 for &b in &i_from {
-                    if (x&(1 << b) != 0) && ((b as isize) < min_one) {
+                    if (x & (1 << b) != 0) && (b as isize) < min_one {
                         min_one = b as isize;
                     }
                 }
 
-                //min_one should be valid
-                if min_one > n as isize{
-                    return (-1, CandSet{ candidate: Vec::new() })
+                // min_one should be valid
+                if min_one > n as isize {
+                    return (-1, CandSet { candidate: Vec::new() });
                 }
 
-                j = min_one;
-            }
+                min_one
+            };
 
             //apply shuffle
             out |= ((x >> j) & 1) << i;
