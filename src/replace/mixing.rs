@@ -645,59 +645,74 @@ pub fn abutterfly_big(
     println!("After adding bookends: {} gates", acc.gates.len());
     // let mut milestone = initial_milestone(acc.gates.len());
     // Final global compression until stable 3×
+    // let mut stable_count = 0;
+    // while stable_count < 3 {
+    //     // if acc.gates.len() <= milestone {
+    //     //     let mut f = OpenOptions::new()
+    //     //         .create(true)
+    //     //         .append(true)d
+    //     //         .open("circuitlist.txt")
+    //     //         .expect("Could not open circuitlist.txt");
+
+    //     //     writeln!(f, "{}", acc.repr()).unwrap();
+    //     //     milestone = next_milestone(milestone);
+    //     // }
+
+    //     let before = acc.gates.len();
+
+    //     let k = if before > 50_000 {
+    //         60
+    //     } else if before > 10_000 {
+    //         50
+    //     } else if before > 5_000 {
+    //         30
+    //     } else if before > 1_000 {
+    //         8
+    //     } else if before > 500 {
+    //         2
+    //     } else {
+    //         1
+    //     };
+
+    //     let mut rng = rand::rng();
+
+    //     let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
+
+    //     let compressed_chunks: Vec<Vec<[u8;3]>> =
+    //     chunks
+    //         .into_par_iter()
+    //         .map(|chunk| {
+    //             let sub = CircuitSeq { gates: chunk };
+    //             let mut thread_conn = Connection::open_with_flags(
+    //                 "circuits.db",
+    //                 OpenFlags::SQLITE_OPEN_READ_ONLY,
+    //             )
+    //             .expect("Failed to open read-only connection");
+    //             compress_big(&sub, 1_000, n, &mut thread_conn, env).gates
+    //         })
+    //         .collect();
+
+    //     let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
+    //     acc.gates = new_gates;
+    //     let after = acc.gates.len();
+    //     if last && acc.gates.len() <= stop {
+    //         break
+    //     }
+    //     if after == before {
+    //         stable_count += 1;
+    //         println!("  {}/{} Final compression stable {}/3 at {} gates", curr_round, last_round, stable_count, after);
+    //     } else {
+    //         println!("  {}/{}: {} → {} gates", curr_round, last_round, before, after);
+    //         stable_count = 0;
+    //     }
+    // }
+
     let mut stable_count = 0;
     while stable_count < 3 {
-        // if acc.gates.len() <= milestone {
-        //     let mut f = OpenOptions::new()
-        //         .create(true)
-        //         .append(true)d
-        //         .open("circuitlist.txt")
-        //         .expect("Could not open circuitlist.txt");
-
-        //     writeln!(f, "{}", acc.repr()).unwrap();
-        //     milestone = next_milestone(milestone);
-        // }
-
         let before = acc.gates.len();
-
-        let k = if before > 50_000 {
-            60
-        } else if before > 10_000 {
-            50
-        } else if before > 5_000 {
-            30
-        } else if before > 1_000 {
-            8
-        } else if before > 500 {
-            2
-        } else {
-            1
-        };
-
-        let mut rng = rand::rng();
-
-        let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
-
-        let compressed_chunks: Vec<Vec<[u8;3]>> =
-        chunks
-            .into_par_iter()
-            .map(|chunk| {
-                let sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
-                compress_big(&sub, 1_000, n, &mut thread_conn, env).gates
-            })
-            .collect();
-
-        let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
-        acc.gates = new_gates;
+        acc = compress_big(&acc, 1_000, n, _conn, &env);
         let after = acc.gates.len();
-        if last && acc.gates.len() <= stop {
-            break
-        }
+
         if after == before {
             stable_count += 1;
             println!("  {}/{} Final compression stable {}/3 at {} gates", curr_round, last_round, stable_count, after);
