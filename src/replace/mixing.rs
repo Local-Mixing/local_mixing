@@ -642,6 +642,7 @@ pub fn abutterfly_big(
     // Add global bookends: first_r ... last_r_inv
     acc = first_r.concat(&acc).concat(&prev_r_inv);
 
+    acc = CircuitSeq { gates: acc.gates.clone() };
     println!("After adding bookends: {} gates", acc.gates.len());
     // let mut milestone = initial_milestone(acc.gates.len());
     // Final global compression until stable 3×
