@@ -22,7 +22,7 @@ use local_mixing::{
     },
 };
 
-use local_mixing::replace::replace::compress_big_ancillas;
+use local_mixing::replace::replace::{compress_big_ancillas, compress_big};
 fn main() {
     let matches = Command::new("rainbow")
         .about("Rainbow circuit generator")
