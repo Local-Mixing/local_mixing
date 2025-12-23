@@ -23,6 +23,9 @@ use local_mixing::{
 };
 
 use local_mixing::replace::replace::{compress_big_ancillas, compress_big};
+use local_mixing::replace::mixing::split_into_random_chunks;
+use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelIterator;
 fn main() {
     let matches = Command::new("rainbow")
         .about("Rainbow circuit generator")
@@ -571,7 +574,40 @@ fn main() {
             let mut stable_count = 0;
             while stable_count < 3 {
                 let before = acc.gates.len();
-                acc = compress_big_ancillas(&acc, 1_000, n, &mut conn, &env);
+
+                let k = if before > 10_000 {
+                    16
+                } else if before > 5_000 {
+                    8
+                } else if before > 1_000 {
+                    4
+                } else if before > 500 {
+                    2
+                } else {
+                    1
+                };
+
+                let mut rng = rand::rng();
+
+                let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
+
+                let compressed_chunks: Vec<Vec<[u8;3]>> =
+                chunks
+                    .into_par_iter()
+                    .map(|chunk| {
+                        let sub = CircuitSeq { gates: chunk };
+                        let mut thread_conn = Connection::open_with_flags(
+                            "circuits.db",
+                            OpenFlags::SQLITE_OPEN_READ_ONLY,
+                        )
+                        .expect("Failed to open read-only connection");
+                        compress_big(&sub, 1_000, n, &mut thread_conn, &env).gates
+                    })
+                    .collect();
+
+                let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
+                acc.gates = new_gates;
+
                 let after = acc.gates.len();
 
                 if after == before {

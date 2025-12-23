@@ -842,7 +842,7 @@ pub fn abutterfly_big_delay_bookends(
     (acc, first_r, prev_r_inv)
 }
 
-fn split_into_random_chunks<T: Clone>(
+pub fn split_into_random_chunks<T: Clone>(
     v: &[T],
     k: usize,
     rng: &mut impl rand::Rng,
