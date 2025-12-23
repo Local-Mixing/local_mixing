@@ -539,7 +539,7 @@ pub fn abutterfly_big(
     shoot_random_gate(&mut c, 500_000);
     SHOOT_RANDOM_GATE_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     // c = random_walk_no_skeleton(&c, &mut rng);
-    let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(50..=100));
+    let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(30..=60));
     let mut prev_r_inv = first_r_inv.clone();
     
     // for (i, g) in c.gates.iter().enumerate() {
@@ -576,7 +576,7 @@ pub fn abutterfly_big(
 
     for &g in &c.gates {
         let t2 = Instant::now();
-        let (r, r_inv) = random_id(n as u8, rng.random_range(50..=100));
+        let (r, r_inv) = random_id(n as u8, rng.random_range(30..=60));
         RANDOM_ID_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let mut block = prev_r_inv.clone().concat(&CircuitSeq { gates: vec![g] }).concat(&r);
         shoot_random_gate(&mut block, 1_000);
