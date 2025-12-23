@@ -323,6 +323,15 @@ static COMPRESS_TIME: AtomicU64 = AtomicU64::new(0);
 static UNREWIRE_TIME: AtomicU64 = AtomicU64::new(0);
 static REPLACE_TIME: AtomicU64 = AtomicU64::new(0);
 static DEDUP_TIME: AtomicU64 = AtomicU64::new(0);
+static PICK_SUBCIRCUIT_TIME: AtomicU64 = AtomicU64::new(0);
+static CANONICALIZE_TIME: AtomicU64 = AtomicU64::new(0);
+static ROW_FETCH_TIME: AtomicU64 = AtomicU64::new(0);
+static DB_OPEN_TIME: AtomicU64 = AtomicU64::new(0);
+static TXN_TIME: AtomicU64 = AtomicU64::new(0);
+static LMDB_LOOKUP_TIME: AtomicU64 = AtomicU64::new(0);
+static FROM_BLOB_TIME: AtomicU64 = AtomicU64::new(0);
+static SPLICE_TIME: AtomicU64 = AtomicU64::new(0);
+static TRIAL_TIME: AtomicU64 = AtomicU64::new(0);
 
 pub fn compress(
     c: &CircuitSeq,
@@ -907,8 +916,9 @@ pub fn compress_lmdb(
     n: usize,
     env: &lmdb::Environment,
 ) -> CircuitSeq {
-
     let id = Permutation::id_perm(n);
+
+    // Timer for initial permutation
     let t0 = Instant::now();
     let c_perm = c.permutation(n);
     PERMUTATION_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -922,6 +932,8 @@ pub fn compress_lmdb(
         return CircuitSeq { gates: Vec::new() };
     }
 
+    // Timer for initial deduplication
+    let dedup_start = Instant::now();
     let mut i = 0;
     while i < compressed.gates.len().saturating_sub(1) {
         if compressed.gates[i] == compressed.gates[i + 1] {
@@ -931,6 +943,7 @@ pub fn compress_lmdb(
             i += 1;
         }
     }
+    DEDUP_TIME.fetch_add(dedup_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     if compressed.gates.is_empty() {
         return CircuitSeq { gates: Vec::new() };
@@ -943,106 +956,113 @@ pub fn compress_lmdb(
     };
 
     for _ in 0..trial_count {
+        let trial_start = Instant::now();
+
+        // Pick subcircuit
+        let pick_start = Instant::now();
         let (subcircuit, start, end) = if do_subcircuit {
             random_subcircuit(&compressed)
         } else {
             (compressed.clone(), 0, compressed.gates.len())
         };
+        PICK_SUBCIRCUIT_TIME.fetch_add(pick_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let mut subcircuit = subcircuit;
+
+        // Canonicalize
+        let canon_start = Instant::now();
         subcircuit.canonicalize();
-        
+        CANONICALIZE_TIME.fetch_add(canon_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
         let max = if n == 7 { 3 } else if n == 5 || n == 6 { 5 } else if n == 4 { 6 } else { 10 };
         let sub_m = subcircuit.gates.len();
         let min = min(sub_m, max);
-        
+
         let (canon_perm_blob, canon_shuf_blob) = if sub_m <= max && (n > 5 || (n == 4 && sub_m > 3) || (n == 5 && sub_m > 2)) {
             let table = format!("n{}m{}", n, min);
             let query = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
 
-            let sql_t0 = Instant::now();
-            let mut stmt = match conn.prepare(&query) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
+            // SQL prepare + query
+            let sql_start = Instant::now();
+            let mut stmt = match conn.prepare(&query) { Ok(s) => s, Err(_) => continue };
             let rows = stmt.query([&subcircuit.repr_blob()]);
-            SQL_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            SQL_TIME.fetch_add(sql_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-            let mut r = match rows {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-
-            if let Some(row_result) = r.next().unwrap() {
-                (
-                    row_result.get(0).expect("Failed to get blob"),
-                    row_result.get(1).expect("Failed to get blob")
-                )
+            let row_start = Instant::now();
+            let mut r = match rows { Ok(r) => r, Err(_) => continue };
+            let blobs = if let Some(row_result) = r.next().unwrap() {
+                (row_result.get(0).unwrap(), row_result.get(1).unwrap())
             } else {
-                continue
-            }
+                continue;
+            };
+            ROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
+            blobs
         } else {
-            let t1 = Instant::now();
+            // Permutation + canonicalization
+            let perm_start = Instant::now();
             let sub_perm = subcircuit.permutation(n);
-            PERMUTATION_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            PERMUTATION_TIME.fetch_add(perm_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-            let t2 = Instant::now();
+            let canon_start = Instant::now();
             let canon_perm = get_canonical(&sub_perm, bit_shuf);
-            CANON_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            CANON_TIME.fetch_add(canon_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             (canon_perm.perm.repr_blob(), canon_perm.shuffle.repr_blob())
         };
 
         let prefix = canon_perm_blob.as_slice();
-        for smaller_m in 1..=min {
-            let db_name = format!("n{}m{}", n, smaller_m);
 
-            let db = match env.open_db(Some(&db_name)) {
+        for smaller_m in 1..=min {
+            let db_open_start = Instant::now();
+            let db = match env.open_db(Some(&format!("n{}m{}", n, smaller_m))) {
                 Ok(db) => db,
                 Err(lmdb::Error::NotFound) => continue,
-                Err(e) => panic!("Failed to open LMDB database {}: {:?}", db_name, e),
+                Err(e) => panic!("Failed to open LMDB database: {:?}", e),
             };
+            DB_OPEN_TIME.fetch_add(db_open_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            let txn_start = Instant::now();
+            let txn = env.begin_ro_txn().expect("txn");
+
+            let lookup_start = Instant::now();
             let mut invert = false;
-            let hit = {
-                let txn = env.begin_ro_txn().expect("txn");
+            let mut res = random_perm_lmdb(&txn, db, prefix);
+            if res.is_none() {
+                let prefix_inv_blob = Permutation::from_blob(&prefix).invert().repr_blob();
+                invert = true;
+                res = random_perm_lmdb(&txn, db, &prefix_inv_blob);
+            }
+            LMDB_LOOKUP_TIME.fetch_add(lookup_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            TXN_TIME.fetch_add(txn_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                let t0 = Instant::now();
-                
-                let mut res = random_perm_lmdb(&txn, db, prefix);
-                if res.is_none() {
-                    let prefix_inv_blob = Permutation::from_blob(&prefix).invert().repr_blob();
-                    invert = true;
-                    res = random_perm_lmdb(&txn, db, &prefix_inv_blob);
-                }
+            if let Some(val_blob) = res {
+                let from_blob_start = Instant::now();
+                let mut repl = CircuitSeq::from_blob(&val_blob);
+                FROM_BLOB_TIME.fetch_add(from_blob_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                SQL_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-                res.map(|val_blob| val_blob)
-            };
-
-            if let Some(val_blob) = hit {
-                let repl_blob: Vec<u8> = val_blob;
-
-                let mut repl = CircuitSeq::from_blob(&repl_blob);
-
-                if invert {
-                    repl.gates.reverse();
-                }
-
+                let rewire_start = Instant::now();
+                if invert { repl.gates.reverse(); }
                 repl.rewire(&Permutation::from_blob(&canon_shuf_blob).invert(), n);
-                
+                REWIRE_TIME.fetch_add(rewire_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+                let splice_start = Instant::now();
                 if repl.gates.len() == end - start { 
                     compressed.gates[start..end].copy_from_slice(&repl.gates);
                 } else {
                     compressed.gates.splice(start..end, repl.gates);
                 }
+                SPLICE_TIME.fetch_add(splice_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
                 break;
             }
         }
 
+        TRIAL_TIME.fetch_add(trial_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
+    // Final deduplication
+    let dedup2_start = Instant::now();
     let mut j = 0;
     while j < compressed.gates.len().saturating_sub(1) {
         if compressed.gates[j] == compressed.gates[j + 1] {
@@ -1052,6 +1072,7 @@ pub fn compress_lmdb(
             j += 1;
         }
     }
+    DEDUP_TIME.fetch_add(dedup2_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     compressed
 }
@@ -1489,9 +1510,9 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
 
         // println!("Replacement: {:?}", CircuitSeq::unrewire_subcircuit(&replacement, &used_wires));
         // println!("Replacement applied at indices {}..{}", index, index + 1);
-        println!("Replacements so far: {}/{}", replaced, num_pairs);
+        // println!("Replacements so far: {}/{}", replaced, num_pairs);
     }
-
+    println!("Replaced {}/{} pairs", replaced, num_pairs);
     println!("Starting single gate replacements");
     random_gate_replacements(circuit, min((num_pairs - replaced)/20 + (m/2 - num_pairs)/20, 1000), num_wires, conn, env);
     println!("Finished replace_pairs");
@@ -1541,6 +1562,15 @@ pub fn print_compress_timers() {
     let contiguous = CONTIGUOUS_TIME.load(Ordering::Relaxed);
     let replace = REPLACE_TIME.load(Ordering::Relaxed);
     let dedup = DEDUP_TIME.load(Ordering::Relaxed);
+    let pick = PICK_SUBCIRCUIT_TIME.load(Ordering::Relaxed);
+    let canonicalize = CANONICALIZE_TIME.load(Ordering::Relaxed);
+    let row_fetch = ROW_FETCH_TIME.load(Ordering::Relaxed);
+    let db_open = DB_OPEN_TIME.load(Ordering::Relaxed);
+    let txn = TXN_TIME.load(Ordering::Relaxed);
+    let lmdb_lookup = LMDB_LOOKUP_TIME.load(Ordering::Relaxed);
+    let from_blob = FROM_BLOB_TIME.load(Ordering::Relaxed);
+    let splice = SPLICE_TIME.load(Ordering::Relaxed);
+    let trial = TRIAL_TIME.load(Ordering::Relaxed);
 
     println!("--- Compression Timing Totals (minutes) ---");
     println!("Permutation computation time: {:.2} min", perm as f64 / 60_000_000_000.0);
@@ -1553,8 +1583,16 @@ pub fn print_compress_timers() {
     println!("Contiguous convex subcircuit time: {:.2} min", contiguous as f64 / 60_000_000_000.0);
     println!("Replacement time: {:.2} min", replace as f64 / 60_000_000_000.0);
     println!("Deduplication time: {:.2} min", dedup as f64 / 60_000_000_000.0);
+    println!("Pick subcircuit time: {:.2} min", pick as f64 / 60_000_000_000.0);
+    println!("Subcircuit canonicalize time: {:.2} min", canonicalize as f64 / 60_000_000_000.0);
+    println!("SQL row fetch time: {:.2} min", row_fetch as f64 / 60_000_000_000.0);
+    println!("LMDB DB open time: {:.2} min", db_open as f64 / 60_000_000_000.0);
+    println!("LMDB transaction begin time: {:.2} min", txn as f64 / 60_000_000_000.0);
+    println!("LMDB lookup time: {:.2} min", lmdb_lookup as f64 / 60_000_000_000.0);
+    println!("CircuitSeq from_blob time: {:.2} min", from_blob as f64 / 60_000_000_000.0);
+    println!("Gate splice time: {:.2} min", splice as f64 / 60_000_000_000.0);
+    println!("Trial loop time: {:.2} min", trial as f64 / 60_000_000_000.0);
 }
-
 
 #[cfg(test)]
 mod tests {
