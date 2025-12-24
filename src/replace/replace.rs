@@ -523,7 +523,6 @@ pub fn expand_lmdb<'a>(
     if compressed.gates.is_empty() {
         return CircuitSeq { gates: Vec::new() };
     }
-    let txn = env.begin_ro_txn().expect("lmdb ro txn");
     let perm_len = 1 << n;
     for _ in 0..trials {
         let (mut subcircuit, start, end) = random_subcircuit(&compressed);
@@ -547,6 +546,8 @@ pub fn expand_lmdb<'a>(
                     Some(db) => *db,
                     None => continue,
                 };
+
+                let txn = env.begin_ro_txn().expect("lmdb ro txn");
 
                 let row_start = Instant::now();
                 let val = match txn.get(db, &subcircuit.repr_blob()) {
@@ -629,6 +630,8 @@ pub fn expand_lmdb<'a>(
             };
             let mut invert = false;
             let hit = {
+                let txn = env.begin_ro_txn().expect("txn");
+
                 // let t0 = Instant::now();
                 
                 let mut res = random_perm_lmdb(&txn, db, prefix);
@@ -973,9 +976,7 @@ pub fn compress_lmdb<'a>(
     let t0 = Instant::now();
     let c_perm = c.permutation(n);
     PERMUTATION_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-    let txn_start = Instant::now();
-    let txn = env.begin_ro_txn().expect("txn");
-    TXN_TIME.fetch_add(txn_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
     if c_perm == id {
         return CircuitSeq { gates: Vec::new() };
     }
@@ -1038,6 +1039,8 @@ pub fn compress_lmdb<'a>(
                     Some(db) => *db,
                     None => continue,
                 };
+
+                let txn = env.begin_ro_txn().expect("lmdb ro txn");
 
                 let row_start = Instant::now();
                 let val = match txn.get(db, &subcircuit.repr_blob()) {
@@ -1123,6 +1126,9 @@ pub fn compress_lmdb<'a>(
             };
             DB_OPEN_TIME.fetch_add(db_open_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
+            let txn_start = Instant::now();
+            let txn = env.begin_ro_txn().expect("txn");
+            TXN_TIME.fetch_add(txn_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let lookup_start = Instant::now();
             let mut invert = false;
             let mut res = random_perm_lmdb(&txn, db, prefix);
@@ -1132,6 +1138,7 @@ pub fn compress_lmdb<'a>(
                 res = random_perm_lmdb(&txn, db, &prefix_inv_blob);
             }
             LMDB_LOOKUP_TIME.fetch_add(lookup_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            
 
             if let Some(val_blob) = res {
                 let from_blob_start = Instant::now();
