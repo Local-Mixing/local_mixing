@@ -1141,7 +1141,6 @@ pub fn main_butterfly(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: u
 
 pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, asymmetric: bool, save: &str, env: &lmdb::Environment,) {
     // Start with the input circuit
-    let dbs = open_all_dbs(env);
     let bit_shuf_list = (3..=7)
         .map(|n| {
             (0..n)

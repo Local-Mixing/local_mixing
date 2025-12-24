@@ -2043,7 +2043,6 @@ mod tests {
         file.write_all(id.as_bytes())
             .expect("Failed to write to file");
     }
-    use std::time::Duration;
     #[test]
     fn benchmark_sql_vs_canonical() {
         use std::time::{Duration, Instant};
@@ -2092,7 +2091,17 @@ mod tests {
                 }
             }
         }
-
+        let start = Instant::now();
+        for _ in 0..10_000 {
+            for &(n, max_m) in &ns_and_ms {
+                for m in 1..=max_m {
+                    let table = format!("n{}m{}", n, m);
+                    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+                    let _ = conn.prepare(&query_limit).unwrap();
+                }
+            }
+        }
+        println!("Prepared statements 10,000 times in {:?}", start.elapsed());
         // Prepare statements for tests 3 and 4
         let mut stmts_prepared = HashMap::new();
         let mut stmts_prepared_limit1 = HashMap::new();
