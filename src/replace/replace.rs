@@ -827,7 +827,7 @@ pub fn compress_big(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
-    let table = format!("n{}m{}perms", 7, 4);
+    let table = format!("n{}m{}", 7, 4);
     let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
     let mut stmt = conn.prepare(&query_limit).unwrap();
 
@@ -1190,7 +1190,7 @@ pub fn expand_big(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
-    let table = format!("n{}m{}perms", 7, 4);
+    let table = format!("n{}m{}", 7, 4);
     let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
     let mut stmt = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
@@ -1336,7 +1336,7 @@ pub fn compress_big_ancillas(
     dbs: &HashMap<String, lmdb::Database>, 
 
 ) -> CircuitSeq {
-    let table = format!("n{}m{}perms", 7, 4);
+    let table = format!("n{}m{}", 7, 4);
     let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
     let mut stmt = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
