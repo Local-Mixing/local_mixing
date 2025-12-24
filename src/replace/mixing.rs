@@ -974,7 +974,10 @@ pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> 
         "n5m1","n5m2","n5m3","n5m4","n5m5",
         "n6m1","n6m2","n6m3","n6m4","n6m5",
         "n7m1","n7m2","n7m3","n7m4",
-        "perm_tables_n3","perm_tables_n4","perm_tables_n5","perm_tables_n6","perm_tables_n7"
+        "perm_tables_n3","perm_tables_n4","perm_tables_n5","perm_tables_n6","perm_tables_n7",
+        "n5m1perms","n5m2perms","n5m3perms",
+        "n6m1perms","n6m2perms","n6m3perms","n6m4perms",
+        "n7m1perms","n7m2perms","n7m3perms"
     ];
 
     for name in db_names.iter() {

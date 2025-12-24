@@ -25,6 +25,7 @@ use libc::{c_uint};
 use std::{ptr, slice, marker::PhantomData};
 extern crate lmdb_sys;
 use lmdb_sys as ffi;
+use rusqlite::Statement;
 
 pub struct Iter<'txn> {
     cursor: *mut ffi::MDB_cursor,
@@ -514,13 +515,14 @@ pub fn expand_lmdb<'a>(
     env: &lmdb::Environment,
     _old_n: usize,
     dbs: &HashMap<String, lmdb::Database>,
-    prepared_stmt: &mut HashMap<(usize, usize), rusqlite::Statement<'a>>
+    prepared_stmt: &mut rusqlite::Statement<'a>,
+    conn: &Connection
 ) -> CircuitSeq {
     let mut compressed = c.clone();
     if compressed.gates.is_empty() {
         return CircuitSeq { gates: Vec::new() };
     }
-
+    let perm_len = 1 << n;
     for _ in 0..trials {
         let (mut subcircuit, start, end) = random_subcircuit(&compressed);
         subcircuit.canonicalize();
@@ -537,11 +539,30 @@ pub fn expand_lmdb<'a>(
 
         let sub_m = subcircuit.gates.len();
         let (canon_perm_blob, canon_shuf_blob) =
-            if sub_m <= max && (n > 5 || (n == 4 && sub_m > 3) || (n == 5 && sub_m > 2)) {
-                let stmt = match prepared_stmt.get_mut(&(n, sub_m)) {
-                    Some(s) => s,
+        if sub_m <= max && ((n == 5 && sub_m == 3) || (n == 6 && sub_m <= 4) || (n == 7 && sub_m <= 3)) {
+            let db_name = format!("n{}m{}perms", n, sub_m);
+                let db = match dbs.get(&db_name) {
+                    Some(db) => *db,
                     None => continue,
                 };
+
+                let txn = env.begin_ro_txn().expect("lmdb ro txn");
+
+                let row_start = Instant::now();
+                let val = match txn.get(db, &subcircuit.repr_blob()) {
+                    Ok(v) => v,
+                    Err(lmdb::Error::NotFound) => continue,
+                    Err(e) => panic!("LMDB get failed: {:?}", e),
+                };
+                ROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+                let perm = val[..perm_len].to_vec();
+                let shuf = val[perm_len..].to_vec();
+
+                (perm, shuf)
+        } else if sub_m <= max && ((n == 4 && sub_m > 3) || (n == 5 && sub_m > 3) || (n == 6 && sub_m == 5) || (n == 7 && sub_m  == 4)) {
+            if n == 7 && sub_m == 4 {
+                let stmt: &mut Statement<'_> = &mut *prepared_stmt;
 
                 let row_start = Instant::now();
                 let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
@@ -560,7 +581,34 @@ pub fn expand_lmdb<'a>(
                     Err(rusqlite::Error::QueryReturnedNoRows) => continue,
                     Err(e) => panic!("SQL query failed: {:?}", e),
                 }
+
             } else {
+                let table = format!("n{}m{}", n, sub_m);
+                let query = format!(
+                    "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+                    table
+                );
+
+                let row_start = Instant::now();
+                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
+                    conn.query_row(
+                        &query,
+                        [&subcircuit.repr_blob()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    );
+
+                ROW_FETCH_TIME.fetch_add(
+                    row_start.elapsed().as_nanos() as u64,
+                    Ordering::Relaxed,
+                );
+
+                match blobs_result {
+                    Ok(b) => b,
+                    Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                    Err(e) => panic!("SQL query failed: {:?}", e),
+                }
+            }
+        } else {
             // let t1 = Instant::now();
             let sub_perm = subcircuit.permutation(n);
             // PERMUTATION_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -778,20 +826,10 @@ pub fn compress_big(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
-    let ns_and_ms = vec![(3, 10), (4, 6), (5, 5), (6, 5), (7, 4)];
-    let mut prepared_stmt = HashMap::new();
-        for &(n, max_m) in &ns_and_ms {
-            for m in 1..=max_m {
-                let table = format!("n{}m{}", n, m);
-                let query = format!("SELECT perm, shuf FROM {} WHERE circuit = ?", table);
-                let stmt = conn.prepare(&query).unwrap();
-                prepared_stmt.insert((n, m), stmt);
+    let table = format!("n{}m{}perms", 7, 4);
+    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    let mut stmt = conn.prepare(&query_limit).unwrap();
 
-                let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
-                let stmt_limit = conn.prepare(&query_limit).unwrap();
-                prepared_stmt.insert((n, m), stmt_limit);
-            }
-        }
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
@@ -855,7 +893,7 @@ pub fn compress_big(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut prepared_stmt);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, conn);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -928,10 +966,11 @@ pub fn compress_lmdb<'a>(
     n: usize,
     env: &lmdb::Environment,
     dbs: &HashMap<String, lmdb::Database>,
-    prepared_stmt: &mut HashMap<(usize, usize), rusqlite::Statement<'a>>
+    prepared_stmt: &mut rusqlite::Statement<'a>,
+    conn: &Connection,
 ) -> CircuitSeq {
     let id = Permutation::id_perm(n);
-
+    let perm_len = 1 << n;
     // Timer for initial permutation
     let t0 = Instant::now();
     let c_perm = c.permutation(n);
@@ -992,27 +1031,76 @@ pub fn compress_lmdb<'a>(
         let sub_m = subcircuit.gates.len();
         let min = min(sub_m, max);
 
-        let (canon_perm_blob, canon_shuf_blob) =
-            if sub_m <= max && (n > 5 || (n == 4 && sub_m > 3) || (n == 5 && sub_m > 2)) {
-                let stmt = match prepared_stmt.get_mut(&(n, min)) {
-                    Some(s) => s,
+        let (canon_perm_blob, canon_shuf_blob) = 
+            if sub_m <= max && ((n == 5 && sub_m == 3) || (n == 6 && sub_m <= 4) || (n == 7 && sub_m <= 3)) {
+                let db_name = format!("n{}m{}perms", n, min);
+                let db = match dbs.get(&db_name) {
+                    Some(db) => *db,
                     None => continue,
                 };
 
+                let txn = env.begin_ro_txn().expect("lmdb ro txn");
+
                 let row_start = Instant::now();
-                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> = stmt.query_row(
-                    [&subcircuit.repr_blob()],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                );
-
-                let blobs = match blobs_result {
-                    Ok(b) => b,
-                    Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-                    Err(e) => panic!("SQL query failed: {:?}", e),
+                let val = match txn.get(db, &subcircuit.repr_blob()) {
+                    Ok(v) => v,
+                    Err(lmdb::Error::NotFound) => continue,
+                    Err(e) => panic!("LMDB get failed: {:?}", e),
                 };
-
                 ROW_FETCH_TIME.fetch_add(row_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                blobs
+
+                let perm = val[..perm_len].to_vec();
+                let shuf = val[perm_len..].to_vec();
+
+                (perm, shuf)
+            } else if sub_m <= max && ((n == 4 && sub_m > 3) || (n == 5 && sub_m > 3) || (n == 6 && sub_m == 5) || (n == 7 && sub_m  == 4)) {
+                if n == 7 && sub_m == 4 {
+                    let stmt: &mut Statement<'_> = &mut *prepared_stmt;
+
+                    let row_start = Instant::now();
+                    let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
+                        stmt.query_row(
+                            [&subcircuit.repr_blob()],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        );
+
+                    ROW_FETCH_TIME.fetch_add(
+                        row_start.elapsed().as_nanos() as u64,
+                        Ordering::Relaxed,
+                    );
+
+                    match blobs_result {
+                        Ok(b) => b,
+                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                        Err(e) => panic!("SQL query failed: {:?}", e),
+                    }
+
+                } else {
+                    let table = format!("n{}m{}", n, sub_m);
+                    let query = format!(
+                        "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+                        table
+                    );
+
+                    let row_start = Instant::now();
+                    let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
+                        conn.query_row(
+                            &query,
+                            [&subcircuit.repr_blob()],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        );
+
+                    ROW_FETCH_TIME.fetch_add(
+                        row_start.elapsed().as_nanos() as u64,
+                        Ordering::Relaxed,
+                    );
+
+                    match blobs_result {
+                        Ok(b) => b,
+                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                        Err(e) => panic!("SQL query failed: {:?}", e),
+                    }
+                }
             } else {
             // Permutation + canonicalization
             let perm_start = Instant::now();
@@ -1101,20 +1189,9 @@ pub fn expand_big(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
-    let ns_and_ms = vec![(3, 10), (4, 6), (5, 5), (6, 5), (7, 4)];
-    let mut prepared_stmt = HashMap::new();
-        for &(n, max_m) in &ns_and_ms {
-            for m in 1..=max_m {
-                let table = format!("n{}m{}", n, m);
-                let query = format!("SELECT perm, shuf FROM {} WHERE circuit = ?", table);
-                let stmt = conn.prepare(&query).unwrap();
-                prepared_stmt.insert((n, m), stmt);
-
-                let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
-                let stmt_limit = conn.prepare(&query_limit).unwrap();
-                prepared_stmt.insert((n, m), stmt_limit);
-            }
-        }
+    let table = format!("n{}m{}perms", 7, 4);
+    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    let mut stmt = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
@@ -1174,7 +1251,7 @@ pub fn expand_big(
         
         let bit_shuf = &bit_shuf_list[new_wires - 3];
 
-        let subcircuit_temp = expand_lmdb(&subcircuit, 10, &bit_shuf, new_wires, &env, n_wires, dbs, &mut prepared_stmt);
+        let subcircuit_temp = expand_lmdb(&subcircuit, 10, &bit_shuf, new_wires, &env, n_wires, dbs, &mut stmt, conn);
         subcircuit = subcircuit_temp;
 
         subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
@@ -1258,20 +1335,9 @@ pub fn compress_big_ancillas(
     dbs: &HashMap<String, lmdb::Database>, 
 
 ) -> CircuitSeq {
-    let ns_and_ms = vec![(3, 10), (4, 6), (5, 5), (6, 5), (7, 4)];
-    let mut prepared_stmt = HashMap::new();
-        for &(n, max_m) in &ns_and_ms {
-            for m in 1..=max_m {
-                let table = format!("n{}m{}", n, m);
-                let query = format!("SELECT perm, shuf FROM {} WHERE circuit = ?", table);
-                let stmt = conn.prepare(&query).unwrap();
-                prepared_stmt.insert((n, m), stmt);
-
-                let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
-                let stmt_limit = conn.prepare(&query_limit).unwrap();
-                prepared_stmt.insert((n, m), stmt_limit);
-            }
-        }
+    let table = format!("n{}m{}perms", 7, 4);
+    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    let mut stmt = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
@@ -1344,7 +1410,7 @@ pub fn compress_big_ancillas(
         // PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut prepared_stmt);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, conn);
         // COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
