@@ -1083,7 +1083,6 @@ pub fn compress_lmdb<'a>(
                         "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
                         table
                     );
-
                     let row_start = Instant::now();
                     let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
                         conn.query_row(
@@ -1099,7 +1098,10 @@ pub fn compress_lmdb<'a>(
 
                     match blobs_result {
                         Ok(b) => b,
-                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                        Err(rusqlite::Error::QueryReturnedNoRows) => {
+                            println!("{}", table);
+                            continue;
+                        },
                         Err(e) => panic!("SQL query failed: {:?}", e),
                     }
                 }
