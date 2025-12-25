@@ -13,7 +13,7 @@ pub struct Gate{
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CircuitSeq {
-    pub gates: Vec<[u8;3]>, //TODO: Change to Vec<[u8;3]>
+    pub gates: Vec<[u8;3]>, 
 }
 
 //Permutations are all the possible outputs of a circuit

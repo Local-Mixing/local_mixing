@@ -1116,11 +1116,11 @@ pub fn compress_lmdb<'a>(
                     );
 
                     match blobs_result {
-                        Ok(b) => b,
-                        Err(rusqlite::Error::QueryReturnedNoRows) => {
+                        Ok(b) => {
                             println!("{}", table);
-                            continue;
+                            b
                         },
+                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
                         Err(e) => panic!("SQL query failed: {:?}", e),
                     }
                 }
