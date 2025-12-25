@@ -1033,7 +1033,7 @@ pub fn compress_lmdb<'a>(
         let min = min(sub_m, max);
 
         let (canon_perm_blob, canon_shuf_blob) = 
-            if sub_m <= max && ((n == 5 && sub_m == 3) || (n == 6 && sub_m <= 4) || (n == 7 && sub_m <= 3)) {
+            if sub_m <= max && ((n == 4 && sub_m > 3) || (n == 5 && sub_m >= 3) || (n == 6 && sub_m <= 4) || (n == 7 && sub_m <= 3)) {
                 let db_name = format!("n{}m{}perms", n, min);
                 let db = match dbs.get(&db_name) {
                     Some(db) => *db,
@@ -1054,7 +1054,7 @@ pub fn compress_lmdb<'a>(
                 let shuf = val[perm_len..].to_vec();
 
                 (perm, shuf)
-            } else if sub_m <= max && ((n == 4 && sub_m > 3) || (n == 5 && sub_m > 3) || (n == 6 && sub_m == 5) || (n == 7 && sub_m  == 4)) {
+            } else if sub_m <= max && ((n == 6 && sub_m == 5) || (n == 7 && sub_m  == 4)) {
                 if n == 7 && sub_m == 4 {
                     let stmt: &mut Statement<'_> = &mut *prepared_stmt;
 
