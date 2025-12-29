@@ -1040,7 +1040,8 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
     for i in 0..rounds {
         let stop = 1000;
         circuit = if asymmetric {
-            abutterfly_big(&circuit, conn, n, i != rounds-1, std::cmp::min(stop*(i+1), 5000), env, i+1, rounds, &bit_shuf_list, &dbs)
+            // abutterfly_big(&circuit, conn, n, i != rounds-1, std::cmp::min(stop*(i+1), 5000), env, i+1, rounds, &bit_shuf_list, &dbs)
+            abutterfly_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs)
         } else {
             butterfly_big(&circuit,conn,n, i != rounds-1, stop*(i+1), env, &bit_shuf_list, &dbs)
         };

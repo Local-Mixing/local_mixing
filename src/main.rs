@@ -535,7 +535,7 @@ fn main() {
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_dbs(34)      
+                .set_max_dbs(60)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
