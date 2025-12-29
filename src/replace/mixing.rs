@@ -653,7 +653,7 @@ pub fn abutterfly_big(
         }
         if after == before {
             stable_count += 1;
-            println!("  {}/{} Final compression stable {}/6 at {} gates", curr_round, last_round, stable_count, after);
+            println!("  {}/{} Final compression stable {}/12 at {} gates", curr_round, last_round, stable_count, after);
         } else {
             println!("  {}/{}: {} → {} gates", curr_round, last_round, before, after);
             stable_count = 0;
