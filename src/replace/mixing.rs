@@ -601,7 +601,7 @@ pub fn abutterfly_big(
     // Final global compression until stable 6×
     let mut rng = rand::rng();
     let mut stable_count = 0;
-    while stable_count < 6 {
+    while stable_count < 12 {
         // if acc.gates.len() <= milestone {
         //     let mut f = OpenOptions::new()
         //         .create(true)
@@ -633,7 +633,7 @@ pub fn abutterfly_big(
                     OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )
                 .expect("Failed to open read-only connection");
-                compress_big(&sub, 1_000, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+                compress_big(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
             })
             .collect();
 
