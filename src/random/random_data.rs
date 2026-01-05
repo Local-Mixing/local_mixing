@@ -238,7 +238,7 @@ pub fn find_convex_subcircuit<R: RngCore>(
     let num_gates = circuit.gates.len();
     let mut search_attempts = 0;
     let max_attempts = 3;
-
+    let window = 200;
     loop {
         search_attempts += 1;
         if search_attempts > max_attempts {
@@ -267,7 +267,8 @@ pub fn find_convex_subcircuit<R: RngCore>(
             let mut selected_gates_seen = 1;
 
             if selected_gate_idx[0] != num_gates - 1 {
-                for curr_idx in selected_gate_idx[0] + 1..num_gates {
+                let right_bound = (selected_gate_idx[0] + window).min(num_gates - 1);
+                for curr_idx in selected_gate_idx[0] + 1..right_bound {
                     if path_connected_target_wires.all_wires_hit()
                         || path_connected_control_wires.all_wires_hit()
                     {
@@ -331,7 +332,8 @@ pub fn find_convex_subcircuit<R: RngCore>(
             let mut selected_gates_seen = 1;
 
             if selected_gate_idx[selected_gate_ctr - 1] != 0 {
-                for curr_idx in (0..=selected_gate_idx[selected_gate_ctr - 1] - 1).rev() {
+                let left_bound = selected_gate_idx[selected_gate_ctr - 1].saturating_sub(window);
+                for curr_idx in (left_bound..=selected_gate_idx[selected_gate_ctr - 1] - 1).rev() {
                     if path_connected_target_wires.all_wires_hit()
                         || path_connected_control_wires.all_wires_hit()
                     {
