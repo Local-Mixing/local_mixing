@@ -823,6 +823,7 @@ pub fn compress_big(
     env: &lmdb::Environment, 
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>,
+    txn: &RoTransaction
 ) -> CircuitSeq {
     let table = format!("n{}m{}", 7, 4);
     let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
@@ -893,7 +894,7 @@ pub fn compress_big(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, &mut stmt2, conn);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, &mut stmt2, conn, txn);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -969,6 +970,7 @@ pub fn compress_lmdb<'a>(
     prepared_stmt: &mut rusqlite::Statement<'a>,
     prepared_stmt2: &mut rusqlite::Statement<'a>,
     conn: &Connection,
+    txn: &RoTransaction,
 ) -> CircuitSeq {
     let id = Permutation::id_perm(n);
     let perm_len = 1 << n;
@@ -1110,7 +1112,7 @@ pub fn compress_lmdb<'a>(
                     None => continue,
                 };
 
-                let txn = env.begin_ro_txn().expect("lmdb ro txn");
+                // let txn = env.begin_ro_txn().expect("lmdb ro txn");
 
                 let row_start = Instant::now();
                 let val = match txn.get(db, &subcircuit.repr_blob()) {
@@ -1148,9 +1150,9 @@ pub fn compress_lmdb<'a>(
             };
             DB_OPEN_TIME.fetch_add(db_open_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-            let txn_start = Instant::now();
-            let txn = env.begin_ro_txn().expect("txn");
-            TXN_TIME.fetch_add(txn_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            // let txn_start = Instant::now();
+            // let txn = env.begin_ro_txn().expect("txn");
+            // TXN_TIME.fetch_add(txn_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let lookup_start = Instant::now();
             let mut invert = false;
             let mut res = random_perm_lmdb(&txn, db, prefix);
@@ -1359,7 +1361,7 @@ pub fn compress_big_ancillas(
     env: &lmdb::Environment, 
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>, 
-
+    txn: &RoTransaction
 ) -> CircuitSeq {
     let table = format!("n{}m{}", 7, 4);
     let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
@@ -1439,7 +1441,7 @@ pub fn compress_big_ancillas(
         // PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, &mut stmt2, conn);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, &mut stmt2, conn, txn);
         // COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -1852,7 +1854,7 @@ mod tests {
         let mut stable_count = 0;
         let conn = Connection::open("circuits.db").expect("Failed to open DB");
         let mut acc = CircuitSeq::from_string(&data2);
-        let bit_shuf_list = (3..=7)
+        let bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
         .map(|n| {
             (0..n)
                 .permutations(n)
@@ -1879,7 +1881,7 @@ mod tests {
         let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
         while stable_count < 6 {
             let before = acc.gates.len();
-            acc = compress_big(&acc, 1_000, 64, &mut conn, &env, &bit_shuf_list, &dbs);
+            // acc = compress_big(&acc, 1_000, 64, &mut conn, &env, &bit_shuf_list, &dbs);
             let after = acc.gates.len();
 
             if after == before {

@@ -536,7 +536,7 @@ fn main() {
 
             let env = Environment::new()
                 .set_max_dbs(60)      
-                .set_map_size(700 * 1024 * 1024 * 1024) 
+                .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
             let dbs = open_all_dbs(&env);
@@ -548,11 +548,12 @@ fn main() {
                         .collect::<Vec<Vec<usize>>>()
                 })
                 .collect();
+            let txn = env.begin_ro_txn().expect("lmdb ro txn");
             // Call compression logic
             let mut stable_count = 0;
             while stable_count < 6 {
                 let before = acc.gates.len();
-                acc = compress_big_ancillas(&acc, 1_000, n, &mut conn, &env, &bit_shuf_list, &dbs);
+                acc = compress_big_ancillas(&acc, 1_000, n, &mut conn, &env, &bit_shuf_list, &dbs, &txn);
                 let after = acc.gates.len();
 
                 if after == before {
