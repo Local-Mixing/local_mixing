@@ -1923,7 +1923,7 @@ mod tests {
     #[test]
     fn print_lmdb_keys() -> Result<(), Box<dyn std::error::Error>> {
         let env_path = "./db";
-        let db_name = "perm_tables_n7";
+        let db_name = "perm_tables_n6";
 
         let env = Environment::new()
             .set_max_dbs(80)
