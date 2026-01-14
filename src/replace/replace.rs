@@ -970,7 +970,7 @@ pub fn compress_lmdb<'a>(
     prepared_stmt: &mut rusqlite::Statement<'a>,
     prepared_stmt2: &mut rusqlite::Statement<'a>,
     conn: &Connection,
-    txn: &RoTransaction,
+    _txn: &RoTransaction,
 ) -> CircuitSeq {
     let id = Permutation::id_perm(n);
     let perm_len = 1 << n;
@@ -1112,7 +1112,7 @@ pub fn compress_lmdb<'a>(
                     None => continue,
                 };
 
-                // let txn = env.begin_ro_txn().expect("lmdb ro txn");
+                let txn = env.begin_ro_txn().expect("lmdb ro txn");
 
                 let row_start = Instant::now();
                 let val = match txn.get(db, &subcircuit.repr_blob()) {
@@ -1150,9 +1150,9 @@ pub fn compress_lmdb<'a>(
             };
             DB_OPEN_TIME.fetch_add(db_open_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-            // let txn_start = Instant::now();
-            // let txn = env.begin_ro_txn().expect("txn");
-            // TXN_TIME.fetch_add(txn_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let txn_start = Instant::now();
+            let txn = env.begin_ro_txn().expect("txn");
+            TXN_TIME.fetch_add(txn_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let lookup_start = Instant::now();
             let mut invert = false;
             let mut res = random_perm_lmdb(&txn, db, prefix);
@@ -1675,7 +1675,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
     println!("Finished replace_pairs");
 }
 
-fn random_gate_replacements(c: &mut CircuitSeq, x: usize, n: usize, _conn: &Connection, env: &lmdb::Environment) {
+pub fn random_gate_replacements(c: &mut CircuitSeq, x: usize, n: usize, _conn: &Connection, env: &lmdb::Environment) {
     let mut rng = rand::rng();
     for _ in 0..x {
         if c.gates.is_empty() {
@@ -1923,21 +1923,18 @@ mod tests {
     #[test]
     fn print_lmdb_keys() -> Result<(), Box<dyn std::error::Error>> {
         let env_path = "./db";
-        let db_name = "n6m5";
+        let db_name = "perm_tables_n7";
 
         let env = Environment::new()
-            .set_max_dbs(50)
+            .set_max_dbs(80)
             .open(Path::new(env_path))?;
 
         let db = env.open_db(Some(db_name))?;
 
         let txn = env.begin_ro_txn()?;
         let mut cursor = txn.open_ro_cursor(db)?;
-        let perm_len = 1 << 6;
-        for (key, _value) in cursor.iter() {
-            let circuit_blob = &key[perm_len..];
-            let circuit = CircuitSeq::from_blob(&circuit_blob);
-            println!("{:?}", circuit.gates); 
+        for (key, value) in cursor.iter() {
+            println!("{:?}", value); 
         }
 
         Ok(())
