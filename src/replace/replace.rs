@@ -947,7 +947,6 @@ pub fn sequential_compress_big(
     env: &lmdb::Environment, 
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>,
-    txn: &RoTransaction
 ) -> CircuitSeq {
     let table = format!("n{}m{}", 7, 4);
     let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);

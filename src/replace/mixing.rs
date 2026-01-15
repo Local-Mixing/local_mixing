@@ -878,7 +878,7 @@ pub fn replace_and_compress_big(
     let mut acc = c;
     let mut rng = rand::rng();
     let mut stable_count = 0;
-    while stable_count < 12 {
+    while stable_count < 3 {
         // if acc.gates.len() <= milestone {
         //     let mut f = OpenOptions::new()
         //         .create(true)
@@ -910,9 +910,7 @@ pub fn replace_and_compress_big(
                     OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )
                 .expect("Failed to open read-only connection");
-                let txn = env.begin_ro_txn().expect("txn");
-                // TXN
-                sequential_compress_big(&sub, n, &mut thread_conn, env, &bit_shuf_list, dbs, &txn).gates
+                sequential_compress_big(&sub, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
             })
             .collect();
 
@@ -932,7 +930,7 @@ pub fn replace_and_compress_big(
         }
         if after == before {
             stable_count += 1;
-            println!("  {}/{} Final compression stable {}/12 at {} gates", curr_round, last_round, stable_count, after);
+            println!("  {}/{} Final compression stable {}/3 at {} gates", curr_round, last_round, stable_count, after);
         } else {
             println!("  {}/{}: {} → {} gates", curr_round, last_round, before, after);
             stable_count = 0;
