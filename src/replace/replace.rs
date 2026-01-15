@@ -1954,7 +1954,7 @@ pub fn replace_tri(
                     new_circuit.extend_from_slice(&reversed[i + 1..]);
                     new_circuit.extend(reversed[0..i - 2].iter().rev());
 
-                    to_replace[chosen / 3] = (new_circuit, vec![id.gates[i], id.gates[i+1], id.gates[i+2]]);
+                    to_replace[chosen / 3] = (new_circuit, vec![id.gates[i], id.gates[i-1], id.gates[i-2]]);
 
                     if v.is_empty() {
                         tris.remove(&tax_rev);
