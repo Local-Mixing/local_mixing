@@ -840,9 +840,9 @@ pub fn replace_and_compress_big(
     let t1 = Instant::now();
     let len = c.gates.len();
     while c.gates.len() < len + 1000 {
-        random_gate_replacements(&mut c, len/100, n, _conn, env);
+        random_gate_replacements(&mut c, len/100, n, _conn, &env);
         replace_pairs(&mut c, n, _conn, &env);
-        replace_tri(&mut c, n, _conn, env);
+        replace_tri(&mut c, n, _conn, &env);
         for _ in 0..50 {
             let k = if c.gates.len() <= 1500 {
                 1
