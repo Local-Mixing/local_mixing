@@ -967,7 +967,7 @@ pub fn sequential_compress_big(
         }
     }
 
-    let len = c.gates.len();
+    let len = circuit.gates.len();
 
     for i in 0..len {
         let t0 = Instant::now();
