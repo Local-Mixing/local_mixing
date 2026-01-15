@@ -856,7 +856,6 @@ pub fn replace_and_compress_big(
                         OpenFlags::SQLITE_OPEN_READ_ONLY,
                     )
                     .expect("Failed to open read-only connection");
-                    let txn = env.begin_ro_txn().expect("txn");
                     // TXN
                     let t3 = Instant::now();
                     let expanded = expand_big(&sub, 100, n, &mut thread_conn, &env, &bit_shuf_list, dbs);
