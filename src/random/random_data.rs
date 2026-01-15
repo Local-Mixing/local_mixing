@@ -293,6 +293,7 @@ pub fn find_convex_subcircuit<R: RngCore>(
                                 break;
                             }
                         }
+                        //TODO is this needed?
                         for i in 0..selected_gate_ctr {
                             if curr_gate == circuit.gates[selected_gate_idx[i]] {
                                 repeat_wires = true;

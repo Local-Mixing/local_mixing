@@ -12,7 +12,7 @@ use local_mixing::{
             install_kill_handler,
             main_butterfly,
             main_butterfly_big,
-            main_butterfly_big_bookendsless,
+            // main_butterfly_big_bookendsless,
             main_mix,
             main_rac_big,
         },
@@ -539,14 +539,14 @@ fn main() {
                 let c1 = random_circuit(n as u8, 30);
                 println!("Starting Len: {}", c1.gates.len());
                 if bookendless {
-                    main_butterfly_big_bookendsless(&c1, rounds, &mut conn, n, true, path, &env);
+                    // main_butterfly_big_bookendsless(&c1, rounds, &mut conn, n, true, path, &env);
                 } else {
                     main_butterfly_big(&c1, rounds, &mut conn, n, true, path, &env);
                 }
             } else {
                 let c = CircuitSeq::from_string(&data);
                 if bookendless {
-                    main_butterfly_big_bookendsless(&c, rounds, &mut conn, n, true, path, &env);
+                    // main_butterfly_big_bookendsless(&c, rounds, &mut conn, n, true, path, &env);
                 } else {
                     main_butterfly_big(&c, rounds, &mut conn, n, true, path, &env);
                 }
@@ -641,12 +641,11 @@ fn main() {
                         .collect::<Vec<Vec<usize>>>()
                 })
                 .collect();
-            let txn = env.begin_ro_txn().expect("lmdb ro txn");
             // Call compression logic
             let mut stable_count = 0;
             while stable_count < 6 {
                 let before = acc.gates.len();
-                acc = compress_big_ancillas(&acc, 1_000, n, &mut conn, &env, &bit_shuf_list, &dbs, &txn);
+                acc = compress_big_ancillas(&acc, 1_000, n, &mut conn, &env, &bit_shuf_list, &dbs);
                 let after = acc.gates.len();
 
                 if after == before {

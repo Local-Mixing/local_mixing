@@ -824,7 +824,6 @@ pub fn compress_big(
     env: &lmdb::Environment, 
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>,
-    txn: &RoTransaction
 ) -> CircuitSeq {
     let table = format!("n{}m{}", 7, 4);
     let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
@@ -895,7 +894,7 @@ pub fn compress_big(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, &mut stmt2, conn, txn);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, &mut stmt2, conn);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -1025,7 +1024,7 @@ pub fn sequential_compress_big(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, &mut stmt2, conn, txn);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, &mut stmt2, conn);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -1101,7 +1100,6 @@ pub fn compress_lmdb<'a>(
     prepared_stmt: &mut rusqlite::Statement<'a>,
     prepared_stmt2: &mut rusqlite::Statement<'a>,
     conn: &Connection,
-    _txn: &RoTransaction,
 ) -> CircuitSeq {
     let id = Permutation::id_perm(n);
     let perm_len = 1 << n;
@@ -1492,7 +1490,6 @@ pub fn compress_big_ancillas(
     env: &lmdb::Environment, 
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>, 
-    txn: &RoTransaction
 ) -> CircuitSeq {
     let table = format!("n{}m{}", 7, 4);
     let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
@@ -1572,7 +1569,7 @@ pub fn compress_big_ancillas(
         // PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, &mut stmt2, conn, txn);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, &mut stmt, &mut stmt2, conn);
         // COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
