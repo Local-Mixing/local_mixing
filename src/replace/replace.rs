@@ -969,7 +969,7 @@ pub fn sequential_compress_big(
 
     let len = circuit.gates.len();
 
-    for i in 0..len {
+    for i in 1..len-1 {
         let t0 = Instant::now();
         let mut subcircuit_gates = vec![];
         let random_max_wires = rng.random_range(5..=7);
