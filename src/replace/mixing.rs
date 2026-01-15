@@ -838,7 +838,8 @@ pub fn replace_and_compress_big(
         random_gate_replacements(&mut c, len/100, n, _conn, &env);
         replace_pairs(&mut c, n, _conn, &env);
         replace_tri(&mut c, n, _conn, &env);
-        for _ in 0..50 {
+        for i in 0..50 {
+            println!("Expanding and replacing: {}/50", i);
             let k = if c.gates.len() <= 1500 {
                 1
             } else {
