@@ -994,6 +994,7 @@ pub fn sequential_compress_big(
         CONVEX_FIND_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         if subcircuit_gates.is_empty() {
+            i+=1;
             continue;
         }
 
@@ -1009,6 +1010,7 @@ pub fn sequential_compress_big(
         let expected_slice: Vec<_> = subcircuit_gates.iter().map(|&i| circuit.gates[i]).collect();
         let actual_slice = &circuit.gates[start..=end];
         if actual_slice != &expected_slice[..] {
+            i+=1;
             continue;
         }
 
