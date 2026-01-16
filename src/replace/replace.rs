@@ -1744,31 +1744,29 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
         }
 
         // Reverse scan: every adjacent pair in reverse
-        for i in (1..id.gates.len()).rev() {
-            let tax_rev = gate_pair_taxonomy(&id.gates[i], &id.gates[i - 1]);
-            if let Some(v) = pairs.get_mut(&tax_rev) {
+        id.gates.reverse();
+        for i in 0..id.gates.len() - 1 {
+            let tax = gate_pair_taxonomy(&id.gates[i], &id.gates[i + 1]);
+            if let Some(v) = pairs.get_mut(&tax) {
                 if !v.is_empty() {
                     let idx = fastrand::usize(..v.len());
                     let chosen = v.swap_remove(idx);
 
-                    // Reverse gates, then reconstruct
-                    let mut reversed_gates = id.gates.clone();
-                    reversed_gates.reverse();
-
+                    // Remove the matching pair and reconstruct
                     let mut new_circuit = Vec::with_capacity(id.gates.len());
                     // Append gates after the pair
-                    new_circuit.extend_from_slice(&reversed_gates[i + 1..]);
+                    new_circuit.extend_from_slice(&id.gates[i + 2..]);
                     // Append gates before the pair, in reverse
-                    new_circuit.extend(reversed_gates[0..i - 1].iter().rev());
+                    new_circuit.extend(id.gates[0..i].iter().rev());
 
-                    to_replace[chosen / 2] = (new_circuit, vec![id.gates[i], id.gates[i-1]]);
+                    to_replace[chosen / 2] = (new_circuit, vec![id.gates[i], id.gates[i+1]]);
 
                     if v.is_empty() {
-                        pairs.remove(&tax_rev);
+                        pairs.remove(&tax);
                     }
 
                     replaced = true;
-                    break;
+                    break; // stop scanning once a match is found
                 }
             }
         }
@@ -1891,7 +1889,7 @@ pub fn replace_tri(
 
     while !tris.is_empty() && fail < 100 {
         let n = rng.random_range(5..=7);
-        let id = match random_canonical_id(&env, conn, n) {
+        let mut id = match random_canonical_id(&env, conn, n) {
             Ok(c) => c,
             Err(_) => continue,
         };
@@ -1937,30 +1935,32 @@ pub fn replace_tri(
         }
 
         // Reverse
-        for i in (2..id.gates.len()).rev() {
-            let tax_rev = gate_tri_taxonomy(
+        id.gates.reverse();
+        for i in 0..id.gates.len().saturating_sub(2) {
+            let tax = gate_tri_taxonomy(
                 &id.gates[i],
-                &id.gates[i - 1],
-                &id.gates[i - 2],
+                &id.gates[i + 1],
+                &id.gates[i + 2],
             );
 
-            if let Some(v) = tris.get_mut(&tax_rev) {
+            if let Some(v) = tris.get_mut(&tax) {
                 if !v.is_empty() {
                     let idx = fastrand::usize(..v.len());
                     let chosen = v.swap_remove(idx);
 
-                    let mut reversed = id.gates.clone();
-                    reversed.reverse();
-
+                    // Remove triple and reconstruct
                     let mut new_circuit = Vec::with_capacity(id.gates.len());
 
-                    new_circuit.extend_from_slice(&reversed[i + 1..]);
-                    new_circuit.extend(reversed[0..i - 2].iter().rev());
+                    // after the triple
+                    new_circuit.extend_from_slice(&id.gates[i + 3..]);
 
-                    to_replace[chosen / 3] = (new_circuit, vec![id.gates[i], id.gates[i-1], id.gates[i-2]]);
+                    // before the triple, reversed
+                    new_circuit.extend(id.gates[0..i].iter().rev());
+
+                    to_replace[chosen / 3] = (new_circuit, vec![id.gates[i], id.gates[i+1], id.gates[i+2]]);
 
                     if v.is_empty() {
-                        tris.remove(&tax_rev);
+                        tris.remove(&tax);
                     }
 
                     replaced_here = true;
