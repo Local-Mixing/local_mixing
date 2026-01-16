@@ -1921,7 +1921,7 @@ pub fn replace_tri(
                     new_circuit.extend_from_slice(&id.gates[i + 3..]);
 
                     // before the triple, reversed
-                    new_circuit.extend(id.gates[0..i].iter().rev());
+                    new_circuit.extend(id.gates[0..i].iter());
 
                     to_replace[chosen / 3] = (new_circuit, vec![id.gates[i], id.gates[i+1], id.gates[i+2]]);
 
@@ -1960,7 +1960,7 @@ pub fn replace_tri(
                     new_circuit.extend_from_slice(&id.gates[i + 3..]);
 
                     // before the triple, reversed
-                    new_circuit.extend(id.gates[0..i].iter().rev());
+                    new_circuit.extend(id.gates[0..i].iter());
 
                     to_replace[chosen / 3] = (new_circuit, vec![id.gates[i], id.gates[i+1], id.gates[i+2]]);
 
