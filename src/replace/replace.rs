@@ -1727,7 +1727,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
                     // Append gates before the pair
                     new_circuit.extend(id.gates[0..i].iter());
                     let nc = CircuitSeq { gates: new_circuit.clone() };
-                    if nc.probably_equal(&CircuitSeq { gates: vec![id.gates[i], id.gates[i+1]]}, num_wires, 10000).is_err() { panic!("pairs dont match new"); }
+                    if nc.probably_equal(&CircuitSeq { gates: vec![id.gates[i+1], id.gates[i]]}, num_wires, 10000).is_err() { panic!("pairs dont match new"); }
                     to_replace[chosen / 2] = (new_circuit, vec![id.gates[i], id.gates[i+1]]);
 
                     if v.is_empty() {
