@@ -967,9 +967,9 @@ pub fn sequential_compress_big(
         }
     }
 
-    let len = circuit.gates.len();
-
-    for i in 1..len-1 {
+    let mut len = circuit.gates.len();
+    let mut i = 0;
+    while i < len {
         let t0 = Instant::now();
         let mut subcircuit_gates = vec![];
         let random_max_wires = rng.random_range(5..=7);
@@ -1052,6 +1052,8 @@ pub fn sequential_compress_big(
             panic!("Replacement grew, which is not allowed");
         }
         REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        i += 1;
+        len = circuit.gates.len();
     }
 
     let t7 = Instant::now();
