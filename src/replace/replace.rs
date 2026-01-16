@@ -1673,7 +1673,7 @@ fn gate_tri_taxonomy(g0: &[u8;3], g1: &[u8;3], g2: &[u8;3]) -> GateTri {
 
 pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Connection, env: &lmdb::Environment) {
     println!("Starting replace_pairs, circuit length: {}", circuit.gates.len());
-
+    let start = circuit.clone();
     let mut pairs: HashMap<GatePair, Vec<usize>> = HashMap::new();
     let gates = circuit.gates.clone();
     let m = circuit.gates.len();
@@ -1845,6 +1845,9 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Conn
     println!("Replaced {}/{} pairs", replaced, num_pairs);
     // println!("Starting single gate replacements");
     // random_gate_replacements(circuit, min((num_pairs - replaced)/20 + (m/2 - num_pairs)/20, 1000), num_wires, conn, env);
+    if start.probably_equal(&circuit, num_wires, 10000).is_err() {
+        panic!("replace pairs changed something");
+    }
     println!("Finished replace_pairs");
 }
 
@@ -1855,7 +1858,7 @@ pub fn replace_tri(
     env: &lmdb::Environment,
 ) {
     println!("Starting replace_tri, circuit length: {}", circuit.gates.len());
-
+    let start = circuit.clone();
     let mut tris: HashMap<GateTri, Vec<usize>> = HashMap::new();
     let gates = circuit.gates.clone();
     let m = gates.len();
@@ -2038,7 +2041,9 @@ pub fn replace_tri(
                 .rev(),
         );
     }
-
+    if start.probably_equal(&circuit, num_wires, 10000).is_err() {
+        panic!("replace tris changed something");
+    }
     println!("Replaced {}/{} triples", replaced, num_tris);
     println!("Finished replace_tri");
 }

@@ -839,7 +839,7 @@ pub fn replace_and_compress_big(
         replace_pairs(&mut c, n, _conn, &env);
         replace_tri(&mut c, n, _conn, &env);
         for i in 1..=5 {
-            println!("Expanding and replacing: {}/35", i);
+            println!("Expanding and replacing: {}/5", i);
             let k = if c.gates.len() <= 1500 {
                 1
             } else {
