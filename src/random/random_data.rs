@@ -250,14 +250,15 @@ pub fn find_convex_subcircuit<R: RngCore>(
         }
 
         // Start with one random gate
-        let mut selected_gate_idx = vec![0; set_size];
+        let len = circuit.gates.len();
+        let mut selected_gate_idx = vec![0; len];
         selected_gate_idx[0] = rng.random_range(0..num_gates);
         let mut selected_gate_ctr = 1;
 
         // Initialize wire set
         let mut curr_wires = HashSet::new();
         curr_wires.extend(circuit.gates[selected_gate_idx[0]].iter().copied());
-        let len = circuit.gates.len();
+        
         while selected_gate_ctr < len {
             let mut candidates: Vec<usize> = vec![];
 
