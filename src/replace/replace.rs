@@ -2050,6 +2050,7 @@ pub fn replace_sequential_pairs(
                         break
                     }
                     used_wires.push(pin);
+                    count += 1;
                 }
                 while count < num {
                     let random = rng.random_range(0..n);
