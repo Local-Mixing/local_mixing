@@ -257,8 +257,8 @@ pub fn find_convex_subcircuit<R: RngCore>(
         // Initialize wire set
         let mut curr_wires = HashSet::new();
         curr_wires.extend(circuit.gates[selected_gate_idx[0]].iter().copied());
-
-        while selected_gate_ctr < set_size {
+        let len = circuit.gates.len();
+        while selected_gate_ctr < len {
             let mut candidates: Vec<usize> = vec![];
 
             // Left-most gate, go right
