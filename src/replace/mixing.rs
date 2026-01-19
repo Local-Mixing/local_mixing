@@ -844,7 +844,7 @@ pub fn replace_and_compress_big(
 
     let t1 = Instant::now();
     let len = c.gates.len();
-    for _ in 0..4 {
+    for _ in 0..2 {
         // random_gate_replacements(&mut c, len/100, n, _conn, &env);
         let t0 = Instant::now();
         shoot_random_gate(&mut c, 200_000);
@@ -854,6 +854,9 @@ pub fn replace_and_compress_big(
         // shoot_random_gate(&mut c, 200_000);
         // SHOOT_RANDOM_GATE_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
         replace_sequential_pairs(&mut c, n, _conn, &env, &bit_shuf_list, dbs);
+        c.gates.reverse();
+        replace_sequential_pairs(&mut c, n, _conn, &env, &bit_shuf_list, dbs);
+        c.gates.reverse();
         // replace_tri(&mut c, n, _conn, &env);
         // for i in 1..=5 {
         //     println!("Expanding and replacing: {}/5", i);
