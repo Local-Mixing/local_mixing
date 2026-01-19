@@ -1890,9 +1890,9 @@ pub fn replace_sequential_pairs(
     // rolling state
     let mut left = gates[0];
     let mut i = 1;
-
+    let mut fail = 0;
     while i < n {
-        let mut fail = 0;
+        
         {
             let mut buf = [0u8; 1];
             if let Ok(n) = io::stdin().read(&mut buf) {
@@ -1968,6 +1968,7 @@ pub fn replace_sequential_pairs(
                                 .rev()
                                 .collect()
                         );
+                        fail = 0;
                         break;
                     }
                 }
@@ -2026,6 +2027,7 @@ pub fn replace_sequential_pairs(
                                     .rev()
                                     .collect()
                             );
+                            fail = 0;
                             break;
                         }
                     }
@@ -2039,10 +2041,12 @@ pub fn replace_sequential_pairs(
             if let Some(mut gates_out) = produced {
                 out.append(&mut gates_out);
                 left = *out.last().unwrap();
+                fail = 0;
             } else {
                 // extremely unlikely fallback
                 out.push(left);
                 left = right;
+                fail = 0;
             }
             i += 1;
         } else {
@@ -2148,6 +2152,7 @@ pub fn replace_sequential_pairs(
                                     .rev()
                                     .collect(),
                             );
+                            fail = 0;
                             break;
                         }
                     }
@@ -2205,6 +2210,7 @@ pub fn replace_sequential_pairs(
                                         .rev()
                                         .collect(),
                                 );
+                                fail = 0;
                                 break;
                             }
                         }
@@ -2218,9 +2224,10 @@ pub fn replace_sequential_pairs(
                 if let Some(mut gates_out) = produced {
                     out
                         .splice((new_index - 1)..=new_index, gates_out.drain(..));
-
+                    fail = 0;
                     i += 1;
                 } else {
+                    fail = 0;
                     i += 1;
                 }
             }
