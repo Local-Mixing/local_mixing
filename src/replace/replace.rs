@@ -2046,6 +2046,7 @@ pub fn replace_sequential_pairs(
                 out.push(left);
                 left = right;
             }
+            println!("1");
             fail = 0;
             i += 1;
         } else {
@@ -2080,6 +2081,7 @@ pub fn replace_sequential_pairs(
                 } 
 
                 // return to stream
+                println!("2");
                 fail = 0;
                 i += 1;
                 continue;
@@ -2225,9 +2227,11 @@ pub fn replace_sequential_pairs(
                 if let Some(mut gates_out) = produced {
                     out
                         .splice((new_index - 1)..=new_index, gates_out.drain(..));
+                    println!("3");
                     fail = 0;
                     i += 1;
                 } else {
+                    println!("4");
                     fail = 0;
                     i += 1;
                 }
