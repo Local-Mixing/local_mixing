@@ -1909,6 +1909,7 @@ pub fn replace_sequential_pairs(
             let mut produced: Option<Vec<[u8; 3]>> = None;
 
             while produced.is_none() && fail < 100 {
+                fail += 1;
                 let id_len = rng.random_range(5..=7);
                 let mut id = match random_canonical_id(env, conn, id_len) {
                     Ok(id) => id,
@@ -2093,6 +2094,7 @@ pub fn replace_sequential_pairs(
                 let mut produced: Option<Vec<[u8; 3]>> = None;
                 
                 while produced.is_none() && fail < 100 {
+                    fail += 1;
                     let id_len = rng.random_range(5..=7);
                     let mut id = match random_canonical_id(env, conn, id_len) {
                         Ok(id) => id,
