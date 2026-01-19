@@ -2034,7 +2034,6 @@ pub fn replace_sequential_pairs(
 
             if new_index == 0 {
                 // nothing to collide with so single gate repl
-                println!("single");
                 let g = &out[0];
                 let temp_out_circ = CircuitSeq { gates: out.clone() };
                 let num = rng.random_range(3..=7);
@@ -2050,7 +2049,7 @@ pub fn replace_sequential_pairs(
                         count += 1;
                     }
                     used_wires.sort();
-                    let rewired_g = CircuitSeq::rewire_subcircuit(&temp_out_circ, &vec![i], &used_wires);
+                    let rewired_g = CircuitSeq::rewire_subcircuit(&temp_out_circ, &vec![0], &used_wires);
                     id.rewire_first_gate(rewired_g.gates[0], num);
                     id = CircuitSeq::unrewire_subcircuit(&id, &used_wires);
                     id.gates.remove(0);
@@ -2070,7 +2069,7 @@ pub fn replace_sequential_pairs(
             if !GatePair::is_none(&tax) {
                 let mut produced: Option<Vec<[u8; 3]>> = None;
                 let mut fail = 0;
-                println!("col");
+                
                 while produced.is_none() && fail < 100 {
                     let id_len = rng.random_range(5..=7);
                     let mut id = match random_canonical_id(env, conn, id_len) {
