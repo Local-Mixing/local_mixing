@@ -2047,62 +2047,87 @@ pub fn replace_sequential_pairs(
             fail = 0;
             i += 1;
         } else {
-            // no collision: shoot right left
+            println!("--- no collision: shoot right left ---");
+            println!("Before push: i = {}, out_len = {}", i, out.len());
             out.push(gates[i]);
             let out_len = out.len();
-            let new_index = shoot_left_vec(&mut out, out_len-1);
+            println!("After push: out_len = {}", out_len);
+
+            let new_index = shoot_left_vec(&mut out, out_len - 1);
+            println!("shoot_left_vec returned new_index = {}", new_index);
+
             if new_index == 0 {
-                // nothing to collide with so single gate repl
+                println!("No collision found, performing single gate replacement.");
                 let g = &out[0];
                 let temp_out_circ = CircuitSeq { gates: out.clone() };
                 let num = rng.random_range(3..=7);
+                println!("Random id length for replacement: {}", num);
+
                 if let Ok(mut id) = random_canonical_id(env, &conn, num) {
+                    println!("Generated random canonical id: {:?}", id.gates);
                     let mut used_wires = vec![g[0], g[1], g[2]];
                     let mut count = 3;
+
                     while count < num {
                         let random = rng.random_range(0..n);
                         if used_wires.contains(&(random as u8)) {
-                            continue
+                            continue;
                         }
                         used_wires.push(random as u8);
                         count += 1;
                     }
                     used_wires.sort();
+                    println!("Used wires after filling: {:?}", used_wires);
+
                     let rewired_g = CircuitSeq::rewire_subcircuit(&temp_out_circ, &vec![0], &used_wires);
                     id.rewire_first_gate(rewired_g.gates[0], num);
                     id = CircuitSeq::unrewire_subcircuit(&id, &used_wires);
                     id.gates.remove(0);
-                    out.splice(0..1, id.gates);
-                    
-                } 
+                    println!("Id gates after unrewire & remove: {:?}", id.gates);
 
-                // return to stream
+                    out.splice(0..1, id.gates);
+                    println!("Out after splice: {:?}", out);
+                }
+
                 fail = 0;
                 i += 1;
+                println!("Continuing to next i = {}", i);
                 continue;
             }
 
             // collision found, make pair replacement
             let left_gate = out[new_index - 1];
             let right_gate = out[new_index];
+            println!("Collision found at new_index = {}: left_gate = {:?}, right_gate = {:?}", new_index, left_gate, right_gate);
+
             let tax = gate_pair_taxonomy(&left_gate, &right_gate);
+            println!("Gate pair taxonomy: {:?}", tax);
+
             if !GatePair::is_none(&tax) {
+                println!("Valid collision detected, entering production loop.");
                 let mut produced: Option<Vec<[u8; 3]>> = None;
-                
+
                 while produced.is_none() && fail < 100 {
+                    println!("--- Production attempt, fail = {} ---", fail);
                     {
                         let mut buf = [0u8; 1];
                         if let Ok(n) = io::stdin().read(&mut buf) {
                             if n > 0 && buf[0] == b'\n' {
-                                println!("i = {}\n fail = {}", i, fail);
+                                println!("i = {}, fail = {} (manual break point)", i, fail);
                             }
                         }
                     }
                     fail += 1;
+
                     let id_len = rng.random_range(5..=7);
+                    println!("Random id length in production: {}", id_len);
                     let mut id = match random_canonical_id(env, conn, id_len) {
-                        Ok(id) => id,
+                        Ok(id) => {
+                            println!("Generated id for production: {:?}", id.gates);
+                            id
+                        },
                         Err(_) => {
+                            println!("Failed to generate id, increment fail and continue");
                             fail += 1;
                             continue;
                         }
@@ -2110,20 +2135,19 @@ pub fn replace_sequential_pairs(
 
                     for j in 0..id.gates.len() - 1 {
                         if gate_pair_taxonomy(&id.gates[j], &id.gates[j + 1]) == tax {
+                            println!("Matching pair found at id index {}: {:?}", j, &id.gates[j..=j+1]);
                             let mut new_circuit = Vec::with_capacity(id.gates.len() - 2);
                             new_circuit.extend_from_slice(&id.gates[j + 2..]);
                             new_circuit.extend_from_slice(&id.gates[..j]);
 
                             let replacement_circ = CircuitSeq { gates: new_circuit };
+                            println!("Replacement circuit: {:?}", replacement_circ.gates);
 
                             let mut used_wires: Vec<u8> = vec![
                                 (num_wires + 1) as u8;
                                 std::cmp::max(
                                     replacement_circ.max_wire(),
-                                    CircuitSeq {
-                                        gates: vec![left_gate, right_gate],
-                                    }
-                                    .max_wire(),
+                                    CircuitSeq { gates: vec![left_gate, right_gate] }.max_wire(),
                                 ) + 1
                             ];
 
@@ -2150,6 +2174,7 @@ pub fn replace_sequential_pairs(
                                     }
                                 }
                             }
+                            println!("Used wires final mapping: {:?}", used_wires);
 
                             produced = Some(
                                 CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
@@ -2158,85 +2183,38 @@ pub fn replace_sequential_pairs(
                                     .rev()
                                     .collect(),
                             );
+                            println!("Produced circuit: {:?}", produced);
                             break;
                         }
                     }
 
                     // reverse pass
                     if produced.is_none() {
+                        println!("No match in forward pass, trying reverse pass");
                         id.gates.reverse();
-                        for j in 0..id.gates.len() - 1 {
-                            if gate_pair_taxonomy(&id.gates[j], &id.gates[j + 1]) == tax {
-                                let mut new_circuit = Vec::with_capacity(id.gates.len() - 2);
-                                new_circuit.extend_from_slice(&id.gates[j + 2..]);
-                                new_circuit.extend_from_slice(&id.gates[..j]);
-
-                                let replacement_circ = CircuitSeq { gates: new_circuit };
-
-                                let mut used_wires: Vec<u8> = vec![
-                                    (num_wires + 1) as u8;
-                                    std::cmp::max(
-                                        replacement_circ.max_wire(),
-                                        CircuitSeq {
-                                            gates: vec![left_gate, right_gate],
-                                        }
-                                        .max_wire(),
-                                    ) + 1
-                                ];
-
-                                used_wires[id.gates[j][0] as usize] = left_gate[0];
-                                used_wires[id.gates[j][1] as usize] = left_gate[1];
-                                used_wires[id.gates[j][2] as usize] = left_gate[2];
-
-                                let mut k = 0;
-                                for collision in &[tax.a, tax.c1, tax.c2] {
-                                    if *collision == CollisionType::OnNew {
-                                        used_wires[id.gates[j + 1][k] as usize] = right_gate[k];
-                                    }
-                                    k += 1;
-                                }
-
-                                for w in 0..used_wires.len() {
-                                    if used_wires[w] == (num_wires + 1) as u8 {
-                                        loop {
-                                            let wire = rng.random_range(0..num_wires) as u8;
-                                            if !used_wires.contains(&wire) {
-                                                used_wires[w] = wire;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                produced = Some(
-                                    CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
-                                        .gates
-                                        .into_iter()
-                                        .rev()
-                                        .collect(),
-                                );
-                                break;
-                            }
-                        }
                     }
 
                     if produced.is_none() {
+                        println!("Still no match, incrementing fail");
                         fail += 1;
                     }
                     fail += 1;
                 }
 
                 if let Some(mut gates_out) = produced {
-                    out
-                        .splice((new_index - 1)..=new_index, gates_out.drain(..));
+                    println!("Splicing produced gates into out: {:?}", gates_out);
+                    out.splice((new_index - 1)..=new_index, gates_out.drain(..));
                     fail = 0;
                     i += 1;
                 } else {
+                    println!("Failed to produce valid replacement after 100 attempts");
                     fail = 0;
                     i += 1;
                 }
             }
+            println!("End of else branch, i = {}, out_len = {}", i, out.len());
         }
+
     }
 
     // flush final carried gate
