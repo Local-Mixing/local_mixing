@@ -303,6 +303,7 @@ fn main() {
                         .short('s')
                         .long("seq")
                         .help("Enable seq mode")
+                        .required(false)
                         .action(clap::ArgAction::SetTrue),
                 ),
         )
@@ -661,7 +662,7 @@ fn main() {
             let p: &String = sub.get_one("p").expect("Missing -p <path>");
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
             let d: &String = sub.get_one("d").expect("Missing -d <path>");
-            let seq = matches.get_flag("seq");
+            let seq = sub.get_flag("seq"); 
             let contents = fs::read_to_string(p)
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", p));
 
