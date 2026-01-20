@@ -771,7 +771,7 @@ fn main() {
         Some(("genran", sub)) => {
             let d: &String = sub.get_one("d").expect("Missing -d <path>");
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
-            let m: usize = *sub.get_one("n").expect("Missing -n <wires>");
+            let m: usize = *sub.get_one("m").expect("Missing -n <wires>");
             
             let circuit = random_circuit(n as u8, m);
             let mut file = fs::File::create(d)
