@@ -2693,14 +2693,7 @@ mod tests {
         let env = Environment::new()
             .set_max_dbs(50)
             .open(Path::new(env_path)).expect("Failed to open db");
-        let mut circuit = CircuitSeq {
-            gates: vec![
-                [1, 2, 3],
-                [3, 4, 5], 
-                [6, 7, 8],
-                [8, 9, 10],
-            ],
-        };
+        let mut circuit = CircuitSeq::from_string("AWd;7AD;9ca;ksz;SJ2;lE3;wQN;EeM;3pu;BLr;7kT;t0A;4XJ;Vu0;u19;hLK;dj9;Wda;QCs;MP9;w58;4zO;Sg9;eMQ;pbU;nR7;1bq;FXi;6BV;LGz;nGr;YxE;smS;i@H;RBN;w8u;5Rk;RxG;jG2;!J8;9nc;Hus;jMu;NHD;UKd;1G0;8k6;tLz;96C;QIi;cmz;!6@;heJ;4hE;cUg;8SQ;TiH;SaP;qQ2;3Po;vSc;fl!;b0H;O7z;sKY;da3;Lo4;B!G;!gs;CxT;1Fe;mo3;hrG;67!;wo2;Q6f;iGZ;XH2;2a6;Rcf;v0M;@KE;ma5;AYJ;dJx;ikm;gW9;Wz4;e@R;N6z;x9S;1NL;Zvw;dlT;9xP;eJv;4!E;8P3;brk;w75;");
         let bit_shuf_list = (3..=7)
         .map(|n| {
             (0..n)
