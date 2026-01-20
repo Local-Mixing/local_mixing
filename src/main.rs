@@ -353,6 +353,34 @@ fn main() {
                         .help("Path to write the reversed circuit file"),
                 ),
         )
+        .subcommand(
+            Command::new("genran")
+                .about("Generate a random circuit with n wires and m gates")
+                .arg(
+                    Arg::new("d")
+                        .short('d')
+                        .long("destination")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to the new circuit file"),
+                )
+                .arg(
+                    Arg::new("n")
+                        .short('n')
+                        .long("wires")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of wires in the circuit"),
+                )
+                .arg(
+                    Arg::new("m")
+                        .short('m')
+                        .long("gates")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of gates in the circuit"),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -740,6 +768,17 @@ fn main() {
             fs::write(dest_path, string)
              .unwrap_or_else(|e| panic!("Failed to write {}: {}", dest_path, e));
             }
+        Some(("genran", sub)) => {
+            let d: &String = sub.get_one("d").expect("Missing -d <path>");
+            let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
+            let m: usize = *sub.get_one("n").expect("Missing -n <wires>");
+            
+            let circuit = random_circuit(n as u8, m);
+            let mut file = fs::File::create(d)
+                .expect("Failed to create new file");
+            write!(file, "{}", circuit.repr())
+                .expect("Failed to write random circuit to file");
+        }
         _ => unreachable!(),
     }
 }
