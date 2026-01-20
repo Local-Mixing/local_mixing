@@ -300,9 +300,10 @@ fn main() {
                 )
                 .arg(
                     Arg::new("seq")
+                        .short('s')
                         .long("seq")
-                        .action(clap::ArgAction::SetTrue)
-                        .help("Use sequential pair replacement"),
+                        .help("Enable seq mode")
+                        .action(clap::ArgAction::SetTrue),
                 ),
         )
         .subcommand(
