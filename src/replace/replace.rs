@@ -1952,7 +1952,7 @@ pub fn replace_sequential_pairs(
                         let mut available_wires: Vec<u8> = (0..num_wires as u8)
                             .filter(|w| !used_wires.contains(w))
                             .collect();
-                        println!("available_wires: {:?}", available_wires);
+                      
                         available_wires.shuffle(&mut rng);
                         for w in 0..used_wires.len() {
                             if used_wires[w] == (num_wires + 1) as u8 {
@@ -2013,7 +2013,7 @@ pub fn replace_sequential_pairs(
                             let mut available_wires: Vec<u8> = (0..num_wires as u8)
                                 .filter(|w| !used_wires.contains(w))
                                 .collect();
-                            println!("available_wires: {:?}", available_wires);
+                    
                             available_wires.shuffle(&mut rng);
                             for w in 0..used_wires.len() {
                                 if used_wires[w] == (num_wires + 1) as u8 {
@@ -2071,7 +2071,7 @@ pub fn replace_sequential_pairs(
                     let mut count = 3;
 
                     while count < num {
-                        let random = rng.random_range(0..n);
+                        let random = rng.random_range(0..num_wires);
                         if used_wires.contains(&(random as u8)) {
                             continue;
                         }
@@ -2141,7 +2141,7 @@ pub fn replace_sequential_pairs(
                             let mut available_wires: Vec<u8> = (0..num_wires as u8)
                                 .filter(|w| !used_wires.contains(w))
                                 .collect();
-                            println!("available_wires: {:?}", available_wires);
+                          
                             available_wires.shuffle(&mut rng);
 
                             for w in 0..used_wires.len() {
