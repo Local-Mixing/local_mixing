@@ -2682,4 +2682,70 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn replace_sequential_pair_preserves_invariants() {
+        use rand::{SeedableRng, rngs::StdRng};
+        let mut rng = StdRng::seed_from_u64(0xdeadbeef);
+        let num_wires = 64;
+        let env_path = "./db";
+        let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
+        let env = Environment::new()
+            .set_max_dbs(50)
+            .open(Path::new(env_path)).expect("Failed to open db");
+        let mut circuit = CircuitSeq {
+            gates: vec![
+                [1, 2, 3],
+                [3, 4, 5], 
+                [6, 7, 8],
+                [8, 9, 10],
+            ],
+        };
+        let bit_shuf_list = (3..=7)
+        .map(|n| {
+            (0..n)
+                .permutations(n)
+                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                .collect::<Vec<Vec<usize>>>()
+        })
+        .collect();
+        let dbs = open_all_dbs(&env);
+
+        // Call under test
+        for _ in 0..2 {
+            replace_sequential_pairs(
+                &mut circuit,
+                num_wires,
+                &mut conn,
+                &env,
+                &bit_shuf_list,
+                &dbs
+                /* whatever other params you have */
+            );
+            circuit.gates.reverse();
+            replace_sequential_pairs(
+                &mut circuit,
+                num_wires,
+                &mut conn,
+                &env,
+                &bit_shuf_list,
+                &dbs
+                /* whatever other params you have */
+            );
+            circuit.gates.reverse();
+        }
+
+        // No invalid wire indices
+        for (i, gate) in circuit.gates.iter().enumerate() {
+            for &w in gate {
+                assert!(
+                    (w as usize) < num_wires,
+                    "gate {} contains wire {} >= num_wires {}",
+                    i,
+                    w,
+                    num_wires
+                );
+            }
+        }
+    }
 }

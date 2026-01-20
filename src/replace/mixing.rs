@@ -844,7 +844,7 @@ pub fn replace_and_compress_big(
 
     let t1 = Instant::now();
     let len = c.gates.len();
-    for _ in 0..2 {
+    for _ in 0..1 {
         // random_gate_replacements(&mut c, len/100, n, _conn, &env);
         let t0 = Instant::now();
         shoot_random_gate(&mut c, 200_000);
