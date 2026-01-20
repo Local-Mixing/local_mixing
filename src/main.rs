@@ -694,7 +694,11 @@ fn main() {
                 acc = if !seq {
                     compress_big_ancillas(&acc, 1_000, n, &mut conn, &env, &bit_shuf_list, &dbs)
                 } else {
-                    sequential_compress_big_ancillas(&acc, n, &mut conn, &env, &bit_shuf_list, &dbs)
+                    sequential_compress_big_ancillas(&acc, n, &mut conn, &env, &bit_shuf_list, &dbs);
+                    acc.gates.reverse();
+                    sequential_compress_big_ancillas(&acc, n, &mut conn, &env, &bit_shuf_list, &dbs);
+                    acc.gates.reverse();
+                    acc
                 };
                 let after = acc.gates.len();
 
