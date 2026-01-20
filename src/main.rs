@@ -21,6 +21,7 @@ use local_mixing::{
 };
 use local_mixing::replace::mixing::open_all_dbs;
 use local_mixing::replace::replace::compress_big_ancillas;
+use local_mixing::replace::replace::{sequential_compress_big, sequential_compress_big_ancillas};
 
 use std::{
     fs::{self},
@@ -296,6 +297,12 @@ fn main() {
                         .required(true)
                         .value_parser(clap::value_parser!(usize))
                         .help("Number of wires in the circuit"),
+                )
+                .arg(
+                    Arg::new("seq")
+                        .long("seq")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Use sequential pair replacement"),
                 ),
         )
         .subcommand(
@@ -653,6 +660,7 @@ fn main() {
             let p: &String = sub.get_one("p").expect("Missing -p <path>");
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
             let d: &String = sub.get_one("d").expect("Missing -d <path>");
+            let seq = matches.get_flag("seq");
             let contents = fs::read_to_string(p)
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", p));
 
@@ -681,7 +689,11 @@ fn main() {
             let mut stable_count = 0;
             while stable_count < 6 {
                 let before = acc.gates.len();
-                acc = compress_big_ancillas(&acc, 1_000, n, &mut conn, &env, &bit_shuf_list, &dbs);
+                acc = if !seq {
+                    compress_big_ancillas(&acc, 1_000, n, &mut conn, &env, &bit_shuf_list, &dbs)
+                } else {
+                    sequential_compress_big_ancillas(&acc, n, &mut conn, &env, &bit_shuf_list, &dbs)
+                };
                 let after = acc.gates.len();
 
                 if after == before {
