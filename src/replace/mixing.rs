@@ -830,7 +830,7 @@ static MADE_LEFT: AtomicUsize = AtomicUsize::new(0);
 static TRAVERSE_LEFT: AtomicUsize = AtomicUsize::new(0);
 
 pub fn replace_and_compress_big(
-    c: &CircuitSeq,
+    circuit: &CircuitSeq,
     _conn: &mut Connection,
     n: usize,
     last: bool,
@@ -849,8 +849,8 @@ pub fn replace_and_compress_big(
     MADE_LEFT.store(0, Ordering::SeqCst);
     TRAVERSE_LEFT.store(0, Ordering::SeqCst);
 
-    println!("Butterfly start: {} gates", c.gates.len());
-    let mut c = c.clone();
+    println!("Butterfly start: {} gates", circuit.gates.len());
+    let mut c = circuit.clone();
     let t0 = Instant::now();
     shoot_random_gate(&mut c, 200_000);
     SHOOT_RANDOM_GATE_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -910,6 +910,7 @@ pub fn replace_and_compress_big(
         .append(true)
         .open(intermediate)
         .expect("Failed to open replacednocomp.txt");
+    println!("Writing to {}", intermediate);
     writeln!(f, "{}", c.repr()).expect("Failed to write intermediate CircuitSeq");
 
     // let mut milestone = initial_milestone(acc.gates.len());
@@ -1397,7 +1398,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usi
             panic!("The functionality has changed");
         }
         {
-        println!("Updating progress");
+        println!("Updating progress {}", progress_path);
         let mut f = OpenOptions::new()
             .create(true)
             .append(true)

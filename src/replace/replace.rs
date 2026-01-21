@@ -2841,7 +2841,7 @@ mod tests {
             let new_gates: Vec<[u8;3]> = replaced_chunks.into_iter().flatten().collect();
             circuit.gates = new_gates;
 
-        if circuit.probably_equal(&out_circ, num_wires, 100_000).is_ok() {
+        if circuit.probably_equal(&out_circ, num_wires, 100_000).is_err() {
             panic!("Functionality was changed");
         }
 
