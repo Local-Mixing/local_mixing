@@ -2422,7 +2422,7 @@ mod tests {
         let circuit = CircuitSeq::from_blob(blob);
 
         assert_eq!(
-            circuit.permutation(7),
+            circuit.permutation(1 << 7),
             id,
             "Random circuit is not an identity!"
         );
