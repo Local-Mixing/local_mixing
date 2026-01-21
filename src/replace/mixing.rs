@@ -16,7 +16,7 @@ use crate::{
     },
 };
 // use crate::random::random_data::random_walk_no_skeleton;
-
+use rand::prelude::SliceRandom;
 use itertools::Itertools;
 use lmdb::RoTransaction;
 use rand::Rng;
@@ -868,6 +868,10 @@ pub fn replace_and_compress_big(
         let k = std::cmp::min(k, 60);
         let mut rng = rand::rng();
         let chunks = split_into_random_chunks(&c.gates, k, &mut rng);
+        println!(
+            "Starting replace_sequential_pairs , circuit length: {} , num_wires: {}",
+            c.gates.len(), n
+        );
         let replaced_chunks: Vec<Vec<[u8;3]>> =
         chunks
             .into_par_iter()
@@ -897,7 +901,10 @@ pub fn replace_and_compress_big(
             c.gates = new_gates;
     }
     REPLACE_PAIRS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
+    println!(
+        "Finished replace_sequential_pairs, new length: {}",
+        c.gates.len()
+    );
     let mut f = OpenOptions::new()
         .create(true)
         .append(true)
@@ -997,44 +1004,39 @@ pub fn replace_and_compress_big(
     )
 }
 
-pub fn split_into_random_chunks<T: Clone>(
-    v: &[T],
+pub fn split_into_random_chunks(
+    v: &Vec<[u8;3]>,
     k: usize,
-    rng: &mut impl rand::Rng,
-) -> Vec<Vec<T>> {
-    let n = v.len();
-    if k <= 1 || n <= 1 {
-        return vec![v.to_vec()];
-    }
-
-    // Minimum chunk size
+    rng: &mut impl Rng,
+) -> Vec<Vec<[u8;3]>> {
     let min_size = 100;
+    let n = v.len();
+    assert!(k * min_size <= n);
 
-    let max_chunks = k;
-    let mut cuts = Vec::with_capacity(max_chunks - 1);
-    let mut start = 0;
+    let slack = n - k * min_size;
 
-    // Generate cuts ensuring each chunk >= min_size
-    for _ in 0..(max_chunks - 1) {
-        // Remaining length that can still accommodate remaining cuts
-        let remaining_chunks = max_chunks - cuts.len();
-        let max_cut = n - (remaining_chunks * min_size);
-        if start >= max_cut {
-            break
-        }
-        let cut = rng.random_range(start + min_size..=max_cut);
-        cuts.push(cut);
-        start = cut;
+    let mut cuts: Vec<usize> = (0..slack).collect();
+    cuts.shuffle(rng);
+    cuts.truncate(k - 1);
+    cuts.sort_unstable();
+
+    let mut sizes = Vec::with_capacity(k);
+    let mut prev = 0;
+
+    for &c in &cuts {
+        sizes.push(c - prev + min_size); 
+        prev = c;
+    }
+    sizes.push(slack - prev + min_size);
+
+    let mut out = Vec::with_capacity(k);
+    let mut idx = 0;
+    for size in sizes {
+        out.push(v[idx..idx + size].to_vec());
+        idx += size;
     }
 
-    let mut boundaries = vec![0];
-    boundaries.extend(cuts);
-    boundaries.push(n);
-
-    boundaries
-        .windows(2)
-        .map(|w| v[w[0]..w[1]].to_vec())
-        .collect()
+    out
 }
 
 pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> {
@@ -1311,7 +1313,7 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
 pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
-    let progress_path = format!("{}_progress", save_base);
+    let progress_path = format!("{}_progress.txt", save_base);
     let mut sum_already_coll = 0usize;
     let mut sum_shoot = 0usize;
     let mut sum_made_left = 0usize;
@@ -1394,6 +1396,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usi
         {
         println!("Updating progress");
         let mut f = OpenOptions::new()
+            .create(true)
             .append(true)
             .open(&progress_path)
             .expect("Failed to open progress file");
@@ -1654,4 +1657,57 @@ pub fn main_compression(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n:
     }
 
     println!("Final circuit written to recent_circuit.txt");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::prelude::*;
+
+    #[test]
+    fn test_split_into_random_chunks() {
+        use rand::prelude::*;
+
+        let mut rng = rand::rng();
+        let min_size = 100;
+        let n = 250;
+        let k = 60;
+
+        // Build v = 4 concatenated copies of 0..999
+        let mut v: Vec<[u8; 3]> = (0..n)
+            .map(|i| [i as u8, i as u8, i as u8])
+            .collect();
+        for _ in 0..100 { // append 3 more copies
+            v.extend((0..n).map(|i| [i as u8, i as u8, i as u8]));
+        }
+
+        let chunks = split_into_random_chunks(
+            &v,
+            k,
+            &mut rng,
+        );
+
+        assert_eq!(chunks.len(), k, "Expected {} chunks, got {}", k, chunks.len());
+
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert!(
+                chunk.len() >= min_size,
+                "Chunk {} is smaller than min_size: {}",
+                i,
+                chunk.len()
+            );
+            println!("{}", chunk.len());
+        }
+
+        let total_len: usize = chunks.iter().map(|c| c.len()).sum();
+        assert_eq!(total_len, v.len(), "Total elements mismatch");
+
+        // Flatten without sorting
+        let all_elements: Vec<[u8; 3]> = chunks.into_iter().flatten().collect();
+
+        // Check that the flattened elements are exactly equal to the original v
+        for (i, &elem) in all_elements.iter().enumerate() {
+            assert_eq!(elem, v[i], "Element mismatch at index {}", i % 250);
+        }
+    }
 }

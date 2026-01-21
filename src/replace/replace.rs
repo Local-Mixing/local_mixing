@@ -3,6 +3,7 @@ use crate::{
     random::random_data::{
         contiguous_convex,
         find_convex_subcircuit,
+        simple_find_convex_subcircuit,
         get_canonical,
         random_circuit,
         targeted_convex_subcircuit,
@@ -887,7 +888,7 @@ pub fn compress_big(
             3
         };
         for set_size in (3..=size).rev() {
-            let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
+            let (gates, _) = simple_find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
             if !gates.is_empty() {
                 subcircuit_gates = gates;
                 break;
@@ -1541,7 +1542,7 @@ pub fn expand_big(
         let mut subcircuit_gates = vec![];
         let random_max_wires = rng.random_range(3..=7);
         for set_size in (3..=7).rev() {
-            let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
+            let (gates, _) = simple_find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
             if !gates.is_empty() {
                 subcircuit_gates = gates;
                 break;
@@ -1697,7 +1698,7 @@ pub fn compress_big_ancillas(
         let mut subcircuit_gates = vec![];
         let random_max_wires = rng.random_range(3..=7);
         for set_size in (3..=6).rev() {
-            let (gates, _) = find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
+            let (gates, _) = simple_find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
             if !gates.is_empty() {
                 subcircuit_gates = gates;
                 break;
@@ -2052,10 +2053,6 @@ pub fn replace_sequential_pairs(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>
 ) -> (usize, usize, usize, usize) {
-    println!(
-        "Starting replace_sequential_pairs , circuit length: {} , num_wires: {}",
-        circuit.gates.len(), num_wires
-    );
     make_stdin_nonblocking();
     let gates = circuit.gates.clone();
     let n = gates.len();
@@ -2305,11 +2302,6 @@ pub fn replace_sequential_pairs(
     out.push(left);
 
     circuit.gates = out;
-
-    println!(
-        "Finished replace_sequential_pairs, new length: {}",
-        circuit.gates.len()
-    );
 
     (already_collided, shoot_count, curr_zero, traverse_left)
 }
