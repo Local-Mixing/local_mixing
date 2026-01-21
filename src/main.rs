@@ -16,7 +16,7 @@ use local_mixing::{
             main_mix,
             main_rac_big,
         },
-        replace::random_canonical_id,
+        replace::{GatePair, gate_pair_taxonomy, random_canonical_id }
     },
 };
 use local_mixing::replace::mixing::open_all_dbs;
@@ -340,6 +340,10 @@ fn main() {
         )
         .subcommand(
             Command::new("lmdbcounts")
+            .about("Generate table for generating canon ids")
+        )
+        .subcommand(
+            Command::new("lmdbid")
             .about("Generate table for generating canon ids")
         )
         .subcommand(
@@ -776,6 +780,38 @@ fn main() {
                 println!("Saved perm_tables_n{}", n);
             }
         }
+        Some(("lmdbid", _)) => {
+            let env_path = "./db";
+
+            let env = Environment::new()
+                .set_max_dbs(50)
+                .set_map_size(800 * 1024 * 1024 * 1024)
+                .open(Path::new(env_path))
+                .expect("Failed to open lmdb");
+
+            let ns_and_ms = [
+                (5, 5),
+                (6, 5),
+                (7, 4),
+            ];
+
+            for (n, max_m) in ns_and_ms {
+                let tables: Vec<String> = (1..=max_m)
+                    .map(|m| format!("n{}m{}", n, m))
+                    .collect();
+
+                let perm_circuit_table =
+                    circuit_tables_gen(&env, &tables)
+                        .expect("Failed to compute perms");
+
+                let tax_id_table = create_tax_id_table(perm_circuit_table);
+                let db_name = format!("ids_n{}", n);
+                save_tax_id_tables_to_lmdb(&env_path, &db_name, &tax_id_table)
+                    .expect("Failed to save perms");
+
+                println!("Saved ids_n{}", n);
+            }
+        }
         Some(("string", sub)) => {
             let from_path = sub.get_one::<String>("source").unwrap();
             let dest_path = sub.get_one::<String>("dest").unwrap();
@@ -1037,7 +1073,7 @@ pub fn sql_to_lmdb_perms(n: usize, m: usize) -> Result<(), ()> {
 
 /// Scans all tables and creates a DB of perms with multiple circuits
 use std::collections::HashMap;
-
+use std::collections::HashSet;
 fn perm_tables_with_duplicates(
     env: &Environment,
     tables: &[String], // tables like n{num_wires}m{m}
@@ -1112,5 +1148,147 @@ fn save_perm_tables_to_lmdb(
 
     flush_batch(&env, db, &mut batch);
 
+    Ok(())
+}
+
+fn circuit_tables_gen(
+    env: &Environment,
+    tables: &[String], // tables like n{num_wires}m{m}
+) -> Result<HashMap<Vec<u8>, Vec<Vec<u8>>>, lmdb::Error> {
+    let mut perms_to_circuits: HashMap<Vec<u8>, Vec<Vec<u8>>> = HashMap::new();
+
+    for table in tables {
+        let t = table.strip_prefix('n').unwrap();
+        let (n_str, _m_str) = t.split_once('m').unwrap();
+        let num_wires: usize = n_str.parse().unwrap();
+
+        let perm_len = 1usize << num_wires;
+
+        let db = env.open_db(Some(table))?;
+        let ro_txn = env.begin_ro_txn()?;
+        let mut cursor = ro_txn.open_ro_cursor(db)?;
+
+        for (k, v) in cursor.iter() {
+            let perm = &k[..perm_len];
+            let circuit = v.to_vec();
+
+            perms_to_circuits
+                .entry(perm.to_vec())
+                .or_default()
+                .push(circuit);
+        }
+    }
+
+    // keep only perms that appear in more than one circuit
+    perms_to_circuits.retain(|_, circuits| circuits.len() > 1);
+
+    Ok(perms_to_circuits)
+}
+
+fn create_tax_id_table(circuit_table: HashMap<Vec<u8>, Vec<Vec<u8>>>) -> HashMap<GatePair, Vec<Vec<u8>>> {
+    let mut tax_table: HashMap<GatePair, HashSet<Vec<u8>>> = HashMap::new();
+    for (_, circuits) in circuit_table {
+        let n = circuits.len();
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let mut curr_tax_f: HashSet<GatePair> = HashSet::new();
+                let mut curr_tax_b: HashSet<GatePair> = HashSet::new();
+                let c1 = &circuits[i];
+                let c2 = &circuits[j];
+
+                let mut c1 = CircuitSeq::from_blob(&c1);
+                let mut c2 = CircuitSeq::from_blob(&c2);
+                c2.gates.reverse();
+                let mut forward = c1.concat(&c2);
+                c1.gates.reverse();
+                c2.gates.reverse();
+                let mut back = c2.concat(&c1);
+
+                let len = forward.gates.len();
+                for _ in 0..len {
+                    let g1 = forward.gates[0];
+                    let g2 = forward.gates[1];
+                    let ftax = gate_pair_taxonomy(&g1, &g2);
+                    let g1 = back.gates[0];
+                    let g2 = back.gates[1];
+                    let btax = gate_pair_taxonomy(&g1, &g2);
+                    if curr_tax_f.insert(ftax) {
+                        tax_table
+                            .entry(ftax)
+                            .or_default()
+                            .insert(forward.clone().repr_blob());
+                    }
+
+                    if curr_tax_b.insert(btax) {
+                        tax_table
+                            .entry(btax)
+                            .or_default()
+                            .insert(back.clone().repr_blob());
+                    }
+
+                    let first = forward.gates.remove(0);
+                    forward.gates.push(first);
+                    let first = back.gates.remove(0);
+                    back.gates.push(first);
+                }
+            }
+        }
+    }
+
+    tax_table
+        .into_iter()
+        .map(|(k, v)| (k, v.into_iter().collect()))
+        .collect()
+
+}
+
+fn save_tax_id_tables_to_lmdb(
+    env_path: &str,
+    db_name: &str,
+    perms_to_m: &HashMap<GatePair, Vec<Vec<u8>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(env_path)?;
+
+    let env = Environment::new()
+        .set_max_dbs(90)
+        .set_map_size(800 * 1024 * 1024 * 1024)
+        .open(Path::new(env_path))?;
+
+    let db = env.create_db(Some(db_name), lmdb::DatabaseFlags::empty())?;
+
+    let batch_size = 100_000;
+    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(batch_size);
+
+    let flush_batch = |env: &Environment,
+                       db: Database,
+                       batch: &mut Vec<(Vec<u8>, Vec<u8>)>| {
+        if batch.is_empty() {
+            return;
+        }
+
+        let mut txn = env.begin_rw_txn().expect("Failed to begin LMDB txn");
+
+        for (key, value) in batch.iter() {
+            txn.put(db, key, value, WriteFlags::empty())
+                .expect("Failed to write LMDB entry");
+        }
+
+        txn.commit().expect("Failed to commit LMDB txn");
+        batch.clear();
+    };
+
+    for (tax, ids) in perms_to_m.iter() {
+        let key_bytes = bincode::serialize(tax)?;
+        let value_bytes = bincode::serialize(ids)?;
+
+        batch.push((key_bytes, value_bytes));
+
+        if batch.len() >= batch_size {
+            flush_batch(&env, db, &mut batch);
+        }
+    }
+
+    flush_batch(&env, db, &mut batch);
     Ok(())
 }

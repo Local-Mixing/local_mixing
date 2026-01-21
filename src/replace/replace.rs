@@ -21,7 +21,7 @@ use lmdb::{Cursor, Database, RoCursor, RoTransaction, Transaction};
 use libc::c_uint;
 extern crate lmdb_sys;
 use lmdb_sys as ffi;
-
+use serde::{Serialize, Deserialize};
 use std::{
     cmp::{max, min},
     collections::{HashMap, HashSet},
@@ -1770,7 +1770,7 @@ pub fn compress_big_ancillas(
     circuit
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CollisionType {
     OnActive,
     OnCtrl1,
@@ -1778,7 +1778,7 @@ pub enum CollisionType {
     OnNew,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GatePair {
     a: CollisionType,
     c1: CollisionType,
