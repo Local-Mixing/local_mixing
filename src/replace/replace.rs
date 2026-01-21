@@ -2847,6 +2847,8 @@ mod tests {
             panic!("Functionality was changed");
         }
 
+        println!("All good");
+        
         // No invalid wire indices
         for (i, gate) in circuit.gates.iter().enumerate() {
             for &w in gate {
