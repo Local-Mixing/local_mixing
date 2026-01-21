@@ -1189,7 +1189,6 @@ fn create_tax_id_table(circuit_table: HashMap<Vec<u8>, Vec<Vec<u8>>>) -> HashMap
     let mut tax_table: HashMap<GatePair, HashSet<Vec<u8>>> = HashMap::new();
     for (_, circuits) in circuit_table {
         let n = circuits.len();
-        println!("n: {}", n);
         for i in 0..n {
             for j in (i + 1)..n {
                 let mut curr_tax_f: HashSet<GatePair> = HashSet::new();
@@ -1206,6 +1205,7 @@ fn create_tax_id_table(circuit_table: HashMap<Vec<u8>, Vec<Vec<u8>>>) -> HashMap
                 let mut back = c2.concat(&c1);
 
                 let len = forward.gates.len();
+                println!("len: {}", len);
                 for _ in 0..len {
                     let g1 = forward.gates[0];
                     let g2 = forward.gates[1];
