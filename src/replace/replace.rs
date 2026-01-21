@@ -2147,11 +2147,14 @@ pub fn replace_sequential_pairs(
                     CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
                         .gates
                         .into_iter()
-                        .skip(2)
                         .rev()
                         .collect()
                 );
-
+                let Some(temp) = produced;
+                let two = CircuitSeq { gates: vec![id.gates[0], id.gates[1] ]};
+                if two.probably_equal(&temp).is_err(){
+                    panic!("BB");
+                }
                 if produced.is_none() {
                     fail += 1;
                 }
@@ -2221,7 +2224,7 @@ pub fn replace_sequential_pairs(
                 while produced.is_none() && fail < 100 {
                     fail += 1;
                     let id_len = rng.random_range(5..=7);
-                    let  id = match get_random_identity(id_len, tax, env) {
+                    let id = match get_random_identity(id_len, tax, env) {
                         Ok(id) => id,
                         Err(_) => {
                             fail += 1;
@@ -2276,7 +2279,6 @@ pub fn replace_sequential_pairs(
                         CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
                             .gates
                             .into_iter()
-                            .skip(2)
                             .rev()
                             .collect()
                     );
