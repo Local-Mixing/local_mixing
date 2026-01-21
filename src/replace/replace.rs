@@ -2159,7 +2159,7 @@ pub fn replace_sequential_pairs(
 
             if let Some(mut gates_out) = produced {
                 out.append(&mut gates_out);
-                left = *out.last().unwrap();
+                left = out.pop().unwrap();
             } else {
                 // extremely unlikely fallback
                 out.push(left);
@@ -2199,10 +2199,7 @@ pub fn replace_sequential_pairs(
                     id.rewire_first_gate(rewired_g.gates[0], num);
                     id = CircuitSeq::unrewire_subcircuit(&id, &used_wires);
                     id.gates.remove(0);
-                    let g = CircuitSeq{ gates: vec![out[0]] };
-                    if g.probably_equal(&id, n, 100_000).is_err() {
-                        panic!("Single bb");
-                    }
+                    
                     out.splice(0..1, id.gates);
                 }
 
@@ -2281,15 +2278,7 @@ pub fn replace_sequential_pairs(
                             .rev()
                             .collect()
                     );
-                    let temp = CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
-                        .gates
-                        .into_iter()
-                        .rev()
-                        .collect();
-                    let two = CircuitSeq { gates: vec![left_gate, right_gate]};
-                    if two.probably_equal(&CircuitSeq{ gates: temp } , n, 100_000).is_err(){
-                        panic!("BB");
-                    }
+                    
                     if produced.is_none() {
                         fail += 1;
                     }
