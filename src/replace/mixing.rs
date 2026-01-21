@@ -1393,6 +1393,9 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usi
                 j += 1;
             }
         }
+        if c.probably_equal(&circuit, n, 100_000).is_ok() {
+            panic!("The functionality has changed");
+        }
         {
         println!("Updating progress");
         let mut f = OpenOptions::new()

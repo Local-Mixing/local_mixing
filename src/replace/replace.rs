@@ -2301,7 +2301,12 @@ pub fn replace_sequential_pairs(
     // flush final carried gate
     out.push(left);
 
-    circuit.gates = out;
+    let out_circ = CircuitSeq{ gates: out };
+
+    if circuit.probably_equal(&out_circ, num_wires, 100_000).is_ok() {
+        panic!("Functionality was changed");
+    }
+    circuit.gates = out_circ.gates;
 
     (already_collided, shoot_count, curr_zero, traverse_left)
 }
