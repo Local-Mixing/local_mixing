@@ -2929,6 +2929,7 @@ mod tests {
         .collect();
         let dbs = open_all_dbs(&env);
         let chunks = split_into_random_chunks(&circuit.gates, 10, &mut rng);
+        static TOTAL_TIME: AtomicU64 = AtomicU64::new(0);
         // Call under test
         let replaced_chunks: Vec<Vec<[u8;3]>> =
         chunks
@@ -2940,10 +2941,12 @@ mod tests {
                     OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )
                 .expect("Failed to open read-only connection");
+                let t0 = Instant::now();
                 let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, 64, &mut thread_conn, &env, &bit_shuf_list, &dbs);
                 sub.gates.reverse();
                 let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, 64, &mut thread_conn, &env, &bit_shuf_list, &dbs);
                 sub.gates.reverse();
+                TOTAL_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 sub.gates
             })
             .collect();
