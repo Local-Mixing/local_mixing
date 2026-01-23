@@ -218,34 +218,72 @@ pub fn random_canonical_id(
     }
 }
 
+static GET_ID_TOTAL_TIME: AtomicU64 = AtomicU64::new(0);
+static DB_NAME_TIME: AtomicU64 = AtomicU64::new(0);
+static DB_LOOKUP_TIME: AtomicU64 = AtomicU64::new(0);
+static TXN_BEGIN_TIME: AtomicU64 = AtomicU64::new(0);
+static SERIALIZE_KEY_TIME: AtomicU64 = AtomicU64::new(0);
+static LMDB_GET_TIME: AtomicU64 = AtomicU64::new(0);
+static DESERIALIZE_LIST_TIME: AtomicU64 = AtomicU64::new(0);
+static RNG_CHOOSE_TIME: AtomicU64 = AtomicU64::new(0);
+
 fn get_random_identity(
     n: usize,
     gate_pair: GatePair,
     env: &lmdb::Environment,
     dbs: &HashMap<String, lmdb::Database>,
 ) -> Result<CircuitSeq, Box<dyn std::error::Error>> {
+    use std::time::Instant;
+    use std::sync::atomic::Ordering;
+
+    let total_start = Instant::now();
+
+    let t = Instant::now();
     let db_name = format!("ids_n{}", n);
+    DB_NAME_TIME.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+    let t = Instant::now();
     let db = match dbs.get(&db_name) {
-                Some(db) => *db,
-                None => panic!("No db {}", db_name),
-            };
+        Some(db) => *db,
+        None => panic!("No db {}", db_name),
+    };
+    DB_LOOKUP_TIME.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
+    let t = Instant::now();
     let txn = env.begin_ro_txn()?;
+    TXN_BEGIN_TIME.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-    // Serialize the gate_pair to use as the key
-    let key_bytes = bincode::serialize(&gate_pair).unwrap_or_else(|e| panic!("Failed to serialize gate pair: {}", e));
+    let t = Instant::now();
+    let key_bytes = bincode::serialize(&gate_pair)
+        .unwrap_or_else(|e| panic!("Failed to serialize gate pair: {}", e));
+    SERIALIZE_KEY_TIME.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-    // Lookup the circuits
+    let t = Instant::now();
     let value_bytes = txn.get(db, &key_bytes)?;
+    LMDB_GET_TIME.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
+    let t = Instant::now();
     let circuits: Vec<Vec<u8>> =
-        bincode::deserialize(value_bytes).unwrap_or_else(|e| panic!("Failed to deserialize circuit list: {}", e));
+        bincode::deserialize(value_bytes)
+            .unwrap_or_else(|e| panic!("Failed to deserialize circuit list: {}", e));
+    DESERIALIZE_LIST_TIME.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
+    let t = Instant::now();
     let blob = circuits
         .choose(&mut rand::rng())
         .expect("Failed to choose a random circuit");
+    RNG_CHOOSE_TIME.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-    Ok(CircuitSeq::from_blob(blob))
+    let t = Instant::now();
+    let out = CircuitSeq::from_blob(blob);
+    FROM_BLOB_TIME.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+    GET_ID_TOTAL_TIME.fetch_add(
+        total_start.elapsed().as_nanos() as u64,
+        Ordering::Relaxed,
+    );
+
+    Ok(out)
 }
 
 // To just get a completely random circuit and reverse for identity, rather than using canonical ones from our rainbow table
@@ -2388,26 +2426,22 @@ pub fn replace_pair_distances(
     // next phases just scan in the block zone for things of size i. go up until 10
 }
 
-//TODO FIGURE THIS OUT
 pub fn update_distance(
     distances: &mut Vec<usize>,
     didx: usize,
     id_len: usize,
 ) {
-    let dval = distances[didx];
-    let rep_len = id_len - 1;
+    let k = id_len - 1;
 
-    let mut replacement = Vec::with_capacity(rep_len);
+    let left0 = distances[didx - 1] + 1;
+    let right0 = distances[didx + 1] + 1;
 
-    let up_len = rep_len / 2;
-    let down_len = rep_len - up_len;
+    let mut replacement = Vec::with_capacity(k);
 
-    for i in 0..up_len {
-        replacement.push(dval + 1 + i);
-    }
-
-    for i in (0..down_len).rev() {
-        replacement.push(dval + 1 + i);
+    for i in 0..k {
+        let from_left = left0 + i;
+        let from_right = right0 + (k - 1 - i);
+        replacement.push(from_left.min(from_right));
     }
 
     distances.splice(didx..=didx, replacement);
@@ -2697,6 +2731,7 @@ pub fn print_compress_timers() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libc::open;
     use rusqlite::Connection;
     use std::time::{Instant};
     #[test]
@@ -2980,6 +3015,45 @@ mod tests {
     fn test_update_dist() {
         let mut d = vec![0, 1, 1, 0];
         update_distance(&mut d, 1, 6);
-        assert_eq!(d, vec![0, 2, 3, 4, 3, 2, 1, 0]);
+        assert_eq!(d, vec![0, 1, 2, 3, 3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn test_gen_id_speeds() {
+        // stress / invariant check
+        let n = 64;
+        let w = 7;
+        let env_path = "./db";
+
+        let env = Environment::new()
+            .set_max_dbs(50)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new(env_path))
+            .expect("Failed to open lmdb");
+        let dbs = open_all_dbs(&env);
+
+        for _ in 0..10_000 {
+            let c = random_circuit(64, 2);
+            let tax = gate_pair_taxonomy(&c.gates[0], &c.gates[1]);
+            let id = get_random_identity(n, tax, &env, &dbs);
+        }
+        let ns_to_min = |v: u64| v as f64 / (60.0 * 1_000_000_000.0);
+        println!("\n=== get_random_identity timers ===");
+
+        println!("DB_OPEN_TIME          : {:.6}", ns_to_min(DB_OPEN_TIME.load(Ordering::Relaxed)));
+        println!("TXN_TIME              : {:.6}", ns_to_min(TXN_TIME.load(Ordering::Relaxed)));
+        println!("LMDB_LOOKUP_TIME      : {:.6}", ns_to_min(LMDB_LOOKUP_TIME.load(Ordering::Relaxed)));
+        println!("ROW_FETCH_TIME        : {:.6}", ns_to_min(ROW_FETCH_TIME.load(Ordering::Relaxed)));
+        println!("SROW_FETCH_TIME       : {:.6}", ns_to_min(SROW_FETCH_TIME.load(Ordering::Relaxed)));
+        println!("SIXROW_FETCH_TIME     : {:.6}", ns_to_min(SIXROW_FETCH_TIME.load(Ordering::Relaxed)));
+        println!("LROW_FETCH_TIME       : {:.6}", ns_to_min(LROW_FETCH_TIME.load(Ordering::Relaxed)));
+        println!("FROM_BLOB_TIME        : {:.6}", ns_to_min(FROM_BLOB_TIME.load(Ordering::Relaxed)));
+        println!("CANONICALIZE_TIME     : {:.6}", ns_to_min(CANONICALIZE_TIME.load(Ordering::Relaxed)));
+        println!("PICK_SUBCIRCUIT_TIME  : {:.6}", ns_to_min(PICK_SUBCIRCUIT_TIME.load(Ordering::Relaxed)));
+        println!("PERMUTATION_TIME      : {:.6}", ns_to_min(PERMUTATION_TIME.load(Ordering::Relaxed)));
+        println!("CANON_TIME            : {:.6}", ns_to_min(CANON_TIME.load(Ordering::Relaxed)));
+        println!("TRIAL_TIME            : {:.6}", ns_to_min(TRIAL_TIME.load(Ordering::Relaxed)));
+
+        println!("=================================\n");
     }
 }
