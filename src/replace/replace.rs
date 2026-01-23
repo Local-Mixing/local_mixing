@@ -238,7 +238,9 @@ fn get_random_identity(
     let g = GatePair::to_int(&gate_pair);
     let db_name = format!("ids_n{}g{}", n, g);
 
-    let db = dbs.get(&db_name).expect("No DB with that name");
+    let db = dbs.get(&db_name).unwrap_or_else(|| {
+        panic!("Failed to get DB with name: {}", db_name);
+    });
 
     // Hardcoded max entries for all DBs
     let max_entries: usize = match db_name.as_str() {
