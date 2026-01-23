@@ -799,7 +799,7 @@ fn main() {
                 .expect("Failed to open lmdb");
 
             let ns_and_ms = [
-                (5, 5),
+                // (5, 5),
                 (6, 5),
                 (7, 4),
             ];
@@ -1258,24 +1258,34 @@ fn save_tax_id_tables_to_lmdb(
     use lmdb::{Environment, Database, WriteFlags};
     use std::path::Path;
 
-    // Ensure LMDB directory exists
-    std::fs::create_dir_all(env_path)?;
-
     // Open environment
     let env = Environment::new()
         .set_max_dbs(155)
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
-    // Delete old DBs ids_n5, ids_n6, ids_n7
-    for n in 5..=7 {
-        let db_to_delete = format!("ids_n{}", n);
-        if let Ok(db) = env.open_db(Some(&db_to_delete)) {
+    let dbs_to_delete = [
+        "ids_nids_n5g14",
+        "ids_nids_n5g18",
+        "ids_nids_n5g19",
+        "ids_nids_n5g23",
+        "ids_nids_n5g3",
+        "ids_nids_n5g30",
+        "ids_nids_n5g6",
+        "ids_nids_n5g9",
+    ];
+
+    for db_name in dbs_to_delete.iter() {
+        if let Ok(db) = env.open_db(Some(db_name)) {
             let mut txn = env.begin_rw_txn()?;
+            // SAFETY: ensure no other transactions or handles are active
             unsafe {
-                txn.drop_db(db)?;                                            
+                txn.drop_db(db)?;
             }
             txn.commit()?;
+            println!("Dropped DB: {}", db_name);
+        } else {
+            println!("DB not found: {}", db_name);
         }
     }
 
