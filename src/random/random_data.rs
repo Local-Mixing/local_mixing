@@ -2544,7 +2544,7 @@ mod tests {
         }
 
         let env = Environment::new()
-            .set_max_dbs(100)
+            .set_max_dbs(155)
             .open(Path::new("./db"))
             .expect("Failed to open LMDB env");
 
@@ -2620,7 +2620,7 @@ mod tests {
         // Open LMDB
         let env_path = "./db";
         let env = Environment::new()
-            .set_max_dbs(80)
+            .set_max_dbs(155)
             .set_map_size(800 * 1024 * 1024 * 1024)
             .open(Path::new(env_path))
             .expect("Failed to open LMDB env");

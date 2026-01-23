@@ -461,7 +461,7 @@ fn main() {
                 ).unwrap();
                 let lmdb = "./db";
                 let env = Environment::new()
-                .set_max_dbs(50)      
+                .set_max_dbs(155)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -551,7 +551,7 @@ fn main() {
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_dbs(50)      
+                .set_max_dbs(155)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -586,7 +586,7 @@ fn main() {
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(80)      
+                .set_max_dbs(155)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -629,7 +629,7 @@ fn main() {
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(60)      
+                .set_max_dbs(155)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -687,7 +687,7 @@ fn main() {
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_dbs(60)      
+                .set_max_dbs(155)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -759,7 +759,7 @@ fn main() {
             let env_path = "./db";
 
             let env = Environment::new()
-                .set_max_dbs(50)
+                .set_max_dbs(155)
                 .set_map_size(64 * 1024 * 1024 * 1024)
                 .open(Path::new(env_path))
                 .expect("Failed to open lmdb");
@@ -793,7 +793,7 @@ fn main() {
             let env_path = "./db";
 
             let env = Environment::new()
-                .set_max_dbs(50)
+                .set_max_dbs(155)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(env_path))
                 .expect("Failed to open lmdb");
@@ -939,7 +939,7 @@ pub fn sql_to_lmdb(n: usize, m: usize) -> Result<(), ()> {
 
     fs::create_dir_all(lmdb_path).expect("Failed to create LMDB directory");
     let env = Environment::new()
-        .set_max_dbs(50)
+        .set_max_dbs(155)
         .set_map_size(map_size_bytes)
         .open(Path::new(lmdb_path))
         .expect("Failed to open LMDB environment");
@@ -1025,7 +1025,7 @@ pub fn sql_to_lmdb_perms(n: usize, m: usize) -> Result<(), ()> {
     // Open LMDB
     fs::create_dir_all(lmdb_path).expect("Failed to create LMDB directory");
     let env = Environment::new()
-        .set_max_dbs(50)
+        .set_max_dbs(155)
         .set_map_size(map_size_bytes)
         .open(Path::new(lmdb_path))
         .expect("Failed to open LMDB environment");
@@ -1126,7 +1126,7 @@ fn save_perm_tables_to_lmdb(
 
     std::fs::create_dir_all(env_path)?;
     let env = Environment::new()
-        .set_max_dbs(50)
+        .set_max_dbs(155)
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
@@ -1255,47 +1255,62 @@ fn save_tax_id_tables_to_lmdb(
     db_name: &str,
     perms_to_m: &HashMap<GatePair, Vec<Vec<u8>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use lmdb::{Environment, Database, WriteFlags};
+    use std::path::Path;
+
+    // Ensure LMDB directory exists
     std::fs::create_dir_all(env_path)?;
 
+    // Open environment
     let env = Environment::new()
-        .set_max_dbs(90)
+        .set_max_dbs(155)
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
-    let db = env.create_db(Some(db_name), lmdb::DatabaseFlags::empty())?;
+    // Delete old DBs ids_n5, ids_n6, ids_n7
+    for n in 5..=7 {
+        let db_to_delete = format!("ids_n{}", n);
+        if let Ok(db) = env.open_db(Some(&db_to_delete)) {
+            let mut txn = env.begin_rw_txn()?;
+            unsafe {
+                txn.drop_db(db)?;
+            }
+            txn.commit()?;
+        }
+    }
 
     let batch_size = 100_000;
-    let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(batch_size);
+    let mut batch: Vec<Vec<u8>> = Vec::with_capacity(batch_size);
 
-    let flush_batch = |env: &Environment,
-                       db: Database,
-                       batch: &mut Vec<(Vec<u8>, Vec<u8>)>| {
+    let flush_batch = |env: &Environment, db: Database, batch: &mut Vec<Vec<u8>>| {
         if batch.is_empty() {
             return;
         }
 
         let mut txn = env.begin_rw_txn().expect("Failed to begin LMDB txn");
-
-        for (key, value) in batch.iter() {
-            txn.put(db, key, value, WriteFlags::empty())
-                .expect("Failed to write LMDB entry");
+        for key in batch.iter() {
+            txn.put(db, key, &[], WriteFlags::empty())
+                .expect("Failed to write LMDB key");
         }
-
         txn.commit().expect("Failed to commit LMDB txn");
         batch.clear();
     };
 
-    for (tax, ids) in perms_to_m.iter() {
-        let key_bytes = bincode::serialize(tax)?;
-        let value_bytes = bincode::serialize(ids)?;
+    for (gatepair, circuits) in perms_to_m.iter() {
+        let g = GatePair::to_int(gatepair); // your conversion function
+        let dynamic_db_name = format!("ids_n{}g{}", db_name, g);
+        let db = env.create_db(Some(&dynamic_db_name), lmdb::DatabaseFlags::empty())?;
 
-        batch.push((key_bytes, value_bytes));
+        for circuit in circuits {
+            batch.push(circuit.clone());
 
-        if batch.len() >= batch_size {
-            flush_batch(&env, db, &mut batch);
+            if batch.len() >= batch_size {
+                flush_batch(&env, db, &mut batch);
+            }
         }
+
+        flush_batch(&env, db, &mut batch);
     }
 
-    flush_batch(&env, db, &mut batch);
     Ok(())
 }

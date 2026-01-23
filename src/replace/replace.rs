@@ -238,8 +238,9 @@ fn get_random_identity(
 
     let total_start = Instant::now();
 
+    let g = GatePair::to_int(&gate_pair);
     let t = Instant::now();
-    let db_name = format!("ids_n{}", n);
+    let db_name = format!("ids_n{}g{}", n, g);
     DB_NAME_TIME.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     let t = Instant::now();
@@ -1864,6 +1865,127 @@ impl GatePair {
     pub fn is_none(gate_pair: &Self) -> bool {
         gate_pair.a == CollisionType::OnNew && gate_pair.c1 == CollisionType::OnNew && gate_pair.c2 == CollisionType::OnNew
     }
+
+    pub fn to_int(gp: &Self) -> usize {
+        let a = gp.a;
+        let b = gp.c1;
+        let c = gp.c2;
+
+        if a == CollisionType::OnNew && b == CollisionType::OnNew && c == CollisionType::OnNew {
+            0
+        } else if a == CollisionType::OnActive && b == CollisionType::OnNew && c == CollisionType::OnNew {
+            1
+        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnNew && c == CollisionType::OnNew {
+            2
+        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnNew && c == CollisionType::OnNew {
+            3
+        } else if a == CollisionType::OnNew && b == CollisionType::OnActive && c == CollisionType::OnNew {
+            4
+        } else if a == CollisionType::OnNew && b == CollisionType::OnCtrl1 && c == CollisionType::OnNew {
+            5
+        } else if a == CollisionType::OnNew && b == CollisionType::OnCtrl2 && c == CollisionType::OnNew {
+            6
+        } else if a == CollisionType::OnNew && b == CollisionType::OnNew && c == CollisionType::OnActive {
+            7
+        } else if a == CollisionType::OnNew && b == CollisionType::OnNew && c == CollisionType::OnCtrl1 {
+            8
+        } else if a == CollisionType::OnNew && b == CollisionType::OnNew && c == CollisionType::OnCtrl2 {
+            9
+        } else if a == CollisionType::OnActive && b == CollisionType::OnCtrl1 && c == CollisionType::OnNew {
+            10
+        } else if a == CollisionType::OnActive && b == CollisionType::OnCtrl2 && c == CollisionType::OnNew {
+            11
+        } else if a == CollisionType::OnActive && b == CollisionType::OnNew && c == CollisionType::OnCtrl1 {
+            12
+        } else if a == CollisionType::OnActive && b == CollisionType::OnNew && c == CollisionType::OnCtrl2 {
+            13
+        } else if a == CollisionType::OnActive && b == CollisionType::OnCtrl1 && c == CollisionType::OnCtrl2 {
+            14
+        } else if a == CollisionType::OnActive && b == CollisionType::OnCtrl2 && c == CollisionType::OnCtrl1 {
+            15
+        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnActive && c == CollisionType::OnNew {
+            16
+        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnCtrl2 && c == CollisionType::OnNew {
+            17
+        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnNew && c == CollisionType::OnActive {
+            18
+        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnNew && c == CollisionType::OnCtrl2 {
+            19
+        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnActive && c == CollisionType::OnCtrl2 {
+            20
+        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnCtrl2 && c == CollisionType::OnActive {
+            21
+        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnActive && c == CollisionType::OnNew {
+            22
+        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnCtrl1 && c == CollisionType::OnNew {
+            23
+        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnNew && c == CollisionType::OnActive {
+            24
+        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnNew && c == CollisionType::OnCtrl1 {
+            25
+        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnActive && c == CollisionType::OnCtrl1 {
+            26
+        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnCtrl1 && c == CollisionType::OnActive {
+            27
+        } else if a == CollisionType::OnNew && b == CollisionType::OnActive && c == CollisionType::OnCtrl1 {
+            28
+        } else if a == CollisionType::OnNew && b == CollisionType::OnActive && c == CollisionType::OnCtrl2 {
+            29
+        } else if a == CollisionType::OnNew && b == CollisionType::OnCtrl1 && c == CollisionType::OnActive {
+            30
+        } else if a == CollisionType::OnNew && b == CollisionType::OnCtrl1 && c == CollisionType::OnCtrl2 {
+            31
+        } else if a == CollisionType::OnNew && b == CollisionType::OnCtrl2 && c == CollisionType::OnActive {
+            32
+        } else if a == CollisionType::OnNew && b == CollisionType::OnCtrl2 && c == CollisionType::OnCtrl1 {
+            33
+        } else {
+            panic!("Not a valid GatePair");
+        }
+    }
+
+    pub fn from_int(i: usize) -> Self {
+        use CollisionType::*;
+
+        match i {
+            0 => GatePair { a: OnNew, c1: OnNew, c2: OnNew },
+            1 => GatePair { a: OnActive, c1: OnNew, c2: OnNew },
+            2 => GatePair { a: OnCtrl1,  c1: OnNew, c2: OnNew },
+            3 => GatePair { a: OnCtrl2,  c1: OnNew, c2: OnNew },
+            4 => GatePair { a: OnNew, c1: OnActive, c2: OnNew },
+            5 => GatePair { a: OnNew, c1: OnCtrl1, c2: OnNew },
+            6 => GatePair { a: OnNew, c1: OnCtrl2, c2: OnNew },
+            7 => GatePair { a: OnNew, c1: OnNew, c2: OnActive },
+            8 => GatePair { a: OnNew, c1: OnNew, c2: OnCtrl1 },
+            9 => GatePair { a: OnNew, c1: OnNew, c2: OnCtrl2 },
+            10 => GatePair { a: OnActive, c1: OnCtrl1, c2: OnNew },
+            11 => GatePair { a: OnActive, c1: OnCtrl2, c2: OnNew },
+            12 => GatePair { a: OnActive, c1: OnNew, c2: OnCtrl1 },
+            13 => GatePair { a: OnActive, c1: OnNew, c2: OnCtrl2 },
+            14 => GatePair { a: OnActive, c1: OnCtrl1, c2: OnCtrl2 },
+            15 => GatePair { a: OnActive, c1: OnCtrl2, c2: OnCtrl1 },
+            16 => GatePair { a: OnCtrl1, c1: OnActive, c2: OnNew },
+            17 => GatePair { a: OnCtrl1, c1: OnCtrl2, c2: OnNew },
+            18 => GatePair { a: OnCtrl1, c1: OnNew, c2: OnActive },
+            19 => GatePair { a: OnCtrl1, c1: OnNew, c2: OnCtrl2 },
+            20 => GatePair { a: OnCtrl1, c1: OnActive, c2: OnCtrl2 },
+            21 => GatePair { a: OnCtrl1, c1: OnCtrl2, c2: OnActive },
+            22 => GatePair { a: OnCtrl2, c1: OnActive, c2: OnNew },
+            23 => GatePair { a: OnCtrl2, c1: OnCtrl1, c2: OnNew },
+            24 => GatePair { a: OnCtrl2, c1: OnNew, c2: OnActive },
+            25 => GatePair { a: OnCtrl2, c1: OnNew, c2: OnCtrl1 },
+            26 => GatePair { a: OnCtrl2, c1: OnActive, c2: OnCtrl1 },
+            27 => GatePair { a: OnCtrl2, c1: OnCtrl1, c2: OnActive },
+            28 => GatePair { a: OnNew, c1: OnActive, c2: OnCtrl1 },
+            29 => GatePair { a: OnNew, c1: OnActive, c2: OnCtrl2 },
+            30 => GatePair { a: OnNew, c1: OnCtrl1, c2: OnActive },
+            31 => GatePair { a: OnNew, c1: OnCtrl1, c2: OnCtrl2 },
+            32 => GatePair { a: OnNew, c1: OnCtrl2, c2: OnActive },
+            33 => GatePair { a: OnNew, c1: OnCtrl2, c2: OnCtrl1 },
+
+            _ => panic!("Invalid GatePair index"),
+        }
+    }
 }
 
 pub fn get_collision_type(g1: &[u8; 3], pin: u8) -> CollisionType {
@@ -2817,7 +2939,7 @@ mod tests {
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(50)      
+                .set_max_dbs(155)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -2880,7 +3002,7 @@ mod tests {
     fn test_random_canon_id() {
         let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(50)      
+                .set_max_dbs(155)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new("./db"))
                 .expect("Failed to open lmdb");
@@ -2898,7 +3020,7 @@ mod tests {
         let db_name = "perm_tables_n6";
 
         let env = Environment::new()
-            .set_max_dbs(80)
+            .set_max_dbs(155)
             .open(Path::new(env_path))?;
 
         let db = env.open_db(Some(db_name))?;
@@ -2919,7 +3041,7 @@ mod tests {
         let env_path = "./db";
         let db_name = "n4m2";
         let env = Environment::new()
-            .set_max_dbs(50)
+            .set_max_dbs(155)
             .open(Path::new(env_path)).expect("Failed to open db");
         let db = env.open_db(Some(&db_name))
                 .unwrap_or_else(|e| panic!("LMDB DB '{}' failed to open: {:?}", db_name, e));
@@ -2949,7 +3071,7 @@ mod tests {
         let env_path = "./db";
         let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
         let env = Environment::new()
-            .set_max_dbs(80)
+            .set_max_dbs(155)
             .open(Path::new(env_path)).expect("Failed to open db");
         let data2 = fs::read_to_string("./tempcirc.txt").expect("Failed to read circuitF.txt");
         let mut circuit = CircuitSeq::from_string(&data2);
@@ -3026,7 +3148,7 @@ mod tests {
         let env_path = "./db";
 
         let env = Environment::new()
-            .set_max_dbs(80)
+            .set_max_dbs(155)
             .set_map_size(800 * 1024 * 1024 * 1024)
             .open(Path::new(env_path))
             .expect("Failed to open lmdb");
