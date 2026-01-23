@@ -2318,6 +2318,12 @@ pub fn replace_sequential_pairs(
     let mut fail = 0;
 
     while i < n {
+        let mut buf = [0u8; 1];
+        if let Ok(n) = io::stdin().read(&mut buf) {
+            if n > 0 && buf[0] == b'\n' {
+                println!("  i = {}", i);
+            }
+        }
         let right = gates[i];
         let tax = gate_pair_taxonomy(&left, &right);
 
@@ -3243,6 +3249,7 @@ mod tests {
             let c = random_circuit(64, 2);
             let tax = gate_pair_taxonomy(&c.gates[0], &c.gates[1]);
             let id = get_random_identity(w, tax, &env, &dbs);
+            println!("{:?}", id.unwrap().gates);
         }
         let ns_to_min = |v: u64| v as f64 / (60.0 * 1_000_000_000.0);
         println!("\n=== get_random_identity timers ===");

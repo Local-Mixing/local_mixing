@@ -1346,9 +1346,6 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usi
         })
         .collect();
     let dbs = open_all_dbs(env);
-    for (name, db) in &dbs {
-        println!("name: {}", name);
-    }
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat obfuscate + compress 'rounds' times
