@@ -235,7 +235,7 @@ pub fn find_convex_subcircuit<R: RngCore>(
     circuit: &CircuitSeq,
     rng: &mut R,
 ) -> (Vec<usize>, usize) {
-    let mut circuit = circuit.clone();
+    let circuit = circuit.clone();
     let num_gates = circuit.gates.len();
     let mut search_attempts = 0;
     let max_attempts = 3;
@@ -509,7 +509,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                     } else {
                         let curr_gate = circuit.gates[curr_idx];
                         let mut collides_with_prev_selected = false;
-                        let mut repeat_wires = false;
+                        let repeat_wires = false;
 
                         for i in 0..selected_gates_seen {
                             if Gate::collides_index(
@@ -577,7 +577,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                     } else {
                         let curr_gate = circuit.gates[curr_idx];
                         let mut collides_with_prev_selected = false;
-                        let mut repeat_wires = false;
+                        let repeat_wires = false;
 
                         for i in 0..selected_gates_seen {
                             if Gate::collides_index(
@@ -1959,7 +1959,7 @@ mod tests {
         // Keep trying until a convex subcircuit with >= 3 gates is found
         while subcircuit_gates.len() < 5 {
             for set_size in (3..=16).rev() {
-                let (mut gates, tries) = simple_find_convex_subcircuit(set_size, max_wires, 64, &c, &mut rng);
+                let (gates, tries) = simple_find_convex_subcircuit(set_size, max_wires, 64, &c, &mut rng);
                 attempts += tries;
 
                 if !gates.is_empty() && gates.len() >= 3 {

@@ -1,6 +1,13 @@
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation}, rainbow::canonical::Canonicalization, random::random_data::{
-        contiguous_convex, find_convex_subcircuit, get_canonical, random_circuit, shoot_left_vec, shoot_random_gate, simple_find_convex_subcircuit, targeted_convex_subcircuit
+        contiguous_convex, 
+        // find_convex_subcircuit, 
+        get_canonical, 
+        random_circuit, 
+        shoot_left_vec, 
+        shoot_random_gate, 
+        simple_find_convex_subcircuit, 
+        targeted_convex_subcircuit
     }
 };
 
@@ -31,7 +38,7 @@ use std::io::{self, Read};
 use std::os::unix::io::AsRawFd;
 use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
 use std::sync::atomic::{AtomicU64, Ordering};
-use rand::prelude::IndexedRandom;
+// use rand::prelude::IndexedRandom;
 
 pub struct Iter<'txn> {
     cursor: *mut ffi::MDB_cursor,
@@ -219,13 +226,13 @@ pub fn random_canonical_id(
 }
 
 static GET_ID_TOTAL_TIME: AtomicU64 = AtomicU64::new(0);
-static DB_NAME_TIME: AtomicU64 = AtomicU64::new(0);
-static DB_LOOKUP_TIME: AtomicU64 = AtomicU64::new(0);
-static TXN_BEGIN_TIME: AtomicU64 = AtomicU64::new(0);
-static SERIALIZE_KEY_TIME: AtomicU64 = AtomicU64::new(0);
-static LMDB_GET_TIME: AtomicU64 = AtomicU64::new(0);
-static DESERIALIZE_LIST_TIME: AtomicU64 = AtomicU64::new(0);
-static RNG_CHOOSE_TIME: AtomicU64 = AtomicU64::new(0);
+// static DB_NAME_TIME: AtomicU64 = AtomicU64::new(0);
+// static DB_LOOKUP_TIME: AtomicU64 = AtomicU64::new(0);
+// static TXN_BEGIN_TIME: AtomicU64 = AtomicU64::new(0);
+// static SERIALIZE_KEY_TIME: AtomicU64 = AtomicU64::new(0);
+// static LMDB_GET_TIME: AtomicU64 = AtomicU64::new(0);
+// static DESERIALIZE_LIST_TIME: AtomicU64 = AtomicU64::new(0);
+// static RNG_CHOOSE_TIME: AtomicU64 = AtomicU64::new(0);
 
 fn get_random_identity(
     n: usize,
@@ -1302,7 +1309,6 @@ pub fn sequential_compress_big_ancillas(
         }
 
         let t2 = Instant::now();
-        let used_wires = subcircuit.used_wires();
         let mut used_wires = subcircuit.used_wires();
         let n_wires = used_wires.len();
         let max = 7;
@@ -2100,7 +2106,7 @@ fn gate_tri_taxonomy(g0: &[u8;3], g1: &[u8;3], g2: &[u8;3]) -> GateTri {
 
 pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &mut Connection, env: &lmdb::Environment) {
     println!("Starting replace_pairs, circuit length: {}", circuit.gates.len());
-    let start = circuit.clone();
+    // let start = circuit.clone();
     let mut pairs: HashMap<GatePair, Vec<usize>> = HashMap::new();
     let gates = circuit.gates.clone();
     let m = circuit.gates.len();
@@ -2293,7 +2299,7 @@ pub fn replace_sequential_pairs(
     num_wires: usize,
     conn: &mut Connection,
     env: &lmdb::Environment,
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
+    _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>
 ) -> (usize, usize, usize, usize) {
     make_stdin_nonblocking();
@@ -2546,13 +2552,14 @@ pub fn replace_sequential_pairs(
     (already_collided, shoot_count, curr_zero, traverse_left)
 }
 
+// returns the id-2 and the length
 pub fn replace_single_pair(
     left: &[u8;3],
     right: &[u8;3],
     num_wires: usize,
-    conn: &mut Connection,
+    _conn: &mut Connection,
     env: &lmdb::Environment,
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
+    _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>
 ) -> (Vec<[u8;3]>, usize) {
     make_stdin_nonblocking();
@@ -2625,18 +2632,87 @@ pub fn replace_single_pair(
     id.gates.len() - 2)
 }
 
+//TODO maybe parallelize this
 pub fn replace_pair_distances(
     circuit: &mut CircuitSeq,
     num_wires: usize,
     conn: &mut Connection,
     env: &lmdb::Environment,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
-    dbs: &HashMap<String, lmdb::Database>
+    dbs: &HashMap<String, lmdb::Database>,
 ) {
-    let mut distances = vec![0usize; circuit.gates.len()];
-    //add a block after the first sequential run
-    // phase run is in sequence
-    // next phases just scan in the block zone for things of size i. go up until 10
+    let min = 30;
+
+    let mut distances = vec![0usize; circuit.gates.len() + 1];
+
+    let (mut left, mut right) = update_bounds(&distances);
+
+    let mut curr = 0;
+    loop {
+        // Termination condition
+        if curr >= min {
+            break;
+        }
+
+        let mut pending: Vec<(usize, usize, Vec<[u8; 3]>)> = Vec::new();
+
+        // scan
+        let mut i = left;
+        while i <= right {
+            if distances[i] == curr {
+                let (id, id_len) = replace_single_pair(
+                    &circuit.gates[i - 1],
+                    &circuit.gates[i],
+                    num_wires,
+                    conn,
+                    env,
+                    bit_shuf_list,
+                    dbs,
+                );
+
+                // Save what to do later
+                pending.push((i, id_len, id));
+            }
+            i += 1;
+        }
+
+        // Nothing at this level, move up
+        if pending.is_empty() {
+            curr += 1;
+            continue;
+        }
+
+        // replace
+        pending.reverse();
+
+        for (i, id_len, id) in pending {
+            circuit.gates.splice(i - 1..=i, id);
+            update_distance(&mut distances, i, id_len);
+        }
+
+        // Recompute bounds once after batch
+        let (l, r) = update_bounds(&distances);
+        left = l;
+        right = r;
+    }
+}
+
+fn update_bounds(distances: &[usize]) -> (usize, usize) {
+    let mut left = 0;
+    while left + 1 < distances.len()
+        && distances[left + 1] == distances[left] + 1
+    {
+        left += 1;
+    }
+
+    let mut right = distances.len() - 1;
+    while right > 0
+        && distances[right - 1] == distances[right] + 1
+    {
+        right -= 1;
+    }
+
+    (left, right)
 }
 
 pub fn update_distance(
@@ -2667,7 +2743,7 @@ pub fn replace_tri(
     env: &lmdb::Environment,
 ) {
     println!("Starting replace_tri, circuit length: {}", circuit.gates.len());
-    let start = circuit.clone();
+    // let start = circuit.clone();
     let mut tris: HashMap<GateTri, Vec<usize>> = HashMap::new();
     let gates = circuit.gates.clone();
     let m = gates.len();
@@ -2944,7 +3020,6 @@ pub fn print_compress_timers() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libc::open;
     use rusqlite::Connection;
     use std::time::{Instant};
     #[test]
@@ -3038,8 +3113,8 @@ mod tests {
         let data2 = fs::read_to_string(str2).expect("Failed to read circuitF.txt");
         let mut stable_count = 0;
         let conn = Connection::open("circuits.db").expect("Failed to open DB");
-        let mut acc = CircuitSeq::from_string(&data2);
-        let bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
+        let acc = CircuitSeq::from_string(&data2);
+        let _bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
         .map(|n| {
             (0..n)
                 .permutations(n)
@@ -3047,7 +3122,7 @@ mod tests {
                 .collect::<Vec<Vec<usize>>>()
         })
         .collect();
-        let dbs = open_all_dbs(&env);
+        let _dbs = open_all_dbs(&env);
         let mut stmts_prepared = HashMap::new();
         let mut stmts_prepared_limit1 = HashMap::new();
         let ns_and_ms = vec![(3, 10), (4, 6), (5, 5), (6, 5), (7, 4)];
@@ -3063,7 +3138,7 @@ mod tests {
                 stmts_prepared_limit1.insert((n, m), stmt_limit);
             }
         }
-        let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
+        let _conn = Connection::open("circuits.db").expect("Failed to open DB");
         while stable_count < 6 {
             let before = acc.gates.len();
             // acc = compress_big(&acc, 1_000, 64, &mut conn, &env, &bit_shuf_list, &dbs);
@@ -3118,7 +3193,7 @@ mod tests {
 
         let txn = env.begin_ro_txn()?;
         let mut cursor = txn.open_ro_cursor(db)?;
-        for (key, value) in cursor.iter() {
+        for (_, value) in cursor.iter() {
             println!("{:?}", value); 
         }
 
@@ -3160,7 +3235,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0xdeadbeef);
         let num_wires = 64;
         let env_path = "./db";
-        let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
+        let _conn = Connection::open("circuits.db").expect("Failed to open DB");
         let env = Environment::new()
             .set_max_dbs(155)
             .open(Path::new(env_path)).expect("Failed to open db");
@@ -3190,9 +3265,9 @@ mod tests {
                 )
                 .expect("Failed to open read-only connection");
                 let t0 = Instant::now();
-                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, 64, &mut thread_conn, &env, &bit_shuf_list, &dbs);
+                let (_, _, _, _) = replace_sequential_pairs(&mut sub, 64, &mut thread_conn, &env, &bit_shuf_list, &dbs);
                 sub.gates.reverse();
-                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, 64, &mut thread_conn, &env, &bit_shuf_list, &dbs);
+                let (_, _, _, _) = replace_sequential_pairs(&mut sub, 64, &mut thread_conn, &env, &bit_shuf_list, &dbs);
                 sub.gates.reverse();
                 TOTAL_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 sub.gates
@@ -3234,7 +3309,7 @@ mod tests {
     #[test]
     fn test_gen_id_speeds() {
         // stress / invariant check
-        let n = 64;
+        let _n = 64;
         let w = 7;
         let env_path = "./db";
 
@@ -3254,13 +3329,13 @@ mod tests {
         let ns_to_min = |v: u64| v as f64 / (60.0 * 1_000_000_000.0);
         println!("\n=== get_random_identity timers ===");
 
-        println!("DB_NAME_TIME          : {:.6}", ns_to_min(DB_NAME_TIME.load(Ordering::Relaxed)));
-        println!("DB_LOOKUP_TIME        : {:.6}", ns_to_min(DB_LOOKUP_TIME.load(Ordering::Relaxed)));
-        println!("TXN_BEGIN_TIME        : {:.6}", ns_to_min(TXN_BEGIN_TIME.load(Ordering::Relaxed)));
-        println!("SERIALIZE_KEY_TIME    : {:.6}", ns_to_min(SERIALIZE_KEY_TIME.load(Ordering::Relaxed)));
-        println!("LMDB_GET_TIME         : {:.6}", ns_to_min(LMDB_GET_TIME.load(Ordering::Relaxed)));
-        println!("DESERIALIZE_LIST_TIME : {:.6}", ns_to_min(DESERIALIZE_LIST_TIME.load(Ordering::Relaxed)));
-        println!("RNG_CHOOSE_TIME       : {:.6}", ns_to_min(RNG_CHOOSE_TIME.load(Ordering::Relaxed)));
+        // println!("DB_NAME_TIME          : {:.6}", ns_to_min(DB_NAME_TIME.load(Ordering::Relaxed)));
+        // println!("DB_LOOKUP_TIME        : {:.6}", ns_to_min(DB_LOOKUP_TIME.load(Ordering::Relaxed)));
+        // println!("TXN_BEGIN_TIME        : {:.6}", ns_to_min(TXN_BEGIN_TIME.load(Ordering::Relaxed)));
+        // println!("SERIALIZE_KEY_TIME    : {:.6}", ns_to_min(SERIALIZE_KEY_TIME.load(Ordering::Relaxed)));
+        // println!("LMDB_GET_TIME         : {:.6}", ns_to_min(LMDB_GET_TIME.load(Ordering::Relaxed)));
+        // println!("DESERIALIZE_LIST_TIME : {:.6}", ns_to_min(DESERIALIZE_LIST_TIME.load(Ordering::Relaxed)));
+        // println!("RNG_CHOOSE_TIME       : {:.6}", ns_to_min(RNG_CHOOSE_TIME.load(Ordering::Relaxed)));
         println!("FROM_BLOB_TIME        : {:.6}", ns_to_min(FROM_BLOB_TIME.load(Ordering::Relaxed)));
 
         println!("=================================\n");
