@@ -2657,8 +2657,8 @@ pub fn replace_pair_distances(
         let mut pending: Vec<(usize, usize, Vec<[u8; 3]>)> = Vec::new();
 
         // scan
-        let mut i = left;
-        while i <= right {
+        let mut i = left + 1;
+        while i < right {
             if distances[i] == curr {
                 let (id, id_len) = replace_single_pair(
                     &circuit.gates[i - 1],
