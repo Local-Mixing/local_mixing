@@ -2656,7 +2656,8 @@ pub fn replace_pair_distances(
         let mut buf = [0u8; 1];
         if let Ok(n) = io::stdin().read(&mut buf) {
             if n > 0 && buf[0] == b'\n' {
-                println!("  curr = {}", curr);
+                println!("  curr = {} \n
+                            distances: {:?}", curr, distances);
             }
         }
         let mut pending: Vec<(usize, usize, Vec<[u8; 3]>)> = Vec::new();
