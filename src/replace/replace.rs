@@ -2653,18 +2653,18 @@ pub fn replace_pair_distances(
         if curr >= min {
             break;
         }
-        let mut buf = [0u8; 1];
-        if let Ok(n) = io::stdin().read(&mut buf) {
-            if n > 0 && buf[0] == b'\n' {
-                println!("  curr = {} \n
-                            distances: {:?}", curr, distances);
-            }
-        }
         let mut pending: Vec<(usize, usize, Vec<[u8; 3]>)> = Vec::new();
 
         // scan
         let mut i = left + 1;
         while i < right {
+            let mut buf = [0u8; 1];
+            if let Ok(n) = io::stdin().read(&mut buf) {
+                if n > 0 && buf[0] == b'\n' {
+                    println!("  curr = {} \n
+                                distances: {:?}", curr, distances);
+                }
+            }
             if distances[i] == curr {
                 let (id, id_len) = replace_single_pair(
                     &circuit.gates[i - 1],
