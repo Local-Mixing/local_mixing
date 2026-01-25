@@ -2812,8 +2812,8 @@ pub fn replace_pair_distances_linear(
                         }
                     }
                     if i == lb {
-                        while lb + 1 < out_dists.len()
-                            && out_dists[lb + 1] == out_dists[lb] + 1
+                        while temp_lb + 1 < out_dists.len()
+                            && out_dists[temp_lb + 1] == out_dists[temp_lb] + 1
                         {
                             temp_lb += 1;
                         }
