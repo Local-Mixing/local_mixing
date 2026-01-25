@@ -2805,10 +2805,12 @@ pub fn replace_pair_distances_linear(
                     let left_dist = out_dists.last().unwrap() + 1;
                     let right_dist = dists[i+1] + 1;
                     // emit replacement
-                    for j in 0..(id_len - 1) {
+                    for j in 0..id_len {
                         out_gates.push(id[j].clone());
-                        let d = (left_dist + j).min(right_dist + id_len - 1 - j);
-                        out_dists.push(d);
+                        if j != id_len - 1 {
+                            let d = (left_dist + j).min(right_dist + id_len - 1 - j);
+                            out_dists.push(d);
+                        }
                     }
                     if i == lb {
                         while lb + 1 < out_dists.len()
