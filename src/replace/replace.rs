@@ -437,7 +437,7 @@ pub fn get_random_wide_identity(
                 }
             }
             let rewired_g = CircuitSeq::rewire_subcircuit(&id, &vec![min], &used_wires);
-            i.rewire_first_gate(rewired_g.gates[min], 6);
+            i.rewire_first_gate(rewired_g.gates[0], 6);
             i = CircuitSeq::unrewire_subcircuit(&i, &used_wires);
             i.gates.remove(0);
             id.gates.splice(min..=min, i.gates);
