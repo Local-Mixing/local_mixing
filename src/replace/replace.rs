@@ -2818,14 +2818,7 @@ pub fn replace_pair_distances_linear(
                             temp_lb += 1;
                         }
                         temp_lb += 1;
-                    } else if i == rb {
-                        while rb > 0
-                            && out_dists[rb - 1] == out_dists[rb] + 1
-                        {
-                            rb -= 1;
-                        }
-                        rb -= 1;
-                    }
+                    } 
                     i += 1;
                     continue;
                 }
@@ -2837,6 +2830,13 @@ pub fn replace_pair_distances_linear(
             i += 1;
         }
         lb = temp_lb;
+        rb = out_dists.len();
+        while rb > 0
+            && out_dists[rb - 1] == out_dists[rb] + 1
+        {
+            rb -= 1;
+        }
+        rb -= 1;
         // close tail distance
         out_dists.push(0);
 
