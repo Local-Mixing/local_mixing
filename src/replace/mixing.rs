@@ -2,7 +2,16 @@ use crate::{
     circuit::circuit::CircuitSeq,
     random::random_data::shoot_random_gate,
     replace::replace::{
-        compress, compress_big, expand_big, obfuscate, outward_compress, random_id, replace_pair_distances, replace_pair_distances_linear, replace_pairs, replace_sequential_pairs
+        compress, 
+        compress_big, 
+        expand_big, 
+        obfuscate, 
+        outward_compress, 
+        random_id, 
+        // replace_pair_distances, 
+        replace_pair_distances_linear, 
+        replace_pairs, 
+        replace_sequential_pairs
     },
 };
 // use crate::random::random_data::random_walk_no_skeleton;

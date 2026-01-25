@@ -6,6 +6,7 @@ use crate::{
         random_circuit, 
         shoot_left_vec, 
         shoot_random_gate, 
+        shoot_random_gate_gate_ver,
         simple_find_convex_subcircuit, 
         targeted_convex_subcircuit
     }
@@ -387,7 +388,6 @@ pub fn get_random_wide_identity(
     let mut id = CircuitSeq { gates: Vec::new() };
     let mut uw = id.used_wires();
     let mut wires = uw.len();
-    let max_wires = n;
     let gp = GatePair::new();
     let mut rng = rand::rng();
     while wires < 16 {
@@ -415,6 +415,8 @@ pub fn get_random_wide_identity(
                 .min_by_key(|(_, v)| v.len())
                 .map(|(_, v)| v)
                 .unwrap();
+            let mut min_keys: Vec<u8> = wires.keys().cloned().collect();
+            min_keys.sort_by_key(|k| wires.get(k).map(|v| v.len()).unwrap_or(0));
             let min = min_vals[0];
             let mut used_wires = vec![id.gates[min][0], id.gates[min][1], id.gates[min][2]];
             let mut unused_wires: Vec<u8> = (0..n as u8)
@@ -422,18 +424,17 @@ pub fn get_random_wide_identity(
                 .collect();
             unused_wires.shuffle(&mut rng);
             let mut count = 3;
+            let mut j = 1;
             while count < 6 {
                 if !unused_wires.is_empty() {
                     let random = unused_wires.pop().unwrap();
                     used_wires.push(random);
                     count += 1;
                 } else {
-                    let random = rng.random_range(0..n);
-                    if used_wires.contains(&(random as u8)) {
-                        continue;
-                    }
-                    used_wires.push(random as u8);
+                    let random = min_keys[j];
+                    used_wires.push(random);
                     count += 1;
+                    j += 1;
                 }
             }
             let rewired_g = CircuitSeq::rewire_subcircuit(&id, &vec![min], &used_wires);
@@ -2836,6 +2837,7 @@ pub fn replace_pair_distances_linear(
     min: usize,
 ) {
     // initialize pair distances
+    
     let mut gates = circuit.gates.drain(..).collect::<Vec<_>>();
     let mut dists = vec![0usize; gates.len() + 1];
     let mut lb = 1;
@@ -2911,6 +2913,7 @@ pub fn replace_pair_distances_linear(
         out_dists.push(0);
 
         gates = out_gates;
+        shoot_random_gate_gate_ver(&mut gates, 100_000);
         dists = out_dists;
     }
     // println!("{:?}", dists);

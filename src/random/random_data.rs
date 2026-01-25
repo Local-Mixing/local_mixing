@@ -1031,6 +1031,50 @@ pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
     }
 }
 
+pub fn shoot_random_gate_gate_ver(circuit: &mut Vec<[u8;3]>, rounds: usize) {
+    let mut rng = rand::rng();
+    let len = circuit.len();
+
+    if len == 0 {
+        return
+    }
+
+    for _ in 0..rounds {
+        let gate_idx = rng.random_range(0..len);
+        let go_left: bool = rng.random_bool(0.5);
+
+        if go_left {
+            // Shoot left
+            let mut target = gate_idx;
+            while target > 0 {
+                if Gate::collides_index(&circuit[target - 1], &circuit[gate_idx]) {
+                    break;
+                }
+                target -= 1;
+            }
+
+            if target != gate_idx {
+                let gate = circuit.remove(gate_idx);
+                circuit.insert(target, gate);
+            }
+        } else {
+            // Shoot right
+            let mut target = gate_idx;
+            while target + 1 < len {
+                if Gate::collides_index(&circuit[target + 1], &circuit[gate_idx]) {
+                    break;
+                }
+                target += 1;
+            }
+
+            if target != gate_idx {
+                let gate = circuit.remove(gate_idx);
+                circuit.insert(target, gate);
+            }
+        }
+    }
+}
+
 pub fn shoot_left_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize { 
     let mut target = gate_idx;
     while target > 0 {
