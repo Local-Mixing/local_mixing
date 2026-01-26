@@ -3535,24 +3535,32 @@ mod tests {
             .open(Path::new(env_path))
             .expect("Failed to open lmdb");
         let dbs = open_all_dbs(&env);
-        let id = get_random_wide_identity(16, &env, &dbs);
-        assert!(id.probably_equal(&CircuitSeq{ gates: Vec::new() }, 16, 100_000).is_ok(), "Not an identity");
-        println!("id: {:?}", id.gates);
+        for run in 0..2 {
+            let id = get_random_wide_identity(16, &env, &dbs);
 
-        let mut wires: HashMap<u8, Vec<usize>> = HashMap::new();
-        for (i, gates) in id.gates.into_iter().enumerate() {
-            for pins in gates {
-                    wires.entry(pins)
-                    .or_insert_with(Vec::new)
-                    .push(i);
+            assert!(
+                id.probably_equal(&CircuitSeq { gates: Vec::new() }, 16, 100_000).is_ok(),
+                "Not an identity"
+            );
+
+            // write repr() to file
+            let mut file = File::create(format!("id_16{}.txt", run))
+                .expect("Failed to create output file");
+            writeln!(file, "{}", id.repr()).expect("Failed to write repr");
+
+            // wire statistics
+            let mut wires: HashMap<u8, Vec<usize>> = HashMap::new();
+            for (i, gates) in id.gates.iter().enumerate() {
+                for &pins in gates {
+                    wires.entry(pins).or_insert_with(Vec::new).push(i);
                 }
-        }
+            }
 
-        let mut i = 0;
-        for (k, v) in &wires {
-            println!("wire: {}, # of gates: {}", k, v.len());
-            i += 1;
+            println!("Run {}", run);
+            for (k, v) in &wires {
+                println!("wire: {}, # of gates: {}", k, v.len());
+            }
+            println!("Num wires: {}\n", wires.len());
         }
-        println!("Num wires: {}", i)
     }
 }
