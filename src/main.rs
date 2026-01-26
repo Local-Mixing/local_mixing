@@ -1454,7 +1454,7 @@ pub fn fill_n_id(n: usize) {
         .open(Path::new(env_path)).expect("Failed to open db");
     let dbs = open_all_dbs(&env);
 
-    let batch_size = 100_000;
+    let batch_size = 100;
     let mut batches: HashMap<u8, Vec<Vec<u8>>> = HashMap::new();
     let mut db_cache: HashMap<u8, Database> = HashMap::new();
 
@@ -1462,7 +1462,7 @@ pub fn fill_n_id(n: usize) {
         if batch.is_empty() {
             return;
         }
-
+        println!("Flushing batch");
         let mut txn = env.begin_rw_txn().expect("Failed to begin LMDB txn");
         for key in batch.iter() {
             txn.put(db, key, &[], WriteFlags::empty())
