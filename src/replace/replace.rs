@@ -449,6 +449,12 @@ pub fn get_random_wide_identity(
         uw = id.used_wires();
         nwires = uw.len();
     }
+
+    let mut shuf: Vec<usize> = (0..n).collect();
+    shuf.shuffle(&mut rng);
+
+    let bit_shuf = Permutation { data: shuf };
+    id.rewire(&bit_shuf, n);
     id
 }
 
