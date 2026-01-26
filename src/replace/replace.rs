@@ -387,10 +387,10 @@ pub fn get_random_wide_identity(
 ) -> CircuitSeq {
     let mut id = CircuitSeq { gates: Vec::new() };
     let mut uw = id.used_wires();
-    let mut wires = uw.len();
+    let mut nwires = uw.len();
     let gp = GatePair::new();
     let mut rng = rand::rng();
-    while wires < 16 {
+    while nwires < 16 {
         let mut i = match get_random_identity(6, gp, env, dbs) {
             Ok(i) => {
                 i
@@ -428,7 +428,7 @@ pub fn get_random_wide_identity(
             let mut count = 3;
             let mut j = 1;
             while count < 6 {
-                println!("count {} wires {}", count, wires);
+                println!("count {} wires {}", count, nwires);
                 if !unused_wires.is_empty() {
                     let random = unused_wires.pop().unwrap();
                     used_wires.push(random);
@@ -447,7 +447,7 @@ pub fn get_random_wide_identity(
             id.gates.splice(min..=min, i.gates);
         }
         uw = id.used_wires();
-        wires = uw.len();
+        nwires = uw.len();
     }
     id
 }
