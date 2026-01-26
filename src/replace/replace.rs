@@ -422,7 +422,6 @@ pub fn get_random_wide_identity(
             let mut unused_wires: Vec<u8> = (0..n as u8)
                 .filter(|w| !used_wires.contains(w) && !uw.contains(w))
                 .collect();
-            unused_wires.shuffle(&mut rng);
             let mut count = 3;
             let mut j = 1;
             while count < 6 {
