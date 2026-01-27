@@ -2448,14 +2448,20 @@ pub fn replace_sequential_pairs(
         let right = gates[i];
         let tax = gate_pair_taxonomy(&left, &right);
 
-        if !GatePair::is_none(&tax) {
+        // if !GatePair::is_none(&tax) {
             already_collided += 1;
             let mut produced: Option<Vec<[u8; 3]>> = None;
 
             while produced.is_none() && fail < 100 {
                 fail += 1;
-                let id_len = rng.random_range(5..=7);
-
+                let mut id_len = if GatePair::is_none(&tax) {
+                    rng.random_range(6..=8)
+                } else {
+                    rng.random_range(5..=8)
+                };
+                if id_len == 8 {
+                    id_len = 16;
+                }
                 let t_id = Instant::now();
                 let id = match get_random_identity(id_len, tax, env, dbs) {
                     Ok(id) => {
@@ -2532,133 +2538,133 @@ pub fn replace_sequential_pairs(
 
             fail = 0;
             i += 1;
-        } else {
-            shoot_count += 1;
-            out.push(gates[i]);
-            let out_len = out.len();
+        // } else {
+        //     shoot_count += 1;
+        //     out.push(gates[i]);
+        //     let out_len = out.len();
 
-            let new_index = shoot_left_vec(&mut out, out_len - 1);
-            traverse_left += out_len - 1 - new_index;
+        //     let new_index = shoot_left_vec(&mut out, out_len - 1);
+        //     traverse_left += out_len - 1 - new_index;
 
-            if new_index == 0 {
-                curr_zero += 1;
-                let g = &out[0];
-                let temp_out_circ = CircuitSeq { gates: out.clone() };
-                let num = rng.random_range(3..=7);
+        //     if new_index == 0 {
+        //         curr_zero += 1;
+        //         let g = &out[0];
+        //         let temp_out_circ = CircuitSeq { gates: out.clone() };
+        //         let num = rng.random_range(3..=7);
 
-                if let Ok(mut id) = random_canonical_id(env, &conn, num) {
-                    let mut used_wires = vec![g[0], g[1], g[2]];
-                    let mut count = 3;
+        //         if let Ok(mut id) = random_canonical_id(env, &conn, num) {
+        //             let mut used_wires = vec![g[0], g[1], g[2]];
+        //             let mut count = 3;
 
-                    while count < num {
-                        let random = rng.random_range(0..num_wires);
-                        if used_wires.contains(&(random as u8)) {
-                            continue;
-                        }
-                        used_wires.push(random as u8);
-                        count += 1;
-                    }
-                    used_wires.sort();
+        //             while count < num {
+        //                 let random = rng.random_range(0..num_wires);
+        //                 if used_wires.contains(&(random as u8)) {
+        //                     continue;
+        //                 }
+        //                 used_wires.push(random as u8);
+        //                 count += 1;
+        //             }
+        //             used_wires.sort();
 
-                    let rewired_g =
-                        CircuitSeq::rewire_subcircuit(&temp_out_circ, &vec![0], &used_wires);
-                    id.rewire_first_gate(rewired_g.gates[0], num);
-                    id = CircuitSeq::unrewire_subcircuit(&id, &used_wires);
-                    id.gates.remove(0);
+        //             let rewired_g =
+        //                 CircuitSeq::rewire_subcircuit(&temp_out_circ, &vec![0], &used_wires);
+        //             id.rewire_first_gate(rewired_g.gates[0], num);
+        //             id = CircuitSeq::unrewire_subcircuit(&id, &used_wires);
+        //             id.gates.remove(0);
 
-                    out.splice(0..1, id.gates);
-                }
+        //             out.splice(0..1, id.gates);
+        //         }
 
-                fail = 0;
-                i += 1;
-                continue;
-            }
+        //         fail = 0;
+        //         i += 1;
+        //         continue;
+        //     }
 
-            let left_gate = out[new_index - 1];
-            let right_gate = out[new_index];
-            let tax = gate_pair_taxonomy(&left_gate, &right_gate);
+        //     let left_gate = out[new_index - 1];
+        //     let right_gate = out[new_index];
+        //     let tax = gate_pair_taxonomy(&left_gate, &right_gate);
 
-            if !GatePair::is_none(&tax) {
-                let mut produced: Option<Vec<[u8; 3]>> = None;
+        //     if !GatePair::is_none(&tax) {
+        //         let mut produced: Option<Vec<[u8; 3]>> = None;
 
-                while produced.is_none() && fail < 100 {
-                    fail += 1;
-                    let id_len = rng.random_range(5..=7);
+        //         while produced.is_none() && fail < 100 {
+        //             fail += 1;
+        //             let id_len = rng.random_range(5..=7);
 
-                    let t_id = Instant::now();
-                    let id = match get_random_identity(id_len, tax, env, dbs) {
-                        Ok(id) => {
-                            IDENTITY_TIME.fetch_add(t_id.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                            id
-                        }
-                        Err(_) => {
-                            IDENTITY_TIME.fetch_add(t_id.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                            fail += 1;
-                            continue;
-                        }
-                    };
+        //             let t_id = Instant::now();
+        //             let id = match get_random_identity(id_len, tax, env, dbs) {
+        //                 Ok(id) => {
+        //                     IDENTITY_TIME.fetch_add(t_id.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        //                     id
+        //                 }
+        //                 Err(_) => {
+        //                     IDENTITY_TIME.fetch_add(t_id.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        //                     fail += 1;
+        //                     continue;
+        //                 }
+        //             };
 
-                    let new_circuit = id.gates[2..].to_vec();
-                    let replacement_circ = CircuitSeq { gates: new_circuit };
+        //             let new_circuit = id.gates[2..].to_vec();
+        //             let replacement_circ = CircuitSeq { gates: new_circuit };
 
-                    let mut used_wires: Vec<u8> = vec![
-                        (num_wires + 1) as u8;
-                        std::cmp::max(
-                            replacement_circ.max_wire(),
-                            CircuitSeq {
-                                gates: vec![id.gates[0], id.gates[1]],
-                            }
-                            .max_wire(),
-                        ) + 1
-                    ];
+        //             let mut used_wires: Vec<u8> = vec![
+        //                 (num_wires + 1) as u8;
+        //                 std::cmp::max(
+        //                     replacement_circ.max_wire(),
+        //                     CircuitSeq {
+        //                         gates: vec![id.gates[0], id.gates[1]],
+        //                     }
+        //                     .max_wire(),
+        //                 ) + 1
+        //             ];
 
-                    used_wires[id.gates[0][0] as usize] = left_gate[0];
-                    used_wires[id.gates[0][1] as usize] = left_gate[1];
-                    used_wires[id.gates[0][2] as usize] = left_gate[2];
+        //             used_wires[id.gates[0][0] as usize] = left_gate[0];
+        //             used_wires[id.gates[0][1] as usize] = left_gate[1];
+        //             used_wires[id.gates[0][2] as usize] = left_gate[2];
 
-                    let mut k = 0;
-                    for collision in &[tax.a, tax.c1, tax.c2] {
-                        if *collision == CollisionType::OnNew {
-                            used_wires[id.gates[1][k] as usize] = right_gate[k];
-                        }
-                        k += 1;
-                    }
+        //             let mut k = 0;
+        //             for collision in &[tax.a, tax.c1, tax.c2] {
+        //                 if *collision == CollisionType::OnNew {
+        //                     used_wires[id.gates[1][k] as usize] = right_gate[k];
+        //                 }
+        //                 k += 1;
+        //             }
 
-                    let mut available_wires: Vec<u8> = (0..num_wires as u8)
-                        .filter(|w| !used_wires.contains(w))
-                        .collect();
+        //             let mut available_wires: Vec<u8> = (0..num_wires as u8)
+        //                 .filter(|w| !used_wires.contains(w))
+        //                 .collect();
 
-                    available_wires.shuffle(&mut rng);
-                    for w in 0..used_wires.len() {
-                        if used_wires[w] == (num_wires + 1) as u8 {
-                            if let Some(&wire) = available_wires.get(0) {
-                                used_wires[w] = wire;
-                                available_wires.remove(0);
-                            } else {
-                                panic!("No available wires left to assign!");
-                            }
-                        }
-                    }
+        //             available_wires.shuffle(&mut rng);
+        //             for w in 0..used_wires.len() {
+        //                 if used_wires[w] == (num_wires + 1) as u8 {
+        //                     if let Some(&wire) = available_wires.get(0) {
+        //                         used_wires[w] = wire;
+        //                         available_wires.remove(0);
+        //                     } else {
+        //                         panic!("No available wires left to assign!");
+        //                     }
+        //                 }
+        //             }
 
-                    produced = Some(
-                        CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
-                            .gates
-                            .into_iter()
-                            .rev()
-                            .collect()
-                    );
+        //             produced = Some(
+        //                 CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
+        //                     .gates
+        //                     .into_iter()
+        //                     .rev()
+        //                     .collect()
+        //             );
 
-                    fail += 1;
-                }
+        //             fail += 1;
+        //         }
 
-                if let Some(mut gates_out) = produced {
-                    out.splice((new_index - 1)..=new_index, gates_out.drain(..));
-                }
+        //         if let Some(mut gates_out) = produced {
+        //             out.splice((new_index - 1)..=new_index, gates_out.drain(..));
+        //         }
 
-                fail = 0;
-                i += 1;
-            }
-        }
+        //         fail = 0;
+        //         i += 1;
+        //     }
+        // }
     }
 
     out.push(left);
