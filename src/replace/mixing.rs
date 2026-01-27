@@ -886,6 +886,7 @@ pub fn replace_and_compress_big(
                 SHOOT_COUNT.fetch_add(shoot, Ordering::SeqCst);
                 MADE_LEFT.fetch_add(zero, Ordering::SeqCst);
                 TRAVERSE_LEFT.fetch_add(trav, Ordering::SeqCst);
+                shoot_random_gate(&mut sub, 200_000);
                 sub.gates.reverse();
                 let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &mut thread_conn, &env, &bit_shuf_list, dbs);
                 ALREADY_COLLIDED.fetch_add(col, Ordering::SeqCst);
