@@ -4,11 +4,13 @@ use crate::{
         // find_convex_subcircuit, 
         get_canonical, 
         random_circuit, 
-        shoot_left_vec, 
+        // shoot_left_vec, 
         shoot_random_gate, 
         shoot_random_gate_gate_ver,
-        simple_find_convex_subcircuit, 
-        targeted_convex_subcircuit
+        simple_find_convex_subcircuit,
+        // find_convex_subcircuit_deep,  
+        // targeted_convex_subcircuit,
+        targeted_find_convex_subcircuit_deep,
     }
 };
 
@@ -1257,13 +1259,13 @@ pub fn sequential_compress_big(
             3
         };
         for set_size in (3..=size).rev() {
-            let (gates, _) = targeted_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng, i);
+            let (gates, _) = targeted_find_convex_subcircuit_deep(set_size, random_max_wires, num_wires, &circuit, &mut rng, i);
             if !gates.is_empty() {
                 subcircuit_gates = gates;
                 break;
             }
             if set_size == 3 {
-                let (gates, _) = targeted_convex_subcircuit(set_size, 7, num_wires, &circuit, &mut rng, i);
+                let (gates, _) = targeted_find_convex_subcircuit_deep(set_size, 7, num_wires, &circuit, &mut rng, i);
                 subcircuit_gates = gates;
             }
         }
@@ -1390,13 +1392,13 @@ pub fn sequential_compress_big_ancillas(
             3
         };
         for set_size in (3..=size).rev() {
-            let (gates, _) = targeted_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng, i);
+            let (gates, _) = targeted_find_convex_subcircuit_deep(set_size, random_max_wires, num_wires, &circuit, &mut rng, i);
             if !gates.is_empty() {
                 subcircuit_gates = gates;
                 break;
             }
             if set_size == 3 {
-                let (gates, _) = targeted_convex_subcircuit(set_size, 7, num_wires, &circuit, &mut rng, i);
+                let (gates, _) = targeted_find_convex_subcircuit_deep(set_size, 7, num_wires, &circuit, &mut rng, i);
                 subcircuit_gates = gates;
             }
         }
