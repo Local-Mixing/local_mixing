@@ -421,6 +421,8 @@ pub fn get_random_wide_identity(
     n: usize, 
     env: &lmdb::Environment,
     dbs: &HashMap<String, Database>,
+    conn: &mut Connection,
+    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
 ) -> CircuitSeq {
     let mut id = CircuitSeq { gates: Vec::new() };
     let mut uw = id.used_wires();
@@ -488,11 +490,15 @@ pub fn get_random_wide_identity(
         nwires = uw.len();
     }
 
-    // let mut shuf: Vec<usize> = (0..n).collect();
-    // shuf.shuffle(&mut rng);
+    let mut len = id.gates.len();
+    while len < 100 {
+        replace_pair_distances_linear(&mut id, n, conn, env, bit_shuf_list, dbs, 15);
+    }
+    let mut shuf: Vec<usize> = (0..n).collect();
+    shuf.shuffle(&mut rng);
 
-    // let bit_shuf = Permutation { data: shuf };
-    // id.rewire(&bit_shuf, n);
+    let bit_shuf = Permutation { data: shuf };
+    id.rewire(&bit_shuf, n);
     id
 }
 
@@ -2457,9 +2463,9 @@ pub fn replace_sequential_pairs(
             while produced.is_none() && fail < 100 {
                 fail += 1;
                 let mut id_len = if GatePair::is_none(&tax) {
-                    rng.random_range(6..=8)
+                    rng.random_range(6..=7)
                 } else {
-                    rng.random_range(5..=8)
+                    rng.random_range(5..=7)
                 };
                 if id_len == 8 {
                     id_len = 16;
@@ -3551,7 +3557,7 @@ mod tests {
         let _n = 64;
         let w = 7;
         let env_path = "./db";
-
+        
         let env = Environment::new()
             .set_max_dbs(155)
             .set_map_size(800 * 1024 * 1024 * 1024)
@@ -3583,15 +3589,27 @@ mod tests {
     #[test]
     pub fn test_gen_id_16() {
         let env_path = "./db";
-
+        let mut thread_conn = Connection::open_with_flags(
+                    "circuits.db",
+                    OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .expect("Failed to open read-only connection");
         let env = Environment::new()
             .set_max_dbs(189)
             .set_map_size(800 * 1024 * 1024 * 1024)
             .open(Path::new(env_path))
             .expect("Failed to open lmdb");
+        let bit_shuf_list = (3..=7)
+        .map(|n| {
+            (0..n)
+                .permutations(n)
+                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                .collect::<Vec<Vec<usize>>>()
+        })
+        .collect();
         let dbs = open_all_dbs(&env);
         for run in 0..2 {
-            let id = get_random_wide_identity(16, &env, &dbs);
+            let id = get_random_wide_identity(16, &env, &dbs, &mut thread_conn, &bit_shuf_list);
 
             assert!(
                 id.probably_equal(&CircuitSeq { gates: Vec::new() }, 16, 100_000).is_ok(),

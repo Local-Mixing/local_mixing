@@ -1457,7 +1457,36 @@ pub fn fill_n_id(n: usize) {
     let batch_size = 100;
     let mut batches: HashMap<u8, Vec<Vec<u8>>> = HashMap::new();
     let mut db_cache: HashMap<u8, Database> = HashMap::new();
-
+    let bit_shuf_list = (3..=7)
+        .map(|n| {
+            (0..n)
+                .permutations(n)
+                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                .collect::<Vec<Vec<usize>>>()
+        })
+        .collect();
+    
+    for g in 0..34 {
+        let db_name = format!("ids_n{}g{}", n, g);
+            let db = match env.open_db(Some(&db_name)) {
+            Ok(db) => db,
+            Err(lmdb::Error::NotFound) => continue, // skip if DB doesn't exist
+            Err(e) => panic!("Failed to open DB {}: {}", db_name, e),
+        };
+        let mut txn = env.begin_rw_txn().expect("failed to start txn");
+        // SAFETY: ensure no other transactions or handles are active
+        unsafe {
+            txn.drop_db(db).expect("Failed to drop db");
+        }
+        txn.commit().expect("Failed to commit");
+        println!("Dropped DB: {}", db_name);
+    
+    }
+    let mut thread_conn = Connection::open_with_flags(
+                "circuits.db",
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .expect("Failed to open read-only connection");
     let flush_batch = |env: &Environment, db: Database, batch: &mut Vec<Vec<u8>>| {
         if batch.is_empty() {
             return;
@@ -1473,7 +1502,7 @@ pub fn fill_n_id(n: usize) {
     };
 
     loop {
-        let mut id = get_random_wide_identity(n, &env, &dbs);
+        let mut id = get_random_wide_identity(n, &env, &dbs, &mut thread_conn, &bit_shuf_list);
         let len = id.gates.len();
 
         for _ in 0..len {
