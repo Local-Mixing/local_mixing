@@ -3229,7 +3229,7 @@ mod tests {
             .expect("Failed to open LMDB env");
 
         let tables = [
-            "ids_n5g0", "ids_n5g1", "ids_n5g2", "ids_n5g3", "ids_n5g4", "ids_n5g5",
+            "ids_n5g1", "ids_n5g2", "ids_n5g3", "ids_n5g4", "ids_n5g5",
             "ids_n5g6", "ids_n5g7", "ids_n5g8", "ids_n5g9", "ids_n5g10", "ids_n5g11",
             "ids_n5g12", "ids_n5g13", "ids_n5g14", "ids_n5g15", "ids_n5g16",
             "ids_n5g17", "ids_n5g18", "ids_n5g19", "ids_n5g20", "ids_n5g21",
