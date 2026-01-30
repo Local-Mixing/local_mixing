@@ -1446,17 +1446,71 @@ fn save_tax_id_tables_to_lmdb(
     Ok(())
 }
 
+use rand::Rng;
+fn gen_mean(circuit: &CircuitSeq, num_wires: usize) -> f64 {
+    let circuit_one = circuit.clone();
+    let circuit_two = circuit;
+
+    let circuit_one_len = circuit_one.gates.len();
+    let circuit_two_len = circuit_two.gates.len();
+
+    let num_points = (circuit_one_len + 1) * (circuit_two_len + 1);
+    let mut average = vec![0f64; num_points * 3];
+
+    let mut rng = rand::rng();
+    let num_inputs = 20;
+
+    for i in 0..num_inputs {
+        // if i % 10 == 0 {
+        //     // println!("{}/{}", i, num_inputs);
+        //     io::stdout().flush().unwrap();
+        // }
+
+        let input_bits: u128 = if num_wires < u128::BITS as usize {
+            rng.random_range(0..(1u128 << num_wires))
+        } else {
+            rng.random_range(0..=u128::MAX)
+        };
+
+        let evolution_one = circuit_one.evaluate_evolution_128(input_bits);
+        let evolution_two = circuit_two.evaluate_evolution_128(input_bits);
+
+        for i1 in 0..=circuit_one_len {
+            for i2 in 0..=circuit_two_len {
+                let diff = evolution_one[i1] ^ evolution_two[i2];
+                let hamming_dist = diff.count_ones() as f64;
+                let overlap = hamming_dist / num_wires as f64;
+
+                let index = i1 * (circuit_two_len + 1) + i2;
+                average[index * 3] = i1 as f64;
+                average[index * 3 + 1] = i2 as f64;
+                average[index * 3 + 2] += overlap / num_inputs as f64;
+            }
+        }
+    }
+
+    let mut sum = 0.0;
+    for i in 0..num_points {
+        sum += average[i * 3 + 2];
+    }
+
+    sum / num_points as f64
+}
+
 pub fn fill_n_id(n: usize) {
     let env_path = "./db";
     let env = Environment::new()
         .set_max_dbs(189)
         .set_map_size(800 * 1024 * 1024 * 1024)
-        .open(Path::new(env_path)).expect("Failed to open db");
+        .open(Path::new(env_path))
+        .expect("Failed to open db");
+
     let dbs = open_all_dbs(&env);
 
     let batch_size = 100;
     let mut batches: HashMap<u8, Vec<Vec<u8>>> = HashMap::new();
     let mut db_cache: HashMap<u8, Database> = HashMap::new();
+
     let bit_shuf_list = (3..=7)
         .map(|n| {
             (0..n)
@@ -1464,48 +1518,67 @@ pub fn fill_n_id(n: usize) {
                 .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
                 .collect::<Vec<Vec<usize>>>()
         })
-        .collect();
-    
+        .collect::<Vec<_>>();
+
+    // Drop existing DBs
     for g in 0..34 {
         let db_name = format!("ids_n{}g{}", n, g);
-            let db = match env.open_db(Some(&db_name)) {
+        let db = match env.open_db(Some(&db_name)) {
             Ok(db) => db,
-            Err(lmdb::Error::NotFound) => continue, // skip if DB doesn't exist
+            Err(lmdb::Error::NotFound) => continue,
             Err(e) => panic!("Failed to open DB {}: {}", db_name, e),
         };
+
         let mut txn = env.begin_rw_txn().expect("failed to start txn");
-        // SAFETY: ensure no other transactions or handles are active
         unsafe {
             txn.drop_db(db).expect("Failed to drop db");
         }
         txn.commit().expect("Failed to commit");
         println!("Dropped DB: {}", db_name);
-    
     }
+
     let mut thread_conn = Connection::open_with_flags(
-                "circuits.db",
-                OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .expect("Failed to open read-only connection");
-    let flush_batch = |env: &Environment, db: Database, batch: &mut Vec<Vec<u8>>| {
+        "circuits.db",
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("Failed to open read-only connection");
+
+    let flush_batch = |env: &Environment,
+                       db: Database,
+                       batch: &mut Vec<Vec<u8>>| -> u64 {
         if batch.is_empty() {
-            return;
+            return 0;
         }
-        println!("Flushing batch");
+
+        let count = batch.len() as u64;
         let mut txn = env.begin_rw_txn().expect("Failed to begin LMDB txn");
+
         for key in batch.iter() {
             txn.put(db, key, &[], WriteFlags::empty())
                 .expect("Failed to write LMDB key");
         }
+
         txn.commit().expect("Failed to commit LMDB txn");
         batch.clear();
+        count
     };
 
+    let mut total_written: u64 = 0;
+    let mut written_per_g: HashMap<u8, u64> = HashMap::new();
+    let mut last_print = std::time::Instant::now();
+
     loop {
-        let mut id = get_random_wide_identity(n, &env, &dbs, &mut thread_conn, &bit_shuf_list);
+        let mut id =
+            get_random_wide_identity(n, &env, &dbs, &mut thread_conn, &bit_shuf_list);
         let len = id.gates.len();
 
         for _ in 0..len {
+            if gen_mean(&id, n) < 0.35 {
+                let first = id.gates.remove(0);
+                id.gates.push(first);
+                continue;
+            }
+
             let g1 = id.gates[0];
             let g2 = id.gates[1];
             let gp = gate_pair_taxonomy(&g1, &g2);
@@ -1521,11 +1594,25 @@ pub fn fill_n_id(n: usize) {
             batches.entry(g).or_default().push(key);
 
             if batches[&g].len() >= batch_size {
-                flush_batch(&env, db, batches.get_mut(&g).unwrap());
+                let written = flush_batch(&env, db, batches.get_mut(&g).unwrap());
+                total_written += written;
+                *written_per_g.entry(g).or_insert(0) += written;
             }
 
+            // rotate
             let first = id.gates.remove(0);
             id.gates.push(first);
         }
+
+        // periodic stats print
+        if last_print.elapsed().as_secs() >= 60 {
+            println!("total written: {}", total_written);
+            for g in 0..34 {
+                let c = written_per_g.get(&(g as u8)).copied().unwrap_or(0);
+                println!("g {:02}: {}", g, c);
+            }
+            last_print = std::time::Instant::now();
+        }
     }
 }
+
