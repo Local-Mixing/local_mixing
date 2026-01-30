@@ -1573,7 +1573,7 @@ pub fn fill_n_id(n: usize) {
         let len = id.gates.len();
 
         for _ in 0..len {
-            if gen_mean(&id, n) < 0.35 {
+            if gen_mean(&id, n) < 0.34 {
                 let first = id.gates.remove(0);
                 id.gates.push(first);
                 continue;
