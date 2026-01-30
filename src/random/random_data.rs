@@ -3218,4 +3218,72 @@ mod tests {
         writer.flush()?;
         Ok(())
     }
+
+    #[test]
+    fn collect_odd_identity_keys() {
+        let env_path = "./db";
+        let env = Environment::new()
+            .set_max_dbs(200)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new(env_path))
+            .expect("Failed to open LMDB env");
+
+        let tables = [
+            "ids_n5g0", "ids_n5g1", "ids_n5g2", "ids_n5g3", "ids_n5g4", "ids_n5g5",
+            "ids_n5g6", "ids_n5g7", "ids_n5g8", "ids_n5g9", "ids_n5g10", "ids_n5g11",
+            "ids_n5g12", "ids_n5g13", "ids_n5g14", "ids_n5g15", "ids_n5g16",
+            "ids_n5g17", "ids_n5g18", "ids_n5g19", "ids_n5g20", "ids_n5g21",
+            "ids_n5g22", "ids_n5g23", "ids_n5g24", "ids_n5g25", "ids_n5g26",
+            "ids_n5g27", "ids_n5g28", "ids_n5g29", "ids_n5g30", "ids_n5g31",
+            "ids_n5g32", "ids_n5g33",
+
+            "ids_n6g0", "ids_n6g1", "ids_n6g2", "ids_n6g3", "ids_n6g4", "ids_n6g5",
+            "ids_n6g6", "ids_n6g7", "ids_n6g8", "ids_n6g9", "ids_n6g10", "ids_n6g11",
+            "ids_n6g12", "ids_n6g13", "ids_n6g14", "ids_n6g15", "ids_n6g16",
+            "ids_n6g17", "ids_n6g18", "ids_n6g19", "ids_n6g20", "ids_n6g21",
+            "ids_n6g22", "ids_n6g23", "ids_n6g24", "ids_n6g25", "ids_n6g26",
+            "ids_n6g27", "ids_n6g28", "ids_n6g29", "ids_n6g30", "ids_n6g31",
+            "ids_n6g32", "ids_n6g33",
+
+            "ids_n7g0", "ids_n7g1", "ids_n7g2", "ids_n7g3", "ids_n7g4", "ids_n7g5",
+            "ids_n7g6", "ids_n7g7", "ids_n7g8", "ids_n7g9", "ids_n7g10", "ids_n7g11",
+            "ids_n7g12", "ids_n7g13", "ids_n7g14", "ids_n7g15", "ids_n7g16",
+            "ids_n7g17", "ids_n7g18", "ids_n7g19", "ids_n7g20", "ids_n7g21",
+            "ids_n7g22", "ids_n7g23", "ids_n7g24", "ids_n7g25", "ids_n7g26",
+            "ids_n7g27", "ids_n7g28", "ids_n7g29", "ids_n7g30", "ids_n7g31",
+            "ids_n7g32", "ids_n7g33",
+        ];
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("odd_ids.txt")
+            .expect("Failed to open odd_ids.txt");
+
+        for table_name in tables {
+            let db: Database = env
+                .open_db(Some(table_name))
+                .expect("DB not found");
+
+            let txn = env.begin_ro_txn().expect("Failed to begin txn");
+            let mut cursor = txn
+                .open_ro_cursor(db)
+                .expect("Failed to open cursor");
+
+            for (key_bytes, _) in cursor.iter() {
+                let circuit = CircuitSeq::from_blob(key_bytes);
+
+                if circuit.gates.len() % 2 == 1 {
+                    writeln!(
+                        file,
+                        "table={}, gates_len={}, circuit = {}",
+                        table_name,
+                        circuit.gates.len(),
+                        circuit.repr()
+                    )
+                    .expect("Failed to write");
+                }
+            }
+        }
+    }
 }
