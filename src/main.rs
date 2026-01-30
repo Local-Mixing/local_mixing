@@ -1507,7 +1507,7 @@ pub fn fill_n_id(n: usize) {
 
     let dbs = open_all_dbs(&env);
 
-    let batch_size = 100;
+    let batch_size = 10;
     let mut batches: HashMap<u8, Vec<Vec<u8>>> = HashMap::new();
     let mut db_cache: HashMap<u8, Database> = HashMap::new();
 
