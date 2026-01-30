@@ -494,7 +494,7 @@ pub fn get_random_wide_identity(
     while len < 100 {
         let left = rng.random_range(0..len-1);
         let (repl, _) = replace_single_pair(&id.gates[left], &id.gates[left+1], n, conn, env, bit_shuf_list, dbs);
-        id.gates.splice(left..=right, repl);
+        id.gates.splice(left..=left+1, repl);
         len = id.gates.len();
     }
     let mut shuf: Vec<usize> = (0..n).collect();
