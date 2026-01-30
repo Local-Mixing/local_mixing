@@ -429,7 +429,8 @@ pub fn get_random_wide_identity(
     let mut nwires = uw.len();
     let gp = GatePair::new();
     let mut rng = rand::rng();
-    while nwires < 16 {
+    let mut len = 0;
+    while nwires < 16 || len < 100 {
         shoot_random_gate(&mut id, 100_000);
         let mut i = match get_random_identity(6, gp, env, dbs) {
             Ok(i) => {
@@ -488,16 +489,9 @@ pub fn get_random_wide_identity(
         }
         uw = id.used_wires();
         nwires = uw.len();
+        len = id.gates.len();
     }
 
-    let mut len = id.gates.len();
-    while len < 100 {
-        let left = rng.random_range(0..len-1);
-        let (repl, _) = replace_single_pair(&id.gates[left], &id.gates[left+1], n, conn, env, bit_shuf_list, dbs);
-        id.gates.splice(left..=left+1, repl);
-        len = id.gates.len();
-        println!("{}", len);
-    }
     let mut shuf: Vec<usize> = (0..n).collect();
     shuf.shuffle(&mut rng);
 
