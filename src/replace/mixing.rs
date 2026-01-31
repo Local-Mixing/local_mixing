@@ -2,16 +2,7 @@ use crate::{
     circuit::circuit::CircuitSeq,
     random::random_data::shoot_random_gate,
     replace::replace::{
-        compress, 
-        compress_big, 
-        expand_big, 
-        obfuscate, 
-        outward_compress, 
-        random_id, 
-        // replace_pair_distances, 
-        replace_pair_distances_linear, 
-        replace_pairs, 
-        replace_sequential_pairs
+        compress, compress_big, compress_big_ancillas, expand_big, obfuscate, outward_compress, random_id, replace_pair_distances_linear, replace_pairs, replace_sequential_pairs
     },
 };
 // use crate::random::random_data::random_walk_no_skeleton;
@@ -952,7 +943,7 @@ pub fn replace_and_compress_big(
                 )
                 .expect("Failed to open read-only connection");
                 
-                compress_big(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+                compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
             })
             .collect();
         COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1080,7 +1071,7 @@ pub fn replace_and_compress_big_distance(
                 )
                 .expect("Failed to open read-only connection");
                 
-                compress_big(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+                compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
             })
             .collect();
         COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
