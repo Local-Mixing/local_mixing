@@ -846,7 +846,7 @@ pub fn replace_and_compress_big(
     SHOOT_RANDOM_GATE_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     let t1 = Instant::now();
-    for _ in 0..1 {
+    for _ in 0..2 {
         let t0 = Instant::now();
         shoot_random_gate(&mut c, 200_000);
         SHOOT_RANDOM_GATE_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -879,12 +879,12 @@ pub fn replace_and_compress_big(
                 TRAVERSE_LEFT.fetch_add(trav, Ordering::SeqCst);
                 shoot_random_gate(&mut sub, 200_000);
                 sub.gates.reverse();
-                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &mut thread_conn, &env, &bit_shuf_list, dbs);
-                ALREADY_COLLIDED.fetch_add(col, Ordering::SeqCst);
-                SHOOT_COUNT.fetch_add(shoot, Ordering::SeqCst);
-                MADE_LEFT.fetch_add(zero, Ordering::SeqCst);
-                TRAVERSE_LEFT.fetch_add(trav, Ordering::SeqCst);
-                sub.gates.reverse();
+                // let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &mut thread_conn, &env, &bit_shuf_list, dbs);
+                // ALREADY_COLLIDED.fetch_add(col, Ordering::SeqCst);
+                // SHOOT_COUNT.fetch_add(shoot, Ordering::SeqCst);
+                // MADE_LEFT.fetch_add(zero, Ordering::SeqCst);
+                // TRAVERSE_LEFT.fetch_add(trav, Ordering::SeqCst);
+                // sub.gates.reverse();
                 sub.gates
             })
             .collect();
