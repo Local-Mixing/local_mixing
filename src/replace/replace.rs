@@ -460,7 +460,92 @@ pub fn get_random_wide_identity(
             let mut min_keys: Vec<u8> = wires.keys().cloned().collect();
             min_keys.sort_by_key(|k| wires.get(k).map(|v| v.len()).unwrap_or(0));
             let min = min_vals[0];
-            let min = id.gates.len()/2;
+            let mut used_wires = vec![id.gates[min][0], id.gates[min][1], id.gates[min][2]];
+            let mut unused_wires: Vec<u8> = (0..n as u8)
+                .filter(|w| !used_wires.contains(w) && !uw.contains(w))
+                .collect();
+            let mut count = 3;
+            let mut j = 1;
+            while count < 6 {
+                if !unused_wires.is_empty() {
+                    let random = unused_wires.pop().unwrap();
+                    used_wires.push(random);
+                    count += 1;
+                } else {
+                    let random = min_keys[j];
+                    if used_wires.contains(&random) {
+                        j += 1;
+                        continue;
+                    }
+                    used_wires.push(random);
+                    count += 1;
+                    j += 1;
+                }
+            }
+            let rewired_g = CircuitSeq::rewire_subcircuit(&id, &vec![min], &used_wires);
+            i.rewire_first_gate(rewired_g.gates[0], 6);
+            i = CircuitSeq::unrewire_subcircuit(&i, &used_wires);
+            i.gates.remove(0);
+            id.gates.splice(min..=min, i.gates);
+        }
+        uw = id.used_wires();
+        nwires = uw.len();
+        len = id.gates.len();
+    }
+
+    let mut shuf: Vec<usize> = (0..n).collect();
+    shuf.shuffle(&mut rng);
+
+    let bit_shuf = Permutation { data: shuf };
+    id.rewire(&bit_shuf, n);
+    id
+}
+
+pub fn get_random_wide_identity_via_pairs(
+    n: usize, 
+    env: &lmdb::Environment,
+    dbs: &HashMap<String, Database>,
+    conn: &mut Connection,
+    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
+) -> CircuitSeq {
+    let mut id = CircuitSeq { gates: Vec::new() };
+    let mut uw = id.used_wires();
+    let mut nwires = uw.len();
+    let mut rng = rand::rng();
+    let mut len = 0;
+    while nwires < 16 || len < 160 {
+        shoot_random_gate(&mut id, 100_000);
+        let gp = GatePair::from_int(rng.random_range(0..34));
+        let mut i = match get_random_identity(6, gp, env, dbs) {
+            Ok(i) => {
+                i
+            }
+            Err(_) => {
+                continue;
+            }
+        };
+        if id.clone().gates.is_empty() {
+            id = i;
+        } else {
+            let mut wires: HashMap<u8, Vec<usize>> = HashMap::new();
+            for (idx, gates) in id.clone().gates.into_iter().enumerate() {
+                for pins in gates {
+                    wires.entry(pins)
+                    .or_insert_with(Vec::new)
+                    .push(idx);
+                }
+            }
+            let min_vals: &Vec<usize> = wires
+                .iter()
+                .min_by_key(|(_, v)| v.len())
+                .map(|(_, v)| v)
+                .unwrap();
+            let mut min_keys: Vec<u8> = wires.keys().cloned().collect();
+            min_keys.sort_by_key(|k| wires.get(k).map(|v| v.len()).unwrap_or(0));
+            let mut min = min_vals[0];
+            if min == id.gates.len() - 1 {
+                min -= 1;
+            }
             let mut used_wires = vec![id.gates[min][0], id.gates[min][1], id.gates[min][2]];
             let mut unused_wires: Vec<u8> = (0..n as u8)
                 .filter(|w| !used_wires.contains(w) && !uw.contains(w))
