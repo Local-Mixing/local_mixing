@@ -3880,7 +3880,7 @@ mod tests {
         let dbs = open_all_dbs(&env);
         let mut curr_mean = 0.0;
         loop {
-            let id = get_random_wide_identity(16, &env, &dbs, &mut thread_conn, &bit_shuf_list);
+            let id = get_random_wide_identity_via_pairs(16, &env, &dbs, &mut thread_conn, &bit_shuf_list);
 
             assert!(
                 id.probably_equal(&CircuitSeq { gates: Vec::new() }, 16, 100_000).is_ok(),
