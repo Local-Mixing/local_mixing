@@ -857,7 +857,7 @@ pub fn replace_and_compress_big(
     SHOOT_RANDOM_GATE_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     let t1 = Instant::now();
-    for _ in 0..2 {
+    for _ in 0..1 {
         let t0 = Instant::now();
         shoot_random_gate(&mut c, 200_000);
         SHOOT_RANDOM_GATE_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -889,18 +889,41 @@ pub fn replace_and_compress_big(
                 MADE_LEFT.fetch_add(zero, Ordering::SeqCst);
                 TRAVERSE_LEFT.fetch_add(trav, Ordering::SeqCst);
                 shoot_random_gate(&mut sub, 200_000);
-                // let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &mut thread_conn, &env, &bit_shuf_list, dbs);
-                // ALREADY_COLLIDED.fetch_add(col, Ordering::SeqCst);
-                // SHOOT_COUNT.fetch_add(shoot, Ordering::SeqCst);
-                // MADE_LEFT.fetch_add(zero, Ordering::SeqCst);
-                // TRAVERSE_LEFT.fetch_add(trav, Ordering::SeqCst);
-                // sub.gates.reverse();
                 sub.gates
             })
             .collect();
-            let new_gates: Vec<[u8;3]> = replaced_chunks.into_iter().flatten().collect();
-            c.gates = new_gates;
-            c.gates.reverse();
+        let mut new_gates: Vec<[u8; 3]> = Vec::new();
+        let len = replaced_chunks.len();
+
+        for i in 0..len - 1 {
+            let chunk = &replaced_chunks[i];
+            let next  = &replaced_chunks[i + 1];
+
+            if i == 0 {
+                new_gates.extend_from_slice(&chunk[..chunk.len() - 1]);
+            } else {
+                new_gates.extend_from_slice(&chunk[1..chunk.len() - 1]);
+            }
+
+            let left  = chunk.last().unwrap();
+            let right = next.first().unwrap();
+
+            let (replaced, _) = replace_single_pair(
+                left,
+                right,
+                n,
+                _conn,
+                &env,
+                &bit_shuf_list,
+                dbs,
+            );
+
+            new_gates.extend_from_slice(&replaced);
+        }
+
+        let last = replaced_chunks.last().unwrap();
+        new_gates.extend_from_slice(&last[1..]);
+        c.gates = new_gates;
     }
     REPLACE_PAIRS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
     println!(
@@ -1019,7 +1042,7 @@ pub fn interleave_sequential_big(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
     intermediate: &str,
-) -> CircuitSeq {
+) -> (CircuitSeq, usize, usize, usize, usize) {
     println!("Current round: {}/{}", curr_round, last_round);
 
     println!("Butterfly start: {} gates", circuit.gates.len());
@@ -1182,7 +1205,13 @@ pub fn interleave_sequential_big(
     println!("  merge_combine_blocks:   {:.3}", MERGE_COMBINE_BLOCKS_TIME.load(Ordering::Relaxed) as f64 / 1e9 / 60.0);
 
     crate::replace::replace::print_compress_timers();
-    acc
+    ( 
+        acc,
+        0,
+        0,
+        0,
+        0,
+    )
 }
 
 pub fn replace_and_compress_big_distance(
@@ -1792,9 +1821,16 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection,
     // Repeat obfuscate + compress 'rounds' times
     let mut post_len = 0;
     let mut count = 0;
+    let mut n = n;
     for i in 0..rounds {
         let _stop = 1000;
-        let new_circuit = interleave_sequential_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate);
+        let (new_circuit, _, _, _, _) = if i == 0 { 
+            let x = interleave_sequential_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate);
+            n *= 2;
+            x
+        } else {
+            replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate) 
+        };
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
