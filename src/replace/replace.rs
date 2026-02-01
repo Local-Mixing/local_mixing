@@ -2464,16 +2464,16 @@ pub fn replace_sequential_pairs(
                 let id_len = if GatePair::is_none(&tax) {
                     let r = rng.random_range(0..100);
                     match r { 
-                        0..45 => 6,   
-                        45..90 => 7,   
+                        0..33 => 6,   
+                        33..66 => 7,   
                         _       => 16, 
                     }
                 } else {
                     let r = rng.random_range(0..100);
                     match r {
-                        0..30  => 5,   
-                        30..60 => 6,   
-                        60..90 => 7,   
+                        0..14  => 5,   
+                        14..40 => 6,   
+                        40..66 => 7,   
                         _       => 16, 
                     }
                 };
