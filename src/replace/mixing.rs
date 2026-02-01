@@ -1859,7 +1859,7 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection,
                 j += 1;
             }
         }
-        if c.probably_equal(&circuit, n, 100_000).is_err() {
+        if c.probably_equal(&circuit, n/2, 100_000).is_err() {
             panic!("The functionality has changed");
         }
         {
