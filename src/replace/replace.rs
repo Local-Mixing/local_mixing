@@ -460,7 +460,6 @@ pub fn get_random_wide_identity(
             let mut min_keys: Vec<u8> = wires.keys().cloned().collect();
             min_keys.sort_by_key(|k| wires.get(k).map(|v| v.len()).unwrap_or(0));
             let min = min_vals[0];
-            let min = id.gates.len()/2;
             let mut used_wires = vec![id.gates[min][0], id.gates[min][1], id.gates[min][2]];
             let mut unused_wires: Vec<u8> = (0..n as u8)
                 .filter(|w| !used_wires.contains(w) && !uw.contains(w))
