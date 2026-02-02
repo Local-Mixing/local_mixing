@@ -433,7 +433,7 @@ pub fn get_random_wide_identity(
     while nwires < n || len < 1000 {
         shoot_random_gate(&mut id, 100_000);
         let gp = GatePair::from_int(rng.random_range(0..34));
-        let mut i = match get_random_identity(16, gp, env, dbs) {
+        let mut i = match get_random_identity(6, gp, env, dbs) {
             Ok(i) => {
                 i
             }
@@ -466,7 +466,7 @@ pub fn get_random_wide_identity(
                 .collect();
             let mut count = 3;
             let mut j = 1;
-            while count < 16 {
+            while count < 6 {
                 if !unused_wires.is_empty() {
                     let random = unused_wires.pop().unwrap();
                     used_wires.push(random);
@@ -483,7 +483,7 @@ pub fn get_random_wide_identity(
                 }
             }
             let rewired_g = CircuitSeq::rewire_subcircuit(&id, &vec![min], &used_wires);
-            i.rewire_first_gate(rewired_g.gates[0], 16);
+            i.rewire_first_gate(rewired_g.gates[0], 6);
             i = CircuitSeq::unrewire_subcircuit(&i, &used_wires);
             i.gates.remove(0);
             id.gates.splice(min..=min, i.gates);
