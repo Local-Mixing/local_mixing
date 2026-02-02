@@ -892,37 +892,38 @@ pub fn replace_and_compress_big(
                 sub.gates
             })
             .collect();
-        let mut new_gates: Vec<[u8; 3]> = Vec::new();
-        let len = replaced_chunks.len();
+        let new_gates: Vec<[u8; 3]> = replaced_chunks.into_iter().flatten().collect();
+        // let mut new_gates: Vec<[u8; 3]> = Vec::new();
+        // let len = replaced_chunks.len();
 
-        for i in 0..len - 1 {
-            let chunk = &replaced_chunks[i];
-            let next  = &replaced_chunks[i + 1];
+        // for i in 0..len - 1 {
+        //     let chunk = &replaced_chunks[i];
+        //     let next  = &replaced_chunks[i + 1];
 
-            if i == 0 {
-                new_gates.extend_from_slice(&chunk[..chunk.len() - 1]);
-            } else {
-                new_gates.extend_from_slice(&chunk[1..chunk.len() - 1]);
-            }
+        //     if i == 0 {
+        //         new_gates.extend_from_slice(&chunk[..chunk.len() - 1]);
+        //     } else {
+        //         new_gates.extend_from_slice(&chunk[1..chunk.len() - 1]);
+        //     }
 
-            let left  = chunk.last().unwrap();
-            let right = next.first().unwrap();
+        //     let left  = chunk.last().unwrap();
+        //     let right = next.first().unwrap();
 
-            let (replaced, _) = replace_single_pair(
-                left,
-                right,
-                n,
-                _conn,
-                &env,
-                &bit_shuf_list,
-                dbs,
-            );
+        //     let (replaced, _) = replace_single_pair(
+        //         left,
+        //         right,
+        //         n,
+        //         _conn,
+        //         &env,
+        //         &bit_shuf_list,
+        //         dbs,
+        //     );
 
-            new_gates.extend_from_slice(&replaced);
-        }
+        //     new_gates.extend_from_slice(&replaced);
+        // }
 
-        let last = replaced_chunks.last().unwrap();
-        new_gates.extend_from_slice(&last[1..]);
+        // let last = replaced_chunks.last().unwrap();
+        // new_gates.extend_from_slice(&last[1..]);
         c.gates = new_gates;
         c.gates.reverse();
     }
@@ -931,7 +932,7 @@ pub fn replace_and_compress_big(
         "Finished replace_sequential_pairs, new length: {}",
         c.gates.len()
     );
-    if c.probably_equal(circuit, n/2, 100_000).is_err() {
+    if c.probably_equal(circuit, n, 100_000).is_err() {
         panic!("replacing changed functionality");
     }
     let mut f = OpenOptions::new()
