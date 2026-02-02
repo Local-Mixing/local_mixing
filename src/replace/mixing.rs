@@ -1882,7 +1882,7 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection,
 
     println!("Final len: {}", circuit.gates.len());
     circuit
-    .probably_equal(&c, n, 150_000)
+    .probably_equal(&c, n/2, 150_000)
     .expect("The circuits differ somewhere!");
 
     // Write to file
