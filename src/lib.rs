@@ -13,6 +13,11 @@ use std::io::{self, Write};
 
 #[pyfunction]
 fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: &str, c2: &str, canon: bool) -> Py<PyArray2<f64>> {
+    let mask: u128 = if num_wires < u128::BITS as usize {
+        (1 << num_wires) - 1
+    } else {
+        u128::MAX
+    };
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
     // Load circuits
@@ -50,7 +55,7 @@ fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: 
 
         for i1 in 0..=circuit_one_len {
             for i2 in 0..=circuit_two_len {
-                let diff = evolution_one[i1] ^ evolution_two[i2];
+                let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
                 let hamming_dist = diff.count_ones() as f64;
                 let overlap = if !flag {
                     hamming_dist / num_wires as f64
