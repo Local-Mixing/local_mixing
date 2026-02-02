@@ -433,7 +433,7 @@ pub fn get_random_wide_identity(
     while nwires < n || len < 1000 {
         shoot_random_gate(&mut id, 100_000);
         let gp = GatePair::from_int(rng.random_range(0..34));
-        let mut i = match get_random_identity(6, gp, env, dbs) {
+        let mut i = match get_random_identity(16, gp, env, dbs) {
             Ok(i) => {
                 i
             }
