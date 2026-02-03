@@ -892,6 +892,7 @@ pub fn replace_and_compress_big(
                 sub.gates
             })
             .collect();
+        println!("{}", replaced_chunks.len());
         let new_gates = mix_seams(replaced_chunks, _conn, n, env, bit_shuf_list, dbs);
         c.gates = new_gates;
         c.gates.reverse();
