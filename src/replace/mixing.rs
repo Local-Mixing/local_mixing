@@ -892,7 +892,6 @@ pub fn replace_and_compress_big(
                 sub.gates
             })
             .collect();
-        println!("{}", replaced_chunks.len());
         let new_gates = mix_seams(replaced_chunks, _conn, n, env, bit_shuf_list, dbs);
         c.gates = new_gates;
         c.gates.reverse();
@@ -1013,6 +1012,9 @@ pub fn mix_seams(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
 ) -> Vec<[u8;3]> {
+    if gates.len() == 1 {
+        return gates.into_iter().flatten().collect()
+    }
     let mut new_gates: Vec<[u8; 3]> = Vec::new();
     let len = gates.len();
     for i in 0..len - 1 {
