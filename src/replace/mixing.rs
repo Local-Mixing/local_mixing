@@ -892,36 +892,6 @@ pub fn replace_and_compress_big(
                 sub.gates
             })
             .collect();
-        // let mut new_gates: Vec<[u8; 3]> = Vec::new();
-        // let len = replaced_chunks.len();
-
-        // for i in 0..len - 1 {
-        //     let chunk = &replaced_chunks[i];
-        //     let next  = &replaced_chunks[i + 1];
-
-        //     if i == 0 {
-        //         new_gates.extend_from_slice(&chunk[..chunk.len() - 1]);
-        //     } else {
-        //         new_gates.extend_from_slice(&chunk[1..chunk.len() - 1]);
-        //     }
-
-        //     let left  = chunk.last().unwrap();
-        //     let right = next.first().unwrap();
-
-        //     let (replaced, _) = replace_single_pair(
-        //         left,
-        //         right,
-        //         n,
-        //         _conn,
-        //         &env,
-        //         &bit_shuf_list,
-        //         dbs,
-        //     );
-        //     new_gates.extend_from_slice(&replaced);
-        // }
-
-        // let last = replaced_chunks.last().unwrap();
-        // new_gates.extend_from_slice(&last[1..]);
         let new_gates = mix_seams(replaced_chunks, _conn, n, env, bit_shuf_list, dbs);
         c.gates = new_gates;
         c.gates.reverse();
@@ -1066,20 +1036,18 @@ pub fn mix_seams(
             &bit_shuf_list,
             dbs,
         );
+        let lr = CircuitSeq { gates: vec![*left, *right] };
+        if lr.probably_equal(&CircuitSeq { gates: replaced.clone() }, n, 1_000).is_err() {
+            panic!("Replaced doesn't match lr");
+        }
         new_gates.extend_from_slice(&replaced);
     }
 
     let last = gates.last().unwrap();
     new_gates.extend_from_slice(&last[1..]);
     let temp: Vec<[u8;3]> = gates.into_iter().flatten().collect();
-    let mut c1 = CircuitSeq { gates: temp };
-    let mut c1rev = c1.clone();
-    c1rev.gates.reverse();
-    let mut c2 = CircuitSeq { gates: new_gates.clone() };
-    let mut c2rev = c2.clone();
-    c2rev.gates.reverse();
-    c1 = c1.concat(&c1rev);
-    c2 = c2.concat(&c2rev);
+    let c1 = CircuitSeq { gates: temp };
+    let c2 = CircuitSeq { gates: new_gates.clone() };
     if c1.probably_equal(&c2, n, 1_000).is_err() {
         panic!("Failed to mix seams");
     }
