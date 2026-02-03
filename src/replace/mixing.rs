@@ -842,6 +842,7 @@ pub fn replace_and_compress_big(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
     intermediate: &str,
+    tower: bool,
 ) -> (CircuitSeq, usize, usize, usize, usize) {
     println!("Current round: {}/{}", curr_round, last_round);
 
@@ -857,7 +858,7 @@ pub fn replace_and_compress_big(
     SHOOT_RANDOM_GATE_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     let t1 = Instant::now();
-    for _ in 0..2 {
+    for _ in 0..1 {
         let t0 = Instant::now();
         shoot_random_gate(&mut c, 200_000);
         SHOOT_RANDOM_GATE_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -883,7 +884,7 @@ pub fn replace_and_compress_big(
                     OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )
                 .expect("Failed to open read-only connection");
-                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &mut thread_conn, &env, &bit_shuf_list, dbs);
+                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &mut thread_conn, &env, &bit_shuf_list, dbs, tower);
                 ALREADY_COLLIDED.fetch_add(col, Ordering::SeqCst);
                 SHOOT_COUNT.fetch_add(shoot, Ordering::SeqCst);
                 MADE_LEFT.fetch_add(zero, Ordering::SeqCst);
@@ -892,9 +893,8 @@ pub fn replace_and_compress_big(
                 sub.gates
             })
             .collect();
-        let new_gates = mix_seams(replaced_chunks, _conn, n, env, bit_shuf_list, dbs);
+        let new_gates = mix_seams(replaced_chunks, _conn, n, env, bit_shuf_list, dbs, tower);
         c.gates = new_gates;
-        c.gates.reverse();
     }
     REPLACE_PAIRS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
     println!(
@@ -1011,6 +1011,7 @@ pub fn mix_seams(
     env: &lmdb::Environment,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
+    tower: bool,
 ) -> Vec<[u8;3]> {
     if gates.len() == 1 {
         return gates.into_iter().flatten().collect()
@@ -1020,7 +1021,6 @@ pub fn mix_seams(
     for i in 0..len - 1 {
         let chunk = &gates[i];
         let next  = &gates[i + 1];
-        println!("{}", chunk.len());
         if i == 0 {
             new_gates.extend_from_slice(&chunk[..chunk.len() - 1]);
         } else {
@@ -1038,6 +1038,7 @@ pub fn mix_seams(
             &env,
             &bit_shuf_list,
             dbs,
+            tower,
         );
         let lr = CircuitSeq { gates: vec![*left, *right] };
         if lr.probably_equal(&CircuitSeq { gates: replaced.clone() }, n, 1_000).is_err() {
@@ -1069,6 +1070,7 @@ pub fn interleave_sequential_big(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
     intermediate: &str,
+    tower: bool,
 ) -> (CircuitSeq, usize, usize, usize, usize) {
     println!("Current round: {}/{}", curr_round, last_round);
 
@@ -1106,7 +1108,7 @@ pub fn interleave_sequential_big(
                     OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )
                 .expect("Failed to open read-only connection");
-                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &mut thread_conn, &env, &bit_shuf_list, dbs);
+                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &mut thread_conn, &env, &bit_shuf_list, dbs, tower);
                 ALREADY_COLLIDED.fetch_add(col, Ordering::SeqCst);
                 SHOOT_COUNT.fetch_add(shoot, Ordering::SeqCst);
                 MADE_LEFT.fetch_add(zero, Ordering::SeqCst);
@@ -1139,6 +1141,7 @@ pub fn interleave_sequential_big(
                 &env,
                 &bit_shuf_list,
                 dbs,
+                tower,
             );
 
             new_gates.extend_from_slice(&replaced);
@@ -1255,6 +1258,7 @@ pub fn replace_and_compress_big_distance(
     dbs: &HashMap<String, lmdb::Database>,
     intermediate: &str,
     min: usize,
+    tower: bool
 ) -> CircuitSeq {
     println!("Current round: {}/{}", curr_round, last_round);
     println!("Replace and compress distance start: {} gates", circuit.gates.len());
@@ -1264,7 +1268,7 @@ pub fn replace_and_compress_big_distance(
     SHOOT_RANDOM_GATE_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     let t1 = Instant::now();
-    replace_pair_distances_linear(&mut c, n, _conn, env, bit_shuf_list, dbs, min);
+    replace_pair_distances_linear(&mut c, n, _conn, env, bit_shuf_list, dbs, min, tower);
     REPLACE_PAIRS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
     println!(
         "Finished replace_sequential_pairs, new length: {}",
@@ -1424,6 +1428,24 @@ pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> 
         "ids_n16g10", "ids_n16g11", "ids_n16g12", "ids_n16g13", "ids_n16g14", "ids_n16g15", "ids_n16g16", "ids_n16g17", "ids_n16g18", "ids_n16g19", 
         "ids_n16g20", "ids_n16g21", "ids_n16g22", "ids_n16g23", "ids_n16g24", "ids_n16g25", "ids_n16g26", "ids_n16g27", "ids_n16g28", "ids_n16g29", 
         "ids_n16g30", "ids_n16g31", "ids_n16g32", "ids_n16g33",
+        "ids_n128g0single",  "ids_n128g1single",  "ids_n128g2single",  "ids_n128g3single",
+        "ids_n128g4single",  "ids_n128g5single",  "ids_n128g6single",  "ids_n128g7single",
+        "ids_n128g8single",  "ids_n128g9single",  "ids_n128g10single", "ids_n128g11single",
+        "ids_n128g12single", "ids_n128g13single", "ids_n128g14single", "ids_n128g15single",
+        "ids_n128g16single", "ids_n128g17single", "ids_n128g18single", "ids_n128g19single",
+        "ids_n128g20single", "ids_n128g21single", "ids_n128g22single", "ids_n128g23single",
+        "ids_n128g24single", "ids_n128g25single", "ids_n128g26single", "ids_n128g27single",
+        "ids_n128g28single", "ids_n128g29single", "ids_n128g30single", "ids_n128g31single",
+        "ids_n128g32single", "ids_n128g33single",
+        "ids_n128g0tower",  "ids_n128g1tower",  "ids_n128g2tower",  "ids_n128g3tower",
+        "ids_n128g4tower",  "ids_n128g5tower",  "ids_n128g6tower",  "ids_n128g7tower",
+        "ids_n128g8tower",  "ids_n128g9tower",  "ids_n128g10tower", "ids_n128g11tower",
+        "ids_n128g12tower", "ids_n128g13tower", "ids_n128g14tower", "ids_n128g15tower",
+        "ids_n128g16tower", "ids_n128g17tower", "ids_n128g18tower", "ids_n128g19tower",
+        "ids_n128g20tower", "ids_n128g21tower", "ids_n128g22tower", "ids_n128g23tower",
+        "ids_n128g24tower", "ids_n128g25tower", "ids_n128g26tower", "ids_n128g27tower",
+        "ids_n128g28tower", "ids_n128g29tower", "ids_n128g30tower", "ids_n128g31tower",
+        "ids_n128g32tower", "ids_n128g33tower",
     ];
 
     for name in db_names.iter() {
@@ -1682,7 +1704,7 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str) {
+pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -1712,7 +1734,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usi
     let mut count = 0;
     for i in 0..rounds {
         let _stop = 1000;
-        let (new_circuit, already_coll, shoot, made_left, traverse_left)  = replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate);
+        let (new_circuit, already_coll, shoot, made_left, traverse_left)  = replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower);
         circuit = new_circuit;
 
         sum_already_coll += already_coll;
@@ -1825,7 +1847,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usi
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str) {
+pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -1853,11 +1875,11 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection,
     for i in 0..rounds {
         let _stop = 1000;
         let (new_circuit, _, _, _, _) = if i == 0 { 
-            let x = interleave_sequential_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate);
+            let x = interleave_sequential_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower);
             n *= 2;
             x
         } else {
-            replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate) 
+            replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower) 
         };
         circuit = new_circuit;
 
@@ -1923,7 +1945,7 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection,
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, min: usize,) {
+pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, min: usize, tower: bool,) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -1949,7 +1971,7 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, conn: &mut Connectio
     let mut count = 0;
     for i in 0..rounds {
         let _stop = 1000;
-        let new_circuit = replace_and_compress_big_distance(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, min);
+        let new_circuit = replace_and_compress_big_distance(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, min, tower);
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {

@@ -242,11 +242,18 @@ fn get_random_identity(
     gate_pair: GatePair,
     env: &lmdb::Environment,
     dbs: &HashMap<String, Database>,
+    tower: bool,
 ) -> Result<CircuitSeq, Box<dyn std::error::Error>> {
     let total_start = Instant::now();
 
     let g = GatePair::to_int(&gate_pair);
-    let db_name = format!("ids_n{}g{}", n, g);
+    let db_name = if n == 128 && tower {
+        format!("ids_n{}g{}{}", n, g, "tower")
+    } else if n == 128 && !tower {
+        format!("ids_n{}g{}{}", n, g, "single")
+    } else {
+        format!("ids_n{}g{}", n, g)
+    };
 
     let db = dbs.get(&db_name).unwrap_or_else(|| {
         panic!("Failed to get DB with name: {}", db_name);
@@ -393,7 +400,76 @@ fn get_random_identity(
         "ids_n16g31" => 2_700,
         "ids_n16g32" => 13_290,
         "ids_n16g33" => 2_360,
-
+        // n128 singles
+        "ids_n128g0single"  => 11_110,
+        "ids_n128g1single"  =>    300,
+        "ids_n128g2single"  =>    650,
+        "ids_n128g3single"  =>    660,
+        "ids_n128g4single"  =>    710,
+        "ids_n128g5single"  =>    290,
+        "ids_n128g6single"  =>    320,
+        "ids_n128g7single"  =>    690,
+        "ids_n128g8single"  =>    330,
+        "ids_n128g9single"  =>    350,
+        "ids_n128g10single" =>    260,
+        "ids_n128g11single" =>    100,
+        "ids_n128g12single" =>    120,
+        "ids_n128g13single" =>    320,
+        "ids_n128g14single" =>    390,
+        "ids_n128g15single" =>     80,
+        "ids_n128g16single" =>    230,
+        "ids_n128g17single" =>    860,
+        "ids_n128g18single" =>    140,
+        "ids_n128g19single" =>    380,
+        "ids_n128g20single" =>    170,
+        "ids_n128g21single" =>    120,
+        "ids_n128g22single" =>    120,
+        "ids_n128g23single" =>    330,
+        "ids_n128g24single" =>    190,
+        "ids_n128g25single" =>    730,
+        "ids_n128g26single" =>    120,
+        "ids_n128g27single" =>    130,
+        "ids_n128g28single" =>    880,
+        "ids_n128g29single" =>    410,
+        "ids_n128g30single" =>    340,
+        "ids_n128g31single" =>    120,
+        "ids_n128g32single" =>    740,
+        "ids_n128g33single" =>    100,
+        // n128 towers
+        "ids_n128g0tower"  => 11_530,
+        "ids_n128g1tower"  =>  2_180,
+        "ids_n128g2tower"  =>  4_660,
+        "ids_n128g3tower"  =>  4_590,
+        "ids_n128g4tower"  =>  4_620,
+        "ids_n128g5tower"  =>  2_290,
+        "ids_n128g6tower"  =>  2_470,
+        "ids_n128g7tower"  =>  4_430,
+        "ids_n128g8tower"  =>  2_360,
+        "ids_n128g9tower"  =>  2_470,
+        "ids_n128g10tower" =>  1_770,
+        "ids_n128g11tower" =>  1_050,
+        "ids_n128g12tower" =>    990,
+        "ids_n128g13tower" =>  2_420,
+        "ids_n128g14tower" =>  2_830,
+        "ids_n128g15tower" =>    620,
+        "ids_n128g16tower" =>  1_440,
+        "ids_n128g17tower" =>  5_490,
+        "ids_n128g18tower" =>    980,
+        "ids_n128g19tower" =>  2_690,
+        "ids_n128g20tower" =>    940,
+        "ids_n128g21tower" =>    760,
+        "ids_n128g22tower" =>  1_030,
+        "ids_n128g23tower" =>  2_270,
+        "ids_n128g24tower" =>  1_450,
+        "ids_n128g25tower" =>  4_430,
+        "ids_n128g26tower" =>    740,
+        "ids_n128g27tower" =>    790,
+        "ids_n128g28tower" =>  5_720,
+        "ids_n128g29tower" =>  2_560,
+        "ids_n128g30tower" =>  2_240,
+        "ids_n128g31tower" =>  1_000,
+        "ids_n128g32tower" =>  4_540,
+        "ids_n128g33tower" =>    830,
         _ => panic!("DB {} not in hardcoded max_entries", db_name),
     };
 
@@ -434,7 +510,7 @@ pub fn get_random_wide_identity(
     while nwires < n || len < 1000 {
         shoot_random_gate(&mut id, 100_000);
         let gp = GatePair::from_int(rng.random_range(0..34));
-        let mut i = match get_random_identity(6, gp, env, dbs) {
+        let mut i = match get_random_identity(6, gp, env, dbs, false) {
             Ok(i) => {
                 i
             }
@@ -520,7 +596,7 @@ pub fn get_random_wide_identity_via_pairs(
     while nwires < 16 || len < 160 {
         shoot_random_gate(&mut id, 100_000);
         let gp = GatePair::from_int(rng.random_range(0..34));
-        let mut i = match get_random_identity(6, gp, env, dbs) {
+        let mut i = match get_random_identity(6, gp, env, dbs, false) {
             Ok(i) => {
                 i
             }
@@ -557,7 +633,7 @@ pub fn get_random_wide_identity_via_pairs(
             i = CircuitSeq {gates: Vec::new()};
             let mut id_gen = false;
             while !id_gen {
-                i = match get_random_identity(6, tax, env, dbs) {
+                i = match get_random_identity(6, tax, env, dbs, false) {
                     Ok(i) => {
                         id_gen = true;
                         i
@@ -2554,7 +2630,8 @@ pub fn replace_sequential_pairs(
     conn: &mut Connection,
     env: &lmdb::Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
-    dbs: &HashMap<String, lmdb::Database>
+    dbs: &HashMap<String, lmdb::Database>,
+    tower: bool
 ) -> (usize, usize, usize, usize) {
     make_stdin_nonblocking();
     let gates = circuit.gates.clone();
@@ -2593,24 +2670,25 @@ pub fn replace_sequential_pairs(
 
             while produced.is_none() && fail < 100 {
                 fail += 1;
-                let id_len = if GatePair::is_none(&tax) {
-                    let r = rng.random_range(0..100);
-                    match r { 
-                        0..45 => 6,   
-                        45..90 => 7,   
-                        _       => 16, 
-                    }
-                } else {
-                    let r = rng.random_range(0..100);
-                    match r {
-                        0..30  => 5,   
-                        30..60 => 6,   
-                        60..90 => 7,   
-                        _       => 16, 
-                    }
-                };
+                // let id_len = if GatePair::is_none(&tax) {
+                //     let r = rng.random_range(0..100);
+                //     match r { 
+                //         0..45 => 6,   
+                //         45..90 => 7,   
+                //         _       => 16, 
+                //     }
+                // } else {
+                //     let r = rng.random_range(0..100);
+                //     match r {
+                //         0..30  => 5,   
+                //         30..60 => 6,   
+                //         60..90 => 7,   
+                //         _       => 16, 
+                //     }
+                // };
+                let id_len = 128;
                 let t_id = Instant::now();
-                let id = match get_random_identity(id_len, tax, env, dbs) {
+                let id = match get_random_identity(id_len, tax, env, dbs, tower) {
                     Ok(id) => {
                         IDENTITY_TIME.fetch_add(t_id.elapsed().as_nanos() as u64, Ordering::Relaxed);
                         id
@@ -2828,7 +2906,8 @@ pub fn replace_single_pair(
     _conn: &mut Connection,
     env: &lmdb::Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
-    dbs: &HashMap<String, lmdb::Database>
+    dbs: &HashMap<String, lmdb::Database>,
+    tower: bool
 ) -> (Vec<[u8;3]>, usize) {
     make_stdin_nonblocking();
     let mut rng = rand::rng();
@@ -2836,23 +2915,24 @@ pub fn replace_single_pair(
     let mut id_gen = false;
     let mut id = CircuitSeq { gates: Vec::new() };
     while !id_gen {
-        let id_len = if GatePair::is_none(&tax) {
-            let r = rng.random_range(0..100);
-            match r { 
-                0..45 => 6,   
-                45..90 => 7,   
-                _       => 16, 
-            }
-        } else {
-            let r = rng.random_range(0..100);
-            match r {
-                0..30  => 5,   
-                30..60 => 6,   
-                60..90 => 7,   
-                _       => 16, 
-            }
-        };
-        id = match get_random_identity(id_len, tax, env, dbs) {
+        // let id_len = if GatePair::is_none(&tax) {
+        //     let r = rng.random_range(0..100);
+        //     match r { 
+        //         0..45 => 6,   
+        //         45..90 => 7,   
+        //         _       => 16, 
+        //     }
+        // } else {
+        //     let r = rng.random_range(0..100);
+        //     match r {
+        //         0..30  => 5,   
+        //         30..60 => 6,   
+        //         60..90 => 7,   
+        //         _       => 16, 
+        //     }
+        // };
+        let id_len = 128;
+        id = match get_random_identity(id_len, tax, env, dbs, tower) {
             Ok(id) => {
                 id_gen = true;
                 id
@@ -2925,6 +3005,7 @@ pub fn replace_pair_distances(
     env: &lmdb::Environment,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
+    tower: bool
 ) {
     let min = 30;
 
@@ -2959,6 +3040,7 @@ pub fn replace_pair_distances(
                     env,
                     bit_shuf_list,
                     dbs,
+                    tower,
                 );
 
                 // Save what to do later
@@ -3048,6 +3130,7 @@ pub fn replace_pair_distances_linear(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
     min: usize,
+    tower: bool,
 ) {
     // initialize pair distances
     
@@ -3081,6 +3164,7 @@ pub fn replace_pair_distances_linear(
                     env,
                     bit_shuf_list,
                     dbs,
+                    tower,
                 );
 
                 if id_len > 0 {
@@ -3680,9 +3764,9 @@ mod tests {
                 )
                 .expect("Failed to open read-only connection");
                 let t0 = Instant::now();
-                let (_, _, _, _) = replace_sequential_pairs(&mut sub, 64, &mut thread_conn, &env, &bit_shuf_list, &dbs);
+                let (_, _, _, _) = replace_sequential_pairs(&mut sub, 64, &mut thread_conn, &env, &bit_shuf_list, &dbs, false);
                 sub.gates.reverse();
-                let (_, _, _, _) = replace_sequential_pairs(&mut sub, 64, &mut thread_conn, &env, &bit_shuf_list, &dbs);
+                let (_, _, _, _) = replace_sequential_pairs(&mut sub, 64, &mut thread_conn, &env, &bit_shuf_list, &dbs, false);
                 sub.gates.reverse();
                 TOTAL_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 sub.gates
@@ -3738,7 +3822,7 @@ mod tests {
         for _ in 0..10_000_000 {
             let c = random_circuit(64, 2);
             let tax = gate_pair_taxonomy(&c.gates[0], &c.gates[1]);
-            let id = get_random_identity(w, tax, &env, &dbs);
+            let id = get_random_identity(w, tax, &env, &dbs, false);
             println!("{:?}", id.unwrap().gates);
         }
         let ns_to_min = |v: u64| v as f64 / (60.0 * 1_000_000_000.0);

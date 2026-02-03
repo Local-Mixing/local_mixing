@@ -194,6 +194,14 @@ fn main() {
                     .help("Number of wires (default: 32)"),
             )
             .arg(
+                Arg::new("tower")
+                    .short('t')
+                    .long("tower")
+                    .help("Use tower identities over singles")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue),
+            )
+            .arg(
                 Arg::new("intermediate")
                     .short('i')
                     .long("intermediate")
@@ -236,6 +244,14 @@ fn main() {
                     .default_value("32")
                     .value_parser(clap::value_parser!(usize))
                     .help("Number of wires (default: 32)"),
+            )
+            .arg(
+                Arg::new("tower")
+                    .short('t')
+                    .long("tower")
+                    .help("Use tower identities over singles")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue),
             )
             .arg(
                 Arg::new("intermediate")
@@ -297,6 +313,14 @@ fn main() {
                     .default_value("30")
                     .value_parser(clap::value_parser!(usize))
                     .help("Minimum distance"),
+            )
+            .arg(
+                Arg::new("tower")
+                    .short('t')
+                    .long("tower")
+                    .help("Use tower identities over singles")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue),
             ),
     )
         .subcommand(
@@ -718,6 +742,7 @@ fn main() {
             let s: &str = sub.get_one::<String>("source").unwrap().as_str();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
+            let tower = sub.get_flag("tower");
             let n: usize = *sub.get_one("n").unwrap_or(&32); // default to 32 if not provided
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
@@ -742,7 +767,7 @@ fn main() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_rac_big(&c, rounds, &mut conn, n, d, &env, i);
+                main_rac_big(&c, rounds, &mut conn, n, d, &env, i, tower);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -775,6 +800,7 @@ fn main() {
             let s: &str = sub.get_one::<String>("source").unwrap().as_str();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
+            let tower = sub.get_flag("tower");
             let n: usize = *sub.get_one("n").unwrap_or(&32); // default to 32 if not provided
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
@@ -799,7 +825,7 @@ fn main() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_interleave_big(&c, rounds, &mut conn, n, d, &env, i);
+                main_interleave_big(&c, rounds, &mut conn, n, d, &env, i, tower);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -834,6 +860,7 @@ fn main() {
             let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
             let n: usize = *sub.get_one("n").unwrap_or(&32); // default to 32 if not provided
             let m: usize = *sub.get_one("m").unwrap_or(&30); // default to 30f not provided
+            let tower = sub.get_flag("tower");
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
             let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
@@ -857,7 +884,7 @@ fn main() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_rac_big_distance(&c, rounds, &mut conn, n, d, &env, i, m);
+                main_rac_big_distance(&c, rounds, &mut conn, n, d, &env, i, m, tower);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
