@@ -3287,4 +3287,37 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn find_swaps() {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("swap12.txt")
+            .expect("Failed to open swap12.txt");
+        let mut circuits: HashSet<CircuitSeq> = HashSet::new();
+        let perm = Permutation { data: vec![0, 1, 4, 5, 2, 3, 6, 7]};
+        for m in 6..20 {
+            for _ in 0..100000 {
+                let mut random = random_circuit(3, m);
+                random.canonicalize();
+                let mut i = 0;
+                while i < random.gates.len().saturating_sub(1) {
+                    if random.gates[i] == random.gates[i + 1] {
+                        random.gates.drain(i..=i + 1);
+                        i = i.saturating_sub(2);
+                    } else {
+                        i += 1;
+                    }
+                }
+                if random.permutation(3) == perm {
+                    circuits.insert(random);
+                }
+            }
+        }
+
+        for c in circuits {
+            writeln!(file, "{}", c.repr()).expect("Failed to write to swap12.txt");
+        }
+    }
 }

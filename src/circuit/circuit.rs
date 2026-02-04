@@ -11,7 +11,7 @@ pub struct Gate{
     pub pins: [usize;3], //one active wire (0) and two control wires (1,2)
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, Hash, PartialEq)]
 pub struct CircuitSeq {
     pub gates: Vec<[u8;3]>, 
 }
