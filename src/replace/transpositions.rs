@@ -281,8 +281,10 @@ mod tests {
             gates.push(gate);
 
             let t = Transpositions::gen_random(128, 100);
+            println!("t: {}", t.transpositions.len());
             gates.extend(t.to_circuit(128, &env, &dbs).gates);
             let tc = t.to_circuit(128, &env, &dbs);
+            println!("c: {}", tc.gates.len());
             gates.extend(tc.gates.into_iter().rev());
         }
 
