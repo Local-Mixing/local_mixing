@@ -196,8 +196,7 @@ impl Transpositions {
             }
         }
         let used_wires = vec![c, a, b];
-        let idxs: Vec<usize> = (0..out.gates.len()).collect();
-        CircuitSeq::rewire_subcircuit(&out, &idxs, &used_wires).gates
+        CircuitSeq::unrewire_subcircuit(&out, &used_wires).gates
     }
 
     pub fn to_circuit(
