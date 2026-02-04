@@ -294,6 +294,13 @@ mod tests {
                 gates.extend(t.to_circuit(128, &env, &dbs).gates);
             } else {
                 let mut combined = last.concat(&t);
+                let mut temp_last = last.to_circuit(128, &env, &dbs);
+                let temp_t = t.to_circuit(128, &env, &dbs);
+                temp_last = temp_last.concat(&temp_t);
+                let temp_circ = combined.to_circuit(128, &env, &dbs);
+                if temp_circ.probably_equal(&temp_last, 128, 100_000).is_err() {
+                    panic!("Combined transpose circuit does not match the original functionality");
+                }
                 combined.canonicalize();
                 combined.filter_repeats();
                 Transpositions::shoot_random_transpositions(&mut combined, 100_000);
@@ -352,5 +359,6 @@ mod tests {
         if base.probably_equal(&new_circuit, 128, 1_000).is_err() {
             panic!("Failed to retain functionality");
         }
+        println!("They are equal even after shooting");
     }
 }
