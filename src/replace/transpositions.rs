@@ -289,7 +289,7 @@ mod tests {
         for &gate in &base.gates {
 
             let t = Transpositions::gen_random(128, 100);
-            println!("t: {}", t.transpositions.len());
+            // println!("t: {}", t.transpositions.len());
             if last.transpositions.is_empty() {
                 gates.extend(t.to_circuit(128, &env, &dbs).gates);
             } else {
@@ -304,7 +304,7 @@ mod tests {
             let c = t.evaluate(gate[2]);
             gates.push([a, b, c]);
             let tc = t.to_circuit(128, &env, &dbs);
-            println!("c: {}", tc.gates.len());
+            // println!("c: {}", tc.gates.len());
             gates.extend(tc.gates.into_iter().rev());
             last = t;
             last.transpositions.reverse();
@@ -316,5 +316,41 @@ mod tests {
         }
         std::fs::write("test.txt", new_circuit.repr())
             .expect("failed to write test.txt");
+    }
+
+    #[test]
+    fn test_transpose_shooting() {
+        use crate::replace::mixing::open_all_dbs;
+        let file = File::open("initial.txt").expect("failed to open initial.txt");
+        let reader = BufReader::new(file);
+
+        let circuits: Vec<String> = reader
+            .lines()
+            .map(|l| l.unwrap())
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+
+        let mut rng = rand::rng();
+        let circuit_str = circuits
+            .choose(&mut rng)
+            .expect("no circuits found");
+
+        let base = CircuitSeq::from_string(circuit_str);
+
+        let env = Environment::new()
+            .set_max_dbs(258)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("failed to open lmdb");
+
+        let dbs = open_all_dbs(&env);
+
+        let mut t = Transpositions::gen_random(128, 100);
+        let base = t.to_circuit(128, &env, &dbs);
+        Transpositions::shoot_random_transpositions(&mut t, 100_000);
+        let new_circuit = t.to_circuit(128, &env, &dbs);
+        if base.probably_equal(&new_circuit, 128, 1_000).is_err() {
+            panic!("Failed to retain functionality");
+        }
     }
 }
