@@ -225,6 +225,19 @@ impl Transpositions {
             }
         }
     }
+
+    pub fn evaluate(&self, input: u8) -> u8 {
+        let mut val = input;
+        for (a, b) in self.transpositions.clone() {
+            if val == a {
+                val = b;
+            } else if val == b {
+                val = a;
+            }
+        }
+
+        val
+    }
 }
 
 #[cfg(test)]
@@ -267,16 +280,15 @@ mod tests {
 
         let mut gates: Vec<[u8; 3]> = Vec::new();
 
-        let t = Transpositions::gen_random(128, 100);
-        gates.extend(t.to_circuit(128, &env, &dbs).gates);
-        let tc = t.to_circuit(128, &env, &dbs);
-        gates.extend(tc.gates.into_iter().rev());
         for &gate in &base.gates {
-            gates.push(gate);
 
             let t = Transpositions::gen_random(128, 100);
             println!("t: {}", t.transpositions.len());
             gates.extend(t.to_circuit(128, &env, &dbs).gates);
+            let a = t.evaluate(gate[0]);
+            let b = t.evaluate(gate[1]);
+            let c = t.evaluate(gate[2]);
+            gates.push([a, b, c]);
             let tc = t.to_circuit(128, &env, &dbs);
             println!("c: {}", tc.gates.len());
             gates.extend(tc.gates.into_iter().rev());
