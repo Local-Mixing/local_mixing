@@ -1,44 +1,12 @@
 use crate::{
     circuit::circuit::CircuitSeq,
-    random::random_data::shoot_random_gate,
-    replace::replace::{
-        compress, 
-        compress_big, 
-        compress_big_ancillas, 
-        expand_big, 
-        obfuscate, 
-        outward_compress, 
-        random_id, 
-        replace_pair_distances_linear, 
-        replace_pairs, 
-        replace_sequential_pairs,
-        interleave,
-        replace_single_pair
-    },
 };
-// use crate::random::random_data::random_walk_no_skeleton;
-use rand::prelude::SliceRandom;
-use itertools::Itertools;
-// use lmdb::RoTransaction;
 use rand::Rng;
-use rayon::prelude::*;
-use std::io;
-use std::io::Read;
-use rusqlite::{Connection, OpenFlags};
-use lmdb::Transaction;
+use lmdb::{Environment, Transaction};
 use lmdb::Cursor;
-use once_cell::sync::Lazy;
 use lmdb::Database;
 use std::{
     collections::HashMap,
-    fs::{File, OpenOptions},
-    io::Write,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-        Arc,
-        Mutex,
-    },
-    time::Instant,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -246,6 +214,31 @@ impl Transpositions {
     }
 }
 
+pub fn insert_wire_shuffles(
+    circuit: &mut CircuitSeq, 
+    n: usize,
+    env: &Environment,
+    dbs: &HashMap<String, Database>,
+) {
+    println!("Inserting wire shuffles");
+    println!("Starting len: {} gates", circuit.gates.len());
+    let mut t_list: Vec<Transpositions> = Vec::new();
+    let mut gates: Vec<[u8;3]> = Vec::new();
+    for &gate in &circuit.gates {
+        let t = Transpositions::gen_random(n, 150);
+        gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
+        t_list.push(t);
+        gates.push(gate);
+    }
+    for t in t_list.iter().rev() {
+        let mut crev = t.to_circuit(n, env, dbs).gates;
+        crev.reverse();
+        gates.extend_from_slice(&crev);
+    }
+    circuit.gates = gates;
+    println!("Complete. Ending len: {} gates", circuit.gates.len());
+}
+
 #[cfg(test)]
 mod tests {
     use lmdb::Environment;
@@ -328,11 +321,11 @@ mod tests {
             .collect();
 
         let mut rng = rand::rng();
-        let circuit_str = circuits
+        let _circuit_str = circuits
             .choose(&mut rng)
             .expect("no circuits found");
 
-        let base = CircuitSeq::from_string(circuit_str);
+        // let base = CircuitSeq::from_string(circuit_str);
 
         let env = Environment::new()
             .set_max_dbs(258)

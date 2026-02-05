@@ -2676,23 +2676,23 @@ pub fn replace_sequential_pairs(
 
             while produced.is_none() && fail < 100 {
                 fail += 1;
-                // let id_len = if GatePair::is_none(&tax) {
-                //     let r = rng.random_range(0..100);
-                //     match r { 
-                //         0..45 => 6,   
-                //         45..90 => 7,   
-                //         _       => 16, 
-                //     }
-                // } else {
-                //     let r = rng.random_range(0..100);
-                //     match r {
-                //         0..30  => 5,   
-                //         30..60 => 6,   
-                //         60..90 => 7,   
-                //         _       => 16, 
-                //     }
-                // };
-                let id_len = 128;
+                let id_len = if GatePair::is_none(&tax) {
+                    let r = rng.random_range(0..100);
+                    match r { 
+                        0..45 => 6,   
+                        45..90 => 7,   
+                        _       => 16, 
+                    }
+                } else {
+                    let r = rng.random_range(0..100);
+                    match r {
+                        0..30  => 5,   
+                        30..60 => 6,   
+                        60..90 => 7,   
+                        _       => 16, 
+                    }
+                };
+                // let id_len = 128;
                 let t_id = Instant::now();
                 let id = match get_random_identity(id_len, tax, env, dbs, tower) {
                     Ok(id) => {

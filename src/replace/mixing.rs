@@ -15,7 +15,9 @@ use crate::{
         interleave,
         replace_single_pair
     },
+    replace::transpositions::insert_wire_shuffles,
 };
+
 // use crate::random::random_data::random_walk_no_skeleton;
 use rand::prelude::SliceRandom;
 use itertools::Itertools;
@@ -1912,6 +1914,99 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection,
             }
         }
         if c.probably_equal(&circuit, n/2, 100_000).is_err() {
+            panic!("The functionality has changed");
+        }
+        {
+        println!("Updating progress {}", progress_path);
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&progress_path)
+            .expect("Failed to open progress file");
+
+        writeln!(
+            f,
+            "=== Round {} ===\n{}\n",
+            i + 1,
+            circuit.repr()
+        )
+        .expect("Failed to write progress");
+        }
+    }
+
+    println!("Final len: {}", circuit.gates.len());
+    circuit
+    .probably_equal(&c, n/2, 150_000)
+    .expect("The circuits differ somewhere!");
+
+    // Write to file
+    let circuit_str = circuit.repr();
+    // let good_str = format!("{}: {}", good_id.gates.len(), good_id.repr());
+    File::create(save)
+        .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
+        .expect("Failed to write recent_circuit.txt");
+
+    println!("Final circuit written to recent_circuit.txt");
+}
+
+pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool) {
+    // Start with the input circuit
+    let save_base = save.strip_suffix(".txt").unwrap_or(save);
+    let progress_path = format!("{}_progress.txt", save_base);
+    OpenOptions::new()
+    .create(true)
+    .write(true)
+    .truncate(true)
+    .open(&progress_path)
+    .expect("Failed to create progress file");
+    let bit_shuf_list = (3..=7)
+        .map(|n| {
+            (0..n)
+                .permutations(n)
+                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                .collect::<Vec<Vec<usize>>>()
+        })
+        .collect();
+    let dbs = open_all_dbs(env);
+    println!("Starting len: {}", c.gates.len());
+    let mut circuit = c.clone();
+    // Repeat obfuscate + compress 'rounds' times
+    let mut post_len = 0;
+    let mut count = 0;
+    insert_wire_shuffles(&mut circuit, n, env, &dbs);
+    for i in 0..rounds {
+        let _stop = 1000;
+        let (new_circuit, _, _, _, _) = 
+            replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower);
+        circuit = new_circuit;
+
+        if circuit.gates.len() == 0 {
+            break;
+        }
+        
+        if circuit.gates.len() == post_len {
+            count += 1;
+        } else {
+            post_len = circuit.gates.len();
+            count = 0;
+        }
+
+        if count > 2 {
+            break;
+        }
+        let mut j = 0;
+        while j < circuit.gates.len().saturating_sub(1) {
+            if circuit.gates[j] == circuit.gates[j + 1] {
+                // remove elements at i and i+1
+                circuit.gates.drain(j..=j + 1);
+
+                // step back up to 2 indices, but not below 0
+                j = j.saturating_sub(2);
+            } else {
+                j += 1;
+            }
+        }
+        if c.probably_equal(&circuit, n, 100_000).is_err() {
             panic!("The functionality has changed");
         }
         {

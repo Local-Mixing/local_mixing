@@ -17,6 +17,7 @@ use local_mixing::{
             main_rac_big,
             main_rac_big_distance,
             main_interleave_big,
+            main_shuffle_rcs_big,
         },
         replace::{GatePair, gate_pair_taxonomy, random_canonical_id, get_random_wide_identity }
     },
@@ -161,6 +162,58 @@ fn main() {
     .subcommand(
         Command::new("rcs")
             .about("Obfuscate and compress an existing circuit via replace and compress sequential method")
+            .arg(
+                Arg::new("rounds")
+                    .short('r')
+                    .long("rounds")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize)),
+            )
+            .arg(
+                Arg::new("source")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the input circuit file"),
+            )
+            .arg(
+                Arg::new("destination")
+                    .short('d')
+                    .long("destination")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the output circuit file"),
+            )
+            .arg(
+                Arg::new("n")
+                    .short('n')
+                    .long("n")
+                    .required(false)
+                    .default_value("32")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires (default: 32)"),
+            )
+            .arg(
+                Arg::new("tower")
+                    .short('t')
+                    .long("tower")
+                    .help("Use tower identities over singles")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue),
+            )
+            .arg(
+                Arg::new("intermediate")
+                    .short('i')
+                    .long("intermediate")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the intermediate circuit file"),
+            ),
+    )
+    .subcommand(
+        Command::new("srcs")
+            .about("Obfuscate and compress an existing circuit via replace and compress sequential method with wire shuffling")
             .arg(
                 Arg::new("rounds")
                     .short('r')
@@ -768,6 +821,64 @@ fn main() {
             } else {
                 let c = CircuitSeq::from_string(&data);
                 main_rac_big(&c, rounds, &mut conn, n, d, &env, i, tower);
+                let x_label = {
+                    let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                    let num = stem.strip_prefix("circuit").unwrap_or(stem);
+                    format!("Circuit {}", num)
+                };
+
+                let y_label = {
+                    let stem = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                    let num = stem.strip_prefix("circuit").unwrap_or(stem);
+                    format!("Circuit {}", num)
+                };
+                let path_s = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                println!(
+                    "For generating heatmaps:\n\
+                    python3 ./heatmap/heatmap_raw.py \
+                    --n {} \
+                    --i 100 \
+                    --x \"{}\" \
+                    --y \"{}\" \
+                    --c1 \"{}\" \
+                    --c2 \"{}\" \
+                    --path ./{}{}.png",
+                        n, x_label, y_label, s, d, path_s, path_d
+                );
+            }
+        }
+        Some(("srcs", sub)) => {
+            let rounds: usize = *sub.get_one("rounds").unwrap();
+            let s: &str = sub.get_one::<String>("source").unwrap().as_str();
+            let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
+            let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
+            let tower = sub.get_flag("tower");
+            let n: usize = *sub.get_one("n").unwrap_or(&32); // default to 32 if not provided
+            let data = fs::read_to_string(s).expect("Failed to read initial.txt");
+
+            let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
+            conn.execute_batch(
+                "
+                PRAGMA temp_store = MEMORY;
+                PRAGMA cache_size = -200000;
+                "
+            ).unwrap();
+            let lmdb = "./db";
+            let _ = std::fs::create_dir_all(lmdb);
+
+            let env = Environment::new()
+                .set_max_readers(10000) 
+                .set_max_dbs(257)      
+                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .open(Path::new(lmdb))
+                .expect("Failed to open lmdb");
+            install_kill_handler();
+            if data.trim().is_empty() {
+                println!("Empty file");
+            } else {
+                let c = CircuitSeq::from_string(&data);
+                main_shuffle_rcs_big(&c, rounds, &mut conn, n, d, &env, i, tower);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
