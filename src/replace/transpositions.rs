@@ -8,6 +8,7 @@ use lmdb::Database;
 use std::{
     collections::HashMap,
 };
+use crate::circuit::Permutation;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Transpositions {
@@ -15,25 +16,43 @@ pub struct Transpositions {
 }
 
 impl Transpositions {
-    pub fn gen_random(n: usize, m: usize) -> Self {
+    pub fn gen_random(n: usize, _m: usize) -> Self {
         assert!(n >= 2, "n must be at least 2");
 
         let mut rng = rand::rng();
-        let mut transpositions = Vec::with_capacity(m);
+        let mut transpositions = Vec::with_capacity(n);
 
-        for _ in 0..m {
-            let a = rng.random_range(0..n) as u8;
-            let mut b = rng.random_range(0..n) as u8;
-
-            while a == b {
-                b = rng.random_range(0..n) as u8;
-            }
-
-            let (x, y) = if a < b { (a, b) } else { (b, a) };
-            transpositions.push((x, y));
+        for i in (0..n).rev() {
+            let j = rng.random_range(0..i as u8);
+            transpositions.push((j, i as u8));
         }
 
         Self { transpositions }
+    }
+
+    pub fn to_perm(&self, n: usize) -> Permutation {
+        let mut perm = Permutation { data: Vec::with_capacity(n) };
+        for i in 0..n {
+            perm.data.push(self.evaluate(i as u8) as usize);
+        } 
+        perm
+    }
+
+    pub fn from_perm(perm: &Permutation) -> Self {
+        let mut perm = perm.clone();
+        let n = perm.data.len();
+        let mut swaps = Vec::new();
+
+        for i in (0..n).rev() {
+            if perm.data[i] != i {
+                let j = perm.data.iter().position(|&x| x == i).unwrap();
+                perm.data.swap(i, j);
+                swaps.push((i as u8, j as u8));
+            }
+        }
+        swaps.reverse();
+
+        Transpositions { transpositions: swaps }
     }
 
     pub fn collides(s1: &(u8, u8), s2: &(u8, u8)) -> bool {
@@ -222,19 +241,18 @@ pub fn insert_wire_shuffles(
 ) {
     println!("Inserting wire shuffles");
     println!("Starting len: {} gates", circuit.gates.len());
-    let mut t_list: Vec<Transpositions> = Vec::new();
+    let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
     let mut gates: Vec<[u8;3]> = Vec::new();
     for &gate in &circuit.gates {
         let t = Transpositions::gen_random(n, 150);
         gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
-        t_list.push(t);
+        t_list.transpositions.extend_from_slice(&t.transpositions);
         gates.push(gate);
     }
-    for t in t_list.iter().rev() {
-        let mut crev = t.to_circuit(n, env, dbs).gates;
-        crev.reverse();
-        gates.extend_from_slice(&crev);
-    }
+    t_list.transpositions.reverse();
+    let p = t_list.to_perm(n);
+    let t = Transpositions::from_perm(&p);
+    gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
