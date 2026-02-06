@@ -50,7 +50,6 @@ impl Transpositions {
                 swaps.push((i as u8, j as u8));
             }
         }
-        swaps.reverse();
 
         Transpositions { transpositions: swaps }
     }
@@ -257,7 +256,7 @@ pub fn insert_wire_shuffles(
     let t = Transpositions::from_perm(&p);
     let p1 = t.to_perm(n);
     if p != p1 {
-        panic!("Permutations do not match");
+        panic!("Permutations do not match")
     }
     let mut c = t.to_circuit(n, env, dbs).gates;
     c.reverse();
