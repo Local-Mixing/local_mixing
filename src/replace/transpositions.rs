@@ -271,7 +271,7 @@ mod tests {
         path::Path,
     };
     use rand::prelude::IndexedRandom;
-    use crate::CircuitSeq;
+    use crate::{CircuitSeq, replace::transpositions::insert_wire_shuffles};
     use crate::replace::transpositions::Transpositions;
     #[test]
     fn test_wire_shifting() {
@@ -369,6 +369,43 @@ mod tests {
         t.filter_repeats();
         let new_circuit = t.to_circuit(128, &env, &dbs);
         if base.probably_equal(&new_circuit, 128, 1_000).is_err() {
+            panic!("Failed to retain functionality after filtering");
+        }
+        println!("They are equal");
+    }
+
+    #[test]
+    fn test_insert_shuffles() {
+        use crate::replace::mixing::open_all_dbs;
+        use crate::random::random_data::random_circuit;
+        let file = File::open("initial.txt").expect("failed to open initial.txt");
+        let reader = BufReader::new(file);
+
+        let circuits: Vec<String> = reader
+            .lines()
+            .map(|l| l.unwrap())
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+
+        let mut rng = rand::rng();
+        let _circuit_str = circuits
+            .choose(&mut rng)
+            .expect("no circuits found");
+
+        // let base = CircuitSeq::from_string(circuit_str);
+
+        let env = Environment::new()
+            .set_max_dbs(258)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("failed to open lmdb");
+
+        let dbs = open_all_dbs(&env);
+
+        let base = random_circuit(64, 100);
+        let mut new_circuit = base.clone();
+        insert_wire_shuffles(&mut new_circuit, 64, &env, &dbs);
+        if base.probably_equal(&new_circuit, 64, 1_000).is_err() {
             panic!("Failed to retain functionality after filtering");
         }
         println!("They are equal");
