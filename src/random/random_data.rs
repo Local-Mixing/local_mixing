@@ -3296,7 +3296,7 @@ mod tests {
             .open("swap12n1.txt")
             .expect("Failed to open swap12n1.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![2, 3, 6, 7, 0 , 1, 4,5]};
+        let perm = Permutation { data: vec![4,5,0,1,6,7,2,3]};
         for m in 6..20 {
             for _ in 0..100000 {
                 let mut random = random_circuit(3, m);
