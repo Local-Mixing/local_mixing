@@ -3327,16 +3327,91 @@ mod tests {
         use lmdb::{Environment, DatabaseFlags, WriteFlags};
 
         let env = Environment::new()
-            .set_max_dbs(258)
-            .set_map_size(800 * 1024 * 1024 * 1024) // adjust if needed
+            .set_max_dbs(262)
+            .set_map_size(800 * 1024 * 1024 * 1024)
             .open(Path::new("./db"))
             .expect("failed to open lmdb env");
 
         let db = env
-            .create_db(Some("swaps"), DatabaseFlags::empty())
+            .create_db(Some("swapsnot1"), DatabaseFlags::empty())
             .expect("failed to create/open db");
 
-        let file = File::open("swap12.txt").expect("failed to open swap12.txt");
+        let file = File::open("swap12n1.txt").expect("failed to open swap12n1.txt");
+        let reader = BufReader::new(file);
+
+        let mut txn = env.begin_rw_txn().expect("failed to start txn");
+
+        for line in reader.lines() {
+            let line = line.expect("failed to read line");
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let circuit = CircuitSeq::from_string(line);
+            let key = circuit.repr_blob();
+
+            txn.put(db, &key, &[], WriteFlags::NO_OVERWRITE)
+                .expect("lmdb put failed");
+        }
+
+        txn.commit().expect("txn commit failed");
+
+        let db = env
+            .create_db(Some("swapsnot2"), DatabaseFlags::empty())
+            .expect("failed to create/open db");
+
+        let file = File::open("swap12n2.txt").expect("failed to open swap12n2.txt");
+        let reader = BufReader::new(file);
+
+        let mut txn = env.begin_rw_txn().expect("failed to start txn");
+
+        for line in reader.lines() {
+            let line = line.expect("failed to read line");
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let circuit = CircuitSeq::from_string(line);
+            let key = circuit.repr_blob();
+
+            txn.put(db, &key, &[], WriteFlags::NO_OVERWRITE)
+                .expect("lmdb put failed");
+        }
+
+        txn.commit().expect("txn commit failed");
+
+        let db = env
+            .create_db(Some("swapsnot12"), DatabaseFlags::empty())
+            .expect("failed to create/open db");
+
+        let file = File::open("swap12n12.txt").expect("failed to open swap12n12.txt");
+        let reader = BufReader::new(file);
+
+        let mut txn = env.begin_rw_txn().expect("failed to start txn");
+
+        for line in reader.lines() {
+            let line = line.expect("failed to read line");
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let circuit = CircuitSeq::from_string(line);
+            let key = circuit.repr_blob();
+
+            txn.put(db, &key, &[], WriteFlags::NO_OVERWRITE)
+                .expect("lmdb put failed");
+        }
+
+        txn.commit().expect("txn commit failed");
+
+        let db = env
+            .create_db(Some("not"), DatabaseFlags::empty())
+            .expect("failed to create/open db");
+
+        let file = File::open("swaponlyn.txt").expect("failed to open swaponly.txt");
         let reader = BufReader::new(file);
 
         let mut txn = env.begin_rw_txn().expect("failed to start txn");
