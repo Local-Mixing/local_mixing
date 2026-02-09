@@ -29,6 +29,9 @@ impl Transpositions {
                 continue;
             }
             transpositions.push((j, i, negation_type));
+            let temp = negation_mask[j as usize];
+            negation_mask[j as usize] = negation_mask[i as usize];
+            negation_mask[i as usize] = temp;
             if negation_type == 1 || negation_type == 3{
                 negation_mask[j as usize] ^= 1;
             }
