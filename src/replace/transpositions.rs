@@ -577,15 +577,7 @@ mod tests {
 
         for (i, val) in negation_mask.into_iter().enumerate() {
             if val == 1 {
-                if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
-                    if let Some(&(swap_idx, pos)) = swaps.choose(&mut rng) {
-                        let curr_neg_type = t.transpositions[swap_idx].2;
-                        if pos > 1 || curr_neg_type > 3 {
-                            panic!("Invalid pos or curr_neg_type");
-                        }
-                        t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
-                    }
-                }
+                gates.extend_from_slice(&Transpositions::gen_gates_not(n, i as u8, &env, &dbs));
             }
         }
 
