@@ -374,9 +374,9 @@ pub fn insert_wire_shuffles(
             }
         }
     }
-    t.reverse();
+
     let mut c = t.to_circuit(n, env, dbs).gates;
-    // c.reverse();
+    c.reverse();
     gates.extend_from_slice(&c);
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
@@ -533,6 +533,63 @@ mod tests {
         println!("They are equal and written to shuffled.txt");
     }
 
+    #[test]
+    fn test_transposition_rev() {
+        use crate::replace::mixing::open_all_dbs;
+        use crate::replace::transpositions::HashMap;
+        let env = Environment::new()
+            .set_max_dbs(262)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("failed to open lmdb");
+
+        let dbs = open_all_dbs(&env);
+        let n = 64;
+        let mut gates: Vec<[u8;3]> = Vec::new();
+        let mut rng = rand::rng();
+        let mut negation_mask = vec![0u8; n];
+        let t = Transpositions::gen_random(n, 150, &mut negation_mask);
+        gates.extend_from_slice(&t.to_circuit(n, &env, &dbs).gates);
+        let p = t.to_perm(n);
+        let mut t = Transpositions::from_perm(&p);
+        let mut wire_transpositions: HashMap<u8, Vec<(usize, usize)>> = HashMap::new();
+        for (i, (a, b, _)) in t.transpositions.clone().into_iter().enumerate() {
+            wire_transpositions
+            .entry(a)
+            .or_default()
+            .push((i, 0));
+
+            wire_transpositions
+                .entry(b)
+                .or_default()
+                .push((i, 1));
+        }
+
+        const TRANSITION: [[u8; 4]; 2] = [
+            // pos = 0
+            [1, 0, 3, 2],
+            // pos = 1
+            [2, 3, 0, 1],
+        ];
+
+        for (i, val) in negation_mask.into_iter().enumerate() {
+            if val == 1 {
+                if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
+                    if let Some(&(swap_idx, pos)) = swaps.choose(&mut rng) {
+                        let curr_neg_type = t.transpositions[swap_idx].2;
+                        if pos > 1 || curr_neg_type > 3 {
+                            panic!("Invalid pos or curr_neg_type");
+                        }
+                        t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
+                    }
+                }
+            }
+        }
+
+        let mut c = t.to_circuit(n, &env, &dbs).gates;
+        c.reverse();
+        gates.extend_from_slice(&c);
+    }
     #[test]
     fn test_wire_shifting2() {
         use crate::replace::mixing::open_all_dbs;
