@@ -361,7 +361,7 @@ pub fn insert_wire_shuffles(
         [2, 3, 0, 1],
     ];
 
-    for (i, val) in negation_mask.clone().into_iter().enumerate() {
+    for (i, val) in negation_mask.into_iter().enumerate() {
         if val == 1 {
             if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
                 if let Some(&(swap_idx, pos)) = swaps.choose(&mut rng) {
@@ -370,14 +370,13 @@ pub fn insert_wire_shuffles(
                         panic!("Invalid pos or curr_neg_type");
                     }
                     t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
-                    negation_mask[i] = 0;
                 }
             }
         }
     }
-    println!("{:?}", negation_mask);
+    t.reverse();
     let mut c = t.to_circuit(n, env, dbs).gates;
-    c.reverse();
+    // c.reverse();
     gates.extend_from_slice(&c);
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
