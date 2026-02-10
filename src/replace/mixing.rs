@@ -1449,7 +1449,7 @@ pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> 
         "ids_n128g24tower", "ids_n128g25tower", "ids_n128g26tower", "ids_n128g27tower",
         "ids_n128g28tower", "ids_n128g29tower", "ids_n128g30tower", "ids_n128g31tower",
         "ids_n128g32tower", "ids_n128g33tower",
-        "swaps", "not", "swapsnot1", "swapsnot2", "swapsnot12"
+        "swaps", "not", "swapsnot1", "swapsnot2", "swapsnot12", "cnot"
     ];
 
     for name in db_names.iter() {
