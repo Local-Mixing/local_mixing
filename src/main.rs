@@ -22,6 +22,7 @@ use local_mixing::{
         replace::{GatePair, gate_pair_taxonomy, random_canonical_id, get_random_wide_identity }
     },
 };
+use local_mixing::replace::transpositions::generate_reversible;
 use local_mixing::replace::mixing::open_all_dbs;
 use local_mixing::replace::replace::compress_big_ancillas;
 use local_mixing::replace::replace::{sequential_compress_big_ancillas};
@@ -436,6 +437,34 @@ fn main() {
                 ),
         )
         .subcommand(
+            Command::new("gen_reversible")
+                .about("Generate reversible circuit")
+                .arg(
+                    Arg::new("source")
+                        .short('s')
+                        .long("source")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to the source circuit file"),
+                )
+                .arg(
+                    Arg::new("dest")
+                        .short('d')
+                        .long("dest")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to write the reversed circuit file"),
+                )
+                .arg(
+                    Arg::new("n")
+                        .short('n')
+                        .long("n")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of wires in the circuit"),
+                )
+        )
+        .subcommand(
             Command::new("binload")
                 .about("Load a binary circuit file")
                 .arg(
@@ -642,7 +671,7 @@ fn main() {
                 ).unwrap();
                 let lmdb = "./db";
                 let env = Environment::new()
-                .set_max_dbs(262)      
+                .set_max_dbs(263)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -732,7 +761,7 @@ fn main() {
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_dbs(262)      
+                .set_max_dbs(263)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -767,7 +796,7 @@ fn main() {
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(262)      
+                .set_max_dbs(263)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -811,7 +840,7 @@ fn main() {
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(262)      
+                .set_max_dbs(263)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -869,7 +898,7 @@ fn main() {
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(262)      
+                .set_max_dbs(263)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -927,7 +956,7 @@ fn main() {
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(262)      
+                .set_max_dbs(263)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -986,7 +1015,7 @@ fn main() {
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(262)      
+                .set_max_dbs(263)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1028,6 +1057,31 @@ fn main() {
             let dest_path = sub.get_one::<String>("dest").unwrap();
             reverse(from_path, dest_path);
         }
+        Some(("gen_reversible", sub)) => {
+            let from_path = sub.get_one::<String>("source").unwrap();
+            let dest_path = sub.get_one::<String>("dest").unwrap();
+            let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
+            let lmdb = "./db";
+            let env = Environment::new()
+                .set_max_dbs(263)      
+                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .open(Path::new(lmdb))
+                .expect("Failed to open lmdb");
+            let dbs = open_all_dbs(&env);
+
+            let contents = fs::read_to_string(from_path)
+                .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", from_path));
+
+            let c = CircuitSeq::from_string(&contents);
+            println!("Creating reversible circuit");
+            let reversible = generate_reversible(&c, n, &env, &dbs);
+            let mut file = fs::File::create(dest_path)
+                .expect("Failed to create new file");
+            write!(file, "{}", reversible.repr())
+                .expect("Failed to write compressed circuit to file");
+
+            println!("Reversible circuit written to {}", dest_path);
+        }
         Some(("compress", sub)) => {
             let p: &String = sub.get_one("p").expect("Missing -p <path>");
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
@@ -1044,7 +1098,7 @@ fn main() {
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_dbs(262)      
+                .set_max_dbs(263)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1116,7 +1170,7 @@ fn main() {
             let env_path = "./db";
 
             let env = Environment::new()
-                .set_max_dbs(262)
+                .set_max_dbs(263)
                 .set_map_size(64 * 1024 * 1024 * 1024)
                 .open(Path::new(env_path))
                 .expect("Failed to open lmdb");
@@ -1150,7 +1204,7 @@ fn main() {
             let env_path = "./db";
 
             let env = Environment::new()
-                .set_max_dbs(262)
+                .set_max_dbs(263)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(env_path))
                 .expect("Failed to open lmdb");
@@ -1300,7 +1354,7 @@ pub fn sql_to_lmdb(n: usize, m: usize) -> Result<(), ()> {
 
     fs::create_dir_all(lmdb_path).expect("Failed to create LMDB directory");
     let env = Environment::new()
-        .set_max_dbs(262)
+        .set_max_dbs(263)
         .set_map_size(map_size_bytes)
         .open(Path::new(lmdb_path))
         .expect("Failed to open LMDB environment");
@@ -1386,7 +1440,7 @@ pub fn sql_to_lmdb_perms(n: usize, m: usize) -> Result<(), ()> {
     // Open LMDB
     fs::create_dir_all(lmdb_path).expect("Failed to create LMDB directory");
     let env = Environment::new()
-        .set_max_dbs(262)
+        .set_max_dbs(263)
         .set_map_size(map_size_bytes)
         .open(Path::new(lmdb_path))
         .expect("Failed to open LMDB environment");
@@ -1487,7 +1541,7 @@ fn save_perm_tables_to_lmdb(
 
     std::fs::create_dir_all(env_path)?;
     let env = Environment::new()
-        .set_max_dbs(262)
+        .set_max_dbs(263)
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
@@ -1621,7 +1675,7 @@ fn save_tax_id_tables_to_lmdb(
 
     // Open environment
     let env = Environment::new()
-        .set_max_dbs(262)
+        .set_max_dbs(263)
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
@@ -1759,7 +1813,7 @@ pub fn fill_n_id(n: usize) {
 
     let env_path = "./db";
     let env = Environment::new()
-        .set_max_dbs(262)
+        .set_max_dbs(263)
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))
         .expect("Failed to open db");
@@ -1878,7 +1932,7 @@ pub fn fill_n_id(n: usize) {
             .expect("sqlite open");
             let env_path = "./db";
             let env = Environment::new()
-                .set_max_dbs(262)
+                .set_max_dbs(263)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(env_path))
                 .expect("Failed to open db");

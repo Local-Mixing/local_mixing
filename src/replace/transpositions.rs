@@ -261,6 +261,45 @@ impl Transpositions {
         CircuitSeq::unrewire_subcircuit(&out, &used_wires).gates
     }
 
+    pub fn gen_gates_cnot(
+        n: usize, 
+        con: u8,
+        not: u8,
+        env: &lmdb::Environment, 
+        dbs: &HashMap<String, Database>,
+    ) -> Vec<[u8;3]> {
+        let db_name = "cnot";
+        let max_entries = 30;
+
+        let db = dbs.get(db_name).unwrap_or_else(|| {
+            panic!("Failed to get DB with name: {}", db_name);
+        });
+
+        let mut rng = rand::rng();
+        let random_index = rng.random_range(0..max_entries);
+
+        let txn = env.begin_ro_txn().expect("Failed to start txn");
+        let mut cursor = txn.open_ro_cursor(*db).expect("Failed to open ro cursor");
+
+        let value_bytes = 
+            cursor.iter_start()
+            .nth(random_index)
+            .map(|(k, _v)| k)
+            .expect("Failed to get random key");
+        
+        let out = CircuitSeq::from_blob(value_bytes);
+
+        let mut c;
+        loop {
+            c = rng.random_range(0..n as u8);
+            if c != con && c != not {
+                break;
+            }
+        }
+        let used_wires = vec![c, con, not];
+        CircuitSeq::unrewire_subcircuit(&out, &used_wires).gates
+    }
+
     pub fn to_circuit(
         &self,
         n: usize,
@@ -377,6 +416,23 @@ pub fn insert_wire_shuffles(
     gates.extend_from_slice(&c);
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
+}
+
+pub fn generate_reversible(
+    c: &CircuitSeq,
+    n: usize,
+    env: &Environment,
+    dbs: &HashMap<String, Database>, 
+) -> CircuitSeq {
+    let mut rev = c.clone();
+    rev.gates.reverse();
+    let mut gates = Vec::new();
+    gates.extend_from_slice(&c.gates.clone());
+    for i in 0..n {
+        gates.extend_from_slice(&Transpositions::gen_gates_cnot(2 * n, i as u8, (i + n) as u8, env, dbs));
+    }
+    gates.extend_from_slice(&rev.gates);
+    CircuitSeq { gates }
 }
 
 #[cfg(test)]
