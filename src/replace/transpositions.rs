@@ -269,7 +269,7 @@ impl Transpositions {
         dbs: &HashMap<String, Database>,
     ) -> Vec<[u8;3]> {
         let db_name = "cnot";
-        let max_entries = 30;
+        let max_entries = 50;
 
         let db = dbs.get(db_name).unwrap_or_else(|| {
             panic!("Failed to get DB with name: {}", db_name);
