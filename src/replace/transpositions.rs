@@ -719,7 +719,7 @@ mod tests {
 
         assert_eq!(
             out_full & high_mask,
-            out_100 & low_mask,
+            (out_100 & low_mask) << 64,
             "last 64 bits differ from c100 result"
         );
     }
