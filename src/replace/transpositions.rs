@@ -722,5 +722,14 @@ mod tests {
             (out_100 & low_mask) << 64,
             "last 64 bits differ from c100 result"
         );
+
+        let mut rev = circuit.clone();
+        rev.gates.reverse();
+        let out_full_rev = rev.evaluate_128(input);
+        assert_eq!(
+            out_full,
+            out_full_rev,
+            "the circuit isn't reversible"
+        );
     }
 }
