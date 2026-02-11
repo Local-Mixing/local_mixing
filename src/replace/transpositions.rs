@@ -689,4 +689,38 @@ mod tests {
         std::fs::write("test.txt", new_circuit.repr())
             .expect("failed to write test.txt");
     }
+
+    #[test]
+    fn test_reversible() {
+        use std::fs;
+        use rand::Rng;
+        let circuit_str = fs::read_to_string("initial.txt")
+            .expect("failed to read initial.txt");
+        let circuit = CircuitSeq::from_string(&circuit_str);
+
+        let mut c100 = circuit.clone();
+        c100.gates.truncate(100);
+
+        let mut rng = rand::rng();
+        let rand64: u128 = rng.random::<u64>() as u128;
+        let input: u128 = rand64; 
+
+        let out_full = circuit.evaluate_128(input);
+        let out_100 = c100.evaluate_128(input);
+
+        let low_mask: u128 = (1u128 << 64) - 1;
+        let high_mask: u128 = !low_mask;
+
+        assert_eq!(
+            out_full & low_mask,
+            input & low_mask,
+            "first 64 bits changed"
+        );
+
+        assert_eq!(
+            out_full & high_mask,
+            out_100 & low_mask,
+            "last 64 bits differ from c100 result"
+        );
+    }
 }

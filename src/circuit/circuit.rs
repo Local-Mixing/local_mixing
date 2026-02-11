@@ -237,6 +237,10 @@ impl CircuitSeq {
         Gate::evaluate_index_list(input, &self.gates)
     }
 
+    pub fn evaluate_128(&self, input: u128) -> u128 {
+        Gate::evaluate_index_list_128(input, &self.gates)
+    }
+
     //small vec is okay since this is never called for num > 32
     pub fn permutation(&self, num_wires: usize) -> Permutation {
         let size = 1 << num_wires;
