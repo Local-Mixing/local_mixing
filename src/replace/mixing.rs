@@ -15,7 +15,7 @@ use crate::{
         interleave,
         replace_single_pair
     },
-    replace::transpositions::insert_wire_shuffles,
+    replace::transpositions::insert_wire_shuffles_x,
 };
 
 // use crate::random::random_data::random_walk_no_skeleton;
@@ -2024,7 +2024,7 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection
     for i in 0..rounds {
         let _stop = 1000;
         loop {
-            insert_wire_shuffles(&mut circuit, n, env, &dbs);
+            insert_wire_shuffles_x(&mut circuit, n, env, &dbs, 10);
             if c.probably_equal(&circuit, n, 1_000).is_ok() {
                 break;
             }
