@@ -368,6 +368,7 @@ pub fn insert_wire_shuffles(
     let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
     let mut gates: Vec<[u8;3]> = Vec::new();
     let mut negation_mask = vec![0u8; n];
+
     for &gate in &circuit.gates {
         let t = Transpositions::gen_random(n, 150, &mut negation_mask);
         gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
@@ -376,12 +377,87 @@ pub fn insert_wire_shuffles(
         let b = t_list.evaluate(gate[1]);
         let c = t_list.evaluate(gate[2]);
         let gate = [a, b, c];
-        // Unnecessary
-        // Before removing, do sanity check
-        // if negation_mask[a as usize] == 1 {
-        //     gates.extend_from_slice(&Transpositions::gen_gates_not(n, a, env, dbs));
-        //     negation_mask[a as usize] = 0;
-        // }
+        if negation_mask[b as usize] == 1 {
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, b, env, dbs));
+            negation_mask[b as usize] = 0;
+        }
+        if negation_mask[c as usize] == 1 {
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, c, env, dbs));
+            negation_mask[c as usize] = 0;
+        }
+        gates.push(gate);
+    }
+    let p = t_list.to_perm(n);
+    let mut t = Transpositions::from_perm(&p);
+    let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
+
+    for (i, (a, b, _)) in t.transpositions.iter().enumerate() {
+        wire_transpositions.insert(*a, (i, 0));
+        wire_transpositions.insert(*b, (i, 1));
+    }
+
+    const TRANSITION: [[u8; 4]; 2] = [
+        // pos = 0
+        [1, 0, 3, 2],
+        // pos = 1
+        [2, 3, 0, 1],
+    ];
+
+    for (i, val) in negation_mask.into_iter().enumerate() {
+        if val == 1 {
+            if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
+                let &(swap_idx, pos) = swaps;
+                let curr_neg_type = t.transpositions[swap_idx].2;
+                if pos > 1 || curr_neg_type > 3 {
+                    panic!("Invalid pos or curr_neg_type");
+                }
+                t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
+                
+            }
+        }
+    }
+
+    let mut c = t.to_circuit(n, env, dbs).gates;
+    c.reverse();
+    gates.extend_from_slice(&c);
+    circuit.gates = gates;
+    println!("Complete. Ending len: {} gates", circuit.gates.len());
+}
+
+// Insert 2 shuffles are the beginning and end, and then an additional x number of shuffles
+pub fn insert_wire_shuffles_x(
+    circuit: &mut CircuitSeq, 
+    n: usize,
+    env: &Environment,
+    dbs: &HashMap<String, Database>,
+    x: usize,
+) {
+    println!("Inserting wire shuffles");
+    println!("Starting len: {} gates", circuit.gates.len());
+    let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
+    let mut gates: Vec<[u8;3]> = Vec::new();
+    let mut negation_mask = vec![0u8; n];
+
+    let start = 1;
+    let end = circuit.gates.len() - 1;
+    let range_size = end - start + 1;
+    let mut rng = rand::rng();
+    let sample = rand::seq::index::sample(&mut rng, range_size, x);
+
+    let mut nums: Vec<usize> = sample.iter().map(|i| start + i).collect();
+
+    nums.push(0);
+
+    for (i, gate) in circuit.gates.iter().enumerate() {
+        if nums.contains(&i) {
+            let t = Transpositions::gen_random(n, 150, &mut negation_mask);
+            gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
+            t_list.transpositions.extend_from_slice(&t.transpositions);
+        }   
+        let a = t_list.evaluate(gate[0]);
+        let b = t_list.evaluate(gate[1]);
+        let c = t_list.evaluate(gate[2]);
+        let gate = [a, b, c];
         if negation_mask[b as usize] == 1 {
             gates.extend_from_slice(&Transpositions::gen_gates_not(n, b, env, dbs));
             negation_mask[b as usize] = 0;
@@ -563,6 +639,7 @@ mod tests {
     fn test_insert_shuffles() {
         use crate::replace::mixing::open_all_dbs;
         use std::io::Write;
+        use crate::replace::transpositions::insert_wire_shuffles_x;
         let file = File::open("initial.txt").expect("failed to open initial.txt");
         let mut reader = BufReader::new(file);
 
@@ -585,7 +662,7 @@ mod tests {
         let dbs = open_all_dbs(&env);
 
         let mut new_circuit = base.clone();
-        insert_wire_shuffles(&mut new_circuit, 64, &env, &dbs);
+        insert_wire_shuffles_x(&mut new_circuit, 64, &env, &dbs, 50);
 
         if base.probably_equal(&new_circuit, 64, 1_000).is_err() {
             panic!("Failed to retain functionality");
