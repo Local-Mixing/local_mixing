@@ -1,8 +1,13 @@
 use clap::{Arg, ArgAction, Command};
 use itertools::Itertools;
 use plotters::prelude::*;
-
 use rusqlite::{Connection, OpenFlags};
+
+use std::{
+    fs,
+    io::Write,
+    path::Path,
+};
 
 use local_mixing::{
     circuit::CircuitSeq,
@@ -10,28 +15,27 @@ use local_mixing::{
     replace::{
         mixing::{
             install_kill_handler,
+        },
+        main_mix::{
             main_butterfly,
             main_butterfly_big,
-            // main_butterfly_big_bookendsless,
+            main_interleave_big,
             main_mix,
             main_rac_big,
             main_rac_big_distance,
-            main_interleave_big,
             main_shuffle_rcs_big,
+            open_all_dbs,
         },
-        replace::{GatePair, gate_pair_taxonomy, random_canonical_id, get_random_wide_identity }
+        pairs::{gate_pair_taxonomy, GatePair},
+        identities::{get_random_wide_identity, random_canonical_id},
+        transpositions::generate_reversible,
+        replace::{
+            compress_big_ancillas,
+            sequential_compress_big_ancillas,
+        },
     },
 };
-use local_mixing::replace::transpositions::generate_reversible;
-use local_mixing::replace::mixing::open_all_dbs;
-use local_mixing::replace::replace::compress_big_ancillas;
-use local_mixing::replace::replace::{sequential_compress_big_ancillas};
 
-use std::{
-    fs::{self},
-    io::Write,
-    path::Path,
-};
 fn main() {
     let matches = Command::new("rainbow")
         .about("Rainbow circuit generator")

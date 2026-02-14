@@ -2496,7 +2496,7 @@ mod tests {
         println!("start and end designated: {:?}", &circ.gates[start..=end]);
     }
 
-    use crate::replace::replace::{gate_pair_taxonomy};
+    use crate::replace::pairs::{gate_pair_taxonomy};
 
     // #[test]
     // fn test_compression_big() {
@@ -2760,7 +2760,7 @@ mod tests {
             .expect("Failed to write test_random.txt");
     }
 
-    use crate::replace::replace::random_id;
+    use crate::replace::identities::random_id;
 
     #[test]
     fn test_shooting() {
@@ -3075,7 +3075,7 @@ mod tests {
     use lmdb::Environment;
     use lmdb::Transaction;
     use lmdb::Cursor;
-    use crate::replace::replace::GatePair;
+    use crate::replace::pairs::GatePair;
     // use rand::prelude::IteratorRandom;
     #[test]
     fn test_random_circuit_identity() {

@@ -1,15 +1,8 @@
 // For adding wire shuffles and bit flips
-use crate::{
-    circuit::circuit::CircuitSeq,
-};
+use std::collections::HashMap;
 use rand::Rng;
-use lmdb::{Environment, Transaction};
-use lmdb::Cursor;
-use lmdb::Database;
-use std::{
-    collections::HashMap,
-};
-use crate::circuit::Permutation;
+use lmdb::{Cursor, Database, Environment, Transaction};
+use crate::circuit::{circuit::CircuitSeq, Permutation};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Transpositions {
@@ -532,11 +525,11 @@ mod tests {
         path::Path,
     };
     use rand::prelude::IndexedRandom;
-    use crate::{CircuitSeq, replace::transpositions::insert_wire_shuffles};
+    use crate::CircuitSeq;
     use crate::replace::transpositions::Transpositions;
     #[test]
     fn test_wire_shifting() {
-        use crate::replace::mixing::open_all_dbs;
+        use crate::replace::main_mix::open_all_dbs;
         let file = File::open("initial.txt").expect("failed to open initial.txt");
         let reader = BufReader::new(file);
 
@@ -594,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_transpose_shooting() {
-        use crate::replace::mixing::open_all_dbs;
+        use crate::replace::main_mix::open_all_dbs;
         let file = File::open("initial.txt").expect("failed to open initial.txt");
         let reader = BufReader::new(file);
 
@@ -637,7 +630,7 @@ mod tests {
 
     #[test]
     fn test_insert_shuffles() {
-        use crate::replace::mixing::open_all_dbs;
+        use crate::replace::main_mix::open_all_dbs;
         use std::io::Write;
         use crate::replace::transpositions::insert_wire_shuffles_x;
         let file = File::open("initial.txt").expect("failed to open initial.txt");
@@ -677,7 +670,7 @@ mod tests {
 
     #[test]
     fn test_transposition_rev() {
-        use crate::replace::mixing::open_all_dbs;
+        use crate::replace::main_mix::open_all_dbs;
         use crate::replace::transpositions::HashMap;
         let env = Environment::new()
             .set_max_dbs(262)
@@ -727,7 +720,7 @@ mod tests {
     }
     #[test]
     fn test_wire_shifting2() {
-        use crate::replace::mixing::open_all_dbs;
+        use crate::replace::main_mix::open_all_dbs;
         let file = File::open("initial.txt").expect("failed to open initial.txt");
         let reader = BufReader::new(file);
 
