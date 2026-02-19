@@ -281,7 +281,7 @@ fn heatmap_mini_slice(py: Python<'_>, num_wires: usize, num_inputs: usize, flag:
 
         for i1 in x1..=x2 {
             for i2 in y1..=y2 {
-                let diff = evolution_one[i1] ^ evolution_two[i2];
+                let diff = evolution_one[i1 - x1] ^ evolution_two[i2 - y1];
                 let hamming_dist = diff.count_ones() as f64;
                 let overlap = if !flag {
                     hamming_dist / num_wires as f64
