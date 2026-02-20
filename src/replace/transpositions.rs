@@ -254,7 +254,7 @@ impl Transpositions {
         }
         let mut b;
         loop {
-            b = rng.random_range(0..n as u8);
+            b = rng.random_range(0..=(n-1) as u8);
             if b != wire && b != a{
                 break;
             }
