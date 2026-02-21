@@ -10,13 +10,23 @@ use std::time::Instant;
 use rand::Rng;
 use numpy::ndarray::Array2;
 use std::io::{self, Write};
+use primitive_types::U256 as u256;
+
+#[inline]
+fn popcount_u256(x: u256) -> u32 {
+    let mut count = 0;
+    for limb in x.0 {
+        count += limb.count_ones();
+    }
+    count
+}
 
 #[pyfunction]
 fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: &str, c2: &str, canon: bool) -> Py<PyArray2<f64>> {
-    let mask: u128 = if num_wires < u128::BITS as usize {
-        (1 << num_wires) - 1
+    let mask = if num_wires < 256 {
+        (u256::one() << num_wires) - u256::one()
     } else {
-        u128::MAX
+        u256::MAX
     };
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
@@ -44,19 +54,16 @@ fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: 
             println!("{}/{}", i, num_inputs);
             io::stdout().flush().unwrap();
         }
-        let input_bits: u128 = if num_wires < u128::BITS as usize {
-            rng.random_range(0..(1u128 << num_wires))
-        } else {
-            rng.random_range(0..=u128::MAX)
-        };
+        let input_bits: u256 = u256::from(rng.random::<u128>())
+                | (u256::from(rng.random::<u128>()) << 128) & mask;
 
-        let evolution_one = circuit_one.evaluate_evolution_128(input_bits);
-        let evolution_two = circuit_two.evaluate_evolution_128(input_bits);
+        let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
+        let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
 
         for i1 in 0..=circuit_one_len {
             for i2 in 0..=circuit_two_len {
                 let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
-                let hamming_dist = diff.count_ones() as f64;
+                let hamming_dist = popcount_u256(diff) as f64;
                 let overlap = if !flag {
                     hamming_dist / num_wires as f64
                 } else {
@@ -88,10 +95,10 @@ fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: 
 
 #[pyfunction]
 fn heatmap_small(py: Python<'_>, num_wires: usize, flag: bool, c1: &str, c2: &str, canon: bool) -> Py<PyArray2<f64>> {
-    let mask: u128 = if num_wires < u128::BITS as usize {
-        (1 << num_wires) - 1
+    let mask = if num_wires < 256 {
+        (u256::one() << num_wires) - u256::one()
     } else {
-        u128::MAX
+        u256::MAX
     };
     println!("Running heatmap on weights 0, 1, and 2");
     io::stdout().flush().unwrap();
@@ -114,17 +121,17 @@ fn heatmap_small(py: Python<'_>, num_wires: usize, flag: bool, c1: &str, c2: &st
     let start_time = Instant::now();
 
     // Generate inputs of Hamming weight 0, 1, and 2
-    let mut inputs: Vec<u128> = Vec::new();
+    let mut inputs: Vec<u256> = Vec::new();
 
-    inputs.push(0);
+    inputs.push(u256::from(0u128));
 
     for i in 0..num_wires {
-        inputs.push(1u128 << i);
+        inputs.push(u256::one() << i);
     }
 
     for i in 0..num_wires {
         for j in (i + 1)..num_wires {
-            inputs.push((1u128 << i) | (1u128 << j));
+            inputs.push((u256::one() << i) | (u256::one() << j));
         }
     }
 
@@ -136,13 +143,13 @@ fn heatmap_small(py: Python<'_>, num_wires: usize, flag: bool, c1: &str, c2: &st
             io::stdout().flush().unwrap();
         }
 
-        let evolution_one = circuit_one.evaluate_evolution_128(input_bits);
-        let evolution_two = circuit_two.evaluate_evolution_128(input_bits);
+        let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
+        let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
 
         for i1 in 0..=circuit_one_len {
             for i2 in 0..=circuit_two_len {
                 let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
-                let hamming_dist = diff.count_ones() as f64;
+                let hamming_dist =  popcount_u256(diff) as f64;
                 let overlap = if !flag {
                     hamming_dist / num_wires as f64
                 } else {
@@ -178,6 +185,11 @@ fn heatmap_slice(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
     // Load circuits
+    let mask = if num_wires < 256 {
+        (u256::one() << num_wires) - u256::one()
+    } else {
+        u256::MAX
+    };
     let circuit_one_str = fs::read_to_string(c1_path)
         .unwrap_or_else(|_| panic!("Failed to read circuit file: {}", c1_path));
     let circuit_two_str = fs::read_to_string(c2_path)
@@ -199,19 +211,16 @@ fn heatmap_slice(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool
             println!("{}/{}", i, num_inputs);
             io::stdout().flush().unwrap();
         }
-        let input_bits: u128 = if num_wires < u128::BITS as usize {
-            rng.random_range(0..(1u128 << num_wires))
-        } else {
-            rng.random_range(0..=u128::MAX)
-        };
+        let input_bits: u256 = u256::from(rng.random::<u128>())
+                | (u256::from(rng.random::<u128>()) << 128) & mask;
 
-        let evolution_one = circuit_one.evaluate_evolution_128(input_bits);
-        let evolution_two = circuit_two.evaluate_evolution_128(input_bits);
+        let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
+        let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
 
         for i1 in x1..=x2 {
             for i2 in y1..=y2 {
                 let diff = evolution_one[i1] ^ evolution_two[i2];
-                let hamming_dist = diff.count_ones() as f64;
+                let hamming_dist = popcount_u256(diff) as f64;
                 let overlap = if !flag {
                     hamming_dist / num_wires as f64
                 } else {
@@ -253,6 +262,12 @@ fn heatmap_mini_slice(py: Python<'_>, num_wires: usize, num_inputs: usize, flag:
         .unwrap_or_else(|_| panic!("Failed to read circuit file: {}", c1_path));
     let circuit_two_str = fs::read_to_string(c2_path)
         .unwrap_or_else(|_| panic!("Failed to read circuit file: {}", c2_path));
+    
+    let mask = if num_wires < 256 {
+        (u256::one() << num_wires) - u256::one()
+    } else {
+        u256::MAX
+    };
 
     let mut circuit_one = CircuitSeq::from_string(&circuit_one_str);
     let mut circuit_two = CircuitSeq::from_string(&circuit_two_str);
@@ -270,19 +285,16 @@ fn heatmap_mini_slice(py: Python<'_>, num_wires: usize, num_inputs: usize, flag:
             println!("{}/{}", i, num_inputs);
             io::stdout().flush().unwrap();
         }
-        let input_bits: u128 = if num_wires < u128::BITS as usize {
-            rng.random_range(0..(1u128 << num_wires))
-        } else {
-            rng.random_range(0..=u128::MAX)
-        };
+        let input_bits: u256 = u256::from(rng.random::<u128>())
+                | (u256::from(rng.random::<u128>()) << 128) & mask;
 
-        let evolution_one = circuit_one.evaluate_evolution_128(input_bits);
-        let evolution_two = circuit_two.evaluate_evolution_128(input_bits);
+        let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
+        let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
 
         for i1 in x1..=x2 {
             for i2 in y1..=y2 {
                 let diff = evolution_one[i1] ^ evolution_two[i2];
-                let hamming_dist = diff.count_ones() as f64;
+                let hamming_dist = popcount_u256(diff) as f64;
                 let overlap = if !flag {
                     hamming_dist / num_wires as f64
                 } else {
