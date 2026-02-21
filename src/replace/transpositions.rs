@@ -15,8 +15,8 @@ impl Transpositions {
         assert!(n >= 2, "n must be at least 2");
         let mut rng = rand::rng();
         let mut transpositions = Vec::with_capacity(n);
-        let n = n as u8;
-        for i in (1..n).rev() {
+        let n = (n - 1) as u8;
+        for i in (1..=n).rev() {
             let negation_type = rng.random_range(0..=3);
             let j = rng.random_range(0..=i);
             if i == j {
