@@ -19,7 +19,7 @@ use crate::{
             replace_and_compress_big,
             replace_and_compress_big_distance,
         },
-        transpositions::insert_wire_shuffles_x,
+        transpositions::{insert_wire_shuffles, insert_wire_shuffles_x},
     },
 };
 
@@ -605,15 +605,14 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection
     // Repeat obfuscate + compress 'rounds' times
     let mut post_len = 0;
     let mut count = 0;
+    insert_wire_shuffles(&mut circuit, n, env, &dbs);
+    if c.probably_equal(&circuit, n, 1_000).is_err() {
+        panic!("Lost functionality after shuffles");
+    } else {
+        println!("Length after shuffles: {} gates", circuit.gates.len());
+    }
     for i in 0..rounds {
         let _stop = 1000;
-        loop {
-            insert_wire_shuffles_x(&mut circuit, n, env, &dbs, 10);
-            if c.probably_equal(&circuit, n, 1_000).is_ok() {
-                break;
-            }
-            circuit = c.clone();
-        }
         let (new_circuit, _, _, _, _) = 
             replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower);
         circuit = new_circuit;
