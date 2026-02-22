@@ -489,7 +489,14 @@ pub fn get_random_identity(
         cursor.iter_start()
         .nth(random_index)
         .map(|(k, _v)| k)
-        .expect("Failed to get random key")
+        .unwrap_or_else(|| {
+            panic!(
+                "Failed to get random key | db={} index={} n={}",
+                db_name,
+                random_index,
+                n
+            )
+        })
     } else {
         cursor.iter_start()
         .nth(random_index)
