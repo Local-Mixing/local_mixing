@@ -745,4 +745,3 @@ pub fn random_id(n: u8, m: usize) -> (CircuitSeq, CircuitSeq) {
     let rev = CircuitSeq { gates: rev_gates };
     (circuit, rev)
 }
-
