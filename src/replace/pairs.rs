@@ -466,7 +466,7 @@ pub fn replace_sequential_pairs(
                         _       => 16, 
                     }
                 };
-                let id_len = 16;
+                let id_len = 128;
                 let t_id = Instant::now();
                 let id = match get_random_identity(id_len, tax, env, dbs, tower) {
                     Ok(id) => {
@@ -716,7 +716,7 @@ pub fn replace_single_pair(
                 _       => 16, 
             }
         };
-        let id_len = 16;
+        let id_len = 128;
         id = match get_random_identity(id_len, tax, env, dbs, tower) {
             Ok(id) => {
                 id_gen = true;
