@@ -1216,7 +1216,7 @@ fn main() {
                 println!("Saved perm_tables_n{}", n);
             }
         }
-        Some(("lmdbid", _)) => {
+        Some(("lmdbid", sub)) => {
             let n: usize = *sub.get_one("n").unwrap();
             let env_path = "./db";
 
