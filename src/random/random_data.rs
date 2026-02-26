@@ -2276,8 +2276,12 @@ pub fn build_from_sql(
                     c2.canonicalize();
                     let canon2 = c2.permutation(n).canon_simple(&bit_shuf);
 
-                    local_results.push((c1, canon1));
-                    local_results.push((c2, canon2));
+                    if !c1.adjacent_id() {
+                        local_results.push((c1, canon1));
+                    }
+                    if !c2.adjacent_id() {
+                        local_results.push((c2, canon2));
+                    }
                 }
 
                 // Stream batches immediately
@@ -3307,6 +3311,7 @@ mod tests {
 
     #[test]
     fn find_swaps() {
+        //cnot
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -3314,7 +3319,162 @@ mod tests {
             .expect("Failed to open swaponlyn.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
         let perm = Permutation { data: vec![0,1,6,7,4,5,2,3]};
-        for m in 6..20 {
+        for m in 2..=10 {
+            for _ in 0..100000 {
+                let mut random = random_circuit(3, m);
+                random.canonicalize();
+                let mut i = 0;
+                while i < random.gates.len().saturating_sub(1) {
+                    if random.gates[i] == random.gates[i + 1] {
+                        random.gates.drain(i..=i + 1);
+                        i = i.saturating_sub(2);
+                    } else {
+                        i += 1;
+                    }
+                }
+                if random.permutation(3) == perm {
+                    circuits.insert(random);
+                }
+            }
+        }
+
+        for c in circuits {
+            writeln!(file, "{}", c.repr()).expect("Failed to write to swaponlyn.txt");
+        }
+
+        //swap 1 2
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("swap12.txt")
+            .expect("Failed to open swaponlyn.txt");
+        let mut circuits: HashSet<CircuitSeq> = HashSet::new();
+        let perm = Permutation { data: vec![0,1,4,5,2,3,6,7]};
+        for m in 6..=15 {
+            for _ in 0..100000 {
+                let mut random = random_circuit(3, m);
+                random.canonicalize();
+                let mut i = 0;
+                while i < random.gates.len().saturating_sub(1) {
+                    if random.gates[i] == random.gates[i + 1] {
+                        random.gates.drain(i..=i + 1);
+                        i = i.saturating_sub(2);
+                    } else {
+                        i += 1;
+                    }
+                }
+                if random.permutation(3) == perm {
+                    circuits.insert(random);
+                }
+            }
+        }
+
+        for c in circuits {
+            writeln!(file, "{}", c.repr()).expect("Failed to write to swaponlyn.txt");
+        }
+
+        //swap 1 2 and then negate 1
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("swap12n1.txt")
+            .expect("Failed to open swaponlyn.txt");
+        let mut circuits: HashSet<CircuitSeq> = HashSet::new();
+        let perm = Permutation { data: vec![2,3,6,7,0,1,4,5]};
+        for m in 6..=15 {
+            for _ in 0..100000 {
+                let mut random = random_circuit(3, m);
+                random.canonicalize();
+                let mut i = 0;
+                while i < random.gates.len().saturating_sub(1) {
+                    if random.gates[i] == random.gates[i + 1] {
+                        random.gates.drain(i..=i + 1);
+                        i = i.saturating_sub(2);
+                    } else {
+                        i += 1;
+                    }
+                }
+                if random.permutation(3) == perm {
+                    circuits.insert(random);
+                }
+            }
+        }
+
+        for c in circuits {
+            writeln!(file, "{}", c.repr()).expect("Failed to write to swaponlyn.txt");
+        }
+
+        //swap 1 2 and then negate 2
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("swap12n2.txt")
+            .expect("Failed to open swaponlyn.txt");
+        let mut circuits: HashSet<CircuitSeq> = HashSet::new();
+        let perm = Permutation { data: vec![4,5,0,1,6,7,2,3]};
+        for m in 6..=15 {
+            for _ in 0..100000 {
+                let mut random = random_circuit(3, m);
+                random.canonicalize();
+                let mut i = 0;
+                while i < random.gates.len().saturating_sub(1) {
+                    if random.gates[i] == random.gates[i + 1] {
+                        random.gates.drain(i..=i + 1);
+                        i = i.saturating_sub(2);
+                    } else {
+                        i += 1;
+                    }
+                }
+                if random.permutation(3) == perm {
+                    circuits.insert(random);
+                }
+            }
+        }
+
+        for c in circuits {
+            writeln!(file, "{}", c.repr()).expect("Failed to write to swaponlyn.txt");
+        }
+
+        //swap 1 2 and then negate both
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("swap12n1n2.txt")
+            .expect("Failed to open swaponlyn.txt");
+        let mut circuits: HashSet<CircuitSeq> = HashSet::new();
+        let perm = Permutation { data: vec![6,7,2,3,4,5,0,1]};
+        for m in 6..=15 {
+            for _ in 0..100000 {
+                let mut random = random_circuit(3, m);
+                random.canonicalize();
+                let mut i = 0;
+                while i < random.gates.len().saturating_sub(1) {
+                    if random.gates[i] == random.gates[i + 1] {
+                        random.gates.drain(i..=i + 1);
+                        i = i.saturating_sub(2);
+                    } else {
+                        i += 1;
+                    }
+                }
+                if random.permutation(3) == perm {
+                    circuits.insert(random);
+                }
+            }
+        }
+
+        for c in circuits {
+            writeln!(file, "{}", c.repr()).expect("Failed to write to swaponlyn.txt");
+        }
+
+        //not 
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("not1.txt")
+            .expect("Failed to open swaponlyn.txt");
+        let mut circuits: HashSet<CircuitSeq> = HashSet::new();
+        let perm = Permutation { data: vec![2,3,0,1,6,7,4,5]};
+        for m in 2..=10 {
             for _ in 0..100000 {
                 let mut random = random_circuit(3, m);
                 random.canonicalize();
@@ -3374,5 +3534,129 @@ mod tests {
 
         txn.commit().expect("txn commit failed");
 
+        let db = env
+            .create_db(Some("not"), DatabaseFlags::empty())
+            .expect("failed to create/open db");
+
+        let file = File::open("not1.txt").expect("failed to open swap12n1.txt");
+        let reader = BufReader::new(file);
+
+        let mut txn = env.begin_rw_txn().expect("failed to start txn");
+
+        for line in reader.lines() {
+            let line = line.expect("failed to read line");
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let circuit = CircuitSeq::from_string(line);
+            let key = circuit.repr_blob();
+
+            txn.put(db, &key, &[], WriteFlags::NO_OVERWRITE)
+                .expect("lmdb put failed");
+        }
+
+        txn.commit().expect("txn commit failed");
+
+        let db = env
+            .create_db(Some("swapnot12"), DatabaseFlags::empty())
+            .expect("failed to create/open db");
+
+        let file = File::open("swap12n1n2.txt").expect("failed to open swap12n1n2.txt");
+        let reader = BufReader::new(file);
+
+        let mut txn = env.begin_rw_txn().expect("failed to start txn");
+
+        for line in reader.lines() {
+            let line = line.expect("failed to read line");
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let circuit = CircuitSeq::from_string(line);
+            let key = circuit.repr_blob();
+
+            txn.put(db, &key, &[], WriteFlags::NO_OVERWRITE)
+                .expect("lmdb put failed");
+        }
+
+        txn.commit().expect("txn commit failed");
+
+        let db = env
+            .create_db(Some("swap"), DatabaseFlags::empty())
+            .expect("failed to create/open db");
+
+        let file = File::open("swap12.txt").expect("failed to open swap12.txt");
+        let reader = BufReader::new(file);
+
+        let mut txn = env.begin_rw_txn().expect("failed to start txn");
+
+        for line in reader.lines() {
+            let line = line.expect("failed to read line");
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let circuit = CircuitSeq::from_string(line);
+            let key = circuit.repr_blob();
+
+            txn.put(db, &key, &[], WriteFlags::NO_OVERWRITE)
+                .expect("lmdb put failed");
+        }
+
+        txn.commit().expect("txn commit failed");
+
+        let db = env
+            .create_db(Some("swapnot1"), DatabaseFlags::empty())
+            .expect("failed to create/open db");
+
+        let file = File::open("swap12n1.txt").expect("failed to open swap12n1.txt");
+        let reader = BufReader::new(file);
+
+        let mut txn = env.begin_rw_txn().expect("failed to start txn");
+
+        for line in reader.lines() {
+            let line = line.expect("failed to read line");
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let circuit = CircuitSeq::from_string(line);
+            let key = circuit.repr_blob();
+
+            txn.put(db, &key, &[], WriteFlags::NO_OVERWRITE)
+                .expect("lmdb put failed");
+        }
+
+        txn.commit().expect("txn commit failed");
+
+        let db = env
+            .create_db(Some("swapnot2"), DatabaseFlags::empty())
+            .expect("failed to create/open db");
+
+        let file = File::open("swap12n2.txt").expect("failed to open swap12n2.txt");
+        let reader = BufReader::new(file);
+
+        let mut txn = env.begin_rw_txn().expect("failed to start txn");
+
+        for line in reader.lines() {
+            let line = line.expect("failed to read line");
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let circuit = CircuitSeq::from_string(line);
+            let key = circuit.repr_blob();
+
+            txn.put(db, &key, &[], WriteFlags::NO_OVERWRITE)
+                .expect("lmdb put failed");
+        }
+
+        txn.commit().expect("txn commit failed");
     }
 }

@@ -1,6 +1,6 @@
 // Basic implementation for circuit, gate, and permutations
 use primitive_types::U256 as u256;
-use rand::{seq::SliceRandom, Rng, RngCore,};
+use rand::{seq::SliceRandom, RngCore,};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::max as std_max,
