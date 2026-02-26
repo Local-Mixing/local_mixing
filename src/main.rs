@@ -1719,6 +1719,10 @@ fn save_tax_id_tables_to_lmdb(
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
+    let dbs_to_delete = [
+    
+    ];
+
     for db_name in dbs_to_delete.iter() {
         if let Ok(db) = env.open_db(Some(db_name)) {
             let mut txn = env.begin_rw_txn()?;
