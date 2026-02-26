@@ -568,6 +568,7 @@ fn main() {
         .subcommand(
             Command::new("lmdbid")
             .about("Generate table for generating canon ids")
+            .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
         )
         .subcommand(
             Command::new("lmdbnid")
@@ -1216,6 +1217,7 @@ fn main() {
             }
         }
         Some(("lmdbid", _)) => {
+            let n: usize = *sub.get_one("n").unwrap();
             let env_path = "./db";
 
             let env = Environment::new()
@@ -1223,13 +1225,12 @@ fn main() {
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(env_path))
                 .expect("Failed to open lmdb");
-
             let ns_and_ms = [
                 (5, 5),
                 (6, 5),
                 (7, 4),
             ];
-
+            let ns_and_ms = vec![ns_and_ms[n - 5]];
             for (n, max_m) in ns_and_ms {
                 let tables: Vec<String> = (1..=max_m)
                     .map(|m| format!("n{}m{}", n, m))
@@ -1719,14 +1720,39 @@ fn save_tax_id_tables_to_lmdb(
         .open(Path::new(env_path))?;
 
     let dbs_to_delete = [
+        "ids_nids_n5g1",
+        "ids_nids_n5g2",
+        "ids_nids_n5g3",
+        "ids_nids_n5g4",
+        "ids_nids_n5g5",
+        "ids_nids_n5g6",
+        "ids_nids_n5g7",
+        "ids_nids_n5g8",
+        "ids_nids_n5g9",
+        "ids_nids_n5g10",
+        "ids_nids_n5g11",
+        "ids_nids_n5g12",
+        "ids_nids_n5g13",
         "ids_nids_n5g14",
+        "ids_nids_n5g15",
+        "ids_nids_n5g16",
+        "ids_nids_n5g17",
         "ids_nids_n5g18",
         "ids_nids_n5g19",
+        "ids_nids_n5g20",
+        "ids_nids_n5g21",
+        "ids_nids_n5g22",
         "ids_nids_n5g23",
-        "ids_nids_n5g3",
+        "ids_nids_n5g24",
+        "ids_nids_n5g25",
+        "ids_nids_n5g26",
+        "ids_nids_n5g27",
+        "ids_nids_n5g28",
+        "ids_nids_n5g29",
         "ids_nids_n5g30",
-        "ids_nids_n5g6",
-        "ids_nids_n5g9",
+        "ids_nids_n5g31",
+        "ids_nids_n5g32",
+        "ids_nids_n5g33",
     ];
 
     for db_name in dbs_to_delete.iter() {
