@@ -556,6 +556,12 @@ fn main() {
                 .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize))),
         )
         .subcommand(
+            Command::new("lmdbp")
+                .about("Explore an existing database")
+                .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize))),
+        )
+        .subcommand(
             Command::new("lmdbcounts")
             .about("Generate table for generating canon ids")
         )
@@ -1166,6 +1172,11 @@ fn main() {
             analyze_gate_to_wires(&c, n, xlabel).unwrap();
         }
         Some(("lmdb", sub)) => {
+            let n: usize = *sub.get_one("n").unwrap();
+            let m: usize = *sub.get_one("m").unwrap();
+            let _ = sql_to_lmdb(n,m);
+        }
+        Some(("lmdbp", sub)) => {
             let n: usize = *sub.get_one("n").unwrap();
             let m: usize = *sub.get_one("m").unwrap();
             let _ = sql_to_lmdb_perms(n, m);
