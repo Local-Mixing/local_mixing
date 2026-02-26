@@ -1719,23 +1719,23 @@ fn save_tax_id_tables_to_lmdb(
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
-    let dbs_to_delete = [
+    // let dbs_to_delete = [
     
-    ];
+    // ];
 
-    for db_name in dbs_to_delete.iter() {
-        if let Ok(db) = env.open_db(Some(db_name)) {
-            let mut txn = env.begin_rw_txn()?;
-            // SAFETY: ensure no other transactions or handles are active
-            unsafe {
-                txn.drop_db(db)?;
-            }
-            txn.commit()?;
-            println!("Dropped DB: {}", db_name);
-        } else {
-            println!("DB not found: {}", db_name);
-        }
-    }
+    // for db_name in dbs_to_delete.iter() {
+    //     if let Ok(db) = env.open_db(Some(db_name)) {
+    //         let mut txn = env.begin_rw_txn()?;
+    //         // SAFETY: ensure no other transactions or handles are active
+    //         unsafe {
+    //             txn.drop_db(db)?;
+    //         }
+    //         txn.commit()?;
+    //         println!("Dropped DB: {}", db_name);
+    //     } else {
+    //         println!("DB not found: {}", db_name);
+    //     }
+    // }
 
     let batch_size = 100;
     let mut batch: Vec<Vec<u8>> = Vec::with_capacity(batch_size);
