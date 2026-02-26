@@ -1883,9 +1883,9 @@ pub fn fill_n_id(n: usize) {
     //flush
 
     {
-        let env = env.clone();
-        let total_written = total_written.clone();
-        let key_counter = key_counter.clone();
+        let env = Arc::clone(&env);
+        let total_written = Arc::clone(&total_written);
+        let key_counter = Arc::clone(&key_counter);
 
         thread::spawn(move || {
             let mut batches: HashMap<(u8, bool), Vec<Vec<u8>>> = HashMap::new();
@@ -1921,7 +1921,22 @@ pub fn fill_n_id(n: usize) {
                 }
 
                 if last_print.elapsed().as_secs() >= 60 {
-                    println!("total written {}", total_written.load(Ordering::Relaxed));
+                    println!("total written: {}",
+                        total_written.load(Ordering::Relaxed)
+                    );
+
+                    for g in 0..34 {
+                        let single = written_per_g
+                            .get(&(g as u8, false))
+                            .copied()
+                            .unwrap_or(0);
+                        let tower = written_per_g
+                            .get(&(g as u8, true))
+                            .copied()
+                            .unwrap_or(0);
+
+                        println!("g {:02}: single {:>8} | tower {:>8}", g, single, tower);
+                    }
                     last_print = Instant::now();
                 }
             }
