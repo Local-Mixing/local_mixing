@@ -1225,8 +1225,8 @@ fn main() {
                 .expect("Failed to open lmdb");
 
             let ns_and_ms = [
-                // (5, 5),
-                // (6, 5),
+                (5, 5),
+                (6, 5),
                 (7, 4),
             ];
 
@@ -1645,10 +1645,27 @@ fn create_tax_id_table(circuit_table: HashMap<Vec<u8>, Vec<Vec<u8>>>) -> HashMap
                 let mut c2 = CircuitSeq::from_blob(&c2);
                 c2.gates.reverse();
                 let mut forward = c1.concat(&c2);
+                let mut i = 0;
+                while i < forward.gates.len().saturating_sub(1) {
+                    if forward.gates[i] == forward.gates[i + 1] {
+                        forward.gates.drain(i..=i + 1);
+                        i = i.saturating_sub(2);
+                    } else {
+                        i += 1;
+                    }
+                }
                 c1.gates.reverse();
                 c2.gates.reverse();
                 let mut back = c2.concat(&c1);
-
+                let mut i = 0;
+                while i < back.gates.len().saturating_sub(1) {
+                    if back.gates[i] == back.gates[i + 1] {
+                        back.gates.drain(i..=i + 1);
+                        i = i.saturating_sub(2);
+                    } else {
+                        i += 1;
+                    }
+                }
                 let len = forward.gates.len();
                 for _ in 0..len {
                     let g1 = forward.gates[0];
