@@ -1719,42 +1719,6 @@ fn save_tax_id_tables_to_lmdb(
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
-    let dbs_to_delete = [
-        "ids_nids_n5g1",
-        "ids_nids_n5g2",
-        "ids_nids_n5g3",
-        "ids_nids_n5g4",
-        "ids_nids_n5g5",
-        "ids_nids_n5g6",
-        "ids_nids_n5g7",
-        "ids_nids_n5g8",
-        "ids_nids_n5g9",
-        "ids_nids_n5g10",
-        "ids_nids_n5g11",
-        "ids_nids_n5g12",
-        "ids_nids_n5g13",
-        "ids_nids_n5g14",
-        "ids_nids_n5g15",
-        "ids_nids_n5g16",
-        "ids_nids_n5g17",
-        "ids_nids_n5g18",
-        "ids_nids_n5g19",
-        "ids_nids_n5g20",
-        "ids_nids_n5g21",
-        "ids_nids_n5g22",
-        "ids_nids_n5g23",
-        "ids_nids_n5g24",
-        "ids_nids_n5g25",
-        "ids_nids_n5g26",
-        "ids_nids_n5g27",
-        "ids_nids_n5g28",
-        "ids_nids_n5g29",
-        "ids_nids_n5g30",
-        "ids_nids_n5g31",
-        "ids_nids_n5g32",
-        "ids_nids_n5g33",
-    ];
-
     for db_name in dbs_to_delete.iter() {
         if let Ok(db) = env.open_db(Some(db_name)) {
             let mut txn = env.begin_rw_txn()?;
