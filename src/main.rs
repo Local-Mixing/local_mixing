@@ -1842,9 +1842,6 @@ pub fn fill_n_id(n: usize) {
 
     const WORKERS: usize = 60;
     const BATCH_SIZE: usize = 10;
-
-
-    let env_path = "./db";
     let env = Arc::new(
         Environment::new()
             .set_max_dbs(266)
@@ -1880,7 +1877,6 @@ pub fn fill_n_id(n: usize) {
             .collect::<Vec<_>>(),
     );
 
-    let key_counter = Arc::new(AtomicU64::new(0));
     let total_written = Arc::new(AtomicU64::new(0));
 
     let (tx, rx): (Sender<((u8, bool), Vec<u8>)>, Receiver<((u8, bool), Vec<u8>)>) =
@@ -1891,7 +1887,6 @@ pub fn fill_n_id(n: usize) {
     {
         let env = Arc::clone(&env);
         let total_written = Arc::clone(&total_written);
-        let key_counter = Arc::clone(&key_counter);
 
         thread::spawn(move || {
             let mut batches: HashMap<(u8, bool), Vec<Vec<u8>>> = HashMap::new();
@@ -1916,8 +1911,7 @@ pub fn fill_n_id(n: usize) {
                     let mut txn = env.begin_rw_txn().unwrap();
 
                     for v in batch.drain(..) {
-                        let k = key_counter.fetch_add(1, Ordering::Relaxed);
-                        txn.put(db, &k.to_be_bytes(), &v, WriteFlags::empty())
+                        txn.put(db, &v, &[], WriteFlags::empty())
                             .unwrap();
                     }
 
