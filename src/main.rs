@@ -1824,6 +1824,7 @@ fn gen_mean(circuit: &CircuitSeq, num_wires: usize) -> f64 {
     sum / num_points as f64
 }
 
+
 pub fn fill_n_id(n: usize) {
     use std::{
         collections::HashMap,
@@ -1843,23 +1844,22 @@ pub fn fill_n_id(n: usize) {
     const WORKERS: usize = 60;
     const BATCH_SIZE: usize = 10;
 
-    let env = Arc::new(
-        Environment::new()
-            .set_max_dbs(266)
-            .set_map_size(800 * 1024 * 1024 * 1024)
-            .set_max_readers(512)
-            .open(Path::new("./db")).expect("Failed to open env")
-    );
-    let dbs = Arc::new(open_all_dbs(&env));
+    let env_path = "./db";
+    let env = Environment::new()
+        .set_max_dbs(257)
+        .set_map_size(800 * 1024 * 1024 * 1024)
+        .open(Path::new(env_path))
+        .expect("Failed to open db");
+
     // Drop existing DBs
     for g in 0..34 {
-        let db_name = format!("ids_n{}g{}", n, g);
+        let db_name = format!("ids_n{}g{}single", n, g);
         if let Ok(db) = env.open_db(Some(&db_name)) {
             let mut txn = env.begin_rw_txn().unwrap();
             unsafe { txn.drop_db(db).unwrap() };
             txn.commit().unwrap();
         }
-        let db_name = format!("ids_n{}g{}", n, g);
+        let db_name = format!("ids_n{}g{}tower", n, g);
         if let Ok(db) = env.open_db(Some(&db_name)) {
             let mut txn = env.begin_rw_txn().unwrap();
             unsafe { txn.drop_db(db).unwrap() };
@@ -1885,64 +1885,71 @@ pub fn fill_n_id(n: usize) {
 
     //flush
 
-    {
-        let env = Arc::clone(&env);
-        let total_written = Arc::clone(&total_written);
+    let env_flush = env;
+    let total_written_flush = total_written.clone();
+    let flush_handle = thread::spawn(move || {
+        let mut batches: HashMap<(u8, bool), Vec<Vec<u8>>> = HashMap::new();
+        let mut db_cache: HashMap<(u8, bool), Database> = HashMap::new();
+        let mut written_per_g: HashMap<(u8, bool), u64> = HashMap::new();
+        let mut last_print = Instant::now();
 
-        thread::spawn(move || {
-            let mut batches: HashMap<(u8, bool), Vec<Vec<u8>>> = HashMap::new();
-            let mut db_cache: HashMap<(u8, bool), Database> = HashMap::new();
-            let mut written_per_g: HashMap<(u8, bool), u64> = HashMap::new();
-            let mut last_print = Instant::now();
+        loop {
+            let ((g, tower), key) = rx.recv().expect("worker hung up");
 
-            loop {
-                let ((g, tower), key) = rx.recv().unwrap();
+            let db = *db_cache.entry((g, tower)).or_insert_with(|| {
+                let suffix = if tower { "tower" } else { "single" };
+                let name = format!("ids_n{}g{}{}", n, g, suffix);
 
-                let db = *db_cache.entry((g, tower)).or_insert_with(|| {
-                    let suffix = if tower { "tower" } else { "single" };
-                    let name = format!("ids_n{}g{}{}", n, g, suffix);
-                    env.create_db(Some(&name), lmdb::DatabaseFlags::empty())
-                        .unwrap()
-                });
+                env_flush
+                    .create_db(Some(&name), lmdb::DatabaseFlags::empty())
+                    .expect("create db")
+            });
 
-                let batch = batches.entry((g, tower)).or_default();
-                batch.push(key);
+            let batch = batches.entry((g, tower)).or_default();
+            batch.push(key);
 
-                if batch.len() >= BATCH_SIZE {
-                    let mut txn = env.begin_rw_txn().unwrap();
+            if batch.len() >= BATCH_SIZE {
+                let already_written = written_per_g
+                    .get(&(g, tower))
+                    .copied()
+                    .unwrap_or(0);
 
-                    for v in batch.drain(..) {
-                        txn.put(db, &v, &[], WriteFlags::empty())
-                            .unwrap();
-                    }
-
-                    txn.commit().unwrap();
-                    total_written.fetch_add(BATCH_SIZE as u64, Ordering::Relaxed);
-                    *written_per_g.entry((g, tower)).or_insert(0) += BATCH_SIZE as u64;
+                if already_written >= 10_000{
+                    batch.clear();
+                    continue;
                 }
-
-                if last_print.elapsed().as_secs() >= 60 {
-                    println!("total written: {}",
-                        total_written.load(Ordering::Relaxed)
-                    );
-
-                    for g in 0..34 {
-                        let single = written_per_g
-                            .get(&(g as u8, false))
-                            .copied()
-                            .unwrap_or(0);
-                        let tower = written_per_g
-                            .get(&(g as u8, true))
-                            .copied()
-                            .unwrap_or(0);
-
-                        println!("g {:02}: single {:>8} | tower {:>8}", g, single, tower);
-                    }
-                    last_print = Instant::now();
+                let mut txn = env_flush.begin_rw_txn().unwrap();
+                for v in batch.iter() {
+                    txn.put(db, v, &[], WriteFlags::empty()).unwrap();
                 }
+                txn.commit().unwrap();
+
+                let written = batch.len() as u64;
+                batch.clear();
+
+                total_written_flush.fetch_add(written, Ordering::Relaxed);
+                *written_per_g.entry((g, tower)).or_insert(0) += written;
             }
-        });
-    }
+
+            if last_print.elapsed().as_secs() >= 60 {
+                println!("total written: {}", total_written_flush.load(Ordering::Relaxed));
+                for g in 0..34 {
+                    let single = written_per_g
+                        .get(&(g as u8, false))
+                        .copied()
+                        .unwrap_or(0);
+
+                    let tower = written_per_g
+                        .get(&(g as u8, true))
+                        .copied()
+                        .unwrap_or(0);
+
+                    println!("g {:02}: single {:>8} | tower {:>8}", g, single, tower);
+                }
+                last_print = Instant::now();
+            }
+        }
+    });
 
     
     //workers
@@ -1950,8 +1957,6 @@ pub fn fill_n_id(n: usize) {
 
     for _ in 0..WORKERS {
         let tx = tx.clone();
-        let env = env.clone();
-        let dbs = dbs.clone();
         let bit_shuf_list = bit_shuf_list.clone();
 
         handles.push(thread::spawn(move || {
@@ -1959,11 +1964,16 @@ pub fn fill_n_id(n: usize) {
                 "circuits.db",
                 OpenFlags::SQLITE_OPEN_READ_ONLY,
             )
-            .unwrap();
-
+            .expect("sqlite open");
+            let env_path = "./db";
+            let env = Environment::new()
+                .set_max_dbs(257)
+                .set_map_size(800 * 1024 * 1024 * 1024)
+                .open(Path::new(env_path))
+                .expect("Failed to open db");
+            let dbs = open_all_dbs(&env);
             loop {
                 let tower = rand::rng().random_bool(0.5);
-
                 let mut id = get_random_wide_identity(
                     n,
                     &env,
@@ -1976,7 +1986,7 @@ pub fn fill_n_id(n: usize) {
                 let len = id.gates.len();
 
                 for _ in 0..len {
-                    if gen_mean(&id, n) < 0.335 {
+                    if gen_mean(&id, n) < 0.235 {
                         let first = id.gates.remove(0);
                         id.gates.push(first);
                         continue;
@@ -1987,7 +1997,8 @@ pub fn fill_n_id(n: usize) {
                     let gp = gate_pair_taxonomy(&g1, &g2);
                     let g = GatePair::to_int(&gp) as u8;
 
-                    tx.send(((g, tower), id.repr_blob())).unwrap();
+                    let key = id.repr_blob();
+                    tx.send(((g, tower), key)).unwrap();
 
                     let first = id.gates.remove(0);
                     id.gates.push(first);
@@ -1996,8 +2007,8 @@ pub fn fill_n_id(n: usize) {
         }));
     }
 
+    let _ = flush_handle.join();
     for h in handles {
         let _ = h.join();
     }
 }
-
