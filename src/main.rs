@@ -667,6 +667,7 @@ fn main() {
                         .value_parser(clap::value_parser!(String))
                         .help("Path to the new circuit file"),
                 )
+                .arg(Arg::new("i").short('i').long("iterations").required(true).value_parser(clap::value_parser!(usize)))
         )
         .get_matches();
 
