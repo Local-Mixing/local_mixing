@@ -1852,20 +1852,20 @@ pub fn fill_n_id(n: usize) {
     );
     let dbs = Arc::new(open_all_dbs(&env));
     // Drop existing DBs
-    for g in 0..34 {
-        let db_name = format!("ids_n{}g{}single", n, g);
-        if let Ok(db) = env.open_db(Some(&db_name)) {
-            let mut txn = env.begin_rw_txn().unwrap();
-            let _ = unsafe { txn.drop_db(db) };
-        let _ = txn.commit();
-        }
-        let db_name = format!("ids_n{}g{}tower", n, g);
-        if let Ok(db) = env.open_db(Some(&db_name)) {
-            let mut txn = env.begin_rw_txn().unwrap();
-            let _ = unsafe { txn.drop_db(db) };
-        let _ = txn.commit();
-        }
-    }
+    // for g in 0..34 {
+    //     let db_name = format!("ids_n{}g{}single", n, g);
+    //     if let Ok(db) = env.open_db(Some(&db_name)) {
+    //         let mut txn = env.begin_rw_txn().unwrap();
+    //         let _ = unsafe { txn.drop_db(db) };
+    //     let _ = txn.commit();
+    //     }
+    //     let db_name = format!("ids_n{}g{}tower", n, g);
+    //     if let Ok(db) = env.open_db(Some(&db_name)) {
+    //         let mut txn = env.begin_rw_txn().unwrap();
+    //         let _ = unsafe { txn.drop_db(db) };
+    //     let _ = txn.commit();
+    //     }
+    // }
 
     let bit_shuf_list = Arc::new(
         (3..=7)
