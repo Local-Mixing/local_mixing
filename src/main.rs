@@ -1853,13 +1853,13 @@ pub fn fill_n_id(n: usize) {
     let dbs = Arc::new(open_all_dbs(&env));
     // Drop existing DBs
     for g in 0..34 {
-        let db_name = format!("ids_n{}g{}single", n, g);
+        let db_name = format!("ids_n{}g{}", n, g);
         if let Ok(db) = env.open_db(Some(&db_name)) {
             let mut txn = env.begin_rw_txn().unwrap();
             unsafe { txn.drop_db(db).unwrap() };
             txn.commit().unwrap();
         }
-        let db_name = format!("ids_n{}g{}tower", n, g);
+        let db_name = format!("ids_n{}g{}", n, g);
         if let Ok(db) = env.open_db(Some(&db_name)) {
             let mut txn = env.begin_rw_txn().unwrap();
             unsafe { txn.drop_db(db).unwrap() };
@@ -1884,6 +1884,7 @@ pub fn fill_n_id(n: usize) {
         bounded(100_000);
 
     //flush
+
     {
         let env = Arc::clone(&env);
         let total_written = Arc::clone(&total_written);
@@ -1895,7 +1896,7 @@ pub fn fill_n_id(n: usize) {
             let mut last_print = Instant::now();
 
             loop {
-                let ((g, tower), key_bytes) = rx.recv().unwrap();
+                let ((g, tower), key) = rx.recv().unwrap();
 
                 let db = *db_cache.entry((g, tower)).or_insert_with(|| {
                     let suffix = if tower { "tower" } else { "single" };
@@ -1905,14 +1906,14 @@ pub fn fill_n_id(n: usize) {
                 });
 
                 let batch = batches.entry((g, tower)).or_default();
-                batch.push(key_bytes);
+                batch.push(key);
 
                 if batch.len() >= BATCH_SIZE {
                     let mut txn = env.begin_rw_txn().unwrap();
 
-                    // Put each identity as a key with zero-length value
-                    for key in batch.drain(..) {
-                        txn.put(db, &key, &[], WriteFlags::empty()).unwrap();
+                    for v in batch.drain(..) {
+                        txn.put(db, &v, &[], WriteFlags::empty())
+                            .unwrap();
                     }
 
                     txn.commit().unwrap();
@@ -1943,6 +1944,7 @@ pub fn fill_n_id(n: usize) {
         });
     }
 
+    
     //workers
     let mut handles = Vec::new();
 
@@ -1985,7 +1987,6 @@ pub fn fill_n_id(n: usize) {
                     let gp = gate_pair_taxonomy(&g1, &g2);
                     let g = GatePair::to_int(&gp) as u8;
 
-                    // Send the identity as a key with no value
                     tx.send(((g, tower), id.repr_blob())).unwrap();
 
                     let first = id.gates.remove(0);
