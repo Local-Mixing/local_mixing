@@ -1843,8 +1843,6 @@ pub fn fill_n_id(n: usize) {
     const WORKERS: usize = 60;
     const BATCH_SIZE: usize = 10;
 
-
-    let env_path = "./db";
     let env = Arc::new(
         Environment::new()
             .set_max_dbs(266)
@@ -1854,14 +1852,20 @@ pub fn fill_n_id(n: usize) {
     );
     let dbs = Arc::new(open_all_dbs(&env));
     // Drop existing DBs
-    // for g in 0..34 {
-    //     let db_name = format!("ids_n{}g{}", n, g);
-    //     if let Ok(db) = env.open_db(Some(&db_name)) {
-    //         let mut txn = env.begin_rw_txn().unwrap();
-    //         unsafe { txn.drop_db(db).unwrap() };
-    //         txn.commit().unwrap();
-    //     }
-    // }
+    for g in 0..34 {
+        let db_name = format!("ids_n{}g{}single", n, g);
+        if let Ok(db) = env.open_db(Some(&db_name)) {
+            let mut txn = env.begin_rw_txn().unwrap();
+            unsafe { txn.drop_db(db).unwrap() };
+            txn.commit().unwrap();
+        }
+        let db_name = format!("ids_n{}g{}tower", n, g);
+        if let Ok(db) = env.open_db(Some(&db_name)) {
+            let mut txn = env.begin_rw_txn().unwrap();
+            unsafe { txn.drop_db(db).unwrap() };
+            txn.commit().unwrap();
+        }
+    }
 
     let bit_shuf_list = Arc::new(
         (3..=7)
@@ -1874,18 +1878,15 @@ pub fn fill_n_id(n: usize) {
             .collect::<Vec<_>>(),
     );
 
-    let key_counter = Arc::new(AtomicU64::new(0));
     let total_written = Arc::new(AtomicU64::new(0));
 
     let (tx, rx): (Sender<((u8, bool), Vec<u8>)>, Receiver<((u8, bool), Vec<u8>)>) =
         bounded(100_000);
 
     //flush
-
     {
         let env = Arc::clone(&env);
         let total_written = Arc::clone(&total_written);
-        let key_counter = Arc::clone(&key_counter);
 
         thread::spawn(move || {
             let mut batches: HashMap<(u8, bool), Vec<Vec<u8>>> = HashMap::new();
@@ -1894,7 +1895,7 @@ pub fn fill_n_id(n: usize) {
             let mut last_print = Instant::now();
 
             loop {
-                let ((g, tower), key) = rx.recv().unwrap();
+                let ((g, tower), key_bytes) = rx.recv().unwrap();
 
                 let db = *db_cache.entry((g, tower)).or_insert_with(|| {
                     let suffix = if tower { "tower" } else { "single" };
@@ -1904,15 +1905,14 @@ pub fn fill_n_id(n: usize) {
                 });
 
                 let batch = batches.entry((g, tower)).or_default();
-                batch.push(key);
+                batch.push(key_bytes);
 
                 if batch.len() >= BATCH_SIZE {
                     let mut txn = env.begin_rw_txn().unwrap();
 
-                    for v in batch.drain(..) {
-                        let k = key_counter.fetch_add(1, Ordering::Relaxed);
-                        txn.put(db, &k.to_be_bytes(), &v, WriteFlags::empty())
-                            .unwrap();
+                    // Put each identity as a key with zero-length value
+                    for key in batch.drain(..) {
+                        txn.put(db, &key, &[], WriteFlags::empty()).unwrap();
                     }
 
                     txn.commit().unwrap();
@@ -1943,7 +1943,6 @@ pub fn fill_n_id(n: usize) {
         });
     }
 
-    
     //workers
     let mut handles = Vec::new();
 
@@ -1975,7 +1974,7 @@ pub fn fill_n_id(n: usize) {
                 let len = id.gates.len();
 
                 for _ in 0..len {
-                    if gen_mean(&id, n) < 0.35 {
+                    if gen_mean(&id, n) < 0.335 {
                         let first = id.gates.remove(0);
                         id.gates.push(first);
                         continue;
@@ -1986,6 +1985,7 @@ pub fn fill_n_id(n: usize) {
                     let gp = gate_pair_taxonomy(&g1, &g2);
                     let g = GatePair::to_int(&gp) as u8;
 
+                    // Send the identity as a key with no value
                     tx.send(((g, tower), id.repr_blob())).unwrap();
 
                     let first = id.gates.remove(0);

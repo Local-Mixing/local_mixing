@@ -176,13 +176,13 @@ impl Transpositions {
     ) -> Vec<[u8;3]> {
         let (a, b, negation_type) = swap;
         let (db_name, max_entries) = if negation_type == 0 {
-            ("swaps", 51)
+            ("swap", 36)
         } else if negation_type == 1 {
-            ("swapsnot1", 25)
+            ("swapnot1", 21)
         } else if negation_type == 2 {
-            ("swapsnot2", 38)
+            ("swapnot2", 16)
         } else if negation_type == 3 {
-            ("swapsnot12", 36)
+            ("swapnot12", 25)
         } else {
             panic!("Invalid negation type")
         };
@@ -229,7 +229,7 @@ impl Transpositions {
             panic!("Failed to get DB with name: {}", db_name);
         });
 
-        let max_entries: usize = 30;
+        let max_entries: usize = 18;
 
         let mut rng = rand::rng();
         let random_index = rng.random_range(0..max_entries);
@@ -272,7 +272,7 @@ impl Transpositions {
         dbs: &HashMap<String, Database>,
     ) -> Vec<[u8;3]> {
         let db_name = "cnot";
-        let max_entries = 50;
+        let max_entries = 19;
 
         let db = dbs.get(db_name).unwrap_or_else(|| {
             panic!("Failed to get DB with name: {}", db_name);
