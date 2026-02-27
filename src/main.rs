@@ -1843,6 +1843,8 @@ pub fn fill_n_id(n: usize) {
     const WORKERS: usize = 60;
     const BATCH_SIZE: usize = 10;
 
+
+    let env_path = "./db";
     let env = Arc::new(
         Environment::new()
             .set_max_dbs(266)
@@ -1852,20 +1854,20 @@ pub fn fill_n_id(n: usize) {
     );
     let dbs = Arc::new(open_all_dbs(&env));
     // Drop existing DBs
-    // for g in 0..34 {
-    //     let db_name = format!("ids_n{}g{}single", n, g);
-    //     if let Ok(db) = env.open_db(Some(&db_name)) {
-    //         let mut txn = env.begin_rw_txn().unwrap();
-    //         let _ = unsafe { txn.drop_db(db) };
-    //     let _ = txn.commit();
-    //     }
-    //     let db_name = format!("ids_n{}g{}tower", n, g);
-    //     if let Ok(db) = env.open_db(Some(&db_name)) {
-    //         let mut txn = env.begin_rw_txn().unwrap();
-    //         let _ = unsafe { txn.drop_db(db) };
-    //     let _ = txn.commit();
-    //     }
-    // }
+    for g in 0..34 {
+        let db_name = format!("ids_n{}g{}single", n, g);
+        if let Ok(db) = env.open_db(Some(&db_name)) {
+            let mut txn = env.begin_rw_txn().unwrap();
+            let _ = unsafe { txn.drop_db(db) };
+        let _ = txn.commit();
+        }
+        let db_name = format!("ids_n{}g{}tower", n, g);
+        if let Ok(db) = env.open_db(Some(&db_name)) {
+            let mut txn = env.begin_rw_txn().unwrap();
+            let _ = unsafe { txn.drop_db(db) };
+        let _ = txn.commit();
+        }
+    }
 
     let bit_shuf_list = Arc::new(
         (3..=7)
@@ -1878,6 +1880,7 @@ pub fn fill_n_id(n: usize) {
             .collect::<Vec<_>>(),
     );
 
+    let key_counter = Arc::new(AtomicU64::new(0));
     let total_written = Arc::new(AtomicU64::new(0));
 
     let (tx, rx): (Sender<((u8, bool), Vec<u8>)>, Receiver<((u8, bool), Vec<u8>)>) =
@@ -1888,6 +1891,7 @@ pub fn fill_n_id(n: usize) {
     {
         let env = Arc::clone(&env);
         let total_written = Arc::clone(&total_written);
+        let key_counter = Arc::clone(&key_counter);
 
         thread::spawn(move || {
             let mut batches: HashMap<(u8, bool), Vec<Vec<u8>>> = HashMap::new();
@@ -1912,7 +1916,8 @@ pub fn fill_n_id(n: usize) {
                     let mut txn = env.begin_rw_txn().unwrap();
 
                     for v in batch.drain(..) {
-                        txn.put(db, &v, &[],WriteFlags::empty())
+                        let k = key_counter.fetch_add(1, Ordering::Relaxed);
+                        txn.put(db, &k.to_be_bytes(), &v, WriteFlags::empty())
                             .unwrap();
                     }
 
