@@ -1184,7 +1184,7 @@ fn main() {
 
                 if after == before {
                     stable_count += 1;
-                    println!("  Final compression stable {}/3 at {} gates", stable_count, after);
+                    println!("  Final compression stable {}/6 at {} gates", stable_count, after);
                 } else {
                     println!("  Final compression reduced: {} → {} gates", before, after);
                     stable_count = 0;
