@@ -1198,8 +1198,8 @@ fn main() {
             println!("Compressed circuit written to {}", d);
         }
         Some(("shuffle", sub)) => {
-            let from_path = sub.get_one::<String>("source").unwrap();
-            let dest_path = sub.get_one::<String>("dest").unwrap();
+            let from_path = sub.get_one::<String>("s").unwrap();
+            let dest_path = sub.get_one::<String>("d").unwrap();
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
             let i: usize = *sub.get_one("i").expect("Missing -i <insertions>");
             let lmdb = "./db";
@@ -1228,8 +1228,8 @@ fn main() {
             println!("Shuffled circuit written to {}", dest_path);
         }
         Some(("shoot", sub)) => {
-            let from_path = sub.get_one::<String>("source").unwrap();
-            let dest_path = sub.get_one::<String>("dest").unwrap();
+            let from_path = sub.get_one::<String>("s").unwrap();
+            let dest_path = sub.get_one::<String>("d").unwrap();
             let i: usize = *sub.get_one("i").expect("Missing -i <iterations>");
 
             let contents = fs::read_to_string(from_path)
