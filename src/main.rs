@@ -11,12 +11,9 @@ use std::{
 
 use local_mixing::{
     circuit::CircuitSeq,
-    random::random_data::{build_from_sql, main_random, random_circuit},
+    random::random_data::{build_from_sql, main_random, random_circuit, shoot_random_gate},
     replace::{
-        mixing::{
-            install_kill_handler,
-        },
-        main_mix::{
+        identities::{get_random_wide_identity, random_canonical_id}, main_mix::{
             main_butterfly,
             main_butterfly_big,
             main_interleave_big,
@@ -25,14 +22,10 @@ use local_mixing::{
             main_rac_big_distance,
             main_shuffle_rcs_big,
             open_all_dbs,
-        },
-        pairs::{gate_pair_taxonomy, GatePair},
-        identities::{get_random_wide_identity, random_canonical_id},
-        transpositions::generate_reversible,
-        replace::{
+        }, mixing::install_kill_handler, pairs::{GatePair, gate_pair_taxonomy}, replace::{
             compress_big_ancillas,
             sequential_compress_big_ancillas,
-        },
+        }, transpositions::{generate_reversible, insert_wire_shuffles, insert_wire_shuffles_x}
     },
 };
 
@@ -548,6 +541,7 @@ fn main() {
                         .value_parser(clap::value_parser!(String))
                         .help("Circuit to analyze path"),
                 ),
+                
         )
         .subcommand(
             Command::new("lmdb")
@@ -622,6 +616,57 @@ fn main() {
                         .value_parser(clap::value_parser!(usize))
                         .help("Number of gates in the circuit"),
                 ),
+        )
+        .subcommand(
+            Command::new("shuffle")
+                .about("Shuffle a circuit")
+                .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(
+                    Arg::new("s")
+                        .short('s')
+                        .long("source")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to the source circuit file"),
+                )
+                .arg(Arg::new("i").short('i').long("iterations").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(
+                    Arg::new("s")
+                        .short('s')
+                        .long("source")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to the source circuit file"),
+                )
+                .arg(
+                    Arg::new("d")
+                        .short('d')
+                        .long("destination")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to the new circuit file"),
+                )
+        )
+        .subcommand(
+            Command::new("shoot")
+                .about("Shuffle a circuit")
+                .arg(Arg::new("r").short('r').long("rounds").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(
+                    Arg::new("s")
+                        .short('s')
+                        .long("source")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to the source circuit file"),
+                )
+                .arg(
+                    Arg::new("d")
+                        .short('d')
+                        .long("destination")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to the new circuit file"),
+                )
         )
         .get_matches();
 
@@ -1151,6 +1196,54 @@ fn main() {
                 .expect("Failed to write compressed circuit to file");
 
             println!("Compressed circuit written to {}", d);
+        }
+        Some(("shuffle", sub)) => {
+            let from_path = sub.get_one::<String>("source").unwrap();
+            let dest_path = sub.get_one::<String>("dest").unwrap();
+            let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
+            let i: usize = *sub.get_one("i").expect("Missing -i <insertions>");
+            let lmdb = "./db";
+            let env = Environment::new()
+                .set_max_dbs(266)      
+                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .open(Path::new(lmdb))
+                .expect("Failed to open lmdb");
+            let dbs = open_all_dbs(&env);
+
+            let contents = fs::read_to_string(from_path)
+                .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", from_path));
+
+            let mut c = CircuitSeq::from_string(&contents);
+            println!("Creating shuffled circuit");
+            if i == 0 {
+                insert_wire_shuffles(&mut c, n, &env, &dbs);
+            } else {
+                insert_wire_shuffles_x(&mut c, n, &env, &dbs, i);
+            }
+            let mut file = fs::File::create(dest_path)
+                .expect("Failed to create new file");
+            write!(file, "{}", c.repr())
+                .expect("Failed to write compressed circuit to file");
+
+            println!("Shuffled circuit written to {}", dest_path);
+        }
+        Some(("shoot", sub)) => {
+            let from_path = sub.get_one::<String>("source").unwrap();
+            let dest_path = sub.get_one::<String>("dest").unwrap();
+            let i: usize = *sub.get_one("i").expect("Missing -i <iterations>");
+
+            let contents = fs::read_to_string(from_path)
+                .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", from_path));
+
+            let mut c = CircuitSeq::from_string(&contents);
+            println!("Creating shot circuit");
+            shoot_random_gate(&mut c, i);
+            let mut file = fs::File::create(dest_path)
+                .expect("Failed to create new file");
+            write!(file, "{}", c.repr())
+                .expect("Failed to write compressed circuit to file");
+
+            println!("Shot circuit written to {}", dest_path);
         }
         Some(("wiredot", sub)) => {
             let n: usize = *sub.get_one("num_wires").unwrap();
