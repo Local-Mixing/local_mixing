@@ -650,7 +650,7 @@ fn main() {
         .subcommand(
             Command::new("shoot")
                 .about("Shuffle a circuit")
-                .arg(Arg::new("r").short('r').long("rounds").required(true).value_parser(clap::value_parser!(usize)))
+                .arg(Arg::new("i").short('i').long("iterations").required(true).value_parser(clap::value_parser!(usize)))
                 .arg(
                     Arg::new("s")
                         .short('s')
