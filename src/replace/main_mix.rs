@@ -599,7 +599,7 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection,
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool) {
+pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, x: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -623,7 +623,9 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection
     // Repeat obfuscate + compress 'rounds' times
     let mut post_len = 0;
     let mut count = 0;
-    insert_wire_shuffles_x(&mut circuit, n, env, &dbs, c.gates.len() - 1);
+    if x == 0 {
+        insert_wire_shuffles_x(&mut circuit, n, env, &dbs, c.gates.len() - 1);
+    }
     if c.probably_equal(&circuit, n, 1_000).is_err() {
         panic!("Lost functionality after shuffles");
     } else {
@@ -631,6 +633,9 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection
     }
     for i in 0..rounds {
         let _stop = 1000;
+        if x != 0 {
+            insert_wire_shuffles_x(&mut circuit, n, env, &dbs, x);
+        }
         let (new_circuit, _, _, _, _) = 
             replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower);
         circuit = new_circuit;
