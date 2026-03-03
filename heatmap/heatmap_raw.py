@@ -68,7 +68,7 @@ if __name__ == "__main__":
     parser.add_argument("--canonless", action="store_true", help="Don't canonicalize before heatmap")
     parser.add_argument("--small", action="store_true", help="Only check small inputs")
     parser.add_argument("--mini", action="store_true", help="Check with mini chunks inputs")
-    parser.add_argument("--fix", action="store_true", default=0, help="Number of fixed bits in inputs")
+    parser.add_argument("--fix", type=int, default=0, help="Number of fixed bits in each random input")
     args = parser.parse_args()
 
     flag = False
