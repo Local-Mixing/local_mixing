@@ -68,6 +68,7 @@ if __name__ == "__main__":
     parser.add_argument("--canonless", action="store_true", help="Don't canonicalize before heatmap")
     parser.add_argument("--small", action="store_true", help="Only check small inputs")
     parser.add_argument("--mini", action="store_true", help="Check with mini chunks inputs")
+    parser.add_argument("--fix", action="store_true", default=0, help="Number of fixed bits in inputs")
     args = parser.parse_args()
 
     flag = False
@@ -91,11 +92,11 @@ if __name__ == "__main__":
                 print(f"Computing slice x[{x_start}:{x_end}], y[{y_start}:{y_end}]...")
                 if args.pieces:
                     results = heatmap_rust.heatmap_slice(
-                        args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2
+                        args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2, args.fix
                     )
                 else:
                     results = heatmap_rust.heatmap_mini_slice(
-                        args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2
+                        args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2, args.fix
                     )
 
                 output_dir = args.path
@@ -116,7 +117,7 @@ if __name__ == "__main__":
 
     else:
         print("Generating full heatmap...")
-        results = heatmap_rust.heatmap(args.n, args.i, flag, args.c1, args.c2, not args.canonless)
+        results = heatmap_rust.heatmap(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix)
         output = args.path
         plot_heatmap(results, output, xlabel=args.x, ylabel=args.y)
         print(f"Heatmap saved to {output}")

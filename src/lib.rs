@@ -11,7 +11,7 @@ use rand::Rng;
 use numpy::ndarray::Array2;
 use std::io::{self, Write};
 use primitive_types::U256 as u256;
-
+use rand::seq::IteratorRandom;
 #[inline]
 fn popcount_u256(x: u256) -> u32 {
     let mut count = 0;
@@ -22,7 +22,7 @@ fn popcount_u256(x: u256) -> u32 {
 }
 
 #[pyfunction]
-fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: &str, c2: &str, canon: bool) -> Py<PyArray2<f64>> {
+fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: &str, c2: &str, canon: bool, fix: usize) -> Py<PyArray2<f64>> {
     let mask = if num_wires < 256 {
         (u256::one() << num_wires) - u256::one()
     } else {
@@ -48,14 +48,23 @@ fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: 
     let mut average = vec![0f64; num_points * 3]; // flat 2D array: [x, y, value] per point
     let mut rng = rand::rng();
     let start_time = Instant::now();
-
+    let mut fixed_mask = u256::zero();
+    let positions = (0..num_wires).choose_multiple(&mut rng, fix);
+    let x0: u256 = u256::from(rng.random::<u128>())
+                | (u256::from(rng.random::<u128>()) << 128) & mask;
+    for p in positions {
+        fixed_mask |= u256::from(1) << p;
+    }
     for i in 0..num_inputs {
         if i % 10 == 0 {
             println!("{}/{}", i, num_inputs);
             io::stdout().flush().unwrap();
         }
-        let input_bits: u256 = u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128) & mask;
+        let r: u256 =
+        u256::from(rng.random::<u128>())
+            | (u256::from(rng.random::<u128>()) << 128);
+
+        let input_bits = ((x0 & fixed_mask) | (r & !fixed_mask)) & mask;
 
         let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
         let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
@@ -180,8 +189,19 @@ fn heatmap_small(py: Python<'_>, num_wires: usize, flag: bool, c1: &str, c2: &st
 }
 
 #[pyfunction]
-fn heatmap_slice(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, x1: usize, x2: usize, y1: usize, y2: usize, c1_path: &str,
-    c2_path: &str) -> Py<PyArray2<f64>> {
+fn heatmap_slice(
+    py: Python<'_>, 
+    num_wires: usize, 
+    num_inputs: usize, 
+    flag: bool, 
+    x1: usize, 
+    x2: usize, 
+    y1: usize, 
+    y2: usize, 
+    c1_path: &str,
+    c2_path: &str, 
+    fix: usize
+) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
     // Load circuits
@@ -205,14 +225,23 @@ fn heatmap_slice(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool
     let mut average = vec![0f64; num_points * 3]; // flat 2D array: [x, y, value] per point
     let mut rng = rand::rng();
     let start_time = Instant::now();
-
+    let mut fixed_mask = u256::zero();
+    let positions = (0..num_wires).choose_multiple(&mut rng, fix);
+    let x0: u256 = u256::from(rng.random::<u128>())
+                | (u256::from(rng.random::<u128>()) << 128) & mask;
+    for p in positions {
+        fixed_mask |= u256::from(1) << p;
+    }
     for i in 0..num_inputs {
         if i % 10 == 0 {
             println!("{}/{}", i, num_inputs);
             io::stdout().flush().unwrap();
         }
-        let input_bits: u256 = u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128) & mask;
+        let r: u256 =
+        u256::from(rng.random::<u128>())
+            | (u256::from(rng.random::<u128>()) << 128);
+
+        let input_bits = ((x0 & fixed_mask) | (r & !fixed_mask)) & mask;
 
         let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
         let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
@@ -253,8 +282,19 @@ fn heatmap_slice(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool
 }
 
 #[pyfunction]
-fn heatmap_mini_slice(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, x1: usize, x2: usize, y1: usize, y2: usize, c1_path: &str,
-    c2_path: &str) -> Py<PyArray2<f64>> {
+fn heatmap_mini_slice(
+    py: Python<'_>, 
+    num_wires: usize, 
+    num_inputs: usize, 
+    flag: bool, 
+    x1: usize, 
+    x2: usize, 
+    y1: usize, 
+    y2: usize, 
+    c1_path: &str,
+    c2_path: &str, 
+    fix: usize
+) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
     // Load circuits
@@ -279,14 +319,23 @@ fn heatmap_mini_slice(py: Python<'_>, num_wires: usize, num_inputs: usize, flag:
     let mut average = vec![0f64; num_points * 3]; // flat 2D array: [x, y, value] per point
     let mut rng = rand::rng();
     let start_time = Instant::now();
-
+    let mut fixed_mask = u256::zero();
+    let positions = (0..num_wires).choose_multiple(&mut rng, fix);
+    let x0: u256 = u256::from(rng.random::<u128>())
+                | (u256::from(rng.random::<u128>()) << 128) & mask;
+    for p in positions {
+        fixed_mask |= u256::from(1) << p;
+    }
     for i in 0..num_inputs {
         if i % 10 == 0 {
             println!("{}/{}", i, num_inputs);
             io::stdout().flush().unwrap();
         }
-        let input_bits: u256 = u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128) & mask;
+        let r: u256 =
+        u256::from(rng.random::<u128>())
+            | (u256::from(rng.random::<u128>()) << 128);
+
+        let input_bits = ((x0 & fixed_mask) | (r & !fixed_mask)) & mask;
 
         let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
         let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
