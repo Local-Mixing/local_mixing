@@ -1448,6 +1448,38 @@ pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
     }
 }
 
+pub fn random_sulking(circuit: &mut CircuitSeq) {
+    let mut rng = rand::rng();
+    let len = circuit.gates.len();
+
+    if len == 0 {
+        return
+    }
+    let mut out: Vec<[u8;3]> = Vec::new();
+    for gate_idx in 0..len{
+        // Shoot left
+        let mut target = gate_idx;
+        out.push(circuit.gates[target]);
+        if gate_idx == 0 {
+            continue
+        } else {
+            while target > 0 {
+                if Gate::collides_index(&out[target - 1], &out[gate_idx]) {
+                    break;
+                }
+                target -= 1;
+            }
+            target = rng.random_range(target..=gate_idx);
+            if target != gate_idx {
+                let gate = out.pop().unwrap();
+                out.insert(target, gate);
+            }
+        }
+    }
+    println!("{}", circuit.gates == out);
+    circuit.gates = out;
+}
+
 pub fn shoot_random_gate_gate_ver(circuit: &mut Vec<[u8;3]>, rounds: usize) {
     let mut rng = rand::rng();
     let len = circuit.len();

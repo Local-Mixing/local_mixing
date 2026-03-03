@@ -11,7 +11,7 @@ use std::{
 
 use local_mixing::{
     circuit::CircuitSeq,
-    random::random_data::{build_from_sql, main_random, random_circuit, shoot_random_gate},
+    random::random_data::{build_from_sql, main_random, random_circuit, shoot_random_gate, random_walk_no_skeleton, random_sulking},
     replace::{
         identities::{get_random_wide_identity, random_canonical_id}, main_mix::{
             main_butterfly,
@@ -1244,8 +1244,11 @@ fn main() {
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", from_path));
 
             let mut c = CircuitSeq::from_string(&contents);
+            let mut rng = rand::rng();
             println!("Creating shot circuit");
-            shoot_random_gate(&mut c, i);
+            // shoot_random_gate(&mut c, i);
+            // random_sulking(&mut c);
+            c = random_walk_no_skeleton(&mut c, &mut rng);
             let mut file = fs::File::create(dest_path)
                 .expect("Failed to create new file");
             write!(file, "{}", c.repr())

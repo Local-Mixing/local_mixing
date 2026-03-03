@@ -67,11 +67,12 @@ if __name__ == "__main__":
     parser.add_argument("--path", type=str, default="./heatmap.png", help="Path to the heatmap generation")
     parser.add_argument("--canonless", action="store_true", help="Don't canonicalize before heatmap")
     parser.add_argument("--small", action="store_true", help="Only check small inputs")
+    parser.add_argument("--mini", action="store_true", help="Check with mini chunks inputs")
     args = parser.parse_args()
 
     flag = False
 
-    if args.pieces:
+    if args.pieces or args.mini:
         if not args.c1 or not args.c2:
             raise ValueError("--c1 and --c2 are required when --pieces is used")
 
@@ -88,9 +89,14 @@ if __name__ == "__main__":
                 y_end = min(y_start + chunk - 1, c2_len - 1)
 
                 print(f"Computing slice x[{x_start}:{x_end}], y[{y_start}:{y_end}]...")
-                results = heatmap_rust.heatmap_slice(
-                    args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2
-                )
+                if args.pieces:
+                    results = heatmap_rust.heatmap_slice(
+                        args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2
+                    )
+                else:
+                    results = heatmap_rust.heatmap_mini_slice(
+                        args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2
+                    )
 
                 output_dir = args.path
                 os.makedirs(output_dir, exist_ok=True)
