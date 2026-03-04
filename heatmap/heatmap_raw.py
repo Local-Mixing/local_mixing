@@ -69,6 +69,7 @@ if __name__ == "__main__":
     parser.add_argument("--small", action="store_true", help="Only check small inputs")
     parser.add_argument("--mini", action="store_true", help="Check with mini chunks inputs")
     parser.add_argument("--fix", type=int, default=0, help="Number of fixed bits in each random input")
+    parser.add_argument("--hw", action="store_true", help="Use hamming weight difference mode")
     args = parser.parse_args()
 
     flag = False
@@ -92,7 +93,7 @@ if __name__ == "__main__":
                 print(f"Computing slice x[{x_start}:{x_end}], y[{y_start}:{y_end}]...")
                 if args.pieces:
                     results = heatmap_rust.heatmap_slice(
-                        args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2, args.fix
+                        args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2, args.fix, args.hw
                     )
                 else:
                     results = heatmap_rust.heatmap_mini_slice(
@@ -117,7 +118,7 @@ if __name__ == "__main__":
 
     else:
         print("Generating full heatmap...")
-        results = heatmap_rust.heatmap(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix)
+        results = heatmap_rust.heatmap(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix, args.hw)
         output = args.path
         plot_heatmap(results, output, xlabel=args.x, ylabel=args.y)
         print(f"Heatmap saved to {output}")

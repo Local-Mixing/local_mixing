@@ -22,7 +22,17 @@ fn popcount_u256(x: u256) -> u32 {
 }
 
 #[pyfunction]
-fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: &str, c2: &str, canon: bool, fix: usize) -> Py<PyArray2<f64>> {
+fn heatmap(
+    py: Python<'_>, 
+    num_wires: usize, 
+    num_inputs: usize, 
+    flag: bool, 
+    c1: &str, 
+    c2: &str, 
+    canon: bool, 
+    fix: usize,
+    hw: bool,
+) -> Py<PyArray2<f64>> {
     let mask = if num_wires < 256 {
         (u256::one() << num_wires) - u256::one()
     } else {
@@ -71,9 +81,13 @@ fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: 
 
         for i1 in 0..=circuit_one_len {
             for i2 in 0..=circuit_two_len {
-                let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
-                let hamming_dist = popcount_u256(diff) as f64;
-                let overlap = if !flag {
+                let hamming_dist = if hw {
+                    (popcount_u256(evolution_one[i1]) as f64 - popcount_u256(evolution_one[i2]) as f64).abs()
+                } else {
+                    let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
+                    popcount_u256(diff) as f64
+                };
+                let overlap = if !flag || hw {
                     hamming_dist / num_wires as f64
                 } else {
                     let tmp = (2.0 * hamming_dist / num_wires as f64) - 1.0;
@@ -103,7 +117,14 @@ fn heatmap(py: Python<'_>, num_wires: usize, num_inputs: usize, flag: bool, c1: 
 }
 
 #[pyfunction]
-fn heatmap_small(py: Python<'_>, num_wires: usize, flag: bool, c1: &str, c2: &str, canon: bool) -> Py<PyArray2<f64>> {
+fn heatmap_small(
+    py: Python<'_>,
+    num_wires: usize, 
+    flag: bool, 
+    c1: &str, 
+    c2: &str, 
+    canon: bool
+) -> Py<PyArray2<f64>> {
     let mask = if num_wires < 256 {
         (u256::one() << num_wires) - u256::one()
     } else {
@@ -200,7 +221,8 @@ fn heatmap_slice(
     y2: usize, 
     c1_path: &str,
     c2_path: &str, 
-    fix: usize
+    fix: usize,
+    hw: bool
 ) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
@@ -248,9 +270,13 @@ fn heatmap_slice(
 
         for i1 in x1..=x2 {
             for i2 in y1..=y2 {
-                let diff = evolution_one[i1] ^ evolution_two[i2];
-                let hamming_dist = popcount_u256(diff) as f64;
-                let overlap = if !flag {
+                let hamming_dist = if hw {
+                    (popcount_u256(evolution_one[i1]) as f64 - popcount_u256(evolution_one[i2]) as f64).abs()
+                } else {
+                    let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
+                    popcount_u256(diff) as f64
+                };
+                let overlap = if !flag || hw {
                     hamming_dist / num_wires as f64
                 } else {
                     let tmp = (2.0 * hamming_dist / num_wires as f64) - 1.0;
