@@ -674,6 +674,41 @@ fn main() {
                         .value_parser(clap::value_parser!(String))
                         .help("Path to the new circuit file"),
                 )
+        ).subcommand(
+    Command::new("equal")
+                .about("Check if two circuits are functionally equivalent")
+                .arg(
+                    Arg::new("wires")
+                        .short('n')
+                        .long("wires")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of wires"),
+                )
+                .arg(
+                    Arg::new("iterations")
+                        .short('i')
+                        .long("iterations")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of test iterations"),
+                )
+                .arg(
+                    Arg::new("circuit_a")
+                        .short('a')
+                        .long("circuit-a")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to first circuit file"),
+                )
+                .arg(
+                    Arg::new("circuit_b")
+                        .short('b')
+                        .long("circuit-b")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to second circuit file"),
+                )
         )
         .get_matches();
 
@@ -1255,6 +1290,26 @@ fn main() {
                 .expect("Failed to write compressed circuit to file");
 
             println!("Shot circuit written to {}", dest_path);
+        }
+        Some(("equal", sub)) => {
+            let c1_path = sub.get_one::<String>("a").unwrap();
+            let c2_path = sub.get_one::<String>("b").unwrap();
+            let i: usize = *sub.get_one("i").expect("Missing -i <iterations>");
+            let n: usize = *sub.get_one("n").expect("Missing -n <num_wires>");
+            let contents1 = fs::read_to_string(c1_path)
+                .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", c1_path));
+            let contents2 = fs::read_to_string(c2_path)
+                .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", c2_path));
+            let c1 = CircuitSeq::from_string(&contents1);
+            let c2 = CircuitSeq::from_string(&contents2);
+            println!("Checking for equivalence between {} and {}", c1_path, c2_path);
+            println!("{}: {} gates", c1_path, c1.gates.len());
+            println!("{}: {} gates", c2_path, c2.gates.len());
+            if c1.probably_equal(&c2, n, i).is_ok() {
+                println!("Circuits are equal!");
+            } else {
+                println!("Circuits are not equal");
+            }
         }
         Some(("wiredot", sub)) => {
             let n: usize = *sub.get_one("num_wires").unwrap();
