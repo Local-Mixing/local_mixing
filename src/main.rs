@@ -1246,9 +1246,9 @@ fn main() {
             let mut c = CircuitSeq::from_string(&contents);
             let mut rng = rand::rng();
             println!("Creating shot circuit");
-            // shoot_random_gate(&mut c, i);
+            shoot_random_gate(&mut c, i);
             // random_sulking(&mut c);
-            c = random_walk_no_skeleton(&mut c, &mut rng);
+            // c = random_walk_no_skeleton(&mut c, &mut rng);
             let mut file = fs::File::create(dest_path)
                 .expect("Failed to create new file");
             write!(file, "{}", c.repr())
