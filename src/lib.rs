@@ -82,7 +82,7 @@ fn heatmap(
         for i1 in 0..=circuit_one_len {
             for i2 in 0..=circuit_two_len {
                 let hamming_dist = if hw {
-                    (popcount_u256(evolution_one[i1]) as f64 - popcount_u256(evolution_one[i2]) as f64).abs()
+                    (popcount_u256(evolution_one[i1]) as f64 - popcount_u256(evolution_two[i2]) as f64).abs()
                 } else {
                     let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
                     popcount_u256(diff) as f64
