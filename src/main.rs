@@ -1292,10 +1292,10 @@ fn main() {
             println!("Shot circuit written to {}", dest_path);
         }
         Some(("equal", sub)) => {
-            let c1_path = sub.get_one::<String>("a").unwrap();
-            let c2_path = sub.get_one::<String>("b").unwrap();
-            let i: usize = *sub.get_one("i").expect("Missing -i <iterations>");
-            let n: usize = *sub.get_one("n").expect("Missing -n <num_wires>");
+            let c1_path = sub.get_one::<String>("circuit_a").unwrap();
+            let c2_path = sub.get_one::<String>("circuit_b").unwrap();
+            let i: usize = *sub.get_one::<usize>("iterations").expect("Missing --iterations");
+            let n: usize = *sub.get_one::<usize>("wires").expect("Missing --wires");
             let contents1 = fs::read_to_string(c1_path)
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", c1_path));
             let contents2 = fs::read_to_string(c2_path)
