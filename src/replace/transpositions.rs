@@ -11,7 +11,7 @@ pub struct Transpositions {
 
 impl Transpositions {
     // Use Knuth Shuffle to get a random wire shuffle and then choose a random negation
-    pub fn gen_random(n: usize, _m: usize, negation_mask: &mut Vec<u8>) -> Self {
+    pub fn gen_random_knuth(n: usize, _m: usize, negation_mask: &mut Vec<u8>) -> Self {
         assert!(n >= 2, "n must be at least 2");
         let mut rng = rand::rng();
         let mut transpositions = Vec::with_capacity(n);
@@ -25,6 +25,43 @@ impl Transpositions {
             }
             transpositions.push((j, i, negation_type));
             let temp = negation_mask[j as usize];
+            negation_mask[j as usize] = negation_mask[i as usize];
+            negation_mask[i as usize] = temp;
+            if negation_type == 1 || negation_type == 3{
+                negation_mask[j as usize] ^= 1;
+            }
+            if negation_type == 2 || negation_type == 3 {
+                negation_mask[i as usize] ^= 1;
+            }
+        }
+
+        Self { transpositions }
+    }
+
+    // Simple random wire shuffle with negation
+    pub fn gen_random_simple(n: usize, m: usize, negation_mask: &mut Vec<u8>) -> Self {
+        assert!(n >= 2, "n must be at least 2");
+        let mut rng = rand::rng();
+        let mut transpositions = Vec::with_capacity(m);
+        for _ in 0..m {
+            let negation_type = rng.random_range(0..=3);
+            let mut i: usize = rng.random_range(0..n);
+            let mut j: usize;
+            loop {
+                j = rng.random_range(0..n);
+                if i != j {
+                    break;
+                }
+            }
+            // Maintain correct ordering
+            if i < j {
+                let temp = i;
+                i = j;
+                j = temp;
+            }
+            transpositions.push((j as u8, i as u8, negation_type));
+            // Adjust negation mask appropriately
+            let temp = negation_mask[j];
             negation_mask[j as usize] = negation_mask[i as usize];
             negation_mask[i as usize] = temp;
             if negation_type == 1 || negation_type == 3{
@@ -364,7 +401,95 @@ pub fn insert_wire_shuffles(
     let mut negation_mask = vec![0u8; n];
 
     for &gate in &circuit.gates {
-        let t = Transpositions::gen_random(n, 150, &mut negation_mask);
+        let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
+        gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
+        t_list.transpositions.extend_from_slice(&t.transpositions);
+        let a = t_list.evaluate(gate[0]);
+        let b = t_list.evaluate(gate[1]);
+        let c = t_list.evaluate(gate[2]);
+        let gate = [a, b, c];
+        if negation_mask[b as usize] == 1 {
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, b, env, dbs));
+            negation_mask[b as usize] = 0;
+        }
+        if negation_mask[c as usize] == 1 {
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, c, env, dbs));
+            negation_mask[c as usize] = 0;
+        }
+        gates.push(gate);
+    }
+    let p = t_list.to_perm(n);
+    let mut t = Transpositions::from_perm(&p);
+    let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
+
+    for (i, (a, b, _)) in t.transpositions.iter().enumerate() {
+        wire_transpositions.insert(*a, (i, 0));
+        wire_transpositions.insert(*b, (i, 1));
+    }
+
+    const TRANSITION: [[u8; 4]; 2] = [
+        // pos = 0
+        [1, 0, 3, 2],
+        // pos = 1
+        [2, 3, 0, 1],
+    ];
+
+    for (i, val) in negation_mask.into_iter().enumerate() {
+        if val == 1 {
+            if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
+                let &(swap_idx, pos) = swaps;
+                let curr_neg_type = t.transpositions[swap_idx].2;
+                if pos > 1 || curr_neg_type > 3 {
+                    panic!("Invalid pos or curr_neg_type");
+                }
+                t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
+                
+            }
+        }
+    }
+
+    let mut c = t.to_circuit(n, env, dbs).gates;
+    c.reverse();
+    gates.extend_from_slice(&c);
+    circuit.gates = gates;
+    println!("Complete. Ending len: {} gates", circuit.gates.len());
+}
+
+pub fn insert_wire_shuffles_simple(
+    circuit: &mut CircuitSeq, 
+    n: usize,
+    env: &Environment,
+    dbs: &HashMap<String, Database>,
+) {
+    println!("Inserting wire shuffles");
+    println!("Starting len: {} gates", circuit.gates.len());
+    let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
+    let mut gates: Vec<[u8;3]> = Vec::new();
+    let mut negation_mask = vec![0u8; n];
+
+    // Generate random points. m needed in k = m * n
+    // Choose them spaced approximately evenly but with `sufficient` randomness
+    let m = circuit.gates.len();
+    let mut points = Vec::with_capacity(m);
+    let mut rng = rand::rng();
+    for i in 0..m {
+        let center = i * n + n / 2;
+
+        // allow significant variance but keep spacing structure
+        let jitter = rng.random_range(-(n as i64)/2 ..= (n as i64)/2);
+
+        let mut p = center as i64 + jitter;
+
+        // avoid very beginning
+        if p < n as i64 / 4 {
+            p = n as i64 / 4;
+        }
+
+        points.push(p as usize);
+    }
+
+    for (i, gate) in circuit.gates.iter().enumerate() {
+        let t = Transpositions::gen_random_simple(n, points[i], &mut negation_mask);
         gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
         t_list.transpositions.extend_from_slice(&t.transpositions);
         let a = t_list.evaluate(gate[0]);
@@ -444,7 +569,7 @@ pub fn insert_wire_shuffles_x(
 
     for (i, gate) in circuit.gates.iter().enumerate() {
         if nums.contains(&i) {
-            let t = Transpositions::gen_random(n, 150, &mut negation_mask);
+            let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
             gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
             t_list.transpositions.extend_from_slice(&t.transpositions);
         }   
@@ -559,7 +684,7 @@ mod tests {
         let mut last = Transpositions { transpositions: Vec::new() };
         for &gate in &base.gates {
 
-            let t = Transpositions::gen_random(64, 100, &mut Vec::new());
+            let t = Transpositions::gen_random_knuth(64, 100, &mut Vec::new());
             // println!("t: {}", t.transpositions.len());
             if last.transpositions.is_empty() {
                 gates.extend(t.to_circuit(64, &env, &dbs).gates);
@@ -613,7 +738,7 @@ mod tests {
 
         let dbs = open_all_dbs(&env);
 
-        let mut t = Transpositions::gen_random(128, 500, &mut Vec::new());
+        let mut t = Transpositions::gen_random_knuth(128, 500, &mut Vec::new());
         let base = t.to_circuit(128, &env, &dbs);
         Transpositions::shoot_random_transpositions(&mut t, 100_000);
         let new_circuit = t.to_circuit(128, &env, &dbs);
@@ -683,7 +808,7 @@ mod tests {
         let n = 64;
         let mut gates: Vec<[u8;3]> = Vec::new();
         let mut negation_mask = vec![0u8; n];
-        let t = Transpositions::gen_random(n, 150, &mut negation_mask);
+        let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
         gates.extend_from_slice(&t.to_circuit(n, &env, &dbs).gates);
         let p = t.to_perm(n);
         let t = Transpositions::from_perm(&p);
@@ -745,7 +870,7 @@ mod tests {
             .expect("failed to open lmdb");
 
         let dbs = open_all_dbs(&env);
-        let t = Transpositions::gen_random(64, 100, &mut Vec::new());
+        let t = Transpositions::gen_random_knuth(64, 100, &mut Vec::new());
         let mut gates: Vec<[u8; 3]> = Vec::new();
         gates.extend(t.to_circuit(64, &env, &dbs).gates);
         for &gate in &base.gates {
