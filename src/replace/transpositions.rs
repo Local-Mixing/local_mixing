@@ -393,7 +393,7 @@ pub fn insert_wire_shuffles_knuth(
     env: &Environment,
     dbs: &HashMap<String, Database>,
 ) {
-    println!("Inserting wire shuffles");
+    println!("Inserting wire shuffles (knuth)");
     println!("Starting len: {} gates", circuit.gates.len());
     let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
     let mut gates: Vec<[u8;3]> = Vec::new();
@@ -460,7 +460,7 @@ pub fn insert_wire_shuffles_simple(
     env: &Environment,
     dbs: &HashMap<String, Database>,
 ) {
-    println!("Inserting wire shuffles");
+    println!("Inserting wire shuffles (simple)");
     println!("Starting len: {} gates", circuit.gates.len());
     let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
     let mut gates: Vec<[u8;3]> = Vec::new();
@@ -486,9 +486,10 @@ pub fn insert_wire_shuffles_simple(
 
         points.push(p as usize);
     }
-
+    let mut last = 0;
     for (i, gate) in circuit.gates.iter().enumerate() {
-        let t = Transpositions::gen_random_simple(n, points[i], &mut negation_mask);
+        let t = Transpositions::gen_random_simple(n, points[i] - last, &mut negation_mask);
+        last = points[i];
         gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
         t_list.transpositions.extend_from_slice(&t.transpositions);
         let a = t_list.evaluate(gate[0]);
