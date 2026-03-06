@@ -658,6 +658,7 @@ fn main() {
                         .long("knuth")
                         .help("Use Knuth shuffle instead of simple")
                         .required(false) 
+                        .action(clap::ArgAction::SetTrue)
                 )
         )
         .subcommand(
