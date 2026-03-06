@@ -492,9 +492,9 @@ fn main() {
             Command::new("compress")
                 .about("Run compression trials on a circuit file")
                 .arg(
-                    Arg::new("p")
-                        .short('p')
-                        .long("path")
+                    Arg::new("s")
+                        .short('s')
+                        .long("source")
                         .required(true)
                         .value_parser(clap::value_parser!(String))
                         .help("Path to the starting circuit file"),
@@ -1189,12 +1189,12 @@ fn main() {
             println!("Reversible circuit written to {}", dest_path);
         }
         Some(("compress", sub)) => {
-            let p: &String = sub.get_one("p").expect("Missing -p <path>");
+            let s: &String = sub.get_one("s").expect("Missing -s <source>");
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
-            let d: &String = sub.get_one("d").expect("Missing -d <path>");
+            let d: &String = sub.get_one("d").expect("Missing -d <destination>");
             let seq = sub.get_flag("seq"); 
-            let contents = fs::read_to_string(p)
-                .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", p));
+            let contents = fs::read_to_string(s)
+                .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", s));
 
             let mut acc = CircuitSeq::from_string(&contents);
 
