@@ -18,7 +18,6 @@ impl Transpositions {
         let n = (n - 1) as u8;
         for i in (1..=n).rev() {
             let negation_type = rng.random_range(0..=3);
-            let negation_type = 0;
             let j = rng.random_range(0..=i);
             if i == j {
                 continue;
