@@ -25,7 +25,7 @@ use local_mixing::{
         }, mixing::install_kill_handler, pairs::{GatePair, gate_pair_taxonomy}, replace::{
             compress_big_ancillas,
             sequential_compress_big_ancillas,
-        }, transpositions::{generate_reversible, insert_wire_shuffles, insert_wire_shuffles_x}
+        }, transpositions::{generate_reversible, insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x}
     },
 };
 
@@ -653,6 +653,12 @@ fn main() {
                         .value_parser(clap::value_parser!(String))
                         .help("Path to the new circuit file"),
                 )
+                .arg(
+                    Arg::new("knuth")
+                        .long("knuth")
+                        .help("Use Knuth shuffle instead of simple")
+                        .required(false) 
+                )
         )
         .subcommand(
             Command::new("shoot")
@@ -1245,6 +1251,7 @@ fn main() {
             let dest_path = sub.get_one::<String>("d").unwrap();
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
             let i: usize = *sub.get_one("i").expect("Missing -i <insertions>");
+            let knuth = sub.get_flag("knuth");
             let lmdb = "./db";
             let env = Environment::new()
                 .set_max_dbs(266)      
@@ -1259,7 +1266,11 @@ fn main() {
             let mut c = CircuitSeq::from_string(&contents);
             println!("Creating shuffled circuit");
             if i == 0 {
-                insert_wire_shuffles(&mut c, n, &env, &dbs);
+                if knuth {
+                    insert_wire_shuffles_knuth(&mut c, n, &env, &dbs);
+                } else {
+                    insert_wire_shuffles_simple(&mut c, n, &env, &dbs);
+                }
             } else {
                 insert_wire_shuffles_x(&mut c, n, &env, &dbs, i);
             }

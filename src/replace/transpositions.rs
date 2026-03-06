@@ -388,7 +388,7 @@ impl Transpositions {
     }
 }
 
-pub fn insert_wire_shuffles(
+pub fn insert_wire_shuffles_knuth(
     circuit: &mut CircuitSeq, 
     n: usize,
     env: &Environment,

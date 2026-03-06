@@ -19,7 +19,7 @@ use crate::{
             replace_and_compress_big,
             replace_and_compress_big_distance,
         },
-        transpositions::{insert_wire_shuffles, insert_wire_shuffles_x},
+        transpositions::{insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x},
     },
 };
 
