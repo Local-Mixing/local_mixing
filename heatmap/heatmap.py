@@ -158,9 +158,9 @@ if __name__ == "__main__":
                 )
 
                 if args.std:
-                    plot_heatmap_std(results, output, xlabel=args.x, ylabel=args.y)
+                    plot_heatmap_std(results, output_path, xlabel=args.x, ylabel=args.y)
                 else:
-                    plot_heatmap_raw(results, output, xlabel=args.x, ylabel=args.y)
+                    plot_heatmap_raw(results, output_path, xlabel=args.x, ylabel=args.y)
                 print(f"Saved {output_path}")
 
     elif args.small:
