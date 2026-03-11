@@ -762,7 +762,7 @@ pub fn sequential_butterfly(
             for i in 0..len {
                 if gates_track[i].1 == 1 {
                     shoot_left_vec_track(&mut gates_track, i, false);
-                    println!("Shoot left");
+                    // println!("Shoot left");
                 }
             }
         } else {
@@ -770,7 +770,7 @@ pub fn sequential_butterfly(
             while i > 0 {
                 if gates_track[i].1 == 1 {
                     let after_idx = shoot_left_vec_track(&mut gates_track, i, false);
-                    println!("Shoot left");
+                    // println!("Shoot left");
                     if after_idx != i {
                         continue;
                     } else {
@@ -789,7 +789,7 @@ pub fn sequential_butterfly(
             for i in (0..len).rev() {
                 if gates_track[i].1 == 2 {
                     shoot_right_vec_track(&mut gates_track, i, false);
-                    println!("Shoot right");
+                    // println!("Shoot right");
                 }
             }
         } else {
@@ -797,7 +797,7 @@ pub fn sequential_butterfly(
             while i < len {
                 if gates_track[i].1 == 2 {
                     let after_idx = shoot_right_vec_track(&mut gates_track, i, false);
-                    println!("Shoot right");
+                    // println!("Shoot right");
                     if after_idx != i {
                         continue;
                     } else {
@@ -835,7 +835,7 @@ pub fn sequential_butterfly(
                     .map(|v| (v, 0))
                     .collect::<Vec<_>>();
                     gates_track.splice(after_idx - 1..=after_idx, pair_repl);
-                    println!("Replacement made left");
+                    // println!("Replacement made left");
                 }
             }
         }
@@ -862,7 +862,7 @@ pub fn sequential_butterfly(
                     .map(|v| (v, 0))
                     .collect::<Vec<_>>();
                     gates_track.splice(after_idx - 1..=after_idx, pair_repl);
-                    println!("Replacement made left");
+                    // println!("Replacement made left");
                 }
                 if after_idx != i {
                     continue;
@@ -901,7 +901,7 @@ pub fn sequential_butterfly(
                     .map(|v| (v, 0))
                     .collect::<Vec<_>>();
                     gates_track.splice(after_idx..=after_idx+1, pair_repl);
-                    println!("Replacement made right");
+                    // println!("Replacement made right");
                 }
             }
         }
@@ -929,7 +929,7 @@ pub fn sequential_butterfly(
                     .map(|v| (v, 0))
                     .collect::<Vec<_>>();
                     gates_track.splice(after_idx..=after_idx+1, pair_repl);
-                    println!("Replacement made right");
+                    // println!("Replacement made right");
                 }
                 if after_idx != i {
                     continue;
