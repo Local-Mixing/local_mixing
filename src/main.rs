@@ -687,7 +687,7 @@ fn main() {
                     .help("Path to the source circuit file"),
             )
             .arg(
-                Arg::new("r")
+                Arg::new("rounds")
                     .short('r')
                     .long("rounds")
                     .required(true)
