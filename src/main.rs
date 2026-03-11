@@ -742,7 +742,7 @@ fn main() {
                     .long("add_rounds_left")
                     .required(false)
                     .default_value("0")
-                    .value_parser(clap::value_parser!(usize))
+                    .value_parser(clap::value_parser!(u8))
                     .help("Add shoot+collision rounds for R*. This is currently unsupported"),
             )
             .arg(
@@ -750,7 +750,7 @@ fn main() {
                     .long("add_rounds_right")
                     .required(false)
                     .default_value("0")
-                    .value_parser(clap::value_parser!(usize))
+                    .value_parser(clap::value_parser!(u8))
                     .help("Add shoot+collision rounds for R*. This is currently unsupported"),
             )
     )
