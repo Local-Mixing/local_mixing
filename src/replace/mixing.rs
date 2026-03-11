@@ -757,7 +757,7 @@ pub fn sequential_butterfly(
     len = gates_track.len();
     println!("  {}/{}: Step 2a: Shooting R's left", curr_round, last_round);
     println!("  {}/{}: Mode: \n Additional rounds: {} \n Forward Order: {}", curr_round, last_round, shoot_more_left, reverse_order_left == false);
-    for _ in 0..shoot_more_left {
+    for _ in 0..=shoot_more_left {
         if !reverse_order_left {
             for i in 0..len {
                 if gates_track[i].1 == 1 {
@@ -784,7 +784,7 @@ pub fn sequential_butterfly(
     }
     println!("  {}/{}: Step 2b: Shooting R*'s right", curr_round, last_round);
     println!("  {}/{}: Mode: \n Additional rounds: {} \n Reverse Order: {}", curr_round, last_round, shoot_more_right, reverse_order_right == true);
-    for _ in 0..shoot_more_right {
+    for _ in 0..=shoot_more_right {
         if reverse_order_right {
             for i in (0..len).rev() {
                 if gates_track[i].1 == 2 {
@@ -878,68 +878,66 @@ pub fn sequential_butterfly(
     println!("  {}/{}: Step 3b: Finding collisions for R*", curr_round, last_round);
     println!("  {}/{}: Mode: \n Reverse Order: {} \n Identity wire lengths: {} \n Tower identities: {}", curr_round, last_round, reverse_order_right == true, id_len, tower_right == true);
 
-    for _ in 0..shoot_more_right {
-        if reverse_order_right {
-            for i in (0..len).rev() {
-                if gates_track[i].1 == 5 {
-                    let curr_len = gates_track.len();
-                    let after_idx = shoot_right_vec_track(&mut gates_track, i, false);
-                    if after_idx != curr_len {
-                        let (pair_repl, _) = replace_single_pair(
-                            &gates_track[after_idx].0, 
-                            &gates_track[after_idx + 1].0, 
-                            n, 
-                            _conn, 
-                            env, 
-                            bit_shuf_list, 
-                            dbs, 
-                            tower_left,
-                            id_len
-                        );
-                        let pair_repl = 
-                        pair_repl
-                        .into_iter()
-                        .map(|v| (v, 0))
-                        .collect::<Vec<_>>();
-                        gates_track.splice(after_idx..=after_idx+1, pair_repl);
-                        println!("Replacement made right");
-                    }
+    if reverse_order_right {
+        for i in (0..len).rev() {
+            if gates_track[i].1 == 5 {
+                let curr_len = gates_track.len();
+                let after_idx = shoot_right_vec_track(&mut gates_track, i, false);
+                if after_idx != curr_len {
+                    let (pair_repl, _) = replace_single_pair(
+                        &gates_track[after_idx].0, 
+                        &gates_track[after_idx + 1].0, 
+                        n, 
+                        _conn, 
+                        env, 
+                        bit_shuf_list, 
+                        dbs, 
+                        tower_left,
+                        id_len
+                    );
+                    let pair_repl = 
+                    pair_repl
+                    .into_iter()
+                    .map(|v| (v, 0))
+                    .collect::<Vec<_>>();
+                    gates_track.splice(after_idx..=after_idx+1, pair_repl);
+                    println!("Replacement made right");
                 }
             }
-        } else {
-            let mut i = 0;
-            while i < len {
-                if gates_track[1].1 == 5 {
-                    let after_idx = shoot_right_vec_track(&mut gates_track, i, false);
-                    let curr_len = gates_track.len();
-                    if after_idx != curr_len {
-                        let (pair_repl, _) = replace_single_pair(
-                            &gates_track[after_idx].0, 
-                            &gates_track[after_idx + 1].0, 
-                            n, 
-                            _conn, 
-                            env, 
-                            bit_shuf_list, 
-                            dbs, 
-                            tower_left,
-                            id_len
-                        );
-                        let pair_repl = 
-                        pair_repl
-                        .into_iter()
-                        .map(|v| (v, 0))
-                        .collect::<Vec<_>>();
-                        gates_track.splice(after_idx..=after_idx+1, pair_repl);
-                        println!("Replacement made right");
-                    }
-                    if after_idx != i {
-                        continue;
-                    } else {
-                        i += 1;
-                    }
+        }
+    } else {
+        let mut i = 0;
+        while i < len {
+            if gates_track[1].1 == 5 {
+                let after_idx = shoot_right_vec_track(&mut gates_track, i, false);
+                let curr_len = gates_track.len();
+                if after_idx != curr_len {
+                    let (pair_repl, _) = replace_single_pair(
+                        &gates_track[after_idx].0, 
+                        &gates_track[after_idx + 1].0, 
+                        n, 
+                        _conn, 
+                        env, 
+                        bit_shuf_list, 
+                        dbs, 
+                        tower_left,
+                        id_len
+                    );
+                    let pair_repl = 
+                    pair_repl
+                    .into_iter()
+                    .map(|v| (v, 0))
+                    .collect::<Vec<_>>();
+                    gates_track.splice(after_idx..=after_idx+1, pair_repl);
+                    println!("Replacement made right");
+                }
+                if after_idx != i {
+                    continue;
                 } else {
                     i += 1;
                 }
+            } else {
+                i += 1;
             }
         }
     }
