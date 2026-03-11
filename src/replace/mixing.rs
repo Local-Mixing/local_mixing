@@ -842,7 +842,7 @@ pub fn sequential_butterfly(
     } else {
         let mut i = len - 1;
         while i > 0 {
-            if gates_track[1].1 == 4 {
+            if gates_track[i].1 == 4 {
                 let after_idx = shoot_left_vec_track(&mut gates_track, i, true);
                 if after_idx != 0 {
                     let (pair_repl, _) = replace_single_pair(
@@ -908,7 +908,7 @@ pub fn sequential_butterfly(
     } else {
         let mut i = 0;
         while i < len {
-            if gates_track[1].1 == 5 {
+            if gates_track[i].1 == 5 {
                 let after_idx = shoot_right_vec_track(&mut gates_track, i, false);
                 let curr_len = gates_track.len();
                 if after_idx != curr_len {
