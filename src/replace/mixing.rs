@@ -762,6 +762,7 @@ pub fn sequential_butterfly(
             for i in 0..len {
                 if gates_track[i].1 == 1 {
                     shoot_left_vec_track(&mut gates_track, i, false);
+                    println!("Shoot left");
                 }
             }
         } else {
@@ -769,6 +770,7 @@ pub fn sequential_butterfly(
             while i > 0 {
                 if gates_track[i].1 == 1 {
                     let after_idx = shoot_left_vec_track(&mut gates_track, i, false);
+                    println!("Shoot left");
                     if after_idx != i {
                         continue;
                     } else {
@@ -787,6 +789,7 @@ pub fn sequential_butterfly(
             for i in (0..len).rev() {
                 if gates_track[i].1 == 2 {
                     shoot_right_vec_track(&mut gates_track, i, false);
+                    println!("Shoot right");
                 }
             }
         } else {
@@ -794,6 +797,7 @@ pub fn sequential_butterfly(
             while i < len {
                 if gates_track[i].1 == 2 {
                     let after_idx = shoot_right_vec_track(&mut gates_track, i, false);
+                    println!("Shoot right");
                     if after_idx != i {
                         continue;
                     } else {
