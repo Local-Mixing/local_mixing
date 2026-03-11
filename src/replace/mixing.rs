@@ -809,7 +809,7 @@ pub fn sequential_butterfly(
             }
         }
     }
-    println!("{:?}", gates_track);
+    // println!("{:?}", gates_track);
     println!("  {}/{}: Step 3a: Finding collisions for R", curr_round, last_round);
     println!("  {}/{}: Mode: \n Forward Order: {} \n Identity wire lengths: {} \n Tower identities: {}", curr_round, last_round, reverse_order_left == false, id_len, tower_left == true);
 
