@@ -1065,7 +1065,7 @@ Command::new("equal")
                 let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
                 println!(
                     "For generating heatmaps:\n\
-                    python3 ./heatmap/heatmap_raw.py \
+                    python3 ./heatmap/heatmap.py \
                     --n {} \
                     --i 100 \
                     --x \"{}\" \
@@ -1125,7 +1125,7 @@ Command::new("equal")
                 let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
                 println!(
                     "For generating heatmaps:\n\
-                    python3 ./heatmap/heatmap_raw.py \
+                    python3 ./heatmap/heatmap.py \
                     --n {} \
                     --i 100 \
                     --x \"{}\" \
@@ -1184,7 +1184,7 @@ Command::new("equal")
                 let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
                 println!(
                     "For generating heatmaps:\n\
-                    python3 ./heatmap/heatmap_raw.py \
+                    python3 ./heatmap/heatmap.py \
                     --n {} \
                     --i 100 \
                     --x \"{}\" \
@@ -1244,7 +1244,7 @@ Command::new("equal")
                 let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
                 println!(
                     "For generating heatmaps:\n\
-                    python3 ./heatmap/heatmap_raw.py \
+                    python3 ./heatmap/heatmap.py \
                     --n {} \
                     --i 100 \
                     --x \"{}\" \
@@ -1321,7 +1321,7 @@ Command::new("equal")
                 let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
                 println!(
                     "For generating heatmaps:\n\
-                    python3 ./heatmap/heatmap_raw.py \
+                    python3 ./heatmap/heatmap.py \
                     --n {} \
                     --i 100 \
                     --x \"{}\" \
