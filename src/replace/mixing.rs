@@ -767,7 +767,7 @@ pub fn sequential_butterfly(
         } else {
             let mut i = len - 1;
             while i > 0 {
-                if gates_track[1].1 == 1 {
+                if gates_track[i].1 == 1 {
                     let after_idx = shoot_left_vec_track(&mut gates_track, i, false);
                     if after_idx != i {
                         continue;
@@ -792,7 +792,7 @@ pub fn sequential_butterfly(
         } else {
             let mut i = 0;
             while i < len {
-                if gates_track[1].1 == 2 {
+                if gates_track[i].1 == 2 {
                     let after_idx = shoot_right_vec_track(&mut gates_track, i, false);
                     if after_idx != i {
                         continue;
@@ -805,6 +805,7 @@ pub fn sequential_butterfly(
             }
         }
     }
+    println!("{:?}", gates_track);
     println!("  {}/{}: Step 3a: Finding collisions for R", curr_round, last_round);
     println!("  {}/{}: Mode: \n Forward Order: {} \n Identity wire lengths: {} \n Tower identities: {}", curr_round, last_round, reverse_order_left == false, id_len, tower_left == true);
 
