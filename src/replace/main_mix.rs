@@ -18,6 +18,7 @@ use crate::{
             obfuscate_and_target_compress,
             replace_and_compress_big,
             replace_and_compress_big_distance,
+            sequential_butterfly,
         },
         transpositions::{insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x},
     },
@@ -358,7 +359,7 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool) {
+pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, id_len: usize,) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -388,7 +389,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usi
     let mut count = 0;
     for i in 0..rounds {
         let _stop = 1000;
-        let (new_circuit, already_coll, shoot, made_left, traverse_left)  = replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower);
+        let (new_circuit, already_coll, shoot, made_left, traverse_left)  = replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower, id_len);
         circuit = new_circuit;
 
         sum_already_coll += already_coll;
@@ -501,7 +502,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usi
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool) {
+pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -529,11 +530,11 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection,
     for i in 0..rounds {
         let _stop = 1000;
         let (new_circuit, _, _, _, _) = if i == 0 { 
-            let x = interleave_sequential_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower);
+            let x = interleave_sequential_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower, id_len);
             n *= 2;
             x
         } else {
-            replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower) 
+            replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower, id_len) 
         };
         circuit = new_circuit;
 
@@ -599,7 +600,7 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection,
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, x: usize) {
+pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, x: usize, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -637,7 +638,7 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection
             insert_wire_shuffles_x(&mut circuit, n, env, &dbs, x);
         }
         let (new_circuit, _, _, _, _) = 
-            replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower);
+            replace_and_compress_big(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, tower, id_len);
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
@@ -702,7 +703,7 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, min: usize, tower: bool,) {
+pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, min: usize, tower: bool, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -728,7 +729,7 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, conn: &mut Connectio
     let mut count = 0;
     for i in 0..rounds {
         let _stop = 1000;
-        let new_circuit = replace_and_compress_big_distance(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, min, tower);
+        let new_circuit = replace_and_compress_big_distance(&circuit, conn, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, intermediate, min, tower, id_len);
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
@@ -914,6 +915,126 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, conn: &mut Connectio
 //     println!("Final circuit written to recent_circuit.txt");
 // }
 
+pub fn main_sequential_butterfly(
+    c: &CircuitSeq, 
+    rounds: usize, 
+    conn: &mut Connection, 
+    n: usize, 
+    save: &str, 
+    env: &lmdb::Environment, 
+    id_len: usize,
+    reverse_order_left: bool,
+    tower_left: bool,
+    shoot_more_left: u8,
+    reverse_order_right: bool,
+    tower_right: bool,
+    shoot_more_right: u8
+) {
+    // Start with the input circuit
+    let save_base = save.strip_suffix(".txt").unwrap_or(save);
+    let progress_path = format!("{}_progress.txt", save_base);
+    OpenOptions::new()
+    .create(true)
+    .write(true)
+    .truncate(true)
+    .open(&progress_path)
+    .expect("Failed to create progress file");
+    let bit_shuf_list = (3..=7)
+        .map(|n| {
+            (0..n)
+                .permutations(n)
+                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                .collect::<Vec<Vec<usize>>>()
+        })
+        .collect();
+    let dbs = open_all_dbs(env);
+    println!("Starting len: {}", c.gates.len());
+    let mut circuit = c.clone();
+    // Repeat obfuscate + compress 'rounds' times
+    let mut post_len = 0;
+    let mut count = 0;
+    for i in 0..rounds {
+        let _stop = 1000;
+        let new_circuit = sequential_butterfly(
+            &circuit, 
+            conn, 
+            n, 
+            env, 
+            i+1, 
+            rounds, 
+            &bit_shuf_list, 
+            &dbs,  
+            id_len,
+            reverse_order_left,
+            tower_left,
+            shoot_more_left,
+            reverse_order_right,
+            tower_right,
+            shoot_more_right
+        );
+        circuit = new_circuit;
+
+        if circuit.gates.len() == 0 {
+            break;
+        }
+        
+        if circuit.gates.len() == post_len {
+            count += 1;
+        } else {
+            post_len = circuit.gates.len();
+            count = 0;
+        }
+
+        if count > 2 {
+            break;
+        }
+        let mut j = 0;
+        while j < circuit.gates.len().saturating_sub(1) {
+            if circuit.gates[j] == circuit.gates[j + 1] {
+                // remove elements at i and i+1
+                circuit.gates.drain(j..=j + 1);
+
+                // step back up to 2 indices, but not below 0
+                j = j.saturating_sub(2);
+            } else {
+                j += 1;
+            }
+        }
+        if c.probably_equal(&circuit, n, 100_000).is_err() {
+            panic!("The functionality has changed");
+        }
+        {
+        println!("Updating progress {}", progress_path);
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&progress_path)
+            .expect("Failed to open progress file");
+
+        writeln!(
+            f,
+            "=== Round {} ===\n{}\n",
+            i + 1,
+            circuit.repr()
+        )
+        .expect("Failed to write progress");
+        }
+    }
+
+    println!("Final len: {}", circuit.gates.len());
+    circuit
+    .probably_equal(&c, n, 150_000)
+    .expect("The circuits differ somewhere!");
+
+    // Write to file
+    let circuit_str = circuit.repr();
+    File::create(save)
+        .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
+        .expect("Failed to write recent_circuit.txt");
+
+    println!("Final circuit written to {}", save);
+}
+
 //do targeted compression
 pub fn main_compression(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment,) {
     let dbs = open_all_dbs(env);
@@ -967,38 +1088,11 @@ pub fn main_compression(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n:
     .expect("The circuits differ somewhere!");
 
     // Write to file
-    let c_str = c.repr();
     let circuit_str = circuit.repr();
-    let long_str = format!("{}:{}", c.repr(), circuit.repr());
-    // Write start.txt
-    File::create("start.txt")
-        .and_then(|mut f| f.write_all(c_str.as_bytes()))
-        .expect("Failed to write start.txt");
-
-    // Write recent_circuit.txt
-    File::create("recent_circuit.txt")
-        .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
-        .expect("Failed to write recent_circuit.txt");
 
     File::create(save)
         .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
         .expect("Failed to write recent_circuit.txt");
 
-    // Write butterfly_recent.txt (overwrite)
-    File::create("butterfly_recent.txt")
-        .and_then(|mut f| f.write_all(long_str.as_bytes()))
-        .expect("Failed to write butterfly_recent.txt");
-
-    // Append to butterfly.txt
-    OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open("butterfly.txt")
-        .and_then(|mut f| writeln!(f, "{}", long_str))
-        .expect("Failed to append to butterfly.txt");
-    if circuit.gates == c.gates {
-        println!("The obfuscation didn't do anything");
-    }
-
-    println!("Final circuit written to recent_circuit.txt");
+    println!("Final circuit written to {}", save);
 }

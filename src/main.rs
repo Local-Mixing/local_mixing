@@ -11,17 +11,10 @@ use std::{
 
 use local_mixing::{
     circuit::CircuitSeq,
-    random::random_data::{build_from_sql, main_random, random_circuit, shoot_random_gate, random_walk_no_skeleton, random_sulking},
+    random::random_data::{build_from_sql, main_random, random_circuit, random_sulking, random_walk_no_skeleton, shoot_random_gate},
     replace::{
         identities::{get_random_wide_identity, random_canonical_id}, main_mix::{
-            main_butterfly,
-            main_butterfly_big,
-            main_interleave_big,
-            main_mix,
-            main_rac_big,
-            main_rac_big_distance,
-            main_shuffle_rcs_big,
-            open_all_dbs,
+            main_butterfly, main_butterfly_big, main_interleave_big, main_mix, main_rac_big, main_rac_big_distance, main_sequential_butterfly, main_shuffle_rcs_big, open_all_dbs
         }, mixing::install_kill_handler, pairs::{GatePair, gate_pair_taxonomy}, replace::{
             compress_big_ancillas,
             sequential_compress_big_ancillas,
@@ -193,6 +186,13 @@ fn main() {
                     .help("Number of wires (default: 32)"),
             )
             .arg(
+                Arg::new("id_len")
+                    .long("id_len")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("ID length"),
+            )
+            .arg(
                 Arg::new("tower")
                     .short('t')
                     .long("tower")
@@ -242,6 +242,13 @@ fn main() {
                     .required(true)
                     .value_parser(clap::value_parser!(usize))
                     .help("Number of wires"),
+            )
+            .arg(
+                Arg::new("id_len")
+                    .long("id_len")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("ID length"),
             )
             .arg(
                 Arg::new("tower")
@@ -312,6 +319,13 @@ fn main() {
                     .action(clap::ArgAction::SetTrue),
             )
             .arg(
+                Arg::new("id_len")
+                    .long("id_len")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("ID length"),
+            )
+            .arg(
                 Arg::new("intermediate")
                     .short('i')
                     .long("intermediate")
@@ -356,6 +370,13 @@ fn main() {
                     .help("Number of wires (default: 32)"),
             )
             .arg(
+                Arg::new("id_len")
+                    .long("id_len")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("ID length"),
+            )
+            .arg(
                 Arg::new("intermediate")
                     .short('i')
                     .long("intermediate")
@@ -381,343 +402,416 @@ fn main() {
                     .action(clap::ArgAction::SetTrue),
             ),
     )
-        .subcommand(
-            Command::new("heatmap")
-                .about("Run the circuit distinguisher and produce a heatmap")
-                .arg(
-                    Arg::new("inputs")
-                        .short('i')
-                        .long("inputs")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize))
-                        .help("Number of random inputs to test"),
-                )
-                .arg(
-                    Arg::new("num_wires")
-                        .short('n')
-                        .long("num_wires")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize)),
-                )
-                .arg(
-                    Arg::new("xlabel")
-                        .short('x')
-                        .long("xlabel")
-                        .value_parser(clap::value_parser!(String))
-                        .help("Label for X axis"),
-                )
-                .arg(
-                    Arg::new("ylabel")
-                        .short('y')
-                        .long("ylabel")
-                        .value_parser(clap::value_parser!(String))
-                        .help("Label for Y axis"),
-                )
-                .arg(
-                    Arg::new("std")
-                        .short('s')
-                        .help("Use standard deviation (if given) or raw otherwise")
-                        .action(ArgAction::SetTrue)
-                ),
-        )
-        .subcommand(
-            Command::new("reverse")
-                .about("Reverse the order of gates in a circuit file")
-                .arg(
-                    Arg::new("source")
-                        .short('s')
-                        .long("source")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to the source circuit file"),
-                )
-                .arg(
-                    Arg::new("dest")
-                        .short('d')
-                        .long("dest")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to write the reversed circuit file"),
-                ),
-        )
-        .subcommand(
-            Command::new("gen_reversible")
-                .about("Generate reversible circuit")
-                .arg(
-                    Arg::new("source")
-                        .short('s')
-                        .long("source")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to the source circuit file"),
-                )
-                .arg(
-                    Arg::new("dest")
-                        .short('d')
-                        .long("dest")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to write the reversed circuit file"),
-                )
-                .arg(
-                    Arg::new("n")
-                        .short('n')
-                        .long("n")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize))
-                        .help("Number of wires in the circuit"),
-                )
-        )
-        .subcommand(
-            Command::new("binload")
-                .about("Load a binary circuit file")
-                .arg(
-                    Arg::new("n")
-                        .short('n')
-                        .long("n")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize))
-                        .help("Number of wires in the circuit"),
-                )
-                .arg(
-                    Arg::new("m")
-                        .short('m')
-                        .long("m")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize))
-                        .help("Number of gates in the circuit"),
-                )
-        )
-        .subcommand(
-            Command::new("compress")
-                .about("Run compression trials on a circuit file")
-                .arg(
-                    Arg::new("s")
-                        .short('s')
-                        .long("source")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to the starting circuit file"),
-                )
-                .arg(
-                    Arg::new("d")
-                        .short('d')
-                        .long("destination")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to the new circuit file"),
-                )
-                .arg(
-                    Arg::new("n")
-                        .short('n')
-                        .long("wires")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize))
-                        .help("Number of wires in the circuit"),
-                )
-                .arg(
-                    Arg::new("seq")
-                        .short('s')
-                        .long("seq")
-                        .help("Enable seq mode")
-                        .required(false)
-                        .action(clap::ArgAction::SetTrue),
-                ),
-        )
-        .subcommand(
-            Command::new("wiredot")
-                .about("Run the circuit counter and produce a dotplot")
-                .arg(
-                    Arg::new("num_wires")
-                        .short('n')
-                        .long("num_wires")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize)),
-                )
-                .arg(
-                    Arg::new("xlabel")
-                        .short('x')
-                        .long("xlabel")
-                        .value_parser(clap::value_parser!(String))
-                        .help("Label for X axis"),
-                )
-                .arg(
-                    Arg::new("path")
-                        .short('p')
-                        .long("path")
-                        .value_parser(clap::value_parser!(String))
-                        .help("Circuit to analyze path"),
-                ),
-                
-        )
-        .subcommand(
-            Command::new("lmdb")
-                .about("Explore an existing database")
-                .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
-                .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize))),
-        )
-        .subcommand(
-            Command::new("lmdbp")
-                .about("Explore an existing database")
-                .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
-                .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize))),
-        )
-        .subcommand(
-            Command::new("lmdbcounts")
-            .about("Generate table for generating canon ids")
-        )
-        .subcommand(
-            Command::new("lmdbid")
-            .about("Generate table for generating canon ids")
+    .subcommand(
+        Command::new("heatmap")
+            .about("Run the circuit distinguisher and produce a heatmap")
+            .arg(
+                Arg::new("inputs")
+                    .short('i')
+                    .long("inputs")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of random inputs to test"),
+            )
+            .arg(
+                Arg::new("num_wires")
+                    .short('n')
+                    .long("num_wires")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize)),
+            )
+            .arg(
+                Arg::new("xlabel")
+                    .short('x')
+                    .long("xlabel")
+                    .value_parser(clap::value_parser!(String))
+                    .help("Label for X axis"),
+            )
+            .arg(
+                Arg::new("ylabel")
+                    .short('y')
+                    .long("ylabel")
+                    .value_parser(clap::value_parser!(String))
+                    .help("Label for Y axis"),
+            )
+            .arg(
+                Arg::new("std")
+                    .short('s')
+                    .help("Use standard deviation (if given) or raw otherwise")
+                    .action(ArgAction::SetTrue)
+            ),
+    )
+    .subcommand(
+        Command::new("reverse")
+            .about("Reverse the order of gates in a circuit file")
+            .arg(
+                Arg::new("source")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source circuit file"),
+            )
+            .arg(
+                Arg::new("dest")
+                    .short('d')
+                    .long("dest")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to write the reversed circuit file"),
+            ),
+    )
+    .subcommand(
+        Command::new("gen_reversible")
+            .about("Generate reversible circuit")
+            .arg(
+                Arg::new("source")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source circuit file"),
+            )
+            .arg(
+                Arg::new("dest")
+                    .short('d')
+                    .long("dest")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to write the reversed circuit file"),
+            )
+            .arg(
+                Arg::new("n")
+                    .short('n')
+                    .long("n")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires in the circuit"),
+            )
+    )
+    .subcommand(
+        Command::new("binload")
+            .about("Load a binary circuit file")
+            .arg(
+                Arg::new("n")
+                    .short('n')
+                    .long("n")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires in the circuit"),
+            )
+            .arg(
+                Arg::new("m")
+                    .short('m')
+                    .long("m")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of gates in the circuit"),
+            )
+    )
+    .subcommand(
+        Command::new("compress")
+            .about("Run compression trials on a circuit file")
+            .arg(
+                Arg::new("s")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the starting circuit file"),
+            )
+            .arg(
+                Arg::new("d")
+                    .short('d')
+                    .long("destination")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the new circuit file"),
+            )
+            .arg(
+                Arg::new("n")
+                    .short('n')
+                    .long("wires")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires in the circuit"),
+            )
+            .arg(
+                Arg::new("seq")
+                    .short('s')
+                    .long("seq")
+                    .help("Enable seq mode")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue),
+            ),
+    )
+    .subcommand(
+        Command::new("wiredot")
+            .about("Run the circuit counter and produce a dotplot")
+            .arg(
+                Arg::new("num_wires")
+                    .short('n')
+                    .long("num_wires")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize)),
+            )
+            .arg(
+                Arg::new("xlabel")
+                    .short('x')
+                    .long("xlabel")
+                    .value_parser(clap::value_parser!(String))
+                    .help("Label for X axis"),
+            )
+            .arg(
+                Arg::new("path")
+                    .short('p')
+                    .long("path")
+                    .value_parser(clap::value_parser!(String))
+                    .help("Circuit to analyze path"),
+            ),
+            
+    )
+    .subcommand(
+        Command::new("lmdb")
+            .about("Explore an existing database")
             .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
-        )
-        .subcommand(
-            Command::new("lmdbnid")
-            .about("Generate table for generating canon ids for n wires")
+            .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize))),
+    )
+    .subcommand(
+        Command::new("lmdbp")
+            .about("Explore an existing database")
             .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
-        )
-        .subcommand(
-            Command::new("string")
-                .about("Reverse the order of gates in a circuit file")
-                .arg(
-                    Arg::new("source")
-                        .short('s')
-                        .long("source")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to the source circuit file"),
-                )
-                .arg(
-                    Arg::new("dest")
-                        .short('d')
-                        .long("dest")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to write the reversed circuit file"),
-                ),
-        )
-        .subcommand(
-            Command::new("genran")
-                .about("Generate a random circuit with n wires and m gates")
-                .arg(
-                    Arg::new("d")
-                        .short('d')
-                        .long("destination")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to the new circuit file"),
-                )
-                .arg(
-                    Arg::new("n")
-                        .short('n')
-                        .long("wires")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize))
-                        .help("Number of wires in the circuit"),
-                )
-                .arg(
-                    Arg::new("m")
-                        .short('m')
-                        .long("gates")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize))
-                        .help("Number of gates in the circuit"),
-                ),
-        )
-        .subcommand(
-            Command::new("shuffle")
-                .about("Shuffle a circuit")
-                .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
-                .arg(
-                    Arg::new("s")
-                        .short('s')
-                        .long("source")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to the source circuit file"),
-                )
-                .arg(Arg::new("i").short('i').long("iterations").required(true).value_parser(clap::value_parser!(usize)))
-                .arg(
-                    Arg::new("s")
-                        .short('s')
-                        .long("source")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to the source circuit file"),
-                )
-                .arg(
-                    Arg::new("d")
-                        .short('d')
-                        .long("destination")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to the new circuit file"),
-                )
-                .arg(
-                    Arg::new("knuth")
-                        .long("knuth")
-                        .help("Use Knuth shuffle instead of simple")
-                        .required(false) 
-                        .action(clap::ArgAction::SetTrue)
-                )
-        )
-        .subcommand(
-            Command::new("shoot")
-                .about("Shuffle a circuit")
-                .arg(Arg::new("i").short('i').long("iterations").required(true).value_parser(clap::value_parser!(usize)))
-                .arg(
-                    Arg::new("s")
-                        .short('s')
-                        .long("source")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to the source circuit file"),
-                )
-                .arg(
-                    Arg::new("d")
-                        .short('d')
-                        .long("destination")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to the new circuit file"),
-                )
-        ).subcommand(
-    Command::new("equal")
-                .about("Check if two circuits are functionally equivalent")
-                .arg(
-                    Arg::new("wires")
-                        .short('n')
-                        .long("wires")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize))
-                        .help("Number of wires"),
-                )
-                .arg(
-                    Arg::new("iterations")
-                        .short('i')
-                        .long("iterations")
-                        .required(true)
-                        .value_parser(clap::value_parser!(usize))
-                        .help("Number of test iterations"),
-                )
-                .arg(
-                    Arg::new("circuit_a")
-                        .short('a')
-                        .long("circuit-a")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to first circuit file"),
-                )
-                .arg(
-                    Arg::new("circuit_b")
-                        .short('b')
-                        .long("circuit-b")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to second circuit file"),
-                )
-        )
-        .get_matches();
+            .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize))),
+    )
+    .subcommand(
+        Command::new("lmdbcounts")
+        .about("Generate table for generating canon ids")
+    )
+    .subcommand(
+        Command::new("lmdbid")
+        .about("Generate table for generating canon ids")
+        .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+    )
+    .subcommand(
+        Command::new("lmdbnid")
+        .about("Generate table for generating canon ids for n wires")
+        .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+    )
+    .subcommand(
+        Command::new("string")
+            .about("Reverse the order of gates in a circuit file")
+            .arg(
+                Arg::new("source")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source circuit file"),
+            )
+            .arg(
+                Arg::new("dest")
+                    .short('d')
+                    .long("dest")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to write the reversed circuit file"),
+            ),
+    )
+    .subcommand(
+        Command::new("genran")
+            .about("Generate a random circuit with n wires and m gates")
+            .arg(
+                Arg::new("d")
+                    .short('d')
+                    .long("destination")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the new circuit file"),
+            )
+            .arg(
+                Arg::new("n")
+                    .short('n')
+                    .long("wires")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires in the circuit"),
+            )
+            .arg(
+                Arg::new("m")
+                    .short('m')
+                    .long("gates")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of gates in the circuit"),
+            ),
+    )
+    .subcommand(
+        Command::new("shuffle")
+            .about("Shuffle a circuit")
+            .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+            .arg(
+                Arg::new("s")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source circuit file"),
+            )
+            .arg(Arg::new("i").short('i').long("iterations").required(true).value_parser(clap::value_parser!(usize)))
+            .arg(
+                Arg::new("d")
+                    .short('d')
+                    .long("destination")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the new circuit file"),
+            )
+            .arg(
+                Arg::new("knuth")
+                    .long("knuth")
+                    .help("Use Knuth shuffle instead of simple")
+                    .required(false) 
+                    .action(clap::ArgAction::SetTrue)
+            )
+    )
+    .subcommand(
+        Command::new("seq_butterfly")
+            .about("Do sequential butterfly on a circuit")
+            .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+            .arg(
+                Arg::new("s")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source circuit file"),
+            )
+            .arg(
+                Arg::new("r")
+                    .short('r')
+                    .long("rounds")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of rounds")
+            )
+            .arg(
+                Arg::new("d")
+                    .short('d')
+                    .long("destination")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the new circuit file"),
+            )
+            .arg(
+                Arg::new("id_len")
+                    .long("id_len")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Length of identities. Use 0 for random."),
+            )
+            .arg(
+                Arg::new("rev_left")
+                    .long("rev_left")
+                    .help("Use reverse order for shoot+collide left on R")
+                    .required(false) 
+                    .action(clap::ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("for_right")
+                    .long("for_right")
+                    .help("Use forward order for shoot+collide right on R*")
+                    .required(false) 
+                    .action(clap::ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("tower_left")
+                    .long("tower_left")
+                    .help("Use tower identities for collide left on R")
+                    .required(false) 
+                    .action(clap::ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("tower_right")
+                    .long("tower_right")
+                    .help("Use tower identities for collide right on R*")
+                    .required(false) 
+                    .action(clap::ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("add_rounds_left")
+                    .long("add_rounds_left")
+                    .required(false)
+                    .default_value("0")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Add shoot+collision rounds for R*. This is currently unsupported"),
+            )
+            .arg(
+                Arg::new("add_rounds_right")
+                    .long("add_rounds_right")
+                    .required(false)
+                    .default_value("0")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Add shoot+collision rounds for R*. This is currently unsupported"),
+            )
+    )
+    .subcommand(
+        Command::new("shoot")
+            .about("Shuffle a circuit")
+            .arg(Arg::new("i").short('i').long("iterations").required(true).value_parser(clap::value_parser!(usize)))
+            .arg(
+                Arg::new("s")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source circuit file"),
+            )
+            .arg(
+                Arg::new("d")
+                    .short('d')
+                    .long("destination")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the new circuit file"),
+            )
+    )
+    .subcommand(
+Command::new("equal")
+            .about("Check if two circuits are functionally equivalent")
+            .arg(
+                Arg::new("wires")
+                    .short('n')
+                    .long("wires")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires"),
+            )
+            .arg(
+                Arg::new("iterations")
+                    .short('i')
+                    .long("iterations")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of test iterations"),
+            )
+            .arg(
+                Arg::new("circuit_a")
+                    .short('a')
+                    .long("circuit-a")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to first circuit file"),
+            )
+            .arg(
+                Arg::new("circuit_b")
+                    .short('b')
+                    .long("circuit-b")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to second circuit file"),
+            )
+    )
+    .get_matches();
 
     match matches.subcommand() {
         Some(("load", sub)) => {
@@ -873,7 +967,7 @@ fn main() {
 
             if data.trim().is_empty() {
                 println!("Generating random");
-                let c1 = random_circuit(n as u8, 30);
+                let c1 = random_circuit(n, 30);
                 println!("Starting Len: {}", c1.gates.len());
                 main_butterfly_big(&c1, rounds, &mut conn, n, false, path, &env);
             } else {
@@ -908,7 +1002,7 @@ fn main() {
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Generating random");
-                let c1 = random_circuit(n as u8, 30);
+                let c1 = random_circuit(n, 30);
                 println!("Starting Len: {}", c1.gates.len());
                 if bookendless {
                     // main_butterfly_big_bookendsless(&c1, rounds, &mut conn, n, true, path, &env);
@@ -931,6 +1025,7 @@ fn main() {
             let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
             let tower = sub.get_flag("tower");
             let n: usize = *sub.get_one("n").unwrap_or(&32); // default to 32 if not provided
+            let id_len: usize = *sub.get_one("id_len").unwrap(); 
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
             let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
@@ -954,7 +1049,7 @@ fn main() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_rac_big(&c, rounds, &mut conn, n, d, &env, i, tower);
+                main_rac_big(&c, rounds, &mut conn, n, d, &env, i, tower, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -990,6 +1085,7 @@ fn main() {
             let tower = sub.get_flag("tower");
             let n: usize = *sub.get_one("n").unwrap();
             let x: usize = *sub.get_one("x").unwrap_or(&0);
+            let id_len: usize = *sub.get_one("id_len").unwrap();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
             let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
@@ -1013,7 +1109,7 @@ fn main() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_shuffle_rcs_big(&c, rounds, &mut conn, n, d, &env, i, tower, x);
+                main_shuffle_rcs_big(&c, rounds, &mut conn, n, d, &env, i, tower, x, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1048,6 +1144,7 @@ fn main() {
             let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
             let tower = sub.get_flag("tower");
             let n: usize = *sub.get_one("n").unwrap_or(&32); // default to 32 if not provided
+            let id_len: usize = *sub.get_one("id_len").unwrap();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
             let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
@@ -1071,7 +1168,7 @@ fn main() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_interleave_big(&c, rounds, &mut conn, n, d, &env, i, tower);
+                main_interleave_big(&c, rounds, &mut conn, n, d, &env, i, tower, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1106,6 +1203,7 @@ fn main() {
             let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
             let n: usize = *sub.get_one("n").unwrap_or(&32); // default to 32 if not provided
             let m: usize = *sub.get_one("m").unwrap_or(&30); // default to 30f not provided
+            let id_len: usize = *sub.get_one("id_len").unwrap();
             let tower = sub.get_flag("tower");
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
@@ -1130,7 +1228,84 @@ fn main() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_rac_big_distance(&c, rounds, &mut conn, n, d, &env, i, m, tower);
+                main_rac_big_distance(&c, rounds, &mut conn, n, d, &env, i, m, tower, id_len);
+                let x_label = {
+                    let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                    let num = stem.strip_prefix("circuit").unwrap_or(stem);
+                    format!("Circuit {}", num)
+                };
+
+                let y_label = {
+                    let stem = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                    let num = stem.strip_prefix("circuit").unwrap_or(stem);
+                    format!("Circuit {}", num)
+                };
+                let path_s = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                println!(
+                    "For generating heatmaps:\n\
+                    python3 ./heatmap/heatmap_raw.py \
+                    --n {} \
+                    --i 100 \
+                    --x \"{}\" \
+                    --y \"{}\" \
+                    --c1 \"{}\" \
+                    --c2 \"{}\" \
+                    --path ./{}{}.png",
+                        n, x_label, y_label, s, d, path_s, path_d
+                );
+            }
+        }
+        Some(("seq_butterfly", sub)) => {
+            let rounds: usize = *sub.get_one("rounds").unwrap();
+            let s: &str = sub.get_one::<String>("source").unwrap().as_str();
+            let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
+            let n: usize = *sub.get_one("n").unwrap();
+            let id_len: usize = *sub.get_one("id_len").unwrap();
+            let tower_left = sub.get_flag("tower_left");
+            let tower_right = sub.get_flag("tower_right");
+            let more_left = *sub.get_one("add_rounds_left").unwrap_or(&0);
+            let more_right = *sub.get_one("add_rounds_right").unwrap_or(&0);
+            let rev_left = sub.get_flag("rev_left");
+            let for_right = sub.get_flag("for_right");
+            let data = fs::read_to_string(s).expect("Failed to read initial.txt");
+
+            let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
+            conn.execute_batch(
+                "
+                PRAGMA temp_store = MEMORY;
+                PRAGMA cache_size = -200000;
+                "
+            ).unwrap();
+            let lmdb = "./db";
+            let _ = std::fs::create_dir_all(lmdb);
+
+            let env = Environment::new()
+                .set_max_readers(10000) 
+                .set_max_dbs(266)      
+                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .open(Path::new(lmdb))
+                .expect("Failed to open lmdb");
+            install_kill_handler();
+            if data.trim().is_empty() {
+                println!("Empty file");
+            } else {
+                let c = CircuitSeq::from_string(&data);
+                main_sequential_butterfly(
+                    &c, 
+                    rounds, 
+                    &mut conn, 
+                    n, 
+                    d, 
+                    &env, 
+                    id_len, 
+                    rev_left, 
+                    tower_left, 
+                    more_left,
+                    !for_right,
+                    tower_right,
+                    more_right,
+                );
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1438,7 +1613,7 @@ fn main() {
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
             let m: usize = *sub.get_one("m").expect("Missing -n <wires>");
             
-            let circuit = random_circuit(n as u8, m);
+            let circuit = random_circuit(n, m);
             let mut file = fs::File::create(d)
                 .expect("Failed to create new file");
             write!(file, "{}", circuit.repr())

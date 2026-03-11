@@ -701,7 +701,7 @@ pub fn get_random_wide_identity_via_pairs(
 }
 
 // To just get a completely random circuit and reverse for identity, rather than using canonical ones from our rainbow table
-pub fn random_id(n: u8, m: usize) -> (CircuitSeq, CircuitSeq) {
+pub fn random_id(n: usize, m: usize) -> (CircuitSeq, CircuitSeq) {
     let circuit = random_circuit(n, m);
 
     // Preallocate reversed gates so we don't need to run through circuit twice

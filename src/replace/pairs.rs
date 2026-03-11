@@ -692,7 +692,8 @@ pub fn replace_single_pair(
     env: &lmdb::Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
-    tower: bool
+    tower: bool,
+    id_len: usize,
 ) -> (Vec<[u8;3]>, usize) {
     make_stdin_nonblocking();
     let mut rng = rand::rng();
@@ -700,23 +701,26 @@ pub fn replace_single_pair(
     let mut id_gen = false;
     let mut id = CircuitSeq { gates: Vec::new() };
     while !id_gen {
-        let id_len = if GatePair::is_none(&tax) {
-            let r = rng.random_range(0..100);
-            match r { 
-                0..45 => 6,   
-                45..90 => 7,   
-                _       => 16, 
-            }
-        } else {
-            let r = rng.random_range(0..100);
-            match r {
-                0..30  => 5,   
-                30..60 => 6,   
-                60..90 => 7,   
-                _       => 16, 
-            }
-        };
-        let id_len = 16;
+        let mut id_len = id_len;
+        if id_len == 0 {
+             id_len = if GatePair::is_none(&tax) {
+                let r = rng.random_range(0..100);
+                match r { 
+                    0..45 => 6,   
+                    45..90 => 7,   
+                    _       => 16, 
+                }
+            } else {
+                let r = rng.random_range(0..100);
+                match r {
+                    0..30  => 5,   
+                    30..60 => 6,   
+                    60..90 => 7,   
+                    _       => 16, 
+                }
+            };
+        }
+        
         id = match get_random_identity(id_len, tax, env, dbs, tower) {
             Ok(id) => {
                 id_gen = true;
@@ -791,7 +795,8 @@ pub fn replace_pair_distances(
     env: &lmdb::Environment,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
-    tower: bool
+    tower: bool,
+    id_len: usize
 ) {
     let min = 30;
 
@@ -827,6 +832,7 @@ pub fn replace_pair_distances(
                     bit_shuf_list,
                     dbs,
                     tower,
+                    id_len
                 );
 
                 // Save what to do later
@@ -921,6 +927,7 @@ pub fn replace_pair_distances_linear(
     dbs: &HashMap<String, lmdb::Database>,
     min: usize,
     tower: bool,
+    id_len: usize,
 ) {
     // initialize pair distances
     
@@ -955,6 +962,7 @@ pub fn replace_pair_distances_linear(
                     bit_shuf_list,
                     dbs,
                     tower,
+                    id_len,
                 );
 
                 if id_len > 0 {
@@ -1211,7 +1219,7 @@ pub fn replace_tri(
 // Create a circuit on n..2n wires and then interleave them
 pub fn interleave(circuit: &CircuitSeq, n: usize) -> CircuitSeq {
     let m = circuit.gates.len();
-    let mut random = random_circuit(n as u8, m);
+    let mut random = random_circuit(n, m);
     let mut gates = Vec::new();
     for gate in random.gates.iter_mut() {
         for pin in gate.iter_mut() {

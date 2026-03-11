@@ -68,7 +68,7 @@ impl PathConnectedWires {
 }
 
 // Computes a completely random circuit on n wires and m gates
-pub fn random_circuit(n: u8, m: usize) -> CircuitSeq {
+pub fn random_circuit(n: usize, m: usize) -> CircuitSeq {
     let mut circuit = Vec::with_capacity(m);
 
     for _ in 0..m {
@@ -107,7 +107,7 @@ pub fn random_circuit(n: u8, m: usize) -> CircuitSeq {
 
 // Attempts to find two random but equivalent circuits on n wires and m = 100..300 gates
 // Very unlikely to succeed
-pub fn random_equivalent_circuits_until_found(n: u8) -> (CircuitSeq, CircuitSeq) {
+pub fn random_equivalent_circuits_until_found(n: usize) -> (CircuitSeq, CircuitSeq) {
     // final_state → list of circuits producing that state
     let mut state_map: HashMap<u64, Vec<CircuitSeq>> = HashMap::new();
     let mut total_generated = 0usize;
@@ -1541,6 +1541,56 @@ pub fn shoot_left_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize {
     target
 }
 
+pub fn shoot_left_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, max: bool) -> usize { 
+    let mut target = gate_idx;
+    let mut rng = rand::rng();
+    while target > 0 {
+        if Gate::collides_index(&circuit[target - 1].0, &circuit[gate_idx].0) {
+            break;
+        }
+        target -= 1;
+    }
+
+    if target != gate_idx {
+        let (gate, left) = circuit.remove(gate_idx);
+        if left != 1 {
+            return gate_idx;
+        }
+        if !max {
+            target = rng.random_range(target..=gate_idx);
+        }
+        let update = if !max {4} else {0};
+        circuit.insert(target, (gate, update));
+    }
+
+    target
+}
+
+pub fn shoot_right_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, max: bool) -> usize { 
+    let mut target = gate_idx;
+    let len = circuit.len();
+    let mut rng = rand::rng();
+    while target + 1 < len {
+        if Gate::collides_index(&circuit[target + 1].0, &circuit[gate_idx].0) {
+            break;
+        }
+        target += 1;
+    }
+    if target != gate_idx {
+        let (gate, right) = circuit.remove(gate_idx);
+        if right != 2 {
+            return gate_idx;
+        }
+        if !max {
+            target = rng.random_range(gate_idx..=target);
+        }
+        let update = if !max {5} else {0};
+        circuit.insert(target, (gate, update));
+    }
+
+    target
+}
+
 // true is shoot left goes all the way to the beginning of the circuit
 // In other words, the gate commutes with all the earlier gates and is hence, level zero on the skeleton graph
 pub fn is_level_zero(circuit: &CircuitSeq, index: usize) -> bool {
@@ -2386,7 +2436,7 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
         let start = std::time::Instant::now(); // start timing this iteration
         total_attempts += 1;
 
-        let mut circuit = random_circuit(n as u8, m);
+        let mut circuit = random_circuit(n, m);
         circuit.canonicalize();
 
         let perm = circuit.permutation(n).canon_simple(&bit_shuf);
@@ -2763,7 +2813,7 @@ mod tests {
 
     #[test]
     fn generate_random_equivalent_circuits() {
-        let n: u8 = 16;
+        let n: usize = 16;
 
         // Generate two equivalent circuits
         let (c1, c2) = random_equivalent_circuits_until_found(n);
@@ -2784,11 +2834,11 @@ mod tests {
 
     #[test]
     fn generate_random() {
-        let n: u8 = 64;
+        let n: usize = 64;
 
         let m = 100;
 
-        let c = random_circuit(n,m);
+        let c = random_circuit(n ,m);
 
         let c_str = c.repr();
         File::create("circuit_random.txt")
@@ -3031,7 +3081,7 @@ mod tests {
         for _ in 0..100_000 {
             for &(n, max_m) in &ns_and_ms {
                 for m in 1..=max_m {
-                    let mut circuit = random_circuit(n as u8, m);
+                    let mut circuit = random_circuit(n, m);
                     circuit.canonicalize();
                     let _ = circuit.repr_blob();
                     let _ = circuit.permutation(n);
@@ -3061,7 +3111,7 @@ mod tests {
         for _ in 0..1_000_000 {
             for &(n, max_m) in &ns_and_ms {
                 for m in 1..=max_m {
-                    let mut circuit = random_circuit(n as u8, m);
+                    let mut circuit = random_circuit(n, m);
                     circuit.canonicalize();
                     let circuit_blob = circuit.repr_blob();
                     let bit_shuf = &bit_shufs[&n];

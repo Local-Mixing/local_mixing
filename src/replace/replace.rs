@@ -1381,7 +1381,7 @@ pub fn obfuscate(c: &CircuitSeq, num_wires: usize) -> (CircuitSeq, Vec<usize>) {
     let mut rng = rand::rng();
 
     // for butterfly
-    let (r, r_inv) = random_id(num_wires as u8, rng.random_range(3..=25));
+    let (r, r_inv) = random_id(num_wires, rng.random_range(3..=25));
 
     for gate in &c.gates {
         // Generate a random identity r ⋅ r⁻¹

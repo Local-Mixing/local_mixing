@@ -17,7 +17,12 @@ use rusqlite::{Connection, OpenFlags};
 
 use crate::{
     circuit::circuit::CircuitSeq,
-    random::random_data::shoot_random_gate,
+    random::random_data::{
+        shoot_random_gate, 
+        shoot_left_vec_track,
+        shoot_right_vec_track,
+        random_circuit
+    },
     replace::{
         replace::{
             compress,
@@ -106,7 +111,7 @@ pub fn butterfly(
 ) -> CircuitSeq {
     // Pick one random R
     let mut rng = rand::rng();
-    let (r, r_inv) = random_id(n as u8, rng.random_range(3..=25)); 
+    let (r, r_inv) = random_id(n, rng.random_range(3..=25)); 
 
     println!("Butterfly start: {} gates", c.gates.len());
 
@@ -354,7 +359,7 @@ pub fn butterfly_big(
 ) -> CircuitSeq {
     // Pick one random R
     let mut rng = rand::rng();
-    let (r, r_inv) = random_id(n as u8, rng.random_range(100..=200)); 
+    let (r, r_inv) = random_id(n, rng.random_range(100..=200)); 
     let mut c = c.clone();
     shoot_random_gate(&mut c, 500_000);
     println!("Butterfly start: {} gates", c.gates.len());
@@ -547,7 +552,7 @@ pub fn abutterfly_big(
     shoot_random_gate(&mut c, 500_000);
     SHOOT_RANDOM_GATE_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     // c = random_walk_no_skeleton(&c, &mut rng);
-    let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(10..=30));
+    let (first_r, first_r_inv) = random_id(n, rng.random_range(10..=30));
     let mut prev_r_inv = first_r_inv.clone();
     let t1 = Instant::now();
     replace_pairs(&mut c, n, _conn, &env);
@@ -557,7 +562,7 @@ pub fn abutterfly_big(
 
     for &g in &c.gates {
         let t2 = Instant::now();
-        let (r, r_inv) = random_id(n as u8, rng.random_range(10..=30));
+        let (r, r_inv) = random_id(n, rng.random_range(10..=30));
         RANDOM_ID_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let mut block = prev_r_inv.clone().concat(&CircuitSeq { gates: vec![g] }).concat(&r);
         shoot_random_gate(&mut block, 1_000);
@@ -702,6 +707,298 @@ pub fn abutterfly_big(
     acc
 }
 
+pub fn sequential_butterfly(
+    c: &CircuitSeq,
+    _conn: &mut Connection,
+    n: usize,
+    env: &lmdb::Environment,
+    curr_round: usize,
+    last_round: usize,
+    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
+    dbs: &HashMap<String, lmdb::Database>,
+    id_len: usize,
+    reverse_order_left: bool,
+    tower_left: bool,
+    shoot_more_left: u8,
+    reverse_order_right: bool,
+    tower_right: bool,
+    shoot_more_right: u8
+) -> CircuitSeq {
+    println!("  {}/{}: Beginning sequential butterfly: {} gates", curr_round, last_round, c.gates.len());
+    let mut rng = rand::rng();
+    let mut circuit = c.clone();
+    let diehard_len = if n == 32 {
+        525
+    } else if n == 64 {
+        1200
+    } else if n == 128 {
+        2500
+    } else {
+        2500
+    };
+    println!("  {}/{}: Step 1: Shooting", curr_round, last_round);
+    let mut len = circuit.gates.len();
+    shoot_random_gate(&mut circuit, len * 50);
+    // Keeps track of the gates and whether it can stay in place `0`, needs to be shot left `1`, or needs to be shot right `2`
+    // After, `4` means to collide to the left and `5` to collide to the right
+    let mut gates_track: Vec<([u8;3], u8)> = Vec::new();
+    gates_track.push((circuit.gates[0], 0));
+    for i in 1..circuit.gates.len() {
+        let random_len = rng.random_range(diehard_len-100..diehard_len+100);
+        let random_circuit = random_circuit(n, random_len);
+        for ri in 0..random_circuit.gates.len() {
+            gates_track.push((random_circuit.gates[ri], 1));
+        }
+        for ri in (0..random_circuit.gates.len()).rev() {
+            gates_track.push((random_circuit.gates[ri], 2));
+        }
+        gates_track.push((circuit.gates[i], 0));
+    }
+    len = gates_track.len();
+    println!("  {}/{}: Step 2a: Shooting R's left", curr_round, last_round);
+    println!("  {}/{}: Mode: \n Additional rounds: {} \n Forward Order: {}", curr_round, last_round, shoot_more_left, reverse_order_left == false);
+    for _ in 0..shoot_more_left {
+        if !reverse_order_left {
+            for i in 0..len {
+                if gates_track[i].1 == 1 {
+                    shoot_left_vec_track(&mut gates_track, i, false);
+                }
+            }
+        } else {
+            let mut i = len - 1;
+            while i > 0 {
+                if gates_track[1].1 == 1 {
+                    let after_idx = shoot_left_vec_track(&mut gates_track, i, false);
+                    if after_idx != i {
+                        continue;
+                    } else {
+                        i -= 1;
+                    }
+                } else {
+                    i -= 1;
+                }
+            }
+        }
+    }
+    println!("  {}/{}: Step 2b: Shooting R*'s right", curr_round, last_round);
+    println!("  {}/{}: Mode: \n Additional rounds: {} \n Reverse Order: {}", curr_round, last_round, shoot_more_right, reverse_order_right == true);
+    for _ in 0..shoot_more_right {
+        if reverse_order_right {
+            for i in (0..len).rev() {
+                if gates_track[i].1 == 2 {
+                    shoot_right_vec_track(&mut gates_track, i, false);
+                }
+            }
+        } else {
+            let mut i = 0;
+            while i < len {
+                if gates_track[1].1 == 2 {
+                    let after_idx = shoot_right_vec_track(&mut gates_track, i, false);
+                    if after_idx != i {
+                        continue;
+                    } else {
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+    println!("  {}/{}: Step 3a: Finding collisions for R", curr_round, last_round);
+    println!("  {}/{}: Mode: \n Forward Order: {} \n Identity wire lengths: {} \n Tower identities: {}", curr_round, last_round, reverse_order_left == false, id_len, tower_left == true);
+
+    if !reverse_order_left {
+        for i in 0..len {
+            if gates_track[i].1 == 4 {
+                let after_idx = shoot_left_vec_track(&mut gates_track, i, true);
+                if after_idx != 0 {
+                    let (pair_repl, _) = replace_single_pair(
+                         &gates_track[after_idx - 1].0, 
+                        &gates_track[after_idx].0, 
+                        n, 
+                        _conn, 
+                        env, 
+                        bit_shuf_list, 
+                        dbs, 
+                        tower_left,
+                        id_len,
+                    );
+                    let pair_repl = 
+                    pair_repl
+                    .into_iter()
+                    .map(|v| (v, 0))
+                    .collect::<Vec<_>>();
+                    gates_track.splice(after_idx - 1..=after_idx, pair_repl);
+                }
+            }
+        }
+    } else {
+        let mut i = len - 1;
+        while i > 0 {
+            if gates_track[1].1 == 4 {
+                let after_idx = shoot_left_vec_track(&mut gates_track, i, true);
+                if after_idx != 0 {
+                    let (pair_repl, _) = replace_single_pair(
+                         &gates_track[after_idx - 1].0, 
+                        &gates_track[after_idx].0, 
+                        n, 
+                        _conn, 
+                        env, 
+                        bit_shuf_list, 
+                        dbs, 
+                        tower_left,
+                        id_len,
+                    );
+                    let pair_repl = 
+                    pair_repl
+                    .into_iter()
+                    .map(|v| (v, 0))
+                    .collect::<Vec<_>>();
+                    gates_track.splice(after_idx - 1..=after_idx, pair_repl);
+                }
+                if after_idx != i {
+                    continue;
+                } else {
+                    i -= 1;
+                }
+            } else {
+                i -= 1;
+            }
+        }
+    }
+
+    println!("  {}/{}: Step 3b: Finding collisions for R*", curr_round, last_round);
+    println!("  {}/{}: Mode: \n Reverse Order: {} \n Identity wire lengths: {} \n Tower identities: {}", curr_round, last_round, reverse_order_right == true, id_len, tower_right == true);
+
+    for _ in 0..shoot_more_right {
+        if reverse_order_right {
+            for i in (0..len).rev() {
+                if gates_track[i].1 == 5 {
+                    let curr_len = gates_track.len();
+                    let after_idx = shoot_right_vec_track(&mut gates_track, i, false);
+                    if after_idx != curr_len {
+                        let (pair_repl, _) = replace_single_pair(
+                            &gates_track[after_idx].0, 
+                            &gates_track[after_idx + 1].0, 
+                            n, 
+                            _conn, 
+                            env, 
+                            bit_shuf_list, 
+                            dbs, 
+                            tower_left,
+                            id_len
+                        );
+                        let pair_repl = 
+                        pair_repl
+                        .into_iter()
+                        .map(|v| (v, 0))
+                        .collect::<Vec<_>>();
+                        gates_track.splice(after_idx..=after_idx+1, pair_repl);
+                    }
+                }
+            }
+        } else {
+            let mut i = 0;
+            while i < len {
+                if gates_track[1].1 == 5 {
+                    let after_idx = shoot_right_vec_track(&mut gates_track, i, false);
+                    let curr_len = gates_track.len();
+                    if after_idx != curr_len {
+                        let (pair_repl, _) = replace_single_pair(
+                            &gates_track[after_idx].0, 
+                            &gates_track[after_idx + 1].0, 
+                            n, 
+                            _conn, 
+                            env, 
+                            bit_shuf_list, 
+                            dbs, 
+                            tower_left,
+                            id_len
+                        );
+                        let pair_repl = 
+                        pair_repl
+                        .into_iter()
+                        .map(|v| (v, 0))
+                        .collect::<Vec<_>>();
+                        gates_track.splice(after_idx..=after_idx+1, pair_repl);
+                    }
+                    if after_idx != i {
+                        continue;
+                    } else {
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    circuit.gates = gates_track
+        .into_iter()
+        .map(|(v, _)| v)
+        .collect::<Vec<_>>();
+
+    println!("  {}/{}: Sending to compressor: {} gates", curr_round, last_round, circuit.gates.len());
+    if circuit.probably_equal(&c, n, 10000).is_err() {
+        panic!("Functionality lost during sequential butterfly");
+    }
+
+    let mut acc = circuit;
+    let mut stable_count = 0;
+    while stable_count < 12 {
+        let before = acc.gates.len();
+
+        let k = if before <= 1500 {
+            1
+        } else {
+            (before + 1499) / 1500 
+        };
+
+        let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
+        let t4 = Instant::now();
+        let compressed_chunks: Vec<Vec<[u8;3]>> =
+        chunks
+            .into_par_iter()
+            .map(|chunk| {
+                let sub = CircuitSeq { gates: chunk };
+                let mut thread_conn = Connection::open_with_flags(
+                    "circuits.db",
+                    OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .expect("Failed to open read-only connection");
+                
+                compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+            })
+            .collect();
+        COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
+        acc.gates = new_gates;
+        if SHOULD_DUMP.load(Ordering::SeqCst) {
+            {
+            let mut guard = CURRENT_ACC.lock().unwrap();
+            *guard = Some(acc.clone());
+        }
+
+            dump_and_exit();
+        }
+        let after = acc.gates.len();
+        if after == before {
+            stable_count += 1;
+        } else {
+            stable_count = 0;
+        }
+
+        let mut buf = [0u8; 1];
+        if let Ok(n) = io::stdin().read(&mut buf) {
+            if n > 0 && buf[0] == b'\n' {
+                println!("  {}/{}: Current gates: {} gates", curr_round, last_round, after);
+            }
+        }
+    }
+    acc
+}
 // Asymmetric butterfly but delay compression and addition of the bookends
 // Hope is to slow down the blowup in the number of gates
 // Currently unsupported
@@ -867,6 +1164,7 @@ pub fn replace_and_compress_big(
     dbs: &HashMap<String, lmdb::Database>,
     intermediate: &str,
     tower: bool,
+    id_len: usize
 ) -> (CircuitSeq, usize, usize, usize, usize) {
     println!("Current round: {}/{}", curr_round, last_round);
 
@@ -920,7 +1218,7 @@ pub fn replace_and_compress_big(
                 sub.gates
             })
             .collect();
-        let new_gates = mix_seams(replaced_chunks, _conn, n, env, bit_shuf_list, dbs, tower);
+        let new_gates = mix_seams(replaced_chunks, _conn, n, env, bit_shuf_list, dbs, tower, id_len);
         c.gates = new_gates;
     }
     REPLACE_PAIRS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1042,6 +1340,7 @@ pub fn mix_seams(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
     tower: bool,
+    id_len: usize,
 ) -> Vec<[u8;3]> {
     if gates.len() == 1 {
         return gates.into_iter().flatten().collect()
@@ -1069,6 +1368,7 @@ pub fn mix_seams(
             &bit_shuf_list,
             dbs,
             tower,
+            id_len,
         );
         let lr = CircuitSeq { gates: vec![*left, *right] };
         if lr.probably_equal(&CircuitSeq { gates: replaced.clone() }, n, 1_000).is_err() {
@@ -1104,6 +1404,7 @@ pub fn interleave_sequential_big(
     dbs: &HashMap<String, lmdb::Database>,
     intermediate: &str,
     tower: bool,
+    id_len: usize,
 ) -> (CircuitSeq, usize, usize, usize, usize) {
     println!("Current round: {}/{}", curr_round, last_round);
 
@@ -1175,6 +1476,7 @@ pub fn interleave_sequential_big(
                 &bit_shuf_list,
                 dbs,
                 tower,
+                id_len,
             );
 
             new_gates.extend_from_slice(&replaced);
@@ -1292,7 +1594,8 @@ pub fn replace_and_compress_big_distance(
     dbs: &HashMap<String, lmdb::Database>,
     intermediate: &str,
     min: usize,
-    tower: bool
+    tower: bool,
+    id_len: usize,
 ) -> CircuitSeq {
     println!("Current round: {}/{}", curr_round, last_round);
     println!("Replace and compress distance start: {} gates", circuit.gates.len());
@@ -1302,7 +1605,7 @@ pub fn replace_and_compress_big_distance(
     SHOOT_RANDOM_GATE_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     let t1 = Instant::now();
-    replace_pair_distances_linear(&mut c, n, _conn, env, bit_shuf_list, dbs, min, tower);
+    replace_pair_distances_linear(&mut c, n, _conn, env, bit_shuf_list, dbs, min, tower, id_len);
     REPLACE_PAIRS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
     println!(
         "Finished replace_sequential_pairs, new length: {}",
