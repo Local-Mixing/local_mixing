@@ -830,6 +830,7 @@ pub fn sequential_butterfly(
                     .map(|v| (v, 0))
                     .collect::<Vec<_>>();
                     gates_track.splice(after_idx - 1..=after_idx, pair_repl);
+                    println!("Replacement made left");
                 }
             }
         }
@@ -856,6 +857,7 @@ pub fn sequential_butterfly(
                     .map(|v| (v, 0))
                     .collect::<Vec<_>>();
                     gates_track.splice(after_idx - 1..=after_idx, pair_repl);
+                    println!("Replacement made left");
                 }
                 if after_idx != i {
                     continue;
@@ -895,6 +897,7 @@ pub fn sequential_butterfly(
                         .map(|v| (v, 0))
                         .collect::<Vec<_>>();
                         gates_track.splice(after_idx..=after_idx+1, pair_repl);
+                        println!("Replacement made right");
                     }
                 }
             }
@@ -922,6 +925,7 @@ pub fn sequential_butterfly(
                         .map(|v| (v, 0))
                         .collect::<Vec<_>>();
                         gates_track.splice(after_idx..=after_idx+1, pair_repl);
+                        println!("Replacement made right");
                     }
                     if after_idx != i {
                         continue;
@@ -940,6 +944,7 @@ pub fn sequential_butterfly(
         .map(|(v, _)| v)
         .collect::<Vec<_>>();
 
+    
     println!("  {}/{}: Sending to compressor: {} gates", curr_round, last_round, circuit.gates.len());
     if circuit.probably_equal(&c, n, 10000).is_err() {
         panic!("Functionality lost during sequential butterfly");
