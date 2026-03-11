@@ -706,8 +706,8 @@ fn main() {
                 Arg::new("id_len")
                     .long("id_len")
                     .required(true)
-                    .value_parser(clap::value_parser!(String))
-                    .help("Length of identities. Use 0 for random."),
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires per identity")
             )
             .arg(
                 Arg::new("rev_left")
