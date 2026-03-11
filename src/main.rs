@@ -679,7 +679,7 @@ fn main() {
             .about("Do sequential butterfly on a circuit")
             .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
             .arg(
-                Arg::new("s")
+                Arg::new("source")
                     .short('s')
                     .long("source")
                     .required(true)
@@ -695,7 +695,7 @@ fn main() {
                     .help("Number of rounds")
             )
             .arg(
-                Arg::new("d")
+                Arg::new("destination")
                     .short('d')
                     .long("destination")
                     .required(true)
