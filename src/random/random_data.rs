@@ -1553,9 +1553,6 @@ pub fn shoot_left_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, ma
 
     if target != gate_idx {
         let (gate, left) = circuit.remove(gate_idx);
-        if left != 1 {
-            return gate_idx;
-        }
         if !max {
             target = rng.random_range(target..=gate_idx);
         }
@@ -1578,9 +1575,6 @@ pub fn shoot_right_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, m
     }
     if target != gate_idx {
         let (gate, right) = circuit.remove(gate_idx);
-        if right != 2 {
-            return gate_idx;
-        }
         if !max {
             target = rng.random_range(gate_idx..=target);
         }
