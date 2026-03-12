@@ -738,7 +738,7 @@ mod tests {
 
         let dbs = open_all_dbs(&env);
 
-        let mut t = Transpositions::gen_random_knuth(128, 500, &mut Vec::new());
+        let mut t = Transpositions::gen_random_knuth(128, 500, &mut vec![0u8; 128]);
         let base = t.to_circuit(128, &env, &dbs);
         Transpositions::shoot_random_transpositions(&mut t, 100_000);
         let new_circuit = t.to_circuit(128, &env, &dbs);
