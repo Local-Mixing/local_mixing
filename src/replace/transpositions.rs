@@ -717,16 +717,16 @@ mod tests {
         let file = File::open("initial.txt").expect("failed to open initial.txt");
         let reader = BufReader::new(file);
 
-        let circuits: Vec<String> = reader
-            .lines()
-            .map(|l| l.unwrap())
-            .filter(|l| !l.trim().is_empty())
-            .collect();
+        // let circuits: Vec<String> = reader
+        //     .lines()
+        //     .map(|l| l.unwrap())
+        //     .filter(|l| !l.trim().is_empty())
+        //     .collect();
 
-        let mut rng = rand::rng();
-        let _circuit_str = circuits
-            .choose(&mut rng)
-            .expect("no circuits found");
+        // let mut rng = rand::rng();
+        // let _circuit_str = circuits
+        //     .choose(&mut rng)
+        //     .expect("no circuits found");
 
         // let base = CircuitSeq::from_string(circuit_str);
 
