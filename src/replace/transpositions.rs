@@ -733,9 +733,9 @@ pub fn create_ri_identities_32() -> (Transpositions, usize, usize) {
         first.transpositions[i].1 += 16;
     }
 
-    for i in 0..16 {
-        transpositions.transpositions.push(first.transpositions[16 - i]);
-        transpositions.transpositions.push(second.transpositions[16 - i]);
+    for i in (0..16).rev() {
+        transpositions.transpositions.push(first.transpositions[i]);
+        transpositions.transpositions.push(second.transpositions[i]);
     }
 
     for i in (0..16).rev() {
