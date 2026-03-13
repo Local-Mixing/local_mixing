@@ -355,6 +355,56 @@ impl Transpositions {
         CircuitSeq { gates }
     }
 
+    // implement this to not be on certain wires for first, second
+    pub fn restricted_to_circuit(
+        &self,
+        n: usize,
+        env: &lmdb::Environment,
+        dbs: &HashMap<String, Database>,
+        first: usize,
+        first_bounds: (usize, usize),
+        second: usize,
+        second_bounds: (usize, usize),
+    ) -> CircuitSeq {
+        let mut gates: Vec<[u8; 3]> = Vec::new();
+        let len = self.transpositions.len();
+
+        for i in 0..first {
+            let swap = self.transpositions[i];
+            let n = first_bounds.1 - first_bounds.0 + 1;
+            let first_circuit = Self::gen_gates_swap(n, swap, env, dbs);
+            let offset = first_bounds.0 as u8;
+
+            let first_circuit: Vec<[u8; 3]> = first_circuit
+                .into_iter()
+                .map(|[a, b, c]| [a + offset, b + offset, c + offset])
+                .collect();
+
+            gates.extend_from_slice(&first_circuit);
+        }
+
+        for i in first..len-second {
+            let swap = self.transpositions[i];
+            let first_circuit = Self::gen_gates_swap(n, swap, env, dbs);
+            gates.extend_from_slice(&first_circuit);
+        }
+
+        for i in len-second..len {
+            let swap = self.transpositions[i];
+            let n = second_bounds.1 - second_bounds.0 + 1;
+            let second_circuit = Self::gen_gates_swap(n, swap, env, dbs);
+            let offset = second_bounds.0 as u8;
+
+            let second_circuit: Vec<[u8; 3]> = second_circuit
+                .into_iter()
+                .map(|[a, b, c]| [a + offset, b + offset, c + offset])
+                .collect();
+            
+            gates.extend_from_slice(&second_circuit);
+        }
+        CircuitSeq { gates }
+    }
+
     pub fn filter_repeats(&mut self) {
         let mut i = 0;
         while i < self.transpositions.len().saturating_sub(1) {
@@ -724,7 +774,7 @@ pub fn create_ri_identities_32() -> (Transpositions, usize, usize) {
     let mut first_negation_mask: Vec<u8> = vec![0u8; 32]; 
     let mut first = Transpositions::gen_random_simple(15, 16, &mut first_negation_mask);
     let mut second_negation_mask: Vec<u8> = vec![0u8; 32]; 
-    let second = Transpositions::gen_random_simple(14, 16, &mut first_negation_mask);
+    let second = Transpositions::gen_random_simple(14, 16, &mut second_negation_mask);
     for i in 0..16 {
         let temp = first_negation_mask[i];
         first_negation_mask[i] = first_negation_mask[i + 16];
@@ -1060,7 +1110,7 @@ mod tests {
         let dbs = open_all_dbs(&env);
 
         let mut file = File::create("test_id.txt").expect("Failed to create file");
-        writeln!(file, "{}", ri.to_circuit(32, &env, &dbs).repr())
+        writeln!(file, "{}", ri.restricted_to_circuit(32, &env, &dbs, 16, (16, 30), 16, (0,13)).repr())
             .expect("Failed to write to file");
 
         println!("Wrote test circuit to file");
