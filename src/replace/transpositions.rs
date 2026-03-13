@@ -642,6 +642,118 @@ pub fn generate_reversible(
     CircuitSeq { gates }
 }
 
+pub fn replace_disjoint_pair((a,b, t1): (u8, u8, u8), (c,d, t2): (u8, u8, u8)) -> Vec<(u8, u8, u8)> {
+    let possibilities = match (t1, t2) {
+        (0,0) => [
+            vec![(a,c,0),(b,d,0),(a,d,0),(b,c,0)],
+            vec![(b,c,0),(a,d,0),(b,d,0),(a,c,0)],
+        ],
+        (0,1) => [
+            vec![(a,c,2),(b,d,0),(a,d,0),(b,c,2)],
+            vec![(b,c,2),(a,d,0),(b,d,0),(a,c,2)],
+        ],
+        (0,2) => [
+            vec![(a,c,0),(b,d,2),(a,d,2),(b,c,0)],
+            vec![(b,c,0),(a,d,2),(b,d,2),(a,c,0)],
+        ],
+        (0,3) => [
+            vec![(a,c,2),(b,d,2),(a,d,2),(b,c,2)],
+            vec![(b,c,2),(a,d,2),(b,d,2),(a,c,2)],
+        ],
+        (1,0) => [
+            vec![(a,c,1),(b,d,0),(a,d,1),(b,c,0)],
+            vec![(b,c,0),(a,d,1),(b,d,0),(a,c,1)],
+        ],
+        (1,1) => [
+            vec![(a,c,3),(b,d,0),(a,d,1),(b,c,2)],
+            vec![(b,c,2),(a,d,1),(b,d,0),(a,c,3)],
+        ],
+        (1,2) => [
+            vec![(a,c,1),(b,d,2),(a,d,3),(b,c,0)],
+            vec![(b,c,0),(a,d,3),(b,d,2),(a,c,1)],
+        ],
+        (1,3) => [
+            vec![(a,c,3),(b,d,2),(a,d,3),(b,c,2)],
+            vec![(b,c,2),(a,d,3),(b,d,2),(a,c,3)],
+        ],
+        (2,0) => [
+            vec![(a,c,0),(b,d,1),(a,d,0),(b,c,1)],
+            vec![(b,c,1),(a,d,0),(b,d,1),(a,c,0)],
+        ],
+        (2,1) => [
+            vec![(a,c,2),(b,d,1),(a,d,0),(b,c,3)],
+            vec![(b,c,3),(a,d,0),(b,d,1),(a,c,2)],
+        ],
+        (2,2) => [
+            vec![(a,c,0),(b,d,3),(a,d,2),(b,c,1)],
+            vec![(b,c,1),(a,d,2),(b,d,3),(a,c,0)],
+        ],
+        (2,3) => [
+            vec![(a,c,2),(b,d,3),(a,d,2),(b,c,3)],
+            vec![(b,c,3),(a,d,2),(b,d,3),(a,c,2)],
+        ],
+        (3,0) => [
+            vec![(a,c,1),(b,d,1),(a,d,1),(b,c,1)],
+            vec![(b,c,1),(a,d,1),(b,d,1),(a,c,1)],
+        ],
+        (3,1) => [
+            vec![(a,c,3),(b,d,1),(a,d,1),(b,c,3)],
+            vec![(b,c,3),(a,d,1),(b,d,1),(a,c,3)],
+        ],
+        (3,2) => [
+            vec![(a,c,1),(b,d,3),(a,d,3),(b,c,1)],
+            vec![(b,c,1),(a,d,3),(b,d,3),(a,c,1)],
+        ],
+        (3,3) => [
+            vec![(a,c,3),(b,d,3),(a,d,3),(b,c,3)],
+            vec![(b,c,3),(a,d,3),(b,d,3),(a,c,3)],
+        ],
+        _ => unreachable!(),
+    };
+
+    let mut rng = rand::rng();
+    let idx = rng.random_range(0..possibilities.len());
+
+    possibilities[idx].clone()
+}
+
+// Creates an identity with the first part limited to 16..=30 wires (exclude wire 31), the middle part spanning all 0..=31, and the last part spanning 0..=13 (exclude wires 14 and 15) wires 
+// returns the identity, the number of transpositions of the first part, and the number of transpositions of the second part
+pub fn create_ri_identities_32() -> (Transpositions, usize, usize) {
+    let mut transpositions: Transpositions = Transpositions{ transpositions: Vec::new() };
+    let mut first_negation_mask: Vec<u8> = vec![0u8; 32]; 
+    let mut first = Transpositions::gen_random_simple(15, 16, &mut first_negation_mask);
+    let mut second_negation_mask: Vec<u8> = vec![0u8; 32]; 
+    let second = Transpositions::gen_random_simple(14, 16, &mut first_negation_mask);
+    for i in 0..16 {
+        let temp = first_negation_mask[i];
+        first_negation_mask[i] = first_negation_mask[i + 16];
+        first_negation_mask[i + 16] = temp;
+        first.transpositions[i].0 += 16;
+        first.transpositions[i].1 += 16;
+    }
+
+    for i in 0..16 {
+        transpositions.transpositions.push(first.transpositions[16 - i]);
+        transpositions.transpositions.push(second.transpositions[16 - i]);
+    }
+
+    for i in (0..16).rev() {
+        let idx = 2 * i;
+
+        let a = transpositions.transpositions[idx];
+        let b = transpositions.transpositions[idx + 1];
+
+        transpositions.transpositions.splice(idx..idx+2, replace_disjoint_pair(a, b));
+    }
+
+    let mut t = Transpositions { transpositions: Vec::new() };
+    t.transpositions.extend_from_slice(&first.transpositions);
+    t.transpositions.extend_from_slice(&transpositions.transpositions);
+    t.transpositions.extend_from_slice(&second.transpositions);
+    (t, 16, 16)
+}
+
 #[cfg(test)]
 mod tests {
     use lmdb::Environment;
@@ -931,5 +1043,26 @@ mod tests {
             out_full_rev,
             "the circuit isn't reversible"
         );
+    }
+
+    #[test]
+    fn test_ri_32() {
+        use crate::replace::transpositions::create_ri_identities_32;
+        use crate::replace::main_mix::open_all_dbs;
+        use std::io::Write;
+        let (ri, _, _) = create_ri_identities_32();
+        let env = Environment::new()
+            .set_max_dbs(262)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("failed to open lmdb");
+
+        let dbs = open_all_dbs(&env);
+
+        let mut file = File::create("test_id.txt").expect("Failed to create file");
+        writeln!(file, "{}", ri.to_circuit(32, &env, &dbs).repr())
+            .expect("Failed to write to file");
+
+        println!("Wrote test circuit to file");
     }
 }
