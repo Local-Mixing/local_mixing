@@ -370,11 +370,12 @@ impl Transpositions {
         let len = self.transpositions.len();
 
         for i in 0..first {
-            let swap = self.transpositions[i];
+            let mut swap = self.transpositions[i];
             let n = first_bounds.1 - first_bounds.0 + 1;
             let first_circuit = Self::gen_gates_swap(n, swap, env, dbs);
             let offset = first_bounds.0 as u8;
-
+            swap.0 -= offset;
+            swap.1 -= offset;
             let first_circuit: Vec<[u8; 3]> = first_circuit
                 .into_iter()
                 .map(|[a, b, c]| [a + offset, b + offset, c + offset])
@@ -390,11 +391,12 @@ impl Transpositions {
         }
 
         for i in len-second..len {
-            let swap = self.transpositions[i];
+            let mut swap = self.transpositions[i];
             let n = second_bounds.1 - second_bounds.0 + 1;
             let second_circuit = Self::gen_gates_swap(n, swap, env, dbs);
             let offset = second_bounds.0 as u8;
-
+            swap.0 -= offset;
+            swap.1 -= offset;
             let second_circuit: Vec<[u8; 3]> = second_circuit
                 .into_iter()
                 .map(|[a, b, c]| [a + offset, b + offset, c + offset])
