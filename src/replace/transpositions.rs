@@ -357,20 +357,20 @@ impl Transpositions {
 
     // implement this to not be on certain wires for first, second
     pub fn restricted_to_circuit(
-        &self,
+        first: Transpositions,
+        middle: Transpositions,
+        second: Transpositions,
         n: usize,
         env: &lmdb::Environment,
         dbs: &HashMap<String, Database>,
-        first: usize,
         first_bounds: (usize, usize),
-        second: usize,
         second_bounds: (usize, usize),
+        
     ) -> CircuitSeq {
         let mut gates: Vec<[u8; 3]> = Vec::new();
-        let len = self.transpositions.len();
 
-        for i in 0..first {
-            let mut swap = self.transpositions[i];
+        for i in 0..first.transpositions.len() {
+            let mut swap = first.transpositions[i];
             let n = first_bounds.1 - first_bounds.0 + 1;
             let offset = first_bounds.0 as u8;
             swap.0 -= offset;
@@ -384,14 +384,15 @@ impl Transpositions {
             gates.extend_from_slice(&first_circuit);
         }
 
-        for i in first..len-second {
-            let swap = self.transpositions[i];
-            let first_circuit = Self::gen_gates_swap(n, swap, env, dbs);
-            gates.extend_from_slice(&first_circuit);
+        for i in (0..middle.transpositions.len()).rev() {
+            let swap = middle.transpositions[i];
+            let mut middle_circuit = Self::gen_gates_swap(n, swap, env, dbs);
+            middle_circuit.reverse();
+            gates.extend_from_slice(&middle_circuit);
         }
 
-        for i in len-second..len {
-            let mut swap = self.transpositions[i];
+        for i in 0..second.transpositions.len() {
+            let mut swap = second.transpositions[i];
             let n = second_bounds.1 - second_bounds.0 + 1;
             let offset = second_bounds.0 as u8;
             swap.0 -= offset;
@@ -695,83 +696,61 @@ pub fn generate_reversible(
 }
 
 pub fn replace_disjoint_pair((a,b, t1): (u8, u8, u8), (c,d, t2): (u8, u8, u8)) -> Vec<(u8, u8, u8)> {
-    let possibilities = match (t1, t2) {
-        (0,0) => [
-            vec![(a,c,0),(b,d,0),(a,d,0),(b,c,0)],
-            vec![(b,c,0),(a,d,0),(b,d,0),(a,c,0)],
-        ],
-        (0,1) => [
-            vec![(a,c,2),(b,d,0),(a,d,0),(b,c,2)],
-            vec![(b,c,2),(a,d,0),(b,d,0),(a,c,2)],
-        ],
-        (0,2) => [
-            vec![(a,c,0),(b,d,2),(a,d,2),(b,c,0)],
-            vec![(b,c,0),(a,d,2),(b,d,2),(a,c,0)],
-        ],
-        (0,3) => [
-            vec![(a,c,2),(b,d,2),(a,d,2),(b,c,2)],
-            vec![(b,c,2),(a,d,2),(b,d,2),(a,c,2)],
-        ],
-        (1,0) => [
-            vec![(a,c,1),(b,d,0),(a,d,1),(b,c,0)],
-            vec![(b,c,0),(a,d,1),(b,d,0),(a,c,1)],
-        ],
-        (1,1) => [
-            vec![(a,c,3),(b,d,0),(a,d,1),(b,c,2)],
-            vec![(b,c,2),(a,d,1),(b,d,0),(a,c,3)],
-        ],
-        (1,2) => [
-            vec![(a,c,1),(b,d,2),(a,d,3),(b,c,0)],
-            vec![(b,c,0),(a,d,3),(b,d,2),(a,c,1)],
-        ],
-        (1,3) => [
-            vec![(a,c,3),(b,d,2),(a,d,3),(b,c,2)],
-            vec![(b,c,2),(a,d,3),(b,d,2),(a,c,3)],
-        ],
-        (2,0) => [
-            vec![(a,c,0),(b,d,1),(a,d,0),(b,c,1)],
-            vec![(b,c,1),(a,d,0),(b,d,1),(a,c,0)],
-        ],
-        (2,1) => [
-            vec![(a,c,2),(b,d,1),(a,d,0),(b,c,3)],
-            vec![(b,c,3),(a,d,0),(b,d,1),(a,c,2)],
-        ],
-        (2,2) => [
-            vec![(a,c,0),(b,d,3),(a,d,2),(b,c,1)],
-            vec![(b,c,1),(a,d,2),(b,d,3),(a,c,0)],
-        ],
-        (2,3) => [
-            vec![(a,c,2),(b,d,3),(a,d,2),(b,c,3)],
-            vec![(b,c,3),(a,d,2),(b,d,3),(a,c,2)],
-        ],
-        (3,0) => [
-            vec![(a,c,1),(b,d,1),(a,d,1),(b,c,1)],
-            vec![(b,c,1),(a,d,1),(b,d,1),(a,c,1)],
-        ],
-        (3,1) => [
-            vec![(a,c,3),(b,d,1),(a,d,1),(b,c,3)],
-            vec![(b,c,3),(a,d,1),(b,d,1),(a,c,3)],
-        ],
-        (3,2) => [
-            vec![(a,c,1),(b,d,3),(a,d,3),(b,c,1)],
-            vec![(b,c,1),(a,d,3),(b,d,3),(a,c,1)],
-        ],
-        (3,3) => [
-            vec![(a,c,3),(b,d,3),(a,d,3),(b,c,3)],
-            vec![(b,c,3),(a,d,3),(b,d,3),(a,c,3)],
-        ],
-        _ => unreachable!(),
-    };
+    let possibilities = [
+        vec![(a,c,0),(b,d,0),(a,d,0),(b,c,0)],
+        vec![(b,c,0),(a,d,0),(b,d,0),(a,c,0)],
+    ];
 
     let mut rng = rand::rng();
     let idx = rng.random_range(0..possibilities.len());
+    
+    let mut t = possibilities[idx].clone();
 
-    possibilities[idx].clone()
+    let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
+
+    for (i, (a, b, _)) in t.iter().enumerate() {
+        wire_transpositions.insert(*a, (i, 0));
+        wire_transpositions.insert(*b, (i, 1));
+    }
+
+    const TRANSITION: [[u8; 4]; 2] = [
+        // pos = 0
+        [1, 0, 3, 2],
+        // pos = 1
+        [2, 3, 0, 1],
+    ];
+
+    let mut negation_mask: Vec<u8> = Vec::new();
+    if t1 == 1 || t1 == 3 {
+        negation_mask.push(a);
+    }
+    if t1 == 2 || t1 == 3 {
+        negation_mask.push(b);
+    }
+    if t2 == 1 || t2 == 3 {
+        negation_mask.push(c);
+    }
+    if t2 == 2 || t2 == 3 {
+        negation_mask.push(d);
+    }
+    for val in negation_mask {
+        if let Some(swaps) = wire_transpositions.get(&(val as u8)) {
+            let &(swap_idx, pos) = swaps;
+            let curr_neg_type = t[swap_idx].2;
+            if pos > 1 || curr_neg_type > 3 {
+                panic!("Invalid pos or curr_neg_type");
+            }
+            t[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
+            
+        }
+    }
+
+    t
 }
 
 // Creates an identity with the first part limited to 16..=30 wires (exclude wire 31), the middle part spanning all 0..=31, and the last part spanning 0..=13 (exclude wires 14 and 15) wires 
 // returns the identity, the number of transpositions of the first part, and the number of transpositions of the second part
-//TODO: need to use negation mask to fix things
+
 pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositions, usize, usize) {
     let mut transpositions: Transpositions = Transpositions{ transpositions: Vec::new() };
     let mut first_negation_mask: Vec<u8> = vec![0u8; 32]; 
@@ -1123,8 +1102,7 @@ mod tests {
         if c.probably_equal(&id, 32, 1000).is_err() {
             panic!("Not an id");
         }
-        let repr = first.restricted_to_circuit(32, &env, &dbs, 16, (16, 30), 16, (0,13)).repr();
-        // let repr = ri.to_circuit(32, &env, &dbs).repr();
+        let repr = Transpositions::restricted_to_circuit(first, middle, second, 32, &env, &dbs, (16, 30), (0,13)).repr();
 
         writeln!(file, "{}", repr)
             .expect("Failed to write to file");
