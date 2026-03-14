@@ -476,9 +476,9 @@ impl Transpositions {
                 let middle_circuit: Vec<[u8; 3]> = middle_circuit
                 .into_iter()
                 .map(|[a, b, c]| {
-                    let a = if a > first_bounds.1 as u8 && a < second_bounds.0 as u8 { a + 3 } else { a };
-                    let b = if b > first_bounds.1 as u8 && b < second_bounds.0 as u8 { b + 3 } else { b };
-                    let c = if c > first_bounds.1 as u8 && c < second_bounds.0 as u8 { c + 3 } else { c };
+                    let a = if a > first_bounds.1 as u8 { a + 3 } else { a };
+                    let b = if b > first_bounds.1 as u8 { b + 3 } else { b };
+                    let c = if c > first_bounds.1 as u8 { c + 3 } else { c };
                     [a, b, c]
                 })
                 .collect();
