@@ -771,7 +771,7 @@ pub fn replace_disjoint_pair((a,b, t1): (u8, u8, u8), (c,d, t2): (u8, u8, u8)) -
 
 // Creates an identity with the first part limited to 16..=30 wires (exclude wire 31), the middle part spanning all 0..=31, and the last part spanning 0..=13 (exclude wires 14 and 15) wires 
 // returns the identity, the number of transpositions of the first part, and the number of transpositions of the second part
-pub fn create_ri_identities_32() -> (Transpositions, usize, usize) {
+pub fn create_ri_identities_32() -> (Transpositions, Transpositions, usize, usize) {
     let mut transpositions: Transpositions = Transpositions{ transpositions: Vec::new() };
     let mut first_negation_mask: Vec<u8> = vec![0u8; 32]; 
     let mut first = Transpositions::gen_random_simple(15, 16, &mut first_negation_mask);
@@ -790,6 +790,10 @@ pub fn create_ri_identities_32() -> (Transpositions, usize, usize) {
         transpositions.transpositions.push(second.transpositions[i]);
     }
 
+    let mut test = Transpositions { transpositions: Vec::new() };
+    test.transpositions.extend_from_slice(&first.transpositions);
+    test.transpositions.extend_from_slice(&transpositions.transpositions);
+    test.transpositions.extend_from_slice(&second.transpositions);
     for i in (0..16).rev() {
         let idx = 2 * i;
 
@@ -803,7 +807,7 @@ pub fn create_ri_identities_32() -> (Transpositions, usize, usize) {
     t.transpositions.extend_from_slice(&first.transpositions);
     t.transpositions.extend_from_slice(&transpositions.transpositions);
     t.transpositions.extend_from_slice(&second.transpositions);
-    (t, 16, 16)
+    (t, test, 16, 16)
 }
 
 #[cfg(test)]
@@ -1102,7 +1106,7 @@ mod tests {
         use crate::replace::transpositions::create_ri_identities_32;
         use crate::replace::main_mix::open_all_dbs;
         use std::io::Write;
-        let (ri, _, _) = create_ri_identities_32();
+        let (ri, test, _, _) = create_ri_identities_32();
         let env = Environment::new()
             .set_max_dbs(262)
             .set_map_size(800 * 1024 * 1024 * 1024)
@@ -1114,8 +1118,17 @@ mod tests {
         let mut file = File::create("test_id.txt").expect("Failed to create file");
 
         let repr = ri.restricted_to_circuit(32, &env, &dbs, 16, (16, 30), 16, (0,13)).repr();
-        let repr = ri.to_circuit(32, &env, &dbs).repr();
-
+        // let repr = ri.to_circuit(32, &env, &dbs).repr();
+        let test1 = test.to_circuit(32, &env, &dbs);
+        let id = CircuitSeq { gates: Vec::new() };
+        if test1.probably_equal(&id, 32, 1000).is_err() {
+            println!("Test 1 failed");
+        }
+        let test2 = test.restricted_to_circuit(32, &env, &dbs, 16, (16, 30), 16, (0,13));
+        let id = CircuitSeq { gates: Vec::new() };
+        if test2.probably_equal(&id, 32, 1000).is_err() {
+            println!("Test 2 failed");
+        }
         writeln!(file, "{}", repr)
             .expect("Failed to write to file");
 
