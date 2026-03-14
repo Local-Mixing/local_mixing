@@ -736,6 +736,9 @@ pub fn sequential_butterfly(
     shoot_random_gate(&mut circuit, len * 50);
     println!("   {}/{}: Step 1a: Inserting Identities", curr_round, last_round);
     insert_ri_identities(&mut circuit, &env, &dbs);
+    if circuit.probably_equal(&c, n, 1000).is_err() {
+        panic!("Inserting identities failed");
+    }
     // Keeps track of the gates and whether it can stay in place `0`, needs to be shot left `1`, or needs to be shot right `2`
     // After, `4` means to collide to the left and `5` to collide to the right
     let mut gates_track: Vec<([u8;3], u8)> = Vec::new();

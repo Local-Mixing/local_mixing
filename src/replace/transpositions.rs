@@ -935,10 +935,9 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let (t2, p2) = t_rewired[idx + 1].clone();
 
         for j in (0..50).rev() {
-            let tidx = 2*j;
-            let a = t1.transpositions[tidx];
-            let b = t2.transpositions[tidx];
-            t1.transpositions.splice(tidx..tidx+1, replace_disjoint_pair(a,b));
+            let a = t1.transpositions[j];
+            let b = t2.transpositions[j];
+            t1.transpositions.splice(j..j+1, replace_disjoint_pair(a,b));
         }
 
         let mut new_perm = Vec::with_capacity(32);
