@@ -439,7 +439,7 @@ impl Transpositions {
 
         for i in (0..middle.transpositions.len()).rev() {
             let swap = middle.transpositions[i];
-            let mut middle_circuit = Self::gen_gates_swap_restricted(n, swap, env, dbs, vec![13,14,15,29,30,31]);
+            let mut middle_circuit = Self::gen_gates_swap(n, swap, env, dbs);
             middle_circuit.reverse();
             gates.extend_from_slice(&middle_circuit);
         }
@@ -524,7 +524,7 @@ impl Transpositions {
                 if swap.0 == swap.1 {
                     continue;
                 }
-                let middle_circuit = Self::gen_gates_swap(n, swap, env, dbs);
+                let middle_circuit = Self::gen_gates_swap_restricted(n, swap, env, dbs, vec![13,14,15,29,30,31]);
                 middle_gates.extend_from_slice(&middle_circuit);
             }
             rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
