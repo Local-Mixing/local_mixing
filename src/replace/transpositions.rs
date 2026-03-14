@@ -754,9 +754,9 @@ pub fn replace_disjoint_pair((a,b, t1): (u8, u8, u8), (c,d, t2): (u8, u8, u8)) -
 pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositions, usize, usize) {
     let mut transpositions: Transpositions = Transpositions{ transpositions: Vec::new() };
     let mut first_negation_mask: Vec<u8> = vec![0u8; 32]; 
-    let mut first = Transpositions::gen_random_simple(13, 25, &mut first_negation_mask);
+    let mut first = Transpositions::gen_random_simple(13, 50, &mut first_negation_mask);
     let mut second_negation_mask: Vec<u8> = vec![0u8; 32]; 
-    let second = Transpositions::gen_random_simple(13, 25, &mut second_negation_mask);
+    let second = Transpositions::gen_random_simple(13, 50, &mut second_negation_mask);
     for i in 0..16 {
         let temp = first_negation_mask[i];
         first_negation_mask[i] = first_negation_mask[i + 16];
