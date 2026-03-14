@@ -763,14 +763,14 @@ pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositi
         first_negation_mask[i + 16] = temp;
     }
 
-    for i in 0..25 {
+    for i in 0..50 {
         first.transpositions[i].0 += 16;
         first.transpositions[i].1 += 16;
         transpositions.transpositions.push(first.transpositions[i]);
         transpositions.transpositions.push(second.transpositions[i]);
     }
 
-    for i in (0..25).rev() {
+    for i in (0..50).rev() {
         let idx = 2 * i;
 
         let a = transpositions.transpositions[idx];
@@ -779,7 +779,7 @@ pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositi
         transpositions.transpositions.splice(idx..idx+2, replace_disjoint_pair(a, b));
     }
 
-    (first, transpositions, second, 25, 25)
+    (first, transpositions, second, 50, 50)
 }
 
 #[cfg(test)]
