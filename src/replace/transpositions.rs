@@ -757,15 +757,15 @@ pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositi
     let mut first = Transpositions::gen_random_simple(13, 25, &mut first_negation_mask);
     let mut second_negation_mask: Vec<u8> = vec![0u8; 32]; 
     let second = Transpositions::gen_random_simple(13, 25, &mut second_negation_mask);
-    for i in 0..25 {
+    for i in 0..16 {
         let temp = first_negation_mask[i];
         first_negation_mask[i] = first_negation_mask[i + 16];
         first_negation_mask[i + 16] = temp;
-        first.transpositions[i].0 += 16;
-        first.transpositions[i].1 += 16;
     }
 
     for i in 0..25 {
+        first.transpositions[i].0 += 16;
+        first.transpositions[i].1 += 16;
         transpositions.transpositions.push(first.transpositions[i]);
         transpositions.transpositions.push(second.transpositions[i]);
     }
