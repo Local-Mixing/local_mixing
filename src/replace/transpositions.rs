@@ -748,16 +748,16 @@ pub fn replace_disjoint_pair((a,b, t1): (u8, u8, u8), (c,d, t2): (u8, u8, u8)) -
     t
 }
 
-// Creates an identity with the first part limited to 16..=30 wires (exclude wire 31), the middle part spanning all 0..=31, and the last part spanning 0..=13 (exclude wires 14 and 15) wires 
+// Creates an identity with the first part limited to 16..=28 wires (exclude wires 29, 30, 31), the middle part spanning all 0..=31, and the last part spanning 0..=12 wires (exclude wires 13, 14, 15) 
 // returns the identity, the number of transpositions of the first part, and the number of transpositions of the second part
 
 pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositions, usize, usize) {
     let mut transpositions: Transpositions = Transpositions{ transpositions: Vec::new() };
     let mut first_negation_mask: Vec<u8> = vec![0u8; 32]; 
-    let mut first = Transpositions::gen_random_simple(15, 16, &mut first_negation_mask);
+    let mut first = Transpositions::gen_random_simple(13, 25, &mut first_negation_mask);
     let mut second_negation_mask: Vec<u8> = vec![0u8; 32]; 
-    let second = Transpositions::gen_random_simple(14, 16, &mut second_negation_mask);
-    for i in 0..16 {
+    let second = Transpositions::gen_random_simple(13, 25, &mut second_negation_mask);
+    for i in 0..25 {
         let temp = first_negation_mask[i];
         first_negation_mask[i] = first_negation_mask[i + 16];
         first_negation_mask[i + 16] = temp;
@@ -765,12 +765,12 @@ pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositi
         first.transpositions[i].1 += 16;
     }
 
-    for i in 0..16 {
+    for i in 0..25 {
         transpositions.transpositions.push(first.transpositions[i]);
         transpositions.transpositions.push(second.transpositions[i]);
     }
 
-    for i in (0..16).rev() {
+    for i in (0..25).rev() {
         let idx = 2 * i;
 
         let a = transpositions.transpositions[idx];
@@ -779,7 +779,7 @@ pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositi
         transpositions.transpositions.splice(idx..idx+2, replace_disjoint_pair(a, b));
     }
 
-    (first, transpositions, second, 16, 16)
+    (first, transpositions, second, 25, 25)
 }
 
 #[cfg(test)]
