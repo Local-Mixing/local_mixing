@@ -44,7 +44,6 @@ impl Transpositions {
         let mut transpositions = Vec::with_capacity(m);
         for _ in 0..m {
             let negation_type = rng.random_range(0..=3);
-            let negation_type = 0;
             let mut i: usize = rng.random_range(0..n);
             let mut j: usize;
             loop {
@@ -772,6 +771,7 @@ pub fn replace_disjoint_pair((a,b, t1): (u8, u8, u8), (c,d, t2): (u8, u8, u8)) -
 
 // Creates an identity with the first part limited to 16..=30 wires (exclude wire 31), the middle part spanning all 0..=31, and the last part spanning 0..=13 (exclude wires 14 and 15) wires 
 // returns the identity, the number of transpositions of the first part, and the number of transpositions of the second part
+//TODO: need to use negation mask to fix things
 pub fn create_ri_identities_32() -> (Transpositions, Transpositions, usize, usize) {
     let mut transpositions: Transpositions = Transpositions{ transpositions: Vec::new() };
     let mut first_negation_mask: Vec<u8> = vec![0u8; 32]; 
@@ -793,8 +793,9 @@ pub fn create_ri_identities_32() -> (Transpositions, Transpositions, usize, usiz
 
     let mut test = Transpositions { transpositions: Vec::new() };
     test.transpositions.extend_from_slice(&first.transpositions);
-    test.transpositions.extend_from_slice(&transpositions.transpositions);
-    test.transpositions.extend_from_slice(&second.transpositions);
+    let mut rev = first.transpositions.clone();
+    rev.reverse();
+    test.transpositions.extend_from_slice(&rev);
     for i in (0..16).rev() {
         let idx = 2 * i;
 
