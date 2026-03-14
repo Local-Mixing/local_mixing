@@ -893,13 +893,13 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
     let len = c.gates.len();
     let mut count = 0;
     let mut used_wires:[u8;3] = [c.gates[0][0], c.gates[0][1], c.gates[0][2]];
+    let mut excluded = vec![13,14,15];
+    excluded.shuffle(&mut rng);
     // Create and rewire all the RI identities
     for i in 1..len {
         let (first, middle, second, _, _) = create_ri_identities_32();
         gates.push(c.gates[0]);
         let mut wire_shuffle1 = Permutation{ data: (0..32).collect() };
-        let mut excluded = vec![13,14,15];
-        excluded.shuffle(&mut rng);
         for val in used_wires {
             if val >= 16 {
                 wire_shuffle1.data[val as usize] = excluded[count] + 16;
