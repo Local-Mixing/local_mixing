@@ -255,6 +255,58 @@ impl Transpositions {
         CircuitSeq::unrewire_subcircuit(&out, &used_wires).gates
     }
 
+    // Generate from the LMDB
+    // LMDB swaps wire 1 and wire 2
+    // This relabels wire 1 to swap.0 and and wire 2 to swap.1
+    pub fn gen_gates_swap_restricted(
+        n: usize, 
+        swap: (u8, u8, u8), 
+        env: &lmdb::Environment, 
+        dbs: &HashMap<String, Database>,
+        restricted: Vec<u8>,
+    ) -> Vec<[u8;3]> {
+        let (a, b, negation_type) = swap;
+        let (db_name, max_entries) = if negation_type == 0 {
+            ("swap", 36)
+        } else if negation_type == 1 {
+            ("swapnot1", 21)
+        } else if negation_type == 2 {
+            ("swapnot2", 16)
+        } else if negation_type == 3 {
+            ("swapnot12", 25)
+        } else {
+            panic!("Invalid negation type")
+        };
+
+        let db = dbs.get(db_name).unwrap_or_else(|| {
+            panic!("Failed to get DB with name: {}", db_name);
+        });
+
+        let mut rng = rand::rng();
+        let random_index = rng.random_range(0..max_entries);
+
+        let txn = env.begin_ro_txn().expect("Failed to start txn");
+        let mut cursor = txn.open_ro_cursor(*db).expect("Failed to open ro cursor");
+
+        let value_bytes = 
+            cursor.iter_start()
+            .nth(random_index)
+            .map(|(k, _v)| k)
+            .expect("Failed to get random key");
+        
+        let out = CircuitSeq::from_blob(value_bytes);
+
+        let mut c;
+        loop {
+            c = rng.random_range(0..=(n-1) as u8);
+            if c != a && c != b && !restricted.contains(&c){
+                break;
+            }
+        }
+        let used_wires = vec![c, a, b];
+        CircuitSeq::unrewire_subcircuit(&out, &used_wires).gates
+    }
+
     // LMDB wire 1 gets flipped
     pub fn gen_gates_not(
         n: usize, 
@@ -387,7 +439,7 @@ impl Transpositions {
 
         for i in (0..middle.transpositions.len()).rev() {
             let swap = middle.transpositions[i];
-            let mut middle_circuit = Self::gen_gates_swap(n, swap, env, dbs);
+            let mut middle_circuit = Self::gen_gates_swap_restricted(n, swap, env, dbs, vec![13,14,15,29,30,31]);
             middle_circuit.reverse();
             gates.extend_from_slice(&middle_circuit);
         }
@@ -472,16 +524,7 @@ impl Transpositions {
                 if swap.0 == swap.1 {
                     continue;
                 }
-                let middle_circuit = Self::gen_gates_swap(n-6, swap, env, dbs);
-                let middle_circuit: Vec<[u8; 3]> = middle_circuit
-                .into_iter()
-                .map(|[a, b, c]| {
-                    let a = if a > first_bounds.1 as u8 { a + 3 } else { a };
-                    let b = if b > first_bounds.1 as u8 { b + 3 } else { b };
-                    let c = if c > first_bounds.1 as u8 { c + 3 } else { c };
-                    [a, b, c]
-                })
-                .collect();
+                let middle_circuit = Self::gen_gates_swap(n, swap, env, dbs);
                 middle_gates.extend_from_slice(&middle_circuit);
             }
             rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
