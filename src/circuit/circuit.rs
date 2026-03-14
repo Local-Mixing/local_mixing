@@ -720,6 +720,33 @@ impl CircuitSeq {
     }
 }
 
+// Rewire wire i -> perm[i]
+pub fn rewire_gate_ver(gates: &mut Vec<[u8;3]>, perm: &Permutation, n: usize) {
+    if perm.data.is_empty() {
+        return;
+    }
+
+    if perm.data.len() != n {
+        panic!(
+            "wrong size perm! got {}, have {} wires",
+            perm.data.len(),
+            n
+        );
+    }
+
+    if !perm.is_perm() {
+        panic!("{:?} is not a permutation!", perm);
+    }
+
+    for gate in gates {
+        *gate = [
+            perm.data[gate[0] as usize] as u8,
+            perm.data[gate[1] as usize] as u8,
+            perm.data[gate[2] as usize] as u8,
+        ];
+    }
+}
+
 // Possible gates on n wires
 pub fn base_gates(n: usize) -> Vec<[u8; 3]> {
     let n = n as u8;

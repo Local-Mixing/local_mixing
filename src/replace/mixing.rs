@@ -18,28 +18,23 @@ use rusqlite::{Connection, OpenFlags};
 use crate::{
     circuit::circuit::CircuitSeq,
     random::random_data::{
-        shoot_random_gate, 
-        shoot_left_vec_track,
-        shoot_right_vec_track,
-        random_circuit
+        random_circuit, shoot_left_vec_track, shoot_random_gate, shoot_right_vec_track
     },
     replace::{
-        replace::{
+        identities::random_id, pairs::{
+            interleave,
+            replace_pair_distances_linear,
+            replace_pairs,
+            replace_sequential_pairs,
+            replace_single_pair,
+        }, replace::{
             compress,
             compress_big,
             compress_big_ancillas,
             expand_big,
             obfuscate,
             outward_compress,
-        },
-        identities::random_id,
-        pairs::{
-            interleave,
-            replace_pair_distances_linear,
-            replace_pairs,
-            replace_sequential_pairs,
-            replace_single_pair,
-        },
+        }, transpositions::insert_ri_identities
     },
 };
 
@@ -739,20 +734,32 @@ pub fn sequential_butterfly(
     println!("  {}/{}: Step 1: Shooting", curr_round, last_round);
     let mut len = circuit.gates.len();
     shoot_random_gate(&mut circuit, len * 50);
+    println!("   {}/{}: Step 1a: Inserting Identities", curr_round, last_round);
+    insert_ri_identities(&mut circuit, &env, &dbs);
     // Keeps track of the gates and whether it can stay in place `0`, needs to be shot left `1`, or needs to be shot right `2`
     // After, `4` means to collide to the left and `5` to collide to the right
     let mut gates_track: Vec<([u8;3], u8)> = Vec::new();
-    gates_track.push((circuit.gates[0], 0));
-    for i in 1..circuit.gates.len() {
-        let random_len = rng.random_range(diehard_len-100..diehard_len+100);
-        let random_circuit = random_circuit(n, random_len);
-        for ri in 0..random_circuit.gates.len() {
-            gates_track.push((random_circuit.gates[ri], 1));
+    // gates_track.push((circuit.gates[0], 0));
+    // for i in 1..circuit.gates.len() {
+    //     let random_len = rng.random_range(diehard_len-100..diehard_len+100);
+    //     let random_circuit = random_circuit(n, random_len);
+    //     for ri in 0..random_circuit.gates.len() {
+    //         gates_track.push((random_circuit.gates[ri], 1));
+    //     }
+    //     for ri in (0..random_circuit.gates.len()).rev() {
+    //         gates_track.push((random_circuit.gates[ri], 2));
+    //     }
+    //     gates_track.push((circuit.gates[i], 0));
+    // }
+
+    for i in 0..circuit.gates.len() {
+        if i%100 < 35 {
+            gates_track.push((circuit.gates[i], 1));
+        } else if i%100 > 65 {
+            gates_track.push((circuit.gates[i], 2));
+        } else {
+            gates_track.push((circuit.gates[i], 0));
         }
-        for ri in (0..random_circuit.gates.len()).rev() {
-            gates_track.push((random_circuit.gates[ri], 2));
-        }
-        gates_track.push((circuit.gates[i], 0));
     }
     len = gates_track.len();
     println!("  {}/{}: Step 2a: Shooting R's left", curr_round, last_round);

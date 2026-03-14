@@ -1,9 +1,11 @@
 // For adding wire shuffles and bit flips
 use std::collections::HashMap;
+use heed::Env;
 use rand::Rng;
+use rand::seq::SliceRandom;
 use lmdb::{Cursor, Database, Environment, Transaction};
 use crate::circuit::{circuit::CircuitSeq, Permutation};
-
+use crate::circuit::circuit::rewire_gate_ver;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Transpositions {
     transpositions: Vec<(u8, u8, u8)>
@@ -355,7 +357,6 @@ impl Transpositions {
         CircuitSeq { gates }
     }
 
-    // implement this to not be on certain wires for first, second
     pub fn restricted_to_circuit(
         first: Transpositions,
         middle: Transpositions,
@@ -405,6 +406,108 @@ impl Transpositions {
             
             gates.extend_from_slice(&second_circuit);
         }
+        CircuitSeq { gates }
+    }
+
+    pub fn restricted_to_circuit_rewired_and_insert(
+        t_rewired: Vec<(Transpositions, Permutation)>,
+        c: CircuitSeq,
+        n: usize,
+        env: &lmdb::Environment,
+        dbs: &HashMap<String, Database>,
+        first_bounds: (usize, usize),
+        second_bounds: (usize, usize),
+        
+    ) -> CircuitSeq {
+        let mut gates: Vec<[u8; 3]> = Vec::new();
+        let first = &t_rewired[0].0;
+        let mut first_gates: Vec<[u8;3]> = Vec::new();
+        for i in 0..first.transpositions.len() {
+            let mut swap = first.transpositions[i];
+            if swap.0 == swap.1 {
+                continue;
+            }
+            let n = first_bounds.1 - first_bounds.0 + 1;
+            let offset = first_bounds.0 as u8;
+            swap.0 -= offset;
+            swap.1 -= offset;
+            let first_circuit = Self::gen_gates_swap(n, swap, env, dbs);
+            let first_circuit: Vec<[u8; 3]> = first_circuit
+                .into_iter()
+                .map(|[a, b, c]| [a + offset, b + offset, c + offset])
+                .collect();
+
+            first_gates.extend_from_slice(&first_circuit);
+        }
+        rewire_gate_ver(&mut first_gates, &t_rewired[0].1, n);
+        let curr_len = first_gates.len();
+        first_gates.insert(curr_len/2, c.gates[0]);
+        gates.extend_from_slice(&first_gates);
+
+        let t_len = t_rewired.len();
+        let mut j = 1;
+       while j < t_len-1 {
+            // m's
+            let middle = &t_rewired[j].0;
+            let mut middle_gates: Vec<[u8;3]> = Vec::new();
+            for i in (0..middle.transpositions.len()).rev() {
+                let swap = middle.transpositions[i];
+                if swap.0 == swap.1 {
+                    continue;
+                }
+                let mut middle_circuit = Self::gen_gates_swap(n, swap, env, dbs);
+                middle_circuit.reverse();
+                middle_gates.extend_from_slice(&middle_circuit);
+            }
+            rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
+            gates.extend_from_slice(&middle_gates);
+            j += 1;
+            if j == t_len-1 {
+                break;
+            }
+            // B's
+            let middle = &t_rewired[j].0;
+            let mut middle_gates: Vec<[u8;3]> = Vec::new();
+            for i in 0..middle.transpositions.len() {
+                let swap = middle.transpositions[i];
+                if swap.0 == swap.1 {
+                    continue;
+                }
+                let mut middle_circuit = Self::gen_gates_swap(n, swap, env, dbs);
+                middle_circuit.reverse();
+                middle_gates.extend_from_slice(&middle_circuit);
+            }
+            rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
+            let curr_len = middle_gates.len();
+            middle_gates.insert(curr_len/2, c.gates[j/2]);
+            gates.extend_from_slice(&middle_gates);
+            j += 1;
+        }
+        
+        let second = &t_rewired[t_rewired.len()-1];
+        let mut second_gates: Vec<[u8;3]> = Vec::new();
+        for i in 0..second.0.transpositions.len() {
+            let mut swap = second.0.transpositions[i];
+            if swap.0 == swap.1 {
+                continue;
+            }
+            let n = second_bounds.1 - second_bounds.0 + 1;
+            let offset = second_bounds.0 as u8;
+            swap.0 -= offset;
+            swap.1 -= offset;
+            let second_circuit = Self::gen_gates_swap(n, swap, env, dbs);
+            let second_circuit: Vec<[u8; 3]> = second_circuit
+                .into_iter()
+                .map(|[a, b, c]| [a + offset, b + offset, c + offset])
+                .collect();
+            
+            second_gates.extend_from_slice(&second_circuit);
+        }
+        rewire_gate_ver(&mut second_gates, &t_rewired[t_rewired.len()-1].1, n);
+        let curr_len = second_gates.len();
+        let len = c.gates.len();
+        second_gates.insert(curr_len/2, c.gates[len-1]);
+        gates.extend_from_slice(&second_gates);
         CircuitSeq { gates }
     }
 
@@ -780,6 +883,73 @@ pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositi
     }
 
     (first, transpositions, second, 50, 50)
+}
+
+// Only supports 32 wires for now
+pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap<String, Database>) {
+    let mut gates: Vec<[u8;3]> = Vec::new();
+    let mut t_rewired: Vec<(Transpositions, Permutation)> = Vec::new();
+    let mut rng = rand::rng();
+    let len = c.gates.len();
+    let mut count = 0;
+    let mut used_wires:[u8;3] = [c.gates[0][0], c.gates[0][1], c.gates[0][2]];
+    // Create and rewire all the RI identities
+    for i in 1..len {
+        let (first, middle, second, _, _) = create_ri_identities_32();
+        gates.push(c.gates[0]);
+        let mut wire_shuffle1 = Permutation{ data: (0..32).collect() };
+        let mut excluded = vec![13,14,15];
+        excluded.shuffle(&mut rng);
+        for val in used_wires {
+            if val >= 16 {
+                wire_shuffle1.data[val as usize] = excluded[count] + 16;
+                wire_shuffle1.data[excluded[count] + 16] = val as usize;
+                count += 1;
+            }
+        }
+        t_rewired.push((first, wire_shuffle1.clone()));
+
+        let mut wire_shuffle2 = Permutation{ data: (0..32).collect() };
+        used_wires = [c.gates[i][0], c.gates[i][1], c.gates[i][2]];
+        excluded.shuffle(&mut rng);
+        count = 0;
+        for val in used_wires {
+            if val < 16 {
+                wire_shuffle2.data[val as usize] = excluded[count];
+                wire_shuffle2.data[excluded[count] as usize] = val as usize;
+                count += 1;
+            }
+        }
+        let mut wire_shufflem = Permutation { data: Vec::with_capacity(32)};
+        wire_shufflem.data.extend_from_slice(&wire_shuffle2.data[..16]);
+        wire_shufflem.data.extend_from_slice(&wire_shuffle1.data[16..]);
+        t_rewired.push((middle, wire_shufflem));
+        t_rewired.push((second, wire_shuffle2));
+    }
+    
+    // Combine the RI identities and seam them together
+    let num_identities = t_rewired.len()/3;
+    for i in (0..num_identities-1).rev() {
+        let idx = 2 + 3*i;
+        let (mut t1, p1) = t_rewired[idx].clone();
+        let (t2, p2) = t_rewired[idx + 1].clone();
+
+        for j in (0..50).rev() {
+            let tidx = 2*j;
+            let a = t1.transpositions[tidx];
+            let b = t2.transpositions[tidx];
+            t1.transpositions.splice(tidx..tidx+1, replace_disjoint_pair(a,b));
+        }
+
+        let mut new_perm = Vec::with_capacity(32);
+        new_perm.extend_from_slice(&p1.data[..16]);
+        new_perm.extend_from_slice(&p2.data[16..]);
+
+        let combined = (t1, Permutation{ data: new_perm });
+        t_rewired.splice(idx..idx+2, [combined]);
+    }
+
+    *c = Transpositions::restricted_to_circuit_rewired_and_insert(t_rewired, c.clone(), 32, &env, &dbs, (16, 28), (0, 12));
 }
 
 #[cfg(test)]
