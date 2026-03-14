@@ -898,12 +898,12 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
     // Create and rewire all the RI identities
     for i in 1..len {
         let (first, middle, second, _, _) = create_ri_identities_32();
-        gates.push(c.gates[0]);
         let mut wire_shuffle1 = Permutation{ data: (0..32).collect() };
         for val in used_wires {
             if val >= 16 {
-                wire_shuffle1.data[val as usize] = excluded[count] + 16;
-                wire_shuffle1.data[excluded[count] + 16] = val as usize;
+                let temp = wire_shuffle1.data[val as usize];
+                wire_shuffle1.data[val as usize] = wire_shuffle1.data[excluded[count] + 16];
+                wire_shuffle1.data[excluded[count] + 16] = temp;
                 count += 1;
             }
         }
@@ -915,8 +915,9 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         count = 0;
         for val in used_wires {
             if val < 16 {
-                wire_shuffle2.data[val as usize] = excluded[count];
-                wire_shuffle2.data[excluded[count] as usize] = val as usize;
+                let temp = wire_shuffle2.data[val as usize];
+                wire_shuffle2.data[val as usize] = wire_shuffle2.data[excluded[count] + 16];
+                wire_shuffle2.data[excluded[count] + 16] = temp;
                 count += 1;
             }
         }
