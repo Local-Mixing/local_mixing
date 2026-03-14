@@ -44,6 +44,7 @@ impl Transpositions {
         let mut transpositions = Vec::with_capacity(m);
         for _ in 0..m {
             let negation_type = rng.random_range(0..=3);
+            let negation_type = 0;
             let mut i: usize = rng.random_range(0..n);
             let mut j: usize;
             loop {
