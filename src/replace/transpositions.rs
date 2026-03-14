@@ -416,8 +416,7 @@ impl Transpositions {
         env: &lmdb::Environment,
         dbs: &HashMap<String, Database>,
         first_bounds: (usize, usize),
-        second_bounds: (usize, usize),
-        
+        second_bounds: (usize, usize), 
     ) -> CircuitSeq {
         let mut gates: Vec<[u8; 3]> = Vec::new();
         let first = &t_rewired[0].0;
@@ -473,7 +472,16 @@ impl Transpositions {
                 if swap.0 == swap.1 {
                     continue;
                 }
-                let mut middle_circuit = Self::gen_gates_swap(n, swap, env, dbs);
+                let middle_circuit = Self::gen_gates_swap(n-6, swap, env, dbs);
+                let middle_circuit: Vec<[u8; 3]> = middle_circuit
+                .into_iter()
+                .map(|[a, b, c]| {
+                    let a = if a > first_bounds.1 as u8 && a < second_bounds.0 as u8 { a + 3 } else { a };
+                    let b = if b > first_bounds.1 as u8 && b < second_bounds.0 as u8 { b + 3 } else { b };
+                    let c = if c > first_bounds.1 as u8 && c < second_bounds.0 as u8 { c + 3 } else { c };
+                    [a, b, c]
+                })
+                .collect();
                 middle_gates.extend_from_slice(&middle_circuit);
             }
             rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
