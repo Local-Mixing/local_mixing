@@ -1112,7 +1112,11 @@ mod tests {
         let dbs = open_all_dbs(&env);
 
         let mut file = File::create("test_id.txt").expect("Failed to create file");
-        writeln!(file, "{}", ri.restricted_to_circuit(32, &env, &dbs, 16, (16, 30), 16, (0,13)).repr())
+
+        let repr = ri.restricted_to_circuit(32, &env, &dbs, 16, (16, 30), 16, (0,13)).repr();
+        let repr = ri.to_circuit(32, &env, &dbs).repr();
+
+        writeln!(file, "{}", repr)
             .expect("Failed to write to file");
 
         println!("Wrote test circuit to file");
