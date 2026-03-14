@@ -446,7 +446,7 @@ impl Transpositions {
 
         let t_len = t_rewired.len();
         let mut j = 1;
-       while j < t_len-1 {
+        while j < t_len-1 {
             // m's
             let middle = &t_rewired[j].0;
             let mut middle_gates: Vec<[u8;3]> = Vec::new();
@@ -474,7 +474,6 @@ impl Transpositions {
                     continue;
                 }
                 let mut middle_circuit = Self::gen_gates_swap(n, swap, env, dbs);
-                middle_circuit.reverse();
                 middle_gates.extend_from_slice(&middle_circuit);
             }
             rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
