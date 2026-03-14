@@ -1129,6 +1129,7 @@ mod tests {
         if test2.probably_equal(&id, 32, 1000).is_err() {
             println!("Test 2 failed");
         }
+        println!("{:?}", test);
         writeln!(file, "{}", repr)
             .expect("Failed to write to file");
 
