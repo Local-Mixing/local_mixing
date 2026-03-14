@@ -916,8 +916,8 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         for val in used_wires {
             if val < 16 {
                 let temp = wire_shuffle2.data[val as usize];
-                wire_shuffle2.data[val as usize] = wire_shuffle2.data[excluded[count] + 16];
-                wire_shuffle2.data[excluded[count] + 16] = temp;
+                wire_shuffle2.data[val as usize] = wire_shuffle2.data[excluded[count]];
+                wire_shuffle2.data[excluded[count]] = temp;
                 count += 1;
             }
         }
