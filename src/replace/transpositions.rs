@@ -1120,7 +1120,7 @@ mod tests {
         let repr = ri.restricted_to_circuit(32, &env, &dbs, 16, (16, 30), 16, (0,13)).repr();
         // let repr = ri.to_circuit(32, &env, &dbs).repr();
         let test1 = test.to_circuit(32, &env, &dbs);
-        let id = CircuitSeq { gates: Vec::new() };
+        let id = CircuitSeq { gates: vec![[1,2,3], [1,2,3]] };
         if test1.probably_equal(&id, 32, 1000).is_err() {
             println!("Test 1 failed");
         }
