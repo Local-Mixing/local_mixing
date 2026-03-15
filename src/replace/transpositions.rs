@@ -1055,27 +1055,40 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
     }
     
     // Combine the RI identities and seam them together
-    // let num_identities = t_rewired.len()/3;
-    // for i in (0..num_identities-1).rev() {
-    //     let idx = 2 + 3*i;
-    //     let (mut t1, p1) = t_rewired[idx].clone();
-    //     let (t2, p2) = t_rewired[idx + 1].clone();
+    let num_identities = t_rewired.len()/3;
+    for i in (0..num_identities-1).rev() {
+        let idx = 2 + 3*i;
+        let (t1, p1) = t_rewired[idx].clone();
+        let (t2, p2) = t_rewired[idx + 1].clone();
 
-    //     for j in (0..50).rev() {
-    //         let a = t1.transpositions[j];
-    //         let b = t2.transpositions[j];
-    //         t1.transpositions.splice(j..j+1, replace_disjoint_pair(a,b));
-    //     }
+        let mut combined = Transpositions { transpositions: Vec::new() };
+        for j in (0..50).rev() {
+            let a = t1.transpositions[j];
+            let b = t2.transpositions[j];
+            let mut r = replace_disjoint_pair(a, b);
+            r.extend(combined.transpositions);
+            combined.transpositions = r;
+        }
 
-    //     let mut new_perm = Vec::with_capacity(32);
-    //     new_perm.extend_from_slice(&p1.data[..16]);
-    //     new_perm.extend_from_slice(&p2.data[16..]);
+        let mut new_perm = Vec::with_capacity(32);
+        new_perm.extend_from_slice(&p1.data[..16]);
+        new_perm.extend_from_slice(&p2.data[16..]);
+        let new_perm = Permutation{ data: new_perm};
+        let mut sanity = combined.to_circuit(32, &env, &dbs);
+        sanity.rewire(&new_perm, 32);
+        let mut s1 = t1.to_circuit(32, &env, &dbs);
+        let mut s2 = t2.to_circuit(32, &env, &dbs);
+        s1.rewire(&p1, 32);
+        s2.rewire(&p2, 32);
+        s1 = s1.concat(&s2);
+        if sanity.probably_equal(&s1, 32, 1000).is_err(){
+            panic!("Seams connected incorrectly");
+        }
+        let combined = (t1, new_perm);
+        t_rewired.splice(idx..idx+2, [combined]);
+    }
 
-    //     let combined = (t1, Permutation{ data: new_perm });
-    //     t_rewired.splice(idx..idx+2, [combined]);
-    // }
-
-    *c = Transpositions::restricted_to_circuit_rewired_and_insert_no_seams(t_rewired, c.clone(), 32, &env, &dbs, (16, 28), (0, 12));
+    *c = Transpositions::restricted_to_circuit_rewired_and_insert(t_rewired, c.clone(), 32, &env, &dbs, (16, 28), (0, 12));
 }
 
 #[cfg(test)]
