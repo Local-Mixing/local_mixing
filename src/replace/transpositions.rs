@@ -1074,10 +1074,8 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         new_perm.extend_from_slice(&p1.data[..16]);
         new_perm.extend_from_slice(&p2.data[16..]);
         let new_perm = Permutation{ data: new_perm};
-        let mut sanity = combined.to_circuit(32, &env, &dbs);
-        sanity.rewire(&new_perm, 32);
         for j in 0..3 {
-            if sanity.gates.iter().any(|g| g.contains(&c.gates[i+1][j])) {
+            if combined.transpositions.iter().any(|&(a,b,_)| a == (c.gates[i+1][j]) || b == (c.gates[i+1][j])) {
                 panic!("Not a snug fit");
             }
         }
