@@ -1126,9 +1126,9 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
             combined.transpositions = r;
         }
         let mut s = t1.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
-        s.rewire(&p1, 32);
+        // s.rewire(&p1, 32);
         let mut f = t2.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
-        f.rewire(&p2, 32);
+        // f.rewire(&p2, 32);
         s = s.concat(&f);
 
 
@@ -1138,7 +1138,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let new_perm = Permutation{ data: new_perm };
         let combined = (t1, new_perm);
         let mut san = combined.0.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
-        san.rewire(&combined.1, 32);
+        // san.rewire(&combined.1, 32);
         println!("{:?}", combined.1);
         if san.probably_equal(&s, 32, 1000).is_err() {
             panic!("Seam fail");
