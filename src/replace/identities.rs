@@ -490,16 +490,21 @@ pub fn get_random_shuffled_identity (
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     tower: bool,
 ) -> CircuitSeq {
-    let mut id = get_random_identity(
-        6,
-        GatePair::from_int(rand::rng().random_range(0..34)),
-        env,
-        dbs,
-        tower
-    ).unwrap();
+    let dummy_id = CircuitSeq { gates: Vec::new() };
+    loop {
+        let mut id = get_random_identity(
+            6,
+            GatePair::from_int(rand::rng().random_range(0..34)),
+            env,
+            dbs,
+            tower
+        ).unwrap();
 
-    insert_wire_shuffles_simple(&mut id, n, env, dbs);
-    id
+        insert_wire_shuffles_simple(&mut id, n, env, dbs);
+        if dummy_id.probably_equal(&id, n, 1000).is_ok() {
+            return id
+        }
+    }
 }
 
 
