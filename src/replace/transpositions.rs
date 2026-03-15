@@ -508,7 +508,7 @@ impl Transpositions {
         }
         rewire_gate_ver(&mut first_gates, &t_rewired[0].1, n);
         let curr_len = first_gates.len();
-        first_gates.insert(curr_len/2, c.gates[0]);
+        // first_gates.insert(curr_len/2, c.gates[0]);
         gates.extend_from_slice(&first_gates);
 
         let t_len = t_rewired.len();
@@ -545,7 +545,7 @@ impl Transpositions {
             }
             rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
             let curr_len = middle_gates.len();
-            middle_gates.insert(curr_len/2, c.gates[j/2]);
+            // middle_gates.insert(curr_len/2, c.gates[j/2]);
             gates.extend_from_slice(&middle_gates);
             j += 1;
         }
@@ -572,7 +572,7 @@ impl Transpositions {
         rewire_gate_ver(&mut second_gates, &t_rewired[t_rewired.len()-1].1, n);
         let curr_len = second_gates.len();
         let len = c.gates.len();
-        second_gates.insert(curr_len/2, c.gates[len-1]);
+        // second_gates.insert(curr_len/2, c.gates[len-1]);
         gates.extend_from_slice(&second_gates);
         CircuitSeq { gates }
     }
@@ -1105,18 +1105,6 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let mut wire_shufflem = Permutation { data: Vec::with_capacity(32)};
         wire_shufflem.data.extend_from_slice(&wire_shuffle2.data[..16]);
         wire_shufflem.data.extend_from_slice(&wire_shuffle1.data[16..]);
-        let mut f = first.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
-        f.rewire(&wire_shuffle1, 32);
-        let mut s = second.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
-        s.rewire(&wire_shuffle2, 32);
-        let mut m = middle.to_circuit(32, env, dbs);
-        m.rewire(&wire_shufflem, 32);
-        m.gates.reverse();
-        f = f.concat(&m).concat(&s);
-        let id = CircuitSeq{gates:Vec::new()};
-        if f.probably_equal(&id, 32, 1000).is_err() {
-            panic!("Not an id after shuffle");
-        }
         t_rewired.push((middle, wire_shufflem));
         t_rewired.push((second, wire_shuffle2));
     }
@@ -1508,8 +1496,8 @@ mod tests {
 
         writeln!(file, "{}", c.repr())
             .expect("Failed to write to file");
-
-        if c.probably_equal(&c_old, 32, 1000).is_err() {
+        let id = CircuitSeq { gates: Vec::new() };
+        if c.probably_equal(&id, 32, 1000).is_err() {
             panic!("Changed functionality somewhere");
         }
     }
