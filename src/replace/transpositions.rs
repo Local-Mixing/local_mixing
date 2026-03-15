@@ -1049,7 +1049,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         for &val in &used_wires {
             if val >= 16 {
                 wire_shuffle1.data[excluded[count]] = val as usize;
-                used_targets.push(excluded[count]);
+                used_targets.push(val as usize);
                 count += 1;
             }
         }
@@ -1085,7 +1085,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         for &val in &used_wires {
             if val < 16 {
                 wire_shuffle2.data[excluded[count]] = val as usize;
-                used_targets.push(excluded[count]);
+                used_targets.push(val as usize);
                 count += 1;
             }
         }
