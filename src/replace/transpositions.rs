@@ -1118,12 +1118,18 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         println!("{:?}", p1);
         println!("{:?}", p2);
         let mut combined = Transpositions { transpositions: Vec::new() };
-        for j in (0..50).rev() {
-            let a = t1.transpositions[j];
-            let b = t2.transpositions[j];
-            let mut r = replace_disjoint_pair(a, b);
-            r.extend(combined.transpositions);
-            combined.transpositions = r;
+        for i in 0..50 {
+            combined.transpositions.push(t1.transpositions[i]);
+            combined.transpositions.push(t1.transpositions[i]);
+        }
+
+        for i in (0..50).rev() {
+            let idx = 2 * i;
+
+            let a = combined.transpositions[idx];
+            let b = combined.transpositions[idx + 1];
+
+            combined.transpositions.splice(idx..idx+2, replace_disjoint_pair(a, b));
         }
         let mut s = t1.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
         // s.rewire(&p1, 32);
