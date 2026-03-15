@@ -263,7 +263,7 @@ impl Transpositions {
         swap: (u8, u8, u8), 
         env: &lmdb::Environment, 
         dbs: &HashMap<String, Database>,
-        restricted: Vec<u8>,
+        restricted: &Vec<u8>,
     ) -> Vec<[u8;3]> {
         let (a, b, negation_type) = swap;
         let (db_name, max_entries) = if negation_type == 0 {
@@ -410,6 +410,22 @@ impl Transpositions {
     }
 
     pub fn restricted_to_circuit(
+        &self,
+        n: usize,
+        env: &lmdb::Environment,
+        dbs: &HashMap<String, Database>,
+        restricted: &Vec<u8>
+    ) -> CircuitSeq {
+        let mut gates: Vec<[u8; 3]> = Vec::new();
+
+        for &swap in &self.transpositions {
+            gates.extend_from_slice(&Self::gen_gates_swap_restricted(n, swap, env, dbs, restricted));
+        }
+
+        CircuitSeq { gates }
+    }
+
+    pub fn restricted_to_circuit_RI(
         first: Transpositions,
         middle: Transpositions,
         second: Transpositions,
@@ -524,7 +540,7 @@ impl Transpositions {
                 if swap.0 == swap.1 {
                     continue;
                 }
-                let middle_circuit = Self::gen_gates_swap_restricted(n, swap, env, dbs, vec![13,14,15,29,30,31]);
+                let middle_circuit = Self::gen_gates_swap_restricted(n, swap, env, dbs, &vec![13,14,15,29,30,31]);
                 middle_gates.extend_from_slice(&middle_circuit);
             }
             rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
@@ -1073,9 +1089,11 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let mut new_perm = Vec::with_capacity(32);
         new_perm.extend_from_slice(&p1.data[..16]);
         new_perm.extend_from_slice(&p2.data[16..]);
-        let new_perm = Permutation{ data: new_perm};
+        let new_perm = Permutation{ data: new_perm };
+        let mut sanity = combined.restricted_to_circuit(32, &env, &dbs, &vec![13,14,15,29,30,31]);
+        sanity.rewire(&new_perm, 32);
         for j in 0..3 {
-            if combined.transpositions.iter().any(|&(a,b,_)| a == (c.gates[i+1][j]) || b == (c.gates[i+1][j])) {
+            if sanity.gates.iter().any(|g| g.contains(&c.gates[i][j])) {
                 println!("{:?}", combined);
                 println!("{}: {:?}", i+1, c.gates[i+1]);
                 panic!("Not a snug fit");
