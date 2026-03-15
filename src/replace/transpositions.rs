@@ -1428,7 +1428,7 @@ mod tests {
         if c.probably_equal(&id, 32, 1000).is_err() {
             panic!("Not an id");
         }
-        let mut id = Transpositions::restricted_to_circuit(first, middle, second, 32, &env, &dbs, (16, 30), (0,13));
+        let mut id = first.restricted_to_circuit(32, &env, &dbs, &vec![]);
         let stupid_id = CircuitSeq { gates: Vec::new() };
         if id.probably_equal(&stupid_id, 32, 1000).is_err() {
             panic!("Not an id identity");
