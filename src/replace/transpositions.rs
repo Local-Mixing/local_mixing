@@ -1094,7 +1094,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         sanity.rewire(&new_perm, 32);
         for j in 0..3 {
             if sanity.gates.iter().any(|g| g.contains(&c.gates[i+1][j])) {
-                println!("{:?}", combined);
+                println!("{:?}", sanity);
                 println!("{}: {:?}", i+1, c.gates[i+1]);
                 panic!("Not a snug fit");
             }
