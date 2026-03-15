@@ -1343,10 +1343,15 @@ mod tests {
 
         let mut file = File::create("test_id.txt").expect("Failed to create file");
 
+        let mut c_old = CircuitSeq::from_string("vnt;otv;k3c;");
         let mut c = CircuitSeq::from_string("vnt;otv;k3c;");
         insert_ri_identities(&mut c, &env, &dbs);
 
         writeln!(file, "{}", c.repr())
             .expect("Failed to write to file");
+
+        if c.probably_equal(&c_old, 32, 1000).is_err() {
+            panic!("Changed functionality somewhere");
+        }
     }
 }
