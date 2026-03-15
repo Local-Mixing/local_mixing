@@ -634,6 +634,7 @@ impl Transpositions {
             gates.extend_from_slice(&second_gates);
             assert_eq!(t_rewired[i+1].1.data[..16], t_rewired[i+2].1.data[..16]);
             assert_eq!(t_rewired[i+1].1.data[16..], t_rewired[i].1.data[16..]);
+            println!("ok");
         }
         gates.push(c.gates[c.gates.len()-1]);
         CircuitSeq { gates }
