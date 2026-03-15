@@ -1115,7 +1115,8 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let idx = 2 + 3*i;
         let (t1, p1) = t_rewired[idx].clone();
         let (t2, p2) = t_rewired[idx + 1].clone();
-
+        println!("{:?}", p1);
+        println!("{:?}", p2);
         let mut combined = Transpositions { transpositions: Vec::new() };
         for j in (0..50).rev() {
             let a = t1.transpositions[j];
