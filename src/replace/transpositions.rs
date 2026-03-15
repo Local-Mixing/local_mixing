@@ -598,8 +598,8 @@ impl Transpositions {
 
             let middle = &t_rewired[i+1].0;
             let mut middle_gates: Vec<[u8;3]> = Vec::new();
-            for i in 0..middle.transpositions.len() {
-                let swap = middle.transpositions[i+1];
+            for i in (0..middle.transpositions.len()).rev() {
+                let swap = middle.transpositions[i];
                 if swap.0 == swap.1 {
                     continue;
                 }
@@ -614,7 +614,7 @@ impl Transpositions {
             let second = &t_rewired[i+2].0;
             let mut second_gates: Vec<[u8;3]> = Vec::new();
             for i in 0..second.transpositions.len() {
-                let mut swap = second.transpositions[i+2];
+                let mut swap = second.transpositions[i];
                 if swap.0 == swap.1 {
                     continue;
                 }
