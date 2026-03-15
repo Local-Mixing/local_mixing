@@ -1071,7 +1071,6 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         t_rewired.push((first.clone(), wire_shuffle1.clone()));
 
         used_wires = [c.gates[i][0], c.gates[i][1], c.gates[i][2]];
-        println!("{:?}", used_wires);
         let mut wire_shuffle2 = Permutation { data: (0..32).collect() };
         for idx in 0..16 {
             wire_shuffle2.data[idx] = 33;
@@ -1089,7 +1088,6 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
                 count += 1;
             }
         }
-        println!("{:?}", wire_shuffle2);
         // remaining wires only in lower half
         let mut remaining: Vec<usize> = (0..16)
             .filter(|w| !used_targets.contains(w))
@@ -1104,10 +1102,21 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
                 idx += 1;
             }
         }
-        println!("{:?}", wire_shuffle2);
         let mut wire_shufflem = Permutation { data: Vec::with_capacity(32)};
         wire_shufflem.data.extend_from_slice(&wire_shuffle2.data[..16]);
         wire_shufflem.data.extend_from_slice(&wire_shuffle1.data[16..]);
+        let mut f = first.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
+        f.rewire(&wire_shuffle1, 32);
+        let mut s = second.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
+        s.rewire(&wire_shuffle2, 32);
+        let mut m = middle.to_circuit(32, env, dbs);
+        m.rewire(&wire_shufflem, 32);
+        m.gates.reverse();
+        f = f.concat(&m).concat(&s);
+        let id = CircuitSeq{gates:Vec::new()};
+        if f.probably_equal(&id, 32, 1000).is_err() {
+            panic!("Not an id after shuffle");
+        }
         t_rewired.push((middle, wire_shufflem));
         t_rewired.push((second, wire_shuffle2));
     }
@@ -1131,18 +1140,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let mut new_perm = Vec::with_capacity(32);
         new_perm.extend_from_slice(&p1.data[..16]);
         new_perm.extend_from_slice(&p2.data[16..]);
-        println!("{:?}", p1);
-        println!("{:?}", p2);
         let new_perm = Permutation{ data: new_perm };
-        let mut sanity = combined.restricted_to_circuit(32, &env, &dbs, &vec![13,14,15,29,30,31]);
-        sanity.rewire(&new_perm, 32);
-        for j in 0..3 {
-            if sanity.gates.iter().any(|g| g.contains(&c.gates[i+1][j])) {
-                println!("{:?}", sanity);
-                println!("{}: {:?}", i+1, c.gates[i+1]);
-                panic!("Not a snug fit");
-            }
-        }
         let combined = (t1, new_perm);
         t_rewired.splice(idx..idx+2, [combined]);
     }
