@@ -1074,7 +1074,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
     //     t_rewired.splice(idx..idx+2, [combined]);
     // }
 
-    *c = Transpositions::restricted_to_circuit_rewired_and_insert(t_rewired, c.clone(), 32, &env, &dbs, (16, 28), (0, 12));
+    *c = Transpositions::restricted_to_circuit_rewired_and_insert_no_seams(t_rewired, c.clone(), 32, &env, &dbs, (16, 28), (0, 12));
 }
 
 #[cfg(test)]
