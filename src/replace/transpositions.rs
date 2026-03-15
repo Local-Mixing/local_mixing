@@ -1129,6 +1129,8 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let mut new_perm = Vec::with_capacity(32);
         new_perm.extend_from_slice(&p1.data[..16]);
         new_perm.extend_from_slice(&p2.data[16..]);
+        println!("{:?}", p1);
+        println!("{:?}", p2);
         let new_perm = Permutation{ data: new_perm };
         let mut sanity = combined.restricted_to_circuit(32, &env, &dbs, &vec![13,14,15,29,30,31]);
         sanity.rewire(&new_perm, 32);
