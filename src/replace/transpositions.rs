@@ -46,7 +46,6 @@ impl Transpositions {
         let mut transpositions = Vec::with_capacity(m);
         for _ in 0..m {
             let negation_type = rng.random_range(0..=3);
-            let negation_type = 0;
             let mut i: usize = rng.random_range(0..n);
             let mut j: usize;
             loop {
@@ -990,7 +989,7 @@ pub fn replace_disjoint_pair((a,b, t1): (u8, u8, u8), (c,d, t2): (u8, u8, u8)) -
             
         }
     }
-
+    
     t
 }
 
@@ -1127,8 +1126,14 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
 
             let a = combined.transpositions[idx];
             let b = combined.transpositions[idx + 1];
-            println!("{:?} {:?}, {:?}", a, b, replace_disjoint_pair(a, b));
-            combined.transpositions.splice(idx..idx+2, replace_disjoint_pair(a, b));
+            let ab = replace_disjoint_pair(a, b);
+            let s1 = Transpositions { transpositions: vec![a,b]};
+            let s1 = s1.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
+            let s2 = Transpositions { transpositions: ab.clone() }.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
+            if s1.probably_equal(&s2, 32, 1000).is_err() {
+                panic!("Disjoint failed");
+            }
+            combined.transpositions.splice(idx..idx+2, ab);
         }
         let mut s = t1.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
         // s.rewire(&p1, 32);
