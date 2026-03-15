@@ -1120,19 +1120,13 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
             combined.transpositions.push(t1.transpositions[i]);
             combined.transpositions.push(t2.transpositions[i]);
         }
-
+        let s3 = combined.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
         for i in (0..50).rev() {
             let idx = 2 * i;
 
             let a = combined.transpositions[idx];
             let b = combined.transpositions[idx + 1];
             let ab = replace_disjoint_pair(a, b);
-            let s1 = Transpositions { transpositions: vec![a,b]};
-            let s1 = s1.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
-            let s2 = Transpositions { transpositions: ab.clone() }.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
-            if s1.probably_equal(&s2, 32, 1000).is_err() {
-                panic!("Disjoint failed");
-            }
             combined.transpositions.splice(idx..idx+2, ab);
         }
         let mut s = t1.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
@@ -1143,7 +1137,9 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let mut s2 = Transpositions{ transpositions: t1.transpositions.clone(), };
         s2.transpositions.extend_from_slice(&t2.transpositions.clone());
         let s2 = s2.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
-        
+        if s3.probably_equal(&s, 32, 1000).is_err() {
+            panic!("Seam fail");
+        }
         let mut new_perm = Vec::with_capacity(32);
         new_perm.extend_from_slice(&p1.data[..16]);
         new_perm.extend_from_slice(&p2.data[16..]);
@@ -1151,7 +1147,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let combined = (t1, new_perm);
         let mut san = combined.0.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
         // san.rewire(&combined.1, 32);
-        if s.probably_equal(&s2, 32, 1000).is_err() {
+        if san.probably_equal(&s2, 32, 1000).is_err() {
             panic!("Seam fail");
         }
         t_rewired.splice(idx..idx+2, [combined]);
