@@ -1144,10 +1144,10 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         new_perm.extend_from_slice(&p1.data[..16]);
         new_perm.extend_from_slice(&p2.data[16..]);
         let new_perm = Permutation{ data: new_perm };
-        let combined = (t1, new_perm);
+        let combined = (combined, new_perm);
         let mut san = combined.0.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
         // san.rewire(&combined.1, 32);
-        if san.probably_equal(&s3, 32, 1000).is_err() {
+        if san.probably_equal(&s, 32, 1000).is_err() {
             panic!("Seam fail");
         }
         t_rewired.splice(idx..idx+2, [combined]);
