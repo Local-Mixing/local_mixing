@@ -762,15 +762,15 @@ pub fn sequential_butterfly(
         gates_track.push((circuit.gates[i], 0));
     }
 
-    for i in 0..circuit.gates.len() {
-        if i%100 < 35 {
-            gates_track.push((circuit.gates[i], 1));
-        } else if i%100 > 65 {
-            gates_track.push((circuit.gates[i], 2));
-        } else {
-            gates_track.push((circuit.gates[i], 0));
-        }
-    }
+    // for i in 0..circuit.gates.len() {
+    //     if i%100 < 35 {
+    //         gates_track.push((circuit.gates[i], 1));
+    //     } else if i%100 > 65 {
+    //         gates_track.push((circuit.gates[i], 2));
+    //     } else {
+    //         gates_track.push((circuit.gates[i], 0));
+    //     }
+    // }
     len = gates_track.len();
     println!("  {}/{}: Step 2a: Shooting R's left", curr_round, last_round);
     println!("  {}/{}: Mode: \n Additional rounds: {} \n Forward Order: {}", curr_round, last_round, shoot_more_left, reverse_order_left == false);
