@@ -46,7 +46,6 @@ impl Transpositions {
         let mut transpositions = Vec::with_capacity(m);
         for _ in 0..m {
             let negation_type = rng.random_range(0..=3);
-            let negation_type = 0;
             let mut i: usize = rng.random_range(0..n);
             let mut j: usize;
             loop {
@@ -1012,7 +1011,7 @@ mod tests {
         path::Path,
     };
     use rand::prelude::IndexedRandom;
-    use crate::CircuitSeq;
+    use crate::{CircuitSeq, replace::transpositions::insert_ri_identities};
     use crate::replace::transpositions::Transpositions;
     #[test]
     fn test_wire_shifting() {
@@ -1329,5 +1328,25 @@ mod tests {
             .expect("Failed to write to file");
 
         println!("Wrote test circuit to file");
+    }
+
+    #[test]
+    fn test_insert_ri_identities() {
+        use crate::replace::main_mix::open_all_dbs;
+        use std::io::Write;
+        let env = Environment::new()
+            .set_max_dbs(262)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("failed to open lmdb");
+        let dbs = open_all_dbs(&env);
+
+        let mut file = File::create("test_id.txt").expect("Failed to create file");
+
+        let mut c = CircuitSeq::from_string("vnt;otv;k3c;");
+        insert_ri_identities(&mut c, &env, &dbs);
+
+        writeln!(file, "{}", c.repr())
+            .expect("Failed to write to file");
     }
 }
