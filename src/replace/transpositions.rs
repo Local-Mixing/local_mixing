@@ -1120,7 +1120,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let mut combined = Transpositions { transpositions: Vec::new() };
         for i in 0..50 {
             combined.transpositions.push(t1.transpositions[i]);
-            combined.transpositions.push(t1.transpositions[i]);
+            combined.transpositions.push(t2.transpositions[i]);
         }
 
         for i in (0..50).rev() {
