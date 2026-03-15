@@ -1416,6 +1416,7 @@ mod tests {
         if id.probably_equal(&stupid_id, 32, 1000).is_err() {
             panic!("Shuffling destroyed identity");
         }
+        let repr = id.repr();
         writeln!(file, "{}", repr)
             .expect("Failed to write to file");
 
