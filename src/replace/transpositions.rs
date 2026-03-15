@@ -1115,8 +1115,6 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let idx = 2 + 3*i;
         let (t1, p1) = t_rewired[idx].clone();
         let (t2, p2) = t_rewired[idx + 1].clone();
-        println!("{:?}", p1);
-        println!("{:?}", p2);
         let mut combined = Transpositions { transpositions: Vec::new() };
         for i in 0..50 {
             combined.transpositions.push(t1.transpositions[i]);
@@ -1128,7 +1126,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
 
             let a = combined.transpositions[idx];
             let b = combined.transpositions[idx + 1];
-            println!("{:?} {:?}", a, b);
+            println!("{:?} {:?}, {:?}", a, b, replace_disjoint_pair(a, b));
             combined.transpositions.splice(idx..idx+2, replace_disjoint_pair(a, b));
         }
         let mut s = t1.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
@@ -1145,7 +1143,6 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let combined = (t1, new_perm);
         let mut san = combined.0.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
         // san.rewire(&combined.1, 32);
-        println!("{:?}", combined.1);
         if san.probably_equal(&s, 32, 1000).is_err() {
             panic!("Seam fail");
         }
