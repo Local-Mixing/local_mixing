@@ -588,7 +588,7 @@ impl Transpositions {
     ) -> CircuitSeq {
         let mut gates: Vec<[u8; 3]> = Vec::new();
         for i in 0..c.gates.len()-1 {
-            gates.push(c.gates[i]);
+            // gates.push(c.gates[i]);
             let i = 3*i;
             let first = &t_rewired[i].0;
             let mut first_gates: Vec<[u8;3]> = Vec::new();
@@ -649,7 +649,7 @@ impl Transpositions {
             rewire_gate_ver(&mut second_gates, &t_rewired[i+2].1, n);
             gates.extend_from_slice(&second_gates);
         }
-        gates.push(c.gates[c.gates.len()-1]);
+        // gates.push(c.gates[c.gates.len()-1]);
         CircuitSeq { gates }
     }
 
@@ -1133,7 +1133,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         t_rewired.splice(idx..idx+2, [combined]);
     }
 
-    *c = Transpositions::restricted_to_circuit_rewired_and_insert(t_rewired, c.clone(), 32, &env, &dbs, (16, 28), (0, 12));
+    *c = Transpositions::restricted_to_circuit_rewired_and_insert_no_seams(t_rewired, c.clone(), 32, &env, &dbs, (16, 28), (0, 12));
 }
 
 #[cfg(test)]
