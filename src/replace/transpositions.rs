@@ -1076,6 +1076,8 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let new_perm = Permutation{ data: new_perm};
         for j in 0..3 {
             if combined.transpositions.iter().any(|&(a,b,_)| a == (c.gates[i+1][j]) || b == (c.gates[i+1][j])) {
+                println!("{:?}", combined);
+                println!("{}: {:?}", i+1, c.gates[i+1]);
                 panic!("Not a snug fit");
             }
         }
