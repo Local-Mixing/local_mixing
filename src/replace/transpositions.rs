@@ -1502,8 +1502,10 @@ mod tests {
 
         let mut file = File::create("test_id.txt").expect("Failed to create file");
 
-        let mut c_old = CircuitSeq::from_string("vnt;otv;k3c;g8d;hkm;fn8;3p0;v92;0id;l4a;pq0;sn3;06k;roh;cld;pef;s3j;dh7;jum;l41;gio;1pf;rge;ont;3qa;731;3rg;2eg;2sl;ebg;ovf;opk;tel;hts;cql;06h;u9i;gov;lbc;04i;0as;kp9;iro;e38;bc8;0ue;hst;p9i;gom;908;0do;l5s;t9g;abd;7rs;0hk;fq9;o49;14l;7j0;vu6;clf;4mn;9g6;4vc;lkp;p73;4mi;h9k;7rg;d4a;674;73f;ojr;fpj;gct;94k;nab;3is;q2h;dvp;huv;bsp;lb7;vr2;nd7;ud3;9bv;ljg;q1e;av9;8du;3hl;cd1;mir;ris;uoc;btq;ibc;bds;");
-        let mut c = CircuitSeq::from_string("vnt;otv;k3c;g8d;hkm;fn8;3p0;v92;0id;l4a;pq0;sn3;06k;roh;cld;pef;s3j;dh7;jum;l41;gio;1pf;rge;ont;3qa;731;3rg;2eg;2sl;ebg;ovf;opk;tel;hts;cql;06h;u9i;gov;lbc;04i;0as;kp9;iro;e38;bc8;0ue;hst;p9i;gom;908;0do;l5s;t9g;abd;7rs;0hk;fq9;o49;14l;7j0;vu6;clf;4mn;9g6;4vc;lkp;p73;4mi;h9k;7rg;d4a;674;73f;ojr;fpj;gct;94k;nab;3is;q2h;dvp;huv;bsp;lb7;vr2;nd7;ud3;9bv;ljg;q1e;av9;8du;3hl;cd1;mir;ris;uoc;btq;ibc;bds;");
+        // let mut c_old = CircuitSeq::from_string("vnt;otv;k3c;g8d;hkm;fn8;3p0;v92;0id;l4a;pq0;sn3;06k;roh;cld;pef;s3j;dh7;jum;l41;gio;1pf;rge;ont;3qa;731;3rg;2eg;2sl;ebg;ovf;opk;tel;hts;cql;06h;u9i;gov;lbc;04i;0as;kp9;iro;e38;bc8;0ue;hst;p9i;gom;908;0do;l5s;t9g;abd;7rs;0hk;fq9;o49;14l;7j0;vu6;clf;4mn;9g6;4vc;lkp;p73;4mi;h9k;7rg;d4a;674;73f;ojr;fpj;gct;94k;nab;3is;q2h;dvp;huv;bsp;lb7;vr2;nd7;ud3;9bv;ljg;q1e;av9;8du;3hl;cd1;mir;ris;uoc;btq;ibc;bds;");
+        // let mut c = CircuitSeq::from_string("vnt;otv;k3c;g8d;hkm;fn8;3p0;v92;0id;l4a;pq0;sn3;06k;roh;cld;pef;s3j;dh7;jum;l41;gio;1pf;rge;ont;3qa;731;3rg;2eg;2sl;ebg;ovf;opk;tel;hts;cql;06h;u9i;gov;lbc;04i;0as;kp9;iro;e38;bc8;0ue;hst;p9i;gom;908;0do;l5s;t9g;abd;7rs;0hk;fq9;o49;14l;7j0;vu6;clf;4mn;9g6;4vc;lkp;p73;4mi;h9k;7rg;d4a;674;73f;ojr;fpj;gct;94k;nab;3is;q2h;dvp;huv;bsp;lb7;vr2;nd7;ud3;9bv;ljg;q1e;av9;8du;3hl;cd1;mir;ris;uoc;btq;ibc;bds;");
+        let mut c_old = CircuitSeq::from_string("k3c;k3c;k3c");
+        let mut c = CircuitSeq::from_string("k3c;k3c;k3c");
         insert_ri_identities(&mut c, &env, &dbs);
 
         writeln!(file, "{}", c.repr())
