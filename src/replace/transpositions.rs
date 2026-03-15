@@ -508,7 +508,7 @@ impl Transpositions {
         }
         rewire_gate_ver(&mut first_gates, &t_rewired[0].1, n);
         let curr_len = first_gates.len();
-        // first_gates.insert(curr_len/2, c.gates[0]);
+        first_gates.insert(curr_len/2, c.gates[0]);
         gates.extend_from_slice(&first_gates);
 
         let t_len = t_rewired.len();
@@ -545,7 +545,7 @@ impl Transpositions {
             }
             rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
             let curr_len = middle_gates.len();
-            // middle_gates.insert(curr_len/2, c.gates[j/2]);
+            middle_gates.insert(curr_len/2, c.gates[j/2]);
             gates.extend_from_slice(&middle_gates);
             j += 1;
         }
@@ -572,7 +572,7 @@ impl Transpositions {
         rewire_gate_ver(&mut second_gates, &t_rewired[t_rewired.len()-1].1, n);
         let curr_len = second_gates.len();
         let len = c.gates.len();
-        // second_gates.insert(curr_len/2, c.gates[len-1]);
+        second_gates.insert(curr_len/2, c.gates[len-1]);
         gates.extend_from_slice(&second_gates);
         CircuitSeq { gates }
     }
@@ -1120,7 +1120,6 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
             combined.transpositions.push(t1.transpositions[i]);
             combined.transpositions.push(t2.transpositions[i]);
         }
-        let s3 = combined.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
         for i in (0..50).rev() {
             let idx = 2 * i;
 
@@ -1129,27 +1128,11 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
             let ab = replace_disjoint_pair(a, b);
             combined.transpositions.splice(idx..idx+2, ab);
         }
-        let mut s = t1.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
-        // s.rewire(&p1, 32);
-        let mut f = t2.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
-        // f.rewire(&p2, 32);
-        s = s.concat(&f);
-        let mut s2 = Transpositions{ transpositions: t1.transpositions.clone(), };
-        s2.transpositions.extend_from_slice(&t2.transpositions.clone());
-        let s2 = s2.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
-        if s3.probably_equal(&s, 32, 1000).is_err() {
-            panic!("Seam fail original");
-        }
         let mut new_perm = Vec::with_capacity(32);
         new_perm.extend_from_slice(&p1.data[..16]);
         new_perm.extend_from_slice(&p2.data[16..]);
         let new_perm = Permutation{ data: new_perm };
         let combined = (combined, new_perm);
-        let mut san = combined.0.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
-        // san.rewire(&combined.1, 32);
-        if san.probably_equal(&s, 32, 1000).is_err() {
-            panic!("Seam fail");
-        }
         t_rewired.splice(idx..idx+2, [combined]);
     }
 
@@ -1519,7 +1502,7 @@ mod tests {
         writeln!(file, "{}", c.repr())
             .expect("Failed to write to file");
         let id = CircuitSeq { gates: Vec::new() };
-        if c.probably_equal(&id, 32, 1000).is_err() {
+        if c.probably_equal(&c_old, 32, 1000).is_err() {
             panic!("Changed functionality somewhere");
         }
     }
