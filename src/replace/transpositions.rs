@@ -632,6 +632,8 @@ impl Transpositions {
             }
             rewire_gate_ver(&mut second_gates, &t_rewired[i+2].1, n);
             gates.extend_from_slice(&second_gates);
+            assert_eq!(t_rewired[i+1].1.data[..16], t_rewired[i+2].1.data[..16]);
+            assert_eq!(t_rewired[i+1].1.data[16..], t_rewired[i].1.data[16..]);
         }
         gates.push(c.gates[c.gates.len()-1]);
         CircuitSeq { gates }
@@ -1050,6 +1052,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let mut wire_shufflem = Permutation { data: Vec::with_capacity(32)};
         wire_shufflem.data.extend_from_slice(&wire_shuffle2.data[..16]);
         wire_shufflem.data.extend_from_slice(&wire_shuffle1.data[16..]);
+        
         t_rewired.push((middle, wire_shufflem));
         t_rewired.push((second, wire_shuffle2));
     }
