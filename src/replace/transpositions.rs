@@ -1093,7 +1093,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let mut sanity = combined.restricted_to_circuit(32, &env, &dbs, &vec![13,14,15,29,30,31]);
         sanity.rewire(&new_perm, 32);
         for j in 0..3 {
-            if sanity.gates.iter().any(|g| g.contains(&c.gates[i][j])) {
+            if sanity.gates.iter().any(|g| g.contains(&c.gates[i+1][j])) {
                 println!("{:?}", combined);
                 println!("{}: {:?}", i+1, c.gates[i+1]);
                 panic!("Not a snug fit");
