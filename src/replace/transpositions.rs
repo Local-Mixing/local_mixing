@@ -571,9 +571,9 @@ impl Transpositions {
         second_bounds: (usize, usize), 
     ) -> CircuitSeq {
         let mut gates: Vec<[u8; 3]> = Vec::new();
-        println!("{:?}", t_rewired);
         for i in 0..c.gates.len()-1 {
             gates.push(c.gates[i]);
+            let i = 3*i;
             let first = &t_rewired[i].0;
             let mut first_gates: Vec<[u8;3]> = Vec::new();
             for i in 0..first.transpositions.len() {
@@ -583,7 +583,6 @@ impl Transpositions {
                 }
                 let n = first_bounds.1 - first_bounds.0 + 1;
                 let offset = first_bounds.0 as u8;
-                println!("{}, {}", swap.0, swap.1);
                 swap.0 -= offset;
                 swap.1 -= offset;
                 let first_circuit = Self::gen_gates_swap(n, swap, env, dbs);
