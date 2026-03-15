@@ -583,6 +583,7 @@ impl Transpositions {
                 }
                 let n = first_bounds.1 - first_bounds.0 + 1;
                 let offset = first_bounds.0 as u8;
+                println!("{}, {}", swap.0, swap.1);
                 swap.0 -= offset;
                 swap.1 -= offset;
                 let first_circuit = Self::gen_gates_swap(n, swap, env, dbs);
