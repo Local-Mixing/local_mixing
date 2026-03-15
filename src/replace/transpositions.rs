@@ -1076,13 +1076,10 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let new_perm = Permutation{ data: new_perm};
         let mut sanity = combined.to_circuit(32, &env, &dbs);
         sanity.rewire(&new_perm, 32);
-        let mut s1 = t1.to_circuit(32, &env, &dbs);
-        let mut s2 = t2.to_circuit(32, &env, &dbs);
-        s1.rewire(&p1, 32);
-        s2.rewire(&p2, 32);
-        s1 = s1.concat(&s2);
-        if sanity.probably_equal(&s1, 32, 1000).is_ok(){
-            println!("{}", i);
+        for j in 0..3 {
+            if sanity.gates.iter().any(|g| g.contains(&c.gates[i][j])) {
+                panic!("Not a snug fit");
+            }
         }
         let combined = (t1, new_perm);
         t_rewired.splice(idx..idx+2, [combined]);
