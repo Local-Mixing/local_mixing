@@ -21,7 +21,7 @@ use lmdb_sys as ffi;
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation},
     random::random_data::{random_circuit, shoot_random_gate},
-    replace::pairs::{CollisionType, GatePair, gate_pair_taxonomy},
+    replace::{pairs::{CollisionType, GatePair, gate_pair_taxonomy}, transpositions::insert_wire_shuffles_simple},
 };
 
 // Old iterator method for cursor fails if the given key is not found
@@ -480,6 +480,28 @@ pub fn get_random_identity(
 
     Ok(out)
 }
+
+// Generate identities via shuffling
+pub fn get_random_shuffled_identity (
+    n: usize, 
+    env: &lmdb::Environment,
+    dbs: &HashMap<String, Database>,
+    _conn: &mut Connection,
+    _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
+    tower: bool,
+) -> CircuitSeq {
+    let mut id = get_random_identity(
+        6,
+        GatePair::from_int(rand::rng().random_range(0..34)),
+        env,
+        dbs,
+        tower
+    ).unwrap();
+
+    insert_wire_shuffles_simple(&mut id, n, env, dbs);
+    id
+}
+
 
 // Generate identities on more wires
 // Our original tables only support up to 7 wires

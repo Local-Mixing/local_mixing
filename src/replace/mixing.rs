@@ -21,7 +21,7 @@ use crate::{
         random_circuit, shoot_left_vec_track, shoot_random_gate, shoot_right_vec_track
     },
     replace::{
-        identities::random_id, pairs::{
+        identities::{get_random_shuffled_identity, random_id}, pairs::{
             interleave,
             replace_pair_distances_linear,
             replace_pairs,
@@ -735,25 +735,32 @@ pub fn sequential_butterfly(
     let mut len = circuit.gates.len();
     shoot_random_gate(&mut circuit, len * 50);
     println!("   {}/{}: Step 1a: Inserting Identities", curr_round, last_round);
-    insert_ri_identities(&mut circuit, &env, &dbs);
-    if circuit.probably_equal(&c, n, 1000).is_err() {
-        panic!("Inserting identities failed");
-    }
+    // insert_ri_identities(&mut circuit, &env, &dbs);
+    // if circuit.probably_equal(&c, n, 1000).is_err() {
+    //     panic!("Inserting identities failed");
+    // }
     // Keeps track of the gates and whether it can stay in place `0`, needs to be shot left `1`, or needs to be shot right `2`
     // After, `4` means to collide to the left and `5` to collide to the right
     let mut gates_track: Vec<([u8;3], u8)> = Vec::new();
-    // gates_track.push((circuit.gates[0], 0));
-    // for i in 1..circuit.gates.len() {
-    //     let random_len = rng.random_range(diehard_len-100..diehard_len+100);
-    //     let random_circuit = random_circuit(n, random_len);
-    //     for ri in 0..random_circuit.gates.len() {
-    //         gates_track.push((random_circuit.gates[ri], 1));
-    //     }
-    //     for ri in (0..random_circuit.gates.len()).rev() {
-    //         gates_track.push((random_circuit.gates[ri], 2));
-    //     }
-    //     gates_track.push((circuit.gates[i], 0));
-    // }
+    gates_track.push((circuit.gates[0], 0));
+    for i in 1..circuit.gates.len() {
+        // let random_len = rng.random_range(diehard_len-100..diehard_len+100);
+        // let random_circuit = random_circuit(n, random_len);
+        // for ri in 0..random_circuit.gates.len() {
+        //     gates_track.push((random_circuit.gates[ri], 1));
+        // }
+        // for ri in (0..random_circuit.gates.len()).rev() {
+        //     gates_track.push((random_circuit.gates[ri], 2));
+        // }
+        let random_id = get_random_shuffled_identity(n, env, dbs, _conn, bit_shuf_list, tower_left);
+        for ri in 0..random_id.gates.len()/2 {
+            gates_track.push((random_id.gates[ri], 1));
+        }
+        for ri in random_id.gates.len()/2..random_id.gates.len() {
+            gates_track.push((random_id.gates[ri], 2));
+        }
+        gates_track.push((circuit.gates[i], 0));
+    }
 
     for i in 0..circuit.gates.len() {
         if i%100 < 35 {
