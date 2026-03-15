@@ -1151,7 +1151,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let combined = (t1, new_perm);
         let mut san = combined.0.restricted_to_circuit(32, env, dbs, &vec![13,14,15,29,30,31]);
         // san.rewire(&combined.1, 32);
-        if san.probably_equal(&s2, 32, 1000).is_err() {
+        if s.probably_equal(&s2, 32, 1000).is_err() {
             panic!("Seam fail");
         }
         t_rewired.splice(idx..idx+2, [combined]);
