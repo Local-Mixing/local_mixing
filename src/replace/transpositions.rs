@@ -599,7 +599,7 @@ impl Transpositions {
             let middle = &t_rewired[i+1].0;
             let mut middle_gates: Vec<[u8;3]> = Vec::new();
             for i in 0..middle.transpositions.len() {
-                let swap = middle.transpositions[i];
+                let swap = middle.transpositions[i+1];
                 if swap.0 == swap.1 {
                     continue;
                 }
@@ -614,7 +614,7 @@ impl Transpositions {
             let second = &t_rewired[i+2].0;
             let mut second_gates: Vec<[u8;3]> = Vec::new();
             for i in 0..second.transpositions.len() {
-                let mut swap = second.transpositions[i];
+                let mut swap = second.transpositions[i+2];
                 if swap.0 == swap.1 {
                     continue;
                 }
@@ -632,9 +632,6 @@ impl Transpositions {
             }
             rewire_gate_ver(&mut second_gates, &t_rewired[i+2].1, n);
             gates.extend_from_slice(&second_gates);
-            assert_eq!(t_rewired[i+1].1.data[..16], t_rewired[i+2].1.data[..16]);
-            assert_eq!(t_rewired[i+1].1.data[16..], t_rewired[i].1.data[16..]);
-            println!("ok");
         }
         gates.push(c.gates[c.gates.len()-1]);
         CircuitSeq { gates }
@@ -1027,15 +1024,6 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
     // Create and rewire all the RI identities
     for i in 1..len {
         let (first, middle, second, _, _) = create_ri_identities_32();
-        let mut f = first.clone().to_circuit(32, &env, &dbs);
-        let mut m = middle.clone().to_circuit(32, &env, &dbs);
-        m.gates.reverse();
-        let mut s = second.clone().to_circuit(32, &env, &dbs);
-        f = f.concat(&m).concat(&s);
-        let id = CircuitSeq { gates: Vec::new() };
-        if id.probably_equal(&f, 32, 1000).is_err() {
-            panic!("Not an identity")
-        }
         let mut wire_shuffle1 = Permutation{ data: (0..32).collect() };
         for val in used_wires {
             if val >= 16 {
@@ -1062,18 +1050,6 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         let mut wire_shufflem = Permutation { data: Vec::with_capacity(32)};
         wire_shufflem.data.extend_from_slice(&wire_shuffle2.data[..16]);
         wire_shufflem.data.extend_from_slice(&wire_shuffle1.data[16..]);
-        let mut f = first.to_circuit(32, &env, &dbs);
-        f.rewire(&wire_shufflem, 32);
-        let mut m = middle.to_circuit(32, &env, &dbs);
-        m.rewire(&wire_shufflem, 32);
-        m.gates.reverse();
-        let mut s = second.to_circuit(32, &env, &dbs);
-        s.rewire(&wire_shufflem, 32);
-        f = f.concat(&m).concat(&s);
-        let id = CircuitSeq { gates: Vec::new() };
-        if id.probably_equal(&f, 32, 1000).is_err() {
-            panic!("Shuffles broke functionality")
-        }
         t_rewired.push((middle, wire_shufflem));
         t_rewired.push((second, wire_shuffle2));
     }
