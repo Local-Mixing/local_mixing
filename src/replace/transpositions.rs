@@ -1029,38 +1029,78 @@ pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositi
 
 // Only supports 32 wires for now
 pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap<String, Database>) {
-    let mut gates: Vec<[u8;3]> = Vec::new();
     let mut t_rewired: Vec<(Transpositions, Permutation)> = Vec::new();
     let mut rng = rand::rng();
     let len = c.gates.len();
-    let mut count = 0;
     let mut used_wires:[u8;3] = [c.gates[0][0], c.gates[0][1], c.gates[0][2]];
-    let mut excluded = vec![13,14,15];
-    excluded.shuffle(&mut rng);
     // Create and rewire all the RI identities
     for i in 1..len {
         let (first, middle, second, _, _) = create_ri_identities_32();
-        let mut wire_shuffle1 = Permutation{ data: (0..32).collect() };
-        for val in used_wires {
+        let mut wire_shuffle1 = Permutation { data: (0..32).collect() };
+        for idx in 16..32 {
+            wire_shuffle1.data[idx] = 33;
+        }
+        let mut excluded = vec![29,30,31];
+        excluded.shuffle(&mut rng);
+
+        let mut used_targets = Vec::new();
+        let mut count = 0;
+
+        for &val in &used_wires {
             if val >= 16 {
-                let temp = wire_shuffle1.data[val as usize];
-                wire_shuffle1.data[val as usize] = wire_shuffle1.data[excluded[count] + 16];
-                wire_shuffle1.data[excluded[count] + 16] = temp;
+                wire_shuffle1.data[val as usize] = excluded[count];
+                used_targets.push(excluded[count]);
                 count += 1;
+            }
+        }
+
+        // remaining wires only in upper half
+        let mut remaining: Vec<usize> = (16..32)
+            .filter(|w| !used_targets.contains(w))
+            .collect();
+
+        remaining.shuffle(&mut rng);
+
+        let mut idx = 0;
+        for i in 16..32 {
+            if wire_shuffle1.data[i] == 33 {
+                wire_shuffle1.data[i] = remaining[idx];
+                idx += 1;
             }
         }
         t_rewired.push((first.clone(), wire_shuffle1.clone()));
 
-        let mut wire_shuffle2 = Permutation{ data: (0..32).collect() };
         used_wires = [c.gates[i][0], c.gates[i][1], c.gates[i][2]];
+        let mut wire_shuffle2 = Permutation { data: (0..32).collect() };
+        for idx in 0..16 {
+            wire_shuffle2.data[idx] = 33;
+        }
+        let mut excluded = vec![13,14,15];
         excluded.shuffle(&mut rng);
-        count = 0;
-        for val in used_wires {
+
+        let mut used_targets = Vec::new();
+        let mut count = 0;
+
+        for &val in &used_wires {
             if val < 16 {
-                let temp = wire_shuffle2.data[val as usize];
-                wire_shuffle2.data[val as usize] = wire_shuffle2.data[excluded[count]];
-                wire_shuffle2.data[excluded[count]] = temp;
+                wire_shuffle2.data[val as usize] = excluded[count];
+                used_targets.push(excluded[count]);
                 count += 1;
+            }
+        }
+
+        // remaining wires only in lower half
+        let mut remaining: Vec<usize> = (0..16)
+            .filter(|w| !used_targets.contains(w))
+            .collect();
+
+        remaining.shuffle(&mut rng);
+
+        let mut idx = 0;
+        for i in 0..16 {
+            if wire_shuffle2.data[i] == 33 {
+                wire_shuffle2.data[i] = remaining[idx];
+                idx += 1;
             }
         }
         let mut wire_shufflem = Permutation { data: Vec::with_capacity(32)};
