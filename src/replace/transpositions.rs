@@ -1071,6 +1071,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         t_rewired.push((first.clone(), wire_shuffle1.clone()));
 
         used_wires = [c.gates[i][0], c.gates[i][1], c.gates[i][2]];
+        println!("{:?}", used_wires);
         let mut wire_shuffle2 = Permutation { data: (0..32).collect() };
         for idx in 0..16 {
             wire_shuffle2.data[idx] = 33;
