@@ -1378,6 +1378,8 @@ mod tests {
         use crate::replace::transpositions::create_ri_identities_32;
         use crate::replace::main_mix::open_all_dbs;
         use std::io::Write;
+        use rand::seq::SliceRandom;
+        use crate::replace::transpositions::Permutation;
         let (first, middle, second, _, _) = create_ri_identities_32();
         let env = Environment::new()
             .set_max_dbs(262)
@@ -1402,8 +1404,18 @@ mod tests {
         if c.probably_equal(&id, 32, 1000).is_err() {
             panic!("Not an id");
         }
-        let repr = Transpositions::restricted_to_circuit(first, middle, second, 32, &env, &dbs, (16, 30), (0,13)).repr();
-
+        let mut id = Transpositions::restricted_to_circuit(first, middle, second, 32, &env, &dbs, (16, 30), (0,13));
+        let stupid_id = CircuitSeq { gates: Vec::new() };
+        if id.probably_equal(&stupid_id, 32, 1000).is_err() {
+            panic!("Not an id identity");
+        }
+        let repr = id.repr();
+        let mut shuffle: Permutation = Permutation { data: (0..32).collect() };
+        shuffle.data.shuffle(&mut rand::rng());
+        id.rewire(&shuffle, 32);
+        if id.probably_equal(&stupid_id, 32, 1000).is_err() {
+            panic!("Shuffling destroyed identity");
+        }
         writeln!(file, "{}", repr)
             .expect("Failed to write to file");
 
