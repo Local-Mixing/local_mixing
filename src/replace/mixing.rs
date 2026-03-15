@@ -753,6 +753,10 @@ pub fn sequential_butterfly(
         //     gates_track.push((random_circuit.gates[ri], 2));
         // }
         let random_id = get_random_shuffled_identity(n, env, dbs, _conn, bit_shuf_list, tower_left);
+        let id = CircuitSeq { gates: Vec::new() };
+        if random_id.probably_equal(&id, n, 1000).is_err(){
+            panic!("Not an identity");
+        }
         for ri in 0..random_id.gates.len()/2 {
             gates_track.push((random_id.gates[ri], 1));
         }
