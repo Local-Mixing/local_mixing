@@ -1069,7 +1069,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         m.gates.reverse();
         let mut s = second.to_circuit(32, &env, &dbs);
         s.rewire(&wire_shufflem, 32);
-        f.concat(&m).concat(&s);
+        f = f.concat(&m).concat(&s);
         let id = CircuitSeq { gates: Vec::new() };
         if id.probably_equal(&f, 32, 1000).is_err() {
             panic!("Shuffles broke functionality")
