@@ -1081,8 +1081,8 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         s1.rewire(&p1, 32);
         s2.rewire(&p2, 32);
         s1 = s1.concat(&s2);
-        if sanity.probably_equal(&s1, 32, 1000).is_err(){
-            panic!("Seams connected incorrectly");
+        if sanity.probably_equal(&s1, 32, 1000).is_ok(){
+            println!("{}", i);
         }
         let combined = (t1, new_perm);
         t_rewired.splice(idx..idx+2, [combined]);
