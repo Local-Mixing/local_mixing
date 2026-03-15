@@ -1054,12 +1054,12 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         wire_shufflem.data.extend_from_slice(&wire_shuffle2.data[..16]);
         wire_shufflem.data.extend_from_slice(&wire_shuffle1.data[16..]);
         let mut f = first.to_circuit(32, &env, &dbs);
-        f.rewire(&wire_shuffle1, 32);
+        f.rewire(&wire_shufflem, 32);
         let mut m = middle.to_circuit(32, &env, &dbs);
         m.rewire(&wire_shufflem, 32);
         m.gates.reverse();
         let mut s = second.to_circuit(32, &env, &dbs);
-        s.rewire(&wire_shuffle2, 32);
+        s.rewire(&wire_shufflem, 32);
         f.concat(&m).concat(&s);
         let id = CircuitSeq { gates: Vec::new() };
         if id.probably_equal(&f, 32, 1000).is_err() {
