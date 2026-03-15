@@ -1027,6 +1027,15 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
     // Create and rewire all the RI identities
     for i in 1..len {
         let (first, middle, second, _, _) = create_ri_identities_32();
+        let mut f = first.clone().to_circuit(32, &env, &dbs);
+        let mut m = middle.clone().to_circuit(32, &env, &dbs);
+        m.gates.reverse();
+        let mut s = second.clone().to_circuit(32, &env, &dbs);
+        f.concat(&m).concat(&s);
+        let id = CircuitSeq { gates: Vec::new() };
+        if id.probably_equal(&f, 32, 1000).is_err() {
+            panic!("Not an identity")
+        }
         let mut wire_shuffle1 = Permutation{ data: (0..32).collect() };
         for val in used_wires {
             if val >= 16 {
