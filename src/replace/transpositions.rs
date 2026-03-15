@@ -1089,7 +1089,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
                 count += 1;
             }
         }
-
+        println!("{:?}", wire_shuffle2);
         // remaining wires only in lower half
         let mut remaining: Vec<usize> = (0..16)
             .filter(|w| !used_targets.contains(w))
@@ -1104,6 +1104,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
                 idx += 1;
             }
         }
+        println!("{:?}", wire_shuffle2);
         let mut wire_shufflem = Permutation { data: Vec::with_capacity(32)};
         wire_shufflem.data.extend_from_slice(&wire_shuffle2.data[..16]);
         wire_shufflem.data.extend_from_slice(&wire_shuffle1.data[16..]);
