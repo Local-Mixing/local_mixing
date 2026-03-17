@@ -803,6 +803,14 @@ fn main() {
                     .value_parser(clap::value_parser!(usize))
                     .help("When to stop the game")
             )
+            .arg(
+                Arg::new("intermediate")
+                    .short('i')
+                    .long("intermediate")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the intermediate circuit file"),
+            ),
     )
     .subcommand(
         Command::new("shoot")
@@ -1391,6 +1399,7 @@ Command::new("equal")
             let id_len: usize = *sub.get_one("id_len").unwrap();
             let tower = sub.get_flag("tower");
             let stop: usize = *sub.get_one("stop").unwrap();
+            let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
             let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
@@ -1423,7 +1432,8 @@ Command::new("equal")
                     &env, 
                     id_len, 
                     tower,
-                    stop
+                    stop,
+                    i,
                 );
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();

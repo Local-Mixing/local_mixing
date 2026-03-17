@@ -1042,7 +1042,8 @@ pub fn simple_shooting_game(
     dbs: &HashMap<String, lmdb::Database>,
     id_len: usize,
     tower: bool,
-    stop: usize
+    stop: usize,
+    intermediate: &str,
 ) -> CircuitSeq {
     let mut gates = c.gates.clone();
     println!("   {}/{}: Starting simple shooting game until {} gates", curr_round, last_round, stop);
@@ -1099,8 +1100,17 @@ pub fn simple_shooting_game(
         }
     }
 
-    println!("  {}/{}: Sending to compressor: {} gates", curr_round, last_round, gates.len());
     let mut acc = CircuitSeq { gates };
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(intermediate)
+        .expect("Failed to open replacednocomp.txt");
+    println!("Writing to {}", intermediate);
+    writeln!(f, "{}", acc.repr()).expect("Failed to write intermediate CircuitSeq");
+
+    println!("  {}/{}: Sending to compressor: {} gates", curr_round, last_round, acc.gates.len());
+    
     if acc.probably_equal(&c, n, 10000).is_err() {
         panic!("Functionality lost during sequential butterfly");
     }

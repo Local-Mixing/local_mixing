@@ -1046,6 +1046,7 @@ pub fn main_shooting_game(
     id_len: usize,
     tower: bool,
     stop: usize,
+    intermediate: &str,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -1083,6 +1084,7 @@ pub fn main_shooting_game(
             id_len,
             tower,
             stop,
+            intermediate,
         );
         circuit = new_circuit;
 
