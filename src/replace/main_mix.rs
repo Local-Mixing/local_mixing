@@ -19,6 +19,7 @@ use crate::{
             replace_and_compress_big,
             replace_and_compress_big_distance,
             sequential_butterfly,
+            simple_shooting_game,
         },
         transpositions::{insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x},
     },
@@ -971,6 +972,117 @@ pub fn main_sequential_butterfly(
             reverse_order_right,
             tower_right,
             shoot_more_right
+        );
+        circuit = new_circuit;
+
+        if circuit.gates.len() == 0 {
+            break;
+        }
+        
+        if circuit.gates.len() == post_len {
+            count += 1;
+        } else {
+            post_len = circuit.gates.len();
+            count = 0;
+        }
+
+        if count > 2 {
+            break;
+        }
+        let mut j = 0;
+        while j < circuit.gates.len().saturating_sub(1) {
+            if circuit.gates[j] == circuit.gates[j + 1] {
+                // remove elements at i and i+1
+                circuit.gates.drain(j..=j + 1);
+
+                // step back up to 2 indices, but not below 0
+                j = j.saturating_sub(2);
+            } else {
+                j += 1;
+            }
+        }
+        if c.probably_equal(&circuit, n, 100_000).is_err() {
+            panic!("The functionality has changed");
+        }
+        {
+        println!("Updating progress {}", progress_path);
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&progress_path)
+            .expect("Failed to open progress file");
+
+        writeln!(
+            f,
+            "=== Round {} ===\n{}\n",
+            i + 1,
+            circuit.repr()
+        )
+        .expect("Failed to write progress");
+        }
+    }
+
+    println!("Final len: {}", circuit.gates.len());
+    circuit
+    .probably_equal(&c, n, 150_000)
+    .expect("The circuits differ somewhere!");
+
+    // Write to file
+    let circuit_str = circuit.repr();
+    File::create(save)
+        .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
+        .expect("Failed to write recent_circuit.txt");
+
+    println!("Final circuit written to {}", save);
+}
+
+pub fn main_shooting_game(
+    c: &CircuitSeq, 
+    rounds: usize, 
+    conn: &mut Connection, 
+    n: usize, 
+    save: &str, 
+    env: &lmdb::Environment, 
+    id_len: usize,
+    tower: bool,
+    stop: usize,
+) {
+    // Start with the input circuit
+    let save_base = save.strip_suffix(".txt").unwrap_or(save);
+    let progress_path = format!("{}_progress.txt", save_base);
+    OpenOptions::new()
+    .create(true)
+    .write(true)
+    .truncate(true)
+    .open(&progress_path)
+    .expect("Failed to create progress file");
+    let bit_shuf_list = (3..=7)
+        .map(|n| {
+            (0..n)
+                .permutations(n)
+                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                .collect::<Vec<Vec<usize>>>()
+        })
+        .collect();
+    let dbs = open_all_dbs(env);
+    println!("Starting len: {}", c.gates.len());
+    let mut circuit = c.clone();
+    // Repeat `rounds` times
+    let mut post_len = 0;
+    let mut count = 0;
+    for i in 0..rounds {
+        let new_circuit = simple_shooting_game(
+            &circuit, 
+            conn, 
+            n, 
+            env, 
+            i+1, 
+            rounds, 
+            &bit_shuf_list, 
+            &dbs,  
+            id_len,
+            tower,
+            stop,
         );
         circuit = new_circuit;
 

@@ -18,7 +18,7 @@ use rusqlite::{Connection, OpenFlags};
 use crate::{
     circuit::circuit::CircuitSeq,
     random::random_data::{
-        random_circuit, shoot_left_vec_track, shoot_random_gate, shoot_right_vec_track
+        random_circuit, shoot_left_vec, shoot_left_vec_track, shoot_random_gate, shoot_right_vec, shoot_right_vec_track
     },
     replace::{
         identities::{get_random_shuffled_identity, random_id}, pairs::{
@@ -975,6 +975,135 @@ pub fn sequential_butterfly(
     }
 
     let mut acc = circuit;
+    let mut stable_count = 0;
+    while stable_count < 12 {
+        let before = acc.gates.len();
+
+        let k = if before <= 1500 {
+            1
+        } else {
+            (before + 1499) / 1500 
+        };
+
+        let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
+        let t4 = Instant::now();
+        let compressed_chunks: Vec<Vec<[u8;3]>> =
+        chunks
+            .into_par_iter()
+            .map(|chunk| {
+                let sub = CircuitSeq { gates: chunk };
+                let mut thread_conn = Connection::open_with_flags(
+                    "circuits.db",
+                    OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .expect("Failed to open read-only connection");
+                
+                compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+            })
+            .collect();
+        COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
+        acc.gates = new_gates;
+        if SHOULD_DUMP.load(Ordering::SeqCst) {
+            {
+            let mut guard = CURRENT_ACC.lock().unwrap();
+            *guard = Some(acc.clone());
+        }
+
+            dump_and_exit();
+        }
+        let after = acc.gates.len();
+        if after == before {
+            stable_count += 1;
+        } else {
+            stable_count = 0;
+        }
+
+        let mut buf = [0u8; 1];
+        if let Ok(n) = io::stdin().read(&mut buf) {
+            if n > 0 && buf[0] == b'\n' {
+                println!("  {}/{}: Current gates: {} gates", curr_round, last_round, after);
+            }
+        }
+    }
+    acc
+}
+
+// Simple shooting game method. Send a gate to the right until a collision is made, then make a replacement. Continue the same from the right-most gate
+// Repeat until the blowup is `enough` and then compress
+pub fn simple_shooting_game(
+    c: &CircuitSeq,
+    _conn: &mut Connection,
+    n: usize,
+    env: &lmdb::Environment,
+    curr_round: usize,
+    last_round: usize,
+    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
+    dbs: &HashMap<String, lmdb::Database>,
+    id_len: usize,
+    tower: bool,
+    stop: usize
+) -> CircuitSeq {
+    let mut gates = c.gates.clone();
+    println!("   {}/{}: Starting simple shooting game until {} gates", curr_round, last_round, stop);
+    let mut len = gates.len();
+    println!("Starting gates: {}", len);
+    let mut rng = rand::rng();
+    while len < stop {
+        let left = rng.random_bool(0.5);
+        let starting_idx = rng.random_range(0..len);
+        if left {
+            let mut curr_idx = starting_idx;
+            while curr_idx != 0 {
+                let after_idx = shoot_left_vec(&mut gates, curr_idx);
+                if after_idx == 0 {
+                    break
+                }
+                let (id, length) = replace_single_pair(
+                    &gates[after_idx - 1], 
+                    &gates[after_idx], 
+                    n, 
+                    _conn, 
+                    env, 
+                    bit_shuf_list, 
+                    dbs, 
+                    tower, 
+                    id_len
+                );
+                gates.splice(after_idx-1..after_idx+1, id);
+                len += length - 2;
+                curr_idx = after_idx-1;
+            }
+        } else {
+            let mut curr_idx = starting_idx;
+            while curr_idx != len {
+                let after_idx = shoot_right_vec(&mut gates, curr_idx);
+                if after_idx == len - 1 {
+                    break
+                }
+                let (id, length) = replace_single_pair(
+                    &gates[after_idx], 
+                    &gates[after_idx + 1], 
+                    n, 
+                    _conn, 
+                    env, 
+                    bit_shuf_list, 
+                    dbs, 
+                    tower, 
+                    id_len
+                );
+                gates.splice(after_idx..after_idx+2, id);
+                len += length - 2;
+                curr_idx = after_idx + length - 1;
+            }
+        }
+    }
+
+    println!("  {}/{}: Sending to compressor: {} gates", curr_round, last_round, gates.len());
+    let mut acc = CircuitSeq { gates };
+    if acc.probably_equal(&c, n, 10000).is_err() {
+        panic!("Functionality lost during sequential butterfly");
+    }
     let mut stable_count = 0;
     while stable_count < 12 {
         let before = acc.gates.len();

@@ -1563,6 +1563,24 @@ pub fn shoot_left_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, ma
     target
 }
 
+pub fn shoot_right_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize { 
+    let mut target = gate_idx;
+    let len = circuit.len();
+    while target + 1 < len {
+        if Gate::collides_index(&circuit[target + 1], &circuit[gate_idx]) {
+            break;
+        }
+        target += 1;
+    }
+
+    if target != gate_idx {
+        let gate = circuit.remove(gate_idx);
+        circuit.insert(target, gate);
+    }
+
+    target
+}
+
 pub fn shoot_right_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, max: bool) -> usize { 
     let mut target = gate_idx;
     let len = circuit.len();
