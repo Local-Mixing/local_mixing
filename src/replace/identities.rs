@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     marker::PhantomData,
     ptr,
     slice,
@@ -898,32 +898,30 @@ pub fn create_escalator_identities(
     first_steps: &Vec<Vec<usize>>, 
     second_steps: &Vec<Vec<usize>>
 ) -> (Transpositions, Transpositions, Transpositions, usize) {
-    let mut allowed_wires: Vec<usize> = Vec::new();
     let all_wires: Vec<usize> = (0..n).collect();
+    let mut allowed_wires: HashSet<usize> = all_wires.iter().cloned().collect();
     let mut first = Transpositions { transpositions: Vec::new() };
     let mut middle = Transpositions { transpositions: Vec::new() };
     let mut second = Transpositions { transpositions: Vec::new() };
     let m = 10;
     let mut negation_mask: Vec<u8> = vec![0u8; n];
-    let mut restricted_wires: Vec<usize> = Vec::new();
+
     // Build second from the `top` to bottom
-    second.transpositions.extend_from_slice(
-            &Transpositions::gen_random_simple_restricted(
-                n, 
-                m, 
-                &mut negation_mask, 
-                &restricted_wires)
-            .transpositions);
-    for step in second_steps.iter().rev().take(second_steps.len() - 1) {
+    for step in second_steps.iter().rev() {
         for wire in step {
-            restricted_wires.push(*wire);
+            allowed_wires.remove(wire); 
         }
+
+        let restricted: Vec<usize> = all_wires.iter()
+            .filter(|w| !allowed_wires.contains(w))
+            .cloned()
+            .collect();
         second.transpositions.extend_from_slice(
             &Transpositions::gen_random_simple_restricted(
                 n, 
                 m, 
                 &mut negation_mask, 
-                &restricted_wires)
+                &restricted)
             .transpositions);
     }
 
@@ -931,7 +929,7 @@ pub fn create_escalator_identities(
     // building first
     for step in first_steps {
         for wire in step {
-            allowed_wires.push(*wire);
+            allowed_wires.insert(*wire);
         }
         let restricted: Vec<usize> = all_wires.iter()
             .filter(|w| !allowed_wires.contains(w))
