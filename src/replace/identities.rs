@@ -903,7 +903,7 @@ pub fn create_escalator_identities(
     let mut middle = Transpositions { transpositions: Vec::new() };
     let mut second = Transpositions { transpositions: Vec::new() };
     let m = 10;
-
+    let mut negation_mask: Vec<u8> = vec![0u8; n];
     // building first
     for step in first_steps {
         for wire in step {
@@ -917,7 +917,7 @@ pub fn create_escalator_identities(
             &Transpositions::gen_random_simple_restricted(
                 n, 
                 m, 
-                &mut Vec::new(), 
+                &mut negation_mask, 
                 &restricted)
             .transpositions);
     }
@@ -936,7 +936,7 @@ pub fn create_escalator_identities(
             &Transpositions::gen_random_simple_restricted(
                 n, 
                 m, 
-                &mut Vec::new(), 
+                &mut negation_mask, 
                 &restricted)
             .transpositions);
     }
