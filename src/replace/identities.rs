@@ -984,7 +984,6 @@ mod test {
         );
         let f = first.to_circuit(32, &env, &dbs);
         let mut m = middle.to_circuit(32, &env, &dbs);
-        m.gates.reverse();
         let s = second.to_circuit(32, &env, &dbs);
 
         let mut c = CircuitSeq {gates: Vec::new() };
