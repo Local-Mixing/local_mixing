@@ -923,7 +923,7 @@ pub fn create_escalator_identities(
                 &restricted)
             .transpositions);
     }
-    second.transpositions.reverse();
+
     allowed_wires.clear();
     // building first
     for step in first_steps {
