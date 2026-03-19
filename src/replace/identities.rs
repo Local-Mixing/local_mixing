@@ -909,11 +909,11 @@ pub fn create_escalator_identities(
 
     // Build second from the `top` to bottom
     second.transpositions.extend_from_slice(
-            &Transpositions::gen_random_simple_restricted(
+            &Transpositions::gen_random_simple(
                 n, 
                 m, 
                 &mut negation_mask, 
-                &restricted_wires)
+                )
             .transpositions);
     for step in second_steps.iter().take(second_steps.len() -1) {
         for wire in step {
