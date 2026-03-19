@@ -150,7 +150,6 @@ impl Transpositions {
             }
         }
 
-        swaps.reverse(); 
         let p = Transpositions{ transpositions: swaps.clone() }.to_perm(32);
         println!("Original: {:?}", perm);
         println!("New: {:?}", p);
