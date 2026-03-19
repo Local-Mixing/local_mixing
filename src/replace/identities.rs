@@ -1004,6 +1004,7 @@ mod test {
         use std::fs::File;
         use std::path::Path;
         use crate::CircuitSeq;
+        use rand::seq::SliceRandom;
         let env = Environment::new()
             .set_max_dbs(262)
             .set_map_size(800 * 1024 * 1024 * 1024)
@@ -1013,7 +1014,7 @@ mod test {
         let dbs = open_all_dbs(&env);
 
         let mut file = File::create("test_id.txt").expect("Failed to create file");
-        let mut simple: Vec<Vec<usize>> = vec![
+        let mut simple1: Vec<Vec<usize>> = vec![
             vec![0, 1, 2],
             vec![3, 4, 5],
             vec![6, 7, 8],
@@ -1026,11 +1027,25 @@ mod test {
             vec![26, 27, 28],
             vec![29, 30, 31],
         ];
-        simple.reverse();
+        let mut simple2: Vec<Vec<usize>> = vec![
+            vec![0, 1, 2],
+            vec![3, 4, 5],
+            vec![6, 7, 8],
+            vec![9, 10, 11],
+            vec![12, 13, 14],
+            vec![15, 16],
+            vec![17, 18, 19],
+            vec![20, 21, 22],
+            vec![23, 24, 25],
+            vec![26, 27, 28],
+            vec![29, 30, 31],
+        ];
+        simple1.shuffle(&mut rand::rng());
+        simple2.shuffle(&mut rand::rng());
         let (first, middle, second, _) = create_escalator_identities(
             32,
-            &simple,
-            &simple,
+            &simple1,
+            &simple2,
 
         );
         let f = first.to_circuit(32, &env, &dbs);
