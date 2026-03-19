@@ -150,6 +150,7 @@ impl Transpositions {
             }
         }
 
+        swaps.reverse(); 
         Transpositions { transpositions: swaps }
     }
 
