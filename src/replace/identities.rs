@@ -915,7 +915,7 @@ pub fn create_escalator_identities(
                 &mut negation_mask, 
                 &restricted_wires)
             .transpositions);
-    for step in second_steps.iter().skip(1).rev() {
+    for step in second_steps.iter().skip(1) {
         for wire in step {
             restricted_wires.push(*wire);
         }
