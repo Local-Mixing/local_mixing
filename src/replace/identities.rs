@@ -905,22 +905,18 @@ pub fn create_escalator_identities(
     let mut second = Transpositions { transpositions: Vec::new() };
     let m = 10;
     let mut negation_mask: Vec<u8> = vec![0u8; n];
-
+    let mut restricted_wires: Vec<usize> = Vec::new();
     // Build second from the `top` to bottom
-    for step in second_steps.iter().rev() {
+    for step in second_steps {
         for wire in step {
-            allowed_wires.push(*wire);
+            restricted_wires.push(*wire);
         }
-        let restricted: Vec<usize> = all_wires.iter()
-            .filter(|w| !allowed_wires.contains(w))
-            .cloned()
-            .collect();
         second.transpositions.extend_from_slice(
             &Transpositions::gen_random_simple_restricted(
                 n, 
                 m, 
                 &mut negation_mask, 
-                &restricted)
+                &restricted_wires)
             .transpositions);
     }
 
