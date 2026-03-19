@@ -961,7 +961,37 @@ pub fn create_escalator_identities(
     middle.transpositions.extend_from_slice(&first.transpositions);
 
     let perm = middle.to_perm(n);
-    let new_middle = Transpositions::from_perm(&perm);
+    let mut new_middle = Transpositions::from_perm(&perm);
+    
+    // Use negation mask to update middle
+    let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
+
+    for (i, (a, b, _)) in new_middle.transpositions.iter().enumerate() {
+        wire_transpositions.insert(*a, (i, 0));
+        wire_transpositions.insert(*b, (i, 1));
+    }
+
+    const TRANSITION: [[u8; 4]; 2] = [
+        // pos = 0
+        [1, 0, 3, 2],
+        // pos = 1
+        [2, 3, 0, 1],
+    ];
+
+    for (i, val) in negation_mask.into_iter().enumerate() {
+        if val == 1 {
+            if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
+                let &(swap_idx, pos) = swaps;
+                let curr_neg_type = new_middle.transpositions[swap_idx].2;
+                if pos > 1 || curr_neg_type > 3 {
+                    panic!("Invalid pos or curr_neg_type");
+                }
+                new_middle.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
+                
+            }
+        }
+    }
+
     use crate::replace::main_mix::open_all_dbs;
 
     // Testing
@@ -980,35 +1010,6 @@ pub fn create_escalator_identities(
         panic!("To and from perm failed to maintain functionality");
     }
     middle = new_middle;
-    // Use negation mask to update middle
-    let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
-
-    for (i, (a, b, _)) in middle.transpositions.iter().enumerate() {
-        wire_transpositions.insert(*a, (i, 0));
-        wire_transpositions.insert(*b, (i, 1));
-    }
-
-    const TRANSITION: [[u8; 4]; 2] = [
-        // pos = 0
-        [1, 0, 3, 2],
-        // pos = 1
-        [2, 3, 0, 1],
-    ];
-
-    for (i, val) in negation_mask.into_iter().enumerate() {
-        if val == 1 {
-            if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
-                let &(swap_idx, pos) = swaps;
-                let curr_neg_type = middle.transpositions[swap_idx].2;
-                if pos > 1 || curr_neg_type > 3 {
-                    panic!("Invalid pos or curr_neg_type");
-                }
-                middle.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
-                
-            }
-        }
-    }
-
     (first, middle, second, m)
 }
 
