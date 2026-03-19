@@ -466,7 +466,7 @@ pub fn replace_sequential_pairs(
                         _       => 16, 
                     }
                 };
-                let id_len = 16;
+                // let id_len = 16;
                 let t_id = Instant::now();
                 let id = match get_random_identity(id_len, tax, env, dbs, tower) {
                     Ok(id) => {

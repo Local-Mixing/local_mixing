@@ -1595,7 +1595,7 @@ Command::new("equal")
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", from_path));
 
             let mut c = CircuitSeq::from_string(&contents);
-            let mut rng = rand::rng();
+            // let mut rng = rand::rng();
             println!("Creating shot circuit");
             shoot_random_gate(&mut c, i);
             // random_sulking(&mut c);

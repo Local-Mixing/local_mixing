@@ -13,7 +13,7 @@ use itertools::Itertools;
 use rand::{Rng, prelude::SliceRandom};
 use rusqlite::Connection;
 
-use lmdb::{Cursor, Database, RoCursor, RoTransaction, Transaction};
+use lmdb::{Cursor, Database, RoCursor, RoTransaction, Transaction, Environment};
 
 extern crate lmdb_sys;
 use lmdb_sys as ffi;
@@ -21,7 +21,8 @@ use lmdb_sys as ffi;
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation},
     random::random_data::{random_circuit, shoot_random_gate},
-    replace::{pairs::{CollisionType, GatePair, gate_pair_taxonomy}, transpositions::insert_wire_shuffles_simple},
+    replace::{pairs::{CollisionType, GatePair, gate_pair_taxonomy}, 
+        transpositions::{Transpositions, insert_wire_shuffles_simple, replace_disjoint_pair}},
 };
 
 // Old iterator method for cursor fails if the given key is not found
@@ -739,4 +740,275 @@ pub fn random_id(n: usize, m: usize) -> (CircuitSeq, CircuitSeq) {
 
     let rev = CircuitSeq { gates: rev_gates };
     (circuit, rev)
+}
+
+// Creates an identity with the first part limited to 16..=28 wires (exclude wires 29, 30, 31), the middle part spanning all 0..=31, and the last part spanning 0..=12 wires (exclude wires 13, 14, 15) 
+// returns the identity, the number of transpositions of the first part, and the number of transpositions of the second part
+
+pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositions, usize, usize) {
+    let mut transpositions: Transpositions = Transpositions{ transpositions: Vec::new() };
+    let mut first_negation_mask: Vec<u8> = vec![0u8; 32]; 
+    let mut first = Transpositions::gen_random_simple(13, 50, &mut first_negation_mask);
+    let mut second_negation_mask: Vec<u8> = vec![0u8; 32]; 
+    let second = Transpositions::gen_random_simple(13, 50, &mut second_negation_mask);
+    for i in 0..16 {
+        let temp = first_negation_mask[i];
+        first_negation_mask[i] = first_negation_mask[i + 16];
+        first_negation_mask[i + 16] = temp;
+    }
+
+    for i in 0..50 {
+        first.transpositions[i].0 += 16;
+        first.transpositions[i].1 += 16;
+        transpositions.transpositions.push(first.transpositions[i]);
+        transpositions.transpositions.push(second.transpositions[i]);
+    }
+
+    for i in (0..50).rev() {
+        let idx = 2 * i;
+
+        let a = transpositions.transpositions[idx];
+        let b = transpositions.transpositions[idx + 1];
+
+        transpositions.transpositions.splice(idx..idx+2, replace_disjoint_pair(a, b));
+    }
+
+    (first, transpositions, second, 50, 50)
+}
+
+// Only supports 32 wires for now
+pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap<String, Database>) {
+    let mut t_rewired: Vec<(Transpositions, Permutation)> = Vec::new();
+    let mut rng = rand::rng();
+    let len = c.gates.len();
+    let mut used_wires:[u8;3] = [c.gates[0][0], c.gates[0][1], c.gates[0][2]];
+    // Create and rewire all the RI identities
+    for i in 1..len {
+        let (first, middle, second, _, _) = create_ri_identities_32();
+        let mut wire_shuffle1 = Permutation { data: (0..32).collect() };
+        for idx in 16..32 {
+            wire_shuffle1.data[idx] = 33;
+        }
+        let mut excluded = vec![29,30,31];
+        excluded.shuffle(&mut rng);
+
+        let mut used_targets = Vec::new();
+        let mut count = 0;
+
+        for &val in &used_wires {
+            if val >= 16 {
+                wire_shuffle1.data[excluded[count]] = val as usize;
+                used_targets.push(val as usize);
+                count += 1;
+            }
+        }
+
+        // remaining wires only in upper half
+        let mut remaining: Vec<usize> = (16..32)
+            .filter(|w| !used_targets.contains(w))
+            .collect();
+
+        remaining.shuffle(&mut rng);
+
+        let mut idx = 0;
+        for i in 16..32 {
+            if wire_shuffle1.data[i] == 33 {
+                wire_shuffle1.data[i] = remaining[idx];
+                idx += 1;
+            }
+        }
+        t_rewired.push((first.clone(), wire_shuffle1.clone()));
+
+        used_wires = [c.gates[i][0], c.gates[i][1], c.gates[i][2]];
+        let mut wire_shuffle2 = Permutation { data: (0..32).collect() };
+        for idx in 0..16 {
+            wire_shuffle2.data[idx] = 33;
+        }
+        let mut excluded = vec![13,14,15];
+        excluded.shuffle(&mut rng);
+
+        let mut used_targets = Vec::new();
+        let mut count = 0;
+
+        for &val in &used_wires {
+            if val < 16 {
+                wire_shuffle2.data[excluded[count]] = val as usize;
+                used_targets.push(val as usize);
+                count += 1;
+            }
+        }
+        // remaining wires only in lower half
+        let mut remaining: Vec<usize> = (0..16)
+            .filter(|w| !used_targets.contains(w))
+            .collect();
+
+        remaining.shuffle(&mut rng);
+
+        let mut idx = 0;
+        for i in 0..16 {
+            if wire_shuffle2.data[i] == 33 {
+                wire_shuffle2.data[i] = remaining[idx];
+                idx += 1;
+            }
+        }
+        let mut wire_shufflem = Permutation { data: Vec::with_capacity(32)};
+        wire_shufflem.data.extend_from_slice(&wire_shuffle2.data[..16]);
+        wire_shufflem.data.extend_from_slice(&wire_shuffle1.data[16..]);
+        t_rewired.push((middle, wire_shufflem));
+        t_rewired.push((second, wire_shuffle2));
+    }
+    
+    // Combine the RI identities and seam them together
+    let num_identities = t_rewired.len()/3;
+    for i in (0..num_identities-1).rev() {
+        let idx = 2 + 3*i;
+        let (t1, p1) = t_rewired[idx].clone();
+        let (t2, p2) = t_rewired[idx + 1].clone();
+        let mut combined = Transpositions { transpositions: Vec::new() };
+        for i in 0..50 {
+            combined.transpositions.push(t1.transpositions[i]);
+            combined.transpositions.push(t2.transpositions[i]);
+        }
+        for i in (0..50).rev() {
+            let idx = 2 * i;
+
+            let a = combined.transpositions[idx];
+            let b = combined.transpositions[idx + 1];
+            let ab = replace_disjoint_pair(a, b);
+            combined.transpositions.splice(idx..idx+2, ab);
+        }
+        let mut new_perm = Vec::with_capacity(32);
+        new_perm.extend_from_slice(&p1.data[..16]);
+        new_perm.extend_from_slice(&p2.data[16..]);
+        let new_perm = Permutation{ data: new_perm };
+        let combined = (combined, new_perm);
+        t_rewired.splice(idx..idx+2, [combined]);
+    }
+
+    *c = Transpositions::restricted_to_circuit_rewired_and_insert(t_rewired, c.clone(), 32, &env, &dbs, (16, 28), (0, 12));
+}
+
+// Takes an n and a list of wires that each step will skip over, in order
+// Returns the first escalator, the middle, and the last escalator
+// Middle needs to be reversed when turned into a circuit
+// Returns number of transpositions in first and second
+pub fn create_escalator_identities(
+    n: usize, 
+    first_steps: &Vec<Vec<usize>>, 
+    second_steps: &Vec<Vec<usize>>
+) -> (Transpositions, Transpositions, Transpositions, usize) {
+    let mut allowed_wires: Vec<usize> = Vec::new();
+    let all_wires: Vec<usize> = (0..n).collect();
+    let mut first = Transpositions { transpositions: Vec::new() };
+    let mut middle = Transpositions { transpositions: Vec::new() };
+    let mut second = Transpositions { transpositions: Vec::new() };
+    let m = 10;
+
+    // building first
+    for step in first_steps {
+        for wire in step {
+            allowed_wires.push(*wire);
+        }
+        let restricted: Vec<usize> = all_wires.iter()
+            .filter(|w| !allowed_wires.contains(w))
+            .cloned()
+            .collect();
+        first.transpositions.extend_from_slice(
+            &Transpositions::gen_random_simple_restricted(
+                n, 
+                m, 
+                &mut Vec::new(), 
+                &restricted)
+            .transpositions);
+    }
+
+    // Build second from the `top` to bottom
+    allowed_wires.clear();
+    for step in second_steps.iter().rev() {
+        for wire in step {
+            allowed_wires.push(*wire);
+        }
+        let restricted: Vec<usize> = all_wires.iter()
+            .filter(|w| !allowed_wires.contains(w))
+            .cloned()
+            .collect();
+        second.transpositions.extend_from_slice(
+            &Transpositions::gen_random_simple_restricted(
+                n, 
+                m, 
+                &mut Vec::new(), 
+                &restricted)
+            .transpositions);
+    }
+
+    // Now build middle
+    middle.transpositions.extend_from_slice(&first.transpositions);
+    middle.transpositions.extend_from_slice(&second.transpositions);
+
+    let perm = middle.to_perm(n);
+    middle = Transpositions::from_perm(&perm);
+
+    (first, middle, second, m)
+}
+
+mod test {
+    #[test]
+    fn test_escalator() {
+        use crate::replace::identities::create_escalator_identities;
+        use crate::replace::main_mix::open_all_dbs;
+        use std::io::Write;
+        use rand::seq::SliceRandom;
+        use crate::circuit::circuit::Permutation;
+        use lmdb::Environment;
+        use std::fs::File;
+        use std::path::Path;
+        use crate::CircuitSeq;
+        let env = Environment::new()
+            .set_max_dbs(262)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("failed to open lmdb");
+
+        let dbs = open_all_dbs(&env);
+
+        let mut file = File::create("test_id.txt").expect("Failed to create file");
+        let mut simple: Vec<Vec<usize>> = vec![vec![0,1,2], vec![3,4,5], vec![6,7,8], vec![9,10,11], vec![12,13,14], vec![15,16,17], vec![18,19,20], vec![21,22,23], vec![24,25,26], vec![27,28,29], vec![30,31]];
+        simple.reverse();
+        let (first, middle, second, _) = create_escalator_identities(
+            32,
+            &simple,
+            &simple,
+
+        );
+        let f = first.to_circuit(32, &env, &dbs);
+        let mut m = middle.to_circuit(32, &env, &dbs);
+        m.gates.reverse();
+        let s = second.to_circuit(32, &env, &dbs);
+
+        let mut c = CircuitSeq {gates: Vec::new() };
+        c.gates.extend_from_slice(&f.gates);
+        c.gates.extend_from_slice(&m.gates);
+        c.gates.extend_from_slice(&s.gates);
+        let id = CircuitSeq {gates: Vec::new() };
+        if c.probably_equal(&id, 32, 1000).is_err() {
+            panic!("Not an id");
+        }
+        let mut id = first.restricted_to_circuit(32, &env, &dbs, &vec![]);
+        let stupid_id = CircuitSeq { gates: Vec::new() };
+        if id.probably_equal(&stupid_id, 32, 1000).is_err() {
+            panic!("Not an id identity");
+        }
+        // let repr = id.repr();
+        let mut shuffle: Permutation = Permutation { data: (0..32).collect() };
+        shuffle.data.shuffle(&mut rand::rng());
+        id.rewire(&shuffle, 32);
+        if id.probably_equal(&stupid_id, 32, 1000).is_err() {
+            panic!("Escalators destroyed identity");
+        }
+        let repr = id.repr();
+        writeln!(file, "{}", repr)
+            .expect("Failed to write to file");
+
+        println!("Wrote test circuit to file");
+    }
 }

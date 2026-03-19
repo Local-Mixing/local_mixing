@@ -21,7 +21,7 @@ use crate::{
         random_circuit, shoot_left_vec, shoot_left_vec_track, shoot_random_gate, shoot_right_vec, shoot_right_vec_track
     },
     replace::{
-        identities::{get_random_shuffled_identity, random_id}, pairs::{
+        identities::{get_random_shuffled_identity, random_id, insert_ri_identities,}, pairs::{
             interleave,
             replace_pair_distances_linear,
             replace_pairs,
@@ -34,7 +34,7 @@ use crate::{
             expand_big,
             obfuscate,
             outward_compress,
-        }, transpositions::insert_ri_identities
+        }, 
     },
 };
 
