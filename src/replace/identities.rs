@@ -893,6 +893,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
 // Middle needs to be reversed when turned into a circuit
 // Returns number of transpositions in first and second
 // Structurally, ` first -> middle -> second ` is equal to ` second -> first -> middle ``
+// Currently buggy. Likely to_perm and from_perm code
 pub fn create_escalator_identities(
     n: usize, 
     first_steps: &Vec<Vec<usize>>, 
@@ -960,8 +961,14 @@ pub fn create_escalator_identities(
     middle.transpositions.extend_from_slice(&first.transpositions);
 
     let perm = middle.to_perm(n);
-    middle = Transpositions::from_perm(&perm);
+    let new_middle = Transpositions::from_perm(&perm);
 
+    let c1 = middle.to_circuit(n, env, dbs);
+    let c2 = new_middle.to_circuit(n, env, dbs);
+
+    if c1.probably_equal(&c2, n, 10000).is_err() {
+        panic!("To and from perm failed to maintain functionality");
+    }
     // Use negation mask to update middle
     let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
 
