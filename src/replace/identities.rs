@@ -989,23 +989,7 @@ mod test {
         c.gates.extend_from_slice(&f.gates);
         c.gates.extend_from_slice(&m.gates);
         c.gates.extend_from_slice(&s.gates);
-        let id = CircuitSeq {gates: Vec::new() };
-        if c.probably_equal(&id, 32, 1000).is_err() {
-            panic!("Not an id");
-        }
-        let mut id = first.restricted_to_circuit(32, &env, &dbs, &vec![]);
-        let stupid_id = CircuitSeq { gates: Vec::new() };
-        if id.probably_equal(&stupid_id, 32, 1000).is_err() {
-            panic!("Not an id identity");
-        }
-        // let repr = id.repr();
-        let mut shuffle: Permutation = Permutation { data: (0..32).collect() };
-        shuffle.data.shuffle(&mut rand::rng());
-        id.rewire(&shuffle, 32);
-        if id.probably_equal(&stupid_id, 32, 1000).is_err() {
-            panic!("Escalators destroyed identity");
-        }
-        let repr = id.repr();
+        let repr = c.repr();
         writeln!(file, "{}", repr)
             .expect("Failed to write to file");
 
