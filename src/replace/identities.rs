@@ -919,6 +919,7 @@ pub fn create_escalator_identities(
         for wire in step {
             restricted_wires.push(*wire);
         }
+        println!("{:?}", restricted_wires);
         second.transpositions.extend_from_slice(
             &Transpositions::gen_random_simple_restricted(
                 n, 
