@@ -942,6 +942,8 @@ pub fn create_escalator_identities(
     }
 
     // Now build middle
+    first.transpositions.reverse();
+    second.transpositions.reverse();
     middle.transpositions.extend_from_slice(&first.transpositions);
     middle.transpositions.extend_from_slice(&second.transpositions);
 
