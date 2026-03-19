@@ -907,7 +907,6 @@ pub fn create_escalator_identities(
     let mut negation_mask: Vec<u8> = vec![0u8; n];
 
     // Build second from the `top` to bottom
-    allowed_wires.clear();
     for step in second_steps.iter().rev() {
         for wire in step {
             allowed_wires.push(*wire);
@@ -925,6 +924,7 @@ pub fn create_escalator_identities(
             .transpositions);
     }
 
+    allowed_wires.clear();
     // building first
     for step in first_steps {
         for wire in step {
