@@ -931,7 +931,7 @@ pub fn create_escalator_identities(
 
     allowed_wires.clear();
     // building first
-    for step in first_steps {
+    for step in first_steps.iter().take(first_steps.len() - 1) {
         for wire in step {
             allowed_wires.push(*wire);
         }
@@ -948,7 +948,13 @@ pub fn create_escalator_identities(
                 &restricted)
             .transpositions);
     }
-
+    first.transpositions.extend_from_slice(
+            &Transpositions::gen_random_simple(
+                n, 
+                m, 
+                &mut negation_mask, 
+                )
+            .transpositions);
     // Now build middle
     middle.transpositions.extend_from_slice(&second.transpositions);
     middle.transpositions.extend_from_slice(&first.transpositions);
