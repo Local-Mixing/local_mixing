@@ -151,8 +151,8 @@ impl Transpositions {
         }
 
         swaps.reverse(); 
-        let p = swaps.to_perm();
-        if p == perm {
+        let p = Transpositions{ transpositions: swaps.clone() }.to_perm(32);
+        if p == *perm {
             println!("Sanity check passed");
         }
         Transpositions { transpositions: swaps }
