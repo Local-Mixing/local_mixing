@@ -1402,4 +1402,25 @@ mod tests {
             panic!("Changed functionality somewhere");
         }
     }
+
+    #[test]
+    fn test_transpose_reverse_id() {
+        use crate::replace::main_mix::open_all_dbs;
+        let env = Environment::new()
+            .set_max_dbs(262)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("failed to open lmdb");
+        let dbs = open_all_dbs(&env);
+
+        let mut negation_mask: Vec<u8> = vec![0u8;3];
+        let t = Transpositions::gen_random_simple(32, 50, &mut negation_mask);
+        let mut t2 = t.clone();
+        t2.transpositions.reverse();
+        let c = t.to_circuit(32, &env, &dbs).concat(&t2.to_circuit(32, &env, &dbs));
+        let id = CircuitSeq { gates: Vec::new() };
+        if c.probably_equal(&id, 32, 1000).is_err() {
+            panic!("Stupid identities via tranpose");
+        }
+    }
 }

@@ -892,6 +892,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
 // Returns the first escalator, the middle, and the last escalator
 // Middle needs to be reversed when turned into a circuit
 // Returns number of transpositions in first and second
+// Structurally, ` first -> middle -> second ` is equal to ` second -> first -> middle ``
 pub fn create_escalator_identities(
     n: usize, 
     first_steps: &Vec<Vec<usize>>, 
@@ -904,23 +905,6 @@ pub fn create_escalator_identities(
     let mut second = Transpositions { transpositions: Vec::new() };
     let m = 10;
     let mut negation_mask: Vec<u8> = vec![0u8; n];
-    // building first
-    for step in first_steps {
-        for wire in step {
-            allowed_wires.push(*wire);
-        }
-        let restricted: Vec<usize> = all_wires.iter()
-            .filter(|w| !allowed_wires.contains(w))
-            .cloned()
-            .collect();
-        first.transpositions.extend_from_slice(
-            &Transpositions::gen_random_simple_restricted(
-                n, 
-                m, 
-                &mut negation_mask, 
-                &restricted)
-            .transpositions);
-    }
 
     // Build second from the `top` to bottom
     allowed_wires.clear();
@@ -941,14 +925,59 @@ pub fn create_escalator_identities(
             .transpositions);
     }
 
+    // building first
+    for step in first_steps {
+        for wire in step {
+            allowed_wires.push(*wire);
+        }
+        let restricted: Vec<usize> = all_wires.iter()
+            .filter(|w| !allowed_wires.contains(w))
+            .cloned()
+            .collect();
+        first.transpositions.extend_from_slice(
+            &Transpositions::gen_random_simple_restricted(
+                n, 
+                m, 
+                &mut negation_mask, 
+                &restricted)
+            .transpositions);
+    }
+
     // Now build middle
-    first.transpositions.reverse();
-    second.transpositions.reverse();
-    middle.transpositions.extend_from_slice(&first.transpositions);
     middle.transpositions.extend_from_slice(&second.transpositions);
+    middle.transpositions.extend_from_slice(&first.transpositions);
 
     let perm = middle.to_perm(n);
     middle = Transpositions::from_perm(&perm);
+
+    // Use negation mask to update middle
+    let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
+
+    for (i, (a, b, _)) in middle.transpositions.iter().enumerate() {
+        wire_transpositions.insert(*a, (i, 0));
+        wire_transpositions.insert(*b, (i, 1));
+    }
+
+    const TRANSITION: [[u8; 4]; 2] = [
+        // pos = 0
+        [1, 0, 3, 2],
+        // pos = 1
+        [2, 3, 0, 1],
+    ];
+
+    for (i, val) in negation_mask.into_iter().enumerate() {
+        if val == 1 {
+            if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
+                let &(swap_idx, pos) = swaps;
+                let curr_neg_type = middle.transpositions[swap_idx].2;
+                if pos > 1 || curr_neg_type > 3 {
+                    panic!("Invalid pos or curr_neg_type");
+                }
+                middle.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
+                
+            }
+        }
+    }
 
     (first, middle, second, m)
 }
@@ -959,8 +988,6 @@ mod test {
         use crate::replace::identities::create_escalator_identities;
         use crate::replace::main_mix::open_all_dbs;
         use std::io::Write;
-        use rand::seq::SliceRandom;
-        use crate::circuit::circuit::Permutation;
         use lmdb::Environment;
         use std::fs::File;
         use std::path::Path;
@@ -984,6 +1011,7 @@ mod test {
         );
         let f = first.to_circuit(32, &env, &dbs);
         let mut m = middle.to_circuit(32, &env, &dbs);
+        m.gates.reverse();
         let s = second.to_circuit(32, &env, &dbs);
 
         let mut c = CircuitSeq {gates: Vec::new() };
