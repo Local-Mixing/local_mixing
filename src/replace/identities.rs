@@ -1015,9 +1015,9 @@ mod test {
         let s = second.to_circuit(32, &env, &dbs);
 
         let mut c = CircuitSeq {gates: Vec::new() };
+        c.gates.extend_from_slice(&s.gates);
         c.gates.extend_from_slice(&f.gates);
         c.gates.extend_from_slice(&m.gates);
-        c.gates.extend_from_slice(&s.gates);
         let repr = c.repr();
         writeln!(file, "{}", repr)
             .expect("Failed to write to file");
