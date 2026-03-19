@@ -1001,7 +1001,7 @@ mod test {
         let dbs = open_all_dbs(&env);
 
         let mut file = File::create("test_id.txt").expect("Failed to create file");
-        let mut simple: Vec<Vec<usize>> = vec![vec![0,1,2], vec![3,4,5], vec![6,7,8], vec![9,10,11], vec![12,13,14], vec![15,16,17], vec![18,19,20], vec![21,22,23], vec![24,25,26], vec![27,28,29], vec![30,31]];
+        let mut simple: Vec<Vec<usize>> = vec![vec![0,1], vec![2,3,4,], vec![5,6,7], vec![8,9,10], vec![11,12,13], vec![14,15,16], vec![17,18,19], vec![18,21,22], vec![23,24,25], vec![26,27,28], vec![29,30,31]];
         simple.reverse();
         let (first, middle, second, _) = create_escalator_identities(
             32,
