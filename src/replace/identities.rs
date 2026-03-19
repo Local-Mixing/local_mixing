@@ -939,6 +939,7 @@ pub fn create_escalator_identities(
             .filter(|w| !allowed_wires.contains(w))
             .cloned()
             .collect();
+        println!("{:?}", restricted);
         first.transpositions.extend_from_slice(
             &Transpositions::gen_random_simple_restricted(
                 n, 
