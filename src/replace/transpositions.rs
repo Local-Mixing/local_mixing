@@ -307,7 +307,7 @@ impl Transpositions {
         swap: (u8, u8, u8), 
         env: &lmdb::Environment, 
         dbs: &HashMap<String, Database>,
-        restricted: &Vec<u8>,
+        restricted: &Vec<usize>,
     ) -> Vec<[u8;3]> {
         let (a, b, negation_type) = swap;
         let (db_name, max_entries) = if negation_type == 0 {
@@ -343,7 +343,7 @@ impl Transpositions {
         let mut c;
         loop {
             c = rng.random_range(0..=(n-1) as u8);
-            if c != a && c != b && !restricted.contains(&c){
+            if c != a && c != b && !restricted.contains(&(c as usize)){
                 break;
             }
         }
@@ -458,7 +458,7 @@ impl Transpositions {
         n: usize,
         env: &lmdb::Environment,
         dbs: &HashMap<String, Database>,
-        restricted: &Vec<u8>
+        restricted: &Vec<usize>
     ) -> CircuitSeq {
         let mut gates: Vec<[u8; 3]> = Vec::new();
 
