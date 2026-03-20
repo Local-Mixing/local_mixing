@@ -1063,6 +1063,10 @@ mod test {
         writeln!(file, "{}", repr)
             .expect("Failed to write to file");
 
+        let id = CircuitSeq { gates: Vec::new() };
+        if c.probably_equal(&id, 32, 10000).is_err() {
+            panic!("Not an id");
+        }
         println!("Wrote test circuit to file");
     }
 }
