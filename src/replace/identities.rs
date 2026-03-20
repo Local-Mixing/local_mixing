@@ -909,7 +909,7 @@ pub fn create_escalator_identities(
     let mut first = Transpositions { transpositions: Vec::new() };
     let mut middle = Transpositions { transpositions: Vec::new() };
     let mut second = Transpositions { transpositions: Vec::new() };
-    let m = 10;
+    let m = 30;
     let mut negation_mask: Vec<u8> = vec![0u8; n];
 
     // Build second from the `top` to bottom
