@@ -959,7 +959,7 @@ pub fn create_escalator_identities(
     // Now build middle
     middle.transpositions.extend_from_slice(&second.transpositions);
     middle.transpositions.extend_from_slice(&first.transpositions);
-
+    
     let perm = middle.to_perm(n);
     let mut new_middle = Transpositions::from_perm(&perm);
     
@@ -992,23 +992,6 @@ pub fn create_escalator_identities(
         }
     }
 
-    use crate::replace::main_mix::open_all_dbs;
-
-    // Testing
-    use std::path::Path;
-    let env = Environment::new()
-            .set_max_dbs(262)
-            .set_map_size(800 * 1024 * 1024 * 1024)
-            .open(Path::new("./db"))
-            .expect("failed to open lmdb");
-
-    let dbs = open_all_dbs(&env);
-    let c1 = middle.to_circuit(n, &env, &dbs);
-    let c2 = new_middle.to_circuit(n, &env, &dbs);
-    
-    if c1.probably_equal(&c2, n, 10000).is_err() {
-        panic!("To and from perm failed to maintain functionality");
-    }
     middle = new_middle;
     (first, middle, second, m)
 }
