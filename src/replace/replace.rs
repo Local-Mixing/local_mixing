@@ -1101,7 +1101,8 @@ pub fn compress_lmdb<'a>(
         let min = min(sub_m, max);
 
         let (canon_perm_blob, canon_shuf_blob) = 
-            if sub_m <= max && ((n == 6 && sub_m == 5) || (n == 7 && sub_m  == 4)) {
+            // Disabling SQL
+            if false && sub_m <= max && ((n == 6 && sub_m == 5) || (n == 7 && sub_m  == 4)) {
                 if n == 7 && sub_m == 4 {
                     let stmt: &mut Statement<'_> = &mut *prepared_stmt;
 
