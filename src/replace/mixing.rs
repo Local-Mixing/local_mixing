@@ -825,7 +825,6 @@ pub fn sequential_butterfly(
         // }
         // let random_id = get_random_shuffled_identity(n, env, dbs, _conn, bit_shuf_list, tower_left);
         let first_steps = if last_steps.is_empty() {
-            counter += 1;
             make_steps(n, &circuit.gates[0])
         } else {
             last_steps.clone()
