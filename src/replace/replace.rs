@@ -1431,12 +1431,15 @@ pub fn compress_big_ancillas(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>, 
 ) -> CircuitSeq {
-    let table = format!("n{}m{}", 7, 4);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
-    let mut stmt = conn.prepare(&query_limit).unwrap();
-    let table = format!("n{}m{}", 6, 5);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
-    let mut stmt2 = conn.prepare(&query_limit).unwrap();
+    // let table = format!("n{}m{}", 7, 4);
+    // let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    // let mut stmt = conn.prepare(&query_limit).unwrap();
+    // let table = format!("n{}m{}", 6, 5);
+    // let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    // let mut stmt2 = conn.prepare(&query_limit).unwrap();
+
+    let mut stmt = conn.prepare("SELECT 1 WHERE 0=1").unwrap();
+    let mut stmt2 = conn.prepare("SELECT 1 WHERE 0=1").unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
