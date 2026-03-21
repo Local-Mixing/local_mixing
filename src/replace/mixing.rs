@@ -769,7 +769,6 @@ pub fn make_steps(n: usize, gate: &[u8; 3]) -> Vec<Vec<usize>> {
     // Ensure ends must be size 3
     assert!(steps.first().unwrap().len() == 3);
     assert!(steps.last().unwrap().len() == 3);
-
     steps
 }
 
@@ -815,7 +814,7 @@ pub fn sequential_butterfly(
     let mut gates_track: Vec<([u8;3], u8)> = Vec::new();
     gates_track.push((circuit.gates[0], 0));
     let mut last_steps: Vec<Vec<usize>> = Vec::new();
-    for i in 1..circuit.gates.len() {
+    for i in 1..len {
         // let random_len = rng.random_range(diehard_len-100..diehard_len+100);
         // let random_circuit = random_circuit(n, random_len);
         // for ri in 0..random_circuit.gates.len() {
@@ -826,6 +825,7 @@ pub fn sequential_butterfly(
         // }
         // let random_id = get_random_shuffled_identity(n, env, dbs, _conn, bit_shuf_list, tower_left);
         let first_steps = if last_steps.is_empty() {
+            counter += 1;
             make_steps(n, &circuit.gates[0])
         } else {
             last_steps.clone()
