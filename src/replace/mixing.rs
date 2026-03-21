@@ -751,13 +751,14 @@ pub fn make_steps(n: usize, gate: &[u8; 3]) -> Vec<Vec<usize>> {
     small_steps.shuffle(&mut rng);
 
     let mut small_count = 0;
+    let small_len = small_steps.len();
     let total = large_steps.len() + small_steps.len();
     let mut positions: Vec<usize> = (1..total-1).collect();
     positions.shuffle(&mut rng);
     positions = vec![positions[0], positions[1]];
     positions.sort();
     for i in 0..total {
-        if i == positions[small_count] {
+        if i == positions[small_count] && small_count < small_len {
             steps.push(small_steps[small_count].clone());
             small_count += 1;
         } else {
