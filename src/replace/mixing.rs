@@ -805,7 +805,7 @@ pub fn sequential_butterfly(
     let mut len = circuit.gates.len();
     shoot_random_gate(&mut circuit, len * 50);
     println!("   {}/{}: Step 1a: Inserting Identities", curr_round, last_round);
-    insert_ri_identities(&mut circuit, &env, &dbs);
+    // insert_ri_identities(&mut circuit, &env, &dbs);
     if circuit.probably_equal(&c, n, 1000).is_err() {
         panic!("Inserting identities failed");
     }
