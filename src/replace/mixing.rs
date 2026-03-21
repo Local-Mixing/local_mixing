@@ -21,7 +21,7 @@ use crate::{
         random_circuit, shoot_left_vec, shoot_left_vec_track, shoot_random_gate, shoot_right_vec, shoot_right_vec_track
     },
     replace::{
-        identities::{get_random_shuffled_identity, random_id, insert_ri_identities, create_escalator_identities}, pairs::{
+        identities::{create_escalator_identities, create_escalator_identities_tracked, get_random_shuffled_identity, insert_ri_identities, random_id}, pairs::{
             interleave,
             replace_pair_distances_linear,
             replace_pairs,
@@ -702,6 +702,76 @@ pub fn abutterfly_big(
     acc
 }
 
+pub fn make_steps(n: usize, gate: &[u8; 3]) -> Vec<Vec<usize>> {
+    let mut rng = rand::rng();
+
+    let gate: Vec<usize> = gate.iter().map(|&x| x as usize).collect();
+
+    let mut remaining: Vec<usize> = (0..n)
+        .filter(|x| !gate.contains(x))
+        .collect();
+
+    remaining.shuffle(&mut rng);
+
+    let mut steps: Vec<Vec<usize>> = Vec::new();
+
+    let mut i = 0;
+    let rem = remaining.len() % 3;
+
+    let mut small_steps: Vec<Vec<usize>> = Vec::new();
+    let mut large_steps: Vec<Vec<usize>> = Vec::new();
+
+    // size 2 steps
+    if rem == 1 && remaining.len() >= 4 {
+        let chunk = &remaining[i..i+4];
+        small_steps.push(vec![chunk[0], chunk[1]]);
+        small_steps.push(vec![chunk[2], chunk[3]]);
+        i += 4;
+    } else if rem == 2 {
+        let chunk = &remaining[i..i+2];
+        small_steps.push(vec![chunk[0], chunk[1]]);
+        i += 2;
+    }
+
+    // Normal rise steps
+    while i < remaining.len() {
+        large_steps.push(vec![
+            remaining[i],
+            remaining[i + 1],
+            remaining[i + 2],
+        ]);
+        i += 3;
+    }
+
+    // Insert fixed into 3 rise steps
+    large_steps.push(gate);
+
+    // Shuffle
+    large_steps.shuffle(&mut rng);
+    small_steps.shuffle(&mut rng);
+
+    let mut small_count = 0;
+    let total = large_steps.len() + small_steps.len();
+    let mut positions: Vec<usize> = (1..total-1).collect();
+    positions.shuffle(&mut rng);
+    positions = vec![positions[0], positions[1]];
+    positions.sort();
+    for i in 0..total {
+        if i == positions[small_count] {
+            steps.push(small_steps[small_count].clone());
+            small_count += 1;
+        } else {
+            steps.push(large_steps[i - small_count].clone());
+        }
+    }
+
+    // Ensure ends must be size 3
+    assert!(steps.first().unwrap().len() == 3);
+    assert!(steps.last().unwrap().len() == 3);
+
+    steps
+}
+
 pub fn sequential_butterfly(
     c: &CircuitSeq,
     _conn: &mut Connection,
@@ -743,6 +813,7 @@ pub fn sequential_butterfly(
     // After, `4` means to collide to the left and `5` to collide to the right
     let mut gates_track: Vec<([u8;3], u8)> = Vec::new();
     gates_track.push((circuit.gates[0], 0));
+    let mut last_steps: Vec<Vec<usize>> = Vec::new();
     for i in 1..circuit.gates.len() {
         // let random_len = rng.random_range(diehard_len-100..diehard_len+100);
         // let random_circuit = random_circuit(n, random_len);
@@ -752,17 +823,28 @@ pub fn sequential_butterfly(
         // for ri in (0..random_circuit.gates.len()).rev() {
         //     gates_track.push((random_circuit.gates[ri], 2));
         // }
-        let random_id = get_random_shuffled_identity(n, env, dbs, _conn, bit_shuf_list, tower_left);
-        let id = CircuitSeq { gates: Vec::new() };
-        if random_id.probably_equal(&id, n, 1000).is_err(){
-            panic!("Not an identity");
-        }
-        for ri in 0..random_id.gates.len()/2 {
-            gates_track.push((random_id.gates[ri], 1));
-        }
-        for ri in random_id.gates.len()/2..random_id.gates.len() {
-            gates_track.push((random_id.gates[ri], 2));
-        }
+        // let random_id = get_random_shuffled_identity(n, env, dbs, _conn, bit_shuf_list, tower_left);
+        let first_steps = if last_steps.is_empty() {
+            make_steps(n, &circuit.gates[0])
+        } else {
+            last_steps.clone()
+        };
+
+        let curr_gate = circuit.gates[i];
+        let second_steps = make_steps(n, &curr_gate);
+        let (gt, _, _, _, _) = create_escalator_identities_tracked(n, &first_steps, &second_steps, env, dbs);
+        last_steps = second_steps;
+        // let id = CircuitSeq { gates: Vec::new() };
+        // if random_id.probably_equal(&id, n, 1000).is_err(){
+        //     panic!("Not an identity");
+        // }
+        // for ri in 0..random_id.gates.len()/2 {
+        //     gates_track.push((random_id.gates[ri], 1));
+        // }
+        // for ri in random_id.gates.len()/2..random_id.gates.len() {
+        //     gates_track.push((random_id.gates[ri], 2));
+        // }
+        gates_track.extend_from_slice(&gt);
         gates_track.push((circuit.gates[i], 0));
     }
 
