@@ -805,7 +805,7 @@ pub fn sequential_butterfly(
     let mut len = circuit.gates.len();
     shoot_random_gate(&mut circuit, len * 50);
     println!("   {}/{}: Step 1a: Inserting Identities", curr_round, last_round);
-    // insert_ri_identities(&mut circuit, &env, &dbs);
+    insert_ri_identities(&mut circuit, &env, &dbs);
     if circuit.probably_equal(&c, n, 1000).is_err() {
         panic!("Inserting identities failed");
     }
@@ -815,14 +815,14 @@ pub fn sequential_butterfly(
     gates_track.push((circuit.gates[0], 0));
     let mut last_steps: Vec<Vec<usize>> = Vec::new();
     for i in 1..len {
-        let random_len = rng.random_range(diehard_len-100..diehard_len+100);
-        let random_circuit = random_circuit(n, random_len);
-        for ri in 0..random_circuit.gates.len() {
-            gates_track.push((random_circuit.gates[ri], 1));
-        }
-        for ri in (0..random_circuit.gates.len()).rev() {
-            gates_track.push((random_circuit.gates[ri], 2));
-        }
+        // let random_len = rng.random_range(diehard_len-100..diehard_len+100);
+        // let random_circuit = random_circuit(n, random_len);
+        // for ri in 0..random_circuit.gates.len() {
+        //     gates_track.push((random_circuit.gates[ri], 1));
+        // }
+        // for ri in (0..random_circuit.gates.len()).rev() {
+        //     gates_track.push((random_circuit.gates[ri], 2));
+        // }
         // let random_id = get_random_shuffled_identity(n, env, dbs, _conn, bit_shuf_list, tower_left);
         // let first_steps = if last_steps.is_empty() {
         //     make_steps(n, &circuit.gates[0])
@@ -845,18 +845,18 @@ pub fn sequential_butterfly(
         //     gates_track.push((random_id.gates[ri], 2));
         // }
         // gates_track.extend_from_slice(&gt);
-        gates_track.push((circuit.gates[i], 0));
+        // gates_track.push((circuit.gates[i], 0));
     }
 
-    // for i in 0..circuit.gates.len() {
-    //     if i%100 < 35 {
-    //         gates_track.push((circuit.gates[i], 1));
-    //     } else if i%100 > 65 {
-    //         gates_track.push((circuit.gates[i], 2));
-    //     } else {
-    //         gates_track.push((circuit.gates[i], 0));
-    //     }
-    // }
+    for i in 0..circuit.gates.len() {
+        if i%100 < 35 {
+            gates_track.push((circuit.gates[i], 1));
+        } else if i%100 > 65 {
+            gates_track.push((circuit.gates[i], 2));
+        } else {
+            gates_track.push((circuit.gates[i], 0));
+        }
+    }
     len = gates_track.len();
     println!("  {}/{}: Step 2a: Shooting R's left", curr_round, last_round);
     println!("  {}/{}: Mode: \n Additional rounds: {} \n Forward Order: {}", curr_round, last_round, shoot_more_left, reverse_order_left == false);
