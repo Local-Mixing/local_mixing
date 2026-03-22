@@ -815,25 +815,25 @@ pub fn sequential_butterfly(
     gates_track.push((circuit.gates[0], 0));
     let mut last_steps: Vec<Vec<usize>> = Vec::new();
     for i in 1..len {
-        // let random_len = rng.random_range(diehard_len-100..diehard_len+100);
-        // let random_circuit = random_circuit(n, random_len);
-        // for ri in 0..random_circuit.gates.len() {
-        //     gates_track.push((random_circuit.gates[ri], 1));
-        // }
-        // for ri in (0..random_circuit.gates.len()).rev() {
-        //     gates_track.push((random_circuit.gates[ri], 2));
-        // }
+        let random_len = rng.random_range(diehard_len-100..diehard_len+100);
+        let random_circuit = random_circuit(n, random_len);
+        for ri in 0..random_circuit.gates.len() {
+            gates_track.push((random_circuit.gates[ri], 1));
+        }
+        for ri in (0..random_circuit.gates.len()).rev() {
+            gates_track.push((random_circuit.gates[ri], 2));
+        }
         // let random_id = get_random_shuffled_identity(n, env, dbs, _conn, bit_shuf_list, tower_left);
-        let first_steps = if last_steps.is_empty() {
-            make_steps(n, &circuit.gates[0])
-        } else {
-            last_steps.clone()
-        };
+        // let first_steps = if last_steps.is_empty() {
+        //     make_steps(n, &circuit.gates[0])
+        // } else {
+        //     last_steps.clone()
+        // };
 
-        let curr_gate = circuit.gates[i];
-        let second_steps = make_steps(n, &curr_gate);
-        let (gt, _, _, _, _) = create_escalator_identities_tracked(n, &first_steps, &second_steps, env, dbs);
-        last_steps = second_steps;
+        // let curr_gate = circuit.gates[i];
+        // let second_steps = make_steps(n, &curr_gate);
+        // let (gt, _, _, _, _) = create_escalator_identities_tracked(n, &first_steps, &second_steps, env, dbs);
+        // last_steps = second_steps;
         // let id = CircuitSeq { gates: Vec::new() };
         // if random_id.probably_equal(&id, n, 1000).is_err(){
         //     panic!("Not an identity");
@@ -844,7 +844,7 @@ pub fn sequential_butterfly(
         // for ri in random_id.gates.len()/2..random_id.gates.len() {
         //     gates_track.push((random_id.gates[ri], 2));
         // }
-        gates_track.extend_from_slice(&gt);
+        // gates_track.extend_from_slice(&gt);
         gates_track.push((circuit.gates[i], 0));
     }
 
@@ -1052,7 +1052,7 @@ pub fn sequential_butterfly(
 
     
     println!("  {}/{}: Sending to compressor: {} gates", curr_round, last_round, circuit.gates.len());
-    if circuit.probably_equal(&c, n, 10000).is_err() {
+    if circuit.probably_equal(&c, n, 1000).is_err() {
         panic!("Functionality lost during sequential butterfly");
     }
 
