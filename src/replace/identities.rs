@@ -1154,9 +1154,9 @@ mod test {
             vec![29, 30, 31],
         ];
         // simple1.shuffle(&mut rand::rng());
-        // simple2.shuffle(&mut rand::rng());
+        simple2.shuffle(&mut rand::rng());
         simple1.reverse();
-        simple2.reverse();
+        // simple2.reverse();
         let (c, first, middle, second, _) = create_escalator_identities(
             32,
             &simple1,
