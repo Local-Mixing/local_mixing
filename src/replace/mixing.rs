@@ -805,10 +805,10 @@ pub fn sequential_butterfly(
     let mut len = circuit.gates.len();
     shoot_random_gate(&mut circuit, len * 50);
     println!("   {}/{}: Step 1a: Inserting Identities", curr_round, last_round);
-    insert_ri_identities(&mut circuit, &env, &dbs);
-    if circuit.probably_equal(&c, n, 1000).is_err() {
-        panic!("Inserting identities failed");
-    }
+    // insert_ri_identities(&mut circuit, &env, &dbs);
+    // if circuit.probably_equal(&c, n, 1000).is_err() {
+    //     panic!("Inserting identities failed");
+    // }
     // Keeps track of the gates and whether it can stay in place `0`, needs to be shot left `1`, or needs to be shot right `2`
     // After, `4` means to collide to the left and `5` to collide to the right
     let mut gates_track: Vec<([u8;3], u8)> = Vec::new();
@@ -824,16 +824,16 @@ pub fn sequential_butterfly(
         //     gates_track.push((random_circuit.gates[ri], 2));
         // }
         // let random_id = get_random_shuffled_identity(n, env, dbs, _conn, bit_shuf_list, tower_left);
-        // let first_steps = if last_steps.is_empty() {
-        //     make_steps(n, &circuit.gates[0])
-        // } else {
-        //     last_steps.clone()
-        // };
+        let first_steps = if last_steps.is_empty() {
+            make_steps(n, &circuit.gates[0])
+        } else {
+            last_steps.clone()
+        };
 
-        // let curr_gate = circuit.gates[i];
-        // let second_steps = make_steps(n, &curr_gate);
-        // let (gt, _, _, _, _) = create_escalator_identities_tracked(n, &first_steps, &second_steps, env, dbs);
-        // last_steps = second_steps;
+        let curr_gate = circuit.gates[i];
+        let second_steps = make_steps(n, &curr_gate);
+        let (gt, _, _, _, _) = create_escalator_identities_tracked(n, &first_steps, &second_steps, env, dbs);
+        last_steps = second_steps;
         // let id = CircuitSeq { gates: Vec::new() };
         // if random_id.probably_equal(&id, n, 1000).is_err(){
         //     panic!("Not an identity");
@@ -844,19 +844,19 @@ pub fn sequential_butterfly(
         // for ri in random_id.gates.len()/2..random_id.gates.len() {
         //     gates_track.push((random_id.gates[ri], 2));
         // }
-        // gates_track.extend_from_slice(&gt);
-        // gates_track.push((circuit.gates[i], 0));
+        gates_track.extend_from_slice(&gt);
+        gates_track.push((circuit.gates[i], 0));
     }
 
-    for i in 0..circuit.gates.len() {
-        if i%100 < 35 {
-            gates_track.push((circuit.gates[i], 1));
-        } else if i%100 > 65 {
-            gates_track.push((circuit.gates[i], 2));
-        } else {
-            gates_track.push((circuit.gates[i], 0));
-        }
-    }
+    // for i in 0..circuit.gates.len() {
+    //     if i%100 < 35 {
+    //         gates_track.push((circuit.gates[i], 1));
+    //     } else if i%100 > 65 {
+    //         gates_track.push((circuit.gates[i], 2));
+    //     } else {
+    //         gates_track.push((circuit.gates[i], 0));
+    //     }
+    // }
     len = gates_track.len();
     println!("  {}/{}: Step 2a: Shooting R's left", curr_round, last_round);
     println!("  {}/{}: Mode: \n Additional rounds: {} \n Forward Order: {}", curr_round, last_round, shoot_more_left, reverse_order_left == false);
