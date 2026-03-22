@@ -1057,57 +1057,57 @@ pub fn sequential_butterfly(
     }
 
     let mut acc = circuit;
-    let mut stable_count = 0;
-    while stable_count < 12 {
-        let before = acc.gates.len();
+    // let mut stable_count = 0;
+    // while stable_count < 12 {
+    //     let before = acc.gates.len();
 
-        let k = if before <= 1500 {
-            1
-        } else {
-            (before + 1499) / 1500 
-        };
+    //     let k = if before <= 1500 {
+    //         1
+    //     } else {
+    //         (before + 1499) / 1500 
+    //     };
 
-        let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
-        let t4 = Instant::now();
-        let compressed_chunks: Vec<Vec<[u8;3]>> =
-        chunks
-            .into_par_iter()
-            .map(|chunk| {
-                let sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+    //     let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
+    //     let t4 = Instant::now();
+    //     let compressed_chunks: Vec<Vec<[u8;3]>> =
+    //     chunks
+    //         .into_par_iter()
+    //         .map(|chunk| {
+    //             let sub = CircuitSeq { gates: chunk };
+    //             let mut thread_conn = Connection::open_with_flags(
+    //                 "circuits.db",
+    //                 OpenFlags::SQLITE_OPEN_READ_ONLY,
+    //             )
+    //             .expect("Failed to open read-only connection");
                 
-                compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
-            })
-            .collect();
-        COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
-        acc.gates = new_gates;
-        if SHOULD_DUMP.load(Ordering::SeqCst) {
-            {
-            let mut guard = CURRENT_ACC.lock().unwrap();
-            *guard = Some(acc.clone());
-        }
+    //             compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+    //         })
+    //         .collect();
+    //     COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    //     let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
+    //     acc.gates = new_gates;
+    //     if SHOULD_DUMP.load(Ordering::SeqCst) {
+    //         {
+    //         let mut guard = CURRENT_ACC.lock().unwrap();
+    //         *guard = Some(acc.clone());
+    //     }
 
-            dump_and_exit();
-        }
-        let after = acc.gates.len();
-        if after == before {
-            stable_count += 1;
-        } else {
-            stable_count = 0;
-        }
+    //         dump_and_exit();
+    //     }
+    //     let after = acc.gates.len();
+    //     if after == before {
+    //         stable_count += 1;
+    //     } else {
+    //         stable_count = 0;
+    //     }
 
-        let mut buf = [0u8; 1];
-        if let Ok(n) = io::stdin().read(&mut buf) {
-            if n > 0 && buf[0] == b'\n' {
-                println!("  {}/{}: Current gates: {} gates", curr_round, last_round, after);
-            }
-        }
-    }
+    //     let mut buf = [0u8; 1];
+    //     if let Ok(n) = io::stdin().read(&mut buf) {
+    //         if n > 0 && buf[0] == b'\n' {
+    //             println!("  {}/{}: Current gates: {} gates", curr_round, last_round, after);
+    //         }
+    //     }
+    // }
     acc
 }
 
