@@ -1003,16 +1003,17 @@ pub fn create_escalator_identities_tracked(
     env: &Environment,
     dbs: &HashMap<String, Database>,
 ) -> (Vec<([u8;3], u8)>, Transpositions, Transpositions, Transpositions, usize) {
+    let mut first = Transpositions { transpositions: Vec::new() };
+    let mut middle = Transpositions { transpositions: Vec::new() };
+    let mut second = Transpositions { transpositions: Vec::new() };
+    let mut gates_track: Vec<([u8;3], u8)> = Vec::new();
+    let m = 10;
     loop { 
         let mut allowed_wires: Vec<usize> = Vec::new();
         let all_wires: Vec<usize> = (0..n).collect();
         let mut restricted_wires: Vec<usize> = Vec::new();
         let mut first_circuit = CircuitSeq { gates: Vec::new() };
         let mut second_circuit = CircuitSeq { gates: Vec::new() };
-        let mut first = Transpositions { transpositions: Vec::new() };
-        let mut middle = Transpositions { transpositions: Vec::new() };
-        let mut second = Transpositions { transpositions: Vec::new() };
-        let m = 10;
         let mut negation_mask: Vec<u8> = vec![0u8; n];
 
         // Build second from the `top` to bottom
@@ -1091,7 +1092,6 @@ pub fn create_escalator_identities_tracked(
         let mut middle_circuit = middle.to_circuit(n, env, dbs);
         middle_circuit.gates.reverse();
         let circuit = first_circuit.concat(&middle_circuit).concat(&second_circuit);
-        let mut gates_track: Vec<([u8;3], u8)> = Vec::new();
         for i in 0..first_circuit.gates.len() {
             gates_track.push((first_circuit.gates[i], 1));
         }
@@ -1104,6 +1104,11 @@ pub fn create_escalator_identities_tracked(
         let id = CircuitSeq {gates: Vec::new() };
         if circuit.probably_equal(&id, n, 1000).is_ok() {
             break;
+        } else {
+            first.transpositions.clear();
+            middle.transpositions.clear();
+            second.transpositions.clear();
+            gates_track.clear
         }
     }
     (gates_track, first, middle, second, m)
