@@ -1108,7 +1108,7 @@ pub fn create_escalator_identities_tracked(
             first.transpositions.clear();
             middle.transpositions.clear();
             second.transpositions.clear();
-            gates_track.clear
+            gates_track.clear();
         }
     }
     (gates_track, first, middle, second, m)
