@@ -911,90 +911,104 @@ pub fn create_escalator_identities(
     let mut second = Transpositions { transpositions: Vec::new() };
     let mut first_middle_circuit = CircuitSeq { gates: Vec::new() };
     let mut second_middle_circuit = CircuitSeq { gates: Vec::new() };
+    let mut middle_circuit;
     let m = 30;
     let mut negation_mask: Vec<u8> = vec![0u8; n];
-
-    // Build second from the `top` to bottom
-    let add_transps = Transpositions::gen_random_simple(n, m, &mut negation_mask);
-    second.transpositions.extend_from_slice(&add_transps.transpositions);
-    let sc = add_transps.to_circuit(n, env, dbs);
-    second_middle_circuit.gates.extend_from_slice(&sc.gates);
-    for step in second_steps.iter().take(second_steps.len() - 1) {
-        for wire in step {
-            restricted_wires.push(*wire);
-        }
-        let add_transps = Transpositions::gen_random_simple_restricted(n, m, &mut negation_mask, &restricted_wires);
+    loop {
+        // Build second from the `top` to bottom
+        let add_transps = Transpositions::gen_random_simple(n, m, &mut negation_mask);
         second.transpositions.extend_from_slice(&add_transps.transpositions);
-        let sc = add_transps.restricted_to_circuit(n, env, dbs, &restricted_wires);
-        second_circuit.gates.extend_from_slice(&sc.gates);
-    }
-
-    allowed_wires.clear();
-    // building first
-    for step in first_steps.iter().take(first_steps.len() - 1) {
-        for wire in step {
-            allowed_wires.push(*wire);
+        let sc = add_transps.to_circuit(n, env, dbs);
+        second_middle_circuit.gates.extend_from_slice(&sc.gates);
+        for step in second_steps.iter().take(second_steps.len() - 1) {
+            for wire in step {
+                restricted_wires.push(*wire);
+            }
+            let add_transps = Transpositions::gen_random_simple_restricted(n, m, &mut negation_mask, &restricted_wires);
+            second.transpositions.extend_from_slice(&add_transps.transpositions);
+            let sc = add_transps.restricted_to_circuit(n, env, dbs, &restricted_wires);
+            second_circuit.gates.extend_from_slice(&sc.gates);
         }
-        let restricted: Vec<usize> = all_wires.iter()
-            .filter(|w| !allowed_wires.contains(w))
-            .cloned()
-            .collect();
-        let add_transpf = Transpositions::gen_random_simple_restricted(n, m, &mut negation_mask, &restricted);
+
+        allowed_wires.clear();
+        // building first
+        for step in first_steps.iter().take(first_steps.len() - 1) {
+            for wire in step {
+                allowed_wires.push(*wire);
+            }
+            let restricted: Vec<usize> = all_wires.iter()
+                .filter(|w| !allowed_wires.contains(w))
+                .cloned()
+                .collect();
+            let add_transpf = Transpositions::gen_random_simple_restricted(n, m, &mut negation_mask, &restricted);
+            first.transpositions.extend_from_slice(&add_transpf.transpositions);
+            let fc = add_transpf.restricted_to_circuit(n, env, dbs, &restricted);
+            first_circuit.gates.extend_from_slice(&fc.gates);
+        }
+        let add_transpf = Transpositions::gen_random_simple(n, m, &mut negation_mask);
         first.transpositions.extend_from_slice(&add_transpf.transpositions);
-        let fc = add_transpf.restricted_to_circuit(n, env, dbs, &restricted);
-        first_circuit.gates.extend_from_slice(&fc.gates);
-    }
-    let add_transpf = Transpositions::gen_random_simple(n, m, &mut negation_mask);
-    first.transpositions.extend_from_slice(&add_transpf.transpositions);
-    let fc = add_transpf.to_circuit(n, env, dbs);
-    first_middle_circuit.gates.extend_from_slice(&fc.gates);
+        let fc = add_transpf.to_circuit(n, env, dbs);
+        first_middle_circuit.gates.extend_from_slice(&fc.gates);
 
-    // Now build middle
-    middle.transpositions.extend_from_slice(&second.transpositions);
-    middle.transpositions.extend_from_slice(&first.transpositions);
-    
-    let perm = middle.to_perm(n);
-    let mut new_middle = Transpositions::from_perm(&perm);
-    
-    // Use negation mask to update middle
-    let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
+        // Now build middle
+        middle.transpositions.extend_from_slice(&second.transpositions);
+        middle.transpositions.extend_from_slice(&first.transpositions);
+        
+        let perm = middle.to_perm(n);
+        let mut new_middle = Transpositions::from_perm(&perm);
+        
+        // Use negation mask to update middle
+        let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
 
-    for (i, (a, b, _)) in new_middle.transpositions.iter().enumerate() {
-        wire_transpositions.insert(*a, (i, 0));
-        wire_transpositions.insert(*b, (i, 1));
-    }
+        for (i, (a, b, _)) in new_middle.transpositions.iter().enumerate() {
+            wire_transpositions.insert(*a, (i, 0));
+            wire_transpositions.insert(*b, (i, 1));
+        }
 
-    const TRANSITION: [[u8; 4]; 2] = [
-        // pos = 0
-        [1, 0, 3, 2],
-        // pos = 1
-        [2, 3, 0, 1],
-    ];
+        const TRANSITION: [[u8; 4]; 2] = [
+            // pos = 0
+            [1, 0, 3, 2],
+            // pos = 1
+            [2, 3, 0, 1],
+        ];
 
-    for (i, val) in negation_mask.into_iter().enumerate() {
-        if val == 1 {
-            if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
-                let &(swap_idx, pos) = swaps;
-                let curr_neg_type = new_middle.transpositions[swap_idx].2;
-                if pos > 1 || curr_neg_type > 3 {
-                    panic!("Invalid pos or curr_neg_type");
+        for (i, val) in negation_mask.into_iter().enumerate() {
+            if val == 1 {
+                if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
+                    let &(swap_idx, pos) = swaps;
+                    let curr_neg_type = new_middle.transpositions[swap_idx].2;
+                    if pos > 1 || curr_neg_type > 3 {
+                        panic!("Invalid pos or curr_neg_type");
+                    }
+                    new_middle.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
+                    
                 }
-                new_middle.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
-                
             }
         }
-    }
 
-    middle = new_middle;
+        middle = new_middle;
 
-    let mut middle_circuit = middle.to_circuit(n, env, dbs);
-    middle_circuit.gates.reverse();
-    middle_circuit = first_middle_circuit.concat(&middle_circuit).concat(&second_middle_circuit);
-    let circuit = first_circuit.concat(&middle_circuit).concat(&second_circuit);
+        middle_circuit = middle.to_circuit(n, env, dbs);
+        middle_circuit.gates.reverse();
+        middle_circuit = first_middle_circuit.concat(&middle_circuit).concat(&second_middle_circuit);
+        let circuit = first_circuit.concat(&middle_circuit).concat(&second_circuit);
 
-    let id = CircuitSeq {gates: Vec::new() };
-    if circuit.probably_equal(&id, n, 10000).is_err() {
-        panic!("Not an id");
+        let id = CircuitSeq { gates: Vec::new() };
+        if circuit.probably_equal(&id, n, 10000).is_err() {
+            // Reset all variables
+            restricted_wires.clear();
+            first_circuit.gates.clear();
+            second_circuit.gates.clear();
+            first.transpositions.clear();
+            middle.transpositions.clear();
+            second.transpositions.clear();
+            first_middle_circuit.gates.clear();
+            second_middle_circuit.gates.clear();
+            middle_circuit.gates.clear();
+            negation_mask = vec![0u8; n];
+        } else {
+            break
+        }
     }
     (first_circuit, middle_circuit, second_circuit, m)
 }
