@@ -1007,7 +1007,7 @@ pub fn create_escalator_identities_tracked(
     let mut middle = Transpositions { transpositions: Vec::new() };
     let mut second = Transpositions { transpositions: Vec::new() };
     let mut gates_track: Vec<([u8;3], u8)> = Vec::new();
-    let m = 10;
+    let m = 30;
     loop { 
         let mut allowed_wires: Vec<usize> = Vec::new();
         let all_wires: Vec<usize> = (0..n).collect();
