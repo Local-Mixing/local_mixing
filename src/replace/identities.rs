@@ -900,7 +900,7 @@ pub fn create_escalator_identities(
     second_steps: &Vec<Vec<usize>>,
     env: &Environment,
     dbs: &HashMap<String, Database>,
-) -> (CircuitSeq, Transpositions, Transpositions, Transpositions, usize) {
+) -> (CircuitSeq, CircuitSeq, CircuitSeq, usize) {
     let mut allowed_wires: Vec<usize> = Vec::new();
     let all_wires: Vec<usize> = (0..n).collect();
     let mut restricted_wires: Vec<usize> = Vec::new();
@@ -909,6 +909,8 @@ pub fn create_escalator_identities(
     let mut first = Transpositions { transpositions: Vec::new() };
     let mut middle = Transpositions { transpositions: Vec::new() };
     let mut second = Transpositions { transpositions: Vec::new() };
+    let mut first_middle_circuit = CircuitSeq { gates: Vec::new() };
+    let mut second_middle_circuit = CircuitSeq { gates: Vec::new() };
     let m = 30;
     let mut negation_mask: Vec<u8> = vec![0u8; n];
 
@@ -916,7 +918,7 @@ pub fn create_escalator_identities(
     let add_transps = Transpositions::gen_random_simple(n, m, &mut negation_mask);
     second.transpositions.extend_from_slice(&add_transps.transpositions);
     let sc = add_transps.to_circuit(n, env, dbs);
-    second_circuit.gates.extend_from_slice(&sc.gates);
+    second_middle_circuit.gates.extend_from_slice(&sc.gates);
     for step in second_steps.iter().take(second_steps.len() - 1) {
         for wire in step {
             restricted_wires.push(*wire);
@@ -945,7 +947,7 @@ pub fn create_escalator_identities(
     let add_transpf = Transpositions::gen_random_simple(n, m, &mut negation_mask);
     first.transpositions.extend_from_slice(&add_transpf.transpositions);
     let fc = add_transpf.to_circuit(n, env, dbs);
-    first_circuit.gates.extend_from_slice(&fc.gates);
+    first_middle_circuit.gates.extend_from_slice(&fc.gates);
 
     // Now build middle
     middle.transpositions.extend_from_slice(&second.transpositions);
@@ -987,13 +989,14 @@ pub fn create_escalator_identities(
 
     let mut middle_circuit = middle.to_circuit(n, env, dbs);
     middle_circuit.gates.reverse();
+    middle_circuit = first_middle_circuit.concat(&middle_circuit).concat(&second_middle_circuit);
     let circuit = first_circuit.concat(&middle_circuit).concat(&second_circuit);
 
     let id = CircuitSeq {gates: Vec::new() };
     if circuit.probably_equal(&id, n, 10000).is_err() {
         panic!("Not an id");
     }
-    (circuit, first, middle, second, m)
+    (first_circuit, middle_circuit, second_circuit, m)
 }
 
 pub fn create_escalator_identities_tracked(
@@ -1164,22 +1167,18 @@ mod test {
         // simple2.shuffle(&mut rand::rng());
         // simple1.reverse();
         simple2.reverse();
-        let (c, first, middle, second, _) = create_escalator_identities(
+        let (first, mut middle, second, _) = create_escalator_identities(
             32,
             &simple1,
             &simple2,
             &env,
             &dbs
         );
-        let f = first.to_circuit(32, &env, &dbs);
-        let mut m = middle.to_circuit(32, &env, &dbs);
-        m.gates.reverse();
-        let s = second.to_circuit(32, &env, &dbs);
-
-        let mut c_test = CircuitSeq {gates: Vec::new() };
-        c_test.gates.extend_from_slice(&f.gates);
-        c_test.gates.extend_from_slice(&m.gates);
-        c_test.gates.extend_from_slice(&s.gates);
+        // middle.gates.reverse();
+        let mut c = CircuitSeq {gates: Vec::new() };
+        c.gates.extend_from_slice(&first.gates);
+        c.gates.extend_from_slice(&middle.gates);
+        c.gates.extend_from_slice(&second.gates);
         let repr = c.repr();
         writeln!(file, "{}", repr)
             .expect("Failed to write to file");
