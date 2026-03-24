@@ -788,8 +788,6 @@ pub fn zip_escalators(
 ) -> CircuitSeq {
     let mut rng = rand::rng();
     let mut gate_step = 1;
-    println!("{:?}", steps);
-    println!("{:?}", gate);
     while gate_step < steps.len() {
         if steps[gate_step].contains(&(gate[0] as usize)) {
             break;
