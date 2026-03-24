@@ -838,6 +838,7 @@ pub fn zip_sequential_butterfly(
                 tower_left, 
                 id_len
             );
+            gates_track.extend_from_slice(&combined.gates);
         } else {
             gates_track.extend_from_slice(
                 &first.into_iter().flatten().collect::<Vec<[u8;3]>>()
