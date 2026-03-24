@@ -801,8 +801,8 @@ pub fn zip_escalators(
     let mut right = right.clone();
     right[gate_step].insert(0, *gate);
     let mut combined: Vec<[u8;3]> = Vec::new();
-    let max = std::cmp::max(left.len(), right.len());
-    for i in 0..max {
+    let min = std::cmp::min(left.len(), right.len());
+    for i in 0..min {
         let l = &left[i];
         let r = &right[i];
 
