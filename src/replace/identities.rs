@@ -786,6 +786,8 @@ pub fn zip_escalators(
     tower: bool,
     id_len: usize
 ) -> CircuitSeq {
+    use std::fs::File;
+    use std::io::Write;
     let mut rng = rand::rng();
     let mut gate_step = 1;
     while gate_step < steps.len() {
@@ -794,6 +796,12 @@ pub fn zip_escalators(
         }
         gate_step += 1;
     }
+
+    let mut left_file = File::create("left.txt").unwrap();
+    let mut right_file = File::create("right.txt").unwrap();
+    writeln!(left_file, "{:?}", left).unwrap();
+    writeln!(right_file, "{:?}", right).unwrap();
+
     let mut right = right.clone();
     right[gate_step].insert(0, *gate);
     let mut combined: Vec<[u8;3]> = Vec::new();
