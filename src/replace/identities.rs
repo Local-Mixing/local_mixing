@@ -796,14 +796,34 @@ pub fn zip_escalators(
         }
         gate_step += 1;
     }
-
+    let mut right = right.clone();
+    right[gate_step].insert(0, *gate);
     let mut left_file = File::create("left.txt").unwrap();
     let mut right_file = File::create("right.txt").unwrap();
     writeln!(left_file, "{:?}", left).unwrap();
     writeln!(right_file, "{:?}", right).unwrap();
 
-    let mut right = right.clone();
-    right[gate_step].insert(0, *gate);
+    use std::collections::HashSet;
+
+    for i in 0..left.len() {
+        let mut wires = HashSet::new();
+
+        // insert all wires from left[i]
+        for gate in &left[i] {
+            wires.insert(gate[0]);
+            wires.insert(gate[1]);
+            wires.insert(gate[2]);
+        }
+
+        // check right[i]
+        for gate in &right[i] {
+            if wires.contains(&gate[0]) ||
+            wires.contains(&gate[1]) ||
+            wires.contains(&gate[2]) {
+                panic!("Overlap at index {}", i);
+            }
+        }
+    }
     let mut combined: Vec<[u8;3]> = Vec::new();
     let min = std::cmp::min(left.len(), right.len());
     for i in 0..min {
