@@ -809,9 +809,6 @@ pub fn zip_escalators(
 
         // interleave while both have wires
         while j < l.len() && j < r.len() {
-            combined.push(l[j]);
-            combined.push(r[j]);
-
             let left_gate = l[j];
             let right_gate = r[j];
             let quasi: bool = rng.random_bool(0.5);
