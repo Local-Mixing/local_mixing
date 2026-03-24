@@ -842,7 +842,17 @@ pub fn zip_escalators(
         }
     }
 
-    CircuitSeq { gates: combined }
+    let c = CircuitSeq { gates: combined };
+
+    let mut test_circuit = CircuitSeq { gates: Vec::new()};
+    test_circuit.gates.extend(left.into_iter().flatten());
+    test_circuit.gates.push(*gate);
+    test_circuit.gates.extend(right.into_iter().flatten());
+    if test_circuit.probably_equal(&c, n, 1000).is_err() {
+        panic!("Zipping failed")
+    }
+
+    c
 }
 // Only supports 32 wires for now
 pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap<String, Database>) {
