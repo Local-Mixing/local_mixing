@@ -18,7 +18,7 @@ use crate::{
             obfuscate_and_target_compress,
             replace_and_compress_big,
             replace_and_compress_big_distance,
-            sequential_butterfly,
+            zip_sequential_butterfly,
             simple_shooting_game,
         },
         transpositions::{insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x},
@@ -956,7 +956,7 @@ pub fn main_sequential_butterfly(
     let mut count = 0;
     for i in 0..rounds {
         let _stop = 1000;
-        let new_circuit = sequential_butterfly(
+        let new_circuit = zip_sequential_butterfly(
             &circuit, 
             conn, 
             n, 

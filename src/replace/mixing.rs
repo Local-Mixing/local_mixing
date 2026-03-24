@@ -21,7 +21,7 @@ use crate::{
         random_circuit, shoot_left_vec, shoot_left_vec_track, shoot_random_gate, shoot_right_vec, shoot_right_vec_track
     },
     replace::{
-        identities::{create_escalator_identities, create_escalator_identities_tracked, get_random_shuffled_identity, insert_ri_identities, random_id}, pairs::{
+        identities::{create_escalator_identities, create_escalator_identities_tracked, get_random_shuffled_identity, insert_ri_identities, random_id, zip_escalators}, pairs::{
             interleave,
             replace_pair_distances_linear,
             replace_pairs,
@@ -34,7 +34,7 @@ use crate::{
             expand_big,
             obfuscate,
             outward_compress,
-        }, 
+        }, transpositions::{Transpositions}
     },
 };
 
@@ -770,6 +770,147 @@ pub fn make_steps(n: usize, gate: &[u8; 3]) -> Vec<Vec<usize>> {
     assert!(steps.first().unwrap().len() == 3);
     assert!(steps.last().unwrap().len() == 3);
     steps
+}
+
+pub fn zip_sequential_butterfly(
+    c: &CircuitSeq,
+    _conn: &mut Connection,
+    n: usize,
+    env: &lmdb::Environment,
+    curr_round: usize,
+    last_round: usize,
+    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
+    dbs: &HashMap<String, lmdb::Database>,
+    id_len: usize,
+    reverse_order_left: bool,
+    tower_left: bool,
+    shoot_more_left: u8,
+    reverse_order_right: bool,
+    tower_right: bool,
+    shoot_more_right: u8
+) -> CircuitSeq {
+    
+    println!("  {}/{}: Beginning sequential butterfly: {} gates", curr_round, last_round, c.gates.len());
+    let mut rng = rand::rng();
+    let mut circuit = c.clone();
+    let diehard_len = if n == 32 {
+        525
+    } else if n == 64 {
+        1200
+    } else if n == 128 {
+        2500
+    } else {
+        2500
+    };
+    println!("  {}/{}: Step 1: Shooting", curr_round, last_round);
+    let mut len = circuit.gates.len();
+    shoot_random_gate(&mut circuit, len * 50);
+    println!("   {}/{}: Step 1a: Inserting Identities", curr_round, last_round);
+    // Keeps track of the gates and whether it can stay in place `0`, needs to be shot left `1`, or needs to be shot right `2`
+    // After, `4` means to collide to the left and `5` to collide to the right
+    let mut gates_track: Vec<[u8;3]> = Vec::new();
+    gates_track.push(circuit.gates[0]);
+    let mut last_steps: Vec<Vec<usize>> = Vec::new();
+    let mut last_second: Vec<Vec<[u8;3]>> = Vec::new();
+    for i in 1..len {
+        let first_steps = if last_steps.is_empty() {
+            make_steps(n, &circuit.gates[0])
+        } else {
+            last_steps.clone()
+        };
+
+        let curr_gate = circuit.gates[i];
+        let second_steps = make_steps(n, &curr_gate);
+        let (first, middle, second, _) = create_escalator_identities(n, &first_steps, &second_steps, env, dbs);
+        if !last_second.is_empty() {
+            let combined = zip_escalators(
+                &last_second, 
+                &first, 
+                &circuit.gates[i-1], 
+                &first_steps, 
+                n, 
+                &mut Transpositions{ transpositions: Vec::new() }, 
+                &mut Vec::new(), 
+                _conn, 
+                env, 
+                bit_shuf_list, 
+                dbs, 
+                tower_left, 
+                id_len
+            );
+        } else {
+            gates_track.extend_from_slice(
+                &first.into_iter().flatten().collect::<Vec<[u8;3]>>()
+            );
+        }
+        gates_track.extend_from_slice(&middle.gates);
+        last_steps = second_steps;
+        last_second = second;
+    }
+    gates_track.extend_from_slice(
+        &last_second.into_iter().flatten().collect::<Vec<[u8;3]>>()
+    );
+    gates_track.push(circuit.gates[circuit.gates.len() - 1]);
+    circuit.gates = gates_track;
+
+    println!("  {}/{}: Sending to compressor: {} gates", curr_round, last_round, circuit.gates.len());
+    if circuit.probably_equal(&c, n, 1000).is_err() {
+        panic!("Functionality lost during sequential butterfly");
+    }
+
+    let mut acc = circuit;
+    let mut stable_count = 0;
+    while stable_count < 12 {
+        let before = acc.gates.len();
+
+        let k = if before <= 1500 {
+            1
+        } else {
+            (before + 1499) / 1500 
+        };
+
+        let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
+        let t4 = Instant::now();
+        let compressed_chunks: Vec<Vec<[u8;3]>> =
+        chunks
+            .into_par_iter()
+            .map(|chunk| {
+                let sub = CircuitSeq { gates: chunk };
+                let mut thread_conn = Connection::open_with_flags(
+                    "circuits.db",
+                    OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .expect("Failed to open read-only connection");
+                
+                compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+            })
+            .collect();
+        COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
+        acc.gates = new_gates;
+        if SHOULD_DUMP.load(Ordering::SeqCst) {
+            {
+            let mut guard = CURRENT_ACC.lock().unwrap();
+            *guard = Some(acc.clone());
+        }
+
+            dump_and_exit();
+        }
+        let after = acc.gates.len();
+        if after == before {
+            stable_count += 1;
+        } else {
+            stable_count = 0;
+        }
+
+        let mut buf = [0u8; 1];
+        if let Ok(n) = io::stdin().read(&mut buf) {
+            if n > 0 && buf[0] == b'\n' {
+                println!("  {}/{}: Current gates: {} gates", curr_round, last_round, after);
+            }
+        }
+    }
+    acc
 }
 
 pub fn sequential_butterfly(
