@@ -795,6 +795,9 @@ pub fn zip_escalators(
         gate_step += 1;
     }
     let mut right = right.clone();
+    println!("{:?}", right);
+    println!("{:?}, {:?}", gate, gate_step);
+    println!("{:?}", steps);
     right[gate_step].insert(0, *gate);
     let mut combined: Vec<[u8;3]> = Vec::new();
     let min = std::cmp::min(left.len(), right.len());
