@@ -786,14 +786,10 @@ pub fn zip_escalators(
     tower: bool,
     id_len: usize
 ) -> CircuitSeq {
-    let mut s: Vec<usize> = Vec::new();
-    s.push(gate[0] as usize);
-    s.push(gate[1] as usize);
-    s.push(gate[2] as usize);
     let mut rng = rand::rng();
     let mut gate_step = 1;
     while gate_step < steps.len() {
-        if steps[gate_step] == s {
+        if steps[gate_step].contains(&(gate[0] as usize)) {
             break;
         }
         gate_step += 1;
