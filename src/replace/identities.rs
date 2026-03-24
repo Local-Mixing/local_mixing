@@ -1116,6 +1116,8 @@ pub fn create_escalator_identities(
             second.transpositions.clear();
             first_middle_circuit.gates.clear();
             second_middle_circuit.gates.clear();
+            first_step_gates.clear();
+            second_step_gates.clear();
             middle_circuit.gates.clear();
             negation_mask = vec![0u8; n];
         } else {
