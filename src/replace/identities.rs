@@ -804,7 +804,7 @@ pub fn zip_escalators(
     writeln!(right_file, "{:?}", right).unwrap();
 
     use std::collections::HashSet;
-
+    println!("{}{}", left.len(), right.len());
     for i in 0..left.len() {
         let mut wires = HashSet::new();
 
