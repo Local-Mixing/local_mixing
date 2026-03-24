@@ -816,25 +816,27 @@ pub fn zip_escalators(
         while j < l.len() && j < r.len() {
             let left_gate = l[j];
             let right_gate = r[j];
-            let quasi: bool = rng.random_bool(0.5);
-            let quasi = true;
-            if quasi {
-                let (paired_up, _) = replace_single_pair(
-                                                        &left_gate,
-                                                        &right_gate,
-                                                        n,
-                                                        _conn,
-                                                        env,
-                                                        _bit_shuf_list,
-                                                        dbs,
-                                                        tower,
-                                                        id_len
-                                                    );
+            combined.push(left_gate);
+            combined.push(right_gate);
+            // let quasi: bool = rng.random_bool(0.5);
+            // let quasi = true;
+            // if quasi {
+            //     let (paired_up, _) = replace_single_pair(
+            //                                             &left_gate,
+            //                                             &right_gate,
+            //                                             n,
+            //                                             _conn,
+            //                                             env,
+            //                                             _bit_shuf_list,
+            //                                             dbs,
+            //                                             tower,
+            //                                             id_len
+            //                                         );
                 
-                combined.extend_from_slice(&paired_up);
-            } else {
+            //     combined.extend_from_slice(&paired_up);
+            // } else {
 
-            }
+            // }
             j += 1;
         }
 
