@@ -755,7 +755,7 @@ pub fn make_steps(n: usize, gate: &[u8; 3]) -> Vec<Vec<usize>> {
     positions = vec![positions[0], positions[1], positions[2]];
     positions.sort();
     for i in 0..total {
-        if i == positions[small_count] && small_count < small_len && small_count == 0 || small_count == 2{
+        if i == positions[small_count] && (small_count < small_len && small_count == 0) || (small_count < small_len && small_count == 2){
             steps.push(small_steps[small_count].clone());
             small_count += 1;
         } else if i == positions[small_count] && small_count == 1 {
