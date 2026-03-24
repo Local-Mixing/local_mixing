@@ -815,8 +815,8 @@ pub fn zip_escalators(
         while j < l.len() && j < r.len() {
             let left_gate = l[j];
             let right_gate = r[j];
-            combined.push(left_gate);
-            combined.push(right_gate);
+            // combined.push(left_gate);
+            // combined.push(right_gate);
             let quasi: bool = rng.random_bool(0.5);
             let quasi = true;
             if quasi {
