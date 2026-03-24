@@ -803,27 +803,6 @@ pub fn zip_escalators(
     writeln!(left_file, "{:?}", left).unwrap();
     writeln!(right_file, "{:?}", right).unwrap();
 
-    use std::collections::HashSet;
-    println!("{}, left: {}, right:{}", steps.len(), left.len(), right.len());
-    for i in 0..left.len() {
-        let mut wires = HashSet::new();
-
-        // insert all wires from left[i]
-        for gate in &left[i] {
-            wires.insert(gate[0]);
-            wires.insert(gate[1]);
-            wires.insert(gate[2]);
-        }
-
-        // check right[i]
-        for gate in &right[i] {
-            if wires.contains(&gate[0]) ||
-            wires.contains(&gate[1]) ||
-            wires.contains(&gate[2]) {
-                panic!("Overlap at index {}", i);
-            }
-        }
-    }
     let mut combined: Vec<[u8;3]> = Vec::new();
     let min = std::cmp::min(left.len(), right.len());
     for i in 0..min {
@@ -876,7 +855,6 @@ pub fn zip_escalators(
 
     let mut test_circuit = CircuitSeq { gates: Vec::new()};
     test_circuit.gates.extend(left.into_iter().flatten());
-    test_circuit.gates.push(*gate);
     test_circuit.gates.extend(right.into_iter().flatten());
     if test_circuit.probably_equal(&c, n, 1000).is_err() {
         panic!("Zipping failed")
