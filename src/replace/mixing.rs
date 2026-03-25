@@ -767,8 +767,8 @@ pub fn make_steps(n: usize, gate: &[u8; 3]) -> Vec<Vec<usize>> {
         }
     }
     // always in the middle
-    steps.insert(steps.len()/2, gate.clone());
-    
+    steps.insert(0, gate.clone());
+
     // Ensure ends must be size 3
     assert!(steps.first().unwrap().len() == 3);
     assert!(steps.last().unwrap().len() == 3);
