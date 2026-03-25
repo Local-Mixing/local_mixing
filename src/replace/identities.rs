@@ -789,7 +789,7 @@ pub fn zip_escalators(
     use std::fs::File;
     use std::io::Write;
     let mut rng = rand::rng();
-    let mut gate_step = 1;
+    let mut gate_step = 0;
     while gate_step < steps.len() {
         if steps[gate_step].contains(&(gate[0] as usize)) {
             break;
