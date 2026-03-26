@@ -1044,7 +1044,7 @@ pub fn compress_lmdb<'a>(
     let t0 = Instant::now();
     let c_perm = c.permutation(n);
     PERMUTATION_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-    println!("Lmdb compress");
+
     if c_perm == id {
         return CircuitSeq { gates: Vec::new() };
     }
@@ -1103,6 +1103,7 @@ pub fn compress_lmdb<'a>(
         let (canon_perm_blob, canon_shuf_blob) = 
             if sub_m <= max && ((n == 6 && sub_m == 5) || (n == 7 && sub_m  == 4)) {
                 if n == 7 && sub_m == 4 {
+                    println!("In duck");
                     let stmt: &mut Statement<'_> = &mut *prepared_stmt;
 
                     let row_start = Instant::now();
@@ -1122,9 +1123,11 @@ pub fn compress_lmdb<'a>(
                         Err(duckdb::Error::QueryReturnedNoRows) => continue,
                         Err(e) => panic!("DUCKDB query failed: {:?}", e),
                     };
+                    println!("left duck");
                     (perm_shuf[..perm_len].to_vec(), perm_shuf[perm_len..].to_vec())
 
                 } else if n == 6 && sub_m == 5 {
+                    println!("in duck");
                     let stmt: &mut Statement<'_> = &mut *prepared_stmt2;
 
                     let row_start = Instant::now();
@@ -1144,8 +1147,10 @@ pub fn compress_lmdb<'a>(
                         Err(duckdb::Error::QueryReturnedNoRows) => continue,
                         Err(e) => panic!("DUCKDB query failed: {:?}", e),
                     };
+                    println!("left duck");
                     (perm_shuf[..perm_len].to_vec(), perm_shuf[perm_len..].to_vec())
                 } else {
+                    println!("in impossible");
                     let table = format!("n{}m{}", n, sub_m);
                     let query = format!(
                         "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
@@ -1163,7 +1168,7 @@ pub fn compress_lmdb<'a>(
                         row_start.elapsed().as_nanos() as u64,
                         Ordering::Relaxed,
                     );
-
+                    println!("left impossible");
                     match blobs_result {
                         Ok(b) => {
                             println!("{}", table);
@@ -1438,7 +1443,7 @@ pub fn compress_big_ancillas(
     let table2 = format!("n{}m{}perms", 6, 5);
     let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table2);
     let mut stmt2 = conn.prepare(&query_limit).unwrap();
-    println!("Queries created");
+
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
