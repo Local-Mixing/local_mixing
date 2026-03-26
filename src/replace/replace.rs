@@ -1044,7 +1044,7 @@ pub fn compress_lmdb<'a>(
     let t0 = Instant::now();
     let c_perm = c.permutation(n);
     PERMUTATION_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
+    println!("Lmdb compress");
     if c_perm == id {
         return CircuitSeq { gates: Vec::new() };
     }
@@ -1438,7 +1438,7 @@ pub fn compress_big_ancillas(
     let table2 = format!("n{}m{}perms", 6, 5);
     let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table2);
     let mut stmt2 = conn.prepare(&query_limit).unwrap();
-
+    println!("Queries created");
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
