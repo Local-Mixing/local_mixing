@@ -754,10 +754,10 @@ pub fn sequential_compress_big(
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
     let table = format!("n{}m{}perms", 7, 4);
-    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit_hash = hash($1) LIMIT 1", table);
     let mut stmt = conn.prepare(&query_limit).unwrap();
     let table2 = format!("n{}m{}perms", 6, 5);
-    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table2);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit_hash = hash($1) LIMIT 1", table2);
     let mut stmt2 = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -888,10 +888,10 @@ pub fn sequential_compress_big_ancillas(
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
     let table = format!("n{}m{}perms", 7, 4);
-    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit_hash = hash($1) LIMIT 1", table);
     let mut stmt = conn.prepare(&query_limit).unwrap();
     let table2 = format!("n{}m{}perms", 6, 5);
-    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table2);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit_hash = hash($1) LIMIT 1", table2);
     let mut stmt2 = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -1288,10 +1288,10 @@ pub fn expand_big(
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
     let table = format!("n{}m{}", 7, 4);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit_hash = hash(?1) LIMIT 1", table);
     let mut stmt = conn.prepare(&query_limit).unwrap();
     let table2 = format!("n{}m{}", 6, 5);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table2);
+    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit_hash = hash(?1) LIMIT 1", table2);
     let mut stmt2 = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -1438,10 +1438,10 @@ pub fn compress_big_ancillas(
     dbs: &HashMap<String, lmdb::Database>, 
 ) -> CircuitSeq {
     let table = format!("n{}m{}perms", 7, 4);
-    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit_hash = hash($1) LIMIT 1", table);
     let mut stmt = conn.prepare(&query_limit).unwrap();
     let table2 = format!("n{}m{}perms", 6, 5);
-    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table2);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit_hash = hash($1) LIMIT 1", table2);
     let mut stmt2 = conn.prepare(&query_limit).unwrap();
 
     let mut circuit = c.clone();
