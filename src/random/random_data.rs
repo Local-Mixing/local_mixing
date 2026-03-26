@@ -17,7 +17,7 @@ use rayon::{
     iter::{IntoParallelRefIterator, ParallelIterator},
     slice::ParallelSlice,
 };
-use rusqlite::{params, Connection, Result};
+use duckdb::{Connection, AccessMode, Config};
 use smallvec::SmallVec;
 use std::{
     collections::{HashMap, HashSet},
@@ -1820,7 +1820,7 @@ fn is_level_zero_raw(c: &CircuitSeq, idx: usize, remaining: &[bool]) -> bool {
 // Below is used for db storing
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
+pub fn create_table(conn: &Connection, table_name: &str) -> duckdb::Result<()> {
     // Table name includes n and m
     let sql = format!(
         "CREATE TABLE IF NOT EXISTS {table} (
@@ -1828,6 +1828,7 @@ pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
             perm BLOB NOT NULL,
             shuf BLOB NOT NULL
         );
+        CREATE INDEX IF NOT EXISTS idx_circuit_{table} ON {table} (circuit);
         CREATE INDEX IF NOT EXISTS idx_perm_{table} ON {table} (perm);",
         table = table_name
     );
@@ -1837,16 +1838,16 @@ pub fn create_table(conn: &mut Connection, table_name: &str) -> Result<()> {
 }
 
 pub fn insert_circuit(
-    conn: &mut Connection,
+    conn: &Connection,
     circuit: &CircuitSeq, 
     canon: &Canonicalization,
     table_name: &str,
-) -> Result<()> {
+) -> duckdb::Result<()> {
     let key = circuit.repr_blob();
     let perm = canon.perm.repr_blob();
     let shuf = canon.shuffle.repr_blob();
-    let sql = format!("INSERT OR IGNORE INTO {} (circuit, perm, shuf) VALUES (?1, ?2, ?3)", table_name);
-    conn.execute(&sql, &[&key, &perm, &shuf])?;
+    let sql = format!("INSERT OR IGNORE INTO {} (circuit, perm, shuf) VALUES ($1, $2, $3)", table_name);
+    conn.execute(&sql, duckdb::params![key.as_slice(), perm.as_slice(), shuf.as_slice()])?;
     Ok(())
 }
 
@@ -1854,13 +1855,11 @@ pub fn insert_circuits_batch(
     conn: &mut Connection,
     table_name: &str,
     circuits: &[(CircuitSeq, Canonicalization)],
-) -> Result<usize> {
-    // Start a single transaction for all inserts
+) -> duckdb::Result<usize> {
     let tx = conn.transaction()?;
 
-    // Prepare the SQL once
     let sql = format!(
-        "INSERT OR IGNORE INTO {} (circuit, perm, shuf) VALUES (?1, ?2, ?3)",
+        "INSERT OR IGNORE INTO {} (circuit, perm, shuf) VALUES ($1, $2, $3)",
         table_name
     );
 
@@ -1871,12 +1870,11 @@ pub fn insert_circuits_batch(
         let perm = canon.perm.repr_blob();
         let shuf = canon.shuffle.repr_blob();
 
-        if tx.execute(&sql, &[&key, &perm, &shuf])? > 0 {
+        if tx.execute(&sql, duckdb::params![key.as_slice(), perm.as_slice(), shuf.as_slice()])? > 0 {
             inserted += 1;
         }
     }
 
-    // Commit all inserts at once
     tx.commit()?;
 
     Ok(inserted)
@@ -2157,9 +2155,10 @@ impl Permutation {
 // Testing code to look at sql db
 // sql db is mostly unused, outside of n6m5 and n7m4
 // Switched over to lmdb
-pub fn check_cycles(n: usize, m: usize) -> Result<()> {
+pub fn check_cycles(n: usize, m: usize) -> duckdb::Result<()> {
     // Open the database
-    let conn = Connection::open("circuits.db")?;
+    let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+    let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
     let table_name = format!("n{}m{}", n, m);
 
     // Build the query string with the table name
@@ -2187,8 +2186,9 @@ pub fn check_cycles(n: usize, m: usize) -> Result<()> {
     Ok(())
 }
 
-pub fn print_all(table_name: &str) -> Result<()> {
-    let conn = Connection::open("circuits.db")?;
+pub fn print_all(table_name: &str) -> duckdb::Result<()> {
+    let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+    let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
 
     let query = format!("SELECT circuit, perm, shuf FROM {}", table_name);
     let mut stmt = conn.prepare(&query)?;
@@ -2217,8 +2217,9 @@ pub fn print_all(table_name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn count_distinct(n: usize, m: usize) -> Result<usize> {
-    let conn = Connection::open("circuits.db")?;
+pub fn count_distinct(n: usize, m: usize) -> duckdb::Result<usize> {
+    let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+    let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
     let table_name = format!("n{}m{}", n, m);
     
     let query = format!("SELECT COUNT(DISTINCT perm) FROM {}", table_name);
@@ -2245,11 +2246,11 @@ pub fn base_gates(n: usize) -> Vec<[u8; 3]> {
 
 // Given nXmY, attempt to build the corresponding table for nXm{Y+1}
 pub fn build_from_sql(
-    conn: &mut Connection,
+    conn: &Connection,
     n: usize,
     m: usize,
     bit_shuf: &Vec<Vec<usize>>,
-) -> Result<()> {
+) -> duckdb::Result<()> {
     println!("Running build (max CPU)");
 
     let old_table = format!("n{}m{}", n, m - 1);
@@ -2262,7 +2263,7 @@ pub fn build_from_sql(
     let bit_shuf = Arc::new(bit_shuf.clone());
 
     let total_rows: i64 = conn.query_row(
-        &format!("SELECT MAX(rowid) FROM {}", old_table),
+        &format!("SELECT COUNT(*) FROM {}", old_table),
         [],
         |row| row.get(0),
     )?;
@@ -2271,7 +2272,7 @@ pub fn build_from_sql(
     let chunk_size: i64 = 50_000;
     let batch_size = 10_000;
 
-    let mut last_rowid: i64 = 0;
+    let mut offset: i64 = 0;
 
     // Atomic flag for CTRL+C
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -2291,11 +2292,11 @@ pub fn build_from_sql(
 
     // Spawn insertion thread
     let insert_handle = thread::spawn(move || {
-        let mut insert_conn =
-            Connection::open("./circuits.db").expect("Failed to open DB in insert thread");
+        let mut insert_conn = Connection::open("circuits.duckdb").unwrap();
 
         let total_circuits: usize = (total_rows as usize) * base_gates_for_thread.len() * 2; // total circuits to process
         let mut attempted_inserts = 0;
+
         while let Ok(batch) = rx.recv() {
             if stop_flag_clone.load(Ordering::SeqCst) {
                 println!("Insertion thread stopping early...");
@@ -2322,35 +2323,35 @@ pub fn build_from_sql(
     });
 
     // Main loop: fetch old table in chunks
-    while last_rowid < total_rows {
+    while offset < total_rows {
         if stop_flag.load(Ordering::SeqCst) {
             println!("Stopping early due to CTRL+C...");
             break;
         }
 
-        let rows: Vec<(i64, Vec<u8>)> = {
+        let rows: Vec<Vec<u8>> = {
             let mut stmt = conn.prepare(&format!(
-                "SELECT rowid, circuit FROM {} WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                "SELECT circuit FROM {} LIMIT $1 OFFSET $2",
                 old_table
             ))?;
-            stmt.query_map(params![last_rowid, chunk_size], |row| {
-                Ok((row.get(0)?, row.get(1)?))
+            stmt.query_map(duckdb::params![chunk_size, offset], |row| {
+                row.get(0)
             })?
-            .collect::<Result<_, _>>()?
+            .collect::<duckdb::Result<_>>()?
         };
 
         if rows.is_empty() {
             break;
         }
 
-        last_rowid = rows.last().unwrap().0;
+        offset += rows.len() as i64;
 
         // Process circuits in parallel and stream batches immediately
         rows.par_chunks(500).for_each(|row_chunk| {
             let mut local_results =
                 Vec::with_capacity(row_chunk.len() * base_gates.len() * 2);
 
-            for (_rowid, blob) in row_chunk {
+            for blob in row_chunk {
                 let old_circuit = CircuitSeq::from_blob(blob);
                 let mut prefix: SmallVec<[[u8; 3]; 64]> =
                     SmallVec::with_capacity(m);
@@ -2401,9 +2402,9 @@ pub fn build_from_sql(
         });
 
         println!(
-            "Processed up to rowid {}. Progress: {:.2}%",
-            last_rowid,
-            (last_rowid as f64 / total_rows as f64) * 100.0
+            "Processed up to offset {}. Progress: {:.2}%",
+            offset,
+            (offset as f64 / total_rows as f64) * 100.0
         );
 
         if stop_flag.load(Ordering::SeqCst) {
@@ -2423,9 +2424,10 @@ pub fn build_from_sql(
 //Should not see for a particular size query, the speed should not vary across multiple runs
 // Attempt to add a random circuit to the SQL db
 pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
-    let mut conn = Connection::open("./circuits.db").expect("Failed to open DB");
+    let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+    let mut conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
     let table_name = format!("n{}m{}", n, m);
-    create_table(&mut conn, &table_name).expect("Failed to create table");
+    create_table(&conn, &table_name).expect("Failed to create table");
 
     let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
     let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
@@ -2515,7 +2517,7 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
 mod tests {
     use super::*;
     #[test]
-    fn test_check_cycles_n3m3() -> Result<()> {
+    fn test_check_cycles_n3m3() -> duckdb::Result<()> {
         let now = std::time::Instant::now();
         // Call check_cycles for n=3, m=3
         let _ = check_cycles(3, 3);
@@ -3049,12 +3051,13 @@ mod tests {
     #[test]
     fn benchmark_sql_vs_canonical() {
         use std::time::{Duration, Instant};
-        use rusqlite::Connection;
+        use duckdb::Connection;
         use itertools::Itertools; // for permutations
         use lmdb::Environment;
         use std::path::Path;
         use lmdb::Transaction;
-        let conn = Connection::open("circuits.db").expect("Failed to open db");
+        let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+        let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
 
         let ns_and_ms = vec![(4, 6), (5, 5), (6, 4), (7, 3)];
 

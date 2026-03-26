@@ -13,7 +13,7 @@ use std::{
 use once_cell::sync::Lazy;
 use rand::{prelude::SliceRandom, Rng};
 use rayon::prelude::*;
-use rusqlite::{Connection, OpenFlags};
+use duckdb::{Connection, AccessMode, Config};
 
 use crate::{
     circuit::circuit::CircuitSeq,
@@ -39,7 +39,7 @@ use crate::{
 };
 
 // Old legacy method of replace -> compress
-pub fn obfuscate_and_target_compress(c: &CircuitSeq, conn: &mut Connection, bit_shuf: &Vec<Vec<usize>>, n: usize) -> CircuitSeq {
+pub fn obfuscate_and_target_compress(c: &CircuitSeq, conn: &Connection, bit_shuf: &Vec<Vec<usize>>, n: usize) -> CircuitSeq {
     // Obfuscate circuit, get positions of inverses
     let (mut final_circuit, inverse_starts) = obfuscate(c, n);
     println!("{}", final_circuit.to_string(n));
@@ -100,7 +100,7 @@ pub fn pin_counts(circuit: &CircuitSeq, num_wires: usize) -> Vec<usize> {
 // Butterfly method on low number of wires
 pub fn butterfly(
     c: &CircuitSeq,
-    conn: &mut Connection,
+    conn: &Connection,
     bit_shuf: &Vec<Vec<usize>>,
     n: usize,
 ) -> CircuitSeq {
@@ -123,13 +123,11 @@ pub fn butterfly(
             let gi = CircuitSeq { gates: vec![g] };
 
             // create a read-only connection per thread
-            let mut conn = Connection::open_with_flags(
-            "circuits.db",
-            OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ).expect("Failed to open read-only connection");
+            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
 
         // compress the block
-        let compressed_block = outward_compress(&gi, r, 100_000, &mut conn, bit_shuf, n);
+        let compressed_block = outward_compress(&gi, r, 100_000, &conn, bit_shuf, n);
 
         println!(
             "  Block {}: before {} gates → after {} gates",
@@ -206,7 +204,7 @@ pub fn butterfly(
 pub fn merge_combine_blocks(
     blocks: &[CircuitSeq],
     n: usize,
-    db_path: &str,
+    _db_path: &str,
     progress: &Arc<AtomicUsize>,
     _total: usize,
     env: &lmdb::Environment,
@@ -218,11 +216,8 @@ pub fn merge_combine_blocks(
     let pairs: Vec<CircuitSeq> = blocks
         .par_chunks(2)
         .map(|chunk| {
-            let mut conn = Connection::open_with_flags(
-                db_path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .expect("Failed to open DB");
+            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
             // TXN
             let combined = if chunk.len() == 2 {
                 chunk[0].concat(&chunk[1])
@@ -230,7 +225,7 @@ pub fn merge_combine_blocks(
                 chunk[0].clone()
             };
 
-            let compressed = compress_big(&combined, 30, n, &mut conn, env, &bit_shuf_list, dbs);
+            let compressed = compress_big(&combined, 30, n, &conn, env, &bit_shuf_list, dbs);
             compressed
         })
         .collect();
@@ -247,11 +242,8 @@ pub fn merge_combine_blocks(
     let phase2_pairs: Vec<CircuitSeq> = rest
         .par_chunks(2)
         .map(|chunk| {
-            let mut conn = Connection::open_with_flags(
-                db_path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .expect("Failed to open DB");
+            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
             let combined = if chunk.len() == 2 {
                 chunk[0].concat(&chunk[1])
             } else {
@@ -259,7 +251,7 @@ pub fn merge_combine_blocks(
             };
 
             // TXN
-            let compressed = compress_big(&combined, 30, n, &mut conn, env, &bit_shuf_list, dbs);
+            let compressed = compress_big(&combined, 30, n, &conn, env, &bit_shuf_list, dbs);
 
             // let _done = progress2.fetch_add(1, Ordering::Relaxed) + 1;
             // if done % 10 == 0 {
@@ -279,18 +271,15 @@ pub fn merge_combine_blocks(
     let phase2_results: Vec<CircuitSeq> = pairs
         .par_chunks(chunk_size)
         .map(|chunk| {
-            let mut conn = Connection::open_with_flags(
-                db_path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .expect("Failed to open DB");
+            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
 
             let mut combined = CircuitSeq { gates: vec![] };
             for block in chunk {
                 combined = combined.concat(block);
             }
             // TXN
-            let compressed = compress_big(&combined, 200, n, &mut conn, env, &bit_shuf_list, dbs);
+            let compressed = compress_big(&combined, 200, n, &conn, env, &bit_shuf_list, dbs);
 
             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
             println!("Phase 2 partial done: {}/4", done);
@@ -301,8 +290,8 @@ pub fn merge_combine_blocks(
 
     println!("Phase 4: Final merge");
     // Final combination and compression
-    let mut conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .expect("Failed to open DB");
+    let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+    let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
 
     let mut final_combined = CircuitSeq { gates: vec![] };
     for part in phase2_results {
@@ -310,7 +299,7 @@ pub fn merge_combine_blocks(
     }
 
     // TXN
-    let final_compressed = compress_big(&final_combined, 1000, n, &mut conn, env, &bit_shuf_list, dbs);
+    let final_compressed = compress_big(&final_combined, 1000, n, &conn, env, &bit_shuf_list, dbs);
 
     println!("All phases complete");
     final_compressed
@@ -344,7 +333,7 @@ pub fn merge_combine_blocks(
 // Butterfly method for more wires
 pub fn butterfly_big(
     c: &CircuitSeq,
-    _conn: &mut Connection,
+    _conn: &Connection,
     n: usize,
     last: bool,
     stop: usize,
@@ -370,17 +359,15 @@ pub fn butterfly_big(
         let mut gi = r_inv.concat(&CircuitSeq { gates: vec![g] }).concat(&r);
         shoot_random_gate(&mut gi, 1_000);
         // create a read-only connection per thread
-        let mut conn = Connection::open_with_flags(
-        "circuits.db",
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ).expect("Failed to open read-only connection");
+        let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+        let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
         //shoot_random_gate(&mut gi, 100_000);
         // compress the block
 
         // let _txn = env.begin_ro_txn().expect("txn");
 
         // TXN
-        let compressed_block = compress_big(&gi, 10, n, &mut conn, env, &bit_shuf_list, dbs);
+        let compressed_block = compress_big(&gi, 10, n, &conn, env, &bit_shuf_list, dbs);
         let before_len = r_inv.gates.len() * 2 + 1;
         let after_len = compressed_block.gates.len();
             
@@ -452,14 +439,11 @@ pub fn butterfly_big(
             .into_par_iter()
             .map(|chunk| {
                 let sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+                let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
                 // TXN
                 // let txn = env.begin_ro_txn().expect("txn");
-                compress_big(&sub, 1_000, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+                compress_big(&sub, 1_000, n, &thread_conn, env, &bit_shuf_list, dbs).gates
             })
             .collect();
 
@@ -528,7 +512,7 @@ fn dump_and_exit() -> ! {
 // Asymmetric butterfly method on more wires
 pub fn abutterfly_big(
     c: &CircuitSeq,
-    _conn: &mut Connection,
+    _conn: &Connection,
     n: usize,
     last: bool,
     stop: usize,
@@ -574,20 +558,17 @@ pub fn abutterfly_big(
         .into_par_iter()
         .enumerate()
         .map(|(_, block)| {
-            let mut thread_conn = Connection::open_with_flags(
-                "circuits.db",
-                OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .expect("Failed to open read-only connection");
+            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+            let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
             // let txn = env.begin_ro_txn().expect("txn");
             let before_len = block.gates.len();
             let t3 = Instant::now();
-            let expanded = expand_big(&block, 100, n, &mut thread_conn, &env, &bit_shuf_list, dbs);
+            let expanded = expand_big(&block, 100, n, &thread_conn, &env, &bit_shuf_list, dbs);
             EXPAND_BIG_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let t4 = Instant::now();
 
             // TXN
-            let compressed_block = compress_big(&expanded, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs);
+            let compressed_block = compress_big(&expanded, 100, n, &thread_conn, env, &bit_shuf_list, dbs);
             COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let after_len = compressed_block.gates.len();
             
@@ -655,14 +636,11 @@ pub fn abutterfly_big(
             .into_par_iter()
             .map(|chunk| {
                 let sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+                let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
                 // let txn = env.begin_ro_txn().expect("txn");
                 // TXN
-                compress_big(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+                compress_big(&sub, 100, n, &thread_conn, env, &bit_shuf_list, dbs).gates
             })
             .collect();
 
@@ -777,7 +755,7 @@ pub fn make_steps(n: usize, gate: &[u8; 3]) -> Vec<Vec<usize>> {
 
 pub fn zip_sequential_butterfly(
     c: &CircuitSeq,
-    _conn: &mut Connection,
+    _conn: &Connection,
     n: usize,
     env: &lmdb::Environment,
     curr_round: usize,
@@ -880,13 +858,10 @@ pub fn zip_sequential_butterfly(
             .into_par_iter()
             .map(|chunk| {
                 let sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+                let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
                 
-                compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+                compress_big_ancillas(&sub, 100, n, &thread_conn, env, &bit_shuf_list, dbs).gates
             })
             .collect();
         COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -919,7 +894,7 @@ pub fn zip_sequential_butterfly(
 
 pub fn sequential_butterfly(
     c: &CircuitSeq,
-    _conn: &mut Connection,
+    _conn: &Connection,
     n: usize,
     env: &lmdb::Environment,
     curr_round: usize,
@@ -1219,13 +1194,10 @@ pub fn sequential_butterfly(
             .into_par_iter()
             .map(|chunk| {
                 let sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+                let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
                 
-                compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+                compress_big_ancillas(&sub, 100, n, &thread_conn, env, &bit_shuf_list, dbs).gates
             })
             .collect();
         COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1260,7 +1232,7 @@ pub fn sequential_butterfly(
 // Repeat until the blowup is `enough` and then compress
 pub fn simple_shooting_game(
     c: &CircuitSeq,
-    _conn: &mut Connection,
+    _conn: &Connection,
     n: usize,
     env: &lmdb::Environment,
     curr_round: usize,
@@ -1358,13 +1330,10 @@ pub fn simple_shooting_game(
             .into_par_iter()
             .map(|chunk| {
                 let sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+                let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
                 
-                compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+                compress_big_ancillas(&sub, 100, n, &thread_conn, env, &bit_shuf_list, dbs).gates
             })
             .collect();
         COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1399,7 +1368,7 @@ pub fn simple_shooting_game(
 // Currently unsupported
 // pub fn abutterfly_big_delay_bookends(
 //     c: &CircuitSeq,
-//     _conn: &mut Connection,
+//     _conn: &Connection,
 //     n: usize,
 //     env: &lmdb::Environment,
 // ) -> (CircuitSeq, CircuitSeq, CircuitSeq) {
@@ -1442,7 +1411,7 @@ pub fn simple_shooting_game(
 //             let txn = env.begin_ro_txn().expect("txn");
 //             let before_len = block.gates.len();
 //             // TXN
-//             let compressed_block = compress_big(&block, 10, n, &mut thread_conn, env, &bit_shuf_list, &dbs, &txn);
+//             let compressed_block = compress_big(&block, 10, n, &thread_conn, env, &bit_shuf_list, &dbs, &txn);
 //             let after_len = compressed_block.gates.len();
             
 //             let color_line = if after_len < before_len {
@@ -1507,7 +1476,7 @@ pub fn simple_shooting_game(
 //                 .expect("Failed to open read-only connection");
 //                 let txn = env.begin_ro_txn().expect("txn");
 //                 // TXN
-//                 compress_big(&sub, 1_000, n, &mut thread_conn, env, &bit_shuf_list, &dbs, &txn).gates
+//                 compress_big(&sub, 1_000, n, &thread_conn, env, &bit_shuf_list, &dbs, &txn).gates
 //             })
 //             .collect();
 
@@ -1548,7 +1517,7 @@ static TRAVERSE_LEFT: AtomicUsize = AtomicUsize::new(0);
 // New version does not care for the type of pairs it is replacing
 pub fn replace_and_compress_big(
     circuit: &CircuitSeq,
-    _conn: &mut Connection,
+    _conn: &Connection,
     n: usize,
     last: bool,
     stop: usize,
@@ -1598,13 +1567,10 @@ pub fn replace_and_compress_big(
             .into_par_iter()
             .map(|chunk| {
                 let mut sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+                let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
                 // Only do a forward sequential pass. A reverse pass afterwards could be useful
-                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &mut thread_conn, &env, &bit_shuf_list, dbs, tower);
+                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &thread_conn, &env, &bit_shuf_list, dbs, tower);
                 ALREADY_COLLIDED.fetch_add(col, Ordering::SeqCst);
                 SHOOT_COUNT.fetch_add(shoot, Ordering::SeqCst);
                 MADE_LEFT.fetch_add(zero, Ordering::SeqCst);
@@ -1666,13 +1632,10 @@ pub fn replace_and_compress_big(
             .into_par_iter()
             .map(|chunk| {
                 let sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+                let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
                 
-                compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+                compress_big_ancillas(&sub, 100, n, &thread_conn, env, &bit_shuf_list, dbs).gates
             })
             .collect();
         COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1729,7 +1692,7 @@ pub fn replace_and_compress_big(
 // Returns [..chunk.len() - 1][replace_pair(last, next)][1..chunk.len()-1][replace_pair(last, next)]...[1..]
 pub fn mix_seams(
     gates: Vec<Vec<[u8;3]>>,
-    _conn: &mut Connection,
+    _conn: &Connection,
     n: usize,
     env: &lmdb::Environment,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
@@ -1788,7 +1751,7 @@ pub fn mix_seams(
 // Every pair is going to be non colliding, and in fact, will not touch at all
 pub fn interleave_sequential_big(
     circuit: &CircuitSeq,
-    _conn: &mut Connection,
+    _conn: &Connection,
     n: usize,
     last: bool,
     stop: usize,
@@ -1832,12 +1795,9 @@ pub fn interleave_sequential_big(
             .into_par_iter()
             .map(|chunk| {
                 let mut sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
-                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &mut thread_conn, &env, &bit_shuf_list, dbs, tower);
+                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+                let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
+                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &thread_conn, &env, &bit_shuf_list, dbs, tower);
                 ALREADY_COLLIDED.fetch_add(col, Ordering::SeqCst);
                 SHOOT_COUNT.fetch_add(shoot, Ordering::SeqCst);
                 MADE_LEFT.fetch_add(zero, Ordering::SeqCst);
@@ -1916,13 +1876,10 @@ pub fn interleave_sequential_big(
             .into_par_iter()
             .map(|chunk| {
                 let sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+                let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
                 
-                compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+                compress_big_ancillas(&sub, 100, n, &thread_conn, env, &bit_shuf_list, dbs).gates
             })
             .collect();
         COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1978,7 +1935,7 @@ pub fn interleave_sequential_big(
 // RCD method
 pub fn replace_and_compress_big_distance(
     circuit: &CircuitSeq,
-    _conn: &mut Connection,
+    _conn: &Connection,
     n: usize,
     last: bool,
     stop: usize,
@@ -2047,13 +2004,10 @@ pub fn replace_and_compress_big_distance(
             .into_par_iter()
             .map(|chunk| {
                 let sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+                let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
                 
-                compress_big_ancillas(&sub, 100, n, &mut thread_conn, env, &bit_shuf_list, dbs).gates
+                compress_big_ancillas(&sub, 100, n, &thread_conn, env, &bit_shuf_list, dbs).gates
             })
             .collect();
         COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);

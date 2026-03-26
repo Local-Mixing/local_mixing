@@ -6,7 +6,7 @@ use libc::c_uint;
 
 use itertools::Itertools;
 use rand::{Rng, prelude::SliceRandom};
-use rusqlite::Connection;
+use duckdb::Connection;
 
 use lmdb::{Cursor, Database, RoCursor, RoTransaction, Transaction, Environment};
 
@@ -482,7 +482,7 @@ pub fn get_random_shuffled_identity (
     n: usize, 
     env: &lmdb::Environment,
     dbs: &HashMap<String, Database>,
-    _conn: &mut Connection,
+    _conn: &Connection,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     tower: bool,
 ) -> CircuitSeq {
@@ -511,7 +511,7 @@ pub fn get_random_wide_identity(
     n: usize, 
     env: &lmdb::Environment,
     dbs: &HashMap<String, Database>,
-    _conn: &mut Connection,
+    _conn: &Connection,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     tower: bool,
 ) -> CircuitSeq {
@@ -599,7 +599,7 @@ pub fn get_random_wide_identity_via_pairs(
     n: usize, 
     env: &lmdb::Environment,
     dbs: &HashMap<String, Database>,
-    _conn: &mut Connection,
+    _conn: &Connection,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
 ) -> CircuitSeq {
     let mut id = CircuitSeq { gates: Vec::new() };
@@ -779,7 +779,7 @@ pub fn zip_escalators(
     n: usize,
     tran: &mut Transpositions,
     negation_mask: &mut Vec<u8>,
-    _conn: &mut Connection,
+    _conn: &Connection,
     env: &Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs:&HashMap<String, Database>,

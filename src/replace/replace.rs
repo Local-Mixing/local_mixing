@@ -15,7 +15,7 @@ use crate::replace::identities::random_canonical_id;
 use crate::replace::identities::random_id;
 use rand::Rng;
 
-use rusqlite::{Connection, Statement};
+use duckdb::{Connection, AccessMode, Config, Statement};
 
 use lmdb::{Transaction};
 
@@ -96,7 +96,7 @@ pub fn random_subcircuit_max(circuit: &CircuitSeq, max_len: usize) -> (CircuitSe
 
 // Timing variables for benchmarking
 pub static PERMUTATION_TIME: AtomicU64 = AtomicU64::new(0);
-pub static SQL_TIME: AtomicU64 = AtomicU64::new(0);
+pub static DUCKDB_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CANON_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONVEX_FIND_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONTIGUOUS_TIME: AtomicU64 = AtomicU64::new(0);
@@ -124,7 +124,7 @@ pub static IDENTITY_TIME: AtomicU64 = AtomicU64::new(0);
 pub fn compress(
     c: &CircuitSeq,
     trials: usize,
-    conn: &mut Connection,
+    conn: &Connection,
     bit_shuf: &Vec<Vec<usize>>,
     n: usize,
 ) -> CircuitSeq {
@@ -188,7 +188,7 @@ pub fn compress(
                 Err(_) => continue,
             };
             let rows = stmt.query([&subcircuit.repr_blob()]);
-            // SQL_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            // DUCKDB_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             let mut r = match rows {
                 Ok(r) => r,
@@ -233,7 +233,7 @@ pub fn compress(
                 Err(_) => continue,
             };
             let rows = stmt.query([&canon_perm_blob]);
-            // SQL_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            // DUCKDB_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             let mut r = match rows {
                 Ok(r) => r,
@@ -292,8 +292,8 @@ pub fn expand_lmdb<'a>(
     env: &lmdb::Environment,
     _old_n: usize,
     dbs: &HashMap<String, lmdb::Database>,
-    prepared_stmt: &mut rusqlite::Statement<'a>,
-    prepared_stmt2: &mut rusqlite::Statement<'a>,
+    prepared_stmt: &mut Statement<'a>,
+    prepared_stmt2: &mut Statement<'a>,
     conn: &Connection
 ) -> CircuitSeq {
     let mut compressed = c.clone();
@@ -322,7 +322,7 @@ pub fn expand_lmdb<'a>(
                 let stmt: &mut Statement<'_> = &mut *prepared_stmt;
 
                 let row_start = Instant::now();
-                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
+                let blobs_result: duckdb::Result<(Vec<u8>, Vec<u8>)> =
                     stmt.query_row(
                         [&subcircuit.repr_blob()],
                         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -335,15 +335,15 @@ pub fn expand_lmdb<'a>(
 
                 match blobs_result {
                     Ok(b) => b,
-                    Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-                    Err(e) => panic!("SQL query failed: {:?}", e),
+                    Err(duckdb::Error::QueryReturnedNoRows) => continue,
+                    Err(e) => panic!("DUCKDB query failed: {:?}", e),
                 }
 
             } else if n == 6 && sub_m == 5 {
                 let stmt: &mut Statement<'_> = &mut *prepared_stmt2;
 
                 let row_start = Instant::now();
-                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
+                let blobs_result: duckdb::Result<(Vec<u8>, Vec<u8>)> =
                     stmt.query_row(
                         [&subcircuit.repr_blob()],
                         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -356,8 +356,8 @@ pub fn expand_lmdb<'a>(
 
                 match blobs_result {
                     Ok(b) => b,
-                    Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-                    Err(e) => panic!("SQL query failed: {:?}", e),
+                    Err(duckdb::Error::QueryReturnedNoRows) => continue,
+                    Err(e) => panic!("DUCKDB query failed: {:?}", e),
                 }
             
             } else {
@@ -368,7 +368,7 @@ pub fn expand_lmdb<'a>(
                 );
 
                 let row_start = Instant::now();
-                let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
+                let blobs_result: duckdb::Result<(Vec<u8>, Vec<u8>)> =
                     conn.query_row(
                         &query,
                         [&subcircuit.repr_blob()],
@@ -382,8 +382,8 @@ pub fn expand_lmdb<'a>(
 
                 match blobs_result {
                     Ok(b) => b,
-                    Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-                    Err(e) => panic!("SQL query failed: {:?}", e),
+                    Err(duckdb::Error::QueryReturnedNoRows) => continue,
+                    Err(e) => panic!("DUCKDB query failed: {:?}", e),
                 }
             }
         } else if sub_m <= max && (n >= 4) {
@@ -439,7 +439,7 @@ pub fn expand_lmdb<'a>(
                     res = random_perm_lmdb(&txn, db, &prefix_inv_blob);
                 }
 
-                // SQL_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                // DUCKDB_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
                 res.map(|val_blob| val_blob)
             };
@@ -473,7 +473,7 @@ pub fn expand_lmdb<'a>(
 // Fast for small subcircuits
 pub fn compress_exhaust(
     c: &CircuitSeq,
-    conn: &mut Connection,
+    conn: &Connection,
     bit_shuf: &Vec<Vec<usize>>,
     n: usize,
 ) -> CircuitSeq {
@@ -623,16 +623,16 @@ pub fn compress_big(
     c: &CircuitSeq, 
     trials: usize, 
     num_wires: usize, 
-    conn: &mut Connection, 
+    conn: &Connection, 
     env: &lmdb::Environment, 
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
-    let table = format!("n{}m{}", 7, 4);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    let table = format!("n{}m{}perms", 7, 4);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table);
     let mut stmt = conn.prepare(&query_limit).unwrap();
-    let table2 = format!("n{}m{}", 6, 5);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table2);
+    let table2 = format!("n{}m{}perms", 6, 5);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table2);
     let mut stmt2 = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -748,16 +748,16 @@ pub fn compress_big(
 pub fn sequential_compress_big(
     c: &CircuitSeq, 
     num_wires: usize, 
-    conn: &mut Connection, 
+    conn: &Connection, 
     env: &lmdb::Environment, 
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
-    let table = format!("n{}m{}", 7, 4);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    let table = format!("n{}m{}perms", 7, 4);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table);
     let mut stmt = conn.prepare(&query_limit).unwrap();
-    let table2 = format!("n{}m{}", 6, 5);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table2);
+    let table2 = format!("n{}m{}perms", 6, 5);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table2);
     let mut stmt2 = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -882,16 +882,16 @@ pub fn sequential_compress_big(
 pub fn sequential_compress_big_ancillas( 
     c: &CircuitSeq, 
     num_wires: usize, 
-    conn: &mut Connection, 
+    conn: &Connection, 
     env: &lmdb::Environment, 
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
-    let table = format!("n{}m{}", 7, 4);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+    let table = format!("n{}m{}perms", 7, 4);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table);
     let mut stmt = conn.prepare(&query_limit).unwrap();
-    let table2 = format!("n{}m{}", 6, 5);
-    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table2);
+    let table2 = format!("n{}m{}perms", 6, 5);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table2);
     let mut stmt2 = conn.prepare(&query_limit).unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -1034,8 +1034,8 @@ pub fn compress_lmdb<'a>(
     n: usize,
     env: &lmdb::Environment,
     dbs: &HashMap<String, lmdb::Database>,
-    prepared_stmt: &mut rusqlite::Statement<'a>,
-    prepared_stmt2: &mut rusqlite::Statement<'a>,
+    prepared_stmt: &mut duckdb::Statement<'a>,
+    prepared_stmt2: &mut duckdb::Statement<'a>,
     conn: &Connection,
 ) -> CircuitSeq {
     let id = Permutation::id_perm(n);
@@ -1101,16 +1101,15 @@ pub fn compress_lmdb<'a>(
         let min = min(sub_m, max);
 
         let (canon_perm_blob, canon_shuf_blob) = 
-            // Disabling SQL
-            if false && sub_m <= max && ((n == 6 && sub_m == 5) || (n == 7 && sub_m  == 4)) {
+            if sub_m <= max && ((n == 6 && sub_m == 5) || (n == 7 && sub_m  == 4)) {
                 if n == 7 && sub_m == 4 {
                     let stmt: &mut Statement<'_> = &mut *prepared_stmt;
 
                     let row_start = Instant::now();
-                    let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
+                    let blobs_result: duckdb::Result<Vec<u8>> =
                         stmt.query_row(
                             [&subcircuit.repr_blob()],
-                            |row| Ok((row.get(0)?, row.get(1)?)),
+                            |row| row.get(0),
                         );
 
                     SROW_FETCH_TIME.fetch_add(
@@ -1118,20 +1117,21 @@ pub fn compress_lmdb<'a>(
                         Ordering::Relaxed,
                     );
 
-                    match blobs_result {
+                    let perm_shuf = match blobs_result {
                         Ok(b) => b,
-                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-                        Err(e) => panic!("SQL query failed: {:?}", e),
-                    }
+                        Err(duckdb::Error::QueryReturnedNoRows) => continue,
+                        Err(e) => panic!("DUCKDB query failed: {:?}", e),
+                    };
+                    (perm_shuf[..perm_len].to_vec(), perm_shuf[perm_len..].to_vec())
 
                 } else if n == 6 && sub_m == 5 {
                     let stmt: &mut Statement<'_> = &mut *prepared_stmt2;
 
                     let row_start = Instant::now();
-                    let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
+                    let blobs_result: duckdb::Result<Vec<u8>> =
                         stmt.query_row(
                             [&subcircuit.repr_blob()],
-                            |row| Ok((row.get(0)?, row.get(1)?)),
+                            |row| row.get(0),
                         );
 
                     SIXROW_FETCH_TIME.fetch_add(
@@ -1139,11 +1139,12 @@ pub fn compress_lmdb<'a>(
                         Ordering::Relaxed,
                     );
 
-                    match blobs_result {
+                    let perm_shuf = match blobs_result {
                         Ok(b) => b,
-                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-                        Err(e) => panic!("SQL query failed: {:?}", e),
-                    }
+                        Err(duckdb::Error::QueryReturnedNoRows) => continue,
+                        Err(e) => panic!("DUCKDB query failed: {:?}", e),
+                    };
+                    (perm_shuf[..perm_len].to_vec(), perm_shuf[perm_len..].to_vec())
                 } else {
                     let table = format!("n{}m{}", n, sub_m);
                     let query = format!(
@@ -1151,7 +1152,7 @@ pub fn compress_lmdb<'a>(
                         table
                     );
                     let row_start = Instant::now();
-                    let blobs_result: rusqlite::Result<(Vec<u8>, Vec<u8>)> =
+                    let blobs_result: duckdb::Result<(Vec<u8>, Vec<u8>)> =
                         conn.query_row(
                             &query,
                             [&subcircuit.repr_blob()],
@@ -1168,8 +1169,8 @@ pub fn compress_lmdb<'a>(
                             println!("{}", table);
                             b
                         },
-                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
-                        Err(e) => panic!("SQL query failed: {:?}", e),
+                        Err(duckdb::Error::QueryReturnedNoRows) => continue,
+                        Err(e) => panic!("DUCKDB query failed: {:?}", e),
                     }
                 }
             } else if sub_m <= max && (n >= 4) {
@@ -1276,7 +1277,7 @@ pub fn expand_big(
     c: &CircuitSeq, 
     trials: usize, 
     num_wires: usize, 
-    conn: &mut Connection, 
+    conn: &Connection, 
     env: &lmdb::Environment, 
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>,
@@ -1413,7 +1414,7 @@ pub fn obfuscate(c: &CircuitSeq, num_wires: usize) -> (CircuitSeq, Vec<usize>) {
 }
 
 // Expand as we compress to try and get more randomness in the butterfly methods
-pub fn outward_compress(g: &CircuitSeq, r: &CircuitSeq, trials: usize, conn: &mut Connection, bit_shuf: &Vec<Vec<usize>>, n: usize) -> CircuitSeq {
+pub fn outward_compress(g: &CircuitSeq, r: &CircuitSeq, trials: usize, conn: &Connection, bit_shuf: &Vec<Vec<usize>>, n: usize) -> CircuitSeq {
     let mut g = g.clone();
     for gate in r.gates.iter() {
         let wrapper = CircuitSeq { gates: vec![*gate] };
@@ -1426,20 +1427,18 @@ pub fn compress_big_ancillas(
     c: &CircuitSeq, 
     trials: usize, 
     num_wires: usize, 
-    conn: &mut Connection, 
+    conn: &Connection, 
     env: &lmdb::Environment, 
     bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
     dbs: &HashMap<String, lmdb::Database>, 
 ) -> CircuitSeq {
-    // let table = format!("n{}m{}", 7, 4);
-    // let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
-    // let mut stmt = conn.prepare(&query_limit).unwrap();
-    // let table = format!("n{}m{}", 6, 5);
-    // let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
-    // let mut stmt2 = conn.prepare(&query_limit).unwrap();
+    let table = format!("n{}m{}perms", 7, 4);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table);
+    let mut stmt = conn.prepare(&query_limit).unwrap();
+    let table2 = format!("n{}m{}perms", 6, 5);
+    let query_limit = format!("SELECT perm_shuf FROM {} WHERE circuit = $1 LIMIT 1", table2);
+    let mut stmt2 = conn.prepare(&query_limit).unwrap();
 
-    let mut stmt = conn.prepare("SELECT 1 WHERE 0=1").unwrap();
-    let mut stmt2 = conn.prepare("SELECT 1 WHERE 0=1").unwrap();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
@@ -1595,7 +1594,7 @@ pub fn random_gate_replacements(c: &mut CircuitSeq, x: usize, n: usize, _conn: &
 // For timing and benchmarking purposes
 pub fn print_compress_timers() {
     let perm = PERMUTATION_TIME.load(Ordering::Relaxed);
-    let sql = SQL_TIME.load(Ordering::Relaxed);
+    let sql = DUCKDB_TIME.load(Ordering::Relaxed);
     let canon = CANON_TIME.load(Ordering::Relaxed);
     let compress = COMPRESS_TIME.load(Ordering::Relaxed);
     let rewire = REWIRE_TIME.load(Ordering::Relaxed);
@@ -1620,7 +1619,7 @@ pub fn print_compress_timers() {
 
     println!("--- Compression Timing Totals (minutes) ---");
     println!("Permutation computation time: {:.2} min", perm as f64 / 60_000_000_000.0);
-    println!("SQL lookup time: {:.2} min", sql as f64 / 60_000_000_000.0);
+    println!("DUCKDB lookup time: {:.2} min", sql as f64 / 60_000_000_000.0);
     println!("Canonicalization time: {:.2} min", canon as f64 / 60_000_000_000.0);
     println!("Compress LMDB time: {:.2} min", compress as f64 / 60_000_000_000.0);
     println!("Rewire subcircuit time: {:.2} min", rewire as f64 / 60_000_000_000.0);
@@ -1631,9 +1630,9 @@ pub fn print_compress_timers() {
     println!("Deduplication time: {:.2} min", dedup as f64 / 60_000_000_000.0);
     println!("Pick subcircuit time: {:.2} min", pick as f64 / 60_000_000_000.0);
     println!("Subcircuit canonicalize time: {:.2} min", canonicalize as f64 / 60_000_000_000.0);
-    println!("SQL row fetch time: {:.2} min", row_fetch as f64 / 60_000_000_000.0);
-    println!("SQL n7m4 prepared row fetch time: {:.2} min", srow_fetch as f64 / 60_000_000_000.0);
-    println!("SQL n6m5 prepared row fetch time: {:.2} min", sixrow_fetch as f64 / 60_000_000_000.0);
+    println!("DUCKDB row fetch time: {:.2} min", row_fetch as f64 / 60_000_000_000.0);
+    println!("DUCKDB n7m4 prepared row fetch time: {:.2} min", srow_fetch as f64 / 60_000_000_000.0);
+    println!("DUCKDB n6m5 prepared row fetch time: {:.2} min", sixrow_fetch as f64 / 60_000_000_000.0);
     println!("LMDB row fetch time: {:.2} min", lrow_fetch as f64 / 60_000_000_000.0);
     println!("LMDB DB open time: {:.2} min", db_open as f64 / 60_000_000_000.0);
     println!("LMDB transaction begin time: {:.2} min", txn as f64 / 60_000_000_000.0);
@@ -1648,14 +1647,14 @@ pub fn print_compress_timers() {
 mod tests {
     use super::*;
     use lmdb::Cursor;
-    use rusqlite::Connection;
+    use duckdb::Connection;
     use std::time::{Instant};
     use crate::random::random_data::random_circuit;
     use itertools::Itertools;
     #[test]
     fn random_circuit_exists_in_db() {
-        // Open the SQLite DB
-        let conn = Connection::open("circuits.db").expect("Failed to open DB");
+        // Open the DUCKDB
+        let conn = &Connection::open("circuits.db").expect("Failed to open DB");
 
         let perms: Vec<Vec<usize>> = (0..5).permutations(5).collect();
         let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
@@ -1709,7 +1708,7 @@ mod tests {
         // let str1 = "circuitQQF_64.txt";
         // let data1 = fs::read_to_string(str1).expect("Failed to read circuitQQF_64.txt");
         // let mut stable_count = 0;
-        // let mut conn = Connection::open("circuits.db").expect("Failed to open DB");
+        // let mut conn = &Connection::open("circuits.db").expect("Failed to open DB");
         // let mut acc = CircuitSeq::from_string(&data1);
         // while stable_count < 3 {
         //     let before = acc.gates.len();
@@ -1742,7 +1741,7 @@ mod tests {
 
         let data2 = fs::read_to_string(str2).expect("Failed to read circuitF.txt");
         let mut stable_count = 0;
-        let conn = Connection::open("circuits.db").expect("Failed to open DB");
+        let conn = &Connection::open("circuits.db").expect("Failed to open DB");
         let acc = CircuitSeq::from_string(&data2);
         let _bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
         .map(|n| {
@@ -1768,7 +1767,7 @@ mod tests {
                 stmts_prepared_limit1.insert((n, m), stmt_limit);
             }
         }
-        let _conn = Connection::open("circuits.db").expect("Failed to open DB");
+        let _conn = &Connection::open("circuits.db").expect("Failed to open DB");
         while stable_count < 6 {
             let before = acc.gates.len();
             // acc = compress_big(&acc, 1_000, 64, &mut conn, &env, &bit_shuf_list, &dbs);
@@ -1802,7 +1801,7 @@ mod tests {
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new("./db"))
                 .expect("Failed to open lmdb");
-        let conn = Connection::open("circuits.db").expect("Failed to open DB");
+        let conn = &Connection::open("circuits.db").expect("Failed to open DB");
         let circuit = random_canonical_id(&env, &conn, 3).unwrap_or_else(|_| panic!("Failed to run random_canon_id"));
         if circuit.probably_equal(&CircuitSeq { gates: vec![[1,2,3], [1,2,3]]}, 10, 10000).is_err() {
             panic!("Not id");
@@ -1858,7 +1857,6 @@ mod tests {
     use crate::replace::mixing::split_into_random_chunks;
     use rayon::iter::IntoParallelIterator;
     use rayon::iter::ParallelIterator;
-    use rusqlite::OpenFlags;
     #[test]
     fn replace_sequential_pair_preserves_invariants() {
         use crate::replace::pairs::replace_sequential_pairs;
@@ -1866,7 +1864,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0xdeadbeef);
         let num_wires = 64;
         let env_path = "./db";
-        let _conn = Connection::open("circuits.db").expect("Failed to open DB");
+        let _conn = &Connection::open("circuits.db").expect("Failed to open DB");
         let env = Environment::new()
             .set_max_dbs(262)
             .open(Path::new(env_path)).expect("Failed to open db");
@@ -1890,15 +1888,12 @@ mod tests {
             .into_par_iter()
             .map(|chunk| {
                 let mut sub = CircuitSeq { gates: chunk };
-                let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+                let thread_conn = &Connection::open_with_flags("circuits.duckdb", config).unwrap();
                 let t0 = Instant::now();
-                let (_, _, _, _) = replace_sequential_pairs(&mut sub, 64, &mut thread_conn, &env, &bit_shuf_list, &dbs, false);
+                let (_, _, _, _) = replace_sequential_pairs(&mut sub, 64, &thread_conn, &env, &bit_shuf_list, &dbs, false);
                 sub.gates.reverse();
-                let (_, _, _, _) = replace_sequential_pairs(&mut sub, 64, &mut thread_conn, &env, &bit_shuf_list, &dbs, false);
+                let (_, _, _, _) = replace_sequential_pairs(&mut sub, 64, &thread_conn, &env, &bit_shuf_list, &dbs, false);
                 sub.gates.reverse();
                 TOTAL_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 sub.gates
@@ -2030,11 +2025,8 @@ mod tests {
     pub fn test_gen_id_16() {
         use crate::replace::identities::get_random_wide_identity;
         let env_path = "./db";
-        let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+        let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+        let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
         let env = Environment::new()
             .set_max_dbs(200)
             .set_map_size(800 * 1024 * 1024 * 1024)
@@ -2051,7 +2043,7 @@ mod tests {
         let dbs = open_all_dbs(&env);
         let mut count = 0;
         while count < 2 {
-            let id = get_random_wide_identity(16, &env, &dbs, &mut thread_conn, &bit_shuf_list, false);
+            let id = get_random_wide_identity(16, &env, &dbs, &thread_conn, &bit_shuf_list, false);
 
             assert!(
                 id.probably_equal(&CircuitSeq { gates: Vec::new() }, 16, 100_000).is_ok(),
@@ -2088,11 +2080,8 @@ mod tests {
     pub fn test_max_mean_16() {
         use crate::replace::identities::get_random_wide_identity;
         let env_path = "./db";
-        let mut thread_conn = Connection::open_with_flags(
-                    "circuits.db",
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .expect("Failed to open read-only connection");
+        let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+        let thread_conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
         let env = Environment::new()
             .set_max_dbs(200)
             .set_map_size(800 * 1024 * 1024 * 1024)
@@ -2109,7 +2098,7 @@ mod tests {
         let dbs = open_all_dbs(&env);
         let mut curr_mean = 0.0;
         loop {
-            let id = get_random_wide_identity(128, &env, &dbs, &mut thread_conn, &bit_shuf_list, true);
+            let id = get_random_wide_identity(128, &env, &dbs, &thread_conn, &bit_shuf_list, true);
 
             assert!(
                 id.probably_equal(&CircuitSeq { gates: Vec::new() }, 128, 100_000).is_ok(),

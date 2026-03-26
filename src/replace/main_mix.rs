@@ -5,7 +5,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use rusqlite::Connection;
+use duckdb::Connection;
 
 use crate::{
     circuit::circuit::CircuitSeq,
@@ -115,7 +115,7 @@ pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> 
 // All the main code take a circuit and do repeated rounds of whatever method is chosen
 // In between each round, store a progress circuit and a sanity check
 // Finally, record the circuit in the chosen file destination
-pub fn main_mix(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize) {
+pub fn main_mix(c: &CircuitSeq, rounds: usize, conn: &Connection, n: usize) {
     // Start with the input circuit
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
@@ -186,7 +186,7 @@ pub fn main_mix(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize) 
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_butterfly(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize) {
+pub fn main_butterfly(c: &CircuitSeq, rounds: usize, conn: &Connection, n: usize) {
     // Start with the input circuit
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
@@ -266,7 +266,7 @@ pub fn main_butterfly(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: u
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, asymmetric: bool, save: &str, env: &lmdb::Environment,) {
+pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &Connection, n: usize, asymmetric: bool, save: &str, env: &lmdb::Environment,) {
     // Start with the input circuit
     let bit_shuf_list = (3..=7)
         .map(|n| {
@@ -360,7 +360,7 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, 
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, id_len: usize,) {
+pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, id_len: usize,) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -503,7 +503,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usi
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, id_len: usize) {
+pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -601,7 +601,7 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection,
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, x: usize, id_len: usize) {
+pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, x: usize, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -704,7 +704,7 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, conn: &mut Connection
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, min: usize, tower: bool, id_len: usize) {
+pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, conn: &Connection, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, min: usize, tower: bool, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -796,7 +796,7 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, conn: &mut Connectio
 }
 
 // Currently unsupported
-// pub fn main_butterfly_big_bookendsless(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, _asymmetric: bool, save: &str ,env: &lmdb::Environment,) {
+// pub fn main_butterfly_big_bookendsless(c: &CircuitSeq, rounds: usize, conn: &Connection, n: usize, _asymmetric: bool, save: &str ,env: &lmdb::Environment,) {
 //     // Start with the input circuit
 //     let dbs = open_all_dbs(env);
 //     let bit_shuf_list = (3..=7)
@@ -919,7 +919,7 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, conn: &mut Connectio
 pub fn main_sequential_butterfly(
     c: &CircuitSeq, 
     rounds: usize, 
-    conn: &mut Connection, 
+    conn: &Connection, 
     n: usize, 
     save: &str, 
     env: &lmdb::Environment, 
@@ -1039,7 +1039,7 @@ pub fn main_sequential_butterfly(
 pub fn main_shooting_game(
     c: &CircuitSeq, 
     rounds: usize, 
-    conn: &mut Connection, 
+    conn: &Connection, 
     n: usize, 
     save: &str, 
     env: &lmdb::Environment, 
@@ -1150,7 +1150,7 @@ pub fn main_shooting_game(
 }
 
 //do targeted compression
-pub fn main_compression(c: &CircuitSeq, rounds: usize, conn: &mut Connection, n: usize, save: &str, env: &lmdb::Environment,) {
+pub fn main_compression(c: &CircuitSeq, rounds: usize, conn: &Connection, n: usize, save: &str, env: &lmdb::Environment,) {
     let dbs = open_all_dbs(env);
     // Start with the input circuit
     let bit_shuf_list = (3..=7)
