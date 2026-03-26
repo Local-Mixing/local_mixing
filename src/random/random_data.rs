@@ -3171,6 +3171,117 @@ mod tests {
         }
     }
 
+    #[test]
+    fn benchmark_rocksdb_vs_duckdb_vs_canonical() {
+        use std::time::{Duration, Instant};
+        use duckdb::Connection;
+        use itertools::Itertools;
+        use rocksdb::{DB, Options};
+        use std::collections::HashMap;
+
+        let ns_and_ms = vec![(6, 5), (7, 4)];
+
+        // open dbs
+        let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+        let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
+
+        let mut duckdb_stmts = HashMap::new();
+        for &(n, m) in &ns_and_ms {
+            let table = format!("n{}m{}perms", n, m);
+            let query = format!(
+                "SELECT perm_shuf FROM {} WHERE circuit_hash = hash($1) AND circuit = $1 LIMIT 1",
+                table
+            );
+            let stmt = conn.prepare(&query).unwrap();
+            duckdb_stmts.insert((n, m), stmt);
+        }
+
+        let mut rocksdb_dbs = HashMap::new();
+        for &(n, m) in &ns_and_ms {
+            let path = format!("../rocksdb_n{}m{}perms", n, m);
+            let db = DB::open_for_read_only(&Options::default(), &path, false)
+                .expect("Failed to open RocksDB");
+            rocksdb_dbs.insert((n, m), db);
+        }
+
+        let bit_shufs: HashMap<usize, Vec<Vec<usize>>> = (3..=7)
+            .map(|n| {
+                let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
+                let shuf = perms.into_iter().skip(1).collect();
+                (n, shuf)
+            })
+            .collect();
+
+        // timers
+        let mut timer_canonical: HashMap<(usize, usize), Duration> = HashMap::new();
+        let mut timer_duckdb: HashMap<(usize, usize), Duration> = HashMap::new();
+        let mut timer_rocksdb: HashMap<(usize, usize), Duration> = HashMap::new();
+
+        for &(n, m) in &ns_and_ms {
+            timer_canonical.insert((n, m), Duration::ZERO);
+            timer_duckdb.insert((n, m), Duration::ZERO);
+            timer_rocksdb.insert((n, m), Duration::ZERO);
+        }
+
+        println!("Warming up...");
+        for _ in 0..10_000 {
+            for &(n, m) in &ns_and_ms {
+                let mut circuit = random_circuit(n, m);
+                circuit.canonicalize();
+                let _ = circuit.repr_blob();
+                let _ = circuit.permutation(n);
+            }
+        }
+
+        println!("Running benchmark...");
+        let iters = 1_000_000;
+
+        for _ in 0..iters {
+            for &(n, m) in &ns_and_ms {
+                let mut circuit = random_circuit(n, m);
+                circuit.canonicalize();
+                let circuit_blob = circuit.repr_blob();
+                let bit_shuf = &bit_shufs[&n];
+
+                // get_canonical
+                let start = Instant::now();
+                let perm = circuit.permutation(n);
+                let _ = get_canonical(&perm, bit_shuf);
+                timer_canonical.entry((n, m)).and_modify(|d| *d += start.elapsed());
+
+                // DuckDB lookup
+                if let Some(stmt) = duckdb_stmts.get_mut(&(n, m)) {
+                    let start = Instant::now();
+                    let _res: Option<Vec<u8>> = stmt
+                        .query_row([&circuit_blob], |row| row.get(0))
+                        .ok();
+                    timer_duckdb.entry((n, m)).and_modify(|d| *d += start.elapsed());
+                }
+
+                // RocksDB lookup
+                if let Some(db) = rocksdb_dbs.get(&(n, m)) {
+                    let start = Instant::now();
+                    let _res = db.get(&circuit_blob).ok();
+                    timer_rocksdb.entry((n, m)).and_modify(|d| *d += start.elapsed());
+                }
+            }
+        }
+
+        // Print results
+        println!("\nResults over {} iterations:", iters);
+        println!("{:<10} {:<10} {:<20} {:<20} {:<20}", "n", "m", "get_canonical", "duckdb", "rocksdb");
+        println!("{}", "-".repeat(80));
+        for &(n, m) in &ns_and_ms {
+            println!(
+                "{:<10} {:<10} {:<20?} {:<20?} {:<20?}",
+                n, m,
+                timer_canonical[&(n, m)] / iters,
+                timer_duckdb[&(n, m)] / iters,
+                timer_rocksdb[&(n, m)] / iters,
+            );
+        }
+    }
+
     use lmdb::Database;
     use std::path::Path;
     use lmdb::Environment;
