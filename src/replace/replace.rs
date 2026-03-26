@@ -1144,7 +1144,6 @@ pub fn compress_lmdb<'a>(
                         Err(duckdb::Error::QueryReturnedNoRows) => continue,
                         Err(e) => panic!("DUCKDB query failed: {:?}", e),
                     };
-                    println!("left duck");
                     (perm_shuf[..perm_len].to_vec(), perm_shuf[perm_len..].to_vec())
                 } else {
                     println!("in impossible");
