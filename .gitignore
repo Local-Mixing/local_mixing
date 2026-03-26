@@ -4,6 +4,7 @@ debug
 target
 db
 circuits.db*
+circuits.duckdb*
 *.txt
 *.sh
 *.png*
