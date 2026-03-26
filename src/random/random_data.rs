@@ -3198,7 +3198,7 @@ mod tests {
 
         let mut rocksdb_dbs = HashMap::new();
         for &(n, m) in &ns_and_ms {
-            let path = format!("../rocksdb_n{}m{}perms", n, m);
+            let path = format!("rocksdb_n{}m{}perms", n, m);
             let db = DB::open_for_read_only(&Options::default(), &path, false)
                 .expect("Failed to open RocksDB");
             rocksdb_dbs.insert((n, m), db);
