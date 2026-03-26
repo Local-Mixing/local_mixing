@@ -1103,7 +1103,6 @@ pub fn compress_lmdb<'a>(
         let (canon_perm_blob, canon_shuf_blob) = 
             if sub_m <= max && ((n == 6 && sub_m == 5) || (n == 7 && sub_m  == 4)) {
                 if n == 7 && sub_m == 4 {
-                    println!("In duck");
                     let stmt: &mut Statement<'_> = &mut *prepared_stmt;
 
                     let row_start = Instant::now();
@@ -1123,11 +1122,9 @@ pub fn compress_lmdb<'a>(
                         Err(duckdb::Error::QueryReturnedNoRows) => continue,
                         Err(e) => panic!("DUCKDB query failed: {:?}", e),
                     };
-                    println!("left duck");
                     (perm_shuf[..perm_len].to_vec(), perm_shuf[perm_len..].to_vec())
 
                 } else if n == 6 && sub_m == 5 {
-                    println!("in duck");
                     let stmt: &mut Statement<'_> = &mut *prepared_stmt2;
 
                     let row_start = Instant::now();
@@ -1168,7 +1165,6 @@ pub fn compress_lmdb<'a>(
                         row_start.elapsed().as_nanos() as u64,
                         Ordering::Relaxed,
                     );
-                    println!("left impossible");
                     match blobs_result {
                         Ok(b) => {
                             println!("{}", table);
