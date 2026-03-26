@@ -1422,6 +1422,7 @@ Command::new("equal")
 
             let mut acc = CircuitSeq::from_string(&contents);
 
+            println!("Opening duckdb");
             let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
             let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
             let lmdb = "./db";
@@ -1442,6 +1443,7 @@ Command::new("equal")
                 })
                 .collect();
             // Call compression logic
+            println!("Starting compression");
             let mut stable_count = 0;
             while stable_count < 6 {
                 let before = acc.gates.len();
