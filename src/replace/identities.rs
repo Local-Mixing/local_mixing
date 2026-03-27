@@ -1,13 +1,11 @@
 use std::{
-    collections::HashMap, fmt::DebugStruct, marker::PhantomData, ptr, slice, sync::atomic::{AtomicU64, Ordering}, time::Instant
+    collections::HashMap, marker::PhantomData, ptr, slice, sync::atomic::{AtomicU64, Ordering}, time::Instant
 };
 
 use libc::c_uint;
 
 use itertools::Itertools;
 use rand::{Rng, prelude::SliceRandom};
-use duckdb::Connection;
-
 use lmdb::{Cursor, Database, RoCursor, RoTransaction, Transaction, Environment};
 
 extern crate lmdb_sys;
@@ -150,7 +148,6 @@ fn random_perm_from_perm_table(
 // This is legacy now that we have ids_nNgK tables
 pub fn random_canonical_id(
     env: &lmdb::Environment,
-    _conn: &Connection,
     n: usize,
 ) -> Result<CircuitSeq, Box<dyn std::error::Error>> {
     let mut rng = rand::rng();
@@ -482,7 +479,6 @@ pub fn get_random_shuffled_identity (
     n: usize, 
     env: &lmdb::Environment,
     dbs: &HashMap<String, Database>,
-    _conn: &Connection,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     tower: bool,
 ) -> CircuitSeq {
@@ -511,7 +507,6 @@ pub fn get_random_wide_identity(
     n: usize, 
     env: &lmdb::Environment,
     dbs: &HashMap<String, Database>,
-    _conn: &Connection,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     tower: bool,
 ) -> CircuitSeq {
@@ -599,7 +594,6 @@ pub fn get_random_wide_identity_via_pairs(
     n: usize, 
     env: &lmdb::Environment,
     dbs: &HashMap<String, Database>,
-    _conn: &Connection,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
 ) -> CircuitSeq {
     let mut id = CircuitSeq { gates: Vec::new() };
@@ -779,7 +773,6 @@ pub fn zip_escalators(
     n: usize,
     tran: &mut Transpositions,
     negation_mask: &mut Vec<u8>,
-    _conn: &Connection,
     env: &Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs:&HashMap<String, Database>,
@@ -824,7 +817,6 @@ pub fn zip_escalators(
                                                         &left_gate,
                                                         &right_gate,
                                                         n,
-                                                        _conn,
                                                         env,
                                                         _bit_shuf_list,
                                                         dbs,

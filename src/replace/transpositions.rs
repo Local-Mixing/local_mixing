@@ -82,7 +82,6 @@ impl Transpositions {
         let mut transpositions = Vec::with_capacity(m);
         for _ in 0..m {
             let negation_type = rng.random_range(0..=3);
-            let negation_type = 0;
             let mut i: usize;
             loop {
                 i = rng.random_range(0..n);
@@ -914,6 +913,75 @@ pub fn insert_wire_shuffles_x(
             gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
             t_list.transpositions.extend_from_slice(&t.transpositions);
         }   
+        let a = t_list.evaluate(gate[0]);
+        let b = t_list.evaluate(gate[1]);
+        let c = t_list.evaluate(gate[2]);
+        let gate = [a, b, c];
+        if negation_mask[b as usize] == 1 {
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, b, env, dbs));
+            negation_mask[b as usize] = 0;
+        }
+        if negation_mask[c as usize] == 1 {
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, c, env, dbs));
+            negation_mask[c as usize] = 0;
+        }
+        gates.push(gate);
+    }
+    let p = t_list.to_perm(n);
+    let mut t = Transpositions::from_perm(&p);
+    let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
+
+    for (i, (a, b, _)) in t.transpositions.iter().enumerate() {
+        wire_transpositions.insert(*a, (i, 0));
+        wire_transpositions.insert(*b, (i, 1));
+    }
+
+    const TRANSITION: [[u8; 4]; 2] = [
+        // pos = 0
+        [1, 0, 3, 2],
+        // pos = 1
+        [2, 3, 0, 1],
+    ];
+
+    for (i, val) in negation_mask.into_iter().enumerate() {
+        if val == 1 {
+            if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
+                let &(swap_idx, pos) = swaps;
+                let curr_neg_type = t.transpositions[swap_idx].2;
+                if pos > 1 || curr_neg_type > 3 {
+                    panic!("Invalid pos or curr_neg_type");
+                }
+                t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
+                
+            }
+        }
+    }
+
+    let mut c = t.to_circuit(n, env, dbs).gates;
+    c.reverse();
+    gates.extend_from_slice(&c);
+    circuit.gates = gates;
+    println!("Complete. Ending len: {} gates", circuit.gates.len());
+}
+
+// Insert m samf between each gate
+pub fn insert_wire_m_samfs(
+    circuit: &mut CircuitSeq, 
+    n: usize,
+    m: usize,
+    env: &Environment,
+    dbs: &HashMap<String, Database>,
+) {
+    println!("Inserting {} samfs between each gate", m);
+    println!("Starting len: {} gates", circuit.gates.len());
+    let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
+    let mut gates: Vec<[u8;3]> = Vec::new();
+    let mut negation_mask = vec![0u8; n];
+
+    for &gate in &circuit.gates {
+        let t = Transpositions::gen_random_simple(n, m, &mut negation_mask);
+        gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
+        t_list.transpositions.extend_from_slice(&t.transpositions);
         let a = t_list.evaluate(gate[0]);
         let b = t_list.evaluate(gate[1]);
         let c = t_list.evaluate(gate[2]);

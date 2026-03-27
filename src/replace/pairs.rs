@@ -10,7 +10,6 @@ use std::{
 use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
 
 use rand::{prelude::SliceRandom, Rng};
-use duckdb::Connection;
 use serde::{Deserialize, Serialize};
 
 extern crate lmdb_sys;
@@ -206,7 +205,7 @@ fn gate_tri_taxonomy(g0: &[u8;3], g1: &[u8;3], g2: &[u8;3]) -> GateTri {
 }
 
 // Partitions circuit into pairs and then replaces each pair
-pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &Connection, env: &lmdb::Environment) {
+pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, env: &lmdb::Environment) {
     println!("Starting replace_pairs, circuit length: {}", circuit.gates.len());
     // let start = circuit.clone();
     let mut pairs: HashMap<GatePair, Vec<usize>> = HashMap::new();
@@ -240,7 +239,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, conn: &Connecti
     let mut fail = 0;
     while !pairs.is_empty() && fail < 100 {
         let n = rng.random_range(5..=7);
-        let mut id = match random_canonical_id(&env, conn, n) {
+        let mut id = match random_canonical_id(&env, n) {
             Ok(c) => c,
             Err(_) => continue,
         };
@@ -404,7 +403,6 @@ fn make_stdin_nonblocking() {
 pub fn replace_sequential_pairs(
     circuit: &mut CircuitSeq,
     num_wires: usize,
-    _conn: &Connection,
     env: &lmdb::Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
@@ -688,7 +686,6 @@ pub fn replace_single_pair(
     left: &[u8;3],
     right: &[u8;3],
     num_wires: usize,
-    _conn: &Connection,
     env: &lmdb::Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
@@ -791,7 +788,6 @@ pub fn replace_single_pair(
 pub fn replace_pair_distances(
     circuit: &mut CircuitSeq,
     num_wires: usize,
-    conn: &Connection,
     env: &lmdb::Environment,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
@@ -827,7 +823,6 @@ pub fn replace_pair_distances(
                     &circuit.gates[i - 1],
                     &circuit.gates[i],
                     num_wires,
-                    conn,
                     env,
                     bit_shuf_list,
                     dbs,
@@ -921,7 +916,6 @@ pub fn update_distance(
 pub fn replace_pair_distances_linear(
     circuit: &mut CircuitSeq,
     num_wires: usize,
-    conn: &Connection,
     env: &lmdb::Environment,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
@@ -957,7 +951,6 @@ pub fn replace_pair_distances_linear(
                     left,
                     right,
                     num_wires,
-                    conn,
                     env,
                     bit_shuf_list,
                     dbs,
@@ -1021,7 +1014,6 @@ pub fn replace_pair_distances_linear(
 pub fn replace_tri(
     circuit: &mut CircuitSeq,
     num_wires: usize,
-    conn: &Connection,
     env: &lmdb::Environment,
 ) {
     println!("Starting replace_tri, circuit length: {}", circuit.gates.len());
@@ -1059,7 +1051,7 @@ pub fn replace_tri(
 
     while !tris.is_empty() && fail < 100 {
         let n = rng.random_range(5..=7);
-        let mut id = match random_canonical_id(&env, conn, n) {
+        let mut id = match random_canonical_id(&env, n) {
             Ok(c) => c,
             Err(_) => continue,
         };

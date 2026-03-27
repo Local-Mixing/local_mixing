@@ -1,7 +1,7 @@
 use clap::{Arg, ArgAction, Command};
 use itertools::Itertools;
 use plotters::prelude::*;
-use duckdb::{Connection, AccessMode, Config};
+use rocksdb::{DB, Options};
 
 use std::{
     fs,
@@ -14,10 +14,14 @@ use local_mixing::{
     random::random_data::{build_from_sql, main_random, random_circuit, random_sulking, random_walk_no_skeleton, shoot_random_gate},
     replace::{
         identities::{get_random_wide_identity, random_canonical_id}, main_mix::{
-            main_butterfly, main_butterfly_big, main_interleave_big, main_mix, main_rac_big, main_rac_big_distance, main_sequential_butterfly, main_shuffle_rcs_big, open_all_dbs, main_shooting_game,
+            // main_butterfly, 
+            main_butterfly_big, main_interleave_big, 
+            // main_mix, 
+            main_rac_big, main_rac_big_distance, main_sequential_butterfly, main_shuffle_rcs_big, open_all_dbs, main_shooting_game, main_shuffle_shoot_shuffle
         }, mixing::install_kill_handler, pairs::{GatePair, gate_pair_taxonomy}, replace::{
             compress_big_ancillas,
             sequential_compress_big_ancillas,
+            compress_loop,
         }, transpositions::{generate_reversible, insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x}
     },
 };
@@ -813,6 +817,65 @@ fn main() {
             ),
     )
     .subcommand(
+        Command::new("sss")
+            .about("Do simple shooting game on a circuit")
+            .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+            .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize)))
+            .arg(
+                Arg::new("source")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source circuit file"),
+            )
+            .arg(
+                Arg::new("rounds")
+                    .short('r')
+                    .long("rounds")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of rounds")
+            )
+            .arg(
+                Arg::new("destination")
+                    .short('d')
+                    .long("destination")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the new circuit file"),
+            )
+            .arg(
+                Arg::new("id_len")
+                    .long("id_len")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires per identity")
+            )
+            .arg(
+                Arg::new("tower")
+                    .long("tower")
+                    .help("Use tower identities")
+                    .required(false) 
+                    .action(clap::ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("stop")
+                    .long("stop")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("When to stop the game")
+            )
+            .arg(
+                Arg::new("intermediate")
+                    .short('i')
+                    .long("intermediate")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the intermediate circuit file"),
+            ),
+    )
+    .subcommand(
         Command::new("shoot")
             .about("Shuffle a circuit")
             .arg(Arg::new("i").short('i').long("iterations").required(true).value_parser(clap::value_parser!(usize)))
@@ -872,18 +935,18 @@ Command::new("equal")
     .get_matches();
 
     match matches.subcommand() {
-        Some(("load", sub)) => {
-            let n: usize = *sub.get_one("n").unwrap();
-            let m: usize = *sub.get_one("m").unwrap();
-            // main_rainbow_load(n, m, "./db");
+        // Some(("load", sub)) => {
+        //     let n: usize = *sub.get_one("n").unwrap();
+        //     let m: usize = *sub.get_one("m").unwrap();
+        //     // main_rainbow_load(n, m, "./db");
             
-            // Open DB connection
-            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
-            let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
-            let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
-            build_from_sql(&conn, n,m, &bit_shuf).expect("Unknown error occured");
-        }
+        //     // Open DB connection
+        //     let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+        //     let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
+        //     let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
+        //     let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
+        //     build_from_sql(&conn, n,m, &bit_shuf).expect("Unknown error occured");
+        // }
         Some(("random", sub)) => {
             let n: usize = *sub.get_one("n").unwrap();
             let m: usize = *sub.get_one("m").unwrap();
@@ -898,76 +961,73 @@ Command::new("equal")
                 panic!("You must provide either -c <count> or -C for sliding-window mode");
             }
         }
-        Some(("mix", sub)) => {
-            let rounds: usize = *sub.get_one("rounds").unwrap();
+        // Some(("mix", sub)) => {
+        //     let rounds: usize = *sub.get_one("rounds").unwrap();
 
-            let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
-            // let seed = OsRng.try_next_u64().unwrap_or_else(|e| {
-            //     panic!("Failed to generate random seed: {}", e);
-            // });
-            // println!("Using seed: {}", seed);
-            if data.trim().is_empty() {
-                // Open DB connection
-                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-                let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
-                let lmdb = "./db";
-                let env = Environment::new()
-                .set_max_dbs(266)      
-                .set_map_size(700 * 1024 * 1024 * 1024) 
-                .open(Path::new(lmdb))
-                .expect("Failed to open lmdb");
+        //     let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
+        //     // let seed = OsRng.try_next_u64().unwrap_or_else(|e| {
+        //     //     panic!("Failed to generate random seed: {}", e);
+        //     // });
+        //     // println!("Using seed: {}", seed);
+        //     if data.trim().is_empty() {
+        //         // Open DB connection
+        //         let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+        //         let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
+        //         let lmdb = "./db";
+        //         let env = Environment::new()
+        //         .set_max_dbs(266)      
+        //         .set_map_size(700 * 1024 * 1024 * 1024) 
+        //         .open(Path::new(lmdb))
+        //         .expect("Failed to open lmdb");
 
-                // Fallback when file is empty
-                let c1= random_canonical_id(&env, &conn, 5).unwrap();
-                println!("{:?} Starting Len: {}", c1.permutation(5).data, c1.gates.len());
-                main_mix(&c1, rounds, &conn, 5);
-            } else {
+        //         // Fallback when file is empty
+        //         let c1= random_canonical_id(&env, &conn, 5).unwrap();
+        //         println!("{:?} Starting Len: {}", c1.permutation(5).data, c1.gates.len());
+        //         main_mix(&c1, rounds, &conn, 5);
+        //     } else {
                 
-                let c = CircuitSeq::from_string(&data);
+        //         let c = CircuitSeq::from_string(&data);
 
-                // Open DB connection
-                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-                let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
-                main_mix(&c, rounds, &conn, 5);
-            }
-        }
-        Some(("butterfly", sub)) => {
-            let rounds: usize = *sub.get_one("rounds").unwrap();
-            let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
-            // let seed = OsRng.try_next_u64().unwrap_or_else(|e| {
-            //     panic!("Failed to generate random seed: {}", e);
-            // });
-            // println!("Using seed: {}", seed);
-            if data.trim().is_empty() {
-                // Open DB connection
-                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-                let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
-                // Fallback when file is empty
-                println!("Generating random");
-                let c1= random_circuit(6,30);
-                // let perms: Vec<Vec<usize>> = (0..5).permutations(5).collect();
-                // let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
-                // let c1 = compress(&random_circuit(5,128), 100_000, &conn, &bit_shuf,5 );
-                println!("{:?} Starting Len: {}", c1.permutation(6).data, c1.gates.len());
-                main_butterfly(&c1, rounds, &conn, 6);
-            } else {
+        //         // Open DB connection
+        //         let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+        //         let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
+        //         main_mix(&c, rounds, &conn, 5);
+        //     }
+        // }
+        // Some(("butterfly", sub)) => {
+        //     let rounds: usize = *sub.get_one("rounds").unwrap();
+        //     let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
+        //     // let seed = OsRng.try_next_u64().unwrap_or_else(|e| {
+        //     //     panic!("Failed to generate random seed: {}", e);
+        //     // });
+        //     // println!("Using seed: {}", seed);
+        //     if data.trim().is_empty() {
+        //         // Open DB connection
+        //         let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+        //         let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
+        //         // Fallback when file is empty
+        //         println!("Generating random");
+        //         let c1= random_circuit(6,30);
+        //         // let perms: Vec<Vec<usize>> = (0..5).permutations(5).collect();
+        //         // let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
+        //         // let c1 = compress(&random_circuit(5,128), 100_000, &conn, &bit_shuf,5 );
+        //         println!("{:?} Starting Len: {}", c1.permutation(6).data, c1.gates.len());
+        //         main_butterfly(&c1, rounds, &conn, 6);
+        //     } else {
                 
-                let c = CircuitSeq::from_string(&data);
+        //         let c = CircuitSeq::from_string(&data);
 
-                // Open DB connection
-                let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-                let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
-                main_butterfly(&c, rounds, &conn, 6);
-            }
-        }
+        //         // Open DB connection
+        //         let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
+        //         let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
+        //         main_butterfly(&c, rounds, &conn, 6);
+        //     }
+        // }
         Some(("bbutterfly", sub)) => {
             let rounds: usize = *sub.get_one("rounds").unwrap();
             let path: &str = sub.get_one::<String>("path").unwrap().as_str();
             let n: usize = *sub.get_one("n").unwrap_or(&32); // default to 32 if not provided
             let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
-
-            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
 
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
@@ -978,14 +1038,19 @@ Command::new("equal")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
+            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
+                .expect("Failed to open RocksDB n6m5");
+            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
+                .expect("Failed to open RocksDB n7m4");
+
             if data.trim().is_empty() {
                 println!("Generating random");
                 let c1 = random_circuit(n, 30);
                 println!("Starting Len: {}", c1.gates.len());
-                main_butterfly_big(&c1, rounds, &conn, n, false, path, &env);
+                main_butterfly_big(&c1, rounds, &db_n6m5, &db_n7m4, n, false, path, &env);
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_butterfly_big(&c, rounds, &conn, n, false, path, &env);
+                main_butterfly_big(&c, rounds, &db_n6m5, &db_n7m4, n, false, path, &env);
             }
         }
 
@@ -996,8 +1061,6 @@ Command::new("equal")
             let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
             let bookendless = sub.get_flag("bookendless"); 
 
-            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
 
@@ -1007,22 +1070,28 @@ Command::new("equal")
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
+
+            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
+                .expect("Failed to open RocksDB n6m5");
+            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
+                .expect("Failed to open RocksDB n7m4");
+
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Generating random");
                 let c1 = random_circuit(n, 30);
                 println!("Starting Len: {}", c1.gates.len());
                 if bookendless {
-                    // main_butterfly_big_bookendsless(&c1, rounds, &conn, n, true, path, &env);
+                    // main_butterfly_big_bookendsless(&c1, rounds, &db_n6m5, &db_n7m4, n, true, path, &env);
                 } else {
-                    main_butterfly_big(&c1, rounds, &conn, n, true, path, &env);
+                    main_butterfly_big(&c1, rounds, &db_n6m5, &db_n7m4, n, true, path, &env);
                 }
             } else {
                 let c = CircuitSeq::from_string(&data);
                 if bookendless {
-                    // main_butterfly_big_bookendsless(&c, rounds, &conn, n, true, path, &env);
+                    // main_butterfly_big_bookendsless(&c, rounds, &db_n6m5, &db_n7m4, n, true, path, &env);
                 } else {
-                    main_butterfly_big(&c, rounds, &conn, n, true, path, &env);
+                    main_butterfly_big(&c, rounds, &db_n6m5, &db_n7m4, n, true, path, &env);
                 }
             }
         }
@@ -1036,8 +1105,6 @@ Command::new("equal")
             let id_len: usize = *sub.get_one("id_len").unwrap(); 
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
-            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
 
@@ -1047,12 +1114,18 @@ Command::new("equal")
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
+
+            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
+                .expect("Failed to open RocksDB n6m5");
+            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
+                .expect("Failed to open RocksDB n7m4");
+
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_rac_big(&c, rounds, &conn, n, d, &env, i, tower, id_len);
+                main_rac_big(&c, rounds, &db_n6m5, &db_n7m4, n, d, &env, i, tower, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1091,8 +1164,6 @@ Command::new("equal")
             let id_len: usize = *sub.get_one("id_len").unwrap();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
-            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
 
@@ -1102,12 +1173,18 @@ Command::new("equal")
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
+
+            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
+                .expect("Failed to open RocksDB n6m5");
+            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
+                .expect("Failed to open RocksDB n7m4");
+
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_shuffle_rcs_big(&c, rounds, &conn, n, d, &env, i, tower, x, id_len);
+                main_shuffle_rcs_big(&c, rounds, &db_n6m5, &db_n7m4, n, d, &env, i, tower, x, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1145,8 +1222,6 @@ Command::new("equal")
             let id_len: usize = *sub.get_one("id_len").unwrap();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
-            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
 
@@ -1156,12 +1231,18 @@ Command::new("equal")
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
+
+            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
+                .expect("Failed to open RocksDB n6m5");
+            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
+                .expect("Failed to open RocksDB n7m4");
+
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_interleave_big(&c, rounds, &conn, n, d, &env, i, tower, id_len);
+                main_interleave_big(&c, rounds, &db_n6m5, &db_n7m4, n, d, &env, i, tower, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1200,8 +1281,6 @@ Command::new("equal")
             let tower = sub.get_flag("tower");
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
-            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
 
@@ -1211,12 +1290,18 @@ Command::new("equal")
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
+
+            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
+                .expect("Failed to open RocksDB n6m5");
+            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
+                .expect("Failed to open RocksDB n7m4");
+
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_rac_big_distance(&c, rounds, &conn, n, d, &env, i, m, tower, id_len);
+                main_rac_big_distance(&c, rounds, &db_n6m5, &db_n7m4, n, d, &env, i, m, tower, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1258,8 +1343,6 @@ Command::new("equal")
             let for_right = sub.get_flag("for_right");
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
-            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
 
@@ -1269,6 +1352,12 @@ Command::new("equal")
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
+
+            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
+                .expect("Failed to open RocksDB n6m5");
+            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
+                .expect("Failed to open RocksDB n7m4");
+
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
@@ -1277,7 +1366,8 @@ Command::new("equal")
                 main_sequential_butterfly(
                     &c, 
                     rounds, 
-                    &conn, 
+                    &db_n6m5,
+                    &db_n7m4,
                     n, 
                     d, 
                     &env, 
@@ -1321,14 +1411,13 @@ Command::new("equal")
             let s: &str = sub.get_one::<String>("source").unwrap().as_str();
             let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
             let n: usize = *sub.get_one("n").unwrap();
+            let m: usize = *sub.get_one("m").unwrap();
             let id_len: usize = *sub.get_one("id_len").unwrap();
             let tower = sub.get_flag("tower");
             let stop: usize = *sub.get_one("stop").unwrap();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
-            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
 
@@ -1338,16 +1427,24 @@ Command::new("equal")
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
+
+            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
+                .expect("Failed to open RocksDB n6m5");
+            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
+                .expect("Failed to open RocksDB n7m4");
+
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_shooting_game(
+                main_shuffle_shoot_shuffle(
                     &c, 
                     rounds, 
-                    &conn, 
+                    &db_n6m5,
+                    &db_n7m4,
                     n, 
+                    m,
                     d, 
                     &env, 
                     id_len, 
@@ -1422,9 +1519,6 @@ Command::new("equal")
 
             let mut acc = CircuitSeq::from_string(&contents);
 
-            println!("Opening duckdb");
-            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
 
@@ -1434,6 +1528,13 @@ Command::new("equal")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
             let dbs = open_all_dbs(&env);
+
+            println!("Opening RocksDB");
+            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
+                .expect("Failed to open RocksDB n6m5");
+            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
+                .expect("Failed to open RocksDB n7m4");
+
             let bit_shuf_list = (3..=7)
                 .map(|n| {
                     (0..n)
@@ -1444,28 +1545,18 @@ Command::new("equal")
                 .collect();
             // Call compression logic
             println!("Starting compression");
-            let mut stable_count = 0;
-            while stable_count < 6 {
-                let before = acc.gates.len();
-                acc = if !seq {
-                    compress_big_ancillas(&acc, 1_000, n, &conn, &env, &bit_shuf_list, &dbs)
-                } else {
-                    sequential_compress_big_ancillas(&acc, n, &conn, &env, &bit_shuf_list, &dbs);
-                    acc.gates.reverse();
-                    sequential_compress_big_ancillas(&acc, n, &conn, &env, &bit_shuf_list, &dbs);
-                    acc.gates.reverse();
-                    acc
-                };
-                let after = acc.gates.len();
-
-                if after == before {
-                    stable_count += 1;
-                    println!("  Final compression stable {}/6 at {} gates", stable_count, after);
-                } else {
-                    println!("  Final compression reduced: {} → {} gates", before, after);
-                    stable_count = 0;
-                }
-            }
+            acc = compress_loop(
+                &acc,
+                n,
+                &db_n6m5,
+                &db_n7m4,
+                &env,
+                &bit_shuf_list,
+                &dbs,
+                12,
+                1,
+                1
+            );
             let mut file = fs::File::create(d)
                 .expect("Failed to create new file");
             write!(file, "{}", acc.repr())
@@ -1764,12 +1855,12 @@ pub fn sql_to_lmdb(n: usize, m: usize) -> Result<(), ()> {
     let map_size_bytes: usize = 800 * 1024 * 1024 * 1024;
     let batch_max_entries: usize = 100_000;
 
-    let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-    let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
+    let sqlite_conn = rusqlite::Connection::open("circuits.db")
+        .expect("Failed to open SQLite database");
     let table = format!("n{}m{}", n, m);
 
     let query = format!("SELECT * FROM {}", table);
-    let mut stmt = conn.prepare(&query).expect("Failed to prepare SQLite query");
+    let mut stmt = sqlite_conn.prepare(&query).expect("Failed to prepare SQLite query");
     let mut rows = stmt.query([]).expect("Failed to query SQLite rows");
 
     fs::create_dir_all(lmdb_path).expect("Failed to create LMDB directory");
@@ -1849,12 +1940,12 @@ pub fn sql_to_lmdb_perms(n: usize, m: usize) -> Result<(), ()> {
     let batch_max_entries: usize = 100_000;
 
     // Open SQLite
-    let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-    let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
+    let sqlite_conn = rusqlite::Connection::open("circuits.db")
+        .expect("Failed to open SQLite database");
     let table = format!("n{}m{}", n, m);
     let table2 = format!("n{}m{}perms", n, m);
     let query = format!("SELECT * FROM {}", table);
-    let mut stmt = conn.prepare(&query).expect("Failed to prepare SQLite query");
+    let mut stmt = sqlite_conn.prepare(&query).expect("Failed to prepare SQLite query");
     let mut rows = stmt.query([]).expect("Failed to query SQLite rows");
 
     // Open LMDB
@@ -2351,9 +2442,6 @@ pub fn fill_n_id(n: usize) {
         let bit_shuf_list = bit_shuf_list.clone();
 
         handles.push(thread::spawn(move || {
-            let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-            let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
-
             loop {
                 let tower = rand::rng().random_bool(0.5);
 
@@ -2361,7 +2449,6 @@ pub fn fill_n_id(n: usize) {
                     n,
                     &env,
                     &dbs,
-                    &conn,
                     &bit_shuf_list,
                     tower,
                 );

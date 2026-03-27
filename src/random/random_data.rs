@@ -3242,13 +3242,13 @@ mod tests {
                 circuit.canonicalize();
                 let circuit_blob = circuit.repr_blob();
                 let bit_shuf = &bit_shufs[&n];
-
+                println!("Get canonical");
                 // get_canonical
                 let start = Instant::now();
                 let perm = circuit.permutation(n);
                 let _ = get_canonical(&perm, bit_shuf);
                 timer_canonical.entry((n, m)).and_modify(|d| *d += start.elapsed());
-
+                println!("duckdb");
                 // DuckDB lookup
                 if let Some(stmt) = duckdb_stmts.get_mut(&(n, m)) {
                     let start = Instant::now();
@@ -3257,7 +3257,7 @@ mod tests {
                         .ok();
                     timer_duckdb.entry((n, m)).and_modify(|d| *d += start.elapsed());
                 }
-
+                println!("rocksdb");
                 // RocksDB lookup
                 if let Some(db) = rocksdb_dbs.get(&(n, m)) {
                     let start = Instant::now();
