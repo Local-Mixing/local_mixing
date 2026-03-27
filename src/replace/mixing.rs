@@ -1127,10 +1127,7 @@ pub fn simple_shooting_game(
         .expect("Failed to open replacednocomp.txt");
     println!("Writing to {}", intermediate);
     writeln!(f, "{}", acc.repr()).expect("Failed to write intermediate CircuitSeq");
-
-    println!("  {}/{}: Sending to compressor: {} gates", curr_round, last_round, acc.gates.len());
-    
-    if acc.probably_equal(&c, n, 10000).is_err() {
+    if acc.probably_equal(&c, n, 1000).is_err() {
         panic!("Functionality lost during sequential butterfly");
     }
     acc

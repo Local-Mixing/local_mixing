@@ -1198,7 +1198,7 @@ pub fn main_shuffle_shoot_shuffle(
             db_n7m4,
             id_len,
             tower,
-            10 * circuit.gates.len(),
+            4 * circuit.gates.len(),
             intermediate,
             true,
         );
