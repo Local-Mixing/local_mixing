@@ -1058,14 +1058,16 @@ pub fn simple_shooting_game(
     tower: bool,
     stop: usize,
     intermediate: &str,
-    ends: bool
+    ends: bool,
+    iter: usize,
 ) -> CircuitSeq {
     let mut gates = c.gates.clone();
-    println!("   {}/{}: Starting simple shooting game until {} gates", curr_round, last_round, stop);
+    println!("   {}/{}: Starting simple shooting game until {} rounds or {} gates", curr_round, last_round, iter, stop);
     let mut len = gates.len();
     println!("Starting gates: {}", len);
     let mut rng = rand::rng();
-    while len < stop {
+    let mut count = 0;
+    while (count < iter) && (len < stop) {
         let left = rng.random_bool(0.5);
         let starting_idx = if ends && left {
             len - 1
@@ -1117,9 +1119,10 @@ pub fn simple_shooting_game(
                 curr_idx = after_idx + length - 1;
             }
         }
+        count += 1;
     }
 
-    let mut acc = CircuitSeq { gates };
+    let acc = CircuitSeq { gates };
     let mut f = OpenOptions::new()
         .create(true)
         .append(true)

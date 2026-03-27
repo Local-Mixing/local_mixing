@@ -1082,7 +1082,8 @@ pub fn main_shooting_game(
             tower,
             stop,
             intermediate,
-            false
+            false,
+            100
         );
         circuit = new_circuit;
 
@@ -1201,6 +1202,7 @@ pub fn main_shuffle_shoot_shuffle(
             4 * circuit.gates.len(),
             intermediate,
             true,
+            4
         );
         circuit = new_circuit;
         println!("After shooting game: {} gates", circuit.gates.len());
@@ -1214,7 +1216,7 @@ pub fn main_shuffle_shoot_shuffle(
             env,
             &bit_shuf_list,
             &dbs,
-            12,
+            6,
             i+1, 
             rounds, 
         );
