@@ -1186,6 +1186,9 @@ pub fn main_shuffle_shoot_shuffle(
     let mut post_len = 0;
     let mut count = 0;
     insert_wire_shuffles_simple(&mut circuit, n, env, &dbs);
+    if circuit.probably_equal(&c, n, 100).is_err() {
+        panic!("Lost functionality after shuffling");
+    }
     for i in 0..rounds {
         let new_circuit = simple_shooting_game(
             &circuit,  
@@ -1205,8 +1208,14 @@ pub fn main_shuffle_shoot_shuffle(
             1
         );
         circuit = new_circuit;
+        if circuit.probably_equal(&c, n, 100).is_err() {
+            panic!("Lost functionality after shooting game");
+        }
         println!("After shooting game: {} gates", circuit.gates.len());
         insert_wire_m_samfs(&mut circuit, n, m, env, &dbs);
+        if circuit.probably_equal(&c, n, 100).is_err() {
+            panic!("Lost functionality after samfs");
+        }
         println!("After inserting samfs: {} gates", circuit.gates.len());
         circuit = compress_loop(
             &circuit,
