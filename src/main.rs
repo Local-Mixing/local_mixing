@@ -1411,6 +1411,77 @@ Command::new("equal")
             let s: &str = sub.get_one::<String>("source").unwrap().as_str();
             let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
             let n: usize = *sub.get_one("n").unwrap();
+            let id_len: usize = *sub.get_one("id_len").unwrap();
+            let tower = sub.get_flag("tower");
+            let stop: usize = *sub.get_one("stop").unwrap();
+            let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
+            let data = fs::read_to_string(s).expect("Failed to read initial.txt");
+
+            let lmdb = "./db";
+            let _ = std::fs::create_dir_all(lmdb);
+
+            let env = Environment::new()
+                .set_max_readers(10000) 
+                .set_max_dbs(266)      
+                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .open(Path::new(lmdb))
+                .expect("Failed to open lmdb");
+
+            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
+                .expect("Failed to open RocksDB n6m5");
+            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
+                .expect("Failed to open RocksDB n7m4");
+
+            install_kill_handler();
+            if data.trim().is_empty() {
+                println!("Empty file");
+            } else {
+                let c = CircuitSeq::from_string(&data);
+                main_shooting_game(
+                    &c, 
+                    rounds, 
+                    &db_n6m5,
+                    &db_n7m4,
+                    n, 
+                    d, 
+                    &env, 
+                    id_len, 
+                    tower,
+                    stop,
+                    i,
+                );
+                let x_label = {
+                    let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                    let num = stem.strip_prefix("circuit").unwrap_or(stem);
+                    format!("Circuit {}", num)
+                };
+
+                let y_label = {
+                    let stem = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                    let num = stem.strip_prefix("circuit").unwrap_or(stem);
+                    format!("Circuit {}", num)
+                };
+                let path_s = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                println!(
+                    "For generating heatmaps:\n\
+                    python3 ./heatmap/heatmap.py \
+                    --n {} \
+                    --i 100 \
+                    --x \"{}\" \
+                    --y \"{}\" \
+                    --c1 \"{}\" \
+                    --c2 \"{}\" \
+                    --path ./{}{}.png",
+                        n, x_label, y_label, s, d, path_s, path_d
+                );
+            }
+        }
+        Some(("sss", sub)) => {
+            let rounds: usize = *sub.get_one("rounds").unwrap();
+            let s: &str = sub.get_one::<String>("source").unwrap().as_str();
+            let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
+            let n: usize = *sub.get_one("n").unwrap();
             let m: usize = *sub.get_one("m").unwrap();
             let id_len: usize = *sub.get_one("id_len").unwrap();
             let tower = sub.get_flag("tower");
