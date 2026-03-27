@@ -1186,11 +1186,14 @@ pub fn main_shuffle_shoot_shuffle(
     // Repeat `rounds` times
     let mut post_len = 0;
     let mut count = 0;
+    let mut new_circuit = circuit.clone();
     loop {
-        insert_wire_shuffles_simple(&mut circuit, n, env, &dbs);
-        if circuit.probably_equal(&c, n, 100).is_ok() {
+        insert_wire_shuffles_simple(&mut new_circuit, n, env, &dbs);
+        if new_circuit.probably_equal(&c, n, 100).is_ok() {
+            circuit = new_circuit;
             break
         }
+
     }
     for i in 0..rounds {
         loop {
@@ -1217,9 +1220,11 @@ pub fn main_shuffle_shoot_shuffle(
             }
         }
         println!("After shooting game: {} gates", circuit.gates.len());
+        let mut new_circuit = circuit.clone();
         loop {
-            insert_wire_m_samfs_every_x(&mut circuit, n, m, x, env, &dbs);
-            if circuit.probably_equal(&c, n, 100).is_ok() {
+            insert_wire_m_samfs_every_x(&mut new_circuit, n, m, x, env, &dbs);
+            if new_circuit.probably_equal(&c, n, 100).is_ok() {
+                circuit = new_circuit;
                 break;
             }
         }
