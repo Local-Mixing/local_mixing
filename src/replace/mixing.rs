@@ -1068,7 +1068,7 @@ pub fn simple_shooting_game(
     while len < stop {
         let left = rng.random_bool(0.5);
         let starting_idx = if ends && left {
-            len
+            len - 1
         } else if ends && !left {
             0
         } else {
