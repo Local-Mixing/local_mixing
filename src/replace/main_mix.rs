@@ -10,6 +10,7 @@ use rocksdb::{DB};
 use crate::{
     circuit::circuit::CircuitSeq,
     replace::{
+        replace::compress_loop,
         mixing::{
             abutterfly_big, butterfly_big, interleave_sequential_big, replace_and_compress_big, replace_and_compress_big_distance, simple_shooting_game, zip_sequential_butterfly
         },
@@ -1205,6 +1206,19 @@ pub fn main_shuffle_shoot_shuffle(
         println!("After shooting game: {} gates", circuit.gates.len());
         insert_wire_m_samfs(&mut circuit, n, m, env, &dbs);
         println!("After inserting samfs: {} gates", circuit.gates.len());
+        circuit = compress_loop(
+            &circuit,
+            n,
+            db_n6m5,
+            db_n7m4,
+            env,
+            &bit_shuf_list,
+            &dbs,
+            12,
+            i+1, 
+            rounds, 
+        );
+        println!("After compression: {} gates", circuit.gates.len());
         if circuit.gates.len() == 0 {
             break;
         }

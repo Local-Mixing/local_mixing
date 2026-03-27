@@ -1133,18 +1133,7 @@ pub fn simple_shooting_game(
     if acc.probably_equal(&c, n, 10000).is_err() {
         panic!("Functionality lost during sequential butterfly");
     }
-    compress_loop(
-        &acc,
-        n,
-        db_n6m5,
-        db_n7m4,
-        env,
-        bit_shuf_list,
-        dbs,
-        12,
-        curr_round,
-        last_round
-    )
+    acc
 }
 // Asymmetric butterfly but delay compression and addition of the bookends
 // Hope is to slow down the blowup in the number of gates
