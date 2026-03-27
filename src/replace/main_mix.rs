@@ -1193,7 +1193,7 @@ pub fn main_shuffle_shoot_shuffle(
             circuit = new_circuit;
             break
         }
-
+        new_circuit = circuit.clone();
     }
     for i in 0..rounds {
         loop {
@@ -1227,6 +1227,7 @@ pub fn main_shuffle_shoot_shuffle(
                 circuit = new_circuit;
                 break;
             }
+            new_circuit = circuit.clone();
         }
         println!("After inserting samfs: {} gates", circuit.gates.len());
         circuit = compress_loop(
