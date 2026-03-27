@@ -965,10 +965,11 @@ pub fn insert_wire_shuffles_x(
 }
 
 // Insert m samf between each gate
-pub fn insert_wire_m_samfs(
+pub fn insert_wire_m_samfs_every_x(
     circuit: &mut CircuitSeq, 
     n: usize,
     m: usize,
+    x: usize,
     env: &Environment,
     dbs: &HashMap<String, Database>,
 ) {
@@ -978,10 +979,12 @@ pub fn insert_wire_m_samfs(
     let mut gates: Vec<[u8;3]> = Vec::new();
     let mut negation_mask = vec![0u8; n];
 
-    for &gate in &circuit.gates {
-        let t = Transpositions::gen_random_simple(n, m, &mut negation_mask);
-        gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
-        t_list.transpositions.extend_from_slice(&t.transpositions);
+    for (i, gate) in circuit.gates.iter().enumerate() {
+        if i % x == 0 {
+            let t = Transpositions::gen_random_simple(n, m, &mut negation_mask);
+            gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
+            t_list.transpositions.extend_from_slice(&t.transpositions);
+        }
         let a = t_list.evaluate(gate[0]);
         let b = t_list.evaluate(gate[1]);
         let c = t_list.evaluate(gate[2]);

@@ -821,6 +821,7 @@ fn main() {
             .about("Do simple shooting game on a circuit")
             .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
             .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize)))
+            .arg(Arg::new("x").short('x').long("x").required(true).value_parser(clap::value_parser!(usize)))
             .arg(
                 Arg::new("source")
                     .short('s')
@@ -1483,6 +1484,7 @@ Command::new("equal")
             let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
             let n: usize = *sub.get_one("n").unwrap();
             let m: usize = *sub.get_one("m").unwrap();
+            let x: usize = *sub.get_one("x").unwrap();
             let id_len: usize = *sub.get_one("id_len").unwrap();
             let tower = sub.get_flag("tower");
             let stop: usize = *sub.get_one("stop").unwrap();
@@ -1528,6 +1530,7 @@ Command::new("equal")
                     &db_n7m4,
                     n, 
                     m,
+                    x,
                     d, 
                     &env, 
                     id_len, 

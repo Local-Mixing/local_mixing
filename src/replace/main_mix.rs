@@ -14,7 +14,7 @@ use crate::{
         mixing::{
             abutterfly_big, butterfly_big, interleave_sequential_big, replace_and_compress_big, replace_and_compress_big_distance, simple_shooting_game, zip_sequential_butterfly
         },
-        transpositions::{insert_wire_m_samfs, insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x},
+        transpositions::{insert_wire_m_samfs_every_x, insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x},
     },
 };
 
@@ -1155,6 +1155,7 @@ pub fn main_shuffle_shoot_shuffle(
     db_n7m4: &DB,
     n: usize, 
     m: usize,
+    x: usize,
     save: &str, 
     env: &lmdb::Environment, 
     id_len: usize,
@@ -1212,7 +1213,7 @@ pub fn main_shuffle_shoot_shuffle(
             panic!("Lost functionality after shooting game");
         }
         println!("After shooting game: {} gates", circuit.gates.len());
-        insert_wire_m_samfs(&mut circuit, n, m, env, &dbs);
+        insert_wire_m_samfs_every_x(&mut circuit, n, m, x, env, &dbs);
         if circuit.probably_equal(&c, n, 100).is_err() {
             panic!("Lost functionality after samfs");
         }
