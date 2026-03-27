@@ -1202,7 +1202,9 @@ pub fn main_shuffle_shoot_shuffle(
             true,
         );
         circuit = new_circuit;
+        println!("After shooting game: {} gates", circuit.gates.len());
         insert_wire_m_samfs(&mut circuit, n, m, env, &dbs);
+        println!("After inserting samfs: {} gates", circuit.gates.len());
         if circuit.gates.len() == 0 {
             break;
         }
