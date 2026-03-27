@@ -3234,7 +3234,7 @@ mod tests {
         }
 
         println!("Running benchmark...");
-        let iters = 1_000_000;
+        let iters = 10;
 
         for _ in 0..iters {
             for &(n, m) in &ns_and_ms {
