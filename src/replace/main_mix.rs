@@ -1186,36 +1186,42 @@ pub fn main_shuffle_shoot_shuffle(
     // Repeat `rounds` times
     let mut post_len = 0;
     let mut count = 0;
-    insert_wire_shuffles_simple(&mut circuit, n, env, &dbs);
-    if circuit.probably_equal(&c, n, 100).is_err() {
-        panic!("Lost functionality after shuffling");
+    loop {
+        insert_wire_shuffles_simple(&mut circuit, n, env, &dbs);
+        if circuit.probably_equal(&c, n, 100).is_ok() {
+            break
+        }
     }
     for i in 0..rounds {
-        let new_circuit = simple_shooting_game(
-            &circuit,  
-            n, 
-            env, 
-            i+1, 
-            rounds, 
-            &bit_shuf_list, 
-            &dbs,  
-            db_n6m5,
-            db_n7m4,
-            id_len,
-            tower,
-            4 * circuit.gates.len(),
-            intermediate,
-            true,
-            1
-        );
-        circuit = new_circuit;
-        if circuit.probably_equal(&c, n, 100).is_err() {
-            panic!("Lost functionality after shooting game");
+        loop {
+            let new_circuit = simple_shooting_game(
+                &circuit,  
+                n, 
+                env, 
+                i+1, 
+                rounds, 
+                &bit_shuf_list, 
+                &dbs,  
+                db_n6m5,
+                db_n7m4,
+                id_len,
+                tower,
+                4 * circuit.gates.len(),
+                intermediate,
+                true,
+                1
+            );
+            if new_circuit.probably_equal(&c, n, 100).is_ok() {
+                circuit = new_circuit;
+                break;
+            }
         }
         println!("After shooting game: {} gates", circuit.gates.len());
-        insert_wire_m_samfs_every_x(&mut circuit, n, m, x, env, &dbs);
-        if circuit.probably_equal(&c, n, 100).is_err() {
-            panic!("Lost functionality after samfs");
+        loop {
+            insert_wire_m_samfs_every_x(&mut circuit, n, m, x, env, &dbs);
+            if circuit.probably_equal(&c, n, 100).is_ok() {
+                break;
+            }
         }
         println!("After inserting samfs: {} gates", circuit.gates.len());
         circuit = compress_loop(
