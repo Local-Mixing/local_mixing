@@ -1202,7 +1202,7 @@ pub fn main_shuffle_shoot_shuffle(
             4 * circuit.gates.len(),
             intermediate,
             true,
-            4
+            1
         );
         circuit = new_circuit;
         println!("After shooting game: {} gates", circuit.gates.len());
