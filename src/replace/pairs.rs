@@ -1270,3 +1270,46 @@ pub fn interleave(
 
     CircuitSeq{ gates }
 }
+
+#[cfg(test)]
+mod tests {
+    fn test_interleave() {
+        use crate::CircuitSeq;
+        use crate::replace::pairs::interleave;
+        use lmdb::Environment;
+        use std::path::Path;
+        use crate::replace::main_mix::open_all_dbs;
+        use itertools::Itertools;
+        let env = Environment::new()
+            .set_max_dbs(262)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("failed to open lmdb");
+
+        let dbs = open_all_dbs(&env);
+        let bit_shuf_list = (3..=7)
+        .map(|n| {
+            (0..n)
+                .permutations(n)
+                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                .collect::<Vec<Vec<usize>>>()
+        })
+        .collect();
+
+        let n = 32;
+        let s = std::fs::read_to_string("./circuits/n32m50.txt").unwrap();
+        let circuit = CircuitSeq::from_string(s.trim());
+        let interleaved = interleave(
+            &circuit, 
+            n,
+            &env,
+            &dbs,
+            &bit_shuf_list,
+            false,
+            0
+        );
+        if circuit.probably_equal(&interleaved, n, 1000).is_err() {
+            panic!("Original wires changed functionality");
+        }
+    }
+}
