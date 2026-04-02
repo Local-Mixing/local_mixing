@@ -1232,7 +1232,7 @@ pub fn interleave(
         // Choose between pair replacemnt or CNOT
         // NOTs not currently supported
         let choice = rng.random_range(0..2);
-        if choice == 0 {
+        if false && choice == 0 {
             gates.extend_from_slice(
                 &replace_single_pair(
                     &circuit.gates[i], 
