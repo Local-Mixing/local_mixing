@@ -1245,7 +1245,7 @@ pub fn interleave(
                     id_len
                 ).0
             );
-        } else if false && choice == 2 {
+        } else if choice == 2 {
             gates.push(circuit.gates[i]);
             gates.push(random.gates[i]);
             let mut wires: Vec<_> = (0..n as u8).collect();
