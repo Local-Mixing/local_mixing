@@ -21,6 +21,10 @@ pub struct CircuitSeq {
     pub gates: Vec<[u8;3]>, 
 }
 
+// Polynomial representation of circuit
+type Monomial = u64;
+type Polynomial = HashSet<Monomial>;
+
 // Permutations are all the possible outputs of a circuit
 // On n wires permutation length is 1 << n
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -718,6 +722,42 @@ impl CircuitSeq {
 
         Ok(())
     }
+
+    // Gets the polynomial over each wire of a circuit
+    // pub fn to_polynomial(
+    //     circuit: &Self
+    // ) -> Vec<Polynomial> {
+    //     let gates = circuit.gates;
+
+    // }
+}
+
+fn poly_xor(mut poly_1: Polynomial, poly_2: Polynomial) -> Polynomial {
+    for m in poly_2 {
+        if !poly_1.remove(&m) {
+            poly_1.insert(m);
+        }
+    }
+    poly_1
+}
+
+fn poly_and(poly_1: &Polynomial, poly_2: &Polynomial) -> Polynomial {
+    let mut result = Polynomial::new();
+    for &m1 in poly_1 {
+        for &m2 in poly_2 {
+            let m = m1 | m2;
+            if !result.remove(&m) {
+                result.insert(m);
+            }
+        }
+    }
+    result
+}
+ 
+fn poly_not(p: Polynomial) -> Polynomial {
+    // NOT f = 1 + f; constant 1 is the empty monomial
+    let one = HashSet::from([0u64]);
+    poly_xor(one, p)
 }
 
 // Rewire wire i -> perm[i]

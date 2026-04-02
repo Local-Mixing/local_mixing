@@ -1486,7 +1486,15 @@ pub fn interleave_sequential_big(
     println!("Current round: {}/{}", curr_round, last_round);
 
     println!("Butterfly start: {} gates", circuit.gates.len());
-    let mut c = interleave(circuit, n);
+    let mut c = interleave(
+        circuit, 
+        n,
+        env,
+        dbs,
+        bit_shuf_list,
+        tower,
+        id_len
+    );
     let t0 = Instant::now();
     let n = 2 * n;
     shoot_random_gate(&mut c, 200_000);

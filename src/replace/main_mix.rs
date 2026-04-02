@@ -15,6 +15,7 @@ use crate::{
             abutterfly_big, butterfly_big, interleave_sequential_big, replace_and_compress_big, replace_and_compress_big_distance, simple_shooting_game, zip_sequential_butterfly
         },
         transpositions::{insert_wire_m_samfs_every_x, insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x},
+        pairs::{interleave}
     },
 };
 
@@ -1162,6 +1163,7 @@ pub fn main_shuffle_shoot_shuffle(
     tower: bool,
     stop: usize,
     intermediate: &str,
+    leave: bool,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -1186,6 +1188,22 @@ pub fn main_shuffle_shoot_shuffle(
     // Repeat `rounds` times
     let mut post_len = 0;
     let mut count = 0;
+    if leave {
+        circuit = interleave(
+            &circuit, 
+            n,
+            env,
+            &dbs,
+            &bit_shuf_list,
+            tower,
+            id_len,
+        );
+    }
+    let n = if leave {
+        2 * n
+    } else {
+        n
+    };
     let mut new_circuit = circuit.clone();
     loop {
         insert_wire_shuffles_simple(&mut new_circuit, n, env, &dbs);
@@ -1269,6 +1287,11 @@ pub fn main_shuffle_shoot_shuffle(
                 j += 1;
             }
         }
+        let n = if leave {
+            n / 2
+        } else {
+            n
+        };
         if c.probably_equal(&circuit, n, 100_000).is_err() {
             panic!("The functionality has changed");
         }

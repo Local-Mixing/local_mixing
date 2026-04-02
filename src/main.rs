@@ -861,6 +861,13 @@ fn main() {
                     .action(clap::ArgAction::SetTrue)
             )
             .arg(
+                Arg::new("interleave")
+                    .long("interleave")
+                    .help("Use interleaving")
+                    .required(false) 
+                    .action(clap::ArgAction::SetTrue)
+            )
+            .arg(
                 Arg::new("stop")
                     .long("stop")
                     .required(true)
@@ -1487,6 +1494,7 @@ Command::new("equal")
             let x: usize = *sub.get_one("x").unwrap();
             let id_len: usize = *sub.get_one("id_len").unwrap();
             let tower = sub.get_flag("tower");
+            let leave = sub.get_flag("interleave");
             let stop: usize = *sub.get_one("stop").unwrap();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
@@ -1537,6 +1545,7 @@ Command::new("equal")
                     tower,
                     stop,
                     i,
+                    leave,
                 );
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();

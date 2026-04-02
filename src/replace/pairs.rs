@@ -20,6 +20,7 @@ use crate::{
     replace::{
         identities::{get_random_identity, random_canonical_id},
         replace::IDENTITY_TIME,
+        transpositions::{Transpositions},
     },
 };
 
@@ -1209,9 +1210,18 @@ pub fn replace_tri(
 
 // Used in the interleave method
 // Create a circuit on n..2n wires and then interleave them
-pub fn interleave(circuit: &CircuitSeq, n: usize) -> CircuitSeq {
+pub fn interleave(
+    circuit: &CircuitSeq, 
+    n: usize, 
+    env: &lmdb::Environment,
+    dbs: &HashMap<String, lmdb::Database>,
+    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
+    tower: bool,
+    id_len: usize,
+) -> CircuitSeq {
     let m = circuit.gates.len();
     let mut random = random_circuit(n, m);
+    let mut rng = rand::rng();
     let mut gates = Vec::new();
     for gate in random.gates.iter_mut() {
         for pin in gate.iter_mut() {
@@ -1219,8 +1229,43 @@ pub fn interleave(circuit: &CircuitSeq, n: usize) -> CircuitSeq {
         }
     }
     for i in 0..m {
-        gates.push(circuit.gates[i]);
-        gates.push(random.gates[i]);
+        // Choose between pair replacemnt or CNOT
+        // NOTs not currently supported
+        let choice = rng.random_range(0..2);
+        if choice == 0 {
+            gates.extend_from_slice(
+                &replace_single_pair(
+                    &circuit.gates[i], 
+                    &random.gates[i], 
+                    n, 
+                    env, 
+                    bit_shuf_list, 
+                    dbs, 
+                    tower, 
+                    id_len
+                ).0
+            );
+        } else if choice == 2 {
+            gates.push(circuit.gates[i]);
+            gates.push(random.gates[i]);
+            let mut wires: Vec<_> = (0..n as u8).collect();
+            wires.shuffle(&mut rng);
+            for wire in wires {
+                let n_wire = rng.random_range(n..2 * n) as u8;
+                gates.extend_from_slice(
+                    &Transpositions::gen_gates_cnot(
+                        2 * n,
+                        wire,
+                        n_wire,
+                        env,
+                        dbs
+                    )
+                );
+            }
+        } else {
+            gates.push(circuit.gates[i]);
+            gates.push(random.gates[i]);
+        }
     }
 
     CircuitSeq{ gates }

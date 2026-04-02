@@ -314,7 +314,6 @@ pub fn compress_loop(
         };
 
         let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
-        let t4 = Instant::now();
         let compressed_chunks: Vec<Vec<[u8;3]>> =
         chunks
             .into_par_iter()
@@ -323,30 +322,17 @@ pub fn compress_loop(
                 compress_big_ancillas(&sub, 100, n, db_n6m5, db_n7m4, env, &bit_shuf_list, dbs).gates
             })
             .collect();
-        COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
         acc.gates = new_gates;
-        if SHOULD_DUMP.load(Ordering::SeqCst) {
-            {
-            let mut guard = CURRENT_ACC.lock().unwrap();
-            *guard = Some(acc.clone());
-            }
-
-            dump_and_exit();
-        }
         let after = acc.gates.len();
         if after == before {
             stable_count += 1;
+            println!("  {}/{}: Stable {}/{}: {} gates", curr_round, last_round, stable_count, stable_max, after);
         } else {
             stable_count = 0;
+            println!("  {}/{}: Reduced: {} gates", curr_round, last_round, after);
         }
 
-        let mut buf = [0u8; 1];
-        if let Ok(n) = io::stdin().read(&mut buf) {
-            if n > 0 && buf[0] == b'\n' {
-                println!("  {}/{}: Current gates: {} gates", curr_round, last_round, after);
-            }
-        }
     }
     acc
 }
