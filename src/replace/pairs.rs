@@ -1273,6 +1273,7 @@ pub fn interleave(
 
 #[cfg(test)]
 mod tests {
+    #[test]
     fn test_interleave() {
         use crate::CircuitSeq;
         use crate::replace::pairs::interleave;
