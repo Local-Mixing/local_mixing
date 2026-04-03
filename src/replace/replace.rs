@@ -324,6 +324,14 @@ pub fn compress_loop(
             .collect();
         let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
         acc.gates = new_gates;
+        if SHOULD_DUMP.load(Ordering::SeqCst) {
+            {
+            let mut guard = CURRENT_ACC.lock().unwrap();
+            *guard = Some(acc.clone());
+            }
+
+            dump_and_exit();
+        }
         let after = acc.gates.len();
         if after == before {
             stable_count += 1;
