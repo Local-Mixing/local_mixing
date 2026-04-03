@@ -731,7 +731,7 @@ impl CircuitSeq {
             // active ^= ctrl1 & !ctrl2
             // new degree = max(deg[active], deg[ctrl1] + deg[ctrl2])
             let new_deg = deg[active as usize]
-                .max(deg[ctrl1 as usize].saturating_add(deg[ctrl2 as usize])).max(n as u8);
+                .max(deg[ctrl1 as usize].saturating_add(deg[ctrl2 as usize])).min(n as u8);
             
             if new_deg == 0 {
                 deg[active as usize] = 1;
