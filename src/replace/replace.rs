@@ -309,9 +309,13 @@ pub fn compress_loop(
     // Spawn a thread that sends a message whenever `Enter`
     let (tx, rx) = mpsc::channel::<()>();
     thread::spawn(move || {
-        let stdin = std::io::stdin();
-        for _ in stdin.lock().lines() {
-            if tx.send(()).is_err() { break; }
+    let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            if let Ok(l) = line {
+                if !l.is_empty() {
+                    if tx.send(()).is_err() { break; }
+                }
+            }
         }
     });
 
