@@ -727,7 +727,7 @@ impl CircuitSeq {
     pub fn to_degree_upper(self, n: usize, start: usize, end: usize) -> Vec<u8> {
         let mut deg: Vec<u8> = vec![0u8; n];
 
-        for &[active, ctrl1, ctrl2] in &self.gates[start..=end] {
+        for &[active, ctrl1, ctrl2] in &self.gates[start..end] {
             // active ^= ctrl1 & !ctrl2
             // new degree = max(deg[active], deg[ctrl1] + deg[ctrl2])
             let new_deg = deg[active as usize]
