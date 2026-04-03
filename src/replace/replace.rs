@@ -18,10 +18,8 @@ use rand::Rng;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use rocksdb::{DB};
-use crate::replace::mixing::COMPRESS_BIG_TIME;
-use crate::replace::mixing::SHOULD_DUMP;
-use crate::replace::mixing::CURRENT_ACC;
-use crate::replace::mixing::dump_and_exit;
+use std::fs::File;
+use std::io::Write;
 use lmdb::{Transaction};
 
 extern crate lmdb_sys;
