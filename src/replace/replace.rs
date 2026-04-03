@@ -30,6 +30,9 @@ use std::{
     time::Instant,
     io::{self, Read},
 };
+use std::sync::mpsc;
+use std::thread;
+use std::io::BufRead;
 use std::sync::atomic::{AtomicU64, Ordering};
 // use rand::prelude::IndexedRandom;
 
@@ -289,7 +292,7 @@ pub static IDENTITY_TIME: AtomicU64 = AtomicU64::new(0);
 
 pub fn compress_loop(
     circuit: &CircuitSeq,
-    n: usize, 
+    n: usize,
     db_n6m5: &DB,
     db_n7m4: &DB,
     env: &lmdb::Environment,
@@ -298,31 +301,41 @@ pub fn compress_loop(
     stable_max: usize,
     curr_round: usize,
     last_round: usize,
-) -> CircuitSeq { 
+) -> CircuitSeq {
     let mut acc = circuit.clone();
     let mut rng = rand::rng();
     let mut stable_count = 0;
+
+    // Spawn a thread that sends a message whenever `Enter`
+    let (tx, rx) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        let stdin = std::io::stdin();
+        for _ in stdin.lock().lines() {
+            if tx.send(()).is_err() { break; }
+        }
+    });
+
     while stable_count < stable_max {
         let before = acc.gates.len();
 
         let k = if before <= 1500 {
             1
         } else {
-            (before + 1499) / 1500 
+            (before + 1499) / 1500
         };
 
         let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
-        let compressed_chunks: Vec<Vec<[u8;3]>> =
-        chunks
+        let compressed_chunks: Vec<Vec<[u8; 3]>> = chunks
             .into_par_iter()
             .map(|chunk| {
                 let sub = CircuitSeq { gates: chunk };
                 compress_big_ancillas(&sub, 100, n, db_n6m5, db_n7m4, env, &bit_shuf_list, dbs).gates
             })
             .collect();
-        let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
+        let new_gates: Vec<[u8; 3]> = compressed_chunks.into_iter().flatten().collect();
         acc.gates = new_gates;
         let after = acc.gates.len();
+
         if after == before {
             stable_count += 1;
             println!("  {}/{}: Stable {}/{}: {} gates", curr_round, last_round, stable_count, stable_max, after);
@@ -330,7 +343,10 @@ pub fn compress_loop(
             stable_count = 0;
             println!("  {}/{}: Reduced: {} gates", curr_round, last_round, after);
         }
-        if before - after > 1000 {
+
+        // Check if user pressed Enter
+        if rx.try_recv().is_ok() {
+            println!("  Keyboard input received, writing...");
             let mut f = File::create("temp_compression.txt").expect("create temp_compression.txt");
             writeln!(f, "{}", acc.repr()).expect("write");
             eprintln!("Wrote temp_compression.txt");
