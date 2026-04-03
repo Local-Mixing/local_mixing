@@ -723,13 +723,24 @@ impl CircuitSeq {
         Ok(())
     }
 
-    // Gets the polynomial over each wire of a circuit
-    // pub fn to_polynomial(
-    //     circuit: &Self
-    // ) -> Vec<Polynomial> {
-    //     let gates = circuit.gates;
+    // Computes the upper bound of each wire's algebraic degree
+    pub fn to_degree_upper(self, n: usize, start: usize, end: usize) -> Vec<u8> {
+        let mut deg: Vec<u8> = vec![0u8; n];
 
-    // }
+        for &[active, ctrl1, ctrl2] in &self.gates[start..=end] {
+            // active ^= ctrl1 & !ctrl2
+            // new degree = max(deg[active], deg[ctrl1] + deg[ctrl2])
+            let new_deg = deg[active as usize]
+                .max(deg[ctrl1 as usize].saturating_add(deg[ctrl2 as usize])).max(n as u8);
+            
+            if new_deg == 0 {
+                deg[active as usize] = 1;
+            } else {
+                deg[active as usize] = new_deg;
+            }
+        }
+        deg
+    }
 }
 
 fn poly_xor(mut poly_1: Polynomial, poly_2: Polynomial) -> Polynomial {

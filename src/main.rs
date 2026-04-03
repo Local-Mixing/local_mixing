@@ -622,6 +622,40 @@ fn main() {
             ),
     )
     .subcommand(
+        Command::new("degree")
+            .about("Compute an upper bound on the algebraic degree of each wire")
+            .arg(
+                Arg::new("source")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source circuit file"),
+            )
+            .arg(
+                Arg::new("n")
+                    .short('n')
+                    .long("wires")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires in the circuit"),
+            )
+            .arg(
+                Arg::new("start")
+                    .long("start")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Starting index"),
+            )
+            .arg(
+                Arg::new("end")
+                    .long("end")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Ending index"),
+            )
+    )
+    .subcommand(
         Command::new("genran")
             .about("Generate a random circuit with n wires and m gates")
             .arg(
@@ -1844,7 +1878,25 @@ Command::new("equal")
             let string = circuit.to_string(circuit.used_wires().len());
             fs::write(dest_path, string)
              .unwrap_or_else(|e| panic!("Failed to write {}: {}", dest_path, e));
+        }
+        Some(("degree", sub)) => {
+            let from_path = sub.get_one::<String>("source").unwrap();
+            let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
+            let start: usize = *sub.get_one("start").expect("Starting index");
+            let end: usize = *sub.get_one("end").expect("Ending index");
+            let input_str = fs::read_to_string(from_path)
+                .unwrap_or_else(|e| panic!("Failed to read {}: {}", from_path, e));
+            let circuit = CircuitSeq::from_string(input_str.trim());
+            let end = if end == 0 {
+                circuit.gates.len()
+            } else {
+                end
+            };
+            let degrees = circuit.to_degree_upper(n, start, end);
+            for i in 0..n {
+                println!("wire {}: {} degree", i, degrees[i]);
             }
+        }
         Some(("genran", sub)) => {
             let d: &String = sub.get_one("d").expect("Missing -d <path>");
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
