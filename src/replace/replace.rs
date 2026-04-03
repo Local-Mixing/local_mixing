@@ -306,19 +306,6 @@ pub fn compress_loop(
     let mut rng = rand::rng();
     let mut stable_count = 0;
 
-    // Spawn a thread that sends a message whenever `Enter`
-    let (tx, rx) = mpsc::channel::<()>();
-    thread::spawn(move || {
-    let stdin = std::io::stdin();
-        for line in stdin.lock().lines() {
-            if let Ok(l) = line {
-                if !l.is_empty() {
-                    if tx.send(()).is_err() { break; }
-                }
-            }
-        }
-    });
-
     while stable_count < stable_max {
         let before = acc.gates.len();
 
@@ -348,10 +335,10 @@ pub fn compress_loop(
             println!("  {}/{}: Reduced: {} gates", curr_round, last_round, after);
         }
 
-        // Check if user pressed Enter
-        if rx.try_recv().is_ok() {
-            println!("  Keyboard input received, writing...");
-            let mut f = File::create("temp_compression.txt").expect("create temp_compression.txt");
+        // Check if user created write_now
+        if std::path::Path::new("write_now").exists() {
+            std::fs::remove_file("write_now").ok();
+            let mut f = File::create("temp_compression.txt").expect("create");
             writeln!(f, "{}", acc.repr()).expect("write");
             eprintln!("Wrote temp_compression.txt");
         }
