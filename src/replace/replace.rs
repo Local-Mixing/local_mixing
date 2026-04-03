@@ -324,14 +324,6 @@ pub fn compress_loop(
             .collect();
         let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
         acc.gates = new_gates;
-        if SHOULD_DUMP.load(Ordering::SeqCst) {
-            {
-            let mut guard = CURRENT_ACC.lock().unwrap();
-            *guard = Some(acc.clone());
-            }
-
-            dump_and_exit();
-        }
         let after = acc.gates.len();
         if after == before {
             stable_count += 1;
@@ -340,7 +332,11 @@ pub fn compress_loop(
             stable_count = 0;
             println!("  {}/{}: Reduced: {} gates", curr_round, last_round, after);
         }
-
+        if before - after > 1000 {
+            let mut f = File::create("temp_compression.txt").expect("create temp_compression.txt");
+            writeln!(f, "{}", acc.repr()).expect("write");
+            eprintln!("Wrote temp_compression.txt");
+        }
     }
     acc
 }
