@@ -1206,7 +1206,7 @@ pub fn main_shuffle_shoot_shuffle(
     };
     let mut new_circuit = circuit.clone();
     loop {
-        insert_wire_shuffles_simple(&mut new_circuit, n, env, &dbs);
+        insert_wire_m_samfs_every_x(&mut new_circuit, n, n/2, 1, env, &dbs);
         if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
             circuit = new_circuit;
             break
