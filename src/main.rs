@@ -1918,7 +1918,7 @@ Command::new("equal")
             };
             let polys = circuit.to_polynomial(n, start, end);
             for i in 0..n {
-                println!("wire {}: {} degree", i, poly_degree(polys[i]));
+                println!("wire {}: {} degree", i, poly_degree(&polys[i]));
             }
         }
         Some(("genran", sub)) => {
