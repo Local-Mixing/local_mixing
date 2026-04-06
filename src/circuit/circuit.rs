@@ -723,6 +723,29 @@ impl CircuitSeq {
         Ok(())
     }
 
+    pub fn to_polynomial(n: usize, circuit: &CircuitSeq, start: usize, end: usize) -> Vec<Polynomial> {
+        let gates = circuit.gates[start..end];
+        // Wire i starts as degree 1 monomial
+        let mut polys: Vec<Polynomial> = (0..n)
+        .map(|i| HashSet::from([1u64 << i]))
+        .collect();
+    
+        for &[a, b, c] in gates {
+            // a' = a XOR (b AND NOT c)
+            let not_c = poly_not(polys[c].clone());
+            let term = poly_and(&polys[b], &not_c);
+            let new_a = poly_xor(polys[a].clone(), term);
+            polys[a] = new_a;
+        }
+    
+        // XOR each wire with its initial value x_i so unchanged wires become 0
+        for i in 0..n {
+            let xi = HashSet::from([1u64 << i]);
+            polys[i] = poly_xor(polys[i].clone(), xi);
+        }
+
+        polys
+    }
     // Computes the upper bound of each wire's algebraic degree
     pub fn to_degree_upper(self, n: usize, start: usize, end: usize) -> Vec<u8> {
         let mut deg: Vec<u8> = vec![0u8; n];
@@ -769,6 +792,41 @@ fn poly_not(p: Polynomial) -> Polynomial {
     // NOT f = 1 + f; constant 1 is the empty monomial
     let one = HashSet::from([0u64]);
     poly_xor(one, p)
+}
+
+// Display polynomials
+ 
+fn monomial_degree(m: u64) -> u32 {
+    m.count_ones()
+}
+ 
+fn monomial_to_str(m: u64, n: usize) -> String {
+    if m == 0 {
+        return "1".to_string();
+    }
+    (0..n)
+        .filter(|&i| (m >> i) & 1 == 1)
+        .map(|i| format!("x{}", i))
+        .collect::<Vec<_>>()
+        .join("*")
+}
+ 
+fn poly_to_str(poly: &Polynomial, n: usize) -> String {
+    if poly.is_empty() {
+        return "1".to_string();
+    }
+    let mut terms: Vec<u64> = poly.iter().copied().collect();
+    // Sort by degree, then by value
+    terms.sort_by_key(|&m| (monomial_degree(m), m));
+    terms
+        .iter()
+        .map(|&m| monomial_to_str(m, n))
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+ 
+fn poly_degree(poly: &Polynomial) -> u32 {
+    poly.iter().map(|&m| monomial_degree(m)).max().unwrap_or(0)
 }
 
 // Rewire wire i -> perm[i]

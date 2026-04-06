@@ -10,7 +10,7 @@ use std::{
 };
 
 use local_mixing::{
-    circuit::CircuitSeq,
+    circuit::{CircuitSeq, poly_degree},
     random::random_data::{build_from_sql, main_random, random_circuit, random_sulking, random_walk_no_skeleton, shoot_random_gate},
     replace::{
         identities::{get_random_wide_identity, random_canonical_id}, main_mix::{
@@ -1916,9 +1916,9 @@ Command::new("equal")
             } else {
                 end
             };
-            let degrees = circuit.to_degree_upper(n, start, end);
+            let polys = circuit.to_polynomial(n, start, end);
             for i in 0..n {
-                println!("wire {}: {} degree", i, degrees[i]);
+                println!("wire {}: {} degree", i, poly_degree(polys[i]));
             }
         }
         Some(("genran", sub)) => {
