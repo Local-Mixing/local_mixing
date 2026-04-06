@@ -723,7 +723,7 @@ impl CircuitSeq {
         Ok(())
     }
 
-    pub fn to_polynomial(n: usize, circuit: &CircuitSeq, start: usize, end: usize) -> Vec<Polynomial> {
+    pub fn to_polynomial(self, n: usize, start: usize, end: usize) -> Vec<Polynomial> {
         let gates = &circuit.gates[start..end];
         // Wire i starts as degree 1 monomial
         let mut polys: Vec<Polynomial> = (0..n)
