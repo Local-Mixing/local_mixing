@@ -825,7 +825,7 @@ fn poly_to_str(poly: &Polynomial, n: usize) -> String {
         .join(" + ")
 }
  
-fn poly_degree(poly: &Polynomial) -> u32 {
+pub fn poly_degree(poly: &Polynomial) -> u32 {
     poly.iter().map(|&m| monomial_degree(m)).max().unwrap_or(0)
 }
 
