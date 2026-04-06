@@ -730,7 +730,7 @@ impl CircuitSeq {
         .map(|i| HashSet::from([1u64 << i]))
         .collect();
     
-        for &[a, b, c] in &gates {
+        for &[a, b, c] in gates {
             // a' = a XOR (b AND NOT c)
             let not_c = poly_not(polys[c].clone());
             let term = poly_and(&polys[b], &not_c);
