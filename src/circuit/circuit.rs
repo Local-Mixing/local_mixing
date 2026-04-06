@@ -724,13 +724,13 @@ impl CircuitSeq {
     }
 
     pub fn to_polynomial(n: usize, circuit: &CircuitSeq, start: usize, end: usize) -> Vec<Polynomial> {
-        let gates = circuit.gates[start..end];
+        let gates = &circuit.gates[start..end];
         // Wire i starts as degree 1 monomial
         let mut polys: Vec<Polynomial> = (0..n)
         .map(|i| HashSet::from([1u64 << i]))
         .collect();
     
-        for &[a, b, c] in gates {
+        for &[a, b, c] in &gates {
             // a' = a XOR (b AND NOT c)
             let not_c = poly_not(polys[c].clone());
             let term = poly_and(&polys[b], &not_c);
