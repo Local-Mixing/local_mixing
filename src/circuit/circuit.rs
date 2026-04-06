@@ -724,7 +724,7 @@ impl CircuitSeq {
     }
 
     pub fn to_polynomial(self, n: usize, start: usize, end: usize) -> Vec<Polynomial> {
-        let gates = &circuit.gates[start..end];
+        let gates = &self.gates[start..end];
         // Wire i starts as degree 1 monomial
         let mut polys: Vec<Polynomial> = (0..n)
         .map(|i| HashSet::from([1u64 << i]))
