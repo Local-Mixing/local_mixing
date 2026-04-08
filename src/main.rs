@@ -656,6 +656,40 @@ fn main() {
             )
     )
     .subcommand(
+        Command::new("polynomials")
+            .about("Compute polynomial of each wire")
+            .arg(
+                Arg::new("source")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source circuit file"),
+            )
+            .arg(
+                Arg::new("n")
+                    .short('n')
+                    .long("wires")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires in the circuit"),
+            )
+            .arg(
+                Arg::new("start")
+                    .long("start")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Starting index"),
+            )
+            .arg(
+                Arg::new("end")
+                    .long("end")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Ending index"),
+            )
+    )
+    .subcommand(
         Command::new("genran")
             .about("Generate a random circuit with n wires and m gates")
             .arg(
@@ -1919,6 +1953,24 @@ Command::new("equal")
             let polys = circuit.to_polynomial(n, start, end);
             for i in 0..n {
                 println!("wire {}: {} degree", i, poly_degree(&polys[i]));
+            }
+        }
+        Some(("polynomials", sub)) => {
+            let from_path = sub.get_one::<String>("source").unwrap();
+            let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
+            let start: usize = *sub.get_one("start").expect("Starting index");
+            let end: usize = *sub.get_one("end").expect("Ending index");
+            let input_str = fs::read_to_string(from_path)
+                .unwrap_or_else(|e| panic!("Failed to read {}: {}", from_path, e));
+            let circuit = CircuitSeq::from_string(input_str.trim());
+            let end = if end == 0 {
+                circuit.gates.len()
+            } else {
+                end
+            };
+            let polys = circuit.to_polynomial(n, start, end);
+            for i in 0..n {
+                println!("wire {}: {:?}", i, polys[i]);
             }
         }
         Some(("genran", sub)) => {
