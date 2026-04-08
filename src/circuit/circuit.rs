@@ -811,7 +811,7 @@ fn monomial_to_str(m: u64, n: usize) -> String {
         .join("*")
 }
  
-fn poly_to_str(poly: &Polynomial, n: usize) -> String {
+pub fn poly_to_str(poly: &Polynomial, n: usize) -> String {
     if poly.is_empty() {
         return "1".to_string();
     }
