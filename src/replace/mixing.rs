@@ -1680,15 +1680,25 @@ pub fn split_into_random_chunks(
     k: usize,
     rng: &mut impl Rng,
 ) -> Vec<Vec<[u8;3]>> {
+    split_into_random_chunk_ranges(v.len(), k, rng)
+        .into_iter()
+        .map(|(start, end)| v[start..end].to_vec())
+        .collect()
+}
 
+pub fn split_into_random_chunk_ranges(
+    len: usize,
+    k: usize,
+    rng: &mut impl Rng,
+) -> Vec<(usize, usize)> {
     if k == 1 {
-        return vec![v.clone()]
+        return vec![(0, len)];
     }
-    let min_size = 100;
-    let n = v.len();
-    assert!(k * min_size <= n);
 
-    let slack = n - k * min_size;
+    let min_size = 100;
+    assert!(k * min_size <= len);
+
+    let slack = len - k * min_size;
 
     let mut cuts: Vec<usize> = (0..slack).collect();
     cuts.shuffle(rng);
@@ -1699,19 +1709,20 @@ pub fn split_into_random_chunks(
     let mut prev = 0;
 
     for &c in &cuts {
-        sizes.push(c - prev + min_size); 
+        sizes.push(c - prev + min_size);
         prev = c;
     }
     sizes.push(slack - prev + min_size);
 
-    let mut out = Vec::with_capacity(k);
+    let mut ranges = Vec::with_capacity(k);
     let mut idx = 0;
     for size in sizes {
-        out.push(v[idx..idx + size].to_vec());
-        idx += size;
+        let end = idx + size;
+        ranges.push((idx, end));
+        idx = end;
     }
 
-    out
+    ranges
 }
 
 #[cfg(test)]

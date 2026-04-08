@@ -69,7 +69,7 @@ impl Gate {
     pub fn evaluate_index(state: usize, gate: [u8;3]) -> usize {
         let c1 = (state >> gate[1]) & 1;
         let c2 = (state >> gate[2]) & 1;
-        state ^ (c1 | ((!c2) & 1)) << gate[0]
+        state ^ (c1 & ((!c2) & 1)) << gate[0]
     }
 
     // Evaluate up to 128 bits
@@ -77,7 +77,7 @@ impl Gate {
     pub fn evaluate_index_128(state: u128, gate: [u8;3]) -> u128 {
         let c1 = (state >> gate[1]) & 1;
         let c2 = (state >> gate[2]) & 1;
-        state ^ (c1 | ((!c2) & 1)) << gate[0]
+        state ^ (c1 & ((!c2) & 1)) << gate[0]
     }
 
     // Evaluate up to 256 bits
@@ -86,7 +86,7 @@ impl Gate {
         let one = u256::one();
         let c1 = (state >> gate[1]) & one;
         let c2 = (state >> gate[2]) & one;
-        state ^ ((c1 | (one ^ c2)) << gate[0])
+        state ^ ((c1 & (one ^ c2)) << gate[0])
     }
 
     // Evaluate a list of gates

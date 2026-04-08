@@ -13,7 +13,7 @@ use crate::{
 use crate::replace::identities::random_perm_lmdb;
 use crate::replace::identities::random_canonical_id;
 use crate::replace::identities::random_id;
-use crate::replace::mixing::split_into_random_chunks;
+use crate::replace::mixing::split_into_random_chunk_ranges;
 use rand::Rng;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
@@ -309,21 +309,30 @@ pub fn compress_loop(
     while stable_count < stable_max {
         let before = acc.gates.len();
 
+        let max_chunks = 4 * rayon::current_num_threads().max(1);
         let k = if before <= 1500 {
             1
         } else {
-            (before + 1499) / 1500
+            ((before + 1499) / 1500).min(max_chunks)
         };
 
-        let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
-        let compressed_chunks: Vec<Vec<[u8; 3]>> = chunks
+        let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
+        let compressed_chunks: Vec<Vec<[u8; 3]>> = ranges
             .into_par_iter()
-            .map(|chunk| {
-                let sub = CircuitSeq { gates: chunk };
+            .map(|(start, end)| {
+                let sub = CircuitSeq {
+                    gates: acc.gates[start..end].to_vec(),
+                };
                 compress_big_ancillas(&sub, 100, n, db_n6m5, db_n7m4, env, &bit_shuf_list, dbs).gates
             })
             .collect();
-        let new_gates: Vec<[u8; 3]> = compressed_chunks.into_iter().flatten().collect();
+
+        let total_len: usize = compressed_chunks.iter().map(|chunk| chunk.len()).sum();
+        let mut new_gates = Vec::with_capacity(total_len);
+        for chunk in compressed_chunks {
+            new_gates.extend(chunk);
+        }
+
         acc.gates = new_gates;
         let after = acc.gates.len();
 

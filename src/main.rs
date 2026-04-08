@@ -26,6 +26,26 @@ use local_mixing::{
     },
 };
 
+const ROCKSDB_N6M5_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
+const ROCKSDB_N7M4_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
+
+fn make_rocksdb_readonly(path: &str, cache_bytes: usize) -> DB {
+    let cache = Cache::new_lru_cache(cache_bytes);
+
+    let mut block_opts = BlockBasedOptions::default();
+    block_opts.set_block_cache(&cache);
+    block_opts.set_bloom_filter(10.0, false);
+    block_opts.set_cache_index_and_filter_blocks(true);
+    block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+
+    let mut opts = Options::default();
+    opts.set_block_based_table_factory(&block_opts);
+    opts.set_compression_type(rocksdb::DBCompressionType::None);
+
+    DB::open_for_read_only(&opts, path, false)
+        .unwrap_or_else(|_| panic!("Failed to open RocksDB {}", path))
+}
+
 fn main() {
     let matches = Command::new("rainbow")
         .about("Rainbow circuit generator")
@@ -1114,10 +1134,8 @@ Command::new("equal")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
-                .expect("Failed to open RocksDB n6m5");
-            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
-                .expect("Failed to open RocksDB n7m4");
+            let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
+            let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
             if data.trim().is_empty() {
                 println!("Generating random");
@@ -1147,10 +1165,8 @@ Command::new("equal")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
-                .expect("Failed to open RocksDB n6m5");
-            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
-                .expect("Failed to open RocksDB n7m4");
+            let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
+            let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
             install_kill_handler();
             if data.trim().is_empty() {
@@ -1191,10 +1207,8 @@ Command::new("equal")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
-                .expect("Failed to open RocksDB n6m5");
-            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
-                .expect("Failed to open RocksDB n7m4");
+            let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
+            let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
             install_kill_handler();
             if data.trim().is_empty() {
@@ -1250,10 +1264,8 @@ Command::new("equal")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
-                .expect("Failed to open RocksDB n6m5");
-            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
-                .expect("Failed to open RocksDB n7m4");
+            let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
+            let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
             install_kill_handler();
             if data.trim().is_empty() {
@@ -1308,10 +1320,8 @@ Command::new("equal")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
-                .expect("Failed to open RocksDB n6m5");
-            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
-                .expect("Failed to open RocksDB n7m4");
+            let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
+            let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
             install_kill_handler();
             if data.trim().is_empty() {
@@ -1367,10 +1377,8 @@ Command::new("equal")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
-                .expect("Failed to open RocksDB n6m5");
-            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
-                .expect("Failed to open RocksDB n7m4");
+            let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
+            let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
             install_kill_handler();
             if data.trim().is_empty() {
@@ -1429,10 +1437,8 @@ Command::new("equal")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let db_n6m5 = DB::open_for_read_only(&Options::default(), "rocksdb_n6m5perms", false)
-                .expect("Failed to open RocksDB n6m5");
-            let db_n7m4 = DB::open_for_read_only(&Options::default(), "rocksdb_n7m4perms", false)
-                .expect("Failed to open RocksDB n7m4");
+            let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
+            let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
             install_kill_handler();
             if data.trim().is_empty() {
@@ -1503,22 +1509,8 @@ Command::new("equal")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let cache = Cache::new_lru_cache(25 * 1024 * 1024 * 1024); 
-
-            let mut block_opts = BlockBasedOptions::default();
-            block_opts.set_block_cache(&cache);
-            block_opts.set_bloom_filter(10.0, false);
-            block_opts.set_cache_index_and_filter_blocks(true);
-            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
-
-            let mut opts = Options::default();
-            opts.set_block_based_table_factory(&block_opts);
-            opts.set_compression_type(rocksdb::DBCompressionType::None);
-
-            let db_n6m5 = DB::open_for_read_only(&opts, "rocksdb_n6m5perms", false)
-                .expect("Failed to open RocksDB n6m5");
-            let db_n7m4 = DB::open_for_read_only(&opts, "rocksdb_n7m4perms", false)
-                .expect("Failed to open RocksDB n7m4");
+            let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
+            let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
             install_kill_handler();
             if data.trim().is_empty() {
@@ -1589,31 +1581,8 @@ Command::new("equal")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let cache_n6m5 = Cache::new_lru_cache(12 * 1024 * 1024 * 1024);
-            let cache_n7m4 = Cache::new_lru_cache(12 * 1024 * 1024 * 1024);
-
-            let mut block_opts_n6m5 = BlockBasedOptions::default();
-            block_opts_n6m5.set_block_cache(&cache_n6m5);
-            block_opts_n6m5.set_bloom_filter(10.0, false);
-            block_opts_n6m5.set_cache_index_and_filter_blocks(true);
-            block_opts_n6m5.set_pin_l0_filter_and_index_blocks_in_cache(true);
-
-            let mut opts_n6m5 = Options::default();
-            opts_n6m5.set_block_based_table_factory(&block_opts_n6m5);
-            opts_n6m5.set_compression_type(rocksdb::DBCompressionType::None);
-
-            let mut block_opts_n7m4 = BlockBasedOptions::default();
-            block_opts_n7m4.set_block_cache(&cache_n7m4);
-            block_opts_n7m4.set_bloom_filter(10.0, false);
-            block_opts_n7m4.set_cache_index_and_filter_blocks(true);
-            block_opts_n7m4.set_pin_l0_filter_and_index_blocks_in_cache(true);
-
-            let mut opts_n7m4 = Options::default();
-            opts_n7m4.set_block_based_table_factory(&block_opts_n7m4);
-            opts_n7m4.set_compression_type(rocksdb::DBCompressionType::None);
-
-            let db_n6m5 = DB::open_for_read_only(&opts_n6m5, "rocksdb_n6m5perms", false).expect("Failed to open rocksdb");
-            let db_n7m4 = DB::open_for_read_only(&opts_n7m4, "rocksdb_n7m4perms", false).expect("Failed to open rocksdb");
+            let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
+            let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
             install_kill_handler();
             if data.trim().is_empty() {
@@ -1714,22 +1683,8 @@ Command::new("equal")
             let dbs = open_all_dbs(&env);
 
             println!("Opening RocksDB");
-            let cache = Cache::new_lru_cache(25 * 1024 * 1024 * 1024); 
-
-            let mut block_opts = BlockBasedOptions::default();
-            block_opts.set_block_cache(&cache);
-            block_opts.set_bloom_filter(10.0, false);
-            block_opts.set_cache_index_and_filter_blocks(true);
-            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
-
-            let mut opts = Options::default();
-            opts.set_block_based_table_factory(&block_opts);
-            opts.set_compression_type(rocksdb::DBCompressionType::None);
-
-            let db_n6m5 = DB::open_for_read_only(&opts, "rocksdb_n6m5perms", false)
-                .expect("Failed to open RocksDB n6m5");
-            let db_n7m4 = DB::open_for_read_only(&opts, "rocksdb_n7m4perms", false)
-                .expect("Failed to open RocksDB n7m4");
+            let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
+            let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
             let bit_shuf_list = (3..=7)
                 .map(|n| {
