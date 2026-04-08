@@ -1612,8 +1612,8 @@ Command::new("equal")
             opts_n7m4.set_block_based_table_factory(&block_opts_n7m4);
             opts_n7m4.set_compression_type(rocksdb::DBCompressionType::None);
 
-            let db_n6m5 = DB::open_for_read_only(&opts_n6m5, "rocksdb_n6m5perms", false)?;
-            let db_n7m4 = DB::open_for_read_only(&opts_n7m4, "rocksdb_n7m4perms", false)?;
+            let db_n6m5 = DB::open_for_read_only(&opts_n6m5, "rocksdb_n6m5perms", false).expect("Failed to open rocksdb");
+            let db_n7m4 = DB::open_for_read_only(&opts_n7m4, "rocksdb_n7m4perms", false).expect("Failed to open rocksdb");
 
             install_kill_handler();
             if data.trim().is_empty() {
