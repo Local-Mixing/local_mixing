@@ -3733,7 +3733,7 @@ mod tests {
             // Convert the circuit to a permutation
             let perm = circuit.permutation(3);
 
-            println!("Permutation for key '{}': {:?}", key_str, perm);
+            println!("Permutation for circuit '{:?}': {:?}", circuit.repr(), perm);
         }
     }
 
