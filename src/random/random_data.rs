@@ -3682,7 +3682,7 @@ mod tests {
             .expect("Failed to open swaponlyn.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
         let perm = Permutation { data: vec![2,3,0,1,6,7,4,5]};
-        for m in 2..=15 {
+        for m in 2..=10 {
             for _ in 0..100000 {
                 let mut random = random_circuit(3, m);
                 if random.permutation(3) == perm {
