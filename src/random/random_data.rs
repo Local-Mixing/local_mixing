@@ -3724,11 +3724,8 @@ mod tests {
         let mut cursor = txn.open_ro_cursor(db).expect("Failed to open cursor");
 
         for (key, value) in cursor.iter() {
-            let key_str = std::str::from_utf8(key).unwrap_or("<binary>");
-            println!("Key: {}", key_str);
-
             // Deserialize the blob into a CircuitSeq
-            let circuit = CircuitSeq::from_blob(value);
+            let circuit = CircuitSeq::from_blob(key);
 
             // Convert the circuit to a permutation
             let perm = circuit.permutation(3);
