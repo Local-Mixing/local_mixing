@@ -22,8 +22,8 @@ pub struct CircuitSeq {
 }
 
 // Polynomial representation of circuit
-type Monomial = u64;
-type Polynomial = HashSet<Monomial>;
+pub type Monomial = u64;
+pub type Polynomial = HashSet<Monomial>;
 
 // Permutations are all the possible outputs of a circuit
 // On n wires permutation length is 1 << n
@@ -796,7 +796,7 @@ fn poly_not(p: Polynomial) -> Polynomial {
 
 // Display polynomials
  
-fn monomial_degree(m: u64) -> u32 {
+pub fn monomial_degree(m: u64) -> u32 {
     m.count_ones()
 }
  

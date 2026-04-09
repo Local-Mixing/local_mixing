@@ -3707,6 +3707,37 @@ mod tests {
     }
 
     #[test]
+    fn test_read_swap_and_print_perm() {
+        let env = Environment::new()
+            .set_max_dbs(202)
+            .open(Path::new("./db"))
+            .expect("Failed to open LMDB environment");
+
+        let db = env
+            .open_db(Some("swap"))
+            .expect("Failed to open 'swap' database");
+
+        // Begin a read-only transaction
+        let txn = env.begin_ro_txn().expect("Failed to begin read-only transaction");
+
+        // Iterate over all key-value pairs in the "swap" db
+        let mut cursor = txn.open_ro_cursor(db).expect("Failed to open cursor");
+
+        for (key, value) in cursor.iter() {
+            let key_str = std::str::from_utf8(key).unwrap_or("<binary>");
+            println!("Key: {}", key_str);
+
+            // Deserialize the blob into a CircuitSeq
+            let circuit = CircuitSeq::from_blob(value);
+
+            // Convert the circuit to a permutation
+            let perm = circuit.permutation(3);
+
+            println!("Permutation for key '{}': {:?}", key_str, perm);
+        }
+    }
+
+    #[test]
     fn load_swaps_into_lmdb() {
         use std::{fs::File, io::{BufRead, BufReader}, path::Path};
         use lmdb::{Environment, DatabaseFlags, WriteFlags};
