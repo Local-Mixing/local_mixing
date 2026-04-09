@@ -3714,7 +3714,7 @@ mod tests {
             .expect("Failed to open LMDB environment");
 
         let db = env
-            .open_db(Some("swap"))
+            .open_db(Some("not1"))
             .expect("Failed to open 'swap' database");
 
         // Begin a read-only transaction
