@@ -3745,11 +3745,27 @@ mod tests {
             .open(Path::new("./db"))
             .expect("failed to open lmdb env");
 
+        // Delete existing databases before creating them (ignore errors if they don't exist)
+        let dbs_to_delete = ["cnot", "not", "swapnot12", "swap", "swapnot1", "swapnot2"];
+        for db_name in dbs_to_delete.iter() {
+        if let Ok(db) = env.open_db(Some(db_name)) {
+            let mut txn = env.begin_rw_txn().expect("Failed to begin txn");
+            // SAFETY: ensure no other transactions or handles are active
+            unsafe {
+                txn.drop_db(db).expect("Failed to drop db");
+            }
+            txn.commit().expect("Failed to commit txn");
+            println!("Dropped DB: {}", db_name);
+        } else {
+            println!("DB not found: {}", db_name);
+        }
+    }
+
         let db = env
             .create_db(Some("cnot"), DatabaseFlags::empty())
             .expect("failed to create/open db");
 
-        let file = File::open("c1not2.txt").expect("failed to open swap12n1.txt");
+        let file = File::open("c1not2.txt").expect("failed to open c1not2.txt");
         let reader = BufReader::new(file);
 
         let mut txn = env.begin_rw_txn().expect("failed to start txn");
@@ -3774,7 +3790,7 @@ mod tests {
             .create_db(Some("not"), DatabaseFlags::empty())
             .expect("failed to create/open db");
 
-        let file = File::open("not1.txt").expect("failed to open swap12n1.txt");
+        let file = File::open("not1.txt").expect("failed to open not1.txt");
         let reader = BufReader::new(file);
 
         let mut txn = env.begin_rw_txn().expect("failed to start txn");
