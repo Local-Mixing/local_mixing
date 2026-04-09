@@ -3685,6 +3685,9 @@ mod tests {
         for m in 2..=15 {
             for _ in 0..100000 {
                 let mut random = random_circuit(3, m);
+                if random.permutation(3) == perm {
+                    println!("Found not1 candidate: {}", random.repr());
+                }
                 random.canonicalize();
                 let mut i = 0;
                 while i < random.gates.len().saturating_sub(1) {
