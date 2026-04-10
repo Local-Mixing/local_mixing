@@ -1285,7 +1285,7 @@ mod tests {
         // Gates are disjoint on wires 0-5. Test verified by hand
         // Test on two different ones. Should canonicalize to the same thing both times, with the same permutation.
         println!("Test 1:");
-        let circuit = CircuitSeq::from_string("042;651;");
+        let circuit = CircuitSeq::from_string("042;351;");
         let polys = circuit.to_polynomial(6, 0, 2);
         let (canonical, _) = canonicalize_polys(polys);
         println!("Canonical polys:");
