@@ -14,7 +14,12 @@ use crate::{
         mixing::{
             abutterfly_big, butterfly_big, interleave_sequential_big, replace_and_compress_big, replace_and_compress_big_distance, simple_shooting_game, zip_sequential_butterfly
         },
-        transpositions::{insert_wire_m_samfs_every_x, insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x},
+        transpositions::{
+            insert_wire_m_samfs_every_x, 
+            //insert_wire_shuffles_knuth, 
+            //insert_wire_shuffles_simple, 
+            insert_wire_shuffles_x
+        },
         pairs::{interleave}
     },
 };
@@ -1161,7 +1166,7 @@ pub fn main_shuffle_shoot_shuffle(
     env: &lmdb::Environment, 
     id_len: usize,
     tower: bool,
-    stop: usize,
+    _stop: usize,
     intermediate: &str,
     leave: bool,
 ) {

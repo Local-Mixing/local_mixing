@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
-    io::{self, Read, Write},
+    io::{Write},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc,
@@ -18,10 +18,22 @@ use rocksdb::{DB};
 use crate::{
     circuit::circuit::CircuitSeq,
     random::random_data::{
-        random_circuit, shoot_left_vec, shoot_left_vec_track, shoot_random_gate, shoot_right_vec, shoot_right_vec_track
+        // random_circuit, 
+        shoot_left_vec, 
+        shoot_left_vec_track, 
+        shoot_random_gate, 
+        shoot_right_vec,
+        shoot_right_vec_track
     },
     replace::{
-        identities::{create_escalator_identities, create_escalator_identities_tracked, get_random_shuffled_identity, insert_ri_identities, random_id, zip_escalators}, pairs::{
+        identities::{
+            create_escalator_identities, 
+            create_escalator_identities_tracked, 
+            // get_random_shuffled_identity, 
+            // insert_ri_identities, 
+            random_id, 
+            zip_escalators
+        }, pairs::{
             interleave,
             replace_pair_distances_linear,
             replace_pairs,
@@ -30,7 +42,7 @@ use crate::{
         }, replace::{
             // compress,
             compress_big,
-            compress_big_ancillas,
+            // compress_big_ancillas,
             expand_big,
             compress_loop,
             // obfuscate,
@@ -326,8 +338,8 @@ pub fn merge_combine_blocks(
 pub fn butterfly_big(
     c: &CircuitSeq,
     n: usize,
-    last: bool,
-    stop: usize,
+    _last: bool,
+    _stop: usize,
     env: &lmdb::Environment,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
@@ -455,8 +467,8 @@ pub fn dump_and_exit() -> ! {
 pub fn abutterfly_big(
     c: &CircuitSeq,
     n: usize,
-    last: bool,
-    stop: usize,
+    _last: bool,
+    _stop: usize,
     env: &lmdb::Environment,
     curr_round: usize,
     last_round: usize,
@@ -658,18 +670,18 @@ pub fn zip_sequential_butterfly(
     db_n6m5: &DB,
     db_n7m4: &DB,
     id_len: usize,
-    reverse_order_left: bool,
+    _reverse_order_left: bool,
     tower_left: bool,
-    shoot_more_left: u8,
-    reverse_order_right: bool,
-    tower_right: bool,
-    shoot_more_right: u8
+    _shoot_more_left: u8,
+    _reverse_order_right: bool,
+    _tower_right: bool,
+    _shoot_more_right: u8
 ) -> CircuitSeq {
     
     println!("  {}/{}: Beginning sequential butterfly: {} gates", curr_round, last_round, c.gates.len());
-    let mut rng = rand::rng();
+    let mut _rng = rand::rng();
     let mut circuit = c.clone();
-    let diehard_len = if n == 32 {
+    let _diehard_len = if n == 32 {
         525
     } else if n == 64 {
         1200
@@ -679,7 +691,7 @@ pub fn zip_sequential_butterfly(
         2500
     };
     println!("  {}/{}: Step 1: Shooting", curr_round, last_round);
-    let mut len = circuit.gates.len();
+    let len = circuit.gates.len();
     shoot_random_gate(&mut circuit, len * 50);
     println!("   {}/{}: Step 1a: Inserting Identities", curr_round, last_round);
     // Keeps track of the gates and whether it can stay in place `0`, needs to be shot left `1`, or needs to be shot right `2`
@@ -767,9 +779,8 @@ pub fn sequential_butterfly(
     shoot_more_right: u8
 ) -> CircuitSeq {
     println!("  {}/{}: Beginning sequential butterfly: {} gates", curr_round, last_round, c.gates.len());
-    let mut rng = rand::rng();
     let mut circuit = c.clone();
-    let diehard_len = if n == 32 {
+    let _diehard_len = if n == 32 {
         525
     } else if n == 64 {
         1200
@@ -1052,8 +1063,8 @@ pub fn simple_shooting_game(
     last_round: usize,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
-    db_n6m5: &DB,
-    db_n7m4: &DB,
+    _db_n6m5: &DB,
+    _db_n7m4: &DB,
     id_len: usize,
     tower: bool,
     stop: usize,
@@ -1290,8 +1301,8 @@ static TRAVERSE_LEFT: AtomicUsize = AtomicUsize::new(0);
 pub fn replace_and_compress_big(
     circuit: &CircuitSeq,
     n: usize,
-    last: bool,
-    stop: usize,
+    _last: bool,
+    _stop: usize,
     env: &lmdb::Environment,
     curr_round: usize,
     last_round: usize,
@@ -1373,9 +1384,8 @@ pub fn replace_and_compress_big(
     // let mut milestone = initial_milestone(acc.gates.len());
     // Final global compression until stable 6×
     println!("Beginning compression");
-    let mut acc = c;
-    acc = compress_loop(
-        &circuit,
+    let acc = compress_loop(
+        &c,
         n,
         db_n6m5,
         db_n7m4,
@@ -1410,8 +1420,8 @@ pub fn replace_and_compress_big(
 // Returns [..chunk.len() - 1][replace_pair(last, next)][1..chunk.len()-1][replace_pair(last, next)]...[1..]
 pub fn mix_seams(
     gates: Vec<Vec<[u8;3]>>,
-    db_n6m5: &DB,
-    db_n7m4: &DB,
+    _db_n6m5: &DB,
+    _db_n7m4: &DB,
     n: usize,
     env: &lmdb::Environment,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
@@ -1470,8 +1480,8 @@ pub fn mix_seams(
 pub fn interleave_sequential_big(
     circuit: &CircuitSeq,
     n: usize,
-    last: bool,
-    stop: usize,
+    _last: bool,
+    _stop: usize,
     env: &lmdb::Environment,
     curr_round: usize,
     last_round: usize,
@@ -1617,8 +1627,8 @@ pub fn interleave_sequential_big(
 pub fn replace_and_compress_big_distance(
     circuit: &CircuitSeq,
     n: usize,
-    last: bool,
-    stop: usize,
+    _last: bool,
+    _stop: usize,
     env: &lmdb::Environment,
     curr_round: usize,
     last_round: usize,

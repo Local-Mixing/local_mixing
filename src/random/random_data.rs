@@ -3726,7 +3726,7 @@ mod tests {
         // Iterate over all key-value pairs in the "swap" db
         let mut cursor = txn.open_ro_cursor(db).expect("Failed to open cursor");
 
-        for (key, value) in cursor.iter() {
+        for (key, _) in cursor.iter() {
             // Deserialize the blob into a CircuitSeq
             let circuit = CircuitSeq::from_blob(key);
 

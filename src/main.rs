@@ -11,16 +11,26 @@ use std::{
 
 use local_mixing::{
     circuit::{CircuitSeq, circuit::{poly_degree, poly_to_str}},
-    random::random_data::{build_from_sql, main_random, random_circuit, random_sulking, random_walk_no_skeleton, shoot_random_gate},
+    random::random_data::{
+        // build_from_sql, 
+        main_random, 
+        random_circuit, 
+        // random_sulking, 
+        // random_walk_no_skeleton, 
+        shoot_random_gate
+    },
     replace::{
-        identities::{get_random_wide_identity, random_canonical_id}, main_mix::{
+        identities::{
+            get_random_wide_identity, 
+            // random_canonical_id
+        }, main_mix::{
             // main_butterfly, 
             main_butterfly_big, main_interleave_big, 
             // main_mix, 
             main_rac_big, main_rac_big_distance, main_sequential_butterfly, main_shuffle_rcs_big, open_all_dbs, main_shooting_game, main_shuffle_shoot_shuffle
         }, mixing::install_kill_handler, pairs::{GatePair, gate_pair_taxonomy}, replace::{
-            compress_big_ancillas,
-            sequential_compress_big_ancillas,
+            // compress_big_ancillas,
+            // sequential_compress_big_ancillas,
             compress_loop,
         }, transpositions::{generate_reversible, insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x}
     },

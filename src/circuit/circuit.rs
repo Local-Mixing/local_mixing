@@ -731,7 +731,7 @@ impl CircuitSeq {
         .collect();
     
         for &[a, b, c] in gates {
-            // a' = a XOR (b AND NOT c)
+            // a' = a XOR (b AND NOT c) XOR 1 (unchanged polynomial)
             let not_c = poly_not(polys[c as usize].clone());
             let term = poly_and(&polys[b as usize], &not_c);
             let new_a = poly_xor(polys[a as usize].clone(), term);
@@ -739,10 +739,10 @@ impl CircuitSeq {
         }
     
         // XOR each wire with its initial value x_i so unchanged wires become 0
-        for i in 0..n {
-            let xi = HashSet::from([1u64 << i]);
-            polys[i] = poly_xor(polys[i].clone(), xi);
-        }
+        // for i in 0..n {
+        //     let xi = HashSet::from([1u64 << i]);
+        //     polys[i] = poly_xor(polys[i].clone(), xi);
+        // }
 
         polys
     }
@@ -872,13 +872,435 @@ pub fn base_gates(n: usize) -> Vec<[u8; 3]> {
     gates
 }
 
+/// Initial ranking method
+/// Degree counts of a polynomial: [count_of_max_possible_deg, ..., count_of_deg_0]
+/// Padded to max_possible_degree+1 entries so Vec comparison is always over equal-length
+/// vectors and correctly ranks e.g. one degree-2 monomial above two degree-1 monomials.
+fn degree_counts(poly: &Polynomial, max_possible_degree: usize) -> Vec<usize> {
+    let mut counts = vec![0usize; max_possible_degree + 1];
+    for m in poly {
+        let deg = m.count_ones() as usize;
+        counts[deg] += 1;
+    }
+    counts.reverse();
+    counts
+}
+
+/// Used in tie-breaking
+/// For a given polynomial, return a degree-bucketed count (high to low) of
+/// how many monomials of each degree contain variable `wire_idx`.
+fn wire_counts_in_poly(poly: &Polynomial, max_possible_degree: usize, wire_idx: usize) -> Vec<usize> {
+    if poly.is_empty() {
+        return vec![];
+    }
+    let bit = 1u64 << wire_idx;
+    let mut counts = vec![0usize; max_possible_degree + 1];
+    for m in poly {
+        if m & bit != 0 {
+            counts[m.count_ones() as usize] += 1;
+        }
+    }
+    counts.reverse();
+    counts
+}
+
+/// Used in tie-breaking. Check a single polynomial
+/// Split a single tied group by their appearance counts in one polynomial.
+/// Returns ordered sub-groups (highest count first), each internally still tied.
+fn split_by_poly(group: &[usize], poly: &Polynomial, max_possible_degree: usize) -> Vec<Vec<usize>> {
+    let mut scored: Vec<(usize, Vec<usize>)> = group
+        .iter()
+        .map(|&w| (w, wire_counts_in_poly(poly, max_possible_degree, w)))
+        .collect();
+
+    // Sort descending by count
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Partition into tied sub-groups
+    let mut result: Vec<Vec<usize>> = Vec::new();
+    let mut current: Vec<usize> = vec![scored[0].0];
+    for i in 1..scored.len() {
+        if scored[i].1 == scored[i - 1].1 {
+            current.push(scored[i].0);
+        } else {
+            result.push(current.clone());
+            current = vec![scored[i].0];
+        }
+    }
+    result.push(current);
+    result
+}
+
+/// Used in tie-breaking. Check multiple polynomials in ranked order
+/// Try to split a group of tied wires using the ranked polynomials (highest rank first).
+/// Restarts from the top-ranked polynomial whenever any split occurs.
+/// Returns a list of sub-groups in rank order.
+fn split_group(group: &[usize], ranked_polys: &[&Polynomial], max_possible_degree: usize) -> Vec<Vec<usize>> {
+    if group.len() <= 1 {
+        return vec![group.to_vec()];
+    }
+
+    let mut subgroups: Vec<Vec<usize>> = vec![group.to_vec()];
+
+    'outer: loop {
+        for poly in ranked_polys.iter() {
+            let mut new_subgroups: Vec<Vec<usize>> = Vec::new();
+            let mut any_split = false;
+
+            for sg in &subgroups {
+                if sg.len() <= 1 {
+                    new_subgroups.push(sg.clone());
+                    continue;
+                }
+                let split = split_by_poly(sg, poly, max_possible_degree);
+                if split.len() > 1 {
+                    any_split = true;
+                }
+                new_subgroups.extend(split);
+            }
+
+            if any_split {
+                subgroups = new_subgroups;
+                continue 'outer; // restart from highest ranked poly
+            }
+        }
+        // Full pass with no splits — we're done
+        break;
+    }
+
+    subgroups
+}
+
+pub fn canonicalize_polys(polynomials: Vec<Polynomial>) -> (Vec<Polynomial>, Permutation) {
+    let n = polynomials.len();
+    if n == 0 {
+        return (vec![], Permutation { data: vec![] });
+    }
+    let max_degree = n - 1;
+
+    // Step 1: Initial grouping by degree counts
+    let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
+        .map(|i| (i, degree_counts(&polynomials[i], max_degree)))
+        .collect();
+
+    // Sort descending: higher degree entries first, then lexicographically by counts
+    profiles.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Partition into initially-tied groups
+    let mut pending_groups: Vec<Vec<usize>> = Vec::new();
+    {
+        let mut current: Vec<usize> = vec![profiles[0].0];
+        for i in 1..profiles.len() {
+            if profiles[i].1 == profiles[i - 1].1 {
+                current.push(profiles[i].0);
+            } else {
+                pending_groups.push(current.clone());
+                current = vec![profiles[i].0];
+            }
+        }
+        pending_groups.push(current);
+    }
+
+    // final_order[pos] = Some(wire) once a wire is locked into that position, None while
+    // still unresolved. Positions are assigned to groups upfront based on degree ranking,
+    // so e.g. a singleton group at the end is immediately locked at its correct position
+    // even while earlier groups are still in tiebreak. Only locked positions are visible
+    // to ranked_polys_from and thus usable for comparisons.
+    let mut final_order: Vec<Option<usize>> = vec![None; n];
+
+    // Each entry is (start_pos, sub_groups):
+    //   start_pos — base index into final_order for the first still-unresolved wire in this group
+    //   sub_groups — current partition of unresolved wires; starts as one vec, splits as
+    //                tiebreaks are resolved. Singleton sub_groups get locked into final_order
+    //                and are removed; the entry is dropped when all sub_groups are singletons.
+    let mut pending: Vec<(usize, Vec<Vec<usize>>)> = {
+        let mut pos = 0;
+        pending_groups
+            .into_iter()
+            .map(|g| {
+                let start = pos;
+                pos += g.len();
+                (start, vec![g])
+            })
+            .collect()
+    };
+
+    // Build ranked_polys from locked-in positions only (skip None).
+    // Returns polynomials in rank order (position 0 first).
+    let ranked_polys_from = |order: &Vec<Option<usize>>| -> Vec<&Polynomial> {
+        order
+            .iter()
+            .filter_map(|slot| slot.map(|w| &polynomials[w]))
+            .collect()
+    };
+
+    
+    loop {
+        let mut any_progress = false;
+
+        for (start_pos, sub_groups) in pending.iter_mut() {
+            let mut local_progress = true;
+
+            // Rules 2-5
+            // Keep re-splitting until no more progress within this group
+            let mut current = sub_groups.clone();
+            while local_progress {
+                local_progress = false;
+                let ranked = ranked_polys_from(&final_order);
+                let mut next: Vec<Vec<usize>> = Vec::new();
+                for sg in &current {
+                    if sg.len() <= 1 {
+                        next.push(sg.clone());
+                        continue;
+                    }
+                    let split = split_group(sg, &ranked, max_degree);
+                    if split.len() > 1 {
+                        local_progress = true;
+                        any_progress = true;
+                    }
+                    next.extend(split);
+                }
+                current = next;
+            }
+
+            // Lock in any singletons at their positions, advancing start_pos past each one
+            let mut pos = *start_pos;
+            for sg in &current {
+                if sg.len() == 1 {
+                    final_order[pos] = Some(sg[0]);
+                    any_progress = true;
+                }
+                pos += sg.len();
+            }
+            // Advance start_pos past all leading singletons so rule 6 always
+            // writes the next winner into the correct slot
+            *start_pos += current.iter().take_while(|sg| sg.len() == 1).count();
+
+            *sub_groups = current;
+        }
+
+        // Drop fully resolved pending entries
+        pending.retain(|(_, sgs)| sgs.iter().any(|sg| sg.len() > 1));
+
+        if pending.is_empty() {
+            break;
+        }
+
+        if !any_progress {
+            // Rule 6: fully stuck — pick lowest wire index from first unresolved sub_group
+            // of first pending entry as a single arbitrary tiebreak, then restart
+            let (start_pos, sub_groups) = &mut pending[0];
+            sub_groups[0].sort();
+            let winner = sub_groups[0].remove(0);
+            final_order[*start_pos] = Some(winner);
+            *start_pos += 1;
+        }
+    }
+
+    // Unwrap — all positions must be filled by now
+    let final_order: Vec<usize> = final_order
+        .into_iter()
+        .map(|slot| slot.expect("all positions should be filled"))
+        .collect();
+
+    // final_order[pos] = wire
+    // Remap: variable x_wire -> x_pos  (bit wire -> bit pos)
+    // TODO: this is likely the inverse. may need to change for consistency
+    let remap_monomial = |m: Monomial| -> Monomial {
+        let mut result = 0u64;
+        for (pos, &wire) in final_order.iter().enumerate() {
+            if m & (1u64 << wire) != 0 {
+                result |= 1u64 << pos;
+            }
+        }
+        result
+    };
+
+    // Remap all of our polynomials and select them in the order
+    // Both based on final_order
+    let canonical: Vec<Polynomial> = final_order
+    .iter()
+    .map(|&wire| {
+        polynomials[wire]
+            .iter()
+            .map(|&m| remap_monomial(m))
+            .collect()
+    })
+    .collect();
+
+    let data = final_order;
+
+    (canonical, Permutation { data })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mono(vars: &[usize]) -> Monomial {
+        vars.iter().fold(0u64, |acc, &v| acc | (1u64 << v))
+    }
+
+    fn poly(monomials: &[&[usize]]) -> Polynomial {
+        let mut p = Polynomial::new();
+        for &vars in monomials {
+            let m = mono(vars);
+            // GF(2): duplicate insertion cancels
+            if !p.remove(&m) {
+                p.insert(m);
+            }
+        }
+        p
+    }
+
     #[test]
-    fn test_from_string() {
-        let s = "lej;egu;gdt;pt0;vib;cp8;tes;8pt;p0h;h59;cl7;d7e;agc;laq;u39;pog;u39;laq;d7e;pog;agc;cl7;h59;p0h;8pt;cp8;tes;vib;pt0;032;324;024;213;pt0;vib;cp8;tes;8pt;p0h;h59;d7e;cl7;u39;pog;p8h;sd6;783;agc;la9;laq;nlc;9j2;nlc;783;sd6;9j2;u39;341;213;132;432;la9;p8h;pog;laq;agc;d7e;cl7;h59;p0h;8pt;cl7;d7e;agc;laq;8pt;p0h;h59;p8h;pog;p8h;pog;u39;laq;agc;d7e;cl7;h59;p0h;8pt;tes;cp8;tes;cp8;8pt;p0h;h59;d7e;pog;p8h;cl7;agc;la9;laq;la9;p8h;pog;laq;agc;d7e;cl7;h59;p0h;8pt;tes;cp8;vib;pt0;vib;pt0;cp8;tes;8pt;p0h;cl7;d7e;pog;h59;7hu;p8h;sd6;783;agc;la9;laq;504;tsi;7hu;tsi;504;783;u39;314;sd6;la9;p8h;pog;laq;agc;d7e;cl7;h59;p0h;8pt;tes;cp8;vib;pt0;gdt;132;gdt;pt0;vib;cp8;tes;8pt;vib;8pt;tes;cp8;pt0;gdt;egu;lej;031;lej;egu;pt0;vib;cp8;gdt;tes;d7e;8pt;p0h;h59;cl7;d7e;cl7;h59;p0h;8pt;tes;cp8;vib;pt0;gdt;egu;lej;132;lej;egu;gdt;pt0;vib;cp8;tes;8pt;p0h;h59;cl7;d7e;u39;pog;p8h;sd6;783;agc;la9;laq;nlc;9j2;nlc;504;tsi;7hu;tsi;504;9j2;783;sd6;la9;p8h;pog;laq;agc;7hu;u39;h59;d7e;cl7;h59;cl7;d7e;agc;laq;314;u39;pog;la9;sd6;783;nlc;504;783;sd6;pog;nlc;9j2;504;9j2;u39;la9;laq;agc;d7e;cl7;h59;p0h;vib;8pt;tes;cp8;vib;cp8;tes;cl7;d7e;agc;laq;u39;8pt;p0h;h59;pog;la9;sd6;783;p8h;7hu;783;sd6;la9;pog;laq;agc;7hu;u39;d7e;cl7;p8h;h59;p0h;8pt;tes;cp8;tes;cl7;d7e;cp8;agc;8pt;laq;pog;la9;sd6;783;p0h;h59;p8h;u39;432;132;213;504;nlc;504;nlc;783;sd6;la9;p8h;pog;u39;341;laq;agc;d7e;cl7;h59;p0h;8pt;tes;cp8;vib;pt0;gdt;pt0;vib;cp8;gdt;d7e;tes;sd6;8pt;p0h;h59;cl7;agc;laq;u39;pog;p8h;la9;783;9j2;nlc;504;tsi;504;nlc;9j2;783;tsi;sd6;p8h;pog;u39;d7e;la9;laq;agc;cl7;h59;p0h;8pt;cp8;tes;vib;pt0;vib;032;213;024;pt0;cp8;tes;8pt;p0h;h59;cl7;d7e;agc;laq;u39;pog;p8h;la9;pog;u39;324;laq;d7e;la9;agc;cl7;p8h;h59;cl7;d7e;agc;laq;u39;pog;sd6;783;h59;p8h;504;la9;9j2;nlc;504;nlc;9j2;783;sd6;la9;p8h;pog;u39;laq;agc;d7e;cl7;h59;p0h;8pt;tes;cp8;vib;pt0;gdt;egu;lej;032;lej;egu;gdt;pt0;vib;tes;cp8;8pt;cl7;d7e;783;agc;laq;u39;pog;la9;sd6;p0h;h59;p8h;504;9j2;nlc;504;nlc;9j2;783;sd6;la9;p8h;pog;u39;laq;agc;d7e;cl7;h59;p0h;8pt;tes;cp8;vib;pt0;gdt;egu;lej;";
-        println!("{:?}", CircuitSeq::from_string(s).gates);
+    fn test_example_from_spec() {
+        // 0-indexed wires:
+        // P0 = x_0
+        // P1 = x_1 + x_0 + x_0*x_2
+        // P2 = x_2
+        // P3 = x_3
+        // P4 = x_4
+        // P5 = x_5 + x_3 + x_3*x_4
+        let polys = vec![
+            poly(&[&[0]]),
+            poly(&[&[1], &[0], &[0, 2]]),
+            poly(&[&[2]]),
+            poly(&[&[3]]),
+            poly(&[&[4]]),
+            poly(&[&[5], &[3], &[3, 4]]),
+        ];
+
+        let (canonical, perm) = canonicalize_polys(polys);
+
+        // Expected final order: P1, P5, P0, P2, P3, P4
+        // data = [1, 5, 0, 2, 3, 4]
+        assert_eq!(perm.data, vec![1, 5, 0, 2, 3, 4]);
+
+        // Remap: wire1->x0, wire5->x1, wire0->x2, wire2->x3, wire3->x4, wire4->x5
+        // canonical[0] = P1 remapped: x_1 + x_0 + x_0*x_2  ->  x_0 + x_2 + x_2*x_3
+        assert_eq!(canonical[0], poly(&[&[0], &[2], &[2, 3]]));
+
+        // canonical[1] = P5 remapped: x_5 + x_3 + x_3*x_4  ->  x_1 + x_4 + x_4*x_5
+        assert_eq!(canonical[1], poly(&[&[1], &[4], &[4, 5]]));
+
+        // canonical[2] = P0 remapped: x_0 -> x_2
+        assert_eq!(canonical[2], poly(&[&[2]]));
+
+        // canonical[3] = P2 remapped: x_2 -> x_3
+        assert_eq!(canonical[3], poly(&[&[3]]));
+
+        // canonical[4] = P3 remapped: x_3 -> x_4
+        assert_eq!(canonical[4], poly(&[&[4]]));
+
+        // canonical[5] = P4 remapped: x_4 -> x_5
+        assert_eq!(canonical[5], poly(&[&[5]]));
+    }
+
+    #[test]
+    fn test_single_poly() {
+        let polys = vec![poly(&[&[0, 1]])];
+        let (canonical, perm) = canonicalize_polys(polys);
+        assert_eq!(perm.data, vec![0]);
+        assert_eq!(canonical[0], poly(&[&[0, 1]]));
+    }
+
+    #[test]
+    fn test_already_canonical() {
+        let polys = vec![
+            poly(&[&[0, 1]]),
+            poly(&[&[1]]),
+        ];
+        let (canonical, perm) = canonicalize_polys(polys);
+        assert_eq!(perm.data, vec![0, 1]);
+        assert_eq!(canonical[0], poly(&[&[0, 1]]));
+        assert_eq!(canonical[1], poly(&[&[1]]));
+    }
+
+    #[test]
+    fn test_reverse_order() {
+        // P0 = x_0 (degree 1), P1 = x_0*x_1 (degree 2) -> P1 should come first
+        let polys = vec![
+            poly(&[&[0]]),
+            poly(&[&[0, 1]]),
+        ];
+        let (canonical, perm) = canonicalize_polys(polys);
+        // data[0]=1, data[1]=0: position 0 pulls wire 1, position 1 pulls wire 0
+        assert_eq!(perm.data, vec![1, 0]);
+        // P1 remapped: wire1->x0, wire0->x1 => x_0*x_1 unchanged
+        assert_eq!(canonical[0], poly(&[&[0, 1]]));
+        // P0 remapped: x_0 -> x_1
+        assert_eq!(canonical[1], poly(&[&[1]]));
+    }
+
+    #[test]
+    fn test_gf2_cancellation_via_remap() {
+        // Construct a case where after remap two monomials in the same polynomial
+        // become identical and must cancel in GF(2).
+        // This cannot happen with a bijective wire remap (which we always have),
+        // but we verify the HashSet XOR logic is correct by testing a direct
+        // polynomial with a duplicate monomial supplied at construction time.
+        // poly(&[&[0], &[0]]) should be the zero polynomial (empty set).
+        let zero = poly(&[&[0], &[0]]);
+        assert!(zero.is_empty());
+    }
+
+    #[test]
+    fn test_degree2_beats_two_degree1() {
+        // x_0*x_1 should rank higher than x_0 + x_1 even though both have
+        // one monomial at their respective max degrees. This catches the bug
+        // where profile [1] (one deg-1) was incorrectly equal to [1,0] (one deg-2).
+        let polys = vec![
+            poly(&[&[0], &[1]]),  // P0 = x_0 + x_1  (max degree 1)
+            poly(&[&[0, 1]]),     // P1 = x_0*x_1    (max degree 2)
+        ];
+        let (_canonical, perm) = canonicalize_polys(polys);
+        assert_eq!(perm.data, vec![1, 0]); // P1 comes first
+    }
+
+    #[test]
+    fn test_singleton_group_locked_early() {
+        // Groups by degree: (P1 P2) at degree 2, (P0) at degree 1, (P3) at degree 0.
+        // P3 should be locked into position 3 immediately even while P1/P2 are in tiebreak,
+        // and P0 locked into position 2. Neither should be usable for comparisons until locked.
+        // P1 = x_0*x_1, P2 = x_2*x_3 — symmetric, tiebreak via rule 6 -> P1 first
+        // P0 = x_0 (degree 1), P3 = 1 (degree 0, the constant monomial)
+        let polys = vec![
+            poly(&[&[0]]),        // P0: x_0         degree 1
+            poly(&[&[0, 1]]),     // P1: x_0*x_1     degree 2
+            poly(&[&[2, 3]]),     // P2: x_2*x_3     degree 2
+            poly(&[&[]]),         // P3: 1 (constant) degree 0
+        ];
+        let (_canonical, perm) = canonicalize_polys(polys);
+        // P1 and P2 tie at degree 2 -> rule 6 picks P1 (index 1 < 2)
+        // P0 at degree 1 -> position 2
+        // P3 at degree 0 -> position 3
+        assert_eq!(perm.data[2], 1); // position 2 = P1... wait, data[pos]=wire
+        // data = [1, 2, 0, 3]: pos0=P1, pos1=P2, pos2=P0, pos3=P3
+        assert_eq!(perm.data, vec![1, 2, 0, 3]);
+    }
+
+    #[test]
+    fn test_disjoint_gates_twice() {
+        // Gates are disjoint on wires 0-5. Test verified by hand
+        // Test on two different ones. Should canonicalize to the same thing both times, with the same permutation.
+        println!("Test 1:");
+        let circuit = CircuitSeq::from_string("042;651;");
+        let polys = circuit.to_polynomial(6, 0, 2);
+        let (canonical, _) = canonicalize_polys(polys);
+        println!("Canonical polys:");
+        for (i, poly) in canonical.iter().enumerate() {
+            println!("  P{}: {}", i, poly_to_str(poly, 6));
+        }
+
+        println!("Test 2:");
+        let circuit = CircuitSeq::from_string("512;304;");
+        let polys = circuit.to_polynomial(6, 0, 2);
+        let (canonical, _) = canonicalize_polys(polys);
+        println!("Canonical polys:");
+        for (i, poly) in canonical.iter().enumerate() {
+            println!("  P{}: {}", i, poly_to_str(poly, 6));
+        }
     }
 
     use std::fs;

@@ -771,8 +771,8 @@ pub fn zip_escalators(
     gate: &[u8;3], 
     steps: &Vec<Vec<usize>>,
     n: usize,
-    tran: &mut Transpositions,
-    negation_mask: &mut Vec<u8>,
+    _tran: &mut Transpositions,
+    _negation_mask: &mut Vec<u8>,
     env: &Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs:&HashMap<String, Database>,
@@ -810,7 +810,7 @@ pub fn zip_escalators(
             let right_gate = r[j];
             // combined.push(left_gate);
             // combined.push(right_gate);
-            let quasi: bool = rng.random_bool(0.5);
+            let _quasi: bool = rng.random_bool(0.5);
             let quasi = true;
             if quasi {
                 let (paired_up, _) = replace_single_pair(
@@ -1265,7 +1265,7 @@ mod test {
         // simple2.shuffle(&mut rand::rng());
         // simple1.reverse();
         simple2.reverse();
-        let (first, mut middle, second, _) = create_escalator_identities(
+        let (first, middle, second, _) = create_escalator_identities(
             32,
             &simple1,
             &simple2,
