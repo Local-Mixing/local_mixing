@@ -1003,7 +1003,7 @@ pub fn canonicalize_polys(polynomials: Vec<Polynomial>) -> (Vec<Polynomial>, Per
     if n == 0 {
         return (vec![], Permutation { data: vec![] });
     }
-    let max_degree = n - 1;
+    let max_degree = n;
 
     // Step 1: Initial grouping by degree counts
     let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
