@@ -1352,7 +1352,7 @@ mod tests {
         use rand::Rng;
 
         let mut rng = rand::rng();
-        let shuffle_circuit = CircuitSeq::from_string("102;210;021;");
+        let shuffle_circuit = CircuitSeq::from_string("012;345;678;");
         let mut base_circuit = shuffle_circuit.clone();
         let bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
         .map(|n| {
