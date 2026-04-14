@@ -1346,6 +1346,26 @@ mod tests {
         println!("Total time for 100,000 random circuits: {:.2?}", timer.elapsed());
     }
 
+    #[test]
+    fn test_shuffled_canonicalization() {
+        use crate::random::random_data::random_circuit;
+        let circuit = random_circuit(30, 20);
+        let old_circuit = circuit.clone();
+        let polys = circuit.to_polynomial(30, 0, 20);
+        let (canonical, _) = canonicalize_polys(polys);
+
+        for _ in 0..100_000 {
+            let mut rng = rand::rng();
+            let mut pins: Vec<usize> = (0..30).collect();
+            pins.shuffle(&mut rng);
+            let mut shuffled_circuit = old_circuit.clone();
+            shuffled_circuit.rewire(&Permutation { data: pins }, 30);
+            let shuffled_polys = shuffled_circuit.to_polynomial(30, 0, 20);
+            let (shuffled_canonical, _) = canonicalize_polys(shuffled_polys);
+            assert_eq!(canonical, shuffled_canonical);
+        }
+    }
+
     use std::fs;
     use std::fs::File;
     use std::io::Write;
