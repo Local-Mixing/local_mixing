@@ -1102,8 +1102,7 @@ pub fn canonicalize_polys(polynomials: Vec<Polynomial>) -> (Vec<Polynomial>, Per
             // Advance start_pos past all leading singletons so rule 6 always
             // writes the next winner into the correct slot
             *start_pos += current.iter().take_while(|sg| sg.len() == 1).count();
-
-            *sub_groups = current;
+            *sub_groups = current.into_iter().skip_while(|sg| sg.len() == 1).collect();
         }
 
         // Drop fully resolved pending entries
