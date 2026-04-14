@@ -1350,30 +1350,31 @@ mod tests {
     fn test_shuffled_canonicalization() {
         use crate::random::random_data::random_circuit;
         let mut rng = rand::rng();
+        let n = 8;
         for _ in 0..10_000 {
-            let circuit = random_circuit(7, 20);
+            let circuit = random_circuit(n, 20);
             let old_circuit = circuit.clone();
-            let polys = old_circuit.to_polynomial(7, 0, 20);
+            let polys = old_circuit.to_polynomial(n, 0, 20);
             let (canonical, _) = canonicalize_polys(polys.clone());
             let canon_string = canonical.iter().enumerate()
-                .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, 7)))
+                .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
                 .collect::<Vec<_>>()
                 .join("\n");
             for _ in 0..100 {
-                let mut pins: Vec<usize> = (0..7).collect();
+                let mut pins: Vec<usize> = (0..n).collect();
                 pins.shuffle(&mut rng);
                 let mut shuffled_circuit = circuit.clone();
-                shuffled_circuit.rewire(&Permutation { data: pins }, 7);
-                let shuffled_polys = shuffled_circuit.to_polynomial(7, 0, 20);
+                shuffled_circuit.rewire(&Permutation { data: pins }, n);
+                let shuffled_polys = shuffled_circuit.to_polynomial(n, 0, 20);
                 let (shuffled_canonical, _) = canonicalize_polys(shuffled_polys);
                 let shuffled_string = shuffled_canonical.iter().enumerate()
-                    .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, 7)))
+                    .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
                     .collect::<Vec<_>>()
                     .join("\n");
                 assert_eq!(canon_string, shuffled_string,
                     "\nOriginal polys:\n{}\n",
                     polys.iter().enumerate()
-                        .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, 7)))
+                        .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
                         .collect::<Vec<_>>()
                         .join("\n")
                 );
