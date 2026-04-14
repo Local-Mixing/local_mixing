@@ -32,6 +32,10 @@ pub struct Permutation {
     pub data: Vec<usize>,
 }
 
+fn count_ones_u256(x: u256) -> u32 {
+    x.0.iter().map(|w| w.count_ones()).sum()
+}
+
 // Functions on Gate struct and [u8;3]
 impl Gate {
     // Returns the largest wire used
@@ -723,6 +727,40 @@ impl CircuitSeq {
         Ok(())
     }
 
+    // Probabilistic check on circuit being a shuffle of bits
+    pub fn probably_shuffle(
+        &self,
+        num_wires: usize,
+        num_inputs: usize
+    ) -> Result<(), String> {
+
+        let mut rng = rand::rng();
+
+        // build mask with lowest num_wires bits set
+        let mask = if num_wires < 256 {
+            (u256::one() << num_wires) - u256::one()
+        } else {
+            u256::MAX
+        };
+
+        for _ in 0..num_inputs {
+
+            // generate random 256-bit input
+            let mut bytes = [0u8; 32];
+            rng.fill_bytes(&mut bytes);
+            let random_input = u256::from_little_endian(&bytes) & mask;
+
+            let self_output =
+                Gate::evaluate_index_list_256(random_input, &self.gates);
+
+            if count_ones_u256(self_output & mask) == count_ones_u256(random_input & mask) {
+                return Err("Circuit is not a shuffle".to_string());
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn to_polynomial(self, n: usize, start: usize, end: usize) -> Vec<Polynomial> {
         let gates = &self.gates[start..end];
         // Wire i starts as degree 1 monomial
@@ -1135,6 +1173,8 @@ pub fn canonicalize_polys(polynomials: Vec<Polynomial>) -> (Vec<Polynomial>, Per
 
 #[cfg(test)]
 mod tests {
+    use itertools::Itertools;
+
     use super::*;
 
     fn mono(vars: &[usize]) -> Monomial {
@@ -1319,5 +1359,28 @@ mod tests {
         File::create("after_canon.txt")
             .and_then(|mut f| f.write_all(c_str.as_bytes()))
             .expect("Failed to write test_compression.txt");
+    }
+
+    #[test]
+    pub fn test_probably_shuffle() {
+        use rand::Rng;
+
+        let mut rng = rand::rng();
+        let shuffle_circuit = CircuitSeq::from_string("102;210;021;");
+        let mut base_circuit = shuffle_circuit.clone();
+        let bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
+        .map(|n| {
+            (0..n)
+                .permutations(n)
+                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                .collect::<Vec<Vec<usize>>>()
+        })
+        .collect();
+        let three_wire = &bit_shuf_list[0]; 
+        let shuf = &three_wire[rng.random_range(0..three_wire.len())];
+        base_circuit.rewire(&Permutation { data: shuf.clone() }, 3);
+        base_circuit.gates.reverse();
+        let combined = shuffle_circuit.concat(&base_circuit);
+        assert!(combined.probably_shuffle(3, 100).is_ok());
     }
 }
