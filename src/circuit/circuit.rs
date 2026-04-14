@@ -1335,6 +1335,9 @@ mod tests {
         
         let circuit = random_circuit(15, 10);
         let polys = circuit.to_polynomial(15, 0, 10);
+        for (i, poly) in polys.iter().enumerate() {
+            println!("  P{}: {}", i, poly_to_str(poly, 6));
+        }
         let (canonical, _) = canonicalize_polys(polys);
         println!("Canonical polys:");
         for (i, poly) in canonical.iter().enumerate() {
