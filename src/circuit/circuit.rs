@@ -1349,27 +1349,35 @@ mod tests {
     #[test]
     fn test_shuffled_canonicalization() {
         use crate::random::random_data::random_circuit;
-        let circuit = random_circuit(15, 20);
-        let old_circuit = circuit.clone();
-        let polys = circuit.to_polynomial(15, 0, 20);
-        let (canonical, _) = canonicalize_polys(polys);
-        let canon_string = canonical.iter().enumerate()
-            .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, 15)))
-            .collect::<Vec<_>>()
-            .join("\n");
-        for _ in 0..100_000 {
-            let mut rng = rand::rng();
-            let mut pins: Vec<usize> = (0..15).collect();
-            pins.shuffle(&mut rng);
-            let mut shuffled_circuit = old_circuit.clone();
-            shuffled_circuit.rewire(&Permutation { data: pins }, 15);
-            let shuffled_polys = shuffled_circuit.to_polynomial(15, 0, 20);
-            let (shuffled_canonical, _) = canonicalize_polys(shuffled_polys);
-            let shuffled_string = shuffled_canonical.iter().enumerate()
+        let mut rng = rand::rng();
+        for _ in 0..10_000 {
+            let circuit = random_circuit(15, 20);
+            let old_circuit = circuit.clone();
+            let polys = old_circuit.to_polynomial(15, 0, 20);
+            let (canonical, _) = canonicalize_polys(polys.clone());
+            let canon_string = canonical.iter().enumerate()
                 .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, 15)))
                 .collect::<Vec<_>>()
                 .join("\n");
-            assert_eq!(canon_string, shuffled_string);
+            for _ in 0..100 {
+                let mut pins: Vec<usize> = (0..15).collect();
+                pins.shuffle(&mut rng);
+                let mut shuffled_circuit = circuit.clone();
+                shuffled_circuit.rewire(&Permutation { data: pins }, 15);
+                let shuffled_polys = shuffled_circuit.to_polynomial(15, 0, 20);
+                let (shuffled_canonical, _) = canonicalize_polys(shuffled_polys);
+                let shuffled_string = shuffled_canonical.iter().enumerate()
+                    .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, 15)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert_eq!(canon_string, shuffled_string,
+                    "\nOriginal polys:\n{}\n",
+                    polys.iter().enumerate()
+                        .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, 15)))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+            }
         }
     }
 
