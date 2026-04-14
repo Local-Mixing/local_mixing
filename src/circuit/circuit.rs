@@ -1335,15 +1335,15 @@ mod tests {
     fn test_random_circuit_canonicalization() {
         use crate::random::random_data::random_circuit;
         
-        let circuit = random_circuit(14, 10);
-        let polys = circuit.to_polynomial(14, 0, 10);
+        let circuit = random_circuit(30, 20);
+        let polys = circuit.to_polynomial(30, 0, 20);
         for (i, poly) in polys.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 14));
+            println!("  P{}: {}", i, poly_to_str(poly, 30));
         }
         let (canonical, _) = canonicalize_polys(polys);
         println!("Canonical polys:");
         for (i, poly) in canonical.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 14));
+            println!("  P{}: {}", i, poly_to_str(poly, 30));
         }
     }
 
