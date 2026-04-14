@@ -1090,7 +1090,7 @@ pub fn canonicalize_polys(polynomials: Vec<Polynomial>) -> (Vec<Polynomial>, Per
             // Lock in any singletons at their positions, advancing start_pos past each one
             let mut pos = *start_pos;
             for sg in &current {
-                if sg.len() == 1 && final_order[pos].is_none() {
+                if sg.len() == 1 {
                     final_order[pos] = Some(sg[0]);
                     any_progress = true;
                 }
@@ -1142,6 +1142,7 @@ pub fn canonicalize_polys(polynomials: Vec<Polynomial>) -> (Vec<Polynomial>, Per
 
     // Remap all of our polynomials and select them in the order
     // Both based on final_order
+
     let (canonical, perm_data): (Vec<Polynomial>, Vec<usize>) = final_order
         .iter()
         .map(|&wire| {
