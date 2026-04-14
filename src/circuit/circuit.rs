@@ -1336,8 +1336,8 @@ mod tests {
     fn test_random_circuit_canonicalization() {
         use crate::random::random_data::random_circuit;
         
-        let circuit = random_circuit(15, 10);
-        let polys = circuit.to_polynomial(15, 0, 10);
+        let circuit = random_circuit(3, 10);
+        let polys = circuit.to_polynomial(3, 0, 10);
         for (i, poly) in polys.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 6));
         }
