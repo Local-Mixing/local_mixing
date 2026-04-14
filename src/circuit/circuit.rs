@@ -1093,7 +1093,7 @@ pub fn canonicalize_polys(polynomials: Vec<Polynomial>) -> (Vec<Polynomial>, Per
             // Lock in any singletons at their positions, advancing start_pos past each one
             let mut pos = *start_pos;
             for sg in &current {
-                if sg.len() == 1 {
+                if sg.len() == 1 && final_order[pos].is_none() {
                     final_order[pos] = Some(sg[0]);
                     any_progress = true;
                 }
