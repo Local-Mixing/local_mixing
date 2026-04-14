@@ -1329,6 +1329,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_random_circuit_canonicalization() {
+        let circuit = random_circuit(15, 10);
+        let polys = circuit.to_polynomial(15, 0, 10);
+        let (canonical, _) = canonicalize_polys(polys);
+        println!("Canonical polys:");
+        for (i, poly) in canonical.iter().enumerate() {
+            println!("  P{}: {}", i, poly_to_str(poly, 6));
+        }
+    }
+
     use std::fs;
     use std::fs::File;
     use std::io::Write;
@@ -1350,9 +1361,10 @@ mod tests {
     #[test]
     pub fn test_probably_shuffle() {
         use rand::Rng;
+        use crate::random::random_data::random_circuit;
 
         let mut rng = rand::rng();
-        let shuffle_circuit = CircuitSeq::from_string("012;345;678;");
+        let shuffle_circuit = random_circuit(9, 15);
         let mut base_circuit = shuffle_circuit.clone();
         let bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
         .map(|n| {
