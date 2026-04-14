@@ -1312,17 +1312,13 @@ mod tests {
     fn test_disjoint_gates_twice() {
         // Gates are disjoint on wires 0-5. Test verified by hand
         // Test on two different ones. Should canonicalize to the same thing both times, with the same permutation.
-        println!("Test 1:");
-        let circuit = CircuitSeq::from_string("042;351;");
-        let polys = circuit.to_polynomial(6, 0, 2);
-        let (canonical, _) = canonicalize_polys(polys);
-        println!("Canonical polys:");
-        for (i, poly) in canonical.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 6));
-        }
-
-        println!("Test 2:");
-        let circuit = CircuitSeq::from_string("512;304;");
+        let mut rng = rand::rng();
+        let mut pins: [u8; 6] = [0, 1, 2, 3, 4, 5];
+        pins.shuffle(&mut rng);
+        let circuit = CircuitSeq { gates: vec![
+            [pins[0], pins[1], pins[2]], 
+            [pins[3], pins[4], pins[5]]] 
+        };
         let polys = circuit.to_polynomial(6, 0, 2);
         let (canonical, _) = canonicalize_polys(polys);
         println!("Canonical polys:");
