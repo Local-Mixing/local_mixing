@@ -1334,17 +1334,20 @@ mod tests {
     #[test]
     fn test_random_circuit_canonicalization() {
         use crate::random::random_data::random_circuit;
-        
-        let circuit = random_circuit(30, 20);
-        let polys = circuit.to_polynomial(30, 0, 20);
-        for (i, poly) in polys.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 30));
+        let timer = std::time::Instant::now();
+        for _ in 0..100_000 {
+            let circuit = random_circuit(30, 20);
+            let polys = circuit.to_polynomial(30, 0, 20);
+            for (i, poly) in polys.iter().enumerate() {
+                println!("  P{}: {}", i, poly_to_str(poly, 30));
+            }
+            let (canonical, _) = canonicalize_polys(polys);
+            println!("Canonical polys:");
+            for (i, poly) in canonical.iter().enumerate() {
+                println!("  P{}: {}", i, poly_to_str(poly, 30));
+            }
         }
-        let (canonical, _) = canonicalize_polys(polys);
-        println!("Canonical polys:");
-        for (i, poly) in canonical.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 30));
-        }
+        println!("Total time for 100,000 random circuits: {:.2?}", timer.elapsed());
     }
 
     use std::fs;
