@@ -1152,9 +1152,19 @@ pub fn canonicalize_polys(polynomials: Vec<Polynomial>) -> (Vec<Polynomial>, Per
     })
     .collect();
 
-    let data = final_order;
+    let (canonical, perm_data): (Vec<Polynomial>, Vec<usize>) = final_order
+        .iter()
+        .map(|&wire| {
+            let remapped: Polynomial = polynomials[wire]
+                .iter()
+                .map(|&m| remap_monomial(m))
+                .collect();
+            (remapped, wire)
+        })
+        .filter(|(poly, _)| !poly.is_empty())
+        .unzip();
 
-    (canonical, Permutation { data })
+    (canonical, Permutation { data: perm_data })
 }
 
 #[cfg(test)]
@@ -1332,7 +1342,7 @@ mod tests {
     #[test]
     fn test_random_circuit_canonicalization() {
         use crate::random::random_data::random_circuit;
-        
+
         let circuit = random_circuit(15, 10);
         let polys = circuit.to_polynomial(15, 0, 10);
         let (canonical, _) = canonicalize_polys(polys);
