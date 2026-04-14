@@ -1331,6 +1331,8 @@ mod tests {
 
     #[test]
     fn test_random_circuit_canonicalization() {
+        use crate::random::random_data::random_circuit;
+        
         let circuit = random_circuit(15, 10);
         let polys = circuit.to_polynomial(15, 0, 10);
         let (canonical, _) = canonicalize_polys(polys);
