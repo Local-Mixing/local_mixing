@@ -727,38 +727,24 @@ impl CircuitSeq {
         Ok(())
     }
 
-    // Probabilistic check on circuit being a shuffle of bits
-    pub fn probably_shuffle(
-        &self,
-        num_wires: usize,
-        num_inputs: usize
-    ) -> Result<(), String> {
+    /// Relabel wires in encounter order (first wire seen → 0, second → 1, etc.)
+    fn first_wire_form(&self) -> Vec<[u8; 3]> {
+        let mut map: HashMap<u8, u8> = HashMap::new();
+        let mut counter: u8 = 0;
 
-        let mut rng = rand::rng();
+        self.gates.iter().map(|gate| {
+            gate.map(|wire| {
+                *map.entry(wire).or_insert_with(|| {
+                    let id = counter;
+                    counter += 1;
+                    id
+                })
+            })
+        }).collect()
+    }
 
-        // build mask with lowest num_wires bits set
-        let mask = if num_wires < 256 {
-            (u256::one() << num_wires) - u256::one()
-        } else {
-            u256::MAX
-        };
-
-        for _ in 0..num_inputs {
-
-            // generate random 256-bit input
-            let mut bytes = [0u8; 32];
-            rng.fill_bytes(&mut bytes);
-            let random_input = u256::from_little_endian(&bytes) & mask;
-
-            let self_output =
-                Gate::evaluate_index_list_256(random_input, &self.gates);
-
-            if count_ones_u256(self_output & mask) == count_ones_u256(random_input & mask) {
-                return Err("Circuit is not a shuffle".to_string());
-            }
-        }
-
-        Ok(())
+    pub fn is_relabeling_of(&self, other: &CircuitSeq) -> bool {
+        self.first_wire_form() == other.first_wire_form()
     }
 
     pub fn to_polynomial(self, n: usize, start: usize, end: usize) -> Vec<Polynomial> {
@@ -1379,8 +1365,6 @@ mod tests {
         let three_wire = &bit_shuf_list[0]; 
         let shuf = &three_wire[rng.random_range(0..three_wire.len())];
         base_circuit.rewire(&Permutation { data: shuf.clone() }, 3);
-        base_circuit.gates.reverse();
-        let combined = shuffle_circuit.concat(&base_circuit);
-        assert!(combined.probably_shuffle(3, 100).is_ok());
+        assert!(base_circuit.is_relabeling_of(&shuffle_circuit) == true);
     }
 }
