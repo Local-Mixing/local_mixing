@@ -955,16 +955,65 @@ fn split_by_poly(group: &[usize], poly: &Polynomial, max_possible_degree: usize)
     result
 }
 
+/// Score each wire in a group by summing wire_counts_in_poly over the group's own polynomials.
+fn split_by_own_polys(
+    group: &[usize],
+    polynomials: &[&Polynomial],
+    max_possible_degree: usize,
+) -> Vec<Vec<usize>> {
+    let mut scored: Vec<(usize, Vec<usize>)> = group
+        .iter()
+        .map(|&w| {
+            let score = group.iter().fold(
+                vec![0usize; max_possible_degree + 1],
+                |mut acc, &g| {
+                    let counts = wire_counts_in_poly(&polynomials[g], max_possible_degree, w);
+                    for (a, c) in acc.iter_mut().zip(counts.iter()) {
+                        *a += c;
+                    }
+                    acc
+                },
+            );
+            (w, score)
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut result: Vec<Vec<usize>> = Vec::new();
+    let mut current: Vec<usize> = vec![scored[0].0];
+    for i in 1..scored.len() {
+        if scored[i].1 == scored[i - 1].1 {
+            current.push(scored[i].0);
+        } else {
+            result.push(current.clone());
+            current = vec![scored[i].0];
+        }
+    }
+    result.push(current);
+    result
+}
+
 /// Used in tie-breaking. Check multiple polynomials in ranked order
 /// Try to split a group of tied wires using the ranked polynomials (highest rank first).
 /// Restarts from the top-ranked polynomial whenever any split occurs.
 /// Returns a list of sub-groups in rank order.
-fn split_group(group: &[usize], ranked_polys: &[&Polynomial], max_possible_degree: usize) -> Vec<Vec<usize>> {
+fn split_group(
+    group: &[usize], 
+    polynomials: &[&Polynomial],
+    ranked_polys: &[&Polynomial], 
+    max_possible_degree: usize
+) -> Vec<Vec<usize>> {
     if group.len() <= 1 {
         return vec![group.to_vec()];
     }
 
-    let mut subgroups: Vec<Vec<usize>> = vec![group.to_vec()];
+    let initial = split_by_own_polys(group, polynomials, max_possible_degree);
+    if initial.iter().all(|sg| sg.len() <= 1) {
+        return initial;
+    }
+
+    let mut subgroups = initial;
 
     'outer: loop {
         for poly in ranked_polys.iter() {
@@ -1077,7 +1126,8 @@ pub fn canonicalize_polys(polynomials: Vec<Polynomial>) -> (Vec<Polynomial>, Per
                         next.push(sg.clone());
                         continue;
                     }
-                    let split = split_group(sg, &ranked, max_degree);
+                    let polynomials = sg.iter().map(|&w| &polynomials[w]).collect::<Vec<_>>();
+                    let split = split_group(sg, &polynomials, &ranked, max_degree);
                     if split.len() > 1 {
                         local_progress = true;
                         any_progress = true;
