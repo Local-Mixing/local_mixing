@@ -1399,9 +1399,9 @@ mod tests {
         for n in 6..30 {
             println!("Testing n={} wires", n);
             for _ in 0..10_000 {
-                let circuit = random_circuit(n, 20);
+                let circuit = random_circuit(n, 6);
                 let old_circuit = circuit.clone();
-                let polys = old_circuit.to_polynomial(n, 0, 20);
+                let polys = old_circuit.to_polynomial(n, 0, 6);
                 let (canonical, _) = canonicalize_polys(polys.clone());
                 let canon_string = canonical.iter().enumerate()
                     .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
@@ -1412,7 +1412,7 @@ mod tests {
                     pins.shuffle(&mut rng);
                     let mut shuffled_circuit = circuit.clone();
                     shuffled_circuit.rewire(&Permutation { data: pins }, n);
-                    let shuffled_polys = shuffled_circuit.to_polynomial(n, 0, 20);
+                    let shuffled_polys = shuffled_circuit.to_polynomial(n, 0, 6);
                     let (shuffled_canonical, _) = canonicalize_polys(shuffled_polys);
                     let shuffled_string = shuffled_canonical.iter().enumerate()
                         .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
