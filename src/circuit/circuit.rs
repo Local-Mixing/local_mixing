@@ -917,9 +917,6 @@ fn degree_counts(poly: &Polynomial, max_possible_degree: usize) -> Vec<usize> {
 /// For a given polynomial, return a degree-bucketed count (high to low) of
 /// how many monomials of each degree contain variable `wire_idx`.
 fn wire_counts_in_poly(poly: &Polynomial, max_possible_degree: usize, wire_idx: usize) -> Vec<usize> {
-    if poly.is_empty() {
-        return vec![];
-    }
     let bit = 1u64 << wire_idx;
     let mut counts = vec![0usize; max_possible_degree + 1];
     for m in poly {
@@ -1350,7 +1347,7 @@ mod tests {
     fn test_shuffled_canonicalization() {
         use crate::random::random_data::random_circuit;
         let mut rng = rand::rng();
-        for n in 8..30 {
+        for n in 6..30 {
             println!("Testing n={} wires", n);
             for _ in 0..10_000 {
                 let circuit = random_circuit(n, 6);
