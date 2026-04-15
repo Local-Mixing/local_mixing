@@ -958,7 +958,7 @@ fn split_by_poly(group: &[usize], poly: &Polynomial, max_possible_degree: usize)
 /// Score each wire in a group by summing wire_counts_in_poly over the group's own polynomials.
 fn split_by_own_polys(
     group: &[usize],
-    polynomials: &[&Polynomial],
+    polynomials: &[Polynomial],
     max_possible_degree: usize,
 ) -> Vec<Vec<usize>> {
     let mut scored: Vec<(usize, Vec<usize>)> = group
@@ -1000,7 +1000,7 @@ fn split_by_own_polys(
 /// Returns a list of sub-groups in rank order.
 fn split_group(
     group: &[usize], 
-    polynomials: &[&Polynomial],
+    polynomials: &[Polynomial],
     ranked_polys: &[&Polynomial], 
     max_possible_degree: usize
 ) -> Vec<Vec<usize>> {
@@ -1126,7 +1126,6 @@ pub fn canonicalize_polys(polynomials: Vec<Polynomial>) -> (Vec<Polynomial>, Per
                         next.push(sg.clone());
                         continue;
                     }
-                    let polynomials = sg.iter().map(|&w| &polynomials[w]).collect::<Vec<_>>();
                     let split = split_group(sg, &polynomials, &ranked, max_degree);
                     if split.len() > 1 {
                         local_progress = true;
