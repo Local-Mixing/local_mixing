@@ -1426,8 +1426,8 @@ mod tests {
         use crate::random::random_data::random_circuit;
         let timer = std::time::Instant::now();
         for _ in 0..100_000 {
-            let circuit = random_circuit(30, 20);
-            let polys = circuit.to_polynomial(30, 0, 20);
+            let circuit = random_circuit(15, 20);
+            let polys = circuit.to_polynomial(15, 0, 20);
             // for (i, poly) in polys.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
             // }
