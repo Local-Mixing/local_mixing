@@ -927,105 +927,6 @@ fn wire_counts_in_poly(poly: &Polynomial, max_possible_degree: usize, wire_idx: 
     counts
 }
 
-/// Split a group of polynomials by how much a single already-ranked variable x_k
-/// appears in each polynomial. Score of P_i = wire_counts_in_poly(P_i, max_degree, k).
-fn split_polys_by_variable(
-    group: &[usize],
-    polynomials: &[Polynomial],
-    var_idx: usize,
-    max_possible_degree: usize,
-) -> Vec<Vec<usize>> {
-    let mut scored: Vec<(usize, Vec<usize>)> = group
-        .iter()
-        .map(|&p| (p, wire_counts_in_poly(&polynomials[p], max_possible_degree, var_idx)))
-        .collect();
-
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
-
-    let mut result: Vec<Vec<usize>> = Vec::new();
-    let mut current: Vec<usize> = vec![scored[0].0];
-    for i in 1..scored.len() {
-        if scored[i].1 == scored[i - 1].1 {
-            current.push(scored[i].0);
-        } else {
-            result.push(current.clone());
-            current = vec![scored[i].0];
-        }
-    }
-    result.push(current);
-    result
-}
-
-/// Split a group of variables by how much each variable x_i appears
-/// across all polynomials in the group (Rule 3).
-/// Score of x_i = sum over j in group of wire_counts_in_poly(P_j, max_degree, i).
-fn split_vars_by_own_polys(
-    group: &[usize],
-    polynomials: &[Polynomial],
-    max_possible_degree: usize,
-) -> Vec<Vec<usize>> {
-    let mut scored: Vec<(usize, Vec<usize>)> = group
-        .iter()
-        .map(|&w| {
-            let score = group.iter().fold(
-                vec![0usize; max_possible_degree + 1],
-                |mut acc, &g| {
-                    let counts = wire_counts_in_poly(&polynomials[g], max_possible_degree, w);
-                    for (a, c) in acc.iter_mut().zip(counts.iter()) {
-                        *a += c;
-                    }
-                    acc
-                },
-            );
-            (w, score)
-        })
-        .collect();
-
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
-
-    let mut result: Vec<Vec<usize>> = Vec::new();
-    let mut current: Vec<usize> = vec![scored[0].0];
-    for i in 1..scored.len() {
-        if scored[i].1 == scored[i - 1].1 {
-            current.push(scored[i].0);
-        } else {
-            result.push(current.clone());
-            current = vec![scored[i].0];
-        }
-    }
-    result.push(current);
-    result
-}
-
-/// Split a group of variables by how much each variable x_i appears
-/// in a single already-ranked polynomial P_k (Rule 4).
-/// Score of x_i = wire_counts_in_poly(P_k, max_degree, i).
-fn split_vars_by_poly(
-    group: &[usize],
-    poly: &Polynomial,
-    max_possible_degree: usize,
-) -> Vec<Vec<usize>> {
-    let mut scored: Vec<(usize, Vec<usize>)> = group
-        .iter()
-        .map(|&w| (w, wire_counts_in_poly(poly, max_possible_degree, w)))
-        .collect();
-
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
-
-    let mut result: Vec<Vec<usize>> = Vec::new();
-    let mut current: Vec<usize> = vec![scored[0].0];
-    for i in 1..scored.len() {
-        if scored[i].1 == scored[i - 1].1 {
-            current.push(scored[i].0);
-        } else {
-            result.push(current.clone());
-            current = vec![scored[i].0];
-        }
-    }
-    result.push(current);
-    result
-}
-
 fn make_canonical_form(polynomials: &[Polynomial], final_order: &[usize]) -> Vec<Vec<Monomial>> {
     let remap_monomial = |m: Monomial| -> Monomial {
         let mut result = 0u64;
@@ -1036,7 +937,6 @@ fn make_canonical_form(polynomials: &[Polynomial], final_order: &[usize]) -> Vec
         }
         result
     };
-
     final_order
         .iter()
         .map(|&wire| {
@@ -1050,248 +950,272 @@ fn make_canonical_form(polynomials: &[Polynomial], final_order: &[usize]) -> Vec
         .collect()
 }
 
-/// Try to make progress on all pending groups using Rules 2, 3, 4.
-/// Returns true if any progress was made (split or singleton locked).
-/// Mutates final_order and pending in place.
-/// 
-/// Rule 2: for each tied group of polynomials, iterate ranked variables,
-///         split polys by how much that variable appears in each poly.
-/// Rule 3: split variables in tied group by summed appearance in own polys.
-/// Rule 4: split variables by appearance in each ranked polynomial in order.
-fn try_progress(
+/// Split a group of polynomial indices by how much a single ranked singleton
+/// variable `var_idx` appears in each polynomial.
+/// Returns sub-groups in descending order of score.
+fn split_polys_by_ranked_var(
+    group: &[usize],
     polynomials: &[Polynomial],
-    final_order: &mut Vec<Option<usize>>,
-    pending: &mut Vec<(usize, Vec<Vec<usize>>)>,
-    // ranked_vars[i] = wire index of the i-th ranked variable (locked so far)
-    ranked_vars: &[usize],
+    var_idx: usize,
     max_degree: usize,
-) -> bool {
-    let mut any_progress = false;
+) -> Vec<Vec<usize>> {
+    let mut scored: Vec<(usize, Vec<usize>)> = group
+        .iter()
+        .map(|&p| (p, wire_counts_in_poly(&polynomials[p], max_degree, var_idx)))
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
 
-    for (start_pos, sub_groups) in pending.iter_mut() {
-        let mut current = sub_groups.clone();
-        let mut local_progress = true;
-
-        while local_progress {
-            local_progress = false;
-            let mut next: Vec<Vec<usize>> = Vec::new();
-
-            for sg in &current {
-                if sg.len() <= 1 {
-                    next.push(sg.clone());
-                    continue;
-                }
-
-                // Rule 2: split polynomials by each ranked variable in order
-                let mut after_rule2 = vec![sg.clone()];
-                'r2: for &var in ranked_vars.iter() {
-                    let mut new_groups: Vec<Vec<usize>> = Vec::new();
-                    let mut split_happened = false;
-                    for g in &after_rule2 {
-                        if g.len() <= 1 {
-                            new_groups.push(g.clone());
-                            continue;
-                        }
-                        let split = split_polys_by_variable(g, polynomials, var, max_degree);
-                        if split.len() > 1 {
-                            split_happened = true;
-                        }
-                        new_groups.extend(split);
-                    }
-                    after_rule2 = new_groups;
-                    if split_happened {
-                        // restart r2 from highest ranked variable
-                        // but we already have the result — just break and let
-                        // outer while loop restart
-                        local_progress = true;
-                        any_progress = true;
-                        break 'r2;
-                    }
-                }
-
-                if local_progress {
-                    next.extend(after_rule2);
-                    continue;
-                }
-
-                // Rule 3: split variables by summed appearance in own polys
-                // Here sg is a group of polynomial indices which are also variable indices
-                let after_rule3 = split_vars_by_own_polys(sg, polynomials, max_degree);
-                if after_rule3.len() > 1 {
-                    local_progress = true;
-                    any_progress = true;
-                    next.extend(after_rule3);
-                    continue;
-                }
-
-                // Rule 4: split variables by each ranked polynomial in order
-                let ranked_polys: Vec<&Polynomial> = final_order
-                    .iter()
-                    .filter_map(|slot| slot.map(|w| &polynomials[w]))
-                    .collect();
-
-                let mut after_rule4 = vec![sg.clone()];
-                for poly in ranked_polys.iter() {
-                    let mut new_groups: Vec<Vec<usize>> = Vec::new();
-                    let mut split_happened = false;
-                    for g in &after_rule4 {
-                        if g.len() <= 1 {
-                            new_groups.push(g.clone());
-                            continue;
-                        }
-                        let split = split_vars_by_poly(g, poly, max_degree);
-                        if split.len() > 1 {
-                            split_happened = true;
-                        }
-                        new_groups.extend(split);
-                    }
-                    after_rule4 = new_groups;
-                    if split_happened {
-                        local_progress = true;
-                        any_progress = true;
-                        break;
-                    }
-                }
-
-                next.extend(after_rule4);
-            }
-
-            current = next;
+    let mut result: Vec<Vec<usize>> = Vec::new();
+    let mut current = vec![scored[0].0];
+    for i in 1..scored.len() {
+        if scored[i].1 == scored[i - 1].1 {
+            current.push(scored[i].0);
+        } else {
+            result.push(current.clone());
+            current = vec![scored[i].0];
         }
+    }
+    result.push(current);
+    result
+}
 
-        // Lock in any leading singletons
-        let mut pos = *start_pos;
-        for sg in &current {
-            if sg.len() == 1 && final_order[pos].is_none() {
-                final_order[pos] = Some(sg[0]);
-                any_progress = true;
-            }
-            pos += sg.len();
+/// Score each variable in `group` using a single ranked group `ranked_group`.
+/// If ranked_group is a singleton [p], score of x_i = wire_counts_in_poly(P_p, max_degree, i).
+/// If ranked_group has multiple elements, score of x_i = sum over p in ranked_group.
+fn score_vars_by_ranked_group(
+    group: &[usize],
+    polynomials: &[Polynomial],
+    ranked_group: &[usize],
+    max_degree: usize,
+) -> Vec<(usize, Vec<usize>)> {
+    group
+        .iter()
+        .map(|&w| {
+            let score = ranked_group.iter().fold(
+                vec![0usize; max_degree + 1],
+                |mut acc, &p| {
+                    let counts = wire_counts_in_poly(&polynomials[p], max_degree, w);
+                    for (a, c) in acc.iter_mut().zip(counts.iter()) {
+                        *a += c;
+                    }
+                    acc
+                },
+            );
+            (w, score)
+        })
+        .collect()
+}
+
+/// Split a group of variables by their scores. Returns sub-groups in descending order.
+fn split_by_scores(scored: Vec<(usize, Vec<usize>)>) -> Vec<Vec<usize>> {
+    let mut scored = scored;
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut result: Vec<Vec<usize>> = Vec::new();
+    let mut current = vec![scored[0].0];
+    for i in 1..scored.len() {
+        if scored[i].1 == scored[i - 1].1 {
+            current.push(scored[i].0);
+        } else {
+            result.push(current.clone());
+            current = vec![scored[i].0];
         }
-        *start_pos += current.iter().take_while(|sg| sg.len() == 1).count();
-        *sub_groups = current.into_iter().skip_while(|sg| sg.len() == 1).collect();
+    }
+    result.push(current);
+    result
+}
+
+/// Represents the current state of the ranking process.
+/// `groups` is the full ordered list of groups (singletons and tied),
+/// where each entry is a Vec<usize> of polynomial/variable indices.
+/// Singletons have len() == 1.
+struct RankingState {
+    /// groups[i] = the i-th ranked group (singleton or tied)
+    groups: Vec<Vec<usize>>,
+}
+
+impl RankingState {
+    /// Is every group a singleton?
+    fn is_fully_ranked(&self) -> bool {
+        self.groups.iter().all(|g| g.len() == 1)
     }
 
-    pending.retain(|(_, sgs)| sgs.iter().any(|sg| sg.len() > 1));
+    /// Collect all ranked singleton variable indices in rank order.
+    fn ranked_singletons(&self) -> Vec<usize> {
+        self.groups
+            .iter()
+            .filter(|g| g.len() == 1)
+            .map(|g| g[0])
+            .collect()
+    }
 
-    any_progress
+    /// Try rule 2.1: for each tied group, iterate ranked singleton variables.
+    /// Returns true and mutates self if any split occurred.
+    fn try_rule_2_1(&mut self, polynomials: &[Polynomial], max_degree: usize) -> bool {
+        let singletons = self.ranked_singletons();
+        if singletons.is_empty() {
+            return false;
+        }
+
+        for gi in 0..self.groups.len() {
+            if self.groups[gi].len() <= 1 {
+                continue;
+            }
+            let group = self.groups[gi].clone();
+
+            // Try each ranked singleton variable in order
+            for &var in &singletons {
+                let split = split_polys_by_ranked_var(&group, polynomials, var, max_degree);
+                if split.len() > 1 {
+                    // Replace this group with the split sub-groups
+                    self.groups.splice(gi..=gi, split);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Try rule 2.2: for each tied group, iterate all ranked groups in order.
+    /// Score variables in the tied group using each ranked group.
+    /// Variable ranking directly becomes polynomial ranking.
+    /// Returns true and mutates self if any split occurred.
+    fn try_rule_2_2(&mut self, polynomials: &[Polynomial], max_degree: usize) -> bool {
+        for gi in 0..self.groups.len() {
+            if self.groups[gi].len() <= 1 {
+                continue;
+            }
+            let group = self.groups[gi].clone();
+
+            // Iterate over all other groups in ranked order as scorers
+            for rgi in 0..self.groups.len() {
+                if rgi == gi {
+                    // Skip the group itself? Or include it?
+                    // Including it: sum over the tied group's own polys
+                    // which gives the Rule 3 / split_by_own_polys behaviour.
+                    // We include it for completeness — it's the tied group scoring itself.
+                }
+                let ranked_group = self.groups[rgi].clone();
+                let scored = score_vars_by_ranked_group(&group, polynomials, &ranked_group, max_degree);
+                let split = split_by_scores(scored);
+                if split.len() > 1 {
+                    self.groups.splice(gi..=gi, split);
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 fn canonicalize_inner(
     polynomials: &[Polynomial],
-    mut final_order: Vec<Option<usize>>,
-    mut pending: Vec<(usize, Vec<Vec<usize>>)>,
+    initial_groups: Vec<Vec<usize>>,
     max_degree: usize,
+    use_backtracking: bool,
 ) -> Vec<usize> {
+    let mut state = RankingState { groups: initial_groups };
+
     loop {
-        // Build ranked_vars from locked positions in order
-        let ranked_vars: Vec<usize> = final_order
-            .iter()
-            .filter_map(|slot| *slot)
-            .collect();
-
-        let progress = try_progress(
-            polynomials,
-            &mut final_order,
-            &mut pending,
-            &ranked_vars,
-            max_degree,
-        );
-
-        if pending.is_empty() {
+        if state.is_fully_ranked() {
             break;
         }
 
-        if !progress {
-            // Rule 5: backtracking
-            let (start_pos, sub_groups) = &pending[0];
-            let start_pos = *start_pos;
-            let candidates = sub_groups[0].clone();
+        // Rule 2.1
+        if state.try_rule_2_1(polynomials, max_degree) {
+            continue; // restart from 2.1
+        }
+
+        // Rule 2.2
+        if state.try_rule_2_2(polynomials, max_degree) {
+            continue; // restart from 2.1
+        }
+
+        // Rule 2.3: fully stuck
+        if use_backtracking {
+            // Find first tied group
+            let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
+            let candidates = state.groups[gi].clone();
 
             let best = candidates
                 .iter()
                 .min_by_key(|&&w| {
-                    let mut trial_order = final_order.clone();
-                    trial_order[start_pos] = Some(w);
-
-                    let mut trial_pending = pending.clone();
-                    trial_pending[0].0 = start_pos + 1;
-                    trial_pending[0].1[0].retain(|&x| x != w);
-                    if trial_pending[0].1[0].is_empty() {
-                        trial_pending[0].1.remove(0);
+                    let mut trial_groups = state.groups.clone();
+                    // Lock w as singleton, put rest back as tied group
+                    let mut rest: Vec<usize> = candidates.iter().copied().filter(|&x| x != w).collect();
+                    let mut replacement = vec![vec![w]];
+                    if !rest.is_empty() {
+                        replacement.push(rest);
                     }
-                    if trial_pending[0].1.is_empty() {
-                        trial_pending.remove(0);
-                    }
+                    trial_groups.splice(gi..=gi, replacement);
 
-                    let trial_final =
-                        canonicalize_inner(polynomials, trial_order, trial_pending, max_degree);
+                    let trial_final = canonicalize_inner(
+                        polynomials,
+                        trial_groups,
+                        max_degree,
+                        use_backtracking,
+                    );
                     make_canonical_form(polynomials, &trial_final)
                 })
                 .copied()
                 .unwrap();
 
-            final_order[start_pos] = Some(best);
-            pending[0].0 = start_pos + 1;
-            pending[0].1[0].retain(|&x| x != best);
-            if pending[0].1[0].is_empty() {
-                pending[0].1.remove(0);
+            // Lock best
+            let rest: Vec<usize> = candidates.iter().copied().filter(|&x| x != best).collect();
+            let mut replacement = vec![vec![best]];
+            if !rest.is_empty() {
+                replacement.push(rest);
             }
-            if pending[0].1.is_empty() {
-                pending.remove(0);
+            state.groups.splice(gi..=gi, replacement);
+        } else {
+            // Pick lowest index
+            let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
+            let mut group = state.groups[gi].clone();
+            group.sort();
+            let winner = group.remove(0);
+            let mut replacement = vec![vec![winner]];
+            if !group.is_empty() {
+                replacement.push(group);
             }
+            state.groups.splice(gi..=gi, replacement);
         }
     }
 
-    final_order
-        .into_iter()
-        .map(|slot| slot.expect("all positions should be filled"))
-        .collect()
+    state.groups.iter().map(|g| g[0]).collect()
 }
 
-pub fn canonicalize_polys(polynomials: Vec<Polynomial>) -> (Vec<Polynomial>, Permutation) {
+pub fn canonicalize_polys(
+    polynomials: Vec<Polynomial>,
+    use_backtracking: bool,
+) -> (Vec<Polynomial>, Permutation) {
     let n = polynomials.len();
     if n == 0 {
         return (vec![], Permutation { data: vec![] });
     }
     let max_degree = n;
 
-    // Rule 1: initial grouping by degree profile
+    // Rule 1: order by degree profile
     let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
         .map(|i| (i, degree_counts(&polynomials[i], max_degree)))
         .collect();
-
     profiles.sort_by(|a, b| b.1.cmp(&a.1));
 
-    let mut pending_groups: Vec<Vec<usize>> = Vec::new();
+    // Partition into initial tied groups
+    let mut initial_groups: Vec<Vec<usize>> = Vec::new();
     {
-        let mut current: Vec<usize> = vec![profiles[0].0];
+        let mut current = vec![profiles[0].0];
         for i in 1..profiles.len() {
             if profiles[i].1 == profiles[i - 1].1 {
                 current.push(profiles[i].0);
             } else {
-                pending_groups.push(current.clone());
+                initial_groups.push(current.clone());
                 current = vec![profiles[i].0];
             }
         }
-        pending_groups.push(current);
+        initial_groups.push(current);
     }
 
-    let final_order: Vec<Option<usize>> = vec![None; n];
-
-    let pending: Vec<(usize, Vec<Vec<usize>>)> = {
-        let mut pos = 0;
-        pending_groups
-            .into_iter()
-            .map(|g| {
-                let start = pos;
-                pos += g.len();
-                (start, vec![g])
-            })
-            .collect()
-    };
-
-    let final_order = canonicalize_inner(&polynomials, final_order, pending, max_degree);
+    let final_order = canonicalize_inner(&polynomials, initial_groups, max_degree, use_backtracking);
 
     let remap_monomial = |m: Monomial| -> Monomial {
         let mut result = 0u64;
@@ -1313,9 +1237,7 @@ pub fn canonicalize_polys(polynomials: Vec<Polynomial>) -> (Vec<Polynomial>, Per
         })
         .collect();
 
-    let data = final_order;
-
-    (canonical, Permutation { data })
+    (canonical, Permutation { data: final_order })
 }
 
 #[cfg(test)]
@@ -1358,7 +1280,7 @@ mod tests {
             poly(&[&[5], &[3], &[3, 4]]),
         ];
 
-        let (canonical, perm) = canonicalize_polys(polys);
+        let (canonical, perm) = canonicalize_polys(polys, true);
 
         // Expected final order: P1, P5, P0, P2, P3, P4
         // data = [1, 5, 0, 2, 3, 4]
@@ -1387,7 +1309,7 @@ mod tests {
     #[test]
     fn test_single_poly() {
         let polys = vec![poly(&[&[0, 1]])];
-        let (canonical, perm) = canonicalize_polys(polys);
+        let (canonical, perm) = canonicalize_polys(polys, true);
         assert_eq!(perm.data, vec![0]);
         assert_eq!(canonical[0], poly(&[&[0, 1]]));
     }
@@ -1398,7 +1320,7 @@ mod tests {
             poly(&[&[0, 1]]),
             poly(&[&[1]]),
         ];
-        let (canonical, perm) = canonicalize_polys(polys);
+        let (canonical, perm) = canonicalize_polys(polys, true);
         assert_eq!(perm.data, vec![0, 1]);
         assert_eq!(canonical[0], poly(&[&[0, 1]]));
         assert_eq!(canonical[1], poly(&[&[1]]));
@@ -1411,7 +1333,7 @@ mod tests {
             poly(&[&[0]]),
             poly(&[&[0, 1]]),
         ];
-        let (canonical, perm) = canonicalize_polys(polys);
+        let (canonical, perm) = canonicalize_polys(polys, true);
         // data[0]=1, data[1]=0: position 0 pulls wire 1, position 1 pulls wire 0
         assert_eq!(perm.data, vec![1, 0]);
         // P1 remapped: wire1->x0, wire0->x1 => x_0*x_1 unchanged
@@ -1441,7 +1363,7 @@ mod tests {
             poly(&[&[0], &[1]]),  // P0 = x_0 + x_1  (max degree 1)
             poly(&[&[0, 1]]),     // P1 = x_0*x_1    (max degree 2)
         ];
-        let (_canonical, perm) = canonicalize_polys(polys);
+        let (_canonical, perm) = canonicalize_polys(polys, true);
         assert_eq!(perm.data, vec![1, 0]); // P1 comes first
     }
 
@@ -1458,7 +1380,7 @@ mod tests {
             poly(&[&[2, 3]]),     // P2: x_2*x_3     degree 2
             poly(&[&[]]),         // P3: 1 (constant) degree 0
         ];
-        let (_canonical, perm) = canonicalize_polys(polys);
+        let (_canonical, perm) = canonicalize_polys(polys, true);
         // P1 and P2 tie at degree 2 -> rule 6 picks P1 (index 1 < 2)
         // P0 at degree 1 -> position 2
         // P3 at degree 0 -> position 3
@@ -1479,7 +1401,7 @@ mod tests {
             [pins[3], pins[4], pins[5]]] 
         };
         let polys = circuit.to_polynomial(6, 0, 2);
-        let (canonical, _) = canonicalize_polys(polys);
+        let (canonical, _) = canonicalize_polys(polys, true);
         println!("Canonical polys:");
         for (i, poly) in canonical.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 6));
@@ -1496,7 +1418,7 @@ mod tests {
             // for (i, poly) in polys.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
             // }
-            let (canonical, _) = canonicalize_polys(polys);
+            let (canonical, _) = canonicalize_polys(polys, true);
             // println!("Canonical polys:");
             // for (i, poly) in canonical.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
@@ -1515,7 +1437,7 @@ mod tests {
                 let circuit = random_circuit(n, 6);
                 let old_circuit = circuit.clone();
                 let polys = old_circuit.to_polynomial(n, 0, 6);
-                let (canonical, _) = canonicalize_polys(polys.clone());
+                let (canonical, _) = canonicalize_polys(polys.clone(), true);
                 let canon_string = canonical.iter().enumerate()
                     .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
                     .collect::<Vec<_>>()
@@ -1526,7 +1448,7 @@ mod tests {
                     let mut shuffled_circuit = circuit.clone();
                     shuffled_circuit.rewire(&Permutation { data: pins }, n);
                     let shuffled_polys = shuffled_circuit.to_polynomial(n, 0, 6);
-                    let (shuffled_canonical, _) = canonicalize_polys(shuffled_polys);
+                    let (shuffled_canonical, _) = canonicalize_polys(shuffled_polys, false);
                     let shuffled_string = shuffled_canonical.iter().enumerate()
                         .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
                         .collect::<Vec<_>>()
