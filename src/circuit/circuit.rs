@@ -937,7 +937,7 @@ fn filter_poly_by_var(poly: &Polynomial, filter_var: usize) -> Polynomial {
 
 /// Canonicalize a polynomial vector for comparison purposes.
 /// Remaps wire indices according to a given order and sorts each polynomial's monomials.
-/// Used in Rule 2.5 (backtracking) to compare trial canonical forms.
+/// Used in Rule L (backtracking) to compare trial canonical forms.
 fn make_canonical_form(polynomials: &[Polynomial], final_order: &[usize]) -> Vec<Vec<Monomial>> {
     let remap_monomial = |m: Monomial| -> Monomial {
         let mut result = 0u64;
@@ -975,6 +975,49 @@ fn split_polys_by_ranked_var(
     let mut scored: Vec<(usize, Vec<usize>)> = group
         .iter()
         .map(|&p| (p, wire_counts_in_poly(&polynomials[p], max_degree, var_idx)))
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut result: Vec<Vec<usize>> = Vec::new();
+    let mut current = vec![scored[0].0];
+    for i in 1..scored.len() {
+        if scored[i].1 == scored[i - 1].1 {
+            current.push(scored[i].0);
+        } else {
+            result.push(current.clone());
+            current = vec![scored[i].0];
+        }
+    }
+    result.push(current);
+    result
+}
+
+/// Rule 2.5 helper.
+/// Split a group of polynomial indices by how much a group of variables
+/// (summed together) appears in each polynomial.
+/// Score of P_i = sum over var_idx in var_group of wire_counts_in_poly(P_i, max_degree, var_idx).
+/// Returns sub-groups in descending order of score.
+fn split_polys_by_var_group(
+    group: &[usize],
+    polynomials: &[Polynomial],
+    var_group: &[usize],
+    max_degree: usize,
+) -> Vec<Vec<usize>> {
+    let mut scored: Vec<(usize, Vec<usize>)> = group
+        .iter()
+        .map(|&p| {
+            let score = var_group.iter().fold(
+                vec![0usize; max_degree + 1],
+                |mut acc, &var_idx| {
+                    let counts = wire_counts_in_poly(&polynomials[p], max_degree, var_idx);
+                    for (a, c) in acc.iter_mut().zip(counts.iter()) {
+                        *a += c;
+                    }
+                    acc
+                },
+            );
+            (p, score)
+        })
         .collect();
     scored.sort_by(|a, b| b.1.cmp(&a.1));
 
@@ -1074,56 +1117,38 @@ fn split_by_scores(mut scored: Vec<(usize, Vec<usize>)>) -> Vec<Vec<usize>> {
 
 /// Rule 2.4 helper.
 /// Rank a single monomial under the current partial variable ordering.
-/// Returns a sort key: first the degree (higher = better), then for each variable
-/// slot (highest rank first) the rank of that variable. Tied variables get the same
-/// rank value, so monomials that differ only in tied variables compare as equal.
+/// Returns a sort key: first the degree negated (so higher degree sorts first),
+/// then the ranks of variables present in the monomial sorted ascending (best rank first).
+/// Tied variables get the same rank value, so monomials differing only in tied variables
+/// compare as equal.
 ///
-/// `var_rank[i]` = rank of variable x_i under the current partial ordering,
-/// where a lower number means higher rank (rank 0 = highest).
-/// Variables in the same tied group get the same rank value.
+/// `var_rank[i]` = rank of variable x_i, where lower value = higher rank (0 = best).
+/// Variables in the same tied group share the same rank value.
 fn monomial_sort_key(m: Monomial, var_rank: &[usize]) -> Vec<isize> {
     let degree = m.count_ones() as usize;
-    // Collect ranks of variables present in this monomial, sorted best-first (ascending rank value)
+    // Collect ranks of variables present in this monomial, sorted best-first (ascending value)
     let mut var_ranks: Vec<usize> = (0..var_rank.len())
         .filter(|&i| m & (1u64 << i) != 0)
         .map(|i| var_rank[i])
         .collect();
     var_ranks.sort(); // ascending = best rank first
-    // Return degree (negated so higher degree sorts first) followed by variable ranks
+    // Negate degree so higher degree sorts first under ascending comparison
     let mut key: Vec<isize> = vec![-(degree as isize)];
     key.extend(var_ranks.iter().map(|&r| r as isize));
     key
 }
 
 /// Rule 2.4 helper.
-/// Build a var_rank array from the current groups.
-/// Variables in the same group get the same rank value.
-/// Rank 0 = highest (first group), increasing rank = lower priority.
-fn build_var_rank(groups: &[Vec<usize>], n: usize) -> Vec<usize> {
-    let mut var_rank = vec![0usize; n];
-    let mut rank = 0;
-    for group in groups {
-        for &w in group {
-            var_rank[w] = rank;
-        }
-        rank += group.len(); // advance rank by group size so tied vars share same rank value
-        // Note: all members of a tied group get the same rank (rank before advancing),
-        // but we advance by group.len() to leave a gap for future splits within the group.
-        // Actually we want all tied vars to share the exact same rank value:
-    }
-    var_rank
-}
-
-/// Rule 2.4 helper.
 /// Sort a polynomial's monomials by their rank under the current partial variable ordering.
-/// Higher-ranked monomials come first. Monomials that are equal under the partial ordering
+/// Higher-ranked monomials come first. Monomials equal under the partial ordering
 /// are left in an arbitrary but consistent order (by monomial bitmask value).
 fn rank_monomials(poly: &Polynomial, var_rank: &[usize]) -> Vec<Monomial> {
     let mut monomials: Vec<Monomial> = poly.iter().copied().collect();
     monomials.sort_by(|&a, &b| {
         let ka = monomial_sort_key(a, var_rank);
         let kb = monomial_sort_key(b, var_rank);
-        ka.cmp(&kb) // ascending key = descending rank (degree is negated)
+        // ascending key = descending rank (degree is negated, lower rank value = better)
+        ka.cmp(&kb)
     });
     monomials
 }
@@ -1167,7 +1192,8 @@ impl RankingState {
 
     /// Build var_rank array from current groups.
     /// All variables in the same tied group receive the same rank value.
-    /// Rank 0 = highest priority (first group).
+    /// Rank 0 = highest priority (first group). Each group advances the rank
+    /// counter by its size, leaving room for future splits within the group.
     fn current_var_rank(&self) -> Vec<usize> {
         let mut var_rank = vec![0usize; self.n];
         let mut rank = 0usize;
@@ -1296,8 +1322,8 @@ impl RankingState {
     ///      differ only in tied variables compare as equal.
     ///
     /// Polynomial ordering: sort monomials highest-first, then compare lists
-    /// lexicographically. If two polynomials compare as equal under the partial ordering,
-    /// they remain tied and fall through to Rule 2.5.
+    /// lexicographically. Polynomials that compare as equal remain tied and fall
+    /// through to Rule 2.5.
     ///
     /// If any split occurs, record it and return true to restart from 2.1.
     fn try_rule_2_4(&mut self, polynomials: &[Polynomial]) -> bool {
@@ -1340,10 +1366,42 @@ impl RankingState {
         }
         false
     }
+
+    /// Rule 2.5: same as Rule 2.1 but uses tied groups as scoring sources instead of
+    /// only singletons. For each tied group being split, iterate all other tied groups
+    /// (non-singletons) in rank order. For each scoring group (P_j P_k ...), score each
+    /// polynomial P_i in the tied group by summing wire_counts_in_poly over all variables
+    /// in the scoring group:
+    ///   score(P_i) = sum over var_idx in scoring_group of wire_counts_in_poly(P_i, max_degree, var_idx)
+    /// Singletons are skipped here since Rule 2.1 already handles them.
+    /// If any split occurs, record it and return true to restart from 2.1.
+    fn try_rule_2_5(&mut self, polynomials: &[Polynomial], max_degree: usize) -> bool {
+        for gi in 0..self.groups.len() {
+            if self.groups[gi].len() <= 1 {
+                continue;
+            }
+            let group = self.groups[gi].clone();
+
+            // Iterate non-singleton groups in rank order as scoring sources
+            for rgi in 0..self.groups.len() {
+                if self.groups[rgi].len() <= 1 {
+                    // Singletons already handled by Rule 2.1
+                    continue;
+                }
+                let var_group = self.groups[rgi].clone();
+                let split = split_polys_by_var_group(&group, polynomials, &var_group, max_degree);
+                if split.len() > 1 {
+                    self.apply_split(gi, split);
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
-/// Inner recursive canonicalization. Runs Rules 2.1-2.4 deterministically until stuck,
-/// then applies Rule 2.5 (backtracking or lowest-index) to break remaining ties.
+/// Inner recursive canonicalization. Runs Rules 2.1-2.5 deterministically until stuck,
+/// then applies Rule L (backtracking or lowest-index) to break remaining ties.
 /// `use_backtracking` toggles between canonical backtracking (correct) and lowest-index
 /// tiebreak (fast but may not be canonical for non-symmetric stuck groups).
 fn canonicalize_inner(
@@ -1380,7 +1438,12 @@ fn canonicalize_inner(
             continue; // restart from 2.1
         }
 
-        // Rule 2.5: fully stuck — either backtrack or pick lowest index (toggleable)
+        // Rule 2.5: split polynomials by tied groups as scoring sources (extends 2.1 to groups)
+        if state.try_rule_2_5(polynomials, max_degree) {
+            continue; // restart from 2.1
+        }
+
+        // Rule L: fully stuck — either backtrack or pick lowest index (toggleable)
         if use_backtracking {
             // Try each candidate in the first stuck group, recurse to completion,
             // and pick the candidate that yields the lexicographically smallest
@@ -1422,7 +1485,7 @@ fn canonicalize_inner(
         } else {
             // Fast path: pick lowest original wire index from first stuck group.
             // Not guaranteed canonical for non-symmetric stuck groups, but useful
-            // for testing or when canonicality of Rule 2.5 cases is not required.
+            // for testing or when canonicality of Rule L cases is not required.
             let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
             let mut group = state.groups[gi].clone();
             group.sort();
@@ -1473,7 +1536,7 @@ pub fn canonicalize_polys(
         initial_groups.push(current);
     }
 
-    // Run Rules 2.1-2.5 to fully resolve all ties
+    // Run Rules 2.1-2.5 and Rule L to fully resolve all ties
     let final_order = canonicalize_inner(&polynomials, initial_groups, max_degree, use_backtracking);
 
     // final_order[pos] = wire
