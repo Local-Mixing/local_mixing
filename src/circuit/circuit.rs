@@ -1731,12 +1731,15 @@ mod tests {
                         .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
                         .collect::<Vec<_>>()
                         .join("\n");
-                    assert_eq!(canon_string, shuffled_string,
-                        "\nOriginal polys:\n{}\n",
+                    assert!(
+                        canon_string == shuffled_string,
+                        "\nOriginal polys:\n{}\n\nleft:\n{}\n\nright:\n{}\n",
                         polys.iter().enumerate()
                             .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
                             .collect::<Vec<_>>()
-                            .join("\n")
+                            .join("\n"),
+                        canon_string,
+                        shuffled_string,
                     );
                 }
             }
