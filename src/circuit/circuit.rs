@@ -1827,9 +1827,9 @@ mod tests {
     #[test]
     fn test_circuit_poly_canonicalization() {
         let circuit = CircuitSeq { gates: vec![
-            [1, 2, 3], 
+            [3, 1, 2], 
             [1, 2, 4],
-            [1, 2, 3],
+            [3, 1, 2],
             [1, 2, 4],
         ]};
         let polys = circuit.to_polynomial(5, 0, 4);
