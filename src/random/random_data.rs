@@ -18,18 +18,21 @@ use rayon::{
     slice::ParallelSlice,
 };
 use duckdb::{Connection, AccessMode, Config};
+use rocksdb::{DB, WriteBatch, Options, BlockBasedOptions, SstFileWriter, IngestExternalFileOptions};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use rayon::prelude::*;
 use smallvec::SmallVec;
+use xxhash_rust::xxh3::xxh3_128;
 use std::{
     collections::{HashMap, HashSet},
     fs::OpenOptions,
     io::Write,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, 
-    },
     thread,
 };
-
+use crate::circuit::circuit::polys_repr_blob;
+use crate::circuit::Polynomial;
+use crate::circuit::circuit::canonicalize_polys;
 // Store permutation canonicalizations (wire relabeling) in a cache for speed
 pub static CANON_CACHE: Lazy<DashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>> = Lazy::new(|| DashMap::new());
 
@@ -2415,6 +2418,243 @@ pub fn build_from_sql(
     // Close sender to signal insertion thread to exit
     drop(tx);
     insert_handle.join().expect("Insertion thread panicked");
+
+    println!("Build finished (or stopped early).");
+    Ok(())
+}
+
+pub fn open_db_for_write(m: usize) -> DB {
+    let path = format!("rocks_db_m{}", m);
+    let mut opts = Options::default();
+    opts.create_if_missing(true);
+
+    // Parallelism
+    opts.increase_parallelism(num_cpus::get() as i32);
+    opts.set_max_background_jobs(8);
+
+    // Larger memtable = fewer flushes
+    opts.set_write_buffer_size(256 * 1024 * 1024); // 256 MB
+    opts.set_max_write_buffer_number(4);
+    opts.set_min_write_buffer_number_to_merge(2);
+
+    // Compaction
+    opts.set_level_zero_file_num_compaction_trigger(10);
+    opts.set_max_bytes_for_level_base(512 * 1024 * 1024);
+    opts.set_max_bytes_for_level_multiplier(10.0);
+    opts.set_num_levels(7);
+
+    // Compression — none on hot levels, zstd on cold
+    opts.set_compression_type(rocksdb::DBCompressionType::None);
+    opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
+
+    // Block options
+    let mut block_opts = BlockBasedOptions::default();
+    block_opts.set_bloom_filter(10.0, false);
+    block_opts.set_block_size(16 * 1024);
+    block_opts.set_cache_index_and_filter_blocks(true);
+    opts.set_block_based_table_factory(&block_opts);
+
+    DB::open(&opts, path).expect("Failed to open RocksDB for write")
+}
+
+pub fn open_db_for_read(m: usize) -> DB {
+    let path = format!("rocks_db_m{}", m);
+    let mut opts = Options::default();
+    opts.create_if_missing(false);
+
+    // Parallelism for background reads
+    opts.increase_parallelism(num_cpus::get() as i32);
+
+    // Large block cache so hot keys stay in RAM
+    let cache = rocksdb::Cache::new_lru_cache(4 * 1024 * 1024 * 1024); // 4 GB
+    let mut block_opts = BlockBasedOptions::default();
+    block_opts.set_block_cache(&cache);
+    block_opts.set_block_size(16 * 1024);
+
+    // Bloom filter is the most important setting for key lookup —
+    // lets RocksDB skip SST files that definitely don't contain the key
+    block_opts.set_bloom_filter(10.0, false);
+    block_opts.set_cache_index_and_filter_blocks(true);
+    block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+
+    opts.set_block_based_table_factory(&block_opts);
+
+    // No compaction needed for read-only workload
+    opts.set_disable_auto_compactions(true);
+
+    DB::open_for_read_only(&opts, path, false).expect("Failed to open RocksDB for read")
+}
+
+// Given mY, attempt to build the corresponding table for m{Y+1}
+pub fn build_from_rocks(
+    old_db: &Arc<DB>,
+    new_db: &Arc<DB>,
+    m: usize,
+    bit_shuf: &Vec<Vec<usize>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Running build (max CPU)");
+
+    let base_gates: Arc<Vec<[u8; 3]>> = Arc::new(base_gates(15));
+
+    // estimate on total rows
+    let total_rows = old_db
+        .property_int_value("rocksdb.estimate-num-keys")
+        .unwrap()
+        .unwrap_or(0);
+    println!("Estimated rows: {}", total_rows);
+
+    let batch_size = 10_000;
+    let chunk_size = 50_000;
+
+    // Atomic flag for CTRL+C
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    {
+        let stop_flag = stop_flag.clone();
+        ctrlc::set_handler(move || {
+            println!("CTRL+C detected! Finishing current batch...");
+            stop_flag.store(true, Ordering::SeqCst);
+        })
+        .expect("Error setting CTRL+C handler");
+    }
+
+    // Bounded channel for insertion
+    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>)>>(10_000);
+    let db_writer = Arc::clone(new_db);
+    let stop_flag_clone = stop_flag.clone();
+    let base_gates_for_thread = Arc::clone(&base_gates);
+
+    // Spawn insertion thread
+    let insert_handle = std::thread::spawn(move || {
+        let total_circuits = total_rows as usize * base_gates_for_thread.len() * 2;
+        let mut attempted_inserts = 0;
+
+        while let Ok(batch) = rx.recv() {
+            if stop_flag_clone.load(Ordering::SeqCst) {
+                println!("Insertion thread stopping early...");
+                break;
+            }
+
+            let mut wb = WriteBatch::default();
+
+            for (circuit, canon) in &batch {
+                let canon_blob = polys_repr_blob(&canon);
+                let hash: u128 = xxh3_128(&canon_blob);
+
+                let circuit_blob = circuit.repr_blob();
+                let mut key = Vec::with_capacity(16 + circuit_blob.len());
+                key.extend_from_slice(&hash.to_le_bytes());
+                key.extend_from_slice(&circuit_blob);
+
+                wb.put(&key, &[]);
+            }
+
+            if let Err(e) = db_writer.write(wb) {
+                eprintln!("Error writing batch to RocksDB: {:?}", e);
+            }
+
+            attempted_inserts += batch.len();
+            println!(
+                "Attempted inserts: {} / {} ({:.2}%)",
+                attempted_inserts,
+                total_circuits,
+                (attempted_inserts as f64 / total_circuits as f64) * 100.0
+            );
+        }
+
+        println!("Insertion thread finished");
+    });
+
+    // Stream iterator in chunks to avoid loading all keys into RAM
+    let iter = old_db.iterator(rocksdb::IteratorMode::Start);
+
+    for chunk in &iter.chunks(chunk_size) {
+        if stop_flag.load(Ordering::SeqCst) {
+            break;
+        }
+
+        let keys: Vec<Vec<u8>> = chunk
+            .map(|item| {
+                let (k, _v) = item.expect("RocksDB iter error");
+                k.to_vec()
+            })
+            .collect();
+
+        let base_gates_par = Arc::clone(&base_gates);
+        let stop_flag_par = Arc::clone(&stop_flag);
+        let tx_par = tx.clone();
+
+        keys.par_chunks(500).for_each(|key_chunk| {
+            if stop_flag_par.load(Ordering::SeqCst) {
+                return;
+            }
+
+            let mut local_results =
+                Vec::with_capacity(key_chunk.len() * base_gates_par.len() * 2);
+
+            for key in key_chunk {
+                let circuit_blob = &key[16..];
+                let old_circuit = CircuitSeq::from_blob(circuit_blob);
+
+                let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
+                prefix.extend_from_slice(&old_circuit.gates);
+
+                for g in base_gates_par.iter() {
+                    let mut q1 = prefix.clone();
+                    q1.push(*g);
+                    let mut c1 = CircuitSeq { gates: q1.to_vec() };
+                    c1.canonicalize();
+                    let canon1 = canonicalize_polys(c1.to_polynomial(15, 0, m), true);
+                    c1.rewire(&canon1.1, 15);
+
+                    let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
+                    q2.push(*g);
+                    q2.extend_from_slice(&prefix);
+                    let mut c2 = CircuitSeq { gates: q2.to_vec() };
+                    c2.canonicalize();
+                    let canon2 = canonicalize_polys(c2.to_polynomial(15, 0, m), true);
+                    c2.rewire(&canon2.1, 15);
+
+                    if !c1.adjacent_id() {
+                        local_results.push((c1, canon1.0));
+                    }
+                    if !c2.adjacent_id() {
+                        local_results.push((c2, canon2.0));
+                    }
+                }
+
+                while local_results.len() >= batch_size {
+                    let drain_start = local_results.len() - batch_size;
+                    let batch = local_results.split_off(drain_start);
+                    if let Err(e) = tx_par.send(batch) {
+                        eprintln!("Failed to send batch: {:?}", e);
+                        return;
+                    }
+                }
+
+                if stop_flag_par.load(Ordering::SeqCst) {
+                    return;
+                }
+            }
+
+            if !local_results.is_empty() {
+                if let Err(e) = tx_par.send(local_results) {
+                    eprintln!("Failed to send remaining batch: {:?}", e);
+                }
+            }
+        });
+    }
+
+    drop(tx);
+    insert_handle.join().expect("Insertion thread panicked");
+
+    // Compact new_db so it's optimally laid out for reads next time it's opened
+    if !stop_flag.load(Ordering::SeqCst) {
+        println!("Compacting new_db for optimal read performance...");
+        new_db.compact_range::<&[u8], &[u8]>(None, None);
+        println!("Compaction done.");
+    } else {
+        println!("Stopped early, skipping compaction. Run compaction manually before next read.");
+    }
 
     println!("Build finished (or stopped early).");
     Ok(())
