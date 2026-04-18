@@ -755,9 +755,9 @@ impl CircuitSeq {
         .collect();
     
         for &[a, b, c] in gates {
-            // a' = a XOR (not b AND c) XOR 1
-            let not_b = poly_not(polys[b as usize].clone());
-            let term = poly_and(&not_b, &polys[c as usize]);
+            // a' = a + bc + b + 1 = a + b(c+1) = a + b*NOT(c) + 1
+            let not_c = poly_not(polys[c as usize].clone());
+            let term = poly_and(&polys[b as usize], &not_c);
             let mut new_a = poly_xor(polys[a as usize].clone(), term);
             if !new_a.remove(&0u64) {
                 new_a.insert(0u64);
