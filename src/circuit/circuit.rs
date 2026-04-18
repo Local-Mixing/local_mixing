@@ -927,7 +927,7 @@ fn degree_counts(poly: &Polynomial, max_possible_degree: usize) -> Vec<usize> {
     counts
 }
 
-/// Used in tie-breaking
+/// Used in tie-breaking.
 /// For a given polynomial, return a degree-bucketed count (high to low) of
 /// how many monomials of each degree contain variable `wire_idx`.
 fn wire_counts_in_poly(poly: &Polynomial, max_possible_degree: usize, wire_idx: usize) -> Vec<usize> {
@@ -975,146 +975,28 @@ fn make_canonical_form(polynomials: &[Polynomial], final_order: &[usize]) -> Vec
         .collect()
 }
 
-/// Rule 2.1 helper.
-/// Split a group of polynomial indices by how much a single ranked singleton
-/// variable `var_idx` appears in each polynomial.
-/// Score of P_i = wire_counts_in_poly(P_i, max_degree, var_idx).
-/// Returns sub-groups in descending order of score.
-fn split_polys_by_ranked_var(
-    group: &[usize],
-    polynomials: &[Polynomial],
-    var_idx: usize,
-    max_degree: usize,
-) -> Vec<Vec<usize>> {
-    let mut scored: Vec<(usize, Vec<usize>)> = group
-        .iter()
-        .map(|&p| (p, wire_counts_in_poly(&polynomials[p], max_degree, var_idx)))
-        .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
-
-    let mut result: Vec<Vec<usize>> = Vec::new();
-    let mut current = vec![scored[0].0];
-    for i in 1..scored.len() {
-        if scored[i].1 == scored[i - 1].1 {
-            current.push(scored[i].0);
-        } else {
-            result.push(current.clone());
-            current = vec![scored[i].0];
-        }
-    }
-    result.push(current);
-    result
-}
-
-/// Rule 2.6 helper (extends 2.1 to tied groups).
-/// Split a group of polynomial indices by how much a group of variables
-/// (summed together) appears in each polynomial.
-/// Score of P_i = sum over var_idx in var_group of wire_counts_in_poly(P_i, max_degree, var_idx).
-/// Returns sub-groups in descending order of score.
-fn split_polys_by_var_group(
-    group: &[usize],
-    polynomials: &[Polynomial],
-    var_group: &[usize],
-    max_degree: usize,
-) -> Vec<Vec<usize>> {
-    let mut scored: Vec<(usize, Vec<usize>)> = group
-        .iter()
-        .map(|&p| {
-            let score = var_group.iter().fold(
-                vec![0usize; max_degree + 1],
-                |mut acc, &var_idx| {
-                    let counts = wire_counts_in_poly(&polynomials[p], max_degree, var_idx);
-                    for (a, c) in acc.iter_mut().zip(counts.iter()) {
-                        *a += c;
-                    }
-                    acc
-                },
-            );
-            (p, score)
-        })
-        .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
-
-    let mut result: Vec<Vec<usize>> = Vec::new();
-    let mut current = vec![scored[0].0];
-    for i in 1..scored.len() {
-        if scored[i].1 == scored[i - 1].1 {
-            current.push(scored[i].0);
-        } else {
-            result.push(current.clone());
-            current = vec![scored[i].0];
-        }
-    }
-    result.push(current);
-    result
-}
-
-/// Rule 2.2 helper.
-/// Score each variable x_i in `group` using a single ranked group `ranked_group`.
-/// If ranked_group is a singleton [p]: score of x_i = wire_counts_in_poly(P_p, max_degree, i).
-/// If ranked_group has multiple elements: score of x_i = sum over p in ranked_group of
-/// wire_counts_in_poly(P_p, max_degree, i).
-/// Variable ranking directly becomes polynomial ranking.
-fn score_vars_by_ranked_group(
-    group: &[usize],
-    polynomials: &[Polynomial],
-    ranked_group: &[usize],
-    max_degree: usize,
-) -> Vec<(usize, Vec<usize>)> {
-    group
-        .iter()
-        .map(|&w| {
-            let score = ranked_group.iter().fold(
-                vec![0usize; max_degree + 1],
-                |mut acc, &p| {
-                    let counts = wire_counts_in_poly(&polynomials[p], max_degree, w);
-                    for (a, c) in acc.iter_mut().zip(counts.iter()) {
-                        *a += c;
-                    }
-                    acc
-                },
-            );
-            (w, score)
-        })
-        .collect()
-}
-
-/// Rule 2.3 helper.
-/// Same as score_vars_by_ranked_group but filters each polynomial in ranked_group
-/// to only monomials containing `filter_var` before scoring.
-/// If the filtered polynomial is empty, scores are all zero (contributes nothing to split).
-fn score_vars_by_ranked_group_filtered(
-    group: &[usize],
-    polynomials: &[Polynomial],
-    ranked_group: &[usize],
-    filter_var: usize,
-    max_degree: usize,
-) -> Vec<(usize, Vec<usize>)> {
-    group
-        .iter()
-        .map(|&w| {
-            let score = ranked_group.iter().fold(
-                vec![0usize; max_degree + 1],
-                |mut acc, &p| {
-                    // Filter to monomials containing filter_var before scoring
-                    let filtered = filter_poly_by_var(&polynomials[p], filter_var);
-                    let counts = wire_counts_in_poly(&filtered, max_degree, w);
-                    for (a, c) in acc.iter_mut().zip(counts.iter()) {
-                        *a += c;
-                    }
-                    acc
-                },
-            );
-            (w, score)
-        })
-        .collect()
-}
-
-/// Partition a scored list of wires into sub-groups by descending score.
-/// Wires with equal scores remain in the same sub-group (still tied).
+/// Partition a list of (index, score) pairs into sub-groups by descending score.
+/// Indices with equal scores remain in the same sub-group (still tied).
 fn split_by_scores(mut scored: Vec<(usize, Vec<usize>)>) -> Vec<Vec<usize>> {
     scored.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut result: Vec<Vec<usize>> = Vec::new();
+    let mut current = vec![scored[0].0];
+    for i in 1..scored.len() {
+        if scored[i].1 == scored[i - 1].1 {
+            current.push(scored[i].0);
+        } else {
+            result.push(current.clone());
+            current = vec![scored[i].0];
+        }
+    }
+    result.push(current);
+    result
+}
 
+/// Partition a list of (index, ranked-monomial-list) pairs into sub-groups
+/// by descending lexicographic order of their monomial lists.
+fn split_by_monomial_lists(mut scored: Vec<(usize, Vec<Monomial>)>) -> Vec<Vec<usize>> {
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
     let mut result: Vec<Vec<usize>> = Vec::new();
     let mut current = vec![scored[0].0];
     for i in 1..scored.len() {
@@ -1161,7 +1043,7 @@ fn rank_monomials(monomials: &[Monomial], var_rank: &[usize]) -> Vec<Monomial> {
     sorted.sort_by(|&a, &b| {
         let ka = monomial_sort_key(a, var_rank);
         let kb = monomial_sort_key(b, var_rank);
-        // ascending key = descending rank (degree is negated, lower rank value = better)
+        // ascending key = descending rank (degree negated, lower rank value = better)
         ka.cmp(&kb)
     });
     sorted
@@ -1189,16 +1071,6 @@ impl RankingState {
         self.groups.iter().all(|g| g.len() == 1)
     }
 
-    /// Collect all ranked singleton variable indices in rank order (highest rank first).
-    /// These are the variables available for use in Rules 2.1 and 2.3.
-    fn ranked_singletons(&self) -> Vec<usize> {
-        self.groups
-            .iter()
-            .filter(|g| g.len() == 1)
-            .map(|g| g[0])
-            .collect()
-    }
-
     /// Replace group at index `gi` with the given split sub-groups.
     fn apply_split(&mut self, gi: usize, split: Vec<Vec<usize>>) {
         self.groups.splice(gi..=gi, split);
@@ -1223,53 +1095,44 @@ impl RankingState {
         var_rank
     }
 
-    /// Rule 2.1: for each tied group (highest to lowest rank), iterate ranked singleton
-    /// variables (x_k) in rank order. For each x_k, score each polynomial P_i in the
-    /// tied group by wire_counts_in_poly(P_i, max_degree, k) — i.e. how much of x_k
-    /// appears in P_i. If any split occurs, record it and return true to restart from 2.1.
-    fn try_rule_2_1(&mut self, polynomials: &[Polynomial], max_degree: usize) -> bool {
-        let singletons = self.ranked_singletons();
-        if singletons.is_empty() {
-            return false;
-        }
-
-        for gi in 0..self.groups.len() {
-            if self.groups[gi].len() <= 1 {
-                continue;
-            }
-            let group = self.groups[gi].clone();
-
-            // Try each ranked singleton variable in rank order
-            for &var in &singletons {
-                let split = split_polys_by_ranked_var(&group, polynomials, var, max_degree);
-                if split.len() > 1 {
-                    self.apply_split(gi, split);
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Rule 2.2: for each tied group (highest to lowest rank), iterate all ranked groups
-    /// G_j in rank order. Score each variable x_i in the tied group using G_j:
-    ///   - If G_j is a singleton {P_j}: score(x_i) = wire_counts_in_poly(P_j, max_degree, i)
-    ///   - If G_j is a tied group {P_j, P_k, ...}: score(x_i) = sum over all P in G_j
-    /// Variable ranking directly becomes polynomial ranking (since poly index == var index).
+    /// Rule 2.1: for each tied group G_j, iterate all groups G_i in rank order
+    /// (singletons and non-singletons alike). Score each polynomial P in G_j by
+    /// summing wire_counts_in_poly over all variables in G_i:
+    ///   score(P) = sum over var in G_i of wire_counts_in_poly(P, max_degree, var)
+    /// When G_i is a singleton {x_k} this reduces to wire_counts_in_poly(P, max_degree, k).
+    /// When G_i is a tied group this sums over all variables in the group.
     /// If any split occurs, record it and return true to restart from 2.1.
-    fn try_rule_2_2(&mut self, polynomials: &[Polynomial], max_degree: usize) -> bool {
+    fn try_rule_2_1(&mut self, polynomials: &[Polynomial], max_degree: usize) -> bool {
         for gi in 0..self.groups.len() {
             if self.groups[gi].len() <= 1 {
                 continue;
             }
             let group = self.groups[gi].clone();
 
-            // Iterate all ranked groups in rank order as scorers
+            // Iterate all groups in rank order as scoring sources
             for rgi in 0..self.groups.len() {
-                let ranked_group = self.groups[rgi].clone();
-                let scored = score_vars_by_ranked_group(
-                    &group, polynomials, &ranked_group, max_degree,
-                );
+                let scoring_group = self.groups[rgi].clone();
+
+                // Score each polynomial P in G_j by summing wire counts over all
+                // variables in the scoring group
+                let scored: Vec<(usize, Vec<usize>)> = group
+                    .iter()
+                    .map(|&p| {
+                        let score = scoring_group.iter().fold(
+                            vec![0usize; max_degree + 1],
+                            |mut acc, &var| {
+                                let counts =
+                                    wire_counts_in_poly(&polynomials[p], max_degree, var);
+                                for (a, c) in acc.iter_mut().zip(counts.iter()) {
+                                    *a += c;
+                                }
+                                acc
+                            },
+                        );
+                        (p, score)
+                    })
+                    .collect();
+
                 let split = split_by_scores(scored);
                 if split.len() > 1 {
                     self.apply_split(gi, split);
@@ -1280,64 +1143,129 @@ impl RankingState {
         false
     }
 
-    /// Rule 2.3: same as 2.2 but restricts each polynomial to monomials containing
-    /// a filter variable x_k before scoring. Iterates filter variables from highest
-    /// ranked singleton downward. For each x_k, exhausts all ranked groups G_j before
-    /// moving to the next filter variable. If any split occurs at any point, record it
-    /// and return true to restart from 2.1.
-    ///
-    /// Empty filtered polynomials (x_k doesn't appear in P_j) score all zeros and
-    /// contribute nothing to the split, which is correct.
-    fn try_rule_2_3(&mut self, polynomials: &[Polynomial], max_degree: usize) -> bool {
-        let singletons = self.ranked_singletons();
-        if singletons.is_empty() {
-            return false;
-        }
-
+    /// Rule 2.2: for each tied group G_j, iterate all groups G_i in rank order.
+    /// Score each variable x_j in the tied group by summing wire_counts_in_poly
+    /// over all P in G_i:
+    ///   score(x_j) = sum over P in G_i of wire_counts_in_poly(P, max_degree, j)
+    /// Variable ranking directly becomes polynomial ranking (poly index == var index).
+    /// If any split occurs, record it and return true to restart from 2.1.
+    fn try_rule_2_2(&mut self, polynomials: &[Polynomial], max_degree: usize) -> bool {
         for gi in 0..self.groups.len() {
             if self.groups[gi].len() <= 1 {
                 continue;
             }
             let group = self.groups[gi].clone();
 
-            // Iterate filter variables from highest ranked singleton downward
-            for &filter_var in &singletons {
-                // Exhaust all ranked groups G_j for this filter variable before
-                // moving to the next filter variable
+            // Iterate all groups in rank order as scorers
+            for rgi in 0..self.groups.len() {
+                let scoring_group = self.groups[rgi].clone();
+
+                // Score each variable x_j in the tied group using scoring_group
+                let scored: Vec<(usize, Vec<usize>)> = group
+                    .iter()
+                    .map(|&w| {
+                        let score = scoring_group.iter().fold(
+                            vec![0usize; max_degree + 1],
+                            |mut acc, &p| {
+                                let counts =
+                                    wire_counts_in_poly(&polynomials[p], max_degree, w);
+                                for (a, c) in acc.iter_mut().zip(counts.iter()) {
+                                    *a += c;
+                                }
+                                acc
+                            },
+                        );
+                        (w, score)
+                    })
+                    .collect();
+
+                let split = split_by_scores(scored);
+                if split.len() > 1 {
+                    self.apply_split(gi, split);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Rule 2.3: for each tied group G_j, iterate all groups G_k in rank order as
+    /// filter sources. For each G_k, iterate all groups G_i in rank order as scoring
+    /// sources. Score each variable x_j in the tied group by:
+    ///   score(x_j) = sum over P in G_i of
+    ///                sum over f in G_k of
+    ///                wire_counts_in_poly(filter(P, f), max_degree, j)
+    /// When G_k is a singleton {x_k} this reduces to the old 2.3 behaviour.
+    /// When G_k is a tied group the filter sums over all variables in the group.
+    /// If any split occurs for any (G_k, G_i) pair, record it and restart from 2.1.
+    /// If all G_i fail for a given G_k, move to the next G_k and restart G_i iteration.
+    /// Variable ranking directly becomes polynomial ranking.
+    fn try_rule_2_3(&mut self, polynomials: &[Polynomial], max_degree: usize) -> bool {
+        for gi in 0..self.groups.len() {
+            if self.groups[gi].len() <= 1 {
+                continue;
+            }
+            let group = self.groups[gi].clone();
+
+            // Outer loop: iterate all groups G_k in rank order as filter sources
+            for fgi in 0..self.groups.len() {
+                let filter_group = self.groups[fgi].clone();
+
+                // Inner loop: iterate all groups G_i in rank order as scoring sources
                 for rgi in 0..self.groups.len() {
-                    let ranked_group = self.groups[rgi].clone();
-                    let scored = score_vars_by_ranked_group_filtered(
-                        &group,
-                        polynomials,
-                        &ranked_group,
-                        filter_var,
-                        max_degree,
-                    );
+                    let scoring_group = self.groups[rgi].clone();
+
+                    // Score each variable x_j in tied group:
+                    // sum over P in G_i of sum over f in G_k of
+                    // wire_counts_in_poly(filter(P, f), max_degree, j)
+                    let scored: Vec<(usize, Vec<usize>)> = group
+                        .iter()
+                        .map(|&w| {
+                            let score = scoring_group.iter().fold(
+                                vec![0usize; max_degree + 1],
+                                |mut acc, &p| {
+                                    // Sum over all filter variables in G_k
+                                    for &f in &filter_group {
+                                        let filtered =
+                                            filter_poly_by_var(&polynomials[p], f);
+                                        let counts =
+                                            wire_counts_in_poly(&filtered, max_degree, w);
+                                        for (a, c) in acc.iter_mut().zip(counts.iter()) {
+                                            *a += c;
+                                        }
+                                    }
+                                    acc
+                                },
+                            );
+                            (w, score)
+                        })
+                        .collect();
+
                     let split = split_by_scores(scored);
                     if split.len() > 1 {
                         self.apply_split(gi, split);
                         return true;
                     }
                 }
-                // No split from any G_j for this filter_var — try next filter_var
+                // All G_i failed for this filter group — move to next G_k
             }
         }
         false
     }
 
-    /// Rule 2.4: for each tied group, rank each polynomial's monomials using the current
-    /// partial variable ordering, then compare polynomials lexicographically by their
-    /// sorted monomial lists.
+    /// Rule 2.4: for each tied group G_j, rank each polynomial's full monomial set
+    /// using the current partial variable ordering, then compare polynomials
+    /// lexicographically by their sorted monomial lists all the way through.
     ///
     /// Monomial ordering:
     ///   1. Higher degree always ranks above lower degree.
-    ///   2. Within the same degree, compare by variable ranks (highest ranked var first),
-    ///      lexicographically. Tied variables get the same rank value, so monomials that
-    ///      differ only in tied variables compare as equal.
+    ///   2. Within the same degree, compare by variable ranks (highest ranked var first)
+    ///      lexicographically. Tied variables get the same rank value, so monomials
+    ///      differing only in tied variables compare as equal.
     ///
-    /// Polynomial ordering: sort monomials highest-first, then compare lists
-    /// lexicographically. Polynomials that compare as equal remain tied and fall
-    /// through to Rule 2.5.
+    /// Polynomial ordering: sort monomials highest-first, then compare the full lists
+    /// lexicographically — compare all the way through, not just the highest monomial.
+    /// Polynomials that compare as equal under the full ordering remain tied.
     ///
     /// If any split occurs, record it and return true to restart from 2.1.
     fn try_rule_2_4(&mut self, polynomials: &[Polynomial]) -> bool {
@@ -1349,8 +1277,8 @@ impl RankingState {
             }
             let group = self.groups[gi].clone();
 
-            // Rank each polynomial's monomials under the current partial variable ordering
-            let mut scored: Vec<(usize, Vec<Monomial>)> = group
+            // Rank each polynomial's full monomial list under current partial ordering
+            let scored: Vec<(usize, Vec<Monomial>)> = group
                 .iter()
                 .map(|&p| {
                     let monomials: Vec<Monomial> = polynomials[p].iter().copied().collect();
@@ -1358,24 +1286,8 @@ impl RankingState {
                 })
                 .collect();
 
-            // Sort polynomials by their ranked monomial lists lexicographically
-            // (highest monomial first within each list)
-            scored.sort_by(|a, b| a.1.cmp(&b.1).reverse());
-
-            // Partition into sub-groups: polynomials with equal ranked monomial lists
-            // remain tied; those with different lists are split
-            let mut split: Vec<Vec<usize>> = Vec::new();
-            let mut current = vec![scored[0].0];
-            for i in 1..scored.len() {
-                if scored[i].1 == scored[i - 1].1 {
-                    current.push(scored[i].0);
-                } else {
-                    split.push(current.clone());
-                    current = vec![scored[i].0];
-                }
-            }
-            split.push(current);
-
+            // Compare polynomials by full ranked monomial lists lexicographically
+            let split = split_by_monomial_lists(scored);
             if split.len() > 1 {
                 self.apply_split(gi, split);
                 return true;
@@ -1384,15 +1296,16 @@ impl RankingState {
         false
     }
 
-    /// Rule 2.5: for each tied group, iterate all ranked groups G_j in rank order.
-    /// For each variable x_i in the tied group, build a ranked monomial list by:
-    ///   1. For each P in G_j, filter to monomials containing x_i
-    ///   2. Concatenate all filtered monomial sets across P in G_j (duplicates allowed)
+    /// Rule 2.5: combines the filtering of 2.3 with the monomial ranking of 2.4.
+    /// For each tied group G_j, iterate all groups G_i in rank order. For each
+    /// variable x_j in the tied group, build a ranked monomial list by:
+    ///   1. For each P in G_i, filter to monomials containing x_j
+    ///   2. Concatenate all filtered monomial sets across all P in G_i (duplicates ok,
+    ///      no GF2 cancellation needed since we are just comparing, not computing)
     ///   3. Rank the concatenated list using the current partial variable ordering
-    ///      (same monomial ordering as Rule 2.4: higher degree first, then by variable rank)
-    /// Compare the ranked monomial lists for each x_i lexicographically to split the
-    /// tied group. Variable ranking from this comparison directly becomes polynomial ranking.
-    /// If any split occurs from any G_j, record it and return true to restart from 2.1.
+    /// Compare the ranked monomial lists for each x_j lexicographically to split G_j.
+    /// Variable ranking directly becomes polynomial ranking.
+    /// If any split occurs, record it and return true to restart from 2.1.
     fn try_rule_2_5(&mut self, polynomials: &[Polynomial]) -> bool {
         let var_rank = self.current_var_rank();
 
@@ -1402,76 +1315,28 @@ impl RankingState {
             }
             let group = self.groups[gi].clone();
 
-            // Iterate all ranked groups in rank order as scorers
+            // Iterate all groups G_i in rank order
             for rgi in 0..self.groups.len() {
-                let ranked_group = self.groups[rgi].clone();
+                let scoring_group = self.groups[rgi].clone();
 
-                // For each variable x_i in the tied group, build a ranked monomial list
-                // by concatenating filtered monomials from all polynomials in ranked_group
-                let mut scored: Vec<(usize, Vec<Monomial>)> = group
+                // For each variable x_j in the tied group, build a ranked monomial list
+                // by concatenating filter(P, x_j) across all P in scoring_group
+                let scored: Vec<(usize, Vec<Monomial>)> = group
                     .iter()
                     .map(|&w| {
-                        // Collect monomials containing x_w from all P in ranked_group
-                        let mut combined: Vec<Monomial> = ranked_group
+                        // Concatenate monomials containing x_w from all P in scoring_group
+                        let combined: Vec<Monomial> = scoring_group
                             .iter()
                             .flat_map(|&p| filter_poly_by_var(&polynomials[p], w))
                             .collect();
-                        // Rank the combined list using current partial variable ordering
-                        let ranked = rank_monomials(&combined, &var_rank);
-                        (w, ranked)
+                        // Rank combined list using current partial variable ordering
+                        (w, rank_monomials(&combined, &var_rank))
                     })
                     .collect();
 
-                // Sort variables by their ranked monomial lists lexicographically
-                scored.sort_by(|a, b| a.1.cmp(&b.1).reverse());
-
-                // Partition into sub-groups: variables with equal ranked monomial lists
-                // remain tied; those with different lists are split.
+                // Compare variables by their ranked monomial lists lexicographically.
                 // Variable ranking directly becomes polynomial ranking.
-                let mut split: Vec<Vec<usize>> = Vec::new();
-                let mut current = vec![scored[0].0];
-                for i in 1..scored.len() {
-                    if scored[i].1 == scored[i - 1].1 {
-                        current.push(scored[i].0);
-                    } else {
-                        split.push(current.clone());
-                        current = vec![scored[i].0];
-                    }
-                }
-                split.push(current);
-
-                if split.len() > 1 {
-                    self.apply_split(gi, split);
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Rule 2.6: same as Rule 2.1 but uses tied groups as scoring sources instead of
-    /// only singletons. For each tied group being split, iterate all other tied groups
-    /// (non-singletons) in rank order. For each scoring group (P_j P_k ...), score each
-    /// polynomial P_i in the tied group by summing wire_counts_in_poly over all variables
-    /// in the scoring group:
-    ///   score(P_i) = sum over var_idx in scoring_group of wire_counts_in_poly(P_i, max_degree, var_idx)
-    /// Singletons are skipped here since Rule 2.1 already handles them.
-    /// If any split occurs, record it and return true to restart from 2.1.
-    fn try_rule_2_6(&mut self, polynomials: &[Polynomial], max_degree: usize) -> bool {
-        for gi in 0..self.groups.len() {
-            if self.groups[gi].len() <= 1 {
-                continue;
-            }
-            let group = self.groups[gi].clone();
-
-            // Iterate non-singleton groups in rank order as scoring sources
-            for rgi in 0..self.groups.len() {
-                if self.groups[rgi].len() <= 1 {
-                    // Singletons already handled by Rule 2.1
-                    continue;
-                }
-                let var_group = self.groups[rgi].clone();
-                let split = split_polys_by_var_group(&group, polynomials, &var_group, max_degree);
+                let split = split_by_monomial_lists(scored);
                 if split.len() > 1 {
                     self.apply_split(gi, split);
                     return true;
@@ -1482,7 +1347,7 @@ impl RankingState {
     }
 }
 
-/// Inner recursive canonicalization. Runs Rules 2.1-2.6 deterministically until stuck,
+/// Inner recursive canonicalization. Runs Rules 2.1-2.5 deterministically until stuck,
 /// then applies Rule L (backtracking or lowest-index) to break remaining ties.
 /// `use_backtracking` toggles between canonical backtracking (correct) and lowest-index
 /// tiebreak (fast but may not be canonical for non-symmetric stuck groups).
@@ -1500,34 +1365,28 @@ fn canonicalize_inner(
             break;
         }
 
-        // Rule 2.1: split polynomials by ranked singleton variables
+        // Rule 2.1: split polynomials by all groups (singletons and non-singletons)
         if state.try_rule_2_1(polynomials, max_degree) {
             continue; // restart from 2.1
         }
 
-        // Rule 2.2: split variables by ranked groups (full polynomials)
+        // Rule 2.2: split variables by all groups (full polynomial profiling)
         if state.try_rule_2_2(polynomials, max_degree) {
             continue; // restart from 2.1
         }
 
-        // Rule 2.3: split variables by ranked groups (filtered to monomials of x_k)
+        // Rule 2.3: split variables by all groups, filtered by all groups
         if state.try_rule_2_3(polynomials, max_degree) {
             continue; // restart from 2.1
         }
 
-        // Rule 2.4: split polynomials by lexicographic comparison of ranked monomial lists
+        // Rule 2.4: split polynomials by full ranked monomial list comparison
         if state.try_rule_2_4(polynomials) {
             continue; // restart from 2.1
         }
 
-        // Rule 2.5: split variables by ranked monomial lists built from filtered polynomials,
-        // where each polynomial is filtered to monomials containing the variable being scored
+        // Rule 2.5: split variables by ranked monomial lists built from filtered polynomials
         if state.try_rule_2_5(polynomials) {
-            continue; // restart from 2.1
-        }
-
-        // Rule 2.6: split polynomials by tied groups as scoring sources (extends 2.1 to groups)
-        if state.try_rule_2_6(polynomials, max_degree) {
             continue; // restart from 2.1
         }
 
@@ -1545,7 +1404,8 @@ fn canonicalize_inner(
                 .min_by_key(|&&w| {
                     // Tentatively lock w as a singleton and put the rest back as tied
                     let mut trial_groups = state.groups.clone();
-                    let rest: Vec<usize> = candidates.iter().copied().filter(|&x| x != w).collect();
+                    let rest: Vec<usize> =
+                        candidates.iter().copied().filter(|&x| x != w).collect();
                     let mut replacement = vec![vec![w]];
                     if !rest.is_empty() {
                         replacement.push(rest);
@@ -1564,7 +1424,8 @@ fn canonicalize_inner(
                 .unwrap();
 
             // Lock the best candidate and continue
-            let rest: Vec<usize> = candidates.iter().copied().filter(|&x| x != best).collect();
+            let rest: Vec<usize> =
+                candidates.iter().copied().filter(|&x| x != best).collect();
             let mut replacement = vec![vec![best]];
             if !rest.is_empty() {
                 replacement.push(rest);
@@ -1624,8 +1485,9 @@ pub fn canonicalize_polys(
         initial_groups.push(current);
     }
 
-    // Run Rules 2.1-2.6 and Rule L to fully resolve all ties
-    let final_order = canonicalize_inner(&polynomials, initial_groups, max_degree, use_backtracking);
+    // Run Rules 2.1-2.5 and Rule L to fully resolve all ties
+    let final_order =
+        canonicalize_inner(&polynomials, initial_groups, max_degree, use_backtracking);
 
     // final_order[pos] = wire
     // Remap: variable x_wire -> x_pos (bit wire -> bit pos)
