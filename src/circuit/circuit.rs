@@ -1512,8 +1512,52 @@ pub fn canonicalize_polys(
                 .collect()
         })
         .collect();
-
+    
+    let canonical = trim_canonicalized(canonical);
+    
     (canonical, Permutation { data: final_order })
+}
+
+/// After canonicalization, trim trailing polynomials that are uninformative.
+/// Starting from the last polynomial, remove P_i if both conditions hold:
+///   1. P_i is trivial — its only monomial is the single variable x_i (bitmask 1 << i)
+///   2. x_i does not appear in any other polynomial in the full list
+/// Stop as soon as we reach a P_i that is non-trivial OR whose variable x_i
+/// appears in some other polynomial. Keep everything from that point forward.
+///
+/// Returns the trimmed polynomial list. The permutation is left unchanged.
+pub fn trim_canonicalized(polynomials: Vec<Polynomial>) -> Vec<Polynomial> {
+    let n = polynomials.len();
+    let mut keep_up_to = n; // exclusive upper bound — trim everything at or after this
+
+    for i in (0..n).rev() {
+        let bit = 1u64 << i;
+
+        // Check if P_i is trivial: exactly one monomial which is just x_i
+        let is_trivial = polynomials[i].len() == 1
+            && polynomials[i].iter().next().copied().unwrap() == bit;
+
+        if !is_trivial {
+            // Non-trivial polynomial — stop trimming here
+            break;
+        }
+
+        // Check if x_i appears in any other polynomial (including higher degree monomials)
+        let used_elsewhere = polynomials
+            .iter()
+            .enumerate()
+            .any(|(j, poly)| j != i && poly.iter().any(|&m| m & bit != 0));
+
+        if used_elsewhere {
+            // x_i is referenced by another polynomial — stop trimming here
+            break;
+        }
+
+        // P_i is trivial and x_i is unused elsewhere — trim it
+        keep_up_to = i;
+    }
+
+    polynomials[..keep_up_to].to_vec()
 }
 
 #[cfg(test)]
