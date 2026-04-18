@@ -1833,6 +1833,10 @@ mod tests {
             [1, 2, 4],
         ]};
         let polys = circuit.to_polynomial(5, 0, 4);
+        println!("Original polys:");
+        for (i, poly) in polys.iter().enumerate() {
+            println!("  P{}: {}", i, poly_to_str(poly, 6));
+        }
         let (canonical, _) = canonicalize_polys(polys, true);
         println!("Canonical polys:");
         for (i, poly) in canonical.iter().enumerate() {
