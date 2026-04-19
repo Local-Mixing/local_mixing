@@ -773,6 +773,35 @@ impl CircuitSeq {
 
         polys
     }
+
+    pub fn to_polynomial_print(&self, n: usize, start: usize, end: usize) -> Vec<Polynomial> {
+        let gates = &self.gates[start..end];
+        // Wire i starts as degree 1 monomial
+        let mut polys: Vec<Polynomial> = (0..n)
+        .map(|i| HashSet::from([1u64 << i]))
+        .collect();
+    
+        for (gate_idx, &[a, b, c]) in gates.iter().enumerate() {
+            // a' = a + bc + b + 1 = a + b(c+1) = a + b*NOT(c) + 1
+            let not_c = poly_not(polys[c as usize].clone());
+            let term = poly_and(&polys[b as usize], &not_c);
+            let mut new_a = poly_xor(polys[a as usize].clone(), term);
+            if !new_a.remove(&0u64) {
+                new_a.insert(0u64);
+            }
+            polys[a as usize] = new_a.clone();
+            println!("gate {}, {}: deg: {}", gate_idx, a, poly_degree(&new_a));
+        }
+    
+        // XOR each wire with its initial value x_i so unchanged wires become 0
+        // for i in 0..n {
+        //     let xi = HashSet::from([1u64 << i]);
+        //     polys[i] = poly_xor(polys[i].clone(), xi);
+        // }
+
+        polys
+    }
+
     // Computes the upper bound of each wire's algebraic degree
     pub fn to_degree_upper(self, n: usize, start: usize, end: usize) -> Vec<u8> {
         let mut deg: Vec<u8> = vec![0u8; n];
@@ -1514,7 +1543,7 @@ pub fn canonicalize_polys(
         .collect();
     
     let canonical = trim_canonicalized(canonical);
-    
+
     (canonical, Permutation { data: final_order })
 }
 

@@ -1924,7 +1924,7 @@ Command::new("equal")
             } else {
                 end
             };
-            let polys = circuit.to_polynomial(n, start, end);
+            let polys = circuit.to_polynomial_print(n, start, end);
             for i in 0..n {
                 println!("wire {}: {} degree", i, poly_degree(&polys[i]));
             }
