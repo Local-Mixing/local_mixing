@@ -2747,7 +2747,7 @@ pub fn build_from_rocks(
                     let mut c1 = CircuitSeq { gates: q1.to_vec() };
                     c1.canonicalize();
                     let canon1 = canonicalize_polys(c1.to_polynomial(3 * m, 0, m), true);
-                    c1.rewire(&canon1.1, 3 * m);
+                    c1.rewire(&canon1.1.invert(), 3 * m);
                     c1.canonicalize();
                     let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
                     q2.push(*g);
@@ -2755,7 +2755,7 @@ pub fn build_from_rocks(
                     let mut c2 = CircuitSeq { gates: q2.to_vec() };
                     c2.canonicalize();
                     let canon2 = canonicalize_polys(c2.to_polynomial(3 * m, 0, m), true);
-                    c2.rewire(&canon2.1, 3 * m);
+                    c2.rewire(&canon2.1.invert(), 3 * m);
                     c2.canonicalize();
                     if !c1.adjacent_id() {
                         local_results.push((c1, canon1.0));
@@ -2813,7 +2813,7 @@ pub fn build_m1(new_db: &Arc<DB>) -> Result<(), Box<dyn std::error::Error>> {
         let c = CircuitSeq { gates: vec![*g] };
         let canon = canonicalize_polys(c.to_polynomial(3, 0, 1), true);
         let mut c = c;
-        c.rewire(&canon.1, 3);
+        c.rewire(&canon.1.invert(), 3);
 
         if c.adjacent_id() {
             continue;
