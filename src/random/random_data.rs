@@ -2482,7 +2482,7 @@ pub fn open_db_for_write(m: usize) -> DB {
     // Disable WAL for faster bulk ingestion — no recovery needed
     opts.set_manual_wal_flush(true);
 
-    opts.increase_parallelism(num_cpus::get() as i32);
+    opts.increase_parallelism(160);
     opts.set_max_background_jobs(8);
 
     opts.set_write_buffer_size(256 * 1024 * 1024);
@@ -2517,7 +2517,7 @@ pub fn open_db_for_read(m: usize) -> DB {
     // Must register merge operator even for reads
     opts.set_merge_operator_associative("append_merge", append_merge);
 
-    opts.increase_parallelism(num_cpus::get() as i32);
+    opts.increase_parallelism(160);
 
     opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
 
