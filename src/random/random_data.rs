@@ -4392,4 +4392,33 @@ mod tests {
             println!();
         }
     }
+
+    #[test]
+    fn test_count_circuits_per_table() {
+        for m in 1..=5 {
+            let db = Arc::new(open_db_for_read(m));
+            let iter = db.iterator(rocksdb::IteratorMode::Start);
+
+            let mut count = 0;
+            for item in iter {
+                let (_key, value) = item.expect("RocksDB iter error");
+
+                let mut pos = 0;
+                while pos < value.len() {
+                    if pos + 1 > value.len() {
+                        break;
+                    }
+                    let len = value[pos] as usize;
+                    pos += 1;
+                    if pos + len > value.len() {
+                        break;
+                    }
+                    pos += len;
+                    count += 1;
+                }
+            }
+
+            println!("m={}: {} circuits", m, count);
+        }
+    }
 }
