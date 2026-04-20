@@ -2622,14 +2622,135 @@ fn flush_to_sst(db: &Arc<DB>, pending: &mut Vec<(Vec<u8>, Vec<u8>)>, sst_index: 
     println!("Ingested SST file #{}", *sst_index - 1);
 }
 
+/// Returns the set of wires actually touched by the circuit (appearing in any gate).
+fn touched_wires(circuit: &CircuitSeq) -> Vec<u8> {
+    let mut touched: Vec<u8> = Vec::new();
+    for gate in &circuit.gates {
+        for &w in gate.iter() {
+            if !touched.contains(&w) {
+                touched.push(w);
+            }
+        }
+    }
+    touched.sort();
+    touched
+}
+
+/// Expand an abstract gate (possibly containing UNUSED sentinel) into concrete gates
+/// by substituting actual unused wires into the UNUSED slots.
+/// UNUSED slots are filled with ordered distinct selections from `untouched`.
+fn expand_abstract_gate(gate: [u8; 3], untouched: &[u8]) -> Vec<[u8; 3]> {
+    const UNUSED: u8 = u8::MAX;
+    let slots: Vec<usize> = gate
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| **w == UNUSED)
+        .map(|(i, _)| i)
+        .collect();
+
+    match slots.len() {
+        0 => vec![gate],
+        1 => untouched
+            .iter()
+            .map(|&u0| {
+                let mut g = gate;
+                g[slots[0]] = u0;
+                g
+            })
+            .collect(),
+        2 => {
+            let mut result = Vec::new();
+            for &u0 in untouched {
+                for &u1 in untouched {
+                    if u1 == u0 {
+                        continue;
+                    }
+                    let mut g = gate;
+                    g[slots[0]] = u0;
+                    g[slots[1]] = u1;
+                    result.push(g);
+                }
+            }
+            result
+        }
+        3 => {
+            let mut result = Vec::new();
+            for &u0 in untouched {
+                for &u1 in untouched {
+                    if u1 == u0 {
+                        continue;
+                    }
+                    for &u2 in untouched {
+                        if u2 == u0 || u2 == u1 {
+                            continue;
+                        }
+                        let mut g = gate;
+                        g[slots[0]] = u0;
+                        g[slots[1]] = u1;
+                        g[slots[2]] = u2;
+                        result.push(g);
+                    }
+                }
+            }
+            result
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// For a given circuit, enumerate all concrete gates worth trying when
+/// appending or prepending a gate. Exploits the symmetry that all untouched
+/// wires are equivalent, collapsing them into one representative (UNUSED sentinel)
+/// for enumeration then expanding back to concrete gates.
+///
+/// For a circuit touching k wires out of n total (with n-k untouched), the
+/// number of abstract options is:
+///   k*(k-1)*(k-2)          -- all three wires are touched
+///   + k*(k-1)              -- two touched, one untouched
+///   + k                    -- one touched, two untouched  
+///   + 1                    -- all three untouched (if n-k >= 3)
+/// Each abstract option expands to 1, (n-k), (n-k)*(n-k-1), or (n-k)*(n-k-1)*(n-k-2)
+/// concrete gates respectively.
+pub fn abstract_gates_for_circuit(circuit: &CircuitSeq, n: usize) -> Vec<[u8; 3]> {
+    const UNUSED: u8 = u8::MAX;
+
+    let touched = touched_wires(circuit);
+    let untouched: Vec<u8> = (0..n as u8)
+        .filter(|w| !touched.contains(w))
+        .collect();
+
+    // Abstract wire set: touched wires + one UNUSED representative if any untouched exist
+    let abstract_wires: Vec<u8> = {
+        let mut w = touched.clone();
+        if !untouched.is_empty() {
+            w.push(UNUSED);
+        }
+        w
+    };
+
+    let mut result = Vec::new();
+    for &a in &abstract_wires {
+        for &b in &abstract_wires {
+            if b == a {
+                continue;
+            }
+            for &c in &abstract_wires {
+                if c == a || c == b {
+                    continue;
+                }
+                result.extend(expand_abstract_gate([a, b, c], &untouched));
+            }
+        }
+    }
+    result
+}
+
 pub fn build_from_rocks(
     old_db: &Arc<DB>,
     new_db: &Arc<DB>,
     m: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Running build (max CPU)");
-
-    let base_gates: Arc<Vec<[u8; 3]>> = Arc::new(base_gates(3 * m));
 
     let total_rows = old_db
         .property_int_value("rocksdb.estimate-num-keys")
@@ -2639,6 +2760,9 @@ pub fn build_from_rocks(
 
     let chunk_size = 500_000;
     let batch_size = 10_000;
+
+    // Upper bound for progress reporting — actual work will be less due to abstract gates
+    let upper_bound_gates = base_gates(3 * m).len();
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     {
@@ -2653,11 +2777,10 @@ pub fn build_from_rocks(
     // Tuple: (circuit, canon polys, forward key, reversed key)
     let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)>>(100_000);
     let stop_flag_clone = stop_flag.clone();
-    let base_gates_for_thread = Arc::clone(&base_gates);
     let new_db_writer = Arc::clone(new_db);
 
     let insert_handle = std::thread::spawn(move || {
-        let total_circuits = total_rows as usize * base_gates_for_thread.len() * 2;
+        let total_circuits = total_rows as usize * upper_bound_gates * 2;
         let mut attempted_inserts = 0;
         let mut sst_index = 0usize;
         let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
@@ -2670,7 +2793,7 @@ pub fn build_from_rocks(
                 break;
             }
 
-            for (circuit, canon, key, rev_key) in &batch {
+            for (circuit, _canon, key, rev_key) in &batch {
                 // Second gate: check if the reverse of this circuit is already
                 // pending from this batch (parallel producers can't see each other)
                 if pending_keys.contains(rev_key.as_slice()) {
@@ -2722,7 +2845,6 @@ pub fn build_from_rocks(
             })
             .collect();
 
-        let base_gates_par = Arc::clone(&base_gates);
         let stop_flag_par = Arc::clone(&stop_flag);
         let tx_par = tx.clone();
         let new_db_par = Arc::clone(new_db);
@@ -2732,96 +2854,112 @@ pub fn build_from_rocks(
                 return;
             }
 
-            let mut local_results =
-                Vec::with_capacity(entry_chunk.len() * base_gates_par.len() * 2);
+            let mut local_results = Vec::new();
 
             for (_key, value) in entry_chunk {
-                // Parse first circuit blob from value list
+                // Parse all circuit blobs from value list
                 if value.is_empty() {
                     continue;
                 }
-                let len = value[0] as usize;
-                if 1 + len > value.len() {
-                    continue;
-                }
-                let circuit_blob = &value[1..1 + len];
-                let old_circuit = CircuitSeq::from_blob(circuit_blob);
 
-                let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
-                prefix.extend_from_slice(&old_circuit.gates);
+                let mut pos = 0;
+                while pos < value.len() {
+                    if pos + 1 > value.len() {
+                        break;
+                    }
+                    let len = value[pos] as usize;
+                    pos += 1;
+                    if pos + len > value.len() {
+                        break;
+                    }
+                    let circuit_blob = &value[pos..pos + len];
+                    pos += len;
 
-                for g in base_gates_par.iter() {
-                    let mut q1 = prefix.clone();
-                    q1.push(*g);
-                    let mut c1 = CircuitSeq { gates: q1.to_vec() };
-                    c1.canonicalize();
-                    let canon1 = canonicalize_polys(c1.to_polynomial(3 * m, 0, m), true);
-                    c1.rewire(&canon1.1.invert(), 3 * m);
-                    c1.canonicalize();
+                    let old_circuit = CircuitSeq::from_blob(circuit_blob);
 
-                    // Compute forward key for c1
-                    let c1_blob = polys_repr_blob(&canon1.0);
-                    let c1_hash: u128 = xxh3_128(&c1_blob);
-                    let c1_key = c1_hash.to_le_bytes().to_vec();
+                    let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
+                    prefix.extend_from_slice(&old_circuit.gates);
 
-                    // Compute reversed key for c1 in parallel
-                    let mut c1_rev = c1.clone();
-                    c1_rev.gates.reverse();
-                    c1_rev.canonicalize();
-                    let canon1_rev = canonicalize_polys(c1_rev.to_polynomial(3 * m, 0, m), true);
-                    let c1_rev_blob = polys_repr_blob(&canon1_rev.0);
-                    let c1_rev_hash: u128 = xxh3_128(&c1_rev_blob);
-                    let c1_rev_key = c1_rev_hash.to_le_bytes().to_vec();
+                    // Compute per-circuit gate list based on touched/untouched wires
+                    let gates = abstract_gates_for_circuit(&old_circuit, 3 * m);
 
-                    let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
-                    q2.push(*g);
-                    q2.extend_from_slice(&prefix);
-                    let mut c2 = CircuitSeq { gates: q2.to_vec() };
-                    c2.canonicalize();
-                    let canon2 = canonicalize_polys(c2.to_polynomial(3 * m, 0, m), true);
-                    c2.rewire(&canon2.1.invert(), 3 * m);
-                    c2.canonicalize();
+                    for g in gates.iter() {
+                        let mut q1 = prefix.clone();
+                        q1.push(*g);
+                        let mut c1 = CircuitSeq { gates: q1.to_vec() };
+                        c1.canonicalize();
+                        let canon1 = canonicalize_polys(c1.to_polynomial(3 * m, 0, m), true);
+                        c1.rewire(&canon1.1.invert(), 3 * m);
+                        c1.canonicalize();
 
-                    // Compute forward key for c2
-                    let c2_blob = polys_repr_blob(&canon2.0);
-                    let c2_hash: u128 = xxh3_128(&c2_blob);
-                    let c2_key = c2_hash.to_le_bytes().to_vec();
+                        // Compute forward key for c1
+                        let c1_blob = polys_repr_blob(&canon1.0);
+                        let c1_hash: u128 = xxh3_128(&c1_blob);
+                        let c1_key = c1_hash.to_le_bytes().to_vec();
 
-                    // Compute reversed key for c2 in parallel
-                    let mut c2_rev = c2.clone();
-                    c2_rev.gates.reverse();
-                    c2_rev.canonicalize();
-                    let canon2_rev = canonicalize_polys(c2_rev.to_polynomial(3 * m, 0, m), true);
-                    let c2_rev_blob = polys_repr_blob(&canon2_rev.0);
-                    let c2_rev_hash: u128 = xxh3_128(&c2_rev_blob);
-                    let c2_rev_key = c2_rev_hash.to_le_bytes().to_vec();
+                        // Compute reversed key for c1 in parallel
+                        let mut c1_rev = c1.clone();
+                        c1_rev.gates.reverse();
+                        c1_rev.canonicalize();
+                        let canon1_rev =
+                            canonicalize_polys(c1_rev.to_polynomial(3 * m, 0, m), true);
+                        let c1_rev_blob = polys_repr_blob(&canon1_rev.0);
+                        let c1_rev_hash: u128 = xxh3_128(&c1_rev_blob);
+                        let c1_rev_key = c1_rev_hash.to_le_bytes().to_vec();
 
-                    // First gate: check db in parallel (bloom filter makes this fast)
-                    if !c1.adjacent_id() {
-                        let rev_in_db = new_db_par.get(&c1_rev_key).unwrap_or(None).is_some();
-                        if !rev_in_db {
-                            local_results.push((c1, canon1.0, c1_key, c1_rev_key));
+                        let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
+                        q2.push(*g);
+                        q2.extend_from_slice(&prefix);
+                        let mut c2 = CircuitSeq { gates: q2.to_vec() };
+                        c2.canonicalize();
+                        let canon2 = canonicalize_polys(c2.to_polynomial(3 * m, 0, m), true);
+                        c2.rewire(&canon2.1.invert(), 3 * m);
+                        c2.canonicalize();
+
+                        // Compute forward key for c2
+                        let c2_blob = polys_repr_blob(&canon2.0);
+                        let c2_hash: u128 = xxh3_128(&c2_blob);
+                        let c2_key = c2_hash.to_le_bytes().to_vec();
+
+                        // Compute reversed key for c2 in parallel
+                        let mut c2_rev = c2.clone();
+                        c2_rev.gates.reverse();
+                        c2_rev.canonicalize();
+                        let canon2_rev =
+                            canonicalize_polys(c2_rev.to_polynomial(3 * m, 0, m), true);
+                        let c2_rev_blob = polys_repr_blob(&canon2_rev.0);
+                        let c2_rev_hash: u128 = xxh3_128(&c2_rev_blob);
+                        let c2_rev_key = c2_rev_hash.to_le_bytes().to_vec();
+
+                        // First gate: check db in parallel (bloom filter makes this fast)
+                        if !c1.adjacent_id() {
+                            let rev_in_db =
+                                new_db_par.get(&c1_rev_key).unwrap_or(None).is_some();
+                            if !rev_in_db {
+                                local_results.push((c1, canon1.0, c1_key, c1_rev_key));
+                            }
+                        }
+                        if !c2.adjacent_id() {
+                            let rev_in_db =
+                                new_db_par.get(&c2_rev_key).unwrap_or(None).is_some();
+                            if !rev_in_db {
+                                local_results.push((c2, canon2.0, c2_key, c2_rev_key));
+                            }
                         }
                     }
-                    if !c2.adjacent_id() {
-                        let rev_in_db = new_db_par.get(&c2_rev_key).unwrap_or(None).is_some();
-                        if !rev_in_db {
-                            local_results.push((c2, canon2.0, c2_key, c2_rev_key));
+
+                    while local_results.len() >= batch_size {
+                        let drain_start = local_results.len() - batch_size;
+                        let batch = local_results.split_off(drain_start);
+                        if let Err(e) = tx_par.send(batch) {
+                            eprintln!("Failed to send batch: {:?}", e);
+                            return;
                         }
                     }
-                }
 
-                while local_results.len() >= batch_size {
-                    let drain_start = local_results.len() - batch_size;
-                    let batch = local_results.split_off(drain_start);
-                    if let Err(e) = tx_par.send(batch) {
-                        eprintln!("Failed to send batch: {:?}", e);
+                    if stop_flag_par.load(Ordering::SeqCst) {
                         return;
                     }
-                }
-
-                if stop_flag_par.load(Ordering::SeqCst) {
-                    return;
                 }
             }
 
