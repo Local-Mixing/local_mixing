@@ -2650,7 +2650,8 @@ pub fn build_from_rocks(
         .expect("Error setting CTRL+C handler");
     }
 
-    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(100_000);
+    // Tuple: (circuit, canon polys, forward key, reversed key)
+    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)>>(100_000);
     let stop_flag_clone = stop_flag.clone();
     let base_gates_for_thread = Arc::clone(&base_gates);
     let new_db_writer = Arc::clone(new_db);
@@ -2660,6 +2661,7 @@ pub fn build_from_rocks(
         let mut attempted_inserts = 0;
         let mut sst_index = 0usize;
         let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        // Tracks forward keys already in pending to catch same-batch reverse pairs
         let mut pending_keys: HashSet<Vec<u8>> = HashSet::new();
 
         while let Ok(batch) = rx.recv() {
@@ -2668,18 +2670,10 @@ pub fn build_from_rocks(
                 break;
             }
 
-            for (circuit, canon, rev_key) in &batch {
-                let canon_blob = polys_repr_blob(canon);
-                let hash: u128 = xxh3_128(&canon_blob);
-                let key = hash.to_le_bytes().to_vec();
-
-                // Skip if reversed key is already in pending 
+            for (circuit, canon, key, rev_key) in &batch {
+                // Second gate: check if the reverse of this circuit is already
+                // pending from this batch (parallel producers can't see each other)
                 if pending_keys.contains(rev_key.as_slice()) {
-                    continue;
-                }
-
-                // Skip if reversed key is already in the db
-                if new_db_writer.get(rev_key).unwrap_or(None).is_some() {
                     continue;
                 }
 
@@ -2687,7 +2681,7 @@ pub fn build_from_rocks(
                 let value = encode_circuit(&circuit_blob);
 
                 pending_keys.insert(key.clone());
-                pending.push((key, value));
+                pending.push((key.clone(), value));
             }
 
             attempted_inserts += batch.len();
@@ -2731,6 +2725,7 @@ pub fn build_from_rocks(
         let base_gates_par = Arc::clone(&base_gates);
         let stop_flag_par = Arc::clone(&stop_flag);
         let tx_par = tx.clone();
+        let new_db_par = Arc::clone(new_db);
 
         entries.par_chunks(500).for_each(|entry_chunk| {
             if stop_flag_par.load(Ordering::SeqCst) {
@@ -2764,7 +2759,12 @@ pub fn build_from_rocks(
                     c1.rewire(&canon1.1.invert(), 3 * m);
                     c1.canonicalize();
 
-                    // Check reversed c1
+                    // Compute forward key for c1
+                    let c1_blob = polys_repr_blob(&canon1.0);
+                    let c1_hash: u128 = xxh3_128(&c1_blob);
+                    let c1_key = c1_hash.to_le_bytes().to_vec();
+
+                    // Compute reversed key for c1 in parallel
                     let mut c1_rev = c1.clone();
                     c1_rev.gates.reverse();
                     c1_rev.canonicalize();
@@ -2782,7 +2782,12 @@ pub fn build_from_rocks(
                     c2.rewire(&canon2.1.invert(), 3 * m);
                     c2.canonicalize();
 
-                    // Check reversed c2
+                    // Compute forward key for c2
+                    let c2_blob = polys_repr_blob(&canon2.0);
+                    let c2_hash: u128 = xxh3_128(&c2_blob);
+                    let c2_key = c2_hash.to_le_bytes().to_vec();
+
+                    // Compute reversed key for c2 in parallel
                     let mut c2_rev = c2.clone();
                     c2_rev.gates.reverse();
                     c2_rev.canonicalize();
@@ -2791,11 +2796,18 @@ pub fn build_from_rocks(
                     let c2_rev_hash: u128 = xxh3_128(&c2_rev_blob);
                     let c2_rev_key = c2_rev_hash.to_le_bytes().to_vec();
 
+                    // First gate: check db in parallel (bloom filter makes this fast)
                     if !c1.adjacent_id() {
-                        local_results.push((c1, canon1.0, c1_rev_key));
+                        let rev_in_db = new_db_par.get(&c1_rev_key).unwrap_or(None).is_some();
+                        if !rev_in_db {
+                            local_results.push((c1, canon1.0, c1_key, c1_rev_key));
+                        }
                     }
                     if !c2.adjacent_id() {
-                        local_results.push((c2, canon2.0, c2_rev_key));
+                        let rev_in_db = new_db_par.get(&c2_rev_key).unwrap_or(None).is_some();
+                        if !rev_in_db {
+                            local_results.push((c2, canon2.0, c2_key, c2_rev_key));
+                        }
                     }
                 }
 
