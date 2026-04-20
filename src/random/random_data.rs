@@ -2650,7 +2650,7 @@ pub fn build_from_rocks(
         .expect("Error setting CTRL+C handler");
     }
 
-    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>)>>(100_000);
+    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(100_000);
     let stop_flag_clone = stop_flag.clone();
     let base_gates_for_thread = Arc::clone(&base_gates);
     let new_db_writer = Arc::clone(new_db);
@@ -2660,6 +2660,7 @@ pub fn build_from_rocks(
         let mut attempted_inserts = 0;
         let mut sst_index = 0usize;
         let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        let mut pending_keys: HashSet<Vec<u8>> = HashSet::new();
 
         while let Ok(batch) = rx.recv() {
             if stop_flag_clone.load(Ordering::SeqCst) {
@@ -2667,35 +2668,25 @@ pub fn build_from_rocks(
                 break;
             }
 
-            for (circuit, canon) in &batch {
+            for (circuit, canon, rev_key) in &batch {
                 let canon_blob = polys_repr_blob(canon);
                 let hash: u128 = xxh3_128(&canon_blob);
                 let key = hash.to_le_bytes().to_vec();
 
-                // Check if the reversed circuit's canonical form is already a key
-                // in either pending or the db. If so, skip this circuit entirely.
-                let mut reversed_circuit = circuit.clone();
-                reversed_circuit.gates.reverse();
-                reversed_circuit.canonicalize();
-                let reversed_canon = canonicalize_polys(reversed_circuit.to_polynomial(3 * m, 0, m), true);
-                let reversed_blob = polys_repr_blob(&reversed_canon.0);
-                let reversed_hash: u128 = xxh3_128(&reversed_blob);
-                let reversed_key = reversed_hash.to_le_bytes().to_vec();
-
-                // Skip if reversed key is already in pending
-                let in_pending = pending.iter().any(|(k, _)| k == &reversed_key);
-                if in_pending {
+                // Skip if reversed key is already in pending 
+                if pending_keys.contains(rev_key.as_slice()) {
                     continue;
                 }
 
                 // Skip if reversed key is already in the db
-                if new_db_writer.get(&reversed_key).unwrap_or(None).is_some() {
+                if new_db_writer.get(rev_key).unwrap_or(None).is_some() {
                     continue;
                 }
 
                 let circuit_blob = circuit.repr_blob();
                 let value = encode_circuit(&circuit_blob);
 
+                pending_keys.insert(key.clone());
                 pending.push((key, value));
             }
 
@@ -2710,12 +2701,14 @@ pub fn build_from_rocks(
             // Flush to SST every 1M pending entries to bound RAM usage
             if pending.len() >= 1_000_000 {
                 flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
+                pending_keys.clear();
             }
         }
 
         // Flush any remaining
         if !pending.is_empty() {
             flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
+            pending_keys.clear();
         }
 
         println!("Insertion thread finished");
@@ -2770,6 +2763,16 @@ pub fn build_from_rocks(
                     let canon1 = canonicalize_polys(c1.to_polynomial(3 * m, 0, m), true);
                     c1.rewire(&canon1.1.invert(), 3 * m);
                     c1.canonicalize();
+
+                    // Check reversed c1
+                    let mut c1_rev = c1.clone();
+                    c1_rev.gates.reverse();
+                    c1_rev.canonicalize();
+                    let canon1_rev = canonicalize_polys(c1_rev.to_polynomial(3 * m, 0, m), true);
+                    let c1_rev_blob = polys_repr_blob(&canon1_rev.0);
+                    let c1_rev_hash: u128 = xxh3_128(&c1_rev_blob);
+                    let c1_rev_key = c1_rev_hash.to_le_bytes().to_vec();
+
                     let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
                     q2.push(*g);
                     q2.extend_from_slice(&prefix);
@@ -2778,11 +2781,21 @@ pub fn build_from_rocks(
                     let canon2 = canonicalize_polys(c2.to_polynomial(3 * m, 0, m), true);
                     c2.rewire(&canon2.1.invert(), 3 * m);
                     c2.canonicalize();
+
+                    // Check reversed c2
+                    let mut c2_rev = c2.clone();
+                    c2_rev.gates.reverse();
+                    c2_rev.canonicalize();
+                    let canon2_rev = canonicalize_polys(c2_rev.to_polynomial(3 * m, 0, m), true);
+                    let c2_rev_blob = polys_repr_blob(&canon2_rev.0);
+                    let c2_rev_hash: u128 = xxh3_128(&c2_rev_blob);
+                    let c2_rev_key = c2_rev_hash.to_le_bytes().to_vec();
+
                     if !c1.adjacent_id() {
-                        local_results.push((c1, canon1.0));
+                        local_results.push((c1, canon1.0, c1_rev_key));
                     }
                     if !c2.adjacent_id() {
-                        local_results.push((c2, canon2.0));
+                        local_results.push((c2, canon2.0, c2_rev_key));
                     }
                 }
 
