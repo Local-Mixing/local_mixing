@@ -2749,20 +2749,20 @@ pub fn build_from_rocks(
                     let canon1 = canonicalize_polys(c1.to_polynomial(3 * m, 0, m), true);
                     c1.rewire(&canon1.1.invert(), 3 * m);
                     c1.canonicalize();
-                    let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
-                    q2.push(*g);
-                    q2.extend_from_slice(&prefix);
-                    let mut c2 = CircuitSeq { gates: q2.to_vec() };
-                    c2.canonicalize();
-                    let canon2 = canonicalize_polys(c2.to_polynomial(3 * m, 0, m), true);
-                    c2.rewire(&canon2.1.invert(), 3 * m);
-                    c2.canonicalize();
+                    // let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
+                    // q2.push(*g);
+                    // q2.extend_from_slice(&prefix);
+                    // let mut c2 = CircuitSeq { gates: q2.to_vec() };
+                    // c2.canonicalize();
+                    // let canon2 = canonicalize_polys(c2.to_polynomial(3 * m, 0, m), true);
+                    // c2.rewire(&canon2.1.invert(), 3 * m);
+                    // c2.canonicalize();
                     if !c1.adjacent_id() {
                         local_results.push((c1, canon1.0));
                     }
-                    if !c2.adjacent_id() {
-                        local_results.push((c2, canon2.0));
-                    }
+                    // if !c2.adjacent_id() {
+                    //     local_results.push((c2, canon2.0));
+                    // }
                 }
 
                 while local_results.len() >= batch_size {
