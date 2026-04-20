@@ -4372,4 +4372,24 @@ mod tests {
 
         println!("Total circuits: {}", count);
     }
+
+    #[test]
+    fn test_base_gate_canonicalization() {
+        use crate::circuit::circuit::poly_to_str;
+        let gates = base_gates(3);
+
+        for g in gates.iter() {
+            let c = CircuitSeq { gates: vec![*g] };
+            let canon = canonicalize_polys(c.to_polynomial(3, 0, 1), true);
+            let mut c = CircuitSeq { gates: vec![*g] };
+            c.rewire(&canon.1, 3);
+
+            println!("Gate: {:?}", g);
+            println!("Rewired circuit: {}", c.repr());
+            for (i, poly) in canon.0.iter().enumerate() {
+                println!("  P{}: {}", i, poly_to_str(poly, 3));
+            }
+            println!();
+        }
+    }
 }
