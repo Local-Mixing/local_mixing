@@ -35,6 +35,11 @@ use local_mixing::{
         }, transpositions::{generate_reversible, insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x}
     },
 };
+use local_mixing::random::random_data::open_db_for_read;
+use local_mixing::random::random_data::open_db_for_write;
+use std::sync::Arc;
+use local_mixing::random::random_data::build_from_rocks;
+use local_mixing::random::random_data::build_m1;
 
 const ROCKSDB_N6M5_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
 const ROCKSDB_N7M4_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
@@ -1038,6 +1043,18 @@ Command::new("equal")
                     .help("Path to second circuit file"),
             )
     )
+    .subcommand(
+Command::new("rocksdb_1")
+            .about("Create m sized rocks_db based on m-1")
+            .arg(
+                Arg::new("m")
+                    .short('m')
+                    .long("m")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of gates"),
+            )
+    )
     .get_matches();
 
     match matches.subcommand() {
@@ -1957,6 +1974,16 @@ Command::new("equal")
                 .expect("Failed to create new file");
             write!(file, "{}", circuit.repr())
                 .expect("Failed to write random circuit to file");
+        }
+        Some(("rocksdb_1", sub)) => {
+            let m: usize = *sub.get_one("m").expect("Missing -n <wires>");
+            let new_db = Arc::new(open_db_for_write(m));
+            if m == 1 {
+                build_m1(&new_db).expect("build_m1 failed");
+            } else {
+                let old_db = Arc::new(open_db_for_read(m - 1));
+                build_from_rocks(&old_db, &new_db, m).expect("build_from_rocks failed");
+            }
         }
         _ => unreachable!(),
     }

@@ -18,12 +18,15 @@ use rayon::{
     slice::ParallelSlice,
 };
 use duckdb::{Connection, AccessMode, Config};
-use rocksdb::{DB, WriteBatch, Options, BlockBasedOptions, SstFileWriter, IngestExternalFileOptions};
+use rocksdb::{
+    DB, Options, BlockBasedOptions, SstFileWriter, IngestExternalFileOptions,
+    MergeOperands, DBCompressionType, Cache,
+};
+use xxhash_rust::xxh3::xxh3_128;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use xxhash_rust::xxh3::xxh3_128;
 use std::{
     collections::{HashMap, HashSet},
     fs::OpenOptions,
@@ -2423,31 +2426,80 @@ pub fn build_from_sql(
     Ok(())
 }
 
+/// Merge operator — appends new circuit blobs to existing list, deduplicating.
+/// Value format: [u8 len | blob bytes | ...]
+fn append_merge(
+    _key: &[u8],
+    existing: Option<&[u8]>,
+    operands: &MergeOperands,
+) -> Option<Vec<u8>> {
+    let mut result: Vec<u8> = existing.unwrap_or(&[]).to_vec();
+
+    for operand in operands {
+        let mut pos = 0;
+        while pos + 1 <= operand.len() {
+            let len = operand[pos] as usize;
+            pos += 1;
+            if pos + len > operand.len() {
+                break;
+            }
+            let new_blob = &operand[pos..pos + len];
+            pos += len;
+
+            // Check for duplicate in result
+            let mut rpos = 0;
+            let mut found = false;
+            while rpos + 1 <= result.len() {
+                let rlen = result[rpos] as usize;
+                rpos += 1;
+                if rpos + rlen > result.len() {
+                    break;
+                }
+                if &result[rpos..rpos + rlen] == new_blob {
+                    found = true;
+                    break;
+                }
+                rpos += rlen;
+            }
+
+            if !found {
+                result.push(new_blob.len() as u8);
+                result.extend_from_slice(new_blob);
+            }
+        }
+    }
+
+    Some(result)
+}
+
 pub fn open_db_for_write(m: usize) -> DB {
     let path = format!("rocks_db_m{}", m);
     let mut opts = Options::default();
     opts.create_if_missing(true);
 
-    // Parallelism
+    opts.set_merge_operator_associative("append_merge", append_merge);
+
+    // Disable WAL for faster bulk ingestion — no recovery needed
+    opts.set_manual_wal_flush(true);
+
     opts.increase_parallelism(num_cpus::get() as i32);
     opts.set_max_background_jobs(8);
 
-    // Larger memtable = fewer flushes
-    opts.set_write_buffer_size(256 * 1024 * 1024); // 256 MB
+    opts.set_write_buffer_size(256 * 1024 * 1024);
     opts.set_max_write_buffer_number(4);
     opts.set_min_write_buffer_number_to_merge(2);
 
-    // Compaction
     opts.set_level_zero_file_num_compaction_trigger(10);
     opts.set_max_bytes_for_level_base(512 * 1024 * 1024);
     opts.set_max_bytes_for_level_multiplier(10.0);
     opts.set_num_levels(7);
 
-    // Compression — none on hot levels, zstd on cold
-    opts.set_compression_type(rocksdb::DBCompressionType::None);
-    opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
+    opts.set_compression_type(DBCompressionType::None);
+    opts.set_bottommost_compression_type(DBCompressionType::Zstd);
 
-    // Block options
+    // 16 byte prefix for xxHash128
+    opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+
     let mut block_opts = BlockBasedOptions::default();
     block_opts.set_bloom_filter(10.0, false);
     block_opts.set_block_size(16 * 1024);
@@ -2462,51 +2514,132 @@ pub fn open_db_for_read(m: usize) -> DB {
     let mut opts = Options::default();
     opts.create_if_missing(false);
 
-    // Parallelism for background reads
+    // Must register merge operator even for reads
+    opts.set_merge_operator_associative("append_merge", append_merge);
+
     opts.increase_parallelism(num_cpus::get() as i32);
 
-    // Large block cache so hot keys stay in RAM
-    let cache = rocksdb::Cache::new_lru_cache(4 * 1024 * 1024 * 1024); // 4 GB
+    opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+
+    let cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024);
     let mut block_opts = BlockBasedOptions::default();
     block_opts.set_block_cache(&cache);
     block_opts.set_block_size(16 * 1024);
-
-    // Bloom filter is the most important setting for key lookup —
-    // lets RocksDB skip SST files that definitely don't contain the key
     block_opts.set_bloom_filter(10.0, false);
     block_opts.set_cache_index_and_filter_blocks(true);
     block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
-
     opts.set_block_based_table_factory(&block_opts);
 
-    // No compaction needed for read-only workload
     opts.set_disable_auto_compactions(true);
 
     DB::open_for_read_only(&opts, path, false).expect("Failed to open RocksDB for read")
 }
 
-// Given mY, attempt to build the corresponding table for m{Y+1}
+/// Encode a single circuit blob as a length-prefixed entry
+fn encode_circuit(circuit_blob: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(1 + circuit_blob.len());
+    v.push(circuit_blob.len() as u8);
+    v.extend_from_slice(circuit_blob);
+    v
+}
+
+/// Merge duplicate keys in a sorted list, deduplicating circuit blobs
+fn merge_sorted_entries(entries: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut merged: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+
+    for (key, value) in entries {
+        if let Some(last) = merged.last_mut() {
+            if last.0 == key {
+                // value is [u8 len | blob], extract the blob
+                if value.is_empty() {
+                    continue;
+                }
+                let new_len = value[0] as usize;
+                if 1 + new_len > value.len() {
+                    continue;
+                }
+                let new_blob = &value[1..1 + new_len];
+
+                // Scan existing blobs for duplicate
+                let mut rpos = 0;
+                let mut found = false;
+                while rpos + 1 <= last.1.len() {
+                    let rlen = last.1[rpos] as usize;
+                    rpos += 1;
+                    if rpos + rlen > last.1.len() {
+                        break;
+                    }
+                    if &last.1[rpos..rpos + rlen] == new_blob {
+                        found = true;
+                        break;
+                    }
+                    rpos += rlen;
+                }
+
+                if !found {
+                    last.1.push(new_len as u8);
+                    last.1.extend_from_slice(new_blob);
+                }
+                continue;
+            }
+        }
+        merged.push((key, value));
+    }
+
+    merged
+}
+
+fn flush_to_sst(db: &Arc<DB>, pending: &mut Vec<(Vec<u8>, Vec<u8>)>, sst_index: &mut usize) {
+    if pending.is_empty() {
+        return;
+    }
+
+    // Sort by key — required for SST ingestion
+    pending.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+
+    let merged = merge_sorted_entries(std::mem::take(pending));
+
+    let sst_path = format!("/tmp/sst_{}.sst", sst_index);
+    *sst_index += 1;
+
+    let mut opts = Options::default();
+    opts.set_merge_operator_associative("append_merge", append_merge);
+    opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+
+    let mut writer = SstFileWriter::create(&opts);
+    writer.open(&sst_path).expect("Failed to open SST writer");
+
+    for (key, value) in &merged {
+        writer.put(key, value).expect("Failed to write SST entry");
+    }
+    writer.finish().expect("Failed to finish SST file");
+
+    let mut ingest_opts = IngestExternalFileOptions::default();
+    ingest_opts.set_move_files(true);
+    db.ingest_external_file_opts(&ingest_opts, vec![sst_path.clone()])
+        .expect("Failed to ingest SST file");
+
+    println!("Ingested SST file #{}", *sst_index - 1);
+}
+
 pub fn build_from_rocks(
     old_db: &Arc<DB>,
     new_db: &Arc<DB>,
     m: usize,
-    bit_shuf: &Vec<Vec<usize>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Running build (max CPU)");
 
-    let base_gates: Arc<Vec<[u8; 3]>> = Arc::new(base_gates(15));
+    let base_gates: Arc<Vec<[u8; 3]>> = Arc::new(base_gates(3 * m));
 
-    // estimate on total rows
     let total_rows = old_db
         .property_int_value("rocksdb.estimate-num-keys")
         .unwrap()
         .unwrap_or(0);
     println!("Estimated rows: {}", total_rows);
 
-    let batch_size = 10_000;
     let chunk_size = 50_000;
+    let batch_size = 10_000;
 
-    // Atomic flag for CTRL+C
     let stop_flag = Arc::new(AtomicBool::new(false));
     {
         let stop_flag = stop_flag.clone();
@@ -2517,16 +2650,16 @@ pub fn build_from_rocks(
         .expect("Error setting CTRL+C handler");
     }
 
-    // Bounded channel for insertion
     let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>)>>(10_000);
-    let db_writer = Arc::clone(new_db);
     let stop_flag_clone = stop_flag.clone();
     let base_gates_for_thread = Arc::clone(&base_gates);
+    let new_db_writer = Arc::clone(new_db);
 
-    // Spawn insertion thread
     let insert_handle = std::thread::spawn(move || {
         let total_circuits = total_rows as usize * base_gates_for_thread.len() * 2;
         let mut attempted_inserts = 0;
+        let mut sst_index = 0usize;
+        let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
 
         while let Ok(batch) = rx.recv() {
             if stop_flag_clone.load(Ordering::SeqCst) {
@@ -2534,22 +2667,15 @@ pub fn build_from_rocks(
                 break;
             }
 
-            let mut wb = WriteBatch::default();
-
             for (circuit, canon) in &batch {
-                let canon_blob = polys_repr_blob(&canon);
+                let canon_blob = polys_repr_blob(canon);
                 let hash: u128 = xxh3_128(&canon_blob);
+                let key = hash.to_le_bytes().to_vec();
 
                 let circuit_blob = circuit.repr_blob();
-                let mut key = Vec::with_capacity(16 + circuit_blob.len());
-                key.extend_from_slice(&hash.to_le_bytes());
-                key.extend_from_slice(&circuit_blob);
+                let value = encode_circuit(&circuit_blob);
 
-                wb.put(&key, &[]);
-            }
-
-            if let Err(e) = db_writer.write(wb) {
-                eprintln!("Error writing batch to RocksDB: {:?}", e);
+                pending.push((key, value));
             }
 
             attempted_inserts += batch.len();
@@ -2559,12 +2685,21 @@ pub fn build_from_rocks(
                 total_circuits,
                 (attempted_inserts as f64 / total_circuits as f64) * 100.0
             );
+
+            // Flush to SST every 1M pending entries to bound RAM usage
+            if pending.len() >= 1_000_000 {
+                flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
+            }
+        }
+
+        // Flush any remaining
+        if !pending.is_empty() {
+            flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
         }
 
         println!("Insertion thread finished");
     });
 
-    // Stream iterator in chunks to avoid loading all keys into RAM
     let iter = old_db.iterator(rocksdb::IteratorMode::Start);
 
     for chunk in &iter.chunks(chunk_size) {
@@ -2572,10 +2707,10 @@ pub fn build_from_rocks(
             break;
         }
 
-        let keys: Vec<Vec<u8>> = chunk
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = chunk
             .map(|item| {
-                let (k, _v) = item.expect("RocksDB iter error");
-                k.to_vec()
+                let (k, v) = item.expect("RocksDB iter error");
+                (k.to_vec(), v.to_vec())
             })
             .collect();
 
@@ -2583,16 +2718,24 @@ pub fn build_from_rocks(
         let stop_flag_par = Arc::clone(&stop_flag);
         let tx_par = tx.clone();
 
-        keys.par_chunks(500).for_each(|key_chunk| {
+        entries.par_chunks(500).for_each(|entry_chunk| {
             if stop_flag_par.load(Ordering::SeqCst) {
                 return;
             }
 
             let mut local_results =
-                Vec::with_capacity(key_chunk.len() * base_gates_par.len() * 2);
+                Vec::with_capacity(entry_chunk.len() * base_gates_par.len() * 2);
 
-            for key in key_chunk {
-                let circuit_blob = &key[16..];
+            for (_key, value) in entry_chunk {
+                // Parse first circuit blob from value list
+                if value.is_empty() {
+                    continue;
+                }
+                let len = value[0] as usize;
+                if 1 + len > value.len() {
+                    continue;
+                }
+                let circuit_blob = &value[1..1 + len];
                 let old_circuit = CircuitSeq::from_blob(circuit_blob);
 
                 let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
@@ -2603,8 +2746,8 @@ pub fn build_from_rocks(
                     q1.push(*g);
                     let mut c1 = CircuitSeq { gates: q1.to_vec() };
                     c1.canonicalize();
-                    let canon1 = canonicalize_polys(c1.to_polynomial(15, 0, m), true);
-                    c1.rewire(&canon1.1, 15);
+                    let canon1 = canonicalize_polys(c1.to_polynomial(3 * m, 0, m), true);
+                    c1.rewire(&canon1.1, 3 * m);
 
                     let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
                     q2.push(*g);
@@ -2647,16 +2790,51 @@ pub fn build_from_rocks(
     drop(tx);
     insert_handle.join().expect("Insertion thread panicked");
 
-    // Compact new_db so it's optimally laid out for reads next time it's opened
     if !stop_flag.load(Ordering::SeqCst) {
         println!("Compacting new_db for optimal read performance...");
         new_db.compact_range::<&[u8], &[u8]>(None, None);
         println!("Compaction done.");
     } else {
-        println!("Stopped early, skipping compaction. Run compaction manually before next read.");
+        println!("Stopped early, skipping compaction.");
     }
 
     println!("Build finished (or stopped early).");
+    Ok(())
+}
+
+pub fn build_m1(new_db: &Arc<DB>) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Building m1 base case");
+
+    let gates = base_gates(3);
+    let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut sst_index = 0usize;
+
+    for g in gates.iter() {
+        let c = CircuitSeq { gates: vec![*g] };
+        let canon = canonicalize_polys(c.to_polynomial(3, 0, 1), true);
+        let mut c = c;
+        c.rewire(&canon.1, 3);
+
+        if c.adjacent_id() {
+            continue;
+        }
+
+        let canon_blob = polys_repr_blob(&canon.0);
+        let hash: u128 = xxh3_128(&canon_blob);
+        let key = hash.to_le_bytes().to_vec();
+
+        let circuit_blob = c.repr_blob();
+        let value = encode_circuit(&circuit_blob);
+
+        pending.push((key, value));
+    }
+
+    flush_to_sst(new_db, &mut pending, &mut sst_index);
+
+    println!("Compacting m1 db...");
+    new_db.compact_range::<&[u8], &[u8]>(None, None);
+    println!("Done.");
+
     Ok(())
 }
 
