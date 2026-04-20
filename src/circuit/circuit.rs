@@ -893,10 +893,17 @@ pub fn poly_repr_blob(poly: &Polynomial) -> Vec<u8> {
     blob
 }
 
-pub fn polys_repr_blob(polys: &[Polynomial]) -> Vec<u8> {
-    polys.iter()
-        .flat_map(|poly| poly_repr_blob(poly))
-        .collect()
+pub fn polys_repr_blob(polys: &Vec<Polynomial>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for poly in polys {
+        let mut monomials: Vec<u64> = poly.iter().copied().collect();
+        monomials.sort_unstable();
+        for m in monomials {
+            bytes.extend_from_slice(&m.to_le_bytes());
+        }
+        bytes.extend_from_slice(&u64::MAX.to_le_bytes()); // separator
+    }
+    bytes
 }
 
 // Rewire wire i -> perm[i]
