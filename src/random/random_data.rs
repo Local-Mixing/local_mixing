@@ -4399,9 +4399,12 @@ mod tests {
             let db = Arc::new(open_db_for_read(m));
             let iter = db.iterator(rocksdb::IteratorMode::Start);
 
-            let mut count = 0;
+            let mut key_count = 0;
+            let mut circuit_count = 0;
+
             for item in iter {
                 let (_key, value) = item.expect("RocksDB iter error");
+                key_count += 1;
 
                 let mut pos = 0;
                 while pos < value.len() {
@@ -4414,11 +4417,11 @@ mod tests {
                         break;
                     }
                     pos += len;
-                    count += 1;
+                    circuit_count += 1;
                 }
             }
 
-            println!("m={}: {} circuits", m, count);
+            println!("m={}: {} keys, {} circuits", m, key_count, circuit_count);
         }
     }
 }
