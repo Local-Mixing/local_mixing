@@ -2672,6 +2672,27 @@ pub fn build_from_rocks(
                 let hash: u128 = xxh3_128(&canon_blob);
                 let key = hash.to_le_bytes().to_vec();
 
+                // Check if the reversed circuit's canonical form is already a key
+                // in either pending or the db. If so, skip this circuit entirely.
+                let mut reversed_circuit = circuit.clone();
+                reversed_circuit.gates.reverse();
+                reversed_circuit.canonicalize();
+                let reversed_canon = canonicalize_polys(reversed_circuit.to_polynomial(3 * m, 0, m), true);
+                let reversed_blob = polys_repr_blob(&reversed_canon.0);
+                let reversed_hash: u128 = xxh3_128(&reversed_blob);
+                let reversed_key = reversed_hash.to_le_bytes().to_vec();
+
+                // Skip if reversed key is already in pending
+                let in_pending = pending.iter().any(|(k, _)| k == &reversed_key);
+                if in_pending {
+                    continue;
+                }
+
+                // Skip if reversed key is already in the db
+                if new_db_writer.get(&reversed_key).unwrap_or(None).is_some() {
+                    continue;
+                }
+
                 let circuit_blob = circuit.repr_blob();
                 let value = encode_circuit(&circuit_blob);
 
