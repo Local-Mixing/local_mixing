@@ -2761,8 +2761,10 @@ pub fn build_from_rocks(
     let chunk_size = 500_000;
     let batch_size = 10_000;
 
-    // Upper bound for progress reporting — actual work will be less due to abstract gates
+    // Upper bound for progress reporting — counts as if we tried all base gates
+    // per circuit even though abstract_gates_for_circuit tries fewer
     let upper_bound_gates = base_gates(3 * m).len();
+    let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     {
@@ -2778,8 +2780,10 @@ pub fn build_from_rocks(
     let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)>>(100_000);
     let stop_flag_clone = stop_flag.clone();
     let new_db_writer = Arc::clone(new_db);
+    let total_gates_tried_insert = Arc::clone(&total_gates_tried);
 
     let insert_handle = std::thread::spawn(move || {
+        let start_time = std::time::Instant::now();
         let total_circuits = total_rows as usize * upper_bound_gates * 2;
         let mut attempted_inserts = 0;
         let mut sst_index = 0usize;
@@ -2808,11 +2812,32 @@ pub fn build_from_rocks(
             }
 
             attempted_inserts += batch.len();
+            let tried = total_gates_tried_insert.load(Ordering::Relaxed);
+            let elapsed = start_time.elapsed().as_secs_f64();
+            let rate = if elapsed > 0.0 { tried as f64 / elapsed } else { 0.0 };
+            let remaining = if rate > 0.0 {
+                (total_circuits as f64 - tried as f64) / rate
+            } else {
+                f64::INFINITY
+            };
+            let remaining_secs = remaining as u64;
+            let remaining_h = remaining_secs / 3600;
+            let remaining_m = (remaining_secs % 3600) / 60;
+            let remaining_s = remaining_secs % 60;
             println!(
-                "Attempted inserts: {} / {} ({:.2}%)",
+                "Attempted inserts: {} / {} ({:.2}%) | elapsed: {:.0}s | rate: {:.0}/s | eta: {:02}:{:02}:{:02}",
                 attempted_inserts,
                 total_circuits,
-                (attempted_inserts as f64 / total_circuits as f64) * 100.0
+                if tried > 0 {
+                    (tried as f64 / total_circuits as f64) * 100.0
+                } else {
+                    0.0
+                },
+                elapsed,
+                rate,
+                remaining_h,
+                remaining_m,
+                remaining_s,
             );
 
             // Flush to SST every 1M pending entries to bound RAM usage
@@ -2828,7 +2853,13 @@ pub fn build_from_rocks(
             pending_keys.clear();
         }
 
-        println!("Insertion thread finished");
+        let elapsed = start_time.elapsed().as_secs_f64();
+        println!(
+            "Insertion thread finished. Total attempted: {} / {} | elapsed: {:.0}s",
+            attempted_inserts,
+            total_circuits,
+            elapsed,
+        );
     });
 
     let iter = old_db.iterator(rocksdb::IteratorMode::Start);
@@ -2848,6 +2879,7 @@ pub fn build_from_rocks(
         let stop_flag_par = Arc::clone(&stop_flag);
         let tx_par = tx.clone();
         let new_db_par = Arc::clone(new_db);
+        let total_gates_tried_par = Arc::clone(&total_gates_tried);
 
         entries.par_chunks(500).for_each(|entry_chunk| {
             if stop_flag_par.load(Ordering::SeqCst) {
@@ -2876,6 +2908,9 @@ pub fn build_from_rocks(
                     pos += len;
 
                     let old_circuit = CircuitSeq::from_blob(circuit_blob);
+
+                    // Count as if we tried all base gates, for progress reporting
+                    total_gates_tried_par.fetch_add(upper_bound_gates * 2, Ordering::Relaxed);
 
                     let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
                     prefix.extend_from_slice(&old_circuit.gates);
