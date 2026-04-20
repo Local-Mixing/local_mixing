@@ -4385,6 +4385,7 @@ mod tests {
             c.rewire(&canon.1, 3);
 
             println!("Gate: {:?}", g);
+            println!("Wiring: {:?}", canon.1);
             println!("Rewired circuit: {}", c.repr());
             for (i, poly) in canon.0.iter().enumerate() {
                 println!("  P{}: {}", i, poly_to_str(poly, 3));
