@@ -2754,8 +2754,8 @@ pub fn build_from_rocks(
                     q2.extend_from_slice(&prefix);
                     let mut c2 = CircuitSeq { gates: q2.to_vec() };
                     c2.canonicalize();
-                    let canon2 = canonicalize_polys(c2.to_polynomial(15, 0, m), true);
-                    c2.rewire(&canon2.1, 15);
+                    let canon2 = canonicalize_polys(c2.to_polynomial(3 * m, 0, m), true);
+                    c2.rewire(&canon2.1, 3 * m);
 
                     if !c1.adjacent_id() {
                         local_results.push((c1, canon1.0));
