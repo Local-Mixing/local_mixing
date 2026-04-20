@@ -4380,11 +4380,10 @@ mod tests {
 
         for g in gates.iter() {
             let c = CircuitSeq { gates: vec![*g] };
+            println!("Gate: {:?}", c.repr());
             let canon = canonicalize_polys(c.to_polynomial(3, 0, 1), true);
             let mut c = CircuitSeq { gates: vec![*g] };
             c.rewire(&canon.1, 3);
-
-            println!("Gate: {:?}", g);
             println!("Wiring: {:?}", canon.1);
             println!("Rewired circuit: {}", c.repr());
             for (i, poly) in canon.0.iter().enumerate() {
