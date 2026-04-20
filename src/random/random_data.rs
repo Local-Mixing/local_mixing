@@ -4335,17 +4335,21 @@ mod tests {
 
     #[test]
     fn test_print_all_circuits() {
-
         let m = 1;
         let db = Arc::new(open_db_for_read(m));
         let iter = db.iterator(rocksdb::IteratorMode::Start);
 
         let mut count = 0;
         for item in iter {
-            let (_key, value) = item.expect("RocksDB iter error");
+            let (key, value) = item.expect("RocksDB iter error");
+
+            // Print the key as hex
+            let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
+            println!("Key: {}", key_hex);
 
             // Scan all circuits in the value list
             let mut pos = 0;
+            let mut circuit_index = 0;
             while pos < value.len() {
                 if pos + 1 > value.len() {
                     break;
@@ -4357,10 +4361,13 @@ mod tests {
                 }
                 let circuit_blob = &value[pos..pos + len];
                 let circuit = CircuitSeq::from_blob(circuit_blob);
-                println!("{}", circuit.repr());
+                println!("  [{circuit_index}] {}", circuit.repr());
                 pos += len;
+                circuit_index += 1;
                 count += 1;
             }
+
+            println!();
         }
 
         println!("Total circuits: {}", count);
