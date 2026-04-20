@@ -2275,7 +2275,7 @@ pub fn build_from_sql(
     )?;
     println!("Total rows in {}: {}", old_table, total_rows);
 
-    let chunk_size: i64 = 200_000;
+    let chunk_size: i64 = 50_000;
     let batch_size = 10_000;
 
     let mut offset: i64 = 0;
@@ -2637,7 +2637,7 @@ pub fn build_from_rocks(
         .unwrap_or(0);
     println!("Estimated rows: {}", total_rows);
 
-    let chunk_size = 50_000;
+    let chunk_size = 500_000;
     let batch_size = 10_000;
 
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -2718,7 +2718,7 @@ pub fn build_from_rocks(
         let stop_flag_par = Arc::clone(&stop_flag);
         let tx_par = tx.clone();
 
-        entries.par_chunks(2_000).for_each(|entry_chunk| {
+        entries.par_chunks(500).for_each(|entry_chunk| {
             if stop_flag_par.load(Ordering::SeqCst) {
                 return;
             }
