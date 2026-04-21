@@ -40,7 +40,7 @@ use local_mixing::random::random_data::open_db_for_write;
 use std::sync::Arc;
 use local_mixing::random::random_data::build_from_rocks;
 use local_mixing::random::random_data::build_m1;
-
+use local_mixing::random::random_data::build_from_2rocks;
 const ROCKSDB_N6M5_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
 const ROCKSDB_N7M4_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
 
@@ -1055,6 +1055,24 @@ Command::new("rocksdb_1")
                     .help("Number of gates"),
             )
     )
+    .subcommand(
+Command::new("rocksdb_2")
+            .about("Create m sized rocks_db with m1+m2 method")
+            .arg(
+                Arg::new("m1")
+                    .long("m1")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of gates"),
+            )
+            .arg(
+                Arg::new("m2")
+                    .long("m2")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of gates"),
+            )
+    )
     .get_matches();
 
     match matches.subcommand() {
@@ -1984,6 +2002,14 @@ Command::new("rocksdb_1")
                 let old_db = Arc::new(open_db_for_read(m - 1));
                 build_from_rocks(&old_db, &new_db, m).expect("build_from_rocks failed");
             }
+        }
+        Some(("rocksdb_2", sub)) => {
+            let m1: usize = *sub.get_one("m1").expect("Missing -m1 <wires>");
+            let m2: usize = *sub.get_one("m2").expect("Missing -m2 <wires>");
+            let new_db = Arc::new(open_db_for_write(m1 + m2));
+            let old_db1 = Arc::new(open_db_for_read(m1));
+            let old_db2 = Arc::new(open_db_for_read(m2));
+            build_from_2rocks(&old_db1, &old_db2, &new_db, m1, m2).expect("build_from_2rocks failed");
         }
         _ => unreachable!(),
     }

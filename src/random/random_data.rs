@@ -3057,6 +3057,382 @@ pub fn build_m1(new_db: &Arc<DB>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Generate all wire mappings for C2 relative to C1.
+/// Returns a list of permutations, where each permutation maps
+/// C2's wire j to a concrete wire index in the combined circuit.
+///
+/// C1 occupies wires 0..N1-1 (fixed).
+/// C2's wires are mapped as follows:
+///   - s is a word of length N1 over {0..N2}, with at most one of each letter from 1..N2
+///   - if s[w] = j (j > 0), then C2's wire j-1 maps to wire w (shared with C1)
+///   - C2's wires not mentioned in s map to fresh wires N1, N1+1, ... in fixed order
+///
+/// Total number of mappings = sum_{k=0}^{min(N1,N2)} C(N1,k) * P(N2,k)
+fn enumerate_c2_wire_mappings(n1: usize, n2: usize) -> Vec<Vec<u8>> {
+    let mut result = Vec::new();
+
+    // Enumerate all words s of length N1 over {0..N2}
+    // with at most one of each letter from 1..N2
+    // We do this recursively/iteratively by choosing which positions
+    // in s get non-zero letters and which letters they get
+
+    // s[i] = 0 means position i of C1's wires is not used by C2
+    // s[i] = j (1-indexed) means C2's wire j-1 maps to C1's wire i
+    fn enumerate_words(
+        pos: usize,
+        n1: usize,
+        n2: usize,
+        word: &mut Vec<usize>,
+        used: &mut Vec<bool>, // which C2 wire indices (1..N2) are used
+        result: &mut Vec<Vec<u8>>,
+    ) {
+        if pos == n1 {
+            // word is complete — build the concrete wire mapping for C2
+            // For each C2 wire j (0-indexed), find where it maps:
+            //   - if j+1 appears in word at position w, it maps to wire w
+            //   - otherwise it maps to the next fresh wire after N1
+
+            // Find which C2 wires are mentioned in word and where
+            let mut c2_to_wire = vec![0u8; n2];
+            let mut mentioned = vec![false; n2];
+            for (w, &j) in word.iter().enumerate() {
+                if j > 0 {
+                    c2_to_wire[j - 1] = w as u8;
+                    mentioned[j - 1] = true;
+                }
+            }
+            // Assign fresh wires to unmentioned C2 wires in fixed order
+            let mut fresh = n1;
+            for j in 0..n2 {
+                if !mentioned[j] {
+                    c2_to_wire[j] = fresh as u8;
+                    fresh += 1;
+                }
+            }
+            result.push(c2_to_wire);
+            return;
+        }
+
+        // Option 1: s[pos] = 0 (this C1 wire not used by C2)
+        word.push(0);
+        enumerate_words(pos + 1, n1, n2, word, used, result);
+        word.pop();
+
+        // Option 2: s[pos] = j for each unused j in 1..N2
+        for j in 1..=n2 {
+            if !used[j - 1] {
+                used[j - 1] = true;
+                word.push(j);
+                enumerate_words(pos + 1, n1, n2, word, used, result);
+                word.pop();
+                used[j - 1] = false;
+            }
+        }
+    }
+
+    let mut word = Vec::with_capacity(n1);
+    let mut used = vec![false; n2];
+    enumerate_words(0, n1, n2, &mut word, &mut used, &mut result);
+    result
+}
+
+/// Apply a wire mapping to a circuit — remap C2's internal wires
+/// to their positions in the combined circuit.
+fn apply_wire_mapping(circuit: &CircuitSeq, mapping: &[u8]) -> CircuitSeq {
+    CircuitSeq {
+        gates: circuit
+            .gates
+            .iter()
+            .map(|&[a, b, c]| [mapping[a as usize], mapping[b as usize], mapping[c as usize]])
+            .collect(),
+    }
+}
+
+pub fn build_from_2rocks(
+    db1: &Arc<DB>,
+    db2: &Arc<DB>,
+    new_db: &Arc<DB>,
+    m1: usize,
+    m2: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let m = m1 + m2;
+    let n = 3 * m;
+    println!("Running build_from_2rocks: m1={} m2={} -> m={}", m1, m2, m);
+
+    let total_rows_db1 = db1
+        .property_int_value("rocksdb.estimate-num-keys")
+        .unwrap()
+        .unwrap_or(0);
+    let total_rows_db2 = db2
+        .property_int_value("rocksdb.estimate-num-keys")
+        .unwrap()
+        .unwrap_or(0);
+    println!(
+        "Estimated rows: db1={} db2={}",
+        total_rows_db1, total_rows_db2
+    );
+
+    let chunk_size = 500_000;
+    let batch_size = 10_000;
+
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    {
+        let stop_flag = stop_flag.clone();
+        ctrlc::set_handler(move || {
+            println!("CTRL+C detected! Finishing current batch...");
+            stop_flag.store(true, Ordering::SeqCst);
+        })
+        .expect("Error setting CTRL+C handler");
+    }
+
+    // Load all of db2 into memory since we need to iterate it for every c1
+    println!("Loading db2 into memory...");
+    let db2_circuits: Arc<Vec<CircuitSeq>> = Arc::new({
+        let iter = db2.iterator(rocksdb::IteratorMode::Start);
+        let mut circuits = Vec::new();
+        for item in iter {
+            let (_key, value) = item.expect("RocksDB iter error");
+            let mut pos = 0;
+            while pos < value.len() {
+                if pos + 1 > value.len() {
+                    break;
+                }
+                let len = value[pos] as usize;
+                pos += 1;
+                if pos + len > value.len() {
+                    break;
+                }
+                let circuit_blob = &value[pos..pos + len];
+                pos += len;
+                circuits.push(CircuitSeq::from_blob(circuit_blob));
+            }
+        }
+        println!("Loaded {} circuits from db2", circuits.len());
+        circuits
+    });
+
+    // Tuple: (circuit, canon polys, forward key, reversed key)
+    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)>>(100_000);
+    let stop_flag_clone = stop_flag.clone();
+    let new_db_writer = Arc::clone(new_db);
+
+    // Progress tracking
+    let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let total_gates_tried_insert = Arc::clone(&total_gates_tried);
+    let total_work = total_rows_db1 as usize * db2_circuits.len();
+
+    let insert_handle = std::thread::spawn(move || {
+        let start_time = std::time::Instant::now();
+        let mut attempted_inserts = 0;
+        let mut sst_index = 0usize;
+        let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        // Tracks forward keys already in pending to catch same-batch reverse pairs
+        let mut pending_keys: HashSet<Vec<u8>> = HashSet::new();
+
+        while let Ok(batch) = rx.recv() {
+            if stop_flag_clone.load(Ordering::SeqCst) {
+                println!("Insertion thread stopping early...");
+                break;
+            }
+
+            for (circuit, _canon, key, rev_key) in &batch {
+                // Second gate: check if the reverse of this circuit is already
+                // pending from this batch (parallel producers can't see each other)
+                if pending_keys.contains(rev_key.as_slice()) {
+                    continue;
+                }
+
+                let circuit_blob = circuit.repr_blob();
+                let value = encode_circuit(&circuit_blob);
+
+                pending_keys.insert(key.clone());
+                pending.push((key.clone(), value));
+            }
+
+            attempted_inserts += batch.len();
+            let tried = total_gates_tried_insert.load(Ordering::Relaxed);
+            let elapsed = start_time.elapsed().as_secs_f64();
+            let rate = if elapsed > 0.0 { tried as f64 / elapsed } else { 0.0 };
+            let remaining = if rate > 0.0 {
+                (total_work as f64 - tried as f64) / rate
+            } else {
+                f64::INFINITY
+            };
+            let remaining_secs = remaining as u64;
+            let remaining_h = remaining_secs / 3600;
+            let remaining_m = (remaining_secs % 3600) / 60;
+            let remaining_s = remaining_secs % 60;
+            println!(
+                "Attempted inserts: {} / {} ({:.2}%) | elapsed: {:.0}s | rate: {:.0}/s | eta: {:02}:{:02}:{:02}",
+                attempted_inserts,
+                total_work,
+                if tried > 0 {
+                    (tried as f64 / total_work as f64) * 100.0
+                } else {
+                    0.0
+                },
+                elapsed,
+                rate,
+                remaining_h,
+                remaining_m,
+                remaining_s,
+            );
+
+            // Flush to SST every 1M pending entries to bound RAM usage
+            if pending.len() >= 1_000_000 {
+                flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
+                pending_keys.clear();
+            }
+        }
+
+        // Flush any remaining
+        if !pending.is_empty() {
+            flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
+            pending_keys.clear();
+        }
+
+        let elapsed = start_time.elapsed().as_secs_f64();
+        println!(
+            "Insertion thread finished. Total attempted: {} | elapsed: {:.0}s",
+            attempted_inserts,
+            elapsed,
+        );
+    });
+
+    let iter = db1.iterator(rocksdb::IteratorMode::Start);
+
+    for chunk in &iter.chunks(chunk_size) {
+        if stop_flag.load(Ordering::SeqCst) {
+            break;
+        }
+
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = chunk
+            .map(|item| {
+                let (k, v) = item.expect("RocksDB iter error");
+                (k.to_vec(), v.to_vec())
+            })
+            .collect();
+
+        let stop_flag_par = Arc::clone(&stop_flag);
+        let tx_par = tx.clone();
+        let new_db_par = Arc::clone(new_db);
+        let db2_circuits_par = Arc::clone(&db2_circuits);
+        let total_gates_tried_par = Arc::clone(&total_gates_tried);
+
+        entries.par_chunks(500).for_each(|entry_chunk| {
+            if stop_flag_par.load(Ordering::SeqCst) {
+                return;
+            }
+
+            let mut local_results = Vec::new();
+
+            for (_key, value) in entry_chunk {
+                if value.is_empty() {
+                    continue;
+                }
+
+                let mut pos = 0;
+                while pos < value.len() {
+                    if pos + 1 > value.len() {
+                        break;
+                    }
+                    let len = value[pos] as usize;
+                    pos += 1;
+                    if pos + len > value.len() {
+                        break;
+                    }
+                    let circuit_blob = &value[pos..pos + len];
+                    pos += len;
+
+                    let c1 = CircuitSeq::from_blob(circuit_blob);
+                    let n1 = touched_wires(&c1).len();
+
+                    for c2 in db2_circuits_par.iter() {
+                        let n2 = touched_wires(c2).len();
+
+                        // Count this c1+c2 pair for progress
+                        total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+
+                        // Enumerate all meaningful wire mappings for c2 relative to c1
+                        let mappings = enumerate_c2_wire_mappings(n1, n2);
+
+                        for mapping in &mappings {
+                            // Apply wire mapping to c2
+                            let c2_mapped = apply_wire_mapping(c2, mapping);
+
+                            // Combined circuit: c1 followed by mapped c2
+                            let mut combined_gates = c1.gates.clone();
+                            combined_gates.extend_from_slice(&c2_mapped.gates);
+                            let mut combined = CircuitSeq { gates: combined_gates };
+                            combined.canonicalize();
+                            let canon =
+                                canonicalize_polys(combined.to_polynomial(n, 0, m), true);
+                            combined.rewire(&canon.1.invert(), n);
+                            combined.canonicalize();
+
+                            // Compute forward key
+                            let blob = polys_repr_blob(&canon.0);
+                            let hash: u128 = xxh3_128(&blob);
+                            let key = hash.to_le_bytes().to_vec();
+
+                            // Compute reversed key
+                            let mut rev = combined.clone();
+                            rev.gates.reverse();
+                            rev.canonicalize();
+                            let canon_rev =
+                                canonicalize_polys(rev.to_polynomial(n, 0, m), true);
+                            let rev_blob = polys_repr_blob(&canon_rev.0);
+                            let rev_hash: u128 = xxh3_128(&rev_blob);
+                            let rev_key = rev_hash.to_le_bytes().to_vec();
+
+                            if !combined.adjacent_id() {
+                                let rev_in_db =
+                                    new_db_par.get(&rev_key).unwrap_or(None).is_some();
+                                if !rev_in_db {
+                                    local_results.push((combined, canon.0, key, rev_key));
+                                }
+                            }
+                        }
+
+                        while local_results.len() >= batch_size {
+                            let drain_start = local_results.len() - batch_size;
+                            let batch = local_results.split_off(drain_start);
+                            if let Err(e) = tx_par.send(batch) {
+                                eprintln!("Failed to send batch: {:?}", e);
+                                return;
+                            }
+                        }
+
+                        if stop_flag_par.load(Ordering::SeqCst) {
+                            return;
+                        }
+                    }
+                }
+            }
+
+            if !local_results.is_empty() {
+                if let Err(e) = tx_par.send(local_results) {
+                    eprintln!("Failed to send remaining batch: {:?}", e);
+                }
+            }
+        });
+    }
+
+    drop(tx);
+    insert_handle.join().expect("Insertion thread panicked");
+
+    if !stop_flag.load(Ordering::SeqCst) {
+        println!("Compacting new_db for optimal read performance...");
+        new_db.compact_range::<&[u8], &[u8]>(None, None);
+        println!("Compaction done.");
+    } else {
+        println!("Stopped early, skipping compaction.");
+    }
+
+    println!("Build finished (or stopped early).");
+    Ok(())
+}
+
 //Speed up SQL queries
 //Should not see for a particular size query, the speed should not vary across multiple runs
 // Attempt to add a random circuit to the SQL db
