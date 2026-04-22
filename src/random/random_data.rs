@@ -3380,7 +3380,7 @@ pub fn build_from_2rocks(
                 if !c1.geq(c2) {
                     continue;
                 }
-                
+
                 let n2 = touched_wires(c2).len();
                 let c2_rev_raw = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
                 let (c2_rev, _) = canonicalize_circuit(c2_rev_raw.gates, n, m2);
@@ -5617,5 +5617,72 @@ mod tests {
             rev.reverse();
             check(rev, "reversed");
         }
+    }
+
+    #[test]
+    fn test_reversal_closure_single_db() {
+        let db = Arc::new({
+            let path = "rocks_db_m4";
+            let mut opts = Options::default();
+            opts.create_if_missing(false);
+            opts.set_merge_operator_associative("append_merge", append_merge);
+            opts.increase_parallelism(160);
+            opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+
+            let cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024);
+            let mut block_opts = BlockBasedOptions::default();
+            block_opts.set_block_cache(&cache);
+            block_opts.set_block_size(16 * 1024);
+            block_opts.set_bloom_filter(10.0, false);
+            block_opts.set_cache_index_and_filter_blocks(true);
+            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+
+            opts.set_block_based_table_factory(&block_opts);
+            opts.set_disable_auto_compactions(true);
+
+            DB::open_for_read_only(&opts, path, false).expect("open failed")
+        });
+
+        let m = 4;
+        let n = 3 * m;
+
+        let mut total = 0usize;
+        let mut reversal_hits = 0usize;
+
+        let iter = db.iterator(rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (_key, value) = item.expect("RocksDB iter error");
+
+            let mut pos = 0;
+            while pos < value.len() {
+                let len = value[pos] as usize;
+                pos += 1;
+
+                let circuit_blob = &value[pos..pos + len];
+                pos += len;
+
+                let circuit = CircuitSeq::from_blob(circuit_blob);
+
+                // reverse
+                let mut rev = circuit.clone();
+                rev.gates.reverse();
+                rev.canonicalize();
+
+                let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true);
+                let rev_blob = polys_repr_blob(&canon_rev.0);
+                let rev_hash: u128 = xxh3_128(&rev_blob);
+                let rev_key = rev_hash.to_le_bytes().to_vec();
+
+                if db.get(&rev_key).unwrap_or(None).is_some() {
+                    reversal_hits += 1;
+                }
+
+                total += 1;
+            }
+        }
+
+        println!("total circuits: {}", total);
+        println!("reversal hits: {}", reversal_hits);
+        println!("fraction closed under reversal: {}", reversal_hits as f64 / total as f64);
     }
 }
