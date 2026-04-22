@@ -1863,7 +1863,7 @@ mod tests {
                     let mut shuffled_circuit = circuit.clone();
                     shuffled_circuit.rewire(&Permutation { data: pins }, n);
                     let shuffled_polys = shuffled_circuit.to_polynomial(n, 0, 6);
-                    let (shuffled_canonical, _) = canonicalize_polys(shuffled_polys, false);
+                    let (shuffled_canonical, _) = canonicalize_polys(shuffled_polys, true);
                     let shuffled_string = shuffled_canonical.iter().enumerate()
                         .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
                         .collect::<Vec<_>>()
