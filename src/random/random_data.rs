@@ -5428,5 +5428,12 @@ mod tests {
             let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
             writeln!(f, "  {:?}", result.gates).unwrap();
         }
+
+        // Case 9: hardcoded circuit
+        writeln!(f, "\n=== Case 9: hardcoded [[1,2,5],[2,3,6],[1,2,4],[0,3,1]] ===").unwrap();
+        let hardcoded = vec![[1u8,2,5],[2,3,6],[1,2,4],[0,3,1]];
+        let m_combined = hardcoded.len();
+        let result = canonicalize_circuit(hardcoded, 3 * m_combined, m_combined);
+        writeln!(f, "  {:?}", result.gates).unwrap();
     }
 }
