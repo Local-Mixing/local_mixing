@@ -5704,12 +5704,19 @@ mod tests {
 
     #[test]
     fn test_c1_vs_c2_after_canon() {
+        use crate::circuit::circuit::poly_to_str;
         let mut c1 = CircuitSeq { gates: vec![[0,4,2], [1,2,3], [6,7,4], [5,3,7]] };
         let mut c2 = CircuitSeq { gates: vec![[0,5,4],[1,4,6],[2,7,5],[3,6,7]] };
 
         assert!(c1.is_relabeling_of(&c2), "Circuits are not relabelings of each other");
         let canon_1 = canonicalize_polys(c1.to_polynomial(12, 0, 4), true);
         let canon_2 = canonicalize_polys(c2.to_polynomial(12, 0, 4), true);
+        for (i, poly) in canon_1.0.iter().enumerate() {
+            println!("  P{}: {}", i, poly_to_str(poly, 3));
+        }
+        for (i, poly) in canon_2.0.iter().enumerate() {
+            println!("  P{}: {}", i, poly_to_str(poly, 3));
+        }
         assert!(canon_1.0 == canon_2.0, "Canonical forms differ:\n  c1: {:?}\n  c2: {:?}", canon_1.0, canon_2.0);
         
         c1.rewire(&canon_1.1.invert(), 12);
