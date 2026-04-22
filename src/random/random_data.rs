@@ -5289,11 +5289,11 @@ mod tests {
     }
 
     #[test]
-    fn test_four_cases() {
+    fn test_eight_cases() {
         let mut c1 = CircuitSeq { gates: vec![[1,2,3], [2,3,6]] };
         let mut c2 = CircuitSeq { gates: vec![[1,2,4], [0,3,1]] };
         let canon1 = canonicalize_polys(c1.to_polynomial(7, 0, 2), true);
-        let canon2 = canonicalize_polys(c2.to_polynomial(7, 0, 2), true);   
+        let canon2 = canonicalize_polys(c2.to_polynomial(7, 0, 2), true);
         c1.rewire(&canon1.1.invert(), 7);
         c2.rewire(&canon2.1.invert(), 7);
         let n1 = touched_wires(&c1).len();
@@ -5306,6 +5306,8 @@ mod tests {
         let mappings_2_1 = enumerate_c2_wire_mappings(n2, n1);
 
         let mut f = std::fs::File::create("test.txt").unwrap();
+
+        // --- latter part rotates ---
 
         // Case 1: c1 || mapped_c2
         writeln!(f, "=== Case 1: c1 || mapped_c2 ===").unwrap();
@@ -5340,6 +5342,44 @@ mod tests {
             let c1_mapped = apply_wire_mapping(&c1, mapping);
             let mut combined = c2_rev.gates.clone();
             combined.extend_from_slice(&c1_mapped.gates);
+            writeln!(f, "  {:?}", combined).unwrap();
+        }
+
+        // --- first part rotates ---
+
+        // Case 5: mapped_c1 || c2
+        writeln!(f, "\n=== Case 5: mapped_c1 || c2 ===").unwrap();
+        for mapping in &mappings_1_2 {
+            let c1_mapped = apply_wire_mapping(&c1, mapping);
+            let mut combined = c1_mapped.gates.clone();
+            combined.extend_from_slice(&c2.gates);
+            writeln!(f, "  {:?}", combined).unwrap();
+        }
+
+        // Case 6: mapped_c2 || c1
+        writeln!(f, "\n=== Case 6: mapped_c2 || c1 ===").unwrap();
+        for mapping in &mappings_2_1 {
+            let c2_mapped = apply_wire_mapping(&c2, mapping);
+            let mut combined = c2_mapped.gates.clone();
+            combined.extend_from_slice(&c1.gates);
+            writeln!(f, "  {:?}", combined).unwrap();
+        }
+
+        // Case 7: mapped_c1 || c2_rev
+        writeln!(f, "\n=== Case 7: mapped_c1 || c2_rev ===").unwrap();
+        for mapping in &mappings_1_2 {
+            let c1_mapped = apply_wire_mapping(&c1, mapping);
+            let mut combined = c1_mapped.gates.clone();
+            combined.extend_from_slice(&c2_rev.gates);
+            writeln!(f, "  {:?}", combined).unwrap();
+        }
+
+        // Case 8: mapped_c2 || c1_rev
+        writeln!(f, "\n=== Case 8: mapped_c2 || c1_rev ===").unwrap();
+        for mapping in &mappings_2_1 {
+            let c2_mapped = apply_wire_mapping(&c2, mapping);
+            let mut combined = c2_mapped.gates.clone();
+            combined.extend_from_slice(&c1_rev.gates);
             writeln!(f, "  {:?}", combined).unwrap();
         }
     }
