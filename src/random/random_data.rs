@@ -3282,9 +3282,9 @@ pub fn build_from_2rocks(
 
     let nc2 = db2_circuits.len();
     let total_work = if same_db {
-        nc2 * (nc2 + 1) / 2
+        nc2 * (nc2 + 1) / 2 * 8
     } else {
-        total_rows_db1 as usize * nc2
+        total_rows_db1 as usize * nc2 * 8
     };
     let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let total_gates_tried_insert = Arc::clone(&total_gates_tried);
@@ -3361,6 +3361,7 @@ pub fn build_from_2rocks(
         let tx_par = tx.clone();
         let new_db_par = Arc::clone(new_db);
         let db2_circuits_par = Arc::clone(&db2_circuits);
+        let total_gates_tried_par = Arc::clone(&total_gates_tried);
 
         (0..n_circuits).into_par_iter().for_each(|i| {
             if stop_flag_par.load(Ordering::SeqCst) {
@@ -3388,6 +3389,7 @@ pub fn build_from_2rocks(
                 // Case 1: c1 || mapped_c2
                 for mapping in &mappings_1_2 {
                     let c2_mapped = apply_wire_mapping(c2, mapping);
+                    total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
                     if let Some(r) = process_combination(c1, &c2_mapped, n, m, &new_db_par) {
                         local_results.push(r);
                     }
@@ -3396,6 +3398,7 @@ pub fn build_from_2rocks(
                 // Case 3: c1_rev || mapped_c2
                 for mapping in &mappings_rev1_2 {
                     let c2_mapped = apply_wire_mapping(c2, mapping);
+                    total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
                     if let Some(r) = process_combination(&c1_rev, &c2_mapped, n, m, &new_db_par) {
                         local_results.push(r);
                     }
@@ -3404,6 +3407,7 @@ pub fn build_from_2rocks(
                 // Case 2: c2 || mapped_c1
                 for mapping in &mappings_2_1 {
                     let c1_mapped = apply_wire_mapping(c1, mapping);
+                    total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
                     if let Some(r) = process_combination(c2, &c1_mapped, n, m, &new_db_par) {
                         local_results.push(r);
                     }
@@ -3412,7 +3416,44 @@ pub fn build_from_2rocks(
                 // Case 4: c2_rev || mapped_c1
                 for mapping in &mappings_rev2_1 {
                     let c1_mapped = apply_wire_mapping(c1, mapping);
+                    total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
                     if let Some(r) = process_combination(&c2_rev, &c1_mapped, n, m, &new_db_par) {
+                        local_results.push(r);
+                    }
+                }
+
+                // Case 5: mapped_c1 || c2
+                for mapping in &mappings_2_1 {
+                    let c1_mapped = apply_wire_mapping(c1, mapping);
+                    total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                    if let Some(r) = process_combination(&c1_mapped, c2, n, m, &new_db_par) {
+                        local_results.push(r);
+                    }
+                }
+
+                // Case 6: mapped_c2 || c1
+                for mapping in &mappings_1_2 {
+                    let c2_mapped = apply_wire_mapping(c2, mapping);
+                    total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                    if let Some(r) = process_combination(&c2_mapped, c1, n, m, &new_db_par) {
+                        local_results.push(r);
+                    }
+                }
+
+                // Case 7: mapped_c1 || c2_rev
+                for mapping in &mappings_rev2_1 {
+                    let c1_mapped = apply_wire_mapping(c1, mapping);
+                    total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                    if let Some(r) = process_combination(&c1_mapped, &c2_rev, n, m, &new_db_par) {
+                        local_results.push(r);
+                    }
+                }
+
+                // Case 8: mapped_c2 || c1_rev
+                for mapping in &mappings_rev1_2 {
+                    let c2_mapped = apply_wire_mapping(c2, mapping);
+                    total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                    if let Some(r) = process_combination(&c2_mapped, &c1_rev, n, m, &new_db_par) {
                         local_results.push(r);
                     }
                 }
@@ -3456,6 +3497,7 @@ pub fn build_from_2rocks(
             let tx_par = tx.clone();
             let new_db_par = Arc::clone(new_db);
             let db2_circuits_par = Arc::clone(&db2_circuits);
+            let total_gates_tried_par = Arc::clone(&total_gates_tried);
 
             entries.par_chunks(500).for_each(|entry_chunk| {
                 if stop_flag_par.load(Ordering::SeqCst) {
@@ -3498,6 +3540,7 @@ pub fn build_from_2rocks(
                             // Case 1: c1 || mapped_c2
                             for mapping in &mappings_1_2 {
                                 let c2_mapped = apply_wire_mapping(c2, mapping);
+                                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
                                 if let Some(r) = process_combination(&c1, &c2_mapped, n, m, &new_db_par) {
                                     local_results.push(r);
                                 }
@@ -3506,6 +3549,7 @@ pub fn build_from_2rocks(
                             // Case 3: c1_rev || mapped_c2
                             for mapping in &mappings_rev1_2 {
                                 let c2_mapped = apply_wire_mapping(c2, mapping);
+                                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
                                 if let Some(r) = process_combination(&c1_rev, &c2_mapped, n, m, &new_db_par) {
                                     local_results.push(r);
                                 }
@@ -3514,6 +3558,7 @@ pub fn build_from_2rocks(
                             // Case 2: c2 || mapped_c1
                             for mapping in &mappings_2_1 {
                                 let c1_mapped = apply_wire_mapping(&c1, mapping);
+                                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
                                 if let Some(r) = process_combination(c2, &c1_mapped, n, m, &new_db_par) {
                                     local_results.push(r);
                                 }
@@ -3522,7 +3567,44 @@ pub fn build_from_2rocks(
                             // Case 4: c2_rev || mapped_c1
                             for mapping in &mappings_rev2_1 {
                                 let c1_mapped = apply_wire_mapping(&c1, mapping);
+                                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
                                 if let Some(r) = process_combination(&c2_rev, &c1_mapped, n, m, &new_db_par) {
+                                    local_results.push(r);
+                                }
+                            }
+
+                            // Case 5: mapped_c1 || c2
+                            for mapping in &mappings_2_1 {
+                                let c1_mapped = apply_wire_mapping(&c1, mapping);
+                                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                                if let Some(r) = process_combination(&c1_mapped, c2, n, m, &new_db_par) {
+                                    local_results.push(r);
+                                }
+                            }
+
+                            // Case 6: mapped_c2 || c1
+                            for mapping in &mappings_1_2 {
+                                let c2_mapped = apply_wire_mapping(c2, mapping);
+                                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                                if let Some(r) = process_combination(&c2_mapped, &c1, n, m, &new_db_par) {
+                                    local_results.push(r);
+                                }
+                            }
+
+                            // Case 7: mapped_c1 || c2_rev
+                            for mapping in &mappings_2_1 {
+                                let c1_mapped = apply_wire_mapping(&c1, mapping);
+                                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                                if let Some(r) = process_combination(&c1_mapped, &c2_rev, n, m, &new_db_par) {
+                                    local_results.push(r);
+                                }
+                            }
+
+                            // Case 8: mapped_c2 || c1_rev
+                            for mapping in &mappings_1_2 {
+                                let c2_mapped = apply_wire_mapping(c2, mapping);
+                                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                                if let Some(r) = process_combination(&c2_mapped, &c1_rev, n, m, &new_db_par) {
                                     local_results.push(r);
                                 }
                             }
