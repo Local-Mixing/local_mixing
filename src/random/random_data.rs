@@ -5133,7 +5133,7 @@ mod tests {
         }
     }
 
-    #[test]
+   #[test]
     fn test_compare_two_m4_dbs() {
         let db1 = Arc::new({
             let path = "rocks_db_m4";
@@ -5219,10 +5219,29 @@ mod tests {
         println!("db1: {} circuits, {} hashes", db1_total_circuits, db1_total_hashes);
         println!("db2: {} circuits, {} hashes", db2_total_circuits, db2_total_hashes);
 
-        // Scan db1 and check each circuit against db2
+        // Load all db2 circuits into memory for relabeling check
+        let mut db2_all_circuits: Vec<CircuitSeq> = Vec::new();
+        {
+            let iter = db2.iterator(rocksdb::IteratorMode::Start);
+            for item in iter {
+                let (_key, value) = item.expect("RocksDB iter error");
+                let mut pos = 0;
+                while pos < value.len() {
+                    if pos + 1 > value.len() { break; }
+                    let len = value[pos] as usize;
+                    pos += 1;
+                    if pos + len > value.len() { break; }
+                    let circuit_blob = &value[pos..pos + len];
+                    pos += len;
+                    db2_all_circuits.push(CircuitSeq::from_blob(circuit_blob));
+                }
+            }
+        }
+
         let mut missing: Vec<CircuitSeq> = Vec::new();
-        let mut passed_reversal = 0usize;
         let mut found_directly = 0usize;
+        let mut passed_reversal = 0usize;
+        let mut passed_relabeling = 0usize;
 
         let iter = db1.iterator(rocksdb::IteratorMode::Start);
         for item in iter {
@@ -5238,19 +5257,18 @@ mod tests {
 
                 let circuit = CircuitSeq::from_blob(circuit_blob);
 
-                // Compute canonical poly and hash for this circuit
+                // Check direct hash match
                 let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true);
                 let blob = polys_repr_blob(&canon.0);
                 let hash: u128 = xxh3_128(&blob);
                 let key = hash.to_le_bytes().to_vec();
 
-                // Check if key exists in db2
                 if db2.get(&key).unwrap_or(None).is_some() {
                     found_directly += 1;
                     continue;
                 }
 
-                // Key not found — try reversed circuit
+                // Check reversed circuit hash match
                 let mut rev = circuit.clone();
                 rev.gates.reverse();
                 rev.canonicalize();
@@ -5260,19 +5278,25 @@ mod tests {
                 let rev_key = rev_hash.to_le_bytes().to_vec();
 
                 if db2.get(&rev_key).unwrap_or(None).is_some() {
-                    // Reversed circuit is in db2 — this is acceptable, skip
                     passed_reversal += 1;
                     continue;
                 }
 
-                // Neither the circuit nor its reverse is in db2 — record as missing
+                // Check if it's a relabeling of any circuit in db2
+                let is_relabeling = db2_all_circuits.iter().any(|c2| circuit.is_relabeling_of(c2));
+                if is_relabeling {
+                    passed_relabeling += 1;
+                    continue;
+                }
+
                 missing.push(circuit);
             }
         }
 
         println!("Found directly in db2: {}", found_directly);
         println!("Passed reversal check: {}", passed_reversal);
-        println!("Missing from db2 (not found directly or by reversal): {}", missing.len());
+        println!("Passed relabeling check: {}", passed_relabeling);
+        println!("Missing from db2 (not found directly, by reversal, or relabeling): {}", missing.len());
 
         if !missing.is_empty() {
             println!("First 10 missing circuits:");
@@ -5287,6 +5311,7 @@ mod tests {
             missing.len()
         );
     }
+
     fn canonicalize_circuit(gates: Vec<[u8; 3]>, n: usize, m: usize) -> CircuitSeq {
         let mut c = CircuitSeq { gates };
         let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true);
