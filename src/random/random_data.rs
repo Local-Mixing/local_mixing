@@ -5287,7 +5287,12 @@ mod tests {
             missing.len()
         );
     }
-
+    fn canonicalize_circuit(gates: Vec<[u8; 3]>, n: usize, m: usize) -> CircuitSeq {
+        let mut c = CircuitSeq { gates };
+        let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true);
+        c.rewire(&canon.1.invert(), n);
+        c
+    }
     #[test]
     fn test_eight_cases() {
         let mut c1 = CircuitSeq { gates: vec![[1,2,3], [2,3,6]] };
@@ -5315,7 +5320,9 @@ mod tests {
             let c2_mapped = apply_wire_mapping(&c2, mapping);
             let mut combined = c1.gates.clone();
             combined.extend_from_slice(&c2_mapped.gates);
-            writeln!(f, "  {:?}", combined).unwrap();
+            let m_combined = combined.len();
+            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
         // Case 2: c2 || mapped_c1
@@ -5324,7 +5331,9 @@ mod tests {
             let c1_mapped = apply_wire_mapping(&c1, mapping);
             let mut combined = c2.gates.clone();
             combined.extend_from_slice(&c1_mapped.gates);
-            writeln!(f, "  {:?}", combined).unwrap();
+            let m_combined = combined.len();
+            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
         // Case 3: c1_rev || mapped_c2
@@ -5333,7 +5342,9 @@ mod tests {
             let c2_mapped = apply_wire_mapping(&c2, mapping);
             let mut combined = c1_rev.gates.clone();
             combined.extend_from_slice(&c2_mapped.gates);
-            writeln!(f, "  {:?}", combined).unwrap();
+            let m_combined = combined.len();
+            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
         // Case 4: c2_rev || mapped_c1
@@ -5342,7 +5353,9 @@ mod tests {
             let c1_mapped = apply_wire_mapping(&c1, mapping);
             let mut combined = c2_rev.gates.clone();
             combined.extend_from_slice(&c1_mapped.gates);
-            writeln!(f, "  {:?}", combined).unwrap();
+            let m_combined = combined.len();
+            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
         // --- first part rotates ---
@@ -5353,7 +5366,9 @@ mod tests {
             let c1_mapped = apply_wire_mapping(&c1, mapping);
             let mut combined = c1_mapped.gates.clone();
             combined.extend_from_slice(&c2.gates);
-            writeln!(f, "  {:?}", combined).unwrap();
+            let m_combined = combined.len();
+            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
         // Case 6: mapped_c2 || c1
@@ -5362,7 +5377,9 @@ mod tests {
             let c2_mapped = apply_wire_mapping(&c2, mapping);
             let mut combined = c2_mapped.gates.clone();
             combined.extend_from_slice(&c1.gates);
-            writeln!(f, "  {:?}", combined).unwrap();
+            let m_combined = combined.len();
+            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
         // Case 7: mapped_c1 || c2_rev
@@ -5371,7 +5388,9 @@ mod tests {
             let c1_mapped = apply_wire_mapping(&c1, mapping);
             let mut combined = c1_mapped.gates.clone();
             combined.extend_from_slice(&c2_rev.gates);
-            writeln!(f, "  {:?}", combined).unwrap();
+            let m_combined = combined.len();
+            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
         // Case 8: mapped_c2 || c1_rev
@@ -5380,7 +5399,9 @@ mod tests {
             let c2_mapped = apply_wire_mapping(&c2, mapping);
             let mut combined = c2_mapped.gates.clone();
             combined.extend_from_slice(&c1_rev.gates);
-            writeln!(f, "  {:?}", combined).unwrap();
+            let m_combined = combined.len();
+            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            writeln!(f, "  {:?}", result.gates).unwrap();
         }
     }
 }
