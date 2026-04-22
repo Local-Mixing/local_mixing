@@ -3370,14 +3370,14 @@ pub fn build_from_2rocks(
             let c1 = &db2_circuits_par[i];
             let n1 = touched_wires(c1).len();
             let c1_rev_raw = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
-            let (c1_rev, _) = canonicalize_circuit(c1_rev_raw.gates, n, m);
+            let (c1_rev, _) = canonicalize_circuit(c1_rev_raw.gates, n, m1);
             let n1_rev = touched_wires(&c1_rev).len();
 
             for j in 0..=i {
                 let c2 = &db2_circuits_par[j];
                 let n2 = touched_wires(c2).len();
                 let c2_rev_raw = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
-                let (c2_rev, _) = canonicalize_circuit(c2_rev_raw.gates, n, m);
+                let (c2_rev, _) = canonicalize_circuit(c2_rev_raw.gates, n, m2);
                 let n2_rev = touched_wires(&c2_rev).len();
 
                 let mappings_1_2 = enumerate_c2_wire_mappings(n1, n2);
@@ -3481,13 +3481,13 @@ pub fn build_from_2rocks(
                         let c1 = CircuitSeq::from_blob(circuit_blob);
                         let n1 = touched_wires(&c1).len();
                         let c1_rev_raw = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
-                        let (c1_rev, _) = canonicalize_circuit(c1_rev_raw.gates, n, m);
+                        let (c1_rev, _) = canonicalize_circuit(c1_rev_raw.gates, n, m1);
                         let n1_rev = touched_wires(&c1_rev).len();
 
                         for c2 in db2_circuits_par.iter() {
                             let n2 = touched_wires(c2).len();
                             let c2_rev_raw = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
-                            let (c2_rev, _) = canonicalize_circuit(c2_rev_raw.gates, n, m);
+                            let (c2_rev, _) = canonicalize_circuit(c2_rev_raw.gates, n, m2);
                             let n2_rev = touched_wires(&c2_rev).len();
 
                             let mappings_1_2 = enumerate_c2_wire_mappings(n1, n2);
