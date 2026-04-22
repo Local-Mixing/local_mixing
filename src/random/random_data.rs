@@ -5707,6 +5707,16 @@ mod tests {
         use crate::circuit::circuit::poly_to_str;
         let mut c1 = CircuitSeq { gates: vec![[0,4,2], [1,2,3], [6,7,4], [5,3,7]] };
         let mut c2 = CircuitSeq { gates: vec![[0,5,4],[1,4,6],[2,7,5],[3,6,7]] };
+        let poly_1 = c1.to_polynomial(12, 0, 4);
+        let poly_2 = c2.to_polynomial(12, 0, 4);
+        println!("Original c1:");
+        for (i, poly) in poly_1.iter().enumerate() {
+            println!("  P{}: {}", i, poly_to_str(poly, 12));
+        }
+        println!("Original c2:");
+        for (i, poly) in poly_2.iter().enumerate() {
+            println!("  P{}: {}", i, poly_to_str(poly, 12));
+        }
 
         assert!(c1.is_relabeling_of(&c2), "Circuits are not relabelings of each other");
         let canon_1 = canonicalize_polys(c1.to_polynomial(12, 0, 4), true, true);
@@ -5715,10 +5725,10 @@ mod tests {
             println!("  P{}: {}", i, poly_to_str(poly, 12));
         }
         println!("{:?}", canon_1.1.data);
-        println!("{:?}", canon_2.1.data);
         for (i, poly) in canon_2.0.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 12));
         }
+        println!("{:?}", canon_2.1.data);
         assert!(canon_1.0 == canon_2.0, "Canonical forms differ:\n  c1: {:?}\n  c2: {:?}", canon_1.0, canon_2.0);
         
         c1.rewire(&canon_1.1.invert(), 12);
