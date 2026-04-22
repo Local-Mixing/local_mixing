@@ -3354,55 +3354,64 @@ pub fn build_from_2rocks(
             attempted_inserts, elapsed,
         );
     });
+
     if same_db {
         let n_circuits = db2_circuits.len();
         let stop_flag_par = Arc::clone(&stop_flag);
         let tx_par = tx.clone();
         let new_db_par = Arc::clone(new_db);
         let db2_circuits_par = Arc::clone(&db2_circuits);
-        let total_gates_tried_par = Arc::clone(&total_gates_tried);
 
         (0..n_circuits).into_par_iter().for_each(|i| {
             if stop_flag_par.load(Ordering::SeqCst) {
                 return;
             }
-
+            let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)> = Vec::new();
             let c1 = &db2_circuits_par[i];
             let n1 = touched_wires(c1).len();
-            let c1_rev = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
-            let (c1_rev, _) = canonicalize_circuit(c1_rev.gates, n, m);
-            let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)> = Vec::new();
+            let c1_rev_raw = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
+            let (c1_rev, _) = canonicalize_circuit(c1_rev_raw.gates, n, m);
+            let n1_rev = touched_wires(&c1_rev).len();
 
             for j in 0..=i {
                 let c2 = &db2_circuits_par[j];
                 let n2 = touched_wires(c2).len();
-                let c2_rev = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
-                let (c2_rev, _) = canonicalize_circuit(c2_rev.gates, n, m);
-
-                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                let c2_rev_raw = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
+                let (c2_rev, _) = canonicalize_circuit(c2_rev_raw.gates, n, m);
+                let n2_rev = touched_wires(&c2_rev).len();
 
                 let mappings_1_2 = enumerate_c2_wire_mappings(n1, n2);
+                let mappings_rev1_2 = enumerate_c2_wire_mappings(n1_rev, n2);
                 let mappings_2_1 = enumerate_c2_wire_mappings(n2, n1);
+                let mappings_rev2_1 = enumerate_c2_wire_mappings(n2_rev, n1);
 
                 // Case 1: c1 || mapped_c2
-                // Case 3: c1_rev || mapped_c2
                 for mapping in &mappings_1_2 {
                     let c2_mapped = apply_wire_mapping(c2, mapping);
                     if let Some(r) = process_combination(c1, &c2_mapped, n, m, &new_db_par) {
                         local_results.push(r);
                     }
+                }
+
+                // Case 3: c1_rev || mapped_c2
+                for mapping in &mappings_rev1_2 {
+                    let c2_mapped = apply_wire_mapping(c2, mapping);
                     if let Some(r) = process_combination(&c1_rev, &c2_mapped, n, m, &new_db_par) {
                         local_results.push(r);
                     }
                 }
 
                 // Case 2: c2 || mapped_c1
-                // Case 4: c2_rev || mapped_c1
                 for mapping in &mappings_2_1 {
                     let c1_mapped = apply_wire_mapping(c1, mapping);
                     if let Some(r) = process_combination(c2, &c1_mapped, n, m, &new_db_par) {
                         local_results.push(r);
                     }
+                }
+
+                // Case 4: c2_rev || mapped_c1
+                for mapping in &mappings_rev2_1 {
+                    let c1_mapped = apply_wire_mapping(c1, mapping);
                     if let Some(r) = process_combination(&c2_rev, &c1_mapped, n, m, &new_db_par) {
                         local_results.push(r);
                     }
@@ -3447,7 +3456,6 @@ pub fn build_from_2rocks(
             let tx_par = tx.clone();
             let new_db_par = Arc::clone(new_db);
             let db2_circuits_par = Arc::clone(&db2_circuits);
-            let total_gates_tried_par = Arc::clone(&total_gates_tried);
 
             entries.par_chunks(500).for_each(|entry_chunk| {
                 if stop_flag_par.load(Ordering::SeqCst) {
@@ -3472,36 +3480,48 @@ pub fn build_from_2rocks(
 
                         let c1 = CircuitSeq::from_blob(circuit_blob);
                         let n1 = touched_wires(&c1).len();
-                        let c1_rev = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
+                        let c1_rev_raw = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
+                        let (c1_rev, _) = canonicalize_circuit(c1_rev_raw.gates, n, m);
+                        let n1_rev = touched_wires(&c1_rev).len();
 
                         for c2 in db2_circuits_par.iter() {
                             let n2 = touched_wires(c2).len();
-                            let c2_rev = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
-
-                            total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                            let c2_rev_raw = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
+                            let (c2_rev, _) = canonicalize_circuit(c2_rev_raw.gates, n, m);
+                            let n2_rev = touched_wires(&c2_rev).len();
 
                             let mappings_1_2 = enumerate_c2_wire_mappings(n1, n2);
+                            let mappings_rev1_2 = enumerate_c2_wire_mappings(n1_rev, n2);
                             let mappings_2_1 = enumerate_c2_wire_mappings(n2, n1);
+                            let mappings_rev2_1 = enumerate_c2_wire_mappings(n2_rev, n1);
 
                             // Case 1: c1 || mapped_c2
-                            // Case 3: c1_rev || mapped_c2
                             for mapping in &mappings_1_2 {
                                 let c2_mapped = apply_wire_mapping(c2, mapping);
                                 if let Some(r) = process_combination(&c1, &c2_mapped, n, m, &new_db_par) {
                                     local_results.push(r);
                                 }
+                            }
+
+                            // Case 3: c1_rev || mapped_c2
+                            for mapping in &mappings_rev1_2 {
+                                let c2_mapped = apply_wire_mapping(c2, mapping);
                                 if let Some(r) = process_combination(&c1_rev, &c2_mapped, n, m, &new_db_par) {
                                     local_results.push(r);
                                 }
                             }
 
                             // Case 2: c2 || mapped_c1
-                            // Case 4: c2_rev || mapped_c1
                             for mapping in &mappings_2_1 {
                                 let c1_mapped = apply_wire_mapping(&c1, mapping);
                                 if let Some(r) = process_combination(c2, &c1_mapped, n, m, &new_db_par) {
                                     local_results.push(r);
                                 }
+                            }
+
+                            // Case 4: c2_rev || mapped_c1
+                            for mapping in &mappings_rev2_1 {
+                                let c1_mapped = apply_wire_mapping(&c1, mapping);
                                 if let Some(r) = process_combination(&c2_rev, &c1_mapped, n, m, &new_db_par) {
                                     local_results.push(r);
                                 }
@@ -5225,29 +5245,9 @@ mod tests {
         println!("db1: {} circuits, {} hashes", db1_total_circuits, db1_total_hashes);
         println!("db2: {} circuits, {} hashes", db2_total_circuits, db2_total_hashes);
 
-        // Load all db2 circuits into memory for relabeling check
-        let mut db2_all_circuits: Vec<CircuitSeq> = Vec::new();
-        {
-            let iter = db2.iterator(rocksdb::IteratorMode::Start);
-            for item in iter {
-                let (_key, value) = item.expect("RocksDB iter error");
-                let mut pos = 0;
-                while pos < value.len() {
-                    if pos + 1 > value.len() { break; }
-                    let len = value[pos] as usize;
-                    pos += 1;
-                    if pos + len > value.len() { break; }
-                    let circuit_blob = &value[pos..pos + len];
-                    pos += len;
-                    db2_all_circuits.push(CircuitSeq::from_blob(circuit_blob));
-                }
-            }
-        }
-
         let mut missing: Vec<CircuitSeq> = Vec::new();
         let mut found_directly = 0usize;
         let mut passed_reversal = 0usize;
-        let mut passed_relabeling = 0usize;
 
         let iter = db1.iterator(rocksdb::IteratorMode::Start);
         for item in iter {
@@ -5288,20 +5288,12 @@ mod tests {
                     continue;
                 }
 
-                // Check if it's a relabeling of any circuit in db2
-                let is_relabeling = db2_all_circuits.iter().any(|c2| circuit.is_relabeling_of(c2));
-                if is_relabeling {
-                    passed_relabeling += 1;
-                    continue;
-                }
-
                 missing.push(circuit);
             }
         }
 
         println!("Found directly in db2: {}", found_directly);
         println!("Passed reversal check: {}", passed_reversal);
-        println!("Passed relabeling check: {}", passed_relabeling);
         println!("Missing from db2 (not found directly, by reversal, or relabeling): {}", missing.len());
 
         if !missing.is_empty() {
