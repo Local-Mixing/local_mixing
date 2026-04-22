@@ -5465,6 +5465,22 @@ mod tests {
         let (result, perm) = canonicalize_circuit(hardcoded, 7, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
         writeln!(f, "  {:?}", perm.data).unwrap();
+
+        // Case 13: Reversed second hardcoded circuit
+        writeln!(f, "\n=== Case 13: reversed hardcoded [[0,3,1], [1,2,4]] ===").unwrap();
+        let hardcoded = vec![[0,3,1], [1,2,4]];
+        let m_combined = hardcoded.len();
+        let (result, perm) = canonicalize_circuit(hardcoded, 7, m_combined);
+        writeln!(f, "  {:?}", result.gates).unwrap();
+        writeln!(f, "  {:?}", perm.data).unwrap();
+
+        // Case 14: Reversed hardcoded circuit again
+        writeln!(f, "\n=== Case 14: reversed hardcoded [[0, 2, 1], [1, 4, 3]] ===").unwrap();
+        let hardcoded = vec![[0, 2, 1], [1, 4, 3]];
+        let m_combined = hardcoded.len();
+        let (result, perm) = canonicalize_circuit(hardcoded, 7, m_combined);
+        writeln!(f, "  {:?}", result.gates).unwrap();
+        writeln!(f, "  {:?}", perm.data).unwrap();  
     }
 
     #[test]
