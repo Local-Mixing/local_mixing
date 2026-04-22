@@ -2707,7 +2707,7 @@ fn expand_abstract_gate(gate: [u8; 3], untouched: &[u8]) -> Vec<[u8; 3]> {
 /// number of abstract options is:
 ///   k*(k-1)*(k-2)          -- all three wires are touched
 ///   + k*(k-1)              -- two touched, one untouched
-///   + k                    -- one touched, two untouched  
+///   + k                    -- one touched, two untouched
 ///   + 1                    -- all three untouched (if n-k >= 3)
 /// Each abstract option expands to 1, (n-k), (n-k)*(n-k-1), or (n-k)*(n-k-1)*(n-k-2)
 /// concrete gates respectively.
@@ -2719,29 +2719,65 @@ pub fn abstract_gates_for_circuit(circuit: &CircuitSeq, n: usize) -> Vec<[u8; 3]
         .filter(|w| !touched.contains(w))
         .collect();
 
-    // Abstract wire set: touched wires + one UNUSED representative if any untouched exist
-    let abstract_wires: Vec<u8> = {
-        let mut w = touched.clone();
-        if !untouched.is_empty() {
-            w.push(UNUSED);
-        }
-        w
-    };
-
     let mut result = Vec::new();
-    for &a in &abstract_wires {
-        for &b in &abstract_wires {
-            if b == a {
-                continue;
-            }
-            for &c in &abstract_wires {
-                if c == a || c == b {
-                    continue;
-                }
-                result.extend(expand_abstract_gate([a, b, c], &untouched));
+
+    // 0 UNUSED slots: all three wires are touched
+    for &a in &touched {
+        for &b in &touched {
+            if b == a { continue; }
+            for &c in &touched {
+                if c == a || c == b { continue; }
+                result.push([a, b, c]);
             }
         }
     }
+
+    if !untouched.is_empty() {
+        // 1 UNUSED slot: exactly one wire is untouched, two are touched
+        // UNUSED in position a
+        for &b in &touched {
+            for &c in &touched {
+                if c == b { continue; }
+                result.extend(expand_abstract_gate([UNUSED, b, c], &untouched));
+            }
+        }
+        // UNUSED in position b
+        for &a in &touched {
+            for &c in &touched {
+                if c == a { continue; }
+                result.extend(expand_abstract_gate([a, UNUSED, c], &untouched));
+            }
+        }
+        // UNUSED in position c
+        for &a in &touched {
+            for &b in &touched {
+                if b == a { continue; }
+                result.extend(expand_abstract_gate([a, b, UNUSED], &untouched));
+            }
+        }
+    }
+
+    if untouched.len() >= 2 {
+        // 2 UNUSED slots: two wires are untouched, one is touched
+        // UNUSED in positions b and c
+        for &a in &touched {
+            result.extend(expand_abstract_gate([a, UNUSED, UNUSED], &untouched));
+        }
+        // UNUSED in positions a and c
+        for &b in &touched {
+            result.extend(expand_abstract_gate([UNUSED, b, UNUSED], &untouched));
+        }
+        // UNUSED in positions a and b
+        for &c in &touched {
+            result.extend(expand_abstract_gate([UNUSED, UNUSED, c], &untouched));
+        }
+    }
+
+    if untouched.len() >= 3 {
+        // 3 UNUSED slots: all three wires are untouched
+        result.extend(expand_abstract_gate([UNUSED, UNUSED, UNUSED], &untouched));
+    }
+
     result
 }
 
