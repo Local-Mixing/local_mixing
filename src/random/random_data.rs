@@ -5563,17 +5563,17 @@ mod tests {
         writeln!(f, "  After first canon: {:?}", result.gates).unwrap();
         writeln!(f, "  Permutation: {:?}", perm.data).unwrap();
 
-        // Case 15: Two disjoint [[0, 4, 2], [1, 2, 3], [6, 7, 8], [5, 3, 7]]]
-        writeln!(f, "\n=== Case 15: Two disjoint [[0, 4, 2], [1, 2, 3], [6, 7, 8], [5, 3, 7]] ===").unwrap();
-        let hardcoded = vec![[0u8, 4, 2], [1, 2, 3], [6, 7, 8], [5, 3, 7]];
+        // Case 15: Two disjoint [[0, 4, 2], [1, 2, 3], [6, 7, 4], [5, 3, 7]]]
+        writeln!(f, "\n=== Case 15: Two disjoint [[0, 4, 2], [1, 2, 3], [6, 7, 4], [5, 3, 7]] ===").unwrap();
+        let hardcoded = vec![[0u8, 4, 2], [1, 2, 3], [6, 7, 4], [5, 3, 7]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 12, m_combined);
         writeln!(f, "  After first canon: {:?}", result.gates).unwrap();
         writeln!(f, "  Permutation: {:?}", perm.data).unwrap();
 
-        // Case 16: Rewired second [[6, 7, 8], [5, 3, 7]]
-        writeln!(f, "\n=== Case 16: Rewired second [[6, 7, 8], [5, 3, 7]] ===").unwrap();
-        let hardcoded = vec![[6u8, 7, 8], [5, 3, 7]];
+        // Case 16: Rewired second [[6, 7, 4], [5, 3, 7]]
+        writeln!(f, "\n=== Case 16: Rewired second [[6, 7, 4], [5, 3, 7]] ===").unwrap();
+        let hardcoded = vec![[6u8, 7, 4], [5, 3, 7]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 12, m_combined);
         writeln!(f, "  After first canon: {:?}", result.gates).unwrap();
