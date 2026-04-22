@@ -1414,6 +1414,7 @@ fn canonicalize_inner(
     initial_groups: Vec<Vec<usize>>,
     max_degree: usize,
     use_backtracking: bool,
+    mut trace: Option<&mut Vec<String>>,
 ) -> Vec<usize> {
     let n = polynomials.len();
     let mut state = RankingState::new(initial_groups, n);
@@ -1425,42 +1426,53 @@ fn canonicalize_inner(
 
         // Rule 2.1: split polynomials by all groups (singletons and non-singletons)
         if state.try_rule_2_1(polynomials, max_degree) {
-            continue; // restart from 2.1
+            if let Some(ref mut t) = trace {
+                t.push("2.1".to_string());
+            }
+            continue;
         }
 
         // Rule 2.2: split variables by all groups (full polynomial profiling)
         if state.try_rule_2_2(polynomials, max_degree) {
-            continue; // restart from 2.1
+            if let Some(ref mut t) = trace {
+                t.push("2.2".to_string());
+            }
+            continue;
         }
 
         // Rule 2.3: split variables by all groups, filtered by all groups
         if state.try_rule_2_3(polynomials, max_degree) {
-            continue; // restart from 2.1
+            if let Some(ref mut t) = trace {
+                t.push("2.3".to_string());
+            }
+            continue;
         }
 
         // Rule 2.4: split polynomials by full ranked monomial list comparison
         if state.try_rule_2_4(polynomials) {
-            continue; // restart from 2.1
+            if let Some(ref mut t) = trace {
+                t.push("2.4".to_string());
+            }
+            continue;
         }
 
         // Rule 2.5: split variables by ranked monomial lists built from filtered polynomials
         if state.try_rule_2_5(polynomials) {
-            continue; // restart from 2.1
+            if let Some(ref mut t) = trace {
+                t.push("2.5".to_string());
+            }
+            continue;
         }
 
         // Rule L: fully stuck — either backtrack or pick lowest index (toggleable)
         if use_backtracking {
-            // Try each candidate in the first stuck group, recurse to completion,
-            // and pick the candidate that yields the lexicographically smallest
-            // canonical form. If two candidates produce identical forms, they are
-            // truly symmetric and the choice doesn't matter.
             let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
             let candidates = state.groups[gi].clone();
 
-            let best = candidates
+            // Try each candidate, collect (canonical_form, final_order, trace) for each
+            let (best, best_trace) = candidates
                 .iter()
-                .min_by_key(|&&w| {
-                    // Tentatively lock w as a singleton and put the rest back as tied
+                .map(|&w| {
                     let mut trial_groups = state.groups.clone();
                     let rest: Vec<usize> =
                         candidates.iter().copied().filter(|&x| x != w).collect();
@@ -1470,33 +1482,43 @@ fn canonicalize_inner(
                     }
                     trial_groups.splice(gi..=gi, replacement);
 
+                    // Collect trace for this trial path
+                    let mut trial_trace: Vec<String> = Vec::new();
                     let trial_final = canonicalize_inner(
                         polynomials,
                         trial_groups,
                         max_degree,
                         use_backtracking,
+                        Some(&mut trial_trace),
                     );
-                    make_canonical_form(polynomials, &trial_final)
+                    let canon = make_canonical_form(polynomials, &trial_final);
+                    (w, canon, trial_final, trial_trace)
                 })
-                .copied()
+                .min_by_key(|(_, canon, _, _)| canon.clone())
+                .map(|(w, _, _, t)| (w, t))
                 .unwrap();
+
+            if let Some(ref mut t) = trace {
+                t.push(format!("L(picked {})", best));
+                t.extend(best_trace);
+            }
 
             // Lock the best candidate and continue
             let rest: Vec<usize> =
-                candidates.iter().copied().filter(|&x| x != best).collect();
+                candidates.iter().copied().filter(|&x| best != x).collect();
             let mut replacement = vec![vec![best]];
             if !rest.is_empty() {
                 replacement.push(rest);
             }
             state.groups.splice(gi..=gi, replacement);
         } else {
-            // Fast path: pick lowest original wire index from first stuck group.
-            // Not guaranteed canonical for non-symmetric stuck groups, but useful
-            // for testing or when canonicality of Rule L cases is not required.
             let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
             let mut group = state.groups[gi].clone();
             group.sort();
             let winner = group.remove(0);
+            if let Some(ref mut t) = trace {
+                t.push(format!("L(lowest {})", winner));
+            }
             let mut replacement = vec![vec![winner]];
             if !group.is_empty() {
                 replacement.push(group);
@@ -1511,6 +1533,7 @@ fn canonicalize_inner(
 pub fn canonicalize_polys(
     polynomials: Vec<Polynomial>,
     use_backtracking: bool,
+    print: bool,
 ) -> (Vec<Polynomial>, Permutation) {
     let n = polynomials.len();
     if n == 0 {
@@ -1544,8 +1567,18 @@ pub fn canonicalize_polys(
     }
 
     // Run Rules 2.1-2.5 and Rule L to fully resolve all ties
-    let final_order =
-        canonicalize_inner(&polynomials, initial_groups, max_degree, use_backtracking);
+    let mut trace: Vec<String> = Vec::new();
+    let final_order = canonicalize_inner(
+        &polynomials,
+        initial_groups,
+        max_degree,
+        use_backtracking,
+        if print { Some(&mut trace) } else { None },
+    );
+
+    if print {
+        println!("Rule trace: {}", trace.join(" -> "));
+    }
 
     // final_order[pos] = wire
     // Remap: variable x_wire -> x_pos (bit wire -> bit pos)
@@ -1570,7 +1603,7 @@ pub fn canonicalize_polys(
                 .collect()
         })
         .collect();
-    
+
     let canonical = trim_canonicalized(canonical);
 
     (canonical, Permutation { data: final_order })
@@ -1660,7 +1693,7 @@ mod tests {
             poly(&[&[5], &[3], &[3, 4]]),
         ];
 
-        let (canonical, perm) = canonicalize_polys(polys, true);
+        let (canonical, perm) = canonicalize_polys(polys, true, false);
 
         // Expected final order: P1, P5, P0, P2, P3, P4
         // data = [1, 5, 0, 2, 3, 4]
@@ -1689,7 +1722,7 @@ mod tests {
     #[test]
     fn test_single_poly() {
         let polys = vec![poly(&[&[0, 1]])];
-        let (canonical, perm) = canonicalize_polys(polys, true);
+        let (canonical, perm) = canonicalize_polys(polys, true, false);
         assert_eq!(perm.data, vec![0]);
         assert_eq!(canonical[0], poly(&[&[0, 1]]));
     }
@@ -1700,7 +1733,7 @@ mod tests {
             poly(&[&[0, 1]]),
             poly(&[&[1]]),
         ];
-        let (canonical, perm) = canonicalize_polys(polys, true);
+        let (canonical, perm) = canonicalize_polys(polys, true, false);
         assert_eq!(perm.data, vec![0, 1]);
         assert_eq!(canonical[0], poly(&[&[0, 1]]));
         assert_eq!(canonical[1], poly(&[&[1]]));
@@ -1713,7 +1746,7 @@ mod tests {
             poly(&[&[0]]),
             poly(&[&[0, 1]]),
         ];
-        let (canonical, perm) = canonicalize_polys(polys, true);
+        let (canonical, perm) = canonicalize_polys(polys, true, false);
         // data[0]=1, data[1]=0: position 0 pulls wire 1, position 1 pulls wire 0
         assert_eq!(perm.data, vec![1, 0]);
         // P1 remapped: wire1->x0, wire0->x1 => x_0*x_1 unchanged
@@ -1743,7 +1776,7 @@ mod tests {
             poly(&[&[0], &[1]]),  // P0 = x_0 + x_1  (max degree 1)
             poly(&[&[0, 1]]),     // P1 = x_0*x_1    (max degree 2)
         ];
-        let (_canonical, perm) = canonicalize_polys(polys, true);
+        let (_canonical, perm) = canonicalize_polys(polys, true, false);
         assert_eq!(perm.data, vec![1, 0]); // P1 comes first
     }
 
@@ -1760,7 +1793,7 @@ mod tests {
             poly(&[&[2, 3]]),     // P2: x_2*x_3     degree 2
             poly(&[&[]]),         // P3: 1 (constant) degree 0
         ];
-        let (_canonical, perm) = canonicalize_polys(polys, true);
+        let (_canonical, perm) = canonicalize_polys(polys, true, false);
         // P1 and P2 tie at degree 2 -> rule 6 picks P1 (index 1 < 2)
         // P0 at degree 1 -> position 2
         // P3 at degree 0 -> position 3
@@ -1781,7 +1814,7 @@ mod tests {
             [pins[3], pins[4], pins[5]]] 
         };
         let polys = circuit.to_polynomial(6, 0, 2);
-        let (canonical, _) = canonicalize_polys(polys, true);
+        let (canonical, _) = canonicalize_polys(polys, true, false);
         println!("Canonical polys:");
         for (i, poly) in canonical.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 6));
@@ -1801,7 +1834,7 @@ mod tests {
         for (i, poly) in polys.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 6));
         }
-        let (canonical, _) = canonicalize_polys(polys, true);
+        let (canonical, _) = canonicalize_polys(polys, true, false);
         println!("Canonical polys:");
         for (i, poly) in canonical.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 6));
@@ -1818,7 +1851,7 @@ mod tests {
             // for (i, poly) in polys.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
             // }
-            let (canonical, _) = canonicalize_polys(polys, true);
+            let (canonical, _) = canonicalize_polys(polys, true, false);
             // println!("Canonical polys:");
             // for (i, poly) in canonical.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
@@ -1833,7 +1866,7 @@ mod tests {
             // for (i, poly) in polys.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
             // }
-            let (canonical, _) = canonicalize_polys(polys, false);
+            let (canonical, _) = canonicalize_polys(polys, false, false);
             // println!("Canonical polys:");
             // for (i, poly) in canonical.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
@@ -1852,7 +1885,7 @@ mod tests {
                 let circuit = random_circuit(n, 6);
                 let old_circuit = circuit.clone();
                 let polys = old_circuit.to_polynomial(n, 0, 6);
-                let (canonical, _) = canonicalize_polys(polys.clone(), true);
+                let (canonical, _) = canonicalize_polys(polys.clone(), true, false);
                 let canon_string = canonical.iter().enumerate()
                     .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
                     .collect::<Vec<_>>()
@@ -1863,7 +1896,7 @@ mod tests {
                     let mut shuffled_circuit = circuit.clone();
                     shuffled_circuit.rewire(&Permutation { data: pins }, n);
                     let shuffled_polys = shuffled_circuit.to_polynomial(n, 0, 6);
-                    let (shuffled_canonical, _) = canonicalize_polys(shuffled_polys, true);
+                    let (shuffled_canonical, _) = canonicalize_polys(shuffled_polys, true, false);
                     let shuffled_string = shuffled_canonical.iter().enumerate()
                         .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
                         .collect::<Vec<_>>()

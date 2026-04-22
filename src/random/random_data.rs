@@ -2959,7 +2959,7 @@ pub fn build_from_rocks(
                         q1.push(*g);
                         let mut c1 = CircuitSeq { gates: q1.to_vec() };
                         c1.canonicalize();
-                        let canon1 = canonicalize_polys(c1.to_polynomial(3 * m, 0, m), true);
+                        let canon1 = canonicalize_polys(c1.to_polynomial(3 * m, 0, m), true, false);
                         c1.rewire(&canon1.1.invert(), 3 * m);
                         c1.canonicalize();
 
@@ -2973,7 +2973,7 @@ pub fn build_from_rocks(
                         c1_rev.gates.reverse();
                         c1_rev.canonicalize();
                         let canon1_rev =
-                            canonicalize_polys(c1_rev.to_polynomial(3 * m, 0, m), true);
+                            canonicalize_polys(c1_rev.to_polynomial(3 * m, 0, m), true, false);
                         let c1_rev_blob = polys_repr_blob(&canon1_rev.0);
                         let c1_rev_hash: u128 = xxh3_128(&c1_rev_blob);
                         let c1_rev_key = c1_rev_hash.to_le_bytes().to_vec();
@@ -2983,7 +2983,7 @@ pub fn build_from_rocks(
                         q2.extend_from_slice(&prefix);
                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
                         c2.canonicalize();
-                        let canon2 = canonicalize_polys(c2.to_polynomial(3 * m, 0, m), true);
+                        let canon2 = canonicalize_polys(c2.to_polynomial(3 * m, 0, m), true, false);
                         c2.rewire(&canon2.1.invert(), 3 * m);
                         c2.canonicalize();
 
@@ -2997,7 +2997,7 @@ pub fn build_from_rocks(
                         c2_rev.gates.reverse();
                         c2_rev.canonicalize();
                         let canon2_rev =
-                            canonicalize_polys(c2_rev.to_polynomial(3 * m, 0, m), true);
+                            canonicalize_polys(c2_rev.to_polynomial(3 * m, 0, m), true, false);
                         let c2_rev_blob = polys_repr_blob(&canon2_rev.0);
                         let c2_rev_hash: u128 = xxh3_128(&c2_rev_blob);
                         let c2_rev_key = c2_rev_hash.to_le_bytes().to_vec();
@@ -3066,7 +3066,7 @@ pub fn build_m1(new_db: &Arc<DB>) -> Result<(), Box<dyn std::error::Error>> {
 
     for g in gates.iter() {
         let c = CircuitSeq { gates: vec![*g] };
-        let canon = canonicalize_polys(c.to_polynomial(3, 0, 1), true);
+        let canon = canonicalize_polys(c.to_polynomial(3, 0, 1), true, false);
         let mut c = c;
         c.rewire(&canon.1.invert(), 3);
 
@@ -3195,7 +3195,7 @@ fn process_combination(
     combined_gates.extend_from_slice(&second.gates);
     let mut combined = CircuitSeq { gates: combined_gates };
     combined.canonicalize();
-    let canon = canonicalize_polys(combined.to_polynomial(n, 0, m), true);
+    let canon = canonicalize_polys(combined.to_polynomial(n, 0, m), true, false);
     combined.rewire(&canon.1.invert(), n);
     combined.canonicalize();
 
@@ -3206,7 +3206,7 @@ fn process_combination(
     let mut rev = combined.clone();
     rev.gates.reverse();
     rev.canonicalize();
-    let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true);
+    let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true, false);
     let rev_blob = polys_repr_blob(&canon_rev.0);
     let rev_hash: u128 = xxh3_128(&rev_blob);
     let rev_key = rev_hash.to_le_bytes().to_vec();
@@ -3747,7 +3747,7 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
 
 fn canonicalize_circuit(gates: Vec<[u8; 3]>, n: usize, m: usize) -> (CircuitSeq, Permutation) {
         let mut c = CircuitSeq { gates };
-        let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true);
+        let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true, false);
         c.rewire(&canon.1.invert(), n);
         c.canonicalize();
         (c, canon.1)
@@ -5203,7 +5203,7 @@ mod tests {
         for g in gates.iter() {
             let c = CircuitSeq { gates: vec![*g] };
             println!("Gate: {:?}", c.repr());
-            let canon = canonicalize_polys(c.to_polynomial(3, 0, 1), true);
+            let canon = canonicalize_polys(c.to_polynomial(3, 0, 1), true, false);
             let mut c = CircuitSeq { gates: vec![*g] };
             c.rewire(&canon.1.invert(), 3);
             println!("Wiring: {:?}", canon.1);
@@ -5352,7 +5352,7 @@ mod tests {
                 let circuit = CircuitSeq::from_blob(circuit_blob);
 
                 // Check direct hash match
-                let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true);
+                let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true, false);
                 let blob = polys_repr_blob(&canon.0);
                 let hash: u128 = xxh3_128(&blob);
                 let key = hash.to_le_bytes().to_vec();
@@ -5366,7 +5366,7 @@ mod tests {
                 let mut rev = circuit.clone();
                 rev.gates.reverse();
                 rev.canonicalize();
-                let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true);
+                let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true, false);
                 let rev_blob = polys_repr_blob(&canon_rev.0);
                 let rev_hash: u128 = xxh3_128(&rev_blob);
                 let rev_key = rev_hash.to_le_bytes().to_vec();
@@ -5400,7 +5400,7 @@ mod tests {
 
     fn canonicalize_circuit(gates: Vec<[u8; 3]>, n: usize, m: usize) -> (CircuitSeq, Permutation) {
         let mut c = CircuitSeq { gates };
-        let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true);
+        let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true, false);
         c.rewire(&canon.1.invert(), n);
         c.canonicalize();
         (c, canon.1)
@@ -5409,8 +5409,8 @@ mod tests {
     fn test_eight_cases() {
         let mut c1 = CircuitSeq { gates: vec![[0,5,4], [1,4,6]] };
         let mut c2 = CircuitSeq { gates: vec![[2,7,5], [3,6,7]] };
-        let canon1 = canonicalize_polys(c1.to_polynomial(8, 0, 2), true);
-        let canon2 = canonicalize_polys(c2.to_polynomial(8, 0, 2), true);
+        let canon1 = canonicalize_polys(c1.to_polynomial(8, 0, 2), true, false);
+        let canon2 = canonicalize_polys(c2.to_polynomial(8, 0, 2), true, false);
         c1.rewire(&canon1.1.invert(), 8);
         c2.rewire(&canon2.1.invert(), 8);
         let n1 = touched_wires(&c1).len();
@@ -5588,10 +5588,10 @@ mod tests {
 
         let check = |gates: Vec<[u8; 3]>, label: &str| -> bool {
             let mut circuit = CircuitSeq { gates };
-            let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true);
+            let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true, false);
             circuit.rewire(&canon.1.invert(), n);
 
-            let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true);
+            let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true, false);
             let blob = polys_repr_blob(&canon.0);
             let hash: u128 = xxh3_128(&blob);
             let key = hash.to_le_bytes().to_vec();
@@ -5684,7 +5684,7 @@ mod tests {
                 rev.gates.reverse();
                 rev.canonicalize();
 
-                let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true);
+                let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true, false);
                 let rev_blob = polys_repr_blob(&canon_rev.0);
                 let rev_hash: u128 = xxh3_128(&rev_blob);
                 let rev_key = rev_hash.to_le_bytes().to_vec();
@@ -5709,8 +5709,8 @@ mod tests {
         let mut c2 = CircuitSeq { gates: vec![[0,5,4],[1,4,6],[2,7,5],[3,6,7]] };
 
         assert!(c1.is_relabeling_of(&c2), "Circuits are not relabelings of each other");
-        let canon_1 = canonicalize_polys(c1.to_polynomial(12, 0, 4), true);
-        let canon_2 = canonicalize_polys(c2.to_polynomial(12, 0, 4), true);
+        let canon_1 = canonicalize_polys(c1.to_polynomial(12, 0, 4), true, true);
+        let canon_2 = canonicalize_polys(c2.to_polynomial(12, 0, 4), true, true);
         for (i, poly) in canon_1.0.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 12));
         }
