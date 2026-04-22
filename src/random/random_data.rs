@@ -5594,7 +5594,7 @@ mod tests {
         };
 
         // let gates = vec![[1, 4, 2], [0, 3, 1]];
-        let gates = vec![[0, 2, 1], [1, 4, 3]];
+        let gates = vec![[0, 5, 4], [1, 4, 6]];
         let found = check(gates.clone(), "forward");
 
         if !found {
