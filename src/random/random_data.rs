@@ -3374,8 +3374,13 @@ pub fn build_from_2rocks(
             let (c1_rev, _) = canonicalize_circuit(c1_rev_raw.gates, n, m1);
             let n1_rev = touched_wires(&c1_rev).len();
 
-            for j in 0..=i {
+            for j in 0..=n_circuits {
                 let c2 = &db2_circuits_par[j];
+
+                if !c1.geq(c2) {
+                    continue;
+                }
+                
                 let n2 = touched_wires(c2).len();
                 let c2_rev_raw = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
                 let (c2_rev, _) = canonicalize_circuit(c2_rev_raw.gates, n, m2);
