@@ -5320,7 +5320,7 @@ mod tests {
     }
     #[test]
     fn test_eight_cases() {
-        let mut c1 = CircuitSeq { gates: vec![[1,2,5],[2,3,6]] };
+        let mut c1 = CircuitSeq { gates: vec![[1,2,5], [2,3,6]] };
         let mut c2 = CircuitSeq { gates: vec![[1,2,4], [0,3,1]] };
         let canon1 = canonicalize_polys(c1.to_polynomial(7, 0, 2), true);
         let canon2 = canonicalize_polys(c2.to_polynomial(7, 0, 2), true);
@@ -5447,6 +5447,14 @@ mod tests {
         // Case 11: second hardcoded circuit
         writeln!(f, "\n=== Case 11: hardcoded [[1,2,4],[0,3,1]] ===").unwrap();
         let hardcoded = vec![[1u8,2,4],[0,3,1]];
+        let m_combined = hardcoded.len();
+        let (result, perm) = canonicalize_circuit(hardcoded, 7, m_combined);
+        writeln!(f, "  {:?}", result.gates).unwrap();
+        writeln!(f, "  {:?}", perm.data).unwrap();
+
+        // Case 12: second hardcoded circuit again
+        writeln!(f, "\n=== Case 12: hardcoded [[1, 4, 2], [0, 3, 1]] ===").unwrap();
+        let hardcoded = vec![[1, 4, 2], [0, 3, 1]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 7, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
