@@ -3374,7 +3374,7 @@ pub fn build_from_2rocks(
 
             let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)> = Vec::new();
 
-            for j in 0..=i {
+            for j in 0..=n {
                 let c2 = &db2_circuits_par[j];
                 let n2 = touched_wires(c2).len();
                 let c2_rev = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
