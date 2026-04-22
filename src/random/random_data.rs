@@ -5712,10 +5712,10 @@ mod tests {
         let canon_1 = canonicalize_polys(c1.to_polynomial(12, 0, 4), true);
         let canon_2 = canonicalize_polys(c2.to_polynomial(12, 0, 4), true);
         for (i, poly) in canon_1.0.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 3));
+            println!("  P{}: {}", i, poly_to_str(poly, 12));
         }
         for (i, poly) in canon_2.0.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 3));
+            println!("  P{}: {}", i, poly_to_str(poly, 12));
         }
         assert!(canon_1.0 == canon_2.0, "Canonical forms differ:\n  c1: {:?}\n  c2: {:?}", canon_1.0, canon_2.0);
         
