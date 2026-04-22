@@ -3354,7 +3354,6 @@ pub fn build_from_2rocks(
             attempted_inserts, elapsed,
         );
     });
-    let same_db = false;
     if same_db {
         let n_circuits = db2_circuits.len();
         let stop_flag_par = Arc::clone(&stop_flag);
@@ -5287,5 +5286,73 @@ mod tests {
             "{} circuits from db1 not found in db2",
             missing.len()
         );
+    }
+
+    #[test]
+    fn test_four_cases() {
+        let mut c1 = CircuitSeq { gates: vec![[1,2,3], [2,3,6]] };
+        let mut c2 = CircuitSeq { gates: vec![[1,2,4], [0,3,1]] };
+        let canon1 = canonicalize_polys(c1.to_polynomial(6, 0, 2), true);
+        let canon2 = canonicalize_polys(c2.to_polynomial(6, 0, 2), true);   
+        c1.rewire(&canon1.1.invert(), 6);
+        c2.rewire(&canon2.1.invert(), 6);
+        let n1 = touched_wires(&c1).len();
+        let n2 = touched_wires(&c2).len();
+
+        let c1_rev = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
+        let c2_rev = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
+
+        let mappings_1_2 = enumerate_c2_wire_mappings(n1, n2);
+        let mappings_2_1 = enumerate_c2_wire_mappings(n2, n1);
+
+        let m = c1.gates.len() + c2.gates.len();
+        let n = 3 * m;
+
+        // use a dummy db — just count results, no actual db needed
+        // wrap in a temp rocksdb or just collect without db check
+        let mut results = Vec::new();
+
+        // Case 1: c1 || mapped_c2
+        println!("=== Case 1: c1 || mapped_c2 ===");
+        for mapping in &mappings_1_2 {
+            let c2_mapped = apply_wire_mapping(&c2, mapping);
+            let mut combined_gates = c1.gates.clone();
+            combined_gates.extend_from_slice(&c2_mapped.gates);
+            println!("  combined: {:?}", combined_gates);
+            results.push(("c1||c2", combined_gates));
+        }
+
+        // Case 2: c2 || mapped_c1
+        println!("=== Case 2: c2 || mapped_c1 ===");
+        for mapping in &mappings_2_1 {
+            let c1_mapped = apply_wire_mapping(&c1, mapping);
+            let mut combined_gates = c2.gates.clone();
+            combined_gates.extend_from_slice(&c1_mapped.gates);
+            println!("  combined: {:?}", combined_gates);
+            results.push(("c2||c1", combined_gates));
+        }
+
+        // Case 3: c1_rev || mapped_c2
+        println!("=== Case 3: c1_rev || mapped_c2 ===");
+        for mapping in &mappings_1_2 {
+            let c2_mapped = apply_wire_mapping(&c2, mapping);
+            let mut combined_gates = c1_rev.gates.clone();
+            combined_gates.extend_from_slice(&c2_mapped.gates);
+            println!("  combined: {:?}", combined_gates);
+            results.push(("c1_rev||c2", combined_gates));
+        }
+
+        // Case 4: c2_rev || mapped_c1
+        println!("=== Case 4: c2_rev || mapped_c1 ===");
+        for mapping in &mappings_2_1 {
+            let c1_mapped = apply_wire_mapping(&c1, mapping);
+            let mut combined_gates = c2_rev.gates.clone();
+            combined_gates.extend_from_slice(&c1_mapped.gates);
+            println!("  combined: {:?}", combined_gates);
+            results.push(("c2_rev||c1", combined_gates));
+        }
+
+        println!("Total combinations: {}", results.len());
+        assert!(results.len() > 0);
     }
 }
