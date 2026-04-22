@@ -5460,4 +5460,59 @@ mod tests {
         writeln!(f, "  {:?}", result.gates).unwrap();
         writeln!(f, "  {:?}", perm.data).unwrap();
     }
+
+    #[test]
+    fn test_circuit_in_db() {
+        let m = 2;
+        let n = 3 * m;
+        let db = Arc::new(open_db_for_read(m));
+
+        let check = |gates: Vec<[u8; 3]>, label: &str| -> bool {
+            let mut circuit = CircuitSeq { gates };
+            let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true);
+            circuit.rewire(&canon.1.invert(), n);
+
+            let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true);
+            let blob = polys_repr_blob(&canon.0);
+            let hash: u128 = xxh3_128(&blob);
+            let key = hash.to_le_bytes().to_vec();
+
+            match db.get(&key).unwrap_or(None) {
+                None => {
+                    println!("{}: key not found in db", label);
+                    false
+                }
+                Some(value) => {
+                    println!("{}: key found, checking circuits in value...", label);
+                    let mut pos = 0;
+                    while pos < value.len() {
+                        if pos + 1 > value.len() { break; }
+                        let len = value[pos] as usize;
+                        pos += 1;
+                        if pos + len > value.len() { break; }
+                        let circuit_blob = &value[pos..pos + len];
+                        pos += len;
+                        let candidate = CircuitSeq::from_blob(circuit_blob);
+                        println!("  candidate: {:?}", candidate.gates);
+                        if candidate.gates == circuit.gates {
+                            println!("  -> exact match found!");
+                            return true;
+                        }
+                    }
+                    println!("  -> key found but no exact circuit match");
+                    true
+                }
+            }
+        };
+
+        let gates = vec![[1,2,4],[0,3,1]];
+
+        let found = check(gates.clone(), "forward");
+
+        if !found {
+            let mut rev = gates.clone();
+            rev.reverse();
+            check(rev, "reversed");
+        }
+    }
 }
