@@ -5320,7 +5320,7 @@ mod tests {
     }
     #[test]
     fn test_eight_cases() {
-        let mut c1 = CircuitSeq { gates: vec![[1,2,3], [2,3,6]] };
+        let mut c1 = CircuitSeq { gates: vec![[1,2,5],[2,3,6]] };
         let mut c2 = CircuitSeq { gates: vec![[1,2,4], [0,3,1]] };
         let canon1 = canonicalize_polys(c1.to_polynomial(7, 0, 2), true);
         let canon2 = canonicalize_polys(c2.to_polynomial(7, 0, 2), true);
