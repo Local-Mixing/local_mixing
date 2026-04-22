@@ -5701,4 +5701,21 @@ mod tests {
         println!("reversal hits: {}", reversal_hits);
         println!("fraction closed under reversal: {}", reversal_hits as f64 / total as f64);
     }
+
+    #[test]
+    fn test_c1_vs_c2_after_canon() {
+        let mut c1 = CircuitSeq { gates: vec![[0, 4, 2], [1, 2, 3], [6, 7, 4], [5, 3, 7]] };
+        let mut c2 = CircuitSeq { gates: vec![[0,5,4],[1,4,6],[2,7,5],[3,6,7]] };
+
+        let canon_1 = canonicalize_polys(c1.to_polynomial(12, 0, 4), true);
+        let canon_2 = canonicalize_polys(c2.to_polynomial(12, 0, 4), true);
+        assert!(canon_1.0 == canon_2.0, "Canonical forms differ:\n  c1: {:?}\n  c2: {:?}", canon_1.0, canon_2.0);
+        
+        c1.rewire(&canon_1.1.invert(), 12);
+        c2.rewire(&canon_2.1.invert(), 12);
+        c1.canonicalize();
+        c2.canonicalize();
+
+        assert!(c1.gates == c2.gates, "Circuits differ after rewiring and canonicalization:\n  c1: {:?}\n  c2: {:?}", c1.gates, c2.gates);
+    }
 }
