@@ -3370,13 +3370,14 @@ pub fn build_from_2rocks(
             let c1 = &db2_circuits_par[i];
             let n1 = touched_wires(c1).len();
             let c1_rev = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
-
+            let (c1_rev, _) = canonicalize_circuit(c1_rev.gates, n, m);
             let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)> = Vec::new();
 
             for j in 0..=i {
                 let c2 = &db2_circuits_par[j];
                 let n2 = touched_wires(c2).len();
                 let c2_rev = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
+                let (c2_rev, _) = canonicalize_circuit(c2_rev.gates, n, m);
 
                 total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
 
@@ -3637,7 +3638,12 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
     );
 }
 
-
+fn canonicalize_circuit(gates: Vec<[u8; 3]>, n: usize, m: usize) -> (CircuitSeq, Permutation) {
+        let mut c = CircuitSeq { gates };
+        let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true);
+        c.rewire(&canon.1.invert(), n);
+        (c, canon.1)
+}
 
 #[cfg(test)]
 mod tests {
