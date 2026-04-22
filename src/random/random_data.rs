@@ -5714,6 +5714,8 @@ mod tests {
         for (i, poly) in canon_1.0.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 12));
         }
+        println!("{:?}", canon_1.1.data);
+        println!("{:?}", canon_2.1.data);
         for (i, poly) in canon_2.0.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 12));
         }
