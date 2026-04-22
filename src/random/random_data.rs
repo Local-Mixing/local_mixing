@@ -5019,4 +5019,159 @@ mod tests {
             println!("m={}: {} keys, {} circuits", m, key_count, circuit_count);
         }
     }
+
+    #[test]
+    fn test_compare_two_m4_dbs() {
+        let db1 = Arc::new({
+            let path = "rocks_db_m4";
+            let mut opts = Options::default();
+            opts.create_if_missing(false);
+            opts.set_merge_operator_associative("append_merge", append_merge);
+            opts.increase_parallelism(160);
+            opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+            let cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024);
+            let mut block_opts = BlockBasedOptions::default();
+            block_opts.set_block_cache(&cache);
+            block_opts.set_block_size(16 * 1024);
+            block_opts.set_bloom_filter(10.0, false);
+            block_opts.set_cache_index_and_filter_blocks(true);
+            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+            opts.set_block_based_table_factory(&block_opts);
+            opts.set_disable_auto_compactions(true);
+            DB::open_for_read_only(&opts, path, false).expect("Failed to open rocks_db_m4")
+        });
+
+        let db2 = Arc::new({
+            let path = "test_rocks_db_m4";
+            let mut opts = Options::default();
+            opts.create_if_missing(false);
+            opts.set_merge_operator_associative("append_merge", append_merge);
+            opts.increase_parallelism(160);
+            opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+            let cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024);
+            let mut block_opts = BlockBasedOptions::default();
+            block_opts.set_block_cache(&cache);
+            block_opts.set_block_size(16 * 1024);
+            block_opts.set_bloom_filter(10.0, false);
+            block_opts.set_cache_index_and_filter_blocks(true);
+            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+            opts.set_block_based_table_factory(&block_opts);
+            opts.set_disable_auto_compactions(true);
+            DB::open_for_read_only(&opts, path, false).expect("Failed to open test_rocks_db_m4")
+        });
+
+        let m = 4;
+        let n = 3 * m;
+
+        // Count total circuits and hashes in db1
+        let mut db1_total_circuits = 0usize;
+        let mut db1_total_hashes = 0usize;
+        {
+            let iter = db1.iterator(rocksdb::IteratorMode::Start);
+            for item in iter {
+                let (_key, value) = item.expect("RocksDB iter error");
+                db1_total_hashes += 1;
+                let mut pos = 0;
+                while pos < value.len() {
+                    if pos + 1 > value.len() { break; }
+                    let len = value[pos] as usize;
+                    pos += 1;
+                    if pos + len > value.len() { break; }
+                    pos += len;
+                    db1_total_circuits += 1;
+                }
+            }
+        }
+
+        // Count total circuits and hashes in db2
+        let mut db2_total_circuits = 0usize;
+        let mut db2_total_hashes = 0usize;
+        {
+            let iter = db2.iterator(rocksdb::IteratorMode::Start);
+            for item in iter {
+                let (_key, value) = item.expect("RocksDB iter error");
+                db2_total_hashes += 1;
+                let mut pos = 0;
+                while pos < value.len() {
+                    if pos + 1 > value.len() { break; }
+                    let len = value[pos] as usize;
+                    pos += 1;
+                    if pos + len > value.len() { break; }
+                    pos += len;
+                    db2_total_circuits += 1;
+                }
+            }
+        }
+
+        println!("db1: {} circuits, {} hashes", db1_total_circuits, db1_total_hashes);
+        println!("db2: {} circuits, {} hashes", db2_total_circuits, db2_total_hashes);
+
+        // Scan db1 and check each circuit against db2
+        let mut missing: Vec<CircuitSeq> = Vec::new();
+        let mut passed_reversal = 0usize;
+        let mut found_directly = 0usize;
+
+        let iter = db1.iterator(rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (_key, value) = item.expect("RocksDB iter error");
+            let mut pos = 0;
+            while pos < value.len() {
+                if pos + 1 > value.len() { break; }
+                let len = value[pos] as usize;
+                pos += 1;
+                if pos + len > value.len() { break; }
+                let circuit_blob = &value[pos..pos + len];
+                pos += len;
+
+                let circuit = CircuitSeq::from_blob(circuit_blob);
+
+                // Compute canonical poly and hash for this circuit
+                let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true);
+                let blob = polys_repr_blob(&canon.0);
+                let hash: u128 = xxh3_128(&blob);
+                let key = hash.to_le_bytes().to_vec();
+
+                // Check if key exists in db2
+                if db2.get(&key).unwrap_or(None).is_some() {
+                    found_directly += 1;
+                    continue;
+                }
+
+                // Key not found — try reversed circuit
+                let mut rev = circuit.clone();
+                rev.gates.reverse();
+                rev.canonicalize();
+                let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true);
+                let rev_blob = polys_repr_blob(&canon_rev.0);
+                let rev_hash: u128 = xxh3_128(&rev_blob);
+                let rev_key = rev_hash.to_le_bytes().to_vec();
+
+                if db2.get(&rev_key).unwrap_or(None).is_some() {
+                    // Reversed circuit is in db2 — this is acceptable, skip
+                    passed_reversal += 1;
+                    continue;
+                }
+
+                // Neither the circuit nor its reverse is in db2 — record as missing
+                missing.push(circuit);
+            }
+        }
+
+        println!("Found directly in db2: {}", found_directly);
+        println!("Passed reversal check: {}", passed_reversal);
+        println!("Missing from db2 (not found directly or by reversal): {}", missing.len());
+
+        if !missing.is_empty() {
+            println!("First 10 missing circuits:");
+            for circuit in missing.iter().take(10) {
+                println!("  {:?}", circuit.gates);
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "{} circuits from db1 not found in db2",
+            missing.len()
+        );
+    }
 }
