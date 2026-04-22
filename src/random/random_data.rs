@@ -5349,7 +5349,7 @@ mod tests {
 
         // Case 5: mapped_c1 || c2
         writeln!(f, "\n=== Case 5: mapped_c1 || c2 ===").unwrap();
-        for mapping in &mappings_1_2 {
+        for mapping in &mappings_2_1 {
             let c1_mapped = apply_wire_mapping(&c1, mapping);
             let mut combined = c1_mapped.gates.clone();
             combined.extend_from_slice(&c2.gates);
@@ -5358,7 +5358,7 @@ mod tests {
 
         // Case 6: mapped_c2 || c1
         writeln!(f, "\n=== Case 6: mapped_c2 || c1 ===").unwrap();
-        for mapping in &mappings_2_1 {
+        for mapping in &mappings_1_2 {
             let c2_mapped = apply_wire_mapping(&c2, mapping);
             let mut combined = c2_mapped.gates.clone();
             combined.extend_from_slice(&c1.gates);
@@ -5367,7 +5367,7 @@ mod tests {
 
         // Case 7: mapped_c1 || c2_rev
         writeln!(f, "\n=== Case 7: mapped_c1 || c2_rev ===").unwrap();
-        for mapping in &mappings_1_2 {
+        for mapping in &mappings_2_1 {
             let c1_mapped = apply_wire_mapping(&c1, mapping);
             let mut combined = c1_mapped.gates.clone();
             combined.extend_from_slice(&c2_rev.gates);
@@ -5376,7 +5376,7 @@ mod tests {
 
         // Case 8: mapped_c2 || c1_rev
         writeln!(f, "\n=== Case 8: mapped_c2 || c1_rev ===").unwrap();
-        for mapping in &mappings_2_1 {
+        for mapping in &mappings_1_2 {
             let c2_mapped = apply_wire_mapping(&c2, mapping);
             let mut combined = c2_mapped.gates.clone();
             combined.extend_from_slice(&c1_rev.gates);
