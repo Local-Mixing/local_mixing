@@ -3744,6 +3744,7 @@ fn canonicalize_circuit(gates: Vec<[u8; 3]>, n: usize, m: usize) -> (CircuitSeq,
         let mut c = CircuitSeq { gates };
         let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true);
         c.rewire(&canon.1.invert(), n);
+        c.canonicalize();
         (c, canon.1)
 }
 
@@ -5396,6 +5397,7 @@ mod tests {
         let mut c = CircuitSeq { gates };
         let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true);
         c.rewire(&canon.1.invert(), n);
+        c.canonicalize();
         (c, canon.1)
     }
     #[test]
