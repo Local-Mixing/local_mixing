@@ -5312,11 +5312,11 @@ mod tests {
         );
     }
 
-    fn canonicalize_circuit(gates: Vec<[u8; 3]>, n: usize, m: usize) -> CircuitSeq {
+    fn canonicalize_circuit(gates: Vec<[u8; 3]>, n: usize, m: usize) -> (CircuitSeq, Permutation) {
         let mut c = CircuitSeq { gates };
         let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true);
         c.rewire(&canon.1.invert(), n);
-        c
+        (c, canon.1)
     }
     #[test]
     fn test_eight_cases() {
@@ -5346,7 +5346,7 @@ mod tests {
             let mut combined = c1.gates.clone();
             combined.extend_from_slice(&c2_mapped.gates);
             let m_combined = combined.len();
-            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            let (result, _) = canonicalize_circuit(combined, 3 * m_combined, m_combined);
             writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
@@ -5357,7 +5357,7 @@ mod tests {
             let mut combined = c2.gates.clone();
             combined.extend_from_slice(&c1_mapped.gates);
             let m_combined = combined.len();
-            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            let (result, _) = canonicalize_circuit(combined, 3 * m_combined, m_combined);
             writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
@@ -5368,7 +5368,7 @@ mod tests {
             let mut combined = c1_rev.gates.clone();
             combined.extend_from_slice(&c2_mapped.gates);
             let m_combined = combined.len();
-            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            let (result, _) = canonicalize_circuit(combined, 3 * m_combined, m_combined);
             writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
@@ -5379,7 +5379,7 @@ mod tests {
             let mut combined = c2_rev.gates.clone();
             combined.extend_from_slice(&c1_mapped.gates);
             let m_combined = combined.len();
-            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            let (result, _) = canonicalize_circuit(combined, 3 * m_combined, m_combined);
             writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
@@ -5392,7 +5392,7 @@ mod tests {
             let mut combined = c1_mapped.gates.clone();
             combined.extend_from_slice(&c2.gates);
             let m_combined = combined.len();
-            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            let (result, _) = canonicalize_circuit(combined, 3 * m_combined, m_combined);
             writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
@@ -5403,7 +5403,7 @@ mod tests {
             let mut combined = c2_mapped.gates.clone();
             combined.extend_from_slice(&c1.gates);
             let m_combined = combined.len();
-            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            let (result, _) = canonicalize_circuit(combined, 3 * m_combined, m_combined);
             writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
@@ -5414,7 +5414,7 @@ mod tests {
             let mut combined = c1_mapped.gates.clone();
             combined.extend_from_slice(&c2_rev.gates);
             let m_combined = combined.len();
-            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            let (result, _) = canonicalize_circuit(combined, 3 * m_combined, m_combined);
             writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
@@ -5425,7 +5425,7 @@ mod tests {
             let mut combined = c2_mapped.gates.clone();
             combined.extend_from_slice(&c1_rev.gates);
             let m_combined = combined.len();
-            let result = canonicalize_circuit(combined, 3 * m_combined, m_combined);
+            let (result, _) = canonicalize_circuit(combined, 3 * m_combined, m_combined);
             writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
@@ -5433,21 +5433,23 @@ mod tests {
         writeln!(f, "\n=== Case 9: hardcoded [[1,2,5],[2,3,6],[1,2,4],[0,3,1]] ===").unwrap();
         let hardcoded = vec![[1u8,2,5],[2,3,6],[1,2,4],[0,3,1]];
         let m_combined = hardcoded.len();
-        let result = canonicalize_circuit(hardcoded, 3 * m_combined, m_combined);
+        let (result, _) = canonicalize_circuit(hardcoded, 3 * m_combined, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
 
         // Case 10: first hardcoded circuit
         writeln!(f, "\n=== Case 10: hardcoded [[1,2,5],[2,3,6]] ===").unwrap();
         let hardcoded = vec![[1u8,2,5],[2,3,6]];
         let m_combined = hardcoded.len();
-        let result = canonicalize_circuit(hardcoded, 7, m_combined);
+        let (result,perm) = canonicalize_circuit(hardcoded, 7, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
+        writeln!(f, "  {:?}", perm.data).unwrap();
 
         // Case 11: second hardcoded circuit
         writeln!(f, "\n=== Case 11: hardcoded [[1,2,4],[0,3,1]] ===").unwrap();
         let hardcoded = vec![[1u8,2,4],[0,3,1]];
         let m_combined = hardcoded.len();
-        let result = canonicalize_circuit(hardcoded, 7, m_combined);
+        let (result, perm) = canonicalize_circuit(hardcoded, 7, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
+        writeln!(f, "  {:?}", perm.data).unwrap();
     }
 }
