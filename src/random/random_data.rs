@@ -5547,6 +5547,14 @@ mod tests {
         let (result, perm) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
         writeln!(f, "  {:?}", perm.data).unwrap();  
+
+        // Case 14: Canon twice
+        writeln!(f, "\n=== Case 14: Canon twice on [[1, 2, 3], [0, 4, 2]] ===").unwrap();
+        let hardcoded = vec![[1u8, 2, 3], [0, 4, 2]];
+        let m_combined = hardcoded.len();
+        let (result, perm) = canonicalize_circuit(hardcoded, 8, m_combined);
+        writeln!(f, "  After first canon: {:?}", result.gates).unwrap();
+        writeln!(f, "  Permutation: {:?}", perm.data).unwrap();
     }
 
     #[test]
