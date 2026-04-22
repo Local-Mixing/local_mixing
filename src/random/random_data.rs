@@ -3276,13 +3276,11 @@ pub fn build_from_2rocks(
         circuits
     });
 
-    // Tuple: (circuit, canon polys, forward key, reversed key)
     let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)>>(100_000);
     let stop_flag_clone = stop_flag.clone();
     let new_db_writer = Arc::clone(new_db);
 
     let nc2 = db2_circuits.len();
-    // For same_db we only process pairs (i,j) with i >= j: N*(N+1)/2 pairs
     let total_work = if same_db {
         nc2 * (nc2 + 1) / 2
     } else {
@@ -3358,7 +3356,6 @@ pub fn build_from_2rocks(
     });
 
     if same_db {
-        // Only pairs (i, j) with i >= j — both drawn from db2_circuits
         let n_circuits = db2_circuits.len();
         let stop_flag_par = Arc::clone(&stop_flag);
         let tx_par = tx.clone();
@@ -3373,7 +3370,6 @@ pub fn build_from_2rocks(
 
             let c1 = &db2_circuits_par[i];
             let n1 = touched_wires(c1).len();
-            // c1_rev is computed once per c1, reused for all j
             let c1_rev = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
 
             let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)> = Vec::new();
@@ -3381,16 +3377,15 @@ pub fn build_from_2rocks(
             for j in 0..=i {
                 let c2 = &db2_circuits_par[j];
                 let n2 = touched_wires(c2).len();
+                let c2_rev = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
 
                 total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
 
-                // Mappings for (c1 first, c2 second) — shared by cases 1 and 3
                 let mappings_1_2 = enumerate_c2_wire_mappings(n1, n2);
-                // Mappings for (c2 first, c1 second)
                 let mappings_2_1 = enumerate_c2_wire_mappings(n2, n1);
 
                 // Case 1: c1 || mapped_c2
-                // Case 3: c1_rev || mapped_c2   (same mappings, c2_mapped computed once)
+                // Case 3: c1_rev || mapped_c2
                 for mapping in &mappings_1_2 {
                     let c2_mapped = apply_wire_mapping(c2, mapping);
                     if let Some(r) = process_combination(c1, &c2_mapped, n, m, &new_db_par) {
@@ -3402,9 +3397,13 @@ pub fn build_from_2rocks(
                 }
 
                 // Case 2: c2 || mapped_c1
+                // Case 4: c2_rev || mapped_c1
                 for mapping in &mappings_2_1 {
                     let c1_mapped = apply_wire_mapping(c1, mapping);
                     if let Some(r) = process_combination(c2, &c1_mapped, n, m, &new_db_par) {
+                        local_results.push(r);
+                    }
+                    if let Some(r) = process_combination(&c2_rev, &c1_mapped, n, m, &new_db_par) {
                         local_results.push(r);
                     }
                 }
@@ -3430,7 +3429,6 @@ pub fn build_from_2rocks(
             }
         });
     } else {
-        // Different databases: iterate db1 in chunks, pair each c1 with every c2
         let iter = db1.iterator(rocksdb::IteratorMode::Start);
 
         for chunk in &iter.chunks(chunk_size) {
@@ -3474,21 +3472,19 @@ pub fn build_from_2rocks(
 
                         let c1 = CircuitSeq::from_blob(circuit_blob);
                         let n1 = touched_wires(&c1).len();
-                        // c1_rev computed once per c1, reused for all c2
                         let c1_rev = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
 
                         for c2 in db2_circuits_par.iter() {
                             let n2 = touched_wires(c2).len();
+                            let c2_rev = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
 
                             total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
 
-                            // Mappings for (c1 first, c2 second) — shared by cases 1 and 3
                             let mappings_1_2 = enumerate_c2_wire_mappings(n1, n2);
-                            // Mappings for (c2 first, c1 second)
                             let mappings_2_1 = enumerate_c2_wire_mappings(n2, n1);
 
                             // Case 1: c1 || mapped_c2
-                            // Case 3: c1_rev || mapped_c2   (same mappings, c2_mapped once)
+                            // Case 3: c1_rev || mapped_c2
                             for mapping in &mappings_1_2 {
                                 let c2_mapped = apply_wire_mapping(c2, mapping);
                                 if let Some(r) = process_combination(&c1, &c2_mapped, n, m, &new_db_par) {
@@ -3500,9 +3496,13 @@ pub fn build_from_2rocks(
                             }
 
                             // Case 2: c2 || mapped_c1
+                            // Case 4: c2_rev || mapped_c1
                             for mapping in &mappings_2_1 {
                                 let c1_mapped = apply_wire_mapping(&c1, mapping);
                                 if let Some(r) = process_combination(c2, &c1_mapped, n, m, &new_db_par) {
+                                    local_results.push(r);
+                                }
+                                if let Some(r) = process_combination(&c2_rev, &c1_mapped, n, m, &new_db_par) {
                                     local_results.push(r);
                                 }
                             }
