@@ -5400,12 +5400,12 @@ mod tests {
     }
     #[test]
     fn test_eight_cases() {
-        let mut c1 = CircuitSeq { gates: vec![[1,2,5], [2,3,6]] };
-        let mut c2 = CircuitSeq { gates: vec![[1,2,4], [0,3,1]] };
-        let canon1 = canonicalize_polys(c1.to_polynomial(7, 0, 2), true);
-        let canon2 = canonicalize_polys(c2.to_polynomial(7, 0, 2), true);
-        c1.rewire(&canon1.1.invert(), 7);
-        c2.rewire(&canon2.1.invert(), 7);
+        let mut c1 = CircuitSeq { gates: vec![[0,5,4], [1,4,6]] };
+        let mut c2 = CircuitSeq { gates: vec![[2,7,5], [3,6,7]] };
+        let canon1 = canonicalize_polys(c1.to_polynomial(8, 0, 2), true);
+        let canon2 = canonicalize_polys(c2.to_polynomial(8, 0, 2), true);
+        c1.rewire(&canon1.1.invert(), 8);
+        c2.rewire(&canon2.1.invert(), 8);
         let n1 = touched_wires(&c1).len();
         let n2 = touched_wires(&c2).len();
 
@@ -5509,60 +5509,44 @@ mod tests {
             writeln!(f, "  {:?}", result.gates).unwrap();
         }
 
-        // Case 9: hardcoded circuit
-        writeln!(f, "\n=== Case 9: hardcoded [[1,2,5],[2,3,6],[1,2,4],[0,3,1]] ===").unwrap();
-        let hardcoded = vec![[1u8,2,5],[2,3,6],[1,2,4],[0,3,1]];
+        // Case 9: full circuit
+        writeln!(f, "\n=== Case 9: full circuit [[0,5,4],[1,4,6],[2,7,5],[3,6,7]] ===").unwrap();
+        let hardcoded = vec![[0u8,5,4],[1,4,6],[2,7,5],[3,6,7]];
         let m_combined = hardcoded.len();
-        let (result, _) = canonicalize_circuit(hardcoded, 3 * m_combined, m_combined);
+        let (result, _) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
 
-        // Case 10: first hardcoded circuit
-        writeln!(f, "\n=== Case 10: hardcoded [[1,2,5],[2,3,6]] ===").unwrap();
-        let hardcoded = vec![[1u8,2,5],[2,3,6]];
+        // Case 10: first part
+        writeln!(f, "\n=== Case 10: first part [[0,5,4],[1,4,6]] ===").unwrap();
+        let hardcoded = vec![[0u8,5,4],[1,4,6]];
         let m_combined = hardcoded.len();
-        let (result,perm) = canonicalize_circuit(hardcoded, 7, m_combined);
-        writeln!(f, "  {:?}", result.gates).unwrap();
-        writeln!(f, "  {:?}", perm.data).unwrap();
-
-        // Case 11: second hardcoded circuit
-        writeln!(f, "\n=== Case 11: hardcoded [[1,2,4],[0,3,1]] ===").unwrap();
-        let hardcoded = vec![[1u8,2,4],[0,3,1]];
-        let m_combined = hardcoded.len();
-        let (result, perm) = canonicalize_circuit(hardcoded, 7, m_combined);
+        let (result,perm) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
         writeln!(f, "  {:?}", perm.data).unwrap();
 
-        // Case 12: second hardcoded circuit again
-        writeln!(f, "\n=== Case 12: hardcoded [[1, 4, 2], [0, 3, 1]] ===").unwrap();
-        let hardcoded = vec![[1, 4, 2], [0, 3, 1]];
+        // Case 11: second part
+        writeln!(f, "\n=== Case 11: second part [[2,7,5],[3,6,7]] ===").unwrap();
+        let hardcoded = vec![[2u8,7,5],[3,6,7]];
         let m_combined = hardcoded.len();
-        let (result, perm) = canonicalize_circuit(hardcoded, 7, m_combined);
+        let (result, perm) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
         writeln!(f, "  {:?}", perm.data).unwrap();
 
-        // Case 13: Reversed second hardcoded circuit
-        writeln!(f, "\n=== Case 13: reversed hardcoded [[0,3,1], [1,2,4]] ===").unwrap();
-        let hardcoded = vec![[0,3,1], [1,2,4]];
+        // Case 12: reversed first part
+        writeln!(f, "\n=== Case 12: reversed first [[1,4,6],[0,5,4]] ===").unwrap();
+        let hardcoded = vec![[1,4,6],[0,5,4]];
         let m_combined = hardcoded.len();
-        let (result, perm) = canonicalize_circuit(hardcoded, 7, m_combined);
+        let (result, perm) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
         writeln!(f, "  {:?}", perm.data).unwrap();
 
-        // Case 14: Reversed hardcoded circuit again
-        writeln!(f, "\n=== Case 14: reversed hardcoded [[0, 2, 1], [1, 4, 3]] ===").unwrap();
-        let hardcoded = vec![[0, 2, 1], [1, 4, 3]];
+        // Case 13: reversed second part
+        writeln!(f, "\n=== Case 13: reversed second [[3,6,7],[2,7,5]] ===").unwrap();
+        let hardcoded = vec![[3,6,7],[2,7,5]];
         let m_combined = hardcoded.len();
-        let (result, perm) = canonicalize_circuit(hardcoded, 7, m_combined);
+        let (result, perm) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
         writeln!(f, "  {:?}", perm.data).unwrap();  
-
-        // Case 15: Reverse reversed hardcoded circuit
-        writeln!(f, "\n=== Case 15: reversed hardcoded [[1, 4, 3], [0, 2, 1]] reversed again ===").unwrap();
-        let hardcoded = vec![[1, 4, 3], [0, 2, 1]];
-        let m_combined = hardcoded.len();
-        let (result, perm) = canonicalize_circuit(hardcoded, 7, m_combined);
-        writeln!(f, "  {:?}", result.gates).unwrap();
-        writeln!(f, "  {:?}", perm.data).unwrap();
     }
 
     #[test]
