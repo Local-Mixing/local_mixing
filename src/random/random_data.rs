@@ -5290,9 +5290,12 @@ mod tests {
 
     #[test]
     fn test_four_cases() {
-        let c1 = CircuitSeq { gates: vec![[1,2,3], [2,3,6]] };
-        let c2 = CircuitSeq { gates: vec![[1,2,4], [0,3,1]] };
-
+        let mut c1 = CircuitSeq { gates: vec![[1,2,3], [2,3,6]] };
+        let mut c2 = CircuitSeq { gates: vec![[1,2,4], [0,3,1]] };
+        let canon1 = canonicalize_polys(c1.to_polynomial(7, 0, 2), true);
+        let canon2 = canonicalize_polys(c2.to_polynomial(7, 0, 2), true);   
+        c1.rewire(&canon1.1.invert(), 7);
+        c2.rewire(&canon2.1.invert(), 7);
         let n1 = touched_wires(&c1).len();
         let n2 = touched_wires(&c2).len();
 
