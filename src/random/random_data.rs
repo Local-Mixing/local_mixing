@@ -5565,7 +5565,7 @@ mod tests {
 
         // Case 15: Two disjoint [[0, 4, 2], [1, 2, 3], [[4, 3, 6], [5, 6, 7]]]
         writeln!(f, "\n=== Case 15: Two disjoint [[0, 4, 2], [1, 2, 3], [[4, 3, 6], [5, 6, 7]] ===").unwrap();
-        let hardcoded = vec![[0u8, 4, 2], [1, 2, 3], [4, 8, 6], [5, 6, 7]];
+        let hardcoded = vec![[0u8, 4, 2], [1, 2, 3], [4, 3, 6], [5, 6, 7]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 12, m_combined);
         writeln!(f, "  After first canon: {:?}", result.gates).unwrap();
