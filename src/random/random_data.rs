@@ -5440,14 +5440,14 @@ mod tests {
         writeln!(f, "\n=== Case 10: hardcoded [[1,2,5],[2,3,6]] ===").unwrap();
         let hardcoded = vec![[1u8,2,5],[2,3,6]];
         let m_combined = hardcoded.len();
-        let result = canonicalize_circuit(hardcoded, 3 * m_combined, m_combined);
+        let result = canonicalize_circuit(hardcoded, 7, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
 
         // Case 11: second hardcoded circuit
         writeln!(f, "\n=== Case 11: hardcoded [[1,2,4],[0,3,1]] ===").unwrap();
         let hardcoded = vec![[1u8,2,4],[0,3,1]];
         let m_combined = hardcoded.len();
-        let result = canonicalize_circuit(hardcoded, 3 * m_combined, m_combined);
+        let result = canonicalize_circuit(hardcoded, 7, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
     }
 }
