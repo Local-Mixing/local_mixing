@@ -298,6 +298,27 @@ impl CircuitSeq {
         blob
     }
 
+    pub fn geq(&self, other: &CircuitSeq) -> bool {
+        if self.gates.len() != other.gates.len() {
+            return false;
+        }
+
+        for (g1, g2) in self.gates.iter().zip(other.gates.iter()) {
+            // Compare pins in order: a, then b, then c
+            for i in 0..3 {
+                if g1[i] > g2[i] {
+                    return true;
+                } else if g1[i] < g2[i] {
+                    return false;
+                }
+            }
+            // otherwise equal, continue to next gate
+        }
+
+        // All gates equal → >= holds
+        true
+    }
+
     /// Reconstruct CircuitSeq from a BLOB
     pub fn from_blob(blob: &[u8]) -> Self {
         assert!(blob.len() % 3 == 0, "Invalid blob length");
