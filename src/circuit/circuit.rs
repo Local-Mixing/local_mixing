@@ -2178,6 +2178,20 @@ mod tests {
             // }
         }
         println!("INDEXED: Total time for 100,000 random circuits: {:.2?}", timer.elapsed());
+        let timer = std::time::Instant::now();
+        for _ in 0..100_000 {
+            let circuit = random_circuit(15, 20);
+            let polys = circuit.to_polynomial(15, 0, 20);
+            // for (i, poly) in polys.iter().enumerate() {
+            //     println!("  P{}: {}", i, poly_to_str(poly, 30));
+            // }
+            let (canonical, _) = canonicalize_polys_2(polys);
+            // println!("Canonical polys:");
+            // for (i, poly) in canonical.iter().enumerate() {
+            //     println!("  P{}: {}", i, poly_to_str(poly, 30));
+            // }
+        }
+        println!("INDEXED_2: Total time for 100,000 random circuits: {:.2?}", timer.elapsed());
     }
 
     #[test]
