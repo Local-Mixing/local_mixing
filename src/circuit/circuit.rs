@@ -1283,69 +1283,69 @@ impl RankingState {
         false
     }
 
-    /// Rule 2.3: for each tied group G_j, iterate all groups G_k in rank order as
-    /// filter sources. For each G_k, iterate all groups G_i in rank order as scoring
-    /// sources. Score each variable x_j in the tied group by:
-    ///   score(x_j) = sum over P in G_i of
-    ///                sum over f in G_k of
-    ///                wire_counts_in_poly(filter(P, f), max_degree, j)
-    /// When G_k is a singleton {x_k} this reduces to the old 2.3 behaviour.
-    /// When G_k is a tied group the filter sums over all variables in the group.
-    /// If any split occurs for any (G_k, G_i) pair, record it and restart from 2.1.
-    /// If all G_i fail for a given G_k, move to the next G_k and restart G_i iteration.
-    /// Variable ranking directly becomes polynomial ranking.
-    fn try_rule_2_3(&mut self, polynomials: &[Polynomial], max_degree: usize) -> bool {
-        for gi in 0..self.groups.len() {
-            if self.groups[gi].len() <= 1 {
-                continue;
-            }
-            let group = self.groups[gi].clone();
+    // /// Rule 2.3: for each tied group G_j, iterate all groups G_k in rank order as
+    // /// filter sources. For each G_k, iterate all groups G_i in rank order as scoring
+    // /// sources. Score each variable x_j in the tied group by:
+    // ///   score(x_j) = sum over P in G_i of
+    // ///                sum over f in G_k of
+    // ///                wire_counts_in_poly(filter(P, f), max_degree, j)
+    // /// When G_k is a singleton {x_k} this reduces to the old 2.3 behaviour.
+    // /// When G_k is a tied group the filter sums over all variables in the group.
+    // /// If any split occurs for any (G_k, G_i) pair, record it and restart from 2.1.
+    // /// If all G_i fail for a given G_k, move to the next G_k and restart G_i iteration.
+    // /// Variable ranking directly becomes polynomial ranking.
+    // fn try_rule_2_3(&mut self, polynomials: &[Polynomial], max_degree: usize) -> bool {
+    //     for gi in 0..self.groups.len() {
+    //         if self.groups[gi].len() <= 1 {
+    //             continue;
+    //         }
+    //         let group = self.groups[gi].clone();
 
-            // Outer loop: iterate all groups G_k in rank order as filter sources
-            for fgi in 0..self.groups.len() {
-                let filter_group = self.groups[fgi].clone();
+    //         // Outer loop: iterate all groups G_k in rank order as filter sources
+    //         for fgi in 0..self.groups.len() {
+    //             let filter_group = self.groups[fgi].clone();
 
-                // Inner loop: iterate all groups G_i in rank order as scoring sources
-                for rgi in 0..self.groups.len() {
-                    let scoring_group = self.groups[rgi].clone();
+    //             // Inner loop: iterate all groups G_i in rank order as scoring sources
+    //             for rgi in 0..self.groups.len() {
+    //                 let scoring_group = self.groups[rgi].clone();
 
-                    // Score each variable x_j in tied group:
-                    // sum over P in G_i of sum over f in G_k of
-                    // wire_counts_in_poly(filter(P, f), max_degree, j)
-                    let scored: Vec<(usize, Vec<usize>)> = group
-                        .iter()
-                        .map(|&w| {
-                            let score = scoring_group.iter().fold(
-                                vec![0usize; max_degree + 1],
-                                |mut acc, &p| {
-                                    // Sum over all filter variables in G_k
-                                    for &f in &filter_group {
-                                        let filtered =
-                                            filter_poly_by_var(&polynomials[p], f);
-                                        let counts =
-                                            wire_counts_in_poly(&filtered, max_degree, w);
-                                        for (a, c) in acc.iter_mut().zip(counts.iter()) {
-                                            *a += c;
-                                        }
-                                    }
-                                    acc
-                                },
-                            );
-                            (w, score)
-                        })
-                        .collect();
+    //                 // Score each variable x_j in tied group:
+    //                 // sum over P in G_i of sum over f in G_k of
+    //                 // wire_counts_in_poly(filter(P, f), max_degree, j)
+    //                 let scored: Vec<(usize, Vec<usize>)> = group
+    //                     .iter()
+    //                     .map(|&w| {
+    //                         let score = scoring_group.iter().fold(
+    //                             vec![0usize; max_degree + 1],
+    //                             |mut acc, &p| {
+    //                                 // Sum over all filter variables in G_k
+    //                                 for &f in &filter_group {
+    //                                     let filtered =
+    //                                         filter_poly_by_var(&polynomials[p], f);
+    //                                     let counts =
+    //                                         wire_counts_in_poly(&filtered, max_degree, w);
+    //                                     for (a, c) in acc.iter_mut().zip(counts.iter()) {
+    //                                         *a += c;
+    //                                     }
+    //                                 }
+    //                                 acc
+    //                             },
+    //                         );
+    //                         (w, score)
+    //                     })
+    //                     .collect();
 
-                    let split = split_by_scores(scored);
-                    if split.len() > 1 {
-                        self.apply_split(gi, split);
-                        return true;
-                    }
-                }
-                // All G_i failed for this filter group — move to next G_k
-            }
-        }
-        false
-    }
+    //                 let split = split_by_scores(scored);
+    //                 if split.len() > 1 {
+    //                     self.apply_split(gi, split);
+    //                     return true;
+    //                 }
+    //             }
+    //             // All G_i failed for this filter group — move to next G_k
+    //         }
+    //     }
+    //     false
+    // }
 
     /// Rule 2.4: for each tied group G_j, rank each polynomial's full monomial set
     /// using the current partial variable ordering, then compare polynomials
@@ -1507,16 +1507,16 @@ fn canonicalize_inner(
             }
         }
 
-        // Rule 2.3: split variables by all groups, filtered by all groups
-        {
-            let t = Instant::now();
-            let fired = state.try_rule_2_3(polynomials, max_degree);
-            TIME_RULE_2_3.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-            if fired {
-                if let Some(ref mut t) = trace { t.push("2.3".to_string()); }
-                continue;
-            }
-        }
+        // // Rule 2.3: split variables by all groups, filtered by all groups
+        // {
+        //     let t = Instant::now();
+        //     let fired = state.try_rule_2_3(polynomials, max_degree);
+        //     TIME_RULE_2_3.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        //     if fired {
+        //         if let Some(ref mut t) = trace { t.push("2.3".to_string()); }
+        //         continue;
+        //     }
+        // }
 
         // Rule 2.4: split polynomials by full ranked monomial list comparison
         {
@@ -1539,7 +1539,6 @@ fn canonicalize_inner(
                 continue;
             }
         }
-        let use_backtracking  = false;
         // Rule L: fully stuck — either backtrack or pick lowest index (toggleable)
         {
             let t = Instant::now();
@@ -2072,7 +2071,7 @@ mod tests {
                 let fired = match rule {
                     1 => state.try_rule_2_1(polynomials, max_degree),
                     2 => state.try_rule_2_2(polynomials, max_degree),
-                    3 => state.try_rule_2_3(polynomials, max_degree),
+                    // 3 => state.try_rule_2_3(polynomials, max_degree),
                     4 => state.try_rule_2_4(polynomials),
                     5 => state.try_rule_2_5(polynomials),
                     _ => false,
