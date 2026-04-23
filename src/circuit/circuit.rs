@@ -1311,98 +1311,135 @@ impl RankingState {
         false
     }
 
-    // /// Rule 2.4: for each tied group G_j, rank each polynomial's full monomial set
-    // /// using the current partial variable ordering, then compare polynomials
-    // /// lexicographically by their sorted monomial lists all the way through.
-    // ///
-    // /// Monomial ordering:
-    // ///   1. Higher degree always ranks above lower degree.
-    // ///   2. Within the same degree, compare by variable ranks (highest ranked var first)
-    // ///      lexicographically. Tied variables get the same rank value, so monomials
-    // ///      differing only in tied variables compare as equal.
-    // ///
-    // /// Polynomial ordering: sort monomials highest-first, then compare the full lists
-    // /// lexicographically — compare all the way through, not just the highest monomial.
-    // /// Polynomials that compare as equal under the full ordering remain tied.
-    // ///
-    // /// If any split occurs, record it and return true to restart from 2.1.
-    // fn try_rule_2_4(&mut self, polynomials: &[Polynomial]) -> bool {
-    //     let var_rank = self.current_var_rank();
+    /// Rule 2.4: for each tied group G_j, rank each polynomial's full monomial set
+    /// using the current partial variable ordering, then compare polynomials
+    /// lexicographically by their sort key lists all the way through.
+    ///
+    /// Monomial ordering:
+    ///   1. Higher degree always ranks above lower degree.
+    ///   2. Within the same degree, compare by variable ranks (highest ranked var first)
+    ///      lexicographically. Tied variables get the same rank value, so monomials
+    ///      differing only in tied variables compare as equal.
+    ///
+    /// Polynomial ordering: sort monomials by their rank keys highest-first, then compare
+    /// the full key lists lexicographically — compare all the way through.
+    /// Polynomials that compare as equal under the full ordering remain tied.
+    ///
+    /// If any split occurs, record it and return true to restart from 2.1.
+    fn try_rule_2_4(&mut self, polynomials: &[Polynomial]) -> bool {
+        let var_rank = self.current_var_rank();
 
-    //     for gi in 0..self.groups.len() {
-    //         if self.groups[gi].len() <= 1 {
-    //             continue;
-    //         }
-    //         let group = self.groups[gi].clone();
+        for gi in 0..self.groups.len() {
+            if self.groups[gi].len() <= 1 {
+                continue;
+            }
+            let group = self.groups[gi].clone();
 
-    //         // Rank each polynomial's full monomial list under current partial ordering
-    //         let scored: Vec<(usize, Vec<Monomial>)> = group
-    //             .iter()
-    //             .map(|&p| {
-    //                 let monomials: Vec<Monomial> = polynomials[p].iter().copied().collect();
-    //                 (p, rank_monomials(&monomials, &var_rank))
-    //             })
-    //             .collect();
+            // For each polynomial, compute sorted list of monomial sort keys
+            // (sorted ascending = highest ranked first since degree is negated)
+            let scored: Vec<(usize, Vec<Vec<isize>>)> = group
+                .iter()
+                .map(|&p| {
+                    let mut keys: Vec<Vec<isize>> = polynomials[p]
+                        .iter()
+                        .map(|&m| monomial_sort_key(m, &var_rank))
+                        .collect();
+                    keys.sort(); // ascending = best rank first (degree negated)
+                    (p, keys)
+                })
+                .collect();
 
-    //         // Compare polynomials by full ranked monomial lists lexicographically
-    //         let split = split_by_monomial_lists(scored);
-    //         if split.len() > 1 {
-    //             self.apply_split(gi, split);
-    //             return true;
-    //         }
-    //     }
-    //     false
-    // }
+            // Partition into sub-groups by descending lexicographic order of key lists
+            let mut scored_sorted = scored.clone();
+            scored_sorted.sort_by(|a, b| b.1.cmp(&a.1));
 
-    // /// Rule 2.5: combines the filtering of 2.3 with the monomial ranking of 2.4.
-    // /// For each tied group G_j, iterate all groups G_i in rank order. For each
-    // /// variable x_j in the tied group, build a ranked monomial list by:
-    // ///   1. For each P in G_i, filter to monomials containing x_j
-    // ///   2. Concatenate all filtered monomial sets across all P in G_i (duplicates ok,
-    // ///      no GF2 cancellation needed since we are just comparing, not computing)
-    // ///   3. Rank the concatenated list using the current partial variable ordering
-    // /// Compare the ranked monomial lists for each x_j lexicographically to split G_j.
-    // /// Variable ranking directly becomes polynomial ranking.
-    // /// If any split occurs, record it and return true to restart from 2.1.
-    // fn try_rule_2_5(&mut self, polynomials: &[Polynomial]) -> bool {
-    //     let var_rank = self.current_var_rank();
+            let mut split: Vec<Vec<usize>> = Vec::new();
+            let mut current = vec![scored_sorted[0].0];
+            for i in 1..scored_sorted.len() {
+                if scored_sorted[i].1 == scored_sorted[i - 1].1 {
+                    current.push(scored_sorted[i].0);
+                } else {
+                    split.push(current.clone());
+                    current = vec![scored_sorted[i].0];
+                }
+            }
+            split.push(current);
 
-    //     for gi in 0..self.groups.len() {
-    //         if self.groups[gi].len() <= 1 {
-    //             continue;
-    //         }
-    //         let group = self.groups[gi].clone();
+            if split.len() > 1 {
+                self.apply_split(gi, split);
+                return true;
+            }
+        }
+        false
+    }
 
-    //         // Iterate all groups G_i in rank order
-    //         for rgi in 0..self.groups.len() {
-    //             let scoring_group = self.groups[rgi].clone();
+    /// Rule 2.5: combines the filtering of 2.3 with the monomial ranking of 2.4.
+    /// For each tied group G_j, iterate all groups G_i in rank order. For each
+    /// variable x_j in the tied group, build a ranked monomial key list by:
+    ///   1. For each P in G_i, filter to monomials containing x_j
+    ///   2. Concatenate all filtered monomial sets across all P in G_i (duplicates ok)
+    ///   3. Compute sort keys for the concatenated list and sort ascending
+    /// Compare the sort key lists for each x_j lexicographically to split G_j.
+    /// Variable ranking directly becomes polynomial ranking.
+    /// If any split occurs, record it and return true to restart from 2.1.
+    fn try_rule_2_5(&mut self, polynomials: &[Polynomial]) -> bool {
+        let var_rank = self.current_var_rank();
 
-    //             // For each variable x_j in the tied group, build a ranked monomial list
-    //             // by concatenating filter(P, x_j) across all P in scoring_group
-    //             let scored: Vec<(usize, Vec<Monomial>)> = group
-    //                 .iter()
-    //                 .map(|&w| {
-    //                     // Concatenate monomials containing x_w from all P in scoring_group
-    //                     let combined: Vec<Monomial> = scoring_group
-    //                         .iter()
-    //                         .flat_map(|&p| filter_poly_by_var(&polynomials[p], w))
-    //                         .collect();
-    //                     // Rank combined list using current partial variable ordering
-    //                     (w, rank_monomials(&combined, &var_rank))
-    //                 })
-    //                 .collect();
+        for gi in 0..self.groups.len() {
+            if self.groups[gi].len() <= 1 {
+                continue;
+            }
+            let group = self.groups[gi].clone();
 
-    //             // Compare variables by their ranked monomial lists lexicographically.
-    //             // Variable ranking directly becomes polynomial ranking.
-    //             let split = split_by_monomial_lists(scored);
-    //             if split.len() > 1 {
-    //                 self.apply_split(gi, split);
-    //                 return true;
-    //             }
-    //         }
-    //     }
-    //     false
-    // }
+            // Iterate all groups G_i in rank order
+            for rgi in 0..self.groups.len() {
+                let scoring_group = self.groups[rgi].clone();
+
+                // For each variable x_j in the tied group, build a sort key list
+                // from filtered monomials across all P in scoring_group
+                let scored: Vec<(usize, Vec<Vec<isize>>)> = group
+                    .iter()
+                    .map(|&w| {
+                        // Concatenate monomials containing x_w from all P in scoring_group
+                        let combined: Vec<Monomial> = scoring_group
+                            .iter()
+                            .flat_map(|&p| filter_poly_by_var(&polynomials[p], w))
+                            .collect();
+                        // Compute and sort keys ascending (best rank first)
+                        let mut keys: Vec<Vec<isize>> = combined
+                            .iter()
+                            .map(|&m| monomial_sort_key(m, &var_rank))
+                            .collect();
+                        keys.sort();
+                        (w, keys)
+                    })
+                    .collect();
+
+                // Partition by descending lexicographic order of key lists.
+                // Variable ranking directly becomes polynomial ranking.
+                let mut scored_sorted = scored.clone();
+                scored_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
+                let mut split: Vec<Vec<usize>> = Vec::new();
+                let mut current = vec![scored_sorted[0].0];
+                for i in 1..scored_sorted.len() {
+                    if scored_sorted[i].1 == scored_sorted[i - 1].1 {
+                        current.push(scored_sorted[i].0);
+                    } else {
+                        split.push(current.clone());
+                        current = vec![scored_sorted[i].0];
+                    }
+                }
+                split.push(current);
+
+                if split.len() > 1 {
+                    self.apply_split(gi, split);
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 /// Inner recursive canonicalization. Runs Rules 2.1-2.5 deterministically until stuck,
@@ -1448,21 +1485,21 @@ fn canonicalize_inner(
             continue;
         }
 
-        // // Rule 2.4: split polynomials by full ranked monomial list comparison
-        // if state.try_rule_2_4(polynomials) {
-        //     if let Some(ref mut t) = trace {
-        //         t.push("2.4".to_string());
-        //     }
-        //     continue;
-        // }
+        // Rule 2.4: split polynomials by full ranked monomial list comparison
+        if state.try_rule_2_4(polynomials) {
+            if let Some(ref mut t) = trace {
+                t.push("2.4".to_string());
+            }
+            continue;
+        }
 
-        // // Rule 2.5: split variables by ranked monomial lists built from filtered polynomials
-        // if state.try_rule_2_5(polynomials) {
-        //     if let Some(ref mut t) = trace {
-        //         t.push("2.5".to_string());
-        //     }
-        //     continue;
-        // }
+        // Rule 2.5: split variables by ranked monomial lists built from filtered polynomials
+        if state.try_rule_2_5(polynomials) {
+            if let Some(ref mut t) = trace {
+                t.push("2.5".to_string());
+            }
+            continue;
+        }
 
         // Rule L: fully stuck — either backtrack or pick lowest index (toggleable)
         if use_backtracking {
