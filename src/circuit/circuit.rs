@@ -1474,6 +1474,40 @@ impl RankingState {
     }
 }
 
+// Is `b` reachable from `a` within `candidates` under any known automorphism?
+fn is_same_orbit(
+    a: usize,
+    b: usize,
+    candidates: &[usize],
+    auts1: &[Vec<usize>],
+    auts2: &[Vec<usize>],
+) -> bool {
+    let cset: HashSet<usize> = candidates.iter().copied().collect();
+    let mut visited: HashSet<usize> = HashSet::new();
+    let mut frontier = vec![a];
+    visited.insert(a);
+    while let Some(x) = frontier.pop() {
+        for aut in auts1.iter().chain(auts2.iter()) {
+            let img = aut[x];
+            if img == b { return true; }
+            if cset.contains(&img) && visited.insert(img) {
+                frontier.push(img);
+            }
+        }
+    }
+    false
+}
+
+// Given two orderings that produce the same canonical form,
+// build the automorphism: sigma[order_a[pos]] = order_b[pos]
+fn automorphism_from_orders(order_a: &[usize], order_b: &[usize], n: usize) -> Vec<usize> {
+    let mut sigma = vec![0usize; n];
+    for pos in 0..order_a.len() {
+        sigma[order_a[pos]] = order_b[pos];
+    }
+    sigma
+}
+
 /// Inner recursive canonicalization. Runs Rules 2.1-2.5 deterministically until stuck,
 /// then applies Rule L (backtracking or lowest-index) to break remaining ties.
 /// `use_backtracking` toggles between canonical backtracking (correct) and lowest-index
@@ -1484,6 +1518,7 @@ fn canonicalize_inner(
     max_degree: usize,
     use_backtracking: bool,
     mut trace: Option<&mut Vec<String>>,
+    known_auts: &mut Vec<Vec<usize>>,
 ) -> Vec<usize> {
     let n = polynomials.len();
     let mut state = RankingState::new(initial_groups, n);
@@ -1492,8 +1527,8 @@ fn canonicalize_inner(
         if state.is_fully_ranked() {
             break;
         }
-        
-        // Rule 2.1: split polynomials by all groups (singletons and non-singletons)
+
+        // Rule 2.1
         {
             let t = Instant::now();
             let fired = state.try_rule_2_1(polynomials, max_degree);
@@ -1504,7 +1539,7 @@ fn canonicalize_inner(
             }
         }
 
-        // Rule 2.2: split variables by all groups (full polynomial profiling)
+        // Rule 2.2
         {
             let t = Instant::now();
             let fired = state.try_rule_2_2(polynomials, max_degree);
@@ -1515,10 +1550,10 @@ fn canonicalize_inner(
             }
         }
 
-        // // Rule 2.3: split variables by all groups, filtered by all groups
+        // Rule 2.3
         // {
         //     let t = Instant::now();
-        //     let fired = state.try_rule_2_3(polynomials, max_degree);
+        //     let fired = state.try_rule_2_3(polynomials);
         //     TIME_RULE_2_3.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
         //     if fired {
         //         if let Some(ref mut t) = trace { t.push("2.3".to_string()); }
@@ -1526,7 +1561,7 @@ fn canonicalize_inner(
         //     }
         // }
 
-        // Rule 2.4: split polynomials by full ranked monomial list comparison
+        // Rule 2.4
         {
             let t = Instant::now();
             let fired = state.try_rule_2_4(polynomials);
@@ -1537,7 +1572,7 @@ fn canonicalize_inner(
             }
         }
 
-         // Rule 2.5: split variables by ranked monomial lists built from filtered polynomials
+        // Rule 2.5
         {
             let t = Instant::now();
             let fired = state.try_rule_2_5(polynomials);
@@ -1547,56 +1582,107 @@ fn canonicalize_inner(
                 continue;
             }
         }
-        // Rule L: fully stuck — either backtrack or pick lowest index (toggleable)
+
+        // Rule L
         {
             let t = Instant::now();
             if use_backtracking {
                 let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
                 let candidates = state.groups[gi].clone();
 
-                // Try each candidate, collect (canonical_form, final_order, trace) for each
-                let (best, best_trace) = candidates
-                    .iter()
-                    .map(|&w| {
-                        let mut trial_groups = state.groups.clone();
-                        let rest: Vec<usize> =
-                            candidates.iter().copied().filter(|&x| x != w).collect();
-                        let mut replacement = vec![vec![w]];
-                        if !rest.is_empty() {
-                            replacement.push(rest);
+                let mut best_canon: Option<Vec<Vec<Monomial>>> = None;
+                let mut best_order: Option<Vec<usize>>         = None;
+                let mut best_trace: Vec<String>                = Vec::new();
+                let mut best_w:     Option<usize>              = None;
+                let mut tried:      Vec<usize>                 = Vec::new();
+                let mut local_auts: Vec<Vec<usize>>            = Vec::new();
+
+                for &w in &candidates {
+                    // Pruning: skip w if it is in the orbit of any already-tried
+                    // candidate under known_auts + local_auts
+                    let pruned = tried.iter().any(|&t| {
+                        is_same_orbit(t, w, &candidates, known_auts, &local_auts)
+                    });
+                    if pruned {
+                        if let Some(ref mut tr) = trace {
+                            tr.push(format!("L(pruned {} via automorphism)", w));
                         }
-                        trial_groups.splice(gi..=gi, replacement);
+                        continue;
+                    }
 
-                        // Collect trace for this trial path
-                        let mut trial_trace: Vec<String> = Vec::new();
-                        let trial_final = canonicalize_inner(
-                            polynomials,
-                            trial_groups,
-                            max_degree,
-                            use_backtracking,
-                            Some(&mut trial_trace),
-                        );
-                        let canon = make_canonical_form(polynomials, &trial_final);
-                        (w, canon, trial_final, trial_trace)
-                    })
-                    .min_by_key(|(_, canon, _, _)| canon.clone())
-                    .map(|(w, _, _, t)| (w, t))
-                    .unwrap();
+                    // Individualize w
+                    let rest: Vec<usize> = candidates.iter().copied()
+                        .filter(|&x| x != w).collect();
+                    let mut trial_groups = state.groups.clone();
+                    let mut replacement = vec![vec![w]];
+                    if !rest.is_empty() { replacement.push(rest.clone()); }
+                    trial_groups.splice(gi..=gi, replacement);
 
-                if let Some(ref mut t) = trace {
-                    t.push(format!("L(picked {})", best));
-                    t.extend(best_trace);
+                    // Pass inherited + local auts into the child
+                    let mut child_auts: Vec<Vec<usize>> = known_auts.iter()
+                        .chain(local_auts.iter())
+                        .cloned()
+                        .collect();
+
+                    let mut trial_trace: Vec<String> = Vec::new();
+                    let trial_order = canonicalize_inner(
+                        polynomials,
+                        trial_groups,
+                        max_degree,
+                        use_backtracking,
+                        Some(&mut trial_trace),
+                        &mut child_auts,
+                    );
+                    let trial_canon = make_canonical_form(polynomials, &trial_order);
+
+                    match best_canon {
+                        None => {
+                            best_canon = Some(trial_canon);
+                            best_order = Some(trial_order);
+                            best_trace = trial_trace;
+                            best_w     = Some(w);
+                        }
+                        Some(ref bc) => {
+                            if trial_canon == *bc {
+                                // Same canonical form -> found an automorphism
+                                let aut = automorphism_from_orders(
+                                    best_order.as_ref().unwrap(),
+                                    &trial_order,
+                                    n,
+                                );
+                                local_auts.push(aut);
+                                if let Some(ref mut tr) = trace {
+                                    tr.push(format!("L(aut found {} ~ {})", best_w.unwrap(), w));
+                                }
+                            } else if trial_canon < *bc {
+                                best_canon = Some(trial_canon);
+                                best_order = Some(trial_order);
+                                best_trace = trial_trace;
+                                best_w     = Some(w);
+                            }
+                        }
+                    }
+
+                    tried.push(w);
                 }
 
-                // Lock the best candidate and continue
-                let rest: Vec<usize> =
-                    candidates.iter().copied().filter(|&x| best != x).collect();
+                // Propagate local automorphisms up to parent
+                known_auts.extend(local_auts);
+
+                let best = best_w.unwrap();
+                if let Some(ref mut tr) = trace {
+                    tr.push(format!("L(picked {})", best));
+                    tr.extend(best_trace);
+                }
+
+                let rest: Vec<usize> = candidates.iter().copied()
+                    .filter(|&x| x != best).collect();
                 let mut replacement = vec![vec![best]];
-                if !rest.is_empty() {
-                    replacement.push(rest);
-                }
+                if !rest.is_empty() { replacement.push(rest); }
                 state.groups.splice(gi..=gi, replacement);
+
             } else {
+                // Non-backtracking: lowest index wins, unchanged
                 let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
                 let mut group = state.groups[gi].clone();
                 group.sort();
@@ -1605,9 +1691,7 @@ fn canonicalize_inner(
                     t.push(format!("L(lowest {})", winner));
                 }
                 let mut replacement = vec![vec![winner]];
-                if !group.is_empty() {
-                    replacement.push(group);
-                }
+                if !group.is_empty() { replacement.push(group); }
                 state.groups.splice(gi..=gi, replacement);
             }
             TIME_RULE_L.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1655,12 +1739,14 @@ pub fn canonicalize_polys(
 
     // Run Rules 2.1-2.5 and Rule L to fully resolve all ties
     let mut trace: Vec<String> = Vec::new();
+    let mut known_auts: Vec<Vec<usize>> = Vec::new();
     let final_order = canonicalize_inner(
         &polynomials,
         initial_groups,
         max_degree,
         use_backtracking,
         if print { Some(&mut trace) } else { None },
+        &mut known_auts,
     );
 
     if print {
