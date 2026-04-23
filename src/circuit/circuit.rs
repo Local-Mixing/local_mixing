@@ -1539,7 +1539,7 @@ fn canonicalize_inner(
                 continue;
             }
         }
-
+        let use_bactracking = false;
         // Rule L: fully stuck — either backtrack or pick lowest index (toggleable)
         {
             let t = Instant::now();
