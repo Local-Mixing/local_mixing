@@ -1955,4 +1955,128 @@ mod tests {
         base_circuit.rewire(&Permutation { data: shuf.clone() }, 3);
         assert!(base_circuit.is_relabeling_of(&shuffle_circuit) == true);
     }
+
+    fn canonicalize_with_rules(
+        polynomials: &[Polynomial],
+        initial_groups: Vec<Vec<usize>>,
+        max_degree: usize,
+        use_backtracking: bool,
+        rules: &[usize], // ordered subset of [1,2,3,4,5]
+    ) -> Vec<usize> {
+        let n = polynomials.len();
+        let mut state = RankingState::new(initial_groups, n);
+
+        loop {
+            if state.is_fully_ranked() {
+                break;
+            }
+
+            let mut progress = false;
+            for &rule in rules {
+                let fired = match rule {
+                    1 => state.try_rule_2_1(polynomials, max_degree),
+                    2 => state.try_rule_2_2(polynomials, max_degree),
+                    3 => state.try_rule_2_3(polynomials, max_degree),
+                    4 => state.try_rule_2_4(polynomials),
+                    5 => state.try_rule_2_5(polynomials),
+                    _ => false,
+                };
+                if fired {
+                    progress = true;
+                    break; // restart from first rule in list
+                }
+            }
+
+            if !progress {
+                // Rule L
+                let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
+                let mut group = state.groups[gi].clone();
+                group.sort();
+                let winner = group.remove(0);
+                let mut replacement = vec![vec![winner]];
+                if !group.is_empty() {
+                    replacement.push(group);
+                }
+                state.groups.splice(gi..=gi, replacement);
+            }
+        }
+
+        state.groups.iter().map(|g| g[0]).collect()
+    }
+
+    fn make_initial_groups(polynomials: &[Polynomial], max_degree: usize) -> Vec<Vec<usize>> {
+        let n = polynomials.len();
+        let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
+            .map(|i| (i, degree_counts(&polynomials[i], max_degree)))
+            .collect();
+        profiles.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let mut initial_groups: Vec<Vec<usize>> = Vec::new();
+        let mut current = vec![profiles[0].0];
+        for i in 1..profiles.len() {
+            if profiles[i].1 == profiles[i - 1].1 {
+                current.push(profiles[i].0);
+            } else {
+                initial_groups.push(current.clone());
+                current = vec![profiles[i].0];
+            }
+        }
+        initial_groups.push(current);
+        initial_groups
+    }
+
+    #[test]
+    fn test_all_rule_combinations() {
+        let mut c1 = CircuitSeq { gates: vec![[0,4,2], [1,2,3], [6,7,4], [5,3,7]] };
+        let mut c2 = CircuitSeq { gates: vec![[0,5,4],[1,4,6],[2,7,5],[3,6,7]] };
+
+        let n = 3;
+        let m = 1;
+
+        let polys1 = c1.to_polynomial(n, 0, m);
+        let polys2 = c2.to_polynomial(n, 0, m);
+        let max_degree = n;
+
+        let all_rules = [1usize, 2, 3, 4, 5];
+
+        // All non-empty subsets in all orderings
+        let mut results: Vec<(Vec<usize>, Vec<usize>, Vec<usize>)> = Vec::new();
+
+        for size in 1..=all_rules.len() {
+            for combo in all_rules.iter().copied().permutations(size) {
+                let groups1 = make_initial_groups(&polys1, max_degree);
+                let groups2 = make_initial_groups(&polys2, max_degree);
+
+                let order1 = canonicalize_with_rules(&polys1, groups1, max_degree, false, &combo);
+                let order2 = canonicalize_with_rules(&polys2, groups2, max_degree, false, &combo);
+
+                let canon1 = make_canonical_form(&polys1, &order1);
+                let canon2 = make_canonical_form(&polys2, &order2);
+
+                results.push((combo.clone(), order1.clone(), order2.clone()));
+
+                println!(
+                    "Rules {:?}  |  c1 order: {:?}  |  c2 order: {:?}  |  same canon: {}",
+                    combo,
+                    order1,
+                    order2,
+                    canon1 == canon2,
+                );
+            }
+        }
+
+        // Summary: which rule sets produce the same canonical form for both circuits
+        println!("\n--- Summary: rule sets where c1 == c2 canonically ---");
+        for (combo, order1, order2) in &results {
+            let groups1 = make_initial_groups(&polys1, max_degree);
+            let groups2 = make_initial_groups(&polys2, max_degree);
+            let o1 = canonicalize_with_rules(&polys1, groups1, max_degree, false, combo);
+            let o2 = canonicalize_with_rules(&polys2, groups2, max_degree, false, combo);
+            let c1f = make_canonical_form(&polys1, &o1);
+            let c2f = make_canonical_form(&polys2, &o2);
+            if c1f == c2f {
+                println!("  {:?}", combo);
+            }
+        }
+    }
 }
