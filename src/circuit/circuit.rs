@@ -2030,8 +2030,8 @@ mod tests {
         let mut c1 = CircuitSeq { gates: vec![[0,4,2], [1,2,3], [6,7,4], [5,3,7]] };
         let mut c2 = CircuitSeq { gates: vec![[0,5,4],[1,4,6],[2,7,5],[3,6,7]] };
 
-        let n = 3;
-        let m = 1;
+        let n = 12;
+        let m = 4;
 
         let polys1 = c1.to_polynomial(n, 0, m);
         let polys2 = c2.to_polynomial(n, 0, m);
