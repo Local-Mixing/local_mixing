@@ -9,6 +9,14 @@ use std::{
 use std::time::Instant;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::AtomicU64;
+
+use std::os::raw::c_int;
+use nauty_Traces_sys::{
+    densenauty, empty_graph, optionblk, statsblk,
+    ADDONEEDGE, FALSE, NAUTYVERSIONID, SETWORDSNEEDED, TRUE, WORDSIZE,
+    nauty_check,
+};
+
 // pins are [active, control1, control2] for Toffoli gates
 // We are only concerned with gate r57
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -1728,6 +1736,208 @@ pub fn trim_canonicalized(polynomials: Vec<Polynomial>) -> Vec<Polynomial> {
     }
 
     polynomials[..keep_up_to].to_vec()
+}
+
+/// FNV-1a hash of a profile vector. Used to assign wire colors.
+/// Collisions would cause over-merging (correctness issue), but FNV-1a
+/// collision probability on these short integer vectors is negligible.
+fn hash_profile(profile: &[usize]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &count in profile {
+        // Hash each byte of count
+        for byte in count.to_le_bytes() {
+            h ^= byte as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    }
+    h
+}
+
+/// Canonicalize a polynomial vector using nauty.
+///
+/// Returns `(canonical_polys, permutation)` where `permutation.data[pos] = wire`,
+/// matching the convention of `canonicalize_polys`.
+pub fn canonicalize_polys_2(
+    polynomials: Vec<Polynomial>,
+) -> (Vec<Polynomial>, Permutation) {
+    let n = polynomials.len();
+    if n == 0 {
+        return (vec![], Permutation { data: vec![] });
+    }
+ 
+    // ── 1. Index all distinct monomials ─────────────────────────────────────
+    let mut mono_index: HashMap<Monomial, usize> = HashMap::new();
+    for poly in &polynomials {
+        for &m in poly {
+            let next = mono_index.len();
+            mono_index.entry(m).or_insert(next);
+        }
+    }
+    let big_m = mono_index.len(); // total distinct monomials
+ 
+    // ── 2. Vertex layout ────────────────────────────────────────────────────
+    // wire i            -> vertex i
+    // monomial mi       -> vertex n + mi
+    // membership(i, mi) -> vertex n + big_m + i * big_m + mi
+    let total_v = n + big_m + n * big_m;
+ 
+    // ── 3. Assign integer colors to every vertex ─────────────────────────────
+    // Colors must be consistent: same color <-> same initial cell in nauty's
+    // partition. We use u64 hashes and then re-map to dense integers below.
+ 
+    let max_degree = n; // polynomials have variables x_0..x_{n-1}, degree <= n
+    let mut vertex_color_u64 = vec![0u64; total_v];
+ 
+    // Wire nodes: color = FNV hash of degree profile
+    for i in 0..n {
+        let profile = degree_counts(&polynomials[i], max_degree);
+        vertex_color_u64[i] = hash_profile(&profile);
+    }
+ 
+    // Monomial nodes: color = degree, offset above all possible profile hashes
+    let mono_base: u64 = 1u64 << 48;
+    for (&m, &mi) in &mono_index {
+        vertex_color_u64[n + mi] = mono_base + m.count_ones() as u64;
+    }
+ 
+    // Membership nodes: single shared color above everything else
+    let membership_color: u64 = mono_base + max_degree as u64 + 1;
+    for v in (n + big_m)..total_v {
+        vertex_color_u64[v] = membership_color;
+    }
+ 
+    // Re-map u64 colors to dense 0-based integers (required for sorting stability)
+    let mut all_colors: Vec<u64> = vertex_color_u64.clone();
+    all_colors.sort_unstable();
+    all_colors.dedup();
+    let color_rank: HashMap<u64, usize> = all_colors
+        .iter()
+        .enumerate()
+        .map(|(r, &c)| (c, r))
+        .collect();
+    let vertex_color: Vec<usize> = vertex_color_u64
+        .iter()
+        .map(|c| color_rank[c])
+        .collect();
+ 
+    // ── 4. Build lab / ptn ───────────────────────────────────────────────────
+    // Vertices grouped by ascending color; within a group order is arbitrary.
+    let mut ordered: Vec<usize> = (0..total_v).collect();
+    ordered.sort_by_key(|&v| vertex_color[v]);
+ 
+    let mut lab: Vec<c_int> = ordered.iter().map(|&v| v as c_int).collect();
+    let mut ptn: Vec<c_int> = vec![1; total_v];
+    for i in 0..(total_v - 1) {
+        if vertex_color[ordered[i]] != vertex_color[ordered[i + 1]] {
+            ptn[i] = 0;
+        }
+    }
+    ptn[total_v - 1] = 0;
+ 
+    // ── 5. Build the graph ───────────────────────────────────────────────────
+    let m_words = SETWORDSNEEDED(total_v);
+ 
+    unsafe {
+        nauty_check(
+            WORDSIZE as c_int,
+            m_words as c_int,
+            total_v as c_int,
+            NAUTYVERSIONID as c_int,
+        );
+    }
+ 
+    let mut g = empty_graph(m_words, total_v);
+ 
+    // Membership edges and variable-presence edges
+    let mut var_presence_added: HashSet<(usize, usize)> = HashSet::new();
+ 
+    for (i, poly) in polynomials.iter().enumerate() {
+        for &mono in poly {
+            let mi = mono_index[&mono];
+ 
+            let wire_v       = i;
+            let mono_v       = n + mi;
+            let member_v     = n + big_m + i * big_m + mi;
+ 
+            // wire i -- membership(i, mi)
+            ADDONEEDGE(&mut g, wire_v, member_v, m_words);
+            // mono mi -- membership(i, mi)
+            ADDONEEDGE(&mut g, mono_v, member_v, m_words);
+ 
+            // variable-presence: wire j -- mono mi, once per (j, mi)
+            for j in 0..n {
+                if mono & (1u64 << j) != 0 && var_presence_added.insert((j, mi)) {
+                    ADDONEEDGE(&mut g, j, mono_v, m_words);
+                }
+            }
+        }
+    }
+ 
+    // ── 6. Call densenauty ───────────────────────────────────────────────────
+    let mut options = optionblk::default();
+    options.getcanon    = TRUE;   // compute canonical labeling
+    options.defaultptn  = FALSE;  // use our lab/ptn coloring
+ 
+    let mut stats  = statsblk::default();
+    let mut orbits = vec![0i32; total_v];
+    let mut canon_g = empty_graph(m_words, total_v);
+ 
+    unsafe {
+        densenauty(
+            g.as_mut_ptr(),
+            lab.as_mut_ptr(),
+            ptn.as_mut_ptr(),
+            orbits.as_mut_ptr(),
+            &mut options,
+            &mut stats,
+            m_words as c_int,
+            total_v as c_int,
+            canon_g.as_mut_ptr(),
+        );
+    }
+ 
+    // ── 7. Extract the canonical wire order from lab ─────────────────────────
+    // lab[pos] = vertex that gets canonical position pos.
+    // For wire vertices (vertex index < n) we record their canonical position.
+    let mut pos_of_wire = vec![0usize; n];
+    for (pos, &v) in lab.iter().enumerate() {
+        let v = v as usize;
+        if v < n {
+            pos_of_wire[v] = pos;
+        }
+    }
+ 
+    // Sort original wire indices by their canonical position
+    let mut final_order: Vec<usize> = (0..n).collect();
+    final_order.sort_by_key(|&w| pos_of_wire[w]);
+    // final_order[canonical_pos] = original_wire
+ 
+    // ── 8. Remap polynomials into canonical variable names ───────────────────
+    // Variable wire w is now at canonical position pos where final_order[pos] = w.
+    // So bit w in an original monomial becomes bit pos in the canonical monomial.
+    let mut wire_to_pos = vec![0usize; n];
+    for (pos, &wire) in final_order.iter().enumerate() {
+        wire_to_pos[wire] = pos;
+    }
+ 
+    let remap_monomial = |m: Monomial| -> Monomial {
+        let mut result = 0u64;
+        for wire in 0..n {
+            if m & (1u64 << wire) != 0 {
+                result |= 1u64 << wire_to_pos[wire];
+            }
+        }
+        result
+    };
+ 
+    let canonical: Vec<Polynomial> = final_order
+        .iter()
+        .map(|&wire| polynomials[wire].iter().map(|&m| remap_monomial(m)).collect())
+        .collect();
+ 
+    let canonical = trim_canonicalized(canonical);
+ 
+    (canonical, Permutation { data: final_order })
 }
 
 pub fn print_rule_times() {

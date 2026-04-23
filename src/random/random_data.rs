@@ -35,7 +35,7 @@ use std::{
 };
 use crate::circuit::circuit::polys_repr_blob;
 use crate::circuit::Polynomial;
-use crate::circuit::circuit::canonicalize_polys;
+use crate::circuit::circuit::{canonicalize_polys, canonicalize_polys_2};
 use crate::circuit::circuit::print_rule_times;
 
 // Store permutation canonicalizations (wire relabeling) in a cache for speed
@@ -2958,7 +2958,8 @@ pub fn build_from_rocks(
                         q1.push(*g);
                         let mut c1 = CircuitSeq { gates: q1.to_vec() };
                         c1.canonicalize();
-                        let canon1 = canonicalize_polys(c1.to_polynomial(3 * m, 0, m), true, false);
+                        // let canon1 = canonicalize_polys(c1.to_polynomial(3 * m, 0, m), true, false);
+                        let canon1 = canonicalize_polys_2(c1.to_polynomial(3 * m, 0, m));
                         c1.rewire(&canon1.1.invert(), 3 * m);
                         c1.canonicalize();
 
@@ -2970,9 +2971,10 @@ pub fn build_from_rocks(
                             let mut c1_rev = c1.clone();
                             c1_rev.gates.reverse();
                             c1_rev.canonicalize();
-                            let canon1_rev = canonicalize_polys(
-                                c1_rev.to_polynomial(3 * m, 0, m), true, false
-                            );
+                            // let canon1_rev = canonicalize_polys(
+                            //     c1_rev.to_polynomial(3 * m, 0, m), true, false
+                            // );
+                            let canon1_rev = canonicalize_polys_2(c1_rev.to_polynomial(3 * m, 0, m));
                             let c1_rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon1_rev.0));
 
                             if !seen_par.contains(&c1_rev_hash) {
@@ -2991,7 +2993,8 @@ pub fn build_from_rocks(
                         q2.extend_from_slice(&prefix);
                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
                         c2.canonicalize();
-                        let canon2 = canonicalize_polys(c2.to_polynomial(3 * m, 0, m), true, false);
+                        // let canon2 = canonicalize_polys(c2.to_polynomial(3 * m, 0, m), true, false);
+                        let canon2 = canonicalize_polys_2(c2.to_polynomial(3 * m, 0, m));
                         c2.rewire(&canon2.1.invert(), 3 * m);
                         c2.canonicalize();
 
@@ -3002,9 +3005,10 @@ pub fn build_from_rocks(
                             let mut c2_rev = c2.clone();
                             c2_rev.gates.reverse();
                             c2_rev.canonicalize();
-                            let canon2_rev = canonicalize_polys(
-                                c2_rev.to_polynomial(3 * m, 0, m), true, false
-                            );
+                            // let canon2_rev = canonicalize_polys(
+                            //     c2_rev.to_polynomial(3 * m, 0, m), true, false
+                            // );
+                            let canon2_rev = canonicalize_polys_2(c2_rev.to_polynomial(3 * m, 0, m));
                             let c2_rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon2_rev.0));
 
                             if !seen_par.contains(&c2_rev_hash) {
