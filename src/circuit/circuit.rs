@@ -1691,9 +1691,6 @@ pub fn trim_canonicalized(polynomials: Vec<Polynomial>) -> Vec<Polynomial> {
 #[cfg(test)]
 mod tests {
     use itertools::Itertools;
-
-    use crate::circuit;
-
     use super::*;
 
     fn mono(vars: &[usize]) -> Monomial {
