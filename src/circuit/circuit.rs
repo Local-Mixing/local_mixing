@@ -2047,8 +2047,8 @@ mod tests {
                 let groups1 = make_initial_groups(&polys1, max_degree);
                 let groups2 = make_initial_groups(&polys2, max_degree);
 
-                let order1 = canonicalize_with_rules(&polys1, groups1, max_degree, false, &combo);
-                let order2 = canonicalize_with_rules(&polys2, groups2, max_degree, false, &combo);
+                let order1 = canonicalize_with_rules(&polys1, groups1, max_degree, true, &combo);
+                let order2 = canonicalize_with_rules(&polys2, groups2, max_degree, true, &combo);
 
                 let canon1 = make_canonical_form(&polys1, &order1);
                 let canon2 = make_canonical_form(&polys2, &order2);
@@ -2070,8 +2070,8 @@ mod tests {
         for (combo, order1, order2) in &results {
             let groups1 = make_initial_groups(&polys1, max_degree);
             let groups2 = make_initial_groups(&polys2, max_degree);
-            let o1 = canonicalize_with_rules(&polys1, groups1, max_degree, false, combo);
-            let o2 = canonicalize_with_rules(&polys2, groups2, max_degree, false, combo);
+            let o1 = canonicalize_with_rules(&polys1, groups1, max_degree, true, combo);
+            let o2 = canonicalize_with_rules(&polys2, groups2, max_degree, true, combo);
             let c1f = make_canonical_form(&polys1, &o1);
             let c2f = make_canonical_form(&polys2, &o2);
             if c1f == c2f {
