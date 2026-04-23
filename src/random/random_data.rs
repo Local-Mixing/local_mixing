@@ -36,6 +36,8 @@ use std::{
 use crate::circuit::circuit::polys_repr_blob;
 use crate::circuit::Polynomial;
 use crate::circuit::circuit::canonicalize_polys;
+use crate::circuit::circuit::print_rule_times;
+
 // Store permutation canonicalizations (wire relabeling) in a cache for speed
 pub static CANON_CACHE: Lazy<DashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>> = Lazy::new(|| DashMap::new());
 
@@ -2917,7 +2919,7 @@ pub fn build_from_rocks(
         let total_gates_tried_par = Arc::clone(&total_gates_tried);
         let seen_par = Arc::clone(&seen);
 
-        entries.par_chunks(50).for_each(|entry_chunk| {
+        entries.par_chunks(20).for_each(|entry_chunk| {
             if stop_flag_par.load(Ordering::SeqCst) {
                 return;
             }
@@ -3052,6 +3054,7 @@ pub fn build_from_rocks(
     }
 
     println!("Build finished (or stopped early).");
+    print_rule_times();
     Ok(())
 }
 
@@ -3518,6 +3521,7 @@ pub fn build_from_2rocks(
     }
 
     println!("Build finished (or stopped early).");
+    print_rule_times();
     Ok(())
 }
 

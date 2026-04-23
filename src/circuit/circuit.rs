@@ -6,7 +6,9 @@ use std::{
     cmp::max as std_max,
     collections::{HashSet, HashMap},
 };
-
+use std::time::Instant;
+use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicU64;
 // pins are [active, control1, control2] for Toffoli gates
 // We are only concerned with gate r57
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -1133,6 +1135,14 @@ fn monomial_sort_key_u64(m: Monomial, var_rank: &[usize], n: usize) -> u64 {
     key
 }
 
+// Static accumulators for time spent in each rule (in nanoseconds)
+static TIME_RULE_2_1: AtomicU64 = AtomicU64::new(0);
+static TIME_RULE_2_2: AtomicU64 = AtomicU64::new(0);
+static TIME_RULE_2_3: AtomicU64 = AtomicU64::new(0);
+static TIME_RULE_2_4: AtomicU64 = AtomicU64::new(0);
+static TIME_RULE_2_5: AtomicU64 = AtomicU64::new(0);
+static TIME_RULE_L:   AtomicU64 = AtomicU64::new(0);
+
 /// Holds the current partial ordering of polynomial/variable indices as a list of groups.
 /// Each group is a Vec<usize> of indices that are currently tied with each other.
 /// Singletons (len == 1) are fully ranked. The position of a group in `groups`
@@ -1474,107 +1484,126 @@ fn canonicalize_inner(
         if state.is_fully_ranked() {
             break;
         }
-
+        
         // Rule 2.1: split polynomials by all groups (singletons and non-singletons)
-        if state.try_rule_2_1(polynomials, max_degree) {
-            if let Some(ref mut t) = trace {
-                t.push("2.1".to_string());
+        {
+            let t = Instant::now();
+            let fired = state.try_rule_2_1(polynomials, max_degree);
+            TIME_RULE_2_1.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            if fired {
+                if let Some(ref mut t) = trace { t.push("2.1".to_string()); }
+                continue;
             }
-            continue;
         }
 
         // Rule 2.2: split variables by all groups (full polynomial profiling)
-        if state.try_rule_2_2(polynomials, max_degree) {
-            if let Some(ref mut t) = trace {
-                t.push("2.2".to_string());
+        {
+            let t = Instant::now();
+            let fired = state.try_rule_2_2(polynomials, max_degree);
+            TIME_RULE_2_2.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            if fired {
+                if let Some(ref mut t) = trace { t.push("2.2".to_string()); }
+                continue;
             }
-            continue;
         }
 
         // Rule 2.3: split variables by all groups, filtered by all groups
-        if state.try_rule_2_3(polynomials, max_degree) {
-            if let Some(ref mut t) = trace {
-                t.push("2.3".to_string());
+        {
+            let t = Instant::now();
+            let fired = state.try_rule_2_3(polynomials, max_degree);
+            TIME_RULE_2_3.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            if fired {
+                if let Some(ref mut t) = trace { t.push("2.3".to_string()); }
+                continue;
             }
-            continue;
         }
 
         // Rule 2.4: split polynomials by full ranked monomial list comparison
-        if state.try_rule_2_4(polynomials) {
-            if let Some(ref mut t) = trace {
-                t.push("2.4".to_string());
+        {
+            let t = Instant::now();
+            let fired = state.try_rule_2_4(polynomials);
+            TIME_RULE_2_4.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            if fired {
+                if let Some(ref mut t) = trace { t.push("2.4".to_string()); }
+                continue;
             }
-            continue;
         }
 
-        // Rule 2.5: split variables by ranked monomial lists built from filtered polynomials
-        if state.try_rule_2_5(polynomials) {
-            if let Some(ref mut t) = trace {
-                t.push("2.5".to_string());
+         // Rule 2.5: split variables by ranked monomial lists built from filtered polynomials
+        {
+            let t = Instant::now();
+            let fired = state.try_rule_2_5(polynomials);
+            TIME_RULE_2_5.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            if fired {
+                if let Some(ref mut t) = trace { t.push("2.5".to_string()); }
+                continue;
             }
-            continue;
         }
 
         // Rule L: fully stuck — either backtrack or pick lowest index (toggleable)
-        if use_backtracking {
-            let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
-            let candidates = state.groups[gi].clone();
+        {
+            let t = Instant::now();
+            if use_backtracking {
+                let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
+                let candidates = state.groups[gi].clone();
 
-            // Try each candidate, collect (canonical_form, final_order, trace) for each
-            let (best, best_trace) = candidates
-                .iter()
-                .map(|&w| {
-                    let mut trial_groups = state.groups.clone();
-                    let rest: Vec<usize> =
-                        candidates.iter().copied().filter(|&x| x != w).collect();
-                    let mut replacement = vec![vec![w]];
-                    if !rest.is_empty() {
-                        replacement.push(rest);
-                    }
-                    trial_groups.splice(gi..=gi, replacement);
+                // Try each candidate, collect (canonical_form, final_order, trace) for each
+                let (best, best_trace) = candidates
+                    .iter()
+                    .map(|&w| {
+                        let mut trial_groups = state.groups.clone();
+                        let rest: Vec<usize> =
+                            candidates.iter().copied().filter(|&x| x != w).collect();
+                        let mut replacement = vec![vec![w]];
+                        if !rest.is_empty() {
+                            replacement.push(rest);
+                        }
+                        trial_groups.splice(gi..=gi, replacement);
 
-                    // Collect trace for this trial path
-                    let mut trial_trace: Vec<String> = Vec::new();
-                    let trial_final = canonicalize_inner(
-                        polynomials,
-                        trial_groups,
-                        max_degree,
-                        use_backtracking,
-                        Some(&mut trial_trace),
-                    );
-                    let canon = make_canonical_form(polynomials, &trial_final);
-                    (w, canon, trial_final, trial_trace)
-                })
-                .min_by_key(|(_, canon, _, _)| canon.clone())
-                .map(|(w, _, _, t)| (w, t))
-                .unwrap();
+                        // Collect trace for this trial path
+                        let mut trial_trace: Vec<String> = Vec::new();
+                        let trial_final = canonicalize_inner(
+                            polynomials,
+                            trial_groups,
+                            max_degree,
+                            use_backtracking,
+                            Some(&mut trial_trace),
+                        );
+                        let canon = make_canonical_form(polynomials, &trial_final);
+                        (w, canon, trial_final, trial_trace)
+                    })
+                    .min_by_key(|(_, canon, _, _)| canon.clone())
+                    .map(|(w, _, _, t)| (w, t))
+                    .unwrap();
 
-            if let Some(ref mut t) = trace {
-                t.push(format!("L(picked {})", best));
-                t.extend(best_trace);
-            }
+                if let Some(ref mut t) = trace {
+                    t.push(format!("L(picked {})", best));
+                    t.extend(best_trace);
+                }
 
-            // Lock the best candidate and continue
-            let rest: Vec<usize> =
-                candidates.iter().copied().filter(|&x| best != x).collect();
-            let mut replacement = vec![vec![best]];
-            if !rest.is_empty() {
-                replacement.push(rest);
+                // Lock the best candidate and continue
+                let rest: Vec<usize> =
+                    candidates.iter().copied().filter(|&x| best != x).collect();
+                let mut replacement = vec![vec![best]];
+                if !rest.is_empty() {
+                    replacement.push(rest);
+                }
+                state.groups.splice(gi..=gi, replacement);
+            } else {
+                let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
+                let mut group = state.groups[gi].clone();
+                group.sort();
+                let winner = group.remove(0);
+                if let Some(ref mut t) = trace {
+                    t.push(format!("L(lowest {})", winner));
+                }
+                let mut replacement = vec![vec![winner]];
+                if !group.is_empty() {
+                    replacement.push(group);
+                }
+                state.groups.splice(gi..=gi, replacement);
             }
-            state.groups.splice(gi..=gi, replacement);
-        } else {
-            let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
-            let mut group = state.groups[gi].clone();
-            group.sort();
-            let winner = group.remove(0);
-            if let Some(ref mut t) = trace {
-                t.push(format!("L(lowest {})", winner));
-            }
-            let mut replacement = vec![vec![winner]];
-            if !group.is_empty() {
-                replacement.push(group);
-            }
-            state.groups.splice(gi..=gi, replacement);
+            TIME_RULE_L.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
     }
 
@@ -1700,6 +1729,25 @@ pub fn trim_canonicalized(polynomials: Vec<Polynomial>) -> Vec<Polynomial> {
     }
 
     polynomials[..keep_up_to].to_vec()
+}
+
+pub fn print_rule_times() {
+    let t1  = TIME_RULE_2_1.load(Ordering::Relaxed);
+    let t2  = TIME_RULE_2_2.load(Ordering::Relaxed);
+    let t3  = TIME_RULE_2_3.load(Ordering::Relaxed);
+    let t4  = TIME_RULE_2_4.load(Ordering::Relaxed);
+    let t5  = TIME_RULE_2_5.load(Ordering::Relaxed);
+    let tl  = TIME_RULE_L.load(Ordering::Relaxed);
+    let total = t1 + t2 + t3 + t4 + t5 + tl;
+
+    println!("Rule timing breakdown:");
+    println!("  Rule 2.1: {:>12} ms ({:.1}%)", t1 / 1_000_000, if total > 0 { t1 as f64 / total as f64 * 100.0 } else { 0.0 });
+    println!("  Rule 2.2: {:>12} ms ({:.1}%)", t2 / 1_000_000, if total > 0 { t2 as f64 / total as f64 * 100.0 } else { 0.0 });
+    println!("  Rule 2.3: {:>12} ms ({:.1}%)", t3 / 1_000_000, if total > 0 { t3 as f64 / total as f64 * 100.0 } else { 0.0 });
+    println!("  Rule 2.4: {:>12} ms ({:.1}%)", t4 / 1_000_000, if total > 0 { t4 as f64 / total as f64 * 100.0 } else { 0.0 });
+    println!("  Rule 2.5: {:>12} ms ({:.1}%)", t5 / 1_000_000, if total > 0 { t5 as f64 / total as f64 * 100.0 } else { 0.0 });
+    println!("  Rule L:   {:>12} ms ({:.1}%)", tl / 1_000_000, if total > 0 { tl as f64 / total as f64 * 100.0 } else { 0.0 });
+    println!("  Total:    {:>12} ms", total / 1_000_000);
 }
 
 #[cfg(test)]
