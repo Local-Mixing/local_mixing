@@ -5871,34 +5871,34 @@ mod tests {
     #[test]
     fn test_c1_vs_c2_after_canon() {
         use crate::circuit::circuit::poly_to_str;
-        let mut c1 = CircuitSeq { gates: vec! [[4, 3, 0], [3, 2, 1]]};
-        let mut c2 = CircuitSeq { gates: vec![[4, 2, 1], [2, 3, 0]] };
-        let poly_1 = c1.to_polynomial(12, 0, 2);
-        let poly_2 = c2.to_polynomial(12, 0, 2);
+        let mut c1 = CircuitSeq { gates: vec![[4,0,3],[3,1,2]] };
+        let mut c2 = CircuitSeq { gates: vec![[4,1,2],[2,0,3]] };
+        let poly_1 = c1.to_polynomial(6, 0, 2);
+        let poly_2 = c2.to_polynomial(6, 0, 2);
         println!("Original c1:");
         for (i, poly) in poly_1.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 12));
+            println!("  P{}: {}", i, poly_to_str(poly, 6));
         }
         println!("Original c2:");
         for (i, poly) in poly_2.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 12));
+            println!("  P{}: {}", i, poly_to_str(poly, 6));
         }
 
         assert!(c1.is_relabeling_of(&c2), "Circuits are not relabelings of each other");
-        let canon_1 = canonicalize_polys_3(c1.to_polynomial(12, 0, 2));
-        let canon_2 = canonicalize_polys_3(c2.to_polynomial(12, 0, 2));
+        let canon_1 = canonicalize_polys_3(c1.to_polynomial(6, 0, 2));
+        let canon_2 = canonicalize_polys_3(c2.to_polynomial(6, 0, 2));
         for (i, poly) in canon_1.0.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 12));
+            println!("  P{}: {}", i, poly_to_str(poly, 6));
         }
         println!("{:?}", canon_1.1.data);
         for (i, poly) in canon_2.0.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 12));
+            println!("  P{}: {}", i, poly_to_str(poly, 6));
         }
         println!("{:?}", canon_2.1.data);
         assert!(canon_1.0 == canon_2.0, "Canonical forms differ:\n  c1: {:?}\n  c2: {:?}", canon_1.0, canon_2.0);
         
-        c1.rewire(&canon_1.1.invert(), 12);
-        c2.rewire(&canon_2.1.invert(), 12);
+        c1.rewire(&canon_1.1.invert(), 6);
+        c2.rewire(&canon_2.1.invert(), 6);
         c1.canonicalize();
         c2.canonicalize();
 
