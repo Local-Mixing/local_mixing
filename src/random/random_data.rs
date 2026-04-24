@@ -5784,9 +5784,21 @@ mod tests {
     }
 
     #[test]
-    fn test_group_relabelings() {
+    fn test_group_relabelings_with_reversal() {
         fn cs(gates: &[[u8; 3]]) -> CircuitSeq {
             CircuitSeq { gates: gates.to_vec() }
+        }
+
+        fn is_equiv(a: &CircuitSeq, b: &CircuitSeq) -> bool {
+            if a.is_relabeling_of(b) {
+                return true;
+            }
+
+            let mut rev = b.clone();
+            rev.gates.reverse();
+            rev.canonicalize(); // keep if your relabeling expects canonical form
+
+            a.is_relabeling_of(&rev)
         }
 
         let circuits = vec![
@@ -5822,7 +5834,7 @@ mod tests {
 
         'outer: for c in &circuits {
             for class in &mut classes {
-                if c.is_relabeling_of(&class[0]) {
+                if is_equiv(c, &class[0]) {
                     class.push(c.clone());
                     continue 'outer;
                 }
@@ -5839,17 +5851,16 @@ mod tests {
             }
         }
 
-        println!("\n--- duplicates only ---");
+        println!("\n--- duplicates (relabeling + reversal) ---");
         for class in &classes {
             if class.len() > 1 {
-                println!("duplicate class (size {}):", class.len());
+                println!("class (size {}):", class.len());
                 for c in class {
                     println!("  {:?}", c.gates);
                 }
             }
         }
 
-        // optional sanity check: no circuit lost
         let total: usize = classes.iter().map(|c| c.len()).sum();
         assert_eq!(total, circuits.len());
     }
