@@ -5904,4 +5904,58 @@ mod tests {
 
         assert!(c1.gates == c2.gates, "Circuits differ after rewiring and canonicalization:\n  c1: {:?}\n  c2: {:?}", c1.gates, c2.gates);
     }
+
+    #[test]
+    fn test_reversal_pair_key() {
+        let m = 2; // adjust as needed
+        let n = 3 * m;
+
+        // The two circuits you observed as duplicates
+        let c_a = CircuitSeq { gates: vec![[3, 0, 2], [4, 1, 3]] };
+        let c_b = CircuitSeq { gates: vec![[4, 0, 2], [2, 1, 3]] };
+
+        // Hash c_a canonically
+        let canon_a = canonicalize_polys_4(c_a.to_polynomial(n, 0, m));
+        let hash_a = xxh3_128(&polys_repr_blob(&canon_a.0));
+
+        // Hash c_b canonically
+        let canon_b = canonicalize_polys_4(c_b.to_polynomial(n, 0, m));
+        let hash_b = xxh3_128(&polys_repr_blob(&canon_b.0));
+
+        // Compute c_a's reversal and hash it
+        let mut c_a_rev = c_a.clone();
+        c_a_rev.gates.reverse();
+        c_a_rev.canonicalize();
+        let canon_a_rev = canonicalize_polys_4(c_a_rev.to_polynomial(n, 0, m));
+        let hash_a_rev = xxh3_128(&polys_repr_blob(&canon_a_rev.0));
+
+        // Compute c_b's reversal and hash it
+        let mut c_b_rev = c_b.clone();
+        c_b_rev.gates.reverse();
+        c_b_rev.canonicalize();
+        let canon_b_rev = canonicalize_polys_4(c_b_rev.to_polynomial(n, 0, m));
+        let hash_b_rev = xxh3_128(&polys_repr_blob(&canon_b_rev.0));
+
+        println!("hash_a:     {:032x}", hash_a);
+        println!("hash_a_rev: {:032x}", hash_a_rev);
+        println!("hash_b:     {:032x}", hash_b);
+        println!("hash_b_rev: {:032x}", hash_b_rev);
+
+        let pair_key_a = hash_a.min(hash_a_rev);
+        let pair_key_b = hash_b.min(hash_b_rev);
+
+        println!("pair_key_a: {:032x}", pair_key_a);
+        println!("pair_key_b: {:032x}", pair_key_b);
+
+        // This is the critical assertion:
+        // if c_b IS the reversal of c_a, their pair keys must match
+        assert_eq!(
+            pair_key_a, pair_key_b,
+            "c_a and c_b are reversals but produce different pair_keys — dedup will miss them"
+        );
+
+        // Also verify they are actually reversals of each other
+        assert_eq!(hash_a, hash_b_rev, "c_a hash should equal c_b_rev hash");
+        assert_eq!(hash_b, hash_a_rev, "c_b hash should equal c_a_rev hash");
+    }
 }
