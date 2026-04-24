@@ -5885,8 +5885,8 @@ mod tests {
         }
 
         assert!(c1.is_relabeling_of(&c2), "Circuits are not relabelings of each other");
-        let canon_1 = canonicalize_polys_4(c1.to_polynomial(12, 0, 2));
-        let canon_2 = canonicalize_polys_4(c2.to_polynomial(12, 0, 2));
+        let canon_1 = canonicalize_polys_3(c1.to_polynomial(12, 0, 2));
+        let canon_2 = canonicalize_polys_3(c2.to_polynomial(12, 0, 2));
         for (i, poly) in canon_1.0.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 12));
         }
