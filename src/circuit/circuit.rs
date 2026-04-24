@@ -2829,47 +2829,18 @@ pub fn canonicalize_polys_4(
     // After compare_vars returns no ordering, apply Ran's tiebreaker:
     // collapse all tied variables to the same name, then rank by
     // the individual polynomials lexicographically (degree DESC, lex).
-    let tiebreak_vars = |tied: &[usize], vr: &[usize]| -> Vec<usize> {
-        // Build a substitution map: variables in the same rank group
-        // all map to the same representative (the minimum index in that group)
-        let mut rep = vec![0usize; n];
-        for v in 0..n {
-            let group_min = (0..n)
-                .filter(|&u| vr[u] == vr[v])
-                .min()
-                .unwrap_or(v);
-            rep[v] = group_min;
-        }
-
-        // For each tied variable x, collect its polynomial from `polynomials`,
-        // remap all monomials using `rep`, then sort monomials by
-        // (degree DESC, monomial value ASC) for lex comparison.
-        let poly_key = |x: usize| -> Vec<(usize, Monomial)> {
-            let mut terms: Vec<(usize, Monomial)> = polynomials[x]
-                .iter()
-                .map(|&m| {
-                    // remap monomial: replace each variable j with rep[j]
-                    let mut remapped = 0u64;
-                    for j in 0..n {
-                        if m & (1u64 << j) != 0 {
-                            remapped |= 1u64 << rep[j];
-                        }
-                    }
-                    let deg = remapped.count_ones() as usize;
-                    (deg, remapped)
-                })
-                .collect();
-            // sort by degree DESC, then monomial ASC (lex)
-            terms.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let tiebreak_vars = |tied: &[usize], _vr: &[usize]| -> Vec<usize> {
+        let poly_key = |x: usize| -> Vec<Monomial> {
+            let mut terms: Vec<Monomial> = polynomials[x].iter().copied().collect();
+            terms.sort();
             terms
         };
 
-        let mut keys: Vec<(usize, Vec<(usize, Monomial)>)> = tied
+        let mut keys: Vec<(usize, Vec<Monomial>)> = tied
             .iter()
             .map(|&x| (x, poly_key(x)))
             .collect();
 
-        // Sort tied vars by their poly key ASC (lower key = higher priority)
         keys.sort_by(|a, b| a.1.cmp(&b.1));
         keys.iter().map(|(x, _)| *x).collect()
     };
