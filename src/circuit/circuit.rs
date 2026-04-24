@@ -2057,176 +2057,79 @@ pub fn canonicalize_polys_3(
         groups.push(current);
     }
 
-    // ── Step 2: build label-independent class polynomials ────────────────────
-    // Map each wire to its group index. Then represent each monomial as a
-    // sorted Vec of group indices — this is invariant under wire relabeling
-    // within groups.
-    let mut wire_to_group = vec![0usize; n];
+    // ── Steps 2+3: WL refinement until stable ────────────────────────────────
+    //
+    // Each wire has a "color" = its group index. We iteratively refine:
+    // the new color of wire `a` is determined by the multiset of
+    // (coeff, sorted colors of other vars) for every monomial containing `a`,
+    // across all polynomials.
+    //
+    // We represent colors as usizes, remapped to dense integers after each round.
+
+    // Initial color = group index from step 1
+    let mut color: Vec<usize> = vec![0; n];
     for (gi, group) in groups.iter().enumerate() {
         for &wire in group {
-            wire_to_group[wire] = gi;
+            color[wire] = gi;
         }
     }
 
-    // AnonMonomial: sorted Vec<usize> of group indices of variables present
-    type AnonMonomial = Vec<usize>;
+    loop {
+        // For each wire, compute its new color signature:
+        // sorted list of (poly_index_color, coeff, sorted_other_colors)
+        // for every (polynomial, monomial) pair where this wire appears.
+        // We use poly_index_color = color of the polynomial's wire index,
+        // since poly i and variable x_i are the same wire.
 
-    let anonymize = |m: Monomial| -> AnonMonomial {
-        let mut gs: Vec<usize> = (0..n)
-            .filter(|&j| m & (1u64 << j) != 0)
-            .map(|j| wire_to_group[j])
-            .collect();
-        gs.sort_unstable();
-        gs
-    };
-
-    // Sum polynomials within each group, keyed by anonymized monomial
-    let class_polys: Vec<HashMap<AnonMonomial, usize>> = groups.iter().map(|group| {
-        let mut sum: HashMap<AnonMonomial, usize> = HashMap::new();
-        for &wire in group {
-            for &m in &polynomials[wire] {
-                *sum.entry(anonymize(m)).or_insert(0) += 1;
-            }
-        }
-        sum
-    }).collect();
-
-    // ── Step 3: greedy sequential rank assignment ─────────────────────────────
-    // Assign ranks 0, 1, ..., n-1. Rank 0 = smallest z = (0+2)^n.
-    // At each step pick the unassigned wire with the highest contribution
-    // to class_polys[0], breaking ties with class_polys[1], etc.
-    //
-    // Score of wire `a` against class poly `ci`, given partial assignment
-    // `w: wire -> Option<rank>`:
-    //   For each anon monomial `am` in class_polys[ci] that contains
-    //   wire_to_group[a]:
-    //     - Count how many of am's group slots are still unassigned
-    //       (treating `a` itself as unassigned for now)
-    //     - partial_coeff = class_polys[ci][am] * product of (rank+2)^n
-    //       for all already-assigned group slots in am
-    //   Return sorted-descending list of (unassigned_slots, partial_coeff)
-    //
-    // "Contains wire_to_group[a]" means: am has at least one entry equal
-    // to wire_to_group[a]. We consume one such entry per wire in the group
-    // that has already been assigned, so we need to track per-group how many
-    // wires are assigned and what ranks they got.
-
-    // Track assigned ranks per group for partial substitution
-    // assigned_in_group[gi] = sorted list of ranks already assigned to wires in group gi
-    let mut assigned_in_group: Vec<Vec<usize>> = vec![Vec::new(); groups.len()];
-    let mut w: Vec<Option<usize>> = vec![None; n];
-    let mut rank_to_wire: Vec<usize> = Vec::with_capacity(n);
-    let mut unassigned: Vec<usize> = (0..n).collect();
-
-    // Score wire `a` against class poly `ci`
-    // Returns a lex-comparable key: higher = more contribution = gets smaller rank
-    let score_wire = |a: usize,
-                      w: &[Option<usize>],
-                      assigned_in_group: &[Vec<usize>],
-                      ci: usize| -> Vec<(usize, BigUint)> {
-        let ga = wire_to_group[a];
-        let mut entries: Vec<(usize, BigUint)> = Vec::new();
-
-        for (am, &coeff) in &class_polys[ci] {
-            // Count how many slots in am equal ga
-            let slots_for_ga = am.iter().filter(|&&g| g == ga).count();
-            if slots_for_ga == 0 {
-                continue;
-            }
-
-            // How many wires in group ga are already assigned (excluding `a`)?
-            // Each assigned wire in ga "consumes" one ga-slot in am and
-            // contributes its z value.
-            let already_assigned_in_ga = assigned_in_group[ga].len();
-
-            // If more ga-slots are needed than available unassigned wires
-            // in the group, this monomial can't be formed — skip.
-            // (This can't actually happen if polynomials are well-formed,
-            // but guard anyway.)
-            if slots_for_ga > groups[ga].len() {
-                continue;
-            }
-
-            // Partial coefficient: multiply by z values of already-assigned
-            // slots in each group present in am.
-            let mut partial = BigUint::from(coeff);
-            let mut unassigned_slots = 0usize;
-
-            // Process each group index in am
-            // We need to figure out how many slots from each group are
-            // "resolved" (assigned) vs still open.
-            // For group ga specifically: one slot is `a` itself (unresolved),
-            // the rest use already-assigned ranks from assigned_in_group[ga].
-            let mut group_slot_counts: HashMap<usize, usize> = HashMap::new();
-            for &g in am {
-                *group_slot_counts.entry(g).or_insert(0) += 1;
-            }
-
-            let mut feasible = true;
-            for (&g, &slots) in &group_slot_counts {
-                let assigned = assigned_in_group[g].len();
-                let is_self_group = g == ga;
-                // slots that wire `a` itself accounts for (only in its own group)
-                let self_slot = if is_self_group { 1 } else { 0 };
-                // how many slots can be filled by already-assigned wires
-                let fillable = if is_self_group {
-                    assigned.min(slots.saturating_sub(self_slot))
-                } else {
-                    assigned.min(slots)
-                };
-                let remaining = slots - fillable - self_slot;
-
-                // Multiply in z values for the fillable slots
-                // (use the smallest available assigned ranks for this group,
-                // since we want a consistent scoring regardless of order)
-                for k in 0..fillable {
-                    let rank = assigned_in_group[g][k];
-                    partial *= BigUint::from(rank + 2).pow(n as u32);
-                }
-
-                unassigned_slots += remaining + self_slot;
-
-                // If there aren't enough unassigned wires in group g to fill
-                // the remaining slots, this monomial isn't achievable
-                let unassigned_in_g = groups[g].len() - assigned;
-                let needed = remaining + self_slot;
-                if needed > unassigned_in_g {
-                    feasible = false;
-                    break;
+        let signature = |wire: usize| -> Vec<(usize, usize, Vec<usize>)> {
+            let mut sig: Vec<(usize, usize, Vec<usize>)> = Vec::new();
+            for (poly_idx, poly) in polynomials.iter().enumerate() {
+                for &m in poly {
+                    if m & (1u64 << wire) == 0 { continue; }
+                    // coeff is always 1 in GF(2) polynomial, but we're
+                    // treating as over N for counting purposes — here
+                    // each monomial appears once per polynomial
+                    let mut other_colors: Vec<usize> = (0..n)
+                        .filter(|&j| j != wire && m & (1u64 << j) != 0)
+                        .map(|j| color[j])
+                        .collect();
+                    other_colors.sort_unstable();
+                    sig.push((color[poly_idx], 1usize, other_colors));
                 }
             }
+            sig.sort_unstable();
+            sig
+        };
 
-            if feasible {
-                entries.push((unassigned_slots, partial));
+        // Compute new colors by ranking signatures
+        let mut sigs: Vec<(usize, Vec<(usize, usize, Vec<usize>)>)> =
+            (0..n).map(|w| (w, signature(w))).collect();
+        sigs.sort_by(|a, b| a.1.cmp(&b.1));
+
+        let mut new_color = vec![0usize; n];
+        let mut current_color = 0usize;
+        new_color[sigs[0].0] = 0;
+        for i in 1..n {
+            if sigs[i].1 != sigs[i-1].1 {
+                current_color += 1;
             }
+            new_color[sigs[i].0] = current_color;
         }
 
-        entries.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
-        entries
-    };
-
-    for next_rank in 0..n {
-        let best_wire = unassigned.iter().copied().max_by(|&a, &b| {
-            for ci in 0..class_polys.len() {
-                let sa = score_wire(a, &w, &assigned_in_group, ci);
-                let sb = score_wire(b, &w, &assigned_in_group, ci);
-                let cmp = sa.cmp(&sb);
-                if cmp != std::cmp::Ordering::Equal {
-                    return cmp;
-                }
-            }
-            std::cmp::Ordering::Equal
-        }).unwrap();
-
-        w[best_wire] = Some(next_rank);
-        rank_to_wire.push(best_wire);
-        assigned_in_group[wire_to_group[best_wire]].push(next_rank);
-        unassigned.retain(|&x| x != best_wire);
+        if new_color == color {
+            break; // stable
+        }
+        color = new_color;
     }
 
-    let final_order = rank_to_wire;
+    // ── Step 4: build final_order from stable colors ──────────────────────────
+    // Sort wires by color ascending — lower color = canonical position 0.
+    // Within same color (genuinely symmetric): sort by original wire index
+    // as tiebreak (arbitrary but consistent).
+    let mut final_order: Vec<usize> = (0..n).collect();
+    final_order.sort_by_key(|&w| (color[w], w));
 
-    // ── Step 4: remap polynomials ─────────────────────────────────────────────
+    // ── Step 5: remap polynomials ─────────────────────────────────────────────
     let mut wire_to_pos = vec![0usize; n];
     for (pos, &wire) in final_order.iter().enumerate() {
         wire_to_pos[wire] = pos;
