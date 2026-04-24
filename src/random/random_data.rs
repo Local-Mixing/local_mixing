@@ -5057,13 +5057,11 @@ mod tests {
                 }
                 let circuit_blob = &value[pos..pos + len];
                 let circuit = CircuitSeq::from_blob(circuit_blob);
-                println!("{}: {}", circuit_index,circuit.repr());
+                println!("{} == {}: {}", count, circuit_index,circuit.repr());
                 pos += len;
                 circuit_index += 1;
                 count += 1;
             }
-
-            println!();
         }
 
         println!("Total circuits: {}", count);
