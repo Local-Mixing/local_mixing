@@ -5657,7 +5657,7 @@ mod tests {
             let make_key = |g: &[[u8; 3]]| -> String {
                 let circuit = CircuitSeq { gates: g.to_vec() };
                 let polys = circuit.to_polynomial(n, 0, g.len());
-                let (canonical, _) = canonicalize_polys_3(polys);
+                let (canonical, _) = canonicalize_polys(polys, true, false);
                 canonical.iter().enumerate()
                     .map(|(i, p)| format!("P{}:{}", i, poly_to_str(p, n)))
                     .collect::<Vec<_>>()
@@ -5797,9 +5797,6 @@ mod tests {
             let mut rev = b.clone();
             rev.gates.reverse();
             rev.canonicalize(); 
-            let canon = canonicalize_polys(rev.to_polynomial(6, 0, rev.gates.len()), true, false);
-            rev.rewire(&canon.1.invert(), 6);
-            rev.canonicalize();
             a.is_relabeling_of(&rev)
         }
 
