@@ -2281,8 +2281,7 @@ pub fn canonicalize_polys_3(
 
     // ── Evaluate objective ────────────────────────────────────────────────────
     // For a given final_order, wire at position pos gets z = (pos+2)^n.
-    // Returns one BigUint per group (sum of poly evaluations in that group),
-    // for lexicographic comparison: group 0 first, then group 1, etc.
+    // Returns one BigUint per group for lexicographic comparison.
     let evaluate = |fo: &[usize]| -> Vec<BigUint> {
         let mut pos_of = vec![0usize; n];
         for (pos, &wire) in fo.iter().enumerate() {
@@ -2309,11 +2308,8 @@ pub fn canonicalize_polys_3(
         }).collect()
     };
 
-    // ── Step 3: insertion sort within each group ──────────────────────────────
-    // For each wire in the group, try inserting it at every possible position
-    // within the group and pick the position that minimizes the objective.
-    // This is O(k^2) evaluations per group of size k, guaranteed global optimum
-    // (no local-minimum problem unlike bubble sort).
+    // ── Step 2: insertion sort within each group ──────────────────────────────
+    // Initial order from step 1 (degree-profile sorted, arbitrary within groups)
     let mut final_order: Vec<usize> = profiles.iter().map(|(i, _)| *i).collect();
 
     for gi in 0..groups.len() {
@@ -2323,7 +2319,7 @@ pub fn canonicalize_polys_3(
 
         for i in (start + 1)..end {
             let wire = final_order[i];
-            // Try inserting `wire` at every position start..=i
+            // Try inserting wire at every position start..=i, pick best
             let best_pos = (start..=i).min_by_key(|&pos| {
                 let mut fo = final_order.clone();
                 fo.remove(i);
