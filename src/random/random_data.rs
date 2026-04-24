@@ -2977,8 +2977,9 @@ pub fn build_from_rocks(
                             let canon1_rev = canonicalize_polys_4(c1_rev.to_polynomial(3 * m, 0, m));
                             let c1_rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon1_rev.0));
 
-                            if !seen_par.contains(&c1_rev_hash) {
-                                seen_par.insert(c1_hash);
+                            let pair_key = c1_hash.min(c1_rev_hash);
+
+                            if seen_par.insert(pair_key) {
                                 local_results.push((
                                     c1,
                                     canon1.0,
@@ -3011,8 +3012,9 @@ pub fn build_from_rocks(
                             let canon2_rev = canonicalize_polys_4(c2_rev.to_polynomial(3 * m, 0, m));
                             let c2_rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon2_rev.0));
 
-                            if !seen_par.contains(&c2_rev_hash) {
-                                seen_par.insert(c2_hash);
+                            let pair_key = c2_hash.min(c2_rev_hash);
+
+                            if seen_par.insert(pair_key) {
                                 local_results.push((
                                     c2,
                                     canon2.0,
