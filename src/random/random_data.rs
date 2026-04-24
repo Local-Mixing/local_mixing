@@ -5790,14 +5790,17 @@ mod tests {
         }
 
         fn is_equiv(a: &CircuitSeq, b: &CircuitSeq) -> bool {
-            if a.is_relabeling_of(b) {
+            let canon_a = canonicalize_polys(a.to_polynomial(6, 0, 2), true, false);
+            let canon_b = canonicalize_polys(b.to_polynomial(6, 0, 2), true, false);
+
+            if canon_a.0 == canon_b.0 {
                 return true;
             }
 
             let mut rev = b.clone();
             rev.gates.reverse();
-            rev.canonicalize(); 
-            a.is_relabeling_of(&rev)
+            let canon_rev = canonicalize_polys(rev.to_polynomial(6, 0, 2), true, false);
+            canon_a.0 == canon_rev.0
         }
 
         let circuits = vec![
