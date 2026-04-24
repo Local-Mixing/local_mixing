@@ -2826,6 +2826,54 @@ pub fn canonicalize_polys_4(
         None // genuinely symmetric across all class polys
     };
 
+    // After compare_vars returns no ordering, apply Ran's tiebreaker:
+    // collapse all tied variables to the same name, then rank by
+    // the individual polynomials lexicographically (degree DESC, lex).
+    let tiebreak_vars = |tied: &[usize], vr: &[usize]| -> Vec<usize> {
+        // Build a substitution map: variables in the same rank group
+        // all map to the same representative (the minimum index in that group)
+        let mut rep = vec![0usize; n];
+        for v in 0..n {
+            let group_min = (0..n)
+                .filter(|&u| vr[u] == vr[v])
+                .min()
+                .unwrap_or(v);
+            rep[v] = group_min;
+        }
+
+        // For each tied variable x, collect its polynomial from `polynomials`,
+        // remap all monomials using `rep`, then sort monomials by
+        // (degree DESC, monomial value ASC) for lex comparison.
+        let poly_key = |x: usize| -> Vec<(usize, Monomial)> {
+            let mut terms: Vec<(usize, Monomial)> = polynomials[x]
+                .iter()
+                .map(|&m| {
+                    // remap monomial: replace each variable j with rep[j]
+                    let mut remapped = 0u64;
+                    for j in 0..n {
+                        if m & (1u64 << j) != 0 {
+                            remapped |= 1u64 << rep[j];
+                        }
+                    }
+                    let deg = remapped.count_ones() as usize;
+                    (deg, remapped)
+                })
+                .collect();
+            // sort by degree DESC, then monomial ASC (lex)
+            terms.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            terms
+        };
+
+        let mut keys: Vec<(usize, Vec<(usize, Monomial)>)> = tied
+            .iter()
+            .map(|&x| (x, poly_key(x)))
+            .collect();
+
+        // Sort tied vars by their poly key ASC (lower key = higher priority)
+        keys.sort_by(|a, b| a.1.cmp(&b.1));
+        keys.iter().map(|(x, _)| *x).collect()
+    };
+
     // Main refinement loop
     loop {
         let mut updated = false;
@@ -2837,11 +2885,11 @@ pub fn canonicalize_polys_4(
                 .collect();
             if tied.len() <= 1 { continue; }
 
-            // Try to split this group
+            // Try to split this group using compare_vars
             let mut sorted_tied = tied.clone();
             sorted_tied.sort_by(|&a, &b| {
                 match compare_vars(a, b, &var_rank) {
-                    Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Less, // a first
+                    Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Less,
                     Some(std::cmp::Ordering::Less)    => std::cmp::Ordering::Greater,
                     _                                  => std::cmp::Ordering::Equal,
                 }
@@ -2859,7 +2907,64 @@ pub fn canonicalize_polys_4(
                 new_sub_ranks[i] = sub_rank;
             }
 
-            if sub_rank == 0 { continue; }
+            if sub_rank == 0 {
+                // compare_vars couldn't split — apply Ran's tiebreaker
+                let tb_order = tiebreak_vars(&tied, &var_rank);
+
+                // Check if tiebreaker actually differentiates anything
+                let poly_key = |x: usize| -> Vec<(usize, Monomial)> {
+                    let mut rep = vec![0usize; n];
+                    for v in 0..n {
+                        let group_min = (0..n)
+                            .filter(|&u| var_rank[u] == var_rank[v])
+                            .min()
+                            .unwrap_or(v);
+                        rep[v] = group_min;
+                    }
+                    let mut terms: Vec<(usize, Monomial)> = polynomials[x]
+                        .iter()
+                        .map(|&m| {
+                            let mut remapped = 0u64;
+                            for j in 0..n {
+                                if m & (1u64 << j) != 0 {
+                                    remapped |= 1u64 << rep[j];
+                                }
+                            }
+                            let deg = remapped.count_ones() as usize;
+                            (deg, remapped)
+                        })
+                        .collect();
+                    terms.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+                    terms
+                };
+
+                let tb_sub_rank = {
+                    let mut sr = 0usize;
+                    let mut new_sr = vec![0usize; tb_order.len()];
+                    for i in 1..tb_order.len() {
+                        if poly_key(tb_order[i - 1]) != poly_key(tb_order[i]) {
+                            sr += 1;
+                        }
+                        new_sr[i] = sr;
+                    }
+                    (sr, new_sr)
+                };
+
+                if tb_sub_rank.0 == 0 { continue; } // genuinely symmetric, skip
+
+                // Apply tiebreak sub-ranks
+                for v in 0..n {
+                    if var_rank[v] > cur_rank {
+                        var_rank[v] += tb_sub_rank.0;
+                    }
+                }
+                for (i, &v) in tb_order.iter().enumerate() {
+                    var_rank[v] = cur_rank + tb_sub_rank.1[i];
+                }
+
+                updated = true;
+                break 'rank_loop;
+            }
 
             // Shift ranks above cur_rank
             for v in 0..n {
