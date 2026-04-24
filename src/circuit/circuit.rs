@@ -2609,75 +2609,27 @@ pub fn canonicalize_polys_4(
     // ── Step 3: iterative refinement ─────────────────────────────────────────
     // var_rank[x] = rank of x. Lower value = higher priority. Equal = incomparable.
     // Start with all variables tied (empty partial order).
+    //
+    // KEY INVARIANT: rank values are always *dense* — after every update we
+    // re-normalize so ranks are 0,1,2,... with no gaps. This means the raw
+    // rank value is always the ordinal position of the variable's equivalence
+    // class, making poly_key_by_ranks stable across iterations.
     let mut var_rank: Vec<usize> = vec![0usize; n];
 
-    // ── Monomial comparison under current var_rank ───────────────────────────
-    //
-    // Returns Some(Greater) if M > M', Some(Less) if M < M', None if incomparable.
-    //
-    // Rule 1: higher degree wins.
-    // Rule 2: same degree — M > M' iff M has a variable x with var_rank[x] 
-    //         (strictly better than) at least one variable in M', AND M' has
-    //         no variable with var_rank strictly better than all vars in M.
-    //         More precisely: neither dominates the other = incomparable.
-    //         M dominates M' = M has a var strictly better than some var in M',
-    //         AND M' has no var strictly better than any var in M.
-    // Rule 3: same variable set — higher coeff wins.
-    //
-    // Dominance for same-degree monomials:
-    //   Let best(M) = min var_rank among vars in M (best variable).
-    //   M dominates M' if best(M) < best(M') [M has a strictly better variable
-    //   than M''s best, so certainly better than at least one var in M'].
-    //   But the spec condition is subtler: M has a var x better than SOME var
-    //   in M', and M' has NO var better than ALL vars in M.
-    //   Simpler reading: compare sorted rank lists lex, but treat equal-ranked
-    //   variables as incomparable.
-    //
-    // Actually the spec condition is:
-    //   M > M' if: exists x in M s.t. x is ordered higher than some x' in M',
-    //              AND NOT exists x' in M' s.t. x' is ordered higher than some x in M
-    //   i.e. M has a strictly-better variable than M' has, and M' does NOT have
-    //   a strictly-better variable than M has.
-    //   = min_rank(M) < min_rank(M') [since if M has a better best-var, that var
-    //     is better than every var in M' including M''s best... wait no]
-    //
-    // Let me re-read carefully:
-    //   "M has a variable x that is ordered higher than at least one variable in M'"
-    //   = exists x in M, exists x' in M': var_rank[x] < var_rank[x']
-    //     (since lower rank value = higher priority)
-    //   "M' has no such variable"
-    //   = NOT exists x' in M', exists x in M: var_rank[x'] < var_rank[x]
-    //   = for all x' in M', for all x in M: var_rank[x'] >= var_rank[x]
-    //   = min_rank(M') >= min_rank(M)... no:
-    //   = for all x' in M': var_rank[x'] >= min_rank(M)
-    //   = min_rank(M') >= min_rank(M)
-    //   Combined with first condition: exists x in M, x' in M': rank[x] < rank[x']
-    //   = min_rank(M) < max_rank(M')  [take x = argmin in M, x' = argmax in M']
-    //   But second condition: min_rank(M') >= min_rank(M)
-    //   Hmm, these don't simplify cleanly for general cases.
-    //
-    // Cleaner: since variables in the same rank-group are INCOMPARABLE (not ordered),
-    // "x is ordered higher than x'" requires var_rank[x] STRICTLY LESS than var_rank[x'],
-    // AND x and x' are in different rank groups (i.e. not tied).
-    // With that:
-    //   Condition 1: exists x in M, x' in M': var_rank[x] < var_rank[x']
-    //   Condition 2: NOT exists x' in M', x in M: var_rank[x'] < var_rank[x]
-    //              = min_rank(M') >= min_rank(M)   [if M' had a better var than all of M,
-    //                                                condition 2 fails]
-    //   Wait: cond 2 = for all x' in M', for all x in M: var_rank[x'] >= var_rank[x]
-    //               = min_rank(M) <= min_rank(M') ... no:
-    //               = for all x' in M': var_rank[x'] >= min_rank(M)
-    //               = min_rank(M') >= min_rank(M)
-    //   And cond 1: min_rank(M) < max_rank(M')
-    //   So M > M' iff min_rank(M) <= min_rank(M') AND min_rank(M) < max_rank(M')
-    //   i.e. M's best variable is at least as good as M''s best, and M has
-    //   something strictly better than M''s worst.
-    //
-    // Incomparable: neither M > M' nor M' > M.
-    //   = NOT (min_rank(M) <= min_rank(M') AND min_rank(M) < max_rank(M'))
-    //     AND NOT (min_rank(M') <= min_rank(M) AND min_rank(M') < max_rank(M))
-    //
-    // Special case: same variable set -> Rule 3 (coeff comparison), always comparable.
+    // Normalize var_rank to be dense (0,1,2,...) with no gaps.
+    // Call this after every mutation of var_rank.
+    let normalize_ranks = |vr: &mut Vec<usize>| {
+        let mut sorted_vals: Vec<usize> = vr.clone();
+        sorted_vals.sort_unstable();
+        sorted_vals.dedup();
+        let rank_map: HashMap<usize, usize> = sorted_vals.iter()
+            .enumerate()
+            .map(|(new, &old)| (old, new))
+            .collect();
+        for v in vr.iter_mut() {
+            *v = rank_map[v];
+        }
+    };
 
     let cmp_monomials = |m: Monomial, coeff_m: usize,
                          mp: Monomial, coeff_mp: usize,
@@ -2685,17 +2637,13 @@ pub fn canonicalize_polys_4(
         let deg_m  = m.count_ones()  as usize;
         let deg_mp = mp.count_ones() as usize;
 
-        // Rule 1: degree
         if deg_m != deg_mp {
             return Some(deg_m.cmp(&deg_mp));
         }
-
-        // Same variable set -> Rule 3
         if m == mp {
             return Some(coeff_m.cmp(&coeff_mp));
         }
 
-        // Rule 2: dominance
         let ranks_m:  Vec<usize> = (0..n).filter(|&j| m  & (1u64 << j) != 0).map(|j| vr[j]).collect();
         let ranks_mp: Vec<usize> = (0..n).filter(|&j| mp & (1u64 << j) != 0).map(|j| vr[j]).collect();
 
@@ -2704,50 +2652,27 @@ pub fn canonicalize_polys_4(
         let max_m  = *ranks_m.iter().max().unwrap();
         let max_mp = *ranks_mp.iter().max().unwrap();
 
-        // M > M': min_rank(M) <= min_rank(M') AND min_rank(M) < max_rank(M')
-        // (M has a var at least as good as M''s best, and something in M'
-        //  is strictly worse than M's best)
         let m_gt_mp = min_m <= min_mp && min_m < max_mp;
-        // M' > M: symmetric
         let mp_gt_m = min_mp <= min_m && min_mp < max_m;
 
         match (m_gt_mp, mp_gt_m) {
             (true,  false) => Some(std::cmp::Ordering::Greater),
             (false, true)  => Some(std::cmp::Ordering::Less),
-            (false, false) => None, // incomparable
-            (true,  true)  => None, // shouldn't happen with consistent var_rank, treat as incomparable
+            _              => None,
         }
     };
 
-    // For variable x in class poly ci, get its monomials sorted by rank
-    // descending, with incomparable monomials grouped together.
-    // We return a Vec of "rank levels" where each level is a Vec of
-    // (monomial, coeff) that are mutually incomparable and equally ranked.
-    // Within a level, order doesn't matter for the algorithm.
     let ranked_monomials_of = |x: usize, ci: usize, vr: &[usize]|
         -> Vec<Vec<(Monomial, usize)>> {
-        let mut ms: Vec<(Monomial, usize)> = class_polys[ci].iter()
-            .filter(|(m, _)| *m & (1u64 << x) != 0)
+        let mut remaining: Vec<(Monomial, usize)> = class_polys[ci].iter()
+            .filter(|(&m, _)| m & (1u64 << x) != 0)
             .map(|(&m, &coeff)| (m, coeff))
             .collect();
 
-        if ms.is_empty() { return vec![]; }
+        if remaining.is_empty() { return vec![]; }
 
-        // Sort into levels: group incomparable monomials together
-        // Use a simple approach: sort by (degree DESC, coeff DESC) as a
-        // first pass, then group monomials that are mutually incomparable
-        // and have the same degree.
-        // Actually: two monomials of the same degree are incomparable iff
-        // neither dominates. We group them level by level:
-        // level 0 = all monomials not dominated by any other,
-        // level 1 = all remaining not dominated by any remaining, etc.
-        // (This is topological sort by the partial order.)
-
-        let mut remaining = ms;
         let mut levels: Vec<Vec<(Monomial, usize)>> = Vec::new();
-
         while !remaining.is_empty() {
-            // Find all elements not dominated by any other remaining element
             let top: Vec<(Monomial, usize)> = remaining.iter().copied()
                 .filter(|&(m, cm)| {
                     !remaining.iter().any(|&(mp, cmp)| {
@@ -2756,7 +2681,6 @@ pub fn canonicalize_polys_4(
                     })
                 })
                 .collect();
-            // Remove top from remaining
             let top_set: std::collections::HashSet<(Monomial, usize)> =
                 top.iter().copied().collect();
             remaining.retain(|x| !top_set.contains(x));
@@ -2765,14 +2689,6 @@ pub fn canonicalize_polys_4(
         levels
     };
 
-    // Compare variables x and x' using their ranked monomial levels in class ci.
-    // Walk down levels in parallel. At each level:
-    //   - compare the top monomial of x's level vs top of x''s level
-    //   - if one is strictly higher: tiebreak found
-    //   - if incomparable: go to next level
-    //   - if equal (same monomial): go to next level
-    // Returns Some(Greater) if x > x' (x gets lower rank value),
-    //         Some(Less) if x < x', None if no tiebreak found.
     let compare_vars_in_class = |x: usize, xp: usize, ci: usize, vr: &[usize]|
         -> Option<std::cmp::Ordering> {
         let levels_x  = ranked_monomials_of(x,  ci, vr);
@@ -2780,92 +2696,59 @@ pub fn canonicalize_polys_4(
         let depth = levels_x.len().max(levels_xp.len());
 
         for k in 0..depth {
-            let level_x  = levels_x.get(k);
-            let level_xp = levels_xp.get(k);
-
-            match (level_x, level_xp) {
-                (None, None) => break,
-                (Some(_), None) => return Some(std::cmp::Ordering::Greater), // x has more monomials
-                (None, Some(_)) => return Some(std::cmp::Ordering::Less),
+            match (levels_x.get(k), levels_xp.get(k)) {
+                (None, None)       => break,
+                (Some(_), None)    => return Some(std::cmp::Ordering::Greater),
+                (None, Some(_))    => return Some(std::cmp::Ordering::Less),
                 (Some(lx), Some(lxp)) => {
-                    // Compare the best monomial in each level against the other
-                    // Try all pairs: if any pair gives a strict ordering, use it
                     let mut found: Option<std::cmp::Ordering> = None;
                     'pairs: for &(m, cm) in lx {
                         for &(mp, cmp) in lxp {
                             match cmp_monomials(m, cm, mp, cmp, vr) {
-                                Some(std::cmp::Ordering::Greater) => {
-                                    found = Some(std::cmp::Ordering::Greater);
+                                Some(o @ std::cmp::Ordering::Greater) |
+                                Some(o @ std::cmp::Ordering::Less) => {
+                                    found = Some(o);
                                     break 'pairs;
                                 }
-                                Some(std::cmp::Ordering::Less) => {
-                                    found = Some(std::cmp::Ordering::Less);
-                                    break 'pairs;
-                                }
-                                _ => {} // incomparable or equal, keep looking
+                                _ => {}
                             }
                         }
                     }
-                    if let Some(ord) = found {
-                        return Some(ord);
-                    }
-                    // This level is incomparable — continue to next level
+                    if let Some(ord) = found { return Some(ord); }
                 }
             }
         }
-        None // no tiebreak found
+        None
     };
 
-    // Full variable comparison: try all class polys in order
     let compare_vars = |x: usize, xp: usize, vr: &[usize]| -> Option<std::cmp::Ordering> {
         for ci in 0..class_polys.len() {
             if let Some(ord) = compare_vars_in_class(x, xp, ci, vr) {
                 return Some(ord);
             }
         }
-        None // genuinely symmetric across all class polys
+        None
     };
 
-    // After compare_vars returns no ordering, apply Ran's tiebreaker:
-    // collapse all tied variables to the same name by representing each monomial
-    // as a sorted multiset of var_rank values (so tied vars are indistinct),
-    // then rank individual polynomials lexicographically by their term lists.
-    // This is permutation-invariant: two circuits that are wire-permutations of
-    // each other will produce the same rank-multiset keys regardless of input ordering.
-    let poly_key_by_ranks = |x: usize, vr: &[usize]| -> Vec<Vec<usize>> {
-        let mut terms: Vec<Vec<usize>> = polynomials[x]
+    // Tiebreaker: represent each polynomial by its monomials as sorted lists
+    // of NORMALIZED rank values. Because ranks are dense after normalization,
+    // the rank value IS the equivalence-class ordinal — stable across iterations.
+    // Two variables in the same rank group get the same rank value, so they
+    // appear identical in monomials, which is correct: we don't distinguish them.
+    let poly_key_by_ranks = |wire: usize, vr: &[usize]| -> Vec<Vec<usize>> {
+        let mut terms: Vec<Vec<usize>> = polynomials[wire]
             .iter()
             .map(|&m| {
-                // Represent monomial as sorted list of rank values of its variables.
-                // Variables in the same rank group get the same rank value,
-                // making them indistinct — correctly implementing "assign the same
-                // value to all tied variables".
                 let mut ranks: Vec<usize> = (0..n)
                     .filter(|&v| m & (1u64 << v) != 0)
                     .map(|v| vr[v])
                     .collect();
-                ranks.sort();
+                ranks.sort_unstable();
                 ranks
             })
             .collect();
-        // Sort monomials: higher degree first, then lex on rank list
         terms.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(&b)));
         terms
-    };
-
-    let tiebreak_vars = |tied: &[usize], vr: &[usize]| -> Vec<usize> {
-        // For each tied variable x, collect its polynomial from `polynomials`,
-        // represent each monomial as a sorted multiset of rank values (so all
-        // variables in the same rank group are treated as identical), then
-        // sort the polynomial's term list for lex comparison.
-        let mut keys: Vec<(usize, Vec<Vec<usize>>)> = tied
-            .iter()
-            .map(|&x| (x, poly_key_by_ranks(x, vr)))
-            .collect();
-
-        // Sort tied vars by their poly key ASC (lower key = higher priority)
-        keys.sort_by(|a, b| a.1.cmp(&b.1));
-        keys.iter().map(|(x, _)| *x).collect()
     };
 
     // Main refinement loop
@@ -2879,7 +2762,7 @@ pub fn canonicalize_polys_4(
                 .collect();
             if tied.len() <= 1 { continue; }
 
-            // Try to split this group using compare_vars
+            // Try compare_vars first
             let mut sorted_tied = tied.clone();
             sorted_tied.sort_by(|&a, &b| {
                 match compare_vars(a, b, &var_rank) {
@@ -2889,58 +2772,49 @@ pub fn canonicalize_polys_4(
                 }
             });
 
-            // Assign sub-ranks
             let mut sub_rank = 0usize;
             let mut new_sub_ranks = vec![0usize; sorted_tied.len()];
             for i in 1..sorted_tied.len() {
-                let a = sorted_tied[i - 1];
-                let b = sorted_tied[i];
-                if compare_vars(a, b, &var_rank) != None {
+                if compare_vars(sorted_tied[i-1], sorted_tied[i], &var_rank).is_some() {
                     sub_rank += 1;
                 }
                 new_sub_ranks[i] = sub_rank;
             }
 
             if sub_rank == 0 {
-                // compare_vars couldn't split — apply Ran's tiebreaker:
-                // use individual polynomials with variables renamed by rank group
-                let tb_order = tiebreak_vars(&tied, &var_rank);
+                // compare_vars found nothing — try poly_key tiebreaker.
+                // Because var_rank is normalized, poly_key_by_ranks is stable.
+                let mut tb_sorted = tied.clone();
+                tb_sorted.sort_by(|&a, &b| {
+                    poly_key_by_ranks(a, &var_rank).cmp(&poly_key_by_ranks(b, &var_rank))
+                });
 
-                // Check if tiebreaker actually differentiates anything,
-                // using the same rank-multiset key for consistency
-                let tb_sub_rank = {
-                    let mut sr = 0usize;
-                    let mut new_sr = vec![0usize; tb_order.len()];
-                    for i in 1..tb_order.len() {
-                        // Use poly_key_by_ranks for both ordering and differentiation check —
-                        // same key function as tiebreak_vars to stay consistent
-                        if poly_key_by_ranks(tb_order[i - 1], &var_rank)
-                            != poly_key_by_ranks(tb_order[i], &var_rank)
-                        {
-                            sr += 1;
-                        }
-                        new_sr[i] = sr;
+                let mut tb_sub_rank = 0usize;
+                let mut tb_new_sub_ranks = vec![0usize; tb_sorted.len()];
+                for i in 1..tb_sorted.len() {
+                    if poly_key_by_ranks(tb_sorted[i-1], &var_rank)
+                        != poly_key_by_ranks(tb_sorted[i], &var_rank)
+                    {
+                        tb_sub_rank += 1;
                     }
-                    (sr, new_sr)
-                };
+                    tb_new_sub_ranks[i] = tb_sub_rank;
+                }
 
-                if tb_sub_rank.0 == 0 { continue; } // genuinely symmetric, skip
+                if tb_sub_rank == 0 { continue; } // genuinely symmetric
 
-                // Apply tiebreak sub-ranks
                 for v in 0..n {
                     if var_rank[v] > cur_rank {
-                        var_rank[v] += tb_sub_rank.0;
+                        var_rank[v] += tb_sub_rank;
                     }
                 }
-                for (i, &v) in tb_order.iter().enumerate() {
-                    var_rank[v] = cur_rank + tb_sub_rank.1[i];
+                for (i, &v) in tb_sorted.iter().enumerate() {
+                    var_rank[v] = cur_rank + tb_new_sub_ranks[i];
                 }
-
+                normalize_ranks(&mut var_rank);
                 updated = true;
                 break 'rank_loop;
             }
 
-            // Shift ranks above cur_rank
             for v in 0..n {
                 if var_rank[v] > cur_rank {
                     var_rank[v] += sub_rank;
@@ -2949,7 +2823,7 @@ pub fn canonicalize_polys_4(
             for (i, &v) in sorted_tied.iter().enumerate() {
                 var_rank[v] = cur_rank + new_sub_ranks[i];
             }
-
+            normalize_ranks(&mut var_rank);
             updated = true;
             break 'rank_loop;
         }
@@ -2958,7 +2832,7 @@ pub fn canonicalize_polys_4(
     }
 
     // ── Step 4: build final_order ─────────────────────────────────────────────
-    // Remaining ties broken by lowest wire index (arbitrary but consistent)
+    // Remaining ties broken by lowest wire index
     let mut final_order: Vec<usize> = (0..n).collect();
     final_order.sort_by_key(|&w| (var_rank[w], w));
 
