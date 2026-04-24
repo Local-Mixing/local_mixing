@@ -5042,7 +5042,7 @@ mod tests {
 
             // Print the key as hex
             let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
-            println!("Key: {}", key_hex);
+            // println!("Key: {}", key_hex);
 
             // Scan all circuits in the value list
             let mut pos = 0;
