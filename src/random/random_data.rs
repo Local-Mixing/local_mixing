@@ -5584,6 +5584,174 @@ mod tests {
     }
 
     #[test]
+    fn test_compare_circuit_lists() {
+        use std::collections::HashMap;
+        use crate::circuit::{circuit::canonicalize_polys, circuit::poly_to_str, CircuitSeq};
+
+        // Left side: pairs of gates
+        let left_circuits: Vec<Vec<[u8; 3]>> = vec![
+            vec![[0,1,2],[0,1,3]],
+            vec![[1,3,2],[0,2,1]],
+            vec![[0,4,2],[1,2,3]],
+            vec![[1,0,3],[0,1,2]],
+            vec![[0,2,3],[1,2,4]],
+            vec![[1,0,2],[0,4,3]],
+            vec![[0,3,1],[0,4,2]],
+            vec![[0,3,2],[1,0,3]],
+            vec![[0,1,2],[0,2,1]],
+            vec![[1,2,3],[0,2,1]],
+            vec![[0,2,3],[1,4,2]],
+            vec![[0,4,2],[1,5,3]],
+            vec![[1,3,2],[0,1,2]],
+            vec![[0,3,2],[1,4,2]],
+            vec![[0,3,2],[1,2,3]],
+            vec![[0,2,1],[1,0,2]],
+            vec![[1,0,2],[0,1,2]],
+            vec![[1,4,0],[0,3,2]],
+            vec![[1,0,2],[0,3,1]],
+            vec![[1,2,0],[0,2,1]],
+            vec![[1,0,3],[0,4,2]],
+            vec![[0,2,1],[0,3,1]],
+            vec![[0,1,2],[0,3,1]],
+            vec![[1,3,0],[0,2,1]],
+            vec![[0,3,2],[1,3,2]],
+            vec![[1,3,0],[0,4,2]],
+        ];
+
+        // Right side: gate strings -> parse into gates
+        // Format: "012;013;" means gates [0,1,2] and [0,1,3]
+        let right_strings: Vec<&str> = vec![
+            "012;013;",
+            "021;143;",
+            "021;123;",
+            "012;143;",
+            "042;123;",
+            "103;012;",
+            "012;123;",
+            "023;124;",
+            "031;042;",
+            "012;021;",
+            "042;153;",
+            "012;132;",
+            "032;142;",
+            "032;123;",
+            "021;102;",
+            "102;012;",
+            "120;021;",
+            "021;031;",
+            "012;031;",
+            "130;021;",
+            "032;132;",
+            "021;132;",
+            "130;012;",
+        ];
+
+        fn parse_gates(s: &str) -> Vec<[u8; 3]> {
+            s.split(';')
+                .filter(|p| !p.is_empty())
+                .map(|g| {
+                    let bytes: Vec<u8> = g.bytes()
+                        .map(|b| b - b'0')
+                        .collect();
+                    [bytes[0], bytes[1], bytes[2]]
+                })
+                .collect()
+        }
+
+        fn circuit_canon_key(gates: &[[u8; 3]]) -> String {
+            // Infer n from max wire used
+            let n = gates.iter().flatten().map(|&w| w as usize).max().unwrap_or(0) + 1;
+            let circuit = CircuitSeq { gates: gates.to_vec() };
+            let polys = circuit.to_polynomial(n, 0, gates.len());
+            let (canonical, _) = canonicalize_polys(polys, true, false);
+            canonical.iter().enumerate()
+                .map(|(i, p)| format!("P{}:{}", i, poly_to_str(p, n)))
+                .collect::<Vec<_>>()
+                .join("|")
+        }
+
+        // Canonicalize all left circuits
+        println!("=== LEFT SIDE CANONICAL FORMS ===");
+        let mut left_keys: Vec<String> = Vec::new();
+        for (i, gates) in left_circuits.iter().enumerate() {
+            let key = circuit_canon_key(gates);
+            println!("L{:02}: {:?} -> {}", i, gates, key);
+            left_keys.push(key);
+        }
+
+        // Canonicalize all right circuits
+        println!("\n=== RIGHT SIDE CANONICAL FORMS ===");
+        let mut right_keys: Vec<String> = Vec::new();
+        for (i, s) in right_strings.iter().enumerate() {
+            let gates = parse_gates(s);
+            let key = circuit_canon_key(&gates);
+            println!("R{:02}: {} -> {}", i, s, key);
+            right_keys.push(key);
+        }
+
+        // Find canonical keys that appear on left but not right, and vice versa
+        let left_set:  std::collections::HashSet<&String> = left_keys.iter().collect();
+        let right_set: std::collections::HashSet<&String> = right_keys.iter().collect();
+
+        let only_left:  Vec<_> = left_set.difference(&right_set).collect();
+        let only_right: Vec<_> = right_set.difference(&left_set).collect();
+        let in_both:    Vec<_> = left_set.intersection(&right_set).collect();
+
+        println!("\n=== SUMMARY ===");
+        println!("Left unique count:  {}", left_keys.len());
+        println!("Right unique count: {}", right_keys.len());
+        println!("Distinct on left:   {}", left_set.len());
+        println!("Distinct on right:  {}", right_set.len());
+        println!("Shared:             {}", in_both.len());
+
+        println!("\n--- Keys only on LEFT (not matched on right) ---");
+        for k in &only_left {
+            let idxs: Vec<usize> = left_keys.iter().enumerate()
+                .filter(|(_, key)| key == *k).map(|(i, _)| i).collect();
+            println!("  {:?}: {}", idxs, k);
+        }
+
+        println!("\n--- Keys only on RIGHT (not matched on left) ---");
+        for k in &only_right {
+            let idxs: Vec<usize> = right_keys.iter().enumerate()
+                .filter(|(_, key)| key == *k).map(|(i, _)| i).collect();
+            println!("  {:?}: {}", idxs, k);
+        }
+
+        println!("\n--- Keys appearing on BOTH sides ---");
+        for k in &in_both {
+            let left_idxs: Vec<usize> = left_keys.iter().enumerate()
+                .filter(|(_, key)| key == *k).map(|(i, _)| i).collect();
+            let right_idxs: Vec<usize> = right_keys.iter().enumerate()
+                .filter(|(_, key)| key == *k).map(|(i, _)| i).collect();
+            println!("  L{:?} <-> R{:?}: {}", left_idxs, right_idxs, k);
+        }
+
+        // Also print duplicates within each side
+        println!("\n--- Duplicates within LEFT ---");
+        let mut left_seen: HashMap<&String, Vec<usize>> = HashMap::new();
+        for (i, k) in left_keys.iter().enumerate() {
+            left_seen.entry(k).or_default().push(i);
+        }
+        for (k, idxs) in &left_seen {
+            if idxs.len() > 1 {
+                println!("  {:?} share key: {}", idxs, k);
+            }
+        }
+
+        println!("\n--- Duplicates within RIGHT ---");
+        let mut right_seen: HashMap<&String, Vec<usize>> = HashMap::new();
+        for (i, k) in right_keys.iter().enumerate() {
+            right_seen.entry(k).or_default().push(i);
+        }
+        for (k, idxs) in &right_seen {
+            if idxs.len() > 1 {
+                println!("  {:?} share key: {}", idxs, k);
+            }
+        }
+    }
+
+    #[test]
     fn test_c1_vs_c2_after_canon() {
         use crate::circuit::circuit::poly_to_str;
         let mut c1 = CircuitSeq { gates: vec![[0,4,2], [1,2,3], [6,7,4], [5,3,7]] };
