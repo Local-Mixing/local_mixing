@@ -5588,7 +5588,6 @@ mod tests {
         use std::collections::HashMap;
         use crate::circuit::{circuit::canonicalize_polys, circuit::poly_to_str, CircuitSeq};
 
-        // Left side: pairs of gates
         let left_circuits: Vec<Vec<[u8; 3]>> = vec![
             vec![[0,1,2],[0,1,3]],
             vec![[1,3,2],[0,2,1]],
@@ -5618,8 +5617,6 @@ mod tests {
             vec![[1,3,0],[0,4,2]],
         ];
 
-        // Right side: gate strings -> parse into gates
-        // Format: "012;013;" means gates [0,1,2] and [0,1,3]
         let right_strings: Vec<&str> = vec![
             "012;013;",
             "021;143;",
@@ -5650,103 +5647,139 @@ mod tests {
             s.split(';')
                 .filter(|p| !p.is_empty())
                 .map(|g| {
-                    let bytes: Vec<u8> = g.bytes()
-                        .map(|b| b - b'0')
-                        .collect();
+                    let bytes: Vec<u8> = g.bytes().map(|b| b - b'0').collect();
                     [bytes[0], bytes[1], bytes[2]]
                 })
                 .collect()
         }
 
-        fn circuit_canon_key(gates: &[[u8; 3]]) -> String {
-            // Infer n from max wire used
-            let n = gates.iter().flatten().map(|&w| w as usize).max().unwrap_or(0) + 1;
-            let circuit = CircuitSeq { gates: gates.to_vec() };
-            let polys = circuit.to_polynomial(n, 0, gates.len());
-            let (canonical, _) = canonicalize_polys(polys, true, false);
-            canonical.iter().enumerate()
-                .map(|(i, p)| format!("P{}:{}", i, poly_to_str(p, n)))
-                .collect::<Vec<_>>()
-                .join("|")
+        // Returns (forward_key, reversed_key)
+        fn circuit_canon_keys(gates: &[[u8; 3]], n: usize) -> (String, String) {
+            let make_key = |g: &[[u8; 3]]| -> String {
+                let circuit = CircuitSeq { gates: g.to_vec() };
+                let polys = circuit.to_polynomial(n, 0, g.len());
+                let (canonical, _) = canonicalize_polys(polys, true, false);
+                canonical.iter().enumerate()
+                    .map(|(i, p)| format!("P{}:{}", i, poly_to_str(p, n)))
+                    .collect::<Vec<_>>()
+                    .join("|")
+            };
+
+            let forward = make_key(gates);
+            let mut rev_gates = gates.to_vec();
+            rev_gates.reverse();
+            let reversed = make_key(&rev_gates);
+            (forward, reversed)
         }
 
-        // Canonicalize all left circuits
-        println!("=== LEFT SIDE CANONICAL FORMS ===");
-        let mut left_keys: Vec<String> = Vec::new();
-        for (i, gates) in left_circuits.iter().enumerate() {
-            let key = circuit_canon_key(gates);
-            println!("L{:02}: {:?} -> {}", i, gates, key);
-            left_keys.push(key);
+        // Use a fixed n large enough for all circuits
+        let n = 6;
+
+        // For each circuit, store both forward and reversed canonical keys,
+        // along with a label indicating which variant matched
+        #[derive(Debug)]
+        struct Entry {
+            label: String,
+            forward_key: String,
+            reversed_key: String,
         }
 
-        // Canonicalize all right circuits
-        println!("\n=== RIGHT SIDE CANONICAL FORMS ===");
-        let mut right_keys: Vec<String> = Vec::new();
-        for (i, s) in right_strings.iter().enumerate() {
+        let mut left_entries: Vec<Entry> = left_circuits.iter().enumerate().map(|(i, gates)| {
+            let (fk, rk) = circuit_canon_keys(gates, n);
+            Entry { label: format!("L{:02}", i), forward_key: fk, reversed_key: rk }
+        }).collect();
+
+        let mut right_entries: Vec<Entry> = right_strings.iter().enumerate().map(|(i, s)| {
             let gates = parse_gates(s);
-            let key = circuit_canon_key(&gates);
-            println!("R{:02}: {} -> {}", i, s, key);
-            right_keys.push(key);
+            let (fk, rk) = circuit_canon_keys(&gates, n);
+            Entry { label: format!("R{:02}", i), forward_key: fk, reversed_key: rk }
+        }).collect();
+
+        // Print all keys
+        println!("=== LEFT SIDE ===");
+        for e in &left_entries {
+            println!("{}: fwd={}", e.label, e.forward_key);
+            println!("{}  rev={}", e.label, e.reversed_key);
+        }
+        println!("\n=== RIGHT SIDE ===");
+        for e in &right_entries {
+            println!("{}: fwd={}", e.label, e.forward_key);
+            println!("{}  rev={}", e.label, e.reversed_key);
         }
 
-        // Find canonical keys that appear on left but not right, and vice versa
-        let left_set:  std::collections::HashSet<&String> = left_keys.iter().collect();
-        let right_set: std::collections::HashSet<&String> = right_keys.iter().collect();
+        // Build lookup: for each right entry, the set of keys it matches
+        // (either forward or reversed counts as a match)
+        // A left entry matches a right entry if any of the 4 combinations match:
+        //   (L.fwd == R.fwd), (L.fwd == R.rev), (L.rev == R.fwd), (L.rev == R.rev)
 
-        let only_left:  Vec<_> = left_set.difference(&right_set).collect();
-        let only_right: Vec<_> = right_set.difference(&left_set).collect();
-        let in_both:    Vec<_> = left_set.intersection(&right_set).collect();
+        println!("\n=== MATCHES (left <-> right, any forward/reverse combination) ===");
+        let mut matched_left:  std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut matched_right: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
-        println!("\n=== SUMMARY ===");
-        println!("Left unique count:  {}", left_keys.len());
-        println!("Right unique count: {}", right_keys.len());
-        println!("Distinct on left:   {}", left_set.len());
-        println!("Distinct on right:  {}", right_set.len());
-        println!("Shared:             {}", in_both.len());
-
-        println!("\n--- Keys only on LEFT (not matched on right) ---");
-        for k in &only_left {
-            let idxs: Vec<usize> = left_keys.iter().enumerate()
-                .filter(|(_, key)| key == *k).map(|(i, _)| i).collect();
-            println!("  {:?}: {}", idxs, k);
-        }
-
-        println!("\n--- Keys only on RIGHT (not matched on left) ---");
-        for k in &only_right {
-            let idxs: Vec<usize> = right_keys.iter().enumerate()
-                .filter(|(_, key)| key == *k).map(|(i, _)| i).collect();
-            println!("  {:?}: {}", idxs, k);
-        }
-
-        println!("\n--- Keys appearing on BOTH sides ---");
-        for k in &in_both {
-            let left_idxs: Vec<usize> = left_keys.iter().enumerate()
-                .filter(|(_, key)| key == *k).map(|(i, _)| i).collect();
-            let right_idxs: Vec<usize> = right_keys.iter().enumerate()
-                .filter(|(_, key)| key == *k).map(|(i, _)| i).collect();
-            println!("  L{:?} <-> R{:?}: {}", left_idxs, right_idxs, k);
-        }
-
-        // Also print duplicates within each side
-        println!("\n--- Duplicates within LEFT ---");
-        let mut left_seen: HashMap<&String, Vec<usize>> = HashMap::new();
-        for (i, k) in left_keys.iter().enumerate() {
-            left_seen.entry(k).or_default().push(i);
-        }
-        for (k, idxs) in &left_seen {
-            if idxs.len() > 1 {
-                println!("  {:?} share key: {}", idxs, k);
+        for (li, le) in left_entries.iter().enumerate() {
+            for (ri, re) in right_entries.iter().enumerate() {
+                let l_keys = [&le.forward_key, &le.reversed_key];
+                let r_keys = [&re.forward_key, &re.reversed_key];
+                let mut match_desc: Vec<&str> = Vec::new();
+                if le.forward_key  == re.forward_key  { match_desc.push("fwd==fwd"); }
+                if le.forward_key  == re.reversed_key { match_desc.push("fwd==rev"); }
+                if le.reversed_key == re.forward_key  { match_desc.push("rev==fwd"); }
+                if le.reversed_key == re.reversed_key { match_desc.push("rev==rev"); }
+                if !match_desc.is_empty() {
+                    println!("  {} <-> {} [{}]", le.label, re.label, match_desc.join(", "));
+                    matched_left.insert(li);
+                    matched_right.insert(ri);
+                }
             }
         }
 
-        println!("\n--- Duplicates within RIGHT ---");
-        let mut right_seen: HashMap<&String, Vec<usize>> = HashMap::new();
-        for (i, k) in right_keys.iter().enumerate() {
-            right_seen.entry(k).or_default().push(i);
+        println!("\n=== LEFT entries with NO match on right (fwd or rev) ===");
+        for (li, le) in left_entries.iter().enumerate() {
+            if !matched_left.contains(&li) {
+                println!("  {}: fwd={}", le.label, le.forward_key);
+                println!("  {}  rev={}", le.label, le.reversed_key);
+            }
         }
-        for (k, idxs) in &right_seen {
-            if idxs.len() > 1 {
-                println!("  {:?} share key: {}", idxs, k);
+
+        println!("\n=== RIGHT entries with NO match on left (fwd or rev) ===");
+        for (ri, re) in right_entries.iter().enumerate() {
+            if !matched_right.contains(&ri) {
+                println!("  {}: fwd={}", re.label, re.forward_key);
+                println!("  {}  rev={}", re.label, re.reversed_key);
+            }
+        }
+
+        // Duplicates within left (same canonical key, forward or reversed)
+        println!("\n=== Duplicates within LEFT ===");
+        for i in 0..left_entries.len() {
+            for j in (i+1)..left_entries.len() {
+                let li = &left_entries[i];
+                let lj = &left_entries[j];
+                let mut descs = Vec::new();
+                if li.forward_key  == lj.forward_key  { descs.push("fwd==fwd"); }
+                if li.forward_key  == lj.reversed_key { descs.push("fwd==rev"); }
+                if li.reversed_key == lj.forward_key  { descs.push("rev==fwd"); }
+                if li.reversed_key == lj.reversed_key { descs.push("rev==rev"); }
+                if !descs.is_empty() {
+                    println!("  {} <-> {} [{}]", li.label, lj.label, descs.join(", "));
+                }
+            }
+        }
+
+        // Duplicates within right
+        println!("\n=== Duplicates within RIGHT ===");
+        for i in 0..right_entries.len() {
+            for j in (i+1)..right_entries.len() {
+                let ri = &right_entries[i];
+                let rj = &right_entries[j];
+                let mut descs = Vec::new();
+                if ri.forward_key  == rj.forward_key  { descs.push("fwd==fwd"); }
+                if ri.forward_key  == rj.reversed_key { descs.push("fwd==rev"); }
+                if ri.reversed_key == rj.forward_key  { descs.push("rev==fwd"); }
+                if ri.reversed_key == rj.reversed_key { descs.push("rev==rev"); }
+                if !descs.is_empty() {
+                    println!("  {} <-> {} [{}]", ri.label, rj.label, descs.join(", "));
+                }
             }
         }
     }
