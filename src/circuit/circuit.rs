@@ -2268,13 +2268,6 @@ pub fn canonicalize_polys_3(
         groups.push(current);
     }
 
-    let mut wire_to_group = vec![0usize; n];
-    for (gi, group) in groups.iter().enumerate() {
-        for &wire in group {
-            wire_to_group[wire] = gi;
-        }
-    }
-
     // Group position ranges in final_order
     let mut group_start = vec![0usize; groups.len() + 1];
     {
@@ -2286,42 +2279,19 @@ pub fn canonicalize_polys_3(
         group_start[groups.len()] = n;
     }
 
-    // Start: respect step 1 ordering, arbitrary within groups
-    let mut final_order: Vec<usize> = profiles.iter().map(|(i, _)| *i).collect();
-
-    // ── Evaluate objective for current final_order ────────────────────────────
-    //
-    // Key insight: instead of anonymizing monomials, we evaluate directly.
+    // ── Evaluate objective ────────────────────────────────────────────────────
     // For a given final_order, wire at position pos gets z = (pos+2)^n.
-    // The objective is sum over all (poly_wire, monomial) pairs of
-    // prod_{j in supp(monomial)} z_j, summed over N (not GF2).
-    //
-    // This IS label-independent because we're evaluating based on positions
-    // in final_order, not on wire indices. Two circuits that are relabelings
-    // of each other will have the same set of (position-based) monomials
-    // under the optimal final_order.
-    //
-    // We sum over all polynomials (not just per group) for the full objective,
-    // then use per-group sums for tiebreaking.
-
-    // Precompute: for each polynomial, its monomials as lists of wire indices
-    // (already have this as polynomials: Vec<Polynomial>)
-
-    // Evaluate full objective: sum over all polys, all monomials,
-    // prod of z values. Returns Vec<BigUint> — one value per group
-    // (group 0 sum first, then group 1, etc.) for lex tiebreaking.
+    // Returns one BigUint per group (sum of poly evaluations in that group),
+    // for lexicographic comparison: group 0 first, then group 1, etc.
     let evaluate = |fo: &[usize]| -> Vec<BigUint> {
-        // pos_of_wire[wire] = position in fo
         let mut pos_of = vec![0usize; n];
         for (pos, &wire) in fo.iter().enumerate() {
             pos_of[wire] = pos;
         }
-        // z[wire] = (pos_of[wire] + 2)^n
         let z: Vec<BigUint> = (0..n)
             .map(|wire| BigUint::from(pos_of[wire] + 2).pow(n as u32))
             .collect();
 
-        // Sum per group: only sum polynomials belonging to that group
         groups.iter().map(|group| {
             let mut total = BigUint::zero();
             for &poly_wire in group {
@@ -2339,23 +2309,29 @@ pub fn canonicalize_polys_3(
         }).collect()
     };
 
-    // ── Bubble sort within each group ─────────────────────────────────────────
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for gi in 0..groups.len() {
-            let start = group_start[gi];
-            let end   = group_start[gi + 1];
-            for i in start..(end.saturating_sub(1)) {
-                let mut fo_swapped = final_order.clone();
-                fo_swapped.swap(i, i + 1);
-                let v_orig    = evaluate(&final_order);
-                let v_swapped = evaluate(&fo_swapped);
-                if v_swapped < v_orig {
-                    final_order = fo_swapped;
-                    changed = true;
-                }
-            }
+    // ── Step 3: insertion sort within each group ──────────────────────────────
+    // For each wire in the group, try inserting it at every possible position
+    // within the group and pick the position that minimizes the objective.
+    // This is O(k^2) evaluations per group of size k, guaranteed global optimum
+    // (no local-minimum problem unlike bubble sort).
+    let mut final_order: Vec<usize> = profiles.iter().map(|(i, _)| *i).collect();
+
+    for gi in 0..groups.len() {
+        let start = group_start[gi];
+        let end   = group_start[gi + 1];
+        if end - start <= 1 { continue; }
+
+        for i in (start + 1)..end {
+            let wire = final_order[i];
+            // Try inserting `wire` at every position start..=i
+            let best_pos = (start..=i).min_by_key(|&pos| {
+                let mut fo = final_order.clone();
+                fo.remove(i);
+                fo.insert(pos, wire);
+                evaluate(&fo)
+            }).unwrap();
+            final_order.remove(i);
+            final_order.insert(best_pos, wire);
         }
     }
 
