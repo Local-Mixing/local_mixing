@@ -5513,7 +5513,7 @@ mod tests {
     #[test]
     fn test_reversal_closure_single_db() {
         let db = Arc::new({
-            let path = "rocks_db_m4";
+            let path = "rocks_db_m2";
             let mut opts = Options::default();
             opts.create_if_missing(false);
             opts.set_merge_operator_associative("append_merge", append_merge);
