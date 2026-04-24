@@ -5784,6 +5784,77 @@ mod tests {
     }
 
     #[test]
+    fn test_group_relabelings() {
+        fn cs(gates: &[[u8; 3]]) -> CircuitSeq {
+            CircuitSeq { gates: gates.to_vec() }
+        }
+
+        let circuits = vec![
+            cs(&[[0,1,2],[0,1,3]]),
+            cs(&[[1,3,2],[0,2,1]]),
+            cs(&[[0,4,2],[1,2,3]]),
+            cs(&[[1,0,3],[0,1,2]]),
+            cs(&[[0,2,3],[1,2,4]]),
+            cs(&[[1,0,2],[0,4,3]]),
+            cs(&[[0,3,1],[0,4,2]]),
+            cs(&[[0,3,2],[1,0,3]]),
+            cs(&[[0,1,2],[0,2,1]]),
+            cs(&[[1,2,3],[0,2,1]]),
+            cs(&[[0,2,3],[1,4,2]]),
+            cs(&[[0,4,2],[1,5,3]]),
+            cs(&[[1,3,2],[0,1,2]]),
+            cs(&[[0,3,2],[1,4,2]]),
+            cs(&[[0,3,2],[1,2,3]]),
+            cs(&[[0,2,1],[1,0,2]]),
+            cs(&[[1,0,2],[0,1,2]]),
+            cs(&[[1,4,0],[0,3,2]]),
+            cs(&[[1,0,2],[0,3,1]]),
+            cs(&[[1,2,0],[0,2,1]]),
+            cs(&[[1,0,3],[0,4,2]]),
+            cs(&[[0,2,1],[0,3,1]]),
+            cs(&[[0,1,2],[0,3,1]]),
+            cs(&[[1,3,0],[0,2,1]]),
+            cs(&[[0,3,2],[1,3,2]]),
+            cs(&[[1,3,0],[0,4,2]]),
+        ];
+
+        let mut classes: Vec<Vec<CircuitSeq>> = Vec::new();
+
+        'outer: for c in &circuits {
+            for class in &mut classes {
+                if c.is_relabeling_of(&class[0]) {
+                    class.push(c.clone());
+                    continue 'outer;
+                }
+            }
+            classes.push(vec![c.clone()]);
+        }
+
+        println!("num equivalence classes: {}", classes.len());
+
+        for (i, class) in classes.iter().enumerate() {
+            println!("class {} (size {}):", i, class.len());
+            for c in class {
+                println!("  {:?}", c.gates);
+            }
+        }
+
+        println!("\n--- duplicates only ---");
+        for class in &classes {
+            if class.len() > 1 {
+                println!("duplicate class (size {}):", class.len());
+                for c in class {
+                    println!("  {:?}", c.gates);
+                }
+            }
+        }
+
+        // optional sanity check: no circuit lost
+        let total: usize = classes.iter().map(|c| c.len()).sum();
+        assert_eq!(total, circuits.len());
+    }
+
+    #[test]
     fn test_c1_vs_c2_after_canon() {
         use crate::circuit::circuit::poly_to_str;
         let mut c1 = CircuitSeq { gates: vec![[0,4,2], [1,2,3], [6,7,4], [5,3,7]] };
