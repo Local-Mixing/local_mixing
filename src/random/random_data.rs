@@ -2839,8 +2839,8 @@ pub fn build_from_rocks(
                 break;
             }
 
-            for (circuit, _canon, key, rev_key) in &batch {
-                if pending_keys.contains(rev_key.as_slice()) {
+            for (circuit, _canon, key, pair_key) in &batch {
+                if pending_keys.contains(pair_key.as_slice()) {
                     continue;
                 }
 
@@ -2984,7 +2984,7 @@ pub fn build_from_rocks(
                                     c1,
                                     canon1.0,
                                     c1_hash.to_le_bytes().to_vec(),
-                                    c1_rev_hash.to_le_bytes().to_vec(),
+                                    pair_key.to_le_bytes().to_vec(),
                                 ));
                             }
                         }
@@ -3019,7 +3019,7 @@ pub fn build_from_rocks(
                                     c2,
                                     canon2.0,
                                     c2_hash.to_le_bytes().to_vec(),
-                                    c2_rev_hash.to_le_bytes().to_vec(),
+                                    pair_key.to_le_bytes().to_vec(),
                                 ));
                             }
                         }
