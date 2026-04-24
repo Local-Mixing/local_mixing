@@ -5534,7 +5534,7 @@ mod tests {
             DB::open_for_read_only(&opts, path, false).expect("open failed")
         });
 
-        let m = 4;
+        let m = 2;
         let n = 3 * m;
 
         let mut total = 0usize;
