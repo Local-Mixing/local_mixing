@@ -2240,6 +2240,156 @@ pub fn canonicalize_polys_3(
     (canonical, Permutation { data: final_order })
 }
 
+pub fn canonicalize_polys_4(
+    polynomials: Vec<Polynomial>,
+) -> (Vec<Polynomial>, Permutation) {
+    let n = polynomials.len();
+    if n == 0 {
+        return (vec![], Permutation { data: vec![] });
+    }
+    let max_degree = n;
+
+    // ── Step 1: group by degree profile ──────────────────────────────────────
+    let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
+        .map(|i| (i, degree_counts(&polynomials[i], max_degree)))
+        .collect();
+    profiles.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    {
+        let mut current = vec![profiles[0].0];
+        for i in 1..profiles.len() {
+            if profiles[i].1 == profiles[i - 1].1 {
+                current.push(profiles[i].0);
+            } else {
+                groups.push(current.clone());
+                current = vec![profiles[i].0];
+            }
+        }
+        groups.push(current);
+    }
+
+    // ── Step 2: build class polynomials over ℕ ───────────────────────────────
+    // For each group, sum member polynomials with natural number coefficients.
+    let class_polys: Vec<HashMap<Monomial, usize>> = groups.iter().map(|group| {
+        let mut sum: HashMap<Monomial, usize> = HashMap::new();
+        for &wire in group {
+            for &m in &polynomials[wire] {
+                *sum.entry(m).or_insert(0) += 1;
+            }
+        }
+        sum
+    }).collect();
+
+    // ── Step 3: evaluate a class poly given a rank assignment ─────────────────
+    // z_i = (rank[i] + 2)^n, evaluate sum_{m} coeff(m) * prod_{i in supp(m)} z_i
+    // We use BigUint for exact arithmetic.
+    let evaluate_class_poly = |class_poly: &HashMap<Monomial, usize>, rank: &[usize]| -> BigUint {
+        let mut total = BigUint::zero();
+        for (&m, &coeff) in class_poly {
+            let mut term = BigUint::from(coeff);
+            for i in 0..n {
+                if m & (1u64 << i) != 0 {
+                    term *= BigUint::from(rank[i] + 2).pow(n as u32);
+                }
+            }
+            total += term;
+        }
+        total
+    };
+
+    // ── Step 4: compare two rank assignments lexicographically over class polys
+    // Returns Ordering::Less if rank_a gives a smaller (better) score than rank_b.
+    let compare_ranks = |rank_a: &[usize], rank_b: &[usize]| -> std::cmp::Ordering {
+        for class_poly in &class_polys {
+            let sa = evaluate_class_poly(class_poly, rank_a);
+            let sb = evaluate_class_poly(class_poly, rank_b);
+            let cmp = sa.cmp(&sb);
+            if cmp != std::cmp::Ordering::Equal {
+                return cmp;
+            }
+        }
+        std::cmp::Ordering::Equal
+    };
+
+    // ── Step 5: bubble-sort-like optimization within each group ──────────────
+    // rank[wire] = current rank assigned to that wire.
+    // Initialize: within each group, assign ranks in arbitrary (sorted) order.
+    let mut rank = vec![0usize; n];
+    {
+        let mut next_rank = 0usize;
+        for group in &groups {
+            let mut members = group.clone();
+            members.sort(); // arbitrary but deterministic start
+            for wire in members {
+                rank[wire] = next_rank;
+                next_rank += 1;
+            }
+        }
+    }
+
+    // Repeatedly try all pairwise swaps within each group.
+    // Keep a swap if it strictly improves the lexicographic score over class polys.
+    // Repeat until no swap improves anything.
+    loop {
+        let mut improved = false;
+        for group in &groups {
+            if group.len() <= 1 {
+                continue;
+            }
+            for i in 0..group.len() {
+                for j in (i + 1)..group.len() {
+                    let wi = group[i];
+                    let wj = group[j];
+
+                    let mut trial_rank = rank.clone();
+                    trial_rank.swap(wi, wj);
+
+                    if compare_ranks(&trial_rank, &rank) == std::cmp::Ordering::Less {
+                        rank = trial_rank;
+                        improved = true;
+                    }
+                }
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+
+    // ── Step 6: build final_order from rank ──────────────────────────────────
+    // rank[wire] = position in final order, so invert to get final_order[pos] = wire
+    let mut final_order = vec![0usize; n];
+    for wire in 0..n {
+        final_order[rank[wire]] = wire;
+    }
+
+    // ── Step 7: remap polynomials ─────────────────────────────────────────────
+    let mut wire_to_pos = vec![0usize; n];
+    for (pos, &wire) in final_order.iter().enumerate() {
+        wire_to_pos[wire] = pos;
+    }
+
+    let remap_monomial = |m: Monomial| -> Monomial {
+        let mut result = 0u64;
+        for wire in 0..n {
+            if m & (1u64 << wire) != 0 {
+                result |= 1u64 << wire_to_pos[wire];
+            }
+        }
+        result
+    };
+
+    let canonical: Vec<Polynomial> = final_order
+        .iter()
+        .map(|&wire| polynomials[wire].iter().map(|&m| remap_monomial(m)).collect())
+        .collect();
+
+    let canonical = trim_canonicalized(canonical);
+
+    (canonical, Permutation { data: final_order })
+}
+
 pub fn print_rule_times() {
     let t1  = TIME_RULE_2_1.load(Ordering::Relaxed);
     let t2  = TIME_RULE_2_2.load(Ordering::Relaxed);
