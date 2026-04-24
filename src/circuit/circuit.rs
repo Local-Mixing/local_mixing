@@ -2829,18 +2829,45 @@ pub fn canonicalize_polys_4(
     // After compare_vars returns no ordering, apply Ran's tiebreaker:
     // collapse all tied variables to the same name, then rank by
     // the individual polynomials lexicographically (degree DESC, lex).
-    let tiebreak_vars = |tied: &[usize], _vr: &[usize]| -> Vec<usize> {
-        let poly_key = |x: usize| -> Vec<Monomial> {
-            let mut terms: Vec<Monomial> = polynomials[x].iter().copied().collect();
-            terms.sort();
+    let tiebreak_vars = |tied: &[usize], vr: &[usize]| -> Vec<usize> {
+        // Build a substitution map: variables in the same rank group
+        // all map to the same representative (the minimum index in that group)
+        let mut rep = vec![0usize; n];
+        for v in 0..n {
+            let group_min = (0..n)
+                .filter(|&u| vr[u] == vr[v])
+                .min()
+                .unwrap_or(v);
+            rep[v] = group_min;
+        }
+
+        // For each tied variable x, collect its polynomial from `polynomials`,
+        // remap all monomials using `rep`, then sort monomials by
+        // (degree DESC, monomial value ASC) for lex comparison.
+        let poly_key = |x: usize| -> Vec<Vec<usize>> {
+            let mut terms: Vec<Vec<usize>> = polynomials[x]
+                .iter()
+                .map(|&m| {
+                    // represent each monomial as sorted list of rank values of its variables
+                    let mut ranks: Vec<usize> = (0..n)
+                        .filter(|&v| m & (1u64 << v) != 0)
+                        .map(|v| vr[v])
+                        .collect();
+                    ranks.sort();
+                    ranks
+                })
+                .collect();
+            // sort monomials: higher degree first, then lex on rank list
+            terms.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(&b)));
             terms
         };
 
-        let mut keys: Vec<(usize, Vec<Monomial>)> = tied
+        let mut keys: Vec<(usize, Vec<Vec<usize>>)> = tied
             .iter()
             .map(|&x| (x, poly_key(x)))
             .collect();
 
+        // Sort tied vars by their poly key ASC (lower key = higher priority)
         keys.sort_by(|a, b| a.1.cmp(&b.1));
         keys.iter().map(|(x, _)| *x).collect()
     };
