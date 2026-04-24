@@ -2332,14 +2332,22 @@ pub fn canonicalize_polys_4(
     // Repeat until no swap improves anything.
     loop {
         let mut improved = false;
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let mut trial_rank = rank.clone();
-                trial_rank.swap(i, j);
+        for group in &groups {
+            if group.len() <= 1 {
+                continue;
+            }
+            for i in 0..group.len() {
+                for j in (i + 1)..group.len() {
+                    let wi = group[i];
+                    let wj = group[j];
 
-                if compare_ranks(&trial_rank, &rank) == std::cmp::Ordering::Less {
-                    rank = trial_rank;
-                    improved = true;
+                    let mut trial_rank = rank.clone();
+                    trial_rank.swap(wi, wj);
+
+                    if compare_ranks(&trial_rank, &rank) == std::cmp::Ordering::Less {
+                        rank = trial_rank;
+                        improved = true;
+                    }
                 }
             }
         }
