@@ -2057,75 +2057,86 @@ pub fn canonicalize_polys_3(
         groups.push(current);
     }
 
-    // ── Steps 2+3: WL refinement until stable ────────────────────────────────
-    //
-    // Each wire has a "color" = its group index. We iteratively refine:
-    // the new color of wire `a` is determined by the multiset of
-    // (coeff, sorted colors of other vars) for every monomial containing `a`,
-    // across all polynomials.
-    //
-    // We represent colors as usizes, remapped to dense integers after each round.
-
-    // Initial color = group index from step 1
-    let mut color: Vec<usize> = vec![0; n];
-    for (gi, group) in groups.iter().enumerate() {
-        for &wire in group {
-            color[wire] = gi;
+    // ── Precompute: for each wire, list of (poly_wire, monomial) pairs ────────
+    // poly_wire = the wire whose polynomial contains this monomial
+    // This is the inverted index: wire -> [(poly_wire, monomial), ...]
+    let mut wire_appearances: Vec<Vec<(usize, Monomial)>> = vec![Vec::new(); n];
+    for (poly_wire, poly) in polynomials.iter().enumerate() {
+        for &m in poly {
+            for j in 0..n {
+                if m & (1u64 << j) != 0 {
+                    wire_appearances[j].push((poly_wire, m));
+                }
+            }
         }
     }
 
-    loop {
-        // For each wire, compute its new color signature:
-        // sorted list of (poly_index_color, coeff, sorted_other_colors)
-        // for every (polynomial, monomial) pair where this wire appears.
-        // We use poly_index_color = color of the polynomial's wire index,
-        // since poly i and variable x_i are the same wire.
+    // ── Steps 2+3: WL refinement ──────────────────────────────────────────────
+    // Color = group index from step 1
+    let mut color: Vec<u32> = vec![0u32; n];
+    for (gi, group) in groups.iter().enumerate() {
+        for &wire in group {
+            color[wire] = gi as u32;
+        }
+    }
 
-        let signature = |wire: usize| -> Vec<(usize, usize, Vec<usize>)> {
-            let mut sig: Vec<(usize, usize, Vec<usize>)> = Vec::new();
-            for (poly_idx, poly) in polynomials.iter().enumerate() {
-                for &m in poly {
-                    if m & (1u64 << wire) == 0 { continue; }
-                    // coeff is always 1 in GF(2) polynomial, but we're
-                    // treating as over N for counting purposes — here
-                    // each monomial appears once per polynomial
-                    let mut other_colors: Vec<usize> = (0..n)
+    // Reusable buffer to avoid allocation per wire per round
+    let mut sig_buf: Vec<u64> = Vec::with_capacity(256);
+
+    loop {
+        // For each wire, compute signature as sorted Vec<u64> where each
+        // entry packs (poly_color, other_var_colors...) into a single u64.
+        // Pack: high 8 bits = poly_color, then 8 bits per other var color,
+        // sorted. For n<=15 this fits comfortably in u64 (8 + 14*4 = 64).
+        // Using 4 bits per color (max 16 distinct colors, sufficient for
+        // WL on small n; increase to 8 bits if needed).
+
+        let pack_sig_entry = |poly_color: u32, mut other_colors: Vec<u32>| -> u64 {
+            other_colors.sort_unstable();
+            let mut val: u64 = (poly_color as u64) << 56;
+            for (i, &c) in other_colors.iter().enumerate().take(7) {
+                val |= (c as u64) << (48 - i * 8);
+            }
+            val
+        };
+
+        // Compute new color for each wire based on its signature
+        let mut wire_sigs: Vec<(usize, Vec<u64>)> = (0..n).map(|wire| {
+            let mut sig: Vec<u64> = wire_appearances[wire]
+                .iter()
+                .map(|&(poly_wire, m)| {
+                    let poly_color = color[poly_wire];
+                    let other_colors: Vec<u32> = (0..n)
                         .filter(|&j| j != wire && m & (1u64 << j) != 0)
                         .map(|j| color[j])
                         .collect();
-                    other_colors.sort_unstable();
-                    sig.push((color[poly_idx], 1usize, other_colors));
-                }
-            }
+                    pack_sig_entry(poly_color, other_colors)
+                })
+                .collect();
             sig.sort_unstable();
-            sig
-        };
+            sig.dedup(); // same (poly, monomial_shape) shouldn't repeat
+            (wire, sig)
+        }).collect();
 
-        // Compute new colors by ranking signatures
-        let mut sigs: Vec<(usize, Vec<(usize, usize, Vec<usize>)>)> =
-            (0..n).map(|w| (w, signature(w))).collect();
-        sigs.sort_by(|a, b| a.1.cmp(&b.1));
-
-        let mut new_color = vec![0usize; n];
-        let mut current_color = 0usize;
-        new_color[sigs[0].0] = 0;
+        // Rank signatures to get new colors
+        wire_sigs.sort_by(|a, b| a.1.cmp(&b.1));
+        let mut new_color = vec![0u32; n];
+        let mut cur = 0u32;
+        new_color[wire_sigs[0].0] = 0;
         for i in 1..n {
-            if sigs[i].1 != sigs[i-1].1 {
-                current_color += 1;
+            if wire_sigs[i].1 != wire_sigs[i-1].1 {
+                cur += 1;
             }
-            new_color[sigs[i].0] = current_color;
+            new_color[wire_sigs[i].0] = cur;
         }
 
         if new_color == color {
-            break; // stable
+            break;
         }
         color = new_color;
     }
 
-    // ── Step 4: build final_order from stable colors ──────────────────────────
-    // Sort wires by color ascending — lower color = canonical position 0.
-    // Within same color (genuinely symmetric): sort by original wire index
-    // as tiebreak (arbitrary but consistent).
+    // ── Step 4: build final_order ─────────────────────────────────────────────
     let mut final_order: Vec<usize> = (0..n).collect();
     final_order.sort_by_key(|&w| (color[w], w));
 
