@@ -5796,8 +5796,10 @@ mod tests {
 
             let mut rev = b.clone();
             rev.gates.reverse();
-            rev.canonicalize(); // keep if your relabeling expects canonical form
-
+            rev.canonicalize(); 
+            let canon = canonicalize_polys_3(rev.to_polynomial(12, 0, rev.gates.len()));
+            rev.rewire(&canon.1.invert(), 12);
+            rev.canonicalize();
             a.is_relabeling_of(&rev)
         }
 
