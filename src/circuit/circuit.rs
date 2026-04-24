@@ -2374,7 +2374,7 @@ pub fn canonicalize_polys_4(
     }
     let max_degree = n;
 
-    // ── Step 1: group by degree profile ──────────────────────────────────────
+    // ── Step 1: partition into equivalence classes by degree profile ─────────
     let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
         .map(|i| (i, degree_counts(&polynomials[i], max_degree)))
         .collect();
@@ -2394,8 +2394,8 @@ pub fn canonicalize_polys_4(
         groups.push(current);
     }
 
-    // ── Step 2: build class polynomials over ℕ ───────────────────────────────
-    // For each group, sum member polynomials with natural number coefficients.
+    // ── Step 2: build class polynomials over N ───────────────────────────────
+    // Sum polynomials within each equivalence class, coefficients over N.
     let class_polys: Vec<HashMap<Monomial, usize>> = groups.iter().map(|group| {
         let mut sum: HashMap<Monomial, usize> = HashMap::new();
         for &wire in group {
@@ -2406,90 +2406,142 @@ pub fn canonicalize_polys_4(
         sum
     }).collect();
 
-    // ── Step 3: evaluate a class poly given a rank assignment ─────────────────
-    // z_i = (rank[i] + 2)^n, evaluate sum_{m} coeff(m) * prod_{i in supp(m)} z_i
-    // We use BigUint for exact arithmetic.
-    let evaluate_class_poly = |class_poly: &HashMap<Monomial, usize>, rank: &[usize]| -> BigUint {
-        let mut total = BigUint::zero();
-        for (&m, &coeff) in class_poly {
-            let mut term = BigUint::from(coeff);
-            for i in 0..n {
-                if m & (1u64 << i) != 0 {
-                    term *= BigUint::from(rank[i] + 2).pow(n as u32);
-                }
-            }
-            total += term;
-        }
-        total
+    // ── Step 3: iterative partial order refinement ───────────────────────────
+    //
+    // var_rank[x] = rank of variable x.
+    // Lower value = higher priority. Equal value = incomparable (tied).
+    //
+    // START with all variables tied (empty partial order).
+    let mut var_rank: Vec<usize> = vec![0usize; n];
+
+    // Monomial sort key under current var_rank:
+    //   (degree, sorted_var_ranks_ascending, coeff)
+    // Higher degree = higher rank.
+    // Same degree: lex-smaller sorted ranks = higher rank (lower value = better var).
+    // Same vars: higher coeff = higher rank.
+    let monomial_key = |m: Monomial, coeff: usize, vr: &[usize]| -> (usize, Vec<usize>, usize) {
+        let degree = m.count_ones() as usize;
+        let mut ranks: Vec<usize> = (0..n)
+            .filter(|&j| m & (1u64 << j) != 0)
+            .map(|j| vr[j])
+            .collect();
+        ranks.sort_unstable();
+        (degree, ranks, coeff)
     };
 
-    // ── Step 4: compare two rank assignments lexicographically over class polys
-    // Returns Ordering::Less if rank_a gives a smaller (better) score than rank_b.
-    let compare_ranks = |rank_a: &[usize], rank_b: &[usize]| -> std::cmp::Ordering {
-        for class_poly in &class_polys {
-            let sa = evaluate_class_poly(class_poly, rank_a);
-            let sb = evaluate_class_poly(class_poly, rank_b);
-            let cmp = sa.cmp(&sb);
-            if cmp != std::cmp::Ordering::Equal {
-                return cmp;
+    let cmp_keys = |
+        (da, ra, ca): &(usize, Vec<usize>, usize),
+        (db, rb, cb): &(usize, Vec<usize>, usize),
+    | -> std::cmp::Ordering {
+        if da != db { return da.cmp(db); }
+        // smaller rank value = better variable, so rb < ra means ra is worse
+        let rc = rb.cmp(ra); // reversed: smaller ranks win
+        if rc != std::cmp::Ordering::Equal { return rc; }
+        ca.cmp(cb)
+    };
+
+    // For each variable x and class ci, compute sorted-descending monomial list
+    let compute_sorted_monomials = |vr: &[usize]| -> Vec<Vec<Vec<(usize, Vec<usize>, usize)>>> {
+        (0..n).map(|x| {
+            class_polys.iter().map(|cp| {
+                let mut ms: Vec<(usize, Vec<usize>, usize)> = cp.iter()
+                    .filter(|(m, _)| *m & (1u64 << x) != 0)
+                    .map(|(&m, &coeff)| monomial_key(m, coeff, vr))
+                    .collect();
+                ms.sort_by(|a, b| cmp_keys(b, a)); // descending
+                ms
+            }).collect()
+        }).collect()
+    };
+
+    // Compare variable x vs x' using their monomial lists across all class polys.
+    // Returns Greater if x's monomials dominate (x should get lower rank value),
+    // Less if x' dominates, Equal if genuinely tied.
+    let compare_vars = |
+        x: usize,
+        xp: usize,
+        sorted_monomials: &Vec<Vec<Vec<(usize, Vec<usize>, usize)>>>,
+    | -> std::cmp::Ordering {
+        for ci in 0..class_polys.len() {
+            let mx  = &sorted_monomials[x][ci];
+            let mxp = &sorted_monomials[xp][ci];
+            let len = mx.len().min(mxp.len());
+            for k in 0..len {
+                let cmp = cmp_keys(&mx[k], &mxp[k]);
+                if cmp != std::cmp::Ordering::Equal {
+                    return cmp;
+                }
+            }
+            if mx.len() != mxp.len() {
+                return mx.len().cmp(&mxp.len());
             }
         }
         std::cmp::Ordering::Equal
     };
 
-    // ── Step 5: bubble-sort-like optimization within each group ──────────────
-    // rank[wire] = current rank assigned to that wire.
-    // Initialize: within each group, assign ranks in arbitrary (sorted) order.
-    let mut rank = vec![0usize; n];
-    {
-        let mut next_rank = 0usize;
-        for group in &groups {
-            let mut members = group.clone();
-            members.sort(); // arbitrary but deterministic start
-            for wire in members {
-                rank[wire] = next_rank;
-                next_rank += 1;
-            }
-        }
-    }
-
-    // Repeatedly try all pairwise swaps within each group.
-    // Keep a swap if it strictly improves the lexicographic score over class polys.
-    // Repeat until no swap improves anything.
+    // Main loop: recompute monomial rankings, then try to refine var_rank
     loop {
-        let mut improved = false;
-        for group in &groups {
-            if group.len() <= 1 {
-                continue;
+        let sorted_monomials = compute_sorted_monomials(&var_rank);
+
+        // Find all currently-tied groups
+        // (variables with the same var_rank value)
+        let max_rank = *var_rank.iter().max().unwrap();
+        let mut updated = false;
+
+        for cur_rank in 0..=max_rank {
+            let tied: Vec<usize> = (0..n)
+                .filter(|&v| var_rank[v] == cur_rank)
+                .collect();
+            if tied.len() <= 1 { continue; }
+
+            // Try to split this tied group by sorting its members
+            let mut sorted_tied = tied.clone();
+            sorted_tied.sort_by(|&a, &b| {
+                // Greater = a dominates = a gets lower rank value (higher priority)
+                compare_vars(a, b, &sorted_monomials).reverse()
+            });
+
+            // Assign sub-ranks: members that compare Equal stay tied
+            let mut sub_rank = 0usize;
+            let mut new_sub_ranks = vec![0usize; sorted_tied.len()];
+            for i in 1..sorted_tied.len() {
+                let a = sorted_tied[i - 1];
+                let b = sorted_tied[i];
+                if compare_vars(a, b, &sorted_monomials) != std::cmp::Ordering::Equal {
+                    sub_rank += 1;
+                }
+                new_sub_ranks[i] = sub_rank;
             }
-            for i in 0..group.len() {
-                for j in (i + 1)..group.len() {
-                    let wi = group[i];
-                    let wj = group[j];
 
-                    let mut trial_rank = rank.clone();
-                    trial_rank.swap(wi, wj);
+            if sub_rank == 0 { continue; } // no split possible for this group
 
-                    if compare_ranks(&trial_rank, &rank) == std::cmp::Ordering::Less {
-                        rank = trial_rank;
-                        improved = true;
-                    }
+            // Make room: shift all ranks > cur_rank up by sub_rank
+            for v in 0..n {
+                if var_rank[v] > cur_rank {
+                    var_rank[v] += sub_rank;
                 }
             }
+            // Assign new sub-ranks to this group
+            for (i, &v) in sorted_tied.iter().enumerate() {
+                var_rank[v] = cur_rank + new_sub_ranks[i];
+            }
+
+            updated = true;
+            break; // restart from scratch with updated var_rank
         }
-        if !improved {
-            break;
+
+        if !updated {
+            break; // stable — remaining ties are genuine symmetries
         }
     }
 
-    // ── Step 6: build final_order from rank ──────────────────────────────────
-    // rank[wire] = position in final order, so invert to get final_order[pos] = wire
-    let mut final_order = vec![0usize; n];
-    for wire in 0..n {
-        final_order[rank[wire]] = wire;
-    }
+    // ── Step 4: build final_order ─────────────────────────────────────────────
+    // Lower var_rank = higher priority = canonical position 0.
+    // Remaining ties broken by lowest original wire index (arbitrary but consistent).
+    let mut final_order: Vec<usize> = (0..n).collect();
+    final_order.sort_by_key(|&w| (var_rank[w], w));
 
-    // ── Step 7: remap polynomials ─────────────────────────────────────────────
+    // ── Step 5: remap polynomials ─────────────────────────────────────────────
     let mut wire_to_pos = vec![0usize; n];
     for (pos, &wire) in final_order.iter().enumerate() {
         wire_to_pos[wire] = pos;
@@ -2511,7 +2563,6 @@ pub fn canonicalize_polys_4(
         .collect();
 
     let canonical = trim_canonicalized(canonical);
-
     (canonical, Permutation { data: final_order })
 }
 
