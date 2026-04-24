@@ -2028,6 +2028,217 @@ pub fn canonicalize_polys_2(
     (canonical, Permutation { data: final_order })
 }
 
+// pub fn canonicalize_polys_3(
+//     polynomials: Vec<Polynomial>,
+// ) -> (Vec<Polynomial>, Permutation) {
+//     let n = polynomials.len();
+//     if n == 0 {
+//         return (vec![], Permutation { data: vec![] });
+//     }
+//     let max_degree = n;
+
+//     // ── Step 1: same as canonicalize_polys ───────────────────────────────────
+//     let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
+//         .map(|i| (i, degree_counts(&polynomials[i], max_degree)))
+//         .collect();
+//     profiles.sort_by(|a, b| b.1.cmp(&a.1));
+
+//     let mut groups: Vec<Vec<usize>> = Vec::new();
+//     {
+//         let mut current = vec![profiles[0].0];
+//         for i in 1..profiles.len() {
+//             if profiles[i].1 == profiles[i - 1].1 {
+//                 current.push(profiles[i].0);
+//             } else {
+//                 groups.push(current.clone());
+//                 current = vec![profiles[i].0];
+//             }
+//         }
+//         groups.push(current);
+//     }
+
+//     // ── Step 2: sum polynomials within each group over N ─────────────────────
+//     // Coefficients are natural numbers (count how many polys in the group
+//     // contain each monomial), NOT GF(2).
+//     let class_polys: Vec<HashMap<Monomial, usize>> = groups.iter().map(|group| {
+//         let mut sum: HashMap<Monomial, usize> = HashMap::new();
+//         for &wire in group {
+//             for &m in &polynomials[wire] {
+//                 *sum.entry(m).or_insert(0) += 1;
+//             }
+//         }
+//         sum
+//     }).collect();
+
+//     // ── Step 3: find w minimizing P_{C_k} lexicographically ──────────────────
+//     //
+//     // w[i] = rank assigned to variable x_i, a permutation of {0..n}.
+//     // Substitution: z_i = (w[i] + 2)^n.
+//     // Objective: minimize P_{C_1}(z), break ties with P_{C_2}(z), etc.
+//     //
+//     // Greedy algorithm:
+//     // Assign ranks 0, 1, 2, ... one at a time to unassigned variables.
+//     // At each step, among still-unassigned variables, the one that should
+//     // get the current (smallest remaining) rank is the one whose assignment
+//     // most reduces the objective — i.e. the variable that, when given the
+//     // smallest z value, contributes least.
+//     //
+//     // Because (pos+2)^n provides degree-hierarchical separation, the variable
+//     // that should get rank `next_rank` is the one that appears in the
+//     // *fewest / lowest-degree / lowest-coeff* monomials — so that assigning
+//     // it a small z value saves the most.
+//     //
+//     // Equivalently: sort variables so that the one appearing in the most /
+//     // highest-degree / highest-coeff monomials gets the LARGEST rank
+//     // (largest z value). That way the highest-degree terms get the largest
+//     // inputs, which... wait, we want to MINIMIZE, so we want small z on
+//     // high-contribution variables.
+//     //
+//     // Let's be precise. The evaluation is:
+//     //   sum_{m} coeff(m) * prod_{i in supp(m)} (w(i)+2)^n
+//     //
+//     // To minimize: assign w(i)=0 (smallest z) to the variable i that appears
+//     // in the most/highest monomials, because giving a small multiplier to a
+//     // high-weight variable reduces the sum most.
+//     //
+//     // So: rank 0 (z = 2^n, smallest) -> variable with highest contribution
+//     //     rank n-1 (z = (n+1)^n, largest) -> variable with lowest contribution
+//     //
+//     // We determine "highest contribution" iteratively, fixing one variable
+//     // per step and updating which monomials are still "live" for comparison.
+//     //
+//     // For correctness with interactions: at each step, score each remaining
+//     // variable by the sorted list of (degree_of_monomial, coeff) for all
+//     // class-poly monomials containing it, evaluated under the CURRENT partial
+//     // assignment (substituting already-fixed variables with their z values).
+//     // Then pick the variable with the highest score (give it the next rank).
+//     //
+//     // This is equivalent to: reduce each monomial by substituting fixed
+//     // variables, then score remaining variables on the reduced polynomial.
+
+//     // w_assignment[wire] = rank assigned to wire (-1 = unassigned)
+//     let mut w: Vec<Option<usize>> = vec![None; n];
+//     let mut rank_to_wire: Vec<usize> = Vec::with_capacity(n); // rank_to_wire[rank] = wire
+
+//     // We assign rank 0 first (this wire gets z = 2^n, the smallest value).
+//     // At each step we pick the wire that has the highest contribution to the
+//     // class polynomials (considering interactions via already-fixed wires),
+//     // and assign it the next rank.
+//     //
+//     // "Contribution score" of an unassigned wire `a` to class poly `ci`,
+//     // given current partial assignment:
+//     //   For each monomial m containing `a`:
+//     //     - if m contains any other UNASSIGNED wire besides `a`: skip for now
+//     //       (its contribution depends on future assignments)
+//     //     - contribution = coeff(m) * prod_{j in supp(m), j != a} z_j
+//     //       where z_j = (w[j]+2)^n for already-assigned j
+//     //   We represent this as a BigUint for exact comparison.
+//     //
+//     // Actually, for the greedy to be correct we score by the full monomial
+//     // profile including unresolved interactions — using the same
+//     // (degree, coeff) key as before but now accounting for partial subs.
+//     // The simplest correct approach: score by the reduced polynomial's
+//     // contribution, where "reduced" means substitute fixed variables.
+
+//     // Helper: given current partial w assignment, compute the "contribution
+//     // score" of unassigned wire `a` to class_poly[ci] as a BigUint.
+//     // For each monomial containing `a`, substitute already-assigned variables
+//     // and accumulate the product * coeff. Monomials where another unassigned
+//     // variable also appears contribute (rank_of_that_var + 2)^n which we
+//     // don't know yet — so we use a symbolic key instead: sorted tuple of
+//     // (degree_remaining, coeff * product_of_fixed_z_values).
+//     // For simplicity and correctness we use BigUint throughout.
+//     let score_wire = |wire: usize, w: &[Option<usize>], ci: usize| -> Vec<(usize, BigUint)> {
+//         // Returns sorted-descending list of (remaining_degree, partial_coeff)
+//         // for each monomial in class_poly[ci] containing `wire`.
+//         // remaining_degree = number of unassigned variables in monomial (including wire).
+//         // partial_coeff = coeff * product of (w[j]+2)^n for assigned j in monomial.
+//         let mut entries: Vec<(usize, BigUint)> = class_polys[ci]
+//             .iter()
+//             .filter(|(m, _)| *m & (1u64 << wire) != 0)
+//             .map(|(&m, &coeff)| {
+//                 let mut partial = BigUint::from(coeff);
+//                 let mut remaining_deg = 0usize;
+//                 for j in 0..n {
+//                     if m & (1u64 << j) != 0 {
+//                         match w[j] {
+//                             Some(rank) if j != wire => {
+//                                 // already assigned: substitute z_j = (rank+2)^n
+//                                 partial *= BigUint::from(rank + 2).pow(n as u32);
+//                             }
+//                             _ => {
+//                                 // unassigned (or is `wire` itself)
+//                                 remaining_deg += 1;
+//                             }
+//                         }
+//                     }
+//                 }
+//                 (remaining_deg, partial)
+//             })
+//             .collect();
+//         // Sort descending: higher remaining_deg first (more impactful),
+//         // then higher partial_coeff first
+//         entries.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+//         entries
+//     };
+
+//     // Assign ranks 0, 1, ..., n-1 one at a time
+//     let mut unassigned: Vec<usize> = (0..n).collect();
+
+//     for next_rank in 0..n {
+//         // Among unassigned wires, find the one with the highest contribution
+//         // (it gets the smallest z value = next_rank, to minimize the objective)
+//         // Break ties lexicographically across class polynomials.
+//         let best_wire = unassigned.iter().copied().max_by(|&a, &b| {
+//             for ci in 0..class_polys.len() {
+//                 let sa = score_wire(a, &w, ci);
+//                 let sb = score_wire(b, &w, ci);
+//                 // Compare lex: higher score = more contribution = gets smaller rank
+//                 let cmp = sa.cmp(&sb);
+//                 if cmp != std::cmp::Ordering::Equal {
+//                     return cmp;
+//                 }
+//             }
+//             std::cmp::Ordering::Equal
+//         }).unwrap();
+
+//         w[best_wire] = Some(next_rank);
+//         rank_to_wire.push(best_wire);
+//         unassigned.retain(|&x| x != best_wire);
+//     }
+
+//     // rank_to_wire[rank] = wire, so rank 0 -> wire with most contribution.
+//     // final_order[pos] = wire means canonical position pos gets this wire.
+//     // We want the wire with rank 0 (highest contribution, assigned smallest z)
+//     // to get canonical position 0.
+//     let final_order = rank_to_wire;
+
+//     // ── Step 4: remap polynomials ─────────────────────────────────────────────
+//     let mut wire_to_pos = vec![0usize; n];
+//     for (pos, &wire) in final_order.iter().enumerate() {
+//         wire_to_pos[wire] = pos;
+//     }
+
+//     let remap_monomial = |m: Monomial| -> Monomial {
+//         let mut result = 0u64;
+//         for wire in 0..n {
+//             if m & (1u64 << wire) != 0 {
+//                 result |= 1u64 << wire_to_pos[wire];
+//             }
+//         }
+//         result
+//     };
+
+//     let canonical: Vec<Polynomial> = final_order
+//         .iter()
+//         .map(|&wire| polynomials[wire].iter().map(|&m| remap_monomial(m)).collect())
+//         .collect();
+
+//     let canonical = trim_canonicalized(canonical);
+
+//     (canonical, Permutation { data: final_order })
+// }
+
 pub fn canonicalize_polys_3(
     polynomials: Vec<Polynomial>,
 ) -> (Vec<Polynomial>, Permutation) {
@@ -2057,90 +2268,130 @@ pub fn canonicalize_polys_3(
         groups.push(current);
     }
 
-    // ── Precompute: for each wire, list of (poly_wire, monomial) pairs ────────
-    // poly_wire = the wire whose polynomial contains this monomial
-    // This is the inverted index: wire -> [(poly_wire, monomial), ...]
-    let mut wire_appearances: Vec<Vec<(usize, Monomial)>> = vec![Vec::new(); n];
-    for (poly_wire, poly) in polynomials.iter().enumerate() {
-        for &m in poly {
-            for j in 0..n {
-                if m & (1u64 << j) != 0 {
-                    wire_appearances[j].push((poly_wire, m));
+    // ── Step 2: build label-independent class polynomials ────────────────────
+    // Represent each monomial as a sorted Vec of group indices of its variables.
+    // This is invariant under wire relabeling within groups.
+    let mut wire_to_group = vec![0usize; n];
+    for (gi, group) in groups.iter().enumerate() {
+        for &wire in group {
+            wire_to_group[wire] = gi;
+        }
+    }
+
+    // AnonMonomial: sorted Vec<usize> of group indices
+    let anonymize = |m: Monomial| -> Vec<usize> {
+        let mut gs: Vec<usize> = (0..n)
+            .filter(|&j| m & (1u64 << j) != 0)
+            .map(|j| wire_to_group[j])
+            .collect();
+        gs.sort_unstable();
+        gs
+    };
+
+    // For each group, sum its polynomials over N using anonymized monomials
+    let class_polys: Vec<HashMap<Vec<usize>, usize>> = groups.iter().map(|group| {
+        let mut sum: HashMap<Vec<usize>, usize> = HashMap::new();
+        for &wire in group {
+            for &m in &polynomials[wire] {
+                *sum.entry(anonymize(m)).or_insert(0) += 1;
+            }
+        }
+        sum
+    }).collect();
+
+    // ── Step 3: bubble sort within each group ────────────────────────────────
+    //
+    // final_order[pos] = wire. Canonical position pos gets z value (pos+2)^n.
+    // We only swap within the same group (step 1 ordering is fixed between
+    // groups).
+    //
+    // Objective evaluation using anonymized class polys:
+    // For a given final_order, wire at position pos gets z = (pos+2)^n.
+    // pos_of_wire[wire] = pos.
+    // For an anonymized monomial `am` (sorted group indices), we need to
+    // assign z values to its slots. Each slot is a group index g; we assign
+    // z values from wires in group g in the order they appear in final_order.
+    //
+    // To evaluate: for each group g, let pos_list[g] = positions of group g's
+    // wires in final_order, in order. Then for anon monomial am, assign the
+    // k-th occurrence of group g in am to pos_list[g][k], giving z=(pos+2)^n.
+    //
+    // This evaluation IS label-independent: it depends only on the relative
+    // ordering of wires within their groups, not on which wire has which index.
+
+    // Start: respect step 1 ordering, arbitrary within groups
+    let mut final_order: Vec<usize> = profiles.iter().map(|(i, _)| *i).collect();
+
+    // Map from position in final_order back to which group it belongs
+    // (needed to restrict swaps to within-group only)
+    let pos_group: Vec<usize> = final_order.iter().map(|&w| wire_to_group[w]).collect();
+    // Build group position ranges: group gi occupies positions group_start[gi]..group_start[gi+1]
+    let mut group_start = vec![0usize; groups.len() + 1];
+    {
+        let mut pos = 0;
+        for (gi, group) in groups.iter().enumerate() {
+            group_start[gi] = pos;
+            pos += group.len();
+        }
+        group_start[groups.len()] = n;
+    }
+
+    // Evaluate the objective for a given final_order using BigUint.
+    // Returns a Vec<BigUint> (one per class poly) for lex comparison.
+    let evaluate_all = |fo: &[usize]| -> Vec<BigUint> {
+        // For each group, positions of its wires in fo, in order
+        let mut group_positions: Vec<Vec<usize>> = vec![Vec::new(); groups.len()];
+        for (pos, &wire) in fo.iter().enumerate() {
+            group_positions[wire_to_group[wire]].push(pos);
+        }
+
+        class_polys.iter().map(|cp| {
+            let mut total = BigUint::zero();
+            for (am, &coeff) in cp {
+                // Count occurrences of each group in am
+                let mut group_usage: Vec<usize> = vec![0usize; groups.len()];
+                let mut term = BigUint::from(coeff);
+                let mut feasible = true;
+                for &g in am {
+                    let idx = group_usage[g];
+                    if idx >= group_positions[g].len() {
+                        feasible = false;
+                        break;
+                    }
+                    let pos = group_positions[g][idx];
+                    term *= BigUint::from(pos + 2).pow(n as u32);
+                    group_usage[g] += 1;
+                }
+                if feasible {
+                    total += term;
+                }
+            }
+            total
+        }).collect()
+    };
+
+    // Bubble sort: only swap adjacent positions within the same group
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for gi in 0..groups.len() {
+            let start = group_start[gi];
+            let end   = group_start[gi + 1];
+            for i in start..(end - 1) {
+                let mut fo_swapped = final_order.clone();
+                fo_swapped.swap(i, i + 1);
+                let v_orig   = evaluate_all(&final_order);
+                let v_swapped = evaluate_all(&fo_swapped);
+                // swap if strictly better (smaller)
+                if v_swapped < v_orig {
+                    final_order = fo_swapped;
+                    changed = true;
                 }
             }
         }
     }
 
-    // ── Steps 2+3: WL refinement ──────────────────────────────────────────────
-    // Color = group index from step 1
-    let mut color: Vec<u32> = vec![0u32; n];
-    for (gi, group) in groups.iter().enumerate() {
-        for &wire in group {
-            color[wire] = gi as u32;
-        }
-    }
-
-    // Reusable buffer to avoid allocation per wire per round
-    let mut sig_buf: Vec<u64> = Vec::with_capacity(256);
-
-    loop {
-        // For each wire, compute signature as sorted Vec<u64> where each
-        // entry packs (poly_color, other_var_colors...) into a single u64.
-        // Pack: high 8 bits = poly_color, then 8 bits per other var color,
-        // sorted. For n<=15 this fits comfortably in u64 (8 + 14*4 = 64).
-        // Using 4 bits per color (max 16 distinct colors, sufficient for
-        // WL on small n; increase to 8 bits if needed).
-
-        let pack_sig_entry = |poly_color: u32, mut other_colors: Vec<u32>| -> u64 {
-            other_colors.sort_unstable();
-            let mut val: u64 = (poly_color as u64) << 56;
-            for (i, &c) in other_colors.iter().enumerate().take(7) {
-                val |= (c as u64) << (48 - i * 8);
-            }
-            val
-        };
-
-        // Compute new color for each wire based on its signature
-        let mut wire_sigs: Vec<(usize, Vec<u64>)> = (0..n).map(|wire| {
-            let mut sig: Vec<u64> = wire_appearances[wire]
-                .iter()
-                .map(|&(poly_wire, m)| {
-                    let poly_color = color[poly_wire];
-                    let other_colors: Vec<u32> = (0..n)
-                        .filter(|&j| j != wire && m & (1u64 << j) != 0)
-                        .map(|j| color[j])
-                        .collect();
-                    pack_sig_entry(poly_color, other_colors)
-                })
-                .collect();
-            sig.sort_unstable();
-            sig.dedup(); // same (poly, monomial_shape) shouldn't repeat
-            (wire, sig)
-        }).collect();
-
-        // Rank signatures to get new colors
-        wire_sigs.sort_by(|a, b| a.1.cmp(&b.1));
-        let mut new_color = vec![0u32; n];
-        let mut cur = 0u32;
-        new_color[wire_sigs[0].0] = 0;
-        for i in 1..n {
-            if wire_sigs[i].1 != wire_sigs[i-1].1 {
-                cur += 1;
-            }
-            new_color[wire_sigs[i].0] = cur;
-        }
-
-        if new_color == color {
-            break;
-        }
-        color = new_color;
-    }
-
-    // ── Step 4: build final_order ─────────────────────────────────────────────
-    let mut final_order: Vec<usize> = (0..n).collect();
-    final_order.sort_by_key(|&w| (color[w], w));
-
-    // ── Step 5: remap polynomials ─────────────────────────────────────────────
+    // ── Step 4: remap polynomials ─────────────────────────────────────────────
     let mut wire_to_pos = vec![0usize; n];
     for (pos, &wire) in final_order.iter().enumerate() {
         wire_to_pos[wire] = pos;
