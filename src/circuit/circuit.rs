@@ -2609,15 +2609,9 @@ pub fn canonicalize_polys_4(
     // ── Step 3: iterative refinement ─────────────────────────────────────────
     // var_rank[x] = rank of x. Lower value = higher priority. Equal = incomparable.
     // Start with all variables tied (empty partial order).
-    //
-    // KEY INVARIANT: rank values are always *dense* — after every update we
-    // re-normalize so ranks are 0,1,2,... with no gaps. This means the raw
-    // rank value is always the ordinal position of the variable's equivalence
-    // class, making poly_key_by_ranks stable across iterations.
+    // INVARIANT: ranks are always dense (0,1,2,...) after every mutation.
     let mut var_rank: Vec<usize> = vec![0usize; n];
 
-    // Normalize var_rank to be dense (0,1,2,...) with no gaps.
-    // Call this after every mutation of var_rank.
     let normalize_ranks = |vr: &mut Vec<usize>| {
         let mut sorted_vals: Vec<usize> = vr.clone();
         sorted_vals.sort_unstable();
@@ -2631,64 +2625,75 @@ pub fn canonicalize_polys_4(
         }
     };
 
-    let cmp_monomials = |m: Monomial, coeff_m: usize,
-                         mp: Monomial, coeff_mp: usize,
-                         vr: &[usize]| -> Option<std::cmp::Ordering> {
-        let deg_m  = m.count_ones()  as usize;
-        let deg_mp = mp.count_ones() as usize;
+    // Represent a monomial as a sorted Vec<usize> of var_rank values of its
+    // variables. This is invariant under permutations of same-ranked variables.
+    let monomial_rank_sig = |m: Monomial, vr: &[usize]| -> Vec<usize> {
+        let mut ranks: Vec<usize> = (0..n)
+            .filter(|&j| m & (1u64 << j) != 0)
+            .map(|j| vr[j])
+            .collect();
+        ranks.sort_unstable();
+        ranks
+    };
 
-        if deg_m != deg_mp {
-            return Some(deg_m.cmp(&deg_mp));
-        }
-        if m == mp {
-            return Some(coeff_m.cmp(&coeff_mp));
-        }
-
-        let ranks_m:  Vec<usize> = (0..n).filter(|&j| m  & (1u64 << j) != 0).map(|j| vr[j]).collect();
-        let ranks_mp: Vec<usize> = (0..n).filter(|&j| mp & (1u64 << j) != 0).map(|j| vr[j]).collect();
-
-        let min_m  = *ranks_m.iter().min().unwrap();
-        let min_mp = *ranks_mp.iter().min().unwrap();
-        let max_m  = *ranks_m.iter().max().unwrap();
-        let max_mp = *ranks_mp.iter().max().unwrap();
-
-        let m_gt_mp = min_m <= min_mp && min_m < max_mp;
-        let mp_gt_m = min_mp <= min_m && min_mp < max_m;
-
-        match (m_gt_mp, mp_gt_m) {
+    // Compare two rank-signature monomials.
+    // Returns Some(Greater) if (sa,ca) > (sb,cb), Some(Less), or None if incomparable.
+    let cmp_sigs = |sa: &Vec<usize>, ca: usize,
+                    sb: &Vec<usize>, cb: usize| -> Option<std::cmp::Ordering> {
+        let da = sa.len();
+        let db = sb.len();
+        // Rule 1: higher degree wins
+        if da != db { return Some(da.cmp(&db)); }
+        // Rule 3: same signature = same variables up to tied permutations
+        if sa == sb { return Some(ca.cmp(&cb)); }
+        // Rule 2: dominance
+        let min_a = sa[0];
+        let max_a = *sa.last().unwrap();
+        let min_b = sb[0];
+        let max_b = *sb.last().unwrap();
+        let a_gt_b = min_a <= min_b && min_a < max_b;
+        let b_gt_a = min_b <= min_a && min_b < max_a;
+        match (a_gt_b, b_gt_a) {
             (true,  false) => Some(std::cmp::Ordering::Greater),
             (false, true)  => Some(std::cmp::Ordering::Less),
             _              => None,
         }
     };
 
+    // For variable x in class poly ci, collect monomials containing x,
+    // merge those with the same rank signature (sum coefficients),
+    // then build Pareto levels (incomparability layers).
     let ranked_monomials_of = |x: usize, ci: usize, vr: &[usize]|
-        -> Vec<Vec<(Monomial, usize)>> {
-        let mut remaining: Vec<(Monomial, usize)> = class_polys[ci].iter()
-            .filter(|(m, _)| *m & (1u64 << x) != 0)
-            .map(|(&m, &coeff)| (m, coeff))
-            .collect();
+        -> Vec<Vec<(Vec<usize>, usize)>> {
+        let mut sig_map: HashMap<Vec<usize>, usize> = HashMap::new();
+        for (&m, &coeff) in &class_polys[ci] {
+            if m & (1u64 << x) == 0 { continue; }
+            let sig = monomial_rank_sig(m, vr);
+            *sig_map.entry(sig).or_insert(0) += coeff;
+        }
+        if sig_map.is_empty() { return vec![]; }
 
-        if remaining.is_empty() { return vec![]; }
-
-        let mut levels: Vec<Vec<(Monomial, usize)>> = Vec::new();
+        let mut remaining: Vec<(Vec<usize>, usize)> = sig_map.into_iter().collect();
+        let mut levels: Vec<Vec<(Vec<usize>, usize)>> = Vec::new();
         while !remaining.is_empty() {
-            let top: Vec<(Monomial, usize)> = remaining.iter().copied()
-                .filter(|&(m, cm)| {
-                    !remaining.iter().any(|&(mp, cmp)| {
-                        if (m, cm) == (mp, cmp) { return false; }
-                        matches!(cmp_monomials(mp, cmp, m, cm, vr), Some(std::cmp::Ordering::Greater))
+            let top: Vec<(Vec<usize>, usize)> = remaining.iter().cloned()
+                .filter(|(sa, ca)| {
+                    !remaining.iter().any(|(sb, cb)| {
+                        if sa == sb { return false; }
+                        matches!(cmp_sigs(sb, *cb, sa, *ca), Some(std::cmp::Ordering::Greater))
                     })
                 })
                 .collect();
-            let top_set: std::collections::HashSet<(Monomial, usize)> =
-                top.iter().copied().collect();
-            remaining.retain(|x| !top_set.contains(x));
+            let top_set: std::collections::HashSet<Vec<usize>> =
+                top.iter().map(|(s, _)| s.clone()).collect();
+            remaining.retain(|(s, _)| !top_set.contains(s));
             levels.push(top);
         }
         levels
     };
 
+    // Compare variables x and x' in class ci.
+    // Walk Pareto levels in parallel; at each level compare across level entries.
     let compare_vars_in_class = |x: usize, xp: usize, ci: usize, vr: &[usize]|
         -> Option<std::cmp::Ordering> {
         let levels_x  = ranked_monomials_of(x,  ci, vr);
@@ -2697,14 +2702,14 @@ pub fn canonicalize_polys_4(
 
         for k in 0..depth {
             match (levels_x.get(k), levels_xp.get(k)) {
-                (None, None)       => break,
-                (Some(_), None)    => return Some(std::cmp::Ordering::Greater),
-                (None, Some(_))    => return Some(std::cmp::Ordering::Less),
+                (None, None)    => break,
+                (Some(_), None) => return Some(std::cmp::Ordering::Greater),
+                (None, Some(_)) => return Some(std::cmp::Ordering::Less),
                 (Some(lx), Some(lxp)) => {
                     let mut found: Option<std::cmp::Ordering> = None;
-                    'pairs: for &(m, cm) in lx {
-                        for &(mp, cmp) in lxp {
-                            match cmp_monomials(m, cm, mp, cmp, vr) {
+                    'pairs: for (sa, ca) in lx {
+                        for (sb, cb) in lxp {
+                            match cmp_sigs(sa, *ca, sb, *cb) {
                                 Some(o @ std::cmp::Ordering::Greater) |
                                 Some(o @ std::cmp::Ordering::Less) => {
                                     found = Some(o);
@@ -2715,12 +2720,14 @@ pub fn canonicalize_polys_4(
                         }
                     }
                     if let Some(ord) = found { return Some(ord); }
+                    // incomparable at this level — continue to next
                 }
             }
         }
         None
     };
 
+    // Try all class polys in order for tiebreaking
     let compare_vars = |x: usize, xp: usize, vr: &[usize]| -> Option<std::cmp::Ordering> {
         for ci in 0..class_polys.len() {
             if let Some(ord) = compare_vars_in_class(x, xp, ci, vr) {
@@ -2730,22 +2737,13 @@ pub fn canonicalize_polys_4(
         None
     };
 
-    // Tiebreaker: represent each polynomial by its monomials as sorted lists
-    // of NORMALIZED rank values. Because ranks are dense after normalization,
-    // the rank value IS the equivalence-class ordinal — stable across iterations.
-    // Two variables in the same rank group get the same rank value, so they
-    // appear identical in monomials, which is correct: we don't distinguish them.
+    // Tiebreaker using individual polynomial structure.
+    // Represent each polynomial by its monomials as sorted rank-sig lists.
+    // Because ranks are normalized (dense), this is stable across iterations.
     let poly_key_by_ranks = |wire: usize, vr: &[usize]| -> Vec<Vec<usize>> {
         let mut terms: Vec<Vec<usize>> = polynomials[wire]
             .iter()
-            .map(|&m| {
-                let mut ranks: Vec<usize> = (0..n)
-                    .filter(|&v| m & (1u64 << v) != 0)
-                    .map(|v| vr[v])
-                    .collect();
-                ranks.sort_unstable();
-                ranks
-            })
+            .map(|&m| monomial_rank_sig(m, vr))
             .collect();
         terms.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(&b)));
         terms
@@ -2782,8 +2780,7 @@ pub fn canonicalize_polys_4(
             }
 
             if sub_rank == 0 {
-                // compare_vars found nothing — try poly_key tiebreaker.
-                // Because var_rank is normalized, poly_key_by_ranks is stable.
+                // compare_vars found nothing — try poly_key tiebreaker
                 let mut tb_sorted = tied.clone();
                 tb_sorted.sort_by(|&a, &b| {
                     poly_key_by_ranks(a, &var_rank).cmp(&poly_key_by_ranks(b, &var_rank))
