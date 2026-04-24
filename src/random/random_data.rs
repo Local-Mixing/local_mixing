@@ -5510,8 +5510,10 @@ mod tests {
         }
     }
 
+    use std::collections::HashSet;
+
     #[test]
-    fn test_reversal_closure_single_db() {
+    fn list_circuits_up_to_reversal() {
         let db = Arc::new({
             let path = "rocks_db_m2";
             let mut opts = Options::default();
@@ -5537,9 +5539,8 @@ mod tests {
         let m = 2;
         let n = 3 * m;
 
-        let mut total = 0usize;
-        let mut reversal_hits = 0usize;
-        let mut missing_count = 0usize;
+        let mut seen: HashSet<u128> = HashSet::new();
+        let mut reps = 0usize;
 
         let iter = db.iterator(rocksdb::IteratorMode::Start);
         for item in iter {
@@ -5555,34 +5556,31 @@ mod tests {
 
                 let circuit = CircuitSeq::from_blob(circuit_blob);
 
-                // reverse
+                // hash of original
+                let canon = canonicalize_polys_3(circuit.to_polynomial(n, 0, m));
+                let blob = polys_repr_blob(&canon.0);
+                let h: u128 = xxh3_128(&blob);
+
+                // hash of reversed
                 let mut rev = circuit.clone();
                 rev.gates.reverse();
                 rev.canonicalize();
 
                 let canon_rev = canonicalize_polys_3(rev.to_polynomial(n, 0, m));
                 let rev_blob = polys_repr_blob(&canon_rev.0);
-                let rev_hash: u128 = xxh3_128(&rev_blob);
-                let rev_key = rev_hash.to_le_bytes().to_vec();
+                let h_rev: u128 = xxh3_128(&rev_blob);
 
-                if db.get(&rev_key).unwrap_or(None).is_some() {
-                    reversal_hits += 1;
-                } else {
-                    missing_count += 1;
-                    println!("NOT FOUND (reversal): {:?}", circuit.gates);
+                // choose canonical representative of the pair
+                let rep = h.min(h_rev);
+
+                if seen.insert(rep) {
+                    reps += 1;
+                    println!("{:?}", circuit.gates);
                 }
-
-                total += 1;
             }
         }
 
-        println!("total circuits: {}", total);
-        println!("reversal hits: {}", reversal_hits);
-        println!("missing: {}", missing_count);
-        println!(
-            "fraction closed under reversal: {}",
-            reversal_hits as f64 / total as f64
-        );
+        println!("number of reversal classes: {}", reps);
     }
 
     #[test]
