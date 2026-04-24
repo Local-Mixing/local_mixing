@@ -2827,44 +2827,40 @@ pub fn canonicalize_polys_4(
     };
 
     // After compare_vars returns no ordering, apply Ran's tiebreaker:
-    // collapse all tied variables to the same name, then rank by
-    // the individual polynomials lexicographically (degree DESC, lex).
+    // collapse all tied variables to the same name by representing each monomial
+    // as a sorted multiset of var_rank values (so tied vars are indistinct),
+    // then rank individual polynomials lexicographically by their term lists.
+    // This is permutation-invariant: two circuits that are wire-permutations of
+    // each other will produce the same rank-multiset keys regardless of input ordering.
+    let poly_key_by_ranks = |x: usize, vr: &[usize]| -> Vec<Vec<usize>> {
+        let mut terms: Vec<Vec<usize>> = polynomials[x]
+            .iter()
+            .map(|&m| {
+                // Represent monomial as sorted list of rank values of its variables.
+                // Variables in the same rank group get the same rank value,
+                // making them indistinct — correctly implementing "assign the same
+                // value to all tied variables".
+                let mut ranks: Vec<usize> = (0..n)
+                    .filter(|&v| m & (1u64 << v) != 0)
+                    .map(|v| vr[v])
+                    .collect();
+                ranks.sort();
+                ranks
+            })
+            .collect();
+        // Sort monomials: higher degree first, then lex on rank list
+        terms.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(&b)));
+        terms
+    };
+
     let tiebreak_vars = |tied: &[usize], vr: &[usize]| -> Vec<usize> {
-        // Build a substitution map: variables in the same rank group
-        // all map to the same representative (the minimum index in that group)
-        let mut rep = vec![0usize; n];
-        for v in 0..n {
-            let group_min = (0..n)
-                .filter(|&u| vr[u] == vr[v])
-                .min()
-                .unwrap_or(v);
-            rep[v] = group_min;
-        }
-
         // For each tied variable x, collect its polynomial from `polynomials`,
-        // remap all monomials using `rep`, then sort monomials by
-        // (degree DESC, monomial value ASC) for lex comparison.
-        let poly_key = |x: usize| -> Vec<Vec<usize>> {
-            let mut terms: Vec<Vec<usize>> = polynomials[x]
-                .iter()
-                .map(|&m| {
-                    // represent each monomial as sorted list of rank values of its variables
-                    let mut ranks: Vec<usize> = (0..n)
-                        .filter(|&v| m & (1u64 << v) != 0)
-                        .map(|v| vr[v])
-                        .collect();
-                    ranks.sort();
-                    ranks
-                })
-                .collect();
-            // sort monomials: higher degree first, then lex on rank list
-            terms.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(&b)));
-            terms
-        };
-
+        // represent each monomial as a sorted multiset of rank values (so all
+        // variables in the same rank group are treated as identical), then
+        // sort the polynomial's term list for lex comparison.
         let mut keys: Vec<(usize, Vec<Vec<usize>>)> = tied
             .iter()
-            .map(|&x| (x, poly_key(x)))
+            .map(|&x| (x, poly_key_by_ranks(x, vr)))
             .collect();
 
         // Sort tied vars by their poly key ASC (lower key = higher priority)
@@ -2906,41 +2902,21 @@ pub fn canonicalize_polys_4(
             }
 
             if sub_rank == 0 {
-                // compare_vars couldn't split — apply Ran's tiebreaker
+                // compare_vars couldn't split — apply Ran's tiebreaker:
+                // use individual polynomials with variables renamed by rank group
                 let tb_order = tiebreak_vars(&tied, &var_rank);
 
-                // Check if tiebreaker actually differentiates anything
-                let poly_key = |x: usize| -> Vec<(usize, Monomial)> {
-                    let mut rep = vec![0usize; n];
-                    for v in 0..n {
-                        let group_min = (0..n)
-                            .filter(|&u| var_rank[u] == var_rank[v])
-                            .min()
-                            .unwrap_or(v);
-                        rep[v] = group_min;
-                    }
-                    let mut terms: Vec<(usize, Monomial)> = polynomials[x]
-                        .iter()
-                        .map(|&m| {
-                            let mut remapped = 0u64;
-                            for j in 0..n {
-                                if m & (1u64 << j) != 0 {
-                                    remapped |= 1u64 << rep[j];
-                                }
-                            }
-                            let deg = remapped.count_ones() as usize;
-                            (deg, remapped)
-                        })
-                        .collect();
-                    terms.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-                    terms
-                };
-
+                // Check if tiebreaker actually differentiates anything,
+                // using the same rank-multiset key for consistency
                 let tb_sub_rank = {
                     let mut sr = 0usize;
                     let mut new_sr = vec![0usize; tb_order.len()];
                     for i in 1..tb_order.len() {
-                        if poly_key(tb_order[i - 1]) != poly_key(tb_order[i]) {
+                        // Use poly_key_by_ranks for both ordering and differentiation check —
+                        // same key function as tiebreak_vars to stay consistent
+                        if poly_key_by_ranks(tb_order[i - 1], &var_rank)
+                            != poly_key_by_ranks(tb_order[i], &var_rank)
+                        {
                             sr += 1;
                         }
                         new_sr[i] = sr;
