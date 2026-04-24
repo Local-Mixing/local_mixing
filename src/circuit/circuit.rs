@@ -2082,7 +2082,7 @@ pub fn canonicalize_polys_3(
     let wire_key = |wire: usize| -> Vec<Vec<(usize, usize)>> {
         class_polys.iter().map(|cp| {
             let mut pairs: Vec<(usize, usize)> = cp.iter()
-                .filter(|(&m, _)| m & (1u64 << wire) != 0)
+                .filter(|(m, _)| *m & (1u64 << wire) != 0)
                 .map(|(&m, &coeff)| (m.count_ones() as usize, coeff))
                 .collect();
             // Descending: higher degree/coeff first
