@@ -2665,7 +2665,7 @@ pub fn canonicalize_polys_4(
     let ranked_monomials_of = |x: usize, ci: usize, vr: &[usize]|
         -> Vec<Vec<(Monomial, usize)>> {
         let mut remaining: Vec<(Monomial, usize)> = class_polys[ci].iter()
-            .filter(|(&m, _)| m & (1u64 << x) != 0)
+            .filter(|(m, _)| *m & (1u64 << x) != 0)
             .map(|(&m, &coeff)| (m, coeff))
             .collect();
 
