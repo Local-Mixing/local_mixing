@@ -5587,7 +5587,7 @@ mod tests {
     fn test_compare_circuit_lists() {
         use crate::circuit::{circuit::poly_to_str, CircuitSeq};
 
-        let circuits: Vec<Vec<[u8; 3]>> = vec![
+        let left_circuits: Vec<Vec<[u8; 3]>> = vec![
             vec![[3,2,1],[1,0,3]],
             vec![[4,3,0],[5,2,1]],
             vec![[3,0,1],[3,2,0]],
