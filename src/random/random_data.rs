@@ -5871,10 +5871,10 @@ mod tests {
     #[test]
     fn test_c1_vs_c2_after_canon() {
         use crate::circuit::circuit::poly_to_str;
-        let mut c1 = CircuitSeq { gates: vec![[0,4,2], [1,2,3], [6,7,4], [5,3,7]] };
-        let mut c2 = CircuitSeq { gates: vec![[0,5,4],[1,4,6],[2,7,5],[3,6,7]] };
-        let poly_1 = c1.to_polynomial(12, 0, 4);
-        let poly_2 = c2.to_polynomial(12, 0, 4);
+        let mut c1 = CircuitSeq { gates: vec! [[4, 3, 0], [3, 2, 1]]};
+        let mut c2 = CircuitSeq { gates: vec![[4, 2, 1], [2, 3, 0]] };
+        let poly_1 = c1.to_polynomial(12, 0, 2);
+        let poly_2 = c2.to_polynomial(12, 0, 2);
         println!("Original c1:");
         for (i, poly) in poly_1.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 12));
@@ -5885,8 +5885,8 @@ mod tests {
         }
 
         assert!(c1.is_relabeling_of(&c2), "Circuits are not relabelings of each other");
-        let canon_1 = canonicalize_polys(c1.to_polynomial(12, 0, 4), true, true);
-        let canon_2 = canonicalize_polys(c2.to_polynomial(12, 0, 4), true, true);
+        let canon_1 = canonicalize_polys_3(c1.to_polynomial(12, 0, 2));
+        let canon_2 = canonicalize_polys_3(c2.to_polynomial(12, 0, 2));
         for (i, poly) in canon_1.0.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 12));
         }
