@@ -19,7 +19,7 @@ use nauty_Traces_sys::{
 
 use num_bigint::BigUint;
 use num_traits::Zero;
-
+use num_traits::One;
 // pins are [active, control1, control2] for Toffoli gates
 // We are only concerned with gate r57
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -2268,9 +2268,6 @@ pub fn canonicalize_polys_3(
         groups.push(current);
     }
 
-    // ── Step 2: build label-independent class polynomials ────────────────────
-    // Represent each monomial as a sorted Vec of group indices of its variables.
-    // This is invariant under wire relabeling within groups.
     let mut wire_to_group = vec![0usize; n];
     for (gi, group) in groups.iter().enumerate() {
         for &wire in group {
@@ -2278,54 +2275,7 @@ pub fn canonicalize_polys_3(
         }
     }
 
-    // AnonMonomial: sorted Vec<usize> of group indices
-    let anonymize = |m: Monomial| -> Vec<usize> {
-        let mut gs: Vec<usize> = (0..n)
-            .filter(|&j| m & (1u64 << j) != 0)
-            .map(|j| wire_to_group[j])
-            .collect();
-        gs.sort_unstable();
-        gs
-    };
-
-    // For each group, sum its polynomials over N using anonymized monomials
-    let class_polys: Vec<HashMap<Vec<usize>, usize>> = groups.iter().map(|group| {
-        let mut sum: HashMap<Vec<usize>, usize> = HashMap::new();
-        for &wire in group {
-            for &m in &polynomials[wire] {
-                *sum.entry(anonymize(m)).or_insert(0) += 1;
-            }
-        }
-        sum
-    }).collect();
-
-    // ── Step 3: bubble sort within each group ────────────────────────────────
-    //
-    // final_order[pos] = wire. Canonical position pos gets z value (pos+2)^n.
-    // We only swap within the same group (step 1 ordering is fixed between
-    // groups).
-    //
-    // Objective evaluation using anonymized class polys:
-    // For a given final_order, wire at position pos gets z = (pos+2)^n.
-    // pos_of_wire[wire] = pos.
-    // For an anonymized monomial `am` (sorted group indices), we need to
-    // assign z values to its slots. Each slot is a group index g; we assign
-    // z values from wires in group g in the order they appear in final_order.
-    //
-    // To evaluate: for each group g, let pos_list[g] = positions of group g's
-    // wires in final_order, in order. Then for anon monomial am, assign the
-    // k-th occurrence of group g in am to pos_list[g][k], giving z=(pos+2)^n.
-    //
-    // This evaluation IS label-independent: it depends only on the relative
-    // ordering of wires within their groups, not on which wire has which index.
-
-    // Start: respect step 1 ordering, arbitrary within groups
-    let mut final_order: Vec<usize> = profiles.iter().map(|(i, _)| *i).collect();
-
-    // Map from position in final_order back to which group it belongs
-    // (needed to restrict swaps to within-group only)
-    let pos_group: Vec<usize> = final_order.iter().map(|&w| wire_to_group[w]).collect();
-    // Build group position ranges: group gi occupies positions group_start[gi]..group_start[gi+1]
+    // Group position ranges in final_order
     let mut group_start = vec![0usize; groups.len() + 1];
     {
         let mut pos = 0;
@@ -2336,33 +2286,52 @@ pub fn canonicalize_polys_3(
         group_start[groups.len()] = n;
     }
 
-    // Evaluate the objective for a given final_order using BigUint.
-    // Returns a Vec<BigUint> (one per class poly) for lex comparison.
-    let evaluate_all = |fo: &[usize]| -> Vec<BigUint> {
-        // For each group, positions of its wires in fo, in order
-        let mut group_positions: Vec<Vec<usize>> = vec![Vec::new(); groups.len()];
-        for (pos, &wire) in fo.iter().enumerate() {
-            group_positions[wire_to_group[wire]].push(pos);
-        }
+    // Start: respect step 1 ordering, arbitrary within groups
+    let mut final_order: Vec<usize> = profiles.iter().map(|(i, _)| *i).collect();
 
-        class_polys.iter().map(|cp| {
+    // ── Evaluate objective for current final_order ────────────────────────────
+    //
+    // Key insight: instead of anonymizing monomials, we evaluate directly.
+    // For a given final_order, wire at position pos gets z = (pos+2)^n.
+    // The objective is sum over all (poly_wire, monomial) pairs of
+    // prod_{j in supp(monomial)} z_j, summed over N (not GF2).
+    //
+    // This IS label-independent because we're evaluating based on positions
+    // in final_order, not on wire indices. Two circuits that are relabelings
+    // of each other will have the same set of (position-based) monomials
+    // under the optimal final_order.
+    //
+    // We sum over all polynomials (not just per group) for the full objective,
+    // then use per-group sums for tiebreaking.
+
+    // Precompute: for each polynomial, its monomials as lists of wire indices
+    // (already have this as polynomials: Vec<Polynomial>)
+
+    // Evaluate full objective: sum over all polys, all monomials,
+    // prod of z values. Returns Vec<BigUint> — one value per group
+    // (group 0 sum first, then group 1, etc.) for lex tiebreaking.
+    let evaluate = |fo: &[usize]| -> Vec<BigUint> {
+        // pos_of_wire[wire] = position in fo
+        let mut pos_of = vec![0usize; n];
+        for (pos, &wire) in fo.iter().enumerate() {
+            pos_of[wire] = pos;
+        }
+        // z[wire] = (pos_of[wire] + 2)^n
+        let z: Vec<BigUint> = (0..n)
+            .map(|wire| BigUint::from(pos_of[wire] + 2).pow(n as u32))
+            .collect();
+
+        // Sum per group: only sum polynomials belonging to that group
+        groups.iter().map(|group| {
             let mut total = BigUint::zero();
-            for (am, &coeff) in cp {
-                // Count occurrences of each group in am
-                let mut group_usage: Vec<usize> = vec![0usize; groups.len()];
-                let mut term = BigUint::from(coeff);
-                let mut feasible = true;
-                for &g in am {
-                    let idx = group_usage[g];
-                    if idx >= group_positions[g].len() {
-                        feasible = false;
-                        break;
+            for &poly_wire in group {
+                for &m in &polynomials[poly_wire] {
+                    let mut term = BigUint::one();
+                    for j in 0..n {
+                        if m & (1u64 << j) != 0 {
+                            term *= &z[j];
+                        }
                     }
-                    let pos = group_positions[g][idx];
-                    term *= BigUint::from(pos + 2).pow(n as u32);
-                    group_usage[g] += 1;
-                }
-                if feasible {
                     total += term;
                 }
             }
@@ -2370,19 +2339,18 @@ pub fn canonicalize_polys_3(
         }).collect()
     };
 
-    // Bubble sort: only swap adjacent positions within the same group
+    // ── Bubble sort within each group ─────────────────────────────────────────
     let mut changed = true;
     while changed {
         changed = false;
         for gi in 0..groups.len() {
             let start = group_start[gi];
             let end   = group_start[gi + 1];
-            for i in start..(end - 1) {
+            for i in start..(end.saturating_sub(1)) {
                 let mut fo_swapped = final_order.clone();
                 fo_swapped.swap(i, i + 1);
-                let v_orig   = evaluate_all(&final_order);
-                let v_swapped = evaluate_all(&fo_swapped);
-                // swap if strictly better (smaller)
+                let v_orig    = evaluate(&final_order);
+                let v_swapped = evaluate(&fo_swapped);
                 if v_swapped < v_orig {
                     final_order = fo_swapped;
                     changed = true;
@@ -2391,7 +2359,7 @@ pub fn canonicalize_polys_3(
         }
     }
 
-    // ── Step 4: remap polynomials ─────────────────────────────────────────────
+    // ── Remap polynomials ─────────────────────────────────────────────────────
     let mut wire_to_pos = vec![0usize; n];
     for (pos, &wire) in final_order.iter().enumerate() {
         wire_to_pos[wire] = pos;
