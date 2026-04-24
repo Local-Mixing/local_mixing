@@ -5539,6 +5539,7 @@ mod tests {
 
         let mut total = 0usize;
         let mut reversal_hits = 0usize;
+        let mut missing_count = 0usize;
 
         let iter = db.iterator(rocksdb::IteratorMode::Start);
         for item in iter {
@@ -5566,6 +5567,9 @@ mod tests {
 
                 if db.get(&rev_key).unwrap_or(None).is_some() {
                     reversal_hits += 1;
+                } else {
+                    missing_count += 1;
+                    println!("NOT FOUND (reversal): {:?}", circuit.gates);
                 }
 
                 total += 1;
@@ -5574,7 +5578,11 @@ mod tests {
 
         println!("total circuits: {}", total);
         println!("reversal hits: {}", reversal_hits);
-        println!("fraction closed under reversal: {}", reversal_hits as f64 / total as f64);
+        println!("missing: {}", missing_count);
+        println!(
+            "fraction closed under reversal: {}",
+            reversal_hits as f64 / total as f64
+        );
     }
 
     #[test]
