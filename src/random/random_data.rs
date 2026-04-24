@@ -5585,8 +5585,7 @@ mod tests {
 
     #[test]
     fn test_compare_circuit_lists() {
-        use std::collections::HashMap;
-        use crate::circuit::{circuit::canonicalize_polys, circuit::poly_to_str, CircuitSeq};
+        use crate::circuit::{circuit::poly_to_str, CircuitSeq};
 
         let left_circuits: Vec<Vec<[u8; 3]>> = vec![
             vec![[0,1,2],[0,1,3]],
@@ -5658,7 +5657,7 @@ mod tests {
             let make_key = |g: &[[u8; 3]]| -> String {
                 let circuit = CircuitSeq { gates: g.to_vec() };
                 let polys = circuit.to_polynomial(n, 0, g.len());
-                let (canonical, _) = canonicalize_polys(polys, true, false);
+                let (canonical, _) = canonicalize_polys_3(polys);
                 canonical.iter().enumerate()
                     .map(|(i, p)| format!("P{}:{}", i, poly_to_str(p, n)))
                     .collect::<Vec<_>>()
