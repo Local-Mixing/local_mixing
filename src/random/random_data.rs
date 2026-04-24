@@ -5559,7 +5559,7 @@ mod tests {
                 rev.gates.reverse();
                 rev.canonicalize();
 
-                let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true, false);
+                let canon_rev = canonicalize_polys_3(rev.to_polynomial(n, 0, m));
                 let rev_blob = polys_repr_blob(&canon_rev.0);
                 let rev_hash: u128 = xxh3_128(&rev_blob);
                 let rev_key = rev_hash.to_le_bytes().to_vec();
