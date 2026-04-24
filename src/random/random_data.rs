@@ -5041,7 +5041,6 @@ mod tests {
             let (key, value) = item.expect("RocksDB iter error");
 
             // Print the key as hex
-            let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
             // println!("Key: {}", key_hex);
 
             // Scan all circuits in the value list
@@ -5058,7 +5057,7 @@ mod tests {
                 }
                 let circuit_blob = &value[pos..pos + len];
                 let circuit = CircuitSeq::from_blob(circuit_blob);
-                println!("  [{circuit_index}] {}", circuit.repr());
+                println!("{}: {}", circuit_index,circuit.repr());
                 pos += len;
                 circuit_index += 1;
                 count += 1;
