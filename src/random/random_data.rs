@@ -5797,8 +5797,8 @@ mod tests {
             let mut rev = b.clone();
             rev.gates.reverse();
             rev.canonicalize(); 
-            let canon = canonicalize_polys(rev.to_polynomial(12, 0, rev.gates.len()), true, false);
-            rev.rewire(&canon.1.invert(), 12);
+            let canon = canonicalize_polys(rev.to_polynomial(6, 0, rev.gates.len()), true, false);
+            rev.rewire(&canon.1.invert(), 6);
             rev.canonicalize();
             a.is_relabeling_of(&rev)
         }
