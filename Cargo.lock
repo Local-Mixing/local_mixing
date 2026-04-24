@@ -1794,6 +1794,8 @@ dependencies = [
  "lmdb-sys",
  "lru",
  "nauty-Traces-sys",
+ "num-bigint",
+ "num-traits",
  "num_cpus",
  "numpy",
  "once_cell",

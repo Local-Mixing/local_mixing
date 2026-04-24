@@ -17,6 +17,9 @@ use nauty_Traces_sys::{
     nauty_check,
 };
 
+use num_bigint::BigUint;
+use num_traits::Zero;
+
 // pins are [active, control1, control2] for Toffoli gates
 // We are only concerned with gate r57
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -2023,6 +2026,139 @@ pub fn canonicalize_polys_2(
  
     let canonical = trim_canonicalized(canonical);
  
+    (canonical, Permutation { data: final_order })
+}
+
+pub fn canonicalize_polys_3(
+    polynomials: Vec<Polynomial>,
+) -> (Vec<Polynomial>, Permutation) {
+    let n = polynomials.len();
+    if n == 0 {
+        return (vec![], Permutation { data: vec![] });
+    }
+    let max_degree = n;
+
+    // ── Step 1: identical to canonicalize_polys ──────────────────────────────
+    // Partition into initial groups by degree profile
+    let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
+        .map(|i| (i, degree_counts(&polynomials[i], max_degree)))
+        .collect();
+    profiles.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    {
+        let mut current = vec![profiles[0].0];
+        for i in 1..profiles.len() {
+            if profiles[i].1 == profiles[i - 1].1 {
+                current.push(profiles[i].0);
+            } else {
+                groups.push(current.clone());
+                current = vec![profiles[i].0];
+            }
+        }
+        groups.push(current);
+    }
+
+    // ── Step 2: sum polynomials within each equivalence class over N ─────────
+    // Over N means coefficients count multiplicity, not GF(2).
+    // class_poly[c] maps monomial -> count (how many polys in the class contain it)
+    let class_polys: Vec<HashMap<Monomial, usize>> = groups.iter().map(|group| {
+        let mut sum: HashMap<Monomial, usize> = HashMap::new();
+        for &wire in group {
+            for &m in &polynomials[wire] {
+                *sum.entry(m).or_insert(0) += 1;
+            }
+        }
+        sum
+    }).collect();
+
+    // ── Step 3: find permutation w minimizing P_{C_1}(z_1,...,z_n) ──────────
+    // z_i = (w(i) + 2)^n.  We use bubble sort on the permutation.
+    // w[i] = the rank assigned to variable x_i (0-indexed, so w(i)+2 in [2, n+1])
+    //
+    // Objective: minimize sum over monomials m of coeff(m) * prod_{j in m} (w(j)+2)^n
+    //
+    // We use BigUint to handle the large values exactly.
+
+    // Start with identity permutation: w(i) = i
+    let mut w: Vec<usize> = (0..n).collect();
+
+    // Evaluate P_C at current w for class index `ci`
+    let evaluate = |w: &[usize], ci: usize| -> BigUint {
+        let base: Vec<BigUint> = (0..n)
+            .map(|i| BigUint::from(w[i] + 2).pow(n as u32))
+            .collect();
+        let mut total = BigUint::zero();
+        for (&mono, &coeff) in &class_polys[ci] {
+            let mut term = BigUint::from(coeff);
+            for j in 0..n {
+                if mono & (1u64 << j) != 0 {
+                    term *= &base[j];
+                }
+            }
+            total += term;
+        }
+        total
+    };
+
+    // Bubble sort: repeatedly sweep, swapping adjacent (i, i+1) if swap improves
+    // the objective lexicographically across class polynomials.
+    // "Better" means: compare class 0 value first, break ties with class 1, etc.
+    let is_better = |w_new: &[usize], w_old: &[usize]| -> bool {
+        for ci in 0..class_polys.len() {
+            let v_new = evaluate(w_new, ci);
+            let v_old = evaluate(w_old, ci);
+            if v_new < v_old { return true; }
+            if v_new > v_old { return false; }
+            // equal: move to next class
+        }
+        false // exactly equal across all classes: no improvement
+    };
+
+    // Run bubble sort until no more swaps improve the objective
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for i in 0..(n - 1) {
+            let mut w_swapped = w.clone();
+            w_swapped.swap(i, i + 1);
+            if is_better(&w_swapped, &w) {
+                w = w_swapped;
+                changed = true;
+            }
+        }
+    }
+
+    // w[i] = rank assigned to variable x_i.
+    // We want final_order[rank] = wire, i.e. final_order[w[i]] = i.
+    let mut final_order = vec![0usize; n];
+    for i in 0..n {
+        final_order[w[i]] = i;
+    }
+
+    // ── Step 4: remap polynomials ─────────────────────────────────────────────
+    let mut wire_to_pos = vec![0usize; n];
+    for (pos, &wire) in final_order.iter().enumerate() {
+        wire_to_pos[wire] = pos;
+    }
+
+    let remap_monomial = |m: Monomial| -> Monomial {
+        let mut result = 0u64;
+        for wire in 0..n {
+            if m & (1u64 << wire) != 0 {
+                result |= 1u64 << wire_to_pos[wire];
+            }
+        }
+        result
+    };
+
+    let canonical: Vec<Polynomial> = final_order
+        .iter()
+        .map(|&wire| polynomials[wire].iter().map(|&m| remap_monomial(m)).collect())
+        .collect();
+
+    let canonical = trim_canonicalized(canonical);
+
     (canonical, Permutation { data: final_order })
 }
 
