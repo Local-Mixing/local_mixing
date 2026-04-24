@@ -2268,7 +2268,13 @@ pub fn canonicalize_polys_3(
         groups.push(current);
     }
 
-    // Group position ranges in final_order
+    let mut wire_to_group = vec![0usize; n];
+    for (gi, group) in groups.iter().enumerate() {
+        for &wire in group {
+            wire_to_group[wire] = gi;
+        }
+    }
+
     let mut group_start = vec![0usize; groups.len() + 1];
     {
         let mut pos = 0;
@@ -2279,17 +2285,22 @@ pub fn canonicalize_polys_3(
         group_start[groups.len()] = n;
     }
 
-    // ── Evaluate objective ────────────────────────────────────────────────────
-    // For a given final_order, wire at position pos gets z = (pos+2)^n.
-    // Returns one BigUint per group for lexicographic comparison.
+    // ── Evaluate objective (group-relative, label-independent) ───────────────
+    // Wire j at absolute position p in final_order, belonging to group g
+    // starting at group_start[g], gets z = (p - group_start[g] + 2)^n.
+    // This is invariant under relabeling because it only depends on the
+    // wire's rank within its group, not its absolute wire index.
     let evaluate = |fo: &[usize]| -> Vec<BigUint> {
         let mut pos_of = vec![0usize; n];
         for (pos, &wire) in fo.iter().enumerate() {
             pos_of[wire] = pos;
         }
-        let z: Vec<BigUint> = (0..n)
-            .map(|wire| BigUint::from(pos_of[wire] + 2).pow(n as u32))
-            .collect();
+        // Group-relative z value for each wire
+        let z: Vec<BigUint> = (0..n).map(|wire| {
+            let g = wire_to_group[wire];
+            let relative_pos = pos_of[wire] - group_start[g];
+            BigUint::from(relative_pos + 2).pow(n as u32)
+        }).collect();
 
         groups.iter().map(|group| {
             let mut total = BigUint::zero();
@@ -2309,7 +2320,6 @@ pub fn canonicalize_polys_3(
     };
 
     // ── Step 2: insertion sort within each group ──────────────────────────────
-    // Initial order from step 1 (degree-profile sorted, arbitrary within groups)
     let mut final_order: Vec<usize> = profiles.iter().map(|(i, _)| *i).collect();
 
     for gi in 0..groups.len() {
@@ -2319,7 +2329,6 @@ pub fn canonicalize_polys_3(
 
         for i in (start + 1)..end {
             let wire = final_order[i];
-            // Try inserting wire at every position start..=i, pick best
             let best_pos = (start..=i).min_by_key(|&pos| {
                 let mut fo = final_order.clone();
                 fo.remove(i);
