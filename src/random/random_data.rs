@@ -5695,10 +5695,6 @@ mod tests {
                         ei.gates, ej.gates,
                         descs.join(", ")
                     );
-                    println!("    fwd[i]={}", ei.forward_key);
-                    println!("    rev[i]={}", ei.reversed_key);
-                    println!("    fwd[j]={}", ej.forward_key);
-                    println!("    rev[j]={}", ej.reversed_key);
                 }
             }
         }
