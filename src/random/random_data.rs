@@ -6022,6 +6022,8 @@ mod tests {
         println!("{:?}", canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false).0);
         let mut c1 = CircuitSeq { gates: vec![[3, 2, 0], [4, 0, 3], [3, 1, 0]]  };
         let mut c2 = CircuitSeq { gates: vec![[3, 1, 0], [4, 0, 3], [3, 2, 0]] };
+        c1.canonicalize();
+        c2.canonicalize();
         // c1.gates.reverse();
         // c2.gates.reverse();
         let poly_1 = c1.to_polynomial(9, 0, 3);
