@@ -5583,35 +5583,161 @@ mod tests {
     }
 
     #[test]
+    pub fn list_up_to_canon_and_rev() {
+        let db = Arc::new({
+            let path = "rocks_db_m3";
+            let mut opts = Options::default();
+            opts.create_if_missing(false);
+            opts.set_merge_operator_associative("append_merge", append_merge);
+            opts.increase_parallelism(160);
+            opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+
+            let cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024);
+            let mut block_opts = BlockBasedOptions::default();
+            block_opts.set_block_cache(&cache);
+            block_opts.set_block_size(16 * 1024);
+            block_opts.set_bloom_filter(10.0, false);
+            block_opts.set_cache_index_and_filter_blocks(true);
+            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+
+            opts.set_block_based_table_factory(&block_opts);
+            opts.set_disable_auto_compactions(true);
+
+            DB::open_for_read_only(&opts, path, false).expect("open failed")
+        });
+
+        let m = 3;
+        let n = 3 * m;
+
+        // ── Step 1: read all circuits from db, dedup by reversal pair ────────────
+        let mut seen_pairs: HashSet<u128> = HashSet::new();
+
+        #[derive(Clone, Debug)]
+        struct Entry {
+            gates:       Vec<[u8; 3]>,
+            forward_key: String,
+            reversed_key: String,
+        }
+
+        let make_key = |gates: &[[u8; 3]]| -> String {
+            let circuit = CircuitSeq { gates: gates.to_vec() };
+            let polys = circuit.to_polynomial(n, 0, m);
+            let (canonical, _) = canonicalize_polys(polys, true, false);
+            polys_repr_blob(&canonical)
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect()
+        };
+
+        let mut entries: Vec<Entry> = Vec::new();
+
+        let iter = db.iterator(rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (_key, value) = item.expect("RocksDB iter error");
+
+            let mut pos = 0;
+            while pos < value.len() {
+                let len = value[pos] as usize;
+                pos += 1;
+                let circuit_blob = &value[pos..pos + len];
+                pos += len;
+
+                let circuit = CircuitSeq::from_blob(circuit_blob);
+
+                // forward canonical hash
+                let canon = canonicalize_polys_4(circuit.to_polynomial(n, 0, m));
+                let h: u128 = xxh3_128(&polys_repr_blob(&canon.0));
+
+                // reversed canonical hash
+                let mut rev = circuit.clone();
+                rev.gates.reverse();
+                rev.canonicalize();
+                let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
+                let h_rev: u128 = xxh3_128(&polys_repr_blob(&canon_rev.0));
+
+                let pair_key = h.min(h_rev);
+                if !seen_pairs.insert(pair_key) {
+                    continue;
+                }
+
+                let forward_key  = make_key(&circuit.gates);
+                let reversed_key = make_key(&rev.gates);
+
+                entries.push(Entry {
+                    gates: circuit.gates.clone(),
+                    forward_key,
+                    reversed_key,
+                });
+            }
+        }
+
+        println!("Total circuits (up to reversal): {}", entries.len());
+
+        // ── Step 2: duplicate check (same logic as test_compare_circuit_lists) ───
+
+        println!("\n=== Duplicates within collected circuits (fwd or rev match) ===");
+        let mut any_dup = false;
+        for i in 0..entries.len() {
+            for j in (i + 1)..entries.len() {
+                let ei = &entries[i];
+                let ej = &entries[j];
+
+                let mut descs: Vec<&str> = Vec::new();
+                if ei.forward_key  == ej.forward_key  { descs.push("fwd==fwd"); }
+                if ei.forward_key  == ej.reversed_key { descs.push("fwd==rev"); }
+                if ei.reversed_key == ej.forward_key  { descs.push("rev==fwd"); }
+                if ei.reversed_key == ej.reversed_key { descs.push("rev==rev"); }
+
+                if !descs.is_empty() {
+                    any_dup = true;
+                    println!(
+                        "  [{i}] {:?}  <->  [{j}] {:?}  [{}]",
+                        ei.gates, ej.gates,
+                        descs.join(", ")
+                    );
+                    println!("    fwd[i]={}", ei.forward_key);
+                    println!("    rev[i]={}", ei.reversed_key);
+                    println!("    fwd[j]={}", ej.forward_key);
+                    println!("    rev[j]={}", ej.reversed_key);
+                }
+            }
+        }
+
+        if !any_dup {
+            println!("  (none — all circuits are distinct up to canonicalization and reversal)");
+        }
+    }
+
+    #[test]
     fn test_compare_circuit_lists() {
         use crate::circuit::{circuit::poly_to_str, CircuitSeq};
 
         let left_circuits: Vec<Vec<[u8; 3]>> = vec![
-    vec![[3,1,2],[1,3,0]],
-    vec![[3,0,2],[3,1,0]],
-    vec![[3,1,0],[4,0,2]],
-    vec![[1,0,3],[2,1,0]],
-    vec![[2,0,1],[3,1,0]],
-    vec![[3,0,2],[2,1,0]],
-    vec![[3,0,1],[3,0,2]],
-    vec![[4,0,2],[4,1,3]],
-    vec![[2,0,1],[3,1,2]],
-    vec![[2,0,1],[3,2,1]],
-    vec![[2,0,1],[0,1,2]],
-    vec![[3,1,2],[2,0,3]],
-    vec![[3,0,1],[4,0,2]],
-    vec![[3,0,2],[0,1,3]],
-    vec![[2,0,1],[3,0,1]],
-    vec![[4,0,1],[1,2,3]],
-    vec![[3,0,2],[4,1,2]],
-    vec![[2,0,1],[3,0,2]],
-    vec![[2,0,1],[1,0,2]],
-    vec![[1,2,0],[2,1,0]],
-    vec![[4,0,2],[5,1,3]],
-    vec![[4,0,2],[0,1,3]],
-    vec![[3,0,2],[3,1,2]],
-    vec![[2,0,1],[2,1,0]],
-];
+            vec![[3,1,2],[1,3,0]],
+            vec![[3,0,2],[3,1,0]],
+            vec![[3,1,0],[4,0,2]],
+            vec![[1,0,3],[2,1,0]],
+            vec![[2,0,1],[3,1,0]],
+            vec![[3,0,2],[2,1,0]],
+            vec![[3,0,1],[3,0,2]],
+            vec![[4,0,2],[4,1,3]],
+            vec![[2,0,1],[3,1,2]],
+            vec![[2,0,1],[3,2,1]],
+            vec![[2,0,1],[0,1,2]],
+            vec![[3,1,2],[2,0,3]],
+            vec![[3,0,1],[4,0,2]],
+            vec![[3,0,2],[0,1,3]],
+            vec![[2,0,1],[3,0,1]],
+            vec![[4,0,1],[1,2,3]],
+            vec![[3,0,2],[4,1,2]],
+            vec![[2,0,1],[3,0,2]],
+            vec![[2,0,1],[1,0,2]],
+            vec![[1,2,0],[2,1,0]],
+            vec![[4,0,2],[5,1,3]],
+            vec![[4,0,2],[0,1,3]],
+            vec![[3,0,2],[3,1,2]],
+            vec![[2,0,1],[2,1,0]],
+        ];
 
         let right_strings: Vec<&str> = vec![
             "012;013;",

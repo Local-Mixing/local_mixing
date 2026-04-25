@@ -2723,7 +2723,6 @@ pub fn canonicalize_polys_4(
             if !has_ties { break 'outer; }
 
             let max_rank = *var_rank.iter().max().unwrap_or(&0);
-            let mut ci_made_progress = false;
 
             for cur_rank in 0..=max_rank {
                 let tied: Vec<usize> = (0..n)
