@@ -5673,8 +5673,6 @@ mod tests {
 
         println!("Total circuits (up to reversal): {}", entries.len());
 
-        // ── Step 2: duplicate check (same logic as test_compare_circuit_lists) ───
-
         println!("\n=== Duplicates within collected circuits (fwd or rev match) ===");
         let mut any_dup = false;
         for i in 0..entries.len() {
@@ -5699,6 +5697,18 @@ mod tests {
             }
         }
 
+        // count unique up to canonicalization and reversal
+        let mut seen_canon: HashSet<String> = HashSet::new();
+        for e in &entries {
+            let canon_pair_key = if e.forward_key <= e.reversed_key {
+                format!("{}|{}", e.forward_key, e.reversed_key)
+            } else {
+                format!("{}|{}", e.reversed_key, e.forward_key)
+            };
+            seen_canon.insert(canon_pair_key);
+        }
+
+println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.len());
         if !any_dup {
             println!("  (none — all circuits are distinct up to canonicalization and reversal)");
         }
