@@ -6016,7 +6016,7 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
                 .collect::<Vec<Vec<usize>>>()
         })
         .collect();
-        println!("perm canon same? {}", get_canonical(&c1.permutation(6), &bit_shuf_list[6]).perm == get_canonical(&c2.permutation(6), &bit_shuf_list[6]).perm);
+        println!("perm canon same? {}", get_canonical(&c1.permutation(6), &bit_shuf_list[6 - 3]).perm == get_canonical(&c2.permutation(6), &bit_shuf_list[6 - 3]).perm);
         println!("canon same? {}", canon1.0 == canon2.0);
         c1.rewire(&canon1.1.invert(), 9);
         c2.rewire(&canon2.1.invert(), 9);
