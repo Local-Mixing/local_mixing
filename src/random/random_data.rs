@@ -6003,8 +6003,8 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
     #[test]
     fn test_c1_vs_c2_after_canon() {
         use crate::circuit::circuit::poly_to_str;
-        let mut c1 = CircuitSeq { gates: vec![[4, 0, 2], [4, 1, 3], [5, 2, 3]]  };
-        let mut c2 = CircuitSeq { gates: vec![[4, 0, 3], [4, 1, 2], [5, 2, 3]] };
+        let mut c1 = CircuitSeq { gates: vec![[4, 0, 1], [1, 4, 3], [5, 4, 2]]  };
+        let mut c2 = CircuitSeq { gates: vec![[3, 0, 2], [5, 0, 4], [0, 1, 3]]  };
         println!("Evaluation same? {}", c1.probably_equal(&c2, 9, 1000).is_ok());
         let canon1 = canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false);
         let canon2 = canonicalize_polys(c2.to_polynomial(9, 0, 3), true, false);
@@ -6066,8 +6066,8 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
         let n = 3 * m;
 
         // The two circuits you observed as duplicates
-        let mut c_a = CircuitSeq { gates: vec![[2, 0, 1], [3, 1, 2]]  };
-        let mut c_b = CircuitSeq { gates: vec![[3, 0, 2], [2, 1, 0]] };
+        let mut c_a = CircuitSeq { gates: vec![[4, 0, 1], [1, 4, 3], [5, 4, 2]]  };
+        let mut c_b = CircuitSeq { gates: vec![[3, 0, 2], [5, 0, 4], [0, 1, 3]]  };
 
         // Hash c_a canonically
         let canon_a = canonicalize_polys_4(c_a.to_polynomial(n, 0, m));
