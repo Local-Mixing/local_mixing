@@ -6065,8 +6065,8 @@ mod tests {
         let n = 3 * m;
 
         // The two circuits you observed as duplicates
-        let mut c_a = CircuitSeq { gates: vec![[4, 0, 1], [1, 4, 3], [5, 4, 2]]  };
-        let mut c_b = CircuitSeq { gates: vec![[3, 0, 2], [5, 0, 4], [0, 1, 3]]  };
+        let mut c_a = CircuitSeq { gates: vec![[3, 2, 0], [4, 0, 3], [3, 1, 0]]  };
+        let mut c_b = CircuitSeq { gates: vec![[3, 1, 0], [4, 0, 3], [3, 2, 0]] };
 
         // Hash c_a canonically
         let canon_a = canonicalize_polys_4(c_a.to_polynomial(n, 0, m));
