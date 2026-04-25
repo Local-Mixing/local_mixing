@@ -6003,8 +6003,10 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
     #[test]
     fn test_c1_vs_c2_after_canon() {
         use crate::circuit::circuit::poly_to_str;
-        let mut c1 = CircuitSeq { gates: vec![[4, 0, 1], [1, 4, 3], [5, 4, 2]]  };
+        let mut c1 = CircuitSeq { gates: vec![[5, 4, 2], [1, 4, 3], [4, 0, 1] ]  };
         let mut c2 = CircuitSeq { gates: vec![[3, 0, 2], [5, 0, 4], [0, 1, 3]]  };
+        c1.gates.reverse();
+        c2.gates.reverse();
         println!("Evaluation same? {}", c1.probably_equal(&c2, 9, 1000).is_ok());
         let canon1 = canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false);
         let canon2 = canonicalize_polys(c2.to_polynomial(9, 0, 3), true, false);
