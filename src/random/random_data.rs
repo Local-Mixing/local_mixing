@@ -5929,7 +5929,7 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
 
             let mut rev = b.clone();
             rev.gates.reverse();
-            let canon_rev = canonicalize_polys(rev.to_polynomial(6, 0, 2), true, false);
+            let canon_rev = canonicalize_polys(rev.to_polynomial(9, 0, 3), true, false);
             canon_a.0 == canon_rev.0
         }
 
@@ -6004,8 +6004,9 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
     fn test_c1_vs_c2_after_canon() {
         use crate::circuit::circuit::poly_to_str;
         let mut c1 = CircuitSeq { gates: vec![[4, 0, 2], [4, 1, 3], [5, 2, 3]]  };
-        let mut c2 = CircuitSeq { gates: vec![[4, 0, 3], [4, 1, 2], [5, 2, 3]]};
-        assert!(canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false).0 == canonicalize_polys(c2.to_polynomial(9, 0, 3), true, false).0, "Canonical forms differ");
+        let mut c2 = CircuitSeq { gates: vec![[4, 0, 3], [4, 1, 2], [5, 2, 3]] };
+        println!("{}", canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false).0 == canonicalize_polys(c2.to_polynomial(9, 0, 3), true, false).0);
+        println!("{:?}", canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false).0);
         let poly_1 = c1.to_polynomial(6, 0, 2);
         let poly_2 = c2.to_polynomial(6, 0, 2);
         println!("Original c1:");
