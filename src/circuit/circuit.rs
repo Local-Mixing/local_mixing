@@ -866,6 +866,7 @@ impl CircuitSeq {
             }).collect()
         }
         let mut c1 = self.clone();
+        c1.canonicalize();
         let mut c2 = self.clone();
         c2.gates.reverse();
         c2.canonicalize();
