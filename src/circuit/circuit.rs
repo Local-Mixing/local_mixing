@@ -2575,7 +2575,7 @@ pub fn canonicalize_polys_4(
     }
     let max_degree = n;
 
-    // ── Step 1: partition into equivalence classes by degree profile ─────────
+    // ── Step 1: partition into equivalence classes ───────────────────────────
     let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
         .map(|i| (i, degree_counts(&polynomials[i], max_degree)))
         .collect();
@@ -2596,7 +2596,6 @@ pub fn canonicalize_polys_4(
     }
 
     // ── Step 2: build class polynomials over N ───────────────────────────────
-    // Sum polynomials within each class, coefficients over N (not GF2).
     let class_polys: Vec<HashMap<Monomial, usize>> = groups.iter().map(|group| {
         let mut sum: HashMap<Monomial, usize> = HashMap::new();
         for &wire in group {
@@ -2607,236 +2606,194 @@ pub fn canonicalize_polys_4(
         sum
     }).collect();
 
-    // ── Step 3: iterative variable ranking via class polynomials ─────────────
-    //
-    // var_rank[x]: lower = higher priority. Equal = currently incomparable.
-    // Start with empty partial order: all variables tied at rank 0.
-    // INVARIANT: ranks are always dense (0,1,2,...) — normalize after every update.
+    // ── Step 3: iterative refinement ─────────────────────────────────────────
     let mut var_rank: Vec<usize> = vec![0usize; n];
 
-    let normalize_ranks = |vr: &mut Vec<usize>| {
-        let mut vals: Vec<usize> = vr.clone();
-        vals.sort_unstable();
-        vals.dedup();
-        let map: HashMap<usize, usize> = vals.iter().enumerate().map(|(i, &v)| (v, i)).collect();
-        for v in vr.iter_mut() { *v = map[v]; }
-    };
-
-    // Represent a monomial as sorted Vec<usize> of var_rank values of its variables.
-    // Invariant under permutations of same-ranked (tied) variables.
-    let mono_sig = |m: Monomial, vr: &[usize]| -> Vec<usize> {
-        let mut ranks: Vec<usize> = (0..n)
-            .filter(|&j| m & (1u64 << j) != 0)
-            .map(|j| vr[j])
-            .collect();
-        ranks.sort_unstable();
-        ranks
-    };
-
-    // Compare two monomials (represented as rank-sigs + coefficients).
-    // Returns Some(Greater) if a > b, Some(Less) if a < b, None if incomparable.
-    //
-    // Rules:
-    //   1. Higher degree wins.
-    //   2. Same degree: a > b if a has a variable x ranked higher than some
-    //      variable in b, AND b has no variable ranked higher than any in a.
-    //      "ranked higher" = strictly lower rank value (and not tied).
-    //      With sorted sigs: a dominates b iff min(sig_a) <= min(sig_b)
-    //      AND min(sig_a) < max(sig_b).  Neither dominates = incomparable.
-    //   3. Same sig (same variable multiset up to ties): higher coeff wins.
-    let cmp_mono_sigs = |sa: &Vec<usize>, ca: usize,
-                          sb: &Vec<usize>, cb: usize| -> Option<std::cmp::Ordering> {
-        // Rule 1
-        if sa.len() != sb.len() { return Some(sa.len().cmp(&sb.len())); }
-        // Rule 3
-        if sa == sb { return Some(ca.cmp(&cb)); }
-        // Rule 2
-        let min_a = sa[0]; let max_a = *sa.last().unwrap();
-        let min_b = sb[0]; let max_b = *sb.last().unwrap();
-        let a_gt_b = min_a <= min_b && min_a < max_b;
-        let b_gt_a = min_b <= min_a && min_b < max_a;
-        match (a_gt_b, b_gt_a) {
+    let cmp_monomials = |m: Monomial, coeff_m: usize,
+                         mp: Monomial, coeff_mp: usize,
+                         vr: &[usize]| -> Option<std::cmp::Ordering> {
+        let deg_m  = m.count_ones() as usize;
+        let deg_mp = mp.count_ones() as usize;
+        if deg_m != deg_mp { return Some(deg_m.cmp(&deg_mp)); }
+        if m == mp { return Some(coeff_m.cmp(&coeff_mp)); }
+        let ranks_m:  Vec<usize> = (0..n).filter(|&j| m  & (1u64<<j)!=0).map(|j| vr[j]).collect();
+        let ranks_mp: Vec<usize> = (0..n).filter(|&j| mp & (1u64<<j)!=0).map(|j| vr[j]).collect();
+        let min_m  = *ranks_m.iter().min().unwrap();
+        let min_mp = *ranks_mp.iter().min().unwrap();
+        let max_m  = *ranks_m.iter().max().unwrap();
+        let max_mp = *ranks_mp.iter().max().unwrap();
+        let m_gt_mp = min_m <= min_mp && min_m < max_mp;
+        let mp_gt_m = min_mp <= min_m && min_mp < max_m;
+        match (m_gt_mp, mp_gt_m) {
             (true,  false) => Some(std::cmp::Ordering::Greater),
             (false, true)  => Some(std::cmp::Ordering::Less),
             _              => None,
         }
     };
 
-    // For variable x in class poly ci, collect all monomials containing x,
-    // merge those with the same rank-sig (sum their coefficients),
-    // then build a ranked list: level 0 = top (undominated), level 1 = next, etc.
-    // Each level is a group of mutually incomparable monomials.
     let ranked_monomials_of = |x: usize, ci: usize, vr: &[usize]|
-        -> Vec<Vec<(Vec<usize>, usize)>> {
-        // Merge by sig
-        let mut sig_map: HashMap<Vec<usize>, usize> = HashMap::new();
-        for (&m, &coeff) in &class_polys[ci] {
-            if m & (1u64 << x) == 0 { continue; }
-            *sig_map.entry(mono_sig(m, vr)).or_insert(0) += coeff;
-        }
-        if sig_map.is_empty() { return vec![]; }
-
-        // Build Pareto levels
-        let mut remaining: Vec<(Vec<usize>, usize)> = sig_map.into_iter().collect();
+        -> Vec<Vec<(Monomial, usize)>> {
+        let mut remaining: Vec<(Monomial, usize)> = class_polys[ci].iter()
+            .filter(|(m, _)| *m & (1u64 << x) != 0)
+            .map(|(&m, &coeff)| (m, coeff))
+            .collect();
+        if remaining.is_empty() { return vec![]; }
         let mut levels = Vec::new();
         while !remaining.is_empty() {
-            let top: Vec<_> = remaining.iter().cloned()
-                .filter(|(sa, ca)| {
-                    !remaining.iter().any(|(sb, cb)| {
-                        sa != sb &&
-                        matches!(cmp_mono_sigs(sb, *cb, sa, *ca),
-                                 Some(std::cmp::Ordering::Greater))
+            let top: Vec<(Monomial, usize)> = remaining.iter().copied()
+                .filter(|&(m, cm)| {
+                    !remaining.iter().any(|&(mp, cmp)| {
+                        if (m,cm)==(mp,cmp) { return false; }
+                        matches!(cmp_monomials(mp,cmp,m,cm,vr), Some(std::cmp::Ordering::Greater))
                     })
                 })
                 .collect();
-            let top_keys: std::collections::HashSet<Vec<usize>> =
-                top.iter().map(|(s,_)| s.clone()).collect();
-            remaining.retain(|(s,_)| !top_keys.contains(s));
+            let top_set: std::collections::HashSet<(Monomial,usize)> = top.iter().copied().collect();
+            remaining.retain(|x| !top_set.contains(x));
             levels.push(top);
         }
         levels
     };
 
-    // Compare variables x and x' across all class polys.
-    // For each class poly, walk down ranked levels in parallel.
-    // At each level: if one side's level strictly dominates the other's -> tiebreak.
-    // If incomparable at this level -> go to next level.
-    // If all levels exhausted -> try next class poly.
-    // Returns Some(Greater) if x > x' (x gets lower rank = higher priority),
-    // Some(Less) if x' > x, None if no tiebreak found across all class polys.
-    let compare_vars = |x: usize, xp: usize, vr: &[usize]| -> Option<std::cmp::Ordering> {
-        for ci in 0..class_polys.len() {
-            let lx  = ranked_monomials_of(x,  ci, vr);
-            let lxp = ranked_monomials_of(xp, ci, vr);
-            let depth = lx.len().max(lxp.len());
-            for k in 0..depth {
-                match (lx.get(k), lxp.get(k)) {
-                    (None, None)    => break,
-                    (Some(_), None) => return Some(std::cmp::Ordering::Greater),
-                    (None, Some(_)) => return Some(std::cmp::Ordering::Less),
-                    (Some(lvl_x), Some(lvl_xp)) => {
-                        // Try all pairs across the two levels
-                        let mut found = None;
-                        'pairs: for (sa, ca) in lvl_x {
-                            for (sb, cb) in lvl_xp {
-                                match cmp_mono_sigs(sa, *ca, sb, *cb) {
-                                    Some(o @ std::cmp::Ordering::Greater) |
-                                    Some(o @ std::cmp::Ordering::Less) => {
-                                        found = Some(o);
-                                        break 'pairs;
-                                    }
-                                    _ => {}
+    let compare_vars_in_class = |x: usize, xp: usize, ci: usize, vr: &[usize]|
+        -> Option<std::cmp::Ordering> {
+        let levels_x  = ranked_monomials_of(x,  ci, vr);
+        let levels_xp = ranked_monomials_of(xp, ci, vr);
+        let depth = levels_x.len().max(levels_xp.len());
+        for k in 0..depth {
+            match (levels_x.get(k), levels_xp.get(k)) {
+                (None, None)    => break,
+                (Some(_), None) => return Some(std::cmp::Ordering::Greater),
+                (None, Some(_)) => return Some(std::cmp::Ordering::Less),
+                (Some(lx), Some(lxp)) => {
+                    let mut found = None;
+                    'pairs: for &(m,cm) in lx {
+                        for &(mp,cmp) in lxp {
+                            match cmp_monomials(m,cm,mp,cmp,vr) {
+                                Some(o @ std::cmp::Ordering::Greater) |
+                                Some(o @ std::cmp::Ordering::Less) => {
+                                    found = Some(o); break 'pairs;
                                 }
+                                _ => {}
                             }
                         }
-                        if let Some(o) = found { return Some(o); }
-                        // incomparable at this level -> continue down
                     }
+                    if let Some(o) = found { return Some(o); }
                 }
             }
-            // exhausted this class poly -> try next
         }
         None
     };
 
-    // ── Individual-polynomial tiebreaker ─────────────────────────────────────
-    // Used when compare_vars finds no ordering between variables in a tied group.
-    //
-    // For each wire x in the tied group, evaluate polynomial[x] with variables
-    // renamed by their rank group: all variables in the same rank group get the
-    // same name (their rank value). Represent the polynomial as a sorted list of
-    // rank-sigs (sorted: degree DESC, then lex ASC on sig). Compare these lists
-    // lexicographically to rank the wires.
-    //
-    // This is label-independent because rank-sigs are invariant under permutations
-    // of same-ranked variables.
-    let poly_key = |wire: usize, vr: &[usize]| -> Vec<Vec<usize>> {
-        let mut terms: Vec<Vec<usize>> = polynomials[wire]
+    let poly_key_by_ranks = |x: usize, vr: &[usize]| -> Vec<Vec<usize>> {
+        let mut terms: Vec<Vec<usize>> = polynomials[x]
             .iter()
-            .map(|&m| mono_sig(m, vr))
+            .map(|&m| {
+                let mut ranks: Vec<usize> = (0..n)
+                    .filter(|&v| m & (1u64<<v) != 0)
+                    .map(|v| vr[v])
+                    .collect();
+                ranks.sort();
+                ranks
+            })
             .collect();
-        // Sort: higher degree first, then lex ascending on sig
         terms.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(&b)));
         terms
     };
 
-    // ── Main refinement loop ─────────────────────────────────────────────────
+    // ── Main loop: process each class poly in order, fully exhaust before
+    //    moving to next. Only use individual poly tiebreaker after all
+    //    class polys are exhausted.
+    for ci in 0..class_polys.len() {
+        loop {
+            let mut updated = false;
+            let max_rank = *var_rank.iter().max().unwrap_or(&0);
+
+            for cur_rank in 0..=max_rank {
+                let tied: Vec<usize> = (0..n)
+                    .filter(|&v| var_rank[v] == cur_rank)
+                    .collect();
+                if tied.len() <= 1 { continue; }
+
+                let mut sorted_tied = tied.clone();
+                sorted_tied.sort_by(|&a, &b| {
+                    match compare_vars_in_class(a, b, ci, &var_rank) {
+                        Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Less,
+                        Some(std::cmp::Ordering::Less)    => std::cmp::Ordering::Greater,
+                        _                                  => std::cmp::Ordering::Equal,
+                    }
+                });
+
+                let mut sub_rank = 0usize;
+                let mut new_sub_ranks = vec![0usize; sorted_tied.len()];
+                for i in 1..sorted_tied.len() {
+                    if compare_vars_in_class(sorted_tied[i-1], sorted_tied[i], ci, &var_rank).is_some() {
+                        sub_rank += 1;
+                    }
+                    new_sub_ranks[i] = sub_rank;
+                }
+
+                if sub_rank > 0 {
+                    for v in 0..n {
+                        if var_rank[v] > cur_rank { var_rank[v] += sub_rank; }
+                    }
+                    for (i, &v) in sorted_tied.iter().enumerate() {
+                        var_rank[v] = cur_rank + new_sub_ranks[i];
+                    }
+                    updated = true;
+                    break; // restart inner loop for this ci
+                }
+            }
+
+            if !updated { break; } // ci fully exhausted, move to next
+        }
+    }
+
+    // ── Individual poly tiebreaker: only after all class polys exhausted ──────
+    // For each still-tied group, rank the individual polynomials of those wires
+    // by representing each monomial as a sorted rank-sig, then comparing lex.
     loop {
         let mut updated = false;
         let max_rank = *var_rank.iter().max().unwrap_or(&0);
 
-        'rank_loop: for cur_rank in 0..=max_rank {
+        for cur_rank in 0..=max_rank {
             let tied: Vec<usize> = (0..n)
                 .filter(|&v| var_rank[v] == cur_rank)
                 .collect();
             if tied.len() <= 1 { continue; }
 
-            // ── Try compare_vars (class polynomial rules) ─────────────────
-            let mut sorted = tied.clone();
-            sorted.sort_by(|&a, &b| {
-                match compare_vars(a, b, &var_rank) {
-                    Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Less,
-                    Some(std::cmp::Ordering::Less)    => std::cmp::Ordering::Greater,
-                    _                                  => std::cmp::Ordering::Equal,
-                }
-            });
-
-            let mut sub_rank = 0usize;
-            let mut new_sub_ranks = vec![0usize; sorted.len()];
-            for i in 1..sorted.len() {
-                if compare_vars(sorted[i-1], sorted[i], &var_rank).is_some() {
-                    sub_rank += 1;
-                }
-                new_sub_ranks[i] = sub_rank;
-            }
-
-            if sub_rank > 0 {
-                for v in 0..n {
-                    if var_rank[v] > cur_rank { var_rank[v] += sub_rank; }
-                }
-                for (i, &v) in sorted.iter().enumerate() {
-                    var_rank[v] = cur_rank + new_sub_ranks[i];
-                }
-                normalize_ranks(&mut var_rank);
-                updated = true;
-                break 'rank_loop;
-            }
-
-            // ── compare_vars exhausted: try individual polynomial tiebreaker
             let mut tb_sorted = tied.clone();
             tb_sorted.sort_by(|&a, &b| {
-                poly_key(a, &var_rank).cmp(&poly_key(b, &var_rank))
+                poly_key_by_ranks(a, &var_rank).cmp(&poly_key_by_ranks(b, &var_rank))
             });
 
             let mut tb_sub_rank = 0usize;
             let mut tb_new_sub_ranks = vec![0usize; tb_sorted.len()];
             for i in 1..tb_sorted.len() {
-                if poly_key(tb_sorted[i-1], &var_rank) != poly_key(tb_sorted[i], &var_rank) {
+                if poly_key_by_ranks(tb_sorted[i-1], &var_rank)
+                    != poly_key_by_ranks(tb_sorted[i], &var_rank)
+                {
                     tb_sub_rank += 1;
                 }
                 tb_new_sub_ranks[i] = tb_sub_rank;
             }
 
-            if tb_sub_rank > 0 {
-                for v in 0..n {
-                    if var_rank[v] > cur_rank { var_rank[v] += tb_sub_rank; }
-                }
-                for (i, &v) in tb_sorted.iter().enumerate() {
-                    var_rank[v] = cur_rank + tb_new_sub_ranks[i];
-                }
-                normalize_ranks(&mut var_rank);
-                updated = true;
-                break 'rank_loop;
-            }
+            if tb_sub_rank == 0 { continue; } // genuinely symmetric
 
-            // genuinely symmetric — leave tied, move to next rank group
+            for v in 0..n {
+                if var_rank[v] > cur_rank { var_rank[v] += tb_sub_rank; }
+            }
+            for (i, &v) in tb_sorted.iter().enumerate() {
+                var_rank[v] = cur_rank + tb_new_sub_ranks[i];
+            }
+            updated = true;
+            break;
         }
 
         if !updated { break; }
     }
 
     // ── Step 4: build final_order ─────────────────────────────────────────────
-    // Remaining ties (genuine symmetry) broken by lowest wire index.
     let mut final_order: Vec<usize> = (0..n).collect();
     final_order.sort_by_key(|&w| (var_rank[w], w));
 
