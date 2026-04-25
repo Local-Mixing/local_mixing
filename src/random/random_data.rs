@@ -6008,6 +6008,15 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
         println!("Evaluation same? {}", c1.probably_equal(&c2, 9, 1000).is_ok());
         let canon1 = canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false);
         let canon2 = canonicalize_polys(c2.to_polynomial(9, 0, 3), true, false);
+        let bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
+        .map(|n| {
+            (0..n)
+                .permutations(n)
+                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                .collect::<Vec<Vec<usize>>>()
+        })
+        .collect();
+        println!("perm canon same? {}", get_canonical(&c1.permutation(6), &bit_shuf_list[6]).perm == get_canonical(&c2.permutation(6), &bit_shuf_list[6]).perm);
         println!("canon same? {}", canon1.0 == canon2.0);
         c1.rewire(&canon1.1.invert(), 9);
         c2.rewire(&canon2.1.invert(), 9);
