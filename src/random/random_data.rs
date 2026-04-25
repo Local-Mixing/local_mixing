@@ -5114,7 +5114,7 @@ mod tests {
 
     #[test]
     fn test_print_all_circuits() {
-        let m = 2;
+        let m = 3;
         let db = Arc::new(open_db_for_read(m));
         let iter = db.iterator(rocksdb::IteratorMode::Start);
 
