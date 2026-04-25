@@ -2975,7 +2975,7 @@ pub fn build_from_rocks(
                         q2.extend_from_slice(&prefix);
                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
                         c2.canonicalize();
-                        if !canon2.1.adjacent_id() {
+                        if !c2.adjacent_id() {
                             let canon2 = c2.canonicalize_polys(3 * m);
                             double_canon_check(&canon2.1, 3 * m, "c2");
                             let c2_hash: u128 = xxh3_128(&polys_repr_blob(&canon2.0));
