@@ -2783,6 +2783,20 @@ pub fn abstract_gates_for_circuit(circuit: &CircuitSeq, n: usize) -> Vec<[u8; 3]
     result
 }
 
+fn double_canon_check(circuit: &CircuitSeq, n: usize, label: &str) {
+    let mut c = circuit.clone();
+    let canon1 = c.canonicalize_polys(n);
+    let mut c2 = canon1.1.clone();
+    let canon2 = c2.canonicalize_polys(n);
+    assert!(
+        canon1.1.gates == canon2.1.gates,
+        "Double canonicalization produced different result for {}!\n  first:  {:?}\n  second: {:?}",
+        label,
+        canon1.1.gates,
+        canon2.1.gates
+    );
+}
+
 pub fn build_from_rocks(
     old_db: &Arc<DB>,
     new_db: &Arc<DB>,
@@ -2946,6 +2960,7 @@ pub fn build_from_rocks(
                         let mut c1 = CircuitSeq { gates: q1.to_vec() };
                         c1.canonicalize();
                         let canon1 = c1.canonicalize_polys(3 * m);
+                        double_canon_check(&canon1.1, 3 * m, "c1");
                         if !canon1.1.adjacent_id() {
                             let c1_hash: u128 = xxh3_128(&polys_repr_blob(&canon1.0));
                             local_results.push((
@@ -2961,6 +2976,7 @@ pub fn build_from_rocks(
                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
                         c2.canonicalize();
                         let canon2 = c2.canonicalize_polys(3 * m);
+                        double_canon_check(&canon2.1, 3 * m, "c2");
                         if !canon2.1.adjacent_id() {
                             let c2_hash: u128 = xxh3_128(&polys_repr_blob(&canon2.0));
                             local_results.push((
@@ -6004,22 +6020,6 @@ mod tests {
     #[test]
     fn test_c1_vs_c2_after_canon() {
         use crate::circuit::circuit::poly_to_str;
-        let mut c1 = CircuitSeq { gates: vec![[5, 0, 3], [6, 1, 4], [7, 2, 3]]  };
-        let mut c2 = CircuitSeq { gates: vec![[5, 0, 3], [6, 1, 4], [7, 2, 4]]  };
-        c1.gates.reverse();
-        c2.gates.reverse();
-        println!("Evaluation same? {}", c1.probably_equal(&c2, 9, 1000).is_ok());
-        let canon1 = canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false);
-        let canon2 = canonicalize_polys(c2.to_polynomial(9, 0, 3), true, false);
-        println!("canon same? {}", canon1.0 == canon2.0);
-        c1.rewire(&canon1.1.invert(), 9);
-        c2.rewire(&canon2.1.invert(), 9);
-        c1.canonicalize();
-        c2.canonicalize();
-        println!("After rewiring:");
-        println!("c1: {:?}", c1.gates);
-        println!("c2: {:?}", c2.gates);
-        println!("{:?}", canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false).0);
         let mut c1 = CircuitSeq { gates: vec![[3, 2, 0], [4, 0, 3], [3, 1, 0]]  };
         let mut c2 = CircuitSeq { gates: vec![[3, 1, 0], [4, 0, 3], [3, 2, 0]] };
         c1.canonicalize();
