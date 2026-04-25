@@ -5664,9 +5664,10 @@ mod tests {
 
     #[test]
     pub fn list_up_to_canon_and_rev() {
+        let m = 3;
         let db = Arc::new({
             let path = "rocks_db_m3";
-            let m = 3;
+            
             let mut opts = Options::default();
             opts.create_if_missing(false);
             opts.set_merge_operator_associative("append_merge", append_merge);
