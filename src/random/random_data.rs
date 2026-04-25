@@ -5920,8 +5920,8 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
         }
 
         fn is_equiv(a: &CircuitSeq, b: &CircuitSeq) -> bool {
-            let canon_a = canonicalize_polys(a.to_polynomial(6, 0, 2), true, false);
-            let canon_b = canonicalize_polys(b.to_polynomial(6, 0, 2), true, false);
+            let canon_a = canonicalize_polys(a.to_polynomial(9, 0, 3), true, false);
+            let canon_b = canonicalize_polys(b.to_polynomial(9, 0, 3), true, false);
 
             if canon_a.0 == canon_b.0 {
                 return true;
@@ -6005,7 +6005,7 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
         use crate::circuit::circuit::poly_to_str;
         let mut c1 = CircuitSeq { gates: vec![[4, 0, 2], [4, 1, 3], [5, 2, 3]]  };
         let mut c2 = CircuitSeq { gates: vec![[4, 0, 3], [4, 1, 2], [5, 2, 3]]};
-        assert!(canonicalize_polys(c1.to_polynomial(6, 0, 2), true, false).0 == canonicalize_polys(c2.to_polynomial(6, 0, 2), true, false).0, "Canonical forms differ");
+        assert!(canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false).0 == canonicalize_polys(c2.to_polynomial(9, 0, 3), true, false).0, "Canonical forms differ");
         let poly_1 = c1.to_polynomial(6, 0, 2);
         let poly_2 = c2.to_polynomial(6, 0, 2);
         println!("Original c1:");
