@@ -6003,22 +6003,13 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
     #[test]
     fn test_c1_vs_c2_after_canon() {
         use crate::circuit::circuit::poly_to_str;
-        let mut c1 = CircuitSeq { gates: vec![[5, 4, 2], [1, 4, 3], [4, 0, 1] ]  };
-        let mut c2 = CircuitSeq { gates: vec![[3, 0, 2], [5, 0, 4], [0, 1, 3]]  };
+        let mut c1 = CircuitSeq { gates: vec![[5, 0, 3], [6, 1, 4], [7, 2, 3]]  };
+        let mut c2 = CircuitSeq { gates: vec![[5, 0, 3], [6, 1, 4], [7, 2, 4]]  };
         c1.gates.reverse();
         c2.gates.reverse();
         println!("Evaluation same? {}", c1.probably_equal(&c2, 9, 1000).is_ok());
         let canon1 = canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false);
         let canon2 = canonicalize_polys(c2.to_polynomial(9, 0, 3), true, false);
-        let bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
-        .map(|n| {
-            (0..n)
-                .permutations(n)
-                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
-                .collect::<Vec<Vec<usize>>>()
-        })
-        .collect();
-        println!("perm canon same? {}", get_canonical(&c1.permutation(6), &bit_shuf_list[6 - 3]).perm == get_canonical(&c2.permutation(6), &bit_shuf_list[6 - 3]).perm);
         println!("canon same? {}", canon1.0 == canon2.0);
         c1.rewire(&canon1.1.invert(), 9);
         c2.rewire(&canon2.1.invert(), 9);
@@ -6028,10 +6019,10 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
         println!("c1: {:?}", c1.gates);
         println!("c2: {:?}", c2.gates);
         println!("{:?}", canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false).0);
-        let mut c1 = CircuitSeq { gates: vec![[5, 4, 2], [1, 4, 3], [4, 0, 1] ]  };
-        let mut c2 = CircuitSeq { gates: vec![[3, 0, 2], [5, 0, 4], [0, 1, 3]]  };
-        c1.gates.reverse();
-        c2.gates.reverse();
+        let mut c1 = CircuitSeq { gates: vec![[5, 0, 3], [6, 1, 4], [7, 2, 3]]  };
+        let mut c2 = CircuitSeq { gates: vec![[5, 0, 3], [6, 1, 4], [7, 2, 4]]  };
+        // c1.gates.reverse();
+        // c2.gates.reverse();
         let poly_1 = c1.to_polynomial(9, 0, 3);
         let poly_2 = c2.to_polynomial(9, 0, 3);
         println!("Original c1:");
