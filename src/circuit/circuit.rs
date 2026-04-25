@@ -2687,6 +2687,11 @@ pub fn canonicalize_polys_4(
                         }
                     }
                     if let Some(o) = found { return Some(o); }
+                    // All pairs equal — tiebreak by number of monomials at this level
+                    if lx.len() != lxp.len() {
+                        return Some(lx.len().cmp(&lxp.len()));
+                    }
+                    // Same size, all equal — continue to next level
                 }
             }
         }
@@ -2713,15 +2718,14 @@ pub fn canonicalize_polys_4(
         (0..n).any(|v| (0..n).any(|u| u != v && vr[u] == vr[v]))
     };
 
-    // ── Master loop: restart from scratch whenever any stage makes progress ───
+    // ── Master loop ───────────────────────────────────────────────────────────
     'master: loop {
         if !has_ties(&var_rank) { break; }
 
-        // ── Stage 1: class polynomial refinement ─────────────────────────────
+        // Stage 1: class polynomial refinement
         'outer: loop {
             for ci in 0..class_polys.len() {
                 if !has_ties(&var_rank) { break 'outer; }
-
                 let max_rank = *var_rank.iter().max().unwrap_or(&0);
                 for cur_rank in 0..=max_rank {
                     let tied: Vec<usize> = (0..n)
@@ -2754,16 +2758,16 @@ pub fn canonicalize_polys_4(
                         for (i, &v) in sorted_tied.iter().enumerate() {
                             var_rank[v] = cur_rank + new_sub_ranks[i];
                         }
-                        continue 'outer; // restart class poly loop
+                        continue 'outer;
                     }
                 }
             }
-            break; // full pass over all ci with no progress
+            break;
         }
 
         if !has_ties(&var_rank) { break 'master; }
 
-        // ── Stage 2: individual poly key tiebreaker ───────────────────────────
+        // Stage 2: individual poly key tiebreaker
         let mut tb1_fired = false;
         let max_rank = *var_rank.iter().max().unwrap_or(&0);
         for cur_rank in 0..=max_rank {
@@ -2800,14 +2804,19 @@ pub fn canonicalize_polys_4(
             }
         }
 
-        if tb1_fired { continue 'master; } // restart from stage 1
+        if tb1_fired { continue 'master; }
 
-        // ── Stage 3: scan P_i in rank order, use ranked monomials to split ────
+        // Stage 3: scan singleton P_i in rank order, use monomials to split
         let mut tb2_fired = false;
         let mut poly_order: Vec<usize> = (0..n).collect();
         poly_order.sort_by_key(|&i| var_rank[i]);
 
         'tb2: for &poly_idx in &poly_order {
+            // Only use polynomials whose wire is uniquely ranked (singleton)
+            let wire_rank = var_rank[poly_idx];
+            let is_singleton = (0..n).filter(|&v| var_rank[v] == wire_rank).count() == 1;
+            if !is_singleton { continue; }
+
             let ranked = ranked_monomials_of_poly(&polynomials[poly_idx], &var_rank);
 
             for &(mono, _coeff) in &ranked {
@@ -2839,9 +2848,9 @@ pub fn canonicalize_polys_4(
             }
         }
 
-        if tb2_fired { continue 'master; } // restart from stage 1
+        if tb2_fired { continue 'master; }
 
-        break 'master; // all stages exhausted — remaining ties are genuine
+        break 'master;
     }
 
     // ── Step 4: build final_order ─────────────────────────────────────────────

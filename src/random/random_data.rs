@@ -6034,16 +6034,19 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
             println!("  P{}: {}", i, poly_to_str(poly, 9));
         }
 
-        // assert!(c1.is_relabeling_of(&c2), "Circuits are not relabelings of each other");
         let canon_1 = canonicalize_polys_4(c1.to_polynomial(9, 0, 3));
         let canon_2 = canonicalize_polys_4(c2.to_polynomial(9, 0, 3));
+        println!("Canonical c1: ");
         for (i, poly) in canon_1.0.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 9));
         }
+        println!("Wire ranking for c1");
         println!("{:?}", canon_1.1.data);
+        println!("Canonical c2: ");
         for (i, poly) in canon_2.0.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 9));
         }
+        println!("Wire ranking for c2");
         println!("{:?}", canon_2.1.data);
         assert!(canon_1.0 == canon_2.0, "Canonical forms differ:\n  c1: {:?}\n  c2: {:?}", canon_1.0, canon_2.0);
         
