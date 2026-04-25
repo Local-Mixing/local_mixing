@@ -6020,6 +6020,8 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
         println!("canon same? {}", canon1.0 == canon2.0);
         c1.rewire(&canon1.1.invert(), 9);
         c2.rewire(&canon2.1.invert(), 9);
+        c1.canonicalize();
+        c2.canonicalize();
         println!("After rewiring:");
         println!("c1: {:?}", c1.gates);
         println!("c2: {:?}", c2.gates);
