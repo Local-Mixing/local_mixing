@@ -5662,7 +5662,7 @@ mod tests {
 
                 let forward_key  = make_key(&circuit.gates);
                 let reversed_key = make_key(&rev.gates);
-
+                println!("Entries: {}", entries.len());
                 entries.push(Entry {
                     gates: circuit.gates.clone(),
                     forward_key,
@@ -5708,7 +5708,7 @@ mod tests {
             seen_canon.insert(canon_pair_key);
         }
 
-println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.len());
+        println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.len());
         if !any_dup {
             println!("  (none — all circuits are distinct up to canonicalization and reversal)");
         }
