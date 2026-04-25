@@ -2807,8 +2807,13 @@ pub fn build_from_rocks(
     let upper_bound_gates = base_gates(3 * m).len();
     let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    // In-memory dedup set — no RocksDB reads in hot loop
-    let seen: Arc<dashmap::DashSet<u128>> = Arc::new(dashmap::DashSet::new());
+    // DashMap<pair_key, Vec<(fwd_blob, rev_blob)>>
+    // pair_key = min(fwd_hash, rev_hash) for bucketing
+    // Within each bucket, we store the actual circuit blobs so that
+    // semantically equal but structurally different circuits are handled
+    // correctly — we only skip if the exact (fwd, rev) pair is already there
+    // (in either order).
+    let seen: Arc<DashMap<u128, Vec<(Vec<u8>, Vec<u8>)>>> = Arc::new(DashMap::new());
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     {
@@ -2831,7 +2836,6 @@ pub fn build_from_rocks(
         let mut attempted_inserts = 0;
         let mut sst_index = 0usize;
         let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        let mut pending_keys: HashSet<Vec<u8>> = HashSet::new();
 
         while let Ok(batch) = rx.recv() {
             if stop_flag_clone.load(Ordering::SeqCst) {
@@ -2839,15 +2843,11 @@ pub fn build_from_rocks(
                 break;
             }
 
-            for (circuit, _canon, key, pair_key) in &batch {
-                if pending_keys.contains(pair_key.as_slice()) {
-                    continue;
-                }
-
+            // No secondary dedup needed — seen DashMap upstream is the single
+            // source of truth
+            for (circuit, _canon, key, _pair_key) in &batch {
                 let circuit_blob = circuit.repr_blob();
                 let value = encode_circuit(&circuit_blob);
-
-                pending_keys.insert(key.clone());
                 pending.push((key.clone(), value));
             }
 
@@ -2882,13 +2882,11 @@ pub fn build_from_rocks(
 
             if pending.len() >= 1_000_000 {
                 flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
-                pending_keys.clear();
             }
         }
 
         if !pending.is_empty() {
             flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
-            pending_keys.clear();
         }
 
         let elapsed = start_time.elapsed().as_secs_f64();
@@ -2958,28 +2956,34 @@ pub fn build_from_rocks(
                         q1.push(*g);
                         let mut c1 = CircuitSeq { gates: q1.to_vec() };
                         c1.canonicalize();
-                        // let canon1 = canonicalize_polys(c1.to_polynomial(3 * m, 0, m), true, false);
                         let canon1 = canonicalize_polys_4(c1.to_polynomial(3 * m, 0, m));
                         c1.rewire(&canon1.1.invert(), 3 * m);
                         c1.canonicalize();
 
                         if !c1.adjacent_id() {
-                            let c1_blob = polys_repr_blob(&canon1.0);
-                            let c1_hash: u128 = xxh3_128(&c1_blob);
+                            let c1_fwd_blob = polys_repr_blob(&canon1.0);
+                            let c1_hash: u128 = xxh3_128(&c1_fwd_blob);
 
-                            // Only compute rev if c1 passes
                             let mut c1_rev = c1.clone();
                             c1_rev.gates.reverse();
                             c1_rev.canonicalize();
-                            // let canon1_rev = canonicalize_polys(
-                            //     c1_rev.to_polynomial(3 * m, 0, m), true, false
-                            // );
                             let canon1_rev = canonicalize_polys_4(c1_rev.to_polynomial(3 * m, 0, m));
-                            let c1_rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon1_rev.0));
+                            let c1_rev_blob = polys_repr_blob(&canon1_rev.0);
+                            let c1_rev_hash: u128 = xxh3_128(&c1_rev_blob);
 
                             let pair_key = c1_hash.min(c1_rev_hash);
 
-                            if seen_par.insert(pair_key) {
+                            // Atomically check and insert using DashMap entry API.
+                            // entry() holds a lock on the bucket for the duration,
+                            // eliminating any TOCTOU window.
+                            let mut entry = seen_par.entry(pair_key).or_insert_with(Vec::new);
+                            let already_seen = entry.iter().any(|(f, r)| {
+                                (f == &c1_fwd_blob && r == &c1_rev_blob)
+                                    || (f == &c1_rev_blob && r == &c1_fwd_blob)
+                            });
+                            if !already_seen {
+                                entry.push((c1_fwd_blob, c1_rev_blob));
+                                drop(entry); // release lock before pushing to channel
                                 local_results.push((
                                     c1,
                                     canon1.0,
@@ -2994,27 +2998,31 @@ pub fn build_from_rocks(
                         q2.extend_from_slice(&prefix);
                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
                         c2.canonicalize();
-                        // let canon2 = canonicalize_polys(c2.to_polynomial(3 * m, 0, m), true, false);
                         let canon2 = canonicalize_polys_4(c2.to_polynomial(3 * m, 0, m));
                         c2.rewire(&canon2.1.invert(), 3 * m);
                         c2.canonicalize();
 
                         if !c2.adjacent_id() {
-                            let c2_blob = polys_repr_blob(&canon2.0);
-                            let c2_hash: u128 = xxh3_128(&c2_blob);
+                            let c2_fwd_blob = polys_repr_blob(&canon2.0);
+                            let c2_hash: u128 = xxh3_128(&c2_fwd_blob);
 
                             let mut c2_rev = c2.clone();
                             c2_rev.gates.reverse();
                             c2_rev.canonicalize();
-                            // let canon2_rev = canonicalize_polys(
-                            //     c2_rev.to_polynomial(3 * m, 0, m), true, false
-                            // );
                             let canon2_rev = canonicalize_polys_4(c2_rev.to_polynomial(3 * m, 0, m));
-                            let c2_rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon2_rev.0));
+                            let c2_rev_blob = polys_repr_blob(&canon2_rev.0);
+                            let c2_rev_hash: u128 = xxh3_128(&c2_rev_blob);
 
                             let pair_key = c2_hash.min(c2_rev_hash);
 
-                            if seen_par.insert(pair_key) {
+                            let mut entry = seen_par.entry(pair_key).or_insert_with(Vec::new);
+                            let already_seen = entry.iter().any(|(f, r)| {
+                                (f == &c2_fwd_blob && r == &c2_rev_blob)
+                                    || (f == &c2_rev_blob && r == &c2_fwd_blob)
+                            });
+                            if !already_seen {
+                                entry.push((c2_fwd_blob, c2_rev_blob));
+                                drop(entry);
                                 local_results.push((
                                     c2,
                                     canon2.0,
@@ -3251,8 +3259,11 @@ pub fn build_from_2rocks(
 
     let batch_size = 10_000;
 
-    // In-memory dedup set — same atomic pair_key approach as build_from_rocks
-    let seen: Arc<dashmap::DashSet<u128>> = Arc::new(dashmap::DashSet::new());
+    // DashMap<pair_key, Vec<(fwd_blob, rev_blob)>>
+    // pair_key = min(fwd_hash, rev_hash) for bucketing
+    // Within each bucket, we store actual circuit blobs so semantically equal
+    // but structurally different circuits are handled correctly
+    let seen: Arc<DashMap<u128, Vec<(Vec<u8>, Vec<u8>)>>> = Arc::new(DashMap::new());
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     {
@@ -3336,8 +3347,6 @@ pub fn build_from_2rocks(
                 break;
             }
 
-            // No secondary dedup needed — seen DashSet upstream is the single
-            // source of truth, same as build_from_rocks
             for (circuit, _canon, key, _pair_key) in &batch {
                 let circuit_blob = circuit.repr_blob();
                 let value = encode_circuit(&circuit_blob);
@@ -3385,31 +3394,41 @@ pub fn build_from_2rocks(
         );
     });
 
-    let process_combination_deduped = |first: &CircuitSeq,
-                                       second: &CircuitSeq,
-                                       seen: &dashmap::DashSet<u128>,
-                                       total_gates_tried_par: &Arc<std::sync::atomic::AtomicUsize>|
-     -> Option<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)> {
-        total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+    // Helper: compute (fwd_blob, rev_blob, fwd_hash, rev_hash, pair_key) for a combined circuit
+    let compute_blobs = |first: &CircuitSeq, second: &CircuitSeq| -> (Vec<u8>, Vec<u8>, u128, u128, u128) {
+        let mut combined = first.clone();
+        combined.gates.extend_from_slice(&second.gates);
+        combined.canonicalize();
+        let canon = canonicalize_polys_4(combined.to_polynomial(n, 0, m));
+        let fwd_blob = polys_repr_blob(&canon.0);
+        let fwd_hash = xxh3_128(&fwd_blob);
 
-        let result = process_combination(first, second, n, m, new_db)?;
-        let (circuit, canon, key_bytes, _old_rev_key) = result;
-
-        // Recompute pair_key the same way as build_from_rocks:
-        // hash forward canonical, hash reversed canonical, pair_key = min
-        let fwd_hash = xxh3_128(&polys_repr_blob(&canon));
-
-        let mut rev = circuit.clone();
+        let mut rev = combined.clone();
         rev.gates.reverse();
         rev.canonicalize();
         let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
-        let rev_hash = xxh3_128(&polys_repr_blob(&canon_rev.0));
+        let rev_blob = polys_repr_blob(&canon_rev.0);
+        let rev_hash = xxh3_128(&rev_blob);
 
         let pair_key = fwd_hash.min(rev_hash);
+        (fwd_blob, rev_blob, fwd_hash, rev_hash, pair_key)
+    };
 
-        // Atomic insert — only one of a circuit/reversal pair gets through
-        if seen.insert(pair_key) {
-            Some((circuit, canon, key_bytes, pair_key.to_le_bytes().to_vec()))
+    // Helper: dedup check and insert into seen, returns the key bytes if inserted
+    let try_insert_seen = |seen: &DashMap<u128, Vec<(Vec<u8>, Vec<u8>)>>,
+                           fwd_blob: Vec<u8>,
+                           rev_blob: Vec<u8>,
+                           pair_key: u128|
+     -> Option<Vec<u8>> {
+        let fwd_hash = xxh3_128(&fwd_blob);
+        let mut entry = seen.entry(pair_key).or_insert_with(Vec::new);
+        let already_seen = entry.iter().any(|(f, r)| {
+            (f == &fwd_blob && r == &rev_blob) || (f == &rev_blob && r == &fwd_blob)
+        });
+        if !already_seen {
+            entry.push((fwd_blob, rev_blob));
+            drop(entry);
+            Some(fwd_hash.to_le_bytes().to_vec())
         } else {
             None
         }
@@ -3417,7 +3436,6 @@ pub fn build_from_2rocks(
 
     let stop_flag_par = Arc::clone(&stop_flag);
     let tx_par = tx.clone();
-    let new_db_par = Arc::clone(new_db);
     let db1_circuits_par = Arc::clone(&db1_circuits);
     let db2_circuits_par = Arc::clone(&db2_circuits);
     let total_gates_tried_par = Arc::clone(&total_gates_tried);
@@ -3435,7 +3453,6 @@ pub fn build_from_2rocks(
         let n1_rev = touched_wires(&c1_rev).len();
 
         let j_end = if same_db { i + 1 } else { nc2 };
-
         let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)> = Vec::new();
 
         for j in 0..j_end {
@@ -3448,71 +3465,96 @@ pub fn build_from_2rocks(
             let n2 = touched_wires(c2).len();
             let c2_rev_raw = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
             let (c2_rev, _) = canonicalize_circuit(c2_rev_raw.gates, n, m2);
-            let n2_rev = touched_wires(&c2_rev).len();
 
-            let mappings_1_2  = enumerate_c2_wire_mappings(n1,     n2);
+            let mappings_1_2   = enumerate_c2_wire_mappings(n1,     n2);
             let mappings_rev1_2 = enumerate_c2_wire_mappings(n1_rev, n2);
-            let mappings_2_1  = enumerate_c2_wire_mappings(n2,     n1);
+            let mappings_2_1   = enumerate_c2_wire_mappings(n2,     n1);
             // let mappings_rev2_1 = enumerate_c2_wire_mappings(n2_rev, n1);
 
             // Case 1: c1 || mapped_c2
             for mapping in &mappings_1_2 {
                 let c2m = apply_wire_mapping(c2, mapping);
-                if let Some(r) = process_combination_deduped(c1, &c2m, &seen_par, &total_gates_tried_par) {
-                    local_results.push(r);
+                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                if let Some(result) = process_combination(c1, &c2m, n, m, new_db) {
+                    let (circuit, canon, _, _) = result;
+                    let mut rev = circuit.clone();
+                    rev.gates.reverse();
+                    rev.canonicalize();
+                    let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
+                    let fwd_blob = polys_repr_blob(&canon);
+                    let rev_blob = polys_repr_blob(&canon_rev.0);
+                    let fwd_hash = xxh3_128(&fwd_blob);
+                    let rev_hash = xxh3_128(&rev_blob);
+                    let pair_key = fwd_hash.min(rev_hash);
+                    if let Some(key) = try_insert_seen(&seen_par, fwd_blob, rev_blob, pair_key) {
+                        local_results.push((circuit, canon, key, pair_key.to_le_bytes().to_vec()));
+                    }
                 }
             }
-            // Case 2: c2 || mapped_c1 
+
+            // Case 2: c2 || mapped_c1
             for mapping in &mappings_2_1 {
                 let c1m = apply_wire_mapping(c1, mapping);
-                if let Some(r) = process_combination_deduped(c2, &c1m, &seen_par, &total_gates_tried_par) {
-                    local_results.push(r);
+                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                if let Some(result) = process_combination(c2, &c1m, n, m, new_db) {
+                    let (circuit, canon, _, _) = result;
+                    let mut rev = circuit.clone();
+                    rev.gates.reverse();
+                    rev.canonicalize();
+                    let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
+                    let fwd_blob = polys_repr_blob(&canon);
+                    let rev_blob = polys_repr_blob(&canon_rev.0);
+                    let fwd_hash = xxh3_128(&fwd_blob);
+                    let rev_hash = xxh3_128(&rev_blob);
+                    let pair_key = fwd_hash.min(rev_hash);
+                    if let Some(key) = try_insert_seen(&seen_par, fwd_blob, rev_blob, pair_key) {
+                        local_results.push((circuit, canon, key, pair_key.to_le_bytes().to_vec()));
+                    }
                 }
             }
 
             // Case 3: c1_rev || mapped_c2
             for mapping in &mappings_rev1_2 {
                 let c2m = apply_wire_mapping(c2, mapping);
-                if let Some(r) = process_combination_deduped(&c1_rev, &c2m, &seen_par, &total_gates_tried_par) {
-                    local_results.push(r);
+                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                if let Some(result) = process_combination(&c1_rev, &c2m, n, m, new_db) {
+                    let (circuit, canon, _, _) = result;
+                    let mut rev = circuit.clone();
+                    rev.gates.reverse();
+                    rev.canonicalize();
+                    let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
+                    let fwd_blob = polys_repr_blob(&canon);
+                    let rev_blob = polys_repr_blob(&canon_rev.0);
+                    let fwd_hash = xxh3_128(&fwd_blob);
+                    let rev_hash = xxh3_128(&rev_blob);
+                    let pair_key = fwd_hash.min(rev_hash);
+                    if let Some(key) = try_insert_seen(&seen_par, fwd_blob, rev_blob, pair_key) {
+                        local_results.push((circuit, canon, key, pair_key.to_le_bytes().to_vec()));
+                    }
                 }
             }
-            // Case 4: c2_rev || mapped_c1 
-            // for mapping in &mappings_rev2_1 {
-            //     let c1m = apply_wire_mapping(c1, mapping);
-            //     if let Some(r) = process_combination_deduped(&c2_rev, &c1m, &seen_par, &total_gates_tried_par) {
-            //         local_results.push(r);
-            //     }
-            // }
-            // Case 5: mapped_c1 || c2
-            // for mapping in &mappings_2_1 {
-            //     let c1m = apply_wire_mapping(c1, mapping);
-            //     if let Some(r) = process_combination_deduped(&c1m, c2, &seen_par, &total_gates_tried_par) {
-            //         local_results.push(r);
-            //     }
-            // }
-            // Case 6: mapped_c2 || c1
-            // for mapping in &mappings_1_2 {
-            //     let c2m = apply_wire_mapping(c2, mapping);
-            //     if let Some(r) = process_combination_deduped(&c2m, c1, &seen_par, &total_gates_tried_par) {
-            //         local_results.push(r);
-            //     }
-            // }
 
             // Case 7: mapped_c1 || c2_rev
             for mapping in &mappings_2_1 {
                 let c1m = apply_wire_mapping(c1, mapping);
-                if let Some(r) = process_combination_deduped(&c1m, &c2_rev, &seen_par, &total_gates_tried_par) {
-                    local_results.push(r);
+                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                if let Some(result) = process_combination(&c1m, &c2_rev, n, m, new_db) {
+                    let (circuit, canon, _, _) = result;
+                    let mut rev = circuit.clone();
+                    rev.gates.reverse();
+                    rev.canonicalize();
+                    let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
+                    let fwd_blob = polys_repr_blob(&canon);
+                    let rev_blob = polys_repr_blob(&canon_rev.0);
+                    let fwd_hash = xxh3_128(&fwd_blob);
+                    let rev_hash = xxh3_128(&rev_blob);
+                    let pair_key = fwd_hash.min(rev_hash);
+                    if let Some(key) = try_insert_seen(&seen_par, fwd_blob, rev_blob, pair_key) {
+                        local_results.push((circuit, canon, key, pair_key.to_le_bytes().to_vec()));
+                    }
                 }
             }
-            // Case 8: mapped_c2 || c1_rev
-            // for mapping in &mappings_1_2 {
-            //     let c2m = apply_wire_mapping(c2, mapping);
-            //     if let Some(r) = process_combination_deduped(&c2m, &c1_rev, &seen_par, &total_gates_tried_par) {
-            //         local_results.push(r);
-            //     }
-            // }
+
 
             // Drain local_results in batch_size chunks to keep memory bounded
             while local_results.len() >= batch_size {
