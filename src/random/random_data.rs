@@ -2808,11 +2808,10 @@ pub fn build_from_rocks(
     let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     // DashMap<pair_key, Vec<(fwd_blob, rev_blob)>>
-    // pair_key = min(fwd_hash, rev_hash) for bucketing
-    // Within each bucket, we store the actual circuit blobs so that
-    // semantically equal but structurally different circuits are handled
-    // correctly — we only skip if the exact (fwd, rev) pair is already there
-    // (in either order).
+    // pair_key = min(fwd_canon_hash, rev_canon_hash) for bucketing by semantic content.
+    // fwd_blob and rev_blob are raw circuit gate blobs (not poly blobs), so that
+    // semantically equal but structurally different circuits can both be inserted —
+    // we only skip if the exact circuit (or its reversal) is already present.
     let seen: Arc<DashMap<u128, Vec<(Vec<u8>, Vec<u8>)>>> = Arc::new(DashMap::new());
 
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -2961,28 +2960,36 @@ pub fn build_from_rocks(
                         c1.canonicalize();
 
                         if !c1.adjacent_id() {
-                            let c1_fwd_blob = polys_repr_blob(&canon1.0);
-                            let c1_hash: u128 = xxh3_128(&c1_fwd_blob);
+                            // Canon poly hashes for bucketing
+                            let c1_canon_blob = polys_repr_blob(&canon1.0);
+                            let c1_hash: u128 = xxh3_128(&c1_canon_blob);
 
                             let mut c1_rev = c1.clone();
                             c1_rev.gates.reverse();
                             c1_rev.canonicalize();
                             let canon1_rev = canonicalize_polys_4(c1_rev.to_polynomial(3 * m, 0, m));
-                            let c1_rev_blob = polys_repr_blob(&canon1_rev.0);
-                            let c1_rev_hash: u128 = xxh3_128(&c1_rev_blob);
+                            c1_rev.rewire(&canon1_rev.1.invert(), 3 * m);
+                            c1_rev.canonicalize();
+                            let c1_rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon1_rev.0));
 
                             let pair_key = c1_hash.min(c1_rev_hash);
+
+                            // Circuit gate blobs for identity comparison —
+                            // structurally different but semantically equal circuits
+                            // have different gate blobs and can both be inserted
+                            let c1_fwd_gate_blob = c1.repr_blob();
+                            let c1_rev_gate_blob = c1_rev.repr_blob();
 
                             // Atomically check and insert using DashMap entry API.
                             // entry() holds a lock on the bucket for the duration,
                             // eliminating any TOCTOU window.
                             let mut entry = seen_par.entry(pair_key).or_insert_with(Vec::new);
                             let already_seen = entry.iter().any(|(f, r)| {
-                                (f == &c1_fwd_blob && r == &c1_rev_blob)
-                                    || (f == &c1_rev_blob && r == &c1_fwd_blob)
+                                (f == &c1_fwd_gate_blob && r == &c1_rev_gate_blob)
+                                    || (f == &c1_rev_gate_blob && r == &c1_fwd_gate_blob)
                             });
                             if !already_seen {
-                                entry.push((c1_fwd_blob, c1_rev_blob));
+                                entry.push((c1_fwd_gate_blob, c1_rev_gate_blob));
                                 drop(entry); // release lock before pushing to channel
                                 local_results.push((
                                     c1,
@@ -2990,6 +2997,8 @@ pub fn build_from_rocks(
                                     c1_hash.to_le_bytes().to_vec(),
                                     pair_key.to_le_bytes().to_vec(),
                                 ));
+                            } else {
+                                drop(entry);
                             }
                         }
 
@@ -3003,25 +3012,31 @@ pub fn build_from_rocks(
                         c2.canonicalize();
 
                         if !c2.adjacent_id() {
-                            let c2_fwd_blob = polys_repr_blob(&canon2.0);
-                            let c2_hash: u128 = xxh3_128(&c2_fwd_blob);
+                            // Canon poly hashes for bucketing
+                            let c2_canon_blob = polys_repr_blob(&canon2.0);
+                            let c2_hash: u128 = xxh3_128(&c2_canon_blob);
 
                             let mut c2_rev = c2.clone();
                             c2_rev.gates.reverse();
                             c2_rev.canonicalize();
                             let canon2_rev = canonicalize_polys_4(c2_rev.to_polynomial(3 * m, 0, m));
-                            let c2_rev_blob = polys_repr_blob(&canon2_rev.0);
-                            let c2_rev_hash: u128 = xxh3_128(&c2_rev_blob);
+                            c2_rev.rewire(&canon2_rev.1.invert(), 3 * m);
+                            c2_rev.canonicalize();
+                            let c2_rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon2_rev.0));
 
                             let pair_key = c2_hash.min(c2_rev_hash);
 
+                            // Circuit gate blobs for identity comparison
+                            let c2_fwd_gate_blob = c2.repr_blob();
+                            let c2_rev_gate_blob = c2_rev.repr_blob();
+
                             let mut entry = seen_par.entry(pair_key).or_insert_with(Vec::new);
                             let already_seen = entry.iter().any(|(f, r)| {
-                                (f == &c2_fwd_blob && r == &c2_rev_blob)
-                                    || (f == &c2_rev_blob && r == &c2_fwd_blob)
+                                (f == &c2_fwd_gate_blob && r == &c2_rev_gate_blob)
+                                    || (f == &c2_rev_gate_blob && r == &c2_fwd_gate_blob)
                             });
                             if !already_seen {
-                                entry.push((c2_fwd_blob, c2_rev_blob));
+                                entry.push((c2_fwd_gate_blob, c2_rev_gate_blob));
                                 drop(entry);
                                 local_results.push((
                                     c2,
@@ -3029,6 +3044,8 @@ pub fn build_from_rocks(
                                     c2_hash.to_le_bytes().to_vec(),
                                     pair_key.to_le_bytes().to_vec(),
                                 ));
+                            } else {
+                                drop(entry);
                             }
                         }
                     }
