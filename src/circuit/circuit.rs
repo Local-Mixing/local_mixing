@@ -2595,7 +2595,7 @@ pub fn canonicalize_polys_4(
         groups.push(current);
     }
 
-    // ── Step 2: build class polynomials over N ───────────────────────────────
+    // ── Step 2: build class polynomials ──────────────────────────────────────
     let class_polys: Vec<HashMap<Monomial, usize>> = groups.iter().map(|group| {
         let mut sum: HashMap<Monomial, usize> = HashMap::new();
         for &wire in group {
@@ -2610,12 +2610,11 @@ pub fn canonicalize_polys_4(
     let mut var_rank: Vec<usize> = vec![0usize; n];
 
     let cmp_monomials = |m: Monomial, coeff_m: usize,
-                        mp: Monomial, coeff_mp: usize,
-                        vr: &[usize]| -> Option<std::cmp::Ordering> {
+                         mp: Monomial, coeff_mp: usize,
+                         vr: &[usize]| -> Option<std::cmp::Ordering> {
         let deg_m  = m.count_ones() as usize;
         let deg_mp = mp.count_ones() as usize;
 
-        // Rule 1: higher degree wins
         if deg_m != deg_mp { return Some(deg_m.cmp(&deg_mp)); }
 
         let mut ranks_m:  Vec<usize> = (0..n).filter(|&j| m  & (1u64<<j)!=0).map(|j| vr[j]).collect();
@@ -2623,12 +2622,10 @@ pub fn canonicalize_polys_4(
         ranks_m.sort_unstable();
         ranks_mp.sort_unstable();
 
-        // Rule 3: same rank-signature (variables indistinguishable) → compare coeff
         if ranks_m == ranks_mp {
             return Some(coeff_m.cmp(&coeff_mp));
         }
 
-        // Rule 2: dominance via rank-signatures
         let min_m  = ranks_m[0];
         let min_mp = ranks_mp[0];
         let max_m  = *ranks_m.last().unwrap();
@@ -2712,13 +2709,21 @@ pub fn canonicalize_polys_4(
         terms
     };
 
-    // ── Main loop: process each class poly in order, fully exhaust before
-    //    moving to next. Only use individual poly tiebreaker after all
-    //    class polys are exhausted.
-    for ci in 0..class_polys.len() {
-        loop {
-            let mut updated = false;
+    // ── Main refinement loop ──────────────────────────────────────────────────
+    // For each ci, scan ALL tied groups and apply ALL splits found before
+    // restarting. Only restart from ci=0 if ci made any progress at all.
+    // Stop when a full pass over all ci makes no progress and there are
+    // still ties to break.
+    'outer: loop {
+        for ci in 0..class_polys.len() {
+            let has_ties = (0..n).any(|v| {
+                let r = var_rank[v];
+                (0..n).any(|u| u != v && var_rank[u] == r)
+            });
+            if !has_ties { break 'outer; }
+
             let max_rank = *var_rank.iter().max().unwrap_or(&0);
+            let mut ci_made_progress = false;
 
             for cur_rank in 0..=max_rank {
                 let tied: Vec<usize> = (0..n)
@@ -2751,18 +2756,16 @@ pub fn canonicalize_polys_4(
                     for (i, &v) in sorted_tied.iter().enumerate() {
                         var_rank[v] = cur_rank + new_sub_ranks[i];
                     }
-                    updated = true;
-                    break; // restart inner loop for this ci
+                    continue 'outer; // restart from ci=0 immediately
                 }
             }
-
-            if !updated { break; } // ci fully exhausted, move to next
         }
+
+        // Full pass over all ci made no progress — we're stuck
+        break;
     }
 
-    // ── Individual poly tiebreaker: only after all class polys exhausted ──────
-    // For each still-tied group, rank the individual polynomials of those wires
-    // by representing each monomial as a sorted rank-sig, then comparing lex.
+    // ── Individual poly tiebreaker ────────────────────────────────────────────
     loop {
         let mut updated = false;
         let max_rank = *var_rank.iter().max().unwrap_or(&0);
@@ -2789,7 +2792,7 @@ pub fn canonicalize_polys_4(
                 tb_new_sub_ranks[i] = tb_sub_rank;
             }
 
-            if tb_sub_rank == 0 { continue; } // genuinely symmetric
+            if tb_sub_rank == 0 { continue; }
 
             for v in 0..n {
                 if var_rank[v] > cur_rank { var_rank[v] += tb_sub_rank; }
