@@ -59,7 +59,8 @@ impl Gate {
 
     // Gates collide iff either active pin shares a wire with any other pin
     pub fn collides_index(gate: &[u8;3], other: &[u8;3]) -> bool {
-        gate[0] == other[1] 
+        gate[0] == other[0]    
+            ||    gate[0] == other[1] 
             || gate[0] == other[2]
             || gate[1] == other[0] 
             || gate[2] == other[0]
