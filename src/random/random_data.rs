@@ -2959,9 +2959,9 @@ pub fn build_from_rocks(
                         q1.push(*g);
                         let mut c1 = CircuitSeq { gates: q1.to_vec() };
                         c1.canonicalize();
-                        let canon1 = c1.canonicalize_polys(3 * m);
-                        double_canon_check(&canon1.1, 3 * m, "c1");
-                        if !canon1.1.adjacent_id() {
+                        if !c1.adjacent_id() {
+                            let canon1 = c1.canonicalize_polys(3 * m);
+                            double_canon_check(&canon1.1, 3 * m, "c1");
                             let c1_hash: u128 = xxh3_128(&polys_repr_blob(&canon1.0));
                             local_results.push((
                                 canon1.1,
@@ -2975,9 +2975,9 @@ pub fn build_from_rocks(
                         q2.extend_from_slice(&prefix);
                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
                         c2.canonicalize();
-                        let canon2 = c2.canonicalize_polys(3 * m);
-                        double_canon_check(&canon2.1, 3 * m, "c2");
                         if !canon2.1.adjacent_id() {
+                            let canon2 = c2.canonicalize_polys(3 * m);
+                            double_canon_check(&canon2.1, 3 * m, "c2");
                             let c2_hash: u128 = xxh3_128(&polys_repr_blob(&canon2.0));
                             local_results.push((
                                 canon2.1,
