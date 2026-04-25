@@ -5665,7 +5665,8 @@ mod tests {
     #[test]
     pub fn list_up_to_canon_and_rev() {
         let db = Arc::new({
-            let path = "rocks_db_m4";
+            let path = "rocks_db_m3";
+            let m = 3;
             let mut opts = Options::default();
             opts.create_if_missing(false);
             opts.set_merge_operator_associative("append_merge", append_merge);
@@ -5685,8 +5686,6 @@ mod tests {
 
             DB::open_for_read_only(&opts, path, false).expect("open failed")
         });
-
-        let m = 4;
         let n = 3 * m;
 
         // ── Step 1: read all circuits from db, dedup by reversal pair ────────────
