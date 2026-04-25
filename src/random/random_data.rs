@@ -5606,7 +5606,7 @@ mod tests {
             DB::open_for_read_only(&opts, path, false).expect("open failed")
         });
 
-        let m = 3;
+        let m = 4;
         let n = 3 * m;
 
         // ── Step 1: read all circuits from db, dedup by reversal pair ────────────
