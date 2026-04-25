@@ -6026,7 +6026,7 @@ println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.
         println!("c1: {:?}", c1.gates);
         println!("c2: {:?}", c2.gates);
         println!("{:?}", canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false).0);
-        let mut c1 = CircuitSeq { gates: vec![[4, 0, 1], [1, 4, 3], [5, 4, 2]]  };
+        let mut c1 = CircuitSeq { gates: vec![[5, 4, 2], [1, 4, 3], [4, 0, 1] ]  };
         let mut c2 = CircuitSeq { gates: vec![[3, 0, 2], [5, 0, 4], [0, 1, 3]]  };
         let poly_1 = c1.to_polynomial(9, 0, 3);
         let poly_2 = c2.to_polynomial(9, 0, 3);
