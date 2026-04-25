@@ -2609,12 +2609,19 @@ pub fn canonicalize_polys_4(
     // ── Step 3: iterative refinement ─────────────────────────────────────────
     let mut var_rank: Vec<usize> = vec![0usize; n];
 
+    // Compare two monomials under current var_rank.
+    // Rule 1: higher degree wins.
+    // Rule 2: same degree, different rank-sig: lex compare sorted rank-sigs,
+    //         smaller sig = better monomial (lower rank values = better vars).
+    // Rule 3: same rank-sig: compare coefficient.
+    // Always returns Some — total order on monomials.
     let cmp_monomials = |m: Monomial, coeff_m: usize,
                          mp: Monomial, coeff_mp: usize,
                          vr: &[usize]| -> Option<std::cmp::Ordering> {
         let deg_m  = m.count_ones() as usize;
         let deg_mp = mp.count_ones() as usize;
 
+        // Rule 1
         if deg_m != deg_mp { return Some(deg_m.cmp(&deg_mp)); }
 
         let mut ranks_m:  Vec<usize> = (0..n).filter(|&j| m  & (1u64<<j)!=0).map(|j| vr[j]).collect();
@@ -2622,21 +2629,13 @@ pub fn canonicalize_polys_4(
         ranks_m.sort_unstable();
         ranks_mp.sort_unstable();
 
+        // Rule 3: same rank-sig → coeff
         if ranks_m == ranks_mp {
             return Some(coeff_m.cmp(&coeff_mp));
         }
 
-        let min_m  = ranks_m[0];
-        let min_mp = ranks_mp[0];
-        let max_m  = *ranks_m.last().unwrap();
-        let max_mp = *ranks_mp.last().unwrap();
-        let m_gt_mp = min_m <= min_mp && min_m < max_mp;
-        let mp_gt_m = min_mp <= min_m && min_mp < max_m;
-        match (m_gt_mp, mp_gt_m) {
-            (true,  false) => Some(std::cmp::Ordering::Greater),
-            (false, true)  => Some(std::cmp::Ordering::Less),
-            _              => None,
-        }
+        // Rule 2: lex on sorted rank-sigs, smaller = better monomial
+        Some(ranks_mp.cmp(&ranks_m))
     };
 
     let ranked_monomials_of = |x: usize, ci: usize, vr: &[usize]|
@@ -2710,10 +2709,6 @@ pub fn canonicalize_polys_4(
     };
 
     // ── Main refinement loop ──────────────────────────────────────────────────
-    // For each ci, scan ALL tied groups and apply ALL splits found before
-    // restarting. Only restart from ci=0 if ci made any progress at all.
-    // Stop when a full pass over all ci makes no progress and there are
-    // still ties to break.
     'outer: loop {
         for ci in 0..class_polys.len() {
             let has_ties = (0..n).any(|v| {
@@ -2755,12 +2750,10 @@ pub fn canonicalize_polys_4(
                     for (i, &v) in sorted_tied.iter().enumerate() {
                         var_rank[v] = cur_rank + new_sub_ranks[i];
                     }
-                    continue 'outer; // restart from ci=0 immediately
+                    continue 'outer;
                 }
             }
         }
-
-        // Full pass over all ci made no progress — we're stuck
         break;
     }
 
