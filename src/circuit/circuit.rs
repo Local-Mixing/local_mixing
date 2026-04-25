@@ -2610,18 +2610,29 @@ pub fn canonicalize_polys_4(
     let mut var_rank: Vec<usize> = vec![0usize; n];
 
     let cmp_monomials = |m: Monomial, coeff_m: usize,
-                         mp: Monomial, coeff_mp: usize,
-                         vr: &[usize]| -> Option<std::cmp::Ordering> {
+                        mp: Monomial, coeff_mp: usize,
+                        vr: &[usize]| -> Option<std::cmp::Ordering> {
         let deg_m  = m.count_ones() as usize;
         let deg_mp = mp.count_ones() as usize;
+
+        // Rule 1: higher degree wins
         if deg_m != deg_mp { return Some(deg_m.cmp(&deg_mp)); }
-        if m == mp { return Some(coeff_m.cmp(&coeff_mp)); }
-        let ranks_m:  Vec<usize> = (0..n).filter(|&j| m  & (1u64<<j)!=0).map(|j| vr[j]).collect();
-        let ranks_mp: Vec<usize> = (0..n).filter(|&j| mp & (1u64<<j)!=0).map(|j| vr[j]).collect();
-        let min_m  = *ranks_m.iter().min().unwrap();
-        let min_mp = *ranks_mp.iter().min().unwrap();
-        let max_m  = *ranks_m.iter().max().unwrap();
-        let max_mp = *ranks_mp.iter().max().unwrap();
+
+        let mut ranks_m:  Vec<usize> = (0..n).filter(|&j| m  & (1u64<<j)!=0).map(|j| vr[j]).collect();
+        let mut ranks_mp: Vec<usize> = (0..n).filter(|&j| mp & (1u64<<j)!=0).map(|j| vr[j]).collect();
+        ranks_m.sort_unstable();
+        ranks_mp.sort_unstable();
+
+        // Rule 3: same rank-signature (variables indistinguishable) → compare coeff
+        if ranks_m == ranks_mp {
+            return Some(coeff_m.cmp(&coeff_mp));
+        }
+
+        // Rule 2: dominance via rank-signatures
+        let min_m  = ranks_m[0];
+        let min_mp = ranks_mp[0];
+        let max_m  = *ranks_m.last().unwrap();
+        let max_mp = *ranks_mp.last().unwrap();
         let m_gt_mp = min_m <= min_mp && min_m < max_mp;
         let mp_gt_m = min_mp <= min_m && min_mp < max_m;
         match (m_gt_mp, mp_gt_m) {
