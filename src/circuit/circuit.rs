@@ -870,7 +870,7 @@ impl CircuitSeq {
         let mut c2 = self.clone();
         c2.gates.reverse();
         c2.canonicalize();
-        let polys_fwd = self.to_polynomial(n, 0, self.gates.len());
+        let polys_fwd = c1.to_polynomial(n, 0, c1.gates.len());
         let polys_rev = c2.to_polynomial(n, 0, c2.gates.len());
         let canon1 = canonicalize_polys_4(polys_fwd);
         let canon2 = canonicalize_polys_4(polys_rev);
