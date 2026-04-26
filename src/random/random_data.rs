@@ -6041,10 +6041,12 @@ mod tests {
             println!("  P{}: {}", i, poly_to_str(poly, 9));
         }
 
-        // let canon_1 = canonicalize_polys_4(c1.to_polynomial(9, 0, 3));
-        // let canon_2 = canonicalize_polys_4(c2.to_polynomial(9, 0, 3));
-        let canon_1 = canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false);
-        let canon_2 = canonicalize_polys(c2.to_polynomial(9, 0, 3), true, false);
+        let canon_1 = canonicalize_polys_4(c1.to_polynomial(9, 0, 3));
+        let canon_2 = canonicalize_polys_4(c2.to_polynomial(9, 0, 3));
+        let canon_1ver2 = c1.canonicalize_polys(9);
+        let canon_2ver2 = c2.canonicalize_polys(9);
+        // let canon_1 = canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false);
+        // let canon_2 = canonicalize_polys(c2.to_polynomial(9, 0, 3), true, false);
         println!("Canonical c1: ");
         for (i, poly) in canon_1.0.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 9));
@@ -6064,7 +6066,7 @@ mod tests {
         c1.canonicalize();
         c2.canonicalize();
 
-        assert!(c1.gates == c2.gates, "Circuits differ after rewiring and canonicalization:\n  c1: {:?}\n  c2: {:?}", c1.gates, c2.gates);
+        assert!(canon_1ver2.1.gates == canon_2ver2.1.gates, "Circuits differ after rewiring and canonicalization:\n  c1: {:?}\n  c2: {:?}", canon_1ver2.1.gates, canon_2ver2.1.gates);
     }
 
     #[test]
