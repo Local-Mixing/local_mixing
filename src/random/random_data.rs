@@ -2790,8 +2790,9 @@ fn double_canon_check(circuit: &CircuitSeq, n: usize, label: &str) {
     let canon2 = c2.canonicalize_polys(n);
     assert!(
         canon1.1.gates == canon2.1.gates,
-        "Double canonicalization produced different result for {}!\n  first:  {:?}\n  second: {:?}",
+        "Double canonicalization produced different result for {}!\n  original:  {:?}\n  first:  {:?}\n  second: {:?}",
         label,
+        circuit,
         canon1.1.gates,
         canon2.1.gates
     );
