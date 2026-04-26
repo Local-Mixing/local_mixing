@@ -874,21 +874,17 @@ impl CircuitSeq {
         let polys_rev = c2.to_polynomial(n, 0, c2.gates.len());
         let canon1 = canonicalize_polys_4(polys_fwd);
         let canon2 = canonicalize_polys_4(polys_rev);
+        c1.rewire(&canon1.1.invert(), n);
+        c1.canonicalize();
+        c2.rewire(&canon2.1.invert(), n);
+        c2.canonicalize();
         if poly_vec_key(&canon1.0) < poly_vec_key(&canon2.0) {
-            c1.rewire(&canon1.1.invert(), n);
-            c1.canonicalize();
             (canon1.0, c1)
         } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0){
-            c2.rewire(&canon2.1.invert(), n);
-            c2.canonicalize();
             (canon2.0, c2)
         } else if c1.gates <= c2.gates {
-            c1.rewire(&canon1.1.invert(), n);
-            c1.canonicalize();
             (canon1.0, c1)
         } else {
-            c2.rewire(&canon2.1.invert(), n);
-            c2.canonicalize();
             (canon2.0, c2)
         }
     }
