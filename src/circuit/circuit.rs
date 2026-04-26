@@ -878,6 +878,14 @@ impl CircuitSeq {
             c1.rewire(&canon1.1.invert(), n);
             c1.canonicalize();
             (canon1.0, c1)
+        } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0){
+            c2.rewire(&canon2.1.invert(), n);
+            c2.canonicalize();
+            (canon2.0, c2)
+        } else if c1.gates <= c2.gates {
+            c1.rewire(&canon1.1.invert(), n);
+            c1.canonicalize();
+            (canon1.0, c1)
         } else {
             c2.rewire(&canon2.1.invert(), n);
             c2.canonicalize();
