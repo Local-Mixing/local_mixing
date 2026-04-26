@@ -4052,6 +4052,7 @@ mod tests {
         //     .expect("Failed to write test_walked.txt");
     }
 
+    use libc::__c_anonymous_ptp_perout_request_1;
     use rand::prelude::SliceRandom;
 
     pub fn heatmap(circuit_one: &CircuitSeq, circuit_two: &CircuitSeq, num_wires: usize, num_inputs: usize, flag: bool) -> f64 {
@@ -6040,8 +6041,10 @@ mod tests {
             println!("  P{}: {}", i, poly_to_str(poly, 9));
         }
 
-        let canon_1 = canonicalize_polys_4(c1.to_polynomial(9, 0, 3));
-        let canon_2 = canonicalize_polys_4(c2.to_polynomial(9, 0, 3));
+        // let canon_1 = canonicalize_polys_4(c1.to_polynomial(9, 0, 3));
+        // let canon_2 = canonicalize_polys_4(c2.to_polynomial(9, 0, 3));
+        let canon_1 = canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false);
+        let canon_2 = canonicalize_polys(c2.to_polynomial(9, 0, 3), true, false);
         println!("Canonical c1: ");
         for (i, poly) in canon_1.0.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, 9));
