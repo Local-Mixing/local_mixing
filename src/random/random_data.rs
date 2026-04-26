@@ -6026,6 +6026,7 @@ mod tests {
         use crate::circuit::circuit::poly_to_str;
         let mut c1 = CircuitSeq { gates: vec![[3, 0, 2], [3, 1, 0], [3, 1, 2]]    };
         let mut c2 = CircuitSeq { gates: vec![[3, 0, 1], [3, 2, 0], [3, 2, 1]] };
+        c1.gates.reverse();
         println!("Relabeling? {}", c1.is_relabeling_of(&c2));
         c1.canonicalize();
         c2.canonicalize();
