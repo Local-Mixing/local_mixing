@@ -6235,9 +6235,7 @@ mod tests {
                     let (canonical, _) = canonicalize_polys_4(polys);
                     println!("  [canonical polys from first m3 circuit]");
                     for (i, poly) in canonical.iter().enumerate() {
-                        let mut monomials: Vec<u64> = poly.iter().copied().collect();
-                        monomials.sort_unstable();
-                        println!("    P{}: {:?}", i, monomials);
+                        println!("  P{}: {}", i, poly_to_str(poly, 9));
                     }
                 }
             }
