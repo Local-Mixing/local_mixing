@@ -5056,7 +5056,7 @@ mod tests {
     #[test]
     fn test_print_all_circuits() {
         use crate::circuit::circuit::poly_to_str;
-        let m = 3;
+        let m = 4;
         let n = 3 * m;
         let db = Arc::new(open_db_for_read(m));
         let iter = db.iterator(rocksdb::IteratorMode::Start);
