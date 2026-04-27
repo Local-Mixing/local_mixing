@@ -2801,7 +2801,7 @@ pub fn canonicalize_polys_4(
                 })
                 .collect();
             top.sort_unstable();
-            let top_set: HashSet<(Monomial,usize)> = top.iter().copied().collect();
+            let top_set: BTreeSet<(Monomial, usize)> = top.iter().copied().collect();
             remaining.retain(|x| !top_set.contains(x));
             levels.push(top);
         }
