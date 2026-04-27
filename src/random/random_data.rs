@@ -6128,7 +6128,6 @@ mod tests {
 
     #[test]
     fn test_count_m3_keys_in_m4() {
-        use crate::circuit::circuit::poly_to_str;
         let db3 = Arc::new({
             let path = "rocks_db_m3";
             let mut opts = Options::default();
@@ -6147,7 +6146,6 @@ mod tests {
             opts.set_disable_auto_compactions(true);
             DB::open_for_read_only(&opts, path, false).expect("Failed to open rocks_db_m3")
         });
-
         let db4 = Arc::new({
             let path = "rocks_db_m4";
             let mut opts = Options::default();
@@ -6166,48 +6164,88 @@ mod tests {
             opts.set_disable_auto_compactions(true);
             DB::open_for_read_only(&opts, path, false).expect("Failed to open rocks_db_m4")
         });
-
         let m3 = 3;
         let n3 = 3 * m3;
-
         let mut total_keys = 0usize;
         let mut found_in_m4 = 0usize;
+        let mut circuits_in_m3 = 0usize;
+        let mut circuits_in_m4_for_shared = 0usize;
 
         let iter = db3.iterator(rocksdb::IteratorMode::Start);
         for item in iter {
             let (key, value) = item.expect("RocksDB iter error");
             total_keys += 1;
 
-            // Check if this key exists in db4
-            if db4.get(&key).unwrap_or(None).is_none() {
-                continue;
+            // Count circuits in this m3 entry
+            let mut pos = 0;
+            while pos < value.len() {
+                let len = value[pos] as usize;
+                pos += 1;
+                if pos + len > value.len() { break; }
+                pos += len;
+                circuits_in_m3 += 1;
             }
 
+            // Check if this key exists in db4
+            let m4_value = match db4.get(&key).unwrap_or(None) {
+                Some(v) => v,
+                None => continue,
+            };
             found_in_m4 += 1;
 
-            // Read the first circuit from the value
-            if value.is_empty() {
-                continue;
-            }
-            let len = value[0] as usize;
-            if 1 + len > value.len() {
-                continue;
-            }
-            let circuit_blob = &value[1..1 + len];
-            let circuit = CircuitSeq::from_blob(circuit_blob);
+            let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
+            println!("\n=== Shared key: {} ===", key_hex);
 
-            // Compute and canonicalize the polynomial
-            let polys = circuit.to_polynomial(n3, 0, m3);
-            let (canonical, _) = canonicalize_polys_4(polys);
+            // List all circuits in m3 for this key
+            println!("  [m3 circuits]");
+            let mut pos = 0;
+            let mut idx = 0;
+            while pos < value.len() {
+                let len = value[pos] as usize;
+                pos += 1;
+                if pos + len > value.len() { break; }
+                let circuit = CircuitSeq::from_blob(&value[pos..pos + len]);
+                println!("    [{}] {}", idx, circuit.repr());
+                pos += len;
+                idx += 1;
+                circuits_in_m3 += 1;
+            }
 
-            println!("Key found in both dbs — circuit: {:?}", circuit.gates);
-            println!("  Canonical polys:");
-            for (i, poly) in canonical.iter().enumerate() {
-                println!("  P{}: {}", i, poly_to_str(poly, 9));
+            // List all circuits in m4 for this key
+            println!("  [m4 circuits]");
+            let mut pos = 0;
+            let mut idx = 0;
+            while pos < m4_value.len() {
+                let len = m4_value[pos] as usize;
+                pos += 1;
+                if pos + len > m4_value.len() { break; }
+                let circuit = CircuitSeq::from_blob(&m4_value[pos..pos + len]);
+                println!("    [{}] {}", idx, circuit.repr());
+                pos += len;
+                idx += 1;
+                circuits_in_m4_for_shared += 1;
+            }
+
+            // Print canonical polys from first m3 circuit
+            if value.len() > 1 {
+                let len = value[0] as usize;
+                if 1 + len <= value.len() {
+                    let circuit = CircuitSeq::from_blob(&value[1..1 + len]);
+                    let polys = circuit.to_polynomial(n3, 0, m3);
+                    let (canonical, _) = canonicalize_polys_4(polys);
+                    println!("  [canonical polys from first m3 circuit]");
+                    for (i, poly) in canonical.iter().enumerate() {
+                        let mut monomials: Vec<u64> = poly.iter().copied().collect();
+                        monomials.sort_unstable();
+                        println!("    P{}: {:?}", i, monomials);
+                    }
+                }
             }
         }
 
-        println!("\nTotal keys in m3: {}", total_keys);
-        println!("Keys from m3 also found in m4: {}", found_in_m4);
+        println!("\nTotal keys in m3:                  {}", total_keys);
+        println!("Total circuits in m3:              {}", circuits_in_m3);
+        println!("Keys from m3 also found in m4:     {}", found_in_m4);
+        println!("Circuits in m4 for shared keys:    {}", circuits_in_m4_for_shared);
     }
 }
