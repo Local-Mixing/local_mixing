@@ -2723,6 +2723,7 @@ pub fn canonicalize_polys_3(
 pub fn canonicalize_polys_4(
     polynomials: Vec<Polynomial>,
 ) -> (Vec<Polynomial>, Permutation) {
+    let _ = std::collections::BTreeMap::<u64, usize>::new();
     let n = polynomials.len();
     if n == 0 {
         return (vec![], Permutation { data: vec![] });
