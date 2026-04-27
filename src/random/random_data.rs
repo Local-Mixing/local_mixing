@@ -5055,34 +5055,43 @@ mod tests {
 
     #[test]
     fn test_print_all_circuits() {
-        let m = 3;
+        let m = 4;
         let db = Arc::new(open_db_for_read(m));
         let iter = db.iterator(rocksdb::IteratorMode::Start);
+
+        let mut file = std::fs::File::create("friends.txt").expect("Failed to create friends.txt");
 
         let mut count = 0;
         for item in iter {
             let (key, value) = item.expect("RocksDB iter error");
 
-            // Print the key as hex
-            // println!("Key: {}", key_hex);
-
-            // Scan all circuits in the value list
+            // First pass: collect all circuits for this key
+            let mut circuits = Vec::new();
             let mut pos = 0;
-            let mut circuit_index = 0;
             while pos < value.len() {
-                if pos + 1 > value.len() {
-                    break;
-                }
+                if pos + 1 > value.len() { break; }
                 let len = value[pos] as usize;
                 pos += 1;
-                if pos + len > value.len() {
-                    break;
-                }
+                if pos + len > value.len() { break; }
                 let circuit_blob = &value[pos..pos + len];
                 let circuit = CircuitSeq::from_blob(circuit_blob);
-                println!("{} == {}: {}", count, circuit_index,circuit.repr());
+                circuits.push(circuit);
                 pos += len;
-                circuit_index += 1;
+            }
+
+            // If more than one circuit, write all to friends.txt
+            if circuits.len() > 1 {
+                let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
+                writeln!(file, "Key: {}", key_hex).expect("write failed");
+                for (circuit_index, circuit) in circuits.iter().enumerate() {
+                    writeln!(file, "  [{}] {}", circuit_index, circuit.repr()).expect("write failed");
+                }
+                writeln!(file).expect("write failed");
+            }
+
+            // Print and count as before
+            for (circuit_index, circuit) in circuits.iter().enumerate() {
+                println!("{} == {}: {}", count, circuit_index, circuit.repr());
                 count += 1;
             }
         }
