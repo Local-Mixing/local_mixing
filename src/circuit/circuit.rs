@@ -2486,6 +2486,8 @@ pub fn canonicalize_polys_4(
             // Use BTreeSet for deterministic order when building top_set
             let top_set: BTreeSet<(Monomial,usize)> = top.iter().copied().collect();
             remaining.retain(|x| !top_set.contains(x));
+            let mut top = top;
+            top.sort_by(|&(a, ca), &(b, cb)| a.cmp(&b).then(ca.cmp(&cb)));
             levels.push(top);
         }
         levels
