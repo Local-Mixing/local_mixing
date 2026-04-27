@@ -6144,12 +6144,14 @@ mod tests {
     #[test]
     fn test_count_mi_keys_in_mj() {
         use crate::circuit::circuit::poly_to_str;
+        use std::io::Write;
 
         let mi = 4; 
         let mj = 5; 
 
         let path_i = format!("rocks_db_m{}", mi);
         let path_j = format!("rocks_db_m{}", mj);
+        let friends_path = format!("friends{}{}.txt", mi, mj);
 
         let open_db = |path: &str| {
             let mut opts = Options::default();
@@ -6172,6 +6174,9 @@ mod tests {
 
         let dbi = Arc::new(open_db(&path_i));
         let dbj = Arc::new(open_db(&path_j));
+
+        let mut file = std::fs::File::create(&friends_path)
+            .unwrap_or_else(|_| panic!("Failed to create {}", friends_path));
 
         let n = 3 * mi;
         let mut total_keys = 0usize;
@@ -6203,9 +6208,11 @@ mod tests {
 
             let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
             println!("\n=== Shared key: {} ===", key_hex);
+            writeln!(file, "\n=== Shared key: {} ===", key_hex).expect("write failed");
 
             // List all circuits in mi for this key
             println!("  [m{} circuits]", mi);
+            writeln!(file, "  [m{} circuits]", mi).expect("write failed");
             let mut pos = 0;
             let mut idx = 0;
             while pos < value.len() {
@@ -6214,12 +6221,14 @@ mod tests {
                 if pos + len > value.len() { break; }
                 let circuit = CircuitSeq::from_blob(&value[pos..pos + len]);
                 println!("    [{}] {}", idx, circuit.repr());
+                writeln!(file, "    [{}] {}", idx, circuit.repr()).expect("write failed");
                 pos += len;
                 idx += 1;
             }
 
             // List all circuits in mj for this key
             println!("  [m{} circuits]", mj);
+            writeln!(file, "  [m{} circuits]", mj).expect("write failed");
             let mut pos = 0;
             let mut idx = 0;
             while pos < mj_value.len() {
@@ -6228,6 +6237,7 @@ mod tests {
                 if pos + len > mj_value.len() { break; }
                 let circuit = CircuitSeq::from_blob(&mj_value[pos..pos + len]);
                 println!("    [{}] {}", idx, circuit.repr());
+                writeln!(file, "    [{}] {}", idx, circuit.repr()).expect("write failed");
                 pos += len;
                 idx += 1;
                 circuits_in_mj_for_shared += 1;
@@ -6241,16 +6251,21 @@ mod tests {
                     let polys = circuit.to_polynomial(n, 0, mi);
                     let (canonical, _) = canonicalize_polys_4(polys);
                     println!("  [canonical polys from first m{} circuit]", mi);
+                    writeln!(file, "  [canonical polys from first m{} circuit]", mi).expect("write failed");
                     for (i, poly) in canonical.iter().enumerate() {
-                        println!("  P{}: {}", i, poly_to_str(poly, 9));
+                        let s = format!("  P{}: {}", i, poly_to_str(poly, 9));
+                        println!("{}", s);
+                        writeln!(file, "{}", s).expect("write failed");
                     }
                 }
             }
         }
 
-        println!("\nTotal keys in m{}:                  {}", mi, total_keys);
-        println!("Total circuits in m{}:              {}", mi, circuits_in_mi);
-        println!("Keys from m{} also found in m{}:     {}", mi, mj, found_in_mj);
-        println!("Circuits in m{} for shared keys:    {}", mj, circuits_in_mj_for_shared);
+        let summary = format!(
+            "\nTotal keys in m{}:                  {}\nTotal circuits in m{}:              {}\nKeys from m{} also found in m{}:     {}\nCircuits in m{} for shared keys:    {}",
+            mi, total_keys, mi, circuits_in_mi, mi, mj, found_in_mj, mj, circuits_in_mj_for_shared
+        );
+        println!("{}", summary);
+        writeln!(file, "{}", summary).expect("write failed");
     }
 }
