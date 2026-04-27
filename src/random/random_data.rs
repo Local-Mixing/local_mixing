@@ -6125,4 +6125,90 @@ mod tests {
         assert_eq!(hash_a, hash_b_rev, "c_a hash should equal c_b_rev hash");
         assert_eq!(hash_b, hash_a_rev, "c_b hash should equal c_a_rev hash");
     }
+
+    #[test]
+    fn test_count_m3_keys_in_m4() {
+        let db3 = Arc::new({
+            let path = "rocks_db_m3";
+            let mut opts = Options::default();
+            opts.create_if_missing(false);
+            opts.set_merge_operator_associative("append_merge", append_merge);
+            opts.increase_parallelism(160);
+            opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+            let cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024);
+            let mut block_opts = BlockBasedOptions::default();
+            block_opts.set_block_cache(&cache);
+            block_opts.set_block_size(16 * 1024);
+            block_opts.set_bloom_filter(10.0, false);
+            block_opts.set_cache_index_and_filter_blocks(true);
+            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+            opts.set_block_based_table_factory(&block_opts);
+            opts.set_disable_auto_compactions(true);
+            DB::open_for_read_only(&opts, path, false).expect("Failed to open rocks_db_m3")
+        });
+
+        let db4 = Arc::new({
+            let path = "rocks_db_m4";
+            let mut opts = Options::default();
+            opts.create_if_missing(false);
+            opts.set_merge_operator_associative("append_merge", append_merge);
+            opts.increase_parallelism(160);
+            opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+            let cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024);
+            let mut block_opts = BlockBasedOptions::default();
+            block_opts.set_block_cache(&cache);
+            block_opts.set_block_size(16 * 1024);
+            block_opts.set_bloom_filter(10.0, false);
+            block_opts.set_cache_index_and_filter_blocks(true);
+            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+            opts.set_block_based_table_factory(&block_opts);
+            opts.set_disable_auto_compactions(true);
+            DB::open_for_read_only(&opts, path, false).expect("Failed to open rocks_db_m4")
+        });
+
+        let m3 = 3;
+        let n3 = 3 * m3;
+
+        let mut total_keys = 0usize;
+        let mut found_in_m4 = 0usize;
+
+        let iter = db3.iterator(rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item.expect("RocksDB iter error");
+            total_keys += 1;
+
+            // Check if this key exists in db4
+            if db4.get(&key).unwrap_or(None).is_none() {
+                continue;
+            }
+
+            found_in_m4 += 1;
+
+            // Read the first circuit from the value
+            if value.is_empty() {
+                continue;
+            }
+            let len = value[0] as usize;
+            if 1 + len > value.len() {
+                continue;
+            }
+            let circuit_blob = &value[1..1 + len];
+            let circuit = CircuitSeq::from_blob(circuit_blob);
+
+            // Compute and canonicalize the polynomial
+            let polys = circuit.to_polynomial(n3, 0, m3);
+            let (canonical, _) = canonicalize_polys_4(polys);
+
+            println!("Key found in both dbs — circuit: {:?}", circuit.gates);
+            println!("  Canonical polys:");
+            for (i, poly) in canonical.iter().enumerate() {
+                let mut monomials: Vec<u64> = poly.iter().copied().collect();
+                monomials.sort_unstable();
+                println!("    P{}: {:?}", i, monomials);
+            }
+        }
+
+        println!("\nTotal keys in m3: {}", total_keys);
+        println!("Keys from m3 also found in m4: {}", found_in_m4);
+    }
 }
