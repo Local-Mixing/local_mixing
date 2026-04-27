@@ -6142,78 +6142,70 @@ mod tests {
     }
 
     #[test]
-    fn test_count_m3_keys_in_m4() {
+    fn test_count_mi_keys_in_mj() {
         use crate::circuit::circuit::poly_to_str;
-        let db3 = Arc::new({
-            let path = "rocks_db_m3";
-            let mut opts = Options::default();
-            opts.create_if_missing(false);
-            opts.set_merge_operator_associative("append_merge", append_merge);
-            opts.increase_parallelism(160);
-            opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
-            let cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024);
-            let mut block_opts = BlockBasedOptions::default();
-            block_opts.set_block_cache(&cache);
-            block_opts.set_block_size(16 * 1024);
-            block_opts.set_bloom_filter(10.0, false);
-            block_opts.set_cache_index_and_filter_blocks(true);
-            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
-            opts.set_block_based_table_factory(&block_opts);
-            opts.set_disable_auto_compactions(true);
-            DB::open_for_read_only(&opts, path, false).expect("Failed to open rocks_db_m3")
-        });
-        let db4 = Arc::new({
-            let path = "rocks_db_m4";
-            let mut opts = Options::default();
-            opts.create_if_missing(false);
-            opts.set_merge_operator_associative("append_merge", append_merge);
-            opts.increase_parallelism(160);
-            opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
-            let cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024);
-            let mut block_opts = BlockBasedOptions::default();
-            block_opts.set_block_cache(&cache);
-            block_opts.set_block_size(16 * 1024);
-            block_opts.set_bloom_filter(10.0, false);
-            block_opts.set_cache_index_and_filter_blocks(true);
-            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
-            opts.set_block_based_table_factory(&block_opts);
-            opts.set_disable_auto_compactions(true);
-            DB::open_for_read_only(&opts, path, false).expect("Failed to open rocks_db_m4")
-        });
-        let m3 = 3;
-        let n3 = 3 * m3;
-        let mut total_keys = 0usize;
-        let mut found_in_m4 = 0usize;
-        let mut circuits_in_m3 = 0usize;
-        let mut circuits_in_m4_for_shared = 0usize;
 
-        let iter = db3.iterator(rocksdb::IteratorMode::Start);
+        let mi = 4; 
+        let mj = 5; 
+
+        let path_i = format!("rocks_db_m{}", mi);
+        let path_j = format!("rocks_db_m{}", mj);
+
+        let open_db = |path: &str| {
+            let mut opts = Options::default();
+            opts.create_if_missing(false);
+            opts.set_merge_operator_associative("append_merge", append_merge);
+            opts.increase_parallelism(160);
+            opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+            let cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024);
+            let mut block_opts = BlockBasedOptions::default();
+            block_opts.set_block_cache(&cache);
+            block_opts.set_block_size(16 * 1024);
+            block_opts.set_bloom_filter(10.0, false);
+            block_opts.set_cache_index_and_filter_blocks(true);
+            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+            opts.set_block_based_table_factory(&block_opts);
+            opts.set_disable_auto_compactions(true);
+            DB::open_for_read_only(&opts, path, false)
+                .unwrap_or_else(|_| panic!("Failed to open {}", path))
+        };
+
+        let dbi = Arc::new(open_db(&path_i));
+        let dbj = Arc::new(open_db(&path_j));
+
+        let n = 3 * mi;
+        let mut total_keys = 0usize;
+        let mut found_in_mj = 0usize;
+        let mut circuits_in_mi = 0usize;
+        let mut circuits_in_mj_for_shared = 0usize;
+
+        let iter = dbi.iterator(rocksdb::IteratorMode::Start);
         for item in iter {
             let (key, value) = item.expect("RocksDB iter error");
             total_keys += 1;
 
-            // Count circuits in this m3 entry
+            // Count circuits in this mi entry
             let mut pos = 0;
             while pos < value.len() {
                 let len = value[pos] as usize;
                 pos += 1;
                 if pos + len > value.len() { break; }
                 pos += len;
-                circuits_in_m3 += 1;
+                circuits_in_mi += 1;
             }
 
-            // Check if this key exists in db4
-            let m4_value = match db4.get(&key).unwrap_or(None) {
+            // Check if this key exists in mj
+            let mj_value = match dbj.get(&key).unwrap_or(None) {
                 Some(v) => v,
                 None => continue,
             };
-            found_in_m4 += 1;
+            found_in_mj += 1;
 
             let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
             println!("\n=== Shared key: {} ===", key_hex);
 
-            // List all circuits in m3 for this key
-            println!("  [m3 circuits]");
+            // List all circuits in mi for this key
+            println!("  [m{} circuits]", mi);
             let mut pos = 0;
             let mut idx = 0;
             while pos < value.len() {
@@ -6224,32 +6216,31 @@ mod tests {
                 println!("    [{}] {}", idx, circuit.repr());
                 pos += len;
                 idx += 1;
-                circuits_in_m3 += 1;
             }
 
-            // List all circuits in m4 for this key
-            println!("  [m4 circuits]");
+            // List all circuits in mj for this key
+            println!("  [m{} circuits]", mj);
             let mut pos = 0;
             let mut idx = 0;
-            while pos < m4_value.len() {
-                let len = m4_value[pos] as usize;
+            while pos < mj_value.len() {
+                let len = mj_value[pos] as usize;
                 pos += 1;
-                if pos + len > m4_value.len() { break; }
-                let circuit = CircuitSeq::from_blob(&m4_value[pos..pos + len]);
+                if pos + len > mj_value.len() { break; }
+                let circuit = CircuitSeq::from_blob(&mj_value[pos..pos + len]);
                 println!("    [{}] {}", idx, circuit.repr());
                 pos += len;
                 idx += 1;
-                circuits_in_m4_for_shared += 1;
+                circuits_in_mj_for_shared += 1;
             }
 
-            // Print canonical polys from first m3 circuit
+            // Print canonical polys from first mi circuit
             if value.len() > 1 {
                 let len = value[0] as usize;
                 if 1 + len <= value.len() {
                     let circuit = CircuitSeq::from_blob(&value[1..1 + len]);
-                    let polys = circuit.to_polynomial(n3, 0, m3);
+                    let polys = circuit.to_polynomial(n, 0, mi);
                     let (canonical, _) = canonicalize_polys_4(polys);
-                    println!("  [canonical polys from first m3 circuit]");
+                    println!("  [canonical polys from first m{} circuit]", mi);
                     for (i, poly) in canonical.iter().enumerate() {
                         println!("  P{}: {}", i, poly_to_str(poly, 9));
                     }
@@ -6257,9 +6248,9 @@ mod tests {
             }
         }
 
-        println!("\nTotal keys in m3:                  {}", total_keys);
-        println!("Total circuits in m3:              {}", circuits_in_m3);
-        println!("Keys from m3 also found in m4:     {}", found_in_m4);
-        println!("Circuits in m4 for shared keys:    {}", circuits_in_m4_for_shared);
+        println!("\nTotal keys in m{}:                  {}", mi, total_keys);
+        println!("Total circuits in m{}:              {}", mi, circuits_in_mi);
+        println!("Keys from m{} also found in m{}:     {}", mi, mj, found_in_mj);
+        println!("Circuits in m{} for shared keys:    {}", mj, circuits_in_mj_for_shared);
     }
 }
