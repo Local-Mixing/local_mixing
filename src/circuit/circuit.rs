@@ -2416,7 +2416,7 @@ pub fn canonicalize_polys_4(
     let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
         .map(|i| (i, degree_counts(&polynomials[i], max_degree)))
         .collect();
-    profiles.sort_by(|a, b| b.1.cmp(&a.1));
+    profiles.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
     let mut groups: Vec<Vec<usize>> = Vec::new();
     {
@@ -2433,7 +2433,6 @@ pub fn canonicalize_polys_4(
     }
 
     // ── Step 2: build class polynomials ──────────────────────────────────────
-    // Use BTreeMap instead of HashMap for deterministic iteration order
     let class_polys: Vec<BTreeMap<Monomial, usize>> = groups.iter().map(|group| {
         let mut sum: BTreeMap<Monomial, usize> = BTreeMap::new();
         for &wire in group {
@@ -2472,10 +2471,12 @@ pub fn canonicalize_polys_4(
             .filter(|(m, _)| *m & (1u64 << x) != 0)
             .map(|(&m, &coeff)| (m, coeff))
             .collect();
+        //  sort remaining for deterministic iteration order
+        remaining.sort_unstable();
         if remaining.is_empty() { return vec![]; }
         let mut levels = Vec::new();
         while !remaining.is_empty() {
-            let top: Vec<(Monomial, usize)> = remaining.iter().copied()
+            let mut top: Vec<(Monomial, usize)> = remaining.iter().copied()
                 .filter(|&(m, cm)| {
                     !remaining.iter().any(|&(mp, cmp)| {
                         if (m,cm)==(mp,cmp) { return false; }
@@ -2483,11 +2484,10 @@ pub fn canonicalize_polys_4(
                     })
                 })
                 .collect();
-            // Use BTreeSet for deterministic order when building top_set
+            //  sort top before pushing so level order is deterministic
+            top.sort_unstable();
             let top_set: BTreeSet<(Monomial,usize)> = top.iter().copied().collect();
             remaining.retain(|x| !top_set.contains(x));
-            let mut top = top;
-            top.sort_by(|&(a, ca), &(b, cb)| a.cmp(&b).then(ca.cmp(&cb)));
             levels.push(top);
         }
         levels
@@ -2500,8 +2500,7 @@ pub fn canonicalize_polys_4(
             cmp_monomials(a, ca, b, cb, vr)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .reverse()
-                // ADD tiebreak:
-                .then(cb.cmp(&ca))
+                //  tiebreak by monomial value for deterministic order
                 .then(a.cmp(&b))
         });
         ms
@@ -2518,9 +2517,16 @@ pub fn canonicalize_polys_4(
                 (Some(_), None) => return Some(std::cmp::Ordering::Greater),
                 (None, Some(_)) => return Some(std::cmp::Ordering::Less),
                 (Some(lx), Some(lxp)) => {
+                    //  iterate in sorted order so first distinguishing pair
+                    // is always the same regardless of vec history
+                    let mut lx_sorted  = lx.to_vec();
+                    let mut lxp_sorted = lxp.to_vec();
+                    lx_sorted.sort_unstable();
+                    lxp_sorted.sort_unstable();
+
                     let mut found = None;
-                    'pairs: for &(m,cm) in lx {
-                        for &(mp,cmp) in lxp {
+                    'pairs: for &(m,cm) in &lx_sorted {
+                        for &(mp,cmp) in &lxp_sorted {
                             match cmp_monomials(m,cm,mp,cmp,vr) {
                                 Some(o @ std::cmp::Ordering::Greater) |
                                 Some(o @ std::cmp::Ordering::Less) => {
@@ -2531,11 +2537,9 @@ pub fn canonicalize_polys_4(
                         }
                     }
                     if let Some(o) = found { return Some(o); }
-                    // All pairs equal — tiebreak by number of monomials at this level
                     if lx.len() != lxp.len() {
                         return Some(lx.len().cmp(&lxp.len()));
                     }
-                    // Same size, all equal — continue to next level
                 }
             }
         }
@@ -2582,7 +2586,8 @@ pub fn canonicalize_polys_4(
                         match compare_vars_in_class(a, b, ci, &var_rank) {
                             Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Less,
                             Some(std::cmp::Ordering::Less)    => std::cmp::Ordering::Greater,
-                            _                                  => std::cmp::Ordering::Equal,
+                            //  tiebreak by index for deterministic sort
+                            _                                  => a.cmp(&b),
                         }
                     });
 
@@ -2622,7 +2627,10 @@ pub fn canonicalize_polys_4(
 
             let mut tb_sorted = tied.clone();
             tb_sorted.sort_by(|&a, &b| {
-                poly_key_by_ranks(a, &var_rank).cmp(&poly_key_by_ranks(b, &var_rank))
+                poly_key_by_ranks(a, &var_rank)
+                    .cmp(&poly_key_by_ranks(b, &var_rank))
+                    //  tiebreak by index
+                    .then(a.cmp(&b))
             });
 
             let mut tb_sub_rank = 0usize;
@@ -2653,7 +2661,7 @@ pub fn canonicalize_polys_4(
         // Stage 3: scan singleton P_i in rank order, use monomials to split
         let mut tb2_fired = false;
         let mut poly_order: Vec<usize> = (0..n).collect();
-        poly_order.sort_by_key(|&i| var_rank[i]);
+        poly_order.sort_by_key(|&i| (var_rank[i], i));  //  tiebreak by index
 
         'tb2: for &poly_idx in &poly_order {
             let wire_rank = var_rank[poly_idx];
