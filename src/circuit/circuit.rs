@@ -20,8 +20,8 @@ use nauty_Traces_sys::{
 use num_bigint::BigUint;
 use num_traits::Zero;
 use num_traits::One;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::circuit;
 // pins are [active, control1, control2] for Toffoli gates
 // We are only concerned with gate r57
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -2433,8 +2433,9 @@ pub fn canonicalize_polys_4(
     }
 
     // ── Step 2: build class polynomials ──────────────────────────────────────
-    let class_polys: Vec<HashMap<Monomial, usize>> = groups.iter().map(|group| {
-        let mut sum: HashMap<Monomial, usize> = HashMap::new();
+    // Use BTreeMap instead of HashMap for deterministic iteration order
+    let class_polys: Vec<BTreeMap<Monomial, usize>> = groups.iter().map(|group| {
+        let mut sum: BTreeMap<Monomial, usize> = BTreeMap::new();
         for &wire in group {
             for &m in &polynomials[wire] {
                 *sum.entry(m).or_insert(0) += 1;
@@ -2482,7 +2483,8 @@ pub fn canonicalize_polys_4(
                     })
                 })
                 .collect();
-            let top_set: std::collections::HashSet<(Monomial,usize)> = top.iter().copied().collect();
+            // Use BTreeSet for deterministic order when building top_set
+            let top_set: BTreeSet<(Monomial,usize)> = top.iter().copied().collect();
             remaining.retain(|x| !top_set.contains(x));
             levels.push(top);
         }
@@ -2649,7 +2651,6 @@ pub fn canonicalize_polys_4(
         poly_order.sort_by_key(|&i| var_rank[i]);
 
         'tb2: for &poly_idx in &poly_order {
-            // Only use polynomials whose wire is uniquely ranked (singleton)
             let wire_rank = var_rank[poly_idx];
             let is_singleton = (0..n).filter(|&v| var_rank[v] == wire_rank).count() == 1;
             if !is_singleton { continue; }
