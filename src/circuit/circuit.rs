@@ -2499,8 +2499,8 @@ pub fn canonicalize_polys_4(
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .reverse()
                 // ADD tiebreak:
-                .then(a.cmp(&b))
-                .then(ca.cmp(&cb))
+                // .then(a.cmp(&b))
+                // .then(ca.cmp(&cb))
         });
         ms
     };
