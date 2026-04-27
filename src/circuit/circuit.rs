@@ -870,18 +870,36 @@ impl CircuitSeq {
         let mut c2 = self.clone();
         c2.gates.reverse();
         c2.canonicalize();
+
+        println!("c1 gates after canonicalize: {:?}", c1.gates);
+        println!("c2 gates after canonicalize: {:?}", c2.gates);
+
         let polys_fwd = c1.to_polynomial(n, 0, c1.gates.len());
         let polys_rev = c2.to_polynomial(n, 0, c2.gates.len());
+
+        println!("polys_fwd key: {:?}", poly_vec_key(&polys_fwd));
+        println!("polys_rev key: {:?}", poly_vec_key(&polys_rev));
+
         let canon1 = canonicalize_polys_4(polys_fwd);
         let canon2 = canonicalize_polys_4(polys_rev);
+
+        println!("canon1 key: {:?}", poly_vec_key(&canon1.0));
+        println!("canon2 key: {:?}", poly_vec_key(&canon2.0));
+        println!("canon1 permutation: {:?}", canon1.1.data);
+        println!("canon2 permutation: {:?}", canon2.1.data);
+
         c1.rewire(&canon1.1.invert(), n);
         c1.canonicalize();
         c2.rewire(&canon2.1.invert(), n);
         c2.canonicalize();
+
+        println!("c1 gates after rewire+canonicalize: {:?}", c1.gates);
+        println!("c2 gates after rewire+canonicalize: {:?}", c2.gates);
+
         if poly_vec_key(&canon1.0) < poly_vec_key(&canon2.0) {
             println!("Case 1");
             (canon1.0, c1)
-        } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0){
+        } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0) {
             println!("Case 2");
             (canon2.0, c2)
         } else if c1.gates <= c2.gates {
