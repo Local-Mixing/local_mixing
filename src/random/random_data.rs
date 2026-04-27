@@ -6128,6 +6128,7 @@ mod tests {
 
     #[test]
     fn test_count_m3_keys_in_m4() {
+        use crate::circuit::circuit::poly_to_str;
         let db3 = Arc::new({
             let path = "rocks_db_m3";
             let mut opts = Options::default();
