@@ -5055,7 +5055,9 @@ mod tests {
 
     #[test]
     fn test_print_all_circuits() {
-        let m = 4;
+        use crate::circuit::circuit::poly_to_str;
+        let m = 3;
+        let n = 3 * m;
         let db = Arc::new(open_db_for_read(m));
         let iter = db.iterator(rocksdb::IteratorMode::Start);
 
@@ -5081,8 +5083,12 @@ mod tests {
 
             // If more than one circuit, write all to friends.txt
             if circuits.len() > 1 {
-                let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
-                writeln!(file, "Key: {}", key_hex).expect("write failed");
+                // Canonicalize the first circuit and use that as the header
+                let polys = circuits[0].to_polynomial(n, 0, m);
+                let (canonical, _) = canonicalize_polys_4(polys);
+                for (i, poly) in canonical.iter().enumerate() {
+                    writeln!(file, "  P{}: {}", i, poly_to_str(poly, n)).expect("write failed");
+                }
                 for (circuit_index, circuit) in circuits.iter().enumerate() {
                     writeln!(file, "  [{}] {}", circuit_index, circuit.repr()).expect("write failed");
                 }
