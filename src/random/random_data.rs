@@ -6202,9 +6202,7 @@ mod tests {
             println!("Key found in both dbs — circuit: {:?}", circuit.gates);
             println!("  Canonical polys:");
             for (i, poly) in canonical.iter().enumerate() {
-                let mut monomials: Vec<u64> = poly.iter().copied().collect();
-                monomials.sort_unstable();
-                println!("    P{}: {:?}", i, monomials);
+                println!("  P{}: {}", i, poly_to_str(poly, 9));
             }
         }
 
