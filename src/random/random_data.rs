@@ -3345,20 +3345,18 @@ pub fn build_from_2rocks(
         );
     });
 
-    // ── Helper: process one (first, second) pair and push to local_results ───
-    //
-    // Mirrors what build_from_rocks does: canonicalize, hash, push. No dedup.
+    // ── Helper: process one (first, second) pair, return Some if non-trivial ──
 
-    let process_and_push = |first: &CircuitSeq,
-                             second: &CircuitSeq,
-                             local_results: &mut Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>| {
+    let process_and_return = |first: &CircuitSeq,
+                               second: &CircuitSeq|
+     -> Option<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> {
         let mut combined_gates = first.gates.clone();
         combined_gates.extend_from_slice(&second.gates);
         let mut combined = CircuitSeq { gates: combined_gates };
         combined.canonicalize();
 
         if combined.adjacent_id() {
-            return;
+            return None;
         }
 
         let canon = canonicalize_polys(combined.to_polynomial(n, 0, m), true, false);
@@ -3367,26 +3365,49 @@ pub fn build_from_2rocks(
 
         let hash: u128 = xxh3_128(&polys_repr_blob(&canon.0));
         let key = hash.to_le_bytes().to_vec();
-        local_results.push((combined, canon.0, key));
+        Some((combined, canon.0, key))
     };
 
-    // ── Build the flat work list at the individual-combination level ─────────
+    // ── Process combinations inline — no upfront collection ──────────────────
     //
-    // Each item is one ready-to-concatenate (first, second) pair — the mapping
-    // has already been applied.  The 4 case loops and the mapping loops are the
-    // generator; rayon parallelises the canonicalization work itself.
-    // With 160 threads this gives far more tasks than pairs would.
+    // Parallelise over i. For each i, iterate j serially and process all 4
+    // cases' mappings immediately, streaming results to the writer thread.
+    // Nothing is collected upfront; memory stays bounded to one i-row at a time.
 
-    println!("Enumerating combinations...");
-    let mut work: Vec<(CircuitSeq, CircuitSeq)> = Vec::new();
-
-    let j_range = |i: usize| -> std::ops::Range<usize> {
-        if same_db { 0..i + 1 } else { 0..nc2 }
+    let j_end = |i: usize| -> usize {
+        if same_db { i + 1 } else { nc2 }
     };
 
-    for i in 0..nc1 {
+    // total_work_arc stays 0 until we know the real count; update it once so
+    // the writer thread can show a denominator as soon as it's available.
+    // Since we can't know it without iterating, we compute it cheaply upfront.
+    let total_work_actual: usize = (0..nc1).map(|i| {
         let c1 = &db1_circuits[i];
+        let n1 = touched_wires(c1).len();
+        let c1_rev_gates: Vec<_> = c1.gates.iter().rev().cloned().collect();
+        let (c1_rev, _) = canonicalize_circuit(c1_rev_gates, n, m1);
+        let n1_rev = touched_wires(&c1_rev).len();
+        (0..j_end(i)).map(|j| {
+            let n2 = touched_wires(&db2_circuits[j]).len();
+            enumerate_c2_wire_mappings(n1,     n2).len()   // case 1
+            + enumerate_c2_wire_mappings(n2,     n1).len() // case 2
+            + enumerate_c2_wire_mappings(n1_rev, n2).len() // case 3
+            + enumerate_c2_wire_mappings(n2,     n1).len() // case 4
+        }).sum::<usize>()
+    }).sum();
+    total_work_arc.store(total_work_actual, Ordering::Relaxed);
+    println!("Total combinations to process: {}", total_work_actual);
 
+    let stop_flag_par = Arc::clone(&stop_flag);
+    let tx_par = tx.clone();
+    let total_gates_tried_par = Arc::clone(&total_gates_tried);
+
+    (0..nc1).into_par_iter().for_each(|i| {
+        if stop_flag_par.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let c1 = &db1_circuits[i];
         let n1 = touched_wires(c1).len();
         let c1_rev = {
             let r = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
@@ -3395,7 +3416,13 @@ pub fn build_from_2rocks(
         };
         let n1_rev = touched_wires(&c1_rev).len();
 
-        for j in j_range(i) {
+        let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> = Vec::new();
+
+        for j in 0..j_end(i) {
+            if stop_flag_par.load(Ordering::SeqCst) {
+                break;
+            }
+
             let c2 = &db2_circuits[j];
             let n2 = touched_wires(c2).len();
 
@@ -3409,48 +3436,22 @@ pub fn build_from_2rocks(
             let mappings_2_1    = enumerate_c2_wire_mappings(n2,     n1);
             let mappings_rev1_2 = enumerate_c2_wire_mappings(n1_rev, n2);
 
-            // Case 1: c1 || mapped_c2
-            for mapping in &mappings_1_2 {
-                work.push((c1.clone(), apply_wire_mapping(c2, mapping)));
-            }
-            // Case 2: c2 || mapped_c1
-            for mapping in &mappings_2_1 {
-                work.push((c2.clone(), apply_wire_mapping(c1, mapping)));
-            }
-            // Case 3: c1_rev || mapped_c2
-            for mapping in &mappings_rev1_2 {
-                work.push((c1_rev.clone(), apply_wire_mapping(c2, mapping)));
-            }
-            // Case 4: mapped_c1 || c2_rev
-            for mapping in &mappings_2_1 {
-                work.push((apply_wire_mapping(c1, mapping), c2_rev.clone()));
-            }
-        }
-    }
+            let count =
+                mappings_1_2.len() + mappings_2_1.len() * 2 + mappings_rev1_2.len();
 
-    let total_work_actual = work.len();
-    total_work_arc.store(total_work_actual, Ordering::Relaxed);
-    println!("Total combinations to process: {}", total_work_actual);
+            // All 4 cases in parallel — each mapping is an independent task.
+            let batch: Vec<_> = mappings_1_2.par_iter()
+                .filter_map(|mapping| process_and_return(c1, &apply_wire_mapping(c2, mapping)))
+                .chain(mappings_2_1.par_iter()
+                    .filter_map(|mapping| process_and_return(c2, &apply_wire_mapping(c1, mapping))))
+                .chain(mappings_rev1_2.par_iter()
+                    .filter_map(|mapping| process_and_return(&c1_rev, &apply_wire_mapping(c2, mapping))))
+                .chain(mappings_2_1.par_iter()
+                    .filter_map(|mapping| process_and_return(&apply_wire_mapping(c1, mapping), &c2_rev)))
+                .collect();
 
-    let stop_flag_par = Arc::clone(&stop_flag);
-    let tx_par = tx.clone();
-    let total_gates_tried_par = Arc::clone(&total_gates_tried);
-    let chunk = (total_work_actual / num_cpus::get()).max(1);
-
-    work.par_chunks(chunk).for_each(|combo_chunk| {
-        if stop_flag_par.load(Ordering::SeqCst) {
-            return;
-        }
-
-        let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> = Vec::new();
-
-        for (first, second) in combo_chunk {
-            if stop_flag_par.load(Ordering::SeqCst) {
-                break;
-            }
-
-            process_and_push(first, second, &mut local_results);
-            total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+            total_gates_tried_par.fetch_add(count, Ordering::Relaxed);
+            local_results.extend(batch);
 
             while local_results.len() >= batch_size {
                 let drain_start = local_results.len() - batch_size;
