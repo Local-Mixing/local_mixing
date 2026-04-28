@@ -3359,13 +3359,11 @@ pub fn build_from_2rocks(
             return None;
         }
 
-        let canon = canonicalize_polys(combined.to_polynomial(n, 0, m), true, false);
-        combined.rewire(&canon.1.invert(), n);
-        combined.canonicalize();
+        let (canon_polys, combined) = combined.canonicalize_polys(n);
 
-        let hash: u128 = xxh3_128(&polys_repr_blob(&canon.0));
+        let hash: u128 = xxh3_128(&polys_repr_blob(&canon_polys));
         let key = hash.to_le_bytes().to_vec();
-        Some((combined, canon.0, key))
+        Some((combined, canon_polys, key))
     };
 
     // ── Process combinations inline — no upfront collection ──────────────────
