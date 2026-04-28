@@ -2783,6 +2783,237 @@ pub fn abstract_gates_for_circuit(circuit: &CircuitSeq, n: usize) -> Vec<[u8; 3]
     result
 }
 
+// pub fn build_from_rocks(
+//     old_db: &Arc<DB>,
+//     new_db: &Arc<DB>,
+//     m: usize,
+// ) -> Result<(), Box<dyn std::error::Error>> {
+//     println!("Running build (max CPU)");
+
+//     rayon::ThreadPoolBuilder::new()
+//         .num_threads(num_cpus::get())
+//         .build_global()
+//         .unwrap();
+
+//     let total_rows = old_db
+//         .property_int_value("rocksdb.estimate-num-keys")
+//         .unwrap()
+//         .unwrap_or(0);
+//     println!("Estimated rows: {}", total_rows);
+
+//     let chunk_size = 500_000;
+//     let batch_size = 10_000;
+
+//     let upper_bound_gates = base_gates(3 * m).len();
+//     let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+//     let stop_flag = Arc::new(AtomicBool::new(false));
+//     {
+//         let stop_flag = stop_flag.clone();
+//         ctrlc::set_handler(move || {
+//             println!("CTRL+C detected! Finishing current batch...");
+//             stop_flag.store(true, Ordering::SeqCst);
+//         })
+//         .expect("Error setting CTRL+C handler");
+//     }
+
+//     let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(100_000);
+//     let stop_flag_clone = stop_flag.clone();
+//     let new_db_writer = Arc::clone(new_db);
+//     let total_gates_tried_insert = Arc::clone(&total_gates_tried);
+
+//     let insert_handle = std::thread::spawn(move || {
+//         let start_time = std::time::Instant::now();
+//         let total_circuits = total_rows as usize * upper_bound_gates * 2;
+//         let mut attempted_inserts = 0;
+//         let mut sst_index = 0usize;
+//         let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+
+//         while let Ok(batch) = rx.recv() {
+//             if stop_flag_clone.load(Ordering::SeqCst) {
+//                 println!("Insertion thread stopping early...");
+//                 break;
+//             }
+
+//             for (circuit, _canon, key) in &batch {
+//                 let circuit_blob = circuit.repr_blob();
+//                 let value = encode_circuit(&circuit_blob);
+//                 pending.push((key.clone(), value));
+//             }
+
+//             attempted_inserts += batch.len();
+//             let tried = total_gates_tried_insert.load(Ordering::Relaxed);
+//             let elapsed = start_time.elapsed().as_secs_f64();
+//             let rate = if elapsed > 0.0 { tried as f64 / elapsed } else { 0.0 };
+//             let remaining = if rate > 0.0 {
+//                 (total_circuits as f64 - tried as f64) / rate
+//             } else {
+//                 f64::INFINITY
+//             };
+//             let remaining_secs = remaining as u64;
+//             let remaining_h = remaining_secs / 3600;
+//             let remaining_m = (remaining_secs % 3600) / 60;
+//             let remaining_s = remaining_secs % 60;
+//             println!(
+//                 "Attempted inserts: {} / {} ({:.2}%) | elapsed: {:.0}s | rate: {:.0}/s | eta: {:02}:{:02}:{:02}",
+//                 attempted_inserts,
+//                 total_circuits,
+//                 if tried > 0 {
+//                     (tried as f64 / total_circuits as f64) * 100.0
+//                 } else {
+//                     0.0
+//                 },
+//                 elapsed,
+//                 rate,
+//                 remaining_h,
+//                 remaining_m,
+//                 remaining_s,
+//             );
+
+//             if pending.len() >= 1_000_000 {
+//                 flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
+//             }
+//         }
+
+//         if !pending.is_empty() {
+//             flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
+//         }
+
+//         let elapsed = start_time.elapsed().as_secs_f64();
+//         println!(
+//             "Insertion thread finished. Total attempted: {} / {} | elapsed: {:.0}s",
+//             attempted_inserts,
+//             total_circuits,
+//             elapsed,
+//         );
+//     });
+
+//     let iter = old_db.iterator(rocksdb::IteratorMode::Start);
+
+//     for chunk in &iter.chunks(chunk_size) {
+//         if stop_flag.load(Ordering::SeqCst) {
+//             break;
+//         }
+
+//         let entries: Vec<(Vec<u8>, Vec<u8>)> = chunk
+//             .map(|item| {
+//                 let (k, v) = item.expect("RocksDB iter error");
+//                 (k.to_vec(), v.to_vec())
+//             })
+//             .collect();
+
+//         let stop_flag_par = Arc::clone(&stop_flag);
+//         let tx_par = tx.clone();
+//         let total_gates_tried_par = Arc::clone(&total_gates_tried);
+
+//         entries.par_chunks(20).for_each(|entry_chunk| {
+//             if stop_flag_par.load(Ordering::SeqCst) {
+//                 return;
+//             }
+
+//             let mut local_results = Vec::new();
+
+//             for (_key, value) in entry_chunk {
+//                 if value.is_empty() {
+//                     continue;
+//                 }
+
+//                 let mut pos = 0;
+//                 while pos < value.len() {
+//                     if pos + 1 > value.len() {
+//                         break;
+//                     }
+//                     let len = value[pos] as usize;
+//                     pos += 1;
+//                     if pos + len > value.len() {
+//                         break;
+//                     }
+//                     let circuit_blob = &value[pos..pos + len];
+//                     pos += len;
+
+//                     let old_circuit = CircuitSeq::from_blob(circuit_blob);
+
+//                     total_gates_tried_par.fetch_add(upper_bound_gates * 2, Ordering::Relaxed);
+
+//                     let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
+//                     prefix.extend_from_slice(&old_circuit.gates);
+
+//                     let gates = abstract_gates_for_circuit(&old_circuit, 3 * m);
+
+//                     for g in gates.iter() {
+//                         let mut q1 = prefix.clone();
+//                         q1.push(*g);
+//                         let mut c1 = CircuitSeq { gates: q1.to_vec() };
+//                         c1.canonicalize();
+//                         if !c1.adjacent_id() {
+//                             // double_canon_check(&c1, 3 * m, "c1");
+//                             let canon1 = c1.canonicalize_polys(3 * m);
+//                             // double_canon_check(&canon1.1, 3 * m, "canon1");
+//                             let c1_hash: u128 = xxh3_128(&polys_repr_blob(&canon1.0));
+//                             local_results.push((
+//                                 canon1.1,
+//                                 canon1.0,
+//                                 c1_hash.to_le_bytes().to_vec(),
+//                             ));
+//                         }
+
+//                         let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
+//                         q2.push(*g);
+//                         q2.extend_from_slice(&prefix);
+//                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
+//                         c2.canonicalize();
+//                         if !c2.adjacent_id() {
+//                             // double_canon_check(&c2, 3 * m, "c2");
+//                             let canon2 = c2.canonicalize_polys(3 * m);
+//                             // double_canon_check(&canon2.1, 3 * m, "canon2");
+//                             let c2_hash: u128 = xxh3_128(&polys_repr_blob(&canon2.0));
+//                             local_results.push((
+//                                 canon2.1,
+//                                 canon2.0,
+//                                 c2_hash.to_le_bytes().to_vec(),
+//                             ));
+//                         }
+//                     }
+
+//                     while local_results.len() >= batch_size {
+//                         let drain_start = local_results.len() - batch_size;
+//                         let batch = local_results.split_off(drain_start);
+//                         if let Err(e) = tx_par.send(batch) {
+//                             eprintln!("Failed to send batch: {:?}", e);
+//                             return;
+//                         }
+//                     }
+
+//                     if stop_flag_par.load(Ordering::SeqCst) {
+//                         return;
+//                     }
+//                 }
+//             }
+
+//             if !local_results.is_empty() {
+//                 if let Err(e) = tx_par.send(local_results) {
+//                     eprintln!("Failed to send remaining batch: {:?}", e);
+//                 }
+//             }
+//         });
+//     }
+
+//     drop(tx);
+//     insert_handle.join().expect("Insertion thread panicked");
+
+//     if !stop_flag.load(Ordering::SeqCst) {
+//         println!("Compacting new_db for optimal read performance...");
+//         new_db.compact_range::<&[u8], &[u8]>(None, None);
+//         println!("Compaction done.");
+//     } else {
+//         println!("Stopped early, skipping compaction.");
+//     }
+
+//     println!("Build finished (or stopped early).");
+//     print_rule_times();
+//     Ok(())
+// }
+
 pub fn build_from_rocks(
     old_db: &Arc<DB>,
     new_db: &Arc<DB>,
@@ -2804,7 +3035,7 @@ pub fn build_from_rocks(
     let chunk_size = 500_000;
     let batch_size = 10_000;
 
-    let upper_bound_gates = base_gates(3 * m).len();
+    let gates = Arc::new(base_gates(3 * m));
     let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -2821,10 +3052,10 @@ pub fn build_from_rocks(
     let stop_flag_clone = stop_flag.clone();
     let new_db_writer = Arc::clone(new_db);
     let total_gates_tried_insert = Arc::clone(&total_gates_tried);
+    let total_circuits = total_rows as usize * gates.len() * 2;
 
     let insert_handle = std::thread::spawn(move || {
         let start_time = std::time::Instant::now();
-        let total_circuits = total_rows as usize * upper_bound_gates * 2;
         let mut attempted_inserts = 0;
         let mut sst_index = 0usize;
         let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
@@ -2858,11 +3089,7 @@ pub fn build_from_rocks(
                 "Attempted inserts: {} / {} ({:.2}%) | elapsed: {:.0}s | rate: {:.0}/s | eta: {:02}:{:02}:{:02}",
                 attempted_inserts,
                 total_circuits,
-                if tried > 0 {
-                    (tried as f64 / total_circuits as f64) * 100.0
-                } else {
-                    0.0
-                },
+                if tried > 0 { (tried as f64 / total_circuits as f64) * 100.0 } else { 0.0 },
                 elapsed,
                 rate,
                 remaining_h,
@@ -2879,12 +3106,11 @@ pub fn build_from_rocks(
             flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
         }
 
-        let elapsed = start_time.elapsed().as_secs_f64();
         println!(
             "Insertion thread finished. Total attempted: {} / {} | elapsed: {:.0}s",
             attempted_inserts,
             total_circuits,
-            elapsed,
+            start_time.elapsed().as_secs_f64(),
         );
     });
 
@@ -2905,6 +3131,7 @@ pub fn build_from_rocks(
         let stop_flag_par = Arc::clone(&stop_flag);
         let tx_par = tx.clone();
         let total_gates_tried_par = Arc::clone(&total_gates_tried);
+        let gates_par = Arc::clone(&gates);
 
         entries.par_chunks(20).for_each(|entry_chunk| {
             if stop_flag_par.load(Ordering::SeqCst) {
@@ -2920,58 +3147,41 @@ pub fn build_from_rocks(
 
                 let mut pos = 0;
                 while pos < value.len() {
-                    if pos + 1 > value.len() {
-                        break;
-                    }
+                    if pos + 1 > value.len() { break; }
                     let len = value[pos] as usize;
                     pos += 1;
-                    if pos + len > value.len() {
-                        break;
-                    }
+                    if pos + len > value.len() { break; }
                     let circuit_blob = &value[pos..pos + len];
                     pos += len;
 
                     let old_circuit = CircuitSeq::from_blob(circuit_blob);
 
-                    total_gates_tried_par.fetch_add(upper_bound_gates * 2, Ordering::Relaxed);
+                    total_gates_tried_par.fetch_add(gates_par.len() * 2, Ordering::Relaxed);
 
-                    let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
-                    prefix.extend_from_slice(&old_circuit.gates);
+                    let prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::from_slice(&old_circuit.gates);
 
-                    let gates = abstract_gates_for_circuit(&old_circuit, 3 * m);
-
-                    for g in gates.iter() {
+                    for &g in gates_par.iter() {
+                        // append
                         let mut q1 = prefix.clone();
-                        q1.push(*g);
+                        q1.push(g);
                         let mut c1 = CircuitSeq { gates: q1.to_vec() };
                         c1.canonicalize();
                         if !c1.adjacent_id() {
-                            // double_canon_check(&c1, 3 * m, "c1");
                             let canon1 = c1.canonicalize_polys(3 * m);
-                            // double_canon_check(&canon1.1, 3 * m, "canon1");
-                            let c1_hash: u128 = xxh3_128(&polys_repr_blob(&canon1.0));
-                            local_results.push((
-                                canon1.1,
-                                canon1.0,
-                                c1_hash.to_le_bytes().to_vec(),
-                            ));
+                            let hash: u128 = xxh3_128(&polys_repr_blob(&canon1.0));
+                            local_results.push((canon1.1, canon1.0, hash.to_le_bytes().to_vec()));
                         }
 
-                        let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
-                        q2.push(*g);
+                        // prepend
+                        let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(prefix.len() + 1);
+                        q2.push(g);
                         q2.extend_from_slice(&prefix);
                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
                         c2.canonicalize();
                         if !c2.adjacent_id() {
-                            // double_canon_check(&c2, 3 * m, "c2");
                             let canon2 = c2.canonicalize_polys(3 * m);
-                            // double_canon_check(&canon2.1, 3 * m, "canon2");
-                            let c2_hash: u128 = xxh3_128(&polys_repr_blob(&canon2.0));
-                            local_results.push((
-                                canon2.1,
-                                canon2.0,
-                                c2_hash.to_le_bytes().to_vec(),
-                            ));
+                            let hash: u128 = xxh3_128(&polys_repr_blob(&canon2.0));
+                            local_results.push((canon2.1, canon2.0, hash.to_le_bytes().to_vec()));
                         }
                     }
 
