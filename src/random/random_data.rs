@@ -6305,4 +6305,86 @@ mod tests {
         println!("Done in {:?}", elapsed);
         println!("Total distinct canonical keys for {}-gate circuits on {} wires: {}", m, n, seen.len());
     }
+
+    #[test]
+    fn bench_canonicalize_polys_throughput() {
+        let m = 4;
+        let n = 3 * m;
+        let gates = base_gates(n);
+        
+        // Generate a sample of circuits to benchmark on
+        let mut rng = rand::rng();
+        let sample_size = 10_000;
+        let mut circuits: Vec<CircuitSeq> = Vec::with_capacity(sample_size);
+        while circuits.len() < sample_size {
+            let g1 = gates[rng.random_range(0..gates.len())];
+            let g2 = gates[rng.random_range(0..gates.len())];
+            let g3 = gates[rng.random_range(0..gates.len())];
+            let g4 = gates[rng.random_range(0..gates.len())];
+            let mut c = CircuitSeq { gates: vec![g1, g2, g3, g4] };
+            c.canonicalize();
+            if c.adjacent_id() { continue; }
+            circuits.push(c);
+        }
+        println!("Sample size: {}", circuits.len());
+
+        // Benchmark canonicalize_polys alone
+        let start = std::time::Instant::now();
+        let mut sink = 0u128;
+        for c in &circuits {
+            let (polys, _) = c.canonicalize_polys(n);
+            sink ^= xxh3_128(&polys_repr_blob(&polys));
+        }
+        let elapsed = start.elapsed().as_secs_f64();
+        let rate = circuits.len() as f64 / elapsed;
+        println!("canonicalize_polys: {:.0}/sec (sink={})", rate, sink);
+
+        // Benchmark just polys_repr_blob + hash
+        let polys_vec: Vec<Vec<Polynomial>> = circuits.iter()
+            .map(|c| c.canonicalize_polys(n).0)
+            .collect();
+        let start = std::time::Instant::now();
+        let mut sink = 0u128;
+        for polys in &polys_vec {
+            sink ^= xxh3_128(&polys_repr_blob(polys));
+        }
+        let elapsed = start.elapsed().as_secs_f64();
+        println!("polys_repr_blob + xxh3: {:.0}/sec (sink={})", rate, sink);
+
+        // Benchmark just canonicalize() 
+        let raw: Vec<CircuitSeq> = (0..sample_size).map(|_| {
+            let g1 = gates[rng.random_range(0..gates.len())];
+            let g2 = gates[rng.random_range(0..gates.len())];
+            let g3 = gates[rng.random_range(0..gates.len())];
+            let g4 = gates[rng.random_range(0..gates.len())];
+            CircuitSeq { gates: vec![g1, g2, g3, g4] }
+        }).collect();
+        let mut raw = raw;
+        let start = std::time::Instant::now();
+        for c in &mut raw {
+            c.canonicalize();
+        }
+        let elapsed = start.elapsed().as_secs_f64();
+        println!("canonicalize: {:.0}/sec", raw.len() as f64 / elapsed);
+
+        // Benchmark adjacent_id
+        let start = std::time::Instant::now();
+        let mut sink2 = 0usize;
+        for c in &circuits {
+            if c.adjacent_id() { sink2 += 1; }
+        }
+        let elapsed = start.elapsed().as_secs_f64();
+        println!("adjacent_id: {:.0}/sec (sink={})", circuits.len() as f64 / elapsed, sink2);
+
+        // Parallel throughput
+        let start = std::time::Instant::now();
+        let sink: u128 = circuits.par_iter().map(|c| {
+            let (polys, _) = c.canonicalize_polys(n);
+            xxh3_128(&polys_repr_blob(&polys))
+        }).reduce(|| 0u128, |a, b| a ^ b);
+        let elapsed = start.elapsed().as_secs_f64();
+        println!("parallel canonicalize_polys: {:.0}/sec (sink={})", 
+            circuits.len() as f64 / elapsed, sink);
+    }
+
 }
