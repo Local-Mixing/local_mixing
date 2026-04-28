@@ -6359,4 +6359,32 @@ mod tests {
         println!("{}", summary);
         writeln!(file, "{}", summary).expect("write failed");
     }
+
+    #[test]
+    fn test_enumerate_all_4gate_circuits() {
+        let m = 4;
+        let n = 3 * m; 
+
+        let gates = base_gates(n);
+        let seen: DashMap<Vec<u8>, ()> = DashMap::new();
+
+        // Every possible 4-gate circuit = every ordered 4-tuple of gates
+        gates.par_iter().for_each(|&g1| {
+            for &g2 in &gates {
+                for &g3 in &gates {
+                    for &g4 in &gates {
+                        let mut circuit = CircuitSeq { gates: vec![g1, g2, g3, g4] };
+                        circuit.canonicalize();
+                        if circuit.adjacent_id() { continue; }
+                        let (canon_polys, _canon_circuit) = circuit.canonicalize_polys(n);
+                        let hash: u128 = xxh3_128(&polys_repr_blob(&canon_polys));
+                        let key = hash.to_le_bytes().to_vec();
+                        seen.insert(key, ());
+                    }
+                }
+            }
+        });
+
+        println!("Total distinct canonical keys for 4-gate circuits: {}", seen.len());
+    }
 }
