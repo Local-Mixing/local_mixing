@@ -5276,35 +5276,60 @@ mod tests {
         println!("db1: {} circuits, {} hashes", db1_total_circuits, db1_total_hashes);
         println!("db2: {} circuits, {} hashes", db2_total_circuits, db2_total_hashes);
 
-        // ── Direct-hash missing key/circuit counts ────────────────────────────────
+        // Helper: get canonical poly string from a circuit
+        let canon_poly_str = |circuit: &CircuitSeq| -> String {
+            use crate::circuit::circuit::poly_to_str;
+            let polys = circuit.to_polynomial(n, 0, m);
+            let (canonical, _) = canonicalize_polys_4(polys);
+            canonical.iter().enumerate()
+                .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
 
+        let mut file = std::fs::File::create("diffs.txt").expect("Failed to create diffs.txt");
+        use std::io::Write;
+
+        // ── Keys in db1 not in db2 ────────────────────────────────────────────────
+        writeln!(file, "=== Keys in db1 not in db2 ===").unwrap();
         let mut db1_keys_not_in_db2 = 0usize;
         let mut db1_circuits_not_in_db2 = 0usize;
         for (key, circuits) in &db1_map {
             if !db2_map.contains_key(key) {
                 db1_keys_not_in_db2 += 1;
                 db1_circuits_not_in_db2 += circuits.len();
+                let poly_str = canon_poly_str(&circuits[0]);
+                writeln!(file, "  canonical polys: {}", poly_str).unwrap();
+                for c in circuits {
+                    writeln!(file, "    circuit: {:?}", c.gates).unwrap();
+                }
             }
         }
+        writeln!(file, "Total: {} keys, {} circuits\n", db1_keys_not_in_db2, db1_circuits_not_in_db2).unwrap();
 
+        // ── Keys in db2 not in db1 ────────────────────────────────────────────────
+        writeln!(file, "=== Keys in db2 not in db1 ===").unwrap();
         let mut db2_keys_not_in_db1 = 0usize;
         let mut db2_circuits_not_in_db1 = 0usize;
         for (key, circuits) in &db2_map {
             if !db1_map.contains_key(key) {
                 db2_keys_not_in_db1 += 1;
                 db2_circuits_not_in_db1 += circuits.len();
+                let poly_str = canon_poly_str(&circuits[0]);
+                writeln!(file, "  canonical polys: {}", poly_str).unwrap();
+                for c in circuits {
+                    writeln!(file, "    circuit: {:?}", c.gates).unwrap();
+                }
             }
         }
+        writeln!(file, "Total: {} keys, {} circuits\n", db2_keys_not_in_db1, db2_circuits_not_in_db1).unwrap();
 
-        println!();
         println!("Keys     in db1 not in db2: {}", db1_keys_not_in_db2);
         println!("Keys     in db2 not in db1: {}", db2_keys_not_in_db1);
         println!("Circuits in db1 not in db2: {}", db1_circuits_not_in_db2);
         println!("Circuits in db2 not in db1: {}", db2_circuits_not_in_db1);
-        println!();
 
         // ── Full directional check (relabeling correctness within matched buckets) ─
-
         let check_direction = |src_name: &str,
                             dst_name: &str,
                             src_map: &HashMap<Vec<u8>, Vec<CircuitSeq>>,
@@ -5333,10 +5358,10 @@ mod tests {
                 let dst_key = match dst_key {
                     Some(k) => k,
                     None => {
+                        let poly_str = canon_poly_str(&src_circuits[0]);
                         errors.push(format!(
-                            "[{src_name} -> {dst_name}] key {:?} not found in {dst_name} (direct or reversal). \
-                            First circuit: {:?}",
-                            &key[..8.min(key.len())],
+                            "[{src_name} -> {dst_name}] key not found (direct or reversal)\n  canonical polys: {}\n  first circuit: {:?}",
+                            poly_str,
                             src_circuits[0].gates,
                         ));
                         continue;
@@ -5350,11 +5375,12 @@ mod tests {
                         .iter()
                         .any(|dst_c| CircuitSeq::is_relabeling_of(src_c, dst_c));
                     if !matched {
+                        let poly_str = canon_poly_str(src_c);
                         errors.push(format!(
-                            "[{src_name} -> {dst_name}] circuit {:?} has no relabeling match \
-                            in {dst_name} bucket (bucket has {} circuits)",
+                            "[{src_name} -> {dst_name}] circuit {:?} has no relabeling match in {dst_name} (bucket has {} circuits)\n  canonical polys: {}",
                             src_c.gates,
                             dst_circuits.len(),
+                            poly_str,
                         ));
                     }
                 }
@@ -5364,11 +5390,12 @@ mod tests {
                         .iter()
                         .any(|src_c| CircuitSeq::is_relabeling_of(dst_c, src_c));
                     if !matched {
+                        let poly_str = canon_poly_str(dst_c);
                         errors.push(format!(
-                            "[{src_name} -> {dst_name}] {dst_name} circuit {:?} (in matched bucket) \
-                            has no relabeling match in {src_name} bucket (bucket has {} circuits)",
+                            "[{src_name} -> {dst_name}] {dst_name} circuit {:?} has no relabeling match in {src_name} (bucket has {} circuits)\n  canonical polys: {}",
                             dst_c.gates,
                             src_circuits.len(),
+                            poly_str,
                         ));
                     }
                 }
@@ -5382,15 +5409,16 @@ mod tests {
         all_errors.extend(check_direction("db2", "db1", &db2_map, &db1_map));
         all_errors.dedup();
 
-        if !all_errors.is_empty() {
-            println!("{} error(s):", all_errors.len());
-            for e in all_errors.iter().take(20) {
-                println!("  {}", e);
-            }
-            if all_errors.len() > 20 {
-                println!("  ... and {} more", all_errors.len() - 20);
+        writeln!(file, "\n=== Relabeling errors ===").unwrap();
+        if all_errors.is_empty() {
+            writeln!(file, "  (none)").unwrap();
+        } else {
+            for e in &all_errors {
+                writeln!(file, "  {}", e).unwrap();
             }
         }
+
+        println!("\n{} relabeling error(s) — see diffs.txt for full details", all_errors.len());
 
         assert!(
             all_errors.is_empty(),
