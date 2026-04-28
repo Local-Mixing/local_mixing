@@ -3141,40 +3141,101 @@ fn apply_wire_mapping(circuit: &CircuitSeq, mapping: &[u8]) -> CircuitSeq {
     }
 }
 
-fn process_combination(
-    first: &CircuitSeq,
-    second: &CircuitSeq,
-    n: usize,
-    m: usize,
-    new_db: &Arc<DB>,
-) -> Option<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)> {
-    let mut combined_gates = first.gates.clone();
-    combined_gates.extend_from_slice(&second.gates);
-    let mut combined = CircuitSeq { gates: combined_gates };
-    combined.canonicalize();
-    let canon = canonicalize_polys(combined.to_polynomial(n, 0, m), true, false);
-    combined.rewire(&canon.1.invert(), n);
-    combined.canonicalize();
+// Cache: (n1, n2) -> Arc<(flat_mappings, stride=n2)>
+// flat_mappings is all mappings concatenated contiguously.
+// mapping i is at flat[i*n2..(i+1)*n2].
+static MAPPING_CACHE: Lazy<DashMap<(usize, usize), Arc<(Vec<u8>, usize)>>> =
+    Lazy::new(|| DashMap::new());
 
-    let blob = polys_repr_blob(&canon.0);
-    let hash: u128 = xxh3_128(&blob);
-    let key = hash.to_le_bytes().to_vec();
+pub fn enumerate_c2_wire_mappings_cached(n1: usize, n2: usize) -> Arc<(Vec<u8>, usize)> {
+    if let Some(cached) = MAPPING_CACHE.get(&(n1, n2)) {
+        return Arc::clone(&*cached);
+    }
+    let result = Arc::new(compute_mappings(n1, n2));
+    MAPPING_CACHE.entry((n1, n2)).or_insert_with(|| Arc::clone(&result));
+    Arc::clone(&*MAPPING_CACHE.get(&(n1, n2)).unwrap())
+}
 
-    let mut rev = combined.clone();
-    rev.gates.reverse();
-    rev.canonicalize();
-    let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true, false);
-    let rev_blob = polys_repr_blob(&canon_rev.0);
-    let rev_hash: u128 = xxh3_128(&rev_blob);
-    let rev_key = rev_hash.to_le_bytes().to_vec();
+fn count_mappings(n1: usize, n2: usize) -> usize {
+    let k_max = n1.min(n2);
+    let mut total = 0usize;
+    let mut cnk = 1usize;
+    let mut pnk = 1usize;
+    for k in 0..=k_max {
+        if k > 0 {
+            cnk = cnk * (n1 - k + 1) / k;
+            pnk *= n2 - k + 1;
+        }
+        total += cnk * pnk;
+    }
+    total
+}
 
-    if !combined.adjacent_id() {
-        let rev_in_db = new_db.get(&rev_key).unwrap_or(None).is_some();
-        if !rev_in_db {
-            return Some((combined, canon.0, key, rev_key));
+fn compute_mappings(n1: usize, n2: usize) -> (Vec<u8>, usize) {
+    let total = count_mappings(n1, n2);
+    let mut flat = vec![0u8; total * n2.max(1)];
+    let mut idx = 0usize;
+    let mut c2_to_wire = vec![0u8; n2];
+    let mut used = vec![false; n2];
+
+    enumerate_direct(
+        0, n1, n2,
+        &mut c2_to_wire,
+        &mut used,
+        &mut flat,
+        &mut idx,
+    );
+
+    debug_assert_eq!(idx, total);
+    (flat, n2)
+}
+
+fn enumerate_direct(
+    pos: usize,
+    n1: usize,
+    n2: usize,
+    c2_to_wire: &mut Vec<u8>,
+    used: &mut Vec<bool>,
+    flat: &mut Vec<u8>,
+    idx: &mut usize,
+) {
+    if pos == n1 {
+        // Assign fresh wires to all unassigned c2 wires in order
+        let mut fresh = n1;
+        for j in 0..n2 {
+            if !used[j] {
+                c2_to_wire[j] = fresh as u8;
+                fresh += 1;
+            }
+        }
+
+        // Write mapping into flat buffer
+        let offset = *idx * n2;
+        flat[offset..offset + n2].copy_from_slice(c2_to_wire);
+        *idx += 1;
+
+        // Undo fresh assignments
+        for j in 0..n2 {
+            if !used[j] {
+                c2_to_wire[j] = 0;
+            }
+        }
+        return;
+    }
+
+    // Option 1: c1 wire `pos` is not shared with any c2 wire
+    enumerate_direct(pos + 1, n1, n2, c2_to_wire, used, flat, idx);
+
+    // Option 2: share c1 wire `pos` with c2 wire j, for each unused j
+    for j in 0..n2 {
+        if !used[j] {
+            used[j] = true;
+            c2_to_wire[j] = pos as u8;
+            enumerate_direct(pos + 1, n1, n2, c2_to_wire, used, flat, idx);
+            used[j] = false;
+            c2_to_wire[j] = 0;
         }
     }
-    None
 }
 
 pub fn build_from_2rocks(
@@ -3195,35 +3256,9 @@ pub fn build_from_2rocks(
     rayon::ThreadPoolBuilder::new()
         .num_threads(num_cpus::get())
         .build_global()
-        .ok(); // ignore error if already initialised
+        .ok();
 
-    let total_rows_db1 = db1
-        .property_int_value("rocksdb.estimate-num-keys")
-        .unwrap()
-        .unwrap_or(0);
-    let total_rows_db2 = db2
-        .property_int_value("rocksdb.estimate-num-keys")
-        .unwrap()
-        .unwrap_or(0);
-    println!(
-        "Estimated rows: db1={} db2={}",
-        total_rows_db1, total_rows_db2
-    );
-
-    let batch_size = 10_000;
-
-    let stop_flag = Arc::new(AtomicBool::new(false));
-    {
-        let sf = stop_flag.clone();
-        ctrlc::set_handler(move || {
-            println!("CTRL+C detected! Finishing current batch...");
-            sf.store(true, Ordering::SeqCst);
-        })
-        .expect("Error setting CTRL+C handler");
-    }
-
-    // ── Load both DBs into memory ────────────────────────────────────────────
-
+    // ── Load db2 into memory once ─────────────────────────────────────────────
     println!("Loading db2 into memory...");
     let db2_circuits: Arc<Vec<CircuitSeq>> = Arc::new({
         let iter = db2.iterator(rocksdb::IteratorMode::Start);
@@ -3236,58 +3271,87 @@ pub fn build_from_2rocks(
                 let len = value[pos] as usize;
                 pos += 1;
                 if pos + len > value.len() { break; }
-                let circuit_blob = &value[pos..pos + len];
+                circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
                 pos += len;
-                circuits.push(CircuitSeq::from_blob(circuit_blob));
             }
         }
         println!("Loaded {} circuits from db2", circuits.len());
         circuits
     });
 
-    let db1_circuits: Arc<Vec<CircuitSeq>> = if same_db {
-        Arc::clone(&db2_circuits)
-    } else {
-        println!("Loading db1 into memory...");
-        Arc::new({
-            let iter = db1.iterator(rocksdb::IteratorMode::Start);
-            let mut circuits = Vec::new();
-            for item in iter {
-                let (_key, value) = item.expect("RocksDB iter error");
-                let mut pos = 0;
-                while pos < value.len() {
-                    if pos + 1 > value.len() { break; }
-                    let len = value[pos] as usize;
-                    pos += 1;
-                    if pos + len > value.len() { break; }
-                    let circuit_blob = &value[pos..pos + len];
-                    pos += len;
-                    circuits.push(CircuitSeq::from_blob(circuit_blob));
-                }
-            }
-            println!("Loaded {} circuits from db1", circuits.len());
-            circuits
-        })
-    };
+    // Precompute c2_rev for every c2 once
+    println!("Precomputing c2_rev...");
+    let db2_rev: Arc<Vec<CircuitSeq>> = Arc::new(
+        db2_circuits.par_iter().map(|c2| {
+            let mut r = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
+            r.canonicalize();
+            let canon = canonicalize_polys(r.to_polynomial(n, 0, m2), true, false);
+            r.rewire(&canon.1.invert(), n);
+            r.canonicalize();
+            r
+        }).collect()
+    );
 
-    let nc1 = db1_circuits.len();
+    // Precompute touched wire counts for every c2 and c2_rev
+    let db2_n2: Arc<Vec<usize>> = Arc::new(
+        db2_circuits.par_iter().map(|c| touched_wires(c).len()).collect()
+    );
+    let db2_rev_n2: Arc<Vec<usize>> = Arc::new(
+        db2_rev.par_iter().map(|c| touched_wires(c).len()).collect()
+    );
+
+    // Warm the mapping cache for all (n1, n2) pairs we'll encounter.
+    // n1 ranges over possible touched-wire counts for m1-gate circuits: 1..=3*m1
+    // n2 ranges over actual counts in db2
+    println!("Warming mapping cache...");
+    let unique_n2: Vec<usize> = {
+        let mut v: Vec<usize> = db2_n2.iter().chain(db2_rev_n2.iter()).cloned().collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    let possible_n1: Vec<usize> = (1..=(3 * m1)).collect();
+    possible_n1.par_iter().for_each(|&n1| {
+        for &n2 in &unique_n2 {
+            enumerate_c2_wire_mappings_cached(n1, n2);
+            enumerate_c2_wire_mappings_cached(n2, n1);
+        }
+    });
+    println!("Cache warmed: {} entries", MAPPING_CACHE.len());
+
+    let total_rows = db1
+        .property_int_value("rocksdb.estimate-num-keys")
+        .unwrap()
+        .unwrap_or(0);
+    println!("Estimated rows in db1: {}", total_rows);
+
+    let chunk_size = 500_000;
+    let batch_size = 10_000;
     let nc2 = db2_circuits.len();
 
     let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let total_work_arc = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    // ── Writer thread ────────────────────────────────────────────────────────
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    {
+        let sf = stop_flag.clone();
+        ctrlc::set_handler(move || {
+            println!("CTRL+C detected! Finishing current batch...");
+            sf.store(true, Ordering::SeqCst);
+        })
+        .expect("Error setting CTRL+C handler");
+    }
 
+    // ── Writer thread ─────────────────────────────────────────────────────────
     let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(100_000);
 
     let stop_flag_clone = stop_flag.clone();
     let new_db_writer = Arc::clone(new_db);
     let total_gates_tried_insert = Arc::clone(&total_gates_tried);
-    let total_work_insert = Arc::clone(&total_work_arc);
 
     let insert_handle = std::thread::spawn(move || {
         let start_time = std::time::Instant::now();
-        let mut attempted_inserts = 0;
+        let total_est = total_rows as usize * nc2 * 4;
+        let mut attempted_inserts = 0usize;
         let mut sst_index = 0usize;
         let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
 
@@ -3296,37 +3360,27 @@ pub fn build_from_2rocks(
                 println!("Insertion thread stopping early...");
                 break;
             }
-
             for (circuit, _canon, key) in &batch {
                 let circuit_blob = circuit.repr_blob();
                 let value = encode_circuit(&circuit_blob);
                 pending.push((key.clone(), value));
             }
-
             attempted_inserts += batch.len();
+
             let tried = total_gates_tried_insert.load(Ordering::Relaxed);
-            let total_work = total_work_insert.load(Ordering::Relaxed);
             let elapsed = start_time.elapsed().as_secs_f64();
             let rate = if elapsed > 0.0 { tried as f64 / elapsed } else { 0.0 };
-            let remaining = if rate > 0.0 {
-                (total_work as f64 - tried as f64) / rate
-            } else {
-                f64::INFINITY
-            };
-            let remaining_secs = remaining as u64;
-            let remaining_h = remaining_secs / 3600;
-            let remaining_m = (remaining_secs % 3600) / 60;
-            let remaining_s = remaining_secs % 60;
+            let remaining_secs = if rate > 0.0 {
+                ((total_est as f64 - tried as f64) / rate) as u64
+            } else { 0 };
             println!(
-                "Attempted inserts: {} / {} ({:.2}%) | elapsed: {:.0}s | rate: {:.0}/s | eta: {:02}:{:02}:{:02}",
-                attempted_inserts,
-                total_work,
-                if tried > 0 { (tried as f64 / total_work as f64) * 100.0 } else { 0.0 },
-                elapsed,
+                "inserts={} | tried={}/{} ({:.1}%) | {:.0}/s | eta {:02}:{:02}:{:02}",
+                attempted_inserts, tried, total_est,
+                (tried as f64 / total_est as f64) * 100.0,
                 rate,
-                remaining_h,
-                remaining_m,
-                remaining_s,
+                remaining_secs / 3600,
+                (remaining_secs % 3600) / 60,
+                remaining_secs % 60,
             );
 
             if pending.len() >= 1_000_000 {
@@ -3337,147 +3391,224 @@ pub fn build_from_2rocks(
         if !pending.is_empty() {
             flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
         }
-
         println!(
-            "Insertion thread finished. Total attempted: {} | elapsed: {:.0}s",
+            "Insertion thread finished. total={} elapsed={:.0}s",
             attempted_inserts,
             start_time.elapsed().as_secs_f64(),
         );
     });
 
-    // ── Helper: process one (first, second) pair, return Some if non-trivial ──
+    // ── Work item: one concrete concatenation to attempt ──────────────────────
+    // Pre-materialized: first_gates || second_gates, ready to concatenate.
+    struct WorkItem {
+        first_gates: Vec<[u8; 3]>,
+        second_gates: Vec<[u8; 3]>,
+    }
 
-    let process_and_return = |first: &CircuitSeq,
-                               second: &CircuitSeq|
-     -> Option<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> {
-        let mut combined_gates = first.gates.clone();
-        combined_gates.extend_from_slice(&second.gates);
-        let mut combined = CircuitSeq { gates: combined_gates };
-        combined.canonicalize();
+    // ── Main loop: stream db1 in chunks ──────────────────────────────────────
+    let iter = db1.iterator(rocksdb::IteratorMode::Start);
 
-        if combined.adjacent_id() {
-            return None;
-        }
+    for chunk in &iter.chunks(chunk_size) {
+        if stop_flag.load(Ordering::SeqCst) { break; }
 
-        let (canon_polys, combined) = combined.canonicalize_polys(n);
-
-        let hash: u128 = xxh3_128(&polys_repr_blob(&canon_polys));
-        let key = hash.to_le_bytes().to_vec();
-        Some((combined, canon_polys, key))
-    };
-
-    // ── Process combinations inline — no upfront collection ──────────────────
-    //
-    // Parallelise over i. For each i, iterate j serially and process all 4
-    // cases' mappings immediately, streaming results to the writer thread.
-    // Nothing is collected upfront; memory stays bounded to one i-row at a time.
-
-    let j_end = |i: usize| -> usize {
-        if same_db { i + 1 } else { nc2 }
-    };
-
-    // total_work_arc stays 0 until we know the real count; update it once so
-    // the writer thread can show a denominator as soon as it's available.
-    // Since we can't know it without iterating, we compute it cheaply upfront.
-    let total_work_actual: usize = (0..nc1).map(|i| {
-        let c1 = &db1_circuits[i];
-        let n1 = touched_wires(c1).len();
-        let c1_rev_gates: Vec<_> = c1.gates.iter().rev().cloned().collect();
-        let (c1_rev, _) = canonicalize_circuit(c1_rev_gates, n, m1);
-        let n1_rev = touched_wires(&c1_rev).len();
-        (0..j_end(i)).map(|j| {
-            let n2 = touched_wires(&db2_circuits[j]).len();
-            enumerate_c2_wire_mappings(n1,     n2).len()   // case 1
-            + enumerate_c2_wire_mappings(n2,     n1).len() // case 2
-            + enumerate_c2_wire_mappings(n1_rev, n2).len() // case 3
-            + enumerate_c2_wire_mappings(n2,     n1).len() // case 4
-        }).sum::<usize>()
-    }).sum();
-    total_work_arc.store(total_work_actual, Ordering::Relaxed);
-    println!("Total combinations to process: {}", total_work_actual);
-
-    let stop_flag_par = Arc::clone(&stop_flag);
-    let tx_par = tx.clone();
-    let total_gates_tried_par = Arc::clone(&total_gates_tried);
-
-    // Flatten (i, j) pairs so rayon has nc1*nc2 tasks — keeps all 160 threads busy.
-    // c1_rev is the same for all j given i, so we precompute per i-group.
-    let pairs: Vec<(usize, usize)> = (0..nc1)
-        .flat_map(|i| (0..j_end(i)).map(move |j| (i, j)))
-        .collect();
-
-    pairs.par_iter().for_each(|&(i, j)| {
-        if stop_flag_par.load(Ordering::SeqCst) {
-            return;
-        }
-
-        let c1 = &db1_circuits[i];
-        let c2 = &db2_circuits[j];
-
-        let n1 = touched_wires(c1).len();
-        let n2 = touched_wires(c2).len();
-
-        let c1_rev = {
-            let r = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
-            let (rc, _) = canonicalize_circuit(r.gates, n, m1);
-            rc
-        };
-        let c2_rev = {
-            let r = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
-            let (rc, _) = canonicalize_circuit(r.gates, n, m2);
-            rc
-        };
-        let n1_rev = touched_wires(&c1_rev).len();
-
-        let mappings_1_2    = enumerate_c2_wire_mappings(n1,     n2);
-        let mappings_2_1    = enumerate_c2_wire_mappings(n2,     n1);
-        let mappings_rev1_2 = enumerate_c2_wire_mappings(n1_rev, n2);
-        let count = mappings_1_2.len() + mappings_2_1.len() * 2 + mappings_rev1_2.len();
-
-        let all_work: Vec<(u8, &Vec<u8>)> = mappings_1_2.iter().map(|m| (1u8, m))
-            .chain(mappings_2_1.iter().map(|m| (2u8, m)))
-            .chain(mappings_rev1_2.iter().map(|m| (3u8, m)))
-            .chain(mappings_2_1.iter().map(|m| (4u8, m)))
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = chunk
+            .map(|item| {
+                let (k, v) = item.expect("RocksDB iter error");
+                (k.to_vec(), v.to_vec())
+            })
             .collect();
 
-        let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> =
-            all_work.into_iter().filter_map(|(case, mapping)| match case {
-                1 => process_and_return(c1,      &apply_wire_mapping(c2, mapping)),
-                2 => process_and_return(c2,      &apply_wire_mapping(c1, mapping)),
-                3 => process_and_return(&c1_rev, &apply_wire_mapping(c2, mapping)),
-                _ => process_and_return(&apply_wire_mapping(c1, mapping), &c2_rev),
-            }).collect();
-
-        total_gates_tried_par.fetch_add(count, Ordering::Relaxed);
-
-        while local_results.len() >= batch_size {
-            let drain_start = local_results.len() - batch_size;
-            let batch = local_results.split_off(drain_start);
-            if let Err(e) = tx_par.send(batch) {
-                eprintln!("Failed to send batch: {:?}", e);
-                return;
+        // Decode all c1 circuits from this chunk
+        let mut c1_circuits: Vec<CircuitSeq> = Vec::new();
+        for (_key, value) in &entries {
+            let mut pos = 0;
+            while pos < value.len() {
+                if pos + 1 > value.len() { break; }
+                let len = value[pos] as usize;
+                pos += 1;
+                if pos + len > value.len() { break; }
+                c1_circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
+                pos += len;
             }
         }
 
-        if !local_results.is_empty() {
-            if let Err(e) = tx_par.send(local_results) {
-                eprintln!("Failed to send remaining batch: {:?}", e);
+        // Precompute per-c1 data in parallel
+        struct C1Data {
+            c1: CircuitSeq,
+            n1: usize,
+            c1_rev: CircuitSeq,
+            n1_rev: usize,
+        }
+
+        let c1_data: Vec<C1Data> = c1_circuits
+            .into_par_iter()
+            .map(|c1| {
+                let n1 = touched_wires(&c1).len();
+                let c1_rev = {
+                    let mut r = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
+                    r.canonicalize();
+                    let canon = canonicalize_polys(r.to_polynomial(n, 0, m1), true, false);
+                    r.rewire(&canon.1.invert(), n);
+                    r.canonicalize();
+                    r
+                };
+                let n1_rev = touched_wires(&c1_rev).len();
+                C1Data { c1, n1, c1_rev, n1_rev }
+            })
+            .collect();
+
+        // Build flat work list in parallel over c1, then process each item in parallel.
+        // We avoid collecting into WorkItem structs and instead process directly
+        // using a two-level par_iter: outer over c1, inner over (c2, mapping, case).
+        // This gives maximum parallelism while keeping allocations minimal.
+        let db2_ref   = &*db2_circuits;
+        let db2_rev_ref  = &*db2_rev;
+        let db2_n2_ref   = &*db2_n2;
+        let db2_rev_n2_ref = &*db2_rev_n2;
+        let stop_flag_par  = Arc::clone(&stop_flag);
+        let tx_par = tx.clone();
+        let total_gates_tried_par = Arc::clone(&total_gates_tried);
+
+        // results collected per-c1 chunk, then sent in batches
+        let chunk_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> = c1_data
+            .par_iter()
+            .flat_map(|d| {
+                if stop_flag_par.load(Ordering::SeqCst) {
+                    return vec![];
+                }
+
+                let mut local: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> = Vec::new();
+
+                for (j, c2) in db2_ref.iter().enumerate() {
+                    let n2     = db2_n2_ref[j];
+                    let c2_rev = &db2_rev_ref[j];
+                    let n2_rev = db2_rev_n2_ref[j];
+
+                    // All mapping sets needed for 8 cases
+                    let maps_1_2    = enumerate_c2_wire_mappings_cached(d.n1,     n2);
+                    let maps_2_1    = enumerate_c2_wire_mappings_cached(n2,       d.n1);
+                    let maps_rev1_2 = enumerate_c2_wire_mappings_cached(d.n1_rev, n2);
+                    let maps_2_rev1 = enumerate_c2_wire_mappings_cached(n2_rev,   d.n1);
+
+                    let (flat_1_2,    stride_1_2)    = &*maps_1_2;
+                    let (flat_2_1,    stride_2_1)    = &*maps_2_1;
+                    let (flat_rev1_2, stride_rev1_2) = &*maps_rev1_2;
+                    let (flat_2_rev1, stride_2_rev1) = &*maps_2_rev1;
+
+                    let n_1_2    = if *stride_1_2    == 0 { 0 } else { flat_1_2.len()    / stride_1_2    };
+                    let n_2_1    = if *stride_2_1    == 0 { 0 } else { flat_2_1.len()    / stride_2_1    };
+                    let n_rev1_2 = if *stride_rev1_2 == 0 { 0 } else { flat_rev1_2.len() / stride_rev1_2 };
+                    let n_2_rev1 = if *stride_2_rev1 == 0 { 0 } else { flat_2_rev1.len() / stride_2_rev1 };
+
+                    total_gates_tried_par.fetch_add(
+                        (n_1_2 + n_2_1 + n_rev1_2 + n_2_rev1) * 2,
+                        Ordering::Relaxed,
+                    );
+
+                    // Helper closure: concatenate, canonicalize, push if non-trivial
+                    let mut try_push = |first_gates: &[[u8; 3]], second_gates: &[[u8; 3]]| {
+                        let mut gates = Vec::with_capacity(first_gates.len() + second_gates.len());
+                        gates.extend_from_slice(first_gates);
+                        gates.extend_from_slice(second_gates);
+                        let mut combined = CircuitSeq { gates };
+                        combined.canonicalize();
+                        if combined.adjacent_id() { return; }
+                        let (canon_polys, canon_circuit) = combined.canonicalize_polys(n);
+                        let hash: u128 = xxh3_128(&polys_repr_blob(&canon_polys));
+                        let key = hash.to_le_bytes().to_vec();
+                        local.push((canon_circuit, canon_polys, key));
+                    };
+                    
+                    // Case 1: c1 || mapped_c2
+                    for i in 0..n_1_2 {
+                        let mapping = &flat_1_2[i * stride_1_2..(i + 1) * stride_1_2];
+                        let c2_mapped = apply_wire_mapping(c2, mapping);
+                        try_push(&d.c1.gates, &c2_mapped.gates);
+                    }
+
+                    // Case 2: c2 || mapped_c1
+                    for i in 0..n_2_1 {
+                        let mapping = &flat_2_1[i * stride_2_1..(i + 1) * stride_2_1];
+                        let c1_mapped = apply_wire_mapping(&d.c1, mapping);
+                        try_push(&c2.gates, &c1_mapped.gates);
+                    }
+
+                    // Case 3: c1_rev || mapped_c2
+                    for i in 0..n_rev1_2 {
+                        let mapping = &flat_rev1_2[i * stride_rev1_2..(i + 1) * stride_rev1_2];
+                        let c2_mapped = apply_wire_mapping(c2, mapping);
+                        try_push(&d.c1_rev.gates, &c2_mapped.gates);
+                    }
+
+                    // Case 4: mapped_c1 || c2_rev
+                    for i in 0..n_2_rev1 {
+                        let mapping = &flat_2_rev1[i * stride_2_rev1..(i + 1) * stride_2_rev1];
+                        let c1_mapped = apply_wire_mapping(&d.c1, mapping);
+                        try_push(&c1_mapped.gates, &c2_rev.gates);
+                    }
+
+                    // Case 5: c2_rev || mapped_c1
+                    for i in 0..n_2_rev1 {
+                        let mapping = &flat_2_rev1[i * stride_2_rev1..(i + 1) * stride_2_rev1];
+                        let c1_mapped = apply_wire_mapping(&d.c1, mapping);
+                        try_push(&c2_rev.gates, &c1_mapped.gates);
+                    }
+
+                    // Case 6: mapped_c1 || c2
+                    for i in 0..n_2_1 {
+                        let mapping = &flat_2_1[i * stride_2_1..(i + 1) * stride_2_1];
+                        let c1_mapped = apply_wire_mapping(&d.c1, mapping);
+                        try_push(&c1_mapped.gates, &c2.gates);
+                    }
+
+                    // Case 7: mapped_c2 || c1
+                    for i in 0..n_1_2 {
+                        let mapping = &flat_1_2[i * stride_1_2..(i + 1) * stride_1_2];
+                        let c2_mapped = apply_wire_mapping(c2, mapping);
+                        try_push(&c2_mapped.gates, &d.c1.gates);
+                    }
+
+                    // Case 8: mapped_c2 || c1_rev
+                    for i in 0..n_rev1_2 {
+                        let mapping = &flat_rev1_2[i * stride_rev1_2..(i + 1) * stride_rev1_2];
+                        let c2_mapped = apply_wire_mapping(c2, mapping);
+                        try_push(&c2_mapped.gates, &d.c1_rev.gates);
+                    }
+                }
+
+                local
+            })
+            .collect();
+
+        // Send chunk results to writer in batches
+        if !stop_flag.load(Ordering::SeqCst) {
+            for batch in chunk_results.chunks(batch_size) {
+                if let Err(e) = tx_par.send(batch.to_vec()) {
+                    eprintln!("Failed to send batch: {:?}", e);
+                    break;
+                }
             }
         }
-    });
+
+        println!(
+            "Chunk done: {} results generated, tried={}",
+            chunk_results.len(),
+            total_gates_tried.load(Ordering::Relaxed),
+        );
+
+        if stop_flag.load(Ordering::SeqCst) { break; }
+    }
 
     drop(tx);
     insert_handle.join().expect("Insertion thread panicked");
 
     if !stop_flag.load(Ordering::SeqCst) {
-        println!("Compacting new_db for optimal read performance...");
+        println!("Compacting new_db...");
         new_db.compact_range::<&[u8], &[u8]>(None, None);
         println!("Compaction done.");
-    } else {
-        println!("Stopped early, skipping compaction.");
     }
 
-    println!("Build finished (or stopped early).");
+    println!("Build finished.");
     print_rule_times();
     Ok(())
 }
