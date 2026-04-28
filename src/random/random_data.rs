@@ -3434,7 +3434,9 @@ pub fn build_from_2rocks(
         let mappings_1_2    = enumerate_c2_wire_mappings(n1,     n2);
         let mappings_2_1    = enumerate_c2_wire_mappings(n2,     n1);
         let mappings_rev1_2 = enumerate_c2_wire_mappings(n1_rev, n2);
-
+        println!("i={} j={} n1={} n2={} mappings: {} {} {}", 
+            i, j, n1, n2,
+            mappings_1_2.len(), mappings_2_1.len(), mappings_rev1_2.len());
         let count = mappings_1_2.len() + mappings_2_1.len() * 2 + mappings_rev1_2.len();
 
         let all_work: Vec<(u8, &Vec<u8>)> = mappings_1_2.iter().map(|m| (1u8, m))
