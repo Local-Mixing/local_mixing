@@ -6233,142 +6233,41 @@ mod tests {
     }
 
     #[test]
-    fn test_count_mi_keys_in_mj() {
-        use crate::circuit::circuit::poly_to_str;
-        use std::io::Write;
-
-        let mi = 4; 
-        let mj = 5; 
-
-        let path_i = format!("rocks_db_m{}", mi);
-        let path_j = format!("rocks_db_m{}", mj);
-        let friends_path = format!("friends{}{}.txt", mi, mj);
-
-        let open_db = |path: &str| {
-            let mut opts = Options::default();
-            opts.create_if_missing(false);
-            opts.set_merge_operator_associative("append_merge", append_merge);
-            opts.increase_parallelism(160);
-            opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
-            let cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024);
-            let mut block_opts = BlockBasedOptions::default();
-            block_opts.set_block_cache(&cache);
-            block_opts.set_block_size(16 * 1024);
-            block_opts.set_bloom_filter(10.0, false);
-            block_opts.set_cache_index_and_filter_blocks(true);
-            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
-            opts.set_block_based_table_factory(&block_opts);
-            opts.set_disable_auto_compactions(true);
-            DB::open_for_read_only(&opts, path, false)
-                .unwrap_or_else(|_| panic!("Failed to open {}", path))
-        };
-
-        let dbi = Arc::new(open_db(&path_i));
-        let dbj = Arc::new(open_db(&path_j));
-
-        let mut file = std::fs::File::create(&friends_path)
-            .unwrap_or_else(|_| panic!("Failed to create {}", friends_path));
-
-        let n = 3 * mi;
-        let mut total_keys = 0usize;
-        let mut found_in_mj = 0usize;
-        let mut circuits_in_mi = 0usize;
-        let mut circuits_in_mj_for_shared = 0usize;
-
-        let iter = dbi.iterator(rocksdb::IteratorMode::Start);
-        for item in iter {
-            let (key, value) = item.expect("RocksDB iter error");
-            total_keys += 1;
-
-            // Count circuits in this mi entry
-            let mut pos = 0;
-            while pos < value.len() {
-                let len = value[pos] as usize;
-                pos += 1;
-                if pos + len > value.len() { break; }
-                pos += len;
-                circuits_in_mi += 1;
-            }
-
-            // Check if this key exists in mj
-            let mj_value = match dbj.get(&key).unwrap_or(None) {
-                Some(v) => v,
-                None => continue,
-            };
-            found_in_mj += 1;
-
-            let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
-            println!("\n=== Shared key: {} ===", key_hex);
-            writeln!(file, "\n=== Shared key: {} ===", key_hex).expect("write failed");
-
-            // List all circuits in mi for this key
-            println!("  [m{} circuits]", mi);
-            writeln!(file, "  [m{} circuits]", mi).expect("write failed");
-            let mut pos = 0;
-            let mut idx = 0;
-            while pos < value.len() {
-                let len = value[pos] as usize;
-                pos += 1;
-                if pos + len > value.len() { break; }
-                let circuit = CircuitSeq::from_blob(&value[pos..pos + len]);
-                println!("    [{}] {}", idx, circuit.repr());
-                writeln!(file, "    [{}] {}", idx, circuit.repr()).expect("write failed");
-                pos += len;
-                idx += 1;
-            }
-
-            // List all circuits in mj for this key
-            println!("  [m{} circuits]", mj);
-            writeln!(file, "  [m{} circuits]", mj).expect("write failed");
-            let mut pos = 0;
-            let mut idx = 0;
-            while pos < mj_value.len() {
-                let len = mj_value[pos] as usize;
-                pos += 1;
-                if pos + len > mj_value.len() { break; }
-                let circuit = CircuitSeq::from_blob(&mj_value[pos..pos + len]);
-                println!("    [{}] {}", idx, circuit.repr());
-                writeln!(file, "    [{}] {}", idx, circuit.repr()).expect("write failed");
-                pos += len;
-                idx += 1;
-                circuits_in_mj_for_shared += 1;
-            }
-
-            // Print canonical polys from first mi circuit
-            if value.len() > 1 {
-                let len = value[0] as usize;
-                if 1 + len <= value.len() {
-                    let circuit = CircuitSeq::from_blob(&value[1..1 + len]);
-                    let polys = circuit.to_polynomial(n, 0, mi);
-                    let (canonical, _) = canonicalize_polys_4(polys);
-                    println!("  [canonical polys from first m{} circuit]", mi);
-                    writeln!(file, "  [canonical polys from first m{} circuit]", mi).expect("write failed");
-                    for (i, poly) in canonical.iter().enumerate() {
-                        let s = format!("  P{}: {}", i, poly_to_str(poly, 9));
-                        println!("{}", s);
-                        writeln!(file, "{}", s).expect("write failed");
-                    }
-                }
-            }
-        }
-
-        let summary = format!(
-            "\nTotal keys in m{}:                  {}\nTotal circuits in m{}:              {}\nKeys from m{} also found in m{}:     {}\nCircuits in m{} for shared keys:    {}",
-            mi, total_keys, mi, circuits_in_mi, mi, mj, found_in_mj, mj, circuits_in_mj_for_shared
-        );
-        println!("{}", summary);
-        writeln!(file, "{}", summary).expect("write failed");
-    }
-
-    #[test]
     fn test_enumerate_all_4gate_circuits() {
         let m = 4;
         let n = 3 * m; 
 
         let gates = base_gates(n);
-        let seen: DashMap<Vec<u8>, ()> = DashMap::new();
+        let num_gates = gates.len();
+        let total: u64 = (num_gates as u64).pow(4);
 
-        // Every possible 4-gate circuit = every ordered 4-tuple of gates
+        println!("n={}, gates per position={}", n, num_gates);
+        println!("Total circuits to check: {}", total);
+
+        // Estimate time based on a rough throughput of canonicalize_polys
+        // Benchmark: ~1M circuits/sec on a single thread, scale by num_cpus
+        let num_threads = num_cpus::get();
+        let throughput_per_sec = 1_000_000u64 * num_threads as u64;
+        let est_secs = total / throughput_per_sec;
+        let est_mins = est_secs / 60;
+        let est_hours = est_mins / 60;
+        let est_days = est_hours / 24;
+        println!("Threads available: {}", num_threads);
+        println!("Estimated throughput: {}/sec", throughput_per_sec);
+        println!(
+            "Estimated time: {} days, {} hours, {} mins, {} secs",
+            est_days,
+            est_hours % 24,
+            est_mins % 60,
+            est_secs % 60,
+        );
+        println!("Starting enumeration...");
+
+        let seen: DashMap<Vec<u8>, ()> = DashMap::new();
+        let processed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let start = std::time::Instant::now();
+
+        // Print progress every N outer iterations
         gates.par_iter().for_each(|&g1| {
             for &g2 in &gates {
                 for &g3 in &gates {
@@ -6382,9 +6281,28 @@ mod tests {
                         seen.insert(key, ());
                     }
                 }
+
+                // Update progress after each (g1, g2) pair
+                let done = processed.fetch_add(gates.len() as u64, Ordering::Relaxed) + gates.len() as u64;
+                let elapsed = start.elapsed().as_secs_f64();
+                let actual_rate = if elapsed > 0.0 { done as f64 / elapsed } else { 1.0 };
+                let remaining = ((total as f64 - done as f64) / actual_rate) as u64;
+                let rem_h = remaining / 3600;
+                let rem_m = (remaining % 3600) / 60;
+                let rem_s = remaining % 60;
+                println!(
+                    "Progress: {}/{} ({:.2}%) | rate: {:.0}/s | eta: {:02}:{:02}:{:02} | keys so far: {}",
+                    done, total,
+                    (done as f64 / total as f64) * 100.0,
+                    actual_rate,
+                    rem_h, rem_m, rem_s,
+                    seen.len(),
+                );
             }
         });
 
-        println!("Total distinct canonical keys for 4-gate circuits: {}", seen.len());
+        let elapsed = start.elapsed();
+        println!("Done in {:?}", elapsed);
+        println!("Total distinct canonical keys for {}-gate circuits on {} wires: {}", m, n, seen.len());
     }
 }
