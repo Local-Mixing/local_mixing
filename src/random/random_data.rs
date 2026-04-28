@@ -5611,16 +5611,14 @@ mod tests {
 
     #[test]
     fn test_circuit_in_db() {
-        let m = 2;
+        let m = 4;
         let n = 3 * m;
         let db = Arc::new(open_db_for_read(m));
 
         let check = |gates: Vec<[u8; 3]>, label: &str| -> bool {
             let mut circuit = CircuitSeq { gates };
-            let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true, false);
-            circuit.rewire(&canon.1.invert(), n);
-
-            let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true, false);
+            let canon = circuit.canonicalize_polys(n);
+            circuit = canon.1;
             let blob = polys_repr_blob(&canon.0);
             let hash: u128 = xxh3_128(&blob);
             let key = hash.to_le_bytes().to_vec();
@@ -5653,8 +5651,7 @@ mod tests {
             }
         };
 
-        // let gates = vec![[1, 4, 2], [0, 3, 1]];
-        let gates = vec![[1, 2, 3], [0, 4, 2]];
+        let gates = vec![[4, 0, 3], [5, 1, 2], [0, 4, 5], [1, 5, 4]];
         let found = check(gates.clone(), "forward");
 
         if !found {
