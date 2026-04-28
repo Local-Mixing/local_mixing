@@ -3402,64 +3402,63 @@ pub fn build_from_2rocks(
     let tx_par = tx.clone();
     let total_gates_tried_par = Arc::clone(&total_gates_tried);
 
-    (0..nc1).into_par_iter().for_each(|i| {
+    // Flatten (i, j) pairs so rayon has nc1*nc2 tasks — keeps all 160 threads busy.
+    // c1_rev is the same for all j given i, so we precompute per i-group.
+    let pairs: Vec<(usize, usize)> = (0..nc1)
+        .flat_map(|i| (0..j_end(i)).map(move |j| (i, j)))
+        .collect();
+
+    pairs.par_iter().for_each(|&(i, j)| {
         if stop_flag_par.load(Ordering::SeqCst) {
             return;
         }
 
         let c1 = &db1_circuits[i];
+        let c2 = &db2_circuits[j];
+
         let n1 = touched_wires(c1).len();
+        let n2 = touched_wires(c2).len();
+
         let c1_rev = {
             let r = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
             let (rc, _) = canonicalize_circuit(r.gates, n, m1);
             rc
         };
+        let c2_rev = {
+            let r = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
+            let (rc, _) = canonicalize_circuit(r.gates, n, m2);
+            rc
+        };
         let n1_rev = touched_wires(&c1_rev).len();
 
-        let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> = Vec::new();
+        let mappings_1_2    = enumerate_c2_wire_mappings(n1,     n2);
+        let mappings_2_1    = enumerate_c2_wire_mappings(n2,     n1);
+        let mappings_rev1_2 = enumerate_c2_wire_mappings(n1_rev, n2);
 
-        for j in 0..j_end(i) {
-            if stop_flag_par.load(Ordering::SeqCst) {
-                break;
-            }
+        let count = mappings_1_2.len() + mappings_2_1.len() * 2 + mappings_rev1_2.len();
 
-            let c2 = &db2_circuits[j];
-            let n2 = touched_wires(c2).len();
+        let all_work: Vec<(u8, &Vec<u8>)> = mappings_1_2.iter().map(|m| (1u8, m))
+            .chain(mappings_2_1.iter().map(|m| (2u8, m)))
+            .chain(mappings_rev1_2.iter().map(|m| (3u8, m)))
+            .chain(mappings_2_1.iter().map(|m| (4u8, m)))
+            .collect();
 
-            let c2_rev = {
-                let r = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
-                let (rc, _) = canonicalize_circuit(r.gates, n, m2);
-                rc
-            };
+        let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> =
+            all_work.into_iter().filter_map(|(case, mapping)| match case {
+                1 => process_and_return(c1,      &apply_wire_mapping(c2, mapping)),
+                2 => process_and_return(c2,      &apply_wire_mapping(c1, mapping)),
+                3 => process_and_return(&c1_rev, &apply_wire_mapping(c2, mapping)),
+                _ => process_and_return(&apply_wire_mapping(c1, mapping), &c2_rev),
+            }).collect();
 
-            let mappings_1_2    = enumerate_c2_wire_mappings(n1,     n2);
-            let mappings_2_1    = enumerate_c2_wire_mappings(n2,     n1);
-            let mappings_rev1_2 = enumerate_c2_wire_mappings(n1_rev, n2);
+        total_gates_tried_par.fetch_add(count, Ordering::Relaxed);
 
-            let count =
-                mappings_1_2.len() + mappings_2_1.len() * 2 + mappings_rev1_2.len();
-
-            // All 4 cases in parallel — each mapping is an independent task.
-            let batch: Vec<_> = mappings_1_2.par_iter()
-                .filter_map(|mapping| process_and_return(c1, &apply_wire_mapping(c2, mapping)))
-                .chain(mappings_2_1.par_iter()
-                    .filter_map(|mapping| process_and_return(c2, &apply_wire_mapping(c1, mapping))))
-                .chain(mappings_rev1_2.par_iter()
-                    .filter_map(|mapping| process_and_return(&c1_rev, &apply_wire_mapping(c2, mapping))))
-                .chain(mappings_2_1.par_iter()
-                    .filter_map(|mapping| process_and_return(&apply_wire_mapping(c1, mapping), &c2_rev)))
-                .collect();
-
-            total_gates_tried_par.fetch_add(count, Ordering::Relaxed);
-            local_results.extend(batch);
-
-            while local_results.len() >= batch_size {
-                let drain_start = local_results.len() - batch_size;
-                let batch = local_results.split_off(drain_start);
-                if let Err(e) = tx_par.send(batch) {
-                    eprintln!("Failed to send batch: {:?}", e);
-                    return;
-                }
+        while local_results.len() >= batch_size {
+            let drain_start = local_results.len() - batch_size;
+            let batch = local_results.split_off(drain_start);
+            if let Err(e) = tx_par.send(batch) {
+                eprintln!("Failed to send batch: {:?}", e);
+                return;
             }
         }
 
