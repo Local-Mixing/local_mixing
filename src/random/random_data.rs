@@ -5475,14 +5475,13 @@ mod tests {
                     let circuit = CircuitSeq::from_blob(circuit_blob);
 
                     // Recompute the key from the circuit itself
-                    let polys = circuit.to_polynomial(n, 0, m);
-                    let (canonical, _) = canonicalize_polys_4(polys);
-                    let hash: u128 = xxh3_128(&polys_repr_blob(&canonical));
+                    let canonical = circuit.canonicalize_polys(n);
+                    let hash: u128 = xxh3_128(&polys_repr_blob(&canonical.0));
                     let computed_key = hash.to_le_bytes().to_vec();
 
                     map.entry(computed_key)
                         .or_default()
-                        .push(circuit);
+                        .push(canonical.1);
                     total_circuits += 1;
                 }
             }
