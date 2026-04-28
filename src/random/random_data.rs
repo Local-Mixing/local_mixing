@@ -6235,75 +6235,89 @@ mod tests {
     #[test]
     fn test_enumerate_all_4gate_circuits() {
         let m = 4;
-        let n = 3 * m; 
+        let n = 3 * m;
 
-        let gates = base_gates(n);
+        let gates = Arc::new(base_gates(n));
         let num_gates = gates.len();
         let total: u64 = (num_gates as u64).pow(4);
 
         println!("n={}, gates per position={}", n, num_gates);
         println!("Total circuits to check: {}", total);
 
-        // Estimate time based on a rough throughput of canonicalize_polys
-        // Benchmark: ~1M circuits/sec on a single thread, scale by num_cpus
         let num_threads = num_cpus::get();
-        let throughput_per_sec = 1_000_000u64 * num_threads as u64;
-        let est_secs = total / throughput_per_sec;
-        let est_mins = est_secs / 60;
-        let est_hours = est_mins / 60;
-        let est_days = est_hours / 24;
+        // 297k/sec measured parallel throughput
+        let throughput_per_sec = 297_000u64 * num_threads as u64 / num_threads as u64;
+        let est_secs = total / throughput_per_sec.max(1);
         println!("Threads available: {}", num_threads);
-        println!("Estimated throughput: {}/sec", throughput_per_sec);
+        println!("Measured throughput: ~297k/sec parallel");
         println!(
-            "Estimated time: {} days, {} hours, {} mins, {} secs",
-            est_days,
-            est_hours % 24,
-            est_mins % 60,
+            "Estimated time: {} days {:02}h {:02}m {:02}s",
+            est_secs / 86400,
+            (est_secs % 86400) / 3600,
+            (est_secs % 3600) / 60,
             est_secs % 60,
         );
         println!("Starting enumeration...");
 
-        let seen: DashMap<Vec<u8>, ()> = DashMap::new();
-        let processed = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let start = std::time::Instant::now();
+        let processed = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-        // Print progress every N outer iterations
-        gates.par_iter().for_each(|&g1| {
-            for &g2 in &gates {
-                for &g3 in &gates {
-                    for &g4 in &gates {
-                        let mut circuit = CircuitSeq { gates: vec![g1, g2, g3, g4] };
-                        circuit.canonicalize();
-                        if circuit.adjacent_id() { continue; }
-                        let (canon_polys, _canon_circuit) = circuit.canonicalize_polys(n);
-                        let hash: u128 = xxh3_128(&polys_repr_blob(&canon_polys));
-                        let key = hash.to_le_bytes().to_vec();
-                        seen.insert(key, ());
-                    }
+        // Parallelize at (g1, g2) level — num_gates^2 tasks
+        // Each task owns its inner (g3, g4) loop = num_gates^2 circuits
+        let pairs: Vec<([u8; 3], [u8; 3])> = gates.iter()
+            .flat_map(|&g1| gates.iter().map(move |&g2| (g1, g2)))
+            .collect();
+
+        // Use u128 directly — no Vec<u8> allocation per circuit
+        let global_seen: DashMap<u128, ()> = DashMap::new();
+
+        pairs.par_iter().for_each(|&(g1, g2)| {
+            // Thread-local — zero DashMap contention during hot loop
+            let mut local_seen: HashSet<u128> = HashSet::with_capacity(num_gates * num_gates);
+
+            for &g3 in gates.iter() {
+                for &g4 in gates.iter() {
+                    let mut circuit = CircuitSeq { gates: vec![g1, g2, g3, g4] };
+                    circuit.canonicalize();
+                    if circuit.adjacent_id() { continue; }
+                    let (canon_polys, _) = circuit.canonicalize_polys(n);
+                    let hash: u128 = xxh3_128(&polys_repr_blob(&canon_polys));
+                    local_seen.insert(hash);
                 }
+            }
 
-                // Update progress after each (g1, g2) pair
-                let done = processed.fetch_add(gates.len() as u64, Ordering::Relaxed) + gates.len() as u64;
+            // Merge into global — one dashmap insert per unique hash, not per circuit
+            for hash in &local_seen {
+                global_seen.insert(*hash, ());
+            }
+
+            // Progress — fires once per (g1,g2) pair
+            let inner = (num_gates * num_gates) as u64;
+            let done = processed.fetch_add(inner, Ordering::Relaxed) + inner;
+            if done % (inner * 100) < inner {
                 let elapsed = start.elapsed().as_secs_f64();
-                let actual_rate = if elapsed > 0.0 { done as f64 / elapsed } else { 1.0 };
-                let remaining = ((total as f64 - done as f64) / actual_rate) as u64;
-                let rem_h = remaining / 3600;
-                let rem_m = (remaining % 3600) / 60;
-                let rem_s = remaining % 60;
+                let rate = if elapsed > 0.0 { done as f64 / elapsed } else { 1.0 };
+                let remaining = ((total as f64 - done as f64) / rate) as u64;
                 println!(
-                    "Progress: {}/{} ({:.2}%) | rate: {:.0}/s | eta: {:02}:{:02}:{:02} | keys so far: {}",
+                    "Progress: {}/{} ({:.1}%) | {:.0}/s | eta {:02}d {:02}h {:02}m {:02}s | keys: {}",
                     done, total,
                     (done as f64 / total as f64) * 100.0,
-                    actual_rate,
-                    rem_h, rem_m, rem_s,
-                    seen.len(),
+                    rate,
+                    remaining / 86400,
+                    (remaining % 86400) / 3600,
+                    (remaining % 3600) / 60,
+                    remaining % 60,
+                    global_seen.len(),
                 );
             }
         });
 
         let elapsed = start.elapsed();
         println!("Done in {:?}", elapsed);
-        println!("Total distinct canonical keys for {}-gate circuits on {} wires: {}", m, n, seen.len());
+        println!(
+            "Total distinct canonical keys for {}-gate circuits on {} wires: {}",
+            m, n, global_seen.len()
+        );
     }
 
     #[test]
