@@ -5827,9 +5827,9 @@ mod tests {
 
         let check = |gates: Vec<[u8; 3]>, label: &str| -> bool {
             let mut circuit = CircuitSeq { gates };
-            let canon = canonicalize_polys_4(circuit.to_polynomial(n, 0, 4));
-            circuit.rewire(&canon.1.invert(), n);
-            circuit.canonicalize();
+            let canon = circuit.canonicalize_polys(n);
+            circuit = canon.1;
+            println!("{}: canonicalized circuit: {:?}", label, circuit.gates);
             let blob = polys_repr_blob(&canon.0);
             let hash: u128 = xxh3_128(&blob);
             let key = hash.to_le_bytes().to_vec();
