@@ -869,32 +869,33 @@ impl CircuitSeq {
         }
         let mut c1 = self.clone();
         c1.canonicalize();
-        // let mut c2 = self.clone();
-        // c2.gates.reverse();
-        // c2.canonicalize();
+        let mut c2 = self.clone();
+        c2.gates.reverse();
+        c2.canonicalize();
         let polys_fwd = c1.to_polynomial(n, 0, c1.gates.len());
-        // let polys_rev = c2.to_polynomial(n, 0, c2.gates.len());
+        let polys_rev = c2.to_polynomial(n, 0, c2.gates.len());
         // let canon1 = canonicalize_polys_4(polys_fwd);
         let canon1 = canonicalize_polys(polys_fwd, true, false);
         // let canon2 = canonicalize_polys_4(polys_rev);
+        let canon2 = canonicalize_polys(polys_rev, true, false);
         c1.rewire(&canon1.1.invert(), n);
         c1.canonicalize();
-        // c2.rewire(&canon2.1.invert(), n);
-        // c2.canonicalize();
-        // if poly_vec_key(&canon1.0) < poly_vec_key(&canon2.0) {
-        //     // println!("Case 1");
-        //     (canon1.0, c1)
-        // } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0){
-        //     // println!("Case 2");
-        //     (canon2.0, c2)
-        // } else if c1.gates <= c2.gates {
-        //     // println!("Case 3");
-        //     (canon1.0, c1)
-        // } else {
-        //     // println!("Case 4");
-        //     (canon2.0, c2)
-        // }
-        (canon1.0, c1)
+        c2.rewire(&canon2.1.invert(), n);
+        c2.canonicalize();
+        if poly_vec_key(&canon1.0) < poly_vec_key(&canon2.0) {
+            // println!("Case 1");
+            (canon1.0, c1)
+        } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0){
+            // println!("Case 2");
+            (canon2.0, c2)
+        } else if c1.gates <= c2.gates {
+            // println!("Case 3");
+            (canon1.0, c1)
+        } else {
+            // println!("Case 4");
+            (canon2.0, c2)
+        }
+        // (canon1.0, c1)
     }
 }
 
