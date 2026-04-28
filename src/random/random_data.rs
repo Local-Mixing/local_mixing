@@ -3518,7 +3518,7 @@ pub fn build_from_2rocks(
                         let key = hash.to_le_bytes().to_vec();
                         local.push((canon_circuit, canon_polys, key));
                     };
-                    
+
                     // Case 1: c1 || mapped_c2
                     for i in 0..n_1_2 {
                         let mapping = &flat_1_2[i * stride_1_2..(i + 1) * stride_1_2];
@@ -5260,8 +5260,6 @@ mod tests {
         let m = 4;
         let n = 3 * m;
 
-        // Helper: load all circuits from a db, keyed by their canonical hash.
-        // Each key maps to a Vec of circuits stored under that hash bucket.
         let load_db = |db: &Arc<DB>| -> (usize, usize, HashMap<Vec<u8>, Vec<CircuitSeq>>) {
             let mut total_circuits = 0usize;
             let mut total_hashes = 0usize;
@@ -5293,9 +5291,57 @@ mod tests {
         println!("db1: {} circuits, {} hashes", db1_total_circuits, db1_total_hashes);
         println!("db2: {} circuits, {} hashes", db2_total_circuits, db2_total_hashes);
 
-        // Check one direction: every circuit in `src` must be found in `dst`
-        // (by direct key or reversal key), and the circuit lists under the matched
-        // key must all be relabelings of each other.
+        // For a given src key, find the matching key in dst (direct or via reversal).
+        // Returns None if not found in dst at all.
+        let find_dst_key = |key: &Vec<u8>, src_circuits: &Vec<CircuitSeq>, dst_map: &HashMap<Vec<u8>, Vec<CircuitSeq>>| -> Option<Vec<u8>> {
+            if dst_map.contains_key(key) {
+                return Some(key.clone());
+            }
+            let circuit = &src_circuits[0];
+            let mut rev = circuit.clone();
+            rev.gates.reverse();
+            rev.canonicalize();
+            let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true, false);
+            let rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon_rev.0));
+            let rev_key = rev_hash.to_le_bytes().to_vec();
+            if dst_map.contains_key(&rev_key) {
+                Some(rev_key)
+            } else {
+                None
+            }
+        };
+
+        // ── Compute missing keys and circuits in each direction ───────────────────
+
+        // Keys in db1 not found in db2 (neither direct nor reversal)
+        let mut db1_keys_not_in_db2 = 0usize;
+        let mut db1_circuits_not_in_db2 = 0usize;
+        for (key, circuits) in &db1_map {
+            if find_dst_key(key, circuits, &db2_map).is_none() {
+                db1_keys_not_in_db2 += 1;
+                db1_circuits_not_in_db2 += circuits.len();
+            }
+        }
+
+        // Keys in db2 not found in db1 (neither direct nor reversal)
+        let mut db2_keys_not_in_db1 = 0usize;
+        let mut db2_circuits_not_in_db1 = 0usize;
+        for (key, circuits) in &db2_map {
+            if find_dst_key(key, circuits, &db1_map).is_none() {
+                db2_keys_not_in_db1 += 1;
+                db2_circuits_not_in_db1 += circuits.len();
+            }
+        }
+
+        println!();
+        println!("Keys   in db1 not in db2: {}", db1_keys_not_in_db2);
+        println!("Keys   in db2 not in db1: {}", db2_keys_not_in_db1);
+        println!("Circuits in db1 not in db2: {}", db1_circuits_not_in_db2);
+        println!("Circuits in db2 not in db1: {}", db2_circuits_not_in_db1);
+        println!();
+
+        // ── Full directional check (relabeling correctness within matched buckets) ─
+
         let check_direction = |src_name: &str,
                             dst_name: &str,
                             src_map: &HashMap<Vec<u8>, Vec<CircuitSeq>>,
@@ -5304,28 +5350,7 @@ mod tests {
             let mut errors: Vec<String> = Vec::new();
 
             for (key, src_circuits) in src_map {
-                // Resolve which key to look up in dst: try direct first, then reversal.
-                let dst_key = if dst_map.contains_key(key) {
-                    Some(key.clone())
-                } else {
-                    // Recompute the reversal key from the first circuit in the bucket.
-                    // All circuits in a bucket share the same canonical hash so any
-                    // representative works.
-                    let circuit = &src_circuits[0];
-                    let mut rev = circuit.clone();
-                    rev.gates.reverse();
-                    rev.canonicalize();
-                    let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true, false);
-                    let rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon_rev.0));
-                    let rev_key = rev_hash.to_le_bytes().to_vec();
-                    if dst_map.contains_key(&rev_key) {
-                        Some(rev_key)
-                    } else {
-                        None
-                    }
-                };
-
-                let dst_key = match dst_key {
+                let dst_key = match find_dst_key(key, src_circuits, dst_map) {
                     Some(k) => k,
                     None => {
                         errors.push(format!(
@@ -5340,7 +5365,6 @@ mod tests {
 
                 let dst_circuits = &dst_map[&dst_key];
 
-                // Every src circuit must have at least one relabeling match in dst.
                 for src_c in src_circuits {
                     let matched = dst_circuits
                         .iter()
@@ -5355,8 +5379,6 @@ mod tests {
                     }
                 }
 
-                // Every dst circuit must also have at least one relabeling match in src
-                // (so the buckets are symmetric, not just src ⊆ dst).
                 for dst_c in dst_circuits {
                     let matched = src_circuits
                         .iter()
@@ -5378,8 +5400,6 @@ mod tests {
         let mut all_errors: Vec<String> = Vec::new();
         all_errors.extend(check_direction("db1", "db2", &db1_map, &db2_map));
         all_errors.extend(check_direction("db2", "db1", &db2_map, &db1_map));
-
-        // Deduplicate errors that appear in both directions.
         all_errors.dedup();
 
         if !all_errors.is_empty() {
