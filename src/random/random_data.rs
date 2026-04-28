@@ -3285,7 +3285,7 @@ pub fn build_from_2rocks(
         db2_circuits.par_iter().map(|c2| {
             let mut r = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
             r.canonicalize();
-            let canon = canonicalize_polys(r.to_polynomial(n, 0, m2), true, false);
+            let canon = canonicalize_polys_4(r.to_polynomial(n, 0, m2));
             r.rewire(&canon.1.invert(), n);
             r.canonicalize();
             r
