@@ -5291,51 +5291,29 @@ mod tests {
         println!("db1: {} circuits, {} hashes", db1_total_circuits, db1_total_hashes);
         println!("db2: {} circuits, {} hashes", db2_total_circuits, db2_total_hashes);
 
-        // For a given src key, find the matching key in dst (direct or via reversal).
-        // Returns None if not found in dst at all.
-        let find_dst_key = |key: &Vec<u8>, src_circuits: &Vec<CircuitSeq>, dst_map: &HashMap<Vec<u8>, Vec<CircuitSeq>>| -> Option<Vec<u8>> {
-            if dst_map.contains_key(key) {
-                return Some(key.clone());
-            }
-            let circuit = &src_circuits[0];
-            let mut rev = circuit.clone();
-            rev.gates.reverse();
-            rev.canonicalize();
-            let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true, false);
-            let rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon_rev.0));
-            let rev_key = rev_hash.to_le_bytes().to_vec();
-            if dst_map.contains_key(&rev_key) {
-                Some(rev_key)
-            } else {
-                None
-            }
-        };
+        // ── Direct-hash missing key/circuit counts ────────────────────────────────
 
-        // ── Compute missing keys and circuits in each direction ───────────────────
-
-        // Keys in db1 not found in db2 (neither direct nor reversal)
         let mut db1_keys_not_in_db2 = 0usize;
         let mut db1_circuits_not_in_db2 = 0usize;
         for (key, circuits) in &db1_map {
-            if find_dst_key(key, circuits, &db2_map).is_none() {
+            if !db2_map.contains_key(key) {
                 db1_keys_not_in_db2 += 1;
                 db1_circuits_not_in_db2 += circuits.len();
             }
         }
 
-        // Keys in db2 not found in db1 (neither direct nor reversal)
         let mut db2_keys_not_in_db1 = 0usize;
         let mut db2_circuits_not_in_db1 = 0usize;
         for (key, circuits) in &db2_map {
-            if find_dst_key(key, circuits, &db1_map).is_none() {
+            if !db1_map.contains_key(key) {
                 db2_keys_not_in_db1 += 1;
                 db2_circuits_not_in_db1 += circuits.len();
             }
         }
 
         println!();
-        println!("Keys   in db1 not in db2: {}", db1_keys_not_in_db2);
-        println!("Keys   in db2 not in db1: {}", db2_keys_not_in_db1);
+        println!("Keys     in db1 not in db2: {}", db1_keys_not_in_db2);
+        println!("Keys     in db2 not in db1: {}", db2_keys_not_in_db1);
         println!("Circuits in db1 not in db2: {}", db1_circuits_not_in_db2);
         println!("Circuits in db2 not in db1: {}", db2_circuits_not_in_db1);
         println!();
@@ -5350,7 +5328,24 @@ mod tests {
             let mut errors: Vec<String> = Vec::new();
 
             for (key, src_circuits) in src_map {
-                let dst_key = match find_dst_key(key, src_circuits, dst_map) {
+                let dst_key = if dst_map.contains_key(key) {
+                    Some(key.clone())
+                } else {
+                    let circuit = &src_circuits[0];
+                    let mut rev = circuit.clone();
+                    rev.gates.reverse();
+                    rev.canonicalize();
+                    let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true, false);
+                    let rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon_rev.0));
+                    let rev_key = rev_hash.to_le_bytes().to_vec();
+                    if dst_map.contains_key(&rev_key) {
+                        Some(rev_key)
+                    } else {
+                        None
+                    }
+                };
+
+                let dst_key = match dst_key {
                     Some(k) => k,
                     None => {
                         errors.push(format!(
