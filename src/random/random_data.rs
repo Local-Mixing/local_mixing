@@ -2783,21 +2783,6 @@ pub fn abstract_gates_for_circuit(circuit: &CircuitSeq, n: usize) -> Vec<[u8; 3]
     result
 }
 
-fn double_canon_check(circuit: &CircuitSeq, n: usize, label: &str) {
-    let mut c = circuit.clone();
-    let canon1 = c.canonicalize_polys(n);
-    let mut c2 = canon1.1.clone();
-    let canon2 = c2.canonicalize_polys(n);
-    assert!(
-        canon1.1.gates == canon2.1.gates,
-        "Double canonicalization produced different result for {}!\n  original:  {:?}\n  first:  {:?}\n  second: {:?}",
-        label,
-        circuit,
-        canon1.1.gates,
-        canon2.1.gates
-    );
-}
-
 pub fn build_from_rocks(
     old_db: &Arc<DB>,
     new_db: &Arc<DB>,
@@ -3202,7 +3187,15 @@ pub fn build_from_2rocks(
     let m = m1 + m2;
     let n = 3 * m;
     let same_db = Arc::ptr_eq(db1, db2);
-    println!("Running build_from_2rocks: m1={} m2={} -> m={} same_db={}", m1, m2, m, same_db);
+    println!(
+        "Running build_from_2rocks: m1={} m2={} -> m={} same_db={}",
+        m1, m2, m, same_db
+    );
+
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_cpus::get())
+        .build_global()
+        .ok(); // ignore error if already initialised
 
     let total_rows_db1 = db1
         .property_int_value("rocksdb.estimate-num-keys")
@@ -3212,25 +3205,24 @@ pub fn build_from_2rocks(
         .property_int_value("rocksdb.estimate-num-keys")
         .unwrap()
         .unwrap_or(0);
-    println!("Estimated rows: db1={} db2={}", total_rows_db1, total_rows_db2);
+    println!(
+        "Estimated rows: db1={} db2={}",
+        total_rows_db1, total_rows_db2
+    );
 
     let batch_size = 10_000;
 
-    // DashMap<pair_key, Vec<(fwd_blob, rev_blob)>>
-    // pair_key = min(fwd_hash, rev_hash) for bucketing
-    // Within each bucket, we store actual circuit blobs so semantically equal
-    // but structurally different circuits are handled correctly
-    let seen: Arc<DashMap<u128, Vec<(Vec<u8>, Vec<u8>)>>> = Arc::new(DashMap::new());
-
     let stop_flag = Arc::new(AtomicBool::new(false));
     {
-        let stop_flag = stop_flag.clone();
+        let sf = stop_flag.clone();
         ctrlc::set_handler(move || {
             println!("CTRL+C detected! Finishing current batch...");
-            stop_flag.store(true, Ordering::SeqCst);
+            sf.store(true, Ordering::SeqCst);
         })
         .expect("Error setting CTRL+C handler");
     }
+
+    // ── Load both DBs into memory ────────────────────────────────────────────
 
     println!("Loading db2 into memory...");
     let db2_circuits: Arc<Vec<CircuitSeq>> = Arc::new({
@@ -3280,17 +3272,18 @@ pub fn build_from_2rocks(
 
     let nc1 = db1_circuits.len();
     let nc2 = db2_circuits.len();
-    let total_work = if same_db {
-        nc2 * (nc2 + 1) / 2 * 8
-    } else {
-        nc1 * nc2 * 8
-    };
-    let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let total_gates_tried_insert = Arc::clone(&total_gates_tried);
 
-    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)>>(100_000);
+    let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let total_work_arc = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    // ── Writer thread ────────────────────────────────────────────────────────
+
+    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(100_000);
+
     let stop_flag_clone = stop_flag.clone();
     let new_db_writer = Arc::clone(new_db);
+    let total_gates_tried_insert = Arc::clone(&total_gates_tried);
+    let total_work_insert = Arc::clone(&total_work_arc);
 
     let insert_handle = std::thread::spawn(move || {
         let start_time = std::time::Instant::now();
@@ -3304,7 +3297,7 @@ pub fn build_from_2rocks(
                 break;
             }
 
-            for (circuit, _canon, key, _pair_key) in &batch {
+            for (circuit, _canon, key) in &batch {
                 let circuit_blob = circuit.repr_blob();
                 let value = encode_circuit(&circuit_blob);
                 pending.push((key.clone(), value));
@@ -3312,6 +3305,7 @@ pub fn build_from_2rocks(
 
             attempted_inserts += batch.len();
             let tried = total_gates_tried_insert.load(Ordering::Relaxed);
+            let total_work = total_work_insert.load(Ordering::Relaxed);
             let elapsed = start_time.elapsed().as_secs_f64();
             let rate = if elapsed > 0.0 { tried as f64 / elapsed } else { 0.0 };
             let remaining = if rate > 0.0 {
@@ -3344,176 +3338,120 @@ pub fn build_from_2rocks(
             flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
         }
 
-        let elapsed = start_time.elapsed().as_secs_f64();
         println!(
             "Insertion thread finished. Total attempted: {} | elapsed: {:.0}s",
-            attempted_inserts, elapsed,
+            attempted_inserts,
+            start_time.elapsed().as_secs_f64(),
         );
     });
 
-    // Helper: compute (fwd_blob, rev_blob, fwd_hash, rev_hash, pair_key) for a combined circuit
-    let compute_blobs = |first: &CircuitSeq, second: &CircuitSeq| -> (Vec<u8>, Vec<u8>, u128, u128, u128) {
-        let mut combined = first.clone();
-        combined.gates.extend_from_slice(&second.gates);
+    // ── Helper: process one (first, second) pair and push to local_results ───
+    //
+    // Mirrors what build_from_rocks does: canonicalize, hash, push. No dedup.
+
+    let process_and_push = |first: &CircuitSeq,
+                             second: &CircuitSeq,
+                             local_results: &mut Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>| {
+        let mut combined_gates = first.gates.clone();
+        combined_gates.extend_from_slice(&second.gates);
+        let mut combined = CircuitSeq { gates: combined_gates };
         combined.canonicalize();
-        let canon = canonicalize_polys_4(combined.to_polynomial(n, 0, m));
-        let fwd_blob = polys_repr_blob(&canon.0);
-        let fwd_hash = xxh3_128(&fwd_blob);
 
-        let mut rev = combined.clone();
-        rev.gates.reverse();
-        rev.canonicalize();
-        let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
-        let rev_blob = polys_repr_blob(&canon_rev.0);
-        let rev_hash = xxh3_128(&rev_blob);
-
-        let pair_key = fwd_hash.min(rev_hash);
-        (fwd_blob, rev_blob, fwd_hash, rev_hash, pair_key)
-    };
-
-    // Helper: dedup check and insert into seen, returns the key bytes if inserted
-    let try_insert_seen = |seen: &DashMap<u128, Vec<(Vec<u8>, Vec<u8>)>>,
-                           fwd_blob: Vec<u8>,
-                           rev_blob: Vec<u8>,
-                           pair_key: u128|
-     -> Option<Vec<u8>> {
-        let fwd_hash = xxh3_128(&fwd_blob);
-        let mut entry = seen.entry(pair_key).or_insert_with(Vec::new);
-        let already_seen = entry.iter().any(|(f, r)| {
-            (f == &fwd_blob && r == &rev_blob) || (f == &rev_blob && r == &fwd_blob)
-        });
-        if !already_seen {
-            entry.push((fwd_blob, rev_blob));
-            drop(entry);
-            Some(fwd_hash.to_le_bytes().to_vec())
-        } else {
-            None
+        if combined.adjacent_id() {
+            return;
         }
+
+        let canon = canonicalize_polys(combined.to_polynomial(n, 0, m), true, false);
+        combined.rewire(&canon.1.invert(), n);
+        combined.canonicalize();
+
+        let hash: u128 = xxh3_128(&polys_repr_blob(&canon.0));
+        let key = hash.to_le_bytes().to_vec();
+        local_results.push((combined, canon.0, key));
     };
+
+    // ── Build the flat work list at the individual-combination level ─────────
+    //
+    // Each item is one ready-to-concatenate (first, second) pair — the mapping
+    // has already been applied.  The 4 case loops and the mapping loops are the
+    // generator; rayon parallelises the canonicalization work itself.
+    // With 160 threads this gives far more tasks than pairs would.
+
+    println!("Enumerating combinations...");
+    let mut work: Vec<(CircuitSeq, CircuitSeq)> = Vec::new();
+
+    let j_range = |i: usize| -> std::ops::Range<usize> {
+        if same_db { 0..i + 1 } else { 0..nc2 }
+    };
+
+    for i in 0..nc1 {
+        let c1 = &db1_circuits[i];
+
+        let n1 = touched_wires(c1).len();
+        let c1_rev = {
+            let r = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
+            let (rc, _) = canonicalize_circuit(r.gates, n, m1);
+            rc
+        };
+        let n1_rev = touched_wires(&c1_rev).len();
+
+        for j in j_range(i) {
+            let c2 = &db2_circuits[j];
+            let n2 = touched_wires(c2).len();
+
+            let c2_rev = {
+                let r = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
+                let (rc, _) = canonicalize_circuit(r.gates, n, m2);
+                rc
+            };
+
+            let mappings_1_2    = enumerate_c2_wire_mappings(n1,     n2);
+            let mappings_2_1    = enumerate_c2_wire_mappings(n2,     n1);
+            let mappings_rev1_2 = enumerate_c2_wire_mappings(n1_rev, n2);
+
+            // Case 1: c1 || mapped_c2
+            for mapping in &mappings_1_2 {
+                work.push((c1.clone(), apply_wire_mapping(c2, mapping)));
+            }
+            // Case 2: c2 || mapped_c1
+            for mapping in &mappings_2_1 {
+                work.push((c2.clone(), apply_wire_mapping(c1, mapping)));
+            }
+            // Case 3: c1_rev || mapped_c2
+            for mapping in &mappings_rev1_2 {
+                work.push((c1_rev.clone(), apply_wire_mapping(c2, mapping)));
+            }
+            // Case 4: mapped_c1 || c2_rev
+            for mapping in &mappings_2_1 {
+                work.push((apply_wire_mapping(c1, mapping), c2_rev.clone()));
+            }
+        }
+    }
+
+    let total_work_actual = work.len();
+    total_work_arc.store(total_work_actual, Ordering::Relaxed);
+    println!("Total combinations to process: {}", total_work_actual);
 
     let stop_flag_par = Arc::clone(&stop_flag);
     let tx_par = tx.clone();
-    let db1_circuits_par = Arc::clone(&db1_circuits);
-    let db2_circuits_par = Arc::clone(&db2_circuits);
     let total_gates_tried_par = Arc::clone(&total_gates_tried);
-    let seen_par = Arc::clone(&seen);
+    let chunk = (total_work_actual / num_cpus::get()).max(1);
 
-    (0..nc1).into_par_iter().for_each(|i| {
+    work.par_chunks(chunk).for_each(|combo_chunk| {
         if stop_flag_par.load(Ordering::SeqCst) {
             return;
         }
 
-        let c1 = &db1_circuits_par[i];
-        let n1 = touched_wires(c1).len();
-        let c1_rev_raw = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
-        let (c1_rev, _) = canonicalize_circuit(c1_rev_raw.gates, n, m1);
-        let n1_rev = touched_wires(&c1_rev).len();
+        let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> = Vec::new();
 
-        let j_end = if same_db { i + 1 } else { nc2 };
-        let mut local_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>, Vec<u8>)> = Vec::new();
-
-        for j in 0..j_end {
-            let c2 = &db2_circuits_par[j];
-
-            if same_db && !c1.geq(c2) {
-                continue;
+        for (first, second) in combo_chunk {
+            if stop_flag_par.load(Ordering::SeqCst) {
+                break;
             }
 
-            let n2 = touched_wires(c2).len();
-            let c2_rev_raw = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
-            let (c2_rev, _) = canonicalize_circuit(c2_rev_raw.gates, n, m2);
+            process_and_push(first, second, &mut local_results);
+            total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
 
-            let mappings_1_2   = enumerate_c2_wire_mappings(n1,     n2);
-            let mappings_rev1_2 = enumerate_c2_wire_mappings(n1_rev, n2);
-            let mappings_2_1   = enumerate_c2_wire_mappings(n2,     n1);
-            // let mappings_rev2_1 = enumerate_c2_wire_mappings(n2_rev, n1);
-
-            // Case 1: c1 || mapped_c2
-            for mapping in &mappings_1_2 {
-                let c2m = apply_wire_mapping(c2, mapping);
-                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
-                if let Some(result) = process_combination(c1, &c2m, n, m, new_db) {
-                    let (circuit, canon, _, _) = result;
-                    let mut rev = circuit.clone();
-                    rev.gates.reverse();
-                    rev.canonicalize();
-                    let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
-                    let fwd_blob = polys_repr_blob(&canon);
-                    let rev_blob = polys_repr_blob(&canon_rev.0);
-                    let fwd_hash = xxh3_128(&fwd_blob);
-                    let rev_hash = xxh3_128(&rev_blob);
-                    let pair_key = fwd_hash.min(rev_hash);
-                    if let Some(key) = try_insert_seen(&seen_par, fwd_blob, rev_blob, pair_key) {
-                        local_results.push((circuit, canon, key, pair_key.to_le_bytes().to_vec()));
-                    }
-                }
-            }
-
-            // Case 2: c2 || mapped_c1
-            for mapping in &mappings_2_1 {
-                let c1m = apply_wire_mapping(c1, mapping);
-                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
-                if let Some(result) = process_combination(c2, &c1m, n, m, new_db) {
-                    let (circuit, canon, _, _) = result;
-                    let mut rev = circuit.clone();
-                    rev.gates.reverse();
-                    rev.canonicalize();
-                    let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
-                    let fwd_blob = polys_repr_blob(&canon);
-                    let rev_blob = polys_repr_blob(&canon_rev.0);
-                    let fwd_hash = xxh3_128(&fwd_blob);
-                    let rev_hash = xxh3_128(&rev_blob);
-                    let pair_key = fwd_hash.min(rev_hash);
-                    if let Some(key) = try_insert_seen(&seen_par, fwd_blob, rev_blob, pair_key) {
-                        local_results.push((circuit, canon, key, pair_key.to_le_bytes().to_vec()));
-                    }
-                }
-            }
-
-            // Case 3: c1_rev || mapped_c2
-            for mapping in &mappings_rev1_2 {
-                let c2m = apply_wire_mapping(c2, mapping);
-                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
-                if let Some(result) = process_combination(&c1_rev, &c2m, n, m, new_db) {
-                    let (circuit, canon, _, _) = result;
-                    let mut rev = circuit.clone();
-                    rev.gates.reverse();
-                    rev.canonicalize();
-                    let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
-                    let fwd_blob = polys_repr_blob(&canon);
-                    let rev_blob = polys_repr_blob(&canon_rev.0);
-                    let fwd_hash = xxh3_128(&fwd_blob);
-                    let rev_hash = xxh3_128(&rev_blob);
-                    let pair_key = fwd_hash.min(rev_hash);
-                    if let Some(key) = try_insert_seen(&seen_par, fwd_blob, rev_blob, pair_key) {
-                        local_results.push((circuit, canon, key, pair_key.to_le_bytes().to_vec()));
-                    }
-                }
-            }
-
-            // Case 7: mapped_c1 || c2_rev
-            for mapping in &mappings_2_1 {
-                let c1m = apply_wire_mapping(c1, mapping);
-                total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
-                if let Some(result) = process_combination(&c1m, &c2_rev, n, m, new_db) {
-                    let (circuit, canon, _, _) = result;
-                    let mut rev = circuit.clone();
-                    rev.gates.reverse();
-                    rev.canonicalize();
-                    let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
-                    let fwd_blob = polys_repr_blob(&canon);
-                    let rev_blob = polys_repr_blob(&canon_rev.0);
-                    let fwd_hash = xxh3_128(&fwd_blob);
-                    let rev_hash = xxh3_128(&rev_blob);
-                    let pair_key = fwd_hash.min(rev_hash);
-                    if let Some(key) = try_insert_seen(&seen_par, fwd_blob, rev_blob, pair_key) {
-                        local_results.push((circuit, canon, key, pair_key.to_le_bytes().to_vec()));
-                    }
-                }
-            }
-
-
-            // Drain local_results in batch_size chunks to keep memory bounded
             while local_results.len() >= batch_size {
                 let drain_start = local_results.len() - batch_size;
                 let batch = local_results.split_off(drain_start);
@@ -3521,10 +3459,6 @@ pub fn build_from_2rocks(
                     eprintln!("Failed to send batch: {:?}", e);
                     return;
                 }
-            }
-
-            if stop_flag_par.load(Ordering::SeqCst) {
-                return;
             }
         }
 
@@ -4052,8 +3986,6 @@ mod tests {
         //     .and_then(|mut f| f.write_all(c_str.as_bytes()))
         //     .expect("Failed to write test_walked.txt");
     }
-
-    use libc::__c_anonymous_ptp_perout_request_1;
     use rand::prelude::SliceRandom;
 
     pub fn heatmap(circuit_one: &CircuitSeq, circuit_two: &CircuitSeq, num_wires: usize, num_inputs: usize, flag: bool) -> f64 {
@@ -5157,7 +5089,7 @@ mod tests {
         }
     }
 
-   #[test]
+    #[test]
     fn test_compare_two_m4_dbs() {
         let db1 = Arc::new({
             let path = "rocks_db_m4";
@@ -5200,111 +5132,142 @@ mod tests {
         let m = 4;
         let n = 3 * m;
 
-        // Count total circuits and hashes in db1
-        let mut db1_total_circuits = 0usize;
-        let mut db1_total_hashes = 0usize;
-        {
-            let iter = db1.iterator(rocksdb::IteratorMode::Start);
+        // Helper: load all circuits from a db, keyed by their canonical hash.
+        // Each key maps to a Vec of circuits stored under that hash bucket.
+        let load_db = |db: &Arc<DB>| -> (usize, usize, HashMap<Vec<u8>, Vec<CircuitSeq>>) {
+            let mut total_circuits = 0usize;
+            let mut total_hashes = 0usize;
+            let mut map: HashMap<Vec<u8>, Vec<CircuitSeq>> = HashMap::new();
+            let iter = db.iterator(rocksdb::IteratorMode::Start);
             for item in iter {
-                let (_key, value) = item.expect("RocksDB iter error");
-                db1_total_hashes += 1;
+                let (key, value) = item.expect("RocksDB iter error");
+                total_hashes += 1;
                 let mut pos = 0;
                 while pos < value.len() {
                     if pos + 1 > value.len() { break; }
                     let len = value[pos] as usize;
                     pos += 1;
                     if pos + len > value.len() { break; }
+                    let circuit_blob = &value[pos..pos + len];
                     pos += len;
-                    db1_total_circuits += 1;
+                    map.entry(key.to_vec())
+                        .or_default()
+                        .push(CircuitSeq::from_blob(circuit_blob));
+                    total_circuits += 1;
                 }
             }
-        }
+            (total_circuits, total_hashes, map)
+        };
 
-        // Count total circuits and hashes in db2
-        let mut db2_total_circuits = 0usize;
-        let mut db2_total_hashes = 0usize;
-        {
-            let iter = db2.iterator(rocksdb::IteratorMode::Start);
-            for item in iter {
-                let (_key, value) = item.expect("RocksDB iter error");
-                db2_total_hashes += 1;
-                let mut pos = 0;
-                while pos < value.len() {
-                    if pos + 1 > value.len() { break; }
-                    let len = value[pos] as usize;
-                    pos += 1;
-                    if pos + len > value.len() { break; }
-                    pos += len;
-                    db2_total_circuits += 1;
-                }
-            }
-        }
+        let (db1_total_circuits, db1_total_hashes, db1_map) = load_db(&db1);
+        let (db2_total_circuits, db2_total_hashes, db2_map) = load_db(&db2);
 
         println!("db1: {} circuits, {} hashes", db1_total_circuits, db1_total_hashes);
         println!("db2: {} circuits, {} hashes", db2_total_circuits, db2_total_hashes);
 
-        let mut missing: Vec<CircuitSeq> = Vec::new();
-        let mut found_directly = 0usize;
-        let mut passed_reversal = 0usize;
+        // Check one direction: every circuit in `src` must be found in `dst`
+        // (by direct key or reversal key), and the circuit lists under the matched
+        // key must all be relabelings of each other.
+        let check_direction = |src_name: &str,
+                            dst_name: &str,
+                            src_map: &HashMap<Vec<u8>, Vec<CircuitSeq>>,
+                            dst_map: &HashMap<Vec<u8>, Vec<CircuitSeq>>|
+        -> Vec<String> {
+            let mut errors: Vec<String> = Vec::new();
 
-        let iter = db1.iterator(rocksdb::IteratorMode::Start);
-        for item in iter {
-            let (_key, value) = item.expect("RocksDB iter error");
-            let mut pos = 0;
-            while pos < value.len() {
-                if pos + 1 > value.len() { break; }
-                let len = value[pos] as usize;
-                pos += 1;
-                if pos + len > value.len() { break; }
-                let circuit_blob = &value[pos..pos + len];
-                pos += len;
+            for (key, src_circuits) in src_map {
+                // Resolve which key to look up in dst: try direct first, then reversal.
+                let dst_key = if dst_map.contains_key(key) {
+                    Some(key.clone())
+                } else {
+                    // Recompute the reversal key from the first circuit in the bucket.
+                    // All circuits in a bucket share the same canonical hash so any
+                    // representative works.
+                    let circuit = &src_circuits[0];
+                    let mut rev = circuit.clone();
+                    rev.gates.reverse();
+                    rev.canonicalize();
+                    let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true, false);
+                    let rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon_rev.0));
+                    let rev_key = rev_hash.to_le_bytes().to_vec();
+                    if dst_map.contains_key(&rev_key) {
+                        Some(rev_key)
+                    } else {
+                        None
+                    }
+                };
 
-                let circuit = CircuitSeq::from_blob(circuit_blob);
+                let dst_key = match dst_key {
+                    Some(k) => k,
+                    None => {
+                        errors.push(format!(
+                            "[{src_name} -> {dst_name}] key {:?} not found in {dst_name} (direct or reversal). \
+                            First circuit: {:?}",
+                            &key[..8.min(key.len())],
+                            src_circuits[0].gates,
+                        ));
+                        continue;
+                    }
+                };
 
-                // Check direct hash match
-                let canon = canonicalize_polys(circuit.to_polynomial(n, 0, m), true, false);
-                let blob = polys_repr_blob(&canon.0);
-                let hash: u128 = xxh3_128(&blob);
-                let key = hash.to_le_bytes().to_vec();
+                let dst_circuits = &dst_map[&dst_key];
 
-                if db2.get(&key).unwrap_or(None).is_some() {
-                    found_directly += 1;
-                    continue;
+                // Every src circuit must have at least one relabeling match in dst.
+                for src_c in src_circuits {
+                    let matched = dst_circuits
+                        .iter()
+                        .any(|dst_c| CircuitSeq::is_relabeling_of(src_c, dst_c));
+                    if !matched {
+                        errors.push(format!(
+                            "[{src_name} -> {dst_name}] circuit {:?} has no relabeling match \
+                            in {dst_name} bucket (bucket has {} circuits)",
+                            src_c.gates,
+                            dst_circuits.len(),
+                        ));
+                    }
                 }
 
-                // Check reversed circuit hash match
-                let mut rev = circuit.clone();
-                rev.gates.reverse();
-                rev.canonicalize();
-                let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true, false);
-                let rev_blob = polys_repr_blob(&canon_rev.0);
-                let rev_hash: u128 = xxh3_128(&rev_blob);
-                let rev_key = rev_hash.to_le_bytes().to_vec();
-
-                if db2.get(&rev_key).unwrap_or(None).is_some() {
-                    passed_reversal += 1;
-                    continue;
+                // Every dst circuit must also have at least one relabeling match in src
+                // (so the buckets are symmetric, not just src ⊆ dst).
+                for dst_c in dst_circuits {
+                    let matched = src_circuits
+                        .iter()
+                        .any(|src_c| CircuitSeq::is_relabeling_of(dst_c, src_c));
+                    if !matched {
+                        errors.push(format!(
+                            "[{src_name} -> {dst_name}] {dst_name} circuit {:?} (in matched bucket) \
+                            has no relabeling match in {src_name} bucket (bucket has {} circuits)",
+                            dst_c.gates,
+                            src_circuits.len(),
+                        ));
+                    }
                 }
-
-                missing.push(circuit);
             }
-        }
 
-        println!("Found directly in db2: {}", found_directly);
-        println!("Passed reversal check: {}", passed_reversal);
-        println!("Missing from db2 (not found directly, by reversal, or relabeling): {}", missing.len());
+            errors
+        };
 
-        if !missing.is_empty() {
-            println!("First 10 missing circuits:");
-            for circuit in missing.iter().take(10) {
-                println!("  {:?}", circuit.gates);
+        let mut all_errors: Vec<String> = Vec::new();
+        all_errors.extend(check_direction("db1", "db2", &db1_map, &db2_map));
+        all_errors.extend(check_direction("db2", "db1", &db2_map, &db1_map));
+
+        // Deduplicate errors that appear in both directions.
+        all_errors.dedup();
+
+        if !all_errors.is_empty() {
+            println!("{} error(s):", all_errors.len());
+            for e in all_errors.iter().take(20) {
+                println!("  {}", e);
+            }
+            if all_errors.len() > 20 {
+                println!("  ... and {} more", all_errors.len() - 20);
             }
         }
 
         assert!(
-            missing.is_empty(),
-            "{} circuits from db1 not found in db2",
-            missing.len()
+            all_errors.is_empty(),
+            "{} mismatch(es) between db1 and db2",
+            all_errors.len()
         );
     }
 
