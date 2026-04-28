@@ -880,9 +880,9 @@ impl CircuitSeq {
         // let canon1 = canonicalize_polys(polys_fwd, true, false);
         let canon2 = canonicalize_polys(polys_rev, true, false);
         // let canon2 = canonicalize_polys(polys_rev, true, false);
-        c1.rewire(&canon1.1.invert(), n);
+        c1.rewire(&canon1.1.invert(), n1);
         c1.canonicalize();
-        c2.rewire(&canon2.1.invert(), n);
+        c2.rewire(&canon2.1.invert(), n2);
         c2.canonicalize();
         if poly_vec_key(&canon1.0) < poly_vec_key(&canon2.0) {
             // println!("Case 1");
