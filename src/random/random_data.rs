@@ -3398,13 +3398,6 @@ pub fn build_from_2rocks(
         );
     });
 
-    // ── Work item: one concrete concatenation to attempt ──────────────────────
-    // Pre-materialized: first_gates || second_gates, ready to concatenate.
-    struct WorkItem {
-        first_gates: Vec<[u8; 3]>,
-        second_gates: Vec<[u8; 3]>,
-    }
-
     // ── Main loop: stream db1 in chunks ──────────────────────────────────────
     let iter = db1.iterator(rocksdb::IteratorMode::Start);
 
@@ -3447,7 +3440,7 @@ pub fn build_from_2rocks(
                 let c1_rev = {
                     let mut r = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
                     r.canonicalize();
-                    let canon = canonicalize_polys(r.to_polynomial(n, 0, m1), true, false);
+                    let canon = canonicalize_polys_4(r.to_polynomial(n, 0, m1));
                     r.rewire(&canon.1.invert(), n);
                     r.canonicalize();
                     r
@@ -3702,14 +3695,6 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
         "Finished: inserted {} circuits after {} attempts",
         inserted, total_attempts
     );
-}
-
-fn canonicalize_circuit(gates: Vec<[u8; 3]>, n: usize, m: usize) -> (CircuitSeq, Permutation) {
-        let mut c = CircuitSeq { gates };
-        let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true, false);
-        c.rewire(&canon.1.invert(), n);
-        c.canonicalize();
-        (c, canon.1)
 }
 
 #[cfg(test)]
@@ -5335,7 +5320,7 @@ mod tests {
                     let mut rev = circuit.clone();
                     rev.gates.reverse();
                     rev.canonicalize();
-                    let canon_rev = canonicalize_polys(rev.to_polynomial(n, 0, m), true, false);
+                    let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
                     let rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon_rev.0));
                     let rev_key = rev_hash.to_le_bytes().to_vec();
                     if dst_map.contains_key(&rev_key) {
