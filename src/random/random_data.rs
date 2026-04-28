@@ -5461,7 +5461,7 @@ mod tests {
             let mut map: HashMap<Vec<u8>, Vec<CircuitSeq>> = HashMap::new();
             let iter = db.iterator(rocksdb::IteratorMode::Start);
             for item in iter {
-                let (key, value) = item.expect("RocksDB iter error");
+                let (_key, value) = item.expect("RocksDB iter error");
                 total_hashes += 1;
                 let mut pos = 0;
                 while pos < value.len() {
@@ -5471,9 +5471,18 @@ mod tests {
                     if pos + len > value.len() { break; }
                     let circuit_blob = &value[pos..pos + len];
                     pos += len;
-                    map.entry(key.to_vec())
+
+                    let circuit = CircuitSeq::from_blob(circuit_blob);
+
+                    // Recompute the key from the circuit itself
+                    let polys = circuit.to_polynomial(n, 0, m);
+                    let (canonical, _) = canonicalize_polys_4(polys);
+                    let hash: u128 = xxh3_128(&polys_repr_blob(&canonical));
+                    let computed_key = hash.to_le_bytes().to_vec();
+
+                    map.entry(computed_key)
                         .or_default()
-                        .push(CircuitSeq::from_blob(circuit_blob));
+                        .push(circuit);
                     total_circuits += 1;
                 }
             }
