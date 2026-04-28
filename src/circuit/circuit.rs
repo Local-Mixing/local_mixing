@@ -22,6 +22,8 @@ use num_traits::Zero;
 use num_traits::One;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::rainbow::canonical;
+
 // pins are [active, control1, control2] for Toffoli gates
 // We are only concerned with gate r57
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -872,7 +874,8 @@ impl CircuitSeq {
         // c2.canonicalize();
         let polys_fwd = c1.to_polynomial(n, 0, c1.gates.len());
         // let polys_rev = c2.to_polynomial(n, 0, c2.gates.len());
-        let canon1 = canonicalize_polys_4(polys_fwd);
+        // let canon1 = canonicalize_polys_4(polys_fwd);
+        let canon1 = canonicalize_polys(polys_fwd, true, false);
         // let canon2 = canonicalize_polys_4(polys_rev);
         c1.rewire(&canon1.1.invert(), n);
         c1.canonicalize();
