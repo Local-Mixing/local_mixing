@@ -5749,6 +5749,57 @@ mod tests {
     }
 
     #[test]
+    fn test_canon4_collisions_in_test_db() {
+        // Find pairs of entries in test_rocks_db_m4 that have DIFFERENT canon-1 keys
+        // (i.e. are genuinely distinct) but produce the SAME key under canon-4.
+        let m = 4;
+        let n = 3 * m;
+
+        let mut opts = Options::default();
+        opts.create_if_missing(false);
+        opts.set_merge_operator_associative("append_merge", append_merge);
+        opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+        opts.set_disable_auto_compactions(true);
+        let db = Arc::new(
+            DB::open_for_read_only(&opts, "test_rocks_db_m4", false)
+                .expect("Failed to open test_rocks_db_m4")
+        );
+
+        let decode_first_circuit = |value: &[u8]| -> Option<CircuitSeq> {
+            if value.is_empty() { return None; }
+            let len = value[0] as usize;
+            if 1 + len > value.len() { return None; }
+            Some(CircuitSeq::from_blob(&value[1..1 + len]))
+        };
+
+        // Map: canon-4 key → list of canon-1 keys that share it
+        let mut canon4_to_canon1: HashMap<Vec<u8>, Vec<Vec<u8>>> = HashMap::new();
+
+        let iter = db.iterator(rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (stored_key, value) = item.expect("RocksDB iter error");
+            let circuit = match decode_first_circuit(&value) {
+                Some(c) => c,
+                None => continue,
+            };
+            let canon4 = circuit.canonicalize_polys(n);
+            let hash4: u128 = xxh3_128(&polys_repr_blob(&canon4.0));
+            let key4 = hash4.to_le_bytes().to_vec();
+
+            canon4_to_canon1.entry(key4).or_default().push(stored_key.to_vec());
+        }
+
+        let collisions: Vec<_> = canon4_to_canon1.iter()
+            .filter(|(_, canon1_keys)| canon1_keys.len() > 1)
+            .collect();
+
+        println!("Canon-4 keys that collide distinct canon-1 entries: {}", collisions.len());
+        for (_, canon1_keys) in &collisions {
+            println!("  {} canon-1 keys share one canon-4 key:", canon1_keys.len());
+        }
+    }
+
+    #[test]
     fn test_missing_in_test_db() {
         let m = 4;
         let n = 3 * m;
