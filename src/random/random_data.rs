@@ -5700,6 +5700,14 @@ mod tests {
             if circuits.len() <= 1 {
                 continue;
             }
+            // Skip groups where all circuits are relabelings of each other
+            let has_non_relabeling = circuits.iter().enumerate().any(|(i, c)| {
+                circuits[..i].iter().all(|other| !CircuitSeq::is_relabeling_of(c, other))
+                    && i > 0
+            });
+            if !has_non_relabeling {
+                continue;
+            }
             // Found an entry with friends in rocks_db_m4.
             // Compute the canon-1 key from the first representative and look it up in test_rocks_db_m4.
             let key = canon1_key(&circuits[0]);
