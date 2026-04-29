@@ -867,9 +867,19 @@ impl CircuitSeq {
                 v
             }).collect()
         }
-        let mut c1 = self.clone();
+        // Remap to minimal wires: e.g. [1,2,3] -> [0,1,2]
+        let used = self.used_wires();
+        let wire_map: HashMap<u8, u8> = used.iter().enumerate()
+            .map(|(i, &w)| (w, i as u8))
+            .collect();
+        let remapped = CircuitSeq {
+            gates: self.gates.iter().map(|&[t, c1, c2]| [
+                wire_map[&t], wire_map[&c1], wire_map[&c2],
+            ]).collect(),
+        };
+        let mut c1 = remapped.clone();
         c1.canonicalize();
-        let mut c2 = self.clone();
+        let mut c2 = remapped.clone();
         c2.gates.reverse();
         c2.canonicalize();
         let n1 = c1.max_wire() as usize + 1;
@@ -2410,6 +2420,341 @@ pub fn canonicalize_polys_3(
     (canonical, Permutation { data: final_order })
 }
 
+pub fn canonicalize_polys_4(
+    polynomials: Vec<Polynomial>,
+) -> (Vec<Polynomial>, Permutation) {
+    let n = polynomials.len();
+    if n == 0 {
+        return (vec![], Permutation { data: vec![] });
+    }
+    let max_degree = n;
+
+    // ── Step 1: partition into equivalence classes ───────────────────────────
+    let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
+        .map(|i| (i, degree_counts(&polynomials[i], max_degree)))
+        .collect();
+    profiles.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    {
+        let mut current = vec![profiles[0].0];
+        for i in 1..profiles.len() {
+            if profiles[i].1 == profiles[i - 1].1 {
+                current.push(profiles[i].0);
+            } else {
+                groups.push(current.clone());
+                current = vec![profiles[i].0];
+            }
+        }
+        groups.push(current);
+    }
+
+    // ── Step 2: build class polynomials ──────────────────────────────────────
+    // Use BTreeMap instead of HashMap for deterministic iteration order
+    let class_polys: Vec<BTreeMap<Monomial, usize>> = groups.iter().map(|group| {
+        let mut sum: BTreeMap<Monomial, usize> = BTreeMap::new();
+        for &wire in group {
+            for &m in &polynomials[wire] {
+                *sum.entry(m).or_insert(0) += 1;
+            }
+        }
+        sum
+    }).collect();
+
+    // ── Step 3: iterative refinement ─────────────────────────────────────────
+    let mut var_rank: Vec<usize> = vec![0usize; n];
+
+    let cmp_monomials = |m: Monomial, coeff_m: usize,
+                         mp: Monomial, coeff_mp: usize,
+                         vr: &[usize]| -> Option<std::cmp::Ordering> {
+        let deg_m  = m.count_ones() as usize;
+        let deg_mp = mp.count_ones() as usize;
+        if deg_m != deg_mp { return Some(deg_m.cmp(&deg_mp)); }
+
+        let mut ranks_m:  Vec<usize> = (0..n).filter(|&j| m  & (1u64<<j)!=0).map(|j| vr[j]).collect();
+        let mut ranks_mp: Vec<usize> = (0..n).filter(|&j| mp & (1u64<<j)!=0).map(|j| vr[j]).collect();
+        ranks_m.sort_unstable();
+        ranks_mp.sort_unstable();
+
+        if ranks_m == ranks_mp {
+            return Some(coeff_m.cmp(&coeff_mp));
+        }
+
+        Some(ranks_mp.cmp(&ranks_m))
+    };
+
+    let ranked_monomials_of = |x: usize, class_poly: &BTreeMap<Monomial, usize>, vr: &[usize]|
+        -> Vec<Vec<(Monomial, usize)>> {
+        let mut remaining: Vec<(Monomial, usize)> = class_poly.iter()
+            .filter(|(m, _)| *m & (1u64 << x) != 0)
+            .map(|(&m, &coeff)| (m, coeff))
+            .collect();
+        if remaining.is_empty() { return vec![]; }
+        let mut levels = Vec::new();
+        while !remaining.is_empty() {
+            let top: Vec<(Monomial, usize)> = remaining.iter().copied()
+                .filter(|&(m, cm)| {
+                    !remaining.iter().any(|&(mp, cmp)| {
+                        if (m,cm)==(mp,cmp) { return false; }
+                        matches!(cmp_monomials(mp,cmp,m,cm,vr), Some(std::cmp::Ordering::Greater))
+                    })
+                })
+                .collect();
+            // Use BTreeSet for deterministic order when building top_set
+            let top_set: BTreeSet<(Monomial,usize)> = top.iter().copied().collect();
+            remaining.retain(|x| !top_set.contains(x));
+            levels.push(top);
+        }
+        levels
+    };
+
+    let ranked_monomials_of_poly = |poly: &Polynomial, vr: &[usize]|
+        -> Vec<(Monomial, usize)> {
+        let mut ms: Vec<(Monomial, usize)> = poly.iter().map(|&m| (m, 1usize)).collect();
+        ms.sort_by(|&(a, ca), &(b, cb)| {
+            cmp_monomials(a, ca, b, cb, vr)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .reverse()
+        });
+        ms
+    };
+
+    let compare_vars_in_class = |x: usize, xp: usize, class_poly: &BTreeMap<Monomial, usize>, vr: &[usize]|
+        -> Option<std::cmp::Ordering> {
+        let levels_x  = ranked_monomials_of(x,  class_poly, vr);
+        let levels_xp = ranked_monomials_of(xp, class_poly, vr);
+        let depth = levels_x.len().max(levels_xp.len());
+        for k in 0..depth {
+            match (levels_x.get(k), levels_xp.get(k)) {
+                (None, None)    => break,
+                (Some(_), None) => return Some(std::cmp::Ordering::Greater),
+                (None, Some(_)) => return Some(std::cmp::Ordering::Less),
+                (Some(lx), Some(lxp)) => {
+                    let mut found = None;
+                    'pairs: for &(m,cm) in lx {
+                        for &(mp,cmp) in lxp {
+                            match cmp_monomials(m,cm,mp,cmp,vr) {
+                                Some(o @ std::cmp::Ordering::Greater) |
+                                Some(o @ std::cmp::Ordering::Less) => {
+                                    found = Some(o); break 'pairs;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if let Some(o) = found { return Some(o); }
+                    // All pairs equal — tiebreak by number of monomials at this level
+                    if lx.len() != lxp.len() {
+                        return Some(lx.len().cmp(&lxp.len()));
+                    }
+                    // Same size, all equal — continue to next level
+                }
+            }
+        }
+        None
+    };
+
+    let poly_key_by_ranks = |x: usize, vr: &[usize]| -> Vec<Vec<usize>> {
+        let mut terms: Vec<Vec<usize>> = polynomials[x]
+            .iter()
+            .map(|&m| {
+                let mut ranks: Vec<usize> = (0..n)
+                    .filter(|&v| m & (1u64<<v) != 0)
+                    .map(|v| vr[v])
+                    .collect();
+                ranks.sort();
+                ranks
+            })
+            .collect();
+        terms.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(&b)));
+        terms
+    };
+
+    let has_ties = |vr: &[usize]| -> bool {
+        (0..n).any(|v| (0..n).any(|u| u != v && vr[u] == vr[v]))
+    };
+
+    // ── Master loop ───────────────────────────────────────────────────────────
+    'master: loop {
+        if !has_ties(&var_rank) { break; }
+
+        // Stage 1: class polynomial refinement
+        'outer: loop {
+            for ci in 0..class_polys.len() {
+                if !has_ties(&var_rank) { break 'outer; }
+                let max_rank = *var_rank.iter().max().unwrap_or(&0);
+                for cur_rank in 0..=max_rank {
+                    let tied: Vec<usize> = (0..n)
+                        .filter(|&v| var_rank[v] == cur_rank)
+                        .collect();
+                    if tied.len() <= 1 { continue; }
+
+                    let mut sorted_tied = tied.clone();
+                    sorted_tied.sort_by(|&a, &b| {
+                        match compare_vars_in_class(a, b, &class_polys[ci], &var_rank) {
+                            Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Less,
+                            Some(std::cmp::Ordering::Less)    => std::cmp::Ordering::Greater,
+                            _                                  => std::cmp::Ordering::Equal,
+                        }
+                    });
+
+                    let mut sub_rank = 0usize;
+                    let mut new_sub_ranks = vec![0usize; sorted_tied.len()];
+                    for i in 1..sorted_tied.len() {
+                        if compare_vars_in_class(sorted_tied[i-1], sorted_tied[i], &class_polys[ci], &var_rank).is_some() {
+                            sub_rank += 1;
+                        }
+                        new_sub_ranks[i] = sub_rank;
+                    }
+
+                    if sub_rank > 0 {
+                        for v in 0..n {
+                            if var_rank[v] > cur_rank { var_rank[v] += sub_rank; }
+                        }
+                        for (i, &v) in sorted_tied.iter().enumerate() {
+                            var_rank[v] = cur_rank + new_sub_ranks[i];
+                        }
+                        continue 'outer;
+                    }
+                }
+            }
+            break;
+        }
+
+        if !has_ties(&var_rank) { break 'master; }
+
+        // Stage 2: individual poly key tiebreaker
+        let mut tb1_fired = false;
+        let max_rank = *var_rank.iter().max().unwrap_or(&0);
+        for cur_rank in 0..=max_rank {
+            let tied: Vec<usize> = (0..n)
+                .filter(|&v| var_rank[v] == cur_rank)
+                .collect();
+            if tied.len() <= 1 { continue; }
+
+            let mut tb_sorted = tied.clone();
+            tb_sorted.sort_by(|&a, &b| {
+                poly_key_by_ranks(a, &var_rank).cmp(&poly_key_by_ranks(b, &var_rank))
+            });
+
+            let mut tb_sub_rank = 0usize;
+            let mut tb_new_sub_ranks = vec![0usize; tb_sorted.len()];
+            for i in 1..tb_sorted.len() {
+                if poly_key_by_ranks(tb_sorted[i-1], &var_rank)
+                    != poly_key_by_ranks(tb_sorted[i], &var_rank)
+                {
+                    tb_sub_rank += 1;
+                }
+                tb_new_sub_ranks[i] = tb_sub_rank;
+            }
+
+            if tb_sub_rank > 0 {
+                for v in 0..n {
+                    if var_rank[v] > cur_rank { var_rank[v] += tb_sub_rank; }
+                }
+                for (i, &v) in tb_sorted.iter().enumerate() {
+                    var_rank[v] = cur_rank + tb_new_sub_ranks[i];
+                }
+                tb1_fired = true;
+                break;
+            }
+        }
+
+        if tb1_fired { continue 'master; }
+
+        // Stage 3 / Tiebreak #2: build P_{D_k} from current rank groups, run Stage 1 on them.
+        // Each rank group (singleton or tied) sums its raw polynomials into one class poly.
+        // These reflect the current partial ordering rather than the original degree-profile groups.
+        let max_rank_val = *var_rank.iter().max().unwrap_or(&0);
+        let d_class_polys: Vec<BTreeMap<Monomial, usize>> = (0..=max_rank_val)
+            .filter_map(|rk| {
+                let group: Vec<usize> = (0..n).filter(|&v| var_rank[v] == rk).collect();
+                if group.is_empty() { return None; }
+                let mut sum: BTreeMap<Monomial, usize> = BTreeMap::new();
+                for &w in &group {
+                    for &m in &polynomials[w] {
+                        *sum.entry(m).or_insert(0) += 1;
+                    }
+                }
+                Some(sum)
+            })
+            .collect();
+
+        let mut tb2_fired = false;
+        'tb2: for dci in 0..d_class_polys.len() {
+            if !has_ties(&var_rank) { break 'tb2; }
+            let max_rank = *var_rank.iter().max().unwrap_or(&0);
+            for cur_rank in 0..=max_rank {
+                let tied: Vec<usize> = (0..n)
+                    .filter(|&v| var_rank[v] == cur_rank)
+                    .collect();
+                if tied.len() <= 1 { continue; }
+
+                let mut sorted_tied = tied.clone();
+                sorted_tied.sort_by(|&a, &b| {
+                    match compare_vars_in_class(a, b, &d_class_polys[dci], &var_rank) {
+                        Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Less,
+                        Some(std::cmp::Ordering::Less)    => std::cmp::Ordering::Greater,
+                        _                                  => std::cmp::Ordering::Equal,
+                    }
+                });
+
+                let mut sub_rank = 0usize;
+                let mut new_sub_ranks = vec![0usize; sorted_tied.len()];
+                for i in 1..sorted_tied.len() {
+                    if compare_vars_in_class(sorted_tied[i-1], sorted_tied[i], &d_class_polys[dci], &var_rank).is_some() {
+                        sub_rank += 1;
+                    }
+                    new_sub_ranks[i] = sub_rank;
+                }
+
+                if sub_rank > 0 {
+                    for v in 0..n {
+                        if var_rank[v] > cur_rank { var_rank[v] += sub_rank; }
+                    }
+                    for (i, &v) in sorted_tied.iter().enumerate() {
+                        var_rank[v] = cur_rank + new_sub_ranks[i];
+                    }
+                    tb2_fired = true;
+                    break 'tb2;
+                }
+            }
+        }
+
+        if tb2_fired { continue 'master; }
+
+        break 'master;
+    }
+
+    // ── Step 4: build final_order ─────────────────────────────────────────────
+    let mut final_order: Vec<usize> = (0..n).collect();
+    final_order.sort_by_key(|&w| (var_rank[w], w));
+
+    // ── Step 5: remap polynomials ─────────────────────────────────────────────
+    let mut wire_to_pos = vec![0usize; n];
+    for (pos, &wire) in final_order.iter().enumerate() {
+        wire_to_pos[wire] = pos;
+    }
+
+    let remap_monomial = |m: Monomial| -> Monomial {
+        let mut result = 0u64;
+        for wire in 0..n {
+            if m & (1u64 << wire) != 0 {
+                result |= 1u64 << wire_to_pos[wire];
+            }
+        }
+        result
+    };
+
+    let canonical: Vec<Polynomial> = final_order
+        .iter()
+        .map(|&wire| polynomials[wire].iter().map(|&m| remap_monomial(m)).collect())
+        .collect();
+
+    let canonical = trim_canonicalized(canonical);
+    (canonical, Permutation { data: final_order })
+}
+
 // pub fn canonicalize_polys_4(
 //     polynomials: Vec<Polynomial>,
 // ) -> (Vec<Polynomial>, Permutation) {
@@ -2423,7 +2768,7 @@ pub fn canonicalize_polys_3(
 //     let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
 //         .map(|i| (i, degree_counts(&polynomials[i], max_degree)))
 //         .collect();
-//     profiles.sort_by(|a, b| b.1.cmp(&a.1));
+//     profiles.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
 //     let mut groups: Vec<Vec<usize>> = Vec::new();
 //     {
@@ -2440,7 +2785,6 @@ pub fn canonicalize_polys_3(
 //     }
 
 //     // ── Step 2: build class polynomials ──────────────────────────────────────
-//     // Use BTreeMap instead of HashMap for deterministic iteration order
 //     let class_polys: Vec<BTreeMap<Monomial, usize>> = groups.iter().map(|group| {
 //         let mut sum: BTreeMap<Monomial, usize> = BTreeMap::new();
 //         for &wire in group {
@@ -2479,10 +2823,11 @@ pub fn canonicalize_polys_3(
 //             .filter(|(m, _)| *m & (1u64 << x) != 0)
 //             .map(|(&m, &coeff)| (m, coeff))
 //             .collect();
+//         remaining.sort_unstable();
 //         if remaining.is_empty() { return vec![]; }
 //         let mut levels = Vec::new();
 //         while !remaining.is_empty() {
-//             let top: Vec<(Monomial, usize)> = remaining.iter().copied()
+//             let mut top: Vec<(Monomial, usize)> = remaining.iter().copied()
 //                 .filter(|&(m, cm)| {
 //                     !remaining.iter().any(|&(mp, cmp)| {
 //                         if (m,cm)==(mp,cmp) { return false; }
@@ -2490,8 +2835,8 @@ pub fn canonicalize_polys_3(
 //                     })
 //                 })
 //                 .collect();
-//             // Use BTreeSet for deterministic order when building top_set
-//             let top_set: BTreeSet<(Monomial,usize)> = top.iter().copied().collect();
+//             top.sort_unstable();
+//             let top_set: BTreeSet<(Monomial, usize)> = top.iter().copied().collect();
 //             remaining.retain(|x| !top_set.contains(x));
 //             levels.push(top);
 //         }
@@ -2505,6 +2850,7 @@ pub fn canonicalize_polys_3(
 //             cmp_monomials(a, ca, b, cb, vr)
 //                 .unwrap_or(std::cmp::Ordering::Equal)
 //                 .reverse()
+//                 .then(a.cmp(&b))
 //         });
 //         ms
 //     };
@@ -2520,24 +2866,25 @@ pub fn canonicalize_polys_3(
 //                 (Some(_), None) => return Some(std::cmp::Ordering::Greater),
 //                 (None, Some(_)) => return Some(std::cmp::Ordering::Less),
 //                 (Some(lx), Some(lxp)) => {
-//                     let mut found = None;
-//                     'pairs: for &(m,cm) in lx {
-//                         for &(mp,cmp) in lxp {
-//                             match cmp_monomials(m,cm,mp,cmp,vr) {
-//                                 Some(o @ std::cmp::Ordering::Greater) |
-//                                 Some(o @ std::cmp::Ordering::Less) => {
-//                                     found = Some(o); break 'pairs;
-//                                 }
-//                                 _ => {}
+//                     let mut saw_greater = false;
+//                     let mut saw_less    = false;
+//                     for &(m, cm) in lx {
+//                         for &(mp, cmp) in lxp {
+//                             match cmp_monomials(m, cm, mp, cmp, vr) {
+//                                 Some(std::cmp::Ordering::Greater) => saw_greater = true,
+//                                 Some(std::cmp::Ordering::Less)    => saw_less    = true,
+//                                 _                                  => {}
 //                             }
 //                         }
 //                     }
-//                     if let Some(o) = found { return Some(o); }
-//                     // All pairs equal — tiebreak by number of monomials at this level
+//                     match (saw_greater, saw_less) {
+//                         (true,  false) => return Some(std::cmp::Ordering::Greater),
+//                         (false, true)  => return Some(std::cmp::Ordering::Less),
+//                         _ => {}
+//                     }
 //                     if lx.len() != lxp.len() {
 //                         return Some(lx.len().cmp(&lxp.len()));
 //                     }
-//                     // Same size, all equal — continue to next level
 //                 }
 //             }
 //         }
@@ -2552,7 +2899,7 @@ pub fn canonicalize_polys_3(
 //                     .filter(|&v| m & (1u64<<v) != 0)
 //                     .map(|v| vr[v])
 //                     .collect();
-//                 ranks.sort();
+//                 ranks.sort_unstable();
 //                 ranks
 //             })
 //             .collect();
@@ -2581,17 +2928,17 @@ pub fn canonicalize_polys_3(
 
 //                     let mut sorted_tied = tied.clone();
 //                     sorted_tied.sort_by(|&a, &b| {
-//                         match compare_vars_in_class(a, b, ci, &var_rank) {
+//                         match compare_vars_in_class(a, b, &class_polys[ci], &var_rank) {
 //                             Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Less,
 //                             Some(std::cmp::Ordering::Less)    => std::cmp::Ordering::Greater,
-//                             _                                  => std::cmp::Ordering::Equal,
+//                             _                                  => a.cmp(&b),
 //                         }
 //                     });
 
 //                     let mut sub_rank = 0usize;
 //                     let mut new_sub_ranks = vec![0usize; sorted_tied.len()];
 //                     for i in 1..sorted_tied.len() {
-//                         if compare_vars_in_class(sorted_tied[i-1], sorted_tied[i], ci, &var_rank).is_some() {
+//                         if compare_vars_in_class(sorted_tied[i-1], sorted_tied[i], &class_polys[ci], &var_rank).is_some() {
 //                             sub_rank += 1;
 //                         }
 //                         new_sub_ranks[i] = sub_rank;
@@ -2624,7 +2971,9 @@ pub fn canonicalize_polys_3(
 
 //             let mut tb_sorted = tied.clone();
 //             tb_sorted.sort_by(|&a, &b| {
-//                 poly_key_by_ranks(a, &var_rank).cmp(&poly_key_by_ranks(b, &var_rank))
+//                 poly_key_by_ranks(a, &var_rank)
+//                     .cmp(&poly_key_by_ranks(b, &var_rank))
+//                     .then(a.cmp(&b))
 //             });
 
 //             let mut tb_sub_rank = 0usize;
@@ -2655,7 +3004,7 @@ pub fn canonicalize_polys_3(
 //         // Stage 3: scan singleton P_i in rank order, use monomials to split
 //         let mut tb2_fired = false;
 //         let mut poly_order: Vec<usize> = (0..n).collect();
-//         poly_order.sort_by_key(|&i| var_rank[i]);
+//         poly_order.sort_by_key(|&i| (var_rank[i], i));
 
 //         'tb2: for &poly_idx in &poly_order {
 //             let wire_rank = var_rank[poly_idx];
@@ -2726,327 +3075,6 @@ pub fn canonicalize_polys_3(
 //     let canonical = trim_canonicalized(canonical);
 //     (canonical, Permutation { data: final_order })
 // }
-
-pub fn canonicalize_polys_4(
-    polynomials: Vec<Polynomial>,
-) -> (Vec<Polynomial>, Permutation) {
-    let n = polynomials.len();
-    if n == 0 {
-        return (vec![], Permutation { data: vec![] });
-    }
-    let max_degree = n;
-
-    // ── Step 1: partition into equivalence classes ───────────────────────────
-    let mut profiles: Vec<(usize, Vec<usize>)> = (0..n)
-        .map(|i| (i, degree_counts(&polynomials[i], max_degree)))
-        .collect();
-    profiles.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-
-    let mut groups: Vec<Vec<usize>> = Vec::new();
-    {
-        let mut current = vec![profiles[0].0];
-        for i in 1..profiles.len() {
-            if profiles[i].1 == profiles[i - 1].1 {
-                current.push(profiles[i].0);
-            } else {
-                groups.push(current.clone());
-                current = vec![profiles[i].0];
-            }
-        }
-        groups.push(current);
-    }
-
-    // ── Step 2: build class polynomials ──────────────────────────────────────
-    let class_polys: Vec<BTreeMap<Monomial, usize>> = groups.iter().map(|group| {
-        let mut sum: BTreeMap<Monomial, usize> = BTreeMap::new();
-        for &wire in group {
-            for &m in &polynomials[wire] {
-                *sum.entry(m).or_insert(0) += 1;
-            }
-        }
-        sum
-    }).collect();
-
-    // ── Step 3: iterative refinement ─────────────────────────────────────────
-    let mut var_rank: Vec<usize> = vec![0usize; n];
-
-    let cmp_monomials = |m: Monomial, coeff_m: usize,
-                         mp: Monomial, coeff_mp: usize,
-                         vr: &[usize]| -> Option<std::cmp::Ordering> {
-        let deg_m  = m.count_ones() as usize;
-        let deg_mp = mp.count_ones() as usize;
-        if deg_m != deg_mp { return Some(deg_m.cmp(&deg_mp)); }
-
-        let mut ranks_m:  Vec<usize> = (0..n).filter(|&j| m  & (1u64<<j)!=0).map(|j| vr[j]).collect();
-        let mut ranks_mp: Vec<usize> = (0..n).filter(|&j| mp & (1u64<<j)!=0).map(|j| vr[j]).collect();
-        ranks_m.sort_unstable();
-        ranks_mp.sort_unstable();
-
-        if ranks_m == ranks_mp {
-            return Some(coeff_m.cmp(&coeff_mp));
-        }
-
-        Some(ranks_mp.cmp(&ranks_m))
-    };
-
-    let ranked_monomials_of = |x: usize, ci: usize, vr: &[usize]|
-        -> Vec<Vec<(Monomial, usize)>> {
-        let mut remaining: Vec<(Monomial, usize)> = class_polys[ci].iter()
-            .filter(|(m, _)| *m & (1u64 << x) != 0)
-            .map(|(&m, &coeff)| (m, coeff))
-            .collect();
-        remaining.sort_unstable();
-        if remaining.is_empty() { return vec![]; }
-        let mut levels = Vec::new();
-        while !remaining.is_empty() {
-            let mut top: Vec<(Monomial, usize)> = remaining.iter().copied()
-                .filter(|&(m, cm)| {
-                    !remaining.iter().any(|&(mp, cmp)| {
-                        if (m,cm)==(mp,cmp) { return false; }
-                        matches!(cmp_monomials(mp,cmp,m,cm,vr), Some(std::cmp::Ordering::Greater))
-                    })
-                })
-                .collect();
-            top.sort_unstable();
-            let top_set: BTreeSet<(Monomial, usize)> = top.iter().copied().collect();
-            remaining.retain(|x| !top_set.contains(x));
-            levels.push(top);
-        }
-        levels
-    };
-
-    let ranked_monomials_of_poly = |poly: &Polynomial, vr: &[usize]|
-        -> Vec<(Monomial, usize)> {
-        let mut ms: Vec<(Monomial, usize)> = poly.iter().map(|&m| (m, 1usize)).collect();
-        ms.sort_by(|&(a, ca), &(b, cb)| {
-            cmp_monomials(a, ca, b, cb, vr)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .reverse()
-                .then(a.cmp(&b))
-        });
-        ms
-    };
-
-    let compare_vars_in_class = |x: usize, xp: usize, ci: usize, vr: &[usize]|
-        -> Option<std::cmp::Ordering> {
-        let levels_x  = ranked_monomials_of(x,  ci, vr);
-        let levels_xp = ranked_monomials_of(xp, ci, vr);
-        let depth = levels_x.len().max(levels_xp.len());
-        for k in 0..depth {
-            match (levels_x.get(k), levels_xp.get(k)) {
-                (None, None)    => break,
-                (Some(_), None) => return Some(std::cmp::Ordering::Greater),
-                (None, Some(_)) => return Some(std::cmp::Ordering::Less),
-                (Some(lx), Some(lxp)) => {
-                    let mut saw_greater = false;
-                    let mut saw_less    = false;
-                    for &(m, cm) in lx {
-                        for &(mp, cmp) in lxp {
-                            match cmp_monomials(m, cm, mp, cmp, vr) {
-                                Some(std::cmp::Ordering::Greater) => saw_greater = true,
-                                Some(std::cmp::Ordering::Less)    => saw_less    = true,
-                                _                                  => {}
-                            }
-                        }
-                    }
-                    match (saw_greater, saw_less) {
-                        (true,  false) => return Some(std::cmp::Ordering::Greater),
-                        (false, true)  => return Some(std::cmp::Ordering::Less),
-                        _ => {}
-                    }
-                    if lx.len() != lxp.len() {
-                        return Some(lx.len().cmp(&lxp.len()));
-                    }
-                }
-            }
-        }
-        None
-    };
-
-    let poly_key_by_ranks = |x: usize, vr: &[usize]| -> Vec<Vec<usize>> {
-        let mut terms: Vec<Vec<usize>> = polynomials[x]
-            .iter()
-            .map(|&m| {
-                let mut ranks: Vec<usize> = (0..n)
-                    .filter(|&v| m & (1u64<<v) != 0)
-                    .map(|v| vr[v])
-                    .collect();
-                ranks.sort_unstable();
-                ranks
-            })
-            .collect();
-        terms.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(&b)));
-        terms
-    };
-
-    let has_ties = |vr: &[usize]| -> bool {
-        (0..n).any(|v| (0..n).any(|u| u != v && vr[u] == vr[v]))
-    };
-
-    // ── Master loop ───────────────────────────────────────────────────────────
-    'master: loop {
-        if !has_ties(&var_rank) { break; }
-
-        // Stage 1: class polynomial refinement
-        'outer: loop {
-            for ci in 0..class_polys.len() {
-                if !has_ties(&var_rank) { break 'outer; }
-                let max_rank = *var_rank.iter().max().unwrap_or(&0);
-                for cur_rank in 0..=max_rank {
-                    let tied: Vec<usize> = (0..n)
-                        .filter(|&v| var_rank[v] == cur_rank)
-                        .collect();
-                    if tied.len() <= 1 { continue; }
-
-                    let mut sorted_tied = tied.clone();
-                    sorted_tied.sort_by(|&a, &b| {
-                        match compare_vars_in_class(a, b, ci, &var_rank) {
-                            Some(std::cmp::Ordering::Greater) => std::cmp::Ordering::Less,
-                            Some(std::cmp::Ordering::Less)    => std::cmp::Ordering::Greater,
-                            _                                  => a.cmp(&b),
-                        }
-                    });
-
-                    let mut sub_rank = 0usize;
-                    let mut new_sub_ranks = vec![0usize; sorted_tied.len()];
-                    for i in 1..sorted_tied.len() {
-                        if compare_vars_in_class(sorted_tied[i-1], sorted_tied[i], ci, &var_rank).is_some() {
-                            sub_rank += 1;
-                        }
-                        new_sub_ranks[i] = sub_rank;
-                    }
-
-                    if sub_rank > 0 {
-                        for v in 0..n {
-                            if var_rank[v] > cur_rank { var_rank[v] += sub_rank; }
-                        }
-                        for (i, &v) in sorted_tied.iter().enumerate() {
-                            var_rank[v] = cur_rank + new_sub_ranks[i];
-                        }
-                        continue 'outer;
-                    }
-                }
-            }
-            break;
-        }
-
-        if !has_ties(&var_rank) { break 'master; }
-
-        // Stage 2: individual poly key tiebreaker
-        let mut tb1_fired = false;
-        let max_rank = *var_rank.iter().max().unwrap_or(&0);
-        for cur_rank in 0..=max_rank {
-            let tied: Vec<usize> = (0..n)
-                .filter(|&v| var_rank[v] == cur_rank)
-                .collect();
-            if tied.len() <= 1 { continue; }
-
-            let mut tb_sorted = tied.clone();
-            tb_sorted.sort_by(|&a, &b| {
-                poly_key_by_ranks(a, &var_rank)
-                    .cmp(&poly_key_by_ranks(b, &var_rank))
-                    .then(a.cmp(&b))
-            });
-
-            let mut tb_sub_rank = 0usize;
-            let mut tb_new_sub_ranks = vec![0usize; tb_sorted.len()];
-            for i in 1..tb_sorted.len() {
-                if poly_key_by_ranks(tb_sorted[i-1], &var_rank)
-                    != poly_key_by_ranks(tb_sorted[i], &var_rank)
-                {
-                    tb_sub_rank += 1;
-                }
-                tb_new_sub_ranks[i] = tb_sub_rank;
-            }
-
-            if tb_sub_rank > 0 {
-                for v in 0..n {
-                    if var_rank[v] > cur_rank { var_rank[v] += tb_sub_rank; }
-                }
-                for (i, &v) in tb_sorted.iter().enumerate() {
-                    var_rank[v] = cur_rank + tb_new_sub_ranks[i];
-                }
-                tb1_fired = true;
-                break;
-            }
-        }
-
-        if tb1_fired { continue 'master; }
-
-        // Stage 3: scan singleton P_i in rank order, use monomials to split
-        let mut tb2_fired = false;
-        let mut poly_order: Vec<usize> = (0..n).collect();
-        poly_order.sort_by_key(|&i| (var_rank[i], i));
-
-        'tb2: for &poly_idx in &poly_order {
-            let wire_rank = var_rank[poly_idx];
-            let is_singleton = (0..n).filter(|&v| var_rank[v] == wire_rank).count() == 1;
-            if !is_singleton { continue; }
-
-            let ranked = ranked_monomials_of_poly(&polynomials[poly_idx], &var_rank);
-
-            for &(mono, _coeff) in &ranked {
-                let max_rank = *var_rank.iter().max().unwrap_or(&0);
-                for cur_rank in 0..=max_rank {
-                    let tied: Vec<usize> = (0..n)
-                        .filter(|&v| var_rank[v] == cur_rank)
-                        .collect();
-                    if tied.len() <= 1 { continue; }
-
-                    let in_mono:  Vec<usize> = tied.iter().copied()
-                        .filter(|&v| mono & (1u64 << v) != 0)
-                        .collect();
-                    let out_mono: Vec<usize> = tied.iter().copied()
-                        .filter(|&v| mono & (1u64 << v) == 0)
-                        .collect();
-
-                    if in_mono.is_empty() || out_mono.is_empty() { continue; }
-
-                    for v in 0..n {
-                        if var_rank[v] > cur_rank { var_rank[v] += 1; }
-                    }
-                    for &v in &out_mono {
-                        var_rank[v] = cur_rank + 1;
-                    }
-                    tb2_fired = true;
-                    break 'tb2;
-                }
-            }
-        }
-
-        if tb2_fired { continue 'master; }
-
-        break 'master;
-    }
-
-    // ── Step 4: build final_order ─────────────────────────────────────────────
-    let mut final_order: Vec<usize> = (0..n).collect();
-    final_order.sort_by_key(|&w| (var_rank[w], w));
-
-    // ── Step 5: remap polynomials ─────────────────────────────────────────────
-    let mut wire_to_pos = vec![0usize; n];
-    for (pos, &wire) in final_order.iter().enumerate() {
-        wire_to_pos[wire] = pos;
-    }
-
-    let remap_monomial = |m: Monomial| -> Monomial {
-        let mut result = 0u64;
-        for wire in 0..n {
-            if m & (1u64 << wire) != 0 {
-                result |= 1u64 << wire_to_pos[wire];
-            }
-        }
-        result
-    };
-
-    let canonical: Vec<Polynomial> = final_order
-        .iter()
-        .map(|&wire| polynomials[wire].iter().map(|&m| remap_monomial(m)).collect())
-        .collect();
-
-    let canonical = trim_canonicalized(canonical);
-    (canonical, Permutation { data: final_order })
-}
 
 pub fn print_rule_times() {
     let t1  = TIME_RULE_2_1.load(Ordering::Relaxed);
