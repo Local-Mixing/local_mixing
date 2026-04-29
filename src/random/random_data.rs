@@ -5748,6 +5748,63 @@ mod tests {
         println!("No canon4 collision found (all multi-circuit entries in rocks_db_m4 are also multi-circuit in test_rocks_db_m4)");
     }
 
+    #[test]
+    fn test_find_canon4_poly_mismatch() {
+        let m = 4;
+        let n = 3 * m;
+
+        let mut opts = Options::default();
+        opts.create_if_missing(false);
+        opts.set_merge_operator_associative("append_merge", append_merge);
+        opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+        opts.set_disable_auto_compactions(true);
+        let db = Arc::new(
+            DB::open_for_read_only(&opts, "rocks_db_m4", false)
+                .expect("Failed to open rocks_db_m4")
+        );
+
+        let decode_circuits = |value: &[u8]| -> Vec<CircuitSeq> {
+            let mut circuits = Vec::new();
+            let mut pos = 0;
+            while pos < value.len() {
+                let len = value[pos] as usize;
+                pos += 1;
+                if pos + len > value.len() { break; }
+                circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
+                pos += len;
+            }
+            circuits
+        };
+
+        let iter = db.iterator(rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (_key, value) = item.expect("RocksDB iter error");
+            let circuits = decode_circuits(&value);
+            if circuits.len() <= 1 {
+                continue;
+            }
+
+            let canon1_polys: Vec<Vec<Polynomial>> = circuits.iter()
+                .map(|c| c.canonicalize_polys_1(n).0)
+                .collect();
+
+            let all_same = canon1_polys.windows(2).all(|w| w[0] == w[1]);
+            if !all_same {
+                use crate::circuit::circuit::poly_to_str;
+                println!("Found canon-4 / canon-1 mismatch! {} circuits in group:", circuits.len());
+                for (i, (c, polys)) in circuits.iter().zip(canon1_polys.iter()).enumerate() {
+                    let poly_str = polys.iter().enumerate()
+                        .map(|(j, p)| format!("P{}: {}", j, poly_to_str(p, n)))
+                        .collect::<Vec<_>>().join(" | ");
+                    println!("  circuit {}: {:?}", i, c.gates);
+                    println!("    canon-1 poly: {}", poly_str);
+                }
+                return;
+            }
+        }
+        println!("No mismatch found");
+    }
+
     fn canonicalize_circuit(gates: Vec<[u8; 3]>, n: usize, m: usize) -> (CircuitSeq, Permutation) {
         let mut c = CircuitSeq { gates };
         let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true, false);
