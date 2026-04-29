@@ -5688,7 +5688,7 @@ mod tests {
 
         // Compute a canon-1 key from a circuit
         let canon1_key = |circuit: &CircuitSeq| -> Vec<u8> {
-            let canonical = circuit.canonicalize_polys(n);
+            let canonical = circuit.canonicalize_polys_1(n);
             let hash: u128 = xxh3_128(&polys_repr_blob(&canonical.0));
             hash.to_le_bytes().to_vec()
         };

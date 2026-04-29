@@ -909,6 +909,49 @@ impl CircuitSeq {
         }
         // (canon1.0, c1)
     }
+
+    pub fn canonicalize_polys_1(&self, _n: usize) -> (Vec<Polynomial>, CircuitSeq) {
+        fn poly_vec_key(polys: &Vec<Polynomial>) -> Vec<Vec<u64>> {
+            polys.iter().map(|p| {
+                let mut v: Vec<u64> = p.iter().copied().collect();
+                v.sort();
+                v
+            }).collect()
+        }
+        let used = self.used_wires();
+        let wire_map: HashMap<u8, u8> = used.iter().enumerate()
+            .map(|(i, &w)| (w, i as u8))
+            .collect();
+        let remapped = CircuitSeq {
+            gates: self.gates.iter().map(|&[t, c1, c2]| [
+                wire_map[&t], wire_map[&c1], wire_map[&c2],
+            ]).collect(),
+        };
+        let mut c1 = remapped.clone();
+        c1.canonicalize();
+        let mut c2 = remapped.clone();
+        c2.gates.reverse();
+        c2.canonicalize();
+        let n1 = c1.max_wire() as usize + 1;
+        let n2 = c2.max_wire() as usize + 1;
+        let polys_fwd = c1.to_polynomial(n1, 0, c1.gates.len());
+        let polys_rev = c2.to_polynomial(n2, 0, c2.gates.len());
+        let canon1 = canonicalize_polys(polys_fwd, true, false);
+        let canon2 = canonicalize_polys(polys_rev, true, false);
+        c1.rewire(&canon1.1.invert(), n1);
+        c1.canonicalize();
+        c2.rewire(&canon2.1.invert(), n2);
+        c2.canonicalize();
+        if poly_vec_key(&canon1.0) < poly_vec_key(&canon2.0) {
+            (canon1.0, c1)
+        } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0) {
+            (canon2.0, c2)
+        } else if c1.gates <= c2.gates {
+            (canon1.0, c1)
+        } else {
+            (canon2.0, c2)
+        }
+    }
 }
 
 fn poly_xor(mut poly_1: Polynomial, poly_2: Polynomial) -> Polynomial {
