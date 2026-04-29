@@ -5725,6 +5725,23 @@ mod tests {
                 for c in &test_circuits {
                     println!("  {:?}", c.gates);
                 }
+
+                // Check whether all circuits share the same canon-1 polynomial
+                let canon1_polys: Vec<Vec<Polynomial>> = circuits.iter()
+                    .map(|c| c.canonicalize_polys_1(n).0)
+                    .collect();
+                let all_same_poly = canon1_polys.windows(2).all(|w| w[0] == w[1]);
+                println!("All circuits have same canon-1 polynomial: {}", all_same_poly);
+                if !all_same_poly {
+                    use crate::circuit::circuit::poly_to_str;
+                    for (i, polys) in canon1_polys.iter().enumerate() {
+                        let s = polys.iter().enumerate()
+                            .map(|(j, p)| format!("P{}: {}", j, poly_to_str(p, n)))
+                            .collect::<Vec<_>>().join(" | ");
+                        println!("  circuit {}: {}", i, s);
+                    }
+                }
+
                 return;
             }
         }
