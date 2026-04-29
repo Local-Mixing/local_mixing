@@ -5775,7 +5775,7 @@ mod tests {
 
         let mut total = 0usize;
         let mut missing = 0usize;
-        let mut missing_circuits: Vec<CircuitSeq> = Vec::new();
+        let mut missing_polys: Vec<Vec<Polynomial>> = Vec::new();
 
         let iter = db1.iterator(rocksdb::IteratorMode::Start);
         for item in iter {
@@ -5793,16 +5793,20 @@ mod tests {
             match db2.get(&key).expect("RocksDB get error") {
                 None => {
                     missing += 1;
-                    missing_circuits.push(circuit);
+                    missing_polys.push(canonical.0);
                 }
                 Some(_) => {}
             }
         }
 
+        use crate::circuit::circuit::poly_to_str;
         println!("Total keys in rocks_db_m4: {}", total);
         println!("Missing in test_rocks_db_m4: {}", missing);
-        for c in &missing_circuits {
-            println!("  {:?}", c.gates);
+        for polys in &missing_polys {
+            let s = polys.iter().enumerate()
+                .map(|(i, p)| format!("P{}: {}", i, poly_to_str(p, n)))
+                .collect::<Vec<_>>().join(" | ");
+            println!("  {}", s);
         }
     }
 
@@ -5833,7 +5837,7 @@ mod tests {
 
         let mut total = 0usize;
         let mut missing = 0usize;
-        let mut missing_circuits: Vec<CircuitSeq> = Vec::new();
+        let mut missing_polys: Vec<Vec<Polynomial>> = Vec::new();
 
         let iter = db2.iterator(rocksdb::IteratorMode::Start);
         for item in iter {
@@ -5851,16 +5855,20 @@ mod tests {
             match db1.get(&key).expect("RocksDB get error") {
                 None => {
                     missing += 1;
-                    missing_circuits.push(circuit);
+                    missing_polys.push(canonical.0);
                 }
                 Some(_) => {}
             }
         }
 
+        use crate::circuit::circuit::poly_to_str;
         println!("Total keys in test_rocks_db_m4: {}", total);
         println!("Missing in rocks_db_m4: {}", missing);
-        for c in &missing_circuits {
-            println!("  {:?}", c.gates);
+        for polys in &missing_polys {
+            let s = polys.iter().enumerate()
+                .map(|(i, p)| format!("P{}: {}", i, poly_to_str(p, n)))
+                .collect::<Vec<_>>().join(" | ");
+            println!("  {}", s);
         }
     }
 
