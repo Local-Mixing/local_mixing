@@ -886,9 +886,9 @@ impl CircuitSeq {
         let n2 = c2.max_wire() as usize + 1;
         let polys_fwd = c1.to_polynomial(n1, 0, c1.gates.len());
         let polys_rev = c2.to_polynomial(n2, 0, c2.gates.len());
-        let canon1 = canonicalize_polys(polys_fwd, true, false);
+        let canon1 = canonicalize_polys_4(polys_fwd);
         // let canon1 = canonicalize_polys(polys_fwd, true, false);
-        let canon2 = canonicalize_polys(polys_rev, true, false);
+        let canon2 = canonicalize_polys_4(polys_rev);
         // let canon2 = canonicalize_polys(polys_rev, true, false);
         c1.rewire(&canon1.1.invert(), n1);
         c1.canonicalize();
