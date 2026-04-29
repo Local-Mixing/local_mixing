@@ -5749,6 +5749,64 @@ mod tests {
     }
 
     #[test]
+    fn test_missing_in_test_db() {
+        let m = 4;
+        let n = 3 * m;
+
+        let open_db = |path: &str| -> Arc<DB> {
+            let mut opts = Options::default();
+            opts.create_if_missing(false);
+            opts.set_merge_operator_associative("append_merge", append_merge);
+            opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+            opts.set_disable_auto_compactions(true);
+            Arc::new(DB::open_for_read_only(&opts, path, false)
+                .unwrap_or_else(|_| panic!("Failed to open {}", path)))
+        };
+
+        let db1 = open_db("rocks_db_m4");
+        let db2 = open_db("test_rocks_db_m4");
+
+        let decode_first_circuit = |value: &[u8]| -> Option<CircuitSeq> {
+            if value.is_empty() { return None; }
+            let len = value[0] as usize;
+            if 1 + len > value.len() { return None; }
+            Some(CircuitSeq::from_blob(&value[1..1 + len]))
+        };
+
+        let mut total = 0usize;
+        let mut missing = 0usize;
+        let mut missing_circuits: Vec<CircuitSeq> = Vec::new();
+
+        let iter = db1.iterator(rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (_stored_key, value) = item.expect("RocksDB iter error");
+            let circuit = match decode_first_circuit(&value) {
+                Some(c) => c,
+                None => continue,
+            };
+            total += 1;
+
+            let canonical = circuit.canonicalize_polys_1(n);
+            let hash: u128 = xxh3_128(&polys_repr_blob(&canonical.0));
+            let key = hash.to_le_bytes().to_vec();
+
+            match db2.get(&key).expect("RocksDB get error") {
+                None => {
+                    missing += 1;
+                    missing_circuits.push(circuit);
+                }
+                Some(_) => {}
+            }
+        }
+
+        println!("Total keys in rocks_db_m4: {}", total);
+        println!("Missing in test_rocks_db_m4: {}", missing);
+        for c in &missing_circuits {
+            println!("  {:?}", c.gates);
+        }
+    }
+
+    #[test]
     fn test_find_canon4_poly_mismatch() {
         let m = 4;
         let n = 3 * m;
