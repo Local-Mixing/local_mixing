@@ -5645,6 +5645,84 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_find_canon4_collision() {
+        let m = 4;
+        let n = 3 * m;
+
+        let open_db = |path: &str| -> Arc<DB> {
+            let mut opts = Options::default();
+            opts.create_if_missing(false);
+            opts.set_merge_operator_associative("append_merge", append_merge);
+            opts.increase_parallelism(160);
+            opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+            let cache = Cache::new_lru_cache(4 * 1024 * 1024 * 1024);
+            let mut block_opts = BlockBasedOptions::default();
+            block_opts.set_block_cache(&cache);
+            block_opts.set_block_size(16 * 1024);
+            block_opts.set_bloom_filter(10.0, false);
+            block_opts.set_cache_index_and_filter_blocks(true);
+            block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+            opts.set_block_based_table_factory(&block_opts);
+            opts.set_disable_auto_compactions(true);
+            Arc::new(DB::open_for_read_only(&opts, path, false).unwrap_or_else(|_| panic!("Failed to open {}", path)))
+        };
+
+        let db1 = open_db("rocks_db_m4");
+        let db2 = open_db("test_rocks_db_m4");
+
+        // Decode all circuits from a value blob
+        let decode_circuits = |value: &[u8]| -> Vec<CircuitSeq> {
+            let mut circuits = Vec::new();
+            let mut pos = 0;
+            while pos < value.len() {
+                if pos + 1 > value.len() { break; }
+                let len = value[pos] as usize;
+                pos += 1;
+                if pos + len > value.len() { break; }
+                circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
+                pos += len;
+            }
+            circuits
+        };
+
+        // Compute a canon-1 key from a circuit
+        let canon1_key = |circuit: &CircuitSeq| -> Vec<u8> {
+            let canonical = circuit.canonicalize_polys(n);
+            let hash: u128 = xxh3_128(&polys_repr_blob(&canonical.0));
+            hash.to_le_bytes().to_vec()
+        };
+
+        let iter = db1.iterator(rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (_stored_key, value) = item.expect("RocksDB iter error");
+            let circuits = decode_circuits(&value);
+            if circuits.len() <= 1 {
+                continue;
+            }
+            // Found an entry with friends in rocks_db_m4.
+            // Compute the canon-1 key from the first representative and look it up in test_rocks_db_m4.
+            let key = canon1_key(&circuits[0]);
+            let test_circuits = db2.get(&key).expect("RocksDB get error")
+                .map(|v| decode_circuits(&v))
+                .unwrap_or_default();
+
+            if test_circuits.len() <= 1 {
+                println!("Found canon4 collision!");
+                println!("rocks_db_m4 has {} friends under this key:", circuits.len());
+                for c in &circuits {
+                    println!("  {:?}", c.gates);
+                }
+                println!("test_rocks_db_m4 has {} circuit(s) under the canon-1 key:", test_circuits.len());
+                for c in &test_circuits {
+                    println!("  {:?}", c.gates);
+                }
+                return;
+            }
+        }
+        println!("No canon4 collision found (all multi-circuit entries in rocks_db_m4 are also multi-circuit in test_rocks_db_m4)");
+    }
+
     fn canonicalize_circuit(gates: Vec<[u8; 3]>, n: usize, m: usize) -> (CircuitSeq, Permutation) {
         let mut c = CircuitSeq { gates };
         let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true, false);
