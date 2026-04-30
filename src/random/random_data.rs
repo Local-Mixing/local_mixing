@@ -3668,8 +3668,19 @@ pub fn build_from_2rocks(
                 let c1_rev = {
                     let mut r = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
                     r.canonicalize();
-                    let canon = canonicalize_polys_4(r.to_polynomial(n, 0, m1));
-                    r.rewire(&canon.1.invert(), n);
+                    let used = r.used_wires();
+                    let wire_map: HashMap<u8, u8> = used.iter().enumerate()
+                        .map(|(i, &w)| (w, i as u8))
+                        .collect();
+                    r = CircuitSeq {
+                        gates: r.gates.iter().map(|&[t, c1, c2]| [
+                            wire_map[&t], wire_map[&c1], wire_map[&c2],
+                        ]).collect(),
+                    };
+                    r.canonicalize();
+                    let n1r = r.max_wire() as usize + 1;
+                    let canon = canonicalize_polys_4(r.to_polynomial(n1r, 0, r.gates.len()));
+                    r.rewire(&canon.1.invert(), n1r);
                     r.canonicalize();
                     r
                 };
