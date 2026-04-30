@@ -3750,33 +3750,33 @@ pub fn build_from_2rocks(
                         try_push(&c1_mapped.gates, &c2_rev.gates);
                     }
 
-                    // Case 5: c2_rev || mapped_c1
-                    for i in 0..n_2_rev1 {
-                        let mapping = &flat_2_rev1[i * stride_2_rev1..(i + 1) * stride_2_rev1];
-                        let c1_mapped = apply_wire_mapping(&d.c1, mapping);
-                        try_push(&c2_rev.gates, &c1_mapped.gates);
-                    }
+                    // // Case 5: c2_rev || mapped_c1
+                    // for i in 0..n_2_rev1 {
+                    //     let mapping = &flat_2_rev1[i * stride_2_rev1..(i + 1) * stride_2_rev1];
+                    //     let c1_mapped = apply_wire_mapping(&d.c1, mapping);
+                    //     try_push(&c2_rev.gates, &c1_mapped.gates);
+                    // }
 
-                    // Case 6: mapped_c1 || c2
-                    for i in 0..n_2_1 {
-                        let mapping = &flat_2_1[i * stride_2_1..(i + 1) * stride_2_1];
-                        let c1_mapped = apply_wire_mapping(&d.c1, mapping);
-                        try_push(&c1_mapped.gates, &c2.gates);
-                    }
+                    // // Case 6: mapped_c1 || c2
+                    // for i in 0..n_2_1 {
+                    //     let mapping = &flat_2_1[i * stride_2_1..(i + 1) * stride_2_1];
+                    //     let c1_mapped = apply_wire_mapping(&d.c1, mapping);
+                    //     try_push(&c1_mapped.gates, &c2.gates);
+                    // }
 
-                    // Case 7: mapped_c2 || c1
-                    for i in 0..n_1_2 {
-                        let mapping = &flat_1_2[i * stride_1_2..(i + 1) * stride_1_2];
-                        let c2_mapped = apply_wire_mapping(c2, mapping);
-                        try_push(&c2_mapped.gates, &d.c1.gates);
-                    }
+                    // // Case 7: mapped_c2 || c1
+                    // for i in 0..n_1_2 {
+                    //     let mapping = &flat_1_2[i * stride_1_2..(i + 1) * stride_1_2];
+                    //     let c2_mapped = apply_wire_mapping(c2, mapping);
+                    //     try_push(&c2_mapped.gates, &d.c1.gates);
+                    // }
 
-                    // Case 8: mapped_c2 || c1_rev
-                    for i in 0..n_rev1_2 {
-                        let mapping = &flat_rev1_2[i * stride_rev1_2..(i + 1) * stride_rev1_2];
-                        let c2_mapped = apply_wire_mapping(c2, mapping);
-                        try_push(&c2_mapped.gates, &d.c1_rev.gates);
-                    }
+                    // // Case 8: mapped_c2 || c1_rev
+                    // for i in 0..n_rev1_2 {
+                    //     let mapping = &flat_rev1_2[i * stride_rev1_2..(i + 1) * stride_rev1_2];
+                    //     let c2_mapped = apply_wire_mapping(c2, mapping);
+                    //     try_push(&c2_mapped.gates, &d.c1_rev.gates);
+                    // }
                 }
 
                 local
