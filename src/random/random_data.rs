@@ -3716,7 +3716,7 @@ pub fn build_from_2rocks(
                         let mut combined = CircuitSeq { gates };
                         combined.canonicalize();
                         if combined.adjacent_id() { return; }
-                        let (canon_polys, canon_circuit) = combined.canonicalize_polys(n);
+                        let (canon_polys, canon_circuit, _) = combined.canonicalize_polys(n);
                         let hash: u128 = xxh3_128(&polys_repr_blob(&canon_polys));
                         let key = hash.to_le_bytes().to_vec();
                         local.push((canon_circuit, canon_polys, key));
@@ -6739,6 +6739,8 @@ mod tests {
 
         let canon_1 = c1.canonicalize_polys(m * 3);
         let canon_2 = c2.canonicalize_polys(m * 3);
+        println!("c1 used: {}", if canon_1.2 { "reverse" } else { "forward" });
+        println!("c2 used: {}", if canon_2.2 { "reverse" } else { "forward" });
         println!("Canonical c1: ");
         for (i, poly) in canon_1.0.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, m * 3));
@@ -6853,7 +6855,7 @@ mod tests {
                     let mut circuit = CircuitSeq { gates: vec![g1, g2, g3, g4] };
                     circuit.canonicalize();
                     if circuit.adjacent_id() { continue; }
-                    let (canon_polys, _) = circuit.canonicalize_polys(n);
+                    let (canon_polys, _, _) = circuit.canonicalize_polys(n);
                     let hash: u128 = xxh3_128(&polys_repr_blob(&canon_polys));
                     local_seen.insert(hash);
                 }
@@ -6919,7 +6921,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mut sink = 0u128;
         for c in &circuits {
-            let (polys, _) = c.canonicalize_polys(n);
+            let (polys, _, _) = c.canonicalize_polys(n);
             sink ^= xxh3_128(&polys_repr_blob(&polys));
         }
         let elapsed = start.elapsed().as_secs_f64();
@@ -6966,7 +6968,7 @@ mod tests {
         // Parallel throughput
         let start = std::time::Instant::now();
         let sink: u128 = circuits.par_iter().map(|c| {
-            let (polys, _) = c.canonicalize_polys(n);
+            let (polys, _, _) = c.canonicalize_polys(n);
             xxh3_128(&polys_repr_blob(&polys))
         }).reduce(|| 0u128, |a, b| a ^ b);
         let elapsed = start.elapsed().as_secs_f64();

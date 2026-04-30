@@ -859,7 +859,9 @@ impl CircuitSeq {
         deg
     }
 
-    pub fn canonicalize_polys(&self, n: usize) -> (Vec<Polynomial>, CircuitSeq) {
+    // Returns (canonical_polys, canonical_circuit, reversed)
+    // where reversed=true means the reversed circuit produced the canonical form.
+    pub fn canonicalize_polys(&self, n: usize) -> (Vec<Polynomial>, CircuitSeq, bool) {
         fn poly_vec_key(polys: &Vec<Polynomial>) -> Vec<Vec<u64>> {
             polys.iter().map(|p| {
                 let mut v: Vec<u64> = p.iter().copied().collect();
@@ -887,27 +889,20 @@ impl CircuitSeq {
         let polys_fwd = c1.to_polynomial(n1, 0, c1.gates.len());
         let polys_rev = c2.to_polynomial(n2, 0, c2.gates.len());
         let canon1 = canonicalize_polys_4(polys_fwd);
-        // let canon1 = canonicalize_polys(polys_fwd, true, false);
         let canon2 = canonicalize_polys_4(polys_rev);
-        // let canon2 = canonicalize_polys(polys_rev, true, false);
         c1.rewire(&canon1.1.invert(), n1);
         c1.canonicalize();
         c2.rewire(&canon2.1.invert(), n2);
         c2.canonicalize();
         if poly_vec_key(&canon1.0) < poly_vec_key(&canon2.0) {
-            // println!("Case 1");
-            (canon1.0, c1)
-        } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0){
-            // println!("Case 2");
-            (canon2.0, c2)
+            (canon1.0, c1, false)
+        } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0) {
+            (canon2.0, c2, true)
         } else if c1.gates <= c2.gates {
-            // println!("Case 3");
-            (canon1.0, c1)
+            (canon1.0, c1, false)
         } else {
-            // println!("Case 4");
-            (canon2.0, c2)
+            (canon2.0, c2, true)
         }
-        // (canon1.0, c1)
     }
 
     pub fn canonicalize_polys_1(&self, _n: usize) -> (Vec<Polynomial>, CircuitSeq) {
