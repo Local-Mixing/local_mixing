@@ -6724,7 +6724,7 @@ mod tests {
         c1.canonicalize();
         c2.canonicalize();
         // c1.gates.reverse();
-        // c2.gates.reverse();
+        c2.gates.reverse();
         let poly_1 = c1.to_polynomial(9, 0, 3);
         let poly_2 = c2.to_polynomial(9, 0, 3);
         println!("Original c1:");
