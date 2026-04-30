@@ -3570,7 +3570,7 @@ pub fn build_from_2rocks(
     }
 
     // ── Writer thread ─────────────────────────────────────────────────────────
-    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(100_000);
+    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(64);
 
     let stop_flag_clone = stop_flag.clone();
     let new_db_writer = Arc::clone(new_db);
@@ -3806,16 +3806,20 @@ pub fn build_from_2rocks(
                     //     let c2_mapped = apply_wire_mapping(c2, mapping);
                     //     try_push(&c2_mapped.gates, &d.c1_rev.gates);
                     // }
+
+                    if local.len() >= batch_size && !stop_flag_par.load(Ordering::SeqCst) {
+                        let batch = std::mem::take(&mut local);
+                        if let Err(e) = tx_par.send(batch) {
+                            eprintln!("Failed to send batch: {:?}", e);
+                        }
+                    }
                 }
 
                 let n_local = local.len();
-                // Send this c1's results immediately rather than buffering everything
+                // Send any remaining results
                 if !local.is_empty() && !stop_flag_par.load(Ordering::SeqCst) {
-                    for batch in local.chunks(batch_size) {
-                        if let Err(e) = tx_par.send(batch.to_vec()) {
-                            eprintln!("Failed to send batch: {:?}", e);
-                            break;
-                        }
+                    if let Err(e) = tx_par.send(local) {
+                        eprintln!("Failed to send batch: {:?}", e);
                     }
                 }
                 chunk_total.fetch_add(n_local, Ordering::Relaxed);
