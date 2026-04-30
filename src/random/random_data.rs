@@ -6718,8 +6718,8 @@ mod tests {
     #[test]
     fn test_c1_vs_c2_after_canon() {
         use crate::circuit::circuit::poly_to_str;
-        let mut c1 = CircuitSeq { gates: vec![[3, 0, 2], [3, 1, 0], [3, 1, 2]]    };
-        let mut c2 = CircuitSeq { gates: vec![[3, 0, 1], [3, 2, 0], [3, 2, 1]] };
+        let mut c1 = CircuitSeq { gates: vec![[0, 3, 1], [3, 1, 2], [1, 3, 0], [4, 1, 3]]    };
+        let mut c2 = CircuitSeq { gates: vec![[0, 3, 1], [4, 3, 1], [3, 1, 2], [1, 3, 0]]    };
         println!("Relabeling? {}", c1.is_relabeling_of(&c2));
         c1.canonicalize();
         c2.canonicalize();
