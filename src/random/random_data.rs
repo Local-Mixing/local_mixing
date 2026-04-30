@@ -6725,7 +6725,7 @@ mod tests {
         c1.canonicalize();
         c2.canonicalize();
         // c1.gates.reverse();
-        c2.gates.reverse();
+        // c2.gates.reverse();
         let poly_1 = c1.to_polynomial(m * 3, 0, m);
         let poly_2 = c2.to_polynomial(m * 3, 0, m);
         println!("Original c1:");
