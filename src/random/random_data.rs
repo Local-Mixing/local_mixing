@@ -6720,50 +6720,35 @@ mod tests {
         use crate::circuit::circuit::poly_to_str;
         let mut c1 = CircuitSeq { gates: vec![[0, 3, 1], [3, 1, 2], [1, 3, 0], [4, 1, 3]]    };
         let mut c2 = CircuitSeq { gates: vec![[0, 3, 1], [4, 3, 1], [3, 1, 2], [1, 3, 0]]    };
+        let m = c1.gates.len();
         println!("Relabeling? {}", c1.is_relabeling_of(&c2));
         c1.canonicalize();
         c2.canonicalize();
         // c1.gates.reverse();
         c2.gates.reverse();
-        let poly_1 = c1.to_polynomial(9, 0, 3);
-        let poly_2 = c2.to_polynomial(9, 0, 3);
+        let poly_1 = c1.to_polynomial(m * 3, 0, m);
+        let poly_2 = c2.to_polynomial(m * 3, 0, m);
         println!("Original c1:");
         for (i, poly) in poly_1.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 9));
+            println!("  P{}: {}", i, poly_to_str(poly, m * 3));
         }
         println!("Original c2:");
         for (i, poly) in poly_2.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 9));
+            println!("  P{}: {}", i, poly_to_str(poly, m * 3));
         }
 
-        let canon_1 = canonicalize_polys_4(c1.to_polynomial(9, 0, 3));
-        let canon_2 = canonicalize_polys_4(c2.to_polynomial(9, 0, 3));
-        println!("c1 case:");
-        let canon_1ver2 = c1.canonicalize_polys(9);
-        println!("c2 case:");
-        let canon_2ver2 = c2.canonicalize_polys(9);
-        // let canon_1 = canonicalize_polys(c1.to_polynomial(9, 0, 3), true, false);
-        // let canon_2 = canonicalize_polys(c2.to_polynomial(9, 0, 3), true, false);
+        let canon_1 = c1.canonicalize_polys(m * 3);
+        let canon_2 = c2.canonicalize_polys(m * 3);
         println!("Canonical c1: ");
         for (i, poly) in canon_1.0.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 9));
+            println!("  P{}: {}", i, poly_to_str(poly, m * 3));
         }
-        println!("Wire ranking for c1");
-        println!("{:?}", canon_1.1.data);
         println!("Canonical c2: ");
         for (i, poly) in canon_2.0.iter().enumerate() {
-            println!("  P{}: {}", i, poly_to_str(poly, 9));
+            println!("  P{}: {}", i, poly_to_str(poly, m * 3));
         }
-        println!("Wire ranking for c2");
-        println!("{:?}", canon_2.1.data);
         assert!(canon_1.0 == canon_2.0, "Canonical forms differ:\n  c1: {:?}\n  c2: {:?}", canon_1.0, canon_2.0);
-        
-        c1.rewire(&canon_1.1.invert(), 9);
-        c2.rewire(&canon_2.1.invert(), 9);
-        c1.canonicalize();
-        c2.canonicalize();
-
-        assert!(canon_1ver2.1.gates == canon_2ver2.1.gates, "Circuits differ after rewiring and canonicalization:\n  c1: {:?}\n  c2: {:?}", canon_1ver2.1.gates, canon_2ver2.1.gates);
+        assert!(canon_1.1.gates == canon_2.1.gates, "Circuits differ after canonicalization:\n  c1: {:?}\n  c2: {:?}", canon_1.1.gates, canon_2.1.gates);
     }
 
     #[test]
