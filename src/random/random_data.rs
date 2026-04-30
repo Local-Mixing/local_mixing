@@ -3701,6 +3701,10 @@ pub fn build_from_2rocks(
         let tx_par = tx.clone();
         let total_gates_tried_par = Arc::clone(&total_gates_tried);
 
+        let total_c1 = c1_data.len();
+        let c1_done = std::sync::atomic::AtomicUsize::new(0);
+        println!("Processing chunk: 0/{} c1 circuits...", total_c1);
+
         // results collected per-c1 chunk, then sent in batches
         let chunk_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> = c1_data
             .par_iter()
@@ -3806,6 +3810,14 @@ pub fn build_from_2rocks(
                     //     let c2_mapped = apply_wire_mapping(c2, mapping);
                     //     try_push(&c2_mapped.gates, &d.c1_rev.gates);
                     // }
+                }
+
+                let done = c1_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if done % 50 == 0 || done == total_c1 {
+                    println!(
+                        "Processing chunk: {}/{} c1 circuits... ({} results so far)",
+                        done, total_c1, local.len(),
+                    );
                 }
 
                 local
