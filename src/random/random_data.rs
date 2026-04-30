@@ -3490,7 +3490,9 @@ pub fn build_from_2rocks(
     });
 
     // Precompute c2_rev for every c2 once
-    println!("Precomputing c2_rev...");
+    let total_c2 = db2_circuits.len();
+    println!("Precomputing c2_rev (0/{})...", total_c2);
+    let c2_rev_done = std::sync::atomic::AtomicUsize::new(0);
     let db2_rev: Arc<Vec<CircuitSeq>> = Arc::new(
         db2_circuits.par_iter().map(|c2| {
             let mut r = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
@@ -3510,6 +3512,10 @@ pub fn build_from_2rocks(
             let canon = canonicalize_polys_4(r.to_polynomial(n2, 0, r.gates.len()));
             r.rewire(&canon.1.invert(), n2);
             r.canonicalize();
+            let done = c2_rev_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if done % 50 == 0 || done == total_c2 {
+                println!("Precomputing c2_rev ({}/{})...", done, total_c2);
+            }
             r
         }).collect()
     );
