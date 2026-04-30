@@ -3578,7 +3578,7 @@ pub fn build_from_2rocks(
 
     let insert_handle = std::thread::spawn(move || {
         let start_time = std::time::Instant::now();
-        let total_est = total_rows as usize * nc2 * 4;
+        let total_est = total_rows as usize * nc2; // (c1, c2) pairs
         let mut attempted_inserts = 0usize;
         let mut sst_index = 0usize;
         let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
@@ -3688,6 +3688,7 @@ pub fn build_from_2rocks(
                 C1Data { c1, n1, c1_rev, n1_rev }
             })
             .collect();
+        println!("c1_data precomputed: {} circuits", c1_data.len());
 
         // Build flat work list in parallel over c1, then process each item in parallel.
         // We avoid collecting into WorkItem structs and instead process directly
@@ -3703,14 +3704,12 @@ pub fn build_from_2rocks(
 
         let total_c1 = c1_data.len();
         let c1_done = std::sync::atomic::AtomicUsize::new(0);
+        let chunk_total = std::sync::atomic::AtomicUsize::new(0);
         println!("Processing chunk: 0/{} c1 circuits...", total_c1);
 
-        // results collected per-c1 chunk, then sent in batches
-        let chunk_results: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> = c1_data
-            .par_iter()
-            .flat_map(|d| {
+        c1_data.par_iter().for_each(|d| {
                 if stop_flag_par.load(Ordering::SeqCst) {
-                    return vec![];
+                    return;
                 }
 
                 let mut local: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> = Vec::new();
@@ -3736,10 +3735,7 @@ pub fn build_from_2rocks(
                     let n_rev1_2 = if *stride_rev1_2 == 0 { 0 } else { flat_rev1_2.len() / stride_rev1_2 };
                     let n_2_rev1 = if *stride_2_rev1 == 0 { 0 } else { flat_2_rev1.len() / stride_2_rev1 };
 
-                    total_gates_tried_par.fetch_add(
-                        (n_1_2 + n_2_1 + n_rev1_2 + n_2_rev1) * 2,
-                        Ordering::Relaxed,
-                    );
+                    total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
 
                     // Helper closure: concatenate, canonicalize, push if non-trivial
                     let mut try_push = |first_gates: &[[u8; 3]], second_gates: &[[u8; 3]]| {
@@ -3812,31 +3808,30 @@ pub fn build_from_2rocks(
                     // }
                 }
 
+                let n_local = local.len();
+                // Send this c1's results immediately rather than buffering everything
+                if !local.is_empty() && !stop_flag_par.load(Ordering::SeqCst) {
+                    for batch in local.chunks(batch_size) {
+                        if let Err(e) = tx_par.send(batch.to_vec()) {
+                            eprintln!("Failed to send batch: {:?}", e);
+                            break;
+                        }
+                    }
+                }
+                chunk_total.fetch_add(n_local, Ordering::Relaxed);
+
                 let done = c1_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 if done % 50 == 0 || done == total_c1 {
                     println!(
                         "Processing chunk: {}/{} c1 circuits... ({} results so far)",
-                        done, total_c1, local.len(),
+                        done, total_c1, chunk_total.load(Ordering::Relaxed),
                     );
                 }
-
-                local
-            })
-            .collect();
-
-        // Send chunk results to writer in batches
-        if !stop_flag.load(Ordering::SeqCst) {
-            for batch in chunk_results.chunks(batch_size) {
-                if let Err(e) = tx_par.send(batch.to_vec()) {
-                    eprintln!("Failed to send batch: {:?}", e);
-                    break;
-                }
-            }
-        }
+        });
 
         println!(
             "Chunk done: {} results generated, tried={}",
-            chunk_results.len(),
+            chunk_total.load(Ordering::Relaxed),
             total_gates_tried.load(Ordering::Relaxed),
         );
 
