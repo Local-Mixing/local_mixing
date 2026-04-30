@@ -5588,6 +5588,13 @@ mod tests {
 
                 let dst_circuits = &dst_map[&dst_key];
 
+                let all_src: String = src_circuits.iter()
+                    .map(|c| format!("    {:?}", c.gates))
+                    .collect::<Vec<_>>().join("\n");
+                let all_dst: String = dst_circuits.iter()
+                    .map(|c| format!("    {:?}", c.gates))
+                    .collect::<Vec<_>>().join("\n");
+
                 for src_c in src_circuits {
                     let matched = dst_circuits
                         .iter()
@@ -5595,10 +5602,11 @@ mod tests {
                     if !matched {
                         let poly_str = canon_poly_str(src_c);
                         errors.push(format!(
-                            "[{src_name} -> {dst_name}] circuit {:?} has no relabeling match in {dst_name} (bucket has {} circuits)\n  canonical polys: {}",
+                            "[{src_name} -> {dst_name}] circuit {:?} has no relabeling match in {dst_name}\n  canonical polys: {}\n  {src_name} circuits ({}):\n{}\n  {dst_name} circuits ({}):\n{}",
                             src_c.gates,
-                            dst_circuits.len(),
                             poly_str,
+                            src_circuits.len(), all_src,
+                            dst_circuits.len(), all_dst,
                         ));
                     }
                 }
@@ -5610,10 +5618,11 @@ mod tests {
                     if !matched {
                         let poly_str = canon_poly_str(dst_c);
                         errors.push(format!(
-                            "[{src_name} -> {dst_name}] {dst_name} circuit {:?} has no relabeling match in {src_name} (bucket has {} circuits)\n  canonical polys: {}",
+                            "[{src_name} -> {dst_name}] {dst_name} circuit {:?} has no relabeling match in {src_name}\n  canonical polys: {}\n  {src_name} circuits ({}):\n{}\n  {dst_name} circuits ({}):\n{}",
                             dst_c.gates,
-                            src_circuits.len(),
                             poly_str,
+                            src_circuits.len(), all_src,
+                            dst_circuits.len(), all_dst,
                         ));
                     }
                 }
