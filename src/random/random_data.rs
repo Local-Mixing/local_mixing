@@ -17,7 +17,7 @@ use rayon::{
     iter::{IntoParallelRefIterator, ParallelIterator},
     slice::ParallelSlice,
 };
-use duckdb::{Connection, AccessMode, Config};
+// use duckdb::{Connection, AccessMode, Config};
 use rocksdb::{
     DB, Options, BlockBasedOptions, SstFileWriter, IngestExternalFileOptions,
     MergeOperands, DBCompressionType, Cache,
@@ -1828,6 +1828,7 @@ fn is_level_zero_raw(c: &CircuitSeq, idx: usize, remaining: &[bool]) -> bool {
 // Below is used for db storing
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+#[cfg(any())]
 pub fn create_table(conn: &Connection, table_name: &str) -> duckdb::Result<()> {
     // Table name includes n and m
     let sql = format!(
@@ -1845,9 +1846,10 @@ pub fn create_table(conn: &Connection, table_name: &str) -> duckdb::Result<()> {
     Ok(())
 }
 
+#[cfg(any())]
 pub fn insert_circuit(
     conn: &Connection,
-    circuit: &CircuitSeq, 
+    circuit: &CircuitSeq,
     canon: &Canonicalization,
     table_name: &str,
 ) -> duckdb::Result<()> {
@@ -1859,6 +1861,7 @@ pub fn insert_circuit(
     Ok(())
 }
 
+#[cfg(any())]
 pub fn insert_circuits_batch(
     conn: &mut Connection,
     table_name: &str,
@@ -2163,6 +2166,7 @@ impl Permutation {
 // Testing code to look at sql db
 // sql db is mostly unused, outside of n6m5 and n7m4
 // Switched over to lmdb
+#[cfg(any())]
 pub fn check_cycles(n: usize, m: usize) -> duckdb::Result<()> {
     // Open the database
     let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
@@ -2194,6 +2198,7 @@ pub fn check_cycles(n: usize, m: usize) -> duckdb::Result<()> {
     Ok(())
 }
 
+#[cfg(any())]
 pub fn print_all(table_name: &str) -> duckdb::Result<()> {
     let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
     let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
@@ -2225,6 +2230,7 @@ pub fn print_all(table_name: &str) -> duckdb::Result<()> {
     Ok(())
 }
 
+#[cfg(any())]
 pub fn count_distinct(n: usize, m: usize) -> duckdb::Result<usize> {
     let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
     let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
@@ -2253,6 +2259,7 @@ pub fn base_gates(n: usize) -> Vec<[u8; 3]> {
 }
 
 // Given nXmY, attempt to build the corresponding table for nXm{Y+1}
+#[cfg(any())]
 pub fn build_from_sql(
     conn: &Connection,
     n: usize,
@@ -3921,6 +3928,7 @@ pub fn build_from_2rocks(
 //Speed up SQL queries
 //Should not see for a particular size query, the speed should not vary across multiple runs
 // Attempt to add a random circuit to the SQL db
+#[cfg(any())]
 pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
     let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
     let mut conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
@@ -4012,6 +4020,7 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any())]
     #[test]
     fn test_check_cycles_n3m3() -> duckdb::Result<()> {
         let now = std::time::Instant::now();
@@ -4543,6 +4552,7 @@ mod tests {
         file.write_all(id.as_bytes())
             .expect("Failed to write to file");
     }
+    #[cfg(any())]
     #[test]
     fn benchmark_sql_vs_canonical() {
         use std::time::{Duration, Instant};
@@ -4666,6 +4676,7 @@ mod tests {
         }
     }
 
+    #[cfg(any())]
     #[test]
     fn benchmark_rocksdb_vs_duckdb_vs_canonical() {
         use std::time::{Duration, Instant};

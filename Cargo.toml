@@ -39,7 +39,6 @@ signal-hook = "0.3.18"
 crossbeam-channel = "0.5.15"
 primitive-types = "0.14.0"
 heed = "0.22.0"
-duckdb = "1.10501.0"
 rocksdb = "0.24.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 num_cpus = "1.17.0"

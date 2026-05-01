@@ -13,7 +13,7 @@ use local_mixing::{
     circuit::{CircuitSeq, circuit::{poly_degree, poly_to_str}},
     random::random_data::{
         // build_from_sql, 
-        main_random, 
+        // main_random,
         random_circuit, 
         // random_sulking, 
         // random_walk_no_skeleton, 
@@ -1088,20 +1088,18 @@ Command::new("rocksdb_2")
         //     let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
         //     build_from_sql(&conn, n,m, &bit_shuf).expect("Unknown error occured");
         // }
-        Some(("random", sub)) => {
-            let n: usize = *sub.get_one("n").unwrap();
-            let m: usize = *sub.get_one("m").unwrap();
-
-            if let Some(count) = sub.get_one::<usize>("count") {
-                // Fixed-count mode
-                main_random(n, m, *count, false);
-            } else if sub.get_flag("sliding") {
-                // Sliding-window fail-rate mode
-                main_random(n, m, 0, true);
-            } else {
-                panic!("You must provide either -c <count> or -C for sliding-window mode");
-            }
-        }
+        // Some(("random", sub)) => {
+        //     let n: usize = *sub.get_one("n").unwrap();
+        //     let m: usize = *sub.get_one("m").unwrap();
+        //
+        //     if let Some(count) = sub.get_one::<usize>("count") {
+        //         main_random(n, m, *count, false);
+        //     } else if sub.get_flag("sliding") {
+        //         main_random(n, m, 0, true);
+        //     } else {
+        //         panic!("You must provide either -c <count> or -C for sliding-window mode");
+        //     }
+        // }
         // Some(("mix", sub)) => {
         //     let rounds: usize = *sub.get_one("rounds").unwrap();
 
