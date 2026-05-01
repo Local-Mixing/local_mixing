@@ -5484,7 +5484,7 @@ mod tests {
 
     #[test]
     fn test_count_circuits_per_table() {
-        for m in 1..=5 {
+        for m in 1..=6 {
             let db = Arc::new(open_db_for_read(m));
             let iter = db.iterator(rocksdb::IteratorMode::Start);
 
@@ -5510,7 +5510,7 @@ mod tests {
                 }
             }
 
-            println!("m={}: {} keys, {} circuits", m, key_count, circuit_count);
+            println!("m={}: {} canonical polynomials, {} circuits", m, key_count, circuit_count);
         }
     }
 
