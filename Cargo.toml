@@ -43,6 +43,10 @@ duckdb = "1.10501.0"
 rocksdb = "0.24.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 num_cpus = "1.17.0"
-nauty-Traces-sys = "0.11.0"
 num-bigint = "0.4.6"
+nauty-Traces-sys = "0.11.0"
 num-traits = "0.2.19"
+faster-rs = "0.11.0"
+
+[patch.crates-io]
+libfaster-sys = { path = "patches/libfaster-sys" }

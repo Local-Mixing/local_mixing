@@ -3354,16 +3354,62 @@ fn apply_wire_mapping(circuit: &CircuitSeq, mapping: &[u8]) -> CircuitSeq {
 // Cache: (n1, n2) -> Arc<(flat_mappings, stride=n2)>
 // flat_mappings is all mappings concatenated contiguously.
 // mapping i is at flat[i*n2..(i+1)*n2].
-static MAPPING_CACHE: Lazy<DashMap<(usize, usize), Arc<(Vec<u8>, usize)>>> =
-    Lazy::new(|| DashMap::new());
+// Entries with more mappings than this are streamed on-the-fly instead of cached.
+const LARGE_MAPPING_THRESHOLD: usize = 200_000;
+// Max number of entries kept in the LRU cache.
+const MAPPING_CACHE_CAP: usize = 256;
 
-pub fn enumerate_c2_wire_mappings_cached(n1: usize, n2: usize) -> Arc<(Vec<u8>, usize)> {
-    if let Some(cached) = MAPPING_CACHE.get(&(n1, n2)) {
-        return Arc::clone(&*cached);
+static MAPPING_CACHE: Lazy<std::sync::Mutex<lru::LruCache<(usize, usize), Arc<(Vec<u8>, usize)>>>> =
+    Lazy::new(|| std::sync::Mutex::new(lru::LruCache::new(
+        std::num::NonZeroUsize::new(MAPPING_CACHE_CAP).unwrap()
+    )));
+
+/// Call `f` once per mapping for the (n1, n2) pair.
+/// Small pairs are cached in an LRU; large pairs are enumerated on-the-fly.
+pub fn for_each_mapping<F: FnMut(&[u8])>(n1: usize, n2: usize, mut f: F) {
+    let total = count_mappings(n1, n2);
+    if total <= LARGE_MAPPING_THRESHOLD {
+        // Try cache first
+        let cached = {
+            let mut cache = MAPPING_CACHE.lock().unwrap();
+            cache.get(&(n1, n2)).cloned()
+        };
+        let entry = cached.unwrap_or_else(|| {
+            let arc = Arc::new(compute_mappings(n1, n2));
+            let mut cache = MAPPING_CACHE.lock().unwrap();
+            cache.put((n1, n2), Arc::clone(&arc));
+            arc
+        });
+        let (flat, stride) = &*entry;
+        if *stride > 0 {
+            for chunk in flat.chunks(*stride) {
+                f(chunk);
+            }
+        }
+    } else {
+        // Large: enumerate directly without caching
+        let mut c2_to_wire = vec![0u8; n2];
+        let mut used = vec![false; n2];
+        enumerate_direct_callback(0, n1, n2, &mut c2_to_wire, &mut used, &mut f);
     }
-    let result = Arc::new(compute_mappings(n1, n2));
-    MAPPING_CACHE.entry((n1, n2)).or_insert_with(|| Arc::clone(&result));
-    Arc::clone(&*MAPPING_CACHE.get(&(n1, n2)).unwrap())
+}
+
+// Keep the old cached accessor for the warmup step.
+pub fn enumerate_c2_wire_mappings_cached(n1: usize, n2: usize) -> Arc<(Vec<u8>, usize)> {
+    let total = count_mappings(n1, n2);
+    if total > LARGE_MAPPING_THRESHOLD {
+        return Arc::new((vec![], 0)); // sentinel: will be streamed on-the-fly
+    }
+    let cached = {
+        let mut cache = MAPPING_CACHE.lock().unwrap();
+        cache.get(&(n1, n2)).cloned()
+    };
+    cached.unwrap_or_else(|| {
+        let arc = Arc::new(compute_mappings(n1, n2));
+        let mut cache = MAPPING_CACHE.lock().unwrap();
+        cache.put((n1, n2), Arc::clone(&arc));
+        arc
+    })
 }
 
 fn count_mappings(n1: usize, n2: usize) -> usize {
@@ -3442,6 +3488,42 @@ fn enumerate_direct(
             used[j] = true;
             c2_to_wire[j] = pos as u8;
             enumerate_direct(pos + 1, n1, n2, c2_to_wire, used, flat, idx);
+            used[j] = false;
+            c2_to_wire[j] = 0;
+        }
+    }
+}
+
+fn enumerate_direct_callback<F: FnMut(&[u8])>(
+    pos: usize,
+    n1: usize,
+    n2: usize,
+    c2_to_wire: &mut Vec<u8>,
+    used: &mut Vec<bool>,
+    f: &mut F,
+) {
+    if pos == n1 {
+        let mut fresh = n1;
+        for j in 0..n2 {
+            if !used[j] {
+                c2_to_wire[j] = fresh as u8;
+                fresh += 1;
+            }
+        }
+        f(c2_to_wire);
+        for j in 0..n2 {
+            if !used[j] {
+                c2_to_wire[j] = 0;
+            }
+        }
+        return;
+    }
+    enumerate_direct_callback(pos + 1, n1, n2, c2_to_wire, used, f);
+    for j in 0..n2 {
+        if !used[j] {
+            used[j] = true;
+            c2_to_wire[j] = pos as u8;
+            enumerate_direct_callback(pos + 1, n1, n2, c2_to_wire, used, f);
             used[j] = false;
             c2_to_wire[j] = 0;
         }
@@ -3545,7 +3627,7 @@ pub fn build_from_2rocks(
             enumerate_c2_wire_mappings_cached(n2, n1);
         }
     });
-    println!("Cache warmed: {} entries", MAPPING_CACHE.len());
+    println!("Cache warmed: {} entries", MAPPING_CACHE.lock().unwrap().len());
 
     let total_rows = db1
         .property_int_value("rocksdb.estimate-num-keys")
@@ -3719,22 +3801,6 @@ pub fn build_from_2rocks(
                     let c2_rev = &db2_rev_ref[j];
                     let n2_rev = db2_rev_n2_ref[j];
 
-                    // All mapping sets needed for 8 cases
-                    let maps_1_2    = enumerate_c2_wire_mappings_cached(d.n1,     n2);
-                    let maps_2_1    = enumerate_c2_wire_mappings_cached(n2,       d.n1);
-                    let maps_rev1_2 = enumerate_c2_wire_mappings_cached(d.n1_rev, n2);
-                    let maps_2_rev1 = enumerate_c2_wire_mappings_cached(n2_rev,   d.n1);
-
-                    let (flat_1_2,    stride_1_2)    = &*maps_1_2;
-                    let (flat_2_1,    stride_2_1)    = &*maps_2_1;
-                    let (flat_rev1_2, stride_rev1_2) = &*maps_rev1_2;
-                    let (flat_2_rev1, stride_2_rev1) = &*maps_2_rev1;
-
-                    let n_1_2    = if *stride_1_2    == 0 { 0 } else { flat_1_2.len()    / stride_1_2    };
-                    let n_2_1    = if *stride_2_1    == 0 { 0 } else { flat_2_1.len()    / stride_2_1    };
-                    let n_rev1_2 = if *stride_rev1_2 == 0 { 0 } else { flat_rev1_2.len() / stride_rev1_2 };
-                    let n_2_rev1 = if *stride_2_rev1 == 0 { 0 } else { flat_2_rev1.len() / stride_2_rev1 };
-
                     total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
 
                     // Helper closure: concatenate, canonicalize, push if non-trivial
@@ -3752,32 +3818,28 @@ pub fn build_from_2rocks(
                     };
 
                     // Case 1: c1 || mapped_c2
-                    for i in 0..n_1_2 {
-                        let mapping = &flat_1_2[i * stride_1_2..(i + 1) * stride_1_2];
+                    for_each_mapping(d.n1, n2, |mapping| {
                         let c2_mapped = apply_wire_mapping(c2, mapping);
                         try_push(&d.c1.gates, &c2_mapped.gates);
-                    }
+                    });
 
                     // Case 2: c2 || mapped_c1
-                    for i in 0..n_2_1 {
-                        let mapping = &flat_2_1[i * stride_2_1..(i + 1) * stride_2_1];
+                    for_each_mapping(n2, d.n1, |mapping| {
                         let c1_mapped = apply_wire_mapping(&d.c1, mapping);
                         try_push(&c2.gates, &c1_mapped.gates);
-                    }
+                    });
 
                     // Case 3: c1_rev || mapped_c2
-                    for i in 0..n_rev1_2 {
-                        let mapping = &flat_rev1_2[i * stride_rev1_2..(i + 1) * stride_rev1_2];
+                    for_each_mapping(d.n1_rev, n2, |mapping| {
                         let c2_mapped = apply_wire_mapping(c2, mapping);
                         try_push(&d.c1_rev.gates, &c2_mapped.gates);
-                    }
+                    });
 
                     // Case 4: mapped_c1 || c2_rev
-                    for i in 0..n_2_rev1 {
-                        let mapping = &flat_2_rev1[i * stride_2_rev1..(i + 1) * stride_2_rev1];
+                    for_each_mapping(n2_rev, d.n1, |mapping| {
                         let c1_mapped = apply_wire_mapping(&d.c1, mapping);
                         try_push(&c1_mapped.gates, &c2_rev.gates);
-                    }
+                    });
 
                     // // Case 5: c2_rev || mapped_c1
                     // for i in 0..n_2_rev1 {
@@ -7012,8 +7074,101 @@ mod tests {
             xxh3_128(&polys_repr_blob(&polys))
         }).reduce(|| 0u128, |a, b| a ^ b);
         let elapsed = start.elapsed().as_secs_f64();
-        println!("parallel canonicalize_polys: {:.0}/sec (sink={})", 
+        println!("parallel canonicalize_polys: {:.0}/sec (sink={})",
             circuits.len() as f64 / elapsed, sink);
     }
 
+}
+
+/// Merge rocks_db_m1..=rocks_db_m6 by key into a single RocksDB at `output_path`.
+/// Values for the same key are concatenated (the existing length-prefixed blob format
+/// means the combined value is still valid — each circuit's length marker is intact).
+pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut merged: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+
+    for m in 1..=6 {
+        let path = format!("rocks_db_m{}", m);
+        let db = DB::open_for_read_only(&Options::default(), &path, false)
+            .unwrap_or_else(|e| panic!("Failed to open {}: {}", path, e));
+
+        let mut count = 0usize;
+        for item in db.iterator(rocksdb::IteratorMode::Start) {
+            let (key, value) = item?;
+            merged.entry(key.to_vec()).or_default().extend_from_slice(&value);
+            count += 1;
+        }
+        println!("Loaded {} keys from rocks_db_m{}", count, m);
+    }
+
+    println!("Total unique keys after merge: {}", merged.len());
+
+    let mut opts = Options::default();
+    opts.create_if_missing(true);
+    opts.set_compression_type(DBCompressionType::None);
+    opts.set_bottommost_compression_type(DBCompressionType::Zstd);
+    let output = DB::open(&opts, output_path)?;
+
+    let mut batch = rocksdb::WriteBatch::default();
+    let mut flushed = 0usize;
+    for (key, value) in &merged {
+        batch.put(key, value);
+        flushed += 1;
+        if flushed % 100_000 == 0 {
+            output.write(std::mem::take(&mut batch))?;
+            batch = rocksdb::WriteBatch::default();
+            println!("Written {}/{} keys...", flushed, merged.len());
+        }
+    }
+    if !batch.is_empty() {
+        output.write(batch)?;
+    }
+    println!("Done. {} keys written to {}", flushed, output_path);
+    Ok(())
+}
+
+/// Copy all entries from a RocksDB into a FasterKV store.
+/// FasterKV uses a hash index with a hybrid log, giving fast O(1) point lookups.
+pub fn rocks_to_fasterkv(
+    rocks_path: &str,
+    faster_dir: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use faster_rs::{FasterKvBuilder, status};
+
+    std::fs::create_dir_all(faster_dir)?;
+
+    // Table size: number of hash buckets (power of 2). 1M buckets for up to ~millions of keys.
+    // Log size: backing store size. 8 GB is generous; FASTER only uses what it needs.
+    let store = FasterKvBuilder::new(1 << 20, 8 * 1024 * 1024 * 1024)
+        .with_disk(faster_dir)
+        .build()
+        .map_err(|e| format!("Failed to build FasterKV store: {:?}", e))?;
+
+    let _session = store.start_session();
+
+    let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
+    let mut serial = 1u64;
+
+    for item in rocks.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = item?;
+        let key_vec: Vec<u8> = key.to_vec();
+        let val_vec: Vec<u8> = value.to_vec();
+
+        let s = store.upsert(&key_vec, &val_vec, serial);
+        assert!(s == status::OK || s == status::PENDING);
+        serial += 1;
+
+        if serial % 10_000 == 0 {
+            store.complete_pending(false);
+            println!("Inserted {} entries...", serial - 1);
+        }
+    }
+
+    store.complete_pending(true);
+    let check = store.checkpoint()
+        .map_err(|e| format!("Checkpoint failed: {:?}", e))?;
+    store.stop_session();
+
+    println!("Done. {} entries written to FasterKV at {} (checkpoint token: {})",
+        serial - 1, faster_dir, check.token);
+    Ok(())
 }
