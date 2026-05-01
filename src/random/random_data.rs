@@ -33,6 +33,13 @@ use std::{
     io::Write,
     thread,
 };
+
+fn write_error(msg: &str) {
+    eprintln!("{}", msg);
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open("error.txt") {
+        let _ = writeln!(f, "{}", msg);
+    }
+}
 use crate::circuit::circuit::polys_repr_blob;
 use crate::circuit::Polynomial;
 use crate::circuit::circuit::{canonicalize_polys, canonicalize_polys_2, canonicalize_polys_3, canonicalize_polys_4};
@@ -2877,7 +2884,7 @@ pub fn build_from_rocks(
 
             if pending.len() >= 1_000_000 {
                 if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
-                    eprintln!("Writer thread: flush failed: {}", e);
+                    write_error(&format!("Writer thread: flush failed: {}", e));
                     return;
                 }
             }
@@ -2885,7 +2892,7 @@ pub fn build_from_rocks(
 
         if !pending.is_empty() {
             if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
-                eprintln!("Writer thread: final flush failed: {}", e);
+                write_error(&format!("Writer thread: final flush failed: {}", e));
             }
         }
 
@@ -3262,7 +3269,7 @@ pub fn build_m1(new_db: &Arc<DB>) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Err(e) = flush_to_sst(new_db, &mut pending, &mut sst_index) {
-        eprintln!("combine_rocks_dbs: flush failed: {}", e);
+        write_error(&format!("combine_rocks_dbs: flush failed: {}", e));
     }
 
     println!("Compacting m1 db...");
@@ -3704,7 +3711,7 @@ pub fn build_from_2rocks(
 
             if pending.len() >= 1_000_000 {
                 if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
-                    eprintln!("Writer thread: flush failed: {}", e);
+                    write_error(&format!("Writer thread: flush failed: {}", e));
                     return;
                 }
             }
@@ -3712,7 +3719,7 @@ pub fn build_from_2rocks(
 
         if !pending.is_empty() {
             if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
-                eprintln!("Writer thread: final flush failed: {}", e);
+                write_error(&format!("Writer thread: final flush failed: {}", e));
             }
         }
         println!(
