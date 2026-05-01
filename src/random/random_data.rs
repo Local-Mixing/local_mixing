@@ -2598,14 +2598,12 @@ fn merge_sorted_entries(entries: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Vec<u
     merged
 }
 
-fn flush_to_sst(db: &Arc<DB>, pending: &mut Vec<(Vec<u8>, Vec<u8>)>, sst_index: &mut usize) {
+fn flush_to_sst(db: &Arc<DB>, pending: &mut Vec<(Vec<u8>, Vec<u8>)>, sst_index: &mut usize) -> Result<(), Box<dyn std::error::Error>> {
     if pending.is_empty() {
-        return;
+        return Ok(());
     }
 
-    // Sort by key — required for SST ingestion
     pending.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
-
     let merged = merge_sorted_entries(std::mem::take(pending));
 
     let sst_path = format!("/tmp/sst_{}.sst", sst_index);
@@ -2616,19 +2614,19 @@ fn flush_to_sst(db: &Arc<DB>, pending: &mut Vec<(Vec<u8>, Vec<u8>)>, sst_index: 
     opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
 
     let mut writer = SstFileWriter::create(&opts);
-    writer.open(&sst_path).expect("Failed to open SST writer");
+    writer.open(&sst_path)?;
 
     for (key, value) in &merged {
-        writer.put(key, value).expect("Failed to write SST entry");
+        writer.put(key, value)?;
     }
-    writer.finish().expect("Failed to finish SST file");
+    writer.finish()?;
 
     let mut ingest_opts = IngestExternalFileOptions::default();
     ingest_opts.set_move_files(true);
-    db.ingest_external_file_opts(&ingest_opts, vec![sst_path.clone()])
-        .expect("Failed to ingest SST file");
+    db.ingest_external_file_opts(&ingest_opts, vec![sst_path.clone()])?;
 
     println!("Ingested SST file #{}", *sst_index - 1);
+    Ok(())
 }
 
 /// Returns the set of wires actually touched by the circuit (appearing in any gate).
@@ -2878,12 +2876,17 @@ pub fn build_from_rocks(
             );
 
             if pending.len() >= 1_000_000 {
-                flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
+                if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
+                    eprintln!("Writer thread: flush failed: {}", e);
+                    return;
+                }
             }
         }
 
         if !pending.is_empty() {
-            flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
+            if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
+                eprintln!("Writer thread: final flush failed: {}", e);
+            }
         }
 
         let elapsed = start_time.elapsed().as_secs_f64();
@@ -3258,7 +3261,9 @@ pub fn build_m1(new_db: &Arc<DB>) -> Result<(), Box<dyn std::error::Error>> {
         pending.push((key, value));
     }
 
-    flush_to_sst(new_db, &mut pending, &mut sst_index);
+    if let Err(e) = flush_to_sst(new_db, &mut pending, &mut sst_index) {
+        eprintln!("combine_rocks_dbs: flush failed: {}", e);
+    }
 
     println!("Compacting m1 db...");
     new_db.compact_range::<&[u8], &[u8]>(None, None);
@@ -3651,11 +3656,10 @@ pub fn build_from_2rocks(
     let stop_flag = Arc::new(AtomicBool::new(false));
     {
         let sf = stop_flag.clone();
-        ctrlc::set_handler(move || {
+        let _ = ctrlc::set_handler(move || {
             println!("CTRL+C detected! Finishing current batch...");
             sf.store(true, Ordering::SeqCst);
-        })
-        .expect("Error setting CTRL+C handler");
+        });
     }
 
     // ── Writer thread ─────────────────────────────────────────────────────────
@@ -3699,12 +3703,17 @@ pub fn build_from_2rocks(
             );
 
             if pending.len() >= 1_000_000 {
-                flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
+                if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
+                    eprintln!("Writer thread: flush failed: {}", e);
+                    return;
+                }
             }
         }
 
         if !pending.is_empty() {
-            flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
+            if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
+                eprintln!("Writer thread: final flush failed: {}", e);
+            }
         }
         println!(
             "Insertion thread finished. total={} elapsed={:.0}s",
