@@ -3659,7 +3659,7 @@ pub fn build_from_2rocks(
     }
 
     // ── Writer thread ─────────────────────────────────────────────────────────
-    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(64);
+    let (tx, rx) = bounded::<Vec<(Vec<u8>, Vec<u8>)>>(64);
 
     let stop_flag_clone = stop_flag.clone();
     let new_db_writer = Arc::clone(new_db);
@@ -3677,12 +3677,10 @@ pub fn build_from_2rocks(
                 println!("Insertion thread stopping early...");
                 break;
             }
-            for (circuit, _canon, key) in &batch {
-                let circuit_blob = circuit.repr_blob();
-                let value = encode_circuit(&circuit_blob);
-                pending.push((key.clone(), value));
-            }
             attempted_inserts += batch.len();
+            for (key, value) in batch {
+                pending.push((key, value));
+            }
 
             let tried = total_gates_tried_insert.load(Ordering::Relaxed);
             let elapsed = start_time.elapsed().as_secs_f64();
@@ -3801,7 +3799,7 @@ pub fn build_from_2rocks(
                     return;
                 }
 
-                let mut local: Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)> = Vec::new();
+                let mut local: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
 
                 for (j, c2) in db2_ref.iter().enumerate() {
                     let n2     = db2_n2_ref[j];
@@ -3819,9 +3817,9 @@ pub fn build_from_2rocks(
                         combined.canonicalize();
                         if combined.adjacent_id() { return; }
                         let (canon_polys, canon_circuit, _) = combined.canonicalize_polys(n);
-                        let hash: u128 = xxh3_128(&polys_repr_blob(&canon_polys));
-                        let key = hash.to_le_bytes().to_vec();
-                        local.push((canon_circuit, canon_polys, key));
+                        let key = xxh3_128(&polys_repr_blob(&canon_polys)).to_le_bytes().to_vec();
+                        let value = encode_circuit(&canon_circuit.repr_blob());
+                        local.push((key, value));
                     };
 
                     // Case 1: c1 || mapped_c2
