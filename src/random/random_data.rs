@@ -7161,6 +7161,58 @@ mod tests {
     }
 
     #[test]
+    fn test_top10_popular_m4_m5() {
+        use rocksdb::{DB, Options};
+        use crate::circuit::circuit::poly_to_str;
+
+        let mut opts = Options::default();
+        opts.set_max_open_files(-1);
+        opts.set_merge_operator_associative("append_merge", append_merge);
+        opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+
+        let mut out = String::new();
+
+        for (db_name, m) in [("rocks_db_m4", 4usize), ("rocks_db_m5", 5usize)] {
+            let db = DB::open_for_read_only(&opts, db_name, false)
+                .unwrap_or_else(|e| panic!("Failed to open {}: {}", db_name, e));
+            let n = 3 * m;
+
+            let mut ranked: Vec<(Vec<u8>, usize)> = db
+                .iterator(rocksdb::IteratorMode::Start)
+                .map(|item| {
+                    let (key, value) = item.expect("iter error");
+                    (key.to_vec(), decode_circuit_count(&value))
+                })
+                .collect();
+
+            ranked.sort_by(|a, b| b.1.cmp(&a.1));
+            ranked.truncate(10);
+
+            out.push_str(&format!("\nTOP 10 BY CIRCUIT COUNT — {}\n{:-<60}\n", db_name, ""));
+
+            for (rank, (key, count)) in ranked.iter().enumerate() {
+                let value = db.get(key).unwrap().unwrap();
+                let circuits = decode_circuits(&value);
+                let (canon_polys, _, _) = circuits[0].clone().canonicalize_polys(n);
+                let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
+
+                out.push_str(&format!("\n[{}] hash={} | circuits={}\n", rank + 1, hash_str, count));
+                out.push_str("  Canonical polynomial:\n");
+                for (i, poly) in canon_polys.iter().enumerate() {
+                    out.push_str(&format!("    x{} = {}\n", i, poly_to_str(poly, n)));
+                }
+                out.push_str(&format!("  Circuits ({}):\n", circuits.len()));
+                for c in &circuits {
+                    out.push_str(&format!("    {:?}\n", c.gates));
+                }
+            }
+        }
+
+        std::fs::write("top10.txt", &out).expect("Failed to write top10.txt");
+        println!("Written to top10.txt");
+    }
+
+    #[test]
     fn bench_canonicalize_polys_throughput() {
         let m = 4;
         let n = 3 * m;
