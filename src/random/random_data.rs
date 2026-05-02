@@ -40,6 +40,17 @@ fn write_error(msg: &str) {
         let _ = writeln!(f, "{}", msg);
     }
 }
+
+fn available_disk_bytes(path: &str) -> u64 {
+    let c_path = std::ffi::CString::new(path).unwrap_or_default();
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+    if ret == 0 {
+        stat.f_bavail * stat.f_bsize as u64
+    } else {
+        u64::MAX
+    }
+}
 use crate::circuit::circuit::polys_repr_blob;
 use crate::circuit::Polynomial;
 use crate::circuit::circuit::{canonicalize_polys, canonicalize_polys_2, canonicalize_polys_3, canonicalize_polys_4};
@@ -2511,7 +2522,7 @@ pub fn open_db_for_write(m: usize) -> DB {
     opts.set_max_bytes_for_level_multiplier(10.0);
     opts.set_num_levels(7);
 
-    opts.set_compression_type(DBCompressionType::None);
+    opts.set_compression_type(DBCompressionType::Zstd);
     opts.set_bottommost_compression_type(DBCompressionType::Zstd);
 
     // 16 byte prefix for xxHash128
@@ -2621,6 +2632,7 @@ fn flush_to_sst(db: &Arc<DB>, pending: &mut Vec<(Vec<u8>, Vec<u8>)>, sst_index: 
     let mut opts = Options::default();
     opts.set_merge_operator_associative("append_merge", append_merge);
     opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+    opts.set_compression_type(DBCompressionType::Zstd);
 
     let mut writer = SstFileWriter::create(&opts);
     writer.open(&sst_path)?;
@@ -3722,6 +3734,12 @@ pub fn build_from_2rocks(
             );
 
             if pending.len() >= 200_000 {
+                // Stop early if fewer than 60 GB free on the database disk
+                const MIN_FREE: u64 = 60 * 1024 * 1024 * 1024;
+                if available_disk_bytes(".") < MIN_FREE {
+                    write_error("Writer thread: disk nearly full (<60 GB free), stopping early");
+                    return;
+                }
                 if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
                     write_error(&format!("Writer thread: flush failed: {}", e));
                     return;
