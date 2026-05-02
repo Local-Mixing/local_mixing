@@ -7056,40 +7056,49 @@ mod tests {
                 common.push((key.to_vec(), count4, count5));
             }
         }
-        common.sort_by(|a, b| b.1.cmp(&a.1));
-        common.truncate(100);
-
         let mut out = String::new();
-        out.push_str(&format!("Top {} common hashes (m4 ∩ m5), ranked by m4 circuit count:\n", common.len()));
-        out.push_str(&format!("{:-<80}\n", ""));
 
-        for (rank, (key, count4, count5)) in common.iter().enumerate() {
-            let value4 = db4.get(key).unwrap().unwrap();
-            let circuits4 = decode_circuits(&value4);
-            let value5 = db5.get(key).unwrap().unwrap();
-            let circuits5 = decode_circuits(&value5);
-
-            let repr_circuit = &circuits4[0];
+        let write_section = |out: &mut String, label: &str, mut ranked: Vec<(Vec<u8>, usize, usize)>,
+                              db4: &DB, db5: &DB| {
+            ranked.truncate(100);
+            out.push_str(&format!("\n{}\n{:-<80}\n", label, ""));
             let n = 3 * 4;
-            let (canon_polys, _, _) = repr_circuit.clone().canonicalize_polys(n);
+            for (rank, (key, count4, count5)) in ranked.iter().enumerate() {
+                let value4 = db4.get(key).unwrap().unwrap();
+                let circuits4 = decode_circuits(&value4);
+                let value5 = db5.get(key).unwrap().unwrap();
+                let circuits5 = decode_circuits(&value5);
 
-            let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
-            out.push_str(&format!("\n[{}] hash={} | m4 circuits={} | m5 circuits={}\n",
-                rank + 1, hash_str, count4, count5,
-            ));
-            out.push_str("  Canonical polynomial (from first m4 circuit):\n");
-            for (i, poly) in canon_polys.iter().enumerate() {
-                out.push_str(&format!("    x{} = {}\n", i, poly_to_str(poly, n)));
+                let (canon_polys, _, _) = circuits4[0].clone().canonicalize_polys(n);
+                let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
+
+                out.push_str(&format!("\n[{}] hash={} | m4 circuits={} | m5 circuits={}\n",
+                    rank + 1, hash_str, count4, count5));
+                out.push_str("  Canonical polynomial (from first m4 circuit):\n");
+                for (i, poly) in canon_polys.iter().enumerate() {
+                    out.push_str(&format!("    x{} = {}\n", i, poly_to_str(poly, n)));
+                }
+                out.push_str(&format!("  m4 circuits ({}):\n", circuits4.len()));
+                for c in &circuits4 { out.push_str(&format!("    {:?}\n", c.gates)); }
+                out.push_str(&format!("  m5 circuits ({}):\n", circuits5.len()));
+                for c in &circuits5 { out.push_str(&format!("    {:?}\n", c.gates)); }
             }
-            out.push_str(&format!("  m4 circuits ({}):\n", circuits4.len()));
-            for c in &circuits4 {
-                out.push_str(&format!("    {:?}\n", c.gates));
-            }
-            out.push_str(&format!("  m5 circuits ({}):\n", circuits5.len()));
-            for c in &circuits5 {
-                out.push_str(&format!("    {:?}\n", c.gates));
-            }
-        }
+        };
+
+        // Top 100 overall (m4 + m5 combined)
+        let mut by_total = common.clone();
+        by_total.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
+        write_section(&mut out, "TOP 100 OVERALL (m4 + m5 combined)", by_total, &db4, &db5);
+
+        // Top 100 by m4 count
+        let mut by_m4 = common.clone();
+        by_m4.sort_by(|a, b| b.1.cmp(&a.1));
+        write_section(&mut out, "TOP 100 BY M4 CIRCUIT COUNT", by_m4, &db4, &db5);
+
+        // Top 100 by m5 count
+        let mut by_m5 = common;
+        by_m5.sort_by(|a, b| b.2.cmp(&a.2));
+        write_section(&mut out, "TOP 100 BY M5 CIRCUIT COUNT", by_m5, &db4, &db5);
 
         std::fs::write("100friends.txt", &out).expect("Failed to write 100friends.txt");
         println!("Written to 100friends.txt");
