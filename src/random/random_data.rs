@@ -2500,6 +2500,7 @@ pub fn open_db_for_write(m: usize) -> DB {
 
     opts.increase_parallelism(160);
     opts.set_max_background_jobs(8);
+    opts.set_max_open_files(-1);
 
     opts.set_write_buffer_size(256 * 1024 * 1024);
     opts.set_max_write_buffer_number(4);
