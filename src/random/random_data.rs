@@ -2614,7 +2614,8 @@ fn flush_to_sst(db: &Arc<DB>, pending: &mut Vec<(Vec<u8>, Vec<u8>)>, sst_index: 
     pending.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
     let merged = merge_sorted_entries(std::mem::take(pending));
 
-    let sst_path = format!("/tmp/sst_{}.sst", sst_index);
+    // Use /dev/shm (tmpfs, separate from DB disk) to avoid filling /dev/sda3
+    let sst_path = format!("/dev/shm/sst_{}.sst", sst_index);
     *sst_index += 1;
 
     let mut opts = Options::default();
@@ -2625,14 +2626,24 @@ fn flush_to_sst(db: &Arc<DB>, pending: &mut Vec<(Vec<u8>, Vec<u8>)>, sst_index: 
     writer.open(&sst_path)?;
 
     for (key, value) in &merged {
-        writer.put(key, value)?;
+        if let Err(e) = writer.put(key, value) {
+            let _ = std::fs::remove_file(&sst_path);
+            return Err(e.into());
+        }
     }
-    writer.finish()?;
+    if let Err(e) = writer.finish() {
+        let _ = std::fs::remove_file(&sst_path);
+        return Err(e.into());
+    }
 
     let mut ingest_opts = IngestExternalFileOptions::default();
-    ingest_opts.set_move_files(true);
-    db.ingest_external_file_opts(&ingest_opts, vec![sst_path.clone()])?;
+    ingest_opts.set_move_files(false);
+    if let Err(e) = db.ingest_external_file_opts(&ingest_opts, vec![sst_path.clone()]) {
+        let _ = std::fs::remove_file(&sst_path);
+        return Err(e.into());
+    }
 
+    let _ = std::fs::remove_file(&sst_path);
     println!("Ingested SST file #{}", *sst_index - 1);
     Ok(())
 }
@@ -2883,7 +2894,7 @@ pub fn build_from_rocks(
                 remaining_s,
             );
 
-            if pending.len() >= 1_000_000 {
+            if pending.len() >= 200_000 {
                 if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
                     write_error(&format!("Writer thread: flush failed: {}", e));
                     return;
@@ -3115,7 +3126,7 @@ pub fn build_from_rocks(
 //                 remaining_s,
 //             );
 
-//             if pending.len() >= 1_000_000 {
+//             if pending.len() >= 200_000 {
 //                 flush_to_sst(&new_db_writer, &mut pending, &mut sst_index);
 //             }
 //         }
@@ -3710,7 +3721,7 @@ pub fn build_from_2rocks(
                 remaining_secs % 60,
             );
 
-            if pending.len() >= 1_000_000 {
+            if pending.len() >= 200_000 {
                 if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
                     write_error(&format!("Writer thread: flush failed: {}", e));
                     return;
