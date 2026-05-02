@@ -7024,6 +7024,102 @@ mod tests {
     }
 
     #[test]
+    fn test_top100_common_hashes_m4_m5() {
+        use rocksdb::{DB, Options};
+        use std::collections::HashMap;
+        use crate::circuit::circuit::poly_to_str;
+
+        let mut opts = Options::default();
+        opts.set_max_open_files(-1);
+        opts.set_merge_operator_associative("append_merge", append_merge);
+        opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+
+        let db4 = DB::open_for_read_only(&opts, "rocks_db_m4", false)
+            .expect("Failed to open rocks_db_m4");
+        let db5 = DB::open_for_read_only(&opts, "rocks_db_m5", false)
+            .expect("Failed to open rocks_db_m5");
+
+        // Count circuits per key in m4
+        let mut counts4: HashMap<Vec<u8>, usize> = HashMap::new();
+        for item in db4.iterator(rocksdb::IteratorMode::Start) {
+            let (key, value) = item.expect("m4 iter error");
+            let count = decode_circuit_count(&value);
+            counts4.insert(key.to_vec(), count);
+        }
+
+        // Find keys present in both dbs, sorted by m4 circuit count descending
+        let mut common: Vec<(Vec<u8>, usize, usize)> = Vec::new(); // (key, count4, count5)
+        for item in db5.iterator(rocksdb::IteratorMode::Start) {
+            let (key, value5) = item.expect("m5 iter error");
+            if let Some(&count4) = counts4.get(key.as_ref()) {
+                let count5 = decode_circuit_count(&value5);
+                common.push((key.to_vec(), count4, count5));
+            }
+        }
+        common.sort_by(|a, b| b.1.cmp(&a.1));
+        common.truncate(100);
+
+        println!("Top {} common hashes (m4 ∩ m5), ranked by m4 circuit count:", common.len());
+        println!("{:-<80}", "");
+
+        for (rank, (key, count4, count5)) in common.iter().enumerate() {
+            // Decode canonical polynomial from first m4 circuit
+            let value4 = db4.get(key).unwrap().unwrap();
+            let circuits4 = decode_circuits(&value4);
+            let circuits5 = db5.get(key).unwrap().unwrap();
+            let circuits5 = decode_circuits(&circuits5);
+
+            let repr_circuit = &circuits4[0];
+            let n = 3 * 4;
+            let (canon_polys, _, _) = repr_circuit.clone().canonicalize_polys(n);
+
+            let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
+            println!("\n[{}] hash={} | m4 circuits={} | m5 circuits={}",
+                rank + 1, hash_str, count4, count5,
+            );
+            println!("  Canonical polynomial (from first m4 circuit):");
+            for (i, poly) in canon_polys.iter().enumerate() {
+                println!("    x{} = {}", i, poly_to_str(poly, n));
+            }
+            println!("  m4 circuits ({}):", circuits4.len());
+            for c in &circuits4 {
+                println!("    {:?}", c.gates);
+            }
+            println!("  m5 circuits ({}):", circuits5.len());
+            for c in &circuits5 {
+                println!("    {:?}", c.gates);
+            }
+        }
+    }
+
+    fn decode_circuit_count(value: &[u8]) -> usize {
+        let mut pos = 0;
+        let mut count = 0;
+        while pos < value.len() {
+            let len = value[pos] as usize;
+            pos += 1;
+            if pos + len > value.len() { break; }
+            pos += len;
+            count += 1;
+        }
+        count
+    }
+
+    fn decode_circuits(value: &[u8]) -> Vec<CircuitSeq> {
+        let mut pos = 0;
+        let mut out = Vec::new();
+        while pos < value.len() {
+            if pos + 1 > value.len() { break; }
+            let len = value[pos] as usize;
+            pos += 1;
+            if pos + len > value.len() { break; }
+            out.push(CircuitSeq::from_blob(&value[pos..pos + len]));
+            pos += len;
+        }
+        out
+    }
+
+    #[test]
     fn bench_canonicalize_polys_throughput() {
         let m = 4;
         let n = 3 * m;
