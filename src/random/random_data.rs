@@ -7213,6 +7213,79 @@ mod tests {
     }
 
     #[test]
+    fn test_shared_hashes_m2_m5() {
+        use rocksdb::{DB, Options};
+        use crate::circuit::circuit::poly_to_str;
+
+        let mut opts = Options::default();
+        opts.set_max_open_files(-1);
+        opts.set_merge_operator_associative("append_merge", append_merge);
+        opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+
+        let db2 = DB::open_for_read_only(&opts, "rocks_db_m2", false)
+            .expect("Failed to open rocks_db_m2");
+        let db5 = DB::open_for_read_only(&opts, "rocks_db_m5", false)
+            .expect("Failed to open rocks_db_m5");
+
+        // Collect all keys from m2
+        let keys2: std::collections::HashSet<Vec<u8>> = db2
+            .iterator(rocksdb::IteratorMode::Start)
+            .map(|item| item.expect("m2 iter error").0.to_vec())
+            .collect();
+
+        // Find keys present in both
+        let mut shared: Vec<(Vec<u8>, usize, usize)> = db5
+            .iterator(rocksdb::IteratorMode::Start)
+            .filter_map(|item| {
+                let (key, value5) = item.expect("m5 iter error");
+                if keys2.contains(key.as_ref()) {
+                    let count5 = decode_circuit_count(&value5);
+                    let count2 = decode_circuit_count(
+                        &db2.get(key.as_ref()).unwrap().unwrap()
+                    );
+                    Some((key.to_vec(), count2, count5))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        shared.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
+
+        let mut out = String::new();
+        out.push_str(&format!("HASHES SHARED BETWEEN rocks_db_m2 AND rocks_db_m5\n"));
+        out.push_str(&format!("Total shared: {}\n", shared.len()));
+        out.push_str(&format!("{:-<60}\n", ""));
+
+        for (rank, (key, count2, count5)) in shared.iter().enumerate() {
+            let value2 = db2.get(key).unwrap().unwrap();
+            let circuits2 = decode_circuits(&value2);
+            let value5 = db5.get(key).unwrap().unwrap();
+            let circuits5 = decode_circuits(&value5);
+
+            // Use the m2 circuit to get the canonical poly (n = 3*2 = 6)
+            let (canon_polys, _, _) = circuits2[0].clone().canonicalize_polys(3 * 2);
+            let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
+
+            out.push_str(&format!(
+                "\n[{}] hash={} | m2 circuits={} | m5 circuits={}\n",
+                rank + 1, hash_str, count2, count5
+            ));
+            out.push_str("  Canonical polynomial:\n");
+            for (i, poly) in canon_polys.iter().enumerate() {
+                out.push_str(&format!("    x{} = {}\n", i, poly_to_str(poly, 6)));
+            }
+            out.push_str(&format!("  m2 circuits ({}):\n", circuits2.len()));
+            for c in &circuits2 { out.push_str(&format!("    {:?}\n", c.gates)); }
+            out.push_str(&format!("  m5 circuits ({}):\n", circuits5.len()));
+            for c in &circuits5 { out.push_str(&format!("    {:?}\n", c.gates)); }
+        }
+
+        std::fs::write("shared_m2_m5.txt", &out).expect("Failed to write shared_m2_m5.txt");
+        println!("Written to shared_m2_m5.txt ({} shared hashes)", shared.len());
+    }
+
+    #[test]
     fn bench_canonicalize_polys_throughput() {
         let m = 4;
         let n = 3 * m;
