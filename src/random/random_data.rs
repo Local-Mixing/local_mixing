@@ -7059,37 +7059,40 @@ mod tests {
         common.sort_by(|a, b| b.1.cmp(&a.1));
         common.truncate(100);
 
-        println!("Top {} common hashes (m4 ∩ m5), ranked by m4 circuit count:", common.len());
-        println!("{:-<80}", "");
+        let mut out = String::new();
+        out.push_str(&format!("Top {} common hashes (m4 ∩ m5), ranked by m4 circuit count:\n", common.len()));
+        out.push_str(&format!("{:-<80}\n", ""));
 
         for (rank, (key, count4, count5)) in common.iter().enumerate() {
-            // Decode canonical polynomial from first m4 circuit
             let value4 = db4.get(key).unwrap().unwrap();
             let circuits4 = decode_circuits(&value4);
-            let circuits5 = db5.get(key).unwrap().unwrap();
-            let circuits5 = decode_circuits(&circuits5);
+            let value5 = db5.get(key).unwrap().unwrap();
+            let circuits5 = decode_circuits(&value5);
 
             let repr_circuit = &circuits4[0];
             let n = 3 * 4;
             let (canon_polys, _, _) = repr_circuit.clone().canonicalize_polys(n);
 
             let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
-            println!("\n[{}] hash={} | m4 circuits={} | m5 circuits={}",
+            out.push_str(&format!("\n[{}] hash={} | m4 circuits={} | m5 circuits={}\n",
                 rank + 1, hash_str, count4, count5,
-            );
-            println!("  Canonical polynomial (from first m4 circuit):");
+            ));
+            out.push_str("  Canonical polynomial (from first m4 circuit):\n");
             for (i, poly) in canon_polys.iter().enumerate() {
-                println!("    x{} = {}", i, poly_to_str(poly, n));
+                out.push_str(&format!("    x{} = {}\n", i, poly_to_str(poly, n)));
             }
-            println!("  m4 circuits ({}):", circuits4.len());
+            out.push_str(&format!("  m4 circuits ({}):\n", circuits4.len()));
             for c in &circuits4 {
-                println!("    {:?}", c.gates);
+                out.push_str(&format!("    {:?}\n", c.gates));
             }
-            println!("  m5 circuits ({}):", circuits5.len());
+            out.push_str(&format!("  m5 circuits ({}):\n", circuits5.len()));
             for c in &circuits5 {
-                println!("    {:?}", c.gates);
+                out.push_str(&format!("    {:?}\n", c.gates));
             }
         }
+
+        std::fs::write("100friends.txt", &out).expect("Failed to write 100friends.txt");
+        println!("Written to 100friends.txt");
     }
 
     fn decode_circuit_count(value: &[u8]) -> usize {
