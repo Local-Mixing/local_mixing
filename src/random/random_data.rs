@@ -2500,7 +2500,7 @@ fn append_merge(
 }
 
 pub fn open_db_for_write(m: usize) -> DB {
-    let path = format!("rocks_db_m{}", m);
+    let path = format!("test_rocks_db_m{}", m);
     let mut opts = Options::default();
     opts.create_if_missing(true);
 
@@ -5641,7 +5641,7 @@ mod tests {
         });
 
         let db2 = Arc::new({
-            let path = "test_rocks_db_m4";
+            let path = "rocks_db_m4";
             let mut opts = Options::default();
             opts.create_if_missing(false);
             opts.set_merge_operator_associative("append_merge", append_merge);
@@ -5885,7 +5885,7 @@ mod tests {
         };
 
         let db1 = open_db("rocks_db_m4");
-        let db2 = open_db("test_rocks_db_m4");
+        let db2 = open_db("rocks_db_m4");
 
         // Decode all circuits from a value blob
         let decode_circuits = |value: &[u8]| -> Vec<CircuitSeq> {
@@ -5933,7 +5933,7 @@ mod tests {
 
             if test_circuits.len() <= 1 {
                 println!("Found canon4 collision!");
-                println!("rocks_db_m4 has {} friends under this key:", circuits.len());
+                println!("test_rocks_db_m4 has {} friends under this key:", circuits.len());
                 for c in &circuits {
                     println!("  {:?}", c.gates);
                 }
@@ -5977,7 +5977,7 @@ mod tests {
         opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
         opts.set_disable_auto_compactions(true);
         let db = Arc::new(
-            DB::open_for_read_only(&opts, "test_rocks_db_m4", false)
+            DB::open_for_read_only(&opts, "rocks_db_m4", false)
                 .expect("Failed to open test_rocks_db_m4")
         );
 
@@ -6031,7 +6031,7 @@ mod tests {
         };
 
         let db1 = open_db("rocks_db_m4");
-        let db2 = open_db("test_rocks_db_m4");
+        let db2 = open_db("rocks_db_m4");
 
         let decode_first_circuit = |value: &[u8]| -> Option<CircuitSeq> {
             if value.is_empty() { return None; }
@@ -6093,7 +6093,7 @@ mod tests {
         };
 
         let db1 = open_db("rocks_db_m4");
-        let db2 = open_db("test_rocks_db_m4");
+        let db2 = open_db("rocks_db_m4");
 
         let decode_first_circuit = |value: &[u8]| -> Option<CircuitSeq> {
             if value.is_empty() { return None; }
@@ -7425,7 +7425,7 @@ pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Er
     let mut merged: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
 
     for m in 1..=6 {
-        let path = format!("rocks_db_m{}", m);
+        let path = format!("test_rocks_db_m{}", m);
         let db = DB::open_for_read_only(&Options::default(), &path, false)
             .unwrap_or_else(|e| panic!("Failed to open {}: {}", path, e));
 
