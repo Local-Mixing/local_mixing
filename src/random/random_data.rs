@@ -2510,7 +2510,7 @@ pub fn open_db_for_write(m: usize) -> DB {
     opts.set_manual_wal_flush(true);
 
     opts.increase_parallelism(160);
-    opts.set_max_background_jobs(8);
+    opts.set_max_background_jobs(64);
     opts.set_max_open_files(-1);
 
     opts.set_write_buffer_size(256 * 1024 * 1024);
@@ -3676,13 +3676,20 @@ pub fn build_from_2rocks(
         .property_int_value("rocksdb.estimate-num-keys")
         .unwrap()
         .unwrap_or(0);
-    println!("Estimated rows in db1: {}", total_rows);
 
     let chunk_size = 500_000;
-    let batch_size = 10_000;
+    let batch_size = 50_000;
     let nc2 = db2_circuits.len();
 
+    let total_pairs_est = total_rows as usize * nc2;
+    println!("db1 estimated keys: {}", total_rows);
+    println!("db2 circuits loaded: {}", nc2);
+    println!("Estimated total pairs: {} ({:.2}B)", total_pairs_est, total_pairs_est as f64 / 1e9);
+    println!("chunk_size={} batch_size={} channel_cap=1000 pending_threshold=1M", chunk_size, batch_size);
+
     let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let total_results_generated = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let build_start = std::time::Instant::now();
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     {
@@ -3694,16 +3701,17 @@ pub fn build_from_2rocks(
     }
 
     // ── Writer thread ─────────────────────────────────────────────────────────
-    let (tx, rx) = bounded::<Vec<(Vec<u8>, Vec<u8>)>>(64);
+    let (tx, rx) = bounded::<Vec<(Vec<u8>, Vec<u8>)>>(1_000);
 
     let stop_flag_clone = stop_flag.clone();
     let new_db_writer = Arc::clone(new_db);
     let total_gates_tried_insert = Arc::clone(&total_gates_tried);
+    let total_results_insert = Arc::clone(&total_results_generated);
 
     let insert_handle = std::thread::spawn(move || {
         let start_time = std::time::Instant::now();
-        let total_est = total_rows as usize * nc2; // (c1, c2) pairs
         let mut attempted_inserts = 0usize;
+        let mut sst_count = 0usize;
         let mut sst_index = 0usize;
         let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
 
@@ -3717,53 +3725,76 @@ pub fn build_from_2rocks(
                 pending.push((key, value));
             }
 
-            let tried = total_gates_tried_insert.load(Ordering::Relaxed);
+            let pairs_done = total_gates_tried_insert.load(Ordering::Relaxed);
+            let results_so_far = total_results_insert.load(Ordering::Relaxed);
             let elapsed = start_time.elapsed().as_secs_f64();
-            let rate = if elapsed > 0.0 { tried as f64 / elapsed } else { 0.0 };
-            let remaining_secs = if rate > 0.0 {
-                ((total_est as f64 - tried as f64) / rate) as u64
-            } else { 0 };
+            let pairs_rate = if elapsed > 0.0 { pairs_done as f64 / elapsed } else { 0.0 };
+            let pairs_remaining = if pairs_done < total_pairs_est { total_pairs_est - pairs_done } else { 0 };
+            let eta_secs = if pairs_rate > 0.0 { (pairs_remaining as f64 / pairs_rate) as u64 } else { 0 };
+            let dedup_ratio = if results_so_far > 0 { attempted_inserts as f64 / results_so_far as f64 } else { 0.0 };
             println!(
-                "inserts={} | tried={}/{} ({:.1}%) | {:.0}/s | eta {:02}:{:02}:{:02}",
-                attempted_inserts, tried, total_est,
-                (tried as f64 / total_est as f64) * 100.0,
-                rate,
-                remaining_secs / 3600,
-                (remaining_secs % 3600) / 60,
-                remaining_secs % 60,
+                "[writer] pairs={}/{} ({:.1}%) | pairs/s={:.0} | eta={:02}:{:02}:{:02} | inserts={} | results={} | dedup={:.1}x | pending={} | ssts={}",
+                pairs_done, total_pairs_est,
+                (pairs_done as f64 / total_pairs_est as f64) * 100.0,
+                pairs_rate,
+                eta_secs / 3600, (eta_secs % 3600) / 60, eta_secs % 60,
+                attempted_inserts,
+                results_so_far,
+                dedup_ratio,
+                pending.len(),
+                sst_count,
             );
 
-            if pending.len() >= 200_000 {
-                // Stop early if fewer than 60 GB free on the database disk
-                const MIN_FREE: u64 = 60 * 1024 * 1024 * 1024;
-                if available_disk_bytes(".") < MIN_FREE {
-                    write_error("Writer thread: disk nearly full (<60 GB free), stopping early");
-                    return;
-                }
+            if pending.len() >= 1_000_000 {
                 if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
                     write_error(&format!("Writer thread: flush failed: {}", e));
                     return;
                 }
+                sst_count += 1;
             }
         }
 
-        if !pending.is_empty() {
+        println!("[writer] producers done, flushing {} remaining entries across {} final SSTs...",
+            pending.len() + attempted_inserts - attempted_inserts, // pending count
+            (pending.len() + 999_999) / 1_000_000
+        );
+        while !pending.is_empty() {
             if let Err(e) = flush_to_sst(&new_db_writer, &mut pending, &mut sst_index) {
                 write_error(&format!("Writer thread: final flush failed: {}", e));
+                break;
             }
+            sst_count += 1;
+            println!("[writer] final flush: {} remaining | sst #{}", pending.len(), sst_count);
         }
+        let elapsed = start_time.elapsed().as_secs_f64();
         println!(
-            "Insertion thread finished. total={} elapsed={:.0}s",
-            attempted_inserts,
-            start_time.elapsed().as_secs_f64(),
+            "[writer] finished. total_inserts={} | total_ssts={} | elapsed={:.0}s ({:.1}h)",
+            attempted_inserts, sst_count, elapsed, elapsed / 3600.0,
         );
     });
 
     // ── Main loop: stream db1 in chunks ──────────────────────────────────────
     let iter = db1.iterator(rocksdb::IteratorMode::Start);
+    let mut chunk_idx = 0usize;
+    let mut total_c1_processed = 0usize;
 
     for chunk in &iter.chunks(chunk_size) {
         if stop_flag.load(Ordering::SeqCst) { break; }
+        chunk_idx += 1;
+        let elapsed_outer = build_start.elapsed().as_secs_f64();
+        let pairs_done = total_gates_tried.load(Ordering::Relaxed);
+        let outer_rate = if elapsed_outer > 0.0 { pairs_done as f64 / elapsed_outer } else { 0.0 };
+        let pairs_remaining = if pairs_done < total_pairs_est { total_pairs_est - pairs_done } else { 0 };
+        let eta_outer = if outer_rate > 0.0 { (pairs_remaining as f64 / outer_rate) as u64 } else { 0 };
+        println!(
+            "[chunk {}] c1_processed={} | pairs={}/{} ({:.1}%) | {:.0} pairs/s | eta {:02}:{:02}:{:02} | elapsed={:.1}h",
+            chunk_idx, total_c1_processed,
+            pairs_done, total_pairs_est,
+            (pairs_done as f64 / total_pairs_est as f64) * 100.0,
+            outer_rate,
+            eta_outer / 3600, (eta_outer % 3600) / 60, eta_outer % 60,
+            elapsed_outer / 3600.0,
+        );
 
         let entries: Vec<(Vec<u8>, Vec<u8>)> = chunk
             .map(|item| {
@@ -3834,11 +3865,13 @@ pub fn build_from_2rocks(
         let stop_flag_par  = Arc::clone(&stop_flag);
         let tx_par = tx.clone();
         let total_gates_tried_par = Arc::clone(&total_gates_tried);
+        let total_results_par = Arc::clone(&total_results_generated);
 
         let total_c1 = c1_data.len();
         let c1_done = std::sync::atomic::AtomicUsize::new(0);
         let chunk_total = std::sync::atomic::AtomicUsize::new(0);
-        println!("Processing chunk: 0/{} c1 circuits...", total_c1);
+        println!("[chunk {}] processing {} c1 circuits × {} c2 = {} pairs this chunk",
+            chunk_idx, total_c1, nc2, total_c1 * nc2);
 
         c1_data.par_iter().for_each(|d| {
                 if stop_flag_par.load(Ordering::SeqCst) {
@@ -3921,7 +3954,9 @@ pub fn build_from_2rocks(
                     // }
 
                     if local.len() >= batch_size && !stop_flag_par.load(Ordering::SeqCst) {
+                        let n = local.len();
                         let batch = std::mem::take(&mut local);
+                        total_results_par.fetch_add(n, Ordering::Relaxed);
                         if let Err(e) = tx_par.send(batch) {
                             eprintln!("Failed to send batch: {:?}", e);
                         }
@@ -3931,6 +3966,7 @@ pub fn build_from_2rocks(
                 let n_local = local.len();
                 // Send any remaining results
                 if !local.is_empty() && !stop_flag_par.load(Ordering::SeqCst) {
+                    total_results_par.fetch_add(n_local, Ordering::Relaxed);
                     if let Err(e) = tx_par.send(local) {
                         eprintln!("Failed to send batch: {:?}", e);
                     }
@@ -3939,17 +3975,31 @@ pub fn build_from_2rocks(
 
                 let done = c1_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 if done % 50 == 0 || done == total_c1 {
+                    let pairs_done = total_gates_tried_par.load(Ordering::Relaxed);
+                    let elapsed = build_start.elapsed().as_secs_f64();
+                    let rate = if elapsed > 0.0 { pairs_done as f64 / elapsed } else { 0.0 };
+                    let remaining = if pairs_done < total_pairs_est { total_pairs_est - pairs_done } else { 0 };
+                    let eta = if rate > 0.0 { (remaining as f64 / rate) as u64 } else { 0 };
                     println!(
-                        "Processing chunk: {}/{} c1 circuits... ({} results so far)",
-                        done, total_c1, chunk_total.load(Ordering::Relaxed),
+                        "[chunk {}] c1 {}/{} | pairs={}/{} ({:.1}%) | {:.0}/s | eta {:02}:{:02}:{:02} | results={}",
+                        chunk_idx, done, total_c1,
+                        pairs_done, total_pairs_est,
+                        (pairs_done as f64 / total_pairs_est as f64) * 100.0,
+                        rate,
+                        eta / 3600, (eta % 3600) / 60, eta % 60,
+                        chunk_total.load(Ordering::Relaxed),
                     );
                 }
         });
 
+        let chunk_results = chunk_total.load(Ordering::Relaxed);
+        total_c1_processed += c1_data.len();
+        let elapsed = build_start.elapsed().as_secs_f64();
         println!(
-            "Chunk done: {} results generated, tried={}",
-            chunk_total.load(Ordering::Relaxed),
-            total_gates_tried.load(Ordering::Relaxed),
+            "[chunk {}] done | c1_total_processed={} | chunk_results={} | total_results={} | elapsed={:.1}h",
+            chunk_idx, total_c1_processed, chunk_results,
+            total_results_generated.load(Ordering::Relaxed),
+            elapsed / 3600.0,
         );
 
         if stop_flag.load(Ordering::SeqCst) { break; }
