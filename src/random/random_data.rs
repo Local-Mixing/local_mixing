@@ -2853,7 +2853,7 @@ pub fn build_from_rocks(
         .expect("Error setting CTRL+C handler");
     }
 
-    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(5_000);
+    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(1_000);
     let stop_flag_clone = stop_flag.clone();
     let new_db_writer = Arc::clone(new_db);
     let total_gates_tried_insert = Arc::clone(&total_gates_tried);
@@ -3089,7 +3089,7 @@ pub fn build_from_rocks(
 //         .expect("Error setting CTRL+C handler");
 //     }
 
-//     let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(5_000);
+//     let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(1_000);
 //     let stop_flag_clone = stop_flag.clone();
 //     let new_db_writer = Arc::clone(new_db);
 //     let total_gates_tried_insert = Arc::clone(&total_gates_tried);
@@ -5543,8 +5543,8 @@ mod tests {
             let db = Arc::new(open_db_for_read(m));
             let iter = db.iterator(rocksdb::IteratorMode::Start);
 
-            let mut key_count = 0;
-            let mut circuit_count = 0;
+            let mut key_count: u64 = 0;
+            let mut circuit_count: u64 = 0;
 
             for item in iter {
                 let (_key, value) = item.expect("RocksDB iter error");
