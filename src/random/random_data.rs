@@ -2853,7 +2853,7 @@ pub fn build_from_rocks(
         .expect("Error setting CTRL+C handler");
     }
 
-    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(100_000);
+    let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(5_000);
     let stop_flag_clone = stop_flag.clone();
     let new_db_writer = Arc::clone(new_db);
     let total_gates_tried_insert = Arc::clone(&total_gates_tried);
@@ -3089,7 +3089,7 @@ pub fn build_from_rocks(
 //         .expect("Error setting CTRL+C handler");
 //     }
 
-//     let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(100_000);
+//     let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(5_000);
 //     let stop_flag_clone = stop_flag.clone();
 //     let new_db_writer = Arc::clone(new_db);
 //     let total_gates_tried_insert = Arc::clone(&total_gates_tried);
