@@ -7502,7 +7502,7 @@ pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Er
     // Open all existing source DBs read-only
     let mut dbs: Vec<DB> = Vec::new();
     for m in 1..=6 {
-        let path = format!("test_rocks_db_m{}", m);
+        let path = format!("rocks_db_m{}", m);
         let mut read_opts = Options::default();
         read_opts.set_merge_operator_associative("append_merge", append_merge);
         read_opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
