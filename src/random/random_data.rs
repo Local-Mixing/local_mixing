@@ -5310,6 +5310,80 @@ mod tests {
     }
 
     #[test]
+    fn find_gadget_circuits() {
+        // Wires: 0=x1, 1=r11, 2=r12, 3=x2, 4=r21, 5=x3, 6=r31
+        // w0' = x1^r11^r12^((x2^r21)&(x3^r31))^x2^r21^1, w1..w6 unchanged
+        let target = Permutation {
+            data: (0..128usize).map(|s| {
+                let x1  = (s >> 0) & 1;
+                let r11 = (s >> 1) & 1;
+                let r12 = (s >> 2) & 1;
+                let x2  = (s >> 3) & 1;
+                let r21 = (s >> 4) & 1;
+                let x3  = (s >> 5) & 1;
+                let r31 = (s >> 6) & 1;
+                let w0  = x1 ^ r11 ^ r12 ^ ((x2 ^ r21) & (x3 ^ r31)) ^ x2 ^ r21 ^ 1;
+                (s & !1) | w0
+            }).collect(),
+        };
+
+        let ref_12 = CircuitSeq { gates: vec![
+            [0,3,5],[0,3,6],[0,4,5],[0,4,6],
+            [1,0,2],[0,2,1],[2,0,1],[1,2,0],[0,2,1],[2,1,0],
+            [0,3,4],[0,4,3],
+        ]};
+        assert_eq!(ref_12.permutation(7), target, "ref_12 wrong");
+
+        // [0,1,1] always flips w0 since w1|~w1=1; replaces 6-gate block with 3 gates
+        let opt_9 = CircuitSeq { gates: vec![
+            [0,3,5],[0,3,6],[0,4,5],[0,4,6],
+            [0,1,2],[0,2,1],[0,1,1],
+            [0,3,4],[0,4,3],
+        ]};
+        assert_eq!(opt_9.permutation(7), target, "opt_9 wrong");
+        println!("Both reference circuits verified");
+
+        let mut circuits: HashSet<CircuitSeq> = HashSet::new();
+        circuits.insert(ref_12);
+        circuits.insert(opt_9);
+
+        let mut rng = rand::rng();
+        // Allow repeated wire indices (7^3=343 gate options) to catch e.g. [0,1,1]
+        for m in 5..=12usize {
+            println!("Searching m={}...", m);
+            for _ in 0..1_000_000 {
+                let mut random = CircuitSeq {
+                    gates: (0..m).map(|_| [
+                        rng.random_range(0u8..7),
+                        rng.random_range(0u8..7),
+                        rng.random_range(0u8..7),
+                    ]).collect(),
+                };
+                random.canonicalize();
+                if random.permutation(7) == target {
+                    circuits.insert(random);
+                }
+            }
+        }
+
+        println!("Found {} distinct circuits", circuits.len());
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("gadget_circuits.txt")
+            .expect("failed to open gadget_circuits.txt");
+        for c in &circuits {
+            writeln!(file, "{}", c.repr()).expect("write failed");
+        }
+
+        if let Some(best) = circuits.iter().min_by_key(|c| c.gates.len()) {
+            println!("Smallest: {} gates: {}", best.gates.len(), best.repr());
+        }
+    }
+
+    #[test]
     fn test_read_swap_and_print_perm() {
         let env = Environment::new()
             .set_max_dbs(202)
@@ -7422,45 +7496,164 @@ mod tests {
 /// Values for the same key are concatenated (the existing length-prefixed blob format
 /// means the combined value is still valid — each circuit's length marker is intact).
 pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut merged: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+    use std::collections::BinaryHeap;
+    use std::cmp::Reverse;
 
+    // Open all existing source DBs read-only
+    let mut dbs: Vec<DB> = Vec::new();
     for m in 1..=6 {
         let path = format!("test_rocks_db_m{}", m);
-        let db = DB::open_for_read_only(&Options::default(), &path, false)
-            .unwrap_or_else(|e| panic!("Failed to open {}: {}", path, e));
-
-        let mut count = 0usize;
-        for item in db.iterator(rocksdb::IteratorMode::Start) {
-            let (key, value) = item?;
-            merged.entry(key.to_vec()).or_default().extend_from_slice(&value);
-            count += 1;
-        }
-        println!("Loaded {} keys from rocks_db_m{}", count, m);
-    }
-
-    println!("Total unique keys after merge: {}", merged.len());
-
-    let mut opts = Options::default();
-    opts.create_if_missing(true);
-    opts.set_compression_type(DBCompressionType::None);
-    opts.set_bottommost_compression_type(DBCompressionType::Zstd);
-    let output = DB::open(&opts, output_path)?;
-
-    let mut batch = rocksdb::WriteBatch::default();
-    let mut flushed = 0usize;
-    for (key, value) in &merged {
-        batch.put(key, value);
-        flushed += 1;
-        if flushed % 100_000 == 0 {
-            output.write(std::mem::take(&mut batch))?;
-            batch = rocksdb::WriteBatch::default();
-            println!("Written {}/{} keys...", flushed, merged.len());
+        let mut read_opts = Options::default();
+        read_opts.set_merge_operator_associative("append_merge", append_merge);
+        read_opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+        match DB::open_for_read_only(&read_opts, &path, false) {
+            Ok(db) => {
+                let est = db.property_value("rocksdb.estimate-num-keys")
+                    .ok().flatten()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                println!("Opened {} (~{} keys)", path, est);
+                dbs.push(db);
+            }
+            Err(e) => println!("Skipping {} ({})", path, e),
         }
     }
-    if !batch.is_empty() {
-        output.write(batch)?;
+    if dbs.is_empty() {
+        println!("No source databases found.");
+        return Ok(());
     }
-    println!("Done. {} keys written to {}", flushed, output_path);
+
+    // One iterator per DB — they all iterate in sorted key order
+    let mut iters: Vec<rocksdb::DBIterator> = dbs
+        .iter()
+        .map(|db| db.iterator(rocksdb::IteratorMode::Start))
+        .collect();
+
+    // Seed the min-heap with the first entry from each iterator
+    // Reverse makes BinaryHeap a min-heap ordered by (key, value, db_idx)
+    let mut heap: BinaryHeap<Reverse<(Vec<u8>, Vec<u8>, usize)>> = BinaryHeap::new();
+    for (i, iter) in iters.iter_mut().enumerate() {
+        if let Some(Ok((k, v))) = iter.next() {
+            heap.push(Reverse((k.to_vec(), v.to_vec(), i)));
+        }
+    }
+
+    // Open output DB with same options as open_db_for_write
+    let output = {
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.set_merge_operator_associative("append_merge", append_merge);
+        opts.set_manual_wal_flush(true);
+        opts.increase_parallelism(num_cpus::get() as i32);
+        opts.set_max_background_jobs(64);
+        opts.set_max_open_files(-1);
+        opts.set_write_buffer_size(256 * 1024 * 1024);
+        opts.set_max_write_buffer_number(4);
+        opts.set_min_write_buffer_number_to_merge(2);
+        opts.set_level_zero_file_num_compaction_trigger(10);
+        opts.set_max_bytes_for_level_base(512 * 1024 * 1024);
+        opts.set_max_bytes_for_level_multiplier(10.0);
+        opts.set_num_levels(7);
+        opts.set_compression_type(DBCompressionType::Zstd);
+        opts.set_bottommost_compression_type(DBCompressionType::Zstd);
+        opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+        let mut block_opts = BlockBasedOptions::default();
+        block_opts.set_bloom_filter(10.0, false);
+        block_opts.set_block_size(16 * 1024);
+        block_opts.set_cache_index_and_filter_blocks(true);
+        opts.set_block_based_table_factory(&block_opts);
+        Arc::new(DB::open(&opts, output_path)?)
+    };
+
+    let keys_per_sst = 500_000usize;
+    let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(keys_per_sst + 1);
+    let mut sst_index = 0usize;
+    let mut unique_written = 0usize;
+    let start = std::time::Instant::now();
+
+    // k-way merge: always pop the globally smallest key
+    while !heap.is_empty() {
+        let Reverse((min_key, first_val, db_idx)) = heap.pop().unwrap();
+        if let Some(Ok((k, v))) = iters[db_idx].next() {
+            heap.push(Reverse((k.to_vec(), v.to_vec(), db_idx)));
+        }
+
+        // Collect values for the same key from other DBs currently at the heap front
+        let mut merged_val = first_val;
+        loop {
+            match heap.peek() {
+                Some(Reverse((k, _, _))) if *k == min_key => {
+                    let Reverse((_, v, idx)) = heap.pop().unwrap();
+                    merged_val.extend_from_slice(&v);
+                    if let Some(Ok((k2, v2))) = iters[idx].next() {
+                        heap.push(Reverse((k2.to_vec(), v2.to_vec(), idx)));
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        pending.push((min_key, merged_val));
+        unique_written += 1;
+
+        if pending.len() >= keys_per_sst {
+            // Write pending (already sorted) to SST and ingest
+            let sst_path = format!("/dev/shm/combine_sst_{}.sst", sst_index);
+            sst_index += 1;
+            {
+                let mut sst_opts = Options::default();
+                sst_opts.set_merge_operator_associative("append_merge", append_merge);
+                sst_opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+                sst_opts.set_compression_type(DBCompressionType::Zstd);
+                let mut writer = SstFileWriter::create(&sst_opts);
+                writer.open(&sst_path)?;
+                for (k, v) in &pending {
+                    writer.put(k, v)?;
+                }
+                writer.finish()?;
+            }
+            let mut ingest_opts = IngestExternalFileOptions::default();
+            ingest_opts.set_move_files(false);
+            output.ingest_external_file_opts(&ingest_opts, vec![sst_path.clone()])?;
+            let _ = std::fs::remove_file(&sst_path);
+            pending.clear();
+
+            let elapsed = start.elapsed().as_secs_f64();
+            let rate = unique_written as f64 / elapsed;
+            println!(
+                "[combine] sst={} | keys={} | {:.0} keys/s | elapsed={:.0}s ({:.1}h)",
+                sst_index, unique_written, rate, elapsed, elapsed / 3600.0
+            );
+        }
+    }
+
+    // Final partial SST
+    if !pending.is_empty() {
+        let sst_path = format!("/dev/shm/combine_sst_{}.sst", sst_index);
+        sst_index += 1;
+        {
+            let mut sst_opts = Options::default();
+            sst_opts.set_merge_operator_associative("append_merge", append_merge);
+            sst_opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
+            sst_opts.set_compression_type(DBCompressionType::Zstd);
+            let mut writer = SstFileWriter::create(&sst_opts);
+            writer.open(&sst_path)?;
+            for (k, v) in &pending {
+                writer.put(k, v)?;
+            }
+            writer.finish()?;
+        }
+        let mut ingest_opts = IngestExternalFileOptions::default();
+        ingest_opts.set_move_files(false);
+        output.ingest_external_file_opts(&ingest_opts, vec![sst_path.clone()])?;
+        let _ = std::fs::remove_file(&sst_path);
+    }
+
+    let elapsed = start.elapsed().as_secs_f64();
+    println!(
+        "Done. {} unique keys written to {} in {:.0}s ({:.1}h) via {} SST files",
+        unique_written, output_path, elapsed, elapsed / 3600.0, sst_index
+    );
     Ok(())
 }
 

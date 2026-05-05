@@ -41,6 +41,7 @@ use std::sync::Arc;
 use local_mixing::random::random_data::build_from_rocks;
 use local_mixing::random::random_data::build_m1;
 use local_mixing::random::random_data::build_from_2rocks;
+use local_mixing::random::random_data::combine_rocks_dbs;
 const ROCKSDB_N6M5_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
 const ROCKSDB_N7M4_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
 
@@ -1073,6 +1074,18 @@ Command::new("rocksdb_2")
                     .help("Number of gates"),
             )
     )
+    .subcommand(
+        Command::new("combine_rocks")
+            .about("Combine all test_rocks_db_m* databases into a single output DB")
+            .arg(
+                Arg::new("path")
+                    .short('p')
+                    .long("path")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Output path for the combined database"),
+            )
+    )
     .get_matches();
 
     match matches.subcommand() {
@@ -2008,6 +2021,10 @@ Command::new("rocksdb_2")
             let old_db1 = Arc::new(open_db_for_read(m1));
             let old_db2 = Arc::new(open_db_for_read(m2));
             build_from_2rocks(&old_db1, &old_db2, &new_db, m1, m2).expect("build_from_2rocks failed");
+        }
+        Some(("combine_rocks", sub)) => {
+            let path: &String = sub.get_one("path").expect("Missing -p <path>");
+            combine_rocks_dbs(path).expect("combine_rocks_dbs failed");
         }
         _ => unreachable!(),
     }
