@@ -42,6 +42,7 @@ use local_mixing::random::random_data::build_from_rocks;
 use local_mixing::random::random_data::build_m1;
 use local_mixing::random::random_data::build_from_2rocks;
 use local_mixing::random::random_data::combine_rocks_dbs;
+use local_mixing::random::random_data::rocks_to_fasterkv;
 const ROCKSDB_N6M5_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
 const ROCKSDB_N7M4_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
 
@@ -1076,7 +1077,7 @@ Command::new("rocksdb_2")
     )
     .subcommand(
         Command::new("combine_rocks")
-            .about("Combine all test_rocks_db_m* databases into a single output DB")
+            .about("Combine all rocks_db_m* databases into a single output DB")
             .arg(
                 Arg::new("path")
                     .short('p')
@@ -1084,6 +1085,26 @@ Command::new("rocksdb_2")
                     .required(true)
                     .value_parser(clap::value_parser!(String))
                     .help("Output path for the combined database"),
+            )
+    )
+    .subcommand(
+        Command::new("rocks_to_fmv")
+            .about("Convert a RocksDB into a FasterMV store")
+            .arg(
+                Arg::new("source")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source RocksDB"),
+            )
+            .arg(
+                Arg::new("path")
+                    .short('p')
+                    .long("path")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Output path for the FasterMV store"),
             )
     )
     .get_matches();
@@ -2025,6 +2046,11 @@ Command::new("rocksdb_2")
         Some(("combine_rocks", sub)) => {
             let path: &String = sub.get_one("path").expect("Missing -p <path>");
             combine_rocks_dbs(path).expect("combine_rocks_dbs failed");
+        }
+        Some(("rocks_to_fmv", sub)) => {
+            let source: &String = sub.get_one("source").expect("Missing -s <source>");
+            let path: &String = sub.get_one("path").expect("Missing -p <path>");
+            rocks_to_fasterkv(source, path).expect("rocks_to_fasterkv failed");
         }
         _ => unreachable!(),
     }
