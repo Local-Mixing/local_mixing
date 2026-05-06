@@ -861,7 +861,7 @@ impl CircuitSeq {
 
     // Returns (canonical_polys, canonical_circuit, reversed)
     // where reversed=true means the reversed circuit produced the canonical form.
-    pub fn canonicalize_polys(&self, n: usize) -> (Vec<Polynomial>, CircuitSeq, bool) {
+    pub fn canonicalize_polys(&self, n: usize) -> (Vec<Polynomial>, CircuitSeq, bool, Permutation) {
         fn poly_vec_key(polys: &Vec<Polynomial>) -> Vec<Vec<u64>> {
             polys.iter().map(|p| {
                 let mut v: Vec<u64> = p.iter().copied().collect();
@@ -894,14 +894,16 @@ impl CircuitSeq {
         c1.canonicalize();
         c2.rewire(&canon2.1.invert(), n2);
         c2.canonicalize();
+        // final_order.data[i] = which pre-polys4 wire ended up at canonical position i.
+        // Combined with `used`, this lets callers compute the full orig→canonical wire map.
         if poly_vec_key(&canon1.0) < poly_vec_key(&canon2.0) {
-            (canon1.0, c1, false)
+            (canon1.0, c1, false, canon1.1)
         } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0) {
-            (canon2.0, c2, true)
+            (canon2.0, c2, true, canon2.1)
         } else if c1.gates <= c2.gates {
-            (canon1.0, c1, false)
+            (canon1.0, c1, false, canon1.1)
         } else {
-            (canon2.0, c2, true)
+            (canon2.0, c2, true, canon2.1)
         }
     }
 

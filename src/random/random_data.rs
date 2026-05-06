@@ -3895,7 +3895,7 @@ pub fn build_from_2rocks(
                         let mut combined = CircuitSeq { gates };
                         combined.canonicalize();
                         if combined.adjacent_id() { return; }
-                        let (canon_polys, canon_circuit, _) = combined.canonicalize_polys(n);
+                        let (canon_polys, canon_circuit, _, _) = combined.canonicalize_polys(n);
                         let key = xxh3_128(&polys_repr_blob(&canon_polys)).to_le_bytes().to_vec();
                         let value = encode_circuit(&canon_circuit.repr_blob());
                         local.push((key, value));
@@ -7136,7 +7136,7 @@ mod tests {
                     let mut circuit = CircuitSeq { gates: vec![g1, g2, g3, g4] };
                     circuit.canonicalize();
                     if circuit.adjacent_id() { continue; }
-                    let (canon_polys, _, _) = circuit.canonicalize_polys(n);
+                    let (canon_polys, _, _, _) = circuit.canonicalize_polys(n);
                     let hash: u128 = xxh3_128(&polys_repr_blob(&canon_polys));
                     local_seen.insert(hash);
                 }
@@ -7222,7 +7222,7 @@ mod tests {
                 let value5 = db5.get(key).unwrap().unwrap();
                 let circuits5 = decode_circuits(&value5);
 
-                let (canon_polys, _, _) = circuits4[0].clone().canonicalize_polys(n);
+                let (canon_polys, _, _, _) = circuits4[0].clone().canonicalize_polys(n);
                 let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
 
                 out.push_str(&format!("\n[{}] hash={} | m4 circuits={} | m5 circuits={}\n",
@@ -7317,7 +7317,7 @@ mod tests {
             for (rank, (key, count)) in ranked.iter().enumerate() {
                 let value = db.get(key).unwrap().unwrap();
                 let circuits = decode_circuits(&value);
-                let (canon_polys, _, _) = circuits[0].clone().canonicalize_polys(n);
+                let (canon_polys, _, _, _) = circuits[0].clone().canonicalize_polys(n);
                 let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
 
                 out.push_str(&format!("\n[{}] hash={} | circuits={}\n", rank + 1, hash_str, count));
@@ -7388,7 +7388,7 @@ mod tests {
             let circuits5 = decode_circuits(&value5);
 
             // Use the m2 circuit to get the canonical poly (n = 3*2 = 6)
-            let (canon_polys, _, _) = circuits2[0].clone().canonicalize_polys(3 * 2);
+            let (canon_polys, _, _, _) = circuits2[0].clone().canonicalize_polys(3 * 2);
             let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
 
             out.push_str(&format!(
@@ -7435,7 +7435,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mut sink = 0u128;
         for c in &circuits {
-            let (polys, _, _) = c.canonicalize_polys(n);
+            let (polys, _, _, _) = c.canonicalize_polys(n);
             sink ^= xxh3_128(&polys_repr_blob(&polys));
         }
         let elapsed = start.elapsed().as_secs_f64();
@@ -7482,7 +7482,7 @@ mod tests {
         // Parallel throughput
         let start = std::time::Instant::now();
         let sink: u128 = circuits.par_iter().map(|c| {
-            let (polys, _, _) = c.canonicalize_polys(n);
+            let (polys, _, _, _) = c.canonicalize_polys(n);
             xxh3_128(&polys_repr_blob(&polys))
         }).reduce(|| 0u128, |a, b| a ^ b);
         let elapsed = start.elapsed().as_secs_f64();
@@ -7664,55 +7664,89 @@ pub fn rocks_to_fasterkv(
     faster_dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use faster_rs::{FasterKvBuilder, status};
+    use std::io::{BufWriter, Read, Write};
 
-    // Each shard holds ~1/256 of the data; keep 1M hash buckets (FASTER minimum)
-    // but reduce log from 8 GB to 1 GB per shard (256 GB total vs 2 TB).
-    const SHARD_LOG_BYTES: u64 = 1024 * 1024 * 1024;
+    let tmp_dir = format!("{}/tmp_shards", faster_dir);
+    std::fs::create_dir_all(&tmp_dir)?;
 
-    let mut stores = Vec::with_capacity(256);
-    for shard in 0u16..=255 {
+    // Pass 1: single scan of RocksDB, write each entry to its shard temp file.
+    println!("Pass 1: sharding RocksDB into temp files...");
+    {
+        let mut writers: Vec<BufWriter<std::fs::File>> = (0u16..=255)
+            .map(|shard| {
+                let path = format!("{}/{:02x}.bin", tmp_dir, shard);
+                let f = std::fs::File::create(&path).expect("failed to create temp shard file");
+                BufWriter::with_capacity(8 * 1024 * 1024, f)
+            })
+            .collect();
+
+        let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
+        let mut total = 0u64;
+
+        for item in rocks.iterator(rocksdb::IteratorMode::Start) {
+            let (key, value) = item?;
+            let shard = key[0] as usize;
+            let klen = key.len() as u32;
+            let vlen = value.len() as u32;
+            writers[shard].write_all(&klen.to_le_bytes())?;
+            writers[shard].write_all(&key)?;
+            writers[shard].write_all(&vlen.to_le_bytes())?;
+            writers[shard].write_all(&value)?;
+            total += 1;
+            if total % 1_000_000 == 0 {
+                println!("  Sharded {} entries...", total);
+            }
+        }
+        println!("Pass 1 done: {} entries sharded", total);
+    }
+
+    // Pass 2: for each shard, read temp file and write to its own FasterKV store.
+    for shard in 0u8..=255 {
+        let tmp_path = format!("{}/{:02x}.bin", tmp_dir, shard);
         let shard_dir = format!("{}/{:02x}", faster_dir, shard);
         std::fs::create_dir_all(&shard_dir)?;
-        let store = FasterKvBuilder::new(1 << 20, SHARD_LOG_BYTES)
+
+        let store = FasterKvBuilder::new(1 << 20, 8 * 1024 * 1024 * 1024)
             .with_disk(&shard_dir)
             .build()
             .map_err(|e| format!("Failed to build FasterKV store for shard {:02x}: {:?}", shard, e))?;
-        stores.push(store);
-    }
 
-    let sessions: Vec<_> = stores.iter().map(|s| s.start_session()).collect();
+        let _session = store.start_session();
+        let mut serial = 1u64;
 
-    let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
-    let mut serials = vec![1u64; 256];
-    let mut total = 0u64;
+        let mut reader = std::io::BufReader::with_capacity(
+            8 * 1024 * 1024,
+            std::fs::File::open(&tmp_path)?,
+        );
+        let mut len_buf = [0u8; 4];
+        loop {
+            if reader.read_exact(&mut len_buf).is_err() { break; }
+            let klen = u32::from_le_bytes(len_buf) as usize;
+            let mut key_vec = vec![0u8; klen];
+            reader.read_exact(&mut key_vec)?;
 
-    for item in rocks.iterator(rocksdb::IteratorMode::Start) {
-        let (key, value) = item?;
-        let shard = key[0] as usize;
-        let key_vec: Vec<u8> = key.to_vec();
-        let val_vec: Vec<u8> = value.to_vec();
+            if reader.read_exact(&mut len_buf).is_err() { break; }
+            let vlen = u32::from_le_bytes(len_buf) as usize;
+            let mut val_vec = vec![0u8; vlen];
+            reader.read_exact(&mut val_vec)?;
 
-        let s = stores[shard].upsert(&key_vec, &val_vec, serials[shard]);
-        assert!(s == status::OK || s == status::PENDING);
-        serials[shard] += 1;
-        total += 1;
-
-        if total % 100_000 == 0 {
-            stores[shard].complete_pending(false);
-            println!("Inserted {} entries total...", total);
+            let s = store.upsert(&key_vec, &val_vec, serial);
+            assert!(s == status::OK || s == status::PENDING);
+            serial += 1;
+            if serial % 100_000 == 0 {
+                store.complete_pending(false);
+            }
         }
-    }
 
-    for (shard, store) in stores.iter().enumerate() {
         store.complete_pending(true);
         let check = store.checkpoint()
             .map_err(|e| format!("Checkpoint failed for shard {:02x}: {:?}", shard, e))?;
         store.stop_session();
-        println!("Shard {:02x}: {} entries, checkpoint token: {}",
-            shard, serials[shard] - 1, check.token);
+        std::fs::remove_file(&tmp_path)?;
+        println!("Shard {:02x}: {} entries, checkpoint token: {}", shard, serial - 1, check.token);
     }
 
-    drop(sessions);
-    println!("Done. {} total entries written to 256 FasterKV shards under {}", total, faster_dir);
+    std::fs::remove_dir(&tmp_dir)?;
+    println!("Done. All 256 shards written to {}", faster_dir);
     Ok(())
 }
