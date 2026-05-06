@@ -7490,6 +7490,12 @@ mod tests {
             circuits.len() as f64 / elapsed, sink);
     }
 
+    #[test]
+    fn test_verify_fasterkv() {
+        verify_fasterkv("rocks_db_m1_6", "fastermv_m1_6")
+            .expect("FasterKV verification failed");
+    }
+
 }
 
 /// Merge rocks_db_m1..=rocks_db_m6 by key into a single RocksDB at `output_path`.
