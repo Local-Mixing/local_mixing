@@ -7703,10 +7703,17 @@ pub fn rocks_to_fasterkv(
     drop(sessions);
     for (shard, store) in stores.iter().enumerate() {
         store.complete_pending(true);
-        let check = store.checkpoint()
-            .map_err(|e| format!("checkpoint shard {:02x}: {:?}", shard, e))?;
+        let idx_token = store.checkpoint_index()
+            .map_err(|e| format!("checkpoint_index shard {:02x}: {:?}", shard, e))?.token;
+        let log_token = store.checkpoint_hybrid_log()
+            .map_err(|e| format!("checkpoint_hybrid_log shard {:02x}: {:?}", shard, e))?.token;
         store.stop_session();
-        println!("Shard {:02x}: {} entries, token: {}", shard, serials[shard] - 1, check.token);
+
+        // Save both tokens so verify/recover can find them.
+        let shard_dir = format!("{}/{:02x}", faster_dir, shard);
+        std::fs::write(format!("{}/index.token", shard_dir), &idx_token)?;
+        std::fs::write(format!("{}/log.token", shard_dir), &log_token)?;
+        println!("Shard {:02x}: {} entries", shard, serials[shard] - 1);
     }
 
     println!("Done. {} entries across 256 shards in {}", total, faster_dir);
@@ -7719,7 +7726,6 @@ pub fn verify_fasterkv(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use faster_rs::{FasterKvBuilder, status};
 
-    // Open all 256 shards read-only (load from checkpoint).
     let mut stores = Vec::with_capacity(256);
     for shard in 0u16..=255 {
         let shard_dir = format!("{}/{:02x}", faster_dir, shard);
@@ -7727,6 +7733,14 @@ pub fn verify_fasterkv(
             .with_disk(&shard_dir)
             .build()
             .map_err(|e| format!("shard {:02x}: {:?}", shard, e))?;
+
+        let idx_token = std::fs::read_to_string(format!("{}/index.token", shard_dir))
+            .map_err(|e| format!("missing index.token for shard {:02x}: {}", shard, e))?;
+        let log_token = std::fs::read_to_string(format!("{}/log.token", shard_dir))
+            .map_err(|e| format!("missing log.token for shard {:02x}: {}", shard, e))?;
+        store.recover(idx_token, log_token)
+            .map_err(|e| format!("recover shard {:02x}: {:?}", shard, e))?;
+
         stores.push(store);
     }
     let sessions: Vec<_> = stores.iter().map(|s| s.start_session()).collect();
