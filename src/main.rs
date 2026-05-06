@@ -47,6 +47,26 @@ use local_mixing::random::random_data::verify_fasterkv;
 const ROCKSDB_N6M5_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
 const ROCKSDB_N7M4_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
 
+fn open_fastermv_stores(faster_dir: &str) -> Vec<faster_rs::FasterKv> {
+    use faster_rs::FasterKvBuilder;
+    let mut stores = Vec::with_capacity(256);
+    for shard in 0u16..=255 {
+        let shard_dir = format!("{}/{:02x}", faster_dir, shard);
+        let store = FasterKvBuilder::new(1 << 20, 1024 * 1024 * 1024)
+            .with_disk(&shard_dir)
+            .build()
+            .unwrap_or_else(|e| panic!("Failed to open FasterKV shard {:02x}: {:?}", shard, e));
+        let idx_token = std::fs::read_to_string(format!("{}/index.token", shard_dir))
+            .unwrap_or_else(|_| panic!("Missing index.token for shard {:02x} in {}", shard, faster_dir));
+        let log_token = std::fs::read_to_string(format!("{}/log.token", shard_dir))
+            .unwrap_or_else(|_| panic!("Missing log.token for shard {:02x} in {}", shard, faster_dir));
+        store.recover(idx_token, log_token)
+            .unwrap_or_else(|e| panic!("Failed to recover shard {:02x}: {:?}", shard, e));
+        stores.push(store);
+    }
+    stores
+}
+
 fn make_rocksdb_readonly(path: &str, cache_bytes: usize) -> DB {
     let cache = Cache::new_lru_cache(cache_bytes);
 
@@ -1235,14 +1255,15 @@ Command::new("rocksdb_2")
             let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
             let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
+            let stores = open_fastermv_stores("fastermv");
             if data.trim().is_empty() {
                 println!("Generating random");
                 let c1 = random_circuit(n, 30);
                 println!("Starting Len: {}", c1.gates.len());
-                main_butterfly_big(&c1, rounds, &db_n6m5, &db_n7m4, n, false, path, &env);
+                main_butterfly_big(&c1, rounds, &db_n6m5, &db_n7m4, n, false, path, &env, &stores);
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_butterfly_big(&c, rounds, &db_n6m5, &db_n7m4, n, false, path, &env);
+                main_butterfly_big(&c, rounds, &db_n6m5, &db_n7m4, n, false, path, &env, &stores);
             }
         }
 
@@ -1266,6 +1287,7 @@ Command::new("rocksdb_2")
             let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
             let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
+            let stores = open_fastermv_stores("fastermv");
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Generating random");
@@ -1274,14 +1296,14 @@ Command::new("rocksdb_2")
                 if bookendless {
                     // main_butterfly_big_bookendsless(&c1, rounds, &db_n6m5, &db_n7m4, n, true, path, &env);
                 } else {
-                    main_butterfly_big(&c1, rounds, &db_n6m5, &db_n7m4, n, true, path, &env);
+                    main_butterfly_big(&c1, rounds, &db_n6m5, &db_n7m4, n, true, path, &env, &stores);
                 }
             } else {
                 let c = CircuitSeq::from_string(&data);
                 if bookendless {
                     // main_butterfly_big_bookendsless(&c, rounds, &db_n6m5, &db_n7m4, n, true, path, &env);
                 } else {
-                    main_butterfly_big(&c, rounds, &db_n6m5, &db_n7m4, n, true, path, &env);
+                    main_butterfly_big(&c, rounds, &db_n6m5, &db_n7m4, n, true, path, &env, &stores);
                 }
             }
         }
@@ -1308,12 +1330,13 @@ Command::new("rocksdb_2")
             let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
             let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
+            let stores = open_fastermv_stores("fastermv");
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_rac_big(&c, rounds, &db_n6m5, &db_n7m4, n, d, &env, i, tower, id_len);
+                main_rac_big(&c, rounds, &db_n6m5, &db_n7m4, n, d, &env, &stores, i, tower, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1365,12 +1388,13 @@ Command::new("rocksdb_2")
             let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
             let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
+            let stores = open_fastermv_stores("fastermv");
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_shuffle_rcs_big(&c, rounds, &db_n6m5, &db_n7m4, n, d, &env, i, tower, x, id_len);
+                main_shuffle_rcs_big(&c, rounds, &db_n6m5, &db_n7m4, n, d, &env, &stores, i, tower, x, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1421,12 +1445,13 @@ Command::new("rocksdb_2")
             let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
             let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
+            let stores = open_fastermv_stores("fastermv");
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_interleave_big(&c, rounds, &db_n6m5, &db_n7m4, n, d, &env, i, tower, id_len);
+                main_interleave_big(&c, rounds, &db_n6m5, &db_n7m4, n, d, &env, &stores, i, tower, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1478,12 +1503,13 @@ Command::new("rocksdb_2")
             let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
             let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
+            let stores = open_fastermv_stores("fastermv");
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_rac_big_distance(&c, rounds, &db_n6m5, &db_n7m4, n, d, &env, i, m, tower, id_len);
+                main_rac_big_distance(&c, rounds, &db_n6m5, &db_n7m4, n, d, &env, &stores, i, m, tower, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1538,22 +1564,24 @@ Command::new("rocksdb_2")
             let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
             let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
+            let stores = open_fastermv_stores("fastermv");
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
                 main_sequential_butterfly(
-                    &c, 
-                    rounds, 
+                    &c,
+                    rounds,
                     &db_n6m5,
                     &db_n7m4,
-                    n, 
-                    d, 
-                    &env, 
-                    id_len, 
-                    rev_left, 
-                    tower_left, 
+                    n,
+                    d,
+                    &env,
+                    &stores,
+                    id_len,
+                    rev_left,
+                    tower_left,
                     more_left,
                     !for_right,
                     tower_right,
@@ -1682,22 +1710,24 @@ Command::new("rocksdb_2")
             let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
             let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
 
+            let stores = open_fastermv_stores("fastermv");
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
                 main_shuffle_shoot_shuffle(
-                    &c, 
-                    rounds, 
+                    &c,
+                    rounds,
                     &db_n6m5,
                     &db_n7m4,
-                    n, 
+                    n,
                     m,
                     x,
-                    d, 
-                    &env, 
-                    id_len, 
+                    d,
+                    &env,
+                    &stores,
+                    id_len,
                     tower,
                     stop,
                     i,
@@ -1770,42 +1800,10 @@ Command::new("rocksdb_2")
 
             let mut acc = CircuitSeq::from_string(&contents);
 
-            let lmdb = "./db";
-            let _ = std::fs::create_dir_all(lmdb);
-
-            let env = Environment::new()
-                .set_max_dbs(266)      
-                .set_map_size(800 * 1024 * 1024 * 1024) 
-                .open(Path::new(lmdb))
-                .expect("Failed to open lmdb");
-            let dbs = open_all_dbs(&env);
-
-            println!("Opening RocksDB");
-            let db_n6m5 = make_rocksdb_readonly("rocksdb_n6m5perms", ROCKSDB_N6M5_CACHE_BYTES);
-            let db_n7m4 = make_rocksdb_readonly("rocksdb_n7m4perms", ROCKSDB_N7M4_CACHE_BYTES);
-
-            let bit_shuf_list = (3..=7)
-                .map(|n| {
-                    (0..n)
-                        .permutations(n)
-                        .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
-                        .collect::<Vec<Vec<usize>>>()
-                })
-                .collect();
             // Call compression logic
             println!("Starting compression");
-            acc = compress_loop(
-                &acc,
-                n,
-                &db_n6m5,
-                &db_n7m4,
-                &env,
-                &bit_shuf_list,
-                &dbs,
-                12,
-                1,
-                1
-            );
+            let stores = open_fastermv_stores("fastermv");
+            acc = compress_loop(&acc, n, &stores, 12, 1, 1);
             let mut file = fs::File::create(d)
                 .expect("Failed to create new file");
             write!(file, "{}", acc.repr())
@@ -2071,7 +2069,15 @@ Command::new("rocksdb_2")
         Some(("rocks_to_fmv", sub)) => {
             let source: &String = sub.get_one("source").expect("Missing -s <source>");
             let path: &String = sub.get_one("path").expect("Missing -p <path>");
-            rocks_to_fasterkv(source, path).expect("rocks_to_fasterkv failed");
+            if let Err(e) = rocks_to_fasterkv(source, path) {
+                let msg = format!("rocks_to_fasterkv failed: {}", e);
+                eprintln!("{}", msg);
+                let _ = std::fs::OpenOptions::new()
+                    .create(true).append(true)
+                    .open("error.txt")
+                    .and_then(|mut f| { use std::io::Write; writeln!(f, "{}", msg) });
+                std::process::exit(1);
+            }
         }
         Some(("verify_fmv", sub)) => {
             let source: &String = sub.get_one("source").expect("Missing -s <source>");

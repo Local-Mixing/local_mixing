@@ -219,11 +219,7 @@ pub fn merge_combine_blocks(
     n: usize,
     progress: &Arc<AtomicUsize>,
     _total: usize,
-    env: &lmdb::Environment,
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
-    dbs: &HashMap<String, lmdb::Database>,
-    db_n6m5: &DB,
-    db_n7m4: &DB,
+    stores: &[faster_rs::FasterKv],
 ) -> CircuitSeq {
     println!("Phase 1: Pairwise merge");
     // let total_1 = (blocks.len()+1)/2;
@@ -237,7 +233,7 @@ pub fn merge_combine_blocks(
                 chunk[0].clone()
             };
 
-            let compressed = compress_big(&combined, 30, n, db_n6m5, db_n7m4, env, &bit_shuf_list, dbs);
+            let compressed = compress_big(&combined, 30, n, stores);
             compressed
         })
         .collect();
@@ -261,7 +257,7 @@ pub fn merge_combine_blocks(
             };
 
             // TXN
-            let compressed = compress_big(&combined, 30, n, db_n6m5, db_n7m4, env, &bit_shuf_list, dbs);
+            let compressed = compress_big(&combined, 30, n, stores);
 
             // let _done = progress2.fetch_add(1, Ordering::Relaxed) + 1;
             // if done % 10 == 0 {
@@ -286,7 +282,7 @@ pub fn merge_combine_blocks(
                 combined = combined.concat(block);
             }
             // TXN
-            let compressed = compress_big(&combined, 200, n, db_n6m5, db_n7m4, env, &bit_shuf_list, dbs);
+            let compressed = compress_big(&combined, 200, n, stores);
 
             let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
             println!("Phase 2 partial done: {}/4", done);
@@ -303,7 +299,7 @@ pub fn merge_combine_blocks(
     }
 
     // TXN
-    let final_compressed = compress_big(&final_combined, 1000, n, db_n6m5, db_n7m4, env, &bit_shuf_list, dbs);
+    let final_compressed = compress_big(&final_combined, 1000, n, stores);
 
     println!("All phases complete");
     final_compressed
@@ -340,11 +336,7 @@ pub fn butterfly_big(
     n: usize,
     _last: bool,
     _stop: usize,
-    env: &lmdb::Environment,
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
-    dbs: &HashMap<String, lmdb::Database>,
-    db_n6m5: &DB,
-    db_n7m4: &DB,
+    stores: &[faster_rs::FasterKv],
 ) -> CircuitSeq {
     // Pick one random R
     let mut rng = rand::rng();
@@ -369,7 +361,7 @@ pub fn butterfly_big(
         // let _txn = env.begin_ro_txn().expect("txn");
 
         // TXN
-        let compressed_block = compress_big(&gi, 10, n, db_n6m5, db_n7m4, env, &bit_shuf_list, dbs);
+        let compressed_block = compress_big(&gi, 10, n, stores);
         let before_len = r_inv.gates.len() * 2 + 1;
         let after_len = compressed_block.gates.len();
             
@@ -399,23 +391,12 @@ pub fn butterfly_big(
 
     println!("Beginning merge");
     
-    let mut acc = merge_combine_blocks(&blocks, n, &progress, _total, env, &bit_shuf_list, dbs, db_n6m5, db_n7m4);
+    let mut acc = merge_combine_blocks(&blocks, n, &progress, _total, stores);
 
     // Add bookends: R ... R*
     acc = r.concat(&acc).concat(&r_inv);
     println!("After adding bookends: {} gates", acc.gates.len());
-    acc = compress_loop(
-        &acc,
-        n,
-        db_n6m5,
-        db_n7m4,
-        env,
-        bit_shuf_list,
-        dbs,
-        12,
-        0,
-        0,
-    );
+    acc = compress_loop(&acc, n, stores, 12, 0, 0);
     println!("Compressed len: {}", acc.gates.len());
 
     println!("Butterfly done: {} gates", acc.gates.len());
@@ -476,6 +457,7 @@ pub fn abutterfly_big(
     dbs: &HashMap<String, lmdb::Database>,
     db_n6m5: &DB,
     db_n7m4: &DB,
+    stores: &[faster_rs::FasterKv],
 ) -> CircuitSeq {
     println!("Current round: {}/{}", curr_round, last_round);
     println!("Butterfly start: {} gates", c.gates.len());
@@ -521,7 +503,7 @@ pub fn abutterfly_big(
             let t4 = Instant::now();
 
             // TXN
-            let compressed_block = compress_big(&expanded, 100, n, db_n6m5, db_n7m4, env, &bit_shuf_list, dbs);
+            let compressed_block = compress_big(&expanded, 100, n, stores);
             COMPRESS_BIG_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let after_len = compressed_block.gates.len();
             
@@ -549,7 +531,7 @@ pub fn abutterfly_big(
 
     println!("Beginning merge");
     let t5 = Instant::now();
-    let mut acc = merge_combine_blocks(&compressed_blocks, n, &progress, _total, env, &bit_shuf_list, dbs, db_n6m5, db_n7m4);
+    let mut acc = merge_combine_blocks(&compressed_blocks, n, &progress, _total, stores);
     MERGE_COMBINE_BLOCKS_TIME.fetch_add(t5.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     // Add global bookends: first_r ... last_r_inv
@@ -557,21 +539,8 @@ pub fn abutterfly_big(
 
     acc = CircuitSeq { gates: acc.gates.clone() };
     println!("After adding bookends: {} gates", acc.gates.len());
-    
-    // let mut milestone = initial_milestone(acc.gates.len());
-    // Final global compression until stable 6×
-    acc = compress_loop(
-        &acc,
-        n,
-        db_n6m5,
-        db_n7m4,
-        env,
-        bit_shuf_list,
-        dbs,
-        12,
-        curr_round,
-        last_round
-    );
+
+    acc = compress_loop(&acc, n, stores, 12, curr_round, last_round);
 
     println!("Compressed len: {}", acc.gates.len());
     println!("Butterfly done: {} gates", acc.gates.len());
@@ -669,6 +638,7 @@ pub fn zip_sequential_butterfly(
     dbs: &HashMap<String, lmdb::Database>,
     db_n6m5: &DB,
     db_n7m4: &DB,
+    stores: &[faster_rs::FasterKv],
     id_len: usize,
     _reverse_order_left: bool,
     tower_left: bool,
@@ -746,18 +716,7 @@ pub fn zip_sequential_butterfly(
         panic!("Functionality lost during sequential butterfly");
     }
 
-    compress_loop(
-        &circuit,
-        n,
-        db_n6m5,
-        db_n7m4,
-        env,
-        bit_shuf_list,
-        dbs,
-        12,
-        curr_round,
-        last_round
-    )
+    compress_loop(&circuit, n, stores, 12, curr_round, last_round)
 }
 
 pub fn sequential_butterfly(
@@ -770,6 +729,7 @@ pub fn sequential_butterfly(
     dbs: &HashMap<String, lmdb::Database>,
     db_n6m5: &DB,
     db_n7m4: &DB,
+    stores: &[faster_rs::FasterKv],
     id_len: usize,
     reverse_order_left: bool,
     tower_left: bool,
@@ -1039,18 +999,7 @@ pub fn sequential_butterfly(
     if circuit.probably_equal(&c, n, 1000).is_err() {
         panic!("Functionality lost during sequential butterfly");
     }
-    compress_loop(
-        &circuit,
-        n,
-        db_n6m5,
-        db_n7m4,
-        env,
-        bit_shuf_list,
-        dbs,
-        12,
-        curr_round,
-        last_round
-    )
+    compress_loop(&circuit, n, stores, 12, curr_round, last_round)
 }
 
 // Simple shooting game method. Send a gate to the right until a collision is made, then make a replacement. Continue the same from the right-most gate
@@ -1310,6 +1259,7 @@ pub fn replace_and_compress_big(
     dbs: &HashMap<String, lmdb::Database>,
     db_n6m5: &DB,
     db_n7m4: &DB,
+    stores: &[faster_rs::FasterKv],
     intermediate: &str,
     tower: bool,
     id_len: usize
@@ -1384,18 +1334,7 @@ pub fn replace_and_compress_big(
     // let mut milestone = initial_milestone(acc.gates.len());
     // Final global compression until stable 6×
     println!("Beginning compression");
-    let acc = compress_loop(
-        &c,
-        n,
-        db_n6m5,
-        db_n7m4,
-        env,
-        bit_shuf_list,
-        dbs,
-        12,
-        curr_round,
-        last_round
-    );
+    let acc = compress_loop(&c, n, stores, 12, curr_round, last_round);
 
     println!("Compressed len: {}", acc.gates.len());
     println!("Butterfly done: {} gates", acc.gates.len());
@@ -1489,6 +1428,7 @@ pub fn interleave_sequential_big(
     dbs: &HashMap<String, lmdb::Database>,
     db_n6m5: &DB,
     db_n7m4: &DB,
+    stores: &[faster_rs::FasterKv],
     intermediate: &str,
     tower: bool,
     id_len: usize,
@@ -1591,18 +1531,7 @@ pub fn interleave_sequential_big(
 
     // Final global compression until stable 6×
     println!("Beginning compression");
-    let acc = compress_loop(
-        &circuit,
-        n,
-        db_n6m5,
-        db_n7m4,
-        env,
-        bit_shuf_list,
-        dbs,
-        12,
-        curr_round,
-        last_round
-    );
+    let acc = compress_loop(&circuit, n, stores, 12, curr_round, last_round);
 
     println!("Compressed len: {}", acc.gates.len());
     println!("Butterfly done: {} gates", acc.gates.len());
@@ -1636,6 +1565,7 @@ pub fn replace_and_compress_big_distance(
     dbs: &HashMap<String, lmdb::Database>,
     db_n6m5: &DB,
     db_n7m4: &DB,
+    stores: &[faster_rs::FasterKv],
     intermediate: &str,
     min: usize,
     tower: bool,
@@ -1666,18 +1596,7 @@ pub fn replace_and_compress_big_distance(
     // let mut milestone = initial_milestone(acc.gates.len());
     // Final global compression until stable 6×
     println!("Beginning compression");
-    let acc = compress_loop(
-        &circuit,
-        n,
-        db_n6m5,
-        db_n7m4,
-        env,
-        bit_shuf_list,
-        dbs,
-        12,
-        curr_round,
-        last_round
-    );
+    let acc = compress_loop(&circuit, n, stores, 12, curr_round, last_round);
 
     println!("Compressed len: {}", acc.gates.len());
     println!("Replace and compress distance done: {} gates", acc.gates.len());

@@ -265,7 +265,7 @@ pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> 
 //     println!("Final circuit written to recent_circuit.txt");
 // }
 
-pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, asymmetric: bool, save: &str, env: &lmdb::Environment,) {
+pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, asymmetric: bool, save: &str, env: &lmdb::Environment, stores: &[faster_rs::FasterKv],) {
     // Start with the input circuit
     let bit_shuf_list = (3..=7)
         .map(|n| {
@@ -285,9 +285,9 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: 
         let stop = 1000;
         circuit = if asymmetric {
             // abutterfly_big(&circuit, conn, n, i != rounds-1, std::cmp::min(stop*(i+1), 5000), env, i+1, rounds, &bit_shuf_list, &dbs)
-            abutterfly_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4)
+            abutterfly_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, stores)
         } else {
-            butterfly_big(&circuit, n, i != rounds-1, stop*(i+1), env, &bit_shuf_list, &dbs, db_n6m5, db_n7m4)
+            butterfly_big(&circuit, n, i != rounds-1, stop*(i+1), stores)
         };
         if circuit.gates.len() == 0 {
             break;
@@ -359,7 +359,7 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: 
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_rac_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, id_len: usize,) {
+pub fn main_rac_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, stores: &[faster_rs::FasterKv], intermediate: &str, tower: bool, id_len: usize,) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -389,7 +389,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n
     let mut count = 0;
     for i in 0..rounds {
         let _stop = 1000;
-        let (new_circuit, already_coll, shoot, made_left, traverse_left)  = replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n7m4, db_n6m5, intermediate, tower, id_len);
+        let (new_circuit, already_coll, shoot, made_left, traverse_left)  = replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n7m4, db_n6m5, stores, intermediate, tower, id_len);
         circuit = new_circuit;
 
         sum_already_coll += already_coll;
@@ -502,7 +502,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, id_len: usize) {
+pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, stores: &[faster_rs::FasterKv], intermediate: &str, tower: bool, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -530,11 +530,11 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4:
     for i in 0..rounds {
         let _stop = 1000;
         let (new_circuit, _, _, _, _) = if i == 0 { 
-            let x = interleave_sequential_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, intermediate, tower, id_len);
+            let x = interleave_sequential_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, stores, intermediate, tower, id_len);
             n *= 2;
             x
         } else {
-            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, intermediate, tower, id_len) 
+            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, stores, intermediate, tower, id_len)
         };
         circuit = new_circuit;
 
@@ -600,7 +600,7 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4:
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, tower: bool, x: usize, id_len: usize) {
+pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, stores: &[faster_rs::FasterKv], intermediate: &str, tower: bool, x: usize, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -638,7 +638,7 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4
             insert_wire_shuffles_x(&mut circuit, n, env, &dbs, x);
         }
         let (new_circuit, _, _, _, _) = 
-            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, intermediate, tower, id_len);
+            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, stores, intermediate, tower, id_len);
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
@@ -703,7 +703,7 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, intermediate: &str, min: usize, tower: bool, id_len: usize) {
+pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, stores: &[faster_rs::FasterKv], intermediate: &str, min: usize, tower: bool, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -729,7 +729,7 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m
     let mut count = 0;
     for i in 0..rounds {
         let _stop = 1000;
-        let new_circuit = replace_and_compress_big_distance(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, intermediate, min, tower, id_len);
+        let new_circuit = replace_and_compress_big_distance(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, stores, intermediate, min, tower, id_len);
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
@@ -916,13 +916,14 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m
 // }
 
 pub fn main_sequential_butterfly(
-    c: &CircuitSeq, 
-    rounds: usize, 
+    c: &CircuitSeq,
+    rounds: usize,
     db_n6m5: &DB,
     db_n7m4: &DB,
-    n: usize, 
-    save: &str, 
-    env: &lmdb::Environment, 
+    n: usize,
+    save: &str,
+    env: &lmdb::Environment,
+    stores: &[faster_rs::FasterKv],
     id_len: usize,
     reverse_order_left: bool,
     tower_left: bool,
@@ -957,15 +958,16 @@ pub fn main_sequential_butterfly(
     for i in 0..rounds {
         let _stop = 1000;
         let new_circuit = zip_sequential_butterfly(
-            &circuit, 
-            n, 
-            env, 
-            i+1, 
-            rounds, 
-            &bit_shuf_list, 
-            &dbs,  
+            &circuit,
+            n,
+            env,
+            i+1,
+            rounds,
+            &bit_shuf_list,
+            &dbs,
             db_n6m5,
             db_n7m4,
+            stores,
             id_len,
             reverse_order_left,
             tower_left,
@@ -1155,15 +1157,16 @@ pub fn main_shooting_game(
 }
 
 pub fn main_shuffle_shoot_shuffle(
-    c: &CircuitSeq, 
-    rounds: usize, 
+    c: &CircuitSeq,
+    rounds: usize,
     db_n6m5: &DB,
     db_n7m4: &DB,
-    n: usize, 
+    n: usize,
     m: usize,
     x: usize,
-    save: &str, 
-    env: &lmdb::Environment, 
+    save: &str,
+    env: &lmdb::Environment,
+    stores: &[faster_rs::FasterKv],
     id_len: usize,
     tower: bool,
     _stop: usize,
@@ -1253,18 +1256,7 @@ pub fn main_shuffle_shoot_shuffle(
             new_circuit = circuit.clone();
         }
         println!("After inserting samfs: {} gates", circuit.gates.len());
-        circuit = compress_loop(
-            &circuit,
-            n,
-            db_n6m5,
-            db_n7m4,
-            env,
-            &bit_shuf_list,
-            &dbs,
-            6,
-            i+1, 
-            rounds, 
-        );
+        circuit = compress_loop(&circuit, n, stores, 6, i+1, rounds);
         println!("After compression: {} gates", circuit.gates.len());
         if circuit.gates.len() == 0 {
             break;
@@ -1333,10 +1325,10 @@ pub fn main_shuffle_shoot_shuffle(
 }
 
 //do targeted compression
-pub fn main_compression(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment,) {
+pub fn main_compression(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, stores: &[faster_rs::FasterKv],) {
     let dbs = open_all_dbs(env);
     // Start with the input circuit
-    let bit_shuf_list = (3..=7)
+    let _bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
         .map(|n| {
             (0..n)
                 .permutations(n)
@@ -1350,7 +1342,7 @@ pub fn main_compression(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &D
     let mut post_len = 0;
     let mut count = 0;
     for _ in 0..rounds {
-            butterfly_big(&circuit, n, false, 0, env, &bit_shuf_list, &dbs, db_n6m5, db_n7m4);
+            butterfly_big(&circuit, n, false, 0, stores);
         if circuit.gates.len() == 0 {
             break;
         }

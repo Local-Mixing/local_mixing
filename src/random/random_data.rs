@@ -7496,6 +7496,60 @@ mod tests {
             .expect("FasterKV verification failed");
     }
 
+    #[test]
+    fn test_top100_overall_m1_6() {
+        use rocksdb::{DB, Options};
+        use crate::circuit::circuit::poly_to_str;
+
+        let mut opts = Options::default();
+        opts.set_max_open_files(-1);
+        opts.set_merge_operator_associative("append_merge", append_merge);
+
+        let db = DB::open_for_read_only(&opts, "rocks_db_m1_6", false)
+            .expect("Failed to open rocks_db_m1_6");
+
+        // Collect (key, circuit_count) for every entry.
+        let mut counts: Vec<(Vec<u8>, usize)> = Vec::new();
+        for item in db.iterator(rocksdb::IteratorMode::Start) {
+            let (key, value) = item.expect("iter error");
+            counts.push((key.to_vec(), decode_circuit_count(&value)));
+        }
+
+        // Sort by circuit count descending, take top 100.
+        counts.sort_by(|a, b| b.1.cmp(&a.1));
+        counts.truncate(100);
+
+        let mut out = String::new();
+        out.push_str("TOP 100 MOST POPULAR HASHES — rocks_db_m1_6\n");
+        out.push_str(&"=".repeat(80));
+        out.push('\n');
+
+        for (rank, (key, count)) in counts.iter().enumerate() {
+            let value = db.get(key).unwrap().unwrap();
+            let circuits = decode_circuits(&value);
+            let first = &circuits[0];
+            let n = 3 * first.gates.len().max(1);
+            let (canon_polys, _, _, _) = first.clone().canonicalize_polys(n);
+            let hash_str: String = key.iter().map(|b| format!("{:02x}", b)).collect();
+
+            out.push_str(&format!(
+                "\n[{}] hash={} | circuits={}\n",
+                rank + 1, hash_str, count
+            ));
+            out.push_str("  Canonical polynomial:\n");
+            for (i, poly) in canon_polys.iter().enumerate() {
+                out.push_str(&format!("    x{} = {}\n", i, poly_to_str(poly, n)));
+            }
+            out.push_str(&format!("  Circuits ({}):\n", circuits.len()));
+            for c in &circuits {
+                out.push_str(&format!("    {:?}\n", c.gates));
+            }
+        }
+
+        std::fs::write("top100_overall.txt", &out).expect("Failed to write top100_overall.txt");
+        println!("Written to top100_overall.txt");
+    }
+
 }
 
 /// Merge rocks_db_m1..=rocks_db_m6 by key into a single RocksDB at `output_path`.

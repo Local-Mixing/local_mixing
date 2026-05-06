@@ -289,11 +289,7 @@ pub static IDENTITY_TIME: AtomicU64 = AtomicU64::new(0);
 pub fn compress_loop(
     circuit: &CircuitSeq,
     n: usize,
-    db_n6m5: &DB,
-    db_n7m4: &DB,
-    env: &lmdb::Environment,
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
-    dbs: &HashMap<String, lmdb::Database>,
+    stores: &[faster_rs::FasterKv],
     stable_max: usize,
     curr_round: usize,
     last_round: usize,
@@ -319,7 +315,7 @@ pub fn compress_loop(
                 let sub = CircuitSeq {
                     gates: acc.gates[start..end].to_vec(),
                 };
-                compress_big_ancillas(&sub, 100, n, db_n6m5, db_n7m4, env, &bit_shuf_list, dbs).gates
+                compress_big_ancillas(&sub, 100, n, stores).gates
             })
             .collect();
 
@@ -650,14 +646,10 @@ pub fn expand_lmdb<'a>(
 
 // Compress on larger number of wires
 pub fn compress_big(
-    c: &CircuitSeq, 
-    trials: usize, 
-    num_wires: usize, 
-    db_n6m5: &DB,
-    db_n7m4: &DB,
-    env: &lmdb::Environment, 
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
-    dbs: &HashMap<String, lmdb::Database>,
+    c: &CircuitSeq,
+    trials: usize,
+    num_wires: usize,
+    stores: &[faster_rs::FasterKv],
 ) -> CircuitSeq {
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -719,11 +711,10 @@ pub fn compress_big(
 
         let t3 = Instant::now();
         let sub_num_wires = used_wires.len();
-        let bit_shuf = &bit_shuf_list[sub_num_wires - 3];
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, db_n6m5, db_n7m4);
+        let subcircuit_temp = compress_fastermv(&subcircuit, 20, sub_num_wires, stores);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -771,13 +762,9 @@ pub fn compress_big(
 
 // Sequential compression method
 pub fn sequential_compress_big(
-    c: &CircuitSeq, 
-    num_wires: usize, 
-    db_n6m5: &DB,
-    db_n7m4: &DB,
-    env: &lmdb::Environment, 
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
-    dbs: &HashMap<String, lmdb::Database>,
+    c: &CircuitSeq,
+    num_wires: usize,
+    stores: &[faster_rs::FasterKv],
 ) -> CircuitSeq {
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -846,11 +833,10 @@ pub fn sequential_compress_big(
 
         let t3 = Instant::now();
         let sub_num_wires = used_wires.len();
-        let bit_shuf = &bit_shuf_list[sub_num_wires - 3];
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, db_n6m5, db_n7m4);
+        let subcircuit_temp = compress_fastermv(&subcircuit, 20, sub_num_wires, stores);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -899,14 +885,10 @@ pub fn sequential_compress_big(
 }
 
 // Allow ancillas in compression
-pub fn sequential_compress_big_ancillas( 
-    c: &CircuitSeq, 
-    num_wires: usize, 
-    db_n6m5: &DB,
-    db_n7m4: &DB, 
-    env: &lmdb::Environment, 
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
-    dbs: &HashMap<String, lmdb::Database>,
+pub fn sequential_compress_big_ancillas(
+    c: &CircuitSeq,
+    num_wires: usize,
+    stores: &[faster_rs::FasterKv],
 ) -> CircuitSeq {
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -989,11 +971,10 @@ pub fn sequential_compress_big_ancillas(
 
         let t3 = Instant::now();
         let sub_num_wires = used_wires.len();
-        let bit_shuf = &bit_shuf_list[sub_num_wires - 3];
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, db_n6m5, db_n7m4);
+        let subcircuit_temp = compress_fastermv(&subcircuit, 20, sub_num_wires, stores);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -1246,14 +1227,155 @@ pub fn compress_lmdb<'a>(
     compressed
 }
 
+pub fn compress_fastermv(
+    c: &CircuitSeq,
+    trials: usize,
+    n: usize,
+    stores: &[faster_rs::FasterKv],
+) -> CircuitSeq {
+    use faster_rs::status;
+    use xxhash_rust::xxh3::xxh3_128;
+    use crate::circuit::circuit::polys_repr_blob;
+
+    let mut compressed = c.clone();
+
+    let mut i = 0;
+    while i < compressed.gates.len().saturating_sub(1) {
+        if compressed.gates[i] == compressed.gates[i + 1] {
+            compressed.gates.drain(i..=i + 1);
+            i = i.saturating_sub(2);
+        } else {
+            i += 1;
+        }
+    }
+
+    if compressed.gates.is_empty() {
+        return CircuitSeq { gates: Vec::new() };
+    }
+
+    let (do_subcircuit, trial_count) = if compressed.gates.len() < 5 {
+        (false, 2)
+    } else {
+        (true, trials)
+    };
+
+    let mut session_started = vec![false; stores.len()];
+    let mut serials = vec![1u64; stores.len()];
+    let mut rng = rand::rng();
+
+    for _ in 0..trial_count {
+        let (sub, start, end) = if do_subcircuit {
+            random_subcircuit(&compressed)
+        } else {
+            (compressed.clone(), 0, compressed.gates.len())
+        };
+
+        if sub.gates.is_empty() {
+            continue;
+        }
+
+        let sub_used = sub.used_wires();
+        let k = sub_used.len();
+
+        let (canon_polys, _, is_reversed, final_order) = sub.canonicalize_polys(n);
+
+        if canon_polys.is_empty() {
+            continue;
+        }
+
+        let key = xxh3_128(&polys_repr_blob(&canon_polys)).to_le_bytes().to_vec();
+        let shard = key[0] as usize;
+
+        if !session_started[shard] {
+            stores[shard].start_session();
+            session_started[shard] = true;
+        }
+
+        let ser = serials[shard];
+        serials[shard] += 1;
+        let (s, rx) = stores[shard].read::<Vec<u8>, Vec<u8>>(&key, ser);
+
+        if s == status::NOT_FOUND {
+            continue;
+        }
+
+        stores[shard].complete_pending(true);
+
+        let value = match rx.recv() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let mut candidates: Vec<CircuitSeq> = Vec::new();
+        let mut pos = 0;
+        while pos < value.len() {
+            if pos + 1 > value.len() { break; }
+            let len = value[pos] as usize;
+            pos += 1;
+            if pos + len > value.len() { break; }
+            let candidate = CircuitSeq::from_blob(&value[pos..pos + len]);
+            pos += len;
+            if candidate.gates.len() < sub.gates.len() {
+                candidates.push(candidate);
+            }
+        }
+
+        if candidates.is_empty() {
+            continue;
+        }
+
+        let min_gates = candidates.iter().map(|c| c.gates.len()).min().unwrap();
+        let mut best: Vec<CircuitSeq> = candidates.into_iter().filter(|c| c.gates.len() == min_gates).collect();
+        let idx = rng.random_range(0..best.len());
+        let mut repl = best.swap_remove(idx);
+
+        if is_reversed {
+            repl.gates.reverse();
+        }
+
+        // final_order.data[i] = which minimal-wire index maps to canonical position i
+        // sub_used[j] = the parent-space wire for minimal-wire index j
+        let fo_len = final_order.data.len().min(k);
+        let mut orig_wires: Vec<u8> = vec![0u8; fo_len];
+        for i in 0..fo_len {
+            orig_wires[i] = sub_used[final_order.data[i] as usize];
+        }
+        let repl = CircuitSeq::unrewire_subcircuit(&repl, &orig_wires);
+
+        if repl.gates.len() == end - start {
+            compressed.gates[start..end].copy_from_slice(&repl.gates);
+        } else {
+            compressed.gates.splice(start..end, repl.gates);
+        }
+    }
+
+    for (shard, &started) in session_started.iter().enumerate() {
+        if started {
+            stores[shard].stop_session();
+        }
+    }
+
+    let mut j = 0;
+    while j < compressed.gates.len().saturating_sub(1) {
+        if compressed.gates[j] == compressed.gates[j + 1] {
+            compressed.gates.drain(j..=j + 1);
+            j = j.saturating_sub(2);
+        } else {
+            j += 1;
+        }
+    }
+
+    compressed
+}
+
 pub fn expand_big(
-    c: &CircuitSeq, 
-    trials: usize, 
-    num_wires: usize, 
+    c: &CircuitSeq,
+    trials: usize,
+    num_wires: usize,
     db_n6m5: &DB,
     db_n7m4: &DB,
-    env: &lmdb::Environment, 
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
+    env: &lmdb::Environment,
+    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
     let mut circuit = c.clone();
@@ -1392,14 +1514,10 @@ pub fn obfuscate(c: &CircuitSeq, num_wires: usize) -> (CircuitSeq, Vec<usize>) {
 // }
 
 pub fn compress_big_ancillas(
-    c: &CircuitSeq, 
-    trials: usize, 
-    num_wires: usize, 
-    db_n6m5: &DB,
-    db_n7m4: &DB,
-    env: &lmdb::Environment, 
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>, 
-    dbs: &HashMap<String, lmdb::Database>, 
+    c: &CircuitSeq,
+    trials: usize,
+    num_wires: usize,
+    stores: &[faster_rs::FasterKv],
 ) -> CircuitSeq {
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -1468,12 +1586,11 @@ pub fn compress_big_ancillas(
 
         // let t3 = Instant::now();
         let sub_num_wires = used_wires.len();
-        let bit_shuf = &bit_shuf_list[sub_num_wires - 3];
 
         // PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, &bit_shuf, sub_num_wires, env, dbs, db_n6m5, db_n7m4);
+        let subcircuit_temp = compress_fastermv(&subcircuit, 20, sub_num_wires, stores);
         // COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
