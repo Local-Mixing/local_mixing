@@ -7725,52 +7725,68 @@ pub fn rocks_to_fasterkv(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use faster_rs::{FasterKvBuilder, status};
 
-    let mut stores = Vec::with_capacity(256);
-    for shard in 0u16..=255 {
-        let shard_dir = format!("{}/{:02x}", faster_dir, shard);
-        std::fs::create_dir_all(&shard_dir)?;
-        let store = FasterKvBuilder::new(1 << 20, 512 * 1024 * 1024)
-            .with_disk(&shard_dir)
-            .build()
-            .map_err(|e| format!("shard {:02x}: {:?}", shard, e))?;
-        stores.push(store);
-    }
+    // Process 32 shards at a time: 32 × 1 GB = 32 GB peak RAM, 8 passes over RocksDB.
+    const BATCH: usize = 32;
+    const LOG_BYTES: u64 = 1024 * 1024 * 1024;
+    let mut grand_total = 0u64;
 
-    let sessions: Vec<_> = stores.iter().map(|s| s.start_session()).collect();
-    let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
-    let mut serials = vec![1u64; 256];
-    let mut total = 0u64;
+    for batch_start in (0usize..256).step_by(BATCH) {
+        let batch_end = (batch_start + BATCH).min(256);
+        println!("Processing shards {:02x}..{:02x}", batch_start, batch_end - 1);
 
-    for item in rocks.iterator(rocksdb::IteratorMode::Start) {
-        let (key, value) = item?;
-        let shard = key[0] as usize;
-        let s = stores[shard].upsert(&key.to_vec(), &value.to_vec(), serials[shard]);
-        assert!(s == status::OK || s == status::PENDING);
-        serials[shard] += 1;
-        total += 1;
-        if total % 100_000 == 0 {
-            stores[shard].complete_pending(false);
-            println!("Inserted {} entries...", total);
+        let mut stores = Vec::with_capacity(BATCH);
+        for shard in batch_start..batch_end {
+            let shard_dir = format!("{}/{:02x}", faster_dir, shard);
+            std::fs::create_dir_all(&shard_dir)?;
+            let store = FasterKvBuilder::new(1 << 20, LOG_BYTES)
+                .with_disk(&shard_dir)
+                .build()
+                .map_err(|e| format!("shard {:02x}: {:?}", shard, e))?;
+            stores.push(store);
         }
+
+        let sessions: Vec<_> = stores.iter().map(|s| s.start_session()).collect();
+        let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
+        let mut serials = vec![1u64; BATCH];
+        let mut batch_total = 0u64;
+
+        for item in rocks.iterator(rocksdb::IteratorMode::Start) {
+            let (key, value) = item?;
+            let shard = key[0] as usize;
+            if shard < batch_start || shard >= batch_end {
+                continue;
+            }
+            let idx = shard - batch_start;
+            let s = stores[idx].upsert(&key.to_vec(), &value.to_vec(), serials[idx]);
+            assert!(s == status::OK || s == status::PENDING);
+            serials[idx] += 1;
+            batch_total += 1;
+            if batch_total % 100_000 == 0 {
+                stores[idx].complete_pending(false);
+                println!("  Inserted {} entries this batch...", batch_total);
+            }
+        }
+
+        drop(sessions);
+        for (i, store) in stores.iter().enumerate() {
+            let shard = batch_start + i;
+            store.complete_pending(true);
+            let idx_token = store.checkpoint_index()
+                .map_err(|e| format!("checkpoint_index shard {:02x}: {:?}", shard, e))?.token;
+            let log_token = store.checkpoint_hybrid_log()
+                .map_err(|e| format!("checkpoint_hybrid_log shard {:02x}: {:?}", shard, e))?.token;
+            store.stop_session();
+            let shard_dir = format!("{}/{:02x}", faster_dir, shard);
+            std::fs::write(format!("{}/index.token", shard_dir), &idx_token)?;
+            std::fs::write(format!("{}/log.token", shard_dir), &log_token)?;
+            println!("  Shard {:02x}: {} entries", shard, serials[i] - 1);
+        }
+
+        grand_total += batch_total;
+        println!("Batch done. Total so far: {}", grand_total);
     }
 
-    drop(sessions);
-    for (shard, store) in stores.iter().enumerate() {
-        store.complete_pending(true);
-        let idx_token = store.checkpoint_index()
-            .map_err(|e| format!("checkpoint_index shard {:02x}: {:?}", shard, e))?.token;
-        let log_token = store.checkpoint_hybrid_log()
-            .map_err(|e| format!("checkpoint_hybrid_log shard {:02x}: {:?}", shard, e))?.token;
-        store.stop_session();
-
-        // Save both tokens so verify/recover can find them.
-        let shard_dir = format!("{}/{:02x}", faster_dir, shard);
-        std::fs::write(format!("{}/index.token", shard_dir), &idx_token)?;
-        std::fs::write(format!("{}/log.token", shard_dir), &log_token)?;
-        println!("Shard {:02x}: {} entries", shard, serials[shard] - 1);
-    }
-
-    println!("Done. {} entries across 256 shards in {}", total, faster_dir);
+    println!("Done. {} entries across 256 shards in {}", grand_total, faster_dir);
     Ok(())
 }
 
