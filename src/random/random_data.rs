@@ -7664,89 +7664,119 @@ pub fn rocks_to_fasterkv(
     faster_dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use faster_rs::{FasterKvBuilder, status};
-    use std::io::{BufWriter, Read, Write};
 
-    let tmp_dir = format!("{}/tmp_shards", faster_dir);
-    std::fs::create_dir_all(&tmp_dir)?;
-
-    // Pass 1: single scan of RocksDB, write each entry to its shard temp file.
-    println!("Pass 1: sharding RocksDB into temp files...");
-    {
-        let mut writers: Vec<BufWriter<std::fs::File>> = (0u16..=255)
-            .map(|shard| {
-                let path = format!("{}/{:02x}.bin", tmp_dir, shard);
-                let f = std::fs::File::create(&path).expect("failed to create temp shard file");
-                BufWriter::with_capacity(8 * 1024 * 1024, f)
-            })
-            .collect();
-
-        let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
-        let mut total = 0u64;
-
-        for item in rocks.iterator(rocksdb::IteratorMode::Start) {
-            let (key, value) = item?;
-            let shard = key[0] as usize;
-            let klen = key.len() as u32;
-            let vlen = value.len() as u32;
-            writers[shard].write_all(&klen.to_le_bytes())?;
-            writers[shard].write_all(&key)?;
-            writers[shard].write_all(&vlen.to_le_bytes())?;
-            writers[shard].write_all(&value)?;
-            total += 1;
-            if total % 1_000_000 == 0 {
-                println!("  Sharded {} entries...", total);
-            }
-        }
-        println!("Pass 1 done: {} entries sharded", total);
-    }
-
-    // Pass 2: for each shard, read temp file and write to its own FasterKV store.
-    for shard in 0u8..=255 {
-        let tmp_path = format!("{}/{:02x}.bin", tmp_dir, shard);
+    let mut stores = Vec::with_capacity(256);
+    for shard in 0u16..=255 {
         let shard_dir = format!("{}/{:02x}", faster_dir, shard);
         std::fs::create_dir_all(&shard_dir)?;
-
-        let store = FasterKvBuilder::new(1 << 20, 8 * 1024 * 1024 * 1024)
+        let store = FasterKvBuilder::new(1 << 20, 1024 * 1024 * 1024)
             .with_disk(&shard_dir)
             .build()
-            .map_err(|e| format!("Failed to build FasterKV store for shard {:02x}: {:?}", shard, e))?;
+            .map_err(|e| format!("shard {:02x}: {:?}", shard, e))?;
+        stores.push(store);
+    }
 
-        let _session = store.start_session();
-        let mut serial = 1u64;
+    let sessions: Vec<_> = stores.iter().map(|s| s.start_session()).collect();
+    let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
+    let mut serials = vec![1u64; 256];
+    let mut total = 0u64;
 
-        let mut reader = std::io::BufReader::with_capacity(
-            8 * 1024 * 1024,
-            std::fs::File::open(&tmp_path)?,
-        );
-        let mut len_buf = [0u8; 4];
-        loop {
-            if reader.read_exact(&mut len_buf).is_err() { break; }
-            let klen = u32::from_le_bytes(len_buf) as usize;
-            let mut key_vec = vec![0u8; klen];
-            reader.read_exact(&mut key_vec)?;
+    for item in rocks.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = item?;
+        let shard = key[0] as usize;
+        let s = stores[shard].upsert(&key.to_vec(), &value.to_vec(), serials[shard]);
+        assert!(s == status::OK || s == status::PENDING);
+        serials[shard] += 1;
+        total += 1;
+        if total % 100_000 == 0 {
+            stores[shard].complete_pending(false);
+            println!("Inserted {} entries...", total);
+        }
+    }
 
-            if reader.read_exact(&mut len_buf).is_err() { break; }
-            let vlen = u32::from_le_bytes(len_buf) as usize;
-            let mut val_vec = vec![0u8; vlen];
-            reader.read_exact(&mut val_vec)?;
+    drop(sessions);
+    for (shard, store) in stores.iter().enumerate() {
+        store.complete_pending(true);
+        let check = store.checkpoint()
+            .map_err(|e| format!("checkpoint shard {:02x}: {:?}", shard, e))?;
+        store.stop_session();
+        println!("Shard {:02x}: {} entries, token: {}", shard, serials[shard] - 1, check.token);
+    }
 
-            let s = store.upsert(&key_vec, &val_vec, serial);
-            assert!(s == status::OK || s == status::PENDING);
-            serial += 1;
-            if serial % 100_000 == 0 {
-                store.complete_pending(false);
+    println!("Done. {} entries across 256 shards in {}", total, faster_dir);
+    Ok(())
+}
+
+pub fn verify_fasterkv(
+    rocks_path: &str,
+    faster_dir: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use faster_rs::{FasterKvBuilder, status};
+
+    // Open all 256 shards read-only (load from checkpoint).
+    let mut stores = Vec::with_capacity(256);
+    for shard in 0u16..=255 {
+        let shard_dir = format!("{}/{:02x}", faster_dir, shard);
+        let store = FasterKvBuilder::new(1 << 20, 1024 * 1024 * 1024)
+            .with_disk(&shard_dir)
+            .build()
+            .map_err(|e| format!("shard {:02x}: {:?}", shard, e))?;
+        stores.push(store);
+    }
+    let sessions: Vec<_> = stores.iter().map(|s| s.start_session()).collect();
+
+    let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
+    let mut checked = 0u64;
+    let mut missing = 0u64;
+    let mut mismatch = 0u64;
+    let mut serial = 1u64;
+
+    for item in rocks.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = item?;
+        let shard = key[0] as usize;
+        let key_vec: Vec<u8> = key.to_vec();
+        let val_vec: Vec<u8> = value.to_vec();
+
+        let (s, rx) = stores[shard].read::<Vec<u8>, Vec<u8>>(&key_vec, serial);
+        serial += 1;
+
+        if s == status::NOT_FOUND {
+            missing += 1;
+            if missing <= 5 {
+                println!("MISSING key (shard {:02x}): {:?}", shard, &key_vec[..key_vec.len().min(16)]);
+            }
+        } else {
+            stores[shard].complete_pending(true);
+            match rx.try_recv() {
+                Ok(found_val) => {
+                    if found_val != val_vec {
+                        mismatch += 1;
+                        if mismatch <= 5 {
+                            println!("MISMATCH key (shard {:02x}): {:?}", shard, &key_vec[..key_vec.len().min(16)]);
+                        }
+                    }
+                }
+                Err(_) => {
+                    missing += 1;
+                    if missing <= 5 {
+                        println!("NO RECV key (shard {:02x}): {:?}", shard, &key_vec[..key_vec.len().min(16)]);
+                    }
+                }
             }
         }
 
-        store.complete_pending(true);
-        let check = store.checkpoint()
-            .map_err(|e| format!("Checkpoint failed for shard {:02x}: {:?}", shard, e))?;
-        store.stop_session();
-        std::fs::remove_file(&tmp_path)?;
-        println!("Shard {:02x}: {} entries, checkpoint token: {}", shard, serial - 1, check.token);
+        checked += 1;
+        if checked % 100_000 == 0 {
+            println!("Checked {} entries (missing={} mismatch={})...", checked, missing, mismatch);
+        }
     }
 
-    std::fs::remove_dir(&tmp_dir)?;
-    println!("Done. All 256 shards written to {}", faster_dir);
-    Ok(())
+    drop(sessions);
+    println!("Done. checked={} missing={} mismatch={}", checked, missing, mismatch);
+    if missing == 0 && mismatch == 0 {
+        println!("All entries verified OK.");
+        Ok(())
+    } else {
+        Err(format!("{} missing, {} mismatched", missing, mismatch).into())
+    }
 }

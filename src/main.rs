@@ -43,6 +43,7 @@ use local_mixing::random::random_data::build_m1;
 use local_mixing::random::random_data::build_from_2rocks;
 use local_mixing::random::random_data::combine_rocks_dbs;
 use local_mixing::random::random_data::rocks_to_fasterkv;
+use local_mixing::random::random_data::verify_fasterkv;
 const ROCKSDB_N6M5_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
 const ROCKSDB_N7M4_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
 
@@ -1107,6 +1108,26 @@ Command::new("rocksdb_2")
                     .help("Output path for the FasterMV store"),
             )
     )
+    .subcommand(
+        Command::new("verify_fmv")
+            .about("Verify all RocksDB entries exist in the FasterKV shards")
+            .arg(
+                Arg::new("source")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source RocksDB"),
+            )
+            .arg(
+                Arg::new("path")
+                    .short('p')
+                    .long("path")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the FasterKV shards directory"),
+            )
+    )
     .get_matches();
 
     match matches.subcommand() {
@@ -2051,6 +2072,11 @@ Command::new("rocksdb_2")
             let source: &String = sub.get_one("source").expect("Missing -s <source>");
             let path: &String = sub.get_one("path").expect("Missing -p <path>");
             rocks_to_fasterkv(source, path).expect("rocks_to_fasterkv failed");
+        }
+        Some(("verify_fmv", sub)) => {
+            let source: &String = sub.get_one("source").expect("Missing -s <source>");
+            let path: &String = sub.get_one("path").expect("Missing -p <path>");
+            verify_fasterkv(source, path).expect("verify_fasterkv failed");
         }
         _ => unreachable!(),
     }
