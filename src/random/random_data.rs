@@ -7665,15 +7665,18 @@ pub fn rocks_to_fasterkv(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use faster_rs::{FasterKvBuilder, status};
 
-    // One FasterKV store per first byte of key (256 shards).
+    // Each shard holds ~1/256 of the data, so log size scales accordingly.
+    // 8 GB total / 256 = 32 MB per shard, use 256 MB to be generous.
+    const SHARD_LOG_BYTES: u64 = 256 * 1024 * 1024;
+
     let mut stores = Vec::with_capacity(256);
-    for byte in 0u16..=255 {
-        let shard_dir = format!("{}/{:02x}", faster_dir, byte);
+    for shard in 0u16..=255 {
+        let shard_dir = format!("{}/{:02x}", faster_dir, shard);
         std::fs::create_dir_all(&shard_dir)?;
-        let store = FasterKvBuilder::new(1 << 20, 8 * 1024 * 1024 * 1024)
+        let store = FasterKvBuilder::new(1 << 14, SHARD_LOG_BYTES)
             .with_disk(&shard_dir)
             .build()
-            .map_err(|e| format!("Failed to build FasterKV store for shard {:02x}: {:?}", byte, e))?;
+            .map_err(|e| format!("Failed to build FasterKV store for shard {:02x}: {:?}", shard, e))?;
         stores.push(store);
     }
 
@@ -7694,7 +7697,7 @@ pub fn rocks_to_fasterkv(
         serials[shard] += 1;
         total += 1;
 
-        if total % 10_000 == 0 {
+        if total % 100_000 == 0 {
             stores[shard].complete_pending(false);
             println!("Inserted {} entries total...", total);
         }
