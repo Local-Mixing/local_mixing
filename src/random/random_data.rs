@@ -7665,41 +7665,51 @@ pub fn rocks_to_fasterkv(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use faster_rs::{FasterKvBuilder, status};
 
-    std::fs::create_dir_all(faster_dir)?;
+    // One FasterKV store per first byte of key (256 shards).
+    let mut stores = Vec::with_capacity(256);
+    for byte in 0u16..=255 {
+        let shard_dir = format!("{}/{:02x}", faster_dir, byte);
+        std::fs::create_dir_all(&shard_dir)?;
+        let store = FasterKvBuilder::new(1 << 20, 8 * 1024 * 1024 * 1024)
+            .with_disk(&shard_dir)
+            .build()
+            .map_err(|e| format!("Failed to build FasterKV store for shard {:02x}: {:?}", byte, e))?;
+        stores.push(store);
+    }
 
-    // Table size: number of hash buckets (power of 2). 1M buckets for up to ~millions of keys.
-    // Log size: backing store size. 8 GB is generous; FASTER only uses what it needs.
-    let store = FasterKvBuilder::new(1 << 20, 8 * 1024 * 1024 * 1024)
-        .with_disk(faster_dir)
-        .build()
-        .map_err(|e| format!("Failed to build FasterKV store: {:?}", e))?;
-
-    let _session = store.start_session();
+    let sessions: Vec<_> = stores.iter().map(|s| s.start_session()).collect();
 
     let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
-    let mut serial = 1u64;
+    let mut serials = vec![1u64; 256];
+    let mut total = 0u64;
 
     for item in rocks.iterator(rocksdb::IteratorMode::Start) {
         let (key, value) = item?;
+        let shard = key[0] as usize;
         let key_vec: Vec<u8> = key.to_vec();
         let val_vec: Vec<u8> = value.to_vec();
 
-        let s = store.upsert(&key_vec, &val_vec, serial);
+        let s = stores[shard].upsert(&key_vec, &val_vec, serials[shard]);
         assert!(s == status::OK || s == status::PENDING);
-        serial += 1;
+        serials[shard] += 1;
+        total += 1;
 
-        if serial % 10_000 == 0 {
-            store.complete_pending(false);
-            println!("Inserted {} entries...", serial - 1);
+        if total % 10_000 == 0 {
+            stores[shard].complete_pending(false);
+            println!("Inserted {} entries total...", total);
         }
     }
 
-    store.complete_pending(true);
-    let check = store.checkpoint()
-        .map_err(|e| format!("Checkpoint failed: {:?}", e))?;
-    store.stop_session();
+    for (shard, store) in stores.iter().enumerate() {
+        store.complete_pending(true);
+        let check = store.checkpoint()
+            .map_err(|e| format!("Checkpoint failed for shard {:02x}: {:?}", shard, e))?;
+        store.stop_session();
+        println!("Shard {:02x}: {} entries, checkpoint token: {}",
+            shard, serials[shard] - 1, check.token);
+    }
 
-    println!("Done. {} entries written to FasterKV at {} (checkpoint token: {})",
-        serial - 1, faster_dir, check.token);
+    drop(sessions);
+    println!("Done. {} total entries written to 256 FasterKV shards under {}", total, faster_dir);
     Ok(())
 }
