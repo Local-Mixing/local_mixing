@@ -7492,7 +7492,7 @@ mod tests {
 
     #[test]
     fn test_verify_fasterkv() {
-        verify_fasterkv("rocks_db_m1_6", "fastermv_m1_6")
+        verify_fasterkv("rocks_db_m1_6", "fasterkv_m1_6")
             .expect("FasterKV verification failed");
     }
 
@@ -7729,7 +7729,7 @@ pub fn rocks_to_fasterkv(
     for shard in 0u16..=255 {
         let shard_dir = format!("{}/{:02x}", faster_dir, shard);
         std::fs::create_dir_all(&shard_dir)?;
-        let store = FasterKvBuilder::new(1 << 20, 1024 * 1024 * 1024)
+        let store = FasterKvBuilder::new(1 << 20, 512 * 1024 * 1024)
             .with_disk(&shard_dir)
             .build()
             .map_err(|e| format!("shard {:02x}: {:?}", shard, e))?;
