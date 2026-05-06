@@ -7771,15 +7771,14 @@ pub fn rocks_to_fasterkv(
         for (i, store) in stores.iter().enumerate() {
             let shard = batch_start + i;
             store.complete_pending(true);
-            let idx_token = store.checkpoint_index()
-                .map_err(|e| format!("checkpoint_index shard {:02x}: {:?}", shard, e))?.token;
-            let log_token = store.checkpoint_hybrid_log()
-                .map_err(|e| format!("checkpoint_hybrid_log shard {:02x}: {:?}", shard, e))?.token;
+            let token = store.checkpoint()
+                .map_err(|e| format!("checkpoint shard {:02x}: {:?}", shard, e))?.token;
+            store.complete_pending(true);
             store.stop_session();
             let shard_dir = format!("{}/{:02x}", faster_dir, shard);
-            std::fs::write(format!("{}/index.token", shard_dir), &idx_token)?;
-            std::fs::write(format!("{}/log.token", shard_dir), &log_token)?;
-            println!("  Shard {:02x}: {} entries", shard, serials[i] - 1);
+            std::fs::write(format!("{}/index.token", shard_dir), &token)?;
+            std::fs::write(format!("{}/log.token", shard_dir), &token)?;
+            println!("  Shard {:02x}: {} entries, token={}", shard, serials[i] - 1, &token);
         }
 
         grand_total += batch_total;
@@ -7808,8 +7807,13 @@ pub fn verify_fasterkv(
             .map_err(|e| format!("missing index.token for shard {:02x}: {}", shard, e))?;
         let log_token = std::fs::read_to_string(format!("{}/log.token", shard_dir))
             .map_err(|e| format!("missing log.token for shard {:02x}: {}", shard, e))?;
-        store.recover(idx_token, log_token)
+        let recover = store.recover(idx_token.clone(), log_token.clone())
             .map_err(|e| format!("recover shard {:02x}: {:?}", shard, e))?;
+        if shard < 3 {
+            println!("Shard {:02x} recover: status={} version={} sessions={:?}",
+                shard, recover.status, recover.version, recover.session_ids);
+            println!("  idx_token={} log_token={}", idx_token.trim(), log_token.trim());
+        }
 
         stores.push(store);
     }
