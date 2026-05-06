@@ -7665,15 +7665,15 @@ pub fn rocks_to_fasterkv(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use faster_rs::{FasterKvBuilder, status};
 
-    // Each shard holds ~1/256 of the data, so log size scales accordingly.
-    // 8 GB total / 256 = 32 MB per shard, use 256 MB to be generous.
-    const SHARD_LOG_BYTES: u64 = 256 * 1024 * 1024;
+    // Each shard holds ~1/256 of the data; keep 1M hash buckets (FASTER minimum)
+    // but reduce log from 8 GB to 1 GB per shard (256 GB total vs 2 TB).
+    const SHARD_LOG_BYTES: u64 = 1024 * 1024 * 1024;
 
     let mut stores = Vec::with_capacity(256);
     for shard in 0u16..=255 {
         let shard_dir = format!("{}/{:02x}", faster_dir, shard);
         std::fs::create_dir_all(&shard_dir)?;
-        let store = FasterKvBuilder::new(1 << 14, SHARD_LOG_BYTES)
+        let store = FasterKvBuilder::new(1 << 20, SHARD_LOG_BYTES)
             .with_disk(&shard_dir)
             .build()
             .map_err(|e| format!("Failed to build FasterKV store for shard {:02x}: {:?}", shard, e))?;
