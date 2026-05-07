@@ -237,47 +237,24 @@ mod tests {
         }
     }
 
-    /// Computes the ANF degree of a boolean function given its truth table.
-    /// `k` = number of input variables; `tt` must have length 2^k.
-    fn anf_degree(tt: &[u8], k: usize) -> usize {
-        let size = 1usize << k;
-        let mut f = tt.to_vec();
-        for i in 0..k {
-            for mask in 0..size {
-                if mask & (1 << i) != 0 {
-                    f[mask] ^= f[mask ^ (1 << i)];
-                }
-            }
-        }
-        (0..size)
-            .filter(|&m| f[m] != 0)
-            .map(|m: usize| m.count_ones() as usize)
-            .max()
-            .unwrap_or(0)
-    }
-
     #[test]
     fn degree_before_after() {
+        use crate::circuit::circuit::{poly_degree, poly_to_str};
+
         let n = 8usize;
         let main = crate::random::random_data::random_circuit(n, 20);
         assert_eq!(main.gates.len(), 20);
 
-        // Before: degree of each output wire as function of n=8 main inputs (2^8=256 evals)
         println!("\n=== Algebraic Degree Before/After Gadgetize (n={}) ===", n);
-        println!("\nBEFORE (main circuit, {} inputs):", n);
-        let size_before = 1usize << n;
-        let mut before_tts = vec![vec![0u8; size_before]; n];
-        for inp in 0..size_before {
-            let out = main.evaluate(inp);
-            for wire in 0..n {
-                before_tts[wire][inp] = ((out >> wire) & 1) as u8;
-            }
-        }
-        for wire in 0..n {
-            println!("  wire {:2}: degree {}", wire, anf_degree(&before_tts[wire], n));
+
+        // Before: symbolic polynomials over n variables
+        println!("\nBEFORE ({} gates, {} wires):", main.gates.len(), n);
+        let polys_before = main.to_polynomial(n, 0, main.gates.len());
+        for (wire, poly) in polys_before.iter().enumerate() {
+            println!("  wire {:2}: degree {}", wire, poly_degree(poly));
         }
 
-        // After: 2*n windup cycles then interleaved gadgets — single shared scheduler.
+        // Build gadgetized circuit with 2*n windup cycles
         let windup = 2 * n;
         let steps = n * n;
         let full_aux = degree_chain_circuit(n, windup + steps);
@@ -285,12 +262,9 @@ mod tests {
         let mut sched = GadgetScheduler::new(n);
         let mut gadgetized_gates: Vec<[u8; 3]> = Vec::new();
 
-        // Windup: 2 full cycles on the free pool before any gadgets fire.
         for i in 0..windup {
             gadgetized_gates.push(sched.remap_chain_gate(full_aux.gates[i]));
         }
-
-        // Body: interleave gadgets with the remaining aux gates.
         let m = main.gates.len();
         let mut aux_cursor = windup;
         for (i, &gate) in main.gates.iter().enumerate() {
@@ -307,28 +281,14 @@ mod tests {
         }
         let gadgetized = CircuitSeq { gates: gadgetized_gates };
         let total = 3 * n;
-        let free_start = 2 * n;
-        let k_after = 2 * n;
-        let size_after = 1usize << k_after;
 
-        // Helper: compute and print degrees for a prefix of `gadgetized`.
         let print_snapshot = |gates: &[[u8; 3]], label: &str| {
             let circ = CircuitSeq { gates: gates.to_vec() };
-            let mut tts = vec![vec![0u8; size_after]; total];
-            for inp in 0..size_after {
-                let main_bits = inp & ((1 << n) - 1);
-                let free_bits = (inp >> n) & ((1 << n) - 1);
-                let full = main_bits | (free_bits << free_start);
-                let out = circ.evaluate(full);
-                for wire in 0..total {
-                    tts[wire][inp] = ((out >> wire) & 1) as u8;
-                }
-            }
-            println!("\n{} ({} gates, {} inputs: main[0..{}] + free_aux[{}..{}]):",
-                label, gates.len(), k_after, n, free_start, free_start + n);
+            let polys = circ.to_polynomial(total, 0, gates.len());
+            println!("\n{} ({} gates):", label, gates.len());
             for wire in 0..total {
                 let cat = if wire < n { "main  " } else if wire < 2*n { "paired" } else { "free  " };
-                println!("  wire {:2} [{}]: degree {}", wire, cat, anf_degree(&tts[wire], k_after));
+                println!("  wire {:2} [{}]: degree {}", wire, cat, poly_degree(&polys[wire]));
             }
         };
 
