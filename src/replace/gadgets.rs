@@ -253,6 +253,8 @@ mod tests {
             Chain(Vec<usize>), // active wires touched by chain gates in this interval
         }
         let mut cols: Vec<Col> = Vec::new();
+        let mut gate_starts: Vec<usize> = Vec::new();
+        let mut gate_cursor = 0usize;
 
         for (i, &gate) in main.gates.iter().enumerate() {
             let aux_target = if m > 0 { a * i / m } else { 0 };
@@ -261,7 +263,11 @@ mod tests {
                 chain_active.push(sched.remap_chain_gate(aux.gates[aux_cursor])[0] as usize);
                 aux_cursor += 1;
             }
-            if !chain_active.is_empty() { cols.push(Col::Chain(chain_active)); }
+            if !chain_active.is_empty() {
+                gate_starts.push(gate_cursor);
+                gate_cursor += chain_active.len();
+                cols.push(Col::Chain(chain_active));
+            }
 
             let wa = gate[0] as usize;
             let wb = gate[1] as usize;
@@ -269,6 +275,8 @@ mod tests {
             let r_b = sched.current_aux(wb);
             let r_c = sched.current_aux(wc);
             let (r1, r2) = sched.consume(wa);
+            gate_starts.push(gate_cursor);
+            gate_cursor += 9;
             cols.push(Col::Gadget { idx: i, wa, wb, wc, r1, r2, r_b, r_c });
         }
         let mut tail: Vec<usize> = Vec::new();
@@ -276,11 +284,15 @@ mod tests {
             tail.push(sched.remap_chain_gate(aux.gates[aux_cursor])[0] as usize);
             aux_cursor += 1;
         }
-        if !tail.is_empty() { cols.push(Col::Chain(tail)); }
+        if !tail.is_empty() {
+            gate_starts.push(gate_cursor);
+            cols.push(Col::Chain(tail));
+        }
 
-        // Print header
+        // Print header: event label row + gate-start row
         let cw = 5usize;
-        print!("{:11}", "");
+        let prefix = 11usize;
+        print!("{:prefix$}", "");
         for col in &cols {
             let label = match col {
                 Col::Gadget { idx, .. } => format!("G{}", idx),
@@ -289,9 +301,14 @@ mod tests {
             print!("{:^cw$}", label);
         }
         println!();
+        print!("{:prefix$}", "gate:");
+        for &gs in &gate_starts {
+            print!("{:^cw$}", gs);
+        }
+        println!();
 
         // Print separator
-        print!("{:11}", "");
+        print!("{:prefix$}", "");
         for _ in &cols { print!("{}", "-".repeat(cw)); }
         println!();
 
