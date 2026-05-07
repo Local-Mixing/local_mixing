@@ -5,7 +5,6 @@ use std::{
 };
 
 use itertools::Itertools;
-use rocksdb::{DB};
 
 use crate::{
     circuit::circuit::CircuitSeq,
@@ -36,68 +35,6 @@ use crate::{
 pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> {
     let mut dbs = HashMap::new();
     let db_names = [
-        // "n3m1","n3m2","n3m3","n3m4","n3m5","n3m6","n3m7","n3m8","n3m9","n3m10",
-        // "n4m1","n4m2","n4m3","n4m4","n4m5","n4m6",
-        "n5m1","n5m2","n5m3","n5m4","n5m5",
-        "n6m1","n6m2","n6m3","n6m4","n6m5",
-        "n7m1","n7m2","n7m3","n7m4",
-        // "perm_tables_n3",
-        // "perm_tables_n4",
-        // "perm_tables_n5",
-        // "perm_tables_n6",
-        // "perm_tables_n7",
-        // "n4m1perms","n4m2perms","n4m3perms","n4m4perms","n4m5perms","n4m6perms",
-        "n5m1perms","n5m2perms","n5m3perms","n5m4perms","n5m5perms",
-        "n6m1perms","n6m2perms","n6m3perms","n6m4perms",
-        "n7m1perms","n7m2perms","n7m3perms",
-        "ids_n5g0", "ids_n5g1", "ids_n5g2", "ids_n5g3", "ids_n5g4", "ids_n5g5", "ids_n5g6", "ids_n5g7", "ids_n5g8", "ids_n5g9", 
-        "ids_n5g10", "ids_n5g11", "ids_n5g12", "ids_n5g13", "ids_n5g14", "ids_n5g15", "ids_n5g16", "ids_n5g17", "ids_n5g18", "ids_n5g19", 
-        "ids_n5g20", "ids_n5g21", "ids_n5g22", "ids_n5g23", "ids_n5g24", "ids_n5g25", "ids_n5g26", "ids_n5g27", "ids_n5g28", "ids_n5g29", 
-        "ids_n5g30", "ids_n5g31", "ids_n5g32", "ids_n5g33",
-        "ids_n6g0", "ids_n6g1", "ids_n6g2", "ids_n6g3", "ids_n6g4", "ids_n6g5", "ids_n6g6", "ids_n6g7", "ids_n6g8", "ids_n6g9", 
-        "ids_n6g10", "ids_n6g11", "ids_n6g12", "ids_n6g13", "ids_n6g14", "ids_n6g15", "ids_n6g16", "ids_n6g17", "ids_n6g18", "ids_n6g19", 
-        "ids_n6g20", "ids_n6g21", "ids_n6g22", "ids_n6g23", "ids_n6g24", "ids_n6g25", "ids_n6g26", "ids_n6g27", "ids_n6g28", "ids_n6g29", 
-        "ids_n6g30", "ids_n6g31", "ids_n6g32", "ids_n6g33",
-        "ids_n7g0", "ids_n7g1", "ids_n7g2", "ids_n7g3", "ids_n7g4", "ids_n7g5", "ids_n7g6", "ids_n7g7", "ids_n7g8", "ids_n7g9", 
-        "ids_n7g10", "ids_n7g11", "ids_n7g12", "ids_n7g13", "ids_n7g14", "ids_n7g15", "ids_n7g16", "ids_n7g17", "ids_n7g18", "ids_n7g19", 
-        "ids_n7g20", "ids_n7g21", "ids_n7g22", "ids_n7g23", "ids_n7g24", "ids_n7g25", "ids_n7g26", "ids_n7g27", "ids_n7g28", "ids_n7g29", 
-        "ids_n7g30", "ids_n7g31", "ids_n7g32", "ids_n7g33",
-        "ids_n16g0single",  "ids_n16g1single",  "ids_n16g2single",  "ids_n16g3single",
-        "ids_n16g4single",  "ids_n16g5single",  "ids_n16g6single",  "ids_n16g7single",
-        "ids_n16g8single",  "ids_n16g9single",  "ids_n16g10single", "ids_n16g11single",
-        "ids_n16g12single", "ids_n16g13single", "ids_n16g14single", "ids_n16g15single",
-        "ids_n16g16single", "ids_n16g17single", "ids_n16g18single", "ids_n16g19single",
-        "ids_n16g20single", "ids_n16g21single", "ids_n16g22single", "ids_n16g23single",
-        "ids_n16g24single", "ids_n16g25single", "ids_n16g26single", "ids_n16g27single",
-        "ids_n16g28single", "ids_n16g29single", "ids_n16g30single", "ids_n16g31single",
-        "ids_n16g32single", "ids_n16g33single",
-        "ids_n16g0tower",  "ids_n16g1tower",  "ids_n16g2tower",  "ids_n16g3tower",
-        "ids_n16g4tower",  "ids_n16g5tower",  "ids_n16g6tower",  "ids_n16g7tower",
-        "ids_n16g8tower",  "ids_n16g9tower",  "ids_n16g10tower", "ids_n16g11tower",
-        "ids_n16g12tower", "ids_n16g13tower", "ids_n16g14tower", "ids_n16g15tower",
-        "ids_n16g16tower", "ids_n16g17tower", "ids_n16g18tower", "ids_n16g19tower",
-        "ids_n16g20tower", "ids_n16g21tower", "ids_n16g22tower", "ids_n16g23tower",
-        "ids_n16g24tower", "ids_n16g25tower", "ids_n16g26tower", "ids_n16g27tower",
-        "ids_n16g28tower", "ids_n16g29tower", "ids_n16g30tower", "ids_n16g31tower",
-        "ids_n16g32tower", "ids_n16g33tower",
-        // "ids_n128g0single",  "ids_n128g1single",  "ids_n128g2single",  "ids_n128g3single",
-        // "ids_n128g4single",  "ids_n128g5single",  "ids_n128g6single",  "ids_n128g7single",
-        // "ids_n128g8single",  "ids_n128g9single",  "ids_n128g10single", "ids_n128g11single",
-        // "ids_n128g12single", "ids_n128g13single", "ids_n128g14single", "ids_n128g15single",
-        // "ids_n128g16single", "ids_n128g17single", "ids_n128g18single", "ids_n128g19single",
-        // "ids_n128g20single", "ids_n128g21single", "ids_n128g22single", "ids_n128g23single",
-        // "ids_n128g24single", "ids_n128g25single", "ids_n128g26single", "ids_n128g27single",
-        // "ids_n128g28single", "ids_n128g29single", "ids_n128g30single", "ids_n128g31single",
-        // "ids_n128g32single", "ids_n128g33single",
-        // "ids_n128g0tower",  "ids_n128g1tower",  "ids_n128g2tower",  "ids_n128g3tower",
-        // "ids_n128g4tower",  "ids_n128g5tower",  "ids_n128g6tower",  "ids_n128g7tower",
-        // "ids_n128g8tower",  "ids_n128g9tower",  "ids_n128g10tower", "ids_n128g11tower",
-        // "ids_n128g12tower", "ids_n128g13tower", "ids_n128g14tower", "ids_n128g15tower",
-        // "ids_n128g16tower", "ids_n128g17tower", "ids_n128g18tower", "ids_n128g19tower",
-        // "ids_n128g20tower", "ids_n128g21tower", "ids_n128g22tower", "ids_n128g23tower",
-        // "ids_n128g24tower", "ids_n128g25tower", "ids_n128g26tower", "ids_n128g27tower",
-        // "ids_n128g28tower", "ids_n128g29tower", "ids_n128g30tower", "ids_n128g31tower",
-        // "ids_n128g32tower", "ids_n128g33tower",
         "swap", "not", "swapnot1", "swapnot2", "swapnot12", "cnot"
     ];
 
@@ -265,7 +202,8 @@ pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> 
 //     println!("Final circuit written to recent_circuit.txt");
 // }
 
-pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, asymmetric: bool, save: &str, env: &lmdb::Environment, stores: &[faster_rs::FasterKv],) {
+pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, n: usize, asymmetric: bool, save: &str, env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],) {
     // Start with the input circuit
     let bit_shuf_list = (3..=7)
         .map(|n| {
@@ -285,9 +223,9 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: 
         let stop = 1000;
         circuit = if asymmetric {
             // abutterfly_big(&circuit, conn, n, i != rounds-1, std::cmp::min(stop*(i+1), 5000), env, i+1, rounds, &bit_shuf_list, &dbs)
-            abutterfly_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, stores)
+            abutterfly_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs)
         } else {
-            butterfly_big(&circuit, n, i != rounds-1, stop*(i+1), stores)
+            butterfly_big(&circuit, n, i != rounds-1, stop*(i+1), env, shard_dbs)
         };
         if circuit.gates.len() == 0 {
             break;
@@ -359,7 +297,8 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: 
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_rac_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, stores: &[faster_rs::FasterKv], intermediate: &str, tower: bool, id_len: usize,) {
+pub fn main_rac_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database], intermediate: &str, tower: bool, id_len: usize,) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -389,7 +328,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n
     let mut count = 0;
     for i in 0..rounds {
         let _stop = 1000;
-        let (new_circuit, already_coll, shoot, made_left, traverse_left)  = replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n7m4, db_n6m5, stores, intermediate, tower, id_len);
+        let (new_circuit, already_coll, shoot, made_left, traverse_left)  = replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len);
         circuit = new_circuit;
 
         sum_already_coll += already_coll;
@@ -502,7 +441,8 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, stores: &[faster_rs::FasterKv], intermediate: &str, tower: bool, id_len: usize) {
+pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database], intermediate: &str, tower: bool, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -530,11 +470,11 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4:
     for i in 0..rounds {
         let _stop = 1000;
         let (new_circuit, _, _, _, _) = if i == 0 { 
-            let x = interleave_sequential_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, stores, intermediate, tower, id_len);
+            let x = interleave_sequential_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len);
             n *= 2;
             x
         } else {
-            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, stores, intermediate, tower, id_len)
+            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len)
         };
         circuit = new_circuit;
 
@@ -600,7 +540,8 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4:
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, stores: &[faster_rs::FasterKv], intermediate: &str, tower: bool, x: usize, id_len: usize) {
+pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database], intermediate: &str, tower: bool, x: usize, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -638,7 +579,7 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4
             insert_wire_shuffles_x(&mut circuit, n, env, &dbs, x);
         }
         let (new_circuit, _, _, _, _) = 
-            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, stores, intermediate, tower, id_len);
+            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len);
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
@@ -703,7 +644,8 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, stores: &[faster_rs::FasterKv], intermediate: &str, min: usize, tower: bool, id_len: usize) {
+pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database], intermediate: &str, min: usize, tower: bool, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -729,7 +671,7 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m
     let mut count = 0;
     for i in 0..rounds {
         let _stop = 1000;
-        let new_circuit = replace_and_compress_big_distance(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, db_n6m5, db_n7m4, stores, intermediate, min, tower, id_len);
+        let new_circuit = replace_and_compress_big_distance(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, min, tower, id_len);
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
@@ -918,12 +860,10 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m
 pub fn main_sequential_butterfly(
     c: &CircuitSeq,
     rounds: usize,
-    db_n6m5: &DB,
-    db_n7m4: &DB,
     n: usize,
     save: &str,
     env: &lmdb::Environment,
-    stores: &[faster_rs::FasterKv],
+    shard_dbs: &[lmdb::Database],
     id_len: usize,
     reverse_order_left: bool,
     tower_left: bool,
@@ -965,9 +905,7 @@ pub fn main_sequential_butterfly(
             rounds,
             &bit_shuf_list,
             &dbs,
-            db_n6m5,
-            db_n7m4,
-            stores,
+            shard_dbs,
             id_len,
             reverse_order_left,
             tower_left,
@@ -1042,8 +980,6 @@ pub fn main_sequential_butterfly(
 pub fn main_shooting_game(
     c: &CircuitSeq, 
     rounds: usize, 
-    db_n6m5: &DB,
-    db_n7m4: &DB,
     n: usize, 
     save: &str, 
     env: &lmdb::Environment, 
@@ -1083,9 +1019,7 @@ pub fn main_shooting_game(
             i+1, 
             rounds, 
             &bit_shuf_list, 
-            &dbs,  
-            db_n6m5,
-            db_n7m4,
+            &dbs,
             id_len,
             tower,
             stop,
@@ -1159,14 +1093,12 @@ pub fn main_shooting_game(
 pub fn main_shuffle_shoot_shuffle(
     c: &CircuitSeq,
     rounds: usize,
-    db_n6m5: &DB,
-    db_n7m4: &DB,
     n: usize,
     m: usize,
     x: usize,
     save: &str,
     env: &lmdb::Environment,
-    stores: &[faster_rs::FasterKv],
+    shard_dbs: &[lmdb::Database],
     id_len: usize,
     tower: bool,
     _stop: usize,
@@ -1230,9 +1162,7 @@ pub fn main_shuffle_shoot_shuffle(
                 i+1, 
                 rounds, 
                 &bit_shuf_list, 
-                &dbs,  
-                db_n6m5,
-                db_n7m4,
+                &dbs,
                 id_len,
                 tower,
                 4 * circuit.gates.len(),
@@ -1256,7 +1186,7 @@ pub fn main_shuffle_shoot_shuffle(
             new_circuit = circuit.clone();
         }
         println!("After inserting samfs: {} gates", circuit.gates.len());
-        circuit = compress_loop(&circuit, n, stores, 6, i+1, rounds);
+        circuit = compress_loop(&circuit, n, env, shard_dbs, 6, i+1, rounds);
         println!("After compression: {} gates", circuit.gates.len());
         if circuit.gates.len() == 0 {
             break;
@@ -1325,7 +1255,8 @@ pub fn main_shuffle_shoot_shuffle(
 }
 
 //do targeted compression
-pub fn main_compression(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &DB, n: usize, save: &str, env: &lmdb::Environment, stores: &[faster_rs::FasterKv],) {
+pub fn main_compression(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],) {
     let dbs = open_all_dbs(env);
     // Start with the input circuit
     let _bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
@@ -1342,7 +1273,7 @@ pub fn main_compression(c: &CircuitSeq, rounds: usize, db_n6m5: &DB, db_n7m4: &D
     let mut post_len = 0;
     let mut count = 0;
     for _ in 0..rounds {
-            butterfly_big(&circuit, n, false, 0, stores);
+            butterfly_big(&circuit, n, false, 0, env, shard_dbs);
         if circuit.gates.len() == 0 {
             break;
         }

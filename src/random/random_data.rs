@@ -5384,6 +5384,96 @@ mod tests {
     }
 
     #[test]
+    fn verify_gadget_semantics() {
+        // Wires: 0=x1, 1=r11, 2=r12, 3=x2, 4=r21, 5=x3, 6=r31
+        // Secret shares: s1=x1^r11, s2=x2^r21, s3=x3^r31
+        // After gadget: new_s1 = w0' ^ r12 = 1 ^ s1 ^ (s2 & !s3)
+        // The gate keeps s1 unchanged only when s2=1,s3=0; flips otherwise.
+        let opt_9 = CircuitSeq { gates: vec![
+            [0,3,5],[0,3,6],[0,4,5],[0,4,6],
+            [0,1,2],[0,2,1],[0,1,1],
+            [0,3,4],[0,4,3],
+        ]};
+
+        for s in 0usize..128 {
+            let out = opt_9.evaluate(s);
+
+            let x1  = (s >> 0) & 1;
+            let r11 = (s >> 1) & 1;
+            let r12 = (s >> 2) & 1;
+            let x2  = (s >> 3) & 1;
+            let r21 = (s >> 4) & 1;
+            let x3  = (s >> 5) & 1;
+            let r31 = (s >> 6) & 1;
+
+            let s1 = x1 ^ r11;
+            let s2 = x2 ^ r21;
+            let s3 = x3 ^ r31;
+
+            // Non-active wires must be unchanged
+            for wire in 1..7usize {
+                let in_bit  = (s   >> wire) & 1;
+                let out_bit = (out >> wire) & 1;
+                assert_eq!(in_bit, out_bit,
+                    "wire {} changed for input {:#09b}", wire, s);
+            }
+
+            let w0_prime = (out >> 0) & 1;
+            let expected_new_s1 = 1 ^ s1 ^ (s2 & (1 ^ s3));
+            let actual_new_s1   = w0_prime ^ r12;
+            assert_eq!(actual_new_s1, expected_new_s1,
+                "wrong secret value for input s1={} s2={} s3={} r12={}", s1, s2, s3, r12);
+        }
+
+        println!("Gadget semantics verified for all 128 inputs");
+    }
+
+    #[test]
+    fn load_gadgets_into_lmdb() {
+        use std::{fs::File, io::{BufRead, BufReader}, path::Path};
+        use lmdb::{Environment, DatabaseFlags, WriteFlags};
+
+        let env = Environment::new()
+            .set_max_dbs(270)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("failed to open lmdb env");
+
+        if let Ok(db) = env.open_db(Some("homgad")) {
+            let mut txn = env.begin_rw_txn().expect("failed to begin txn");
+            unsafe { txn.drop_db(db).expect("failed to drop homgad db"); }
+            txn.commit().expect("failed to commit drop");
+            println!("Dropped existing homgad db");
+        }
+
+        let db = env
+            .create_db(Some("homgad"), DatabaseFlags::empty())
+            .expect("failed to create homgad db");
+
+        let file = File::open("gadget_circuits.txt").expect("failed to open gadget_circuits.txt");
+        let reader = BufReader::new(file);
+
+        let mut txn = env.begin_rw_txn().expect("failed to begin txn");
+        let mut count = 0usize;
+
+        for line in reader.lines() {
+            let line = line.expect("failed to read line");
+            let line = line.trim();
+            if line.is_empty() { continue; }
+
+            let circuit = CircuitSeq::from_string(line);
+            let key = circuit.repr_blob();
+
+            txn.put(db, &key, &[], WriteFlags::NO_OVERWRITE)
+                .expect("lmdb put failed");
+            count += 1;
+        }
+
+        txn.commit().expect("txn commit failed");
+        println!("Loaded {} gadget circuits into homgad", count);
+    }
+
+    #[test]
     fn test_read_swap_and_print_perm() {
         let env = Environment::new()
             .set_max_dbs(202)
