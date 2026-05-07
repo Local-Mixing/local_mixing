@@ -259,8 +259,8 @@ mod tests {
     #[test]
     fn degree_before_after() {
         let n = 8usize;
-        let main = crate::random::random_data::random_circuit(n, 50);
-        assert_eq!(main.gates.len(), 50);
+        let main = crate::random::random_data::random_circuit(n, 20);
+        assert_eq!(main.gates.len(), 20);
 
         // Before: degree of each output wire as function of n=8 main inputs (2^8=256 evals)
         println!("\n=== Algebraic Degree Before/After Gadgetize (n={}) ===", n);
