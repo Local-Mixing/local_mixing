@@ -237,6 +237,90 @@ mod tests {
         }
     }
 
+    fn print_gadgetize_visual(main: &CircuitSeq, n: usize) {
+        let steps = n * n;
+        let aux = degree_chain_circuit(n, steps);
+        let total = 3 * n;
+        let m = main.gates.len();
+        let a = aux.gates.len();
+        let mut sched = GadgetScheduler::new(n);
+        let mut aux_cursor = 0usize;
+
+        // Collect columns: either a gadget event or a chain event.
+        enum Col {
+            Gadget { idx: usize, wa: usize, wb: usize, wc: usize,
+                     r1: usize, r2: usize, r_b: usize, r_c: usize },
+            Chain(Vec<usize>), // active wires touched by chain gates in this interval
+        }
+        let mut cols: Vec<Col> = Vec::new();
+
+        for (i, &gate) in main.gates.iter().enumerate() {
+            let aux_target = if m > 0 { a * i / m } else { 0 };
+            let mut chain_active: Vec<usize> = Vec::new();
+            while aux_cursor < aux_target {
+                chain_active.push(sched.remap_chain_gate(aux.gates[aux_cursor])[0] as usize);
+                aux_cursor += 1;
+            }
+            if !chain_active.is_empty() { cols.push(Col::Chain(chain_active)); }
+
+            let wa = gate[0] as usize;
+            let wb = gate[1] as usize;
+            let wc = gate[2] as usize;
+            let r_b = sched.current_aux(wb);
+            let r_c = sched.current_aux(wc);
+            let (r1, r2) = sched.consume(wa);
+            cols.push(Col::Gadget { idx: i, wa, wb, wc, r1, r2, r_b, r_c });
+        }
+        let mut tail: Vec<usize> = Vec::new();
+        while aux_cursor < a {
+            tail.push(sched.remap_chain_gate(aux.gates[aux_cursor])[0] as usize);
+            aux_cursor += 1;
+        }
+        if !tail.is_empty() { cols.push(Col::Chain(tail)); }
+
+        // Print header
+        let cw = 5usize;
+        print!("{:11}", "");
+        for col in &cols {
+            let label = match col {
+                Col::Gadget { idx, .. } => format!("G{}", idx),
+                Col::Chain(_)           => "~".to_string(),
+            };
+            print!("{:^cw$}", label);
+        }
+        println!();
+
+        // Print separator
+        print!("{:11}", "");
+        for _ in &cols { print!("{}", "-".repeat(cw)); }
+        println!();
+
+        // One row per wire
+        for wire in 0..total {
+            let cat = if wire < n { "mn" } else if wire < 2*n { "pr" } else { "fr" };
+            print!("{:2}[{}]    ", wire, cat);
+            for col in &cols {
+                let sym = match col {
+                    Col::Chain(active) =>
+                        if active.contains(&wire) { "~" } else { "." },
+                    Col::Gadget { wa, wb, wc, r1, r2, r_b, r_c, .. } => {
+                        if wire == *wa      { "A" }
+                        else if wire == *wb { "B" }
+                        else if wire == *wc { "C" }
+                        else if wire == *r1 { "1" }
+                        else if wire == *r2 { "2" }
+                        else if wire == *r_b { "b" }
+                        else if wire == *r_c { "c" }
+                        else { "." }
+                    }
+                };
+                print!("{:^cw$}", sym);
+            }
+            println!();
+        }
+        println!("\nA=active  B/C=controls  1=r1(freed)  2=r2(new pair)  b/c=aux of B/C  ~=chain");
+    }
+
     #[test]
     fn degree_before_after() {
         use crate::circuit::circuit::{poly_degree, poly_to_str};
@@ -244,6 +328,9 @@ mod tests {
         let n = 5usize;
         let main = crate::random::random_data::random_circuit(n, 20);
         assert_eq!(main.gates.len(), 20);
+
+        println!("\n=== Gadgetize Visual (n={}) ===", n);
+        print_gadgetize_visual(&main, n);
 
         println!("\n=== Algebraic Degree Before/After Gadgetize (n={}) ===", n);
 
