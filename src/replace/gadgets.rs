@@ -241,7 +241,7 @@ mod tests {
     fn degree_before_after() {
         use crate::circuit::circuit::{poly_degree, poly_to_str};
 
-        let n = 8usize;
+        let n = 5usize;
         let main = crate::random::random_data::random_circuit(n, 20);
         assert_eq!(main.gates.len(), 20);
 
