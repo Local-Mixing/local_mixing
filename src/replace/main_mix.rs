@@ -35,7 +35,7 @@ use crate::{
 pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> {
     let mut dbs = HashMap::new();
     let db_names = [
-        "swap", "not", "swapnot1", "swapnot2", "swapnot12", "cnot"
+        "swap", "not", "swapnot1", "swapnot2", "swapnot12", "cnot", "homgad"
     ];
 
     for name in db_names.iter() {
