@@ -277,42 +277,67 @@ mod tests {
             println!("  wire {:2}: degree {}", wire, anf_degree(&before_tts[wire], n));
         }
 
-        // After: gadgetize with n^2 aux chain steps → 3n=24 total wires
+        // After: 2*n windup cycles then interleaved gadgets — single shared scheduler.
+        let windup = 2 * n;
         let steps = n * n;
-        let aux = degree_chain_circuit(n, steps);
-        let gadgetized = gadgetize(&main, &aux, n);
-        let total = 3 * n;
-        let free_start = 2 * n; // free aux wires are indices 16..23
+        let full_aux = degree_chain_circuit(n, windup + steps);
 
-        // Vary main wires (0..n) AND free aux wires (free_start..free_start+n).
-        // Paired aux wires (n..2n) are held at 0; they start uniform random in
-        // practice but fixing them isolates the degree contribution of the free pool.
-        // 2n=16 variable inputs → 2^16 = 65536 evaluations.
+        let mut sched = GadgetScheduler::new(n);
+        let mut gadgetized_gates: Vec<[u8; 3]> = Vec::new();
+
+        // Windup: 2 full cycles on the free pool before any gadgets fire.
+        for i in 0..windup {
+            gadgetized_gates.push(sched.remap_chain_gate(full_aux.gates[i]));
+        }
+
+        // Body: interleave gadgets with the remaining aux gates.
+        let m = main.gates.len();
+        let mut aux_cursor = windup;
+        for (i, &gate) in main.gates.iter().enumerate() {
+            let aux_target = windup + if m > 0 { steps * i / m } else { 0 };
+            while aux_cursor < aux_target {
+                gadgetized_gates.push(sched.remap_chain_gate(full_aux.gates[aux_cursor]));
+                aux_cursor += 1;
+            }
+            emit_gadget(&mut sched, gate, &mut gadgetized_gates);
+        }
+        while aux_cursor < windup + steps {
+            gadgetized_gates.push(sched.remap_chain_gate(full_aux.gates[aux_cursor]));
+            aux_cursor += 1;
+        }
+        let gadgetized = CircuitSeq { gates: gadgetized_gates };
+        let total = 3 * n;
+        let free_start = 2 * n;
         let k_after = 2 * n;
         let size_after = 1usize << k_after;
-        println!("\nAFTER (gadgetized {} gates, {} inputs: main[0..{}] + free_aux[{}..{}]):",
-            gadgetized.gates.len(), k_after, n, free_start, free_start + n);
 
-        let mut after_tts = vec![vec![0u8; size_after]; total];
-        for inp in 0..size_after {
-            let main_bits = inp & ((1 << n) - 1);
-            let free_bits = (inp >> n) & ((1 << n) - 1);
-            // Build full 24-bit input: main bits in place, free aux bits shifted up
-            let full = main_bits | (free_bits << free_start);
-            let out = gadgetized.evaluate(full);
-            for wire in 0..total {
-                after_tts[wire][inp] = ((out >> wire) & 1) as u8;
+        // Helper: compute and print degrees for a prefix of `gadgetized`.
+        let print_snapshot = |gates: &[[u8; 3]], label: &str| {
+            let circ = CircuitSeq { gates: gates.to_vec() };
+            let mut tts = vec![vec![0u8; size_after]; total];
+            for inp in 0..size_after {
+                let main_bits = inp & ((1 << n) - 1);
+                let free_bits = (inp >> n) & ((1 << n) - 1);
+                let full = main_bits | (free_bits << free_start);
+                let out = circ.evaluate(full);
+                for wire in 0..total {
+                    tts[wire][inp] = ((out >> wire) & 1) as u8;
+                }
             }
-        }
-        for wire in 0..total {
-            let label = if wire < n {
-                "main  "
-            } else if wire < 2 * n {
-                "paired"
-            } else {
-                "free  "
-            };
-            println!("  wire {:2} [{}]: degree {}", wire, label, anf_degree(&after_tts[wire], k_after));
-        }
+            println!("\n{} ({} gates, {} inputs: main[0..{}] + free_aux[{}..{}]):",
+                label, gates.len(), k_after, n, free_start, free_start + n);
+            for wire in 0..total {
+                let cat = if wire < n { "main  " } else if wire < 2*n { "paired" } else { "free  " };
+                println!("  wire {:2} [{}]: degree {}", wire, cat, anf_degree(&tts[wire], k_after));
+            }
+        };
+
+        let g = &gadgetized.gates;
+        let total_gates = g.len();
+        print_snapshot(&g[..total_gates * 1 / 5], "SNAPSHOT 1/5");
+        print_snapshot(&g[..total_gates * 2 / 5], "SNAPSHOT 2/5");
+        print_snapshot(&g[..total_gates * 3 / 5], "SNAPSHOT 3/5");
+        print_snapshot(&g[..total_gates * 4 / 5], "SNAPSHOT 4/5");
+        print_snapshot(g, "AFTER");
     }
 }
