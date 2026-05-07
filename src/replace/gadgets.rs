@@ -259,13 +259,8 @@ mod tests {
     #[test]
     fn degree_before_after() {
         let n = 8usize;
-        // Fixed 20-gate circuit on n=8 wires
-        let main = CircuitSeq { gates: vec![
-            [0,1,2],[1,2,3],[2,3,4],[3,4,5],[4,5,6],[5,6,7],[6,7,0],[7,0,1],
-            [0,3,6],[1,4,7],[2,5,0],[3,6,1],[4,7,2],[5,0,3],[6,1,4],[7,2,5],
-            [0,2,5],[1,3,6],[2,4,7],[3,5,0],
-        ]};
-        assert_eq!(main.gates.len(), 20);
+        let main = crate::random::random_data::random_circuit(n, 50);
+        assert_eq!(main.gates.len(), 50);
 
         // Before: degree of each output wire as function of n=8 main inputs (2^8=256 evals)
         println!("\n=== Algebraic Degree Before/After Gadgetize (n={}) ===", n);
@@ -295,7 +290,7 @@ mod tests {
         // 2n=16 variable inputs → 2^16 = 65536 evaluations.
         let k_after = 2 * n;
         let size_after = 1usize << k_after;
-        println!("\nAFTER (gadgetized {}-gate circuit, {} inputs: main[0..{}] + free_aux[{}..{}]):",
+        println!("\nAFTER (gadgetized {} gates, {} inputs: main[0..{}] + free_aux[{}..{}]):",
             gadgetized.gates.len(), k_after, n, free_start, free_start + n);
 
         let mut after_tts = vec![vec![0u8; size_after]; total];
