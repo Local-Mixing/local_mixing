@@ -294,7 +294,7 @@ mod tests {
 
         let g = &gadgetized.gates;
         let total_gates = g.len();
-        print_snapshot(&g[..total_gates * 1 / 5], "SNAPSHOT 1/5");
+        print_snapshot(&g[..50.min(total_gates)],          "SNAPSHOT gate 50");
         print_snapshot(&g[..total_gates * 2 / 5], "SNAPSHOT 2/5");
         print_snapshot(&g[..total_gates * 3 / 5], "SNAPSHOT 3/5");
         print_snapshot(&g[..total_gates * 4 / 5], "SNAPSHOT 4/5");
