@@ -5119,194 +5119,113 @@ mod tests {
 
     #[test]
     fn find_swaps() {
-        //cnot
+        let dedup = |random: &mut CircuitSeq| {
+            let mut i = 0;
+            while i < random.gates.len().saturating_sub(1) {
+                if random.gates[i] == random.gates[i + 1] {
+                    random.gates.drain(i..=i + 1);
+                    i = i.saturating_sub(2);
+                } else {
+                    i += 1;
+                }
+            }
+        };
+
+        // cnot: flip wire 2 when wire 1 is 1
         let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("c1not2.txt")
-            .expect("Failed to open swaponlyn.txt");
+            .create(true).append(true)
+            .open("c1not2.txt").expect("Failed to open c1not2.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![0,1,6,7,4,5,2,3]};
+        let perm = CircuitSeq::from_string("120;012;210;102;201;021;").permutation(5);
         for m in 2..=10 {
             for _ in 0..100000 {
-                let mut random = random_circuit(3, m);
+                let mut random = random_circuit(5, m);
                 random.canonicalize();
-                let mut i = 0;
-                while i < random.gates.len().saturating_sub(1) {
-                    if random.gates[i] == random.gates[i + 1] {
-                        random.gates.drain(i..=i + 1);
-                        i = i.saturating_sub(2);
-                    } else {
-                        i += 1;
-                    }
-                }
-                if random.permutation(3) == perm {
-                    circuits.insert(random);
-                }
+                dedup(&mut random);
+                if random.permutation(5) == perm { circuits.insert(random); }
             }
         }
+        for c in circuits { writeln!(file, "{}", c.repr()).expect("Failed to write"); }
 
-        for c in circuits {
-            writeln!(file, "{}", c.repr()).expect("Failed to write to swaponlyn.txt");
-        }
-
-        //swap 1 2
+        // swap wires 1 and 2
         let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("swap12.txt")
-            .expect("Failed to open swaponlyn.txt");
+            .create(true).append(true)
+            .open("swap12.txt").expect("Failed to open swap12.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![0,1,4,5,2,3,6,7]};
+        let perm = CircuitSeq::from_string("120;210;120;201;021;120;210;102;012;120;").permutation(5);
         for m in 6..=15 {
             for _ in 0..100000 {
-                let mut random = random_circuit(3, m);
+                let mut random = random_circuit(5, m);
                 random.canonicalize();
-                let mut i = 0;
-                while i < random.gates.len().saturating_sub(1) {
-                    if random.gates[i] == random.gates[i + 1] {
-                        random.gates.drain(i..=i + 1);
-                        i = i.saturating_sub(2);
-                    } else {
-                        i += 1;
-                    }
-                }
-                if random.permutation(3) == perm {
-                    circuits.insert(random);
-                }
+                dedup(&mut random);
+                if random.permutation(5) == perm { circuits.insert(random); }
             }
         }
+        for c in circuits { writeln!(file, "{}", c.repr()).expect("Failed to write"); }
 
-        for c in circuits {
-            writeln!(file, "{}", c.repr()).expect("Failed to write to swaponlyn.txt");
-        }
-
-        //swap 1 2 and then negate 1
+        // swap wires 1 and 2, then negate wire 1
         let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("swap12n1.txt")
-            .expect("Failed to open swaponlyn.txt");
+            .create(true).append(true)
+            .open("swap12n1.txt").expect("Failed to open swap12n1.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![2,3,6,7,0,1,4,5]};
+        let perm = CircuitSeq::from_string("102;120;012;210;120;201;021;201;120;201;").permutation(5);
         for m in 6..=15 {
             for _ in 0..100000 {
-                let mut random = random_circuit(3, m);
+                let mut random = random_circuit(5, m);
                 random.canonicalize();
-                let mut i = 0;
-                while i < random.gates.len().saturating_sub(1) {
-                    if random.gates[i] == random.gates[i + 1] {
-                        random.gates.drain(i..=i + 1);
-                        i = i.saturating_sub(2);
-                    } else {
-                        i += 1;
-                    }
-                }
-                if random.permutation(3) == perm {
-                    circuits.insert(random);
-                }
+                dedup(&mut random);
+                if random.permutation(5) == perm { circuits.insert(random); }
             }
         }
+        for c in circuits { writeln!(file, "{}", c.repr()).expect("Failed to write"); }
 
-        for c in circuits {
-            writeln!(file, "{}", c.repr()).expect("Failed to write to swaponlyn.txt");
-        }
-
-        //swap 1 2 and then negate 2
+        // swap wires 1 and 2, then negate wire 2
         let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("swap12n2.txt")
-            .expect("Failed to open swaponlyn.txt");
+            .create(true).append(true)
+            .open("swap12n2.txt").expect("Failed to open swap12n2.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![4,5,0,1,6,7,2,3]};
+        let perm = CircuitSeq::from_string("021;120;201;102;012;102;201;210;102;201;").permutation(5);
         for m in 6..=15 {
             for _ in 0..100000 {
-                let mut random = random_circuit(3, m);
+                let mut random = random_circuit(5, m);
                 random.canonicalize();
-                let mut i = 0;
-                while i < random.gates.len().saturating_sub(1) {
-                    if random.gates[i] == random.gates[i + 1] {
-                        random.gates.drain(i..=i + 1);
-                        i = i.saturating_sub(2);
-                    } else {
-                        i += 1;
-                    }
-                }
-                if random.permutation(3) == perm {
-                    circuits.insert(random);
-                }
+                dedup(&mut random);
+                if random.permutation(5) == perm { circuits.insert(random); }
             }
         }
+        for c in circuits { writeln!(file, "{}", c.repr()).expect("Failed to write"); }
 
-        for c in circuits {
-            writeln!(file, "{}", c.repr()).expect("Failed to write to swaponlyn.txt");
-        }
-
-        //swap 1 2 and then negate both
+        // swap wires 1 and 2, then negate both
         let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("swap12n1n2.txt")
-            .expect("Failed to open swaponlyn.txt");
+            .create(true).append(true)
+            .open("swap12n1n2.txt").expect("Failed to open swap12n1n2.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![6,7,2,3,4,5,0,1]};
+        let perm = CircuitSeq::from_string("210;120;201;210;012;120;021;201;210;021;210;021;").permutation(5);
         for m in 6..=15 {
             for _ in 0..100000 {
-                let mut random = random_circuit(3, m);
+                let mut random = random_circuit(5, m);
                 random.canonicalize();
-                let mut i = 0;
-                while i < random.gates.len().saturating_sub(1) {
-                    if random.gates[i] == random.gates[i + 1] {
-                        random.gates.drain(i..=i + 1);
-                        i = i.saturating_sub(2);
-                    } else {
-                        i += 1;
-                    }
-                }
-                if random.permutation(3) == perm {
-                    circuits.insert(random);
-                }
+                dedup(&mut random);
+                if random.permutation(5) == perm { circuits.insert(random); }
             }
         }
+        for c in circuits { writeln!(file, "{}", c.repr()).expect("Failed to write"); }
 
-        for c in circuits {
-            writeln!(file, "{}", c.repr()).expect("Failed to write to swaponlyn.txt");
-        }
-
-        //not 
+        // not wire 1
         let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("not1.txt")
-            .expect("Failed to open swaponlyn.txt");
+            .create(true).append(true)
+            .open("not1.txt").expect("Failed to open not1.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![2,3,0,1,6,7,4,5]};
+        let perm = CircuitSeq::from_string("012;120;210;021;120;201;102;120;").permutation(5);
         for m in 2..=10 {
             for _ in 0..100000 {
-                let mut random = random_circuit(3, m);
-                if random.permutation(3) == perm {
-                    println!("Found not1 candidate: {}", random.repr());
-                }
+                let mut random = random_circuit(5, m);
                 random.canonicalize();
-                let mut i = 0;
-                while i < random.gates.len().saturating_sub(1) {
-                    if random.gates[i] == random.gates[i + 1] {
-                        random.gates.drain(i..=i + 1);
-                        i = i.saturating_sub(2);
-                    } else {
-                        i += 1;
-                    }
-                }
-                if random.permutation(3) == perm {
-                    circuits.insert(random);
-                }
+                dedup(&mut random);
+                if random.permutation(5) == perm { circuits.insert(random); }
             }
         }
-
-        for c in circuits {
-            writeln!(file, "{}", c.repr()).expect("Failed to write to swaponlyn.txt");
-        }
+        for c in circuits { writeln!(file, "{}", c.repr()).expect("Failed to write"); }
     }
 
     #[test]
