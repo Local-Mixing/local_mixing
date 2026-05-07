@@ -43,6 +43,7 @@ use local_mixing::random::random_data::build_m1;
 use local_mixing::random::random_data::build_from_2rocks;
 use local_mixing::random::random_data::combine_rocks_dbs;
 use local_mixing::random::random_data::rocks_to_fasterkv;
+use local_mixing::random::random_data::rocks_to_lmdb;
 use local_mixing::random::random_data::verify_fasterkv;
 const ROCKSDB_N6M5_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
 const ROCKSDB_N7M4_CACHE_BYTES: usize = 16 * 1024 * 1024 * 1024;
@@ -1148,6 +1149,26 @@ Command::new("rocksdb_2")
                     .help("Path to the FasterKV shards directory"),
             )
     )
+    .subcommand(
+        Command::new("rocks_to_lmdb")
+            .about("Convert a RocksDB into an LMDB store")
+            .arg(
+                Arg::new("source")
+                    .short('s')
+                    .long("source")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source RocksDB"),
+            )
+            .arg(
+                Arg::new("path")
+                    .short('p')
+                    .long("path")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Output path for the LMDB store"),
+            )
+    )
     .get_matches();
 
     match matches.subcommand() {
@@ -2083,6 +2104,19 @@ Command::new("rocksdb_2")
             let source: &String = sub.get_one("source").expect("Missing -s <source>");
             let path: &String = sub.get_one("path").expect("Missing -p <path>");
             verify_fasterkv(source, path).expect("verify_fasterkv failed");
+        }
+        Some(("rocks_to_lmdb", sub)) => {
+            let source: &String = sub.get_one("source").expect("Missing -s <source>");
+            let path: &String = sub.get_one("path").expect("Missing -p <path>");
+            if let Err(e) = rocks_to_lmdb(source, path) {
+                let msg = format!("rocks_to_lmdb failed: {}", e);
+                eprintln!("{}", msg);
+                let _ = std::fs::OpenOptions::new()
+                    .create(true).append(true)
+                    .open("error.txt")
+                    .and_then(|mut f| { use std::io::Write; writeln!(f, "{}", msg) });
+                std::process::exit(1);
+            }
         }
         _ => unreachable!(),
     }

@@ -7789,6 +7789,41 @@ pub fn rocks_to_fasterkv(
     Ok(())
 }
 
+pub fn rocks_to_lmdb(
+    rocks_path: &str,
+    lmdb_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use lmdb::{Environment, DatabaseFlags, WriteFlags, Transaction};
+
+    std::fs::create_dir_all(lmdb_path)?;
+
+    let env = Environment::new()
+        .set_map_size(200 * 1024 * 1024 * 1024)
+        .set_max_dbs(263)
+        .open(std::path::Path::new(lmdb_path))?;
+
+    let db = env.create_db(Some("m1_6"), DatabaseFlags::empty())?;
+    let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
+
+    let mut count = 0u64;
+    let mut txn = env.begin_rw_txn()?;
+
+    for item in rocks.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = item?;
+        txn.put(db, &key, &value, WriteFlags::empty())?;
+        count += 1;
+        if count % 100_000 == 0 {
+            txn.commit()?;
+            txn = env.begin_rw_txn()?;
+            println!("Inserted {} entries...", count);
+        }
+    }
+
+    txn.commit()?;
+    println!("Done. {} entries written to {}", count, lmdb_path);
+    Ok(())
+}
+
 pub fn verify_fasterkv(
     rocks_path: &str,
     faster_dir: &str,
