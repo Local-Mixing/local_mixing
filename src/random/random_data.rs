@@ -7799,10 +7799,13 @@ pub fn rocks_to_lmdb(
 
     let env = Environment::new()
         .set_map_size(200 * 1024 * 1024 * 1024)
-        .set_max_dbs(263)
+        .set_max_dbs(256)
         .open(std::path::Path::new(lmdb_path))?;
 
-    let db = env.create_db(Some("m1_6"), DatabaseFlags::empty())?;
+    let dbs: Vec<lmdb::Database> = (0u16..=255)
+        .map(|s| env.create_db(Some(format!("{:02x}", s).as_str()), DatabaseFlags::empty()))
+        .collect::<Result<_, _>>()?;
+
     let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
 
     let mut count = 0u64;
@@ -7810,7 +7813,8 @@ pub fn rocks_to_lmdb(
 
     for item in rocks.iterator(rocksdb::IteratorMode::Start) {
         let (key, value) = item?;
-        txn.put(db, &key, &value, WriteFlags::empty())?;
+        let shard = key[0] as usize;
+        txn.put(dbs[shard], &key, &value, WriteFlags::empty())?;
         count += 1;
         if count % 100_000 == 0 {
             txn.commit()?;
