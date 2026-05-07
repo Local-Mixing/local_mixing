@@ -254,32 +254,9 @@ mod tests {
             println!("  wire {:2}: degree {}", wire, poly_degree(poly));
         }
 
-        // Windup: 2 full cycles on ALL 2n aux wires (paired n..2n-1 and free 2n..3n-1).
-        // Template index j maps to wire n+j.
-        let windup_circ = degree_chain_circuit(2 * n, 2 * (2 * n));
-        let mut gadgetized_gates: Vec<[u8; 3]> = windup_circ.gates.iter()
-            .map(|&[a, b, c]| [a + n as u8, b + n as u8, c + n as u8])
-            .collect();
-
-        // Body: interleave gadgets with free-pool degree chain.
         let steps = n * n;
-        let body_aux = degree_chain_circuit(n, steps);
-        let mut sched = GadgetScheduler::new(n);
-        let m = main.gates.len();
-        let mut aux_cursor = 0usize;
-        for (i, &gate) in main.gates.iter().enumerate() {
-            let aux_target = if m > 0 { steps * i / m } else { 0 };
-            while aux_cursor < aux_target {
-                gadgetized_gates.push(sched.remap_chain_gate(body_aux.gates[aux_cursor]));
-                aux_cursor += 1;
-            }
-            emit_gadget(&mut sched, gate, &mut gadgetized_gates);
-        }
-        while aux_cursor < steps {
-            gadgetized_gates.push(sched.remap_chain_gate(body_aux.gates[aux_cursor]));
-            aux_cursor += 1;
-        }
-        let gadgetized = CircuitSeq { gates: gadgetized_gates };
+        let aux = degree_chain_circuit(n, steps);
+        let gadgetized = gadgetize(&main, &aux, n);
         let total = 3 * n;
 
         let print_snapshot = |gates: &[[u8; 3]], label: &str| {
