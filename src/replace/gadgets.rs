@@ -1,23 +1,24 @@
 use std::collections::VecDeque;
 use crate::circuit::circuit::CircuitSeq;
 
-/// 9-gate homomorphic gadget (local wire indices 0–6).
+/// 12-gate homomorphic gadget (local wire indices 0–6).
 ///
 /// Local wire mapping:
 ///   0 = x_a    active main wire
-///   1 = r1     current aux paired with x_a (freed after gadget)
-///   2 = r2     incoming free aux wire      (becomes new pair for x_a)
-///   3 = x_b    control wire 1
+///   1 = r1     current aux paired with x_a (freed after gadget; modified)
+///   2 = r2     incoming free aux wire      (becomes new pair for x_a; modified)
+///   3 = x_b    control wire 1             (read-only)
 ///   4 = r_b    aux currently paired with x_b (read-only)
-///   5 = x_c    control wire 2
+///   5 = x_c    control wire 2             (read-only)
 ///   6 = r_c    aux currently paired with x_c (read-only)
 ///
 /// Gate semantics: [a,b,c] flips wire a when wire[b]=1 OR wire[c]=0.
-/// After the gadget: new_secret_a = 1 ^ s_a ^ (s_b & !s_c)
+/// After the gadget: new_x_a XOR new_r2 = 1 ^ s_a ^ (s_b & !s_c)
 /// where s_i = main_i ^ aux_i is the unmasked secret value.
-const GADGET: [[u8; 3]; 9] = [
+/// All gate indices are distinct (no duplicate wire indices per gate).
+const GADGET: [[u8; 3]; 12] = [
     [0,3,5],[0,3,6],[0,4,5],[0,4,6],
-    [0,1,2],[0,2,1],[0,1,1],
+    [1,0,2],[0,2,1],[2,0,1],[1,2,0],[0,2,1],[2,1,0],
     [0,3,4],[0,4,3],
 ];
 
@@ -97,7 +98,7 @@ impl GadgetScheduler {
     }
 }
 
-/// Emit the 9-gate gadget for main gate `gate` into `out`.
+/// Emit the 12-gate gadget for main gate `gate` into `out`.
 /// Updates the scheduler: r2 consumed from pool, r1 pushed to pool.
 pub fn emit_gadget(sched: &mut GadgetScheduler, gate: [u8; 3], out: &mut Vec<[u8; 3]>) {
     let a = gate[0] as usize;
@@ -152,7 +153,7 @@ pub fn degree_chain_circuit(n: usize, steps: usize) -> CircuitSeq {
 /// Returns a circuit on 3n wires.
 pub fn gadgetize(main: &CircuitSeq, aux: &CircuitSeq, n: usize) -> CircuitSeq {
     let mut sched = GadgetScheduler::new(n);
-    let mut out = Vec::with_capacity(main.gates.len() * 9 + aux.gates.len());
+    let mut out = Vec::with_capacity(main.gates.len() * 12 + aux.gates.len());
 
     let m = main.gates.len();
     let a = aux.gates.len();
@@ -216,12 +217,56 @@ mod tests {
     }
 
     #[test]
+    fn verify_12gate_gadget_semantics() {
+        // Wires: 0=x1(w_a), 1=r11(r1), 2=r12(r2), 3=x2(w_b), 4=r21(r_b), 5=x3(w_c), 6=r31(r_c)
+        // Unlike the 9-gate gadget, wires 1 and 2 are also modified.
+        let gadget_12 = CircuitSeq { gates: vec![
+            [0,3,5],[0,3,6],[0,4,5],[0,4,6],
+            [1,0,2],[0,2,1],[2,0,1],[1,2,0],[0,2,1],[2,1,0],
+            [0,3,4],[0,4,3],
+        ]};
+
+        for s in 0usize..128 {
+            let out = gadget_12.evaluate(s);
+
+            let x1  = (s >> 0) & 1;
+            let r11 = (s >> 1) & 1;
+            let r12 = (s >> 2) & 1;
+            let x2  = (s >> 3) & 1;
+            let r21 = (s >> 4) & 1;
+            let x3  = (s >> 5) & 1;
+            let r31 = (s >> 6) & 1;
+
+            let s1 = x1 ^ r11;
+            let s2 = x2 ^ r21;
+            let s3 = x3 ^ r31;
+
+            // Wires 3-6 must be unchanged (only 0,1,2 are active)
+            for wire in 3..7usize {
+                assert_eq!((s >> wire) & 1, (out >> wire) & 1,
+                    "wire {} changed for input {:#09b}", wire, s);
+            }
+
+            let w0_prime = (out >> 0) & 1;
+            let w2_prime = (out >> 2) & 1; // new r2 (modified)
+
+            // Invariant: new_w_a XOR new_r2 = expected new secret
+            let expected = 1 ^ s1 ^ (s2 & (1 ^ s3));
+            assert_eq!(w0_prime ^ w2_prime, expected,
+                "invariant failed: s={:#09b} s1={} s2={} s3={} w0'={} r2'={} expected={}",
+                s, s1, s2, s3, w0_prime, w2_prime, expected);
+        }
+
+        println!("12-gate gadget semantics verified for all 128 inputs");
+    }
+
+    #[test]
     fn gadgetize_gate_count() {
         let n = 4;
         let main = CircuitSeq { gates: vec![[0,1,2],[1,0,3],[2,3,0],[3,1,2]] };
         let aux  = degree_chain_circuit(n, 40);
         let result = gadgetize(&main, &aux, n);
-        assert_eq!(result.gates.len(), 4 * 9 + 40);
+        assert_eq!(result.gates.len(), 4 * 12 + 40);
     }
 
     #[test]
@@ -276,7 +321,7 @@ mod tests {
             let r_c = sched.current_aux(wc);
             let (r1, r2) = sched.consume(wa);
             gate_starts.push(gate_cursor);
-            gate_cursor += 9;
+            gate_cursor += 12;
             cols.push(Col::Gadget { idx: i, wa, wb, wc, r1, r2, r_b, r_c });
         }
         let mut tail: Vec<usize> = Vec::new();
