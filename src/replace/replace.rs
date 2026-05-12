@@ -49,7 +49,7 @@ pub fn random_subcircuit(circuit: &CircuitSeq) -> (CircuitSeq, usize, usize) {
     let shift = rng.random_range(0..4);
     let upper = 1 << shift;
 
-    let mut b = (a + (1 + rng.random_range(0..upper))) as usize;
+    let mut b = (a + (6 + rng.random_range(0..upper))) as usize;
 
     if b > len {
         b = len;
@@ -935,20 +935,10 @@ pub fn compress_lmdb(
         return CircuitSeq { gates: Vec::new() };
     }
 
-    let (do_subcircuit, trial_count) = if compressed.gates.len() < 5 {
-        (false, 2)
-    } else {
-        (true, trials)
-    };
-
     let mut rng = rand::rng();
 
-    for _ in 0..trial_count {
-        let (sub, start, end) = if do_subcircuit {
-            random_subcircuit(&compressed)
-        } else {
-            (compressed.clone(), 0, compressed.gates.len())
-        };
+    for _ in 0..trials {
+        let (sub, start, end) = random_subcircuit(&compressed);
 
         if sub.gates.is_empty() {
             continue;
