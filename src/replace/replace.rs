@@ -996,8 +996,15 @@ pub fn compress_lmdb(
         }
 
         // Step A: canonical wire space → dense remapped space (0..k-1).
-        // final_order.data[canonical_pos] = wire in the dense remapped space.
-        repl.rewire(&final_order, final_order.data.len());
+        // Extend final_order with identity mappings for any wire indices in repl
+        // that exceed final_order's length (repl from DB may use more wires).
+        let repl_n = repl.max_wire() + 1;
+        let mut order_data = final_order.data.clone();
+        while order_data.len() < repl_n {
+            let i = order_data.len();
+            order_data.push(i);
+        }
+        repl.rewire(&Permutation { data: order_data }, repl_n);
 
         // Step B: dense remapped space → actual wire indices of the subcircuit.
         let repl = CircuitSeq::unrewire_subcircuit(&repl, &used);
