@@ -4439,7 +4439,7 @@ mod tests {
 
             while subcircuit_gates.len() < 5 {
                 for set_size in (3..=16).rev() {
-                    let (gates, tries) = algo(set_size, 7, num_wires, &c, &mut rng);
+                    let (gates, tries) = algo(set_size, num_wires, num_wires, &c, &mut rng);
                     attempts += tries;
                     if gates.len() >= 3 {
                         subcircuit_gates = gates;
