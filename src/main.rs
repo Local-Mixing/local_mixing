@@ -32,6 +32,7 @@ use local_mixing::{
             // compress_big_ancillas,
             // sequential_compress_big_ancillas,
             compress_loop,
+            print_compress_timers,
         }, transpositions::{generate_reversible, insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x}
     },
 };
@@ -1788,6 +1789,7 @@ Command::new("rocksdb_2")
             println!("Starting compression");
             let shard_dbs = open_shard_dbs(&env);
             acc = compress_loop(&acc, n, &env, &shard_dbs, 12, 1, 1);
+            print_compress_timers();
             let mut file = fs::File::create(d)
                 .expect("Failed to create new file");
             write!(file, "{}", acc.repr())

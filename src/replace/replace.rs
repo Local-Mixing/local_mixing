@@ -938,13 +938,17 @@ pub fn compress_lmdb(
     let mut rng = rand::rng();
 
     for _ in 0..trials {
+        let t_trial = Instant::now();
+
         let (sub, start, end) = random_subcircuit(&compressed);
 
         if sub.gates.is_empty() {
             continue;
         }
 
+        let t_canon = Instant::now();
         let (canon_polys, _, is_reversed, final_order, used) = sub.canonicalize_polys(n);
+        CANONICALIZE_TIME.fetch_add(t_canon.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         if canon_polys.is_empty() {
             continue;
@@ -953,16 +957,22 @@ pub fn compress_lmdb(
         let key = xxh3_128(&polys_repr_blob(&canon_polys)).to_le_bytes().to_vec();
         let shard = key[0] as usize;
 
+        let t_txn = Instant::now();
         let txn = match env.begin_ro_txn() {
             Ok(t) => t,
             Err(_) => continue,
         };
+        TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let t_lookup = Instant::now();
         let value: Vec<u8> = match txn.get(shard_dbs[shard], &key) {
             Ok(v) => v.to_vec(),
             Err(lmdb::Error::NotFound) => continue,
             Err(_) => continue,
         };
+        LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
+        let t_blob = Instant::now();
         let mut candidates: Vec<CircuitSeq> = Vec::new();
         let mut pos = 0;
         while pos < value.len() {
@@ -976,6 +986,7 @@ pub fn compress_lmdb(
                 candidates.push(candidate);
             }
         }
+        FROM_BLOB_TIME.fetch_add(t_blob.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         if candidates.is_empty() {
             continue;
@@ -990,9 +1001,7 @@ pub fn compress_lmdb(
             repl.gates.reverse();
         }
 
-        // Step A: canonical wire space → dense remapped space (0..k-1).
-        // Extend final_order with identity mappings for any wire indices in repl
-        // that exceed final_order's length (repl from DB may use more wires).
+        let t_rewire = Instant::now();
         let repl_n = repl.max_wire() + 1;
         let mut order_data = final_order.data.clone();
         while order_data.len() < repl_n {
@@ -1001,9 +1010,6 @@ pub fn compress_lmdb(
         }
         repl.rewire(&Permutation { data: order_data }, std::cmp::max(repl_n, final_order.data.len()));
 
-        // Step B: dense remapped space → actual wire indices of the subcircuit.
-        // If repl needs more wires than used provides, fill with random wires
-        // from 0..n that aren't already in used_ext.
         let repl_n_b = repl.max_wire() + 1;
         let mut used_ext = used.clone();
         if used_ext.len() < repl_n_b {
@@ -1020,12 +1026,17 @@ pub fn compress_lmdb(
             }
         }
         let repl = CircuitSeq::unrewire_subcircuit(&repl, &used_ext);
+        REWIRE_TIME.fetch_add(t_rewire.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
+        let t_splice = Instant::now();
         if repl.gates.len() == end - start {
             compressed.gates[start..end].copy_from_slice(&repl.gates);
         } else {
             compressed.gates.splice(start..end, repl.gates);
         }
+        SPLICE_TIME.fetch_add(t_splice.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
     let mut j = 0;
@@ -1206,12 +1217,12 @@ pub fn compress_big_ancillas(
     }
 
     for _ in 0..trials {
-        // let t0 = Instant::now();
+        let t0 = Instant::now();
         let mut subcircuit_gates = vec![];
         for set_size in (3..=6).rev() {
             let (gates, _) = match mode {
                 0 => find_convex_subcircuit_max_wires(set_size, num_wires, num_wires, &circuit, &mut rng),
-                2 => find_convex_subcircuit_max_gates(set_size, num_wires/2, num_wires, &circuit, &mut rng),
+                2 => find_convex_subcircuit_max_gates(set_size, num_wires, num_wires, &circuit, &mut rng),
                 _ => simple_find_convex_subcircuit(set_size, 30, num_wires, &circuit, &mut rng),
             };
             if !gates.is_empty() {
@@ -1219,7 +1230,7 @@ pub fn compress_big_ancillas(
                 break;
             }
         }
-        // CONVEX_FIND_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        CONVEX_FIND_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         if subcircuit_gates.is_empty() {
             continue;
@@ -1228,9 +1239,9 @@ pub fn compress_big_ancillas(
         let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
         subcircuit_gates.sort();
 
-        // let t1 = Instant::now();
+        let t1 = Instant::now();
         let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
-        // CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let mut subcircuit = CircuitSeq { gates };
 
@@ -1240,7 +1251,6 @@ pub fn compress_big_ancillas(
             continue;
         }
 
-        // let t2 = Instant::now();
         let mut used_wires = subcircuit.used_wires();
         let n_wires = used_wires.len();
         let max = num_wires;
@@ -1256,26 +1266,16 @@ pub fn compress_big_ancillas(
                 count += 1;
             }
         }
-        // used_wires.sort();
-        // subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
-        // REWIRE_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        // let t3 = Instant::now();
         let sub_num_wires = used_wires.len();
 
-        // PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        // let t4 = Instant::now();
+        let t4 = Instant::now();
         let subcircuit_temp = compress_lmdb(&subcircuit, 20, sub_num_wires, env, shard_dbs);
-        // COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
 
-        // let t5 = Instant::now();
-        // subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
-        // UNREWIRE_TIME.fetch_add(t5.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        // let t6 = Instant::now();
+        let t6 = Instant::now();
         let repl_len = subcircuit.gates.len();
         let old_len = end - start + 1;
 
@@ -1294,10 +1294,10 @@ pub fn compress_big_ancillas(
         } else {
             panic!("Replacement grew, which is not allowed");
         }
-        // REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // let t7 = Instant::now();
+    let t7 = Instant::now();
     let mut i = 0;
     while i < circuit.gates.len().saturating_sub(1) {
         if circuit.gates[i] == circuit.gates[i + 1] {
@@ -1307,7 +1307,7 @@ pub fn compress_big_ancillas(
             i += 1;
         }
     }
-    // DEDUP_TIME.fetch_add(t7.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    DEDUP_TIME.fetch_add(t7.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     circuit
 }
