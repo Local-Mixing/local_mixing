@@ -1004,7 +1004,7 @@ pub fn compress_lmdb(
             let i = order_data.len();
             order_data.push(i);
         }
-        repl.rewire(&Permutation { data: order_data }, repl_n);
+        repl.rewire(&Permutation { data: order_data }, std::cmp::max(repl_n, final_order.data.len()));
 
         // Step B: dense remapped space → actual wire indices of the subcircuit.
         let repl = CircuitSeq::unrewire_subcircuit(&repl, &used);
