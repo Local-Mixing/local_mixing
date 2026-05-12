@@ -4471,16 +4471,6 @@ mod tests {
         println!("Selected subcircuit is not convex: {}", !convex_ok);
         println!("Convexity check passed");
 
-        // Optional: rewire/unrewire check and display
-        let gates_arr: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&i| c.gates[i]).collect();
-        let subcircuit = CircuitSeq { gates: gates_arr };
-        let sub = CircuitSeq::rewire_subcircuit(&c, &subcircuit_gates, &subcircuit.used_wires());
-        let undo = CircuitSeq::unrewire_subcircuit(&sub, &subcircuit.used_wires());
-        println!(
-            "Rewire and unrewire is ok: {}",
-            subcircuit.permutation(wire_set.len()) == undo.permutation(wire_set.len())
-        );
-
         let mut circ = c.clone();
         let (start, end) = contiguous_convex(&mut circ, &mut subcircuit_gates, 64).unwrap();
         println!("After gates {:?}", subcircuit_gates);
