@@ -563,7 +563,7 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
                             let new_w = curr_gate.iter().filter(|&w| !curr_wires.contains(w)).count();
-                            if !indirect && !repeat && curr_wires.len() + new_w <= max_wires {
+                            if !indirect && !repeat {
                                 candidates.push((curr_idx, new_w));
                             }
                         }
@@ -609,7 +609,7 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
                             let new_w = curr_gate.iter().filter(|&w| !curr_wires.contains(w)).count();
-                            if !indirect && !repeat && curr_wires.len() + new_w <= max_wires {
+                            if !indirect && !repeat {
                                 candidates.push((curr_idx, new_w));
                             }
                         }
@@ -626,8 +626,6 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
 
             let mut new_wires = curr_wires.clone();
             new_wires.extend(circuit.gates[next_candidate].iter().copied());
-            if new_wires.len() > max_wires { break; }
-
             let mut insert_pos = selected_gate_ctr;
             while insert_pos > 0 && selected_gate_idx[insert_pos - 1] > next_candidate {
                 selected_gate_idx[insert_pos] = selected_gate_idx[insert_pos - 1];
@@ -714,7 +712,7 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
                             let new_w = curr_gate.iter().filter(|&w| !curr_wires.contains(w)).count();
-                            if !indirect && !repeat && curr_wires.len() + new_w <= max_wires {
+                            if !indirect && !repeat {
                                 candidates.push((curr_idx, new_w));
                             }
                         }
@@ -760,7 +758,7 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
                             let new_w = curr_gate.iter().filter(|&w| !curr_wires.contains(w)).count();
-                            if !indirect && !repeat && curr_wires.len() + new_w <= max_wires {
+                            if !indirect && !repeat {
                                 candidates.push((curr_idx, new_w));
                             }
                         }
@@ -777,8 +775,6 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
 
             let mut new_wires = curr_wires.clone();
             new_wires.extend(circuit.gates[next_candidate].iter().copied());
-            if new_wires.len() > max_wires { break; }
-
             let mut insert_pos = selected_gate_ctr;
             while insert_pos > 0 && selected_gate_idx[insert_pos - 1] > next_candidate {
                 selected_gate_idx[insert_pos] = selected_gate_idx[insert_pos - 1];
@@ -884,10 +880,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                                 .filter(|&w| !curr_wires.contains(w))
                                 .count();
 
-                            if !indirect_path_connected
-                                && !repeat_wires
-                                && curr_wires.len() + num_new_wires <= max_wires
-                            {
+                            if !indirect_path_connected && !repeat_wires {
                                 candidates.push(curr_idx);
                                 break;
                             }
@@ -951,10 +944,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                                 .filter(|&w| !curr_wires.contains(w))
                                 .count();
 
-                            if !indirect_path_connected
-                                && !repeat_wires
-                                && curr_wires.len() + num_new_wires <= max_wires
-                            {
+                            if !indirect_path_connected && !repeat_wires {
                                 candidates.push(curr_idx);
                                 break;
                             }

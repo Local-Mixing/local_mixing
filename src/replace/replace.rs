@@ -2,11 +2,12 @@
 
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation}, random::random_data::{
-        contiguous_convex, 
-        get_canonical, 
-        shoot_random_gate, 
+        contiguous_convex,
+        find_convex_subcircuit_max_gates,
+        find_convex_subcircuit_max_wires,
+        get_canonical,
+        shoot_random_gate,
         simple_find_convex_subcircuit,
-
         targeted_find_convex_subcircuit_deep,
     }
 };
@@ -298,6 +299,7 @@ pub fn compress_loop(
     let mut acc = circuit.clone();
     let mut rng = rand::rng();
     let mut stable_count = 0;
+    let mut mode = 0usize;
 
     while stable_count < stable_max {
         let before = acc.gates.len();
@@ -309,6 +311,9 @@ pub fn compress_loop(
             ((before + 1499) / 1500).min(max_chunks)
         };
 
+        let current_mode = [0, 1, 2][mode];
+        mode = (mode + 1) % 3;
+
         let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
         let compressed_chunks: Vec<Vec<[u8; 3]>> = ranges
             .into_par_iter()
@@ -316,7 +321,7 @@ pub fn compress_loop(
                 let sub = CircuitSeq {
                     gates: acc.gates[start..end].to_vec(),
                 };
-                compress_big_ancillas(&sub, 100, n, env, shard_dbs).gates
+                compress_big_ancillas(&sub, 100, n, env, shard_dbs, current_mode).gates
             })
             .collect();
 
@@ -1195,6 +1200,7 @@ pub fn compress_big_ancillas(
     num_wires: usize,
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
+    mode: usize,
 ) -> CircuitSeq {
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -1214,7 +1220,11 @@ pub fn compress_big_ancillas(
         let mut subcircuit_gates = vec![];
         let random_max_wires = rng.random_range(3..=7);
         for set_size in (3..=6).rev() {
-            let (gates, _) = simple_find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
+            let (gates, _) = match mode {
+                0 => find_convex_subcircuit_max_wires(set_size, random_max_wires, num_wires, &circuit, &mut rng),
+                2 => find_convex_subcircuit_max_gates(set_size, random_max_wires, num_wires, &circuit, &mut rng),
+                _ => simple_find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng),
+            };
             if !gates.is_empty() {
                 subcircuit_gates = gates;
                 break;
