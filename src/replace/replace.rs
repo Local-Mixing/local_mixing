@@ -1258,7 +1258,7 @@ pub fn compress_big_ancillas(
             }
         }
         // used_wires.sort();
-        subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
+        // subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
         // REWIRE_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // let t3 = Instant::now();
@@ -1273,7 +1273,7 @@ pub fn compress_big_ancillas(
         subcircuit = subcircuit_temp;
 
         // let t5 = Instant::now();
-        subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
+        // subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
         // UNREWIRE_TIME.fetch_add(t5.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // let t6 = Instant::now();
