@@ -1007,7 +1007,24 @@ pub fn compress_lmdb(
         repl.rewire(&Permutation { data: order_data }, std::cmp::max(repl_n, final_order.data.len()));
 
         // Step B: dense remapped space → actual wire indices of the subcircuit.
-        let repl = CircuitSeq::unrewire_subcircuit(&repl, &used);
+        // If repl needs more wires than used provides, fill with random wires
+        // from 0..n that aren't already in used_ext.
+        let repl_n_b = repl.max_wire() + 1;
+        let mut used_ext = used.clone();
+        if used_ext.len() < repl_n_b {
+            let mut available: Vec<u8> = (0..n as u8)
+                .filter(|w| !used_ext.contains(w))
+                .collect();
+            rand::seq::SliceRandom::shuffle(available.as_mut_slice(), &mut rng);
+            let mut avail = available.into_iter();
+            while used_ext.len() < repl_n_b {
+                match avail.next() {
+                    Some(w) => used_ext.push(w),
+                    None => break,
+                }
+            }
+        }
+        let repl = CircuitSeq::unrewire_subcircuit(&repl, &used_ext);
 
         if repl.gates.len() == end - start {
             compressed.gates[start..end].copy_from_slice(&repl.gates);
