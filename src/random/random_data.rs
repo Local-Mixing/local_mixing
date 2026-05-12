@@ -260,6 +260,10 @@ pub fn find_random_subcircuit<R: Rng>(
     }
 }
 
+// More complex method to find a convex subcircuit of up to max_wires. Starts with a random gate and then expands left and right, adding gates that collide with the current set until we can’t add more without exceeding max_wires. Then checks if the resulting set is convex; if not, retries.
+// Use max_wires version or max_gates version for the maximal versions
+// Use simple version for average case
+
 // Given a circuit of num_wires, we try to find a convex subcircuit of up to max_wires. We can start in any of the min_candidates
 pub fn find_convex_subcircuit<R: RngCore>(
     _set_size: usize,
@@ -4197,7 +4201,7 @@ pub fn build_from_2rocks(
                         let mut combined = CircuitSeq { gates };
                         combined.canonicalize();
                         if combined.adjacent_id() { return; }
-                        let (canon_polys, canon_circuit, _, _) = combined.canonicalize_polys(n);
+                        let (canon_polys, canon_circuit, _, _, _) = combined.canonicalize_polys(n);
                         let key = xxh3_128(&polys_repr_blob(&canon_polys)).to_le_bytes().to_vec();
                         let value = encode_circuit(&canon_circuit.repr_blob());
                         local.push((key, value));
@@ -7433,7 +7437,7 @@ mod tests {
         let c = CircuitSeq { gates: vec![[8,40,28]] };
         let m = c.gates.len();
 
-        let (canon_polys, rewired, reversed, final_order) = c.canonicalize_polys(m * 3);
+        let (canon_polys, rewired, reversed, final_order, _) = c.canonicalize_polys(m * 3);
 
         println!("=== Canonical Polynomials ===");
         for (i, poly) in canon_polys.iter().enumerate() {
@@ -7553,7 +7557,7 @@ mod tests {
                     let mut circuit = CircuitSeq { gates: vec![g1, g2, g3, g4] };
                     circuit.canonicalize();
                     if circuit.adjacent_id() { continue; }
-                    let (canon_polys, _, _, _) = circuit.canonicalize_polys(n);
+                    let (canon_polys, _, _, _, _) = circuit.canonicalize_polys(n);
                     let hash: u128 = xxh3_128(&polys_repr_blob(&canon_polys));
                     local_seen.insert(hash);
                 }
@@ -7639,7 +7643,7 @@ mod tests {
                 let value5 = db5.get(key).unwrap().unwrap();
                 let circuits5 = decode_circuits(&value5);
 
-                let (canon_polys, _, _, _) = circuits4[0].clone().canonicalize_polys(n);
+                let (canon_polys, _, _, _, _) = circuits4[0].clone().canonicalize_polys(n);
                 let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
 
                 out.push_str(&format!("\n[{}] hash={} | m4 circuits={} | m5 circuits={}\n",
@@ -7734,7 +7738,7 @@ mod tests {
             for (rank, (key, count)) in ranked.iter().enumerate() {
                 let value = db.get(key).unwrap().unwrap();
                 let circuits = decode_circuits(&value);
-                let (canon_polys, _, _, _) = circuits[0].clone().canonicalize_polys(n);
+                let (canon_polys, _, _, _, _) = circuits[0].clone().canonicalize_polys(n);
                 let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
 
                 out.push_str(&format!("\n[{}] hash={} | circuits={}\n", rank + 1, hash_str, count));
@@ -7805,7 +7809,7 @@ mod tests {
             let circuits5 = decode_circuits(&value5);
 
             // Use the m2 circuit to get the canonical poly (n = 3*2 = 6)
-            let (canon_polys, _, _, _) = circuits2[0].clone().canonicalize_polys(3 * 2);
+            let (canon_polys, _, _, _, _) = circuits2[0].clone().canonicalize_polys(3 * 2);
             let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
 
             out.push_str(&format!(
@@ -7852,7 +7856,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mut sink = 0u128;
         for c in &circuits {
-            let (polys, _, _, _) = c.canonicalize_polys(n);
+            let (polys, _, _, _, _) = c.canonicalize_polys(n);
             sink ^= xxh3_128(&polys_repr_blob(&polys));
         }
         let elapsed = start.elapsed().as_secs_f64();
@@ -7899,7 +7903,7 @@ mod tests {
         // Parallel throughput
         let start = std::time::Instant::now();
         let sink: u128 = circuits.par_iter().map(|c| {
-            let (polys, _, _, _) = c.canonicalize_polys(n);
+            let (polys, _, _, _, _) = c.canonicalize_polys(n);
             xxh3_128(&polys_repr_blob(&polys))
         }).reduce(|| 0u128, |a, b| a ^ b);
         let elapsed = start.elapsed().as_secs_f64();
@@ -7946,7 +7950,7 @@ mod tests {
             let circuits = decode_circuits(&value);
             let first = &circuits[0];
             let n = 3 * first.gates.len().max(1);
-            let (canon_polys, _, _, _) = first.clone().canonicalize_polys(n);
+            let (canon_polys, _, _, _, _) = first.clone().canonicalize_polys(n);
             let hash_str: String = key.iter().map(|b| format!("{:02x}", b)).collect();
 
             out.push_str(&format!(

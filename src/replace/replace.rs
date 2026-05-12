@@ -949,10 +949,7 @@ pub fn compress_lmdb(
             continue;
         }
 
-        let sub_used = sub.used_wires();
-        let k = sub_used.len();
-
-        let (canon_polys, _, is_reversed, final_order) = sub.canonicalize_polys(n);
+        let (canon_polys, _, is_reversed, final_order, used) = sub.canonicalize_polys(n);
 
         if canon_polys.is_empty() {
             continue;
@@ -998,12 +995,12 @@ pub fn compress_lmdb(
             repl.gates.reverse();
         }
 
-        let fo_len = final_order.data.len().min(k);
-        let mut orig_wires: Vec<u8> = vec![0u8; fo_len];
-        for i in 0..fo_len {
-            orig_wires[i] = sub_used[final_order.data[i] as usize];
-        }
-        let repl = CircuitSeq::unrewire_subcircuit(&repl, &orig_wires);
+        // Step A: canonical wire space → dense remapped space (0..k-1).
+        // final_order.data[canonical_pos] = wire in the dense remapped space.
+        repl.rewire(&final_order, repl.max_wire() + 1);
+
+        // Step B: dense remapped space → actual wire indices of the subcircuit.
+        let repl = CircuitSeq::unrewire_subcircuit(&repl, &used);
 
         if repl.gates.len() == end - start {
             compressed.gates[start..end].copy_from_slice(&repl.gates);

@@ -861,7 +861,7 @@ impl CircuitSeq {
 
     // Returns (canonical_polys, canonical_circuit, reversed)
     // where reversed=true means the reversed circuit produced the canonical form.
-    pub fn canonicalize_polys(&self, n: usize) -> (Vec<Polynomial>, CircuitSeq, bool, Permutation) {
+    pub fn canonicalize_polys(&self, n: usize) -> (Vec<Polynomial>, CircuitSeq, bool, Permutation, Vec<u8>) {
         fn poly_vec_key(polys: &Vec<Polynomial>) -> Vec<Vec<u64>> {
             polys.iter().map(|p| {
                 let mut v: Vec<u64> = p.iter().copied().collect();
@@ -869,7 +869,8 @@ impl CircuitSeq {
                 v
             }).collect()
         }
-        // Remap to minimal wires: e.g. [1,2,3] -> [0,1,2]
+        // Remap to minimal wires: e.g. [3,7,11] -> [0,1,2].
+        // `used` is returned so callers can unrewire canonical circuits back to original wires.
         let used = self.used_wires();
         let wire_map: HashMap<u8, u8> = used.iter().enumerate()
             .map(|(i, &w)| (w, i as u8))
@@ -894,16 +895,17 @@ impl CircuitSeq {
         c1.canonicalize();
         c2.rewire(&canon2.1.invert(), n2);
         c2.canonicalize();
-        // final_order.data[i] = which pre-polys4 wire ended up at canonical position i.
-        // Combined with `used`, this lets callers compute the full orig→canonical wire map.
+        // final_order.data[canonical_pos] = wire in the dense remapped space (0..k-1).
+        // To unrewire a canonical circuit back to original wires, apply final_order first
+        // (canonical → dense), then apply `used` (dense → original).
         if poly_vec_key(&canon1.0) < poly_vec_key(&canon2.0) {
-            (canon1.0, c1, false, canon1.1)
+            (canon1.0, c1, false, canon1.1, used)
         } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0) {
-            (canon2.0, c2, true, canon2.1)
+            (canon2.0, c2, true, canon2.1, used)
         } else if c1.gates <= c2.gates {
-            (canon1.0, c1, false, canon1.1)
+            (canon1.0, c1, false, canon1.1, used)
         } else {
-            (canon2.0, c2, true, canon2.1)
+            (canon2.0, c2, true, canon2.1, used)
         }
     }
 
