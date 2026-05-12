@@ -634,6 +634,7 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
             selected_gate_idx[insert_pos] = next_candidate;
             selected_gate_ctr += 1;
             curr_wires = new_wires;
+            if curr_wires.len() >= max_wires { break; }
         }
 
         if selected_gate_ctr < 3 { continue; }
@@ -783,6 +784,7 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
             selected_gate_idx[insert_pos] = next_candidate;
             selected_gate_ctr += 1;
             curr_wires = new_wires;
+            if curr_wires.len() >= max_wires { break; }
         }
 
         if selected_gate_ctr < 3 { continue; }

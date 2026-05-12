@@ -1221,8 +1221,8 @@ pub fn compress_big_ancillas(
         let random_max_wires = rng.random_range(3..=7);
         for set_size in (3..=6).rev() {
             let (gates, _) = match mode {
-                0 => find_convex_subcircuit_max_wires(set_size, random_max_wires, num_wires, &circuit, &mut rng),
-                2 => find_convex_subcircuit_max_gates(set_size, random_max_wires, num_wires, &circuit, &mut rng),
+                0 => find_convex_subcircuit_max_wires(set_size, num_wires, num_wires, &circuit, &mut rng),
+                2 => find_convex_subcircuit_max_gates(set_size, num_wires / 2, num_wires, &circuit, &mut rng),
                 _ => simple_find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng),
             };
             if !gates.is_empty() {
