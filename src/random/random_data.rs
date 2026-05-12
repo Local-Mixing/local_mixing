@@ -824,6 +824,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
         curr_wires.extend(circuit.gates[selected_gate_idx[0]].iter().copied());
         
         while selected_gate_ctr < len {
+            if selected_gate_ctr >= 30 { break; }
             let mut candidates: Vec<usize> = vec![];
 
             // Left-most gate, go right
@@ -976,6 +977,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
 
             let mut new_wires = curr_wires.clone();
             new_wires.extend(circuit.gates[next_candidate].iter().copied());
+            if new_wires.len() > 21 { break; }
 
             // Insert next gate in sorted order
             let mut insert_pos = selected_gate_ctr;
