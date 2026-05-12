@@ -4421,62 +4421,50 @@ mod tests {
 
     #[test]
     fn test_find_convex_subcircuit_min3_16wires() {
-        // Dummy 16-wire circuit with 30 gates
         let c = random_circuit(64, 1000);
         let mut rng = rand::rng();
-        let max_wires = 7;
+        let num_wires = 64;
 
-        let mut subcircuit_gates = vec![];
-        let mut attempts = 0;
+        let algos: &[(&str, fn(usize, usize, usize, &CircuitSeq, &mut rand::prelude::ThreadRng) -> (Vec<usize>, usize))] = &[
+            ("simple",     simple_find_convex_subcircuit),
+            ("max_wires",  find_convex_subcircuit_max_wires),
+            ("max_gates",  find_convex_subcircuit_max_gates),
+        ];
 
-        // Keep trying until a convex subcircuit with >= 3 gates is found
-        while subcircuit_gates.len() < 5 {
-            for set_size in (3..=16).rev() {
-                let (gates, tries) = simple_find_convex_subcircuit(set_size, max_wires, 64, &c, &mut rng);
-                attempts += tries;
+        for &(name, algo) in algos {
+            let mut subcircuit_gates = vec![];
+            let mut attempts = 0;
 
-                if !gates.is_empty() && gates.len() >= 3 {
-                    subcircuit_gates = gates;
-                    println!(
-                        "Found convex subcircuit with {} gates after {} total attempts",
-                        subcircuit_gates.len(),
-                        attempts
-                    );
-                    break;
+            while subcircuit_gates.len() < 5 {
+                for set_size in (3..=16).rev() {
+                    let (gates, tries) = algo(set_size, 7, num_wires, &c, &mut rng);
+                    attempts += tries;
+                    if gates.len() >= 3 {
+                        subcircuit_gates = gates;
+                        break;
+                    }
+                }
+                if subcircuit_gates.len() < 5 {
+                    println!("[{}] no subcircuit ≥ 5 gates, retrying...", name);
                 }
             }
 
-            if subcircuit_gates.len() < 4 {
-                println!("No subcircuit ≥ 4 gates found in this round, retrying.................................................");
+            let mut wire_set = std::collections::HashSet::new();
+            for &idx in &subcircuit_gates {
+                for &w in &c.gates[idx] { wire_set.insert(w); }
             }
+
+            let convex_ok = is_convex(num_wires, &c, &subcircuit_gates);
+            println!("[{}] gates={} wires={} attempts={} convex={}",
+                name, subcircuit_gates.len(), wire_set.len(), attempts, convex_ok);
+
+            let mut circ = c.clone();
+            let (start, end) = contiguous_convex(&mut circ, &mut subcircuit_gates, num_wires).unwrap();
+            println!("[{}] start={} end={} span={}", name, start, end, end - start + 1);
+
+            assert!(subcircuit_gates.len() >= 3);
+            assert!(convex_ok);
         }
-
-        println!("Selected gate indices: {:?}", subcircuit_gates);
-        println!("Number of search attempts: {}", attempts);
-
-        // Basic assertions
-        assert!(subcircuit_gates.len() >= 3, "Subcircuit must have at least 3 gates");
-        assert!(subcircuit_gates.len() <= c.gates.len(), "Subcircuit cannot exceed total gates");
-
-        // Check that number of distinct wires is <= max_wires
-        let mut wire_set = std::collections::HashSet::new();
-        for &idx in &subcircuit_gates {
-            for &w in &c.gates[idx] {
-                wire_set.insert(w);
-            }
-        }
-
-        println!("Wires used: {:?}", wire_set);
-
-        // Check convexity
-        let convex_ok = is_convex(64, &c, &subcircuit_gates);
-        println!("Selected subcircuit is not convex: {}", !convex_ok);
-        println!("Convexity check passed");
-
-        let mut circ = c.clone();
-        let (start, end) = contiguous_convex(&mut circ, &mut subcircuit_gates, 64).unwrap();
-        println!("After gates {:?}", subcircuit_gates);
-        println!("start and end designated: {:?}", &circ.gates[start..=end]);
     }
 
     use crate::replace::pairs::{gate_pair_taxonomy};
