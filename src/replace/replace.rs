@@ -1254,7 +1254,7 @@ pub fn compress_big_ancillas(
         // let t2 = Instant::now();
         let mut used_wires = subcircuit.used_wires();
         let n_wires = used_wires.len();
-        let max = 7;
+        let max = num_wires;
         let new_wires = rng.random_range(n_wires..=max);
         if new_wires > n_wires {
             let mut count = n_wires;
