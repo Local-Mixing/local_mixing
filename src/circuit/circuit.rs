@@ -909,6 +909,27 @@ impl CircuitSeq {
         }
     }
 
+    /// Compute canonical polynomials for one direction only (forward or reversed).
+    /// Returns (canonical_polys, final_order, used_wires).
+    /// Used by compress_lmdb to try forward first, then reverse on miss.
+    pub fn canonicalize_polys_single(&self, reversed: bool) -> (Vec<Polynomial>, Permutation, Vec<u8>) {
+        let used = self.used_wires();
+        let wire_map: HashMap<u8, u8> = used.iter().enumerate()
+            .map(|(i, &w)| (w, i as u8))
+            .collect();
+        let mut c = CircuitSeq {
+            gates: self.gates.iter().map(|&[t, c1, c2]| [
+                wire_map[&t], wire_map[&c1], wire_map[&c2],
+            ]).collect(),
+        };
+        if reversed { c.gates.reverse(); }
+        c.canonicalize();
+        let n = c.max_wire() as usize + 1;
+        let polys = c.to_polynomial(n, 0, c.gates.len());
+        let canon = canonicalize_polys_4(polys);
+        (canon.0, canon.1, used)
+    }
+
     pub fn canonicalize_polys_1(&self, _n: usize) -> (Vec<Polynomial>, CircuitSeq) {
         fn poly_vec_key(polys: &Vec<Polynomial>) -> Vec<Vec<u64>> {
             polys.iter().map(|p| {

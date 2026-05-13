@@ -1781,6 +1781,7 @@ Command::new("rocksdb_2")
             let _ = std::fs::create_dir_all(lmdb);
             let env = Environment::new()
                 .set_max_dbs(500)
+                .set_max_readers(10000)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");

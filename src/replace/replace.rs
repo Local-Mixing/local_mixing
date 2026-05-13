@@ -601,7 +601,7 @@ pub fn compress_big(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, sub_num_wires, env, shard_dbs);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -724,7 +724,7 @@ pub fn sequential_compress_big(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, sub_num_wires, env, shard_dbs);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -863,7 +863,7 @@ pub fn sequential_compress_big_ancillas(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, sub_num_wires, env, shard_dbs);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -950,15 +950,15 @@ pub fn compress_lmdb(
         }
 
         let t_canon = Instant::now();
-        let (canon_polys, _, is_reversed, final_order, used) = sub.canonicalize_polys(n);
+        let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
         CANONICALIZE_TIME.fetch_add(t_canon.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        if canon_polys.is_empty() {
+        if fwd_polys.is_empty() {
             continue;
         }
 
-        let key = xxh3_128(&polys_repr_blob(&canon_polys)).to_le_bytes().to_vec();
-        let shard = key[0] as usize;
+        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes().to_vec();
+        let fwd_shard = fwd_key[0] as usize;
 
         let t_txn = Instant::now();
         let txn = match env.begin_ro_txn() {
@@ -968,12 +968,32 @@ pub fn compress_lmdb(
         TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t_lookup = Instant::now();
-        let value: Vec<u8> = match txn.get(shard_dbs[shard], &key) {
-            Ok(v) => v.to_vec(),
-            Err(lmdb::Error::NotFound) => continue,
-            Err(_) => continue,
-        };
+        let fwd_result = txn.get(shard_dbs[fwd_shard], &fwd_key).map(|v: &[u8]| v.to_vec());
         LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let (value, final_order, is_reversed) = if let Ok(v) = fwd_result {
+            (v, fwd_order, false)
+        } else {
+            let t_canon2 = Instant::now();
+            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
+            CANONICALIZE_TIME.fetch_add(t_canon2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            if rev_polys.is_empty() {
+                continue;
+            }
+
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes().to_vec();
+            let rev_shard = rev_key[0] as usize;
+
+            let t_lookup2 = Instant::now();
+            let rev_result = txn.get(shard_dbs[rev_shard], &rev_key).map(|v: &[u8]| v.to_vec());
+            LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            match rev_result {
+                Ok(v) => (v, rev_order, true),
+                Err(_) => continue,
+            }
+        };
 
         let t_blob = Instant::now();
         let mut candidates: Vec<CircuitSeq> = Vec::new();
@@ -1224,8 +1244,8 @@ pub fn compress_big_ancillas(
         let mut subcircuit_gates = vec![];
         for set_size in (3..=6).rev() {
             let (gates, _) = match mode {
-                0 => find_convex_subcircuit_max_wires(set_size, num_wires, num_wires, &circuit, &mut rng),
-                2 => find_convex_subcircuit_max_gates(set_size, num_wires, num_wires, &circuit, &mut rng),
+                0 => find_convex_subcircuit_max_wires(set_size, num_wires / 2, num_wires, &circuit, &mut rng),
+                2 => find_convex_subcircuit_max_gates(set_size, 21, num_wires, &circuit, &mut rng),
                 _ => simple_find_convex_subcircuit(set_size, 30, num_wires, &circuit, &mut rng),
             };
             if !gates.is_empty() {
@@ -1279,7 +1299,7 @@ pub fn compress_big_ancillas(
         let sub_num_wires = used_wires.len();
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, sub_num_wires, env, shard_dbs);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
