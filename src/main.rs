@@ -1785,6 +1785,12 @@ Command::new("rocksdb_2")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
+            // Print timers on Ctrl+C
+            ctrlc::set_handler(|| {
+                print_compress_timers();
+                std::process::exit(0);
+            }).expect("Failed to set Ctrl+C handler");
+
             // Call compression logic
             println!("Starting compression");
             let shard_dbs = open_shard_dbs(&env);

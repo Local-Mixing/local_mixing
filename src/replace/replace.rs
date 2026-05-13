@@ -103,6 +103,9 @@ pub static PERMUTATION_TIME: AtomicU64 = AtomicU64::new(0);
 pub static DUCKDB_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CANON_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONVEX_FIND_TIME: AtomicU64 = AtomicU64::new(0);
+pub static CONVEX_MAX_WIRES_TIME: AtomicU64 = AtomicU64::new(0);
+pub static CONVEX_MAX_GATES_TIME: AtomicU64 = AtomicU64::new(0);
+pub static CONVEX_SIMPLE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONTIGUOUS_TIME: AtomicU64 = AtomicU64::new(0);
 pub static REWIRE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static COMPRESS_TIME: AtomicU64 = AtomicU64::new(0);
@@ -1230,7 +1233,13 @@ pub fn compress_big_ancillas(
                 break;
             }
         }
-        CONVEX_FIND_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let elapsed = t0.elapsed().as_nanos() as u64;
+        CONVEX_FIND_TIME.fetch_add(elapsed, Ordering::Relaxed);
+        match mode {
+            0 => CONVEX_MAX_WIRES_TIME.fetch_add(elapsed, Ordering::Relaxed),
+            2 => CONVEX_MAX_GATES_TIME.fetch_add(elapsed, Ordering::Relaxed),
+            _ => CONVEX_SIMPLE_TIME.fetch_add(elapsed, Ordering::Relaxed),
+        };
 
         if subcircuit_gates.is_empty() {
             continue;
@@ -1355,6 +1364,9 @@ pub fn print_compress_timers() {
     let rewire = REWIRE_TIME.load(Ordering::Relaxed);
     let unrewire = UNREWIRE_TIME.load(Ordering::Relaxed);
     let convex_find = CONVEX_FIND_TIME.load(Ordering::Relaxed);
+    let convex_max_wires = CONVEX_MAX_WIRES_TIME.load(Ordering::Relaxed);
+    let convex_max_gates = CONVEX_MAX_GATES_TIME.load(Ordering::Relaxed);
+    let convex_simple = CONVEX_SIMPLE_TIME.load(Ordering::Relaxed);
     let contiguous = CONTIGUOUS_TIME.load(Ordering::Relaxed);
     let replace = REPLACE_TIME.load(Ordering::Relaxed);
     let dedup = DEDUP_TIME.load(Ordering::Relaxed);
@@ -1380,6 +1392,9 @@ pub fn print_compress_timers() {
     println!("Rewire subcircuit time: {:.2} min", rewire as f64 / 60_000_000_000.0);
     println!("Unrewire subcircuit time: {:.2} min", unrewire as f64 / 60_000_000_000.0);
     println!("Convex subcircuit find time: {:.2} min", convex_find as f64 / 60_000_000_000.0);
+    println!("  max_wires: {:.2} min", convex_max_wires as f64 / 60_000_000_000.0);
+    println!("  max_gates: {:.2} min", convex_max_gates as f64 / 60_000_000_000.0);
+    println!("  simple:    {:.2} min", convex_simple as f64 / 60_000_000_000.0);
     println!("Contiguous convex subcircuit time: {:.2} min", contiguous as f64 / 60_000_000_000.0);
     println!("Replacement time: {:.2} min", replace as f64 / 60_000_000_000.0);
     println!("Deduplication time: {:.2} min", dedup as f64 / 60_000_000_000.0);

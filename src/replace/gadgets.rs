@@ -261,6 +261,38 @@ mod tests {
     }
 
     #[test]
+    fn verify_8gate_equals_12gate() {
+        // Wire layout: 0=x_a, 1=r1, 2=r2, 3=x_b, 4=r_b, 5=x_c, 6=r_c
+        //
+        // 6-gate g57 (issue notation 345;035;043;345;052;024, remapped c=2->3,d=3->4,e=4->5,f=5->6):
+        //   their [3,4,5] -> our [4,5,6]
+        //   their [0,3,5] -> our [0,4,6]
+        //   their [0,4,3] -> our [0,5,4]
+        //   their [3,4,5] -> our [4,5,6]
+        //   their [0,5,2] -> our [0,6,3]
+        //   their [0,2,4] -> our [0,3,5]
+        // 2-gate swap: [0,1,2],[0,2,1]
+        let gadget_8 = CircuitSeq { gates: vec![
+            [4,5,6],[0,4,6],[0,5,4],[4,5,6],[0,6,3],[0,3,5],
+            [0,1,2],[0,2,1],
+        ]};
+        let gadget_12 = CircuitSeq { gates: vec![
+            [0,3,5],[0,3,6],[0,4,5],[0,4,6],
+            [1,0,2],[0,2,1],[2,0,1],[1,2,0],[0,2,1],[2,1,0],
+            [0,3,4],[0,4,3],
+        ]};
+
+        for s in 0usize..128 {
+            let out8  = gadget_8.evaluate(s);
+            let out12 = gadget_12.evaluate(s);
+            assert_eq!(out8, out12,
+                "mismatch at input {:#09b}: 8-gate={:#09b} 12-gate={:#09b}",
+                s, out8, out12);
+        }
+        println!("8-gate == 12-gate for all 128 inputs");
+    }
+
+    #[test]
     fn gadgetize_gate_count() {
         let n = 4;
         let main = CircuitSeq { gates: vec![[0,1,2],[1,0,3],[2,3,0],[3,1,2]] };

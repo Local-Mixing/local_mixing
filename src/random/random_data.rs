@@ -507,7 +507,7 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
     let num_gates = circuit.gates.len();
     let mut search_attempts = 0;
     let max_attempts = 3;
-    let window = 200;
+    let window = 100;
     loop {
         search_attempts += 1;
         if search_attempts > max_attempts {
@@ -657,7 +657,7 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
     let num_gates = circuit.gates.len();
     let mut search_attempts = 0;
     let max_attempts = 3;
-    let window = 200;
+    let window = 100;
     loop {
         search_attempts += 1;
         if search_attempts > max_attempts {
