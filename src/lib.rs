@@ -410,3 +410,13 @@ fn local_mixing(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(heatmap_mini_slice, module)?)?;
     Ok(())
 }
+
+pub fn open_shard_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
+    (0u16..=255)
+        .map(|s| {
+            let name = format!("{:02x}", s);
+            env.open_db(Some(name.as_str()))
+                .unwrap_or_else(|e| panic!("Failed to open shard db {:02x}: {:?}", s, e))
+        })
+        .collect()
+}

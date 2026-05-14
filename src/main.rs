@@ -47,15 +47,7 @@ use local_mixing::random::random_data::rocks_to_fasterkv;
 use local_mixing::random::random_data::rocks_to_lmdb;
 use local_mixing::random::random_data::verify_fasterkv;
 
-fn open_shard_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
-    (0u16..=255)
-        .map(|s| {
-            let name = format!("{:02x}", s);
-            env.open_db(Some(name.as_str()))
-                .unwrap_or_else(|e| panic!("Failed to open shard db {:02x}: {:?}", s, e))
-        })
-        .collect()
-}
+
 
 fn make_rocksdb_readonly(path: &str, cache_bytes: usize) -> DB {
     let cache = Cache::new_lru_cache(cache_bytes);
