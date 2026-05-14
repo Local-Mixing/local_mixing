@@ -151,10 +151,30 @@ pub fn degree_chain_circuit(n: usize, steps: usize) -> CircuitSeq {
 /// Aux gates are distributed evenly between gadgets so each freed r1 wire
 /// accumulates ~n chain steps (degree n) before cycling back as r2.
 /// Returns a circuit on 3n wires.
+// CNOT(a ← b) with helper h in the rule-57 gate basis.
+// Works for any initial value of h; h is always restored to its original value.
+// Derived from c1not2.txt: circuit 120;012;210;102;201;021 implements CNOT(wire2←wire1)
+// with wire0 as helper. Mapping: a=wire2, b=wire1, h=wire0.
+fn cnot_gates(a: u8, b: u8, h: u8) -> [[u8; 3]; 6] {
+    [[b,a,h], [h,b,a], [a,b,h], [b,h,a], [a,h,b], [h,a,b]]
+}
+
 pub fn gadgetize(main: &CircuitSeq, aux: &CircuitSeq, n: usize) -> CircuitSeq {
     let mut sched = GadgetScheduler::new(n);
-    let mut out = Vec::with_capacity(main.gates.len() * 12 + aux.gates.len());
+    let mut out = Vec::with_capacity(main.gates.len() * 12 + aux.gates.len() + 12 * n);
 
+    // XOR at beginning: main_i ^= paired_aux_i
+    // paired_aux_i = 0 at start, so this is a no-op functionally,
+    // but symmetric with the end XOR that unmasks the real values.
+    let h_begin = sched.next_r2() as u8;
+    for i in 0..n {
+        let aux_i = sched.current_aux(i) as u8;
+        for &g in &cnot_gates(i as u8, aux_i, h_begin) {
+            out.push(g);
+        }
+    }
+
+    // Main gadgets interleaved with aux chain
     let m = main.gates.len();
     let a = aux.gates.len();
     let mut aux_cursor = 0usize;
@@ -171,6 +191,16 @@ pub fn gadgetize(main: &CircuitSeq, aux: &CircuitSeq, n: usize) -> CircuitSeq {
     while aux_cursor < a {
         out.push(sched.remap_chain_gate(aux.gates[aux_cursor]));
         aux_cursor += 1;
+    }
+
+    // XOR at end: main_i ^= current_paired_aux_i
+    // Recovers real output values onto the main wires (0..n-1).
+    let h_end = sched.next_r2() as u8;
+    for i in 0..n {
+        let aux_i = sched.current_aux(i) as u8;
+        for &g in &cnot_gates(i as u8, aux_i, h_end) {
+            out.push(g);
+        }
     }
 
     CircuitSeq { gates: out }
