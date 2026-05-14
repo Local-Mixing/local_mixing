@@ -2,6 +2,65 @@ use crate::circuit::circuit::CircuitSeq;
 use crate::replace::pairs::{gate_pair_taxonomy, GatePair};
 use lmdb::{Cursor, Transaction, WriteFlags};
 
+#[cfg(test)]
+mod tests {
+    use super::decode_circuits;
+    use lmdb::{Cursor, Environment, Transaction};
+    use std::path::Path;
+    use std::time::Instant;
+
+    #[test]
+    fn shard_gate_count_histogram() {
+        let env = Environment::new()
+            .set_max_dbs(300)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("Failed to open ./db lmdb environment");
+
+        let mut counts = [0u64; 7]; // index = gate count; 0 unused
+        let print_interval_secs = 10.0f64;
+        let mut last_print = Instant::now();
+
+        for shard in 0u16..256 {
+            let name = format!("{:02x}", shard);
+            let db = match env.open_db(Some(name.as_str())) {
+                Ok(db) => db,
+                Err(_) => continue,
+            };
+            let txn = env.begin_ro_txn().expect("ro txn");
+            let mut cursor = txn.open_ro_cursor(db).expect("cursor");
+            for (_, value) in cursor.iter() {
+                for circuit in decode_circuits(value) {
+                    let g = circuit.gates.len().min(6);
+                    if g >= 1 {
+                        counts[g] += 1;
+                    }
+                }
+            }
+            drop(cursor);
+            drop(txn);
+
+            if last_print.elapsed().as_secs_f64() >= print_interval_secs {
+                print_histogram(&counts, shard + 1);
+                last_print = Instant::now();
+            }
+        }
+
+        print_histogram(&counts, 256);
+    }
+
+    fn print_histogram(counts: &[u64; 7], shards_done: u16) {
+        println!("\n--- shard {}/256 ---", shards_done);
+        let total: u64 = counts[1..].iter().sum();
+        for g in 1..=6 {
+            println!("  {:1} gate(s): {:>12}  ({:.1}%)",
+                g, counts[g],
+                if total > 0 { counts[g] as f64 / total as f64 * 100.0 } else { 0.0 });
+        }
+        println!("  total:    {:>12}", total);
+    }
+}
+
 fn decode_circuits(value: &[u8]) -> Vec<CircuitSeq> {
     let mut circuits = Vec::new();
     let mut pos = 0;

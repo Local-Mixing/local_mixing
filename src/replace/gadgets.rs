@@ -109,10 +109,13 @@ pub fn emit_gadget(sched: &mut GadgetScheduler, gate: [u8; 3], out: &mut Vec<[u8
     let r_b = sched.current_aux(b);
     let r_c = sched.current_aux(c);
 
+    // GADGET computes 1^s_a^(s_{slot3}&!s_{slot5}).
+    // Original gate [a,b,c] needs s_a^(s_b|!s_c) = 1^s_a^s_c^(s_b&s_c).
+    // Putting c in slot 3 and b in slot 5 gives 1^s_a^(s_c&!s_b) = 1^s_a^s_c^(s_b&s_c). ✓
     let map: [u8; 7] = [
         a as u8, r1 as u8, r2 as u8,
-        b as u8, r_b as u8,
         c as u8, r_c as u8,
+        b as u8, r_b as u8,
     ];
     for &[ga, gb, gc] in &GADGET {
         out.push([map[ga as usize], map[gb as usize], map[gc as usize]]);
@@ -328,7 +331,28 @@ mod tests {
         let main = CircuitSeq { gates: vec![[0,1,2],[1,0,3],[2,3,0],[3,1,2]] };
         let aux  = degree_chain_circuit(n, 40);
         let result = gadgetize(&main, &aux, n);
-        assert_eq!(result.gates.len(), 4 * 12 + 40);
+        // 6n begin-XOR gates + 4*12 gadget gates + 40 aux gates + 6n end-XOR gates
+        assert_eq!(result.gates.len(), 6 * n + 4 * 12 + 40 + 6 * n);
+    }
+
+    #[test]
+    fn gadgetize_preserves_functionality_on_main_wires() {
+        let n = 3;
+        // A small circuit that exercises all three wires
+        let main = CircuitSeq { gates: vec![[0,1,2],[1,2,0],[2,0,1],[0,2,1]] };
+        let aux  = CircuitSeq { gates: vec![] };
+        let gadgetized = gadgetize(&main, &aux, n);
+
+        let mask = (1usize << n) - 1;
+
+        for input in 0usize..(1 << n) {
+            // aux wires (n..3n-1) start at 0, so just pass `input` directly
+            let expected = main.evaluate(input) & mask;
+            let actual   = gadgetized.evaluate(input) & mask;
+            assert_eq!(actual, expected,
+                "input {:#05b}: expected main wires {:#05b}, got {:#05b}",
+                input, expected, actual);
+        }
     }
 
     #[test]
