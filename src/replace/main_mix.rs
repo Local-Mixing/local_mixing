@@ -1212,11 +1212,8 @@ pub fn main_shuffle_shoot_shuffle(
                 j += 1;
             }
         }
-        let n = if leave {
-            n / 2
-        } else {
-            n
-        };
+        let n = if leave { n / 2 } else { n };
+        let n = if do_gadgetize { n / 3 } else { n };
         if c.probably_equal(&circuit, n, 100_000).is_err() {
             panic!("The functionality has changed");
         }
