@@ -1,30 +1,6 @@
 use crate::circuit::circuit::CircuitSeq;
+use crate::replace::pairs::{gate_pair_taxonomy, GatePair};
 use lmdb::{Cursor, Transaction, WriteFlags};
-
-// Map two gates to one of 34 collision types based on which wire positions overlap.
-// Represents a partial matching between {0,1,2} positions of g1 and g2.
-// Encoded as a 9-bit matrix: bit (i*3+j) = 1 iff g1[i] == g2[j].
-// The 34 valid patterns (at most one 1 per row and column) sorted ascending:
-static COLLISION_PATTERNS: [u16; 34] = [
-    0, 1, 2, 4, 8, 10, 12, 16, 17, 20, 32, 33, 34, 64, 66, 68,
-    80, 84, 96, 98, 128, 129, 132, 136, 140, 160, 161, 256, 257,
-    258, 264, 266, 272, 273,
-];
-
-pub fn collision_type(g1: [u8; 3], g2: [u8; 3]) -> usize {
-    let mut matrix = 0u16;
-    for i in 0..3 {
-        for j in 0..3 {
-            if g1[i] == g2[j] {
-                matrix |= 1 << (i * 3 + j);
-            }
-        }
-    }
-    COLLISION_PATTERNS
-        .iter()
-        .position(|&p| p == matrix)
-        .unwrap_or_else(|| panic!("invalid gate pair collision pattern: {:09b}", matrix))
-}
 
 fn decode_circuits(value: &[u8]) -> Vec<CircuitSeq> {
     let mut circuits = Vec::new();
@@ -60,11 +36,13 @@ pub fn open_id_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
     let dbs: Vec<lmdb::Database> = (0..34)
         .map(|i| {
             let name = format!("id_g{}", i);
-            unsafe { txn.open_db(Some(&name)) }
+            let db = unsafe { txn.open_db(Some(&name)) }
                 .unwrap_or_else(|_| {
                     unsafe { txn.create_db(Some(&name), lmdb::DatabaseFlags::empty()) }
                         .unwrap_or_else(|e| panic!("Failed to create id_g{}: {:?}", i, e))
-                })
+                });
+            txn.clear_db(db).unwrap_or_else(|e| panic!("Failed to clear id_g{}: {:?}", i, e));
+            db
         })
         .collect();
     txn.commit().expect("Failed to commit id_db setup txn");
@@ -135,7 +113,7 @@ pub fn generate_identity_db(
 
                         let g1 = rotated[0];
                         let g2 = rotated[1];
-                        let ctype = collision_type(g1, g2);
+                        let ctype = GatePair::to_int(&gate_pair_taxonomy(&g1, &g2));
 
                         let rotated_circuit = CircuitSeq { gates: rotated };
                         let key = rotated_circuit.repr_blob();
