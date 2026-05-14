@@ -289,7 +289,7 @@ pub fn get_random_identity(
     Ok(out)
 }
 
-const ID_G_COUNTS: [u64; 34] = [
+pub const ID_G_COUNTS: [u64; 34] = [
     5292788,  // id_g0
     2721848,  // id_g1
     6342891,  // id_g2

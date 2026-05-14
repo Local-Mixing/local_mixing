@@ -704,20 +704,11 @@ pub fn replace_single_pair(
         if id_len == 0 {
             let ctype = GatePair::to_int(&tax);
             let db_name = format!("id_g{}", ctype);
+            let count = crate::replace::identities::ID_G_COUNTS[ctype];
+            let idx: u64 = rng.random_range(0..count);
             let chosen: Option<Vec<u8>> = env.begin_ro_txn().ok().and_then(|txn| {
                 let db = unsafe { txn.open_db(Some(&db_name)) }.ok()?;
-                let chosen = txn.open_ro_cursor(db).ok().and_then(|mut cursor| {
-                    let mut chosen: Option<Vec<u8>> = None;
-                    let mut count = 0u64;
-                    for (key, _) in cursor.iter() {
-                        count += 1;
-                        if rng.random_range(0..count) == 0 {
-                            chosen = Some(key.to_vec());
-                        }
-                    }
-                    chosen
-                });
-                chosen
+                txn.get(db, &idx.to_be_bytes()).ok().map(|b| b.to_vec())
             });
             if let Some(blob) = chosen {
                 id = CircuitSeq::from_blob(&blob);
