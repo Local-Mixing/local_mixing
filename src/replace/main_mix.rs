@@ -1151,15 +1151,6 @@ pub fn main_shuffle_shoot_shuffle(
     } else {
         n
     };
-    let mut new_circuit = circuit.clone();
-    loop {
-        insert_wire_m_samfs_every_x(&mut new_circuit, n, n/2, 1, env, &dbs);
-        if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
-            circuit = new_circuit;
-            break
-        }
-        new_circuit = circuit.clone();
-    }
     for i in 0..rounds {
         loop {
             let new_circuit = simple_shooting_game(
