@@ -20,9 +20,7 @@ use nauty_Traces_sys::{
 use num_bigint::BigUint;
 use num_traits::Zero;
 use num_traits::One;
-use std::collections::{BTreeMap, BTreeSet};
-
-use crate::rainbow::canonical;
+use std::collections::BTreeMap;
 
 // pins are [active, control1, control2] for Toffoli gates
 // We are only concerned with gate r57
@@ -47,10 +45,6 @@ pub type Polynomial = HashSet<Monomial>;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Permutation {
     pub data: Vec<usize>,
-}
-
-fn count_ones_u256(x: u256) -> u32 {
-    x.0.iter().map(|w| w.count_ones()).sum()
 }
 
 // Functions on Gate struct and [u8;3]
@@ -861,7 +855,7 @@ impl CircuitSeq {
 
     // Returns (canonical_polys, canonical_circuit, reversed)
     // where reversed=true means the reversed circuit produced the canonical form.
-    pub fn canonicalize_polys(&self, n: usize) -> (Vec<Polynomial>, CircuitSeq, bool, Permutation, Vec<u8>) {
+    pub fn canonicalize_polys(&self, _n: usize) -> (Vec<Polynomial>, CircuitSeq, bool, Permutation, Vec<u8>) {
         fn poly_vec_key(polys: &Vec<Polynomial>) -> Vec<Vec<u64>> {
             polys.iter().map(|p| {
                 let mut v: Vec<u64> = p.iter().copied().collect();
@@ -1181,61 +1175,6 @@ fn split_by_scores(mut scored: Vec<(usize, Vec<usize>)>) -> Vec<Vec<usize>> {
     result
 }
 
-/// Partition a list of (index, ranked-monomial-list) pairs into sub-groups
-/// by descending lexicographic order of their monomial lists.
-fn split_by_monomial_lists(mut scored: Vec<(usize, Vec<Monomial>)>) -> Vec<Vec<usize>> {
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
-    let mut result: Vec<Vec<usize>> = Vec::new();
-    let mut current = vec![scored[0].0];
-    for i in 1..scored.len() {
-        if scored[i].1 == scored[i - 1].1 {
-            current.push(scored[i].0);
-        } else {
-            result.push(current.clone());
-            current = vec![scored[i].0];
-        }
-    }
-    result.push(current);
-    result
-}
-
-/// Rules 2.4 and 2.5 helper.
-/// Rank a single monomial under the current partial variable ordering.
-/// Returns a sort key: first the degree negated (so higher degree sorts first),
-/// then the ranks of variables present in the monomial sorted ascending (best rank first).
-/// Tied variables get the same rank value, so monomials differing only in tied variables
-/// compare as equal.
-///
-/// `var_rank[i]` = rank of variable x_i, where lower value = higher rank (0 = best).
-/// Variables in the same tied group share the same rank value.
-fn monomial_sort_key(m: Monomial, var_rank: &[usize]) -> Vec<isize> {
-    let degree = m.count_ones() as usize;
-    // Collect ranks of variables present in this monomial, sorted best-first (ascending value)
-    let mut var_ranks: Vec<usize> = (0..var_rank.len())
-        .filter(|&i| m & (1u64 << i) != 0)
-        .map(|i| var_rank[i])
-        .collect();
-    var_ranks.sort(); // ascending = best rank first
-    // Negate degree so higher degree sorts first under ascending comparison
-    let mut key: Vec<isize> = vec![-(degree as isize)];
-    key.extend(var_ranks.iter().map(|&r| r as isize));
-    key
-}
-
-/// Rules 2.4 and 2.5 helper.
-/// Sort a list of monomials by their rank under the current partial variable ordering.
-/// Higher-ranked monomials come first. Monomials equal under the partial ordering
-/// retain a consistent order (by monomial bitmask value).
-fn rank_monomials(monomials: &[Monomial], var_rank: &[usize]) -> Vec<Monomial> {
-    let mut sorted: Vec<Monomial> = monomials.to_vec();
-    sorted.sort_by(|&a, &b| {
-        let ka = monomial_sort_key(a, var_rank);
-        let kb = monomial_sort_key(b, var_rank);
-        // ascending key = descending rank (degree negated, lower rank value = better)
-        ka.cmp(&kb)
-    });
-    sorted
-}
 
 /// Pack a monomial's sort key into a single u64 for fast comparison.
 /// Format: [4 bits degree | 4 bits rank_var1 | 4 bits rank_var2 | ...]

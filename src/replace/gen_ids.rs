@@ -90,6 +90,7 @@ fn remove_adjacent_equal(gates: &mut Vec<[u8; 3]>) {
     }
 }
 
+
 pub fn open_id_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
     let mut txn = env.begin_rw_txn().expect("Failed to begin rw txn for id_db setup");
     let dbs: Vec<lmdb::Database> = (0..34)

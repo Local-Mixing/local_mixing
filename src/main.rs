@@ -1,7 +1,7 @@
 use clap::{Arg, ArgAction, Command};
 use itertools::Itertools;
 use plotters::prelude::*;
-use rocksdb::{DB, Options, BlockBasedOptions, Cache};
+
 
 use std::{
     fs,
@@ -57,22 +57,6 @@ fn open_shard_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
         .collect()
 }
 
-fn make_rocksdb_readonly(path: &str, cache_bytes: usize) -> DB {
-    let cache = Cache::new_lru_cache(cache_bytes);
-
-    let mut block_opts = BlockBasedOptions::default();
-    block_opts.set_block_cache(&cache);
-    block_opts.set_bloom_filter(10.0, false);
-    block_opts.set_cache_index_and_filter_blocks(true);
-    block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
-
-    let mut opts = Options::default();
-    opts.set_block_based_table_factory(&block_opts);
-    opts.set_compression_type(rocksdb::DBCompressionType::None);
-
-    DB::open_for_read_only(&opts, path, false)
-        .unwrap_or_else(|_| panic!("Failed to open RocksDB {}", path))
-}
 
 fn main() {
     let matches = Command::new("rainbow")
@@ -1791,7 +1775,7 @@ Command::new("rocksdb_2")
             let s: &String = sub.get_one("s").expect("Missing -s <source>");
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
             let d: &String = sub.get_one("d").expect("Missing -d <destination>");
-            let seq = sub.get_flag("seq"); 
+            let _seq = sub.get_flag("seq");
             let contents = fs::read_to_string(s)
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", s));
 
@@ -2611,7 +2595,7 @@ fn save_tax_id_tables_to_lmdb(
 
         let mut counter: u64 = {
             let txn = env.begin_ro_txn()?;
-            let mut cursor = txn.open_ro_cursor(db)?;
+            let cursor = txn.open_ro_cursor(db)?;
             match cursor.get(None, None, lmdb_sys::MDB_LAST) {
                 Ok((Some(k), _)) => {
                     let arr: [u8; 8] = k.try_into().unwrap_or([0u8; 8]);

@@ -50,49 +50,6 @@ use crate::{
     },
 };
 
-// Old legacy method of replace -> compress
-// pub fn obfuscate_and_target_compress(c: &CircuitSeq, conn: &Connection, bit_shuf: &Vec<Vec<usize>>, n: usize) -> CircuitSeq {
-//     // Obfuscate circuit, get positions of inverses
-//     let (mut final_circuit, inverse_starts) = obfuscate(c, n);
-//     println!("{}", final_circuit.to_string(n));
-//     //let (mut final_circuit, inverse_starts) = obfuscate(&_final_circuit, n);
-//     println!("{:?} Obf Len: {}", pin_counts(&final_circuit, n), final_circuit.gates.len());
-//     // For each gate, compress its "inverse+gate+next_random" slice
-//     // Reverse iteration to avoid index shifting issues
-    
-//     for i in (0..c.gates.len()).rev() {
-//         // ri^-1 start
-//         let start = inverse_starts[i];
-
-//         // r_{i+1} start is the next inverse start
-//         let end = inverse_starts[i + 1]; // safe because i < c.gates.len()
-//         // Slice the subcircuit: r_i^-1 ⋅ g_i ⋅ r_{i+1}
-//         let sub_slice = &final_circuit.gates[start..end];
-
-//         // Wrap it into a CircuitSeq
-//         let sub_circuit = CircuitSeq { gates: sub_slice.to_vec() };
-
-//         // Compress the subcircuit
-//         let compressed_sub = compress(&sub_circuit, 100_000, conn, &bit_shuf, n);
-//         // Replace the slice in the final circuit
-//         if sub_circuit.gates != compressed_sub.gates {
-//             println!("The compression hid g_{}", i);
-//         }
-//         final_circuit.gates.splice(start..end, compressed_sub.gates);
-//     }
-//     let mut com_len = final_circuit.gates.len();
-//     let mut count = 0;
-//     while count < 3 {
-//         final_circuit = compress(&final_circuit, 100_000, conn, &bit_shuf, n);
-//         if final_circuit.gates.len() == com_len {
-//             count += 1;
-//         } else {
-//             com_len = final_circuit.gates.len();
-//         }
-//     }
-//     println!("{:?} Compressed Len: {}", pin_counts(&final_circuit, n), final_circuit.gates.len());
-//     final_circuit
-// }
 
 // Find how many gates are on each wire
 pub fn pin_counts(circuit: &CircuitSeq, num_wires: usize) -> Vec<usize> {
@@ -109,108 +66,6 @@ pub fn pin_counts(circuit: &CircuitSeq, num_wires: usize) -> Vec<usize> {
 // Butterfly Methods 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Butterfly method on low number of wires
-// pub fn butterfly(
-//     c: &CircuitSeq,
-//     conn: &Connection,
-//     bit_shuf: &Vec<Vec<usize>>,
-//     n: usize,
-// ) -> CircuitSeq {
-//     // Pick one random R
-//     let mut rng = rand::rng();
-//     let (r, r_inv) = random_id(n, rng.random_range(3..=25)); 
-
-//     println!("Butterfly start: {} gates", c.gates.len());
-
-//     let r = &r;           // reference is enough; read-only
-//     let r_inv = &r_inv;   // same
-//     let bit_shuf = &bit_shuf;
-
-//     // Parallel processing of gates
-//     let blocks: Vec<_> = c.gates
-//         .par_iter()
-//         .enumerate()
-//         .map(|(i, &g)| {
-//             // wrap single gate as CircuitSeq
-//             let gi = CircuitSeq { gates: vec![g] };
-
-//             // create a read-only connection per thread
-//             let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
-//             let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
-
-//         // compress the block
-//         let compressed_block = outward_compress(&gi, r, 100_000, &conn, bit_shuf, n);
-
-//         println!(
-//             "  Block {}: before {} gates → after {} gates",
-//             i,
-//             r_inv.gates.len() * 2 + 1, // approximate size
-//             compressed_block.gates.len()
-//         );
-
-//         println!("  {}", compressed_block.repr());
-
-//         compressed_block
-//     })
-//     .collect();
-
-//     // Combine blocks hierarchically
-//     let mut acc = blocks[0].clone();
-//     println!("Start combining: {}", acc.gates.len());
-
-//     for (i, b) in blocks.into_iter().skip(1).enumerate() {
-//         let combined = acc.concat(&b);
-//         let before = combined.gates.len();
-//         acc = compress(&combined, 500_000, conn, bit_shuf, n);
-//         let after = acc.gates.len();
-
-//         println!(
-//             "  Combine step {}: {} → {} gates",
-//             i + 1,
-//             before,
-//             after
-//         );
-//     }
-
-//     // Add bookends: R ... R*
-//     acc = r.concat(&acc).concat(&r_inv);
-//     println!("After adding bookends: {} gates", acc.gates.len());
-
-//     // Final global compression (until stable 3x)
-//     let mut stable_count = 0;
-//     while stable_count < 3 {
-//         let before = acc.gates.len();
-//         acc = compress(&acc, 1_000_000, conn, bit_shuf, n);
-//         let after = acc.gates.len();
-
-//         if after == before {
-//             stable_count += 1;
-//             println!("  Final compression stable {}/3 at {} gates", stable_count, after);
-//         } else {
-//             println!("  Final compression reduced: {} → {} gates", before, after);
-//             stable_count = 0;
-//         }
-//     }
-
-//     let mut i = 0;
-//     while i < acc.gates.len().saturating_sub(1) {
-//         if acc.gates[i] == acc.gates[i + 1] {
-//             // remove elements at i and i+1
-//             acc.gates.drain(i..=i + 1);
-
-//             // step back up to 2 indices, but not below 0
-//             i = i.saturating_sub(2);
-//         } else {
-//             i += 1;
-//         }
-//     }
-//     //writeln!(file, "Permutation after remove identities 2 is: \n{:?}", acc.permutation(n).data).unwrap();
-//     println!("Compressed len: {}", acc.gates.len());
-
-//     println!("Butterfly done: {} gates", acc.gates.len());
-
-//     acc
-// }
 
 // Merges blocks and compresses them along to way to "mix the seams"
 pub fn merge_combine_blocks(
@@ -305,30 +160,6 @@ pub fn merge_combine_blocks(
     final_compressed
 }
 
-// fn initial_milestone(acc: usize) -> usize {
-//     if acc >= 10_000 {
-//         (acc / 10_000) * 10_000   // nearest 10k below
-//     } else if acc >= 5_000 {
-//         5_000
-//     } else if acc >= 2_000 {
-//         2_000
-//     } else if acc >= 1_000 {
-//         1_000
-//     } else {
-//         0
-//     }
-// }
-
-/// Given the previous milestone, decide the next lower one
-// fn next_milestone(prev: usize) -> usize {
-//     match prev {
-//         x if x > 10_000 => x - 10_000,
-//         10_000 => 5_000,
-//         5_000 => 2_000,
-//         2_000 => 1_000,
-//         _ => 0,
-//     }
-// }
 
 // Butterfly method for more wires
 pub fn butterfly_big(
@@ -1088,147 +919,9 @@ pub fn simple_shooting_game(
     }
     acc
 }
-// Asymmetric butterfly but delay compression and addition of the bookends
-// Hope is to slow down the blowup in the number of gates
-// Currently unsupported
-// pub fn abutterfly_big_delay_bookends(
-//     c: &CircuitSeq,
-//     _conn: &Connection,
-//     n: usize,
-//     env: &lmdb::Environment,
-// ) -> (CircuitSeq, CircuitSeq, CircuitSeq) {
-//     let dbs = open_all_dbs(env);
-//     let bit_shuf_list = (3..=7)
-//         .map(|n| {
-//             (0..n)
-//                 .permutations(n)
-//                 .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
-//                 .collect::<Vec<Vec<usize>>>()
-//         })
-//         .collect();
-//     println!("Butterfly start: {} gates", c.gates.len());
-//     let mut rng = rand::rng();
-//     let mut pre_blocks: Vec<CircuitSeq> = Vec::with_capacity(c.gates.len());
-//     let mut c = c.clone();
-//     // let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(20..=100));
-//     let (first_r, first_r_inv) = random_id(n as u8, rng.random_range(150..=200));
-//     let mut prev_r_inv = first_r_inv.clone();
-//     shoot_random_gate(&mut c, 100_000);
-//     for &g in &c.gates {
-//         // let (r, r_inv) = random_id(n as u8, rng.random_range(20..=100));
-//         let (r, r_inv) = random_id(n as u8, rng.random_range(150..=200));
-//         let mut block = prev_r_inv.clone().concat(&CircuitSeq { gates: vec![g] }).concat(&r);
-//         shoot_random_gate(&mut block, 1_000);
-//         pre_blocks.push(block);
-//         prev_r_inv = r_inv;
-//     }
-
-//     // Parallel compression of each block
-//     let compressed_blocks: Vec<CircuitSeq> = pre_blocks
-//         .into_par_iter()
-//         .enumerate()
-//         .map(|(i, block)| {
-//             let mut thread_conn = Connection::open_with_flags(
-//                 "circuits.db",
-//                 OpenFlags::SQLITE_OPEN_READ_ONLY,
-//             )
-//             .expect("Failed to open read-only connection");
-//             let txn = env.begin_ro_txn().expect("txn");
-//             let before_len = block.gates.len();
-//             // TXN
-//             let compressed_block = compress_big(&block, 10, n, &thread_conn, env, &bit_shuf_list, &dbs, &txn);
-//             let after_len = compressed_block.gates.len();
-            
-//             let color_line = if after_len < before_len {
-//                 "\x1b[32m──────────────\x1b[0m" // green
-//             } else if after_len > before_len {
-//                 "\x1b[31m──────────────\x1b[0m" // red
-//             } else if block.gates != compressed_block.gates {
-//                 "\x1b[35m──────────────\x1b[0m" // purple
-//             } else {
-//                 "\x1b[90m──────────────\x1b[0m" // gray
-//             };
-
-//             println!(
-//                 "  Block {}: before {} gates → after {} gates  {}",
-//                 i, before_len, after_len, color_line
-//             );
-//             //println!("  {}", compressed_block.repr());
-
-//             compressed_block
-//         })
-//         .collect();
-
-//     let progress = Arc::new(AtomicUsize::new(0));
-//     let _total = 2 * compressed_blocks.len() - 1;
-
-//     println!("Beginning merge");
-//     let mut acc =
-//         merge_combine_blocks(&compressed_blocks, n, "./circuits.db", &progress, _total, env, &bit_shuf_list, &dbs);
-
-//     println!("After merging: {} gates", acc.gates.len());
-
-//     // Final global compression until stable 3×
-//     let mut stable_count = 0;
-//     while stable_count < 3 {
-//         let before = acc.gates.len();
-
-//         let k = if before > 10_000 {
-//             16
-//         } else if before > 5_000 {
-//             8
-//         } else if before > 1_000 {
-//             4
-//         } else if before > 500 {
-//             2
-//         } else {
-//             1
-//         };
-
-//         let mut rng = rand::rng();
-
-//         let chunks = split_into_random_chunks(&acc.gates, k, &mut rng);
-
-//         let compressed_chunks: Vec<Vec<[u8;3]>> =
-//         chunks
-//             .into_par_iter()
-//             .map(|chunk| {
-//                 let sub = CircuitSeq { gates: chunk };
-//                 let mut thread_conn = Connection::open_with_flags(
-//                     "circuits.db",
-//                     OpenFlags::SQLITE_OPEN_READ_ONLY,
-//                 )
-//                 .expect("Failed to open read-only connection");
-//                 let txn = env.begin_ro_txn().expect("txn");
-//                 // TXN
-//                 compress_big(&sub, 1_000, n, &thread_conn, env, &bit_shuf_list, &dbs, &txn).gates
-//             })
-//             .collect();
-
-//         let new_gates: Vec<[u8;3]> = compressed_chunks.into_iter().flatten().collect();
-//         acc.gates = new_gates;
-
-//         let after = acc.gates.len();
-
-//         if after == before {
-//             stable_count += 1;
-//             println!("  Final compression stable {}/3 at {} gates", stable_count, after);
-//         } else {
-//             println!("  Final compression reduced: {} → {} gates", before, after);
-//             stable_count = 0;
-//         }
-//     }
-
-//     println!("Compressed len: {}", acc.gates.len());
-//     println!("Butterfly done: {} gates", acc.gates.len());
-
-//     (acc, first_r, prev_r_inv)
-// }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Pair Replacmeent Methods
+// Pair Replacement Methods
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // Some legacy statistics for the types of pairs we are replacing
@@ -1253,7 +946,7 @@ pub fn replace_and_compress_big(
     shard_dbs: &[lmdb::Database],
     intermediate: &str,
     tower: bool,
-    id_len: usize
+    id_len: usize,
 ) -> (CircuitSeq, usize, usize, usize, usize) {
     println!("Current round: {}/{}", curr_round, last_round);
 

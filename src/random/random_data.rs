@@ -31,7 +31,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::OpenOptions,
     io::Write,
-    thread,
+
 };
 
 fn write_error(msg: &str) {
@@ -41,19 +41,10 @@ fn write_error(msg: &str) {
     }
 }
 
-fn available_disk_bytes(path: &str) -> u64 {
-    let c_path = std::ffi::CString::new(path).unwrap_or_default();
-    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-    let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
-    if ret == 0 {
-        stat.f_bavail * stat.f_bsize as u64
-    } else {
-        u64::MAX
-    }
-}
+
 use crate::circuit::circuit::polys_repr_blob;
 use crate::circuit::Polynomial;
-use crate::circuit::circuit::{canonicalize_polys, canonicalize_polys_2, canonicalize_polys_3, canonicalize_polys_4};
+use crate::circuit::circuit::{canonicalize_polys, canonicalize_polys_4};
 use crate::circuit::circuit::print_rule_times;
 
 // Store permutation canonicalizations (wire relabeling) in a cache for speed
@@ -796,7 +787,7 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
 // Same as above but instead of scanning an entire candidate list, just take the first candidate from the left and right and choose randomly from those two
 pub fn simple_find_convex_subcircuit<R: RngCore>(
     _set_size: usize,
-    max_wires: usize,
+    _max_wires: usize,
     num_wires: usize,
     circuit: &CircuitSeq,
     rng: &mut R,
@@ -878,7 +869,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
 
-                            let num_new_wires = curr_gate
+                            let _num_new_wires = curr_gate
                                 .iter()
                                 .filter(|&w| !curr_wires.contains(w))
                                 .count();
@@ -942,7 +933,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
 
-                            let num_new_wires = curr_gate
+                            let _num_new_wires = curr_gate
                                 .iter()
                                 .filter(|&w| !curr_wires.contains(w))
                                 .count();
@@ -3599,84 +3590,6 @@ pub fn build_m1(new_db: &Arc<DB>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Generate all wire mappings for C2 relative to C1.
-/// Returns a list of permutations, where each permutation maps
-/// C2's wire j to a concrete wire index in the combined circuit.
-///
-/// C1 occupies wires 0..N1-1 (fixed).
-/// C2's wires are mapped as follows:
-///   - s is a word of length N1 over {0..N2}, with at most one of each letter from 1..N2
-///   - if s[w] = j (j > 0), then C2's wire j-1 maps to wire w (shared with C1)
-///   - C2's wires not mentioned in s map to fresh wires N1, N1+1, ... in fixed order
-///
-/// Total number of mappings = sum_{k=0}^{min(N1,N2)} C(N1,k) * P(N2,k)
-fn enumerate_c2_wire_mappings(n1: usize, n2: usize) -> Vec<Vec<u8>> {
-    let mut result = Vec::new();
-
-    // Enumerate all words s of length N1 over {0..N2}
-    // with at most one of each letter from 1..N2
-    // We do this recursively/iteratively by choosing which positions
-    // in s get non-zero letters and which letters they get
-
-    // s[i] = 0 means position i of C1's wires is not used by C2
-    // s[i] = j (1-indexed) means C2's wire j-1 maps to C1's wire i
-    fn enumerate_words(
-        pos: usize,
-        n1: usize,
-        n2: usize,
-        word: &mut Vec<usize>,
-        used: &mut Vec<bool>, // which C2 wire indices (1..N2) are used
-        result: &mut Vec<Vec<u8>>,
-    ) {
-        if pos == n1 {
-            // word is complete — build the concrete wire mapping for C2
-            // For each C2 wire j (0-indexed), find where it maps:
-            //   - if j+1 appears in word at position w, it maps to wire w
-            //   - otherwise it maps to the next fresh wire after N1
-
-            // Find which C2 wires are mentioned in word and where
-            let mut c2_to_wire = vec![0u8; n2];
-            let mut mentioned = vec![false; n2];
-            for (w, &j) in word.iter().enumerate() {
-                if j > 0 {
-                    c2_to_wire[j - 1] = w as u8;
-                    mentioned[j - 1] = true;
-                }
-            }
-            // Assign fresh wires to unmentioned C2 wires in fixed order
-            let mut fresh = n1;
-            for j in 0..n2 {
-                if !mentioned[j] {
-                    c2_to_wire[j] = fresh as u8;
-                    fresh += 1;
-                }
-            }
-            result.push(c2_to_wire);
-            return;
-        }
-
-        // Option 1: s[pos] = 0 (this C1 wire not used by C2)
-        word.push(0);
-        enumerate_words(pos + 1, n1, n2, word, used, result);
-        word.pop();
-
-        // Option 2: s[pos] = j for each unused j in 1..N2
-        for j in 1..=n2 {
-            if !used[j - 1] {
-                used[j - 1] = true;
-                word.push(j);
-                enumerate_words(pos + 1, n1, n2, word, used, result);
-                word.pop();
-                used[j - 1] = false;
-            }
-        }
-    }
-
-    let mut word = Vec::with_capacity(n1);
-    let mut used = vec![false; n2];
-    enumerate_words(0, n1, n2, &mut word, &mut used, &mut result);
-    result
-}
 
 /// Apply a wire mapping to a circuit — remap C2's internal wires
 /// to their positions in the combined circuit.
