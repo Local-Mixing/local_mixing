@@ -114,6 +114,11 @@ pub fn generate_identity_db(
     id_dbs: &[lmdb::Database],
 ) {
     let mut total = 0u64;
+    // Per-DB counters for sequential keys; open_id_dbs clears DBs so we start at 0.
+    let mut counters = vec![0u64; 34];
+    // Deduplicate within this run using a per-type seen set.
+    let mut seen: Vec<std::collections::HashSet<Vec<u8>>> =
+        (0..34).map(|_| std::collections::HashSet::new()).collect();
 
     for shard_idx in 0..256usize {
         let txn = env.begin_ro_txn().expect("ro txn");
@@ -175,9 +180,15 @@ pub fn generate_identity_db(
                         let ctype = GatePair::to_int(&gate_pair_taxonomy(&g1, &g2));
 
                         let rotated_circuit = CircuitSeq { gates: rotated };
-                        let key = rotated_circuit.repr_blob();
-                        let _ = wtxn.put(id_dbs[ctype], &key, &[], WriteFlags::NO_OVERWRITE);
-                        total += 1;
+                        let blob = rotated_circuit.repr_blob();
+
+                        if seen[ctype].insert(blob.clone()) {
+                            let idx = counters[ctype];
+                            counters[ctype] += 1;
+                            wtxn.put(id_dbs[ctype], &idx.to_be_bytes(), &blob, WriteFlags::empty())
+                                .expect("put identity");
+                            total += 1;
+                        }
                     }
                 }
             }

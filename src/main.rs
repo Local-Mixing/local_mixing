@@ -2590,16 +2590,14 @@ fn save_tax_id_tables_to_lmdb(
     // }
 
     let batch_size = 100;
-    let mut batch: Vec<Vec<u8>> = Vec::with_capacity(batch_size);
 
-    let flush_batch = |env: &Environment, db: Database, batch: &mut Vec<Vec<u8>>| {
+    let flush_batch = |env: &Environment, db: Database, batch: &mut Vec<(u64, Vec<u8>)>| {
         if batch.is_empty() {
             return;
         }
-        println!("Flushing batch");
         let mut txn = env.begin_rw_txn().expect("Failed to begin LMDB txn");
-        for key in batch.iter() {
-            txn.put(db, key, &[], WriteFlags::empty())
+        for (idx, value) in batch.iter() {
+            txn.put(db, &idx.to_be_bytes(), value, WriteFlags::empty())
                 .expect("Failed to write LMDB key");
         }
         txn.commit().expect("Failed to commit LMDB txn");
@@ -2607,12 +2605,27 @@ fn save_tax_id_tables_to_lmdb(
     };
 
     for (gatepair, circuits) in perms_to_m.iter() {
-        let g = GatePair::to_int(gatepair); // your conversion function
+        let g = GatePair::to_int(gatepair);
         let dynamic_db_name = format!("ids_n{}g{}", db_name, g);
         let db = env.create_db(Some(&dynamic_db_name), lmdb::DatabaseFlags::empty())?;
 
+        let mut counter: u64 = {
+            let txn = env.begin_ro_txn()?;
+            let mut cursor = txn.open_ro_cursor(db)?;
+            match cursor.get(None, None, lmdb_sys::MDB_LAST) {
+                Ok((Some(k), _)) => {
+                    let arr: [u8; 8] = k.try_into().unwrap_or([0u8; 8]);
+                    u64::from_be_bytes(arr) + 1
+                }
+                _ => 0,
+            }
+        };
+
+        let mut batch: Vec<(u64, Vec<u8>)> = Vec::with_capacity(batch_size);
+
         for circuit in circuits {
-            batch.push(circuit.clone());
+            batch.push((counter, circuit.clone()));
+            counter += 1;
 
             if batch.len() >= batch_size {
                 flush_batch(&env, db, &mut batch);
@@ -2741,9 +2754,10 @@ pub fn fill_n_id(n: usize) {
         let total_written = Arc::clone(&total_written);
 
         thread::spawn(move || {
-            let mut batches: HashMap<(u8, bool), Vec<Vec<u8>>> = HashMap::new();
+            let mut batches: HashMap<(u8, bool), Vec<(u64, Vec<u8>)>> = HashMap::new();
             let mut db_cache: HashMap<(u8, bool), Database> = HashMap::new();
             let mut written_per_g: HashMap<(u8, bool), u64> = HashMap::new();
+            let mut counters: HashMap<(u8, bool), u64> = HashMap::new();
             let mut last_print = Instant::now();
 
             loop {
@@ -2756,14 +2770,18 @@ pub fn fill_n_id(n: usize) {
                         .unwrap()
                 });
 
+                let counter = counters.entry((g, tower)).or_insert(0u64);
+                let count_val = *counter;
+                *counter += 1;
+
                 let batch = batches.entry((g, tower)).or_default();
-                batch.push(key);
+                batch.push((count_val, key));
 
                 if batch.len() >= BATCH_SIZE {
                     let mut txn = env.begin_rw_txn().unwrap();
 
-                    for v in batch.drain(..) {
-                        txn.put(db, &v, &[], WriteFlags::empty())
+                    for (idx, v) in batch.drain(..) {
+                        txn.put(db, &idx.to_be_bytes(), &v, WriteFlags::empty())
                             .unwrap();
                     }
 
