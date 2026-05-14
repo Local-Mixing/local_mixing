@@ -298,6 +298,7 @@ pub fn compress_loop(
     stable_max: usize,
     curr_round: usize,
     last_round: usize,
+    output_path: &str,
 ) -> CircuitSeq {
     let mut acc = circuit.clone();
     let mut rng = rand::rng();
@@ -348,9 +349,9 @@ pub fn compress_loop(
         // Check if user created write_now
         if std::path::Path::new("write_now").exists() {
             std::fs::remove_file("write_now").ok();
-            let mut f = File::create("temp_compression.txt").expect("create");
+            let mut f = File::create(output_path).expect("create");
             writeln!(f, "{}", acc.repr()).expect("write");
-            eprintln!("Wrote temp_compression.txt");
+            eprintln!("Wrote {}", output_path);
         }
     }
     acc

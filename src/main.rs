@@ -28,7 +28,7 @@ use local_mixing::{
             main_butterfly_big, main_interleave_big, 
             // main_mix, 
             main_rac_big, main_rac_big_distance, main_sequential_butterfly, main_shuffle_rcs_big, open_all_dbs, main_shooting_game, main_shuffle_shoot_shuffle
-        }, mixing::install_kill_handler, pairs::{GatePair, gate_pair_taxonomy}, replace::{
+        }, mixing::install_kill_handler, pairs::{GatePair, gate_pair_taxonomy}, gen_ids::{generate_identity_db, open_id_dbs}, replace::{
             // compress_big_ancillas,
             // sequential_compress_big_ancillas,
             compress_loop,
@@ -1158,6 +1158,24 @@ Command::new("rocksdb_2")
                     .help("Output path for the LMDB store"),
             )
     )
+    .subcommand(
+        Command::new("gen_id_db")
+            .about("Generate identity databases from compression DB shards")
+            .arg(
+                Arg::new("src")
+                    .long("src")
+                    .default_value("./db")
+                    .value_parser(clap::value_parser!(String))
+                    .help("Source LMDB path"),
+            )
+            .arg(
+                Arg::new("dst")
+                    .long("dst")
+                    .default_value("./id_db")
+                    .value_parser(clap::value_parser!(String))
+                    .help("Destination LMDB path for identity databases"),
+            )
+    )
     .get_matches();
 
     match matches.subcommand() {
@@ -1795,7 +1813,7 @@ Command::new("rocksdb_2")
             // Call compression logic
             println!("Starting compression");
             let shard_dbs = open_shard_dbs(&env);
-            acc = compress_loop(&acc, n, &env, &shard_dbs, 12, 1, 1);
+            acc = compress_loop(&acc, n, &env, &shard_dbs, 12, 1, 1, d);
             print_compress_timers();
             let mut file = fs::File::create(d)
                 .expect("Failed to create new file");
@@ -2089,6 +2107,30 @@ Command::new("rocksdb_2")
                     .and_then(|mut f| { use std::io::Write; writeln!(f, "{}", msg) });
                 std::process::exit(1);
             }
+        }
+        Some(("gen_id_db", sub)) => {
+            let src: &String = sub.get_one("src").expect("Missing --src");
+            let dst: &String = sub.get_one("dst").expect("Missing --dst");
+
+            let src_env = Environment::new()
+                .set_max_dbs(500)
+                .set_max_readers(10000)
+                .set_map_size(800 * 1024 * 1024 * 1024)
+                .open(Path::new(src.as_str()))
+                .expect("Failed to open source LMDB");
+
+            let _ = std::fs::create_dir_all(dst.as_str());
+            let id_env = Environment::new()
+                .set_max_dbs(34)
+                .set_max_readers(10)
+                .set_map_size(100 * 1024 * 1024 * 1024)
+                .open(Path::new(dst.as_str()))
+                .expect("Failed to open destination LMDB");
+
+            let shard_dbs = open_shard_dbs(&src_env);
+            let id_dbs = open_id_dbs(&id_env);
+
+            generate_identity_db(&src_env, &shard_dbs, &id_env, &id_dbs);
         }
         _ => unreachable!(),
     }

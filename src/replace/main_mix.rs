@@ -1186,7 +1186,7 @@ pub fn main_shuffle_shoot_shuffle(
             new_circuit = circuit.clone();
         }
         println!("After inserting samfs: {} gates", circuit.gates.len());
-        circuit = compress_loop(&circuit, n, env, shard_dbs, 6, i+1, rounds);
+        circuit = compress_loop(&circuit, n, env, shard_dbs, 6, i+1, rounds, "temp_compression.txt");
         println!("After compression: {} gates", circuit.gates.len());
         if circuit.gates.len() == 0 {
             break;

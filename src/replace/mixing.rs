@@ -397,7 +397,7 @@ pub fn butterfly_big(
     // Add bookends: R ... R*
     acc = r.concat(&acc).concat(&r_inv);
     println!("After adding bookends: {} gates", acc.gates.len());
-    acc = compress_loop(&acc, n, env, shard_dbs, 12, 0, 0);
+    acc = compress_loop(&acc, n, env, shard_dbs, 12, 0, 0, "temp_compression.txt");
     println!("Compressed len: {}", acc.gates.len());
 
     println!("Butterfly done: {} gates", acc.gates.len());
@@ -539,7 +539,7 @@ pub fn abutterfly_big(
     acc = CircuitSeq { gates: acc.gates.clone() };
     println!("After adding bookends: {} gates", acc.gates.len());
 
-    acc = compress_loop(&acc, n, env, shard_dbs, 12, curr_round, last_round);
+    acc = compress_loop(&acc, n, env, shard_dbs, 12, curr_round, last_round, "temp_compression.txt");
 
     println!("Compressed len: {}", acc.gates.len());
     println!("Butterfly done: {} gates", acc.gates.len());
@@ -713,7 +713,7 @@ pub fn zip_sequential_butterfly(
         panic!("Functionality lost during sequential butterfly");
     }
 
-    compress_loop(&circuit, n, env, shard_dbs, 12, curr_round, last_round)
+    compress_loop(&circuit, n, env, shard_dbs, 12, curr_round, last_round, "temp_compression.txt")
 }
 
 pub fn sequential_butterfly(
@@ -994,7 +994,7 @@ pub fn sequential_butterfly(
     if circuit.probably_equal(&c, n, 1000).is_err() {
         panic!("Functionality lost during sequential butterfly");
     }
-    compress_loop(&circuit, n, env, shard_dbs, 12, curr_round, last_round)
+    compress_loop(&circuit, n, env, shard_dbs, 12, curr_round, last_round, "temp_compression.txt")
 }
 
 // Simple shooting game method. Send a gate to the right until a collision is made, then make a replacement. Continue the same from the right-most gate
@@ -1325,7 +1325,7 @@ pub fn replace_and_compress_big(
     // let mut milestone = initial_milestone(acc.gates.len());
     // Final global compression until stable 6×
     println!("Beginning compression");
-    let acc = compress_loop(&c, n, env, shard_dbs, 12, curr_round, last_round);
+    let acc = compress_loop(&c, n, env, shard_dbs, 12, curr_round, last_round, "temp_compression.txt");
 
     println!("Compressed len: {}", acc.gates.len());
     println!("Butterfly done: {} gates", acc.gates.len());
@@ -1518,7 +1518,7 @@ pub fn interleave_sequential_big(
 
     // Final global compression until stable 6×
     println!("Beginning compression");
-    let acc = compress_loop(&circuit, n, env, shard_dbs, 12, curr_round, last_round);
+    let acc = compress_loop(&circuit, n, env, shard_dbs, 12, curr_round, last_round, "temp_compression.txt");
 
     println!("Compressed len: {}", acc.gates.len());
     println!("Butterfly done: {} gates", acc.gates.len());
@@ -1581,7 +1581,7 @@ pub fn replace_and_compress_big_distance(
     // let mut milestone = initial_milestone(acc.gates.len());
     // Final global compression until stable 6×
     println!("Beginning compression");
-    let acc = compress_loop(&circuit, n, env, shard_dbs, 12, curr_round, last_round);
+    let acc = compress_loop(&circuit, n, env, shard_dbs, 12, curr_round, last_round, "temp_compression.txt");
 
     println!("Compressed len: {}", acc.gates.len());
     println!("Replace and compress distance done: {} gates", acc.gates.len());
