@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 
 extern crate lmdb_sys;
 
+use lmdb::{Cursor, Transaction};
+
 use crate::{
     circuit::circuit::CircuitSeq,
     random::random_data::{random_circuit, shoot_random_gate_gate_ver},
@@ -699,26 +701,30 @@ pub fn replace_single_pair(
     let mut id_gen = false;
     let mut id = CircuitSeq { gates: Vec::new() };
     while !id_gen {
-        let mut id_len = id_len;
         if id_len == 0 {
-             id_len = if GatePair::is_none(&tax) {
-                let r = rng.random_range(0..100);
-                match r { 
-                    0..45 => 6,   
-                    45..90 => 7,   
-                    _       => 16, 
-                }
-            } else {
-                let r = rng.random_range(0..100);
-                match r {
-                    0..30  => 5,   
-                    30..60 => 6,   
-                    60..90 => 7,   
-                    _       => 16, 
-                }
-            };
+            let ctype = GatePair::to_int(&tax);
+            let db_name = format!("id_g{}", ctype);
+            let chosen: Option<Vec<u8>> = env.begin_ro_txn().ok().and_then(|txn| {
+                let db = unsafe { txn.open_db(Some(&db_name)) }.ok()?;
+                let chosen = txn.open_ro_cursor(db).ok().and_then(|mut cursor| {
+                    let mut chosen: Option<Vec<u8>> = None;
+                    let mut count = 0u64;
+                    for (key, _) in cursor.iter() {
+                        count += 1;
+                        if rng.random_range(0..count) == 0 {
+                            chosen = Some(key.to_vec());
+                        }
+                    }
+                    chosen
+                });
+                chosen
+            });
+            if let Some(blob) = chosen {
+                id = CircuitSeq::from_blob(&blob);
+                id_gen = true;
+            }
+            continue;
         }
-        
         id = match get_random_identity(id_len, tax, env, dbs, tower) {
             Ok(id) => {
                 id_gen = true;

@@ -14,12 +14,13 @@ use crate::{
             abutterfly_big, butterfly_big, interleave_sequential_big, replace_and_compress_big, replace_and_compress_big_distance, simple_shooting_game, zip_sequential_butterfly
         },
         transpositions::{
-            insert_wire_m_samfs_every_x, 
-            //insert_wire_shuffles_knuth, 
-            //insert_wire_shuffles_simple, 
+            insert_wire_m_samfs_every_x,
+            //insert_wire_shuffles_knuth,
+            //insert_wire_shuffles_simple,
             insert_wire_shuffles_x
         },
-        pairs::{interleave}
+        pairs::{interleave},
+        gadgets::gadgetize,
     },
 };
 
@@ -1104,6 +1105,7 @@ pub fn main_shuffle_shoot_shuffle(
     _stop: usize,
     intermediate: &str,
     leave: bool,
+    do_gadgetize: bool,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -1128,9 +1130,14 @@ pub fn main_shuffle_shoot_shuffle(
     // Repeat `rounds` times
     let mut post_len = 0;
     let mut count = 0;
+    if do_gadgetize {
+        let aux = CircuitSeq { gates: Vec::new() };
+        circuit = gadgetize(&circuit, &aux, n);
+    }
+    let n = if do_gadgetize { 3 * n } else { n };
     if leave {
         circuit = interleave(
-            &circuit, 
+            &circuit,
             n,
             env,
             &dbs,
