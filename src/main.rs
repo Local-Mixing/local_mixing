@@ -1166,14 +1166,7 @@ Command::new("rocksdb_2")
                     .long("src")
                     .default_value("./db")
                     .value_parser(clap::value_parser!(String))
-                    .help("Source LMDB path"),
-            )
-            .arg(
-                Arg::new("dst")
-                    .long("dst")
-                    .default_value("./id_db")
-                    .value_parser(clap::value_parser!(String))
-                    .help("Destination LMDB path for identity databases"),
+                    .help("LMDB path (source shards and destination id_g* databases)"),
             )
     )
     .get_matches();
@@ -1217,7 +1210,7 @@ Command::new("rocksdb_2")
         //         let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
         //         let lmdb = "./db";
         //         let env = Environment::new()
-        //         .set_max_dbs(266)      
+        //         .set_max_dbs(300)      
         //         .set_map_size(700 * 1024 * 1024 * 1024) 
         //         .open(Path::new(lmdb))
         //         .expect("Failed to open lmdb");
@@ -1275,7 +1268,7 @@ Command::new("rocksdb_2")
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_dbs(266)      
+                .set_max_dbs(300)      
                 .set_map_size(700 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1304,7 +1297,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(266)      
+                .set_max_dbs(300)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1344,7 +1337,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(266)      
+                .set_max_dbs(300)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1399,7 +1392,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(266)      
+                .set_max_dbs(300)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1453,7 +1446,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(266)      
+                .set_max_dbs(300)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1508,7 +1501,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(266)      
+                .set_max_dbs(300)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1566,7 +1559,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(266)      
+                .set_max_dbs(300)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1635,7 +1628,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(266)      
+                .set_max_dbs(300)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1702,7 +1695,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000) 
-                .set_max_dbs(266)      
+                .set_max_dbs(300)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1766,7 +1759,7 @@ Command::new("rocksdb_2")
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
             let lmdb = "./db";
             let env = Environment::new()
-                .set_max_dbs(266)      
+                .set_max_dbs(300)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1798,7 +1791,7 @@ Command::new("rocksdb_2")
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
             let env = Environment::new()
-                .set_max_dbs(500)
+                .set_max_dbs(300)
                 .set_max_readers(10000)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
@@ -1830,7 +1823,7 @@ Command::new("rocksdb_2")
             let knuth = sub.get_flag("knuth");
             let lmdb = "./db";
             let env = Environment::new()
-                .set_max_dbs(266)      
+                .set_max_dbs(300)      
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1932,7 +1925,7 @@ Command::new("rocksdb_2")
             let env_path = "./db";
 
             let env = Environment::new()
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(64 * 1024 * 1024 * 1024)
                 .open(Path::new(env_path))
                 .expect("Failed to open lmdb");
@@ -1967,7 +1960,7 @@ Command::new("rocksdb_2")
             let env_path = "./db";
 
             let env = Environment::new()
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(env_path))
                 .expect("Failed to open lmdb");
@@ -2110,27 +2103,18 @@ Command::new("rocksdb_2")
         }
         Some(("gen_id_db", sub)) => {
             let src: &String = sub.get_one("src").expect("Missing --src");
-            let dst: &String = sub.get_one("dst").expect("Missing --dst");
 
-            let src_env = Environment::new()
-                .set_max_dbs(500)
+            let env = Environment::new()
+                .set_max_dbs(300)
                 .set_max_readers(10000)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(src.as_str()))
-                .expect("Failed to open source LMDB");
+                .expect("Failed to open LMDB");
 
-            let _ = std::fs::create_dir_all(dst.as_str());
-            let id_env = Environment::new()
-                .set_max_dbs(34)
-                .set_max_readers(10)
-                .set_map_size(100 * 1024 * 1024 * 1024)
-                .open(Path::new(dst.as_str()))
-                .expect("Failed to open destination LMDB");
+            let shard_dbs = open_shard_dbs(&env);
+            let id_dbs = open_id_dbs(&env);
 
-            let shard_dbs = open_shard_dbs(&src_env);
-            let id_dbs = open_id_dbs(&id_env);
-
-            generate_identity_db(&src_env, &shard_dbs, &id_env, &id_dbs);
+            generate_identity_db(&env, &shard_dbs, &id_dbs);
         }
         _ => unreachable!(),
     }
@@ -2236,7 +2220,7 @@ pub fn sql_to_lmdb(n: usize, m: usize) -> Result<(), ()> {
 
     fs::create_dir_all(lmdb_path).expect("Failed to create LMDB directory");
     let env = Environment::new()
-        .set_max_dbs(266)
+        .set_max_dbs(300)
         .set_map_size(map_size_bytes)
         .open(Path::new(lmdb_path))
         .expect("Failed to open LMDB environment");
@@ -2322,7 +2306,7 @@ pub fn sql_to_lmdb_perms(n: usize, m: usize) -> Result<(), ()> {
     // Open LMDB
     fs::create_dir_all(lmdb_path).expect("Failed to create LMDB directory");
     let env = Environment::new()
-        .set_max_dbs(266)
+        .set_max_dbs(300)
         .set_map_size(map_size_bytes)
         .open(Path::new(lmdb_path))
         .expect("Failed to open LMDB environment");
@@ -2423,7 +2407,7 @@ fn save_perm_tables_to_lmdb(
 
     std::fs::create_dir_all(env_path)?;
     let env = Environment::new()
-        .set_max_dbs(266)
+        .set_max_dbs(300)
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
@@ -2574,7 +2558,7 @@ fn save_tax_id_tables_to_lmdb(
 
     // Open environment
     let env = Environment::new()
-        .set_max_dbs(266)
+        .set_max_dbs(300)
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
@@ -2703,7 +2687,7 @@ pub fn fill_n_id(n: usize) {
     const BATCH_SIZE: usize = 10;
     let env = Arc::new(
         Environment::new()
-            .set_max_dbs(266)
+            .set_max_dbs(300)
             .set_map_size(800 * 1024 * 1024 * 1024)
             .set_max_readers(512)
             .open(Path::new("./db")).expect("Failed to open env")

@@ -72,15 +72,14 @@ pub fn open_id_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
 }
 
 pub fn generate_identity_db(
-    src_env: &lmdb::Environment,
+    env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
-    id_env: &lmdb::Environment,
     id_dbs: &[lmdb::Database],
 ) {
     let mut total = 0u64;
 
     for shard_idx in 0..256usize {
-        let txn = src_env.begin_ro_txn().expect("ro txn");
+        let txn = env.begin_ro_txn().expect("ro txn");
         let db = shard_dbs[shard_idx];
         let mut cursor = txn.open_ro_cursor(db).expect("cursor");
 
@@ -99,7 +98,7 @@ pub fn generate_identity_db(
             continue;
         }
 
-        let mut wtxn = id_env.begin_rw_txn().expect("rw txn");
+        let mut wtxn = env.begin_rw_txn().expect("rw txn");
 
         for value in &multi {
             let circuits = decode_circuits(value);
