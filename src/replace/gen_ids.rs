@@ -5,6 +5,7 @@ use lmdb::{Cursor, Transaction, WriteFlags};
 #[cfg(test)]
 mod tests {
     use super::decode_circuits;
+    use crate::circuit::circuit::CircuitSeq;
     use lmdb::{Cursor, Environment, Transaction};
     use std::path::Path;
     use std::time::Instant;
@@ -58,6 +59,98 @@ mod tests {
                 if total > 0 { counts[g] as f64 / total as f64 * 100.0 } else { 0.0 });
         }
         println!("  total:    {:>12}", total);
+    }
+
+    #[test]
+    fn list_completion_m2() {
+        let env = Environment::new()
+            .set_max_dbs(300)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("Failed to open ./db");
+
+        // Open all 256 shard DBs.
+        let shard_dbs: Vec<lmdb::Database> = (0u8..=255)
+            .map(|s| {
+                let name = format!("{:02x}", s);
+                env.open_db(Some(name.as_str()))
+                    .unwrap_or_else(|e| panic!("Failed to open shard {:02x}: {:?}", s, e))
+            })
+            .collect();
+
+        let comp_db = env.open_db(Some("completion_m2"))
+            .expect("completion_m2 DB not found — run build_completion_m2 first");
+
+        let txn = env.begin_ro_txn().expect("ro txn");
+
+        // Collect all entries so we can drop the cursor before doing shard lookups.
+        let mut entries: Vec<(Vec<u8>, Vec<u8>)> = {
+            let mut cursor = txn.open_ro_cursor(comp_db).expect("cursor");
+            cursor.iter().map(|(k, v)| (k.to_vec(), v.to_vec())).collect()
+        };
+        entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+
+        let mut missing = 0u32;
+
+        for (key, value) in &entries {
+            let shard_idx = key[0] as usize;
+
+            // Verify the hash exists in the corresponding shard.
+            let shard_val: Option<&[u8]> = txn.get(shard_dbs[shard_idx], key).ok();
+            if shard_val.is_none() {
+                let hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
+                println!("MISSING from shard {:02x}: {}", shard_idx, hex);
+                missing += 1;
+            }
+
+            // Find the shortest circuit in the shard to use as the canonical label.
+            let canonical_label = shard_val
+                .and_then(|sv| {
+                    let mut shortest: Option<CircuitSeq> = None;
+                    let mut pos = 0;
+                    while pos < sv.len() {
+                        let len = sv[pos] as usize;
+                        pos += 1;
+                        if pos + len > sv.len() { break; }
+                        let c = CircuitSeq::from_blob(&sv[pos..pos + len]);
+                        pos += len;
+                        if shortest.as_ref().map_or(true, |s: &CircuitSeq| c.gates.len() < s.gates.len()) {
+                            shortest = Some(c);
+                        }
+                    }
+                    shortest.map(|c| c.to_string(c.used_wires().len()))
+                })
+                .unwrap_or_else(|| {
+                    let hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
+                    format!("<hash:{}>", &hex[..8])
+                });
+
+            // Decode and print completions.
+            let mut completions: Vec<CircuitSeq> = Vec::new();
+            let mut pos = 0;
+            while pos < value.len() {
+                let len = value[pos] as usize;
+                pos += 1;
+                if pos + len > value.len() { break; }
+                completions.push(CircuitSeq::from_blob(&value[pos..pos + len]));
+                pos += len;
+            }
+
+            println!("Canonical: {}  [shard {:02x} {}]  ({} completions)",
+                canonical_label,
+                shard_idx,
+                if shard_val.is_some() { "OK" } else { "MISSING" },
+                completions.len());
+            for (i, c) in completions.iter().enumerate() {
+                println!("  {:2}. {}", i + 1, c.to_string(c.used_wires().len()));
+            }
+            println!();
+        }
+
+        drop(txn);
+
+        println!("Total: {} canonical circuits, {} missing from shards", entries.len(), missing);
+        assert_eq!(missing, 0, "{} hashes not found in shard DBs", missing);
     }
 }
 
