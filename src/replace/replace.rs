@@ -190,6 +190,80 @@ pub fn compress_loop(
     acc
 }
 
+/// Like `compress_loop` but exits as soon as the circuit drops below `stop` gates.
+/// On the final round use the plain `compress_loop` instead.
+pub fn compress_loop_early(
+    circuit: &CircuitSeq,
+    n: usize,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    stable_max: usize,
+    curr_round: usize,
+    last_round: usize,
+    output_path: &str,
+    stop: usize,
+) -> CircuitSeq {
+    let mut acc = circuit.clone();
+    let mut rng = rand::rng();
+    let mut stable_count = 0;
+    let mut mode = 0usize;
+
+    while stable_count < stable_max {
+        let before = acc.gates.len();
+
+        let max_chunks = 4 * rayon::current_num_threads().max(1);
+        let k = if before <= 1500 {
+            1
+        } else {
+            ((before + 1499) / 1500).min(max_chunks)
+        };
+
+        let current_mode = [0, 1, 2][mode];
+        mode = (mode + 1) % 3;
+
+        let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
+        let compressed_chunks: Vec<Vec<[u8; 3]>> = ranges
+            .into_par_iter()
+            .map(|(start, end)| {
+                let sub = CircuitSeq {
+                    gates: acc.gates[start..end].to_vec(),
+                };
+                compress_big_ancillas(&sub, 100, n, env, shard_dbs, current_mode).gates
+            })
+            .collect();
+
+        let total_len: usize = compressed_chunks.iter().map(|c| c.len()).sum();
+        let mut new_gates = Vec::with_capacity(total_len);
+        for chunk in compressed_chunks {
+            new_gates.extend(chunk);
+        }
+
+        acc.gates = new_gates;
+        let after = acc.gates.len();
+
+        if after < stop {
+            println!("  {}/{}: Early stop at {} gates (below {})", curr_round, last_round, after, stop);
+            break;
+        }
+
+        if after == before {
+            stable_count += 1;
+            println!("  {}/{}: Stable {}/{}: {} gates", curr_round, last_round, stable_count, stable_max, after);
+        } else {
+            stable_count = 0;
+            println!("  {}/{}: Reduced: {} gates", curr_round, last_round, after);
+        }
+
+        if std::path::Path::new("write_now").exists() {
+            std::fs::remove_file("write_now").ok();
+            let mut f = File::create(output_path).expect("create");
+            writeln!(f, "{}", acc.repr()).expect("write");
+            eprintln!("Wrote {}", output_path);
+        }
+    }
+    acc
+}
+
 // Expand with ancilla wires or gates
 pub fn expand_lmdb<'a>(
     c: &CircuitSeq,

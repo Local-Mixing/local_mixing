@@ -1639,13 +1639,15 @@ Command::new("rocksdb_2")
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
+                let shard_dbs = open_shard_dbs(&env);
                 main_shooting_game(
-                    &c, 
+                    &c,
                     rounds,
-                    n, 
-                    d, 
-                    &env, 
-                    id_len, 
+                    n,
+                    d,
+                    &env,
+                    &shard_dbs,
+                    id_len,
                     tower,
                     stop,
                     i,

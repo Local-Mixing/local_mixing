@@ -9,7 +9,7 @@ use itertools::Itertools;
 use crate::{
     circuit::circuit::CircuitSeq,
     replace::{
-        replace::compress_loop,
+        replace::{compress_loop, compress_loop_early},
         mixing::{
             abutterfly_big, butterfly_big, interleave_sequential_big, replace_and_compress_big, replace_and_compress_big_distance, simple_shooting_game, zip_sequential_butterfly
         },
@@ -713,11 +713,12 @@ pub fn main_sequential_butterfly(
 }
 
 pub fn main_shooting_game(
-    c: &CircuitSeq, 
-    rounds: usize, 
-    n: usize, 
-    save: &str, 
-    env: &lmdb::Environment, 
+    c: &CircuitSeq,
+    rounds: usize,
+    n: usize,
+    save: &str,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
     id_len: usize,
     tower: bool,
     stop: usize,
@@ -767,7 +768,19 @@ pub fn main_shooting_game(
         if circuit.gates.len() == 0 {
             break;
         }
-        
+
+        let is_last = i + 1 == rounds;
+        circuit = if is_last {
+            compress_loop(&circuit, n, env, shard_dbs, 12, i + 1, rounds, "temp_compression.txt")
+        } else {
+            let early_stop = circuit.gates.len() / 2;
+            compress_loop_early(&circuit, n, env, shard_dbs, 12, i + 1, rounds, "temp_compression.txt", early_stop)
+        };
+
+        if circuit.gates.len() == 0 {
+            break;
+        }
+
         if circuit.gates.len() == post_len {
             count += 1;
         } else {
