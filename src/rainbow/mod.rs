@@ -1,2 +1,2 @@
 pub mod canonical;
-pub use canonical::{Canonicalization, CandSet, init};
+pub use canonical::{CandSet, Canonicalization, init};

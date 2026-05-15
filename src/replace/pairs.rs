@@ -7,9 +7,9 @@ use std::{
     time::Instant,
 };
 
-use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
+use libc::{F_GETFL, F_SETFL, O_NONBLOCK, fcntl};
 
-use rand::{prelude::SliceRandom, Rng};
+use rand::{Rng, prelude::SliceRandom};
 use serde::{Deserialize, Serialize};
 
 extern crate lmdb_sys;
@@ -20,12 +20,12 @@ use crate::{
     replace::{
         identities::{get_random_identity, random_canonical_id},
         replace::IDENTITY_TIME,
-        transpositions::{Transpositions},
+        transpositions::Transpositions,
     },
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Gate taxonomy and Replacement Pair 
+// Gate taxonomy and Replacement Pair
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CollisionType {
@@ -39,7 +39,7 @@ pub enum CollisionType {
 pub struct GatePair {
     pub a: CollisionType,
     pub c1: CollisionType,
-    pub c2: CollisionType
+    pub c2: CollisionType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -51,11 +51,17 @@ pub struct GateTri {
 
 impl GatePair {
     pub fn new() -> Self {
-        GatePair { a: CollisionType::OnNew, c1: CollisionType::OnNew, c2: CollisionType::OnNew }
+        GatePair {
+            a: CollisionType::OnNew,
+            c1: CollisionType::OnNew,
+            c2: CollisionType::OnNew,
+        }
     }
 
     pub fn is_none(gate_pair: &Self) -> bool {
-        gate_pair.a == CollisionType::OnNew && gate_pair.c1 == CollisionType::OnNew && gate_pair.c2 == CollisionType::OnNew
+        gate_pair.a == CollisionType::OnNew
+            && gate_pair.c1 == CollisionType::OnNew
+            && gate_pair.c2 == CollisionType::OnNew
     }
 
     pub fn to_int(gp: &Self) -> usize {
@@ -65,71 +71,170 @@ impl GatePair {
 
         if a == CollisionType::OnNew && b == CollisionType::OnNew && c == CollisionType::OnNew {
             0
-        } else if a == CollisionType::OnActive && b == CollisionType::OnNew && c == CollisionType::OnNew {
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnNew
+        {
             1
-        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnNew && c == CollisionType::OnNew {
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnNew
+        {
             2
-        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnNew && c == CollisionType::OnNew {
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnNew
+        {
             3
-        } else if a == CollisionType::OnNew && b == CollisionType::OnActive && c == CollisionType::OnNew {
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnNew
+        {
             4
-        } else if a == CollisionType::OnNew && b == CollisionType::OnCtrl1 && c == CollisionType::OnNew {
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnNew
+        {
             5
-        } else if a == CollisionType::OnNew && b == CollisionType::OnCtrl2 && c == CollisionType::OnNew {
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnNew
+        {
             6
-        } else if a == CollisionType::OnNew && b == CollisionType::OnNew && c == CollisionType::OnActive {
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnActive
+        {
             7
-        } else if a == CollisionType::OnNew && b == CollisionType::OnNew && c == CollisionType::OnCtrl1 {
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnCtrl1
+        {
             8
-        } else if a == CollisionType::OnNew && b == CollisionType::OnNew && c == CollisionType::OnCtrl2 {
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnCtrl2
+        {
             9
-        } else if a == CollisionType::OnActive && b == CollisionType::OnCtrl1 && c == CollisionType::OnNew {
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnNew
+        {
             10
-        } else if a == CollisionType::OnActive && b == CollisionType::OnCtrl2 && c == CollisionType::OnNew {
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnNew
+        {
             11
-        } else if a == CollisionType::OnActive && b == CollisionType::OnNew && c == CollisionType::OnCtrl1 {
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnCtrl1
+        {
             12
-        } else if a == CollisionType::OnActive && b == CollisionType::OnNew && c == CollisionType::OnCtrl2 {
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnCtrl2
+        {
             13
-        } else if a == CollisionType::OnActive && b == CollisionType::OnCtrl1 && c == CollisionType::OnCtrl2 {
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnCtrl2
+        {
             14
-        } else if a == CollisionType::OnActive && b == CollisionType::OnCtrl2 && c == CollisionType::OnCtrl1 {
+        } else if a == CollisionType::OnActive
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnCtrl1
+        {
             15
-        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnActive && c == CollisionType::OnNew {
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnNew
+        {
             16
-        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnCtrl2 && c == CollisionType::OnNew {
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnNew
+        {
             17
-        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnNew && c == CollisionType::OnActive {
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnActive
+        {
             18
-        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnNew && c == CollisionType::OnCtrl2 {
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnCtrl2
+        {
             19
-        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnActive && c == CollisionType::OnCtrl2 {
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnCtrl2
+        {
             20
-        } else if a == CollisionType::OnCtrl1 && b == CollisionType::OnCtrl2 && c == CollisionType::OnActive {
+        } else if a == CollisionType::OnCtrl1
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnActive
+        {
             21
-        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnActive && c == CollisionType::OnNew {
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnNew
+        {
             22
-        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnCtrl1 && c == CollisionType::OnNew {
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnNew
+        {
             23
-        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnNew && c == CollisionType::OnActive {
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnActive
+        {
             24
-        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnNew && c == CollisionType::OnCtrl1 {
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnNew
+            && c == CollisionType::OnCtrl1
+        {
             25
-        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnActive && c == CollisionType::OnCtrl1 {
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnCtrl1
+        {
             26
-        } else if a == CollisionType::OnCtrl2 && b == CollisionType::OnCtrl1 && c == CollisionType::OnActive {
+        } else if a == CollisionType::OnCtrl2
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnActive
+        {
             27
-        } else if a == CollisionType::OnNew && b == CollisionType::OnActive && c == CollisionType::OnCtrl1 {
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnCtrl1
+        {
             28
-        } else if a == CollisionType::OnNew && b == CollisionType::OnActive && c == CollisionType::OnCtrl2 {
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnActive
+            && c == CollisionType::OnCtrl2
+        {
             29
-        } else if a == CollisionType::OnNew && b == CollisionType::OnCtrl1 && c == CollisionType::OnActive {
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnActive
+        {
             30
-        } else if a == CollisionType::OnNew && b == CollisionType::OnCtrl1 && c == CollisionType::OnCtrl2 {
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnCtrl1
+            && c == CollisionType::OnCtrl2
+        {
             31
-        } else if a == CollisionType::OnNew && b == CollisionType::OnCtrl2 && c == CollisionType::OnActive {
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnActive
+        {
             32
-        } else if a == CollisionType::OnNew && b == CollisionType::OnCtrl2 && c == CollisionType::OnCtrl1 {
+        } else if a == CollisionType::OnNew
+            && b == CollisionType::OnCtrl2
+            && c == CollisionType::OnCtrl1
+        {
             33
         } else {
             panic!("Not a valid GatePair");
@@ -140,40 +245,176 @@ impl GatePair {
         use CollisionType::*;
 
         match i {
-            0 => GatePair { a: OnNew, c1: OnNew, c2: OnNew },
-            1 => GatePair { a: OnActive, c1: OnNew, c2: OnNew },
-            2 => GatePair { a: OnCtrl1,  c1: OnNew, c2: OnNew },
-            3 => GatePair { a: OnCtrl2,  c1: OnNew, c2: OnNew },
-            4 => GatePair { a: OnNew, c1: OnActive, c2: OnNew },
-            5 => GatePair { a: OnNew, c1: OnCtrl1, c2: OnNew },
-            6 => GatePair { a: OnNew, c1: OnCtrl2, c2: OnNew },
-            7 => GatePair { a: OnNew, c1: OnNew, c2: OnActive },
-            8 => GatePair { a: OnNew, c1: OnNew, c2: OnCtrl1 },
-            9 => GatePair { a: OnNew, c1: OnNew, c2: OnCtrl2 },
-            10 => GatePair { a: OnActive, c1: OnCtrl1, c2: OnNew },
-            11 => GatePair { a: OnActive, c1: OnCtrl2, c2: OnNew },
-            12 => GatePair { a: OnActive, c1: OnNew, c2: OnCtrl1 },
-            13 => GatePair { a: OnActive, c1: OnNew, c2: OnCtrl2 },
-            14 => GatePair { a: OnActive, c1: OnCtrl1, c2: OnCtrl2 },
-            15 => GatePair { a: OnActive, c1: OnCtrl2, c2: OnCtrl1 },
-            16 => GatePair { a: OnCtrl1, c1: OnActive, c2: OnNew },
-            17 => GatePair { a: OnCtrl1, c1: OnCtrl2, c2: OnNew },
-            18 => GatePair { a: OnCtrl1, c1: OnNew, c2: OnActive },
-            19 => GatePair { a: OnCtrl1, c1: OnNew, c2: OnCtrl2 },
-            20 => GatePair { a: OnCtrl1, c1: OnActive, c2: OnCtrl2 },
-            21 => GatePair { a: OnCtrl1, c1: OnCtrl2, c2: OnActive },
-            22 => GatePair { a: OnCtrl2, c1: OnActive, c2: OnNew },
-            23 => GatePair { a: OnCtrl2, c1: OnCtrl1, c2: OnNew },
-            24 => GatePair { a: OnCtrl2, c1: OnNew, c2: OnActive },
-            25 => GatePair { a: OnCtrl2, c1: OnNew, c2: OnCtrl1 },
-            26 => GatePair { a: OnCtrl2, c1: OnActive, c2: OnCtrl1 },
-            27 => GatePair { a: OnCtrl2, c1: OnCtrl1, c2: OnActive },
-            28 => GatePair { a: OnNew, c1: OnActive, c2: OnCtrl1 },
-            29 => GatePair { a: OnNew, c1: OnActive, c2: OnCtrl2 },
-            30 => GatePair { a: OnNew, c1: OnCtrl1, c2: OnActive },
-            31 => GatePair { a: OnNew, c1: OnCtrl1, c2: OnCtrl2 },
-            32 => GatePair { a: OnNew, c1: OnCtrl2, c2: OnActive },
-            33 => GatePair { a: OnNew, c1: OnCtrl2, c2: OnCtrl1 },
+            0 => GatePair {
+                a: OnNew,
+                c1: OnNew,
+                c2: OnNew,
+            },
+            1 => GatePair {
+                a: OnActive,
+                c1: OnNew,
+                c2: OnNew,
+            },
+            2 => GatePair {
+                a: OnCtrl1,
+                c1: OnNew,
+                c2: OnNew,
+            },
+            3 => GatePair {
+                a: OnCtrl2,
+                c1: OnNew,
+                c2: OnNew,
+            },
+            4 => GatePair {
+                a: OnNew,
+                c1: OnActive,
+                c2: OnNew,
+            },
+            5 => GatePair {
+                a: OnNew,
+                c1: OnCtrl1,
+                c2: OnNew,
+            },
+            6 => GatePair {
+                a: OnNew,
+                c1: OnCtrl2,
+                c2: OnNew,
+            },
+            7 => GatePair {
+                a: OnNew,
+                c1: OnNew,
+                c2: OnActive,
+            },
+            8 => GatePair {
+                a: OnNew,
+                c1: OnNew,
+                c2: OnCtrl1,
+            },
+            9 => GatePair {
+                a: OnNew,
+                c1: OnNew,
+                c2: OnCtrl2,
+            },
+            10 => GatePair {
+                a: OnActive,
+                c1: OnCtrl1,
+                c2: OnNew,
+            },
+            11 => GatePair {
+                a: OnActive,
+                c1: OnCtrl2,
+                c2: OnNew,
+            },
+            12 => GatePair {
+                a: OnActive,
+                c1: OnNew,
+                c2: OnCtrl1,
+            },
+            13 => GatePair {
+                a: OnActive,
+                c1: OnNew,
+                c2: OnCtrl2,
+            },
+            14 => GatePair {
+                a: OnActive,
+                c1: OnCtrl1,
+                c2: OnCtrl2,
+            },
+            15 => GatePair {
+                a: OnActive,
+                c1: OnCtrl2,
+                c2: OnCtrl1,
+            },
+            16 => GatePair {
+                a: OnCtrl1,
+                c1: OnActive,
+                c2: OnNew,
+            },
+            17 => GatePair {
+                a: OnCtrl1,
+                c1: OnCtrl2,
+                c2: OnNew,
+            },
+            18 => GatePair {
+                a: OnCtrl1,
+                c1: OnNew,
+                c2: OnActive,
+            },
+            19 => GatePair {
+                a: OnCtrl1,
+                c1: OnNew,
+                c2: OnCtrl2,
+            },
+            20 => GatePair {
+                a: OnCtrl1,
+                c1: OnActive,
+                c2: OnCtrl2,
+            },
+            21 => GatePair {
+                a: OnCtrl1,
+                c1: OnCtrl2,
+                c2: OnActive,
+            },
+            22 => GatePair {
+                a: OnCtrl2,
+                c1: OnActive,
+                c2: OnNew,
+            },
+            23 => GatePair {
+                a: OnCtrl2,
+                c1: OnCtrl1,
+                c2: OnNew,
+            },
+            24 => GatePair {
+                a: OnCtrl2,
+                c1: OnNew,
+                c2: OnActive,
+            },
+            25 => GatePair {
+                a: OnCtrl2,
+                c1: OnNew,
+                c2: OnCtrl1,
+            },
+            26 => GatePair {
+                a: OnCtrl2,
+                c1: OnActive,
+                c2: OnCtrl1,
+            },
+            27 => GatePair {
+                a: OnCtrl2,
+                c1: OnCtrl1,
+                c2: OnActive,
+            },
+            28 => GatePair {
+                a: OnNew,
+                c1: OnActive,
+                c2: OnCtrl1,
+            },
+            29 => GatePair {
+                a: OnNew,
+                c1: OnActive,
+                c2: OnCtrl2,
+            },
+            30 => GatePair {
+                a: OnNew,
+                c1: OnCtrl1,
+                c2: OnActive,
+            },
+            31 => GatePair {
+                a: OnNew,
+                c1: OnCtrl1,
+                c2: OnCtrl2,
+            },
+            32 => GatePair {
+                a: OnNew,
+                c1: OnCtrl2,
+                c2: OnActive,
+            },
+            33 => GatePair {
+                a: OnNew,
+                c1: OnCtrl2,
+                c2: OnCtrl1,
+            },
 
             _ => panic!("Invalid GatePair index"),
         }
@@ -189,7 +430,7 @@ pub fn get_collision_type(g1: &[u8; 3], pin: u8) -> CollisionType {
     }
 }
 
-pub fn gate_pair_taxonomy(g1: &[u8;3], g2: &[u8;3]) -> GatePair {
+pub fn gate_pair_taxonomy(g1: &[u8; 3], g2: &[u8; 3]) -> GatePair {
     GatePair {
         a: get_collision_type(&g1, g2[0]),
         c1: get_collision_type(&g1, g2[1]),
@@ -197,23 +438,26 @@ pub fn gate_pair_taxonomy(g1: &[u8;3], g2: &[u8;3]) -> GatePair {
     }
 }
 
-fn gate_tri_taxonomy(g0: &[u8;3], g1: &[u8;3], g2: &[u8;3]) -> GateTri {
+fn gate_tri_taxonomy(g0: &[u8; 3], g1: &[u8; 3], g2: &[u8; 3]) -> GateTri {
     GateTri {
         first: gate_pair_taxonomy(g0, g1),
         second: gate_pair_taxonomy(g1, g2),
-        gap: gate_pair_taxonomy(g0, g2)
+        gap: gate_pair_taxonomy(g0, g2),
     }
 }
 
 // Partitions circuit into pairs and then replaces each pair
 pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, env: &lmdb::Environment) {
-    println!("Starting replace_pairs, circuit length: {}", circuit.gates.len());
+    println!(
+        "Starting replace_pairs, circuit length: {}",
+        circuit.gates.len()
+    );
     // let start = circuit.clone();
     let mut pairs: HashMap<GatePair, Vec<usize>> = HashMap::new();
     let gates = circuit.gates.clone();
     let m = circuit.gates.len();
     let mut replaced = 0;
-    let mut to_replace: Vec<(Vec<[u8;3]>, Vec<[u8;3]>)> = vec![(Vec::new(), Vec::new()); m / 2];
+    let mut to_replace: Vec<(Vec<[u8; 3]>, Vec<[u8; 3]>)> = vec![(Vec::new(), Vec::new()); m / 2];
     if m < 2 {
         println!("Circuit too small, returning");
         return;
@@ -227,15 +471,13 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, env: &lmdb::Env
         let taxonomy = gate_pair_taxonomy(&g1, &g2);
 
         if !GatePair::is_none(&taxonomy) {
-            pairs.entry(taxonomy)
-                .or_default()
-                .push(i);
+            pairs.entry(taxonomy).or_default().push(i);
         }
         i += 2;
     }
     let num_pairs: usize = pairs.values().map(|v| v.len()).sum();
     println!("Pairs collected: {}", num_pairs);
-    
+
     let mut rng = rand::rng();
     let mut fail = 0;
     while !pairs.is_empty() && fail < 100 {
@@ -263,7 +505,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, env: &lmdb::Env
                     new_circuit.extend(id.gates[0..i].iter());
                     // let nc = CircuitSeq { gates: new_circuit.clone() };
                     // if nc.probably_equal(&CircuitSeq { gates: vec![id.gates[i+1], id.gates[i]]}, num_wires, 10000).is_err() { panic!("pairs dont match new"); }
-                    to_replace[chosen / 2] = (new_circuit, vec![id.gates[i], id.gates[i+1]]);
+                    to_replace[chosen / 2] = (new_circuit, vec![id.gates[i], id.gates[i + 1]]);
 
                     if v.is_empty() {
                         pairs.remove(&tax);
@@ -296,8 +538,8 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, env: &lmdb::Env
                     new_circuit.extend(id.gates[0..i].iter());
                     // let nc = CircuitSeq { gates: new_circuit.clone() };
                     // if nc.probably_equal(&CircuitSeq { gates: vec![id.gates[i+1], id.gates[i]]}, num_wires, 10000).is_err() { panic!("reverse pairs dont match new"); }
-                    to_replace[chosen / 2] = (new_circuit, vec![id.gates[i], id.gates[i+1]]);
-                    
+                    to_replace[chosen / 2] = (new_circuit, vec![id.gates[i], id.gates[i + 1]]);
+
                     if v.is_empty() {
                         pairs.remove(&tax);
                     }
@@ -323,8 +565,19 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, env: &lmdb::Env
         replaced += 1;
         let index = 2 * i;
         let (g1, g2) = (circuit.gates[index], circuit.gates[index + 1]);
-        let replacement_circ = CircuitSeq { gates: replacement.0 };
-        let mut used_wires: Vec<u16> = vec![(num_wires + 1) as u16; max(replacement_circ.max_wire(), CircuitSeq { gates: replacement.1.clone() }.max_wire()) + 1];
+        let replacement_circ = CircuitSeq {
+            gates: replacement.0,
+        };
+        let mut used_wires: Vec<u16> = vec![
+            (num_wires + 1) as u16;
+            max(
+                replacement_circ.max_wire(),
+                CircuitSeq {
+                    gates: replacement.1.clone()
+                }
+                .max_wire()
+            ) + 1
+        ];
 
         used_wires[replacement.1[0][0] as usize] = g1[0] as u16;
         used_wires[replacement.1[0][1] as usize] = g1[1] as u16;
@@ -335,7 +588,10 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, env: &lmdb::Env
         // println!("Gates g1: {:?} g2: {:?}", g1, g2);
 
         let tax = gate_pair_taxonomy(&g1, &g2);
-        if tax.a == CollisionType::OnNew || tax.c1 == CollisionType::OnNew || tax.c2 == CollisionType::OnNew {
+        if tax.a == CollisionType::OnNew
+            || tax.c1 == CollisionType::OnNew
+            || tax.c2 == CollisionType::OnNew
+        {
             // println!("Found OnNew collision, assigning new wires...");
         }
 
@@ -354,10 +610,10 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, env: &lmdb::Env
                 loop {
                     let wire = rng.random_range(0..num_wires) as u16;
                     if used_wires.contains(&wire) {
-                        continue
+                        continue;
                     }
                     used_wires[i] = wire;
-                    break
+                    break;
                 }
             }
         }
@@ -367,7 +623,8 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, env: &lmdb::Env
         // if replacement.probably_equal(&CircuitSeq { gates: vec![[1,2,3], [1,2,3]]}, 64, 100000).is_err() {
         //     panic!("Replacement is not an id");
         // }
-        let used_wires: Vec<u8> = used_wires.into_iter()
+        let used_wires: Vec<u8> = used_wires
+            .into_iter()
             .map(|x| u8::try_from(x).expect("value too big for u8"))
             .collect();
 
@@ -407,7 +664,7 @@ pub fn replace_sequential_pairs(
     env: &lmdb::Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
-    tower: bool
+    tower: bool,
 ) -> (usize, usize, usize, usize) {
     make_stdin_nonblocking();
     let gates = circuit.gates.clone();
@@ -444,108 +701,109 @@ pub fn replace_sequential_pairs(
         let tax = gate_pair_taxonomy(&left, &right);
 
         // if !GatePair::is_none(&tax) {
-            already_collided += 1;
-            let mut produced: Option<Vec<[u8; 3]>> = None;
+        already_collided += 1;
+        let mut produced: Option<Vec<[u8; 3]>> = None;
 
-            while produced.is_none() && fail < 100 {
-                fail += 1;
-                let id_len = if GatePair::is_none(&tax) {
-                    let r = rng.random_range(0..100);
-                    match r { 
-                        0..45 => 6,   
-                        45..90 => 7,   
-                        _       => 16, 
-                    }
-                } else {
-                    let r = rng.random_range(0..100);
-                    match r {
-                        0..30  => 5,   
-                        30..60 => 6,   
-                        60..90 => 7,   
-                        _       => 16, 
-                    }
-                };
-                // let id_len = 16;
-                let t_id = Instant::now();
-                let id = match get_random_identity(id_len, tax, env, dbs, tower) {
-                    Ok(id) => {
-                        IDENTITY_TIME.fetch_add(t_id.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                        id
-                    }
-                    Err(_) => {
-                        IDENTITY_TIME.fetch_add(t_id.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                        fail += 1;
-                        continue;
-                    }
-                };
-
-                let new_circuit = id.gates[2..].to_vec();
-                let replacement_circ = CircuitSeq { gates: new_circuit };
-
-                let mut used_wires: Vec<u16> = vec![
-                    (num_wires + 1) as u16;
-                    std::cmp::max(
-                        replacement_circ.max_wire(),
-                        CircuitSeq {
-                            gates: vec![id.gates[0], id.gates[1]],
-                        }
-                        .max_wire(),
-                    ) + 1
-                ];
-
-                used_wires[id.gates[0][0] as usize] = left[0] as u16;
-                used_wires[id.gates[0][1] as usize] = left[1] as u16;
-                used_wires[id.gates[0][2] as usize] = left[2] as u16;
-
-                let mut k = 0;
-                for collision in &[tax.a, tax.c1, tax.c2] {
-                    if *collision == CollisionType::OnNew {
-                        used_wires[id.gates[1][k] as usize] = right[k] as u16;
-                    }
-                    k += 1;
+        while produced.is_none() && fail < 100 {
+            fail += 1;
+            let id_len = if GatePair::is_none(&tax) {
+                let r = rng.random_range(0..100);
+                match r {
+                    0..45 => 6,
+                    45..90 => 7,
+                    _ => 16,
                 }
-
-                let mut available_wires: Vec<u16> = (0..num_wires as u16)
-                    .filter(|w| !used_wires.contains(w))
-                    .collect();
-
-                available_wires.shuffle(&mut rng);
-                for w in 0..used_wires.len() {
-                    if used_wires[w] == (num_wires + 1) as u16 {
-                        if let Some(&wire) = available_wires.get(0) {
-                            used_wires[w] = wire;
-                            available_wires.remove(0);
-                        } else {
-                            panic!("No available wires left to assign!");
-                        }
-                    }
-                }
-
-                let used_wires: Vec<u8> = used_wires.into_iter()
-                    .map(|x| u8::try_from(x).expect("value too big for u8"))
-                    .collect();
-                
-                produced = Some(
-                    CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
-                        .gates
-                        .into_iter()
-                        .rev()
-                        .collect()
-                );
-
-                fail += 1;
-            }
-
-            if let Some(mut gates_out) = produced {
-                out.append(&mut gates_out);
-                left = out.pop().unwrap();
             } else {
-                out.push(left);
-                left = right;
+                let r = rng.random_range(0..100);
+                match r {
+                    0..30 => 5,
+                    30..60 => 6,
+                    60..90 => 7,
+                    _ => 16,
+                }
+            };
+            // let id_len = 16;
+            let t_id = Instant::now();
+            let id = match get_random_identity(id_len, tax, env, dbs, tower) {
+                Ok(id) => {
+                    IDENTITY_TIME.fetch_add(t_id.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    id
+                }
+                Err(_) => {
+                    IDENTITY_TIME.fetch_add(t_id.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    fail += 1;
+                    continue;
+                }
+            };
+
+            let new_circuit = id.gates[2..].to_vec();
+            let replacement_circ = CircuitSeq { gates: new_circuit };
+
+            let mut used_wires: Vec<u16> = vec![
+                (num_wires + 1) as u16;
+                std::cmp::max(
+                    replacement_circ.max_wire(),
+                    CircuitSeq {
+                        gates: vec![id.gates[0], id.gates[1]],
+                    }
+                    .max_wire(),
+                ) + 1
+            ];
+
+            used_wires[id.gates[0][0] as usize] = left[0] as u16;
+            used_wires[id.gates[0][1] as usize] = left[1] as u16;
+            used_wires[id.gates[0][2] as usize] = left[2] as u16;
+
+            let mut k = 0;
+            for collision in &[tax.a, tax.c1, tax.c2] {
+                if *collision == CollisionType::OnNew {
+                    used_wires[id.gates[1][k] as usize] = right[k] as u16;
+                }
+                k += 1;
             }
 
-            fail = 0;
-            i += 1;
+            let mut available_wires: Vec<u16> = (0..num_wires as u16)
+                .filter(|w| !used_wires.contains(w))
+                .collect();
+
+            available_wires.shuffle(&mut rng);
+            for w in 0..used_wires.len() {
+                if used_wires[w] == (num_wires + 1) as u16 {
+                    if let Some(&wire) = available_wires.get(0) {
+                        used_wires[w] = wire;
+                        available_wires.remove(0);
+                    } else {
+                        panic!("No available wires left to assign!");
+                    }
+                }
+            }
+
+            let used_wires: Vec<u8> = used_wires
+                .into_iter()
+                .map(|x| u8::try_from(x).expect("value too big for u8"))
+                .collect();
+
+            produced = Some(
+                CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
+                    .gates
+                    .into_iter()
+                    .rev()
+                    .collect(),
+            );
+
+            fail += 1;
+        }
+
+        if let Some(mut gates_out) = produced {
+            out.append(&mut gates_out);
+            left = out.pop().unwrap();
+        } else {
+            out.push(left);
+            left = right;
+        }
+
+        fail = 0;
+        i += 1;
         // Old code to use if the two gates do not touch in any way
         // } else {
         //     shoot_count += 1;
@@ -684,15 +942,15 @@ pub fn replace_sequential_pairs(
 
 // returns the id-2 and the length
 pub fn replace_single_pair(
-    left: &[u8;3],
-    right: &[u8;3],
+    left: &[u8; 3],
+    right: &[u8; 3],
     num_wires: usize,
     env: &lmdb::Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
     tower: bool,
     id_len: usize,
-) -> (Vec<[u8;3]>, usize) {
+) -> (Vec<[u8; 3]>, usize) {
     make_stdin_nonblocking();
     let mut rng = rand::rng();
     let tax = gate_pair_taxonomy(&left, &right);
@@ -701,29 +959,29 @@ pub fn replace_single_pair(
     while !id_gen {
         let mut id_len = id_len;
         if id_len == 0 {
-             id_len = if GatePair::is_none(&tax) {
+            id_len = if GatePair::is_none(&tax) {
                 let r = rng.random_range(0..100);
-                match r { 
-                    0..45 => 6,   
-                    45..90 => 7,   
-                    _       => 16, 
+                match r {
+                    0..45 => 6,
+                    45..90 => 7,
+                    _ => 16,
                 }
             } else {
                 let r = rng.random_range(0..100);
                 match r {
-                    0..30  => 5,   
-                    30..60 => 6,   
-                    60..90 => 7,   
-                    _       => 16, 
+                    0..30 => 5,
+                    30..60 => 6,
+                    60..90 => 7,
+                    _ => 16,
                 }
             };
         }
-        
+
         id = match get_random_identity(id_len, tax, env, dbs, tower) {
             Ok(id) => {
                 id_gen = true;
                 id
-            },
+            }
             Err(_) => {
                 continue;
             }
@@ -760,7 +1018,7 @@ pub fn replace_single_pair(
     let mut available_wires: Vec<u16> = (0..num_wires as u16)
         .filter(|w| !used_wires.contains(w))
         .collect();
-    
+
     available_wires.shuffle(&mut rng);
     for w in 0..used_wires.len() {
         if used_wires[w] == (num_wires + 1) as u16 {
@@ -773,16 +1031,19 @@ pub fn replace_single_pair(
         }
     }
 
-    let used_wires: Vec<u8> = used_wires.into_iter()
-    .map(|x| u8::try_from(x).expect("value too big for u8"))
-    .collect();
-
-    (CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
-        .gates
+    let used_wires: Vec<u8> = used_wires
         .into_iter()
-        .rev()
-        .collect(),
-    id.gates.len() - 2)
+        .map(|x| u8::try_from(x).expect("value too big for u8"))
+        .collect();
+
+    (
+        CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
+            .gates
+            .into_iter()
+            .rev()
+            .collect(),
+        id.gates.len() - 2,
+    )
 }
 
 // replace pairs for RCD method
@@ -793,7 +1054,7 @@ pub fn replace_pair_distances(
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
     tower: bool,
-    id_len: usize
+    id_len: usize,
 ) {
     let min = 30;
 
@@ -815,8 +1076,12 @@ pub fn replace_pair_distances(
             let mut buf = [0u8; 1];
             if let Ok(n) = io::stdin().read(&mut buf) {
                 if n > 0 && buf[0] == b'\n' {
-                    println!("  curr = {}\n
-                                gates = {}", curr, circuit.gates.len());
+                    println!(
+                        "  curr = {}\n
+                                gates = {}",
+                        curr,
+                        circuit.gates.len()
+                    );
                 }
             }
             if distances[i] == curr {
@@ -828,7 +1093,7 @@ pub fn replace_pair_distances(
                     bit_shuf_list,
                     dbs,
                     tower,
-                    id_len
+                    id_len,
                 );
 
                 // Save what to do later
@@ -875,16 +1140,12 @@ pub fn replace_pair_distances(
 // Right bound is when the descending begins
 fn update_bounds(distances: &[usize]) -> (usize, usize) {
     let mut left = 0;
-    while left + 1 < distances.len()
-        && distances[left + 1] == distances[left] + 1
-    {
+    while left + 1 < distances.len() && distances[left + 1] == distances[left] + 1 {
         left += 1;
     }
 
     let mut right = distances.len() - 1;
-    while right > 0
-        && distances[right - 1] == distances[right] + 1
-    {
+    while right > 0 && distances[right - 1] == distances[right] + 1 {
         right -= 1;
     }
 
@@ -892,11 +1153,7 @@ fn update_bounds(distances: &[usize]) -> (usize, usize) {
 }
 
 // Update distances after a pair is replaced
-pub fn update_distance(
-    distances: &mut Vec<usize>,
-    didx: usize,
-    id_len: usize,
-) {
+pub fn update_distance(distances: &mut Vec<usize>, didx: usize, id_len: usize) {
     let k = id_len - 1;
 
     let left0 = distances[didx - 1] + 1;
@@ -925,7 +1182,7 @@ pub fn replace_pair_distances_linear(
     id_len: usize,
 ) {
     // initialize pair distances
-    
+
     let mut gates = circuit.gates.drain(..).collect::<Vec<_>>();
     let mut dists = vec![0usize; gates.len() + 1];
     let mut lb = 1;
@@ -947,7 +1204,7 @@ pub fn replace_pair_distances_linear(
             let right = &gates[i];
             let dist = dists[i];
 
-            if dist == curr && i <= rb{
+            if dist == curr && i <= rb {
                 let (id, id_len) = replace_single_pair(
                     left,
                     right,
@@ -963,7 +1220,7 @@ pub fn replace_pair_distances_linear(
                     // remove left gate
                     out_gates.pop();
                     let left_dist = out_dists.last().unwrap() + 1;
-                    let right_dist = dists[i+1] + 1;
+                    let right_dist = dists[i + 1] + 1;
                     // emit replacement
                     for j in 0..id_len {
                         out_gates.push(id[j].clone());
@@ -979,7 +1236,7 @@ pub fn replace_pair_distances_linear(
                             temp_lb += 1;
                         }
                         temp_lb += 1;
-                    } 
+                    }
                     i += 1;
                     continue;
                 }
@@ -992,9 +1249,7 @@ pub fn replace_pair_distances_linear(
         }
         lb = temp_lb;
         rb = out_dists.len() - 1;
-        while rb > 0
-            && out_dists[rb - 1] == out_dists[rb] + 1
-        {
+        while rb > 0 && out_dists[rb - 1] == out_dists[rb] + 1 {
             rb -= 1;
         }
         rb -= 1;
@@ -1012,25 +1267,24 @@ pub fn replace_pair_distances_linear(
 
 // Replace triple of gates
 // Largely unused as if replacing pairs is effective, replacing triples would largely be the same
-pub fn replace_tri(
-    circuit: &mut CircuitSeq,
-    num_wires: usize,
-    env: &lmdb::Environment,
-) {
-    println!("Starting replace_tri, circuit length: {}", circuit.gates.len());
+pub fn replace_tri(circuit: &mut CircuitSeq, num_wires: usize, env: &lmdb::Environment) {
+    println!(
+        "Starting replace_tri, circuit length: {}",
+        circuit.gates.len()
+    );
     // let start = circuit.clone();
     let mut tris: HashMap<GateTri, Vec<usize>> = HashMap::new();
     let gates = circuit.gates.clone();
     let m = gates.len();
     let mut replaced = 0;
 
-    let mut to_replace: Vec<(Vec<[u8;3]>, Vec<[u8;3]>)> = vec![(Vec::new(), Vec::new()); m / 3];
+    let mut to_replace: Vec<(Vec<[u8; 3]>, Vec<[u8; 3]>)> = vec![(Vec::new(), Vec::new()); m / 3];
     if m < 3 {
         println!("Circuit too small, returning");
         return;
     }
 
-    // Build taxonomy 
+    // Build taxonomy
     println!("Building taxonomy triples...");
     let mut i = 0;
     while i + 2 < m {
@@ -1059,13 +1313,9 @@ pub fn replace_tri(
 
         let mut replaced_here = false;
 
-        // Forward 
+        // Forward
         for i in 0..id.gates.len().saturating_sub(2) {
-            let tax = gate_tri_taxonomy(
-                &id.gates[i],
-                &id.gates[i + 1],
-                &id.gates[i + 2],
-            );
+            let tax = gate_tri_taxonomy(&id.gates[i], &id.gates[i + 1], &id.gates[i + 2]);
 
             if let Some(v) = tris.get_mut(&tax) {
                 if !v.is_empty() {
@@ -1081,7 +1331,10 @@ pub fn replace_tri(
                     // before the triple, reversed
                     new_circuit.extend(id.gates[0..i].iter());
 
-                    to_replace[chosen / 3] = (new_circuit, vec![id.gates[i], id.gates[i+1], id.gates[i+2]]);
+                    to_replace[chosen / 3] = (
+                        new_circuit,
+                        vec![id.gates[i], id.gates[i + 1], id.gates[i + 2]],
+                    );
 
                     if v.is_empty() {
                         tris.remove(&tax);
@@ -1100,11 +1353,7 @@ pub fn replace_tri(
         // Reverse
         id.gates.reverse();
         for i in 0..id.gates.len().saturating_sub(2) {
-            let tax = gate_tri_taxonomy(
-                &id.gates[i],
-                &id.gates[i + 1],
-                &id.gates[i + 2],
-            );
+            let tax = gate_tri_taxonomy(&id.gates[i], &id.gates[i + 1], &id.gates[i + 2]);
 
             if let Some(v) = tris.get_mut(&tax) {
                 if !v.is_empty() {
@@ -1120,7 +1369,10 @@ pub fn replace_tri(
                     // before the triple, reversed
                     new_circuit.extend(id.gates[0..i].iter());
 
-                    to_replace[chosen / 3] = (new_circuit, vec![id.gates[i], id.gates[i+1], id.gates[i+2]]);
+                    to_replace[chosen / 3] = (
+                        new_circuit,
+                        vec![id.gates[i], id.gates[i + 1], id.gates[i + 2]],
+                    );
 
                     if v.is_empty() {
                         tris.remove(&tax);
@@ -1151,11 +1403,20 @@ pub fn replace_tri(
         let g1 = circuit.gates[index + 1];
         let g2 = circuit.gates[index + 2];
 
-        let replacement_circ = CircuitSeq { gates: replacement.0 };
+        let replacement_circ = CircuitSeq {
+            gates: replacement.0,
+        };
 
-        let mut used_wires =
-            vec![(num_wires + 1) as u8; max(replacement_circ.max_wire(), CircuitSeq { gates: replacement.1.clone() }.max_wire()) + 1];
-
+        let mut used_wires = vec![
+            (num_wires + 1) as u8;
+            max(
+                replacement_circ.max_wire(),
+                CircuitSeq {
+                    gates: replacement.1.clone()
+                }
+                .max_wire()
+            ) + 1
+        ];
 
         used_wires[replacement.1[0][0] as usize] = g0[0];
         used_wires[replacement.1[0][1] as usize] = g0[1];
@@ -1172,7 +1433,11 @@ pub fn replace_tri(
         }
 
         let mut i = 0;
-        for collision in &[(tax.second.a == CollisionType::OnNew) && (tax.gap.a == CollisionType::OnNew), (tax.second.c1 == CollisionType::OnNew) && (tax.gap.c1 == CollisionType::OnNew), (tax.second.c2 == CollisionType::OnNew) && (tax.gap.c2 == CollisionType::OnNew)] {
+        for collision in &[
+            (tax.second.a == CollisionType::OnNew) && (tax.gap.a == CollisionType::OnNew),
+            (tax.second.c1 == CollisionType::OnNew) && (tax.gap.c1 == CollisionType::OnNew),
+            (tax.second.c2 == CollisionType::OnNew) && (tax.gap.c2 == CollisionType::OnNew),
+        ] {
             if *collision == true {
                 used_wires[replacement.1[2][i] as usize] = g2[i]
             }
@@ -1185,10 +1450,10 @@ pub fn replace_tri(
                 loop {
                     let wire = rng.random_range(0..num_wires) as u8;
                     if used_wires.contains(&wire) {
-                        continue
+                        continue;
                     }
                     used_wires[i] = wire;
-                    break
+                    break;
                 }
             }
         }
@@ -1211,8 +1476,8 @@ pub fn replace_tri(
 // Used in the interleave method
 // Create a circuit on n..2n wires and then interleave them
 pub fn interleave(
-    circuit: &CircuitSeq, 
-    n: usize, 
+    circuit: &CircuitSeq,
+    n: usize,
     env: &lmdb::Environment,
     dbs: &HashMap<String, lmdb::Database>,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
@@ -1234,15 +1499,16 @@ pub fn interleave(
         let choice = rng.random_range(0..2);
         if choice == 0 {
             let replaced_pair = replace_single_pair(
-                    &circuit.gates[i], 
-                    &random.gates[i], 
-                    2 * n, 
-                    env, 
-                    bit_shuf_list, 
-                    dbs, 
-                    tower, 
-                    id_len
-                ).0;
+                &circuit.gates[i],
+                &random.gates[i],
+                2 * n,
+                env,
+                bit_shuf_list,
+                dbs,
+                tower,
+                id_len,
+            )
+            .0;
             gates.extend_from_slice(&replaced_pair);
         } else if choice == 2 {
             gates.push(circuit.gates[i]);
@@ -1251,15 +1517,13 @@ pub fn interleave(
             wires.shuffle(&mut rng);
             for wire in wires {
                 let n_wire = rng.random_range(n..2 * n) as u8;
-                gates.extend_from_slice(
-                    &Transpositions::gen_gates_cnot(
-                        2 * n,
-                        wire,
-                        n_wire,
-                        env,
-                        dbs
-                    )
-                );
+                gates.extend_from_slice(&Transpositions::gen_gates_cnot(
+                    2 * n,
+                    wire,
+                    n_wire,
+                    env,
+                    dbs,
+                ));
             }
         } else {
             gates.push(circuit.gates[i]);
@@ -1267,7 +1531,7 @@ pub fn interleave(
         }
     }
 
-    CircuitSeq{ gates }
+    CircuitSeq { gates }
 }
 
 #[cfg(test)]
@@ -1275,11 +1539,11 @@ mod tests {
     #[test]
     fn test_interleave() {
         use crate::CircuitSeq;
+        use crate::replace::main_mix::open_all_dbs;
         use crate::replace::pairs::interleave;
+        use itertools::Itertools;
         use lmdb::Environment;
         use std::path::Path;
-        use crate::replace::main_mix::open_all_dbs;
-        use itertools::Itertools;
         let env = Environment::new()
             .set_max_dbs(262)
             .set_map_size(800 * 1024 * 1024 * 1024)
@@ -1288,26 +1552,18 @@ mod tests {
 
         let dbs = open_all_dbs(&env);
         let bit_shuf_list = (3..=7)
-        .map(|n| {
-            (0..n)
-                .permutations(n)
-                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
-                .collect::<Vec<Vec<usize>>>()
-        })
-        .collect();
+            .map(|n| {
+                (0..n)
+                    .permutations(n)
+                    .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                    .collect::<Vec<Vec<usize>>>()
+            })
+            .collect();
 
         let n = 32;
         let s = std::fs::read_to_string("./circuits/n32m50.txt").unwrap();
         let circuit = CircuitSeq::from_string(s.trim());
-        let interleaved = interleave(
-            &circuit, 
-            n,
-            &env,
-            &dbs,
-            &bit_shuf_list,
-            false,
-            0
-        );
+        let interleaved = interleave(&circuit, n, &env, &dbs, &bit_shuf_list, false, 0);
         if circuit.probably_equal(&interleaved, n, 1000).is_err() {
             panic!("Original wires changed functionality");
         }

@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use crate::circuit::circuit::CircuitSeq;
+use std::collections::VecDeque;
 
 /// 12-gate homomorphic gadget (local wire indices 0–6).
 ///
@@ -17,9 +17,18 @@ use crate::circuit::circuit::CircuitSeq;
 /// where s_i = main_i ^ aux_i is the unmasked secret value.
 /// All gate indices are distinct (no duplicate wire indices per gate).
 const GADGET: [[u8; 3]; 12] = [
-    [0,3,5],[0,3,6],[0,4,5],[0,4,6],
-    [1,0,2],[0,2,1],[2,0,1],[1,2,0],[0,2,1],[2,1,0],
-    [0,3,4],[0,4,3],
+    [0, 3, 5],
+    [0, 3, 6],
+    [0, 4, 5],
+    [0, 4, 6],
+    [1, 0, 2],
+    [0, 2, 1],
+    [2, 0, 1],
+    [1, 2, 0],
+    [0, 2, 1],
+    [2, 1, 0],
+    [0, 3, 4],
+    [0, 4, 3],
 ];
 
 /// Manages which aux wire is paired to each main wire, and which are free.
@@ -39,8 +48,8 @@ const GADGET: [[u8; 3]; 12] = [
 /// target free wires; paired wires must not be modified outside their gadget.
 pub struct GadgetScheduler {
     n: usize,
-    pairing: Vec<usize>,         // pairing[i] = aux wire currently paired with main wire i
-    free_pool: VecDeque<usize>,  // front = next r2; back = most recently freed
+    pairing: Vec<usize>, // pairing[i] = aux wire currently paired with main wire i
+    free_pool: VecDeque<usize>, // front = next r2; back = most recently freed
 }
 
 impl GadgetScheduler {
@@ -50,7 +59,7 @@ impl GadgetScheduler {
         assert!(n >= 2, "need at least 2 wires for the degree chain");
         GadgetScheduler {
             n,
-            pairing:   (n..2 * n).collect(),
+            pairing: (n..2 * n).collect(),
             free_pool: (2 * n..3 * n).collect(),
         }
     }
@@ -110,9 +119,7 @@ pub fn emit_gadget(sched: &mut GadgetScheduler, gate: [u8; 3], out: &mut Vec<[u8
     let r_c = sched.current_aux(c);
 
     let map: [u8; 7] = [
-        a as u8, r1 as u8, r2 as u8,
-        b as u8, r_b as u8,
-        c as u8, r_c as u8,
+        a as u8, r1 as u8, r2 as u8, b as u8, r_b as u8, c as u8, r_c as u8,
     ];
     for &[ga, gb, gc] in &GADGET {
         out.push([map[ga as usize], map[gb as usize], map[gc as usize]]);
@@ -133,8 +140,8 @@ pub fn degree_chain_circuit(n: usize, steps: usize) -> CircuitSeq {
     let gates = (1..=steps)
         .map(|k| {
             let active = (k % n) as u8;
-            let ctrl1  = ((k + 1) % n) as u8;
-            let ctrl2  = ((k - 1 + n) % n) as u8;
+            let ctrl1 = ((k + 1) % n) as u8;
+            let ctrl2 = ((k - 1 + n) % n) as u8;
             [active, ctrl1, ctrl2]
         })
         .collect();
@@ -220,21 +227,32 @@ mod tests {
     fn verify_12gate_gadget_semantics() {
         // Wires: 0=x1(w_a), 1=r11(r1), 2=r12(r2), 3=x2(w_b), 4=r21(r_b), 5=x3(w_c), 6=r31(r_c)
         // Unlike the 9-gate gadget, wires 1 and 2 are also modified.
-        let gadget_12 = CircuitSeq { gates: vec![
-            [0,3,5],[0,3,6],[0,4,5],[0,4,6],
-            [1,0,2],[0,2,1],[2,0,1],[1,2,0],[0,2,1],[2,1,0],
-            [0,3,4],[0,4,3],
-        ]};
+        let gadget_12 = CircuitSeq {
+            gates: vec![
+                [0, 3, 5],
+                [0, 3, 6],
+                [0, 4, 5],
+                [0, 4, 6],
+                [1, 0, 2],
+                [0, 2, 1],
+                [2, 0, 1],
+                [1, 2, 0],
+                [0, 2, 1],
+                [2, 1, 0],
+                [0, 3, 4],
+                [0, 4, 3],
+            ],
+        };
 
         for s in 0usize..128 {
             let out = gadget_12.evaluate(s);
 
-            let x1  = (s >> 0) & 1;
+            let x1 = (s >> 0) & 1;
             let r11 = (s >> 1) & 1;
             let r12 = (s >> 2) & 1;
-            let x2  = (s >> 3) & 1;
+            let x2 = (s >> 3) & 1;
             let r21 = (s >> 4) & 1;
-            let x3  = (s >> 5) & 1;
+            let x3 = (s >> 5) & 1;
             let r31 = (s >> 6) & 1;
 
             let s1 = x1 ^ r11;
@@ -243,8 +261,13 @@ mod tests {
 
             // Wires 3-6 must be unchanged (only 0,1,2 are active)
             for wire in 3..7usize {
-                assert_eq!((s >> wire) & 1, (out >> wire) & 1,
-                    "wire {} changed for input {:#09b}", wire, s);
+                assert_eq!(
+                    (s >> wire) & 1,
+                    (out >> wire) & 1,
+                    "wire {} changed for input {:#09b}",
+                    wire,
+                    s
+                );
             }
 
             let w0_prime = (out >> 0) & 1;
@@ -252,9 +275,18 @@ mod tests {
 
             // Invariant: new_w_a XOR new_r2 = expected new secret
             let expected = 1 ^ s1 ^ (s2 & (1 ^ s3));
-            assert_eq!(w0_prime ^ w2_prime, expected,
+            assert_eq!(
+                w0_prime ^ w2_prime,
+                expected,
                 "invariant failed: s={:#09b} s1={} s2={} s3={} w0'={} r2'={} expected={}",
-                s, s1, s2, s3, w0_prime, w2_prime, expected);
+                s,
+                s1,
+                s2,
+                s3,
+                w0_prime,
+                w2_prime,
+                expected
+            );
         }
 
         println!("12-gate gadget semantics verified for all 128 inputs");
@@ -263,8 +295,10 @@ mod tests {
     #[test]
     fn gadgetize_gate_count() {
         let n = 4;
-        let main = CircuitSeq { gates: vec![[0,1,2],[1,0,3],[2,3,0],[3,1,2]] };
-        let aux  = degree_chain_circuit(n, 40);
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [1, 0, 3], [2, 3, 0], [3, 1, 2]],
+        };
+        let aux = degree_chain_circuit(n, 40);
         let result = gadgetize(&main, &aux, n);
         assert_eq!(result.gates.len(), 4 * 12 + 40);
     }
@@ -272,8 +306,10 @@ mod tests {
     #[test]
     fn all_wires_in_range() {
         let n = 4;
-        let main = CircuitSeq { gates: vec![[0,1,2],[1,0,3],[2,3,0],[3,1,2]] };
-        let aux  = degree_chain_circuit(n, 40);
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [1, 0, 3], [2, 3, 0], [3, 1, 2]],
+        };
+        let aux = degree_chain_circuit(n, 40);
         let result = gadgetize(&main, &aux, n);
         for gate in &result.gates {
             for &w in gate {
@@ -293,8 +329,16 @@ mod tests {
 
         // Collect columns: either a gadget event or a chain event.
         enum Col {
-            Gadget { idx: usize, wa: usize, wb: usize, wc: usize,
-                     r1: usize, r2: usize, r_b: usize, r_c: usize },
+            Gadget {
+                idx: usize,
+                wa: usize,
+                wb: usize,
+                wc: usize,
+                r1: usize,
+                r2: usize,
+                r_b: usize,
+                r_c: usize,
+            },
             Chain(Vec<usize>), // active wires touched by chain gates in this interval
         }
         let mut cols: Vec<Col> = Vec::new();
@@ -322,7 +366,16 @@ mod tests {
             let (r1, r2) = sched.consume(wa);
             gate_starts.push(gate_cursor);
             gate_cursor += 12;
-            cols.push(Col::Gadget { idx: i, wa, wb, wc, r1, r2, r_b, r_c });
+            cols.push(Col::Gadget {
+                idx: i,
+                wa,
+                wb,
+                wc,
+                r1,
+                r2,
+                r_b,
+                r_c,
+            });
         }
         let mut tail: Vec<usize> = Vec::new();
         while aux_cursor < a {
@@ -341,7 +394,7 @@ mod tests {
         for col in &cols {
             let label = match col {
                 Col::Gadget { idx, .. } => format!("G{}", idx),
-                Col::Chain(_)           => "~".to_string(),
+                Col::Chain(_) => "~".to_string(),
             };
             print!("{:^cw$}", label);
         }
@@ -354,26 +407,57 @@ mod tests {
 
         // Print separator
         print!("{:prefix$}", "");
-        for _ in &cols { print!("{}", "-".repeat(cw)); }
+        for _ in &cols {
+            print!("{}", "-".repeat(cw));
+        }
         println!();
 
         // One row per wire
         for wire in 0..total {
-            let cat = if wire < n { "mn" } else if wire < 2*n { "pr" } else { "fr" };
+            let cat = if wire < n {
+                "mn"
+            } else if wire < 2 * n {
+                "pr"
+            } else {
+                "fr"
+            };
             print!("{:2}[{}]    ", wire, cat);
             for col in &cols {
                 let sym = match col {
-                    Col::Chain(active) =>
-                        if active.contains(&wire) { "~" } else { "." },
-                    Col::Gadget { wa, wb, wc, r1, r2, r_b, r_c, .. } => {
-                        if wire == *wa      { "A" }
-                        else if wire == *wb { "B" }
-                        else if wire == *wc { "C" }
-                        else if wire == *r1 { "1" }
-                        else if wire == *r2 { "2" }
-                        else if wire == *r_b { "b" }
-                        else if wire == *r_c { "c" }
-                        else { "." }
+                    Col::Chain(active) => {
+                        if active.contains(&wire) {
+                            "~"
+                        } else {
+                            "."
+                        }
+                    }
+                    Col::Gadget {
+                        wa,
+                        wb,
+                        wc,
+                        r1,
+                        r2,
+                        r_b,
+                        r_c,
+                        ..
+                    } => {
+                        if wire == *wa {
+                            "A"
+                        } else if wire == *wb {
+                            "B"
+                        } else if wire == *wc {
+                            "C"
+                        } else if wire == *r1 {
+                            "1"
+                        } else if wire == *r2 {
+                            "2"
+                        } else if wire == *r_b {
+                            "b"
+                        } else if wire == *r_c {
+                            "c"
+                        } else {
+                            "."
+                        }
                     }
                 };
                 print!("{:^cw$}", sym);
@@ -394,7 +478,10 @@ mod tests {
         println!("\n=== Gadgetize Visual (n={}) ===", n);
         print_gadgetize_visual(&main, n);
 
-        println!("\n=== Algebraic Degree Before/After Gadgetize (n={}) ===", n);
+        println!(
+            "\n=== Algebraic Degree Before/After Gadgetize (n={}) ===",
+            n
+        );
 
         // Before: symbolic polynomials over n variables
         println!("\nBEFORE ({} gates, {} wires):", main.gates.len(), n);
@@ -409,18 +496,31 @@ mod tests {
         let total = 3 * n;
 
         let print_snapshot = |gates: &[[u8; 3]], label: &str| {
-            let circ = CircuitSeq { gates: gates.to_vec() };
+            let circ = CircuitSeq {
+                gates: gates.to_vec(),
+            };
             let polys = circ.to_polynomial(total, 0, gates.len());
             println!("\n{} ({} gates):", label, gates.len());
             for wire in 0..total {
-                let cat = if wire < n { "main  " } else if wire < 2*n { "paired" } else { "free  " };
-                println!("  wire {:2} [{}]: degree {}", wire, cat, poly_degree(&polys[wire]));
+                let cat = if wire < n {
+                    "main  "
+                } else if wire < 2 * n {
+                    "paired"
+                } else {
+                    "free  "
+                };
+                println!(
+                    "  wire {:2} [{}]: degree {}",
+                    wire,
+                    cat,
+                    poly_degree(&polys[wire])
+                );
             }
         };
 
         let g = &gadgetized.gates;
         let total_gates = g.len();
-        print_snapshot(&g[..50.min(total_gates)],          "SNAPSHOT gate 50");
+        print_snapshot(&g[..50.min(total_gates)], "SNAPSHOT gate 50");
         print_snapshot(&g[..total_gates * 2 / 5], "SNAPSHOT 2/5");
         print_snapshot(&g[..total_gates * 3 / 5], "SNAPSHOT 3/5");
         print_snapshot(&g[..total_gates * 4 / 5], "SNAPSHOT 4/5");

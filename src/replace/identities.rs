@@ -1,12 +1,16 @@
 use std::{
-    collections::HashMap, marker::PhantomData, ptr, slice, sync::atomic::{AtomicU64, Ordering}, time::Instant
+    collections::HashMap,
+    marker::PhantomData,
+    ptr, slice,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Instant,
 };
 
 use libc::c_uint;
 
 use itertools::Itertools;
+use lmdb::{Cursor, Database, Environment, RoCursor, RoTransaction, Transaction};
 use rand::{Rng, prelude::SliceRandom};
-use lmdb::{Cursor, Database, RoCursor, RoTransaction, Transaction, Environment};
 
 extern crate lmdb_sys;
 use lmdb_sys as ffi;
@@ -14,8 +18,10 @@ use lmdb_sys as ffi;
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation},
     random::random_data::{random_circuit, shoot_random_gate},
-    replace::{pairs::{CollisionType, GatePair, gate_pair_taxonomy, replace_single_pair}, 
-        transpositions::{Transpositions, insert_wire_shuffles_simple, replace_disjoint_pair}},
+    replace::{
+        pairs::{CollisionType, GatePair, gate_pair_taxonomy, replace_single_pair},
+        transpositions::{Transpositions, insert_wire_shuffles_simple, replace_disjoint_pair},
+    },
 };
 
 // Old iterator method for cursor fails if the given key is not found
@@ -49,8 +55,14 @@ impl<'txn> Iterator for Iter<'txn> {
         }
 
         unsafe {
-            let mut key = ffi::MDB_val { mv_size: 0, mv_data: ptr::null_mut() };
-            let mut data = ffi::MDB_val { mv_size: 0, mv_data: ptr::null_mut() };
+            let mut key = ffi::MDB_val {
+                mv_size: 0,
+                mv_data: ptr::null_mut(),
+            };
+            let mut data = ffi::MDB_val {
+                mv_size: 0,
+                mv_data: ptr::null_mut(),
+            };
 
             let rc = ffi::mdb_cursor_get(self.cursor, &mut key, &mut data, self.op);
             self.op = self.next_op;
@@ -85,7 +97,12 @@ impl<'txn> RoCursorExt<'txn> for RoCursor<'txn> {
                 mv_size: key.as_ref().len(),
                 mv_data: key.as_ref().as_ptr() as *mut _,
             };
-            lmdb_sys::mdb_cursor_get(self.cursor(), &mut key_val, std::ptr::null_mut(), lmdb_sys::MDB_SET_RANGE)
+            lmdb_sys::mdb_cursor_get(
+                self.cursor(),
+                &mut key_val,
+                std::ptr::null_mut(),
+                lmdb_sys::MDB_SET_RANGE,
+            )
         };
 
         if rc == lmdb_sys::MDB_NOTFOUND {
@@ -104,18 +121,16 @@ impl<'txn> RoCursorExt<'txn> for RoCursor<'txn> {
     }
 }
 
-pub fn random_perm_lmdb(
-    txn: &RoTransaction,
-    db: Database,
-    prefix: &[u8],
-) -> Option<Vec<u8>> {
+pub fn random_perm_lmdb(txn: &RoTransaction, db: Database, prefix: &[u8]) -> Option<Vec<u8>> {
     let mut cursor = txn.open_ro_cursor(db).ok()?;
     let mut rng = rand::rng();
     let mut chosen: Option<Vec<u8>> = None;
     let mut count = 0;
 
     for (key, _) in cursor.iter_from_safe(prefix) {
-        if !key.starts_with(prefix) { break; }
+        if !key.starts_with(prefix) {
+            break;
+        }
         count += 1;
         if rng.random_range(0..count) == 0 {
             chosen = Some(key[prefix.len()..].to_vec());
@@ -124,11 +139,8 @@ pub fn random_perm_lmdb(
     chosen
 }
 
-// Select a random permutation 
-fn random_perm_from_perm_table(
-    txn: &RoTransaction,
-    db: Database,
-) -> Option<(Vec<u8>, Vec<u8>)> {
+// Select a random permutation
+fn random_perm_from_perm_table(txn: &RoTransaction, db: Database) -> Option<(Vec<u8>, Vec<u8>)> {
     let mut cursor = txn.open_ro_cursor(db).ok()?;
     let mut entries = Vec::new();
 
@@ -154,11 +166,16 @@ pub fn random_canonical_id(
 
     loop {
         let perm_db_name = format!("perm_tables_n{}", n);
-        let perm_db = env.open_db(Some(&perm_db_name))
-            .unwrap_or_else(|e| panic!("LMDB DB '{}' not found or failed to open: {:?}", perm_db_name, e));
+        let perm_db = env.open_db(Some(&perm_db_name)).unwrap_or_else(|e| {
+            panic!(
+                "LMDB DB '{}' not found or failed to open: {:?}",
+                perm_db_name, e
+            )
+        });
         let (perm_blob, ms_blob) = {
-            let txn = env.begin_ro_txn()
-                .unwrap_or_else(|e| panic!("Failed to begin RO txn on '{}': {:?}", perm_db_name, e));
+            let txn = env.begin_ro_txn().unwrap_or_else(|e| {
+                panic!("Failed to begin RO txn on '{}': {:?}", perm_db_name, e)
+            });
             match random_perm_from_perm_table(&txn, perm_db) {
                 Some(x) => x,
                 None => panic!("perm_tables_n{} is empty or malformed", n),
@@ -179,19 +196,23 @@ pub fn random_canonical_id(
 
         let i = rng.random_range(0..ms.len());
         let mut j = rng.random_range(0..ms.len());
-        while j == i { j = rng.random_range(0..ms.len()); }
+        while j == i {
+            j = rng.random_range(0..ms.len());
+        }
         let m1 = ms[i];
         let m2 = ms[j];
 
         let db1_name = format!("n{}m{}", n, m1);
         let db2_name = format!("n{}m{}", n, m2);
-        
+
         // println!("Searching for perm_len {} in {}", perm_blob.len().trailing_zeros(), db1_name);
 
         let circuit1_blob = {
-            let db1 = env.open_db(Some(&db1_name))
+            let db1 = env
+                .open_db(Some(&db1_name))
                 .unwrap_or_else(|e| panic!("LMDB DB1 '{}' failed to open: {:?}", db1_name, e));
-            let txn = env.begin_ro_txn()
+            let txn = env
+                .begin_ro_txn()
                 .unwrap_or_else(|e| panic!("Failed to begin RO txn on '{}': {:?}", db1_name, e));
             random_perm_lmdb(&txn, db1, &perm_blob)
                 .unwrap_or_else(|| panic!("perm not found in {}", db1_name))
@@ -199,9 +220,11 @@ pub fn random_canonical_id(
         let mut ca = CircuitSeq::from_blob(&circuit1_blob);
 
         let circuit2_blob = {
-            let db2 = env.open_db(Some(&db2_name))
+            let db2 = env
+                .open_db(Some(&db2_name))
                 .unwrap_or_else(|e| panic!("LMDB DB2 '{}' failed to open: {:?}", db2_name, e));
-            let txn = env.begin_ro_txn()
+            let txn = env
+                .begin_ro_txn()
                 .unwrap_or_else(|e| panic!("Failed to begin RO txn on '{}': {:?}", db2_name, e));
             random_perm_lmdb(&txn, db2, &perm_blob)
                 .unwrap_or_else(|| panic!("perm not found in {}", db2_name))
@@ -447,36 +470,33 @@ pub fn get_random_identity(
     let mut cursor = txn.open_ro_cursor(*db)?;
 
     let value_bytes = if n != 128 {
-        cursor.iter_start()
-        .nth(random_index)
-        .map(|(k, _v)| k)
-        .unwrap_or_else(|| {
-            panic!(
-                "Failed to get random key | db={} index={} n={}",
-                db_name,
-                random_index,
-                n
-            )
-        })
+        cursor
+            .iter_start()
+            .nth(random_index)
+            .map(|(k, _v)| k)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to get random key | db={} index={} n={}",
+                    db_name, random_index, n
+                )
+            })
     } else {
-        cursor.iter_start()
-        .nth(random_index)
-        .map(|(_k, v)| v)
-        .expect("Failed to get random val")
+        cursor
+            .iter_start()
+            .nth(random_index)
+            .map(|(_k, v)| v)
+            .expect("Failed to get random val")
     };
     let out = CircuitSeq::from_blob(value_bytes);
 
-    GET_ID_TOTAL_TIME.fetch_add(
-        total_start.elapsed().as_nanos() as u64,
-        Ordering::Relaxed,
-    );
+    GET_ID_TOTAL_TIME.fetch_add(total_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     Ok(out)
 }
 
 // Generate identities via shuffling
-pub fn get_random_shuffled_identity (
-    n: usize, 
+pub fn get_random_shuffled_identity(
+    n: usize,
     env: &lmdb::Environment,
     dbs: &HashMap<String, Database>,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
@@ -489,22 +509,22 @@ pub fn get_random_shuffled_identity (
             GatePair::from_int(rand::rng().random_range(0..34)),
             env,
             dbs,
-            tower
-        ).unwrap();
+            tower,
+        )
+        .unwrap();
 
         insert_wire_shuffles_simple(&mut id, n, env, dbs);
         if dummy_id.probably_equal(&id, n, 1000).is_ok() {
-            return id
+            return id;
         }
     }
 }
-
 
 // Generate identities on more wires
 // Our original tables only support up to 7 wires
 // Our LMDB currently stores some 16 and 128 wire identities
 pub fn get_random_wide_identity(
-    n: usize, 
+    n: usize,
     env: &lmdb::Environment,
     dbs: &HashMap<String, Database>,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
@@ -519,9 +539,7 @@ pub fn get_random_wide_identity(
         shoot_random_gate(&mut id, 100_000);
         let gp = GatePair::from_int(rng.random_range(0..34));
         let mut i = match get_random_identity(6, gp, env, dbs, false) {
-            Ok(i) => {
-                i
-            }
+            Ok(i) => i,
             Err(_) => {
                 continue;
             }
@@ -532,9 +550,7 @@ pub fn get_random_wide_identity(
             let mut wires: HashMap<u8, Vec<usize>> = HashMap::new();
             for (idx, gates) in id.clone().gates.into_iter().enumerate() {
                 for pins in gates {
-                    wires.entry(pins)
-                    .or_insert_with(Vec::new)
-                    .push(idx);
+                    wires.entry(pins).or_insert_with(Vec::new).push(idx);
                 }
             }
             let min_vals: &Vec<usize> = wires
@@ -546,10 +562,10 @@ pub fn get_random_wide_identity(
             min_keys.sort_by_key(|k| wires.get(k).map(|v| v.len()).unwrap_or(0));
             let mut min = min_vals[0];
             if tower {
-                min = id.gates.len()/2;
+                min = id.gates.len() / 2;
             }
             let mut used_wires = vec![id.gates[min][0], id.gates[min][1], id.gates[min][2]];
-            let mut unused_wires: Vec<u8> = (0..=(n-1) as u8)
+            let mut unused_wires: Vec<u8> = (0..=(n - 1) as u8)
                 .filter(|w| !used_wires.contains(w) && !uw.contains(w))
                 .collect();
             let mut count = 3;
@@ -581,7 +597,7 @@ pub fn get_random_wide_identity(
         len = id.gates.len();
     }
 
-    let mut shuf: Vec<usize> = (0..=(n-1)).collect();
+    let mut shuf: Vec<usize> = (0..=(n - 1)).collect();
     shuf.shuffle(&mut rng);
 
     let bit_shuf = Permutation { data: shuf };
@@ -591,7 +607,7 @@ pub fn get_random_wide_identity(
 
 // Unsupported method of generating more random looking identities on more wires
 pub fn get_random_wide_identity_via_pairs(
-    n: usize, 
+    n: usize,
     env: &lmdb::Environment,
     dbs: &HashMap<String, Database>,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
@@ -605,9 +621,7 @@ pub fn get_random_wide_identity_via_pairs(
         shoot_random_gate(&mut id, 100_000);
         let gp = GatePair::from_int(rng.random_range(0..34));
         let mut i = match get_random_identity(6, gp, env, dbs, false) {
-            Ok(i) => {
-                i
-            }
+            Ok(i) => i,
             Err(_) => {
                 continue;
             }
@@ -618,9 +632,7 @@ pub fn get_random_wide_identity_via_pairs(
             let mut wires: HashMap<u8, Vec<usize>> = HashMap::new();
             for (idx, gates) in id.clone().gates.into_iter().enumerate() {
                 for pins in gates {
-                    wires.entry(pins)
-                    .or_insert_with(Vec::new)
-                    .push(idx);
+                    wires.entry(pins).or_insert_with(Vec::new).push(idx);
                 }
             }
             let min_vals: &Vec<usize> = wires
@@ -634,18 +646,18 @@ pub fn get_random_wide_identity_via_pairs(
             if min == id.gates.len() - 1 {
                 min -= 1;
             }
-            let tax = gate_pair_taxonomy(&id.gates[min], &id.gates[min+1]);
+            let tax = gate_pair_taxonomy(&id.gates[min], &id.gates[min + 1]);
             println!("{:?}", tax);
             println!("{:?}", &id.gates[min]);
-            println!("{:?}", &id.gates[min+1]);
-            i = CircuitSeq {gates: Vec::new()};
+            println!("{:?}", &id.gates[min + 1]);
+            i = CircuitSeq { gates: Vec::new() };
             let mut id_gen = false;
             while !id_gen {
                 i = match get_random_identity(6, tax, env, dbs, false) {
                     Ok(i) => {
                         id_gen = true;
                         i
-                    },
+                    }
                     Err(_) => {
                         continue;
                     }
@@ -663,7 +675,7 @@ pub fn get_random_wide_identity_via_pairs(
                     .max_wire(),
                 ) + 1
             ];
-            
+
             used_wires[i.gates[0][0] as usize] = id.gates[min][0];
             used_wires[i.gates[0][1] as usize] = id.gates[min][1];
             used_wires[i.gates[0][2] as usize] = id.gates[min][2];
@@ -671,12 +683,12 @@ pub fn get_random_wide_identity_via_pairs(
             let mut k = 0;
             for collision in &[tax.a, tax.c1, tax.c2] {
                 if *collision == CollisionType::OnNew {
-                    used_wires[i.gates[1][k] as usize] = id.gates[min+1][k];
+                    used_wires[i.gates[1][k] as usize] = id.gates[min + 1][k];
                 }
                 k += 1;
             }
 
-            let mut unused_wires: Vec<u8> = (0..=(n-1) as u8)
+            let mut unused_wires: Vec<u8> = (0..=(n - 1) as u8)
                 .filter(|w| !used_wires.contains(w) && !uw.contains(w))
                 .collect();
             let mut count = 3;
@@ -698,18 +710,18 @@ pub fn get_random_wide_identity_via_pairs(
                 }
             }
             i.gates = CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
-            .gates
-            .into_iter()
-            .rev()
-            .collect();
-            id.gates.splice(min..=min+1, i.gates);
+                .gates
+                .into_iter()
+                .rev()
+                .collect();
+            id.gates.splice(min..=min + 1, i.gates);
         }
         uw = id.used_wires();
         nwires = uw.len();
         len = id.gates.len();
     }
-    
-    let mut shuf: Vec<usize> = (0..=(n-1)).collect();
+
+    let mut shuf: Vec<usize> = (0..=(n - 1)).collect();
     shuf.shuffle(&mut rng);
 
     let bit_shuf = Permutation { data: shuf };
@@ -731,14 +743,16 @@ pub fn random_id(n: usize, m: usize) -> (CircuitSeq, CircuitSeq) {
     (circuit, rev)
 }
 
-// Creates an identity with the first part limited to 16..=28 wires (exclude wires 29, 30, 31), the middle part spanning all 0..=31, and the last part spanning 0..=12 wires (exclude wires 13, 14, 15) 
+// Creates an identity with the first part limited to 16..=28 wires (exclude wires 29, 30, 31), the middle part spanning all 0..=31, and the last part spanning 0..=12 wires (exclude wires 13, 14, 15)
 // returns the identity, the number of transpositions of the first part, and the number of transpositions of the second part
 
 pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositions, usize, usize) {
-    let mut transpositions: Transpositions = Transpositions{ transpositions: Vec::new() };
-    let mut first_negation_mask: Vec<u8> = vec![0u8; 32]; 
+    let mut transpositions: Transpositions = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut first_negation_mask: Vec<u8> = vec![0u8; 32];
     let mut first = Transpositions::gen_random_simple(13, 50, &mut first_negation_mask);
-    let mut second_negation_mask: Vec<u8> = vec![0u8; 32]; 
+    let mut second_negation_mask: Vec<u8> = vec![0u8; 32];
     let second = Transpositions::gen_random_simple(13, 50, &mut second_negation_mask);
     for i in 0..16 {
         let temp = first_negation_mask[i];
@@ -759,25 +773,27 @@ pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositi
         let a = transpositions.transpositions[idx];
         let b = transpositions.transpositions[idx + 1];
 
-        transpositions.transpositions.splice(idx..idx+2, replace_disjoint_pair(a, b));
+        transpositions
+            .transpositions
+            .splice(idx..idx + 2, replace_disjoint_pair(a, b));
     }
 
     (first, transpositions, second, 50, 50)
 }
 
 pub fn zip_escalators(
-    left: &Vec<Vec<[u8;3]>>, 
-    right: &Vec<Vec<[u8;3]>>, 
-    gate: &[u8;3], 
+    left: &Vec<Vec<[u8; 3]>>,
+    right: &Vec<Vec<[u8; 3]>>,
+    gate: &[u8; 3],
     steps: &Vec<Vec<usize>>,
     n: usize,
     _tran: &mut Transpositions,
     _negation_mask: &mut Vec<u8>,
     env: &Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
-    dbs:&HashMap<String, Database>,
+    dbs: &HashMap<String, Database>,
     tower: bool,
-    id_len: usize
+    id_len: usize,
 ) -> CircuitSeq {
     use std::fs::File;
     use std::io::Write;
@@ -796,7 +812,7 @@ pub fn zip_escalators(
     writeln!(left_file, "{:?}", left).unwrap();
     writeln!(right_file, "{:?}", right).unwrap();
 
-    let mut combined: Vec<[u8;3]> = Vec::new();
+    let mut combined: Vec<[u8; 3]> = Vec::new();
     let min = std::cmp::min(left.len(), right.len());
     for i in 0..min {
         let l = &left[i];
@@ -814,19 +830,18 @@ pub fn zip_escalators(
             let quasi = true;
             if quasi {
                 let (paired_up, _) = replace_single_pair(
-                                                        &left_gate,
-                                                        &right_gate,
-                                                        n,
-                                                        env,
-                                                        _bit_shuf_list,
-                                                        dbs,
-                                                        tower,
-                                                        id_len
-                                                    );
-                
+                    &left_gate,
+                    &right_gate,
+                    n,
+                    env,
+                    _bit_shuf_list,
+                    dbs,
+                    tower,
+                    id_len,
+                );
+
                 combined.extend_from_slice(&paired_up);
             } else {
-
             }
             j += 1;
         }
@@ -845,7 +860,7 @@ pub fn zip_escalators(
 
     let c = CircuitSeq { gates: combined };
 
-    let mut test_circuit = CircuitSeq { gates: Vec::new()};
+    let mut test_circuit = CircuitSeq { gates: Vec::new() };
     test_circuit.gates.extend(left.into_iter().flatten());
     test_circuit.gates.extend(right.into_iter().flatten());
     if test_circuit.probably_equal(&c, n, 1000).is_err() {
@@ -855,19 +870,25 @@ pub fn zip_escalators(
     c
 }
 // Only supports 32 wires for now
-pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap<String, Database>) {
+pub fn insert_ri_identities(
+    c: &mut CircuitSeq,
+    env: &Environment,
+    dbs: &HashMap<String, Database>,
+) {
     let mut t_rewired: Vec<(Transpositions, Permutation)> = Vec::new();
     let mut rng = rand::rng();
     let len = c.gates.len();
-    let mut used_wires:[u8;3] = [c.gates[0][0], c.gates[0][1], c.gates[0][2]];
+    let mut used_wires: [u8; 3] = [c.gates[0][0], c.gates[0][1], c.gates[0][2]];
     // Create and rewire all the RI identities
     for i in 1..len {
         let (first, middle, second, _, _) = create_ri_identities_32();
-        let mut wire_shuffle1 = Permutation { data: (0..32).collect() };
+        let mut wire_shuffle1 = Permutation {
+            data: (0..32).collect(),
+        };
         for idx in 16..32 {
             wire_shuffle1.data[idx] = 33;
         }
-        let mut excluded = vec![29,30,31];
+        let mut excluded = vec![29, 30, 31];
         excluded.shuffle(&mut rng);
 
         let mut used_targets = Vec::new();
@@ -882,9 +903,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         }
 
         // remaining wires only in upper half
-        let mut remaining: Vec<usize> = (16..32)
-            .filter(|w| !used_targets.contains(w))
-            .collect();
+        let mut remaining: Vec<usize> = (16..32).filter(|w| !used_targets.contains(w)).collect();
 
         remaining.shuffle(&mut rng);
 
@@ -898,11 +917,13 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
         t_rewired.push((first.clone(), wire_shuffle1.clone()));
 
         used_wires = [c.gates[i][0], c.gates[i][1], c.gates[i][2]];
-        let mut wire_shuffle2 = Permutation { data: (0..32).collect() };
+        let mut wire_shuffle2 = Permutation {
+            data: (0..32).collect(),
+        };
         for idx in 0..16 {
             wire_shuffle2.data[idx] = 33;
         }
-        let mut excluded = vec![13,14,15];
+        let mut excluded = vec![13, 14, 15];
         excluded.shuffle(&mut rng);
 
         let mut used_targets = Vec::new();
@@ -916,9 +937,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
             }
         }
         // remaining wires only in lower half
-        let mut remaining: Vec<usize> = (0..16)
-            .filter(|w| !used_targets.contains(w))
-            .collect();
+        let mut remaining: Vec<usize> = (0..16).filter(|w| !used_targets.contains(w)).collect();
 
         remaining.shuffle(&mut rng);
 
@@ -929,20 +948,28 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
                 idx += 1;
             }
         }
-        let mut wire_shufflem = Permutation { data: Vec::with_capacity(32)};
-        wire_shufflem.data.extend_from_slice(&wire_shuffle2.data[..16]);
-        wire_shufflem.data.extend_from_slice(&wire_shuffle1.data[16..]);
+        let mut wire_shufflem = Permutation {
+            data: Vec::with_capacity(32),
+        };
+        wire_shufflem
+            .data
+            .extend_from_slice(&wire_shuffle2.data[..16]);
+        wire_shufflem
+            .data
+            .extend_from_slice(&wire_shuffle1.data[16..]);
         t_rewired.push((middle, wire_shufflem));
         t_rewired.push((second, wire_shuffle2));
     }
-    
+
     // Combine the RI identities and seam them together
-    let num_identities = t_rewired.len()/3;
-    for i in (0..num_identities-1).rev() {
-        let idx = 2 + 3*i;
+    let num_identities = t_rewired.len() / 3;
+    for i in (0..num_identities - 1).rev() {
+        let idx = 2 + 3 * i;
         let (t1, p1) = t_rewired[idx].clone();
         let (t2, p2) = t_rewired[idx + 1].clone();
-        let mut combined = Transpositions { transpositions: Vec::new() };
+        let mut combined = Transpositions {
+            transpositions: Vec::new(),
+        };
         for i in 0..50 {
             combined.transpositions.push(t1.transpositions[i]);
             combined.transpositions.push(t2.transpositions[i]);
@@ -953,17 +980,25 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
             let a = combined.transpositions[idx];
             let b = combined.transpositions[idx + 1];
             let ab = replace_disjoint_pair(a, b);
-            combined.transpositions.splice(idx..idx+2, ab);
+            combined.transpositions.splice(idx..idx + 2, ab);
         }
         let mut new_perm = Vec::with_capacity(32);
         new_perm.extend_from_slice(&p1.data[..16]);
         new_perm.extend_from_slice(&p2.data[16..]);
-        let new_perm = Permutation{ data: new_perm };
+        let new_perm = Permutation { data: new_perm };
         let combined = (combined, new_perm);
-        t_rewired.splice(idx..idx+2, [combined]);
+        t_rewired.splice(idx..idx + 2, [combined]);
     }
 
-    *c = Transpositions::restricted_to_circuit_rewired_and_insert(t_rewired, c.clone(), 32, &env, &dbs, (16, 28), (0, 12));
+    *c = Transpositions::restricted_to_circuit_rewired_and_insert(
+        t_rewired,
+        c.clone(),
+        32,
+        &env,
+        &dbs,
+        (16, 28),
+        (0, 12),
+    );
 }
 
 // Takes an n and a list of wires that each step will skip over, in order
@@ -973,22 +1008,28 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
 // Structurally, ` first -> middle -> second ` is equal to ` second -> first -> middle ``
 // Currently buggy. Likely to_perm and from_perm code
 pub fn create_escalator_identities(
-    n: usize, 
-    first_steps: &Vec<Vec<usize>>, 
+    n: usize,
+    first_steps: &Vec<Vec<usize>>,
     second_steps: &Vec<Vec<usize>>,
     env: &Environment,
     dbs: &HashMap<String, Database>,
-) -> (Vec<Vec<[u8;3]>>, CircuitSeq, Vec<Vec<[u8;3]>>, usize) {
+) -> (Vec<Vec<[u8; 3]>>, CircuitSeq, Vec<Vec<[u8; 3]>>, usize) {
     let mut allowed_wires: Vec<usize> = Vec::new();
     let all_wires: Vec<usize> = (0..n).collect();
     let mut restricted_wires: Vec<usize> = Vec::new();
     let mut first_circuit = CircuitSeq { gates: Vec::new() };
     let mut second_circuit = CircuitSeq { gates: Vec::new() };
-    let mut first_step_gates: Vec<Vec<[u8;3]>> = Vec::new();
-    let mut second_step_gates: Vec<Vec<[u8;3]>> = Vec::new();
-    let mut first = Transpositions { transpositions: Vec::new() };
-    let mut middle = Transpositions { transpositions: Vec::new() };
-    let mut second = Transpositions { transpositions: Vec::new() };
+    let mut first_step_gates: Vec<Vec<[u8; 3]>> = Vec::new();
+    let mut second_step_gates: Vec<Vec<[u8; 3]>> = Vec::new();
+    let mut first = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut middle = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut second = Transpositions {
+        transpositions: Vec::new(),
+    };
     let mut first_middle_circuit = CircuitSeq { gates: Vec::new() };
     let mut second_middle_circuit = CircuitSeq { gates: Vec::new() };
     let mut middle_circuit;
@@ -997,15 +1038,24 @@ pub fn create_escalator_identities(
     loop {
         // Build second from the `top` to bottom
         let add_transps = Transpositions::gen_random_simple(n, m, &mut negation_mask);
-        second.transpositions.extend_from_slice(&add_transps.transpositions);
+        second
+            .transpositions
+            .extend_from_slice(&add_transps.transpositions);
         let sc = add_transps.to_circuit(n, env, dbs);
         second_middle_circuit.gates.extend_from_slice(&sc.gates);
         for step in second_steps.iter().take(second_steps.len() - 1) {
             for wire in step {
                 restricted_wires.push(*wire);
             }
-            let add_transps = Transpositions::gen_random_simple_restricted(n, m, &mut negation_mask, &restricted_wires);
-            second.transpositions.extend_from_slice(&add_transps.transpositions);
+            let add_transps = Transpositions::gen_random_simple_restricted(
+                n,
+                m,
+                &mut negation_mask,
+                &restricted_wires,
+            );
+            second
+                .transpositions
+                .extend_from_slice(&add_transps.transpositions);
             let sc = add_transps.restricted_to_circuit(n, env, dbs, &restricted_wires);
             second_circuit.gates.extend_from_slice(&sc.gates);
             second_step_gates.push(sc.gates);
@@ -1017,28 +1067,38 @@ pub fn create_escalator_identities(
             for wire in step {
                 allowed_wires.push(*wire);
             }
-            let restricted: Vec<usize> = all_wires.iter()
+            let restricted: Vec<usize> = all_wires
+                .iter()
                 .filter(|w| !allowed_wires.contains(w))
                 .cloned()
                 .collect();
-            let add_transpf = Transpositions::gen_random_simple_restricted(n, m, &mut negation_mask, &restricted);
-            first.transpositions.extend_from_slice(&add_transpf.transpositions);
+            let add_transpf =
+                Transpositions::gen_random_simple_restricted(n, m, &mut negation_mask, &restricted);
+            first
+                .transpositions
+                .extend_from_slice(&add_transpf.transpositions);
             let fc = add_transpf.restricted_to_circuit(n, env, dbs, &restricted);
             first_circuit.gates.extend_from_slice(&fc.gates);
             first_step_gates.push(fc.gates);
         }
         let add_transpf = Transpositions::gen_random_simple(n, m, &mut negation_mask);
-        first.transpositions.extend_from_slice(&add_transpf.transpositions);
+        first
+            .transpositions
+            .extend_from_slice(&add_transpf.transpositions);
         let fc = add_transpf.to_circuit(n, env, dbs);
         first_middle_circuit.gates.extend_from_slice(&fc.gates);
 
         // Now build middle
-        middle.transpositions.extend_from_slice(&second.transpositions);
-        middle.transpositions.extend_from_slice(&first.transpositions);
-        
+        middle
+            .transpositions
+            .extend_from_slice(&second.transpositions);
+        middle
+            .transpositions
+            .extend_from_slice(&first.transpositions);
+
         let perm = middle.to_perm(n);
         let mut new_middle = Transpositions::from_perm(&perm);
-        
+
         // Use negation mask to update middle
         let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
 
@@ -1063,7 +1123,6 @@ pub fn create_escalator_identities(
                         panic!("Invalid pos or curr_neg_type");
                     }
                     new_middle.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
-                    
                 }
             }
         }
@@ -1072,8 +1131,12 @@ pub fn create_escalator_identities(
 
         middle_circuit = middle.to_circuit(n, env, dbs);
         middle_circuit.gates.reverse();
-        middle_circuit = first_middle_circuit.concat(&middle_circuit).concat(&second_middle_circuit);
-        let circuit = first_circuit.concat(&middle_circuit).concat(&second_circuit);
+        middle_circuit = first_middle_circuit
+            .concat(&middle_circuit)
+            .concat(&second_middle_circuit);
+        let circuit = first_circuit
+            .concat(&middle_circuit)
+            .concat(&second_circuit);
 
         let id = CircuitSeq { gates: Vec::new() };
         if circuit.probably_equal(&id, n, 10000).is_err() {
@@ -1091,25 +1154,37 @@ pub fn create_escalator_identities(
             middle_circuit.gates.clear();
             negation_mask = vec![0u8; n];
         } else {
-            break
+            break;
         }
     }
     (first_step_gates, middle_circuit, second_step_gates, m)
 }
 
 pub fn create_escalator_identities_tracked(
-    n: usize, 
-    first_steps: &Vec<Vec<usize>>, 
+    n: usize,
+    first_steps: &Vec<Vec<usize>>,
     second_steps: &Vec<Vec<usize>>,
     env: &Environment,
     dbs: &HashMap<String, Database>,
-) -> (Vec<([u8;3], u8)>, Transpositions, Transpositions, Transpositions, usize) {
-    let mut first = Transpositions { transpositions: Vec::new() };
-    let mut middle = Transpositions { transpositions: Vec::new() };
-    let mut second = Transpositions { transpositions: Vec::new() };
-    let mut gates_track: Vec<([u8;3], u8)> = Vec::new();
+) -> (
+    Vec<([u8; 3], u8)>,
+    Transpositions,
+    Transpositions,
+    Transpositions,
+    usize,
+) {
+    let mut first = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut middle = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut second = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut gates_track: Vec<([u8; 3], u8)> = Vec::new();
     let m = 30;
-    loop { 
+    loop {
         let mut allowed_wires: Vec<usize> = Vec::new();
         let all_wires: Vec<usize> = (0..n).collect();
         let mut restricted_wires: Vec<usize> = Vec::new();
@@ -1119,15 +1194,24 @@ pub fn create_escalator_identities_tracked(
 
         // Build second from the `top` to bottom
         let add_transps = Transpositions::gen_random_simple(n, m, &mut negation_mask);
-        second.transpositions.extend_from_slice(&add_transps.transpositions);
+        second
+            .transpositions
+            .extend_from_slice(&add_transps.transpositions);
         let sc = add_transps.to_circuit(n, env, dbs);
         second_circuit.gates.extend_from_slice(&sc.gates);
         for step in second_steps.iter().take(second_steps.len() - 1) {
             for wire in step {
                 restricted_wires.push(*wire);
             }
-            let add_transps = Transpositions::gen_random_simple_restricted(n, m, &mut negation_mask, &restricted_wires);
-            second.transpositions.extend_from_slice(&add_transps.transpositions);
+            let add_transps = Transpositions::gen_random_simple_restricted(
+                n,
+                m,
+                &mut negation_mask,
+                &restricted_wires,
+            );
+            second
+                .transpositions
+                .extend_from_slice(&add_transps.transpositions);
             let sc = add_transps.restricted_to_circuit(n, env, dbs, &restricted_wires);
             second_circuit.gates.extend_from_slice(&sc.gates);
         }
@@ -1138,27 +1222,37 @@ pub fn create_escalator_identities_tracked(
             for wire in step {
                 allowed_wires.push(*wire);
             }
-            let restricted: Vec<usize> = all_wires.iter()
+            let restricted: Vec<usize> = all_wires
+                .iter()
                 .filter(|w| !allowed_wires.contains(w))
                 .cloned()
                 .collect();
-            let add_transpf = Transpositions::gen_random_simple_restricted(n, m, &mut negation_mask, &restricted);
-            first.transpositions.extend_from_slice(&add_transpf.transpositions);
+            let add_transpf =
+                Transpositions::gen_random_simple_restricted(n, m, &mut negation_mask, &restricted);
+            first
+                .transpositions
+                .extend_from_slice(&add_transpf.transpositions);
             let fc = add_transpf.restricted_to_circuit(n, env, dbs, &restricted);
             first_circuit.gates.extend_from_slice(&fc.gates);
         }
         let add_transpf = Transpositions::gen_random_simple(n, m, &mut negation_mask);
-        first.transpositions.extend_from_slice(&add_transpf.transpositions);
+        first
+            .transpositions
+            .extend_from_slice(&add_transpf.transpositions);
         let fc = add_transpf.to_circuit(n, env, dbs);
         first_circuit.gates.extend_from_slice(&fc.gates);
 
         // Now build middle
-        middle.transpositions.extend_from_slice(&second.transpositions);
-        middle.transpositions.extend_from_slice(&first.transpositions);
-        
+        middle
+            .transpositions
+            .extend_from_slice(&second.transpositions);
+        middle
+            .transpositions
+            .extend_from_slice(&first.transpositions);
+
         let perm = middle.to_perm(n);
         let mut new_middle = Transpositions::from_perm(&perm);
-        
+
         // Use negation mask to update middle
         let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
 
@@ -1183,7 +1277,6 @@ pub fn create_escalator_identities_tracked(
                         panic!("Invalid pos or curr_neg_type");
                     }
                     new_middle.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
-                    
                 }
             }
         }
@@ -1192,7 +1285,9 @@ pub fn create_escalator_identities_tracked(
 
         let mut middle_circuit = middle.to_circuit(n, env, dbs);
         middle_circuit.gates.reverse();
-        let circuit = first_circuit.concat(&middle_circuit).concat(&second_circuit);
+        let circuit = first_circuit
+            .concat(&middle_circuit)
+            .concat(&second_circuit);
         for i in 0..first_circuit.gates.len() {
             gates_track.push((first_circuit.gates[i], 1));
         }
@@ -1202,7 +1297,7 @@ pub fn create_escalator_identities_tracked(
         for i in 0..second_circuit.gates.len() {
             gates_track.push((second_circuit.gates[i], 2));
         }
-        let id = CircuitSeq {gates: Vec::new() };
+        let id = CircuitSeq { gates: Vec::new() };
         if circuit.probably_equal(&id, n, 1000).is_ok() {
             break;
         } else {
@@ -1218,14 +1313,14 @@ pub fn create_escalator_identities_tracked(
 mod test {
     #[test]
     fn test_escalator() {
+        use crate::CircuitSeq;
         use crate::replace::identities::create_escalator_identities;
         use crate::replace::main_mix::open_all_dbs;
-        use std::io::Write;
         use lmdb::Environment;
-        use std::fs::File;
-        use std::path::Path;
-        use crate::CircuitSeq;
         use rand::seq::SliceRandom;
+        use std::fs::File;
+        use std::io::Write;
+        use std::path::Path;
         let env = Environment::new()
             .set_max_dbs(262)
             .set_map_size(800 * 1024 * 1024 * 1024)
@@ -1265,23 +1360,21 @@ mod test {
         // simple2.shuffle(&mut rand::rng());
         // simple1.reverse();
         simple2.reverse();
-        let (first, middle, second, _) = create_escalator_identities(
-            32,
-            &simple1,
-            &simple2,
-            &env,
-            &dbs
-        );
+        let (first, middle, second, _) =
+            create_escalator_identities(32, &simple1, &simple2, &env, &dbs);
         // middle.gates.reverse();
-        let mut c = CircuitSeq {gates: Vec::new() };
-        let first = CircuitSeq { gates: first.into_iter().flatten().collect() };
-        let second = CircuitSeq { gates: second.into_iter().flatten().collect() };
+        let mut c = CircuitSeq { gates: Vec::new() };
+        let first = CircuitSeq {
+            gates: first.into_iter().flatten().collect(),
+        };
+        let second = CircuitSeq {
+            gates: second.into_iter().flatten().collect(),
+        };
         c.gates.extend_from_slice(&first.gates);
         c.gates.extend_from_slice(&middle.gates);
         c.gates.extend_from_slice(&second.gates);
         let repr = c.repr();
-        writeln!(file, "{}", repr)
-            .expect("Failed to write to file");
+        writeln!(file, "{}", repr).expect("Failed to write to file");
 
         let id = CircuitSeq { gates: Vec::new() };
         if c.probably_equal(&id, 32, 10000).is_err() {

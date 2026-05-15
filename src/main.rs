@@ -1,53 +1,65 @@
 use clap::{Arg, ArgAction, Command};
 use itertools::Itertools;
 use plotters::prelude::*;
-use rocksdb::{DB, Options, BlockBasedOptions, Cache};
+use rocksdb::{BlockBasedOptions, Cache, DB, Options};
 
-use std::{
-    fs,
-    io::Write,
-    path::Path,
-};
+use std::{fs, io::Write, path::Path};
 
+use local_mixing::random::random_data::build_from_2rocks;
+use local_mixing::random::random_data::build_from_rocks;
+use local_mixing::random::random_data::build_m1;
+use local_mixing::random::random_data::combine_rocks_dbs;
+use local_mixing::random::random_data::open_db_for_read;
+use local_mixing::random::random_data::open_db_for_write;
+use local_mixing::random::random_data::rocks_to_fasterkv;
+use local_mixing::random::random_data::rocks_to_lmdb;
+use local_mixing::random::random_data::verify_fasterkv;
 use local_mixing::{
-    circuit::{CircuitSeq, circuit::{poly_degree, poly_to_str}},
+    circuit::{
+        CircuitSeq,
+        circuit::{poly_degree, poly_to_str},
+    },
     random::random_data::{
-        // build_from_sql, 
+        // build_from_sql,
         // main_random,
-        random_circuit, 
-        // random_sulking, 
-        // random_walk_no_skeleton, 
-        shoot_random_gate
+        random_circuit,
+        // random_sulking,
+        // random_walk_no_skeleton,
+        shoot_random_gate,
     },
     replace::{
         identities::{
-            get_random_wide_identity, 
+            get_random_wide_identity,
             // random_canonical_id
-        }, main_mix::{
-            // main_butterfly, 
-            main_butterfly_big, main_interleave_big, 
-            // main_mix, 
-            main_rac_big, main_rac_big_distance, main_sequential_butterfly, main_shuffle_rcs_big, open_all_dbs, main_shooting_game, main_shuffle_shoot_shuffle
-        }, mixing::install_kill_handler, pairs::{GatePair, gate_pair_taxonomy}, replace::{
+        },
+        main_mix::{
+            // main_butterfly,
+            main_butterfly_big,
+            main_interleave_big,
+            // main_mix,
+            main_rac_big,
+            main_rac_big_distance,
+            main_sequential_butterfly,
+            main_shooting_game,
+            main_shuffle_rcs_big,
+            main_shuffle_shoot_shuffle,
+            open_all_dbs,
+        },
+        mixing::install_kill_handler,
+        pairs::{GatePair, gate_pair_taxonomy},
+        replace::{
             // compress_big_ancillas,
             // sequential_compress_big_ancillas,
             compress_loop,
             print_compress_timers,
-        }, transpositions::{generate_reversible, insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x}
+        },
+        transpositions::{
+            generate_reversible, insert_wire_shuffles_knuth, insert_wire_shuffles_simple,
+            insert_wire_shuffles_x,
+        },
     },
 };
-use local_mixing::random::random_data::open_db_for_read;
-use local_mixing::random::random_data::open_db_for_write;
 use std::sync::Arc;
-use local_mixing::random::random_data::build_from_rocks;
-use local_mixing::random::random_data::build_m1;
-use local_mixing::random::random_data::build_from_2rocks;
-use local_mixing::random::random_data::combine_rocks_dbs;
-use local_mixing::random::random_data::rocks_to_fasterkv;
-use local_mixing::random::random_data::rocks_to_lmdb;
-use local_mixing::random::random_data::verify_fasterkv;
-
-
 
 fn make_rocksdb_readonly(path: &str, cache_bytes: usize) -> DB {
     let cache = Cache::new_lru_cache(cache_bytes);
@@ -1157,7 +1169,7 @@ Command::new("rocksdb_2")
         //     let n: usize = *sub.get_one("n").unwrap();
         //     let m: usize = *sub.get_one("m").unwrap();
         //     // main_rainbow_load(n, m, "./db");
-            
+
         //     // Open DB connection
         //     let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
         //     let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
@@ -1191,8 +1203,8 @@ Command::new("rocksdb_2")
         //         let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
         //         let lmdb = "./db";
         //         let env = Environment::new()
-        //         .set_max_dbs(266)      
-        //         .set_map_size(700 * 1024 * 1024 * 1024) 
+        //         .set_max_dbs(266)
+        //         .set_map_size(700 * 1024 * 1024 * 1024)
         //         .open(Path::new(lmdb))
         //         .expect("Failed to open lmdb");
 
@@ -1201,7 +1213,7 @@ Command::new("rocksdb_2")
         //         println!("{:?} Starting Len: {}", c1.permutation(5).data, c1.gates.len());
         //         main_mix(&c1, rounds, &conn, 5);
         //     } else {
-                
+
         //         let c = CircuitSeq::from_string(&data);
 
         //         // Open DB connection
@@ -1230,7 +1242,7 @@ Command::new("rocksdb_2")
         //         println!("{:?} Starting Len: {}", c1.permutation(6).data, c1.gates.len());
         //         main_butterfly(&c1, rounds, &conn, 6);
         //     } else {
-                
+
         //         let c = CircuitSeq::from_string(&data);
 
         //         // Open DB connection
@@ -1249,8 +1261,8 @@ Command::new("rocksdb_2")
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_dbs(266)      
-                .set_map_size(700 * 1024 * 1024 * 1024) 
+                .set_max_dbs(266)
+                .set_map_size(700 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
@@ -1271,15 +1283,15 @@ Command::new("rocksdb_2")
             let path: &str = sub.get_one::<String>("path").unwrap().as_str();
             let n: usize = *sub.get_one("n").unwrap_or(&32); // default to 32 if not provided
             let data = fs::read_to_string("initial.txt").expect("Failed to read initial.txt");
-            let bookendless = sub.get_flag("bookendless"); 
+            let bookendless = sub.get_flag("bookendless");
 
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_readers(10000) 
-                .set_max_dbs(266)      
-                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .set_max_readers(10000)
+                .set_max_dbs(266)
+                .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
@@ -1310,16 +1322,16 @@ Command::new("rocksdb_2")
             let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
             let tower = sub.get_flag("tower");
             let n: usize = *sub.get_one("n").unwrap_or(&32); // default to 32 if not provided
-            let id_len: usize = *sub.get_one("id_len").unwrap(); 
+            let id_len: usize = *sub.get_one("id_len").unwrap();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_readers(10000) 
-                .set_max_dbs(266)      
-                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .set_max_readers(10000)
+                .set_max_dbs(266)
+                .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
@@ -1331,18 +1343,34 @@ Command::new("rocksdb_2")
                 let c = CircuitSeq::from_string(&data);
                 main_rac_big(&c, rounds, n, d, &env, &shard_dbs, i, tower, id_len);
                 let x_label = {
-                    let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(s)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
 
                 let y_label = {
-                    let stem = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(d)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
-                let path_s = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
-                let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                let path_s = std::path::Path::new(s)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                let path_d = std::path::Path::new(d)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
                 println!(
                     "For generating heatmaps:\n\
                     python3 ./heatmap/heatmap.py \
@@ -1353,7 +1381,7 @@ Command::new("rocksdb_2")
                     --c1 \"{}\" \
                     --c2 \"{}\" \
                     --path ./{}{}.png",
-                        n, x_label, y_label, s, d, path_s, path_d
+                    n, x_label, y_label, s, d, path_s, path_d
                 );
             }
         }
@@ -1372,9 +1400,9 @@ Command::new("rocksdb_2")
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_readers(10000) 
-                .set_max_dbs(266)      
-                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .set_max_readers(10000)
+                .set_max_dbs(266)
+                .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
@@ -1386,18 +1414,34 @@ Command::new("rocksdb_2")
                 let c = CircuitSeq::from_string(&data);
                 main_shuffle_rcs_big(&c, rounds, n, d, &env, &shard_dbs, i, tower, x, id_len);
                 let x_label = {
-                    let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(s)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
 
                 let y_label = {
-                    let stem = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(d)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
-                let path_s = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
-                let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                let path_s = std::path::Path::new(s)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                let path_d = std::path::Path::new(d)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
                 println!(
                     "For generating heatmaps:\n\
                     python3 ./heatmap/heatmap.py \
@@ -1408,7 +1452,7 @@ Command::new("rocksdb_2")
                     --c1 \"{}\" \
                     --c2 \"{}\" \
                     --path ./{}{}.png",
-                        n, x_label, y_label, s, d, path_s, path_d
+                    n, x_label, y_label, s, d, path_s, path_d
                 );
             }
         }
@@ -1426,9 +1470,9 @@ Command::new("rocksdb_2")
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_readers(10000) 
-                .set_max_dbs(266)      
-                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .set_max_readers(10000)
+                .set_max_dbs(266)
+                .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
@@ -1440,18 +1484,34 @@ Command::new("rocksdb_2")
                 let c = CircuitSeq::from_string(&data);
                 main_interleave_big(&c, rounds, n, d, &env, &shard_dbs, i, tower, id_len);
                 let x_label = {
-                    let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(s)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
 
                 let y_label = {
-                    let stem = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(d)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
-                let path_s = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
-                let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                let path_s = std::path::Path::new(s)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                let path_d = std::path::Path::new(d)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
                 println!(
                     "For generating heatmaps:\n\
                     python3 ./heatmap/heatmap.py \
@@ -1462,7 +1522,7 @@ Command::new("rocksdb_2")
                     --c1 \"{}\" \
                     --c2 \"{}\" \
                     --path ./{}{}.png",
-                        n, x_label, y_label, s, d, path_s, path_d
+                    n, x_label, y_label, s, d, path_s, path_d
                 );
             }
         }
@@ -1481,9 +1541,9 @@ Command::new("rocksdb_2")
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_readers(10000) 
-                .set_max_dbs(266)      
-                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .set_max_readers(10000)
+                .set_max_dbs(266)
+                .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
@@ -1495,18 +1555,34 @@ Command::new("rocksdb_2")
                 let c = CircuitSeq::from_string(&data);
                 main_rac_big_distance(&c, rounds, n, d, &env, &shard_dbs, i, m, tower, id_len);
                 let x_label = {
-                    let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(s)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
 
                 let y_label = {
-                    let stem = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(d)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
-                let path_s = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
-                let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                let path_s = std::path::Path::new(s)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                let path_d = std::path::Path::new(d)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
                 println!(
                     "For generating heatmaps:\n\
                     python3 ./heatmap/heatmap.py \
@@ -1517,7 +1593,7 @@ Command::new("rocksdb_2")
                     --c1 \"{}\" \
                     --c2 \"{}\" \
                     --path ./{}{}.png",
-                        n, x_label, y_label, s, d, path_s, path_d
+                    n, x_label, y_label, s, d, path_s, path_d
                 );
             }
         }
@@ -1539,9 +1615,9 @@ Command::new("rocksdb_2")
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_readers(10000) 
-                .set_max_dbs(266)      
-                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .set_max_readers(10000)
+                .set_max_dbs(266)
+                .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
@@ -1567,18 +1643,34 @@ Command::new("rocksdb_2")
                     more_right,
                 );
                 let x_label = {
-                    let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(s)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
 
                 let y_label = {
-                    let stem = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(d)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
-                let path_s = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
-                let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                let path_s = std::path::Path::new(s)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                let path_d = std::path::Path::new(d)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
                 println!(
                     "For generating heatmaps:\n\
                     python3 ./heatmap/heatmap.py \
@@ -1589,7 +1681,7 @@ Command::new("rocksdb_2")
                     --c1 \"{}\" \
                     --c2 \"{}\" \
                     --path ./{}{}.png",
-                        n, x_label, y_label, s, d, path_s, path_d
+                    n, x_label, y_label, s, d, path_s, path_d
                 );
             }
         }
@@ -1608,9 +1700,9 @@ Command::new("rocksdb_2")
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_readers(10000) 
-                .set_max_dbs(266)      
-                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .set_max_readers(10000)
+                .set_max_dbs(266)
+                .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
@@ -1619,30 +1711,36 @@ Command::new("rocksdb_2")
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_shooting_game(
-                    &c, 
-                    rounds,
-                    n, 
-                    d, 
-                    &env, 
-                    id_len, 
-                    tower,
-                    stop,
-                    i,
-                );
+                main_shooting_game(&c, rounds, n, d, &env, id_len, tower, stop, i);
                 let x_label = {
-                    let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(s)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
 
                 let y_label = {
-                    let stem = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(d)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
-                let path_s = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
-                let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                let path_s = std::path::Path::new(s)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                let path_d = std::path::Path::new(d)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
                 println!(
                     "For generating heatmaps:\n\
                     python3 ./heatmap/heatmap.py \
@@ -1653,7 +1751,7 @@ Command::new("rocksdb_2")
                     --c1 \"{}\" \
                     --c2 \"{}\" \
                     --path ./{}{}.png",
-                        n, x_label, y_label, s, d, path_s, path_d
+                    n, x_label, y_label, s, d, path_s, path_d
                 );
             }
         }
@@ -1675,9 +1773,9 @@ Command::new("rocksdb_2")
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_readers(10000) 
-                .set_max_dbs(266)      
-                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .set_max_readers(10000)
+                .set_max_dbs(266)
+                .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
@@ -1688,33 +1786,37 @@ Command::new("rocksdb_2")
             } else {
                 let c = CircuitSeq::from_string(&data);
                 main_shuffle_shoot_shuffle(
-                    &c,
-                    rounds,
-                    n,
-                    m,
-                    x,
-                    d,
-                    &env,
-                    &shard_dbs,
-                    id_len,
-                    tower,
-                    stop,
-                    i,
-                    leave,
+                    &c, rounds, n, m, x, d, &env, &shard_dbs, id_len, tower, stop, i, leave,
                 );
                 let x_label = {
-                    let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(s)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
 
                 let y_label = {
-                    let stem = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                    let stem = std::path::Path::new(d)
+                        .file_stem()
+                        .unwrap()
+                        .to_str()
+                        .unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
                     format!("Circuit {}", num)
                 };
-                let path_s = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
-                let path_d = std::path::Path::new(d).file_stem().unwrap().to_str().unwrap();
+                let path_s = std::path::Path::new(s)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                let path_d = std::path::Path::new(d)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
                 println!(
                     "For generating heatmaps:\n\
                     python3 ./heatmap/heatmap.py \
@@ -1725,7 +1827,7 @@ Command::new("rocksdb_2")
                     --c1 \"{}\" \
                     --c2 \"{}\" \
                     --path ./{}{}.png",
-                        n, x_label, y_label, s, d, path_s, path_d
+                    n, x_label, y_label, s, d, path_s, path_d
                 );
             }
         }
@@ -1740,8 +1842,8 @@ Command::new("rocksdb_2")
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
             let lmdb = "./db";
             let env = Environment::new()
-                .set_max_dbs(266)      
-                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .set_max_dbs(266)
+                .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
             let dbs = open_all_dbs(&env);
@@ -1752,8 +1854,7 @@ Command::new("rocksdb_2")
             let c = CircuitSeq::from_string(&contents);
             println!("Creating reversible circuit");
             let reversible = generate_reversible(&c, n, &env, &dbs);
-            let mut file = fs::File::create(dest_path)
-                .expect("Failed to create new file");
+            let mut file = fs::File::create(dest_path).expect("Failed to create new file");
             write!(file, "{}", reversible.repr())
                 .expect("Failed to write compressed circuit to file");
 
@@ -1763,7 +1864,7 @@ Command::new("rocksdb_2")
             let s: &String = sub.get_one("s").expect("Missing -s <source>");
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
             let d: &String = sub.get_one("d").expect("Missing -d <destination>");
-            let seq = sub.get_flag("seq"); 
+            let seq = sub.get_flag("seq");
             let contents = fs::read_to_string(s)
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", s));
 
@@ -1782,10 +1883,8 @@ Command::new("rocksdb_2")
             let shard_dbs = open_shard_dbs(&env);
             acc = compress_loop(&acc, n, &env, &shard_dbs, 12, 1, 1);
             print_compress_timers();
-            let mut file = fs::File::create(d)
-                .expect("Failed to create new file");
-            write!(file, "{}", acc.repr())
-                .expect("Failed to write compressed circuit to file");
+            let mut file = fs::File::create(d).expect("Failed to create new file");
+            write!(file, "{}", acc.repr()).expect("Failed to write compressed circuit to file");
 
             println!("Compressed circuit written to {}", d);
         }
@@ -1797,8 +1896,8 @@ Command::new("rocksdb_2")
             let knuth = sub.get_flag("knuth");
             let lmdb = "./db";
             let env = Environment::new()
-                .set_max_dbs(266)      
-                .set_map_size(800 * 1024 * 1024 * 1024) 
+                .set_max_dbs(266)
+                .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
             let dbs = open_all_dbs(&env);
@@ -1817,10 +1916,8 @@ Command::new("rocksdb_2")
             } else {
                 insert_wire_shuffles_x(&mut c, n, &env, &dbs, i);
             }
-            let mut file = fs::File::create(dest_path)
-                .expect("Failed to create new file");
-            write!(file, "{}", c.repr())
-                .expect("Failed to write compressed circuit to file");
+            let mut file = fs::File::create(dest_path).expect("Failed to create new file");
+            write!(file, "{}", c.repr()).expect("Failed to write compressed circuit to file");
 
             println!("Shuffled circuit written to {}", dest_path);
         }
@@ -1838,17 +1935,17 @@ Command::new("rocksdb_2")
             shoot_random_gate(&mut c, i);
             // random_sulking(&mut c);
             // c = random_walk_no_skeleton(&mut c, &mut rng);
-            let mut file = fs::File::create(dest_path)
-                .expect("Failed to create new file");
-            write!(file, "{}", c.repr())
-                .expect("Failed to write compressed circuit to file");
+            let mut file = fs::File::create(dest_path).expect("Failed to create new file");
+            write!(file, "{}", c.repr()).expect("Failed to write compressed circuit to file");
 
             println!("Shot circuit written to {}", dest_path);
         }
         Some(("equal", sub)) => {
             let c1_path = sub.get_one::<String>("circuit_a").unwrap();
             let c2_path = sub.get_one::<String>("circuit_b").unwrap();
-            let i: usize = *sub.get_one::<usize>("iterations").expect("Missing --iterations");
+            let i: usize = *sub
+                .get_one::<usize>("iterations")
+                .expect("Missing --iterations");
             let n: usize = *sub.get_one::<usize>("wires").expect("Missing --wires");
             let contents1 = fs::read_to_string(c1_path)
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", c1_path));
@@ -1856,7 +1953,10 @@ Command::new("rocksdb_2")
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", c2_path));
             let c1 = CircuitSeq::from_string(&contents1);
             let c2 = CircuitSeq::from_string(&contents2);
-            println!("Checking for equivalence between {} and {}", c1_path, c2_path);
+            println!(
+                "Checking for equivalence between {} and {}",
+                c1_path, c2_path
+            );
             println!("{}: {} gates", c1_path, c1.gates.len());
             println!("{}: {} gates", c2_path, c2.gates.len());
             if c1.probably_equal(&c2, n, i).is_ok() {
@@ -1867,11 +1967,8 @@ Command::new("rocksdb_2")
         }
         Some(("wiredot", sub)) => {
             let n: usize = *sub.get_one("num_wires").unwrap();
-            
-            let path = sub
-                .get_one::<String>("path")
-                .map(|s| s.as_str())
-                .unwrap();
+
+            let path = sub.get_one::<String>("path").map(|s| s.as_str()).unwrap();
 
             let xlabel = sub
                 .get_one::<String>("xlabel")
@@ -1879,8 +1976,7 @@ Command::new("rocksdb_2")
                 .unwrap_or("Circuit 1 gate index");
 
             let e = format!("Failed to read {}", path);
-            let c = fs::read_to_string(path)
-                .expect(&e);
+            let c = fs::read_to_string(path).expect(&e);
             let c = CircuitSeq::from_string(&c);
 
             analyze_gate_to_wires(&c, n, xlabel).unwrap();
@@ -1888,7 +1984,7 @@ Command::new("rocksdb_2")
         Some(("lmdb", sub)) => {
             let n: usize = *sub.get_one("n").unwrap();
             let m: usize = *sub.get_one("m").unwrap();
-            let _ = sql_to_lmdb(n,m);
+            let _ = sql_to_lmdb(n, m);
         }
         Some(("lmdbp", sub)) => {
             let n: usize = *sub.get_one("n").unwrap();
@@ -1904,23 +2000,14 @@ Command::new("rocksdb_2")
                 .open(Path::new(env_path))
                 .expect("Failed to open lmdb");
 
-            let ns_and_ms = [
-                (3, 10),
-                (4, 6),
-                (5, 5),
-                (6, 5),
-                (7, 4),
-            ];
+            let ns_and_ms = [(3, 10), (4, 6), (5, 5), (6, 5), (7, 4)];
 
             for (n, max_m) in ns_and_ms {
-                let tables: Vec<String> = (1..=max_m)
-                    .map(|m| format!("n{}m{}", n, m))
-                    .collect();
+                let tables: Vec<String> = (1..=max_m).map(|m| format!("n{}m{}", n, m)).collect();
 
                 // println!("tables: {:?}", tables);
                 let perms_to_m =
-                    perm_tables_with_duplicates(&env, &tables)
-                        .expect("Failed to compute perms");
+                    perm_tables_with_duplicates(&env, &tables).expect("Failed to compute perms");
 
                 let db_name = format!("perm_tables_n{}", n);
                 save_perm_tables_to_lmdb(&env_path, &db_name, &perms_to_m)
@@ -1938,20 +2025,13 @@ Command::new("rocksdb_2")
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(env_path))
                 .expect("Failed to open lmdb");
-            let ns_and_ms = [
-                (5, 5),
-                (6, 5),
-                (7, 4),
-            ];
+            let ns_and_ms = [(5, 5), (6, 5), (7, 4)];
             let ns_and_ms = vec![ns_and_ms[n - 5]];
             for (n, max_m) in ns_and_ms {
-                let tables: Vec<String> = (1..=max_m)
-                    .map(|m| format!("n{}m{}", n, m))
-                    .collect();
+                let tables: Vec<String> = (1..=max_m).map(|m| format!("n{}m{}", n, m)).collect();
 
                 let perm_circuit_table =
-                    circuit_tables_gen(&env, &tables)
-                        .expect("Failed to compute perms");
+                    circuit_tables_gen(&env, &tables).expect("Failed to compute perms");
 
                 let tax_id_table = create_tax_id_table(perm_circuit_table);
                 let db_name = format!("{}", n);
@@ -1973,7 +2053,7 @@ Command::new("rocksdb_2")
             let circuit = CircuitSeq::from_string(input_str.trim());
             let string = circuit.to_string(circuit.used_wires().len());
             fs::write(dest_path, string)
-             .unwrap_or_else(|e| panic!("Failed to write {}: {}", dest_path, e));
+                .unwrap_or_else(|e| panic!("Failed to write {}: {}", dest_path, e));
         }
         Some(("degree", sub)) => {
             let from_path = sub.get_one::<String>("source").unwrap();
@@ -1983,11 +2063,7 @@ Command::new("rocksdb_2")
             let input_str = fs::read_to_string(from_path)
                 .unwrap_or_else(|e| panic!("Failed to read {}: {}", from_path, e));
             let circuit = CircuitSeq::from_string(input_str.trim());
-            let end = if end == 0 {
-                circuit.gates.len()
-            } else {
-                end
-            };
+            let end = if end == 0 { circuit.gates.len() } else { end };
             let polys = circuit.to_polynomial_print(n, start, end);
             for i in 0..n {
                 println!("wire {}: {} degree", i, poly_degree(&polys[i]));
@@ -2001,11 +2077,7 @@ Command::new("rocksdb_2")
             let input_str = fs::read_to_string(from_path)
                 .unwrap_or_else(|e| panic!("Failed to read {}: {}", from_path, e));
             let circuit = CircuitSeq::from_string(input_str.trim());
-            let end = if end == 0 {
-                circuit.gates.len()
-            } else {
-                end
-            };
+            let end = if end == 0 { circuit.gates.len() } else { end };
             let polys = circuit.to_polynomial(n, start, end);
             for i in 0..n {
                 println!("wire {}: {}", i, poly_to_str(&polys[i], n));
@@ -2015,12 +2087,10 @@ Command::new("rocksdb_2")
             let d: &String = sub.get_one("d").expect("Missing -d <path>");
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
             let m: usize = *sub.get_one("m").expect("Missing -n <wires>");
-            
+
             let circuit = random_circuit(n, m);
-            let mut file = fs::File::create(d)
-                .expect("Failed to create new file");
-            write!(file, "{}", circuit.repr())
-                .expect("Failed to write random circuit to file");
+            let mut file = fs::File::create(d).expect("Failed to create new file");
+            write!(file, "{}", circuit.repr()).expect("Failed to write random circuit to file");
         }
         Some(("rocksdb_1", sub)) => {
             let m: usize = *sub.get_one("m").expect("Missing -n <wires>");
@@ -2038,7 +2108,8 @@ Command::new("rocksdb_2")
             let new_db = Arc::new(open_db_for_write(m1 + m2));
             let old_db1 = Arc::new(open_db_for_read(m1));
             let old_db2 = Arc::new(open_db_for_read(m2));
-            build_from_2rocks(&old_db1, &old_db2, &new_db, m1, m2).expect("build_from_2rocks failed");
+            build_from_2rocks(&old_db1, &old_db2, &new_db, m1, m2)
+                .expect("build_from_2rocks failed");
         }
         Some(("combine_rocks", sub)) => {
             let path: &String = sub.get_one("path").expect("Missing -p <path>");
@@ -2051,9 +2122,13 @@ Command::new("rocksdb_2")
                 let msg = format!("rocks_to_fasterkv failed: {}", e);
                 eprintln!("{}", msg);
                 let _ = std::fs::OpenOptions::new()
-                    .create(true).append(true)
+                    .create(true)
+                    .append(true)
                     .open("error.txt")
-                    .and_then(|mut f| { use std::io::Write; writeln!(f, "{}", msg) });
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        writeln!(f, "{}", msg)
+                    });
                 std::process::exit(1);
             }
         }
@@ -2069,9 +2144,13 @@ Command::new("rocksdb_2")
                 let msg = format!("rocks_to_lmdb failed: {}", e);
                 eprintln!("{}", msg);
                 let _ = std::fs::OpenOptions::new()
-                    .create(true).append(true)
+                    .create(true)
+                    .append(true)
                     .open("error.txt")
-                    .and_then(|mut f| { use std::io::Write; writeln!(f, "{}", msg) });
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        writeln!(f, "{}", msg)
+                    });
                 std::process::exit(1);
             }
         }
@@ -2106,7 +2185,11 @@ pub fn reverse(from_path: &str, dest_path: &str) {
 }
 
 // Find the number of gates on a particular pin
-pub fn analyze_gate_to_wires(circuit: &CircuitSeq, num_wires: usize, x: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn analyze_gate_to_wires(
+    circuit: &CircuitSeq,
+    num_wires: usize,
+    x: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut total_counts = vec![0u32; num_wires];
     let mut active_counts = vec![0u32; num_wires];
     for gate in &circuit.gates {
@@ -2131,24 +2214,27 @@ pub fn analyze_gate_to_wires(circuit: &CircuitSeq, num_wires: usize, x: &str) ->
         .build_cartesian_2d(0f64..num_wires as f64, 0f64..(max_count as f64 + 1.0))?;
 
     let x_label = format!("Wire Index ({})", x);
-    let _ = chart.configure_mesh()
+    let _ = chart
+        .configure_mesh()
         .x_desc(x_label)
         .y_desc("Gate Touch Count")
         .draw();
 
-    chart.draw_series(
-        (0..num_wires).map(|i| Circle::new((i as f64, total_counts[i] as f64), 6, BLUE.filled())),
+    chart
+        .draw_series(
+            (0..num_wires)
+                .map(|i| Circle::new((i as f64, total_counts[i] as f64), 6, BLUE.filled())),
+        )?
+        .label("Total gate count")
+        .legend(|(x, y)| Circle::new((x, y), 5, BLUE.filled()));
 
-    )?
-    .label("Total gate count")
-    .legend(|(x,y)| Circle::new((x,y), 5, BLUE.filled()));
-
-    chart.draw_series(
-        (0..num_wires).map(|i| Circle::new((i as f64, active_counts[i] as f64), 6, RED.filled())),
-
-    )?
-    .label("Active gate count")
-    .legend(|(x,y)| Circle::new((x,y), 5, BLUE.filled()));
+    chart
+        .draw_series(
+            (0..num_wires)
+                .map(|i| Circle::new((i as f64, active_counts[i] as f64), 6, RED.filled())),
+        )?
+        .label("Active gate count")
+        .legend(|(x, y)| Circle::new((x, y), 5, BLUE.filled()));
 
     root.present()?;
     println!("Saved to wire_plot.png");
@@ -2156,12 +2242,11 @@ pub fn analyze_gate_to_wires(circuit: &CircuitSeq, num_wires: usize, x: &str) ->
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+use lmdb::Cursor;
 /// Helper code to create LMDB
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-use lmdb::{Environment, Database, WriteFlags, Transaction};
+use lmdb::{Database, Environment, Transaction, WriteFlags};
 use local_mixing::circuit::Permutation;
-use lmdb::Cursor;
 
 // Helper code to convert to lmdb from the old sql db
 pub fn sql_to_lmdb(n: usize, m: usize) -> Result<(), ()> {
@@ -2169,12 +2254,14 @@ pub fn sql_to_lmdb(n: usize, m: usize) -> Result<(), ()> {
     let map_size_bytes: usize = 800 * 1024 * 1024 * 1024;
     let batch_max_entries: usize = 100_000;
 
-    let sqlite_conn = rusqlite::Connection::open("circuits.db")
-        .expect("Failed to open SQLite database");
+    let sqlite_conn =
+        rusqlite::Connection::open("circuits.db").expect("Failed to open SQLite database");
     let table = format!("n{}m{}", n, m);
 
     let query = format!("SELECT * FROM {}", table);
-    let mut stmt = sqlite_conn.prepare(&query).expect("Failed to prepare SQLite query");
+    let mut stmt = sqlite_conn
+        .prepare(&query)
+        .expect("Failed to prepare SQLite query");
     let mut rows = stmt.query([]).expect("Failed to query SQLite rows");
 
     fs::create_dir_all(lmdb_path).expect("Failed to create LMDB directory");
@@ -2184,15 +2271,20 @@ pub fn sql_to_lmdb(n: usize, m: usize) -> Result<(), ()> {
         .open(Path::new(lmdb_path))
         .expect("Failed to open LMDB environment");
 
-    let db = env.create_db(Some(&table), lmdb::DatabaseFlags::empty())
+    let db = env
+        .create_db(Some(&table), lmdb::DatabaseFlags::empty())
         .expect("Failed to create LMDB database");
 
     let mut batch: Vec<Vec<u8>> = Vec::with_capacity(batch_max_entries);
     let mut rows_processed: u64 = 0;
 
     let flush = |env: &Environment, db: Database, batch: &mut Vec<Vec<u8>>| {
-        if batch.is_empty() { return; }
-        let mut txn = env.begin_rw_txn().expect("Failed to begin LMDB RW transaction");
+        if batch.is_empty() {
+            return;
+        }
+        let mut txn = env
+            .begin_rw_txn()
+            .expect("Failed to begin LMDB RW transaction");
         for key in batch.iter() {
             txn.put(db, key, &[], WriteFlags::empty())
                 .expect("Failed to write LMDB entry");
@@ -2214,7 +2306,7 @@ pub fn sql_to_lmdb(n: usize, m: usize) -> Result<(), ()> {
         inv_key.extend_from_slice(&0u32.to_le_bytes());
         let ro_txn = env.begin_ro_txn().expect("Failed to begin LMDB RO txn");
         if ro_txn.get(db, &inv_key).is_ok() {
-            continue
+            continue;
         }
 
         let mut key = perm.clone();
@@ -2223,9 +2315,9 @@ pub fn sql_to_lmdb(n: usize, m: usize) -> Result<(), ()> {
         circuit_seq.rewire(&Permutation::from_blob(&shuf), n);
         circuit_seq.canonicalize();
         if circuit_seq.gates.windows(2).any(|w| w[0] == w[1]) {
-            continue
+            continue;
         }
-        // compute key = perm || circuit 
+        // compute key = perm || circuit
         key.extend_from_slice(&circuit_seq.repr_blob());
 
         batch.push(key);
@@ -2243,7 +2335,10 @@ pub fn sql_to_lmdb(n: usize, m: usize) -> Result<(), ()> {
         flush(&env, db, &mut batch);
     }
 
-    println!("Finished copying {} rows into LMDB table {}", rows_processed, table);
+    println!(
+        "Finished copying {} rows into LMDB table {}",
+        rows_processed, table
+    );
 
     Ok(())
 }
@@ -2254,12 +2349,14 @@ pub fn sql_to_lmdb_perms(n: usize, m: usize) -> Result<(), ()> {
     let batch_max_entries: usize = 100_000;
 
     // Open SQLite
-    let sqlite_conn = rusqlite::Connection::open("circuits.db")
-        .expect("Failed to open SQLite database");
+    let sqlite_conn =
+        rusqlite::Connection::open("circuits.db").expect("Failed to open SQLite database");
     let table = format!("n{}m{}", n, m);
     let table2 = format!("n{}m{}perms", n, m);
     let query = format!("SELECT * FROM {}", table);
-    let mut stmt = sqlite_conn.prepare(&query).expect("Failed to prepare SQLite query");
+    let mut stmt = sqlite_conn
+        .prepare(&query)
+        .expect("Failed to prepare SQLite query");
     let mut rows = stmt.query([]).expect("Failed to query SQLite rows");
 
     // Open LMDB
@@ -2270,7 +2367,8 @@ pub fn sql_to_lmdb_perms(n: usize, m: usize) -> Result<(), ()> {
         .open(Path::new(lmdb_path))
         .expect("Failed to open LMDB environment");
 
-    let db = env.create_db(Some(&table2), lmdb::DatabaseFlags::empty())
+    let db = env
+        .create_db(Some(&table2), lmdb::DatabaseFlags::empty())
         .expect("Failed to create LMDB database");
 
     let mut batch: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(batch_max_entries);
@@ -2278,8 +2376,12 @@ pub fn sql_to_lmdb_perms(n: usize, m: usize) -> Result<(), ()> {
 
     // Flush function writes batch to LMDB
     let flush = |env: &Environment, db: Database, batch: &mut Vec<(Vec<u8>, Vec<u8>)>| {
-        if batch.is_empty() { return; }
-        let mut txn = env.begin_rw_txn().expect("Failed to begin LMDB RW transaction");
+        if batch.is_empty() {
+            return;
+        }
+        let mut txn = env
+            .begin_rw_txn()
+            .expect("Failed to begin LMDB RW transaction");
         for (key, val) in batch.iter() {
             txn.put(db, key, val, WriteFlags::empty())
                 .expect("Failed to write LMDB entry");
@@ -2316,7 +2418,10 @@ pub fn sql_to_lmdb_perms(n: usize, m: usize) -> Result<(), ()> {
         flush(&env, db, &mut batch);
     }
 
-    println!("Finished copying {} rows into LMDB table {}", rows_processed, table);
+    println!(
+        "Finished copying {} rows into LMDB table {}",
+        rows_processed, table
+    );
     Ok(())
 }
 
@@ -2346,10 +2451,7 @@ fn perm_tables_with_duplicates(
             let perm = &k[..perm_len];
 
             // push every occurrence of perm, even duplicates in same table
-            perms_to_m
-                .entry(perm.to_vec())
-                .or_default()
-                .push(m);
+            perms_to_m.entry(perm.to_vec()).or_default().push(m);
         }
     }
 
@@ -2363,7 +2465,6 @@ fn save_perm_tables_to_lmdb(
     db_name: &str,
     perms_to_m: &HashMap<Vec<u8>, Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-
     std::fs::create_dir_all(env_path)?;
     let env = Environment::new()
         .set_max_dbs(266)
@@ -2376,7 +2477,9 @@ fn save_perm_tables_to_lmdb(
     let mut batch: Vec<(&Vec<u8>, Vec<u8>)> = Vec::with_capacity(batch_size);
 
     let flush_batch = |env: &Environment, db: Database, batch: &mut Vec<(&Vec<u8>, Vec<u8>)>| {
-        if batch.is_empty() { return; }
+        if batch.is_empty() {
+            return;
+        }
         let mut txn = env.begin_rw_txn().expect("Failed to begin LMDB txn");
         for (key, value) in batch.iter() {
             txn.put(db, key, value, WriteFlags::empty())
@@ -2433,7 +2536,9 @@ fn circuit_tables_gen(
     Ok(perms_to_circuits)
 }
 
-fn create_tax_id_table(circuit_table: HashMap<Vec<u8>, Vec<Vec<u8>>>) -> HashMap<GatePair, Vec<Vec<u8>>> {
+fn create_tax_id_table(
+    circuit_table: HashMap<Vec<u8>, Vec<Vec<u8>>>,
+) -> HashMap<GatePair, Vec<Vec<u8>>> {
     let mut tax_table: HashMap<GatePair, HashSet<Vec<u8>>> = HashMap::new();
     for (_, circuits) in circuit_table {
         let n = circuits.len();
@@ -2504,7 +2609,6 @@ fn create_tax_id_table(circuit_table: HashMap<Vec<u8>, Vec<Vec<u8>>>) -> HashMap
         .into_iter()
         .map(|(k, v)| (k, v.into_iter().collect()))
         .collect()
-
 }
 
 fn save_tax_id_tables_to_lmdb(
@@ -2512,7 +2616,7 @@ fn save_tax_id_tables_to_lmdb(
     db_name: &str,
     perms_to_m: &HashMap<GatePair, Vec<Vec<u8>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use lmdb::{Environment, Database, WriteFlags};
+    use lmdb::{Database, Environment, WriteFlags};
     use std::path::Path;
 
     // Open environment
@@ -2522,7 +2626,7 @@ fn save_tax_id_tables_to_lmdb(
         .open(Path::new(env_path))?;
 
     // let dbs_to_delete = [
-    
+
     // ];
 
     // for db_name in dbs_to_delete.iter() {
@@ -2631,16 +2735,15 @@ pub fn fill_n_id(n: usize) {
         collections::HashMap,
         path::Path,
         sync::{
-            atomic::{AtomicU64, Ordering},
             Arc,
+            atomic::{AtomicU64, Ordering},
         },
         thread,
         time::Instant,
     };
 
-    use crossbeam_channel::{bounded, Receiver, Sender};
+    use crossbeam_channel::{Receiver, Sender, bounded};
     use lmdb::{Database, Environment, WriteFlags};
-
 
     const WORKERS: usize = 60;
     const BATCH_SIZE: usize = 10;
@@ -2649,7 +2752,8 @@ pub fn fill_n_id(n: usize) {
             .set_max_dbs(266)
             .set_map_size(800 * 1024 * 1024 * 1024)
             .set_max_readers(512)
-            .open(Path::new("./db")).expect("Failed to open env")
+            .open(Path::new("./db"))
+            .expect("Failed to open env"),
     );
     let dbs = Arc::new(open_all_dbs(&env));
     // Drop existing DBs
@@ -2658,13 +2762,13 @@ pub fn fill_n_id(n: usize) {
         if let Ok(db) = env.open_db(Some(&db_name)) {
             let mut txn = env.begin_rw_txn().unwrap();
             let _ = unsafe { txn.drop_db(db) };
-        let _ = txn.commit();
+            let _ = txn.commit();
         }
         let db_name = format!("ids_n{}g{}tower", n, g);
         if let Ok(db) = env.open_db(Some(&db_name)) {
             let mut txn = env.begin_rw_txn().unwrap();
             let _ = unsafe { txn.drop_db(db) };
-        let _ = txn.commit();
+            let _ = txn.commit();
         }
     }
 
@@ -2681,8 +2785,10 @@ pub fn fill_n_id(n: usize) {
 
     let total_written = Arc::new(AtomicU64::new(0));
 
-    let (tx, rx): (Sender<((u8, bool), Vec<u8>)>, Receiver<((u8, bool), Vec<u8>)>) =
-        bounded(100_000);
+    let (tx, rx): (
+        Sender<((u8, bool), Vec<u8>)>,
+        Receiver<((u8, bool), Vec<u8>)>,
+    ) = bounded(100_000);
 
     //flush
 
@@ -2713,8 +2819,7 @@ pub fn fill_n_id(n: usize) {
                     let mut txn = env.begin_rw_txn().unwrap();
 
                     for v in batch.drain(..) {
-                        txn.put(db, &v, &[], WriteFlags::empty())
-                            .unwrap();
+                        txn.put(db, &v, &[], WriteFlags::empty()).unwrap();
                     }
 
                     txn.commit().unwrap();
@@ -2723,19 +2828,11 @@ pub fn fill_n_id(n: usize) {
                 }
 
                 if last_print.elapsed().as_secs() >= 60 {
-                    println!("total written: {}",
-                        total_written.load(Ordering::Relaxed)
-                    );
+                    println!("total written: {}", total_written.load(Ordering::Relaxed));
 
                     for g in 0..34 {
-                        let single = written_per_g
-                            .get(&(g as u8, false))
-                            .copied()
-                            .unwrap_or(0);
-                        let tower = written_per_g
-                            .get(&(g as u8, true))
-                            .copied()
-                            .unwrap_or(0);
+                        let single = written_per_g.get(&(g as u8, false)).copied().unwrap_or(0);
+                        let tower = written_per_g.get(&(g as u8, true)).copied().unwrap_or(0);
 
                         println!("g {:02}: single {:>8} | tower {:>8}", g, single, tower);
                     }
@@ -2745,7 +2842,6 @@ pub fn fill_n_id(n: usize) {
         });
     }
 
-    
     //workers
     let mut handles = Vec::new();
 
@@ -2759,13 +2855,7 @@ pub fn fill_n_id(n: usize) {
             loop {
                 let tower = rand::rng().random_bool(0.5);
 
-                let mut id = get_random_wide_identity(
-                    n,
-                    &env,
-                    &dbs,
-                    &bit_shuf_list,
-                    tower,
-                );
+                let mut id = get_random_wide_identity(n, &env, &dbs, &bit_shuf_list, tower);
 
                 let len = id.gates.len();
 

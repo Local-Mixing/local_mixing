@@ -9,17 +9,18 @@ use itertools::Itertools;
 use crate::{
     circuit::circuit::CircuitSeq,
     replace::{
-        replace::compress_loop,
         mixing::{
-            abutterfly_big, butterfly_big, interleave_sequential_big, replace_and_compress_big, replace_and_compress_big_distance, simple_shooting_game, zip_sequential_butterfly
+            abutterfly_big, butterfly_big, interleave_sequential_big, replace_and_compress_big,
+            replace_and_compress_big_distance, simple_shooting_game, zip_sequential_butterfly,
         },
+        pairs::interleave,
+        replace::compress_loop,
         transpositions::{
-            insert_wire_m_samfs_every_x, 
-            //insert_wire_shuffles_knuth, 
-            //insert_wire_shuffles_simple, 
-            insert_wire_shuffles_x
+            insert_wire_m_samfs_every_x,
+            //insert_wire_shuffles_knuth,
+            //insert_wire_shuffles_simple,
+            insert_wire_shuffles_x,
         },
-        pairs::{interleave}
     },
 };
 
@@ -35,12 +36,20 @@ use crate::{
 pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> {
     let mut dbs = HashMap::new();
     let db_names = [
-        "swap", "not", "swapnot1", "swapnot2", "swapnot12", "cnot", "homgad"
+        "swap",
+        "not",
+        "swapnot1",
+        "swapnot2",
+        "swapnot12",
+        "cnot",
+        "homgad",
     ];
 
     for name in db_names.iter() {
         match env.open_db(Some(name)) {
-            Ok(db) => { dbs.insert(name.to_string(), db); }
+            Ok(db) => {
+                dbs.insert(name.to_string(), db);
+            }
             Err(lmdb::Error::NotFound) => continue,
             Err(e) => panic!("Failed to open LMDB database {}: {:?}", name, e),
         }
@@ -65,7 +74,7 @@ pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> 
 //         if circuit.gates.len() == 0 {
 //             break;
 //         }
-        
+
 //         if circuit.gates.len() == post_len {
 //             count += 1;
 //         } else {
@@ -136,7 +145,7 @@ pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> 
 //         if circuit.gates.len() == 0 {
 //             break;
 //         }
-        
+
 //         if circuit.gates.len() == post_len {
 //             count += 1;
 //         } else {
@@ -202,8 +211,15 @@ pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> 
 //     println!("Final circuit written to recent_circuit.txt");
 // }
 
-pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, n: usize, asymmetric: bool, save: &str, env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],) {
+pub fn main_butterfly_big(
+    c: &CircuitSeq,
+    rounds: usize,
+    n: usize,
+    asymmetric: bool,
+    save: &str,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+) {
     // Start with the input circuit
     let bit_shuf_list = (3..=7)
         .map(|n| {
@@ -223,14 +239,25 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, n: usize, asymmetric: b
         let stop = 1000;
         circuit = if asymmetric {
             // abutterfly_big(&circuit, conn, n, i != rounds-1, std::cmp::min(stop*(i+1), 5000), env, i+1, rounds, &bit_shuf_list, &dbs)
-            abutterfly_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs)
+            abutterfly_big(
+                &circuit,
+                n,
+                i != rounds - 1,
+                100,
+                env,
+                i + 1,
+                rounds,
+                &bit_shuf_list,
+                &dbs,
+                shard_dbs,
+            )
         } else {
-            butterfly_big(&circuit, n, i != rounds-1, stop*(i+1), env, shard_dbs)
+            butterfly_big(&circuit, n, i != rounds - 1, stop * (i + 1), env, shard_dbs)
         };
         if circuit.gates.len() == 0 {
             break;
         }
-        
+
         if circuit.gates.len() == post_len {
             count += 1;
         } else {
@@ -256,8 +283,8 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, n: usize, asymmetric: b
     }
     println!("Final len: {}", circuit.gates.len());
     circuit
-    .probably_equal(&c, n, 150_000)
-    .expect("The circuits differ somewhere!");
+        .probably_equal(&c, n, 150_000)
+        .expect("The circuits differ somewhere!");
 
     // Write to file
     let c_str = c.repr();
@@ -297,8 +324,17 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, n: usize, asymmetric: b
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_rac_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database], intermediate: &str, tower: bool, id_len: usize,) {
+pub fn main_rac_big(
+    c: &CircuitSeq,
+    rounds: usize,
+    n: usize,
+    save: &str,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    intermediate: &str,
+    tower: bool,
+    id_len: usize,
+) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -307,11 +343,11 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &l
     let mut sum_made_left = 0usize;
     let mut sum_traverse_left = 0usize;
     OpenOptions::new()
-    .create(true)
-    .write(true)
-    .truncate(true)
-    .open(&progress_path)
-    .expect("Failed to create progress file");
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&progress_path)
+        .expect("Failed to create progress file");
     let bit_shuf_list = (3..=7)
         .map(|n| {
             (0..n)
@@ -328,7 +364,21 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &l
     let mut count = 0;
     for i in 0..rounds {
         let _stop = 1000;
-        let (new_circuit, already_coll, shoot, made_left, traverse_left)  = replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len);
+        let (new_circuit, already_coll, shoot, made_left, traverse_left) = replace_and_compress_big(
+            &circuit,
+            n,
+            i != rounds - 1,
+            100,
+            env,
+            i + 1,
+            rounds,
+            &bit_shuf_list,
+            &dbs,
+            shard_dbs,
+            intermediate,
+            tower,
+            id_len,
+        );
         circuit = new_circuit;
 
         sum_already_coll += already_coll;
@@ -339,26 +389,39 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &l
         let total_attempts = already_coll + shoot;
         let already_coll_pct = if total_attempts > 0 {
             already_coll as f64 / total_attempts as f64 * 100.0
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let shoot_pct = if total_attempts > 0 {
             shoot as f64 / total_attempts as f64 * 100.0
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let made_left_pct = if shoot > 0 {
             made_left as f64 / shoot as f64 * 100.0
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let traverse_left_avg = if shoot > 0 {
             traverse_left as f64 / shoot as f64
-        } else { 0.0 };
+        } else {
+            0.0
+        };
 
         println!(
             "Round {} stats: Total Attempts: {} | Already-collided {:.2}% | Shoot {:.2}% | Made-left {:.2}% | Traverse-left avg {:.2}",
-            i + 1, total_attempts, already_coll_pct, shoot_pct, made_left_pct, traverse_left_avg
+            i + 1,
+            total_attempts,
+            already_coll_pct,
+            shoot_pct,
+            made_left_pct,
+            traverse_left_avg
         );
 
         if circuit.gates.len() == 0 {
             break;
         }
-        
+
         if circuit.gates.len() == post_len {
             count += 1;
         } else {
@@ -385,36 +448,39 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &l
             panic!("The functionality has changed");
         }
         {
-        println!("Updating progress {}", progress_path);
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&progress_path)
-            .expect("Failed to open progress file");
+            println!("Updating progress {}", progress_path);
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&progress_path)
+                .expect("Failed to open progress file");
 
-        writeln!(
-            f,
-            "=== Round {} ===\n{}\n",
-            i + 1,
-            circuit.repr()
-        )
-        .expect("Failed to write progress");
+            writeln!(f, "=== Round {} ===\n{}\n", i + 1, circuit.repr())
+                .expect("Failed to write progress");
         }
     }
 
     let total_attempts = sum_already_coll + sum_shoot;
     let overall_already_coll_pct = if total_attempts > 0 {
         sum_already_coll as f64 / total_attempts as f64 * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
     let overall_shoot_pct = if total_attempts > 0 {
         sum_shoot as f64 / total_attempts as f64 * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
     let overall_made_left_pct = if sum_shoot > 0 {
         sum_made_left as f64 / sum_shoot as f64 * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
     let overall_traverse_left_avg = if sum_made_left > 0 {
         sum_traverse_left as f64 / sum_made_left as f64
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     println!("=== Overall Stats ===");
     println!(
@@ -428,8 +494,8 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &l
 
     println!("Final len: {}", circuit.gates.len());
     circuit
-    .probably_equal(&c, n, 150_000)
-    .expect("The circuits differ somewhere!");
+        .probably_equal(&c, n, 150_000)
+        .expect("The circuits differ somewhere!");
 
     // Write to file
     let circuit_str = circuit.repr();
@@ -441,17 +507,26 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &l
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database], intermediate: &str, tower: bool, id_len: usize) {
+pub fn main_interleave_big(
+    c: &CircuitSeq,
+    rounds: usize,
+    n: usize,
+    save: &str,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    intermediate: &str,
+    tower: bool,
+    id_len: usize,
+) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
     OpenOptions::new()
-    .create(true)
-    .write(true)
-    .truncate(true)
-    .open(&progress_path)
-    .expect("Failed to create progress file");
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&progress_path)
+        .expect("Failed to create progress file");
     let bit_shuf_list = (3..=7)
         .map(|n| {
             (0..n)
@@ -469,19 +544,47 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, 
     let mut n = n;
     for i in 0..rounds {
         let _stop = 1000;
-        let (new_circuit, _, _, _, _) = if i == 0 { 
-            let x = interleave_sequential_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len);
+        let (new_circuit, _, _, _, _) = if i == 0 {
+            let x = interleave_sequential_big(
+                &circuit,
+                n,
+                i != rounds - 1,
+                100,
+                env,
+                i + 1,
+                rounds,
+                &bit_shuf_list,
+                &dbs,
+                shard_dbs,
+                intermediate,
+                tower,
+                id_len,
+            );
             n *= 2;
             x
         } else {
-            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len)
+            replace_and_compress_big(
+                &circuit,
+                n,
+                i != rounds - 1,
+                100,
+                env,
+                i + 1,
+                rounds,
+                &bit_shuf_list,
+                &dbs,
+                shard_dbs,
+                intermediate,
+                tower,
+                id_len,
+            )
         };
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
             break;
         }
-        
+
         if circuit.gates.len() == post_len {
             count += 1;
         } else {
@@ -504,31 +607,26 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, 
                 j += 1;
             }
         }
-        if c.probably_equal(&circuit, n/2, 100_000).is_err() {
+        if c.probably_equal(&circuit, n / 2, 100_000).is_err() {
             panic!("The functionality has changed");
         }
         {
-        println!("Updating progress {}", progress_path);
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&progress_path)
-            .expect("Failed to open progress file");
+            println!("Updating progress {}", progress_path);
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&progress_path)
+                .expect("Failed to open progress file");
 
-        writeln!(
-            f,
-            "=== Round {} ===\n{}\n",
-            i + 1,
-            circuit.repr()
-        )
-        .expect("Failed to write progress");
+            writeln!(f, "=== Round {} ===\n{}\n", i + 1, circuit.repr())
+                .expect("Failed to write progress");
         }
     }
 
     println!("Final len: {}", circuit.gates.len());
     circuit
-    .probably_equal(&c, n/2, 150_000)
-    .expect("The circuits differ somewhere!");
+        .probably_equal(&c, n / 2, 150_000)
+        .expect("The circuits differ somewhere!");
 
     // Write to file
     let circuit_str = circuit.repr();
@@ -540,17 +638,27 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, 
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database], intermediate: &str, tower: bool, x: usize, id_len: usize) {
+pub fn main_shuffle_rcs_big(
+    c: &CircuitSeq,
+    rounds: usize,
+    n: usize,
+    save: &str,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    intermediate: &str,
+    tower: bool,
+    x: usize,
+    id_len: usize,
+) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
     OpenOptions::new()
-    .create(true)
-    .write(true)
-    .truncate(true)
-    .open(&progress_path)
-    .expect("Failed to create progress file");
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&progress_path)
+        .expect("Failed to create progress file");
     let bit_shuf_list = (3..=7)
         .map(|n| {
             (0..n)
@@ -578,14 +686,27 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str,
         if x != 0 {
             insert_wire_shuffles_x(&mut circuit, n, env, &dbs, x);
         }
-        let (new_circuit, _, _, _, _) = 
-            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len);
+        let (new_circuit, _, _, _, _) = replace_and_compress_big(
+            &circuit,
+            n,
+            i != rounds - 1,
+            100,
+            env,
+            i + 1,
+            rounds,
+            &bit_shuf_list,
+            &dbs,
+            shard_dbs,
+            intermediate,
+            tower,
+            id_len,
+        );
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
             break;
         }
-        
+
         if circuit.gates.len() == post_len {
             count += 1;
         } else {
@@ -612,27 +733,22 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str,
             panic!("The functionality has changed");
         }
         {
-        println!("Updating progress {}", progress_path);
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&progress_path)
-            .expect("Failed to open progress file");
+            println!("Updating progress {}", progress_path);
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&progress_path)
+                .expect("Failed to open progress file");
 
-        writeln!(
-            f,
-            "=== Round {} ===\n{}\n",
-            i + 1,
-            circuit.repr()
-        )
-        .expect("Failed to write progress");
+            writeln!(f, "=== Round {} ===\n{}\n", i + 1, circuit.repr())
+                .expect("Failed to write progress");
         }
     }
 
     println!("Final len: {}", circuit.gates.len());
     circuit
-    .probably_equal(&c, n/2, 150_000)
-    .expect("The circuits differ somewhere!");
+        .probably_equal(&c, n / 2, 150_000)
+        .expect("The circuits differ somewhere!");
 
     // Write to file
     let circuit_str = circuit.repr();
@@ -644,17 +760,27 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str,
     println!("Final circuit written to recent_circuit.txt");
 }
 
-pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database], intermediate: &str, min: usize, tower: bool, id_len: usize) {
+pub fn main_rac_big_distance(
+    c: &CircuitSeq,
+    rounds: usize,
+    n: usize,
+    save: &str,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    intermediate: &str,
+    min: usize,
+    tower: bool,
+    id_len: usize,
+) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
     OpenOptions::new()
-    .create(true)
-    .write(true)
-    .truncate(true)
-    .open(&progress_path)
-    .expect("Failed to create progress file");
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&progress_path)
+        .expect("Failed to create progress file");
     let bit_shuf_list = (3..=7)
         .map(|n| {
             (0..n)
@@ -671,13 +797,28 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, n: usize, save: &str
     let mut count = 0;
     for i in 0..rounds {
         let _stop = 1000;
-        let new_circuit = replace_and_compress_big_distance(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, min, tower, id_len);
+        let new_circuit = replace_and_compress_big_distance(
+            &circuit,
+            n,
+            i != rounds - 1,
+            100,
+            env,
+            i + 1,
+            rounds,
+            &bit_shuf_list,
+            &dbs,
+            shard_dbs,
+            intermediate,
+            min,
+            tower,
+            id_len,
+        );
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
             break;
         }
-        
+
         if circuit.gates.len() == post_len {
             count += 1;
         } else {
@@ -704,27 +845,22 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, n: usize, save: &str
             panic!("The functionality has changed");
         }
         {
-        println!("Updating progress {}", progress_path);
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&progress_path)
-            .expect("Failed to open progress file");
+            println!("Updating progress {}", progress_path);
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&progress_path)
+                .expect("Failed to open progress file");
 
-        writeln!(
-            f,
-            "=== Round {} ===\n{}\n",
-            i + 1,
-            circuit.repr()
-        )
-        .expect("Failed to write progress");
+            writeln!(f, "=== Round {} ===\n{}\n", i + 1, circuit.repr())
+                .expect("Failed to write progress");
         }
     }
 
     println!("Final len: {}", circuit.gates.len());
     circuit
-    .probably_equal(&c, n, 150_000)
-    .expect("The circuits differ somewhere!");
+        .probably_equal(&c, n, 150_000)
+        .expect("The circuits differ somewhere!");
 
     // Write to file
     let circuit_str = circuit.repr();
@@ -763,7 +899,7 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, n: usize, save: &str
 //         if circuit.gates.len() == 0 {
 //             break;
 //         }
-        
+
 //         if circuit.gates.len() == post_len {
 //             count += 1;
 //         } else {
@@ -870,17 +1006,17 @@ pub fn main_sequential_butterfly(
     shoot_more_left: u8,
     reverse_order_right: bool,
     tower_right: bool,
-    shoot_more_right: u8
+    shoot_more_right: u8,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
     OpenOptions::new()
-    .create(true)
-    .write(true)
-    .truncate(true)
-    .open(&progress_path)
-    .expect("Failed to create progress file");
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&progress_path)
+        .expect("Failed to create progress file");
     let bit_shuf_list = (3..=7)
         .map(|n| {
             (0..n)
@@ -901,7 +1037,7 @@ pub fn main_sequential_butterfly(
             &circuit,
             n,
             env,
-            i+1,
+            i + 1,
             rounds,
             &bit_shuf_list,
             &dbs,
@@ -912,14 +1048,14 @@ pub fn main_sequential_butterfly(
             shoot_more_left,
             reverse_order_right,
             tower_right,
-            shoot_more_right
+            shoot_more_right,
         );
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
             break;
         }
-        
+
         if circuit.gates.len() == post_len {
             count += 1;
         } else {
@@ -946,27 +1082,22 @@ pub fn main_sequential_butterfly(
             panic!("The functionality has changed");
         }
         {
-        println!("Updating progress {}", progress_path);
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&progress_path)
-            .expect("Failed to open progress file");
+            println!("Updating progress {}", progress_path);
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&progress_path)
+                .expect("Failed to open progress file");
 
-        writeln!(
-            f,
-            "=== Round {} ===\n{}\n",
-            i + 1,
-            circuit.repr()
-        )
-        .expect("Failed to write progress");
+            writeln!(f, "=== Round {} ===\n{}\n", i + 1, circuit.repr())
+                .expect("Failed to write progress");
         }
     }
 
     println!("Final len: {}", circuit.gates.len());
     circuit
-    .probably_equal(&c, n, 150_000)
-    .expect("The circuits differ somewhere!");
+        .probably_equal(&c, n, 150_000)
+        .expect("The circuits differ somewhere!");
 
     // Write to file
     let circuit_str = circuit.repr();
@@ -978,11 +1109,11 @@ pub fn main_sequential_butterfly(
 }
 
 pub fn main_shooting_game(
-    c: &CircuitSeq, 
-    rounds: usize, 
-    n: usize, 
-    save: &str, 
-    env: &lmdb::Environment, 
+    c: &CircuitSeq,
+    rounds: usize,
+    n: usize,
+    save: &str,
+    env: &lmdb::Environment,
     id_len: usize,
     tower: bool,
     stop: usize,
@@ -992,11 +1123,11 @@ pub fn main_shooting_game(
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
     OpenOptions::new()
-    .create(true)
-    .write(true)
-    .truncate(true)
-    .open(&progress_path)
-    .expect("Failed to create progress file");
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&progress_path)
+        .expect("Failed to create progress file");
     let bit_shuf_list = (3..=7)
         .map(|n| {
             (0..n)
@@ -1013,26 +1144,26 @@ pub fn main_shooting_game(
     let mut count = 0;
     for i in 0..rounds {
         let new_circuit = simple_shooting_game(
-            &circuit,  
-            n, 
-            env, 
-            i+1, 
-            rounds, 
-            &bit_shuf_list, 
+            &circuit,
+            n,
+            env,
+            i + 1,
+            rounds,
+            &bit_shuf_list,
             &dbs,
             id_len,
             tower,
             stop,
             intermediate,
             false,
-            100
+            100,
         );
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
             break;
         }
-        
+
         if circuit.gates.len() == post_len {
             count += 1;
         } else {
@@ -1059,27 +1190,22 @@ pub fn main_shooting_game(
             panic!("The functionality has changed");
         }
         {
-        println!("Updating progress {}", progress_path);
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&progress_path)
-            .expect("Failed to open progress file");
+            println!("Updating progress {}", progress_path);
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&progress_path)
+                .expect("Failed to open progress file");
 
-        writeln!(
-            f,
-            "=== Round {} ===\n{}\n",
-            i + 1,
-            circuit.repr()
-        )
-        .expect("Failed to write progress");
+            writeln!(f, "=== Round {} ===\n{}\n", i + 1, circuit.repr())
+                .expect("Failed to write progress");
         }
     }
 
     println!("Final len: {}", circuit.gates.len());
     circuit
-    .probably_equal(&c, n, 150_000)
-    .expect("The circuits differ somewhere!");
+        .probably_equal(&c, n, 150_000)
+        .expect("The circuits differ somewhere!");
 
     // Write to file
     let circuit_str = circuit.repr();
@@ -1109,11 +1235,11 @@ pub fn main_shuffle_shoot_shuffle(
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
     OpenOptions::new()
-    .create(true)
-    .write(true)
-    .truncate(true)
-    .open(&progress_path)
-    .expect("Failed to create progress file");
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&progress_path)
+        .expect("Failed to create progress file");
     let bit_shuf_list = (3..=7)
         .map(|n| {
             (0..n)
@@ -1129,46 +1255,34 @@ pub fn main_shuffle_shoot_shuffle(
     let mut post_len = 0;
     let mut count = 0;
     if leave {
-        circuit = interleave(
-            &circuit, 
-            n,
-            env,
-            &dbs,
-            &bit_shuf_list,
-            tower,
-            id_len,
-        );
+        circuit = interleave(&circuit, n, env, &dbs, &bit_shuf_list, tower, id_len);
     }
-    let n = if leave {
-        2 * n
-    } else {
-        n
-    };
+    let n = if leave { 2 * n } else { n };
     let mut new_circuit = circuit.clone();
     loop {
-        insert_wire_m_samfs_every_x(&mut new_circuit, n, n/2, 1, env, &dbs);
+        insert_wire_m_samfs_every_x(&mut new_circuit, n, n / 2, 1, env, &dbs);
         if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
             circuit = new_circuit;
-            break
+            break;
         }
         new_circuit = circuit.clone();
     }
     for i in 0..rounds {
         loop {
             let new_circuit = simple_shooting_game(
-                &circuit,  
-                n, 
-                env, 
-                i+1, 
-                rounds, 
-                &bit_shuf_list, 
+                &circuit,
+                n,
+                env,
+                i + 1,
+                rounds,
+                &bit_shuf_list,
                 &dbs,
                 id_len,
                 tower,
                 4 * circuit.gates.len(),
                 intermediate,
                 true,
-                1
+                1,
             );
             if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
                 circuit = new_circuit;
@@ -1186,12 +1300,12 @@ pub fn main_shuffle_shoot_shuffle(
             new_circuit = circuit.clone();
         }
         println!("After inserting samfs: {} gates", circuit.gates.len());
-        circuit = compress_loop(&circuit, n, env, shard_dbs, 6, i+1, rounds);
+        circuit = compress_loop(&circuit, n, env, shard_dbs, 6, i + 1, rounds);
         println!("After compression: {} gates", circuit.gates.len());
         if circuit.gates.len() == 0 {
             break;
         }
-        
+
         if circuit.gates.len() == post_len {
             count += 1;
         } else {
@@ -1214,36 +1328,27 @@ pub fn main_shuffle_shoot_shuffle(
                 j += 1;
             }
         }
-        let n = if leave {
-            n / 2
-        } else {
-            n
-        };
+        let n = if leave { n / 2 } else { n };
         if c.probably_equal(&circuit, n, 100_000).is_err() {
             panic!("The functionality has changed");
         }
         {
-        println!("Updating progress {}", progress_path);
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&progress_path)
-            .expect("Failed to open progress file");
+            println!("Updating progress {}", progress_path);
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&progress_path)
+                .expect("Failed to open progress file");
 
-        writeln!(
-            f,
-            "=== Round {} ===\n{}\n",
-            i + 1,
-            circuit.repr()
-        )
-        .expect("Failed to write progress");
+            writeln!(f, "=== Round {} ===\n{}\n", i + 1, circuit.repr())
+                .expect("Failed to write progress");
         }
     }
 
     println!("Final len: {}", circuit.gates.len());
     circuit
-    .probably_equal(&c, n, 150_000)
-    .expect("The circuits differ somewhere!");
+        .probably_equal(&c, n, 150_000)
+        .expect("The circuits differ somewhere!");
 
     // Write to file
     let circuit_str = circuit.repr();
@@ -1255,8 +1360,14 @@ pub fn main_shuffle_shoot_shuffle(
 }
 
 //do targeted compression
-pub fn main_compression(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],) {
+pub fn main_compression(
+    c: &CircuitSeq,
+    rounds: usize,
+    n: usize,
+    save: &str,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+) {
     let dbs = open_all_dbs(env);
     // Start with the input circuit
     let _bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
@@ -1273,11 +1384,11 @@ pub fn main_compression(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env
     let mut post_len = 0;
     let mut count = 0;
     for _ in 0..rounds {
-            butterfly_big(&circuit, n, false, 0, env, shard_dbs);
+        butterfly_big(&circuit, n, false, 0, env, shard_dbs);
         if circuit.gates.len() == 0 {
             break;
         }
-        
+
         if circuit.gates.len() == post_len {
             count += 1;
         } else {
@@ -1304,8 +1415,8 @@ pub fn main_compression(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env
     println!("Final len: {}", circuit.gates.len());
 
     circuit
-    .probably_equal(&c, n, 150_000)
-    .expect("The circuits differ somewhere!");
+        .probably_equal(&c, n, 150_000)
+        .expect("The circuits differ somewhere!");
 
     // Write to file
     let circuit_str = circuit.repr();
