@@ -905,7 +905,7 @@ fn main() {
                     .long("stop")
                     .required(true)
                     .value_parser(clap::value_parser!(usize))
-                    .help("When to stop the game")
+                    .help("Gate-count multiplier: shoot until gates reach stop * initial_gates (e.g. 2 = double)")
             )
             .arg(
                 Arg::new("intermediate")
@@ -979,7 +979,7 @@ fn main() {
                     .long("stop")
                     .required(true)
                     .value_parser(clap::value_parser!(usize))
-                    .help("When to stop the game")
+                    .help("Gate-count multiplier: shoot until gates reach stop * initial_gates (e.g. 2 = double)")
             )
             .arg(
                 Arg::new("intermediate")

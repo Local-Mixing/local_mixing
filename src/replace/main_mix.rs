@@ -721,7 +721,7 @@ pub fn main_shooting_game(
     shard_dbs: &[lmdb::Database],
     id_len: usize,
     tower: bool,
-    stop: usize,
+    stop_multiplier: usize,
     intermediate: &str,
 ) {
     // Start with the input circuit
@@ -748,17 +748,18 @@ pub fn main_shooting_game(
     let mut post_len = 0;
     let mut count = 0;
     for i in 0..rounds {
+        let stop_gates = circuit.gates.len() * stop_multiplier;
         let new_circuit = simple_shooting_game(
-            &circuit,  
-            n, 
-            env, 
-            i+1, 
-            rounds, 
-            &bit_shuf_list, 
+            &circuit,
+            n,
+            env,
+            i + 1,
+            rounds,
+            &bit_shuf_list,
             &dbs,
             id_len,
             tower,
-            stop,
+            stop_gates,
             intermediate,
             false,
             100
