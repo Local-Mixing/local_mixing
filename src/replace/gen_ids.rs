@@ -118,7 +118,7 @@ mod tests {
                             shortest = Some(c);
                         }
                     }
-                    shortest.map(|c| c.to_string(c.used_wires().len()))
+                    shortest.map(|c| c.repr())
                 })
                 .unwrap_or_else(|| {
                     let hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
@@ -142,7 +142,7 @@ mod tests {
                 if shard_val.is_some() { "OK" } else { "MISSING" },
                 completions.len());
             for (i, c) in completions.iter().enumerate() {
-                println!("  {:2}. {}", i + 1, c.to_string(c.used_wires().len()));
+                println!("  {:2}. {}", i + 1, c.repr());
             }
             println!();
         }
