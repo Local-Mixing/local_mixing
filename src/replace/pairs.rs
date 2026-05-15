@@ -407,7 +407,7 @@ pub fn replace_sequential_pairs(
     num_wires: usize,
     env: &lmdb::Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
-    dbs: &HashMap<String, lmdb::Database>,
+    _dbs: &HashMap<String, lmdb::Database>,
     _tower: bool,
 ) -> (usize, usize, usize, usize) {
     make_stdin_nonblocking();
@@ -418,124 +418,121 @@ pub fn replace_sequential_pairs(
         return (0, 0, 0, 0);
     }
 
-    let mut already_collided = 0;
-    let shoot_count = 0;
-    let curr_zero = 0;
-    let traverse_left = 0;
-    // let mut shoot_count = 0;
-    // let mut curr_zero = 0;
-    // let mut traverse_left = 0;
+    let comp_db = env.open_db(Some("completion_m2"))
+        .expect("completion_m2 DB not found — run build_completion_m2 first");
 
-    let mut rng = rand::rng();
+    let mut already_collided = 0;
     let mut out: Vec<[u8; 3]> = Vec::new();
 
-    // rolling state
     let mut left = gates[0];
     let mut i = 1;
-    let mut fail = 0;
 
     while i < n {
         let mut buf = [0u8; 1];
-        if let Ok(n) = io::stdin().read(&mut buf) {
-            if n > 0 && buf[0] == b'\n' {
+        if let Ok(nb) = io::stdin().read(&mut buf) {
+            if nb > 0 && buf[0] == b'\n' {
                 println!("  i = {}", i);
             }
         }
         let right = gates[i];
-        let tax = gate_pair_taxonomy(&left, &right);
 
-        // if !GatePair::is_none(&tax) {
-            already_collided += 1;
-            let mut produced: Option<Vec<[u8; 3]>> = None;
+        already_collided += 1;
+        let produced = replace_single_pair_with_completion(&left, &right, num_wires, env, comp_db);
 
-            while produced.is_none() && fail < 100 {
-                fail += 1;
-                let t_id = Instant::now();
-                let id = match get_random_id_db_identity(tax, env, dbs) {
-                    Some(id) => {
-                        IDENTITY_TIME.fetch_add(t_id.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                        id
-                    }
-                    None => {
-                        IDENTITY_TIME.fetch_add(t_id.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                        fail += 1;
-                        continue;
-                    }
-                };
+        if let Some(mut gates_out) = produced {
+            out.append(&mut gates_out);
+            left = out.pop().unwrap();
+        } else {
+            out.push(left);
+            left = right;
+        }
 
-                let new_circuit = id.gates[2..].to_vec();
-                let replacement_circ = CircuitSeq { gates: new_circuit };
-
-                let mut used_wires: Vec<u16> = vec![
-                    (num_wires + 1) as u16;
-                    std::cmp::max(
-                        replacement_circ.max_wire(),
-                        CircuitSeq {
-                            gates: vec![id.gates[0], id.gates[1]],
-                        }
-                        .max_wire(),
-                    ) + 1
-                ];
-
-                used_wires[id.gates[0][0] as usize] = left[0] as u16;
-                used_wires[id.gates[0][1] as usize] = left[1] as u16;
-                used_wires[id.gates[0][2] as usize] = left[2] as u16;
-
-                let mut k = 0;
-                for collision in &[tax.a, tax.c1, tax.c2] {
-                    if *collision == CollisionType::OnNew {
-                        used_wires[id.gates[1][k] as usize] = right[k] as u16;
-                    }
-                    k += 1;
-                }
-
-                let mut available_wires: Vec<u16> = (0..num_wires as u16)
-                    .filter(|w| !used_wires.contains(w))
-                    .collect();
-
-                available_wires.shuffle(&mut rng);
-                for w in 0..used_wires.len() {
-                    if used_wires[w] == (num_wires + 1) as u16 {
-                        if let Some(&wire) = available_wires.get(0) {
-                            used_wires[w] = wire;
-                            available_wires.remove(0);
-                        } else {
-                            panic!("No available wires left to assign!");
-                        }
-                    }
-                }
-
-                let used_wires: Vec<u8> = used_wires.into_iter()
-                    .map(|x| u8::try_from(x).expect("value too big for u8"))
-                    .collect();
-                
-                produced = Some(
-                    CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
-                        .gates
-                        .into_iter()
-                        .rev()
-                        .collect()
-                );
-
-                fail += 1;
-            }
-
-            if let Some(mut gates_out) = produced {
-                out.append(&mut gates_out);
-                left = out.pop().unwrap();
-            } else {
-                out.push(left);
-                left = right;
-            }
-
-            fail = 0;
-            i += 1;
+        i += 1;
     }
 
     out.push(left);
     circuit.gates = out;
 
-    (already_collided, shoot_count, curr_zero, traverse_left)
+    (already_collided, 0, 0, 0)
+}
+
+/// Replace a 2-gate pair with a functionally equivalent completion from the completion_m2 DB.
+/// Mirrors the rewiring logic of compress_lmdb: canonicalize → hash → lookup → rewire back.
+/// Returns None if the pair has no entry in the DB.
+pub fn replace_single_pair_with_completion(
+    left: &[u8; 3],
+    right: &[u8; 3],
+    num_wires: usize,
+    env: &lmdb::Environment,
+    comp_db: lmdb::Database,
+) -> Option<Vec<[u8; 3]>> {
+    use xxhash_rust::xxh3::xxh3_128;
+    use crate::circuit::circuit::{polys_repr_blob, Permutation};
+    use lmdb::Transaction;
+    use rand::prelude::SliceRandom;
+
+    let mut rng = rand::rng();
+    let pair = CircuitSeq { gates: vec![*left, *right] };
+
+    let txn = env.begin_ro_txn().ok()?;
+
+    // Try forward canonicalization, fall back to reversed (same as compress_lmdb).
+    let (value, final_order, used, is_reversed): (Vec<u8>, _, Vec<u8>, bool) = {
+        let (fwd_polys, fwd_order, fwd_used) = pair.canonicalize_polys_single(false);
+        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
+        match txn.get(comp_db, &fwd_key) {
+            Ok(v) => (v.to_vec(), fwd_order, fwd_used, false),
+            Err(_) => {
+                let (rev_polys, rev_order, rev_used) = pair.canonicalize_polys_single(true);
+                if rev_polys.is_empty() { return None; }
+                let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
+                match txn.get(comp_db, &rev_key) {
+                    Ok(v) => (v.to_vec(), rev_order, rev_used, true),
+                    Err(_) => return None,
+                }
+            }
+        }
+    };
+
+    // Decode length-blob list, pick a random completion.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut pos = 0usize;
+    while pos < value.len() {
+        let len = value[pos] as usize;
+        pos += 1;
+        if pos + len > value.len() { break; }
+        spans.push((pos, len));
+        pos += len;
+    }
+    if spans.is_empty() { return None; }
+    let (start, len) = spans[rng.random_range(0..spans.len())];
+    let mut repl = CircuitSeq::from_blob(&value[start..start + len]);
+
+    if is_reversed { repl.gates.reverse(); }
+
+    // Rewire canonical → dense → actual (identical to compress_lmdb).
+    let repl_n = repl.max_wire() + 1;
+    let mut order_data = final_order.data.clone();
+    while order_data.len() < repl_n {
+        order_data.push(order_data.len());
+    }
+    let order_len = order_data.len().max(final_order.data.len());
+    repl.rewire(&Permutation { data: order_data }, order_len);
+
+    let repl_n_b = repl.max_wire() + 1;
+    let mut used_ext = used.clone();
+    if used_ext.len() < repl_n_b {
+        let mut avail: Vec<u8> = (0..num_wires as u8)
+            .filter(|w| !used_ext.contains(w))
+            .collect();
+        avail.shuffle(&mut rng);
+        let mut avail = avail.into_iter();
+        while used_ext.len() < repl_n_b {
+            used_ext.push(avail.next()?);
+        }
+    }
+
+    Some(CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates)
 }
 
 // returns the id-2 and the length

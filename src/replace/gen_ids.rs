@@ -152,6 +152,113 @@ mod tests {
         println!("Total: {} canonical circuits, {} missing from shards", entries.len(), missing);
         assert_eq!(missing, 0, "{} hashes not found in shard DBs", missing);
     }
+
+    /// Sanity check: rewire the first stored completion for the first 2 canonical circuits
+    /// back into the canonical circuit's wire space and verify they compute the same function.
+    #[test]
+    fn sanity_completion_equivalence() {
+        use crate::circuit::circuit::{polys_repr_blob, Permutation};
+        use xxhash_rust::xxh3::xxh3_128;
+
+        let env = Environment::new()
+            .set_max_dbs(300)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("Failed to open ./db");
+
+        let shard_dbs: Vec<lmdb::Database> = (0u8..=255)
+            .map(|s| env.open_db(Some(format!("{:02x}", s).as_str())).unwrap())
+            .collect();
+
+        let comp_db = env.open_db(Some("completion_m2"))
+            .expect("completion_m2 DB not found");
+
+        let txn = env.begin_ro_txn().expect("ro txn");
+
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = {
+            let mut cursor = txn.open_ro_cursor(comp_db).expect("cursor");
+            cursor.iter().map(|(k, v)| (k.to_vec(), v.to_vec())).collect()
+        };
+
+        let num_wires = 16usize; // enough headroom for extra-wire assignment
+
+        for (key, value) in entries.iter().take(2) {
+            // Get the shortest (canonical 2-gate) circuit from the shard.
+            let shard_val = txn.get(shard_dbs[key[0] as usize], key).expect("not in shard");
+            let canon_c = {
+                let mut shortest: Option<CircuitSeq> = None;
+                let mut pos = 0;
+                while pos < shard_val.len() {
+                    let len = shard_val[pos] as usize; pos += 1;
+                    if pos + len > shard_val.len() { break; }
+                    let c = CircuitSeq::from_blob(&shard_val[pos..pos + len]); pos += len;
+                    if shortest.as_ref().map_or(true, |s: &CircuitSeq| c.gates.len() < s.gates.len()) {
+                        shortest = Some(c);
+                    }
+                }
+                shortest.expect("shard value was empty")
+            };
+
+            // Decode the first stored completion.
+            let len = value[0] as usize;
+            let mut comp = CircuitSeq::from_blob(&value[1..1 + len]);
+
+            // Canonicalize the canonical circuit to get final_order and used.
+            // Try forward first, then reversed (matching the lookup order in
+            // replace_single_pair_with_completion).
+            let (final_order, used, is_reversed) = {
+                let (fwd_polys, fwd_order, fwd_used) = canon_c.canonicalize_polys_single(false);
+                let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
+                if fwd_key == key.as_slice() {
+                    (fwd_order, fwd_used, false)
+                } else {
+                    let (_, rev_order, rev_used) = canon_c.canonicalize_polys_single(true);
+                    (rev_order, rev_used, true)
+                }
+            };
+
+            if is_reversed { comp.gates.reverse(); }
+
+            // Rewire completion: canonical → dense → actual (same as replace_single_pair_with_completion).
+            let repl_n = comp.max_wire() + 1;
+            let mut order_data = final_order.data.clone();
+            while order_data.len() < repl_n { order_data.push(order_data.len()); }
+            let order_len = order_data.len().max(final_order.data.len());
+            comp.rewire(&Permutation { data: order_data }, order_len);
+
+            let repl_n_b = comp.max_wire() + 1;
+            let mut used_ext = used.clone();
+            let mut next_wire = num_wires as u8;
+            while used_ext.len() < repl_n_b {
+                used_ext.push(next_wire);
+                next_wire += 1;
+            }
+            let rewired = CircuitSeq::unrewire_subcircuit(&comp, &used_ext);
+
+            // Evaluate both on every input to the used wires (fixing extra wires to 0).
+            let n_used = used.len();
+            let mut all_equal = true;
+            for bits in 0u64..(1u64 << n_used) {
+                // Build a full input word with `used[i]` set to bit i.
+                let mut input: usize = 0;
+                for (i, &w) in used.iter().enumerate() {
+                    if (bits >> i) & 1 == 1 { input |= 1 << w; }
+                }
+                let out_canon   = canon_c.evaluate(input);
+                let out_rewired = rewired.evaluate(input);
+                // Compare only on the used wires.
+                let mask: usize = used.iter().fold(0, |acc, &w| acc | (1 << w));
+                if out_canon & mask != out_rewired & mask {
+                    all_equal = false;
+                    println!("  MISMATCH at input {:b}: canon={:b} rewired={:b}",
+                        input, out_canon & mask, out_rewired & mask);
+                }
+            }
+
+            println!("canonical: {}  completion: {}  equal={}", canon_c.repr(), rewired.repr(), all_equal);
+            assert!(all_equal, "completion does not match canonical circuit");
+        }
+    }
 }
 
 fn decode_circuits(value: &[u8]) -> Vec<CircuitSeq> {

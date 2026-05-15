@@ -38,6 +38,7 @@ use crate::{
             replace_pairs,
             replace_sequential_pairs,
             replace_single_pair,
+            replace_single_pair_with_completion,
         }, replace::{
             // compress,
             compress_big,
@@ -836,15 +837,18 @@ pub fn simple_shooting_game(
     env: &lmdb::Environment,
     curr_round: usize,
     last_round: usize,
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
-    dbs: &HashMap<String, lmdb::Database>,
-    id_len: usize,
-    tower: bool,
+    _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
+    _dbs: &HashMap<String, lmdb::Database>,
+    _id_len: usize,
+    _tower: bool,
     stop: usize,
     intermediate: &str,
     ends: bool,
     iter: usize,
 ) -> CircuitSeq {
+    let comp_db = env.open_db(Some("completion_m2"))
+        .expect("completion_m2 DB not found — run build_completion_m2 first");
+
     let mut gates = c.gates.clone();
     println!("   {}/{}: Starting simple shooting game until {} rounds or {} gates", curr_round, last_round, iter, stop);
     let mut len = gates.len();
@@ -864,43 +868,39 @@ pub fn simple_shooting_game(
             let mut curr_idx = starting_idx;
             while curr_idx != 0 {
                 let after_idx = shoot_left_vec(&mut gates, curr_idx);
-                if after_idx == 0 {
-                    break
+                if after_idx == 0 { break }
+                match replace_single_pair_with_completion(
+                    &gates[after_idx - 1],
+                    &gates[after_idx],
+                    n, env, comp_db,
+                ) {
+                    Some(id) => {
+                        let new_len = id.len();
+                        gates.splice(after_idx - 1..after_idx + 1, id);
+                        len = len - 2 + new_len;
+                        curr_idx = after_idx - 1;
+                    }
+                    None => break,
                 }
-                let (id, length) = replace_single_pair(
-                    &gates[after_idx - 1], 
-                    &gates[after_idx], 
-                    n, 
-                    env, 
-                    bit_shuf_list, 
-                    dbs, 
-                    tower, 
-                    id_len
-                );
-                gates.splice(after_idx-1..after_idx+1, id);
-                len += length - 2;
-                curr_idx = after_idx-1;
             }
         } else {
             let mut curr_idx = starting_idx;
             while curr_idx != len {
                 let after_idx = shoot_right_vec(&mut gates, curr_idx);
-                if after_idx == len - 1 {
-                    break
+                if after_idx == len - 1 { break }
+                match replace_single_pair_with_completion(
+                    &gates[after_idx],
+                    &gates[after_idx + 1],
+                    n, env, comp_db,
+                ) {
+                    Some(id) => {
+                        let new_len = id.len();
+                        gates.splice(after_idx..after_idx + 2, id);
+                        len = len - 2 + new_len;
+                        curr_idx = after_idx + new_len - 1;
+                    }
+                    None => break,
                 }
-                let (id, length) = replace_single_pair(
-                    &gates[after_idx], 
-                    &gates[after_idx + 1], 
-                    n, 
-                    env, 
-                    bit_shuf_list, 
-                    dbs, 
-                    tower, 
-                    id_len
-                );
-                gates.splice(after_idx..after_idx+2, id);
-                len += length - 2;
-                curr_idx = after_idx + length - 1;
             }
         }
         count += 1;
