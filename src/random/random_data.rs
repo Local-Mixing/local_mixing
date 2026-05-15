@@ -27,7 +27,6 @@ use std::{
     collections::{HashMap, HashSet},
     fs::OpenOptions,
     io::Write,
-    thread,
 };
 use xxhash_rust::xxh3::xxh3_128;
 
@@ -42,22 +41,10 @@ fn write_error(msg: &str) {
     }
 }
 
-fn available_disk_bytes(path: &str) -> u64 {
-    let c_path = std::ffi::CString::new(path).unwrap_or_default();
-    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-    let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
-    if ret == 0 {
-        stat.f_bavail * stat.f_bsize as u64
-    } else {
-        u64::MAX
-    }
-}
 use crate::circuit::Polynomial;
 use crate::circuit::circuit::polys_repr_blob;
 use crate::circuit::circuit::print_rule_times;
-use crate::circuit::circuit::{
-    canonicalize_polys, canonicalize_polys_2, canonicalize_polys_3, canonicalize_polys_4,
-};
+use crate::circuit::circuit::{canonicalize_polys, canonicalize_polys_4};
 
 // Store permutation canonicalizations (wire relabeling) in a cache for speed
 pub static CANON_CACHE: Lazy<DashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>> = Lazy::new(|| DashMap::new());
@@ -515,7 +502,7 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
     let num_gates = circuit.gates.len();
     let mut search_attempts = 0;
     let max_attempts = 3;
-    let window = 200;
+    let window = 50;
     loop {
         search_attempts += 1;
         if search_attempts > max_attempts {
@@ -704,7 +691,7 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
     let num_gates = circuit.gates.len();
     let mut search_attempts = 0;
     let max_attempts = 3;
-    let window = 200;
+    let window = 50;
     loop {
         search_attempts += 1;
         if search_attempts > max_attempts {
@@ -882,7 +869,7 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
 // Same as above but instead of scanning an entire candidate list, just take the first candidate from the left and right and choose randomly from those two
 pub fn simple_find_convex_subcircuit<R: RngCore>(
     _set_size: usize,
-    max_wires: usize,
+    _max_wires: usize,
     num_wires: usize,
     circuit: &CircuitSeq,
     rng: &mut R,
@@ -966,7 +953,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
 
-                            let num_new_wires = curr_gate
+                            let _num_new_wires = curr_gate
                                 .iter()
                                 .filter(|&w| !curr_wires.contains(w))
                                 .count();
@@ -1031,7 +1018,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
 
-                            let num_new_wires = curr_gate
+                            let _num_new_wires = curr_gate
                                 .iter()
                                 .filter(|&w| !curr_wires.contains(w))
                                 .count();
@@ -3729,85 +3716,6 @@ pub fn build_m1(new_db: &Arc<DB>) -> Result<(), Box<dyn std::error::Error>> {
     println!("Done.");
 
     Ok(())
-}
-
-/// Generate all wire mappings for C2 relative to C1.
-/// Returns a list of permutations, where each permutation maps
-/// C2's wire j to a concrete wire index in the combined circuit.
-///
-/// C1 occupies wires 0..N1-1 (fixed).
-/// C2's wires are mapped as follows:
-///   - s is a word of length N1 over {0..N2}, with at most one of each letter from 1..N2
-///   - if s[w] = j (j > 0), then C2's wire j-1 maps to wire w (shared with C1)
-///   - C2's wires not mentioned in s map to fresh wires N1, N1+1, ... in fixed order
-///
-/// Total number of mappings = sum_{k=0}^{min(N1,N2)} C(N1,k) * P(N2,k)
-fn enumerate_c2_wire_mappings(n1: usize, n2: usize) -> Vec<Vec<u8>> {
-    let mut result = Vec::new();
-
-    // Enumerate all words s of length N1 over {0..N2}
-    // with at most one of each letter from 1..N2
-    // We do this recursively/iteratively by choosing which positions
-    // in s get non-zero letters and which letters they get
-
-    // s[i] = 0 means position i of C1's wires is not used by C2
-    // s[i] = j (1-indexed) means C2's wire j-1 maps to C1's wire i
-    fn enumerate_words(
-        pos: usize,
-        n1: usize,
-        n2: usize,
-        word: &mut Vec<usize>,
-        used: &mut Vec<bool>, // which C2 wire indices (1..N2) are used
-        result: &mut Vec<Vec<u8>>,
-    ) {
-        if pos == n1 {
-            // word is complete — build the concrete wire mapping for C2
-            // For each C2 wire j (0-indexed), find where it maps:
-            //   - if j+1 appears in word at position w, it maps to wire w
-            //   - otherwise it maps to the next fresh wire after N1
-
-            // Find which C2 wires are mentioned in word and where
-            let mut c2_to_wire = vec![0u8; n2];
-            let mut mentioned = vec![false; n2];
-            for (w, &j) in word.iter().enumerate() {
-                if j > 0 {
-                    c2_to_wire[j - 1] = w as u8;
-                    mentioned[j - 1] = true;
-                }
-            }
-            // Assign fresh wires to unmentioned C2 wires in fixed order
-            let mut fresh = n1;
-            for j in 0..n2 {
-                if !mentioned[j] {
-                    c2_to_wire[j] = fresh as u8;
-                    fresh += 1;
-                }
-            }
-            result.push(c2_to_wire);
-            return;
-        }
-
-        // Option 1: s[pos] = 0 (this C1 wire not used by C2)
-        word.push(0);
-        enumerate_words(pos + 1, n1, n2, word, used, result);
-        word.pop();
-
-        // Option 2: s[pos] = j for each unused j in 1..N2
-        for j in 1..=n2 {
-            if !used[j - 1] {
-                used[j - 1] = true;
-                word.push(j);
-                enumerate_words(pos + 1, n1, n2, word, used, result);
-                word.pop();
-                used[j - 1] = false;
-            }
-        }
-    }
-
-    let mut word = Vec::with_capacity(n1);
-    let mut used = vec![false; n2];
-    enumerate_words(0, n1, n2, &mut word, &mut used, &mut result);
-    result
 }
 
 /// Apply a wire mapping to a circuit — remap C2's internal wires
@@ -7251,8 +7159,16 @@ mod tests {
             gates: c2.gates.iter().rev().cloned().collect(),
         };
 
-        let mappings_1_2 = enumerate_c2_wire_mappings(n1, n2);
-        let mappings_2_1 = enumerate_c2_wire_mappings(n2, n1);
+        let _arc_1_2 = enumerate_c2_wire_mappings_cached(n1, n2);
+        let _arc_2_1 = enumerate_c2_wire_mappings_cached(n2, n1);
+        let (ref mappings_1_2_data, mappings_1_2_stride) = *_arc_1_2;
+        let (ref mappings_2_1_data, mappings_2_1_stride) = *_arc_2_1;
+        let mappings_1_2: Vec<&[u8]> = mappings_1_2_data
+            .chunks(mappings_1_2_stride.max(1))
+            .collect();
+        let mappings_2_1: Vec<&[u8]> = mappings_2_1_data
+            .chunks(mappings_2_1_stride.max(1))
+            .collect();
 
         let mut f = std::fs::File::create("test.txt").unwrap();
 
@@ -7532,7 +7448,7 @@ mod tests {
                 let circuit = CircuitSeq::from_blob(circuit_blob);
 
                 // hash of original
-                let canon = canonicalize_polys_3(circuit.to_polynomial(n, 0, m));
+                let canon = canonicalize_polys_4(circuit.to_polynomial(n, 0, m));
                 let blob = polys_repr_blob(&canon.0);
                 let h: u128 = xxh3_128(&blob);
 
@@ -7541,7 +7457,7 @@ mod tests {
                 rev.gates.reverse();
                 rev.canonicalize();
 
-                let canon_rev = canonicalize_polys_3(rev.to_polynomial(n, 0, m));
+                let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
                 let rev_blob = polys_repr_blob(&canon_rev.0);
                 let h_rev: u128 = xxh3_128(&rev_blob);
 
@@ -8861,6 +8777,83 @@ pub fn rocks_to_fasterkv(
     rocks_path: &str,
     faster_dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use faster_rs::{FasterKvBuilder, status};
+
+    // Process 32 shards at a time: 32 × 1 GB = 32 GB peak RAM, 8 passes over RocksDB.
+    const BATCH: usize = 32;
+    const LOG_BYTES: u64 = 1024 * 1024 * 1024;
+    let mut grand_total = 0u64;
+
+    for batch_start in (0usize..256).step_by(BATCH) {
+        let batch_end = (batch_start + BATCH).min(256);
+        println!(
+            "Processing shards {:02x}..{:02x}",
+            batch_start,
+            batch_end - 1
+        );
+
+        let mut stores = Vec::with_capacity(BATCH);
+        for shard in batch_start..batch_end {
+            let shard_dir = format!("{}/{:02x}", faster_dir, shard);
+            std::fs::create_dir_all(&shard_dir)?;
+            let store = FasterKvBuilder::new(1 << 20, LOG_BYTES)
+                .with_disk(&shard_dir)
+                .build()
+                .map_err(|e| format!("shard {:02x}: {:?}", shard, e))?;
+            stores.push(store);
+        }
+
+        let sessions: Vec<_> = stores.iter().map(|s| s.start_session()).collect();
+        let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
+        let mut serials = vec![1u64; BATCH];
+        let mut batch_total = 0u64;
+
+        for item in rocks.iterator(rocksdb::IteratorMode::Start) {
+            let (key, value) = item?;
+            let shard = key[0] as usize;
+            if shard < batch_start || shard >= batch_end {
+                continue;
+            }
+            let idx = shard - batch_start;
+            let s = stores[idx].upsert(&key.to_vec(), &value.to_vec(), serials[idx]);
+            assert!(s == status::OK || s == status::PENDING);
+            serials[idx] += 1;
+            batch_total += 1;
+            if batch_total % 100_000 == 0 {
+                stores[idx].complete_pending(false);
+                println!("  Inserted {} entries this batch...", batch_total);
+            }
+        }
+
+        drop(sessions);
+        for (i, store) in stores.iter().enumerate() {
+            let shard = batch_start + i;
+            store.complete_pending(true);
+            let token = store
+                .checkpoint()
+                .map_err(|e| format!("checkpoint shard {:02x}: {:?}", shard, e))?
+                .token;
+            store.complete_pending(true);
+            store.stop_session();
+            let shard_dir = format!("{}/{:02x}", faster_dir, shard);
+            std::fs::write(format!("{}/index.token", shard_dir), &token)?;
+            std::fs::write(format!("{}/log.token", shard_dir), &token)?;
+            println!(
+                "  Shard {:02x}: {} entries, token={}",
+                shard,
+                serials[i] - 1,
+                &token
+            );
+        }
+
+        grand_total += batch_total;
+        println!("Batch done. Total so far: {}", grand_total);
+    }
+
+    println!(
+        "Done. {} entries across 256 shards in {}",
+        grand_total, faster_dir
+    );
     Ok(())
 }
 
@@ -8904,5 +8897,109 @@ pub fn verify_fasterkv(
     rocks_path: &str,
     faster_dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    Ok(())
+    use faster_rs::{FasterKvBuilder, status};
+
+    let mut stores = Vec::with_capacity(256);
+    for shard in 0u16..=255 {
+        let shard_dir = format!("{}/{:02x}", faster_dir, shard);
+        let store = FasterKvBuilder::new(1 << 20, 1024 * 1024 * 1024)
+            .with_disk(&shard_dir)
+            .build()
+            .map_err(|e| format!("shard {:02x}: {:?}", shard, e))?;
+
+        let idx_token = std::fs::read_to_string(format!("{}/index.token", shard_dir))
+            .map_err(|e| format!("missing index.token for shard {:02x}: {}", shard, e))?;
+        let log_token = std::fs::read_to_string(format!("{}/log.token", shard_dir))
+            .map_err(|e| format!("missing log.token for shard {:02x}: {}", shard, e))?;
+        let recover = store
+            .recover(idx_token.clone(), log_token.clone())
+            .map_err(|e| format!("recover shard {:02x}: {:?}", shard, e))?;
+        if shard < 3 {
+            println!(
+                "Shard {:02x} recover: status={} version={} sessions={:?}",
+                shard, recover.status, recover.version, recover.session_ids
+            );
+            println!(
+                "  idx_token={} log_token={}",
+                idx_token.trim(),
+                log_token.trim()
+            );
+        }
+
+        stores.push(store);
+    }
+    let sessions: Vec<_> = stores.iter().map(|s| s.start_session()).collect();
+
+    let rocks = DB::open_for_read_only(&Options::default(), rocks_path, false)?;
+    let mut checked = 0u64;
+    let mut missing = 0u64;
+    let mut mismatch = 0u64;
+    let mut serial = 1u64;
+
+    for item in rocks.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = item?;
+        let shard = key[0] as usize;
+        let key_vec: Vec<u8> = key.to_vec();
+        let val_vec: Vec<u8> = value.to_vec();
+
+        let (s, rx) = stores[shard].read::<Vec<u8>, Vec<u8>>(&key_vec, serial);
+        serial += 1;
+
+        if s == status::NOT_FOUND {
+            missing += 1;
+            if missing <= 5 {
+                println!(
+                    "MISSING key (shard {:02x}): {:?}",
+                    shard,
+                    &key_vec[..key_vec.len().min(16)]
+                );
+            }
+        } else {
+            stores[shard].complete_pending(true);
+            match rx.try_recv() {
+                Ok(found_val) => {
+                    if found_val != val_vec {
+                        mismatch += 1;
+                        if mismatch <= 5 {
+                            println!(
+                                "MISMATCH key (shard {:02x}): {:?}",
+                                shard,
+                                &key_vec[..key_vec.len().min(16)]
+                            );
+                        }
+                    }
+                }
+                Err(_) => {
+                    missing += 1;
+                    if missing <= 5 {
+                        println!(
+                            "NO RECV key (shard {:02x}): {:?}",
+                            shard,
+                            &key_vec[..key_vec.len().min(16)]
+                        );
+                    }
+                }
+            }
+        }
+
+        checked += 1;
+        if checked % 100_000 == 0 {
+            println!(
+                "Checked {} entries (missing={} mismatch={})...",
+                checked, missing, mismatch
+            );
+        }
+    }
+
+    drop(sessions);
+    println!(
+        "Done. checked={} missing={} mismatch={}",
+        checked, missing, mismatch
+    );
+    if missing == 0 && mismatch == 0 {
+        println!("All entries verified OK.");
+        Ok(())
+    } else {
+        Err(format!("{} missing, {} mismatched", missing, mismatch).into())
+    }
 }

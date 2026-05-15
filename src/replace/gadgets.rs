@@ -118,8 +118,11 @@ pub fn emit_gadget(sched: &mut GadgetScheduler, gate: [u8; 3], out: &mut Vec<[u8
     let r_b = sched.current_aux(b);
     let r_c = sched.current_aux(c);
 
+    // GADGET computes 1^s_a^(s_{slot3}&!s_{slot5}).
+    // Original gate [a,b,c] needs s_a^(s_b|!s_c) = 1^s_a^s_c^(s_b&s_c).
+    // Putting c in slot 3 and b in slot 5 gives 1^s_a^(s_c&!s_b) = 1^s_a^s_c^(s_b&s_c). ✓
     let map: [u8; 7] = [
-        a as u8, r1 as u8, r2 as u8, b as u8, r_b as u8, c as u8, r_c as u8,
+        a as u8, r1 as u8, r2 as u8, c as u8, r_c as u8, b as u8, r_b as u8,
     ];
     for &[ga, gb, gc] in &GADGET {
         out.push([map[ga as usize], map[gb as usize], map[gc as usize]]);
@@ -158,10 +161,37 @@ pub fn degree_chain_circuit(n: usize, steps: usize) -> CircuitSeq {
 /// Aux gates are distributed evenly between gadgets so each freed r1 wire
 /// accumulates ~n chain steps (degree n) before cycling back as r2.
 /// Returns a circuit on 3n wires.
+// CNOT(a ← b) with helper h in the rule-57 gate basis.
+// Works for any initial value of h; h is always restored to its original value.
+// Derived from c1not2.txt: circuit 120;012;210;102;201;021 implements CNOT(wire2←wire1)
+// with wire0 as helper. Mapping: a=wire2, b=wire1, h=wire0.
+fn cnot_gates(a: u8, b: u8, h: u8) -> [[u8; 3]; 6] {
+    [
+        [b, a, h],
+        [h, b, a],
+        [a, b, h],
+        [b, h, a],
+        [a, h, b],
+        [h, a, b],
+    ]
+}
+
 pub fn gadgetize(main: &CircuitSeq, aux: &CircuitSeq, n: usize) -> CircuitSeq {
     let mut sched = GadgetScheduler::new(n);
-    let mut out = Vec::with_capacity(main.gates.len() * 12 + aux.gates.len());
+    let mut out = Vec::with_capacity(main.gates.len() * 12 + aux.gates.len() + 12 * n);
 
+    // XOR at beginning: main_i ^= paired_aux_i
+    // paired_aux_i = 0 at start, so this is a no-op functionally,
+    // but symmetric with the end XOR that unmasks the real values.
+    let h_begin = sched.next_r2() as u8;
+    for i in 0..n {
+        let aux_i = sched.current_aux(i) as u8;
+        for &g in &cnot_gates(i as u8, aux_i, h_begin) {
+            out.push(g);
+        }
+    }
+
+    // Main gadgets interleaved with aux chain
     let m = main.gates.len();
     let a = aux.gates.len();
     let mut aux_cursor = 0usize;
@@ -178,6 +208,16 @@ pub fn gadgetize(main: &CircuitSeq, aux: &CircuitSeq, n: usize) -> CircuitSeq {
     while aux_cursor < a {
         out.push(sched.remap_chain_gate(aux.gates[aux_cursor]));
         aux_cursor += 1;
+    }
+
+    // XOR at end: main_i ^= current_paired_aux_i
+    // Recovers real output values onto the main wires (0..n-1).
+    let h_end = sched.next_r2() as u8;
+    for i in 0..n {
+        let aux_i = sched.current_aux(i) as u8;
+        for &g in &cnot_gates(i as u8, aux_i, h_end) {
+            out.push(g);
+        }
     }
 
     CircuitSeq { gates: out }
@@ -293,6 +333,59 @@ mod tests {
     }
 
     #[test]
+    fn verify_8gate_equals_12gate() {
+        // Wire layout: 0=x_a, 1=r1, 2=r2, 3=x_b, 4=r_b, 5=x_c, 6=r_c
+        //
+        // 6-gate g57 (issue notation 345;035;043;345;052;024, remapped c=2->3,d=3->4,e=4->5,f=5->6):
+        //   their [3,4,5] -> our [4,5,6]
+        //   their [0,3,5] -> our [0,4,6]
+        //   their [0,4,3] -> our [0,5,4]
+        //   their [3,4,5] -> our [4,5,6]
+        //   their [0,5,2] -> our [0,6,3]
+        //   their [0,2,4] -> our [0,3,5]
+        // 2-gate swap: [0,1,2],[0,2,1]
+        let gadget_8 = CircuitSeq {
+            gates: vec![
+                [4, 5, 6],
+                [0, 4, 6],
+                [0, 5, 4],
+                [4, 5, 6],
+                [0, 6, 3],
+                [0, 3, 5],
+                [0, 1, 2],
+                [0, 2, 1],
+            ],
+        };
+        let gadget_12 = CircuitSeq {
+            gates: vec![
+                [0, 3, 5],
+                [0, 3, 6],
+                [0, 4, 5],
+                [0, 4, 6],
+                [1, 0, 2],
+                [0, 2, 1],
+                [2, 0, 1],
+                [1, 2, 0],
+                [0, 2, 1],
+                [2, 1, 0],
+                [0, 3, 4],
+                [0, 4, 3],
+            ],
+        };
+
+        for s in 0usize..128 {
+            let out8 = gadget_8.evaluate(s);
+            let out12 = gadget_12.evaluate(s);
+            assert_eq!(
+                out8, out12,
+                "mismatch at input {:#09b}: 8-gate={:#09b} 12-gate={:#09b}",
+                s, out8, out12
+            );
+        }
+        println!("8-gate == 12-gate for all 128 inputs");
+    }
+
+    #[test]
     fn gadgetize_gate_count() {
         let n = 4;
         let main = CircuitSeq {
@@ -300,7 +393,32 @@ mod tests {
         };
         let aux = degree_chain_circuit(n, 40);
         let result = gadgetize(&main, &aux, n);
-        assert_eq!(result.gates.len(), 4 * 12 + 40);
+        // 6n begin-XOR gates + 4*12 gadget gates + 40 aux gates + 6n end-XOR gates
+        assert_eq!(result.gates.len(), 6 * n + 4 * 12 + 40 + 6 * n);
+    }
+
+    #[test]
+    fn gadgetize_preserves_functionality_on_main_wires() {
+        let n = 3;
+        // A small circuit that exercises all three wires
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [1, 2, 0], [2, 0, 1], [0, 2, 1]],
+        };
+        let aux = CircuitSeq { gates: vec![] };
+        let gadgetized = gadgetize(&main, &aux, n);
+
+        let mask = (1usize << n) - 1;
+
+        for input in 0usize..(1 << n) {
+            // aux wires (n..3n-1) start at 0, so just pass `input` directly
+            let expected = main.evaluate(input) & mask;
+            let actual = gadgetized.evaluate(input) & mask;
+            assert_eq!(
+                actual, expected,
+                "input {:#05b}: expected main wires {:#05b}, got {:#05b}",
+                input, expected, actual
+            );
+        }
     }
 
     #[test]

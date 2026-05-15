@@ -136,9 +136,9 @@ if __name__ == "__main__":
 
         # Compute slices
         chunk = args.chunk
-        for x_start in range(0, c1_len + 1, chunk):
+        for x_start in range(0, c1_len, chunk):
             x_end = min(x_start + chunk - 1, c1_len - 1)
-            for y_start in range(0, c2_len + 1, chunk):
+            for y_start in range(0, c2_len, chunk):
                 y_end = min(y_start + chunk - 1, c2_len - 1)
 
                 print(f"Computing slice x[{x_start}:{x_end}], y[{y_start}:{y_end}]...")

@@ -8,15 +8,13 @@ use crate::{
     circuit::circuit::{CircuitSeq, Permutation},
     random::random_data::{
         contiguous_convex, find_convex_subcircuit_max_gates, find_convex_subcircuit_max_wires,
-        get_canonical, shoot_random_gate, simple_find_convex_subcircuit,
-        targeted_find_convex_subcircuit_deep,
+        shoot_random_gate, simple_find_convex_subcircuit, targeted_find_convex_subcircuit_deep,
     },
 };
 use lmdb::Transaction;
 use rand::Rng;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
-use rocksdb::DB;
 use std::fs::File;
 use std::io::Write;
 
@@ -100,6 +98,9 @@ pub static PERMUTATION_TIME: AtomicU64 = AtomicU64::new(0);
 pub static DUCKDB_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CANON_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONVEX_FIND_TIME: AtomicU64 = AtomicU64::new(0);
+pub static CONVEX_MAX_WIRES_TIME: AtomicU64 = AtomicU64::new(0);
+pub static CONVEX_MAX_GATES_TIME: AtomicU64 = AtomicU64::new(0);
+pub static CONVEX_SIMPLE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONTIGUOUS_TIME: AtomicU64 = AtomicU64::new(0);
 pub static REWIRE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static COMPRESS_TIME: AtomicU64 = AtomicU64::new(0);
@@ -120,170 +121,6 @@ pub static SPLICE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static TRIAL_TIME: AtomicU64 = AtomicU64::new(0);
 pub static IDENTITY_TIME: AtomicU64 = AtomicU64::new(0);
 
-// Unsupported compression code
-// See compress_lmdb
-// pub fn compress(
-//     c: &CircuitSeq,
-//     trials: usize,
-//     conn: &Connection,
-//     bit_shuf: &Vec<Vec<usize>>,
-//     n: usize,
-// ) -> CircuitSeq {
-
-//     let id = Permutation::id_perm(n);
-
-//     // let t0 = Instant::now();
-//     let c_perm = c.permutation(n);
-//     // PERMUTATION_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-//     if c_perm == id {
-//         return CircuitSeq { gates: Vec::new() };
-//     }
-
-//     let mut compressed = c.clone();
-//     if compressed.gates.is_empty() {
-//         return CircuitSeq { gates: Vec::new() };
-//     }
-
-//     let mut i = 0;
-//     while i < compressed.gates.len().saturating_sub(1) {
-//         if compressed.gates[i] == compressed.gates[i + 1] {
-//             compressed.gates.drain(i..=i + 1);
-//             i = i.saturating_sub(2);
-//         } else {
-//             i += 1;
-//         }
-//     }
-
-//     if compressed.gates.is_empty() {
-//         return CircuitSeq { gates: Vec::new() };
-//     }
-
-//     for _ in 0..trials {
-//         let (mut subcircuit, start, end) = random_subcircuit(&compressed);
-//         subcircuit.canonicalize();
-
-//         let max = if n == 7 {
-//             4
-//         } else if n == 5 || n == 6 {
-//             5
-//         } else if n == 4 {
-//             6
-//         } else {
-//             12
-//         };
-
-//         let sub_m = subcircuit.gates.len();
-//         let min = min(sub_m, max);
-
-//         let (canon_perm_blob, canon_shuf_blob) = if subcircuit.gates.len() <= max && n == 7{
-//             let table = format!("n{}m{}", n, min);
-//             let query = format!(
-//                 "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
-//                 table
-//             );
-
-//             // let sql_t0 = Instant::now();
-//             let mut stmt = match conn.prepare(&query) {
-//                 Ok(s) => s,
-//                 Err(_) => continue,
-//             };
-//             let rows = stmt.query([&subcircuit.repr_blob()]);
-//             // DUCKDB_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-//             let mut r = match rows {
-//                 Ok(r) => r,
-//                 Err(_) => continue,
-//             };
-
-//             if let Some(row_result) = r.next().unwrap() {
-
-//                 (row_result
-//                     .get(0)
-//                     .expect("Failed to get blob"),
-//                 row_result
-//                     .get(1)
-//                     .expect("Failed to get blob"))
-
-//             } else {
-//                 continue
-//             }
-
-//         } else {
-//             // let t1 = Instant::now();
-//             let sub_perm = subcircuit.permutation(n);
-//             // PERMUTATION_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-//             // let t2 = Instant::now();
-//             let canon_perm = get_canonical(&sub_perm, bit_shuf);
-//             // CANON_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-//             (canon_perm.perm.repr_blob(), canon_perm.shuffle.repr_blob())
-//         };
-
-//         for smaller_m in 1..=sub_m {
-//             let table = format!("n{}m{}", n, smaller_m);
-//             let query = format!(
-//                 "SELECT * FROM {} WHERE perm = ?1 ORDER BY RANDOM() LIMIT 1",
-//                 table
-//             );
-
-//             // let sql_t0 = Instant::now();
-//             let mut stmt = match conn.prepare(&query) {
-//                 Ok(s) => s,
-//                 Err(_) => continue,
-//             };
-//             let rows = stmt.query([&canon_perm_blob]);
-//             // DUCKDB_TIME.fetch_add(sql_t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-//             let mut r = match rows {
-//                 Ok(r) => r,
-//                 Err(_) => continue,
-//             };
-
-//             if let Some(row_result) = r.next().unwrap() {
-//                 let blob: Vec<u8> = row_result
-//                     .get(0)
-//                     .expect("Failed to get blob");
-//                 let mut repl = CircuitSeq::from_blob(&blob);
-
-//                 let repl_perm: Vec<u8> = row_result
-//                     .get(1)
-//                     .expect("Failed to get blob");
-
-//                 let repl_shuf: Vec<u8> = row_result
-//                     .get(2)
-//                     .expect("Failed to get blob");
-
-//                 if repl.gates.len() <= subcircuit.gates.len() {
-//                     let rc = Canonicalization { perm: Permutation::from_blob(&repl_perm), shuffle: Permutation::from_blob(&repl_shuf) };
-
-//                     if !rc.shuffle.data.is_empty() {
-//                         repl.rewire(&rc.shuffle, n);
-//                     }
-
-//                     repl.rewire(&Permutation::from_blob(&canon_shuf_blob).invert(), n);
-
-//                     compressed.gates.splice(start..end, repl.gates);
-//                     break;
-//                 }
-//             }
-//         }
-//     }
-
-//     let mut j = 0;
-//     while j < compressed.gates.len().saturating_sub(1) {
-//         if compressed.gates[j] == compressed.gates[j + 1] {
-//             compressed.gates.drain(j..=j + 1);
-//             j = j.saturating_sub(2);
-//         } else {
-//             j += 1;
-//         }
-//     }
-
-//     compressed
-// }
-
 pub fn compress_loop(
     circuit: &CircuitSeq,
     n: usize,
@@ -292,6 +129,7 @@ pub fn compress_loop(
     stable_max: usize,
     curr_round: usize,
     last_round: usize,
+    output_path: &str,
 ) -> CircuitSeq {
     let mut acc = circuit.clone();
     let mut rng = rand::rng();
@@ -345,9 +183,89 @@ pub fn compress_loop(
         // Check if user created write_now
         if std::path::Path::new("write_now").exists() {
             std::fs::remove_file("write_now").ok();
-            let mut f = File::create("temp_compression.txt").expect("create");
+            let mut f = File::create(output_path).expect("create");
             writeln!(f, "{}", acc.repr()).expect("write");
-            eprintln!("Wrote temp_compression.txt");
+            eprintln!("Wrote {}", output_path);
+        }
+    }
+    acc
+}
+
+/// Like `compress_loop` but exits as soon as the circuit drops below `stop` gates.
+/// On the final round use the plain `compress_loop` instead.
+pub fn compress_loop_early(
+    circuit: &CircuitSeq,
+    n: usize,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    stable_max: usize,
+    curr_round: usize,
+    last_round: usize,
+    output_path: &str,
+    stop: usize,
+) -> CircuitSeq {
+    let mut acc = circuit.clone();
+    let mut rng = rand::rng();
+    let mut stable_count = 0;
+    let mut mode = 0usize;
+
+    while stable_count < stable_max {
+        let before = acc.gates.len();
+
+        let max_chunks = 4 * rayon::current_num_threads().max(1);
+        let k = if before <= 1500 {
+            1
+        } else {
+            ((before + 1499) / 1500).min(max_chunks)
+        };
+
+        let current_mode = [0, 1, 2][mode];
+        mode = (mode + 1) % 3;
+
+        let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
+        let compressed_chunks: Vec<Vec<[u8; 3]>> = ranges
+            .into_par_iter()
+            .map(|(start, end)| {
+                let sub = CircuitSeq {
+                    gates: acc.gates[start..end].to_vec(),
+                };
+                compress_big_ancillas(&sub, 100, n, env, shard_dbs, current_mode).gates
+            })
+            .collect();
+
+        let total_len: usize = compressed_chunks.iter().map(|c| c.len()).sum();
+        let mut new_gates = Vec::with_capacity(total_len);
+        for chunk in compressed_chunks {
+            new_gates.extend(chunk);
+        }
+
+        acc.gates = new_gates;
+        let after = acc.gates.len();
+
+        if after < stop {
+            println!(
+                "  {}/{}: Early stop at {} gates (below {})",
+                curr_round, last_round, after, stop
+            );
+            break;
+        }
+
+        if after == before {
+            stable_count += 1;
+            println!(
+                "  {}/{}: Stable {}/{}: {} gates",
+                curr_round, last_round, stable_count, stable_max, after
+            );
+        } else {
+            stable_count = 0;
+            println!("  {}/{}: Reduced: {} gates", curr_round, last_round, after);
+        }
+
+        if std::path::Path::new("write_now").exists() {
+            std::fs::remove_file("write_now").ok();
+            let mut f = File::create(output_path).expect("create");
+            writeln!(f, "{}", acc.repr()).expect("write");
+            eprintln!("Wrote {}", output_path);
         }
     }
     acc
@@ -357,13 +275,13 @@ pub fn compress_loop(
 pub fn expand_lmdb<'a>(
     c: &CircuitSeq,
     trials: usize,
-    bit_shuf: &Vec<Vec<usize>>,
-    n: usize,
-    env: &lmdb::Environment,
+    _bit_shuf: &Vec<Vec<usize>>,
+    _n: usize,
+    _env: &lmdb::Environment,
     _old_n: usize,
-    dbs: &HashMap<String, lmdb::Database>,
+    _dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
-    let mut compressed = c.clone();
+    let compressed = c.clone();
     if compressed.gates.is_empty() {
         return CircuitSeq { gates: Vec::new() };
     }
@@ -377,157 +295,6 @@ pub fn expand_lmdb<'a>(
     compressed
 }
 
-// Attempt to compress every possible subcircuit
-// Fast for small subcircuits
-// pub fn compress_exhaust(
-//     c: &CircuitSeq,
-//     db_n6m5: &DB,
-//     db_n7m4: &DB,
-//     bit_shuf: &Vec<Vec<usize>>,
-//     n: usize,
-// ) -> CircuitSeq {
-//     let id = Permutation::id_perm(n);
-
-//     if c.permutation(n) == id {
-//         return CircuitSeq { gates: Vec::new() };
-//     }
-
-//     let mut compressed = c.clone();
-//     if compressed.gates.is_empty() {
-//         return CircuitSeq { gates: Vec::new() };
-//     }
-
-//     // Initial cleanup of consecutive duplicates
-//     let mut i = 0;
-//     while i < compressed.gates.len().saturating_sub(1) {
-//         if compressed.gates[i] == compressed.gates[i + 1] {
-//             compressed.gates.drain(i..=i + 1);
-//             i = i.saturating_sub(2);
-//         } else {
-//             i += 1;
-//         }
-//     }
-
-//     if compressed.gates.is_empty() {
-//         return CircuitSeq { gates: Vec::new() };
-//     }
-
-//     let mut changed = true;
-//     let mut seen_positions: HashSet<(usize, usize)> = HashSet::new(); // Track replaced positions globally
-
-//     while changed {
-//         changed = false;
-//         let len = compressed.gates.len();
-
-//         'outer: for start in 0..len-2 {
-//             for end in (start + 2)..len { // skip length 1
-//                 if seen_positions.contains(&(start, end)) {
-//                     continue; // skip positions already replaced in this pass
-//                 }
-//                 let subcircuit = CircuitSeq {
-//                     gates: compressed.gates[start..end].to_vec(),
-//                 };
-
-//                 let sub_perm = subcircuit.permutation(n);
-//                 let canon_perm = get_canonical(&sub_perm, bit_shuf);
-//                 let sub_blob = canon_perm.perm.repr_blob();
-
-//                 let sub_m = subcircuit.gates.len();
-
-//                 for smaller_m in 1..=sub_m {
-//                     let table = format!("n{}m{}", n, smaller_m);
-//                     let query = format!(
-//                         "SELECT circuit FROM {} WHERE perm = ?1 ORDER BY RANDOM() LIMIT 1",
-//                         table
-//                     );
-
-//                     let mut stmt = match conn.prepare(&query) {
-//                         Ok(s) => s,
-//                         Err(_) => continue,
-//                     };
-//                     let rows = stmt.query([&sub_blob]);
-
-//                     if let Ok(mut r) = rows {
-//                         if let Some(row) = r.next().unwrap() {
-//                             let blob: Vec<u8> = row.get(0).expect("Failed to get blob");
-//                             let mut repl = CircuitSeq::from_blob(&blob);
-
-//                             if repl.gates.len() <= subcircuit.gates.len() {
-//                                 let repl_perm = repl.permutation(n);
-//                                 let rc = get_canonical(&repl_perm, bit_shuf);
-
-//                                 if !rc.shuffle.data.is_empty() {
-//                                     repl.rewire(&rc.shuffle, n);
-//                                 }
-//                                 repl.rewire(&canon_perm.shuffle.invert(), n);
-
-//                                 if repl.permutation(n) != sub_perm {
-//                                     panic!("Replacement permutation mismatch!");
-//                                 }
-
-//                                 // Only perform replacement if it actually changes the gates
-//                                 if repl.gates != subcircuit.gates {
-//                                     let old_len = end - start;
-//                                     let repl_len = repl.gates.len();
-//                                     let delta = repl_len as isize - old_len as isize; // ≤ 0 always
-//                                     let r_len = repl.gates.len();
-//                                     compressed.gates.splice(start..end, repl.gates);
-
-//                                     if r_len < subcircuit.gates.len() {
-//                                         // Update seen_positions
-//                                         let mut updated = HashSet::new();
-
-//                                         for &(a, b) in &seen_positions {
-//                                             // If it overlaps the replaced region, discard it
-//                                             if !(b <= start || a >= end) {
-//                                                 continue;
-//                                             }
-
-//                                             // If it comes after the replaced region, shift back
-//                                             if a >= end {
-//                                                 let new_a = (a as isize + delta) as usize;
-//                                                 let new_b = (b as isize + delta) as usize;
-//                                                 if new_a < new_b {
-//                                                     updated.insert((new_a, new_b));
-//                                                 }
-//                                             } else {
-//                                                 // Unaffected before the replacement
-//                                                 updated.insert((a, b));
-//                                             }
-//                                         }
-
-//                                         seen_positions = updated;
-//                                     }
-
-//                                     // Mark the new replaced range
-//                                     seen_positions.insert((start, end));
-
-//                                     changed = true;
-//                                     break 'outer;
-//                                 }
-//                             }
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-//     }
-
-//     // Final cleanup of consecutive duplicates
-//     let mut i = 0;
-//     while i < compressed.gates.len().saturating_sub(1) {
-//         if compressed.gates[i] == compressed.gates[i + 1] {
-//             compressed.gates.drain(i..=i + 1);
-//             i = i.saturating_sub(2);
-//         } else {
-//             i += 1;
-//         }
-//     }
-
-//     compressed
-// }
-
-// Compress on larger number of wires
 pub fn compress_big(
     c: &CircuitSeq,
     trials: usize,
@@ -606,7 +373,7 @@ pub fn compress_big(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, sub_num_wires, env, shard_dbs);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -742,7 +509,7 @@ pub fn sequential_compress_big(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, sub_num_wires, env, shard_dbs);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -894,7 +661,7 @@ pub fn sequential_compress_big_ancillas(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, sub_num_wires, env, shard_dbs);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -982,17 +749,17 @@ pub fn compress_lmdb(
         }
 
         let t_canon = Instant::now();
-        let (canon_polys, _, is_reversed, final_order, used) = sub.canonicalize_polys(n);
+        let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
         CANONICALIZE_TIME.fetch_add(t_canon.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        if canon_polys.is_empty() {
+        if fwd_polys.is_empty() {
             continue;
         }
 
-        let key = xxh3_128(&polys_repr_blob(&canon_polys))
+        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
             .to_le_bytes()
             .to_vec();
-        let shard = key[0] as usize;
+        let fwd_shard = fwd_key[0] as usize;
 
         let t_txn = Instant::now();
         let txn = match env.begin_ro_txn() {
@@ -1002,12 +769,38 @@ pub fn compress_lmdb(
         TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t_lookup = Instant::now();
-        let value: Vec<u8> = match txn.get(shard_dbs[shard], &key) {
-            Ok(v) => v.to_vec(),
-            Err(lmdb::Error::NotFound) => continue,
-            Err(_) => continue,
-        };
+        let fwd_result = txn
+            .get(shard_dbs[fwd_shard], &fwd_key)
+            .map(|v: &[u8]| v.to_vec());
         LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let (value, final_order, is_reversed) = if let Ok(v) = fwd_result {
+            (v, fwd_order, false)
+        } else {
+            let t_canon2 = Instant::now();
+            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
+            CANONICALIZE_TIME.fetch_add(t_canon2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            if rev_polys.is_empty() {
+                continue;
+            }
+
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
+                .to_le_bytes()
+                .to_vec();
+            let rev_shard = rev_key[0] as usize;
+
+            let t_lookup2 = Instant::now();
+            let rev_result = txn
+                .get(shard_dbs[rev_shard], &rev_key)
+                .map(|v: &[u8]| v.to_vec());
+            LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            match rev_result {
+                Ok(v) => (v, rev_order, true),
+                Err(_) => continue,
+            }
+        };
 
         let t_blob = Instant::now();
         let mut candidates: Vec<CircuitSeq> = Vec::new();
@@ -1238,16 +1031,6 @@ pub fn obfuscate(c: &CircuitSeq, num_wires: usize) -> (CircuitSeq, Vec<usize>) {
     (obfuscated, inverse_starts)
 }
 
-// Expand as we compress to try and get more randomness in the butterfly methods
-// pub fn outward_compress(g: &CircuitSeq, r: &CircuitSeq, trials: usize, conn: &Connection, bit_shuf: &Vec<Vec<usize>>, n: usize) -> CircuitSeq {
-//     let mut g = g.clone();
-//     for gate in r.gates.iter() {
-//         let wrapper = CircuitSeq { gates: vec![*gate] };
-//         g = compress(&wrapper.concat(&g).concat(&wrapper), trials, conn, bit_shuf, n);
-//     }
-//     g
-// }
-
 pub fn compress_big_ancillas(
     c: &CircuitSeq,
     trials: usize,
@@ -1275,11 +1058,13 @@ pub fn compress_big_ancillas(
         for set_size in (3..=6).rev() {
             let (gates, _) = match mode {
                 0 => find_convex_subcircuit_max_wires(
-                    set_size, num_wires, num_wires, &circuit, &mut rng,
+                    set_size,
+                    num_wires / 2,
+                    num_wires,
+                    &circuit,
+                    &mut rng,
                 ),
-                2 => find_convex_subcircuit_max_gates(
-                    set_size, num_wires, num_wires, &circuit, &mut rng,
-                ),
+                2 => find_convex_subcircuit_max_gates(set_size, 21, num_wires, &circuit, &mut rng),
                 _ => simple_find_convex_subcircuit(set_size, 30, num_wires, &circuit, &mut rng),
             };
             if !gates.is_empty() {
@@ -1287,7 +1072,13 @@ pub fn compress_big_ancillas(
                 break;
             }
         }
-        CONVEX_FIND_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let elapsed = t0.elapsed().as_nanos() as u64;
+        CONVEX_FIND_TIME.fetch_add(elapsed, Ordering::Relaxed);
+        match mode {
+            0 => CONVEX_MAX_WIRES_TIME.fetch_add(elapsed, Ordering::Relaxed),
+            2 => CONVEX_MAX_GATES_TIME.fetch_add(elapsed, Ordering::Relaxed),
+            _ => CONVEX_SIMPLE_TIME.fetch_add(elapsed, Ordering::Relaxed),
+        };
 
         if subcircuit_gates.is_empty() {
             continue;
@@ -1328,7 +1119,7 @@ pub fn compress_big_ancillas(
         let sub_num_wires = used_wires.len();
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 20, sub_num_wires, env, shard_dbs);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -1415,6 +1206,9 @@ pub fn print_compress_timers() {
     let rewire = REWIRE_TIME.load(Ordering::Relaxed);
     let unrewire = UNREWIRE_TIME.load(Ordering::Relaxed);
     let convex_find = CONVEX_FIND_TIME.load(Ordering::Relaxed);
+    let convex_max_wires = CONVEX_MAX_WIRES_TIME.load(Ordering::Relaxed);
+    let convex_max_gates = CONVEX_MAX_GATES_TIME.load(Ordering::Relaxed);
+    let convex_simple = CONVEX_SIMPLE_TIME.load(Ordering::Relaxed);
     let contiguous = CONTIGUOUS_TIME.load(Ordering::Relaxed);
     let replace = REPLACE_TIME.load(Ordering::Relaxed);
     let dedup = DEDUP_TIME.load(Ordering::Relaxed);
@@ -1460,6 +1254,18 @@ pub fn print_compress_timers() {
     println!(
         "Convex subcircuit find time: {:.2} min",
         convex_find as f64 / 60_000_000_000.0
+    );
+    println!(
+        "  max_wires: {:.2} min",
+        convex_max_wires as f64 / 60_000_000_000.0
+    );
+    println!(
+        "  max_gates: {:.2} min",
+        convex_max_gates as f64 / 60_000_000_000.0
+    );
+    println!(
+        "  simple:    {:.2} min",
+        convex_simple as f64 / 60_000_000_000.0
     );
     println!(
         "Contiguous convex subcircuit time: {:.2} min",

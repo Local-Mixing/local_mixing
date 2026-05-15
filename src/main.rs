@@ -1,7 +1,6 @@
 use clap::{Arg, ArgAction, Command};
 use itertools::Itertools;
 use plotters::prelude::*;
-use rocksdb::{BlockBasedOptions, Cache, DB, Options};
 
 use std::{fs, io::Write, path::Path};
 
@@ -28,6 +27,7 @@ use local_mixing::{
         shoot_random_gate,
     },
     replace::{
+        gen_ids::{generate_identity_db, open_id_dbs},
         identities::{
             get_random_wide_identity,
             // random_canonical_id
@@ -61,21 +61,14 @@ use local_mixing::{
 };
 use std::sync::Arc;
 
-fn make_rocksdb_readonly(path: &str, cache_bytes: usize) -> DB {
-    let cache = Cache::new_lru_cache(cache_bytes);
-
-    let mut block_opts = BlockBasedOptions::default();
-    block_opts.set_block_cache(&cache);
-    block_opts.set_bloom_filter(10.0, false);
-    block_opts.set_cache_index_and_filter_blocks(true);
-    block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
-
-    let mut opts = Options::default();
-    opts.set_block_based_table_factory(&block_opts);
-    opts.set_compression_type(rocksdb::DBCompressionType::None);
-
-    DB::open_for_read_only(&opts, path, false)
-        .unwrap_or_else(|_| panic!("Failed to open RocksDB {}", path))
+fn open_shard_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
+    (0u16..=255)
+        .map(|s| {
+            let name = format!("{:02x}", s);
+            env.open_db(Some(name.as_str()))
+                .unwrap_or_else(|e| panic!("Failed to open shard db {:02x}: {:?}", s, e))
+        })
+        .collect()
 }
 
 fn main() {
@@ -624,8 +617,7 @@ fn main() {
                     .long("path")
                     .value_parser(clap::value_parser!(String))
                     .help("Circuit to analyze path"),
-            ),
-            
+            )
     )
     .subcommand(
         Command::new("lmdb")
@@ -794,7 +786,7 @@ fn main() {
                 Arg::new("knuth")
                     .long("knuth")
                     .help("Use Knuth shuffle instead of simple")
-                    .required(false) 
+                    .required(false)
                     .action(clap::ArgAction::SetTrue)
             )
     )
@@ -837,28 +829,28 @@ fn main() {
                 Arg::new("rev_left")
                     .long("rev_left")
                     .help("Use reverse order for shoot+collide left on R")
-                    .required(false) 
+                    .required(false)
                     .action(clap::ArgAction::SetTrue)
             )
             .arg(
                 Arg::new("for_right")
                     .long("for_right")
                     .help("Use forward order for shoot+collide right on R*")
-                    .required(false) 
+                    .required(false)
                     .action(clap::ArgAction::SetTrue)
             )
             .arg(
                 Arg::new("tower_left")
                     .long("tower_left")
                     .help("Use tower identities for collide left on R")
-                    .required(false) 
+                    .required(false)
                     .action(clap::ArgAction::SetTrue)
             )
             .arg(
                 Arg::new("tower_right")
                     .long("tower_right")
                     .help("Use tower identities for collide right on R*")
-                    .required(false) 
+                    .required(false)
                     .action(clap::ArgAction::SetTrue)
             )
             .arg(
@@ -917,7 +909,7 @@ fn main() {
                 Arg::new("tower")
                     .long("tower")
                     .help("Use tower identities")
-                    .required(false) 
+                    .required(false)
                     .action(clap::ArgAction::SetTrue)
             )
             .arg(
@@ -925,7 +917,7 @@ fn main() {
                     .long("stop")
                     .required(true)
                     .value_parser(clap::value_parser!(usize))
-                    .help("When to stop the game")
+                    .help("Gate-count multiplier: shoot until gates reach stop * initial_gates (e.g. 2 = double)")
             )
             .arg(
                 Arg::new("intermediate")
@@ -977,14 +969,21 @@ fn main() {
                 Arg::new("tower")
                     .long("tower")
                     .help("Use tower identities")
-                    .required(false) 
+                    .required(false)
                     .action(clap::ArgAction::SetTrue)
             )
             .arg(
                 Arg::new("interleave")
                     .long("interleave")
                     .help("Use interleaving")
-                    .required(false) 
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("gadgetize")
+                    .long("gadgetize")
+                    .help("Gadgetize the circuit at the start (input becomes 3n wires)")
+                    .required(false)
                     .action(clap::ArgAction::SetTrue)
             )
             .arg(
@@ -992,7 +991,7 @@ fn main() {
                     .long("stop")
                     .required(true)
                     .value_parser(clap::value_parser!(usize))
-                    .help("When to stop the game")
+                    .help("Gate-count multiplier: shoot until gates reach stop * initial_gates (e.g. 2 = double)")
             )
             .arg(
                 Arg::new("intermediate")
@@ -1162,6 +1161,27 @@ Command::new("rocksdb_2")
                     .help("Output path for the LMDB store"),
             )
     )
+    .subcommand(
+        Command::new("gen_id_db")
+            .about("Generate identity databases from compression DB shards")
+            .arg(
+                Arg::new("src")
+                    .long("src")
+                    .default_value("./db")
+                    .value_parser(clap::value_parser!(String))
+                    .help("LMDB path (source shards and destination id_g* databases)"),
+            )
+    )
+    .subcommand(
+        Command::new("print_2gate")
+            .about("Print all m-gate circuits from shard DBs")
+            .arg(Arg::new("m").short('m').required(true).value_parser(clap::value_parser!(usize)).help("Number of gates to filter for"))
+    )
+    .subcommand(
+        Command::new("build_completion_m2")
+            .about("Build completion_m2 DB from a CSV of canonical 2-gate circuits and their completions")
+            .arg(Arg::new("csv").long("csv").required(true).value_parser(clap::value_parser!(String)).help("Path to completions CSV file"))
+    )
     .get_matches();
 
     match matches.subcommand() {
@@ -1203,7 +1223,7 @@ Command::new("rocksdb_2")
         //         let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
         //         let lmdb = "./db";
         //         let env = Environment::new()
-        //         .set_max_dbs(266)
+        //         .set_max_dbs(300)
         //         .set_map_size(700 * 1024 * 1024 * 1024)
         //         .open(Path::new(lmdb))
         //         .expect("Failed to open lmdb");
@@ -1261,7 +1281,7 @@ Command::new("rocksdb_2")
             let _ = std::fs::create_dir_all(lmdb);
 
             let env = Environment::new()
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(700 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1290,7 +1310,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000)
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1330,7 +1350,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000)
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1401,7 +1421,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000)
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1471,7 +1491,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000)
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1542,7 +1562,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000)
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1616,7 +1636,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000)
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1701,7 +1721,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000)
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1711,7 +1731,8 @@ Command::new("rocksdb_2")
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_shooting_game(&c, rounds, n, d, &env, id_len, tower, stop, i);
+                let shard_dbs = open_shard_dbs(&env);
+                main_shooting_game(&c, rounds, n, d, &env, &shard_dbs, id_len, tower, stop, i);
                 let x_label = {
                     let stem = std::path::Path::new(s)
                         .file_stem()
@@ -1765,6 +1786,7 @@ Command::new("rocksdb_2")
             let id_len: usize = *sub.get_one("id_len").unwrap();
             let tower = sub.get_flag("tower");
             let leave = sub.get_flag("interleave");
+            let do_gadgetize = sub.get_flag("gadgetize");
             let stop: usize = *sub.get_one("stop").unwrap();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
@@ -1774,7 +1796,7 @@ Command::new("rocksdb_2")
 
             let env = Environment::new()
                 .set_max_readers(10000)
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1786,7 +1808,20 @@ Command::new("rocksdb_2")
             } else {
                 let c = CircuitSeq::from_string(&data);
                 main_shuffle_shoot_shuffle(
-                    &c, rounds, n, m, x, d, &env, &shard_dbs, id_len, tower, stop, i, leave,
+                    &c,
+                    rounds,
+                    n,
+                    m,
+                    x,
+                    d,
+                    &env,
+                    &shard_dbs,
+                    id_len,
+                    tower,
+                    stop,
+                    i,
+                    leave,
+                    do_gadgetize,
                 );
                 let x_label = {
                     let stem = std::path::Path::new(s)
@@ -1842,7 +1877,7 @@ Command::new("rocksdb_2")
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
             let lmdb = "./db";
             let env = Environment::new()
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1864,7 +1899,7 @@ Command::new("rocksdb_2")
             let s: &String = sub.get_one("s").expect("Missing -s <source>");
             let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
             let d: &String = sub.get_one("d").expect("Missing -d <destination>");
-            let seq = sub.get_flag("seq");
+            let _seq = sub.get_flag("seq");
             let contents = fs::read_to_string(s)
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", s));
 
@@ -1873,15 +1908,23 @@ Command::new("rocksdb_2")
             let lmdb = "./db";
             let _ = std::fs::create_dir_all(lmdb);
             let env = Environment::new()
-                .set_max_dbs(500)
+                .set_max_dbs(300)
+                .set_max_readers(10000)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
+            // Print timers on Ctrl+C
+            ctrlc::set_handler(|| {
+                print_compress_timers();
+                std::process::exit(0);
+            })
+            .expect("Failed to set Ctrl+C handler");
+
             // Call compression logic
             println!("Starting compression");
             let shard_dbs = open_shard_dbs(&env);
-            acc = compress_loop(&acc, n, &env, &shard_dbs, 12, 1, 1);
+            acc = compress_loop(&acc, n, &env, &shard_dbs, 12, 1, 1, d);
             print_compress_timers();
             let mut file = fs::File::create(d).expect("Failed to create new file");
             write!(file, "{}", acc.repr()).expect("Failed to write compressed circuit to file");
@@ -1896,7 +1939,7 @@ Command::new("rocksdb_2")
             let knuth = sub.get_flag("knuth");
             let lmdb = "./db";
             let env = Environment::new()
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
@@ -1995,7 +2038,7 @@ Command::new("rocksdb_2")
             let env_path = "./db";
 
             let env = Environment::new()
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(64 * 1024 * 1024 * 1024)
                 .open(Path::new(env_path))
                 .expect("Failed to open lmdb");
@@ -2021,7 +2064,7 @@ Command::new("rocksdb_2")
             let env_path = "./db";
 
             let env = Environment::new()
-                .set_max_dbs(266)
+                .set_max_dbs(300)
                 .set_map_size(800 * 1024 * 1024 * 1024)
                 .open(Path::new(env_path))
                 .expect("Failed to open lmdb");
@@ -2154,6 +2197,154 @@ Command::new("rocksdb_2")
                 std::process::exit(1);
             }
         }
+        Some(("gen_id_db", sub)) => {
+            let src: &String = sub.get_one("src").expect("Missing --src");
+
+            let env = Environment::new()
+                .set_max_dbs(300)
+                .set_max_readers(10000)
+                .set_map_size(800 * 1024 * 1024 * 1024)
+                .open(Path::new(src.as_str()))
+                .expect("Failed to open LMDB");
+
+            let shard_dbs = open_shard_dbs(&env);
+            let id_dbs = open_id_dbs(&env);
+
+            generate_identity_db(&env, &shard_dbs, &id_dbs);
+        }
+        Some(("print_2gate", sub)) => {
+            let m: usize = *sub.get_one("m").unwrap();
+            use lmdb::{Cursor, Transaction};
+            let env = Environment::new()
+                .set_max_dbs(300)
+                .set_map_size(800 * 1024 * 1024 * 1024)
+                .open(Path::new("./db"))
+                .expect("Failed to open ./db");
+
+            let mut total = 0u64;
+            for shard in 0u16..256 {
+                let name = format!("{:02x}", shard);
+                let db = match env.open_db(Some(name.as_str())) {
+                    Ok(db) => db,
+                    Err(_) => continue,
+                };
+                let txn = env.begin_ro_txn().expect("ro txn");
+                let mut cursor = txn.open_ro_cursor(db).expect("cursor");
+                for (_, value) in cursor.iter() {
+                    let mut pos = 0;
+                    while pos < value.len() {
+                        let len = value[pos] as usize;
+                        pos += 1;
+                        if pos + len > value.len() {
+                            break;
+                        }
+                        let circuit = CircuitSeq::from_blob(&value[pos..pos + len]);
+                        pos += len;
+                        if circuit.gates.len() == m {
+                            println!("{}", circuit.to_string(circuit.used_wires().len()));
+                            total += 1;
+                        }
+                    }
+                }
+                drop(cursor);
+                drop(txn);
+                if shard % 16 == 15 {
+                    eprintln!("Shard {}/256 done, found {} so far", shard + 1, total);
+                }
+            }
+            eprintln!("Total 2-gate circuits: {}", total);
+        }
+        Some(("build_completion_m2", sub)) => {
+            use lmdb::{Transaction, WriteFlags};
+            use local_mixing::circuit::circuit::polys_repr_blob;
+            use std::collections::HashMap;
+            use xxhash_rust::xxh3::xxh3_128;
+
+            let csv_path: &String = sub.get_one("csv").unwrap();
+            let csv_data = fs::read_to_string(csv_path)
+                .unwrap_or_else(|e| panic!("Failed to read CSV {}: {}", csv_path, e));
+
+            // Group completions by canonical string (column A → column C)
+            let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+            for line in csv_data.lines().skip(1) {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let cols: Vec<&str> = line.splitn(4, ',').collect();
+                if cols.len() < 3 {
+                    continue;
+                }
+                let canonical = cols[0].trim().to_string();
+                let completion = cols[2].trim().to_string();
+                groups.entry(canonical).or_default().push(completion);
+            }
+
+            let env = Environment::new()
+                .set_max_dbs(300)
+                .set_map_size(800 * 1024 * 1024 * 1024)
+                .open(Path::new("./db"))
+                .expect("Failed to open ./db");
+
+            let db = env
+                .create_db(Some("completion_m2"), lmdb::DatabaseFlags::empty())
+                .expect("Failed to create completion_m2 DB");
+
+            let mut txn = env.begin_rw_txn().expect("rw txn");
+
+            for (canonical_str, completions) in &groups {
+                let circuit = CircuitSeq::from_string(canonical_str);
+
+                // final_order maps canonical wire → dense wire; invert to get dense → canonical
+                let (polys, _, reversed, final_order, _) = circuit.canonicalize_polys(0);
+                let hash = xxh3_128(&polys_repr_blob(&polys)).to_le_bytes();
+
+                let p_inv = final_order.invert();
+                let n_pair = p_inv.data.len();
+
+                let mut value: Vec<u8> = Vec::new();
+                for comp_str in completions {
+                    let mut comp = CircuitSeq::from_string(comp_str);
+                    if reversed {
+                        comp.gates.reverse();
+                    }
+                    let max_wire = comp.max_wire() as usize;
+
+                    // Extend p_inv with identity for extra wires beyond the 2-gate pair
+                    let mut ext: Vec<usize> = p_inv.data.clone();
+                    for w in n_pair..=max_wire {
+                        ext.push(w);
+                    }
+
+                    let rewired = CircuitSeq {
+                        gates: comp
+                            .gates
+                            .iter()
+                            .map(|&[t, c1, c2]| {
+                                [
+                                    ext[t as usize] as u8,
+                                    ext[c1 as usize] as u8,
+                                    ext[c2 as usize] as u8,
+                                ]
+                            })
+                            .collect(),
+                    };
+
+                    let blob = rewired.repr_blob();
+                    assert!(blob.len() <= 255, "blob too large: {}", blob.len());
+                    value.push(blob.len() as u8);
+                    value.extend_from_slice(&blob);
+                }
+
+                txn.put(db, &hash, &value, WriteFlags::empty())
+                    .expect("Failed to write to completion_m2");
+            }
+
+            txn.commit().expect("commit");
+            println!(
+                "Written {} canonical entries to completion_m2",
+                groups.len()
+            );
+        }
         _ => unreachable!(),
     }
 }
@@ -2266,7 +2457,7 @@ pub fn sql_to_lmdb(n: usize, m: usize) -> Result<(), ()> {
 
     fs::create_dir_all(lmdb_path).expect("Failed to create LMDB directory");
     let env = Environment::new()
-        .set_max_dbs(266)
+        .set_max_dbs(300)
         .set_map_size(map_size_bytes)
         .open(Path::new(lmdb_path))
         .expect("Failed to open LMDB environment");
@@ -2362,7 +2553,7 @@ pub fn sql_to_lmdb_perms(n: usize, m: usize) -> Result<(), ()> {
     // Open LMDB
     fs::create_dir_all(lmdb_path).expect("Failed to create LMDB directory");
     let env = Environment::new()
-        .set_max_dbs(266)
+        .set_max_dbs(300)
         .set_map_size(map_size_bytes)
         .open(Path::new(lmdb_path))
         .expect("Failed to open LMDB environment");
@@ -2467,7 +2658,7 @@ fn save_perm_tables_to_lmdb(
 ) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(env_path)?;
     let env = Environment::new()
-        .set_max_dbs(266)
+        .set_max_dbs(300)
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
@@ -2621,7 +2812,7 @@ fn save_tax_id_tables_to_lmdb(
 
     // Open environment
     let env = Environment::new()
-        .set_max_dbs(266)
+        .set_max_dbs(300)
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(env_path))?;
 
@@ -2644,16 +2835,14 @@ fn save_tax_id_tables_to_lmdb(
     // }
 
     let batch_size = 100;
-    let mut batch: Vec<Vec<u8>> = Vec::with_capacity(batch_size);
 
-    let flush_batch = |env: &Environment, db: Database, batch: &mut Vec<Vec<u8>>| {
+    let flush_batch = |env: &Environment, db: Database, batch: &mut Vec<(u64, Vec<u8>)>| {
         if batch.is_empty() {
             return;
         }
-        println!("Flushing batch");
         let mut txn = env.begin_rw_txn().expect("Failed to begin LMDB txn");
-        for key in batch.iter() {
-            txn.put(db, key, &[], WriteFlags::empty())
+        for (idx, value) in batch.iter() {
+            txn.put(db, &idx.to_be_bytes(), value, WriteFlags::empty())
                 .expect("Failed to write LMDB key");
         }
         txn.commit().expect("Failed to commit LMDB txn");
@@ -2661,12 +2850,27 @@ fn save_tax_id_tables_to_lmdb(
     };
 
     for (gatepair, circuits) in perms_to_m.iter() {
-        let g = GatePair::to_int(gatepair); // your conversion function
+        let g = GatePair::to_int(gatepair);
         let dynamic_db_name = format!("ids_n{}g{}", db_name, g);
         let db = env.create_db(Some(&dynamic_db_name), lmdb::DatabaseFlags::empty())?;
 
+        let mut counter: u64 = {
+            let txn = env.begin_ro_txn()?;
+            let cursor = txn.open_ro_cursor(db)?;
+            match cursor.get(None, None, lmdb_sys::MDB_LAST) {
+                Ok((Some(k), _)) => {
+                    let arr: [u8; 8] = k.try_into().unwrap_or([0u8; 8]);
+                    u64::from_be_bytes(arr) + 1
+                }
+                _ => 0,
+            }
+        };
+
+        let mut batch: Vec<(u64, Vec<u8>)> = Vec::with_capacity(batch_size);
+
         for circuit in circuits {
-            batch.push(circuit.clone());
+            batch.push((counter, circuit.clone()));
+            counter += 1;
 
             if batch.len() >= batch_size {
                 flush_batch(&env, db, &mut batch);
@@ -2749,7 +2953,7 @@ pub fn fill_n_id(n: usize) {
     const BATCH_SIZE: usize = 10;
     let env = Arc::new(
         Environment::new()
-            .set_max_dbs(266)
+            .set_max_dbs(300)
             .set_map_size(800 * 1024 * 1024 * 1024)
             .set_max_readers(512)
             .open(Path::new("./db"))
@@ -2797,9 +3001,10 @@ pub fn fill_n_id(n: usize) {
         let total_written = Arc::clone(&total_written);
 
         thread::spawn(move || {
-            let mut batches: HashMap<(u8, bool), Vec<Vec<u8>>> = HashMap::new();
+            let mut batches: HashMap<(u8, bool), Vec<(u64, Vec<u8>)>> = HashMap::new();
             let mut db_cache: HashMap<(u8, bool), Database> = HashMap::new();
             let mut written_per_g: HashMap<(u8, bool), u64> = HashMap::new();
+            let mut counters: HashMap<(u8, bool), u64> = HashMap::new();
             let mut last_print = Instant::now();
 
             loop {
@@ -2812,14 +3017,19 @@ pub fn fill_n_id(n: usize) {
                         .unwrap()
                 });
 
+                let counter = counters.entry((g, tower)).or_insert(0u64);
+                let count_val = *counter;
+                *counter += 1;
+
                 let batch = batches.entry((g, tower)).or_default();
-                batch.push(key);
+                batch.push((count_val, key));
 
                 if batch.len() >= BATCH_SIZE {
                     let mut txn = env.begin_rw_txn().unwrap();
 
-                    for v in batch.drain(..) {
-                        txn.put(db, &v, &[], WriteFlags::empty()).unwrap();
+                    for (idx, v) in batch.drain(..) {
+                        txn.put(db, &idx.to_be_bytes(), &v, WriteFlags::empty())
+                            .unwrap();
                     }
 
                     txn.commit().unwrap();

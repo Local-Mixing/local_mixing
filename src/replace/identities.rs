@@ -281,217 +281,87 @@ pub fn get_random_identity(
         panic!("Failed to get DB with name: {}", db_name);
     });
 
-    // Hardcoded max entries for all DBs for efficient sampling
-    let max_entries: usize = match db_name.as_str() {
-        // n5
-        "ids_n5g1" => 94_299,
-        "ids_n5g2" => 156_303,
-        "ids_n5g3" => 147_753,
-        "ids_n5g4" => 156_161,
-        "ids_n5g5" => 84_379,
-        "ids_n5g6" => 113_912,
-        "ids_n5g7" => 147_555,
-        "ids_n5g8" => 113_881,
-        "ids_n5g9" => 87_686,
-        "ids_n5g10" => 278_597,
-        "ids_n5g11" => 149_911,
-        "ids_n5g12" => 149_841,
-        "ids_n5g13" => 320_414,
-        "ids_n5g14" => 310_782,
-        "ids_n5g15" => 127_157,
-        "ids_n5g16" => 111_339,
-        "ids_n5g17" => 483_761,
-        "ids_n5g18" => 94_787,
-        "ids_n5g19" => 259_996,
-        "ids_n5g20" => 100_484,
-        "ids_n5g21" => 144_562,
-        "ids_n5g22" => 94_711,
-        "ids_n5g23" => 263_761,
-        "ids_n5g24" => 117_146,
-        "ids_n5g25" => 409_201,
-        "ids_n5g26" => 144_476,
-        "ids_n5g27" => 99_096,
-        "ids_n5g28" => 481_653,
-        "ids_n5g29" => 259_213,
-        "ids_n5g30" => 263_142,
-        "ids_n5g31" => 135_299,
-        "ids_n5g32" => 407_399,
-        "ids_n5g33" => 131_095,
+    let txn = env.begin_ro_txn()?;
 
-        // n6
-        "ids_n6g0" => 236_247,
-        "ids_n6g1" => 376_803,
-        "ids_n6g2" => 647_475,
-        "ids_n6g3" => 594_654,
-        "ids_n6g4" => 646_971,
-        "ids_n6g5" => 289_428,
-        "ids_n6g6" => 415_580,
-        "ids_n6g7" => 594_122,
-        "ids_n6g8" => 415_473,
-        "ids_n6g9" => 320_670,
-        "ids_n6g10" => 713_466,
-        "ids_n6g11" => 351_574,
-        "ids_n6g12" => 351_419,
-        "ids_n6g13" => 912_213,
-        "ids_n6g14" => 908_774,
-        "ids_n6g15" => 225_317,
-        "ids_n6g16" => 307_521,
-        "ids_n6g17" => 1_375_202,
-        "ids_n6g18" => 217_410,
-        "ids_n6g19" => 642_414,
-        "ids_n6g20" => 203_223,
-        "ids_n6g21" => 250_805,
-        "ids_n6g22" => 217_371,
-        "ids_n6g23" => 558_684,
-        "ids_n6g24" => 296_885,
-        "ids_n6g25" => 1_127_637,
-        "ids_n6g26" => 250_660,
-        "ids_n6g27" => 180_403,
-        "ids_n6g28" => 1_367_226,
-        "ids_n6g29" => 640_671,
-        "ids_n6g30" => 557_453,
-        "ids_n6g31" => 298_474,
-        "ids_n6g32" => 1_120_390,
-        "ids_n6g33" => 260_137,
-
-        // n7
-        "ids_n7g0" => 954,
-        "ids_n7g1" => 2_989,
-        "ids_n7g2" => 2_446,
-        "ids_n7g3" => 4_289,
-        "ids_n7g4" => 2_445,
-        "ids_n7g5" => 897,
-        "ids_n7g6" => 2_268,
-        "ids_n7g7" => 4_311,
-        "ids_n7g8" => 2_268,
-        "ids_n7g9" => 2_266,
-        "ids_n7g10" => 6_373,
-        "ids_n7g11" => 1_612,
-        "ids_n7g12" => 1_603,
-        "ids_n7g13" => 7_808,
-        "ids_n7g14" => 7_588,
-        "ids_n7g15" => 1_159,
-        "ids_n7g16" => 2_398,
-        "ids_n7g17" => 12_279,
-        "ids_n7g18" => 807,
-        "ids_n7g19" => 4_450,
-        "ids_n7g20" => 1_509,
-        "ids_n7g21" => 949,
-        "ids_n7g22" => 807,
-        "ids_n7g23" => 4_639,
-        "ids_n7g24" => 3_666,
-        "ids_n7g25" => 17_757,
-        "ids_n7g26" => 950,
-        "ids_n7g27" => 1_973,
-        "ids_n7g28" => 11_945,
-        "ids_n7g29" => 4_407,
-        "ids_n7g30" => 4_605,
-        "ids_n7g31" => 2_436,
-        "ids_n7g32" => 17_486,
-        "ids_n7g33" => 1_369,
-
-        // n16
-        "ids_n16g0single" => 77_760,
-        "ids_n16g1single" => 4_720,
-        "ids_n16g2single" => 7_430,
-        "ids_n16g3single" => 7_170,
-        "ids_n16g4single" => 7_710,
-        "ids_n16g5single" => 5_850,
-        "ids_n16g6single" => 6_110,
-        "ids_n16g7single" => 7_340,
-        "ids_n16g8single" => 6_180,
-        "ids_n16g9single" => 6_140,
-        "ids_n16g10single" => 3_900,
-        "ids_n16g11single" => 1_940,
-        "ids_n16g12single" => 1_900,
-        "ids_n16g13single" => 5_510,
-        "ids_n16g14single" => 4_300,
-        "ids_n16g15single" => 1_310,
-        "ids_n16g16single" => 2_500,
-        "ids_n16g17single" => 10_630,
-        "ids_n16g18single" => 1_610,
-        "ids_n16g19single" => 4_870,
-        "ids_n16g20single" => 1_920,
-        "ids_n16g21single" => 1_680,
-        "ids_n16g22single" => 1_660,
-        "ids_n16g23single" => 4_160,
-        "ids_n16g24single" => 2_340,
-        "ids_n16g25single" => 8_810,
-        "ids_n16g26single" => 1_700,
-        "ids_n16g27single" => 1_660,
-        "ids_n16g28single" => 10_510,
-        "ids_n16g29single" => 5_070,
-        "ids_n16g30single" => 4_000,
-        "ids_n16g31single" => 2_420,
-        "ids_n16g32single" => 8_830,
-        "ids_n16g33single" => 1_920,
-
-        "ids_n16g0tower" => 358_020,
-        "ids_n16g1tower" => 42_020,
-        "ids_n16g2tower" => 69_370,
-        "ids_n16g3tower" => 66_500,
-        "ids_n16g4tower" => 68_320,
-        "ids_n16g5tower" => 51_770,
-        "ids_n16g6tower" => 54_420,
-        "ids_n16g7tower" => 64_530,
-        "ids_n16g8tower" => 54_140,
-        "ids_n16g9tower" => 55_030,
-        "ids_n16g10tower" => 32_430,
-        "ids_n16g11tower" => 17_910,
-        "ids_n16g12tower" => 18_240,
-        "ids_n16g13tower" => 45_400,
-        "ids_n16g14tower" => 35_400,
-        "ids_n16g15tower" => 10_420,
-        "ids_n16g16tower" => 21_430,
-        "ids_n16g17tower" => 84_690,
-        "ids_n16g18tower" => 14_900,
-        "ids_n16g19tower" => 41_940,
-        "ids_n16g20tower" => 13_560,
-        "ids_n16g21tower" => 12_500,
-        "ids_n16g22tower" => 14_950,
-        "ids_n16g23tower" => 35_430,
-        "ids_n16g24tower" => 21_310,
-        "ids_n16g25tower" => 70_120,
-        "ids_n16g26tower" => 12_540,
-        "ids_n16g27tower" => 12_450,
-        "ids_n16g28tower" => 87_780,
-        "ids_n16g29tower" => 41_860,
-        "ids_n16g30tower" => 34_720,
-        "ids_n16g31tower" => 22_690,
-        "ids_n16g32tower" => 70_930,
-        "ids_n16g33tower" => 18_780,
-        _ => panic!("DB {} not in hardcoded max_entries", db_name),
+    let count: u64 = {
+        let cursor = txn.open_ro_cursor(*db)?;
+        // MDB_LAST positions cursor at last entry; key is our sequential counter
+        match cursor.get(None, None, ffi::MDB_LAST) {
+            Ok((Some(k), _)) => {
+                let arr: [u8; 8] = k
+                    .try_into()
+                    .unwrap_or_else(|_| panic!("Non-u64 key in {}", db_name));
+                u64::from_be_bytes(arr) + 1
+            }
+            _ => panic!("Empty DB: {}", db_name),
+        }
     };
 
     let mut rng = rand::rng();
-    let random_index = rng.random_range(0..max_entries);
-
-    let txn = env.begin_ro_txn()?;
-    let mut cursor = txn.open_ro_cursor(*db)?;
-
-    let value_bytes = if n != 128 {
-        cursor
-            .iter_start()
-            .nth(random_index)
-            .map(|(k, _v)| k)
-            .unwrap_or_else(|| {
-                panic!(
-                    "Failed to get random key | db={} index={} n={}",
-                    db_name, random_index, n
-                )
-            })
-    } else {
-        cursor
-            .iter_start()
-            .nth(random_index)
-            .map(|(_k, v)| v)
-            .expect("Failed to get random val")
-    };
+    let random_index: u64 = rng.random_range(0..count);
+    let key = random_index.to_be_bytes();
+    let value_bytes = txn
+        .get(*db, &key)
+        .unwrap_or_else(|_| panic!("Missing key {} in {}", random_index, db_name));
     let out = CircuitSeq::from_blob(value_bytes);
 
     GET_ID_TOTAL_TIME.fetch_add(total_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     Ok(out)
+}
+
+pub const ID_G_COUNTS: [u64; 34] = [
+    5292788, // id_g0
+    2721848, // id_g1
+    6342891, // id_g2
+    6198179, // id_g3
+    4836376, // id_g4
+    2243802, // id_g5
+    2150988, // id_g6
+    5061971, // id_g7
+    2091402, // id_g8
+    2068486, // id_g9
+    3422607, // id_g10
+    996768,  // id_g11
+    1309227, // id_g12
+    3093827, // id_g13
+    5111710, // id_g14
+    778924,  // id_g15
+    5716893, // id_g16
+    8276213, // id_g17
+    1623328, // id_g18
+    2994608, // id_g19
+    2243744, // id_g20
+    400958,  // id_g21
+    1460764, // id_g22
+    2533495, // id_g23
+    3037419, // id_g24
+    6378320, // id_g25
+    386503,  // id_g26
+    2089747, // id_g27
+    7693729, // id_g28
+    2683340, // id_g29
+    2245394, // id_g30
+    831239,  // id_g31
+    6108393, // id_g32
+    795357,  // id_g33
+];
+
+// Sample a random identity from the id_g{i} databases generated by gen_id_db.
+// dbs must contain the id_g{i} entries (populated by open_all_dbs).
+pub fn get_random_id_db_identity(
+    gate_pair: GatePair,
+    env: &lmdb::Environment,
+    dbs: &HashMap<String, lmdb::Database>,
+) -> Option<CircuitSeq> {
+    let ctype = GatePair::to_int(&gate_pair);
+    let db = dbs.get(&format!("id_g{}", ctype))?;
+    let count = ID_G_COUNTS[ctype];
+    let mut rng = rand::rng();
+    let idx: u64 = rng.random_range(0..count);
+    let txn = env.begin_ro_txn().ok()?;
+    let blob = txn.get(*db, &idx.to_be_bytes()).ok()?;
+    Some(CircuitSeq::from_blob(blob))
 }
 
 // Generate identities via shuffling

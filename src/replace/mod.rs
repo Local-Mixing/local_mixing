@@ -1,4 +1,5 @@
 pub mod gadgets;
+pub mod gen_ids;
 pub mod identities;
 pub mod main_mix;
 pub mod mixing;

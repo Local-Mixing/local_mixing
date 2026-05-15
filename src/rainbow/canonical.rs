@@ -2,7 +2,7 @@
 // A lot of this code is legacy and unused
 // See /local_mixing/src/random/random_data.rs
 
-use crate::circuit::{CircuitSeq, Gate, Monomial, Permutation, Polynomial};
+use crate::circuit::{CircuitSeq, Gate, Permutation};
 use itertools::Itertools;
 use lru::LruCache;
 use once_cell::sync::Lazy;

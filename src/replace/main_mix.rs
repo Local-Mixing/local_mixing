@@ -9,12 +9,13 @@ use itertools::Itertools;
 use crate::{
     circuit::circuit::CircuitSeq,
     replace::{
+        gadgets::gadgetize,
         mixing::{
             abutterfly_big, butterfly_big, interleave_sequential_big, replace_and_compress_big,
             replace_and_compress_big_distance, simple_shooting_game, zip_sequential_butterfly,
         },
         pairs::interleave,
-        replace::compress_loop,
+        replace::{compress_loop, compress_loop_early},
         transpositions::{
             insert_wire_m_samfs_every_x,
             //insert_wire_shuffles_knuth,
@@ -35,7 +36,8 @@ use crate::{
 // Last row of tables is used for swapping wires, CNOTS, NOTS
 pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> {
     let mut dbs = HashMap::new();
-    let db_names = [
+
+    let named = [
         "swap",
         "not",
         "swapnot1",
@@ -44,173 +46,29 @@ pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> 
         "cnot",
         "homgad",
     ];
-
-    for name in db_names.iter() {
+    for name in named.iter() {
         match env.open_db(Some(name)) {
             Ok(db) => {
                 dbs.insert(name.to_string(), db);
             }
-            Err(lmdb::Error::NotFound) => continue,
+            Err(lmdb::Error::NotFound) => {}
             Err(e) => panic!("Failed to open LMDB database {}: {:?}", name, e),
+        }
+    }
+
+    for i in 0..34usize {
+        let name = format!("id_g{}", i);
+        match env.open_db(Some(name.as_str())) {
+            Ok(db) => {
+                dbs.insert(name, db);
+            }
+            Err(lmdb::Error::NotFound) => {}
+            Err(e) => panic!("Failed to open id_g{}: {:?}", i, e),
         }
     }
 
     dbs
 }
-// All the main code take a circuit and do repeated rounds of whatever method is chosen
-// In between each round, store a progress circuit and a sanity check
-// Finally, record the circuit in the chosen file destination
-// pub fn main_mix(c: &CircuitSeq, rounds: usize, conn: &Connection, n: usize) {
-//     // Start with the input circuit
-//     println!("Starting len: {}", c.gates.len());
-//     let mut circuit = c.clone();
-//     let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
-//     let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
-//     // Repeat obfuscate + compress 'rounds' times
-//     let mut post_len = 0;
-//     let mut count = 0;
-//     for _ in 0..rounds {
-//         circuit = obfuscate_and_target_compress(&circuit, conn, &bit_shuf, n);
-//         if circuit.gates.len() == 0 {
-//             break;
-//         }
-
-//         if circuit.gates.len() == post_len {
-//             count += 1;
-//         } else {
-//             post_len = circuit.gates.len();
-//             count = 0;
-//         }
-
-//         if count > 2 {
-//             break;
-//         }
-//     }
-//     let mut i = 0;
-//     while i < circuit.gates.len().saturating_sub(1) {
-//         if circuit.gates[i] == circuit.gates[i + 1] {
-//             // remove elements at i and i+1
-//             circuit.gates.drain(i..=i + 1);
-
-//             // step back up to 2 indices, but not below 0
-//             i = i.saturating_sub(2);
-//         } else {
-//             i += 1;
-//         }
-//     }
-//     // Convert the final circuit to string
-//     let circuit_str = circuit.to_string(n);
-//     println!("{:?}", circuit.permutation(n).data);
-//     // Write to file
-//     let mut file = File::create("recent_circuit.txt").expect("Failed to create file");
-//     file.write_all(circuit_str.as_bytes())
-//         .expect("Failed to write circuit to file");
-
-//     let circuit_str = circuit.repr(); // or however you stringify your circuit
-
-//     if !circuit.gates.is_empty() {
-//         let mut file = OpenOptions::new()
-//             .write(true)
-//             .create(true)
-//             .append(true) // append instead of overwriting
-//             .open("good_id.txt")
-//             .expect("Failed to open good_id.txt");
-
-//         let line = format!("{} : {}\n", circuit.gates.len(), circuit_str);
-
-//         file.write_all(line.as_bytes())
-//             .expect("Failed to write circuit to good_ids.txt");
-
-//         println!("Wrote good circuit to good_id.txt");
-//     }
-
-//     if circuit.gates == c.gates {
-//         println!("The obfuscation didn't do anything");
-//     }
-
-//     println!("Final circuit written to recent_circuit.txt");
-// }
-
-// pub fn main_butterfly(c: &CircuitSeq, rounds: usize, conn: &Connection, n: usize) {
-//     // Start with the input circuit
-//     println!("Starting len: {}", c.gates.len());
-//     let mut circuit = c.clone();
-//     let perms: Vec<Vec<usize>> = (0..n).permutations(n).collect();
-//     let bit_shuf = perms.into_iter().skip(1).collect::<Vec<_>>();
-//     // Repeat obfuscate + compress 'rounds' times
-//     let mut post_len = 0;
-//     let mut count = 0;
-//     for _ in 0..rounds {
-//         circuit = butterfly(&circuit, conn, &bit_shuf, n);
-//         if circuit.gates.len() == 0 {
-//             break;
-//         }
-
-//         if circuit.gates.len() == post_len {
-//             count += 1;
-//         } else {
-//             post_len = circuit.gates.len();
-//             count = 0;
-//         }
-
-//         if count > 2 {
-//             break;
-//         }
-//         let mut i = 0;
-//         while i < circuit.gates.len().saturating_sub(1) {
-//             if circuit.gates[i] == circuit.gates[i + 1] {
-//                 // remove elements at i and i+1
-//                 circuit.gates.drain(i..=i + 1);
-
-//                 // step back up to 2 indices, but not below 0
-//                 i = i.saturating_sub(2);
-//             } else {
-//                 i += 1;
-//             }
-//         }
-//     }
-//     println!("Final len: {}", circuit.gates.len());
-//     println!("Final cycle: {:?}", circuit.permutation(n).to_cycle());
-//     // Convert the final circuit to string
-//     let circuit_str = circuit.to_string(n);
-//     println!("Final Permutation: {:?}", circuit.permutation(n).data);
-//     if circuit.permutation(n).data != c.permutation(n).data {
-//         panic!(
-//             "The permutation differs from the original.\nOriginal: {:?}\nNew: {:?}",
-//             c.permutation(n).data,
-//             circuit.permutation(n).data
-//         );
-//     }
-//     // Write to file
-//     let mut file = File::create("recent_circuit.txt").expect("Failed to create file");
-//     file.write_all(circuit_str.as_bytes())
-//         .expect("Failed to write circuit to file");
-
-//     let circuit_str = circuit.repr(); // or however you stringify your circuit
-
-//     if !circuit.gates.is_empty() {
-//         let mut file = OpenOptions::new()
-//             .write(true)
-//             .create(true)
-//             .append(true) // append instead of overwriting
-//             .open("good_id.txt")
-//             .expect("Failed to open good_id.txt");
-
-//         let line = format!("{} : {}\n", circuit.gates.len(), circuit_str);
-
-//         file.write_all(line.as_bytes())
-//             .expect("Failed to write circuit to good_ids.txt");
-
-//         println!("Wrote good circuit to good_id.txt");
-//     }
-
-//     if circuit.gates == c.gates {
-//         println!("The obfuscation didn't do anything");
-//     }
-
-//     println!("Final circuit written to recent_circuit.txt");
-// }
-
 pub fn main_butterfly_big(
     c: &CircuitSeq,
     rounds: usize,
@@ -872,127 +730,6 @@ pub fn main_rac_big_distance(
     println!("Final circuit written to recent_circuit.txt");
 }
 
-// Currently unsupported
-// pub fn main_butterfly_big_bookendsless(c: &CircuitSeq, rounds: usize, conn: &Connection, n: usize, _asymmetric: bool, save: &str ,env: &lmdb::Environment,) {
-//     // Start with the input circuit
-//     let dbs = open_all_dbs(env);
-//     let bit_shuf_list = (3..=7)
-//         .map(|n| {
-//             (0..n)
-//                 .permutations(n)
-//                 .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
-//                 .collect::<Vec<Vec<usize>>>()
-//         })
-//         .collect();
-//     println!("Starting len: {}", c.gates.len());
-//     let mut circuit = c.clone();
-//     // Repeat obfuscate + compress 'rounds' times
-//     let mut post_len = 0;
-//     let mut count = 0;
-//     let mut beginning = CircuitSeq { gates: Vec::new() };
-//     let mut end= CircuitSeq { gates: Vec::new() };
-//     for _ in 0..rounds {
-//         let (new_circuit, b, e) = abutterfly_big_delay_bookends(&circuit, conn, n, env);
-//         beginning = beginning.concat(&b);
-//         end = e.concat(&end);
-//         circuit = new_circuit;
-//         if circuit.gates.len() == 0 {
-//             break;
-//         }
-
-//         if circuit.gates.len() == post_len {
-//             count += 1;
-//         } else {
-//             post_len = circuit.gates.len();
-//             count = 0;
-//         }
-
-//         if count > 2 {
-//             break;
-//         }
-//         let mut i = 0;
-//         while i < circuit.gates.len().saturating_sub(1) {
-//             if circuit.gates[i] == circuit.gates[i + 1] {
-//                 // remove elements at i and i+1
-//                 circuit.gates.drain(i..=i + 1);
-
-//                 // step back up to 2 indices, but not below 0
-//                 i = i.saturating_sub(2);
-//             } else {
-//                 i += 1;
-//             }
-//         }
-//     }
-//     let txn = env.begin_ro_txn().expect("txn");
-//     println!("Adding bookends");
-//     beginning = compress_big(&beginning, 100, n, conn, env, &bit_shuf_list, &dbs, &txn);
-//     end = compress_big(&end, 100, n, conn, env, &bit_shuf_list, &dbs, &txn);
-//     circuit = beginning.concat(&circuit).concat(&end);
-//     let mut c1 = CircuitSeq{ gates: circuit.gates[0..circuit.gates.len()/2].to_vec() };
-//     let mut c2 = CircuitSeq{ gates: circuit.gates[circuit.gates.len()/2..].to_vec() };
-//     c1 = compress_big(&c1, 1_000, n, conn, env, &bit_shuf_list, &dbs, &txn);
-//     c2 = compress_big(&c2, 1_000, n, conn, env, &bit_shuf_list, &dbs, &txn);
-//     circuit = c1.concat(&c2);
-//     let mut stable_count = 0;
-//     while stable_count < 3 {
-//         let before = circuit.gates.len();
-//         //shoot_random_gate(&mut acc, 100_000);
-//         circuit = compress_big(&circuit, 1_000, n, conn, env, &bit_shuf_list, &dbs ,&txn);
-//         let after = circuit.gates.len();
-
-//         if after == before {
-//             stable_count += 1;
-//             println!("  Final compression stable {}/3 at {} gates", stable_count, after);
-//         } else {
-//             println!("  Final compression reduced: {} → {} gates", before, after);
-//             stable_count = 0;
-//         }
-//     }
-
-//     println!("Final len: {}", circuit.gates.len());
-
-//     circuit
-//     .probably_equal(&c, n, 150_000)
-//     .expect("The circuits differ somewhere!");
-
-//     // Write to file
-//     let c_str = c.repr();
-//     let circuit_str = circuit.repr();
-//     let long_str = format!("{}:{}", c.repr(), circuit.repr());
-//     // let good_str = format!("{}: {}", good_id.gates.len(), good_id.repr());
-//     // Write start.txt
-//     File::create("start.txt")
-//         .and_then(|mut f| f.write_all(c_str.as_bytes()))
-//         .expect("Failed to write start.txt");
-
-//     // Write recent_circuit.txt
-//     File::create("recent_circuit.txt")
-//         .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
-//         .expect("Failed to write recent_circuit.txt");
-
-//     File::create(save)
-//         .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
-//         .expect("Failed to write recent_circuit.txt");
-
-//     // Write butterfly_recent.txt (overwrite)
-//     File::create("butterfly_recent.txt")
-//         .and_then(|mut f| f.write_all(long_str.as_bytes()))
-//         .expect("Failed to write butterfly_recent.txt");
-
-//     // Append to butterfly.txt
-//     OpenOptions::new()
-//         .append(true)
-//         .create(true)
-//         .open("butterfly.txt")
-//         .and_then(|mut f| writeln!(f, "{}", long_str))
-//         .expect("Failed to append to butterfly.txt");
-//     if circuit.gates == c.gates {
-//         println!("The obfuscation didn't do anything");
-//     }
-
-//     println!("Final circuit written to recent_circuit.txt");
-// }
-
 pub fn main_sequential_butterfly(
     c: &CircuitSeq,
     rounds: usize,
@@ -1114,9 +851,10 @@ pub fn main_shooting_game(
     n: usize,
     save: &str,
     env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
     id_len: usize,
     tower: bool,
-    stop: usize,
+    stop_multiplier: usize,
     intermediate: &str,
 ) {
     // Start with the input circuit
@@ -1143,6 +881,7 @@ pub fn main_shooting_game(
     let mut post_len = 0;
     let mut count = 0;
     for i in 0..rounds {
+        let stop_gates = circuit.gates.len() * stop_multiplier;
         let new_circuit = simple_shooting_game(
             &circuit,
             n,
@@ -1153,12 +892,43 @@ pub fn main_shooting_game(
             &dbs,
             id_len,
             tower,
-            stop,
+            stop_gates,
             intermediate,
             false,
             100,
         );
         circuit = new_circuit;
+
+        if circuit.gates.len() == 0 {
+            break;
+        }
+
+        let is_last = i + 1 == rounds;
+        circuit = if is_last {
+            compress_loop(
+                &circuit,
+                n,
+                env,
+                shard_dbs,
+                12,
+                i + 1,
+                rounds,
+                "temp_compression.txt",
+            )
+        } else {
+            let early_stop = circuit.gates.len() / 2;
+            compress_loop_early(
+                &circuit,
+                n,
+                env,
+                shard_dbs,
+                12,
+                i + 1,
+                rounds,
+                "temp_compression.txt",
+                early_stop,
+            )
+        };
 
         if circuit.gates.len() == 0 {
             break;
@@ -1230,6 +1000,7 @@ pub fn main_shuffle_shoot_shuffle(
     _stop: usize,
     intermediate: &str,
     leave: bool,
+    do_gadgetize: bool,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -1254,19 +1025,15 @@ pub fn main_shuffle_shoot_shuffle(
     // Repeat `rounds` times
     let mut post_len = 0;
     let mut count = 0;
+    if do_gadgetize {
+        let aux = CircuitSeq { gates: Vec::new() };
+        circuit = gadgetize(&circuit, &aux, n);
+    }
+    let n = if do_gadgetize { 3 * n } else { n };
     if leave {
         circuit = interleave(&circuit, n, env, &dbs, &bit_shuf_list, tower, id_len);
     }
     let n = if leave { 2 * n } else { n };
-    let mut new_circuit = circuit.clone();
-    loop {
-        insert_wire_m_samfs_every_x(&mut new_circuit, n, n / 2, 1, env, &dbs);
-        if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
-            circuit = new_circuit;
-            break;
-        }
-        new_circuit = circuit.clone();
-    }
     for i in 0..rounds {
         loop {
             let new_circuit = simple_shooting_game(
@@ -1300,7 +1067,16 @@ pub fn main_shuffle_shoot_shuffle(
             new_circuit = circuit.clone();
         }
         println!("After inserting samfs: {} gates", circuit.gates.len());
-        circuit = compress_loop(&circuit, n, env, shard_dbs, 6, i + 1, rounds);
+        circuit = compress_loop(
+            &circuit,
+            n,
+            env,
+            shard_dbs,
+            6,
+            i + 1,
+            rounds,
+            "temp_compression.txt",
+        );
         println!("After compression: {} gates", circuit.gates.len());
         if circuit.gates.len() == 0 {
             break;
@@ -1329,6 +1105,7 @@ pub fn main_shuffle_shoot_shuffle(
             }
         }
         let n = if leave { n / 2 } else { n };
+        let n = if do_gadgetize { n / 3 } else { n };
         if c.probably_equal(&circuit, n, 100_000).is_err() {
             panic!("The functionality has changed");
         }
@@ -1368,7 +1145,7 @@ pub fn main_compression(
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
 ) {
-    let dbs = open_all_dbs(env);
+    let _dbs = open_all_dbs(env);
     // Start with the input circuit
     let _bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
         .map(|n| {
