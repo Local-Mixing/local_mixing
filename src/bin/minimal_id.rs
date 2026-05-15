@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use rand::seq::SliceRandom;
 use lmdb::{Cursor, Environment, Transaction};
 use local_mixing::{
     circuit::{CircuitSeq, circuit::poly_degree},
     open_shard_dbs,
 };
+use rand::seq::SliceRandom;
 
 const LMDB_PATH: &str = "./db";
 
