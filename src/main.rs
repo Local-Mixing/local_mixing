@@ -1165,6 +1165,11 @@ Command::new("rocksdb_2")
             .about("Print all m-gate circuits from shard DBs")
             .arg(Arg::new("m").short('m').required(true).value_parser(clap::value_parser!(usize)).help("Number of gates to filter for"))
     )
+    .subcommand(
+        Command::new("build_completion_m2")
+            .about("Build completion_m2 DB from a CSV of canonical 2-gate circuits and their completions")
+            .arg(Arg::new("csv").long("csv").required(true).value_parser(clap::value_parser!(String)).help("Path to completions CSV file"))
+    )
     .get_matches();
 
     match matches.subcommand() {
@@ -2153,6 +2158,80 @@ Command::new("rocksdb_2")
                 }
             }
             eprintln!("Total 2-gate circuits: {}", total);
+        }
+        Some(("build_completion_m2", sub)) => {
+            use xxhash_rust::xxh3::xxh3_128;
+            use local_mixing::circuit::circuit::polys_repr_blob;
+            use lmdb::{Transaction, WriteFlags};
+            use std::collections::HashMap;
+
+            let csv_path: &String = sub.get_one("csv").unwrap();
+            let csv_data = fs::read_to_string(csv_path)
+                .unwrap_or_else(|e| panic!("Failed to read CSV {}: {}", csv_path, e));
+
+            // Group completions by canonical string (column A → column C)
+            let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+            for line in csv_data.lines().skip(1) {
+                if line.trim().is_empty() { continue; }
+                let cols: Vec<&str> = line.splitn(4, ',').collect();
+                if cols.len() < 3 { continue; }
+                let canonical = cols[0].trim().to_string();
+                let completion = cols[2].trim().to_string();
+                groups.entry(canonical).or_default().push(completion);
+            }
+
+            let env = Environment::new()
+                .set_max_dbs(300)
+                .set_map_size(800 * 1024 * 1024 * 1024)
+                .open(Path::new("./db"))
+                .expect("Failed to open ./db");
+
+            let db = env.create_db(Some("completion_m2"), lmdb::DatabaseFlags::empty())
+                .expect("Failed to create completion_m2 DB");
+
+            let mut txn = env.begin_rw_txn().expect("rw txn");
+
+            for (canonical_str, completions) in &groups {
+                let circuit = CircuitSeq::from_string(canonical_str);
+
+                // final_order maps canonical wire → dense wire; invert to get dense → canonical
+                let (polys, _, _, final_order, _) = circuit.canonicalize_polys(0);
+                let hash = xxh3_128(&polys_repr_blob(&polys)).to_le_bytes();
+
+                let p_inv = final_order.invert();
+                let n_pair = p_inv.data.len();
+
+                let mut value: Vec<u8> = Vec::new();
+                for comp_str in completions {
+                    let comp = CircuitSeq::from_string(comp_str);
+                    let max_wire = comp.max_wire() as usize;
+
+                    // Extend p_inv with identity for extra wires beyond the 2-gate pair
+                    let mut ext: Vec<usize> = p_inv.data.clone();
+                    for w in n_pair..=max_wire {
+                        ext.push(w);
+                    }
+
+                    let rewired = CircuitSeq {
+                        gates: comp.gates.iter().map(|&[t, c1, c2]| [
+                            ext[t as usize] as u8,
+                            ext[c1 as usize] as u8,
+                            ext[c2 as usize] as u8,
+                        ]).collect(),
+                    };
+
+                    let blob = rewired.repr_blob();
+                    assert!(blob.len() <= 255, "blob too large: {}", blob.len());
+                    value.push(blob.len() as u8);
+                    value.extend_from_slice(&blob);
+                }
+
+                txn.put(db, &hash, &value, WriteFlags::empty())
+                    .expect("Failed to write to completion_m2");
+            }
+
+            txn.commit().expect("commit");
+            println!("Written {} canonical entries to completion_m2", groups.len());
         }
         _ => unreachable!(),
     }
