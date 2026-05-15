@@ -1,12 +1,12 @@
 // For adding wire shuffles and bit flips
-use std::collections::HashMap;
-use rand::Rng;
-use lmdb::{Cursor, Database, Environment, Transaction};
-use crate::circuit::{circuit::CircuitSeq, Permutation};
 use crate::circuit::circuit::rewire_gate_ver;
+use crate::circuit::{Permutation, circuit::CircuitSeq};
+use lmdb::{Cursor, Database, Environment, Transaction};
+use rand::Rng;
+use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Transpositions {
-    pub transpositions: Vec<(u8, u8, u8)>
+    pub transpositions: Vec<(u8, u8, u8)>,
 }
 
 impl Transpositions {
@@ -26,7 +26,7 @@ impl Transpositions {
             let temp = negation_mask[j as usize];
             negation_mask[j as usize] = negation_mask[i as usize];
             negation_mask[i as usize] = temp;
-            if negation_type == 1 || negation_type == 3{
+            if negation_type == 1 || negation_type == 3 {
                 negation_mask[j as usize] ^= 1;
             }
             if negation_type == 2 || negation_type == 3 {
@@ -63,7 +63,7 @@ impl Transpositions {
             let temp = negation_mask[j];
             negation_mask[j as usize] = negation_mask[i as usize];
             negation_mask[i as usize] = temp;
-            if negation_type == 1 || negation_type == 3{
+            if negation_type == 1 || negation_type == 3 {
                 negation_mask[j as usize] ^= 1;
             }
             if negation_type == 2 || negation_type == 3 {
@@ -76,7 +76,12 @@ impl Transpositions {
 
     // Simple random wire shuffle with negation
     // Restricted wires are never chosen
-    pub fn gen_random_simple_restricted(n: usize, m: usize, negation_mask: &mut Vec<u8>, restricted: &Vec<usize>) -> Self {
+    pub fn gen_random_simple_restricted(
+        n: usize,
+        m: usize,
+        negation_mask: &mut Vec<u8>,
+        restricted: &Vec<usize>,
+    ) -> Self {
         assert!(n >= 2, "n must be at least 2");
         let mut rng = rand::rng();
         let mut transpositions = Vec::with_capacity(m);
@@ -107,7 +112,7 @@ impl Transpositions {
             let temp = negation_mask[j];
             negation_mask[j as usize] = negation_mask[i as usize];
             negation_mask[i as usize] = temp;
-            if negation_type == 1 || negation_type == 3{
+            if negation_type == 1 || negation_type == 3 {
                 negation_mask[j as usize] ^= 1;
             }
             if negation_type == 2 || negation_type == 3 {
@@ -119,10 +124,12 @@ impl Transpositions {
     }
 
     pub fn to_perm(&self, n: usize) -> Permutation {
-        let mut perm = Permutation { data: Vec::with_capacity(n) };
+        let mut perm = Permutation {
+            data: Vec::with_capacity(n),
+        };
         for i in 0..n {
             perm.data.push(self.evaluate(i as u8) as usize);
-        } 
+        }
         perm
     }
 
@@ -148,16 +155,15 @@ impl Transpositions {
             }
         }
 
-        Transpositions { transpositions: swaps }
+        Transpositions {
+            transpositions: swaps,
+        }
     }
 
     pub fn collides(s1: &(u8, u8, u8), s2: &(u8, u8, u8)) -> bool {
         let (a1, b1, _) = s1;
         let (a2, b2, _) = s2;
-        a1 == a2 ||
-        a1 == b2 ||
-        b1 == a2 ||
-        b1 == b2
+        a1 == a2 || a1 == b2 || b1 == a2 || b1 == b2
     }
 
     // Simple randomization
@@ -167,7 +173,7 @@ impl Transpositions {
         let len = transpositions.transpositions.len();
 
         if len == 0 {
-            return
+            return;
         }
 
         for _ in 0..rounds {
@@ -178,7 +184,10 @@ impl Transpositions {
                 // Shoot left
                 let mut target = gate_idx;
                 while target > 0 {
-                    if Transpositions::collides(&transpositions.transpositions[target - 1], &transpositions.transpositions[gate_idx]) {
+                    if Transpositions::collides(
+                        &transpositions.transpositions[target - 1],
+                        &transpositions.transpositions[gate_idx],
+                    ) {
                         break;
                     }
                     target -= 1;
@@ -192,7 +201,10 @@ impl Transpositions {
                 // Shoot right
                 let mut target = gate_idx;
                 while target + 1 < len {
-                    if Transpositions::collides(&transpositions.transpositions[target + 1], &transpositions.transpositions[gate_idx]) {
+                    if Transpositions::collides(
+                        &transpositions.transpositions[target + 1],
+                        &transpositions.transpositions[gate_idx],
+                    ) {
                         break;
                     }
                     target += 1;
@@ -211,10 +223,10 @@ impl Transpositions {
         let (a_1, b_1, _) = s1;
         let (a_2, b_2, _) = s2;
         if a_1 > a_2 {
-            return false
-        } else if a_1 == a_2{
+            return false;
+        } else if a_1 == a_2 {
             if b_1 > b_2 {
-                return false
+                return false;
             }
         }
         true
@@ -250,11 +262,11 @@ impl Transpositions {
     // LMDB swaps wire 1 and wire 2
     // This relabels wire 1 to swap.0 and and wire 2 to swap.1
     pub fn gen_gates_swap(
-        n: usize, 
-        swap: (u8, u8, u8), 
-        env: &lmdb::Environment, 
+        n: usize,
+        swap: (u8, u8, u8),
+        env: &lmdb::Environment,
         dbs: &HashMap<String, Database>,
-    ) -> Vec<[u8;3]> {
+    ) -> Vec<[u8; 3]> {
         let (a, b, negation_type) = swap;
         let (db_name, max_entries) = if negation_type == 0 {
             ("swap", 36)
@@ -278,17 +290,17 @@ impl Transpositions {
         let txn = env.begin_ro_txn().expect("Failed to start txn");
         let mut cursor = txn.open_ro_cursor(*db).expect("Failed to open ro cursor");
 
-        let value_bytes = 
-            cursor.iter_start()
+        let value_bytes = cursor
+            .iter_start()
             .nth(random_index)
             .map(|(k, _v)| k)
             .expect("Failed to get random key");
-        
+
         let out = CircuitSeq::from_blob(value_bytes);
 
         let mut c;
         loop {
-            c = rng.random_range(0..=(n-1) as u8);
+            c = rng.random_range(0..=(n - 1) as u8);
             if c != a && c != b {
                 break;
             }
@@ -301,12 +313,12 @@ impl Transpositions {
     // LMDB swaps wire 1 and wire 2
     // This relabels wire 1 to swap.0 and and wire 2 to swap.1
     pub fn gen_gates_swap_restricted(
-        n: usize, 
-        swap: (u8, u8, u8), 
-        env: &lmdb::Environment, 
+        n: usize,
+        swap: (u8, u8, u8),
+        env: &lmdb::Environment,
         dbs: &HashMap<String, Database>,
         restricted: &Vec<usize>,
-    ) -> Vec<[u8;3]> {
+    ) -> Vec<[u8; 3]> {
         let (a, b, negation_type) = swap;
         let (db_name, max_entries) = if negation_type == 0 {
             ("swap", 36)
@@ -330,18 +342,18 @@ impl Transpositions {
         let txn = env.begin_ro_txn().expect("Failed to start txn");
         let mut cursor = txn.open_ro_cursor(*db).expect("Failed to open ro cursor");
 
-        let value_bytes = 
-            cursor.iter_start()
+        let value_bytes = cursor
+            .iter_start()
             .nth(random_index)
             .map(|(k, _v)| k)
             .expect("Failed to get random key");
-        
+
         let out = CircuitSeq::from_blob(value_bytes);
 
         let mut c;
         loop {
-            c = rng.random_range(0..=(n-1) as u8);
-            if c != a && c != b && !restricted.contains(&(c as usize)){
+            c = rng.random_range(0..=(n - 1) as u8);
+            if c != a && c != b && !restricted.contains(&(c as usize)) {
                 break;
             }
         }
@@ -351,12 +363,12 @@ impl Transpositions {
 
     // LMDB wire 1 gets flipped
     pub fn gen_gates_not(
-        n: usize, 
+        n: usize,
         wire: u8,
-        env: &lmdb::Environment, 
+        env: &lmdb::Environment,
         dbs: &HashMap<String, Database>,
-    ) -> Vec<[u8;3]> {
-        let db_name= "not";
+    ) -> Vec<[u8; 3]> {
+        let db_name = "not";
 
         let db = dbs.get(db_name).unwrap_or_else(|| {
             panic!("Failed to get DB with name: {}", db_name);
@@ -370,25 +382,25 @@ impl Transpositions {
         let txn = env.begin_ro_txn().expect("Failed to start txn");
         let mut cursor = txn.open_ro_cursor(*db).expect("Failed to open ro cursor");
 
-        let value_bytes = 
-            cursor.iter_start()
+        let value_bytes = cursor
+            .iter_start()
             .nth(random_index)
             .map(|(k, _v)| k)
             .expect("Failed to get random key");
-        
+
         let out = CircuitSeq::from_blob(value_bytes);
 
         let mut a;
         loop {
-            a = rng.random_range(0..=(n-1) as u8);
+            a = rng.random_range(0..=(n - 1) as u8);
             if a != wire {
                 break;
             }
         }
         let mut b;
         loop {
-            b = rng.random_range(0..=(n-1) as u8);
-            if b != wire && b != a{
+            b = rng.random_range(0..=(n - 1) as u8);
+            if b != wire && b != a {
                 break;
             }
         }
@@ -398,12 +410,12 @@ impl Transpositions {
 
     // LMDB wire 2 gets flipped if wire 1 is true
     pub fn gen_gates_cnot(
-        n: usize, 
+        n: usize,
         con: u8,
         not: u8,
-        env: &lmdb::Environment, 
+        env: &lmdb::Environment,
         dbs: &HashMap<String, Database>,
-    ) -> Vec<[u8;3]> {
+    ) -> Vec<[u8; 3]> {
         let db_name = "cnot";
         let max_entries = 19;
 
@@ -417,17 +429,17 @@ impl Transpositions {
         let txn = env.begin_ro_txn().expect("Failed to start txn");
         let mut cursor = txn.open_ro_cursor(*db).expect("Failed to open ro cursor");
 
-        let value_bytes = 
-            cursor.iter_start()
+        let value_bytes = cursor
+            .iter_start()
             .nth(random_index)
             .map(|(k, _v)| k)
             .expect("Failed to get random key");
-        
+
         let out = CircuitSeq::from_blob(value_bytes);
 
         let mut c;
         loop {
-            c = rng.random_range(0..=(n-1) as u8);
+            c = rng.random_range(0..=(n - 1) as u8);
             if c != con && c != not {
                 break;
             }
@@ -456,12 +468,14 @@ impl Transpositions {
         n: usize,
         env: &lmdb::Environment,
         dbs: &HashMap<String, Database>,
-        restricted: &Vec<usize>
+        restricted: &Vec<usize>,
     ) -> CircuitSeq {
         let mut gates: Vec<[u8; 3]> = Vec::new();
 
         for &swap in &self.transpositions {
-            gates.extend_from_slice(&Self::gen_gates_swap_restricted(n, swap, env, dbs, restricted));
+            gates.extend_from_slice(&Self::gen_gates_swap_restricted(
+                n, swap, env, dbs, restricted,
+            ));
         }
 
         CircuitSeq { gates }
@@ -476,7 +490,6 @@ impl Transpositions {
         dbs: &HashMap<String, Database>,
         first_bounds: (usize, usize),
         second_bounds: (usize, usize),
-        
     ) -> CircuitSeq {
         let mut gates: Vec<[u8; 3]> = Vec::new();
 
@@ -513,7 +526,7 @@ impl Transpositions {
                 .into_iter()
                 .map(|[a, b, c]| [a + offset, b + offset, c + offset])
                 .collect();
-            
+
             gates.extend_from_slice(&second_circuit);
         }
         CircuitSeq { gates }
@@ -526,11 +539,11 @@ impl Transpositions {
         env: &lmdb::Environment,
         dbs: &HashMap<String, Database>,
         first_bounds: (usize, usize),
-        second_bounds: (usize, usize), 
+        second_bounds: (usize, usize),
     ) -> CircuitSeq {
         let mut gates: Vec<[u8; 3]> = Vec::new();
         let first = &t_rewired[0].0;
-        let mut first_gates: Vec<[u8;3]> = Vec::new();
+        let mut first_gates: Vec<[u8; 3]> = Vec::new();
         for i in 0..first.transpositions.len() {
             let mut swap = first.transpositions[i];
             if swap.0 == swap.1 {
@@ -550,15 +563,15 @@ impl Transpositions {
         }
         rewire_gate_ver(&mut first_gates, &t_rewired[0].1, n);
         let curr_len = first_gates.len();
-        first_gates.insert(curr_len/2, c.gates[0]);
+        first_gates.insert(curr_len / 2, c.gates[0]);
         gates.extend_from_slice(&first_gates);
 
         let t_len = t_rewired.len();
         let mut j = 1;
-        while j < t_len-1 {
+        while j < t_len - 1 {
             // m's
             let middle = &t_rewired[j].0;
-            let mut middle_gates: Vec<[u8;3]> = Vec::new();
+            let mut middle_gates: Vec<[u8; 3]> = Vec::new();
             for i in (0..middle.transpositions.len()).rev() {
                 let swap = middle.transpositions[i];
                 if swap.0 == swap.1 {
@@ -571,29 +584,35 @@ impl Transpositions {
             rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
             gates.extend_from_slice(&middle_gates);
             j += 1;
-            if j == t_len-1 {
+            if j == t_len - 1 {
                 break;
             }
             // B's
             let middle = &t_rewired[j].0;
-            let mut middle_gates: Vec<[u8;3]> = Vec::new();
+            let mut middle_gates: Vec<[u8; 3]> = Vec::new();
             for i in 0..middle.transpositions.len() {
                 let swap = middle.transpositions[i];
                 if swap.0 == swap.1 {
                     continue;
                 }
-                let middle_circuit = Self::gen_gates_swap_restricted(n, swap, env, dbs, &vec![13,14,15,29,30,31]);
+                let middle_circuit = Self::gen_gates_swap_restricted(
+                    n,
+                    swap,
+                    env,
+                    dbs,
+                    &vec![13, 14, 15, 29, 30, 31],
+                );
                 middle_gates.extend_from_slice(&middle_circuit);
             }
             rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
             let curr_len = middle_gates.len();
-            middle_gates.insert(curr_len/2, c.gates[j/2]);
+            middle_gates.insert(curr_len / 2, c.gates[j / 2]);
             gates.extend_from_slice(&middle_gates);
             j += 1;
         }
-        
-        let second = &t_rewired[t_rewired.len()-1];
-        let mut second_gates: Vec<[u8;3]> = Vec::new();
+
+        let second = &t_rewired[t_rewired.len() - 1];
+        let mut second_gates: Vec<[u8; 3]> = Vec::new();
         for i in 0..second.0.transpositions.len() {
             let mut swap = second.0.transpositions[i];
             if swap.0 == swap.1 {
@@ -608,13 +627,13 @@ impl Transpositions {
                 .into_iter()
                 .map(|[a, b, c]| [a + offset, b + offset, c + offset])
                 .collect();
-            
+
             second_gates.extend_from_slice(&second_circuit);
         }
-        rewire_gate_ver(&mut second_gates, &t_rewired[t_rewired.len()-1].1, n);
+        rewire_gate_ver(&mut second_gates, &t_rewired[t_rewired.len() - 1].1, n);
         let curr_len = second_gates.len();
         let len = c.gates.len();
-        second_gates.insert(curr_len/2, c.gates[len-1]);
+        second_gates.insert(curr_len / 2, c.gates[len - 1]);
         gates.extend_from_slice(&second_gates);
         CircuitSeq { gates }
     }
@@ -626,14 +645,14 @@ impl Transpositions {
         env: &lmdb::Environment,
         dbs: &HashMap<String, Database>,
         first_bounds: (usize, usize),
-        second_bounds: (usize, usize), 
+        second_bounds: (usize, usize),
     ) -> CircuitSeq {
         let mut gates: Vec<[u8; 3]> = Vec::new();
-        for i in 0..c.gates.len()-1 {
+        for i in 0..c.gates.len() - 1 {
             // gates.push(c.gates[i]);
-            let i = 3*i;
+            let i = 3 * i;
             let first = &t_rewired[i].0;
-            let mut first_gates: Vec<[u8;3]> = Vec::new();
+            let mut first_gates: Vec<[u8; 3]> = Vec::new();
             for i in 0..first.transpositions.len() {
                 let mut swap = first.transpositions[i];
                 if swap.0 == swap.1 {
@@ -654,8 +673,8 @@ impl Transpositions {
             rewire_gate_ver(&mut first_gates, &t_rewired[i].1, n);
             gates.extend_from_slice(&first_gates);
 
-            let middle = &t_rewired[i+1].0;
-            let mut middle_gates: Vec<[u8;3]> = Vec::new();
+            let middle = &t_rewired[i + 1].0;
+            let mut middle_gates: Vec<[u8; 3]> = Vec::new();
             for i in (0..middle.transpositions.len()).rev() {
                 let swap = middle.transpositions[i];
                 if swap.0 == swap.1 {
@@ -666,11 +685,11 @@ impl Transpositions {
                 middle_circuit.reverse();
                 middle_gates.extend_from_slice(&middle_circuit);
             }
-            rewire_gate_ver(&mut middle_gates, &t_rewired[i+1].1, n);
+            rewire_gate_ver(&mut middle_gates, &t_rewired[i + 1].1, n);
             gates.extend_from_slice(&middle_gates);
 
-            let second = &t_rewired[i+2].0;
-            let mut second_gates: Vec<[u8;3]> = Vec::new();
+            let second = &t_rewired[i + 2].0;
+            let mut second_gates: Vec<[u8; 3]> = Vec::new();
             for i in 0..second.transpositions.len() {
                 let mut swap = second.transpositions[i];
                 if swap.0 == swap.1 {
@@ -688,7 +707,7 @@ impl Transpositions {
 
                 second_gates.extend_from_slice(&second_circuit);
             }
-            rewire_gate_ver(&mut second_gates, &t_rewired[i+2].1, n);
+            rewire_gate_ver(&mut second_gates, &t_rewired[i + 2].1, n);
             gates.extend_from_slice(&second_gates);
         }
         // gates.push(c.gates[c.gates.len()-1]);
@@ -728,15 +747,17 @@ impl Transpositions {
 }
 
 pub fn insert_wire_shuffles_knuth(
-    circuit: &mut CircuitSeq, 
+    circuit: &mut CircuitSeq,
     n: usize,
     env: &Environment,
     dbs: &HashMap<String, Database>,
 ) {
     println!("Inserting wire shuffles (knuth)");
     println!("Starting len: {} gates", circuit.gates.len());
-    let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
-    let mut gates: Vec<[u8;3]> = Vec::new();
+    let mut t_list: Transpositions = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut gates: Vec<[u8; 3]> = Vec::new();
     let mut negation_mask = vec![0u8; n];
 
     for &gate in &circuit.gates {
@@ -782,7 +803,6 @@ pub fn insert_wire_shuffles_knuth(
                     panic!("Invalid pos or curr_neg_type");
                 }
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
-                
             }
         }
     }
@@ -795,15 +815,17 @@ pub fn insert_wire_shuffles_knuth(
 }
 
 pub fn insert_wire_shuffles_simple(
-    circuit: &mut CircuitSeq, 
+    circuit: &mut CircuitSeq,
     n: usize,
     env: &Environment,
     dbs: &HashMap<String, Database>,
 ) {
     println!("Inserting wire shuffles (simple)");
     println!("Starting len: {} gates", circuit.gates.len());
-    let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
-    let mut gates: Vec<[u8;3]> = Vec::new();
+    let mut t_list: Transpositions = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut gates: Vec<[u8; 3]> = Vec::new();
     let mut negation_mask = vec![0u8; n];
 
     // Generate random points. m needed in k = m * n
@@ -815,7 +837,7 @@ pub fn insert_wire_shuffles_simple(
         let center = i * n + n / 2;
 
         // allow significant variance but keep spacing structure
-        let jitter = rng.random_range(-(n as i64)/2 ..= (n as i64)/2);
+        let jitter = rng.random_range(-(n as i64) / 2..=(n as i64) / 2);
 
         let mut p = center as i64 + jitter;
 
@@ -871,7 +893,6 @@ pub fn insert_wire_shuffles_simple(
                     panic!("Invalid pos or curr_neg_type");
                 }
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
-                
             }
         }
     }
@@ -885,7 +906,7 @@ pub fn insert_wire_shuffles_simple(
 
 // Insert 2 shuffles are the beginning and end, and then an additional x number of shuffles
 pub fn insert_wire_shuffles_x(
-    circuit: &mut CircuitSeq, 
+    circuit: &mut CircuitSeq,
     n: usize,
     env: &Environment,
     dbs: &HashMap<String, Database>,
@@ -893,8 +914,10 @@ pub fn insert_wire_shuffles_x(
 ) {
     println!("Inserting wire shuffles");
     println!("Starting len: {} gates", circuit.gates.len());
-    let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
-    let mut gates: Vec<[u8;3]> = Vec::new();
+    let mut t_list: Transpositions = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut gates: Vec<[u8; 3]> = Vec::new();
     let mut negation_mask = vec![0u8; n];
 
     let start = 1;
@@ -912,7 +935,7 @@ pub fn insert_wire_shuffles_x(
             let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
             gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
             t_list.transpositions.extend_from_slice(&t.transpositions);
-        }   
+        }
         let a = t_list.evaluate(gate[0]);
         let b = t_list.evaluate(gate[1]);
         let c = t_list.evaluate(gate[2]);
@@ -952,7 +975,6 @@ pub fn insert_wire_shuffles_x(
                     panic!("Invalid pos or curr_neg_type");
                 }
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
-                
             }
         }
     }
@@ -966,7 +988,7 @@ pub fn insert_wire_shuffles_x(
 
 // Insert m samf between each gate
 pub fn insert_wire_m_samfs_every_x(
-    circuit: &mut CircuitSeq, 
+    circuit: &mut CircuitSeq,
     n: usize,
     m: usize,
     x: usize,
@@ -975,8 +997,10 @@ pub fn insert_wire_m_samfs_every_x(
 ) {
     println!("Inserting {} samfs between each gate", m);
     println!("Starting len: {} gates", circuit.gates.len());
-    let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
-    let mut gates: Vec<[u8;3]> = Vec::new();
+    let mut t_list: Transpositions = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut gates: Vec<[u8; 3]> = Vec::new();
     let mut negation_mask = vec![0u8; n];
 
     for (i, gate) in circuit.gates.iter().enumerate() {
@@ -1024,7 +1048,6 @@ pub fn insert_wire_m_samfs_every_x(
                     panic!("Invalid pos or curr_neg_type");
                 }
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
-                
             }
         }
     }
@@ -1041,28 +1064,37 @@ pub fn generate_reversible(
     c: &CircuitSeq,
     n: usize,
     env: &Environment,
-    dbs: &HashMap<String, Database>, 
+    dbs: &HashMap<String, Database>,
 ) -> CircuitSeq {
     let mut rev = c.clone();
     rev.gates.reverse();
     let mut gates = Vec::new();
     gates.extend_from_slice(&c.gates.clone());
     for i in 0..n {
-        gates.extend_from_slice(&Transpositions::gen_gates_cnot(2 * n, i as u8, (i + n) as u8, env, dbs));
+        gates.extend_from_slice(&Transpositions::gen_gates_cnot(
+            2 * n,
+            i as u8,
+            (i + n) as u8,
+            env,
+            dbs,
+        ));
     }
     gates.extend_from_slice(&rev.gates);
     CircuitSeq { gates }
 }
 
-pub fn replace_disjoint_pair((a,b, t1): (u8, u8, u8), (c,d, t2): (u8, u8, u8)) -> Vec<(u8, u8, u8)> {
+pub fn replace_disjoint_pair(
+    (a, b, t1): (u8, u8, u8),
+    (c, d, t2): (u8, u8, u8),
+) -> Vec<(u8, u8, u8)> {
     let possibilities = [
-        vec![(a,c,0),(b,d,0),(a,d,0),(b,c,0)],
-        vec![(b,c,0),(a,d,0),(b,d,0),(a,c,0)],
+        vec![(a, c, 0), (b, d, 0), (a, d, 0), (b, c, 0)],
+        vec![(b, c, 0), (a, d, 0), (b, d, 0), (a, c, 0)],
     ];
 
     let mut rng = rand::rng();
     let idx = rng.random_range(0..possibilities.len());
-    
+
     let mut t = possibilities[idx].clone();
 
     let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
@@ -1100,24 +1132,23 @@ pub fn replace_disjoint_pair((a,b, t1): (u8, u8, u8), (c,d, t2): (u8, u8, u8)) -
                 panic!("Invalid pos or curr_neg_type");
             }
             t[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
-            
         }
     }
-    
+
     t
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::replace::transpositions::Transpositions;
+    use crate::{CircuitSeq, replace::identities::insert_ri_identities};
     use lmdb::Environment;
+    use rand::prelude::IndexedRandom;
     use std::{
         fs::File,
         io::{BufRead, BufReader},
         path::Path,
     };
-    use rand::prelude::IndexedRandom;
-    use crate::{CircuitSeq, replace::identities::insert_ri_identities};
-    use crate::replace::transpositions::Transpositions;
     #[test]
     fn test_wire_shifting() {
         use crate::replace::main_mix::open_all_dbs;
@@ -1131,9 +1162,7 @@ mod tests {
             .collect();
 
         let mut rng = rand::rng();
-        let circuit_str = circuits
-            .choose(&mut rng)
-            .expect("no circuits found");
+        let circuit_str = circuits.choose(&mut rng).expect("no circuits found");
 
         let base = CircuitSeq::from_string(circuit_str);
 
@@ -1146,9 +1175,10 @@ mod tests {
         let dbs = open_all_dbs(&env);
 
         let mut gates: Vec<[u8; 3]> = Vec::new();
-        let mut last = Transpositions { transpositions: Vec::new() };
+        let mut last = Transpositions {
+            transpositions: Vec::new(),
+        };
         for &gate in &base.gates {
-
             let t = Transpositions::gen_random_knuth(64, 100, &mut Vec::new());
             // println!("t: {}", t.transpositions.len());
             if last.transpositions.is_empty() {
@@ -1172,8 +1202,7 @@ mod tests {
         if base.probably_equal(&new_circuit, 64, 1_000).is_err() {
             panic!("Failed to retain functionality");
         }
-        std::fs::write("test.txt", new_circuit.repr())
-            .expect("failed to write test.txt");
+        std::fs::write("test.txt", new_circuit.repr()).expect("failed to write test.txt");
     }
 
     #[test]
@@ -1222,8 +1251,8 @@ mod tests {
     #[test]
     fn test_insert_shuffles() {
         use crate::replace::main_mix::open_all_dbs;
-        use std::io::Write;
         use crate::replace::transpositions::insert_wire_shuffles_x;
+        use std::io::Write;
         let file = File::open("initial.txt").expect("failed to open initial.txt");
         let mut reader = BufReader::new(file);
 
@@ -1252,8 +1281,7 @@ mod tests {
             panic!("Failed to retain functionality");
         }
 
-        let mut out = File::create("shuffled.txt")
-            .expect("failed to create shuffled.txt");
+        let mut out = File::create("shuffled.txt").expect("failed to create shuffled.txt");
         writeln!(out, "{}", new_circuit.repr()).unwrap();
 
         println!("They are equal and written to shuffled.txt");
@@ -1271,7 +1299,7 @@ mod tests {
 
         let dbs = open_all_dbs(&env);
         let n = 64;
-        let mut gates: Vec<[u8;3]> = Vec::new();
+        let mut gates: Vec<[u8; 3]> = Vec::new();
         let mut negation_mask = vec![0u8; n];
         let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
         gates.extend_from_slice(&t.to_circuit(n, &env, &dbs).gates);
@@ -1279,15 +1307,9 @@ mod tests {
         let t = Transpositions::from_perm(&p);
         let mut wire_transpositions: HashMap<u8, Vec<(usize, usize)>> = HashMap::new();
         for (i, (a, b, _)) in t.transpositions.clone().into_iter().enumerate() {
-            wire_transpositions
-            .entry(a)
-            .or_default()
-            .push((i, 0));
+            wire_transpositions.entry(a).or_default().push((i, 0));
 
-            wire_transpositions
-                .entry(b)
-                .or_default()
-                .push((i, 1));
+            wire_transpositions.entry(b).or_default().push((i, 1));
         }
 
         for (i, val) in negation_mask.into_iter().enumerate() {
@@ -1296,16 +1318,18 @@ mod tests {
             }
         }
         let mut tr: Vec<(u8, u8, u8)> = Vec::new();
-        for (a,b,_) in t.transpositions{
-            tr.push((a,b,0));
+        for (a, b, _) in t.transpositions {
+            tr.push((a, b, 0));
         }
-        let t = Transpositions { transpositions: tr }; 
+        let t = Transpositions { transpositions: tr };
         let mut c = t.to_circuit(n, &env, &dbs).gates;
         c.reverse();
         gates.extend_from_slice(&c);
 
         let c = CircuitSeq { gates };
-        if c.probably_equal(&CircuitSeq{ gates: Vec::new() }, 64, 1_000).is_err() {
+        if c.probably_equal(&CircuitSeq { gates: Vec::new() }, 64, 1_000)
+            .is_err()
+        {
             panic!("Lost functionality");
         }
     }
@@ -1322,9 +1346,7 @@ mod tests {
             .collect();
 
         let mut rng = rand::rng();
-        let circuit_str = circuits
-            .choose(&mut rng)
-            .expect("no circuits found");
+        let circuit_str = circuits.choose(&mut rng).expect("no circuits found");
 
         let base = CircuitSeq::from_string(circuit_str);
 
@@ -1351,16 +1373,14 @@ mod tests {
         if base.probably_equal(&new_circuit, 64, 1_000).is_err() {
             panic!("Failed to retain functionality");
         }
-        std::fs::write("test.txt", new_circuit.repr())
-            .expect("failed to write test.txt");
+        std::fs::write("test.txt", new_circuit.repr()).expect("failed to write test.txt");
     }
 
     #[test]
     fn test_reversible() {
-        use std::fs;
         use rand::Rng;
-        let circuit_str = fs::read_to_string("initial.txt")
-            .expect("failed to read initial.txt");
+        use std::fs;
+        let circuit_str = fs::read_to_string("initial.txt").expect("failed to read initial.txt");
         let circuit = CircuitSeq::from_string(&circuit_str);
 
         let mut c100 = circuit.clone();
@@ -1368,7 +1388,7 @@ mod tests {
 
         let mut rng = rand::rng();
         let rand64: u128 = rng.random::<u64>() as u128;
-        let input: u128 = rand64; 
+        let input: u128 = rand64;
 
         let out_full = circuit.evaluate_128(input);
         let out_100 = c100.evaluate_128(input);
@@ -1391,20 +1411,16 @@ mod tests {
         let mut rev = circuit.clone();
         rev.gates.reverse();
         let out_full_rev = rev.evaluate_128(input);
-        assert_eq!(
-            out_full,
-            out_full_rev,
-            "the circuit isn't reversible"
-        );
+        assert_eq!(out_full, out_full_rev, "the circuit isn't reversible");
     }
 
     #[test]
     fn test_ri_32() {
         use crate::replace::identities::create_ri_identities_32;
         use crate::replace::main_mix::open_all_dbs;
-        use std::io::Write;
-        use rand::seq::SliceRandom;
         use crate::replace::transpositions::Permutation;
+        use rand::seq::SliceRandom;
+        use std::io::Write;
         let (first, middle, second, _, _) = create_ri_identities_32();
         let env = Environment::new()
             .set_max_dbs(262)
@@ -1421,11 +1437,11 @@ mod tests {
         m.gates.reverse();
         let s = second.to_circuit(32, &env, &dbs);
 
-        let mut c = CircuitSeq {gates: Vec::new() };
+        let mut c = CircuitSeq { gates: Vec::new() };
         c.gates.extend_from_slice(&f.gates);
         c.gates.extend_from_slice(&m.gates);
         c.gates.extend_from_slice(&s.gates);
-        let id = CircuitSeq {gates: Vec::new() };
+        let id = CircuitSeq { gates: Vec::new() };
         if c.probably_equal(&id, 32, 1000).is_err() {
             panic!("Not an id");
         }
@@ -1435,15 +1451,16 @@ mod tests {
             panic!("Not an id identity");
         }
         // let repr = id.repr();
-        let mut shuffle: Permutation = Permutation { data: (0..32).collect() };
+        let mut shuffle: Permutation = Permutation {
+            data: (0..32).collect(),
+        };
         shuffle.data.shuffle(&mut rand::rng());
         id.rewire(&shuffle, 32);
         if id.probably_equal(&stupid_id, 32, 1000).is_err() {
             panic!("Shuffling destroyed identity");
         }
         let repr = id.repr();
-        writeln!(file, "{}", repr)
-            .expect("Failed to write to file");
+        writeln!(file, "{}", repr).expect("Failed to write to file");
 
         println!("Wrote test circuit to file");
     }
@@ -1461,14 +1478,17 @@ mod tests {
 
         let mut file = File::create("test_id.txt").expect("Failed to create file");
 
-        let c_old = CircuitSeq::from_string("vnt;otv;k3c;g8d;hkm;fn8;3p0;v92;0id;l4a;pq0;sn3;06k;roh;cld;pef;s3j;dh7;jum;l41;gio;1pf;rge;ont;3qa;731;3rg;2eg;2sl;ebg;ovf;opk;tel;hts;cql;06h;u9i;gov;lbc;04i;0as;kp9;iro;e38;bc8;0ue;hst;p9i;gom;908;0do;l5s;t9g;abd;7rs;0hk;fq9;o49;14l;7j0;vu6;clf;4mn;9g6;4vc;lkp;p73;4mi;h9k;7rg;d4a;674;73f;ojr;fpj;gct;94k;nab;3is;q2h;dvp;huv;bsp;lb7;vr2;nd7;ud3;9bv;ljg;q1e;av9;8du;3hl;cd1;mir;ris;uoc;btq;ibc;bds;");
-        let mut c = CircuitSeq::from_string("vnt;otv;k3c;g8d;hkm;fn8;3p0;v92;0id;l4a;pq0;sn3;06k;roh;cld;pef;s3j;dh7;jum;l41;gio;1pf;rge;ont;3qa;731;3rg;2eg;2sl;ebg;ovf;opk;tel;hts;cql;06h;u9i;gov;lbc;04i;0as;kp9;iro;e38;bc8;0ue;hst;p9i;gom;908;0do;l5s;t9g;abd;7rs;0hk;fq9;o49;14l;7j0;vu6;clf;4mn;9g6;4vc;lkp;p73;4mi;h9k;7rg;d4a;674;73f;ojr;fpj;gct;94k;nab;3is;q2h;dvp;huv;bsp;lb7;vr2;nd7;ud3;9bv;ljg;q1e;av9;8du;3hl;cd1;mir;ris;uoc;btq;ibc;bds;");
+        let c_old = CircuitSeq::from_string(
+            "vnt;otv;k3c;g8d;hkm;fn8;3p0;v92;0id;l4a;pq0;sn3;06k;roh;cld;pef;s3j;dh7;jum;l41;gio;1pf;rge;ont;3qa;731;3rg;2eg;2sl;ebg;ovf;opk;tel;hts;cql;06h;u9i;gov;lbc;04i;0as;kp9;iro;e38;bc8;0ue;hst;p9i;gom;908;0do;l5s;t9g;abd;7rs;0hk;fq9;o49;14l;7j0;vu6;clf;4mn;9g6;4vc;lkp;p73;4mi;h9k;7rg;d4a;674;73f;ojr;fpj;gct;94k;nab;3is;q2h;dvp;huv;bsp;lb7;vr2;nd7;ud3;9bv;ljg;q1e;av9;8du;3hl;cd1;mir;ris;uoc;btq;ibc;bds;",
+        );
+        let mut c = CircuitSeq::from_string(
+            "vnt;otv;k3c;g8d;hkm;fn8;3p0;v92;0id;l4a;pq0;sn3;06k;roh;cld;pef;s3j;dh7;jum;l41;gio;1pf;rge;ont;3qa;731;3rg;2eg;2sl;ebg;ovf;opk;tel;hts;cql;06h;u9i;gov;lbc;04i;0as;kp9;iro;e38;bc8;0ue;hst;p9i;gom;908;0do;l5s;t9g;abd;7rs;0hk;fq9;o49;14l;7j0;vu6;clf;4mn;9g6;4vc;lkp;p73;4mi;h9k;7rg;d4a;674;73f;ojr;fpj;gct;94k;nab;3is;q2h;dvp;huv;bsp;lb7;vr2;nd7;ud3;9bv;ljg;q1e;av9;8du;3hl;cd1;mir;ris;uoc;btq;ibc;bds;",
+        );
         // let c_old = CircuitSeq::from_string("k3c;k3c;k3c");
         // let mut c = CircuitSeq::from_string("k3c;k3c;k3c");
         insert_ri_identities(&mut c, &env, &dbs);
 
-        writeln!(file, "{}", c.repr())
-            .expect("Failed to write to file");
+        writeln!(file, "{}", c.repr()).expect("Failed to write to file");
         let _id = CircuitSeq { gates: Vec::new() };
         if c.probably_equal(&c_old, 32, 1000).is_err() {
             panic!("Changed functionality somewhere");
@@ -1485,11 +1505,13 @@ mod tests {
             .expect("failed to open lmdb");
         let dbs = open_all_dbs(&env);
 
-        let mut negation_mask: Vec<u8> = vec![0u8;3];
+        let mut negation_mask: Vec<u8> = vec![0u8; 3];
         let t = Transpositions::gen_random_simple(32, 50, &mut negation_mask);
         let mut t2 = t.clone();
         t2.transpositions.reverse();
-        let c = t.to_circuit(32, &env, &dbs).concat(&t2.to_circuit(32, &env, &dbs));
+        let c = t
+            .to_circuit(32, &env, &dbs)
+            .concat(&t2.to_circuit(32, &env, &dbs));
         let id = CircuitSeq { gates: Vec::new() };
         if c.probably_equal(&id, 32, 1000).is_err() {
             panic!("Stupid identities via tranpose");

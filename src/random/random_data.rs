@@ -5,47 +5,46 @@ use crate::{
     rainbow::canonical::{self, CandSet, Canonicalization},
 };
 
-use crossbeam::channel::{bounded};
+use crossbeam::channel::bounded;
 use dashmap::DashMap;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
-use rand::{
-    prelude::IndexedRandom,
-    Rng, RngCore,
-};
+use rand::{Rng, RngCore, prelude::IndexedRandom};
 use rayon::{
     iter::{IntoParallelRefIterator, ParallelIterator},
     slice::ParallelSlice,
 };
 // use duckdb::{Connection, AccessMode, Config};
+use rayon::prelude::*;
 use rocksdb::{
-    DB, Options, BlockBasedOptions, SstFileWriter, IngestExternalFileOptions,
-    MergeOperands, DBCompressionType, Cache,
+    BlockBasedOptions, Cache, DB, DBCompressionType, IngestExternalFileOptions, MergeOperands,
+    Options, SstFileWriter,
 };
-use xxhash_rust::xxh3::xxh3_128;
+use smallvec::SmallVec;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use rayon::prelude::*;
-use smallvec::SmallVec;
 use std::{
     collections::{HashMap, HashSet},
     fs::OpenOptions,
     io::Write,
-
 };
+use xxhash_rust::xxh3::xxh3_128;
 
 fn write_error(msg: &str) {
     eprintln!("{}", msg);
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open("error.txt") {
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("error.txt")
+    {
         let _ = writeln!(f, "{}", msg);
     }
 }
 
-
-use crate::circuit::circuit::polys_repr_blob;
 use crate::circuit::Polynomial;
-use crate::circuit::circuit::{canonicalize_polys, canonicalize_polys_4};
+use crate::circuit::circuit::polys_repr_blob;
 use crate::circuit::circuit::print_rule_times;
+use crate::circuit::circuit::{canonicalize_polys, canonicalize_polys_4};
 
 // Store permutation canonicalizations (wire relabeling) in a cache for speed
 pub static CANON_CACHE: Lazy<DashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>> = Lazy::new(|| DashMap::new());
@@ -287,7 +286,7 @@ pub fn find_convex_subcircuit<R: RngCore>(
         // Initialize wire set
         let mut curr_wires = HashSet::new();
         curr_wires.extend(circuit.gates[selected_gate_idx[0]].iter().copied());
-        
+
         while selected_gate_ctr < len {
             let mut candidates: Vec<usize> = vec![];
 
@@ -335,7 +334,8 @@ pub fn find_convex_subcircuit<R: RngCore>(
                         // Indirect collisions are gates that collide with a gate that may not have collided with a gate in our list, but a gate that we have already scanned
                         // Ensures that we don't add a gate that would break convexity as it could follow the rules imposed by our chosen gates, but not the overall circuit
                         let [t, c1, c2] = curr_gate;
-                        let indirect_path_connected = path_connected_control_wires.wire_hit(t as usize)
+                        let indirect_path_connected = path_connected_control_wires
+                            .wire_hit(t as usize)
                             || path_connected_target_wires.wire_hit(c1 as usize)
                             || path_connected_target_wires.wire_hit(c2 as usize);
 
@@ -401,7 +401,8 @@ pub fn find_convex_subcircuit<R: RngCore>(
                         }
 
                         let [t, c1, c2] = curr_gate;
-                        let indirect_path_connected = path_connected_control_wires.wire_hit(t as usize)
+                        let indirect_path_connected = path_connected_control_wires
+                            .wire_hit(t as usize)
                             || path_connected_target_wires.wire_hit(c1 as usize)
                             || path_connected_target_wires.wire_hit(c2 as usize);
 
@@ -480,7 +481,10 @@ pub fn find_convex_subcircuit<R: RngCore>(
         //     curr_wires.len(),
         //     selected_gate_ctr
         // );
-        return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
+        return (
+            selected_gate_idx[..selected_gate_ctr].to_vec(),
+            search_attempts,
+        );
     }
 }
 
@@ -538,12 +542,19 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
                         let mut collides = false;
                         let mut repeat = false;
                         for i in 0..selected_gates_seen {
-                            if Gate::collides_index(&curr_gate, &circuit.gates[selected_gate_idx[i]]) {
-                                collides = true; break;
+                            if Gate::collides_index(
+                                &curr_gate,
+                                &circuit.gates[selected_gate_idx[i]],
+                            ) {
+                                collides = true;
+                                break;
                             }
                         }
                         for i in 0..selected_gate_ctr {
-                            if curr_gate == circuit.gates[selected_gate_idx[i]] { repeat = true; break; }
+                            if curr_gate == circuit.gates[selected_gate_idx[i]] {
+                                repeat = true;
+                                break;
+                            }
                         }
                         let [t, c1, c2] = curr_gate;
                         let indirect = path_connected_control_wires.wire_hit(t as usize)
@@ -553,7 +564,10 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
                             path_connected_target_wires.add_wire(t as usize);
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
-                            let new_w = curr_gate.iter().filter(|&w| !curr_wires.contains(w)).count();
+                            let new_w = curr_gate
+                                .iter()
+                                .filter(|&w| !curr_wires.contains(w))
+                                .count();
                             if !indirect && !repeat {
                                 candidates.push((curr_idx, new_w));
                             }
@@ -576,7 +590,8 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
                         break;
                     }
                     if selected_gates_seen < selected_gate_ctr
-                        && curr_idx == selected_gate_idx[selected_gate_ctr - 1 - selected_gates_seen]
+                        && curr_idx
+                            == selected_gate_idx[selected_gate_ctr - 1 - selected_gates_seen]
                     {
                         selected_gates_seen += 1;
                     } else {
@@ -584,12 +599,19 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
                         let mut collides = false;
                         let mut repeat = false;
                         for i in 0..selected_gates_seen {
-                            if Gate::collides_index(&curr_gate, &circuit.gates[selected_gate_idx[selected_gate_ctr - 1 - i]]) {
-                                collides = true; break;
+                            if Gate::collides_index(
+                                &curr_gate,
+                                &circuit.gates[selected_gate_idx[selected_gate_ctr - 1 - i]],
+                            ) {
+                                collides = true;
+                                break;
                             }
                         }
                         for i in 0..selected_gate_ctr {
-                            if curr_gate == circuit.gates[selected_gate_idx[i]] { repeat = true; break; }
+                            if curr_gate == circuit.gates[selected_gate_idx[i]] {
+                                repeat = true;
+                                break;
+                            }
                         }
                         let [t, c1, c2] = curr_gate;
                         let indirect = path_connected_control_wires.wire_hit(t as usize)
@@ -599,7 +621,10 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
                             path_connected_target_wires.add_wire(t as usize);
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
-                            let new_w = curr_gate.iter().filter(|&w| !curr_wires.contains(w)).count();
+                            let new_w = curr_gate
+                                .iter()
+                                .filter(|&w| !curr_wires.contains(w))
+                                .count();
                             if !indirect && !repeat {
                                 candidates.push((curr_idx, new_w));
                             }
@@ -608,12 +633,21 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
                 }
             }
 
-            if candidates.is_empty() { break; }
+            if candidates.is_empty() {
+                break;
+            }
 
             // Pick candidate with the most new wires (prefer 3, then 2, then 1, then 0)
-            let next_candidate = (0..=3).rev()
-                .find_map(|target| candidates.iter().find(|(_, nw)| *nw == target).map(|(idx, _)| *idx));
-            let next_candidate = match next_candidate { Some(x) => x, None => break };
+            let next_candidate = (0..=3).rev().find_map(|target| {
+                candidates
+                    .iter()
+                    .find(|(_, nw)| *nw == target)
+                    .map(|(idx, _)| *idx)
+            });
+            let next_candidate = match next_candidate {
+                Some(x) => x,
+                None => break,
+            };
 
             let mut new_wires = curr_wires.clone();
             new_wires.extend(circuit.gates[next_candidate].iter().copied());
@@ -625,12 +659,21 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
             selected_gate_idx[insert_pos] = next_candidate;
             selected_gate_ctr += 1;
             curr_wires = new_wires;
-            if curr_wires.len() >= max_wires { break; }
+            if curr_wires.len() >= max_wires {
+                break;
+            }
         }
 
-        if selected_gate_ctr < 3 { continue; }
-        if !is_convex(num_wires, &circuit, &selected_gate_idx[..selected_gate_ctr]) { continue; }
-        return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
+        if selected_gate_ctr < 3 {
+            continue;
+        }
+        if !is_convex(num_wires, &circuit, &selected_gate_idx[..selected_gate_ctr]) {
+            continue;
+        }
+        return (
+            selected_gate_idx[..selected_gate_ctr].to_vec(),
+            search_attempts,
+        );
     }
 }
 
@@ -688,12 +731,19 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
                         let mut collides = false;
                         let mut repeat = false;
                         for i in 0..selected_gates_seen {
-                            if Gate::collides_index(&curr_gate, &circuit.gates[selected_gate_idx[i]]) {
-                                collides = true; break;
+                            if Gate::collides_index(
+                                &curr_gate,
+                                &circuit.gates[selected_gate_idx[i]],
+                            ) {
+                                collides = true;
+                                break;
                             }
                         }
                         for i in 0..selected_gate_ctr {
-                            if curr_gate == circuit.gates[selected_gate_idx[i]] { repeat = true; break; }
+                            if curr_gate == circuit.gates[selected_gate_idx[i]] {
+                                repeat = true;
+                                break;
+                            }
                         }
                         let [t, c1, c2] = curr_gate;
                         let indirect = path_connected_control_wires.wire_hit(t as usize)
@@ -703,7 +753,10 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
                             path_connected_target_wires.add_wire(t as usize);
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
-                            let new_w = curr_gate.iter().filter(|&w| !curr_wires.contains(w)).count();
+                            let new_w = curr_gate
+                                .iter()
+                                .filter(|&w| !curr_wires.contains(w))
+                                .count();
                             if !indirect && !repeat {
                                 candidates.push((curr_idx, new_w));
                             }
@@ -726,7 +779,8 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
                         break;
                     }
                     if selected_gates_seen < selected_gate_ctr
-                        && curr_idx == selected_gate_idx[selected_gate_ctr - 1 - selected_gates_seen]
+                        && curr_idx
+                            == selected_gate_idx[selected_gate_ctr - 1 - selected_gates_seen]
                     {
                         selected_gates_seen += 1;
                     } else {
@@ -734,12 +788,19 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
                         let mut collides = false;
                         let mut repeat = false;
                         for i in 0..selected_gates_seen {
-                            if Gate::collides_index(&curr_gate, &circuit.gates[selected_gate_idx[selected_gate_ctr - 1 - i]]) {
-                                collides = true; break;
+                            if Gate::collides_index(
+                                &curr_gate,
+                                &circuit.gates[selected_gate_idx[selected_gate_ctr - 1 - i]],
+                            ) {
+                                collides = true;
+                                break;
                             }
                         }
                         for i in 0..selected_gate_ctr {
-                            if curr_gate == circuit.gates[selected_gate_idx[i]] { repeat = true; break; }
+                            if curr_gate == circuit.gates[selected_gate_idx[i]] {
+                                repeat = true;
+                                break;
+                            }
                         }
                         let [t, c1, c2] = curr_gate;
                         let indirect = path_connected_control_wires.wire_hit(t as usize)
@@ -749,7 +810,10 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
                             path_connected_target_wires.add_wire(t as usize);
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
-                            let new_w = curr_gate.iter().filter(|&w| !curr_wires.contains(w)).count();
+                            let new_w = curr_gate
+                                .iter()
+                                .filter(|&w| !curr_wires.contains(w))
+                                .count();
                             if !indirect && !repeat {
                                 candidates.push((curr_idx, new_w));
                             }
@@ -758,12 +822,21 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
                 }
             }
 
-            if candidates.is_empty() { break; }
+            if candidates.is_empty() {
+                break;
+            }
 
             // Pick candidate with the fewest new wires (prefer 0, then 1, then 2, then 3)
-            let next_candidate = (0..=3)
-                .find_map(|target| candidates.iter().find(|(_, nw)| *nw == target).map(|(idx, _)| *idx));
-            let next_candidate = match next_candidate { Some(x) => x, None => break };
+            let next_candidate = (0..=3).find_map(|target| {
+                candidates
+                    .iter()
+                    .find(|(_, nw)| *nw == target)
+                    .map(|(idx, _)| *idx)
+            });
+            let next_candidate = match next_candidate {
+                Some(x) => x,
+                None => break,
+            };
 
             let mut new_wires = curr_wires.clone();
             new_wires.extend(circuit.gates[next_candidate].iter().copied());
@@ -775,12 +848,21 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
             selected_gate_idx[insert_pos] = next_candidate;
             selected_gate_ctr += 1;
             curr_wires = new_wires;
-            if curr_wires.len() >= max_wires { break; }
+            if curr_wires.len() >= max_wires {
+                break;
+            }
         }
 
-        if selected_gate_ctr < 3 { continue; }
-        if !is_convex(num_wires, &circuit, &selected_gate_idx[..selected_gate_ctr]) { continue; }
-        return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
+        if selected_gate_ctr < 3 {
+            continue;
+        }
+        if !is_convex(num_wires, &circuit, &selected_gate_idx[..selected_gate_ctr]) {
+            continue;
+        }
+        return (
+            selected_gate_idx[..selected_gate_ctr].to_vec(),
+            search_attempts,
+        );
     }
 }
 
@@ -815,9 +897,11 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
         // Initialize wire set
         let mut curr_wires = HashSet::new();
         curr_wires.extend(circuit.gates[selected_gate_idx[0]].iter().copied());
-        
+
         while selected_gate_ctr < len {
-            if selected_gate_ctr >= 30 { break; }
+            if selected_gate_ctr >= 30 {
+                break;
+            }
             let mut candidates: Vec<usize> = vec![];
 
             // Left-most gate, go right
@@ -834,8 +918,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                         break;
                     }
 
-                    if curr_idx == selected_gate_idx[selected_gates_seen]
-                    {
+                    if curr_idx == selected_gate_idx[selected_gates_seen] {
                         selected_gates_seen += 1;
                     } else {
                         let curr_gate = circuit.gates[curr_idx];
@@ -851,7 +934,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                                 break;
                             }
                         }
-                        // 
+                        //
                         // for i in 0..selected_gate_ctr {
                         //     if curr_gate == circuit.gates[selected_gate_idx[i]] {
                         //         repeat_wires = true;
@@ -860,7 +943,8 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                         // }
 
                         let [t, c1, c2] = curr_gate;
-                        let indirect_path_connected = path_connected_control_wires.wire_hit(t as usize)
+                        let indirect_path_connected = path_connected_control_wires
+                            .wire_hit(t as usize)
                             || path_connected_target_wires.wire_hit(c1 as usize)
                             || path_connected_target_wires.wire_hit(c2 as usize);
 
@@ -924,7 +1008,8 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                         // }
 
                         let [t, c1, c2] = curr_gate;
-                        let indirect_path_connected = path_connected_control_wires.wire_hit(t as usize)
+                        let indirect_path_connected = path_connected_control_wires
+                            .wire_hit(t as usize)
                             || path_connected_target_wires.wire_hit(c1 as usize)
                             || path_connected_target_wires.wire_hit(c2 as usize);
 
@@ -970,7 +1055,9 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
 
             let mut new_wires = curr_wires.clone();
             new_wires.extend(circuit.gates[next_candidate].iter().copied());
-            if new_wires.len() > 21 { break; }
+            if new_wires.len() > 21 {
+                break;
+            }
 
             // Insert next gate in sorted order
             let mut insert_pos = selected_gate_ctr;
@@ -998,7 +1085,10 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
         //     curr_wires.len(),
         //     selected_gate_ctr
         // );
-        return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
+        return (
+            selected_gate_idx[..selected_gate_ctr].to_vec(),
+            search_attempts,
+        );
     }
 }
 
@@ -1047,8 +1137,7 @@ pub fn find_convex_subcircuit_deep<R: RngCore>(
                         break;
                     }
 
-                    if curr_idx == selected_gate_idx[selected_gates_seen]
-                    {
+                    if curr_idx == selected_gate_idx[selected_gates_seen] {
                         selected_gates_seen += 1;
                         continue;
                     }
@@ -1058,10 +1147,7 @@ pub fn find_convex_subcircuit_deep<R: RngCore>(
                     let mut repeat = false;
 
                     for i in 0..selected_gates_seen {
-                        if Gate::collides_index(
-                            &curr_gate,
-                            &circuit.gates[selected_gate_idx[i]],
-                        ) {
+                        if Gate::collides_index(&curr_gate, &circuit.gates[selected_gate_idx[i]]) {
                             collides = true;
                             break;
                         }
@@ -1202,7 +1288,10 @@ pub fn find_convex_subcircuit_deep<R: RngCore>(
             continue;
         }
 
-        return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
+        return (
+            selected_gate_idx[..selected_gate_ctr].to_vec(),
+            search_attempts,
+        );
     }
 }
 
@@ -1218,7 +1307,7 @@ pub fn targeted_convex_subcircuit<R: RngCore>(
     let num_gates = circuit.gates.len();
     let search_attempts = 0;
     let window = 200;
-    
+
     // Start with one random gate
     let mut selected_gate_idx = vec![0; set_size];
     selected_gate_idx[0] = target;
@@ -1255,10 +1344,7 @@ pub fn targeted_convex_subcircuit<R: RngCore>(
                     let mut repeat_wires = false;
 
                     for i in 0..selected_gates_seen {
-                        if Gate::collides_index(
-                            &curr_gate,
-                            &circuit.gates[selected_gate_idx[i]],
-                        ) {
+                        if Gate::collides_index(&curr_gate, &circuit.gates[selected_gate_idx[i]]) {
                             collides_with_prev_selected = true;
                             break;
                         }
@@ -1311,8 +1397,7 @@ pub fn targeted_convex_subcircuit<R: RngCore>(
                 }
 
                 if selected_gates_seen < selected_gate_ctr
-                    && curr_idx
-                        == selected_gate_idx[selected_gate_ctr - 1 - selected_gates_seen]
+                    && curr_idx == selected_gate_idx[selected_gate_ctr - 1 - selected_gates_seen]
                 {
                     selected_gates_seen += 1;
                 } else {
@@ -1404,11 +1489,11 @@ pub fn targeted_convex_subcircuit<R: RngCore>(
     }
 
     if selected_gate_ctr < 3 {
-        return (vec![], 0)
+        return (vec![], 0);
     }
 
     if !is_convex(num_wires, circuit, &selected_gate_idx[..selected_gate_ctr]) {
-        return (vec![], 0)
+        return (vec![], 0);
     }
 
     // println!(
@@ -1416,7 +1501,10 @@ pub fn targeted_convex_subcircuit<R: RngCore>(
     //     curr_wires.len(),
     //     selected_gate_ctr
     // );
-    return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
+    return (
+        selected_gate_idx[..selected_gate_ctr].to_vec(),
+        search_attempts,
+    );
 }
 
 pub fn targeted_find_convex_subcircuit_deep<R: RngCore>(
@@ -1463,8 +1551,7 @@ pub fn targeted_find_convex_subcircuit_deep<R: RngCore>(
                         break;
                     }
 
-                    if curr_idx == selected_gate_idx[selected_gates_seen]
-                    {
+                    if curr_idx == selected_gate_idx[selected_gates_seen] {
                         selected_gates_seen += 1;
                         continue;
                     }
@@ -1474,10 +1561,7 @@ pub fn targeted_find_convex_subcircuit_deep<R: RngCore>(
                     let mut repeat = false;
 
                     for i in 0..selected_gates_seen {
-                        if Gate::collides_index(
-                            &curr_gate,
-                            &circuit.gates[selected_gate_idx[i]],
-                        ) {
+                        if Gate::collides_index(&curr_gate, &circuit.gates[selected_gate_idx[i]]) {
                             collides = true;
                             break;
                         }
@@ -1618,7 +1702,10 @@ pub fn targeted_find_convex_subcircuit_deep<R: RngCore>(
             continue;
         }
 
-        return (selected_gate_idx[..selected_gate_ctr].to_vec(), search_attempts);
+        return (
+            selected_gate_idx[..selected_gate_ctr].to_vec(),
+            search_attempts,
+        );
     }
 }
 
@@ -1626,7 +1713,7 @@ pub fn targeted_find_convex_subcircuit_deep<R: RngCore>(
 pub fn contiguous_convex(
     circuit: &mut CircuitSeq,
     ordered_convex_gates: &mut Vec<usize>,
-    num_wires: usize
+    num_wires: usize,
 ) -> Option<(usize, usize)> {
     // This should never run
     if ordered_convex_gates.len() < 2 {
@@ -1647,9 +1734,7 @@ pub fn contiguous_convex(
     let mut start = *ordered_convex_gates.first().unwrap();
     let mut end = *ordered_convex_gates.last().unwrap();
 
-    let mut non_convex: Vec<usize> = (start..=end)
-        .filter(|&i| !is_convex[i])
-        .collect();
+    let mut non_convex: Vec<usize> = (start..=end).filter(|&i| !is_convex[i]).collect();
 
     // Left pass
     while !non_convex.is_empty() {
@@ -1722,7 +1807,7 @@ pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
     let len = circuit.gates.len();
 
     if len == 0 {
-        return
+        return;
     }
 
     for _ in 0..rounds {
@@ -1766,15 +1851,15 @@ pub fn random_sulking(circuit: &mut CircuitSeq) {
     let len = circuit.gates.len();
 
     if len == 0 {
-        return
+        return;
     }
-    let mut out: Vec<[u8;3]> = Vec::new();
-    for gate_idx in 0..len{
+    let mut out: Vec<[u8; 3]> = Vec::new();
+    for gate_idx in 0..len {
         // Shoot left
         let mut target = gate_idx;
         out.push(circuit.gates[target]);
         if gate_idx == 0 {
-            continue
+            continue;
         } else {
             while target > 0 {
                 if Gate::collides_index(&out[target - 1], &out[gate_idx]) {
@@ -1793,12 +1878,12 @@ pub fn random_sulking(circuit: &mut CircuitSeq) {
     circuit.gates = out;
 }
 
-pub fn shoot_random_gate_gate_ver(circuit: &mut Vec<[u8;3]>, rounds: usize) {
+pub fn shoot_random_gate_gate_ver(circuit: &mut Vec<[u8; 3]>, rounds: usize) {
     let mut rng = rand::rng();
     let len = circuit.len();
 
     if len == 0 {
-        return
+        return;
     }
 
     for _ in 0..rounds {
@@ -1837,7 +1922,7 @@ pub fn shoot_random_gate_gate_ver(circuit: &mut Vec<[u8;3]>, rounds: usize) {
     }
 }
 
-pub fn shoot_left_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize { 
+pub fn shoot_left_vec(circuit: &mut Vec<[u8; 3]>, gate_idx: usize) -> usize {
     let mut target = gate_idx;
     while target > 0 {
         if Gate::collides_index(&circuit[target - 1], &circuit[gate_idx]) {
@@ -1854,7 +1939,7 @@ pub fn shoot_left_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize {
     target
 }
 
-pub fn shoot_left_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, max: bool) -> usize { 
+pub fn shoot_left_vec_track(circuit: &mut Vec<([u8; 3], u8)>, gate_idx: usize, max: bool) -> usize {
     let mut target = gate_idx;
     let mut rng = rand::rng();
     while target > 0 {
@@ -1869,14 +1954,14 @@ pub fn shoot_left_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, ma
         if !max {
             target = rng.random_range(target..=gate_idx);
         }
-        let update = if !max {4} else {0};
+        let update = if !max { 4 } else { 0 };
         circuit.insert(target, (gate, update));
     }
 
     target
 }
 
-pub fn shoot_right_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize { 
+pub fn shoot_right_vec(circuit: &mut Vec<[u8; 3]>, gate_idx: usize) -> usize {
     let mut target = gate_idx;
     let len = circuit.len();
     while target + 1 < len {
@@ -1894,7 +1979,11 @@ pub fn shoot_right_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize {
     target
 }
 
-pub fn shoot_right_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, max: bool) -> usize { 
+pub fn shoot_right_vec_track(
+    circuit: &mut Vec<([u8; 3], u8)>,
+    gate_idx: usize,
+    max: bool,
+) -> usize {
     let mut target = gate_idx;
     let len = circuit.len();
     let mut rng = rand::rng();
@@ -1909,7 +1998,7 @@ pub fn shoot_right_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, m
         if !max {
             target = rng.random_range(gate_idx..=target);
         }
-        let update = if !max {5} else {0};
+        let update = if !max { 5 } else { 0 };
         circuit.insert(target, (gate, update));
     }
 
@@ -1931,10 +2020,10 @@ pub fn is_level_zero(circuit: &CircuitSeq, index: usize) -> bool {
 }
 
 // Assist in creating random_walking
-pub fn left_ordering(circuit: &CircuitSeq) -> CircuitSeq{
+pub fn left_ordering(circuit: &CircuitSeq) -> CircuitSeq {
     let mut circuit = circuit.clone();
     circuit.canonicalize();
-    let mut new_gates: Vec<[u8;3]> = Vec::new();
+    let mut new_gates: Vec<[u8; 3]> = Vec::new();
     let mut c = circuit.clone();
     while !c.gates.is_empty() {
         let mut to_remove: Vec<usize> = Vec::new();
@@ -1953,7 +2042,7 @@ pub fn left_ordering(circuit: &CircuitSeq) -> CircuitSeq{
     if new.probably_equal(&circuit, 64, 100000).is_err() {
         panic!("Left shooting changed functionality");
     }
-    
+
     new
 }
 
@@ -1976,7 +2065,10 @@ pub struct Skeleton {
 pub fn create_skeleton(circuit: &CircuitSeq) -> (CircuitSeq, Skeleton) {
     let c = left_ordering(&circuit);
     let gates = &c.gates;
-    let mut skel = Skeleton { nodes: Vec::new(), depth: 0 };
+    let mut skel = Skeleton {
+        nodes: Vec::new(),
+        depth: 0,
+    };
     let mut start = 0;
     let mut level = 0;
 
@@ -1984,7 +2076,11 @@ pub fn create_skeleton(circuit: &CircuitSeq) -> (CircuitSeq, Skeleton) {
         let mut segment = Vec::new();
         let mut i = start;
         while i < gates.len() {
-            if i > start && segment.iter().any(|&(_, g)| Gate::collides_index(&gates[i], &g)) {
+            if i > start
+                && segment
+                    .iter()
+                    .any(|&(_, g)| Gate::collides_index(&gates[i], &g))
+            {
                 break;
             }
             segment.push((i, gates[i].clone()));
@@ -2074,7 +2170,10 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
         panic!("Didn't add enough gates!");
     }
 
-    if new_gates.probably_equal(&orig_circuit, 64, 100_000).is_err() {
+    if new_gates
+        .probably_equal(&orig_circuit, 64, 100_000)
+        .is_err()
+    {
         panic!("Circuit functionality changed!");
     }
 
@@ -2082,10 +2181,7 @@ pub fn random_walking<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitS
 }
 
 // Random walking algorithm without needing to reconstruct the skeleton graph each time
-pub fn random_walk_no_skeleton<R: RngCore>(
-    circuit: &CircuitSeq,
-    rng: &mut R,
-) -> CircuitSeq {
+pub fn random_walk_no_skeleton<R: RngCore>(circuit: &CircuitSeq, rng: &mut R) -> CircuitSeq {
     let n = circuit.gates.len();
     let mut remaining: Vec<bool> = vec![true; n];
     let mut in_candidates: Vec<bool> = vec![false; n];
@@ -2161,8 +2257,14 @@ pub fn insert_circuit(
     let key = circuit.repr_blob();
     let perm = canon.perm.repr_blob();
     let shuf = canon.shuffle.repr_blob();
-    let sql = format!("INSERT OR IGNORE INTO {} (circuit, perm, shuf) VALUES ($1, $2, $3)", table_name);
-    conn.execute(&sql, duckdb::params![key.as_slice(), perm.as_slice(), shuf.as_slice()])?;
+    let sql = format!(
+        "INSERT OR IGNORE INTO {} (circuit, perm, shuf) VALUES ($1, $2, $3)",
+        table_name
+    );
+    conn.execute(
+        &sql,
+        duckdb::params![key.as_slice(), perm.as_slice(), shuf.as_slice()],
+    )?;
     Ok(())
 }
 
@@ -2186,7 +2288,11 @@ pub fn insert_circuits_batch(
         let perm = canon.perm.repr_blob();
         let shuf = canon.shuffle.repr_blob();
 
-        if tx.execute(&sql, duckdb::params![key.as_slice(), perm.as_slice(), shuf.as_slice()])? > 0 {
+        if tx.execute(
+            &sql,
+            duckdb::params![key.as_slice(), perm.as_slice(), shuf.as_slice()],
+        )? > 0
+        {
             inserted += 1;
         }
     }
@@ -2203,7 +2309,7 @@ pub fn insert_circuits_batch(
 // 3) If fails, use brute force
 pub fn get_canonical(perm: &Permutation, bit_shuf: &Vec<Vec<usize>>) -> Canonicalization {
     // Use a simple hash of the subcircuit as the key
-    let key = perm.repr_blob(); 
+    let key = perm.repr_blob();
 
     // Try to get it from the cache
     if let Some(cached) = CANON_CACHE.get(&key) {
@@ -2217,8 +2323,14 @@ pub fn get_canonical(perm: &Permutation, bit_shuf: &Vec<Vec<usize>>) -> Canonica
     // compute it
     let canon = perm.canon_simple(bit_shuf);
 
-    // Store 
-    CANON_CACHE.insert(key, (canon.clone().perm.repr_blob(), canon.clone().shuffle.repr_blob()));
+    // Store
+    CANON_CACHE.insert(
+        key,
+        (
+            canon.clone().perm.repr_blob(),
+            canon.clone().shuffle.repr_blob(),
+        ),
+    );
     canon
 }
 
@@ -2347,7 +2459,7 @@ impl Permutation {
         // Pre-allocate viable_sets buffer to reuse
         let mut viable_sets: Vec<CandSet> = Vec::with_capacity(4);
 
-        for weight in 0..=num_bits/2 {
+        for weight in 0..=num_bits / 2 {
             let index_words = canonical::index_set(weight, num_bits); // Vec<usize>
 
             'word_loop: for &w in &index_words {
@@ -2416,7 +2528,7 @@ impl Permutation {
                         return Canonicalization {
                             perm: Permutation { data: Vec::new() },
                             shuffle: Permutation { data: Vec::new() },
-                        }
+                        };
                     }
                 }
 
@@ -2461,7 +2573,11 @@ impl Permutation {
     pub fn from_string(s: &str) -> Self {
         let data = s
             .split(',')
-            .map(|x| x.trim().parse::<usize>().expect("Invalid number in permutation"))
+            .map(|x| {
+                x.trim()
+                    .parse::<usize>()
+                    .expect("Invalid number in permutation")
+            })
             .collect();
 
         Permutation { data }
@@ -2540,22 +2656,29 @@ pub fn count_distinct(n: usize, m: usize) -> duckdb::Result<usize> {
     let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
     let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
     let table_name = format!("n{}m{}", n, m);
-    
+
     let query = format!("SELECT COUNT(DISTINCT perm) FROM {}", table_name);
     let count: usize = conn.query_row(&query, [], |row| row.get(0))?;
-    
-    println!("Number of distinct permutations in {}: {}", table_name, count);
+
+    println!(
+        "Number of distinct permutations in {}: {}",
+        table_name, count
+    );
     Ok(count)
 }
 
 pub fn base_gates(n: usize) -> Vec<[u8; 3]> {
     let n = n as u8;
-    let mut gates: Vec<[u8;3]> = Vec::new();
+    let mut gates: Vec<[u8; 3]> = Vec::new();
     for a in 0..n {
         for b in 0..n {
-            if b == a { continue; }
+            if b == a {
+                continue;
+            }
             for c in 0..n {
-                if c == a || c == b { continue; }
+                if c == a || c == b {
+                    continue;
+                }
                 gates.push([a, b, c]);
             }
         }
@@ -2582,11 +2705,10 @@ pub fn build_from_sql(
     let base_gates_for_thread = Arc::clone(&base_gates);
     let bit_shuf = Arc::new(bit_shuf.clone());
 
-    let total_rows: i64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM {}", old_table),
-        [],
-        |row| row.get(0),
-    )?;
+    let total_rows: i64 =
+        conn.query_row(&format!("SELECT COUNT(*) FROM {}", old_table), [], |row| {
+            row.get(0)
+        })?;
     println!("Total rows in {}: {}", old_table, total_rows);
 
     let chunk_size: i64 = 50_000;
@@ -2654,10 +2776,8 @@ pub fn build_from_sql(
                 "SELECT circuit FROM {} LIMIT $1 OFFSET $2",
                 old_table
             ))?;
-            stmt.query_map(duckdb::params![chunk_size, offset], |row| {
-                row.get(0)
-            })?
-            .collect::<duckdb::Result<_>>()?
+            stmt.query_map(duckdb::params![chunk_size, offset], |row| row.get(0))?
+                .collect::<duckdb::Result<_>>()?
         };
 
         if rows.is_empty() {
@@ -2668,13 +2788,11 @@ pub fn build_from_sql(
 
         // Process circuits in parallel and stream batches immediately
         rows.par_chunks(500).for_each(|row_chunk| {
-            let mut local_results =
-                Vec::with_capacity(row_chunk.len() * base_gates.len() * 2);
+            let mut local_results = Vec::with_capacity(row_chunk.len() * base_gates.len() * 2);
 
             for blob in row_chunk {
                 let old_circuit = CircuitSeq::from_blob(blob);
-                let mut prefix: SmallVec<[[u8; 3]; 64]> =
-                    SmallVec::with_capacity(m);
+                let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
                 prefix.extend_from_slice(&old_circuit.gates);
 
                 for g in base_gates.iter() {
@@ -2742,11 +2860,7 @@ pub fn build_from_sql(
 
 /// Merge operator — appends new circuit blobs to existing list, deduplicating.
 /// Value format: [u8 len | blob bytes | ...]
-fn append_merge(
-    _key: &[u8],
-    existing: Option<&[u8]>,
-    operands: &MergeOperands,
-) -> Option<Vec<u8>> {
+fn append_merge(_key: &[u8], existing: Option<&[u8]>, operands: &MergeOperands) -> Option<Vec<u8>> {
     let mut result: Vec<u8> = existing.unwrap_or(&[]).to_vec();
 
     for operand in operands {
@@ -2904,7 +3018,11 @@ fn merge_sorted_entries(entries: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Vec<u
     merged
 }
 
-fn flush_to_sst(db: &Arc<DB>, pending: &mut Vec<(Vec<u8>, Vec<u8>)>, sst_index: &mut usize) -> Result<(), Box<dyn std::error::Error>> {
+fn flush_to_sst(
+    db: &Arc<DB>,
+    pending: &mut Vec<(Vec<u8>, Vec<u8>)>,
+    sst_index: &mut usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     if pending.is_empty() {
         return Ok(());
     }
@@ -3040,18 +3158,20 @@ pub fn abstract_gates_for_circuit(circuit: &CircuitSeq, n: usize) -> Vec<[u8; 3]
     const UNUSED: u8 = u8::MAX;
 
     let touched = touched_wires(circuit);
-    let untouched: Vec<u8> = (0..n as u8)
-        .filter(|w| !touched.contains(w))
-        .collect();
+    let untouched: Vec<u8> = (0..n as u8).filter(|w| !touched.contains(w)).collect();
 
     let mut result = Vec::new();
 
     // 0 UNUSED slots: all three wires are touched
     for &a in &touched {
         for &b in &touched {
-            if b == a { continue; }
+            if b == a {
+                continue;
+            }
             for &c in &touched {
-                if c == a || c == b { continue; }
+                if c == a || c == b {
+                    continue;
+                }
                 result.push([a, b, c]);
             }
         }
@@ -3062,21 +3182,27 @@ pub fn abstract_gates_for_circuit(circuit: &CircuitSeq, n: usize) -> Vec<[u8; 3]
         // UNUSED in position a
         for &b in &touched {
             for &c in &touched {
-                if c == b { continue; }
+                if c == b {
+                    continue;
+                }
                 result.extend(expand_abstract_gate([UNUSED, b, c], &untouched));
             }
         }
         // UNUSED in position b
         for &a in &touched {
             for &c in &touched {
-                if c == a { continue; }
+                if c == a {
+                    continue;
+                }
                 result.extend(expand_abstract_gate([a, UNUSED, c], &untouched));
             }
         }
         // UNUSED in position c
         for &a in &touched {
             for &b in &touched {
-                if b == a { continue; }
+                if b == a {
+                    continue;
+                }
                 result.extend(expand_abstract_gate([a, b, UNUSED], &untouched));
             }
         }
@@ -3167,7 +3293,11 @@ pub fn build_from_rocks(
             attempted_inserts += batch.len();
             let tried = total_gates_tried_insert.load(Ordering::Relaxed);
             let elapsed = start_time.elapsed().as_secs_f64();
-            let rate = if elapsed > 0.0 { tried as f64 / elapsed } else { 0.0 };
+            let rate = if elapsed > 0.0 {
+                tried as f64 / elapsed
+            } else {
+                0.0
+            };
             let remaining = if rate > 0.0 {
                 (total_circuits as f64 - tried as f64) / rate
             } else {
@@ -3210,9 +3340,7 @@ pub fn build_from_rocks(
         let elapsed = start_time.elapsed().as_secs_f64();
         println!(
             "Insertion thread finished. Total attempted: {} / {} | elapsed: {:.0}s",
-            attempted_inserts,
-            total_circuits,
-            elapsed,
+            attempted_inserts, total_circuits, elapsed,
         );
     });
 
@@ -3590,7 +3718,6 @@ pub fn build_m1(new_db: &Arc<DB>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-
 /// Apply a wire mapping to a circuit — remap C2's internal wires
 /// to their positions in the combined circuit.
 fn apply_wire_mapping(circuit: &CircuitSeq, mapping: &[u8]) -> CircuitSeq {
@@ -3598,7 +3725,13 @@ fn apply_wire_mapping(circuit: &CircuitSeq, mapping: &[u8]) -> CircuitSeq {
         gates: circuit
             .gates
             .iter()
-            .map(|&[a, b, c]| [mapping[a as usize], mapping[b as usize], mapping[c as usize]])
+            .map(|&[a, b, c]| {
+                [
+                    mapping[a as usize],
+                    mapping[b as usize],
+                    mapping[c as usize],
+                ]
+            })
             .collect(),
     }
 }
@@ -3612,9 +3745,11 @@ const LARGE_MAPPING_THRESHOLD: usize = 200_000;
 const MAPPING_CACHE_CAP: usize = 256;
 
 static MAPPING_CACHE: Lazy<std::sync::Mutex<lru::LruCache<(usize, usize), Arc<(Vec<u8>, usize)>>>> =
-    Lazy::new(|| std::sync::Mutex::new(lru::LruCache::new(
-        std::num::NonZeroUsize::new(MAPPING_CACHE_CAP).unwrap()
-    )));
+    Lazy::new(|| {
+        std::sync::Mutex::new(lru::LruCache::new(
+            std::num::NonZeroUsize::new(MAPPING_CACHE_CAP).unwrap(),
+        ))
+    });
 
 /// Call `f` once per mapping for the (n1, n2) pair.
 /// Small pairs are cached in an LRU; large pairs are enumerated on-the-fly.
@@ -3686,13 +3821,7 @@ fn compute_mappings(n1: usize, n2: usize) -> (Vec<u8>, usize) {
     let mut c2_to_wire = vec![0u8; n2];
     let mut used = vec![false; n2];
 
-    enumerate_direct(
-        0, n1, n2,
-        &mut c2_to_wire,
-        &mut used,
-        &mut flat,
-        &mut idx,
-    );
+    enumerate_direct(0, n1, n2, &mut c2_to_wire, &mut used, &mut flat, &mut idx);
 
     debug_assert_eq!(idx, total);
     (flat, n2)
@@ -3811,10 +3940,14 @@ pub fn build_from_2rocks(
             let (_key, value) = item.expect("RocksDB iter error");
             let mut pos = 0;
             while pos < value.len() {
-                if pos + 1 > value.len() { break; }
+                if pos + 1 > value.len() {
+                    break;
+                }
                 let len = value[pos] as usize;
                 pos += 1;
-                if pos + len > value.len() { break; }
+                if pos + len > value.len() {
+                    break;
+                }
                 circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
                 pos += len;
             }
@@ -3828,39 +3961,50 @@ pub fn build_from_2rocks(
     println!("Precomputing c2_rev (0/{})...", total_c2);
     let c2_rev_done = std::sync::atomic::AtomicUsize::new(0);
     let db2_rev: Arc<Vec<CircuitSeq>> = Arc::new(
-        db2_circuits.par_iter().map(|c2| {
-            let mut r = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
-            r.canonicalize();
-            // Remap to minimal wires
-            let used = r.used_wires();
-            let wire_map: HashMap<u8, u8> = used.iter().enumerate()
-                .map(|(i, &w)| (w, i as u8))
-                .collect();
-            r = CircuitSeq {
-                gates: r.gates.iter().map(|&[t, c1, c2]| [
-                    wire_map[&t], wire_map[&c1], wire_map[&c2],
-                ]).collect(),
-            };
-            r.canonicalize();
-            let n2 = r.max_wire() as usize + 1;
-            let canon = canonicalize_polys_4(r.to_polynomial(n2, 0, r.gates.len()));
-            r.rewire(&canon.1.invert(), n2);
-            r.canonicalize();
-            let done = c2_rev_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if done % 50 == 0 || done == total_c2 {
-                println!("Precomputing c2_rev ({}/{})...", done, total_c2);
-            }
-            r
-        }).collect()
+        db2_circuits
+            .par_iter()
+            .map(|c2| {
+                let mut r = CircuitSeq {
+                    gates: c2.gates.iter().rev().cloned().collect(),
+                };
+                r.canonicalize();
+                // Remap to minimal wires
+                let used = r.used_wires();
+                let wire_map: HashMap<u8, u8> = used
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &w)| (w, i as u8))
+                    .collect();
+                r = CircuitSeq {
+                    gates: r
+                        .gates
+                        .iter()
+                        .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+                        .collect(),
+                };
+                r.canonicalize();
+                let n2 = r.max_wire() as usize + 1;
+                let canon = canonicalize_polys_4(r.to_polynomial(n2, 0, r.gates.len()));
+                r.rewire(&canon.1.invert(), n2);
+                r.canonicalize();
+                let done = c2_rev_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if done % 50 == 0 || done == total_c2 {
+                    println!("Precomputing c2_rev ({}/{})...", done, total_c2);
+                }
+                r
+            })
+            .collect(),
     );
 
     // Precompute touched wire counts for every c2 and c2_rev
     let db2_n2: Arc<Vec<usize>> = Arc::new(
-        db2_circuits.par_iter().map(|c| touched_wires(c).len()).collect()
+        db2_circuits
+            .par_iter()
+            .map(|c| touched_wires(c).len())
+            .collect(),
     );
-    let db2_rev_n2: Arc<Vec<usize>> = Arc::new(
-        db2_rev.par_iter().map(|c| touched_wires(c).len()).collect()
-    );
+    let db2_rev_n2: Arc<Vec<usize>> =
+        Arc::new(db2_rev.par_iter().map(|c| touched_wires(c).len()).collect());
 
     // Warm the mapping cache for all (n1, n2) pairs we'll encounter.
     // n1 ranges over possible touched-wire counts for m1-gate circuits: 1..=3*m1
@@ -3879,7 +4023,10 @@ pub fn build_from_2rocks(
             enumerate_c2_wire_mappings_cached(n2, n1);
         }
     });
-    println!("Cache warmed: {} entries", MAPPING_CACHE.lock().unwrap().len());
+    println!(
+        "Cache warmed: {} entries",
+        MAPPING_CACHE.lock().unwrap().len()
+    );
 
     let total_rows = db1
         .property_int_value("rocksdb.estimate-num-keys")
@@ -3893,8 +4040,15 @@ pub fn build_from_2rocks(
     let total_pairs_est = total_rows as usize * nc2;
     println!("db1 estimated keys: {}", total_rows);
     println!("db2 circuits loaded: {}", nc2);
-    println!("Estimated total pairs: {} ({:.2}B)", total_pairs_est, total_pairs_est as f64 / 1e9);
-    println!("chunk_size={} batch_size={} channel_cap=1000 pending_threshold=1M", chunk_size, batch_size);
+    println!(
+        "Estimated total pairs: {} ({:.2}B)",
+        total_pairs_est,
+        total_pairs_est as f64 / 1e9
+    );
+    println!(
+        "chunk_size={} batch_size={} channel_cap=1000 pending_threshold=1M",
+        chunk_size, batch_size
+    );
 
     let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let total_results_generated = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -3937,16 +4091,35 @@ pub fn build_from_2rocks(
             let pairs_done = total_gates_tried_insert.load(Ordering::Relaxed);
             let results_so_far = total_results_insert.load(Ordering::Relaxed);
             let elapsed = start_time.elapsed().as_secs_f64();
-            let pairs_rate = if elapsed > 0.0 { pairs_done as f64 / elapsed } else { 0.0 };
-            let pairs_remaining = if pairs_done < total_pairs_est { total_pairs_est - pairs_done } else { 0 };
-            let eta_secs = if pairs_rate > 0.0 { (pairs_remaining as f64 / pairs_rate) as u64 } else { 0 };
-            let dedup_ratio = if results_so_far > 0 { attempted_inserts as f64 / results_so_far as f64 } else { 0.0 };
+            let pairs_rate = if elapsed > 0.0 {
+                pairs_done as f64 / elapsed
+            } else {
+                0.0
+            };
+            let pairs_remaining = if pairs_done < total_pairs_est {
+                total_pairs_est - pairs_done
+            } else {
+                0
+            };
+            let eta_secs = if pairs_rate > 0.0 {
+                (pairs_remaining as f64 / pairs_rate) as u64
+            } else {
+                0
+            };
+            let dedup_ratio = if results_so_far > 0 {
+                attempted_inserts as f64 / results_so_far as f64
+            } else {
+                0.0
+            };
             println!(
                 "[writer] pairs={}/{} ({:.1}%) | pairs/s={:.0} | eta={:02}:{:02}:{:02} | inserts={} | results={} | dedup={:.1}x | pending={} | ssts={}",
-                pairs_done, total_pairs_est,
+                pairs_done,
+                total_pairs_est,
                 (pairs_done as f64 / total_pairs_est as f64) * 100.0,
                 pairs_rate,
-                eta_secs / 3600, (eta_secs % 3600) / 60, eta_secs % 60,
+                eta_secs / 3600,
+                (eta_secs % 3600) / 60,
+                eta_secs % 60,
                 attempted_inserts,
                 results_so_far,
                 dedup_ratio,
@@ -3963,7 +4136,8 @@ pub fn build_from_2rocks(
             }
         }
 
-        println!("[writer] producers done, flushing {} remaining entries across {} final SSTs...",
+        println!(
+            "[writer] producers done, flushing {} remaining entries across {} final SSTs...",
             pending.len() + attempted_inserts - attempted_inserts, // pending count
             (pending.len() + 999_999) / 1_000_000
         );
@@ -3973,12 +4147,19 @@ pub fn build_from_2rocks(
                 break;
             }
             sst_count += 1;
-            println!("[writer] final flush: {} remaining | sst #{}", pending.len(), sst_count);
+            println!(
+                "[writer] final flush: {} remaining | sst #{}",
+                pending.len(),
+                sst_count
+            );
         }
         let elapsed = start_time.elapsed().as_secs_f64();
         println!(
             "[writer] finished. total_inserts={} | total_ssts={} | elapsed={:.0}s ({:.1}h)",
-            attempted_inserts, sst_count, elapsed, elapsed / 3600.0,
+            attempted_inserts,
+            sst_count,
+            elapsed,
+            elapsed / 3600.0,
         );
     });
 
@@ -3988,20 +4169,38 @@ pub fn build_from_2rocks(
     let mut total_c1_processed = 0usize;
 
     for chunk in &iter.chunks(chunk_size) {
-        if stop_flag.load(Ordering::SeqCst) { break; }
+        if stop_flag.load(Ordering::SeqCst) {
+            break;
+        }
         chunk_idx += 1;
         let elapsed_outer = build_start.elapsed().as_secs_f64();
         let pairs_done = total_gates_tried.load(Ordering::Relaxed);
-        let outer_rate = if elapsed_outer > 0.0 { pairs_done as f64 / elapsed_outer } else { 0.0 };
-        let pairs_remaining = if pairs_done < total_pairs_est { total_pairs_est - pairs_done } else { 0 };
-        let eta_outer = if outer_rate > 0.0 { (pairs_remaining as f64 / outer_rate) as u64 } else { 0 };
+        let outer_rate = if elapsed_outer > 0.0 {
+            pairs_done as f64 / elapsed_outer
+        } else {
+            0.0
+        };
+        let pairs_remaining = if pairs_done < total_pairs_est {
+            total_pairs_est - pairs_done
+        } else {
+            0
+        };
+        let eta_outer = if outer_rate > 0.0 {
+            (pairs_remaining as f64 / outer_rate) as u64
+        } else {
+            0
+        };
         println!(
             "[chunk {}] c1_processed={} | pairs={}/{} ({:.1}%) | {:.0} pairs/s | eta {:02}:{:02}:{:02} | elapsed={:.1}h",
-            chunk_idx, total_c1_processed,
-            pairs_done, total_pairs_est,
+            chunk_idx,
+            total_c1_processed,
+            pairs_done,
+            total_pairs_est,
             (pairs_done as f64 / total_pairs_est as f64) * 100.0,
             outer_rate,
-            eta_outer / 3600, (eta_outer % 3600) / 60, eta_outer % 60,
+            eta_outer / 3600,
+            (eta_outer % 3600) / 60,
+            eta_outer % 60,
             elapsed_outer / 3600.0,
         );
 
@@ -4017,10 +4216,14 @@ pub fn build_from_2rocks(
         for (_key, value) in &entries {
             let mut pos = 0;
             while pos < value.len() {
-                if pos + 1 > value.len() { break; }
+                if pos + 1 > value.len() {
+                    break;
+                }
                 let len = value[pos] as usize;
                 pos += 1;
-                if pos + len > value.len() { break; }
+                if pos + len > value.len() {
+                    break;
+                }
                 c1_circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
                 pos += len;
             }
@@ -4039,16 +4242,22 @@ pub fn build_from_2rocks(
             .map(|c1| {
                 let n1 = touched_wires(&c1).len();
                 let c1_rev = {
-                    let mut r = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
+                    let mut r = CircuitSeq {
+                        gates: c1.gates.iter().rev().cloned().collect(),
+                    };
                     r.canonicalize();
                     let used = r.used_wires();
-                    let wire_map: HashMap<u8, u8> = used.iter().enumerate()
+                    let wire_map: HashMap<u8, u8> = used
+                        .iter()
+                        .enumerate()
                         .map(|(i, &w)| (w, i as u8))
                         .collect();
                     r = CircuitSeq {
-                        gates: r.gates.iter().map(|&[t, c1, c2]| [
-                            wire_map[&t], wire_map[&c1], wire_map[&c2],
-                        ]).collect(),
+                        gates: r
+                            .gates
+                            .iter()
+                            .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+                            .collect(),
                     };
                     r.canonicalize();
                     let n1r = r.max_wire() as usize + 1;
@@ -4058,7 +4267,12 @@ pub fn build_from_2rocks(
                     r
                 };
                 let n1_rev = touched_wires(&c1_rev).len();
-                C1Data { c1, n1, c1_rev, n1_rev }
+                C1Data {
+                    c1,
+                    n1,
+                    c1_rev,
+                    n1_rev,
+                }
             })
             .collect();
         println!("c1_data precomputed: {} circuits", c1_data.len());
@@ -4067,11 +4281,11 @@ pub fn build_from_2rocks(
         // We avoid collecting into WorkItem structs and instead process directly
         // using a two-level par_iter: outer over c1, inner over (c2, mapping, case).
         // This gives maximum parallelism while keeping allocations minimal.
-        let db2_ref   = &*db2_circuits;
-        let db2_rev_ref  = &*db2_rev;
-        let db2_n2_ref   = &*db2_n2;
+        let db2_ref = &*db2_circuits;
+        let db2_rev_ref = &*db2_rev;
+        let db2_n2_ref = &*db2_n2;
         let db2_rev_n2_ref = &*db2_rev_n2;
-        let stop_flag_par  = Arc::clone(&stop_flag);
+        let stop_flag_par = Arc::clone(&stop_flag);
         let tx_par = tx.clone();
         let total_gates_tried_par = Arc::clone(&total_gates_tried);
         let total_results_par = Arc::clone(&total_results_generated);
@@ -4079,8 +4293,13 @@ pub fn build_from_2rocks(
         let total_c1 = c1_data.len();
         let c1_done = std::sync::atomic::AtomicUsize::new(0);
         let chunk_total = std::sync::atomic::AtomicUsize::new(0);
-        println!("[chunk {}] processing {} c1 circuits × {} c2 = {} pairs this chunk",
-            chunk_idx, total_c1, nc2, total_c1 * nc2);
+        println!(
+            "[chunk {}] processing {} c1 circuits × {} c2 = {} pairs this chunk",
+            chunk_idx,
+            total_c1,
+            nc2,
+            total_c1 * nc2
+        );
 
         c1_data.par_iter().for_each(|d| {
                 if stop_flag_par.load(Ordering::SeqCst) {
@@ -4206,12 +4425,16 @@ pub fn build_from_2rocks(
         let elapsed = build_start.elapsed().as_secs_f64();
         println!(
             "[chunk {}] done | c1_total_processed={} | chunk_results={} | total_results={} | elapsed={:.1}h",
-            chunk_idx, total_c1_processed, chunk_results,
+            chunk_idx,
+            total_c1_processed,
+            chunk_results,
             total_results_generated.load(Ordering::Relaxed),
             elapsed / 3600.0,
         );
 
-        if stop_flag.load(Ordering::SeqCst) { break; }
+        if stop_flag.load(Ordering::SeqCst) {
+            break;
+        }
     }
 
     drop(tx);
@@ -4253,7 +4476,8 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    })
+    .expect("Error setting Ctrl-C handler");
 
     while running.load(Ordering::SeqCst) && (!stop && inserted < count || stop) {
         let start = std::time::Instant::now(); // start timing this iteration
@@ -4267,8 +4491,7 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
 
         if batch.len() >= batch_size {
             //let start = std::time::Instant::now();
-            let success_count =
-                insert_circuits_batch(&mut conn, &table_name, &batch).unwrap_or(0);
+            let success_count = insert_circuits_batch(&mut conn, &table_name, &batch).unwrap_or(0);
             //let elapsed = start.elapsed();
             inserted += success_count;
             recent += success_count;
@@ -4276,7 +4499,6 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
 
             // Early stop if >=99% of last batch failed
             if success_count * 100 <= batch_size {
-
                 println!(
                     "Stopping early: only {}/{} inserts succeeded (~{:.2}% success)",
                     success_count,
@@ -4288,7 +4510,10 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
         }
 
         if total_attempts % 50_000 == 0 {
-            println!("Attempts: {}, inserted in last window: {}", total_attempts, recent);
+            println!(
+                "Attempts: {}, inserted in last window: {}",
+                total_attempts, recent
+            );
             recent = 0;
         }
 
@@ -4309,8 +4534,7 @@ pub fn main_random(n: usize, m: usize, count: usize, stop: bool) {
 
     // Insert remaining circuits before exiting
     if !batch.is_empty() {
-        let success_count =
-            insert_circuits_batch(&mut conn, &table_name, &batch).unwrap_or(0);
+        let success_count = insert_circuits_batch(&mut conn, &table_name, &batch).unwrap_or(0);
         inserted += success_count;
     }
 
@@ -4340,10 +4564,19 @@ mod tests {
         let mut rng = rand::rng();
         let num_wires = 64;
 
-        let algos: &[(&str, fn(usize, usize, usize, &CircuitSeq, &mut rand::prelude::ThreadRng) -> (Vec<usize>, usize))] = &[
-            ("simple",     simple_find_convex_subcircuit),
-            ("max_wires",  find_convex_subcircuit_max_wires),
-            ("max_gates",  find_convex_subcircuit_max_gates),
+        let algos: &[(
+            &str,
+            fn(
+                usize,
+                usize,
+                usize,
+                &CircuitSeq,
+                &mut rand::prelude::ThreadRng,
+            ) -> (Vec<usize>, usize),
+        )] = &[
+            ("simple", simple_find_convex_subcircuit),
+            ("max_wires", find_convex_subcircuit_max_wires),
+            ("max_gates", find_convex_subcircuit_max_gates),
         ];
 
         for &(name, algo) in algos {
@@ -4366,23 +4599,38 @@ mod tests {
 
             let mut wire_set = std::collections::HashSet::new();
             for &idx in &subcircuit_gates {
-                for &w in &c.gates[idx] { wire_set.insert(w); }
+                for &w in &c.gates[idx] {
+                    wire_set.insert(w);
+                }
             }
 
             let convex_ok = is_convex(num_wires, &c, &subcircuit_gates);
-            println!("[{}] gates={} wires={} attempts={} convex={}",
-                name, subcircuit_gates.len(), wire_set.len(), attempts, convex_ok);
+            println!(
+                "[{}] gates={} wires={} attempts={} convex={}",
+                name,
+                subcircuit_gates.len(),
+                wire_set.len(),
+                attempts,
+                convex_ok
+            );
 
             let mut circ = c.clone();
-            let (start, end) = contiguous_convex(&mut circ, &mut subcircuit_gates, num_wires).unwrap();
-            println!("[{}] start={} end={} span={}", name, start, end, end - start + 1);
+            let (start, end) =
+                contiguous_convex(&mut circ, &mut subcircuit_gates, num_wires).unwrap();
+            println!(
+                "[{}] start={} end={} span={}",
+                name,
+                start,
+                end,
+                end - start + 1
+            );
 
             assert!(subcircuit_gates.len() >= 3);
             assert!(convex_ok);
         }
     }
 
-    use crate::replace::pairs::{gate_pair_taxonomy};
+    use crate::replace::pairs::gate_pair_taxonomy;
 
     // #[test]
     // fn test_compression_big() {
@@ -4398,9 +4646,51 @@ mod tests {
     #[test]
     fn test_convexity() {
         // Dummy 16-wire circuit with 30 gates
-        let gates: Vec<[u8; 3]> = vec!
-            [[13, 6, 5], [7, 10, 1], [8, 12, 7], [5, 1, 11], [10, 5, 3], [1, 5, 9], [1, 15, 9], [14, 7, 10], [4, 9, 14], [14, 13, 9], [10, 12, 6], [5, 7, 13], [2, 1, 10], [11, 12, 6], [12, 9, 10], [8, 0, 9], [5, 3, 4], [2, 8, 10], [11, 10, 2], [9, 5, 12], [11, 1, 15], [14, 2, 3], [11, 1, 15], [9, 5, 12], [11, 10, 2], [2, 8, 10], [5, 3, 4], [8, 0, 9], [12, 9, 10], [11, 12, 6], [2, 1, 10], [1, 15, 9], [5, 7, 13], [10, 12, 6], [14, 13, 9], [1, 5, 9], [4, 9, 14], [14, 7, 10], [10, 5, 3], [5, 1, 11], [8, 12, 7], [7, 10, 1], [13, 6, 5]]
-        ;
+        let gates: Vec<[u8; 3]> = vec![
+            [13, 6, 5],
+            [7, 10, 1],
+            [8, 12, 7],
+            [5, 1, 11],
+            [10, 5, 3],
+            [1, 5, 9],
+            [1, 15, 9],
+            [14, 7, 10],
+            [4, 9, 14],
+            [14, 13, 9],
+            [10, 12, 6],
+            [5, 7, 13],
+            [2, 1, 10],
+            [11, 12, 6],
+            [12, 9, 10],
+            [8, 0, 9],
+            [5, 3, 4],
+            [2, 8, 10],
+            [11, 10, 2],
+            [9, 5, 12],
+            [11, 1, 15],
+            [14, 2, 3],
+            [11, 1, 15],
+            [9, 5, 12],
+            [11, 10, 2],
+            [2, 8, 10],
+            [5, 3, 4],
+            [8, 0, 9],
+            [12, 9, 10],
+            [11, 12, 6],
+            [2, 1, 10],
+            [1, 15, 9],
+            [5, 7, 13],
+            [10, 12, 6],
+            [14, 13, 9],
+            [1, 5, 9],
+            [4, 9, 14],
+            [14, 7, 10],
+            [10, 5, 3],
+            [5, 1, 11],
+            [8, 12, 7],
+            [7, 10, 1],
+            [13, 6, 5],
+        ];
 
         let mut c = CircuitSeq { gates };
         let mut subcircuit_gates = vec![1, 4, 5, 6];
@@ -4438,7 +4728,8 @@ mod tests {
             if c.gates[start + i] != c.gates[gate_idx] {
                 println!(
                     "Mismatch at position {} (circuit idx {})",
-                    start + i, gate_idx
+                    start + i,
+                    gate_idx
                 );
                 all_match = false;
             }
@@ -4451,9 +4742,16 @@ mod tests {
 
     #[test]
     fn verify_butterfly() {
-        let original = CircuitSeq::from_string("692;8c6;fd7;c6f;dc2;1ad;7c2;b8f;a3c;d10;f28;f91;941;8b2;82b;4fc;a78;e8b;780;142;6cb;8a6;e8c;fd7;07e;086;ea7;e74;549;ec3;");
-        let new = CircuitSeq::from_string("f62;6ab;8b5;98f;6d4;4ba;5b1;13f;19e;db6;f9d;74d;172;97d;640;145;97d;172;19e;f9d;13f;6ba;145;5b1;74d;640;4ba;6ba;db6;6ab;6d4;98f;8b5;8e3;f62;8b5;f62;98f;5b1;13f;19e;6d4;6ab;4ba;db6;74d;6ba;640;6ba;145;19e;13f;98f;145;5b1;8b5;74d;640;4ba;8b5;db6;6ab;6d4;f62;0ce;f62;98f;5b1;6ab;6d4;db6;4ba;74d;640;145;13f;19e;f9d;172;97d;145;97d;172;19e;f9d;13f;5b1;98f;8b5;6ba;640;74d;4ba;6ba;db6;6ab;6d4;f62;601;f62;8b5;98f;5b1;13f;19e;6ab;6d4;db6;4ba;6ba;640;74d;19e;13f;5b1;98f;8b5;6ba;640;74d;4ba;db6;6ab;6d4;f62;8fb;f62;8b5;98f;5b1;13f;19e;6d4;6ab;db6;4ba;640;74d;145;19e;13f;98f;145;5b1;8b5;6ba;640;6ba;74d;db6;4ba;6ab;6d4;8b5;98f;94a;5b1;13f;19e;6ab;6d4;4ba;145;db6;6ba;f9d;74d;172;97d;640;145;97d;172;74d;f9d;19e;13f;5b1;98f;8b5;640;4ba;6ba;db6;6d4;6ab;f08;f62;8b5;f62;98f;5b1;6ab;6d4;13f;4ba;db6;74d;f9d;19e;172;97d;145;97d;172;f9d;19e;13f;98f;145;5b1;8b5;640;74d;6ba;640;6ba;db6;4ba;6ab;6d4;8b5;98f;5b1;13f;19e;6d4;6ab;04e;4ba;db6;74d;f9d;172;97d;145;97d;172;19e;f9d;13f;98f;145;5b1;8b5;74d;db6;6ab;4ba;6d4;ab6;f62;8b5;f62;5b1;6ab;6d4;4ba;db6;74d;640;6ba;145;98f;145;13f;19e;f9d;19e;f9d;13f;5b1;98f;8b5;74d;640;6ba;4ba;db6;6ab;6d4;f62;fa2;f62;8b5;5b1;13f;98f;19e;6ab;6d4;4ba;db6;74d;640;6ba;f9d;172;97d;145;640;145;97d;172;19e;f9d;13f;5b1;74d;4ba;6ba;db6;6d4;6ab;98f;8b5;f62;976;f62;8b5;98f;5b1;13f;19e;6ab;6d4;db6;4ba;6ba;640;74d;f9d;172;97d;640;97d;172;74d;f9d;19e;13f;98f;5b1;4ba;6ba;db6;6ab;6d4;f62;1a4;8b5;f62;8b5;98f;6ab;6d4;5b1;4ba;145;db6;6ba;145;74d;19e;13f;f9d;19e;f9d;74d;4ba;6ba;db6;6ab;6d4;13f;5b1;98f;8b5;eca;f62;8b5;f62;6d4;6ab;db6;98f;5b1;4ba;13f;19e;74d;19e;13f;98f;5b1;8b5;640;74d;640;6ba;4ba;6ba;db6;6ab;6d4;ab6;f62;8b5;5b1;f62;6d4;4ba;6ab;db6;640;74d;6ba;640;6ba;145;13f;98f;19e;f9d;172;97d;145;172;97d;19e;f9d;13f;5b1;98f;8b5;74d;db6;6ab;4ba;6d4;f62;2e5;8b5;f62;98f;5b1;6ab;6d4;4ba;db6;74d;6ba;640;13f;f9d;19e;74d;19e;f9d;6ba;13f;5b1;98f;8b5;640;db6;6ab;4ba;6d4;f62;8fa;f62;8b5;98f;5b1;13f;19e;6ab;6d4;4ba;db6;74d;f9d;172;97d;145;97d;172;19e;f9d;13f;145;5b1;98f;8b5;74d;4ba;db6;6ab;6d4;8b5;98f;5b1;13f;19e;06a;6d4;6ab;db6;4ba;74d;6ba;640;6ba;f9d;640;19e;f9d;13f;5b1;74d;4ba;db6;6ab;6d4;98f;f62;137;f62;6d4;4ba;6ab;db6;640;6ba;74d;6ba;98f;5b1;145;172;640;145;13f;f9d;19e;172;19e;f9d;13f;5b1;98f;74d;4ba;db6;6ab;6d4;e17;98f;5b1;13f;19e;6ab;6d4;4ba;db6;f9d;6ba;74d;640;f9d;19e;13f;98f;5b1;8b5;74d;640;4ba;6ba;db6;6d4;6ab;f62;38d;f62;8b5;98f;5b1;13f;19e;6d4;6ab;4ba;db6;74d;f9d;172;97d;145;97d;172;19e;f9d;74d;6ba;145;13f;5b1;98f;8b5;6ba;db6;4ba;6ab;6d4;b48;8b5;5b1;6ab;6d4;4ba;db6;74d;640;6ba;145;98f;145;13f;19e;f9d;97d;172;97d;172;74d;f9d;19e;13f;98f;5b1;8b5;640;6ba;4ba;db6;6d4;6ab;f62;a6f;f62;8b5;98f;5b1;13f;19e;6ab;6d4;4ba;db6;640;6ba;74d;145;f9d;6ba;172;97d;640;145;172;97d;f9d;19e;13f;5b1;74d;4ba;db6;6d4;6ab;98f;fd5;6ab;6d4;db6;6ba;4ba;640;74d;6ba;98f;5b1;13f;19e;f9d;19e;f9d;13f;5b1;98f;8b5;640;74d;db6;6ab;4ba;6d4;8c7;f62;8b5;f62;98f;5b1;13f;19e;6d4;4ba;6ab;db6;f9d;74d;172;19e;f9d;13f;98f;172;5b1;85b;8b5;640;6ba;640;6ba;74d;4ba;db6;6ab;6d4;8b5;5b1;98f;13f;19e;6ab;6d4;4ba;db6;74d;640;19e;13f;5b1;98f;8b5;6ba;640;6ba;74d;db6;4ba;6ab;6d4;f62;192;f62;8b5;98f;5b1;19e;6ab;6d4;4ba;db6;6ba;640;6ba;74d;13f;f9d;97d;172;97d;172;19e;f9d;98f;13f;5b1;74d;640;db6;8b5;6ab;4ba;6d4;f62;280;f62;8b5;98f;5b1;13f;19e;6d4;4ba;145;6ab;db6;6ba;74d;640;f9d;172;97d;172;97d;f9d;19e;74d;13f;98f;145;5b1;8b5;640;6ba;db6;4ba;6d4;0d8;6ab;8b5;6d4;6ab;98f;5b1;13f;db6;4ba;640;6ba;f9d;74d;172;19e;97d;145;97d;172;f9d;19e;13f;98f;145;5b1;74d;640;6ba;db6;6ab;4ba;6d4;f62;6ad;f62;5b1;6ab;6d4;db6;4ba;640;145;13f;98f;f9d;74d;172;19e;97d;145;97d;172;f9d;19e;13f;5b1;98f;8b5;6ba;74d;640;6ba;db6;6ab;4ba;6d4;f62;6e4;8b5;f62;5b1;98f;6d4;6ab;db6;6ba;4ba;640;74d;640;13f;f9d;6ba;19e;172;97d;145;172;97d;19e;f9d;13f;98f;145;5b1;74d;4ba;db6;6d4;6ab;f62;abf;f62;6d4;6ab;db6;4ba;640;98f;5b1;19e;74d;640;172;13f;f9d;172;74d;f9d;db6;19e;13f;5b1;4ba;6d4;98f;8b5;6ab;f62;");
-        println!("Are they equal? {}", original.permutation(16) == new.permutation(16));
+        let original = CircuitSeq::from_string(
+            "692;8c6;fd7;c6f;dc2;1ad;7c2;b8f;a3c;d10;f28;f91;941;8b2;82b;4fc;a78;e8b;780;142;6cb;8a6;e8c;fd7;07e;086;ea7;e74;549;ec3;",
+        );
+        let new = CircuitSeq::from_string(
+            "f62;6ab;8b5;98f;6d4;4ba;5b1;13f;19e;db6;f9d;74d;172;97d;640;145;97d;172;19e;f9d;13f;6ba;145;5b1;74d;640;4ba;6ba;db6;6ab;6d4;98f;8b5;8e3;f62;8b5;f62;98f;5b1;13f;19e;6d4;6ab;4ba;db6;74d;6ba;640;6ba;145;19e;13f;98f;145;5b1;8b5;74d;640;4ba;8b5;db6;6ab;6d4;f62;0ce;f62;98f;5b1;6ab;6d4;db6;4ba;74d;640;145;13f;19e;f9d;172;97d;145;97d;172;19e;f9d;13f;5b1;98f;8b5;6ba;640;74d;4ba;6ba;db6;6ab;6d4;f62;601;f62;8b5;98f;5b1;13f;19e;6ab;6d4;db6;4ba;6ba;640;74d;19e;13f;5b1;98f;8b5;6ba;640;74d;4ba;db6;6ab;6d4;f62;8fb;f62;8b5;98f;5b1;13f;19e;6d4;6ab;db6;4ba;640;74d;145;19e;13f;98f;145;5b1;8b5;6ba;640;6ba;74d;db6;4ba;6ab;6d4;8b5;98f;94a;5b1;13f;19e;6ab;6d4;4ba;145;db6;6ba;f9d;74d;172;97d;640;145;97d;172;74d;f9d;19e;13f;5b1;98f;8b5;640;4ba;6ba;db6;6d4;6ab;f08;f62;8b5;f62;98f;5b1;6ab;6d4;13f;4ba;db6;74d;f9d;19e;172;97d;145;97d;172;f9d;19e;13f;98f;145;5b1;8b5;640;74d;6ba;640;6ba;db6;4ba;6ab;6d4;8b5;98f;5b1;13f;19e;6d4;6ab;04e;4ba;db6;74d;f9d;172;97d;145;97d;172;19e;f9d;13f;98f;145;5b1;8b5;74d;db6;6ab;4ba;6d4;ab6;f62;8b5;f62;5b1;6ab;6d4;4ba;db6;74d;640;6ba;145;98f;145;13f;19e;f9d;19e;f9d;13f;5b1;98f;8b5;74d;640;6ba;4ba;db6;6ab;6d4;f62;fa2;f62;8b5;5b1;13f;98f;19e;6ab;6d4;4ba;db6;74d;640;6ba;f9d;172;97d;145;640;145;97d;172;19e;f9d;13f;5b1;74d;4ba;6ba;db6;6d4;6ab;98f;8b5;f62;976;f62;8b5;98f;5b1;13f;19e;6ab;6d4;db6;4ba;6ba;640;74d;f9d;172;97d;640;97d;172;74d;f9d;19e;13f;98f;5b1;4ba;6ba;db6;6ab;6d4;f62;1a4;8b5;f62;8b5;98f;6ab;6d4;5b1;4ba;145;db6;6ba;145;74d;19e;13f;f9d;19e;f9d;74d;4ba;6ba;db6;6ab;6d4;13f;5b1;98f;8b5;eca;f62;8b5;f62;6d4;6ab;db6;98f;5b1;4ba;13f;19e;74d;19e;13f;98f;5b1;8b5;640;74d;640;6ba;4ba;6ba;db6;6ab;6d4;ab6;f62;8b5;5b1;f62;6d4;4ba;6ab;db6;640;74d;6ba;640;6ba;145;13f;98f;19e;f9d;172;97d;145;172;97d;19e;f9d;13f;5b1;98f;8b5;74d;db6;6ab;4ba;6d4;f62;2e5;8b5;f62;98f;5b1;6ab;6d4;4ba;db6;74d;6ba;640;13f;f9d;19e;74d;19e;f9d;6ba;13f;5b1;98f;8b5;640;db6;6ab;4ba;6d4;f62;8fa;f62;8b5;98f;5b1;13f;19e;6ab;6d4;4ba;db6;74d;f9d;172;97d;145;97d;172;19e;f9d;13f;145;5b1;98f;8b5;74d;4ba;db6;6ab;6d4;8b5;98f;5b1;13f;19e;06a;6d4;6ab;db6;4ba;74d;6ba;640;6ba;f9d;640;19e;f9d;13f;5b1;74d;4ba;db6;6ab;6d4;98f;f62;137;f62;6d4;4ba;6ab;db6;640;6ba;74d;6ba;98f;5b1;145;172;640;145;13f;f9d;19e;172;19e;f9d;13f;5b1;98f;74d;4ba;db6;6ab;6d4;e17;98f;5b1;13f;19e;6ab;6d4;4ba;db6;f9d;6ba;74d;640;f9d;19e;13f;98f;5b1;8b5;74d;640;4ba;6ba;db6;6d4;6ab;f62;38d;f62;8b5;98f;5b1;13f;19e;6d4;6ab;4ba;db6;74d;f9d;172;97d;145;97d;172;19e;f9d;74d;6ba;145;13f;5b1;98f;8b5;6ba;db6;4ba;6ab;6d4;b48;8b5;5b1;6ab;6d4;4ba;db6;74d;640;6ba;145;98f;145;13f;19e;f9d;97d;172;97d;172;74d;f9d;19e;13f;98f;5b1;8b5;640;6ba;4ba;db6;6d4;6ab;f62;a6f;f62;8b5;98f;5b1;13f;19e;6ab;6d4;4ba;db6;640;6ba;74d;145;f9d;6ba;172;97d;640;145;172;97d;f9d;19e;13f;5b1;74d;4ba;db6;6d4;6ab;98f;fd5;6ab;6d4;db6;6ba;4ba;640;74d;6ba;98f;5b1;13f;19e;f9d;19e;f9d;13f;5b1;98f;8b5;640;74d;db6;6ab;4ba;6d4;8c7;f62;8b5;f62;98f;5b1;13f;19e;6d4;4ba;6ab;db6;f9d;74d;172;19e;f9d;13f;98f;172;5b1;85b;8b5;640;6ba;640;6ba;74d;4ba;db6;6ab;6d4;8b5;5b1;98f;13f;19e;6ab;6d4;4ba;db6;74d;640;19e;13f;5b1;98f;8b5;6ba;640;6ba;74d;db6;4ba;6ab;6d4;f62;192;f62;8b5;98f;5b1;19e;6ab;6d4;4ba;db6;6ba;640;6ba;74d;13f;f9d;97d;172;97d;172;19e;f9d;98f;13f;5b1;74d;640;db6;8b5;6ab;4ba;6d4;f62;280;f62;8b5;98f;5b1;13f;19e;6d4;4ba;145;6ab;db6;6ba;74d;640;f9d;172;97d;172;97d;f9d;19e;74d;13f;98f;145;5b1;8b5;640;6ba;db6;4ba;6d4;0d8;6ab;8b5;6d4;6ab;98f;5b1;13f;db6;4ba;640;6ba;f9d;74d;172;19e;97d;145;97d;172;f9d;19e;13f;98f;145;5b1;74d;640;6ba;db6;6ab;4ba;6d4;f62;6ad;f62;5b1;6ab;6d4;db6;4ba;640;145;13f;98f;f9d;74d;172;19e;97d;145;97d;172;f9d;19e;13f;5b1;98f;8b5;6ba;74d;640;6ba;db6;6ab;4ba;6d4;f62;6e4;8b5;f62;5b1;98f;6d4;6ab;db6;6ba;4ba;640;74d;640;13f;f9d;6ba;19e;172;97d;145;172;97d;19e;f9d;13f;98f;145;5b1;74d;4ba;db6;6d4;6ab;f62;abf;f62;6d4;6ab;db6;4ba;640;98f;5b1;19e;74d;640;172;13f;f9d;172;74d;f9d;db6;19e;13f;5b1;4ba;6d4;98f;8b5;6ab;f62;",
+        );
+        println!(
+            "Are they equal? {}",
+            original.permutation(16) == new.permutation(16)
+        );
     }
     use std::fs;
     #[test]
@@ -4474,17 +4772,16 @@ mod tests {
         // Compare (example)
         println!(
             "Are they equal? {}",
-            old.probably_equal(&new,64,100000).is_ok()
+            old.probably_equal(&new, 64, 100000).is_ok()
         );
     }
     use std::time::Instant;
     #[test]
     fn test_print() {
         let t = Instant::now();
-        let c = random_circuit(32,30);
-        let c1 = random_circuit(32,30);
-        c
-            .probably_equal(&c1, 32, 150_000)
+        let c = random_circuit(32, 30);
+        let c1 = random_circuit(32, 30);
+        c.probably_equal(&c1, 32, 150_000)
             .expect("The circuits differ somewhere!");
         println!("Time to compute permutation on 32 wires: {:?}", t.elapsed());
     }
@@ -4497,19 +4794,14 @@ mod tests {
         let c = CircuitSeq::from_string("123;123;");
 
         // Load circuitA from file
-        let contents = fs::read_to_string("circuitOOA_64.txt")
-            .expect("Failed to read");
+        let contents = fs::read_to_string("circuitOOA_64.txt").expect("Failed to read");
         let circuit_a = CircuitSeq::from_string(&contents);
 
         // Compare circuits
-        c
-            .probably_equal(&circuit_a, 64, 150_000)
+        c.probably_equal(&circuit_a, 64, 150_000)
             .expect("The circuits differ somewhere!");
 
-        println!(
-            "Time to compute permutation on 64 wires: {:?}",
-            t.elapsed()
-        );
+        println!("Time to compute permutation on 64 wires: {:?}", t.elapsed());
     }
 
     use std::io::{self, BufRead};
@@ -4619,7 +4911,7 @@ mod tests {
         let (c1, c2) = random_equivalent_circuits_until_found(n);
 
         if c1.probably_equal(&c2, n as usize, 1_000_000).is_ok() {
-           println!("Looks good");
+            println!("Looks good");
         }
         // Write c1 to c1.txt
         let mut file1 = File::create("c1.txt").expect("Failed to create c1.txt");
@@ -4638,7 +4930,7 @@ mod tests {
 
         let m = 100;
 
-        let c = random_circuit(n ,m);
+        let c = random_circuit(n, m);
 
         let c_str = c.repr();
         File::create("circuit_random.txt")
@@ -4652,16 +4944,15 @@ mod tests {
     fn test_shooting() {
         // Start with an initial random identity
         // Load circuitA from file
-        let contents = fs::read_to_string("circuit_before_random.txt")
-            .expect("Failed to read");
+        let contents = fs::read_to_string("circuit_before_random.txt").expect("Failed to read");
         let mut circuit_a = CircuitSeq::from_string(&contents);
         let c1 = circuit_a.clone();
         let mut avg: f64 = 0.0;
-        for _ in 0..100{
+        for _ in 0..100 {
             shoot_random_gate(&mut circuit_a, 1_000_000);
             avg += heatmap(&c1, &circuit_a, 64, 500, false);
         }
-        println!("Shooting avg: {}", avg/100.0);
+        println!("Shooting avg: {}", avg / 100.0);
 
         let c_str = circuit_a.repr();
         File::create("circuit_shot.txt")
@@ -4673,8 +4964,7 @@ mod tests {
     fn test_walking() {
         // Start with an initial random identity
         // Load circuitA from file
-        let contents = fs::read_to_string("circuit_before_random.txt")
-            .expect("Failed to read");
+        let contents = fs::read_to_string("circuit_before_random.txt").expect("Failed to read");
         let mut circuit_a = CircuitSeq::from_string(&contents);
         let circuit_b = circuit_a.clone();
         // Proceed as before
@@ -4683,11 +4973,11 @@ mod tests {
         //     random_walk_no_skeleton(&mut circuit_a, &mut rand::rng());
         // }
         let mut avg: f64 = 0.0;
-        for _ in 0..100{
+        for _ in 0..100 {
             circuit_a = random_walk_no_skeleton(&mut circuit_a, &mut rand::rng());
             avg += heatmap(&circuit_b, &circuit_a, 64, 500, false);
         }
-        println!("Walking avg: {}", avg/100.0);
+        println!("Walking avg: {}", avg / 100.0);
 
         let c_str = circuit_a.repr();
         File::create("circuit_walked_no_skele.txt")
@@ -4703,7 +4993,13 @@ mod tests {
     }
     use rand::prelude::SliceRandom;
 
-    pub fn heatmap(circuit_one: &CircuitSeq, circuit_two: &CircuitSeq, num_wires: usize, num_inputs: usize, flag: bool) -> f64 {
+    pub fn heatmap(
+        circuit_one: &CircuitSeq,
+        circuit_two: &CircuitSeq,
+        num_wires: usize,
+        num_inputs: usize,
+        flag: bool,
+    ) -> f64 {
         let mut circuit_one = circuit_one.clone();
         let mut circuit_two = circuit_two.clone();
         if flag {
@@ -4750,8 +5046,7 @@ mod tests {
     fn test_random_order() {
         // Start with an initial random identity
         // Load circuitA from file
-        let contents = fs::read_to_string("circuit_before_random.txt")
-            .expect("Failed to read");
+        let contents = fs::read_to_string("circuit_before_random.txt").expect("Failed to read");
         let mut circuit_a = CircuitSeq::from_string(&contents);
         let c1 = circuit_a.clone();
         let mut avg: f64 = 0.0;
@@ -4760,7 +5055,7 @@ mod tests {
             circuit_a.gates.shuffle(&mut rand::rng());
             avg += heatmap(&c1, &circuit_a, 64, 500, false);
         }
-        println!("randomized avg: {}", avg/100.0);
+        println!("randomized avg: {}", avg / 100.0);
         let c_str = circuit_a.repr();
         File::create("circuit_randomized.txt")
             .and_then(|mut f| f.write_all(c_str.as_bytes()))
@@ -4769,8 +5064,7 @@ mod tests {
 
     #[test]
     fn test_skeleton() {
-        let contents = fs::read_to_string("circuit_before_random.txt")
-            .expect("Failed to read");
+        let contents = fs::read_to_string("circuit_before_random.txt").expect("Failed to read");
         let circuit_a = CircuitSeq::from_string(&contents);
 
         let (_, skel) = create_skeleton(&circuit_a);
@@ -4808,7 +5102,10 @@ mod tests {
             );
         }
 
-        println!("Skeleton test passed: all {} nodes reachable from level 0", total_nodes);
+        println!(
+            "Skeleton test passed: all {} nodes reachable from level 0",
+            total_nodes
+        );
     }
 
     #[test]
@@ -4836,12 +5133,12 @@ mod tests {
     #[cfg(any())]
     #[test]
     fn benchmark_sql_vs_canonical() {
-        use std::time::{Duration, Instant};
         use duckdb::Connection;
         use itertools::Itertools; // for permutations
         use lmdb::Environment;
-        use std::path::Path;
         use lmdb::Transaction;
+        use std::path::Path;
+        use std::time::{Duration, Instant};
         let config = Config::default().access_mode(AccessMode::ReadOnly).unwrap();
         let conn = Connection::open_with_flags("circuits.duckdb", config).unwrap();
 
@@ -4851,7 +5148,10 @@ mod tests {
         for &(n, max_m) in &ns_and_ms {
             for m in 1..=max_m {
                 let table = format!("n{}m{}", n, m);
-                let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+                let query_limit = format!(
+                    "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+                    table
+                );
                 let stmt_limit = conn.prepare(&query_limit).unwrap();
                 stmts_prepared_limit1.insert((n, m), stmt_limit);
             }
@@ -4888,7 +5188,10 @@ mod tests {
                     let _ = circuit.permutation(n);
                     // SQL warmup if needed
                     let table = format!("n{}m{}", n, m);
-                    let query_limit = format!("SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1", table);
+                    let query_limit = format!(
+                        "SELECT perm, shuf FROM {} WHERE circuit = ?1 LIMIT 1",
+                        table
+                    );
                     let _ = conn.prepare(&query_limit).ok();
                 }
             }
@@ -4921,14 +5224,19 @@ mod tests {
                     let start = Instant::now();
                     let perm = circuit.permutation(n);
                     let _ = get_canonical(&perm, bit_shuf);
-                    timer_canonical.entry((n, m)).and_modify(|d| *d += start.elapsed());
+                    timer_canonical
+                        .entry((n, m))
+                        .and_modify(|d| *d += start.elapsed());
 
                     // 2. SQL prepared LIMIT 1
                     if let Some(stmt) = stmts_prepared_limit1.get_mut(&(n, m)) {
                         let start = Instant::now();
-                        let _res: Option<(Vec<u8>, Vec<u8>)> =
-                            stmt.query_row([&circuit_blob], |row| Ok((row.get(0)?, row.get(1)?))).ok();
-                        timer_sql_prepared_limit1.entry((n, m)).and_modify(|d| *d += start.elapsed());
+                        let _res: Option<(Vec<u8>, Vec<u8>)> = stmt
+                            .query_row([&circuit_blob], |row| Ok((row.get(0)?, row.get(1)?)))
+                            .ok();
+                        timer_sql_prepared_limit1
+                            .entry((n, m))
+                            .and_modify(|d| *d += start.elapsed());
                     }
 
                     // 3. LMDB lookup
@@ -4936,7 +5244,9 @@ mod tests {
                         let start = Instant::now();
                         let txn = env.begin_ro_txn().unwrap();
                         let _res = txn.get(db, &circuit_blob).ok();
-                        timer_lmdb.entry((n, m)).and_modify(|d| *d += start.elapsed());
+                        timer_lmdb
+                            .entry((n, m))
+                            .and_modify(|d| *d += start.elapsed());
                     }
                 }
             }
@@ -4960,11 +5270,11 @@ mod tests {
     #[cfg(any())]
     #[test]
     fn benchmark_rocksdb_vs_duckdb_vs_canonical() {
-        use std::time::{Duration, Instant};
         use duckdb::Connection;
         use itertools::Itertools;
         use rocksdb::{DB, Options};
         use std::collections::HashMap;
+        use std::time::{Duration, Instant};
 
         let ns_and_ms = vec![(6, 5), (7, 4)];
 
@@ -5034,34 +5344,43 @@ mod tests {
                 let start = Instant::now();
                 let perm = circuit.permutation(n);
                 let _ = get_canonical(&perm, bit_shuf);
-                timer_canonical.entry((n, m)).and_modify(|d| *d += start.elapsed());
+                timer_canonical
+                    .entry((n, m))
+                    .and_modify(|d| *d += start.elapsed());
                 println!("duckdb");
                 // DuckDB lookup
                 if let Some(stmt) = duckdb_stmts.get_mut(&(n, m)) {
                     let start = Instant::now();
-                    let _res: Option<Vec<u8>> = stmt
-                        .query_row([&circuit_blob], |row| row.get(0))
-                        .ok();
-                    timer_duckdb.entry((n, m)).and_modify(|d| *d += start.elapsed());
+                    let _res: Option<Vec<u8>> =
+                        stmt.query_row([&circuit_blob], |row| row.get(0)).ok();
+                    timer_duckdb
+                        .entry((n, m))
+                        .and_modify(|d| *d += start.elapsed());
                 }
                 println!("rocksdb");
                 // RocksDB lookup
                 if let Some(db) = rocksdb_dbs.get(&(n, m)) {
                     let start = Instant::now();
                     let _res = db.get(&circuit_blob).ok();
-                    timer_rocksdb.entry((n, m)).and_modify(|d| *d += start.elapsed());
+                    timer_rocksdb
+                        .entry((n, m))
+                        .and_modify(|d| *d += start.elapsed());
                 }
             }
         }
 
         // Print results
         println!("\nResults over {} iterations:", iters);
-        println!("{:<10} {:<10} {:<20} {:<20} {:<20}", "n", "m", "get_canonical", "duckdb", "rocksdb");
+        println!(
+            "{:<10} {:<10} {:<20} {:<20} {:<20}",
+            "n", "m", "get_canonical", "duckdb", "rocksdb"
+        );
         println!("{}", "-".repeat(80));
         for &(n, m) in &ns_and_ms {
             println!(
                 "{:<10} {:<10} {:<20?} {:<20?} {:<20?}",
-                n, m,
+                n,
+                m,
                 timer_canonical[&(n, m)] / iters,
                 timer_duckdb[&(n, m)] / iters,
                 timer_rocksdb[&(n, m)] / iters,
@@ -5069,12 +5388,12 @@ mod tests {
         }
     }
 
+    use crate::replace::pairs::GatePair;
+    use lmdb::Cursor;
     use lmdb::Database;
-    use std::path::Path;
     use lmdb::Environment;
     use lmdb::Transaction;
-    use lmdb::Cursor;
-    use crate::replace::pairs::GatePair;
+    use std::path::Path;
     // use rand::prelude::IteratorRandom;
     #[test]
     fn test_random_circuit_identity() {
@@ -5097,8 +5416,8 @@ mod tests {
             let mut cursor = txn.open_ro_cursor(db).expect("Failed to open cursor");
 
             for (key_bytes, value_bytes) in cursor.iter() {
-                let circuits: Vec<Vec<u8>> = bincode::deserialize(value_bytes)
-                    .expect("Failed to deserialize circuits");
+                let circuits: Vec<Vec<u8>> =
+                    bincode::deserialize(value_bytes).expect("Failed to deserialize circuits");
 
                 let entry = circuit_table.entry(key_bytes.to_vec()).or_default();
                 entry.extend(circuits);
@@ -5181,10 +5500,9 @@ mod tests {
         sum / num_points as f64
     }
 
-
     #[test]
     fn test_means() -> Result<(), Box<dyn std::error::Error>> {
-        use lmdb::{Environment, Cursor, Transaction};
+        use lmdb::{Cursor, Environment, Transaction};
         use std::collections::HashMap;
         use std::fs::File;
         use std::io::{BufWriter, Write};
@@ -5192,18 +5510,43 @@ mod tests {
         let num_wires = 16;
 
         let db_names = [
-            "ids_n16g0", "ids_n16g1", "ids_n16g2", "ids_n16g3", "ids_n16g4",
-            "ids_n16g5", "ids_n16g6", "ids_n16g7", "ids_n16g8", "ids_n16g9",
-            "ids_n16g10", "ids_n16g11", "ids_n16g12", "ids_n16g13", "ids_n16g14",
-            "ids_n16g15", "ids_n16g16", "ids_n16g17", "ids_n16g18", "ids_n16g19",
-            "ids_n16g20", "ids_n16g21", "ids_n16g22", "ids_n16g23", "ids_n16g24",
-            "ids_n16g25", "ids_n16g26", "ids_n16g27", "ids_n16g28", "ids_n16g29",
-            "ids_n16g30", "ids_n16g31", "ids_n16g32", "ids_n16g33",
+            "ids_n16g0",
+            "ids_n16g1",
+            "ids_n16g2",
+            "ids_n16g3",
+            "ids_n16g4",
+            "ids_n16g5",
+            "ids_n16g6",
+            "ids_n16g7",
+            "ids_n16g8",
+            "ids_n16g9",
+            "ids_n16g10",
+            "ids_n16g11",
+            "ids_n16g12",
+            "ids_n16g13",
+            "ids_n16g14",
+            "ids_n16g15",
+            "ids_n16g16",
+            "ids_n16g17",
+            "ids_n16g18",
+            "ids_n16g19",
+            "ids_n16g20",
+            "ids_n16g21",
+            "ids_n16g22",
+            "ids_n16g23",
+            "ids_n16g24",
+            "ids_n16g25",
+            "ids_n16g26",
+            "ids_n16g27",
+            "ids_n16g28",
+            "ids_n16g29",
+            "ids_n16g30",
+            "ids_n16g31",
+            "ids_n16g32",
+            "ids_n16g33",
         ];
 
-        let env = Environment::new()
-            .set_max_dbs(64)
-            .open(Path::new("./db"))?; // adjust path
+        let env = Environment::new().set_max_dbs(64).open(Path::new("./db"))?; // adjust path
 
         let mut dbs = HashMap::new();
         for name in db_names {
@@ -5223,11 +5566,10 @@ mod tests {
 
             for (c_bytes, _) in cursor.iter() {
                 let circuit = CircuitSeq::from_blob(&c_bytes);
-            
+
                 let mean = gen_mean(circuit, num_wires);
 
                 writeln!(writer, "{}", mean)?;
-                
             }
         }
 
@@ -5245,29 +5587,107 @@ mod tests {
             .expect("Failed to open LMDB env");
 
         let tables = [
-            "ids_n5g1", "ids_n5g2", "ids_n5g3", "ids_n5g4", "ids_n5g5",
-            "ids_n5g6", "ids_n5g7", "ids_n5g8", "ids_n5g9", "ids_n5g10", "ids_n5g11",
-            "ids_n5g12", "ids_n5g13", "ids_n5g14", "ids_n5g15", "ids_n5g16",
-            "ids_n5g17", "ids_n5g18", "ids_n5g19", "ids_n5g20", "ids_n5g21",
-            "ids_n5g22", "ids_n5g23", "ids_n5g24", "ids_n5g25", "ids_n5g26",
-            "ids_n5g27", "ids_n5g28", "ids_n5g29", "ids_n5g30", "ids_n5g31",
-            "ids_n5g32", "ids_n5g33",
-
-            "ids_n6g0", "ids_n6g1", "ids_n6g2", "ids_n6g3", "ids_n6g4", "ids_n6g5",
-            "ids_n6g6", "ids_n6g7", "ids_n6g8", "ids_n6g9", "ids_n6g10", "ids_n6g11",
-            "ids_n6g12", "ids_n6g13", "ids_n6g14", "ids_n6g15", "ids_n6g16",
-            "ids_n6g17", "ids_n6g18", "ids_n6g19", "ids_n6g20", "ids_n6g21",
-            "ids_n6g22", "ids_n6g23", "ids_n6g24", "ids_n6g25", "ids_n6g26",
-            "ids_n6g27", "ids_n6g28", "ids_n6g29", "ids_n6g30", "ids_n6g31",
-            "ids_n6g32", "ids_n6g33",
-
-            "ids_n7g0", "ids_n7g1", "ids_n7g2", "ids_n7g3", "ids_n7g4", "ids_n7g5",
-            "ids_n7g6", "ids_n7g7", "ids_n7g8", "ids_n7g9", "ids_n7g10", "ids_n7g11",
-            "ids_n7g12", "ids_n7g13", "ids_n7g14", "ids_n7g15", "ids_n7g16",
-            "ids_n7g17", "ids_n7g18", "ids_n7g19", "ids_n7g20", "ids_n7g21",
-            "ids_n7g22", "ids_n7g23", "ids_n7g24", "ids_n7g25", "ids_n7g26",
-            "ids_n7g27", "ids_n7g28", "ids_n7g29", "ids_n7g30", "ids_n7g31",
-            "ids_n7g32", "ids_n7g33",
+            "ids_n5g1",
+            "ids_n5g2",
+            "ids_n5g3",
+            "ids_n5g4",
+            "ids_n5g5",
+            "ids_n5g6",
+            "ids_n5g7",
+            "ids_n5g8",
+            "ids_n5g9",
+            "ids_n5g10",
+            "ids_n5g11",
+            "ids_n5g12",
+            "ids_n5g13",
+            "ids_n5g14",
+            "ids_n5g15",
+            "ids_n5g16",
+            "ids_n5g17",
+            "ids_n5g18",
+            "ids_n5g19",
+            "ids_n5g20",
+            "ids_n5g21",
+            "ids_n5g22",
+            "ids_n5g23",
+            "ids_n5g24",
+            "ids_n5g25",
+            "ids_n5g26",
+            "ids_n5g27",
+            "ids_n5g28",
+            "ids_n5g29",
+            "ids_n5g30",
+            "ids_n5g31",
+            "ids_n5g32",
+            "ids_n5g33",
+            "ids_n6g0",
+            "ids_n6g1",
+            "ids_n6g2",
+            "ids_n6g3",
+            "ids_n6g4",
+            "ids_n6g5",
+            "ids_n6g6",
+            "ids_n6g7",
+            "ids_n6g8",
+            "ids_n6g9",
+            "ids_n6g10",
+            "ids_n6g11",
+            "ids_n6g12",
+            "ids_n6g13",
+            "ids_n6g14",
+            "ids_n6g15",
+            "ids_n6g16",
+            "ids_n6g17",
+            "ids_n6g18",
+            "ids_n6g19",
+            "ids_n6g20",
+            "ids_n6g21",
+            "ids_n6g22",
+            "ids_n6g23",
+            "ids_n6g24",
+            "ids_n6g25",
+            "ids_n6g26",
+            "ids_n6g27",
+            "ids_n6g28",
+            "ids_n6g29",
+            "ids_n6g30",
+            "ids_n6g31",
+            "ids_n6g32",
+            "ids_n6g33",
+            "ids_n7g0",
+            "ids_n7g1",
+            "ids_n7g2",
+            "ids_n7g3",
+            "ids_n7g4",
+            "ids_n7g5",
+            "ids_n7g6",
+            "ids_n7g7",
+            "ids_n7g8",
+            "ids_n7g9",
+            "ids_n7g10",
+            "ids_n7g11",
+            "ids_n7g12",
+            "ids_n7g13",
+            "ids_n7g14",
+            "ids_n7g15",
+            "ids_n7g16",
+            "ids_n7g17",
+            "ids_n7g18",
+            "ids_n7g19",
+            "ids_n7g20",
+            "ids_n7g21",
+            "ids_n7g22",
+            "ids_n7g23",
+            "ids_n7g24",
+            "ids_n7g25",
+            "ids_n7g26",
+            "ids_n7g27",
+            "ids_n7g28",
+            "ids_n7g29",
+            "ids_n7g30",
+            "ids_n7g31",
+            "ids_n7g32",
+            "ids_n7g33",
         ];
 
         let mut file = OpenOptions::new()
@@ -5277,14 +5697,10 @@ mod tests {
             .expect("Failed to open odd_ids.txt");
 
         for table_name in tables {
-            let db: Database = env
-                .open_db(Some(table_name))
-                .expect("DB not found");
+            let db: Database = env.open_db(Some(table_name)).expect("DB not found");
 
             let txn = env.begin_ro_txn().expect("Failed to begin txn");
-            let mut cursor = txn
-                .open_ro_cursor(db)
-                .expect("Failed to open cursor");
+            let mut cursor = txn.open_ro_cursor(db).expect("Failed to open cursor");
 
             for (key_bytes, _) in cursor.iter() {
                 let circuit = CircuitSeq::from_blob(key_bytes);
@@ -5313,7 +5729,9 @@ mod tests {
             .open("c1not2.txt")
             .expect("Failed to open swaponlyn.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![0,1,6,7,4,5,2,3]};
+        let perm = Permutation {
+            data: vec![0, 1, 6, 7, 4, 5, 2, 3],
+        };
         for m in 2..=10 {
             for _ in 0..100000 {
                 let mut random = random_circuit(3, m);
@@ -5344,7 +5762,9 @@ mod tests {
             .open("swap12.txt")
             .expect("Failed to open swaponlyn.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![0,1,4,5,2,3,6,7]};
+        let perm = Permutation {
+            data: vec![0, 1, 4, 5, 2, 3, 6, 7],
+        };
         for m in 6..=15 {
             for _ in 0..100000 {
                 let mut random = random_circuit(3, m);
@@ -5375,7 +5795,9 @@ mod tests {
             .open("swap12n1.txt")
             .expect("Failed to open swaponlyn.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![2,3,6,7,0,1,4,5]};
+        let perm = Permutation {
+            data: vec![2, 3, 6, 7, 0, 1, 4, 5],
+        };
         for m in 6..=15 {
             for _ in 0..100000 {
                 let mut random = random_circuit(3, m);
@@ -5406,7 +5828,9 @@ mod tests {
             .open("swap12n2.txt")
             .expect("Failed to open swaponlyn.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![4,5,0,1,6,7,2,3]};
+        let perm = Permutation {
+            data: vec![4, 5, 0, 1, 6, 7, 2, 3],
+        };
         for m in 6..=15 {
             for _ in 0..100000 {
                 let mut random = random_circuit(3, m);
@@ -5437,7 +5861,9 @@ mod tests {
             .open("swap12n1n2.txt")
             .expect("Failed to open swaponlyn.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![6,7,2,3,4,5,0,1]};
+        let perm = Permutation {
+            data: vec![6, 7, 2, 3, 4, 5, 0, 1],
+        };
         for m in 6..=15 {
             for _ in 0..100000 {
                 let mut random = random_circuit(3, m);
@@ -5468,7 +5894,9 @@ mod tests {
             .open("not1.txt")
             .expect("Failed to open swaponlyn.txt");
         let mut circuits: HashSet<CircuitSeq> = HashSet::new();
-        let perm = Permutation { data: vec![2,3,0,1,6,7,4,5]};
+        let perm = Permutation {
+            data: vec![2, 3, 0, 1, 6, 7, 4, 5],
+        };
         for m in 2..=10 {
             for _ in 0..100000 {
                 let mut random = random_circuit(3, m);
@@ -5501,32 +5929,53 @@ mod tests {
         // Wires: 0=x1, 1=r11, 2=r12, 3=x2, 4=r21, 5=x3, 6=r31
         // w0' = x1^r11^r12^((x2^r21)&(x3^r31))^x2^r21^1, w1..w6 unchanged
         let target = Permutation {
-            data: (0..128usize).map(|s| {
-                let x1  = (s >> 0) & 1;
-                let r11 = (s >> 1) & 1;
-                let r12 = (s >> 2) & 1;
-                let x2  = (s >> 3) & 1;
-                let r21 = (s >> 4) & 1;
-                let x3  = (s >> 5) & 1;
-                let r31 = (s >> 6) & 1;
-                let w0  = x1 ^ r11 ^ r12 ^ ((x2 ^ r21) & (x3 ^ r31)) ^ x2 ^ r21 ^ 1;
-                (s & !1) | w0
-            }).collect(),
+            data: (0..128usize)
+                .map(|s| {
+                    let x1 = (s >> 0) & 1;
+                    let r11 = (s >> 1) & 1;
+                    let r12 = (s >> 2) & 1;
+                    let x2 = (s >> 3) & 1;
+                    let r21 = (s >> 4) & 1;
+                    let x3 = (s >> 5) & 1;
+                    let r31 = (s >> 6) & 1;
+                    let w0 = x1 ^ r11 ^ r12 ^ ((x2 ^ r21) & (x3 ^ r31)) ^ x2 ^ r21 ^ 1;
+                    (s & !1) | w0
+                })
+                .collect(),
         };
 
-        let ref_12 = CircuitSeq { gates: vec![
-            [0,3,5],[0,3,6],[0,4,5],[0,4,6],
-            [1,0,2],[0,2,1],[2,0,1],[1,2,0],[0,2,1],[2,1,0],
-            [0,3,4],[0,4,3],
-        ]};
+        let ref_12 = CircuitSeq {
+            gates: vec![
+                [0, 3, 5],
+                [0, 3, 6],
+                [0, 4, 5],
+                [0, 4, 6],
+                [1, 0, 2],
+                [0, 2, 1],
+                [2, 0, 1],
+                [1, 2, 0],
+                [0, 2, 1],
+                [2, 1, 0],
+                [0, 3, 4],
+                [0, 4, 3],
+            ],
+        };
         assert_eq!(ref_12.permutation(7), target, "ref_12 wrong");
 
         // [0,1,1] always flips w0 since w1|~w1=1; replaces 6-gate block with 3 gates
-        let opt_9 = CircuitSeq { gates: vec![
-            [0,3,5],[0,3,6],[0,4,5],[0,4,6],
-            [0,1,2],[0,2,1],[0,1,1],
-            [0,3,4],[0,4,3],
-        ]};
+        let opt_9 = CircuitSeq {
+            gates: vec![
+                [0, 3, 5],
+                [0, 3, 6],
+                [0, 4, 5],
+                [0, 4, 6],
+                [0, 1, 2],
+                [0, 2, 1],
+                [0, 1, 1],
+                [0, 3, 4],
+                [0, 4, 3],
+            ],
+        };
         assert_eq!(opt_9.permutation(7), target, "opt_9 wrong");
         println!("Both reference circuits verified");
 
@@ -5540,11 +5989,15 @@ mod tests {
             println!("Searching m={}...", m);
             for _ in 0..1_000_000 {
                 let mut random = CircuitSeq {
-                    gates: (0..m).map(|_| [
-                        rng.random_range(0u8..7),
-                        rng.random_range(0u8..7),
-                        rng.random_range(0u8..7),
-                    ]).collect(),
+                    gates: (0..m)
+                        .map(|_| {
+                            [
+                                rng.random_range(0u8..7),
+                                rng.random_range(0u8..7),
+                                rng.random_range(0u8..7),
+                            ]
+                        })
+                        .collect(),
                 };
                 random.canonicalize();
                 if random.permutation(7) == target {
@@ -5576,21 +6029,29 @@ mod tests {
         // Secret shares: s1=x1^r11, s2=x2^r21, s3=x3^r31
         // After gadget: new_s1 = w0' ^ r12 = 1 ^ s1 ^ (s2 & !s3)
         // The gate keeps s1 unchanged only when s2=1,s3=0; flips otherwise.
-        let opt_9 = CircuitSeq { gates: vec![
-            [0,3,5],[0,3,6],[0,4,5],[0,4,6],
-            [0,1,2],[0,2,1],[0,1,1],
-            [0,3,4],[0,4,3],
-        ]};
+        let opt_9 = CircuitSeq {
+            gates: vec![
+                [0, 3, 5],
+                [0, 3, 6],
+                [0, 4, 5],
+                [0, 4, 6],
+                [0, 1, 2],
+                [0, 2, 1],
+                [0, 1, 1],
+                [0, 3, 4],
+                [0, 4, 3],
+            ],
+        };
 
         for s in 0usize..128 {
             let out = opt_9.evaluate(s);
 
-            let x1  = (s >> 0) & 1;
+            let x1 = (s >> 0) & 1;
             let r11 = (s >> 1) & 1;
             let r12 = (s >> 2) & 1;
-            let x2  = (s >> 3) & 1;
+            let x2 = (s >> 3) & 1;
             let r21 = (s >> 4) & 1;
-            let x3  = (s >> 5) & 1;
+            let x3 = (s >> 5) & 1;
             let r31 = (s >> 6) & 1;
 
             let s1 = x1 ^ r11;
@@ -5599,17 +6060,23 @@ mod tests {
 
             // Non-active wires must be unchanged
             for wire in 1..7usize {
-                let in_bit  = (s   >> wire) & 1;
+                let in_bit = (s >> wire) & 1;
                 let out_bit = (out >> wire) & 1;
-                assert_eq!(in_bit, out_bit,
-                    "wire {} changed for input {:#09b}", wire, s);
+                assert_eq!(
+                    in_bit, out_bit,
+                    "wire {} changed for input {:#09b}",
+                    wire, s
+                );
             }
 
             let w0_prime = (out >> 0) & 1;
             let expected_new_s1 = 1 ^ s1 ^ (s2 & (1 ^ s3));
-            let actual_new_s1   = w0_prime ^ r12;
-            assert_eq!(actual_new_s1, expected_new_s1,
-                "wrong secret value for input s1={} s2={} s3={} r12={}", s1, s2, s3, r12);
+            let actual_new_s1 = w0_prime ^ r12;
+            assert_eq!(
+                actual_new_s1, expected_new_s1,
+                "wrong secret value for input s1={} s2={} s3={} r12={}",
+                s1, s2, s3, r12
+            );
         }
 
         println!("Gadget semantics verified for all 128 inputs");
@@ -5617,8 +6084,12 @@ mod tests {
 
     #[test]
     fn load_gadgets_into_lmdb() {
-        use std::{fs::File, io::{BufRead, BufReader}, path::Path};
-        use lmdb::{Environment, DatabaseFlags, WriteFlags};
+        use lmdb::{DatabaseFlags, Environment, WriteFlags};
+        use std::{
+            fs::File,
+            io::{BufRead, BufReader},
+            path::Path,
+        };
 
         let env = Environment::new()
             .set_max_dbs(270)
@@ -5628,7 +6099,9 @@ mod tests {
 
         if let Ok(db) = env.open_db(Some("homgad")) {
             let mut txn = env.begin_rw_txn().expect("failed to begin txn");
-            unsafe { txn.drop_db(db).expect("failed to drop homgad db"); }
+            unsafe {
+                txn.drop_db(db).expect("failed to drop homgad db");
+            }
             txn.commit().expect("failed to commit drop");
             println!("Dropped existing homgad db");
         }
@@ -5646,7 +6119,9 @@ mod tests {
         for line in reader.lines() {
             let line = line.expect("failed to read line");
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
 
             let circuit = CircuitSeq::from_string(line);
             let key = circuit.repr_blob();
@@ -5672,7 +6147,9 @@ mod tests {
             .expect("Failed to open 'swap' database");
 
         // Begin a read-only transaction
-        let txn = env.begin_ro_txn().expect("Failed to begin read-only transaction");
+        let txn = env
+            .begin_ro_txn()
+            .expect("Failed to begin read-only transaction");
 
         // Iterate over all key-value pairs in the "swap" db
         let mut cursor = txn.open_ro_cursor(db).expect("Failed to open cursor");
@@ -5690,8 +6167,12 @@ mod tests {
 
     #[test]
     fn load_swaps_into_lmdb() {
-        use std::{fs::File, io::{BufRead, BufReader}, path::Path};
-        use lmdb::{Environment, DatabaseFlags, WriteFlags};
+        use lmdb::{DatabaseFlags, Environment, WriteFlags};
+        use std::{
+            fs::File,
+            io::{BufRead, BufReader},
+            path::Path,
+        };
 
         let env = Environment::new()
             .set_max_dbs(263)
@@ -5702,18 +6183,18 @@ mod tests {
         // Delete existing databases before creating them (ignore errors if they don't exist)
         let dbs_to_delete = ["cnot", "not", "swapnot12", "swap", "swapnot1", "swapnot2"];
         for db_name in dbs_to_delete.iter() {
-        if let Ok(db) = env.open_db(Some(db_name)) {
-            let mut txn = env.begin_rw_txn().expect("Failed to begin txn");
-            // SAFETY: ensure no other transactions or handles are active
-            unsafe {
-                txn.drop_db(db).expect("Failed to drop db");
+            if let Ok(db) = env.open_db(Some(db_name)) {
+                let mut txn = env.begin_rw_txn().expect("Failed to begin txn");
+                // SAFETY: ensure no other transactions or handles are active
+                unsafe {
+                    txn.drop_db(db).expect("Failed to drop db");
+                }
+                txn.commit().expect("Failed to commit txn");
+                println!("Dropped DB: {}", db_name);
+            } else {
+                println!("DB not found: {}", db_name);
             }
-            txn.commit().expect("Failed to commit txn");
-            println!("Dropped DB: {}", db_name);
-        } else {
-            println!("DB not found: {}", db_name);
         }
-    }
 
         let db = env
             .create_db(Some("cnot"), DatabaseFlags::empty())
@@ -5884,10 +6365,14 @@ mod tests {
             let mut circuits = Vec::new();
             let mut pos = 0;
             while pos < value.len() {
-                if pos + 1 > value.len() { break; }
+                if pos + 1 > value.len() {
+                    break;
+                }
                 let len = value[pos] as usize;
                 pos += 1;
-                if pos + len > value.len() { break; }
+                if pos + len > value.len() {
+                    break;
+                }
                 let circuit_blob = &value[pos..pos + len];
                 let circuit = CircuitSeq::from_blob(circuit_blob);
                 circuits.push(circuit);
@@ -5903,7 +6388,8 @@ mod tests {
                     writeln!(file, "  P{}: {}", i, poly_to_str(poly, n)).expect("write failed");
                 }
                 for (circuit_index, circuit) in circuits.iter().enumerate() {
-                    writeln!(file, "  [{}] {}", circuit_index, circuit.repr()).expect("write failed");
+                    writeln!(file, "  [{}] {}", circuit_index, circuit.repr())
+                        .expect("write failed");
                 }
                 writeln!(file).expect("write failed");
             }
@@ -5966,7 +6452,10 @@ mod tests {
                 }
             }
 
-            println!("m={}: {} canonical polynomials, {} circuits", m, key_count, circuit_count);
+            println!(
+                "m={}: {} canonical polynomials, {} circuits",
+                m, key_count, circuit_count
+            );
         }
     }
 
@@ -6023,10 +6512,14 @@ mod tests {
                 total_hashes += 1;
                 let mut pos = 0;
                 while pos < value.len() {
-                    if pos + 1 > value.len() { break; }
+                    if pos + 1 > value.len() {
+                        break;
+                    }
                     let len = value[pos] as usize;
                     pos += 1;
-                    if pos + len > value.len() { break; }
+                    if pos + len > value.len() {
+                        break;
+                    }
                     let circuit_blob = &value[pos..pos + len];
                     pos += len;
 
@@ -6037,9 +6530,7 @@ mod tests {
                     let hash: u128 = xxh3_128(&polys_repr_blob(&canonical.0));
                     let computed_key = hash.to_le_bytes().to_vec();
 
-                    map.entry(computed_key)
-                        .or_default()
-                        .push(canonical.1);
+                    map.entry(computed_key).or_default().push(canonical.1);
                     total_circuits += 1;
                 }
             }
@@ -6049,15 +6540,23 @@ mod tests {
         let (db1_total_circuits, db1_total_hashes, db1_map) = load_db(&db1);
         let (db2_total_circuits, db2_total_hashes, db2_map) = load_db(&db2);
 
-        println!("db1: {} circuits, {} hashes", db1_total_circuits, db1_total_hashes);
-        println!("db2: {} circuits, {} hashes", db2_total_circuits, db2_total_hashes);
+        println!(
+            "db1: {} circuits, {} hashes",
+            db1_total_circuits, db1_total_hashes
+        );
+        println!(
+            "db2: {} circuits, {} hashes",
+            db2_total_circuits, db2_total_hashes
+        );
 
         // Helper: get canonical poly string from a circuit
         let canon_poly_str = |circuit: &CircuitSeq| -> String {
             use crate::circuit::circuit::poly_to_str;
             let polys = circuit.to_polynomial(n, 0, m);
             let (canonical, _) = canonicalize_polys_4(polys);
-            canonical.iter().enumerate()
+            canonical
+                .iter()
+                .enumerate()
                 .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
                 .collect::<Vec<_>>()
                 .join(" | ")
@@ -6081,7 +6580,12 @@ mod tests {
                 }
             }
         }
-        writeln!(file, "Total: {} keys, {} circuits\n", db1_keys_not_in_db2, db1_circuits_not_in_db2).unwrap();
+        writeln!(
+            file,
+            "Total: {} keys, {} circuits\n",
+            db1_keys_not_in_db2, db1_circuits_not_in_db2
+        )
+        .unwrap();
 
         // ── Keys in db2 not in db1 ────────────────────────────────────────────────
         writeln!(file, "=== Keys in db2 not in db1 ===").unwrap();
@@ -6098,7 +6602,12 @@ mod tests {
                 }
             }
         }
-        writeln!(file, "Total: {} keys, {} circuits\n", db2_keys_not_in_db1, db2_circuits_not_in_db1).unwrap();
+        writeln!(
+            file,
+            "Total: {} keys, {} circuits\n",
+            db2_keys_not_in_db1, db2_circuits_not_in_db1
+        )
+        .unwrap();
 
         println!("Keys     in db1 not in db2: {}", db1_keys_not_in_db2);
         println!("Keys     in db2 not in db1: {}", db2_keys_not_in_db1);
@@ -6107,10 +6616,10 @@ mod tests {
 
         // ── Full directional check (relabeling correctness within matched buckets) ─
         let check_direction = |src_name: &str,
-                            dst_name: &str,
-                            src_map: &HashMap<Vec<u8>, Vec<CircuitSeq>>,
-                            dst_map: &HashMap<Vec<u8>, Vec<CircuitSeq>>|
-        -> Vec<String> {
+                               dst_name: &str,
+                               src_map: &HashMap<Vec<u8>, Vec<CircuitSeq>>,
+                               dst_map: &HashMap<Vec<u8>, Vec<CircuitSeq>>|
+         -> Vec<String> {
             let mut errors: Vec<String> = Vec::new();
 
             for (key, src_circuits) in src_map {
@@ -6146,12 +6655,16 @@ mod tests {
 
                 let dst_circuits = &dst_map[&dst_key];
 
-                let all_src: String = src_circuits.iter()
+                let all_src: String = src_circuits
+                    .iter()
                     .map(|c| format!("    {:?}", c.gates))
-                    .collect::<Vec<_>>().join("\n");
-                let all_dst: String = dst_circuits.iter()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let all_dst: String = dst_circuits
+                    .iter()
                     .map(|c| format!("    {:?}", c.gates))
-                    .collect::<Vec<_>>().join("\n");
+                    .collect::<Vec<_>>()
+                    .join("\n");
 
                 for src_c in src_circuits {
                     let matched = dst_circuits
@@ -6203,7 +6716,10 @@ mod tests {
             }
         }
 
-        println!("\n{} relabeling error(s) — see diffs.txt for full details", all_errors.len());
+        println!(
+            "\n{} relabeling error(s) — see diffs.txt for full details",
+            all_errors.len()
+        );
 
         assert!(
             all_errors.is_empty(),
@@ -6232,7 +6748,10 @@ mod tests {
             block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
             opts.set_block_based_table_factory(&block_opts);
             opts.set_disable_auto_compactions(true);
-            Arc::new(DB::open_for_read_only(&opts, path, false).unwrap_or_else(|_| panic!("Failed to open {}", path)))
+            Arc::new(
+                DB::open_for_read_only(&opts, path, false)
+                    .unwrap_or_else(|_| panic!("Failed to open {}", path)),
+            )
         };
 
         let db1 = open_db("rocks_db_m4");
@@ -6243,10 +6762,14 @@ mod tests {
             let mut circuits = Vec::new();
             let mut pos = 0;
             while pos < value.len() {
-                if pos + 1 > value.len() { break; }
+                if pos + 1 > value.len() {
+                    break;
+                }
                 let len = value[pos] as usize;
                 pos += 1;
-                if pos + len > value.len() { break; }
+                if pos + len > value.len() {
+                    break;
+                }
                 circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
                 pos += len;
             }
@@ -6269,7 +6792,9 @@ mod tests {
             }
             // Skip groups where all circuits are relabelings of each other
             let has_non_relabeling = circuits.iter().enumerate().any(|(i, c)| {
-                circuits[..i].iter().all(|other| !CircuitSeq::is_relabeling_of(c, other))
+                circuits[..i]
+                    .iter()
+                    .all(|other| !CircuitSeq::is_relabeling_of(c, other))
                     && i > 0
             });
             if !has_non_relabeling {
@@ -6278,33 +6803,48 @@ mod tests {
             // Found an entry with friends in rocks_db_m4.
             // Compute the canon-1 key from the first representative and look it up in test_rocks_db_m4.
             let key = canon1_key(&circuits[0]);
-            let test_circuits = db2.get(&key).expect("RocksDB get error")
+            let test_circuits = db2
+                .get(&key)
+                .expect("RocksDB get error")
                 .map(|v| decode_circuits(&v))
                 .unwrap_or_default();
 
             if test_circuits.len() <= 1 {
                 println!("Found canon4 collision!");
-                println!("test_rocks_db_m4 has {} friends under this key:", circuits.len());
+                println!(
+                    "test_rocks_db_m4 has {} friends under this key:",
+                    circuits.len()
+                );
                 for c in &circuits {
                     println!("  {:?}", c.gates);
                 }
-                println!("test_rocks_db_m4 has {} circuit(s) under the canon-1 key:", test_circuits.len());
+                println!(
+                    "test_rocks_db_m4 has {} circuit(s) under the canon-1 key:",
+                    test_circuits.len()
+                );
                 for c in &test_circuits {
                     println!("  {:?}", c.gates);
                 }
 
                 // Check whether all circuits share the same canon-1 polynomial
-                let canon1_polys: Vec<Vec<Polynomial>> = circuits.iter()
+                let canon1_polys: Vec<Vec<Polynomial>> = circuits
+                    .iter()
                     .map(|c| c.canonicalize_polys_1(n).0)
                     .collect();
                 let all_same_poly = canon1_polys.windows(2).all(|w| w[0] == w[1]);
-                println!("All circuits have same canon-1 polynomial: {}", all_same_poly);
+                println!(
+                    "All circuits have same canon-1 polynomial: {}",
+                    all_same_poly
+                );
                 if !all_same_poly {
                     use crate::circuit::circuit::poly_to_str;
                     for (i, polys) in canon1_polys.iter().enumerate() {
-                        let s = polys.iter().enumerate()
+                        let s = polys
+                            .iter()
+                            .enumerate()
                             .map(|(j, p)| format!("P{}: {}", j, poly_to_str(p, n)))
-                            .collect::<Vec<_>>().join(" | ");
+                            .collect::<Vec<_>>()
+                            .join(" | ");
                         println!("  circuit {}: {}", i, s);
                     }
                 }
@@ -6312,7 +6852,9 @@ mod tests {
                 return;
             }
         }
-        println!("No canon4 collision found (all multi-circuit entries in rocks_db_m4 are also multi-circuit in test_rocks_db_m4)");
+        println!(
+            "No canon4 collision found (all multi-circuit entries in rocks_db_m4 are also multi-circuit in test_rocks_db_m4)"
+        );
     }
 
     #[test]
@@ -6329,13 +6871,17 @@ mod tests {
         opts.set_disable_auto_compactions(true);
         let db = Arc::new(
             DB::open_for_read_only(&opts, "rocks_db_m4", false)
-                .expect("Failed to open test_rocks_db_m4")
+                .expect("Failed to open test_rocks_db_m4"),
         );
 
         let decode_first_circuit = |value: &[u8]| -> Option<CircuitSeq> {
-            if value.is_empty() { return None; }
+            if value.is_empty() {
+                return None;
+            }
             let len = value[0] as usize;
-            if 1 + len > value.len() { return None; }
+            if 1 + len > value.len() {
+                return None;
+            }
             Some(CircuitSeq::from_blob(&value[1..1 + len]))
         };
 
@@ -6353,16 +6899,26 @@ mod tests {
             let hash4: u128 = xxh3_128(&polys_repr_blob(&canon4.0));
             let key4 = hash4.to_le_bytes().to_vec();
 
-            canon4_to_canon1.entry(key4).or_default().push(stored_key.to_vec());
+            canon4_to_canon1
+                .entry(key4)
+                .or_default()
+                .push(stored_key.to_vec());
         }
 
-        let collisions: Vec<_> = canon4_to_canon1.iter()
+        let collisions: Vec<_> = canon4_to_canon1
+            .iter()
             .filter(|(_, canon1_keys)| canon1_keys.len() > 1)
             .collect();
 
-        println!("Canon-4 keys that collide distinct canon-1 entries: {}", collisions.len());
+        println!(
+            "Canon-4 keys that collide distinct canon-1 entries: {}",
+            collisions.len()
+        );
         for (_, canon1_keys) in &collisions {
-            println!("  {} canon-1 keys share one canon-4 key:", canon1_keys.len());
+            println!(
+                "  {} canon-1 keys share one canon-4 key:",
+                canon1_keys.len()
+            );
         }
     }
 
@@ -6377,17 +6933,23 @@ mod tests {
             opts.set_merge_operator_associative("append_merge", append_merge);
             opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
             opts.set_disable_auto_compactions(true);
-            Arc::new(DB::open_for_read_only(&opts, path, false)
-                .unwrap_or_else(|_| panic!("Failed to open {}", path)))
+            Arc::new(
+                DB::open_for_read_only(&opts, path, false)
+                    .unwrap_or_else(|_| panic!("Failed to open {}", path)),
+            )
         };
 
         let db1 = open_db("rocks_db_m4");
         let db2 = open_db("rocks_db_m4");
 
         let decode_first_circuit = |value: &[u8]| -> Option<CircuitSeq> {
-            if value.is_empty() { return None; }
+            if value.is_empty() {
+                return None;
+            }
             let len = value[0] as usize;
-            if 1 + len > value.len() { return None; }
+            if 1 + len > value.len() {
+                return None;
+            }
             Some(CircuitSeq::from_blob(&value[1..1 + len]))
         };
 
@@ -6421,9 +6983,12 @@ mod tests {
         println!("Total keys in rocks_db_m4: {}", total);
         println!("Missing in test_rocks_db_m4: {}", missing);
         for polys in &missing_polys {
-            let s = polys.iter().enumerate()
+            let s = polys
+                .iter()
+                .enumerate()
                 .map(|(i, p)| format!("P{}: {}", i, poly_to_str(p, n)))
-                .collect::<Vec<_>>().join(" | ");
+                .collect::<Vec<_>>()
+                .join(" | ");
             println!("  {}", s);
         }
     }
@@ -6439,17 +7004,23 @@ mod tests {
             opts.set_merge_operator_associative("append_merge", append_merge);
             opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
             opts.set_disable_auto_compactions(true);
-            Arc::new(DB::open_for_read_only(&opts, path, false)
-                .unwrap_or_else(|_| panic!("Failed to open {}", path)))
+            Arc::new(
+                DB::open_for_read_only(&opts, path, false)
+                    .unwrap_or_else(|_| panic!("Failed to open {}", path)),
+            )
         };
 
         let db1 = open_db("rocks_db_m4");
         let db2 = open_db("rocks_db_m4");
 
         let decode_first_circuit = |value: &[u8]| -> Option<CircuitSeq> {
-            if value.is_empty() { return None; }
+            if value.is_empty() {
+                return None;
+            }
             let len = value[0] as usize;
-            if 1 + len > value.len() { return None; }
+            if 1 + len > value.len() {
+                return None;
+            }
             Some(CircuitSeq::from_blob(&value[1..1 + len]))
         };
 
@@ -6483,9 +7054,12 @@ mod tests {
         println!("Total keys in test_rocks_db_m4: {}", total);
         println!("Missing in rocks_db_m4: {}", missing);
         for polys in &missing_polys {
-            let s = polys.iter().enumerate()
+            let s = polys
+                .iter()
+                .enumerate()
                 .map(|(i, p)| format!("P{}: {}", i, poly_to_str(p, n)))
-                .collect::<Vec<_>>().join(" | ");
+                .collect::<Vec<_>>()
+                .join(" | ");
             println!("  {}", s);
         }
     }
@@ -6502,7 +7076,7 @@ mod tests {
         opts.set_disable_auto_compactions(true);
         let db = Arc::new(
             DB::open_for_read_only(&opts, "rocks_db_m4", false)
-                .expect("Failed to open rocks_db_m4")
+                .expect("Failed to open rocks_db_m4"),
         );
 
         let decode_circuits = |value: &[u8]| -> Vec<CircuitSeq> {
@@ -6511,7 +7085,9 @@ mod tests {
             while pos < value.len() {
                 let len = value[pos] as usize;
                 pos += 1;
-                if pos + len > value.len() { break; }
+                if pos + len > value.len() {
+                    break;
+                }
                 circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
                 pos += len;
             }
@@ -6526,18 +7102,25 @@ mod tests {
                 continue;
             }
 
-            let canon1_polys: Vec<Vec<Polynomial>> = circuits.iter()
+            let canon1_polys: Vec<Vec<Polynomial>> = circuits
+                .iter()
                 .map(|c| c.canonicalize_polys_1(n).0)
                 .collect();
 
             let all_same = canon1_polys.windows(2).all(|w| w[0] == w[1]);
             if !all_same {
                 use crate::circuit::circuit::poly_to_str;
-                println!("Found canon-4 / canon-1 mismatch! {} circuits in group:", circuits.len());
+                println!(
+                    "Found canon-4 / canon-1 mismatch! {} circuits in group:",
+                    circuits.len()
+                );
                 for (i, (c, polys)) in circuits.iter().zip(canon1_polys.iter()).enumerate() {
-                    let poly_str = polys.iter().enumerate()
+                    let poly_str = polys
+                        .iter()
+                        .enumerate()
                         .map(|(j, p)| format!("P{}: {}", j, poly_to_str(p, n)))
-                        .collect::<Vec<_>>().join(" | ");
+                        .collect::<Vec<_>>()
+                        .join(" | ");
                     println!("  circuit {}: {:?}", i, c.gates);
                     println!("    canon-1 poly: {}", poly_str);
                 }
@@ -6556,8 +7139,12 @@ mod tests {
     }
     #[test]
     fn test_eight_cases() {
-        let mut c1 = CircuitSeq { gates: vec![[0,5,4], [1,4,6]] };
-        let mut c2 = CircuitSeq { gates: vec![[2,7,5], [3,6,7]] };
+        let mut c1 = CircuitSeq {
+            gates: vec![[0, 5, 4], [1, 4, 6]],
+        };
+        let mut c2 = CircuitSeq {
+            gates: vec![[2, 7, 5], [3, 6, 7]],
+        };
         let canon1 = canonicalize_polys(c1.to_polynomial(8, 0, 2), true, false);
         let canon2 = canonicalize_polys(c2.to_polynomial(8, 0, 2), true, false);
         c1.rewire(&canon1.1.invert(), 8);
@@ -6565,15 +7152,23 @@ mod tests {
         let n1 = touched_wires(&c1).len();
         let n2 = touched_wires(&c2).len();
 
-        let c1_rev = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
-        let c2_rev = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
+        let c1_rev = CircuitSeq {
+            gates: c1.gates.iter().rev().cloned().collect(),
+        };
+        let c2_rev = CircuitSeq {
+            gates: c2.gates.iter().rev().cloned().collect(),
+        };
 
         let _arc_1_2 = enumerate_c2_wire_mappings_cached(n1, n2);
         let _arc_2_1 = enumerate_c2_wire_mappings_cached(n2, n1);
         let (ref mappings_1_2_data, mappings_1_2_stride) = *_arc_1_2;
         let (ref mappings_2_1_data, mappings_2_1_stride) = *_arc_2_1;
-        let mappings_1_2: Vec<&[u8]> = mappings_1_2_data.chunks(mappings_1_2_stride.max(1)).collect();
-        let mappings_2_1: Vec<&[u8]> = mappings_2_1_data.chunks(mappings_2_1_stride.max(1)).collect();
+        let mappings_1_2: Vec<&[u8]> = mappings_1_2_data
+            .chunks(mappings_1_2_stride.max(1))
+            .collect();
+        let mappings_2_1: Vec<&[u8]> = mappings_2_1_data
+            .chunks(mappings_2_1_stride.max(1))
+            .collect();
 
         let mut f = std::fs::File::create("test.txt").unwrap();
 
@@ -6670,23 +7265,27 @@ mod tests {
         }
 
         // Case 9: full circuit
-        writeln!(f, "\n=== Case 9: full circuit [[0,5,4],[1,4,6],[2,7,5],[3,6,7]] ===").unwrap();
-        let hardcoded = vec![[0u8,5,4],[1,4,6],[2,7,5],[3,6,7]];
+        writeln!(
+            f,
+            "\n=== Case 9: full circuit [[0,5,4],[1,4,6],[2,7,5],[3,6,7]] ==="
+        )
+        .unwrap();
+        let hardcoded = vec![[0u8, 5, 4], [1, 4, 6], [2, 7, 5], [3, 6, 7]];
         let m_combined = hardcoded.len();
         let (result, _) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
 
         // Case 10: first part
         writeln!(f, "\n=== Case 10: first part [[0,5,4],[1,4,6]] ===").unwrap();
-        let hardcoded = vec![[0u8,5,4],[1,4,6]];
+        let hardcoded = vec![[0u8, 5, 4], [1, 4, 6]];
         let m_combined = hardcoded.len();
-        let (result,perm) = canonicalize_circuit(hardcoded, 8, m_combined);
+        let (result, perm) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
         writeln!(f, "  {:?}", perm.data).unwrap();
 
         // Case 11: second part
         writeln!(f, "\n=== Case 11: second part [[2,7,5],[3,6,7]] ===").unwrap();
-        let hardcoded = vec![[2u8,7,5],[3,6,7]];
+        let hardcoded = vec![[2u8, 7, 5], [3, 6, 7]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
@@ -6694,7 +7293,7 @@ mod tests {
 
         // Case 12: reversed first part
         writeln!(f, "\n=== Case 12: reversed first [[1,4,6],[0,5,4]] ===").unwrap();
-        let hardcoded = vec![[1,4,6],[0,5,4]];
+        let hardcoded = vec![[1, 4, 6], [0, 5, 4]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
@@ -6702,14 +7301,18 @@ mod tests {
 
         // Case 13: reversed second part
         writeln!(f, "\n=== Case 13: reversed second [[3,6,7],[2,7,5]] ===").unwrap();
-        let hardcoded = vec![[3,6,7],[2,7,5]];
+        let hardcoded = vec![[3, 6, 7], [2, 7, 5]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
-        writeln!(f, "  {:?}", perm.data).unwrap();  
+        writeln!(f, "  {:?}", perm.data).unwrap();
 
         // Case 14: Canon twice
-        writeln!(f, "\n=== Case 14: Canon twice on [[1, 2, 3], [0, 4, 2]] ===").unwrap();
+        writeln!(
+            f,
+            "\n=== Case 14: Canon twice on [[1, 2, 3], [0, 4, 2]] ==="
+        )
+        .unwrap();
         let hardcoded = vec![[1u8, 2, 3], [0, 4, 2]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 8, m_combined);
@@ -6717,7 +7320,11 @@ mod tests {
         writeln!(f, "  Permutation: {:?}", perm.data).unwrap();
 
         // Case 15: Two disjoint [[0, 4, 2], [1, 2, 3], [6, 7, 4], [5, 3, 7]]]
-        writeln!(f, "\n=== Case 15: Two disjoint [[0, 4, 2], [1, 2, 3], [6, 7, 4], [5, 3, 7]] ===").unwrap();
+        writeln!(
+            f,
+            "\n=== Case 15: Two disjoint [[0, 4, 2], [1, 2, 3], [6, 7, 4], [5, 3, 7]] ==="
+        )
+        .unwrap();
         let hardcoded = vec![[0u8, 4, 2], [1, 2, 3], [6, 7, 4], [5, 3, 7]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 12, m_combined);
@@ -6725,12 +7332,16 @@ mod tests {
         writeln!(f, "  Permutation: {:?}", perm.data).unwrap();
 
         // Case 16: Rewired second [[6, 7, 4], [5, 3, 7]]
-        writeln!(f, "\n=== Case 16: Rewired second [[6, 7, 4], [5, 3, 7]] ===").unwrap();
+        writeln!(
+            f,
+            "\n=== Case 16: Rewired second [[6, 7, 4], [5, 3, 7]] ==="
+        )
+        .unwrap();
         let hardcoded = vec![[6u8, 7, 4], [5, 3, 7]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 12, m_combined);
         writeln!(f, "  After first canon: {:?}", result.gates).unwrap();
-        writeln!(f, "  Permutation: {:?}", perm.data).unwrap(); 
+        writeln!(f, "  Permutation: {:?}", perm.data).unwrap();
     }
 
     #[test]
@@ -6757,10 +7368,14 @@ mod tests {
                     println!("{}: key found, checking circuits in value...", label);
                     let mut pos = 0;
                     while pos < value.len() {
-                        if pos + 1 > value.len() { break; }
+                        if pos + 1 > value.len() {
+                            break;
+                        }
                         let len = value[pos] as usize;
                         pos += 1;
-                        if pos + len > value.len() { break; }
+                        if pos + len > value.len() {
+                            break;
+                        }
                         let circuit_blob = &value[pos..pos + len];
                         pos += len;
                         let candidate = CircuitSeq::from_blob(circuit_blob);
@@ -6864,7 +7479,7 @@ mod tests {
         let m = 3;
         let db = Arc::new({
             let path = "rocks_db_m3";
-            
+
             let mut opts = Options::default();
             opts.create_if_missing(false);
             opts.set_merge_operator_associative("append_merge", append_merge);
@@ -6891,13 +7506,15 @@ mod tests {
 
         #[derive(Clone, Debug)]
         struct Entry {
-            gates:       Vec<[u8; 3]>,
+            gates: Vec<[u8; 3]>,
             forward_key: String,
             reversed_key: String,
         }
 
         let make_key = |gates: &[[u8; 3]]| -> String {
-            let circuit = CircuitSeq { gates: gates.to_vec() };
+            let circuit = CircuitSeq {
+                gates: gates.to_vec(),
+            };
             let polys = circuit.to_polynomial(n, 0, m);
             let (canonical, _) = canonicalize_polys(polys, true, false);
             polys_repr_blob(&canonical)
@@ -6937,7 +7554,7 @@ mod tests {
                     continue;
                 }
 
-                let forward_key  = make_key(&circuit.gates);
+                let forward_key = make_key(&circuit.gates);
                 let reversed_key = make_key(&rev.gates);
                 println!("Entries: {}", entries.len());
                 entries.push(Entry {
@@ -6958,16 +7575,25 @@ mod tests {
                 let ej = &entries[j];
 
                 let mut descs: Vec<&str> = Vec::new();
-                if ei.forward_key  == ej.forward_key  { descs.push("fwd==fwd"); }
-                if ei.forward_key  == ej.reversed_key { descs.push("fwd==rev"); }
-                if ei.reversed_key == ej.forward_key  { descs.push("rev==fwd"); }
-                if ei.reversed_key == ej.reversed_key { descs.push("rev==rev"); }
+                if ei.forward_key == ej.forward_key {
+                    descs.push("fwd==fwd");
+                }
+                if ei.forward_key == ej.reversed_key {
+                    descs.push("fwd==rev");
+                }
+                if ei.reversed_key == ej.forward_key {
+                    descs.push("rev==fwd");
+                }
+                if ei.reversed_key == ej.reversed_key {
+                    descs.push("rev==rev");
+                }
 
                 if !descs.is_empty() {
                     any_dup = true;
                     println!(
                         "  [{i}] {:?}  <->  [{j}] {:?}  [{}]",
-                        ei.gates, ej.gates,
+                        ei.gates,
+                        ej.gates,
                         descs.join(", ")
                     );
                 }
@@ -6985,7 +7611,10 @@ mod tests {
             seen_canon.insert(canon_pair_key);
         }
 
-        println!("\nTotal circuits up to canonicalization AND reversal: {}", seen_canon.len());
+        println!(
+            "\nTotal circuits up to canonicalization AND reversal: {}",
+            seen_canon.len()
+        );
         if !any_dup {
             println!("  (none — all circuits are distinct up to canonicalization and reversal)");
         }
@@ -6993,59 +7622,40 @@ mod tests {
 
     #[test]
     fn test_compare_circuit_lists() {
-        use crate::circuit::{circuit::poly_to_str, CircuitSeq};
+        use crate::circuit::{CircuitSeq, circuit::poly_to_str};
 
         let left_circuits: Vec<Vec<[u8; 3]>> = vec![
-            vec![[3,1,2],[1,3,0]],
-            vec![[3,0,2],[3,1,0]],
-            vec![[3,1,0],[4,0,2]],
-            vec![[1,0,3],[2,1,0]],
-            vec![[2,0,1],[3,1,0]],
-            vec![[3,0,2],[2,1,0]],
-            vec![[3,0,1],[3,0,2]],
-            vec![[4,0,2],[4,1,3]],
-            vec![[2,0,1],[3,1,2]],
-            vec![[2,0,1],[3,2,1]],
-            vec![[2,0,1],[0,1,2]],
-            vec![[3,1,2],[2,0,3]],
-            vec![[3,0,1],[4,0,2]],
-            vec![[3,0,2],[0,1,3]],
-            vec![[2,0,1],[3,0,1]],
-            vec![[4,0,1],[1,2,3]],
-            vec![[3,0,2],[4,1,2]],
-            vec![[2,0,1],[3,0,2]],
-            vec![[2,0,1],[1,0,2]],
-            vec![[1,2,0],[2,1,0]],
-            vec![[4,0,2],[5,1,3]],
-            vec![[4,0,2],[0,1,3]],
-            vec![[3,0,2],[3,1,2]],
-            vec![[2,0,1],[2,1,0]],
+            vec![[3, 1, 2], [1, 3, 0]],
+            vec![[3, 0, 2], [3, 1, 0]],
+            vec![[3, 1, 0], [4, 0, 2]],
+            vec![[1, 0, 3], [2, 1, 0]],
+            vec![[2, 0, 1], [3, 1, 0]],
+            vec![[3, 0, 2], [2, 1, 0]],
+            vec![[3, 0, 1], [3, 0, 2]],
+            vec![[4, 0, 2], [4, 1, 3]],
+            vec![[2, 0, 1], [3, 1, 2]],
+            vec![[2, 0, 1], [3, 2, 1]],
+            vec![[2, 0, 1], [0, 1, 2]],
+            vec![[3, 1, 2], [2, 0, 3]],
+            vec![[3, 0, 1], [4, 0, 2]],
+            vec![[3, 0, 2], [0, 1, 3]],
+            vec![[2, 0, 1], [3, 0, 1]],
+            vec![[4, 0, 1], [1, 2, 3]],
+            vec![[3, 0, 2], [4, 1, 2]],
+            vec![[2, 0, 1], [3, 0, 2]],
+            vec![[2, 0, 1], [1, 0, 2]],
+            vec![[1, 2, 0], [2, 1, 0]],
+            vec![[4, 0, 2], [5, 1, 3]],
+            vec![[4, 0, 2], [0, 1, 3]],
+            vec![[3, 0, 2], [3, 1, 2]],
+            vec![[2, 0, 1], [2, 1, 0]],
         ];
 
         let right_strings: Vec<&str> = vec![
-            "012;013;",
-            "021;143;",
-            "021;123;",
-            "012;143;",
-            "042;123;",
-            "103;012;",
-            "012;123;",
-            "023;124;",
-            "031;042;",
-            "012;021;",
-            "042;153;",
-            "012;132;",
-            "032;142;",
-            "032;123;",
-            "021;102;",
-            "102;012;",
-            "120;021;",
-            "021;031;",
-            "012;031;",
-            "130;021;",
-            "032;132;",
-            "021;132;",
-            "130;012;",
+            "012;013;", "021;143;", "021;123;", "012;143;", "042;123;", "103;012;", "012;123;",
+            "023;124;", "031;042;", "012;021;", "042;153;", "012;132;", "032;142;", "032;123;",
+            "021;102;", "102;012;", "120;021;", "021;031;", "012;031;", "130;021;", "032;132;",
+            "021;132;", "130;012;",
         ];
 
         fn parse_gates(s: &str) -> Vec<[u8; 3]> {
@@ -7064,7 +7674,9 @@ mod tests {
                 let circuit = CircuitSeq { gates: g.to_vec() };
                 let polys = circuit.to_polynomial(n, 0, g.len());
                 let (canonical, _) = canonicalize_polys(polys, true, false);
-                canonical.iter().enumerate()
+                canonical
+                    .iter()
+                    .enumerate()
                     .map(|(i, p)| format!("P{}:{}", i, poly_to_str(p, n)))
                     .collect::<Vec<_>>()
                     .join("|")
@@ -7089,16 +7701,32 @@ mod tests {
             reversed_key: String,
         }
 
-        let mut left_entries: Vec<Entry> = left_circuits.iter().enumerate().map(|(i, gates)| {
-            let (fk, rk) = circuit_canon_keys(gates, n);
-            Entry { label: format!("L{:02}", i), forward_key: fk, reversed_key: rk }
-        }).collect();
+        let mut left_entries: Vec<Entry> = left_circuits
+            .iter()
+            .enumerate()
+            .map(|(i, gates)| {
+                let (fk, rk) = circuit_canon_keys(gates, n);
+                Entry {
+                    label: format!("L{:02}", i),
+                    forward_key: fk,
+                    reversed_key: rk,
+                }
+            })
+            .collect();
 
-        let mut right_entries: Vec<Entry> = right_strings.iter().enumerate().map(|(i, s)| {
-            let gates = parse_gates(s);
-            let (fk, rk) = circuit_canon_keys(&gates, n);
-            Entry { label: format!("R{:02}", i), forward_key: fk, reversed_key: rk }
-        }).collect();
+        let mut right_entries: Vec<Entry> = right_strings
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let gates = parse_gates(s);
+                let (fk, rk) = circuit_canon_keys(&gates, n);
+                Entry {
+                    label: format!("R{:02}", i),
+                    forward_key: fk,
+                    reversed_key: rk,
+                }
+            })
+            .collect();
 
         // Print all keys
         println!("=== LEFT SIDE ===");
@@ -7118,7 +7746,7 @@ mod tests {
         //   (L.fwd == R.fwd), (L.fwd == R.rev), (L.rev == R.fwd), (L.rev == R.rev)
 
         println!("\n=== MATCHES (left <-> right, any forward/reverse combination) ===");
-        let mut matched_left:  std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut matched_left: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let mut matched_right: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
         for (li, le) in left_entries.iter().enumerate() {
@@ -7126,12 +7754,25 @@ mod tests {
                 let l_keys = [&le.forward_key, &le.reversed_key];
                 let r_keys = [&re.forward_key, &re.reversed_key];
                 let mut match_desc: Vec<&str> = Vec::new();
-                if le.forward_key  == re.forward_key  { match_desc.push("fwd==fwd"); }
-                if le.forward_key  == re.reversed_key { match_desc.push("fwd==rev"); }
-                if le.reversed_key == re.forward_key  { match_desc.push("rev==fwd"); }
-                if le.reversed_key == re.reversed_key { match_desc.push("rev==rev"); }
+                if le.forward_key == re.forward_key {
+                    match_desc.push("fwd==fwd");
+                }
+                if le.forward_key == re.reversed_key {
+                    match_desc.push("fwd==rev");
+                }
+                if le.reversed_key == re.forward_key {
+                    match_desc.push("rev==fwd");
+                }
+                if le.reversed_key == re.reversed_key {
+                    match_desc.push("rev==rev");
+                }
                 if !match_desc.is_empty() {
-                    println!("  {} <-> {} [{}]", le.label, re.label, match_desc.join(", "));
+                    println!(
+                        "  {} <-> {} [{}]",
+                        le.label,
+                        re.label,
+                        match_desc.join(", ")
+                    );
                     matched_left.insert(li);
                     matched_right.insert(ri);
                 }
@@ -7157,14 +7798,22 @@ mod tests {
         // Duplicates within left (same canonical key, forward or reversed)
         println!("\n=== Duplicates within LEFT ===");
         for i in 0..left_entries.len() {
-            for j in (i+1)..left_entries.len() {
+            for j in (i + 1)..left_entries.len() {
                 let li = &left_entries[i];
                 let lj = &left_entries[j];
                 let mut descs = Vec::new();
-                if li.forward_key  == lj.forward_key  { descs.push("fwd==fwd"); }
-                if li.forward_key  == lj.reversed_key { descs.push("fwd==rev"); }
-                if li.reversed_key == lj.forward_key  { descs.push("rev==fwd"); }
-                if li.reversed_key == lj.reversed_key { descs.push("rev==rev"); }
+                if li.forward_key == lj.forward_key {
+                    descs.push("fwd==fwd");
+                }
+                if li.forward_key == lj.reversed_key {
+                    descs.push("fwd==rev");
+                }
+                if li.reversed_key == lj.forward_key {
+                    descs.push("rev==fwd");
+                }
+                if li.reversed_key == lj.reversed_key {
+                    descs.push("rev==rev");
+                }
                 if !descs.is_empty() {
                     println!("  {} <-> {} [{}]", li.label, lj.label, descs.join(", "));
                     println!("  {:?} <-> {:?}", left_circuits[i], left_circuits[j]);
@@ -7175,14 +7824,22 @@ mod tests {
         // Duplicates within right
         println!("\n=== Duplicates within RIGHT ===");
         for i in 0..right_entries.len() {
-            for j in (i+1)..right_entries.len() {
+            for j in (i + 1)..right_entries.len() {
                 let ri = &right_entries[i];
                 let rj = &right_entries[j];
                 let mut descs = Vec::new();
-                if ri.forward_key  == rj.forward_key  { descs.push("fwd==fwd"); }
-                if ri.forward_key  == rj.reversed_key { descs.push("fwd==rev"); }
-                if ri.reversed_key == rj.forward_key  { descs.push("rev==fwd"); }
-                if ri.reversed_key == rj.reversed_key { descs.push("rev==rev"); }
+                if ri.forward_key == rj.forward_key {
+                    descs.push("fwd==fwd");
+                }
+                if ri.forward_key == rj.reversed_key {
+                    descs.push("fwd==rev");
+                }
+                if ri.reversed_key == rj.forward_key {
+                    descs.push("rev==fwd");
+                }
+                if ri.reversed_key == rj.reversed_key {
+                    descs.push("rev==rev");
+                }
                 if !descs.is_empty() {
                     println!("  {} <-> {} [{}]", ri.label, rj.label, descs.join(", "));
                 }
@@ -7193,7 +7850,9 @@ mod tests {
     #[test]
     fn test_group_relabelings_with_reversal() {
         fn cs(gates: &[[u8; 3]]) -> CircuitSeq {
-            CircuitSeq { gates: gates.to_vec() }
+            CircuitSeq {
+                gates: gates.to_vec(),
+            }
         }
 
         fn is_equiv(a: &CircuitSeq, b: &CircuitSeq) -> bool {
@@ -7211,35 +7870,30 @@ mod tests {
         }
 
         let circuits = vec![
-            cs(&[[3,2,1],[1,0,3]]),
-            cs(&[[4,3,0],[5,2,1]]),
-            cs(&[[3,0,1],[3,2,0]]),
-            cs(&[[3,0,1],[4,2,0]]),
-
-            cs(&[[1,3,0],[2,0,1]]),
-            cs(&[[2,1,0],[3,0,1]]),
-            cs(&[[3,1,0],[3,2,0]]),
-            cs(&[[2,0,1],[3,0,2]]),
-            cs(&[[3,0,1],[3,0,2]]),
-
-            cs(&[[4,3,0],[3,2,1]]),
-            cs(&[[4,3,0],[0,2,1]]),
-
-            cs(&[[3,2,0],[2,1,3]]),
-            cs(&[[2,1,0],[3,2,1]]),
-            cs(&[[4,2,1],[4,3,0]]),
-            cs(&[[2,1,0],[0,2,1]]),
-            cs(&[[3,2,1],[2,3,0]]),
-            cs(&[[3,1,0],[4,2,0]]),
-            cs(&[[2,1,0],[3,1,0]]),
-            cs(&[[3,0,1],[4,0,2]]),
-
-            cs(&[[4,2,1],[2,3,0]]),
-
-            cs(&[[2,1,0],[3,2,0]]),
-            cs(&[[2,1,0],[1,2,0]]),
-            cs(&[[1,0,2],[2,0,1]]),
-            cs(&[[2,0,1],[2,1,0]]),
+            cs(&[[3, 2, 1], [1, 0, 3]]),
+            cs(&[[4, 3, 0], [5, 2, 1]]),
+            cs(&[[3, 0, 1], [3, 2, 0]]),
+            cs(&[[3, 0, 1], [4, 2, 0]]),
+            cs(&[[1, 3, 0], [2, 0, 1]]),
+            cs(&[[2, 1, 0], [3, 0, 1]]),
+            cs(&[[3, 1, 0], [3, 2, 0]]),
+            cs(&[[2, 0, 1], [3, 0, 2]]),
+            cs(&[[3, 0, 1], [3, 0, 2]]),
+            cs(&[[4, 3, 0], [3, 2, 1]]),
+            cs(&[[4, 3, 0], [0, 2, 1]]),
+            cs(&[[3, 2, 0], [2, 1, 3]]),
+            cs(&[[2, 1, 0], [3, 2, 1]]),
+            cs(&[[4, 2, 1], [4, 3, 0]]),
+            cs(&[[2, 1, 0], [0, 2, 1]]),
+            cs(&[[3, 2, 1], [2, 3, 0]]),
+            cs(&[[3, 1, 0], [4, 2, 0]]),
+            cs(&[[2, 1, 0], [3, 1, 0]]),
+            cs(&[[3, 0, 1], [4, 0, 2]]),
+            cs(&[[4, 2, 1], [2, 3, 0]]),
+            cs(&[[2, 1, 0], [3, 2, 0]]),
+            cs(&[[2, 1, 0], [1, 2, 0]]),
+            cs(&[[1, 0, 2], [2, 0, 1]]),
+            cs(&[[2, 0, 1], [2, 1, 0]]),
         ];
 
         let mut classes: Vec<Vec<CircuitSeq>> = Vec::new();
@@ -7280,8 +7934,12 @@ mod tests {
     #[test]
     fn test_c1_vs_c2_after_canon() {
         use crate::circuit::circuit::poly_to_str;
-        let mut c1 = CircuitSeq { gates: vec![[0, 3, 1], [3, 1, 2], [1, 3, 0], [4, 1, 3]]    };
-        let mut c2 = CircuitSeq { gates: vec![[0, 3, 1], [4, 3, 1], [3, 1, 2], [1, 3, 0]]    };
+        let mut c1 = CircuitSeq {
+            gates: vec![[0, 3, 1], [3, 1, 2], [1, 3, 0], [4, 1, 3]],
+        };
+        let mut c2 = CircuitSeq {
+            gates: vec![[0, 3, 1], [4, 3, 1], [3, 1, 2], [1, 3, 0]],
+        };
         let m = c1.gates.len();
         println!("Relabeling? {}", c1.is_relabeling_of(&c2));
         c1.canonicalize();
@@ -7311,15 +7969,27 @@ mod tests {
         for (i, poly) in canon_2.0.iter().enumerate() {
             println!("  P{}: {}", i, poly_to_str(poly, m * 3));
         }
-        assert!(canon_1.0 == canon_2.0, "Canonical forms differ:\n  c1: {:?}\n  c2: {:?}", canon_1.0, canon_2.0);
-        assert!(canon_1.1.gates == canon_2.1.gates, "Circuits differ after canonicalization:\n  c1: {:?}\n  c2: {:?}", canon_1.1.gates, canon_2.1.gates);
+        assert!(
+            canon_1.0 == canon_2.0,
+            "Canonical forms differ:\n  c1: {:?}\n  c2: {:?}",
+            canon_1.0,
+            canon_2.0
+        );
+        assert!(
+            canon_1.1.gates == canon_2.1.gates,
+            "Circuits differ after canonicalization:\n  c1: {:?}\n  c2: {:?}",
+            canon_1.1.gates,
+            canon_2.1.gates
+        );
     }
 
     #[test]
     fn test_canonicalize_hardcoded() {
         use crate::circuit::circuit::poly_to_str;
 
-        let c = CircuitSeq { gates: vec![[8,40,28]] };
+        let c = CircuitSeq {
+            gates: vec![[8, 40, 28]],
+        };
         let m = c.gates.len();
 
         let (canon_polys, rewired, reversed, final_order, _) = c.canonicalize_polys(m * 3);
@@ -7346,8 +8016,12 @@ mod tests {
         let n = 3 * m;
 
         // The two circuits you observed as duplicates
-        let mut c_a = CircuitSeq { gates: vec![[3, 2, 0], [4, 0, 3], [3, 1, 0]]  };
-        let mut c_b = CircuitSeq { gates: vec![[3, 1, 0], [4, 0, 3], [3, 2, 0]] };
+        let mut c_a = CircuitSeq {
+            gates: vec![[3, 2, 0], [4, 0, 3], [3, 1, 0]],
+        };
+        let mut c_b = CircuitSeq {
+            gates: vec![[3, 1, 0], [4, 0, 3], [3, 2, 0]],
+        };
 
         // Hash c_a canonically
         let canon_a = canonicalize_polys_4(c_a.to_polynomial(n, 0, m));
@@ -7426,7 +8100,8 @@ mod tests {
 
         // Parallelize at (g1, g2) level — num_gates^2 tasks
         // Each task owns its inner (g3, g4) loop = num_gates^2 circuits
-        let pairs: Vec<([u8; 3], [u8; 3])> = gates.iter()
+        let pairs: Vec<([u8; 3], [u8; 3])> = gates
+            .iter()
             .flat_map(|&g1| gates.iter().map(move |&g2| (g1, g2)))
             .collect();
 
@@ -7478,15 +8153,17 @@ mod tests {
         println!("Done in {:?}", elapsed);
         println!(
             "Total distinct canonical keys for {}-gate circuits on {} wires: {}",
-            m, n, global_seen.len()
+            m,
+            n,
+            global_seen.len()
         );
     }
 
     #[test]
     fn test_top100_common_hashes_m4_m5() {
+        use crate::circuit::circuit::poly_to_str;
         use rocksdb::{DB, Options};
         use std::collections::HashMap;
-        use crate::circuit::circuit::poly_to_str;
 
         let mut opts = Options::default();
         opts.set_max_open_files(-1);
@@ -7517,8 +8194,11 @@ mod tests {
         }
         let mut out = String::new();
 
-        let write_section = |out: &mut String, label: &str, mut ranked: Vec<(Vec<u8>, usize, usize)>,
-                              db4: &DB, db5: &DB| {
+        let write_section = |out: &mut String,
+                             label: &str,
+                             mut ranked: Vec<(Vec<u8>, usize, usize)>,
+                             db4: &DB,
+                             db5: &DB| {
             ranked.truncate(100);
             out.push_str(&format!("\n{}\n{:-<80}\n", label, ""));
             let n = 3 * 4;
@@ -7531,23 +8211,38 @@ mod tests {
                 let (canon_polys, _, _, _, _) = circuits4[0].clone().canonicalize_polys(n);
                 let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
 
-                out.push_str(&format!("\n[{}] hash={} | m4 circuits={} | m5 circuits={}\n",
-                    rank + 1, hash_str, count4, count5));
+                out.push_str(&format!(
+                    "\n[{}] hash={} | m4 circuits={} | m5 circuits={}\n",
+                    rank + 1,
+                    hash_str,
+                    count4,
+                    count5
+                ));
                 out.push_str("  Canonical polynomial (from first m4 circuit):\n");
                 for (i, poly) in canon_polys.iter().enumerate() {
                     out.push_str(&format!("    x{} = {}\n", i, poly_to_str(poly, n)));
                 }
                 out.push_str(&format!("  m4 circuits ({}):\n", circuits4.len()));
-                for c in &circuits4 { out.push_str(&format!("    {:?}\n", c.gates)); }
+                for c in &circuits4 {
+                    out.push_str(&format!("    {:?}\n", c.gates));
+                }
                 out.push_str(&format!("  m5 circuits ({}):\n", circuits5.len()));
-                for c in &circuits5 { out.push_str(&format!("    {:?}\n", c.gates)); }
+                for c in &circuits5 {
+                    out.push_str(&format!("    {:?}\n", c.gates));
+                }
             }
         };
 
         // Top 100 overall (m4 + m5 combined)
         let mut by_total = common.clone();
         by_total.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
-        write_section(&mut out, "TOP 100 OVERALL (m4 + m5 combined)", by_total, &db4, &db5);
+        write_section(
+            &mut out,
+            "TOP 100 OVERALL (m4 + m5 combined)",
+            by_total,
+            &db4,
+            &db5,
+        );
 
         // Top 100 by m4 count
         let mut by_m4 = common.clone();
@@ -7569,7 +8264,9 @@ mod tests {
         while pos < value.len() {
             let len = value[pos] as usize;
             pos += 1;
-            if pos + len > value.len() { break; }
+            if pos + len > value.len() {
+                break;
+            }
             pos += len;
             count += 1;
         }
@@ -7580,10 +8277,14 @@ mod tests {
         let mut pos = 0;
         let mut out = Vec::new();
         while pos < value.len() {
-            if pos + 1 > value.len() { break; }
+            if pos + 1 > value.len() {
+                break;
+            }
             let len = value[pos] as usize;
             pos += 1;
-            if pos + len > value.len() { break; }
+            if pos + len > value.len() {
+                break;
+            }
             out.push(CircuitSeq::from_blob(&value[pos..pos + len]));
             pos += len;
         }
@@ -7592,8 +8293,8 @@ mod tests {
 
     #[test]
     fn test_top10_popular_m4_m5() {
-        use rocksdb::{DB, Options};
         use crate::circuit::circuit::poly_to_str;
+        use rocksdb::{DB, Options};
 
         let mut opts = Options::default();
         opts.set_max_open_files(-1);
@@ -7618,7 +8319,10 @@ mod tests {
             ranked.sort_by(|a, b| b.1.cmp(&a.1));
             ranked.truncate(10);
 
-            out.push_str(&format!("\nTOP 10 BY CIRCUIT COUNT — {}\n{:-<60}\n", db_name, ""));
+            out.push_str(&format!(
+                "\nTOP 10 BY CIRCUIT COUNT — {}\n{:-<60}\n",
+                db_name, ""
+            ));
 
             for (rank, (key, count)) in ranked.iter().enumerate() {
                 let value = db.get(key).unwrap().unwrap();
@@ -7626,7 +8330,12 @@ mod tests {
                 let (canon_polys, _, _, _, _) = circuits[0].clone().canonicalize_polys(n);
                 let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
 
-                out.push_str(&format!("\n[{}] hash={} | circuits={}\n", rank + 1, hash_str, count));
+                out.push_str(&format!(
+                    "\n[{}] hash={} | circuits={}\n",
+                    rank + 1,
+                    hash_str,
+                    count
+                ));
                 out.push_str("  Canonical polynomial:\n");
                 for (i, poly) in canon_polys.iter().enumerate() {
                     out.push_str(&format!("    x{} = {}\n", i, poly_to_str(poly, n)));
@@ -7644,8 +8353,8 @@ mod tests {
 
     #[test]
     fn test_shared_hashes_m2_m5() {
-        use rocksdb::{DB, Options};
         use crate::circuit::circuit::poly_to_str;
+        use rocksdb::{DB, Options};
 
         let mut opts = Options::default();
         opts.set_max_open_files(-1);
@@ -7670,9 +8379,7 @@ mod tests {
                 let (key, value5) = item.expect("m5 iter error");
                 if keys2.contains(key.as_ref()) {
                     let count5 = decode_circuit_count(&value5);
-                    let count2 = decode_circuit_count(
-                        &db2.get(key.as_ref()).unwrap().unwrap()
-                    );
+                    let count2 = decode_circuit_count(&db2.get(key.as_ref()).unwrap().unwrap());
                     Some((key.to_vec(), count2, count5))
                 } else {
                     None
@@ -7683,7 +8390,9 @@ mod tests {
         shared.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
 
         let mut out = String::new();
-        out.push_str(&format!("HASHES SHARED BETWEEN rocks_db_m2 AND rocks_db_m5\n"));
+        out.push_str(&format!(
+            "HASHES SHARED BETWEEN rocks_db_m2 AND rocks_db_m5\n"
+        ));
         out.push_str(&format!("Total shared: {}\n", shared.len()));
         out.push_str(&format!("{:-<60}\n", ""));
 
@@ -7699,20 +8408,30 @@ mod tests {
 
             out.push_str(&format!(
                 "\n[{}] hash={} | m2 circuits={} | m5 circuits={}\n",
-                rank + 1, hash_str, count2, count5
+                rank + 1,
+                hash_str,
+                count2,
+                count5
             ));
             out.push_str("  Canonical polynomial:\n");
             for (i, poly) in canon_polys.iter().enumerate() {
                 out.push_str(&format!("    x{} = {}\n", i, poly_to_str(poly, 6)));
             }
             out.push_str(&format!("  m2 circuits ({}):\n", circuits2.len()));
-            for c in &circuits2 { out.push_str(&format!("    {:?}\n", c.gates)); }
+            for c in &circuits2 {
+                out.push_str(&format!("    {:?}\n", c.gates));
+            }
             out.push_str(&format!("  m5 circuits ({}):\n", circuits5.len()));
-            for c in &circuits5 { out.push_str(&format!("    {:?}\n", c.gates)); }
+            for c in &circuits5 {
+                out.push_str(&format!("    {:?}\n", c.gates));
+            }
         }
 
         std::fs::write("shared_m2_m5.txt", &out).expect("Failed to write shared_m2_m5.txt");
-        println!("Written to shared_m2_m5.txt ({} shared hashes)", shared.len());
+        println!(
+            "Written to shared_m2_m5.txt ({} shared hashes)",
+            shared.len()
+        );
     }
 
     #[test]
@@ -7720,7 +8439,7 @@ mod tests {
         let m = 4;
         let n = 3 * m;
         let gates = base_gates(n);
-        
+
         // Generate a sample of circuits to benchmark on
         let mut rng = rand::rng();
         let sample_size = 10_000;
@@ -7730,9 +8449,13 @@ mod tests {
             let g2 = gates[rng.random_range(0..gates.len())];
             let g3 = gates[rng.random_range(0..gates.len())];
             let g4 = gates[rng.random_range(0..gates.len())];
-            let mut c = CircuitSeq { gates: vec![g1, g2, g3, g4] };
+            let mut c = CircuitSeq {
+                gates: vec![g1, g2, g3, g4],
+            };
             c.canonicalize();
-            if c.adjacent_id() { continue; }
+            if c.adjacent_id() {
+                continue;
+            }
             circuits.push(c);
         }
         println!("Sample size: {}", circuits.len());
@@ -7749,9 +8472,8 @@ mod tests {
         println!("canonicalize_polys: {:.0}/sec (sink={})", rate, sink);
 
         // Benchmark just polys_repr_blob + hash
-        let polys_vec: Vec<Vec<Polynomial>> = circuits.iter()
-            .map(|c| c.canonicalize_polys(n).0)
-            .collect();
+        let polys_vec: Vec<Vec<Polynomial>> =
+            circuits.iter().map(|c| c.canonicalize_polys(n).0).collect();
         let start = std::time::Instant::now();
         let mut sink = 0u128;
         for polys in &polys_vec {
@@ -7760,14 +8482,18 @@ mod tests {
         let elapsed = start.elapsed().as_secs_f64();
         println!("polys_repr_blob + xxh3: {:.0}/sec (sink={})", rate, sink);
 
-        // Benchmark just canonicalize() 
-        let raw: Vec<CircuitSeq> = (0..sample_size).map(|_| {
-            let g1 = gates[rng.random_range(0..gates.len())];
-            let g2 = gates[rng.random_range(0..gates.len())];
-            let g3 = gates[rng.random_range(0..gates.len())];
-            let g4 = gates[rng.random_range(0..gates.len())];
-            CircuitSeq { gates: vec![g1, g2, g3, g4] }
-        }).collect();
+        // Benchmark just canonicalize()
+        let raw: Vec<CircuitSeq> = (0..sample_size)
+            .map(|_| {
+                let g1 = gates[rng.random_range(0..gates.len())];
+                let g2 = gates[rng.random_range(0..gates.len())];
+                let g3 = gates[rng.random_range(0..gates.len())];
+                let g4 = gates[rng.random_range(0..gates.len())];
+                CircuitSeq {
+                    gates: vec![g1, g2, g3, g4],
+                }
+            })
+            .collect();
         let mut raw = raw;
         let start = std::time::Instant::now();
         for c in &mut raw {
@@ -7780,32 +8506,43 @@ mod tests {
         let start = std::time::Instant::now();
         let mut sink2 = 0usize;
         for c in &circuits {
-            if c.adjacent_id() { sink2 += 1; }
+            if c.adjacent_id() {
+                sink2 += 1;
+            }
         }
         let elapsed = start.elapsed().as_secs_f64();
-        println!("adjacent_id: {:.0}/sec (sink={})", circuits.len() as f64 / elapsed, sink2);
+        println!(
+            "adjacent_id: {:.0}/sec (sink={})",
+            circuits.len() as f64 / elapsed,
+            sink2
+        );
 
         // Parallel throughput
         let start = std::time::Instant::now();
-        let sink: u128 = circuits.par_iter().map(|c| {
-            let (polys, _, _, _, _) = c.canonicalize_polys(n);
-            xxh3_128(&polys_repr_blob(&polys))
-        }).reduce(|| 0u128, |a, b| a ^ b);
+        let sink: u128 = circuits
+            .par_iter()
+            .map(|c| {
+                let (polys, _, _, _, _) = c.canonicalize_polys(n);
+                xxh3_128(&polys_repr_blob(&polys))
+            })
+            .reduce(|| 0u128, |a, b| a ^ b);
         let elapsed = start.elapsed().as_secs_f64();
-        println!("parallel canonicalize_polys: {:.0}/sec (sink={})",
-            circuits.len() as f64 / elapsed, sink);
+        println!(
+            "parallel canonicalize_polys: {:.0}/sec (sink={})",
+            circuits.len() as f64 / elapsed,
+            sink
+        );
     }
 
     #[test]
     fn test_verify_fasterkv() {
-        verify_fasterkv("rocks_db_m1_6", "fasterkv_m1_6")
-            .expect("FasterKV verification failed");
+        verify_fasterkv("rocks_db_m1_6", "fasterkv_m1_6").expect("FasterKV verification failed");
     }
 
     #[test]
     fn test_top100_overall_m1_6() {
-        use rocksdb::{DB, Options};
         use crate::circuit::circuit::poly_to_str;
+        use rocksdb::{DB, Options};
 
         let mut opts = Options::default();
         opts.set_max_open_files(-1);
@@ -7840,7 +8577,9 @@ mod tests {
 
             out.push_str(&format!(
                 "\n[{}] hash={} | circuits={}\n",
-                rank + 1, hash_str, count
+                rank + 1,
+                hash_str,
+                count
             ));
             out.push_str("  Canonical polynomial:\n");
             for (i, poly) in canon_polys.iter().enumerate() {
@@ -7855,15 +8594,14 @@ mod tests {
         std::fs::write("top100_overall.txt", &out).expect("Failed to write top100_overall.txt");
         println!("Written to top100_overall.txt");
     }
-
 }
 
 /// Merge rocks_db_m1..=rocks_db_m6 by key into a single RocksDB at `output_path`.
 /// Values for the same key are concatenated (the existing length-prefixed blob format
 /// means the combined value is still valid — each circuit's length marker is intact).
 pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use std::collections::BinaryHeap;
     use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
 
     // Open all existing source DBs read-only
     let mut dbs: Vec<DB> = Vec::new();
@@ -7874,8 +8612,10 @@ pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Er
         read_opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
         match DB::open_for_read_only(&read_opts, &path, false) {
             Ok(db) => {
-                let est = db.property_value("rocksdb.estimate-num-keys")
-                    .ok().flatten()
+                let est = db
+                    .property_value("rocksdb.estimate-num-keys")
+                    .ok()
+                    .flatten()
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(0);
                 println!("Opened {} (~{} keys)", path, est);
@@ -7988,7 +8728,11 @@ pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Er
             let rate = unique_written as f64 / elapsed;
             println!(
                 "[combine] sst={} | keys={} | {:.0} keys/s | elapsed={:.0}s ({:.1}h)",
-                sst_index, unique_written, rate, elapsed, elapsed / 3600.0
+                sst_index,
+                unique_written,
+                rate,
+                elapsed,
+                elapsed / 3600.0
             );
         }
     }
@@ -8018,7 +8762,11 @@ pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Er
     let elapsed = start.elapsed().as_secs_f64();
     println!(
         "Done. {} unique keys written to {} in {:.0}s ({:.1}h) via {} SST files",
-        unique_written, output_path, elapsed, elapsed / 3600.0, sst_index
+        unique_written,
+        output_path,
+        elapsed,
+        elapsed / 3600.0,
+        sst_index
     );
     Ok(())
 }
@@ -8038,7 +8786,11 @@ pub fn rocks_to_fasterkv(
 
     for batch_start in (0usize..256).step_by(BATCH) {
         let batch_end = (batch_start + BATCH).min(256);
-        println!("Processing shards {:02x}..{:02x}", batch_start, batch_end - 1);
+        println!(
+            "Processing shards {:02x}..{:02x}",
+            batch_start,
+            batch_end - 1
+        );
 
         let mut stores = Vec::with_capacity(BATCH);
         for shard in batch_start..batch_end {
@@ -8077,29 +8829,36 @@ pub fn rocks_to_fasterkv(
         for (i, store) in stores.iter().enumerate() {
             let shard = batch_start + i;
             store.complete_pending(true);
-            let token = store.checkpoint()
-                .map_err(|e| format!("checkpoint shard {:02x}: {:?}", shard, e))?.token;
+            let token = store
+                .checkpoint()
+                .map_err(|e| format!("checkpoint shard {:02x}: {:?}", shard, e))?
+                .token;
             store.complete_pending(true);
             store.stop_session();
             let shard_dir = format!("{}/{:02x}", faster_dir, shard);
             std::fs::write(format!("{}/index.token", shard_dir), &token)?;
             std::fs::write(format!("{}/log.token", shard_dir), &token)?;
-            println!("  Shard {:02x}: {} entries, token={}", shard, serials[i] - 1, &token);
+            println!(
+                "  Shard {:02x}: {} entries, token={}",
+                shard,
+                serials[i] - 1,
+                &token
+            );
         }
 
         grand_total += batch_total;
         println!("Batch done. Total so far: {}", grand_total);
     }
 
-    println!("Done. {} entries across 256 shards in {}", grand_total, faster_dir);
+    println!(
+        "Done. {} entries across 256 shards in {}",
+        grand_total, faster_dir
+    );
     Ok(())
 }
 
-pub fn rocks_to_lmdb(
-    rocks_path: &str,
-    lmdb_path: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use lmdb::{Environment, DatabaseFlags, WriteFlags, Transaction};
+pub fn rocks_to_lmdb(rocks_path: &str, lmdb_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use lmdb::{DatabaseFlags, Environment, Transaction, WriteFlags};
 
     std::fs::create_dir_all(lmdb_path)?;
 
@@ -8152,12 +8911,19 @@ pub fn verify_fasterkv(
             .map_err(|e| format!("missing index.token for shard {:02x}: {}", shard, e))?;
         let log_token = std::fs::read_to_string(format!("{}/log.token", shard_dir))
             .map_err(|e| format!("missing log.token for shard {:02x}: {}", shard, e))?;
-        let recover = store.recover(idx_token.clone(), log_token.clone())
+        let recover = store
+            .recover(idx_token.clone(), log_token.clone())
             .map_err(|e| format!("recover shard {:02x}: {:?}", shard, e))?;
         if shard < 3 {
-            println!("Shard {:02x} recover: status={} version={} sessions={:?}",
-                shard, recover.status, recover.version, recover.session_ids);
-            println!("  idx_token={} log_token={}", idx_token.trim(), log_token.trim());
+            println!(
+                "Shard {:02x} recover: status={} version={} sessions={:?}",
+                shard, recover.status, recover.version, recover.session_ids
+            );
+            println!(
+                "  idx_token={} log_token={}",
+                idx_token.trim(),
+                log_token.trim()
+            );
         }
 
         stores.push(store);
@@ -8182,7 +8948,11 @@ pub fn verify_fasterkv(
         if s == status::NOT_FOUND {
             missing += 1;
             if missing <= 5 {
-                println!("MISSING key (shard {:02x}): {:?}", shard, &key_vec[..key_vec.len().min(16)]);
+                println!(
+                    "MISSING key (shard {:02x}): {:?}",
+                    shard,
+                    &key_vec[..key_vec.len().min(16)]
+                );
             }
         } else {
             stores[shard].complete_pending(true);
@@ -8191,14 +8961,22 @@ pub fn verify_fasterkv(
                     if found_val != val_vec {
                         mismatch += 1;
                         if mismatch <= 5 {
-                            println!("MISMATCH key (shard {:02x}): {:?}", shard, &key_vec[..key_vec.len().min(16)]);
+                            println!(
+                                "MISMATCH key (shard {:02x}): {:?}",
+                                shard,
+                                &key_vec[..key_vec.len().min(16)]
+                            );
                         }
                     }
                 }
                 Err(_) => {
                     missing += 1;
                     if missing <= 5 {
-                        println!("NO RECV key (shard {:02x}): {:?}", shard, &key_vec[..key_vec.len().min(16)]);
+                        println!(
+                            "NO RECV key (shard {:02x}): {:?}",
+                            shard,
+                            &key_vec[..key_vec.len().min(16)]
+                        );
                     }
                 }
             }
@@ -8206,12 +8984,18 @@ pub fn verify_fasterkv(
 
         checked += 1;
         if checked % 100_000 == 0 {
-            println!("Checked {} entries (missing={} mismatch={})...", checked, missing, mismatch);
+            println!(
+                "Checked {} entries (missing={} mismatch={})...",
+                checked, missing, mismatch
+            );
         }
     }
 
     drop(sessions);
-    println!("Done. checked={} missing={} mismatch={}", checked, missing, mismatch);
+    println!(
+        "Done. checked={} missing={} mismatch={}",
+        checked, missing, mismatch
+    );
     if missing == 0 && mismatch == 0 {
         println!("All entries verified OK.");
         Ok(())

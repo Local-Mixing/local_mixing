@@ -1,17 +1,17 @@
 pub mod circuit;
-pub mod replace;
 pub mod rainbow;
 pub mod random;
-use pyo3::prelude::*;
-use numpy::PyArray2;
-use std::fs;
+pub mod replace;
 use crate::circuit::CircuitSeq;
-use std::time::Instant;
-use rand::Rng;
+use numpy::PyArray2;
 use numpy::ndarray::Array2;
-use std::io::{self, Write};
 use primitive_types::U256 as u256;
+use pyo3::prelude::*;
+use rand::Rng;
 use rand::seq::IteratorRandom;
+use std::fs;
+use std::io::{self, Write};
+use std::time::Instant;
 #[inline]
 fn popcount_u256(x: u256) -> u32 {
     let mut count = 0;
@@ -23,13 +23,13 @@ fn popcount_u256(x: u256) -> u32 {
 
 #[pyfunction]
 fn heatmap(
-    py: Python<'_>, 
-    num_wires: usize, 
-    num_inputs: usize, 
-    flag: bool, 
-    c1: &str, 
-    c2: &str, 
-    canon: bool, 
+    py: Python<'_>,
+    num_wires: usize,
+    num_inputs: usize,
+    flag: bool,
+    c1: &str,
+    c2: &str,
+    canon: bool,
     fix: usize,
     hw: bool,
 ) -> Py<PyArray2<f64>> {
@@ -41,10 +41,8 @@ fn heatmap(
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
     // Load circuits
-    let circuit_one_str = fs::read_to_string(c1)
-        .expect("Failed to read butterfly_recent.txt");
-    let circuit_two_str = fs::read_to_string(c2)
-        .expect("Failed to read butterfly_recent.txt");
+    let circuit_one_str = fs::read_to_string(c1).expect("Failed to read butterfly_recent.txt");
+    let circuit_two_str = fs::read_to_string(c2).expect("Failed to read butterfly_recent.txt");
     let mut circuit_one = CircuitSeq::from_string(&circuit_one_str);
     let mut circuit_two = CircuitSeq::from_string(&circuit_two_str);
     if canon {
@@ -60,8 +58,8 @@ fn heatmap(
     let start_time = Instant::now();
     let mut fixed_mask = u256::zero();
     let positions = (0..num_wires).choose_multiple(&mut rng, fix);
-    let x0: u256 = u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128) & mask;
+    let x0: u256 =
+        u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128) & mask;
     for p in positions {
         fixed_mask |= u256::from(1) << p;
     }
@@ -70,9 +68,7 @@ fn heatmap(
             println!("{}/{}", i, num_inputs);
             io::stdout().flush().unwrap();
         }
-        let r: u256 =
-        u256::from(rng.random::<u128>())
-            | (u256::from(rng.random::<u128>()) << 128);
+        let r: u256 = u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128);
 
         let input_bits = ((x0 & fixed_mask) | (r & !fixed_mask)) & mask;
 
@@ -82,7 +78,9 @@ fn heatmap(
         for i1 in 0..=circuit_one_len {
             for i2 in 0..=circuit_two_len {
                 let hamming_dist = if hw {
-                    (popcount_u256(evolution_one[i1]) as f64 - popcount_u256(evolution_two[i2]) as f64).abs()
+                    (popcount_u256(evolution_one[i1]) as f64
+                        - popcount_u256(evolution_two[i2]) as f64)
+                        .abs()
                 } else {
                     let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
                     popcount_u256(diff) as f64
@@ -119,11 +117,11 @@ fn heatmap(
 #[pyfunction]
 fn heatmap_small(
     py: Python<'_>,
-    num_wires: usize, 
-    flag: bool, 
-    c1: &str, 
-    c2: &str, 
-    canon: bool
+    num_wires: usize,
+    flag: bool,
+    c1: &str,
+    c2: &str,
+    canon: bool,
 ) -> Py<PyArray2<f64>> {
     let mask = if num_wires < 256 {
         (u256::one() << num_wires) - u256::one()
@@ -133,10 +131,8 @@ fn heatmap_small(
     println!("Running heatmap on weights 0, 1, and 2");
     io::stdout().flush().unwrap();
     // Load circuits
-    let circuit_one_str = fs::read_to_string(c1)
-        .expect("Failed to read butterfly_recent.txt");
-    let circuit_two_str = fs::read_to_string(c2)
-        .expect("Failed to read butterfly_recent.txt");
+    let circuit_one_str = fs::read_to_string(c1).expect("Failed to read butterfly_recent.txt");
+    let circuit_two_str = fs::read_to_string(c2).expect("Failed to read butterfly_recent.txt");
     let mut circuit_one = CircuitSeq::from_string(&circuit_one_str);
     let mut circuit_two = CircuitSeq::from_string(&circuit_two_str);
     if canon {
@@ -179,7 +175,7 @@ fn heatmap_small(
         for i1 in 0..=circuit_one_len {
             for i2 in 0..=circuit_two_len {
                 let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
-                let hamming_dist =  popcount_u256(diff) as f64;
+                let hamming_dist = popcount_u256(diff) as f64;
                 let overlap = if !flag {
                     hamming_dist / num_wires as f64
                 } else {
@@ -211,18 +207,18 @@ fn heatmap_small(
 
 #[pyfunction]
 fn heatmap_slice(
-    py: Python<'_>, 
-    num_wires: usize, 
-    num_inputs: usize, 
-    flag: bool, 
-    x1: usize, 
-    x2: usize, 
-    y1: usize, 
-    y2: usize, 
+    py: Python<'_>,
+    num_wires: usize,
+    num_inputs: usize,
+    flag: bool,
+    x1: usize,
+    x2: usize,
+    y1: usize,
+    y2: usize,
     c1_path: &str,
-    c2_path: &str, 
+    c2_path: &str,
     fix: usize,
-    hw: bool
+    hw: bool,
 ) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
@@ -249,8 +245,8 @@ fn heatmap_slice(
     let start_time = Instant::now();
     let mut fixed_mask = u256::zero();
     let positions = (0..num_wires).choose_multiple(&mut rng, fix);
-    let x0: u256 = u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128) & mask;
+    let x0: u256 =
+        u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128) & mask;
     for p in positions {
         fixed_mask |= u256::from(1) << p;
     }
@@ -259,9 +255,7 @@ fn heatmap_slice(
             println!("{}/{}", i, num_inputs);
             io::stdout().flush().unwrap();
         }
-        let r: u256 =
-        u256::from(rng.random::<u128>())
-            | (u256::from(rng.random::<u128>()) << 128);
+        let r: u256 = u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128);
 
         let input_bits = ((x0 & fixed_mask) | (r & !fixed_mask)) & mask;
 
@@ -271,7 +265,9 @@ fn heatmap_slice(
         for i1 in x1..=x2 {
             for i2 in y1..=y2 {
                 let hamming_dist = if hw {
-                    (popcount_u256(evolution_one[i1]) as f64 - popcount_u256(evolution_one[i2]) as f64).abs()
+                    (popcount_u256(evolution_one[i1]) as f64
+                        - popcount_u256(evolution_one[i2]) as f64)
+                        .abs()
                 } else {
                     let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
                     popcount_u256(diff) as f64
@@ -309,17 +305,17 @@ fn heatmap_slice(
 
 #[pyfunction]
 fn heatmap_mini_slice(
-    py: Python<'_>, 
-    num_wires: usize, 
-    num_inputs: usize, 
-    flag: bool, 
-    x1: usize, 
-    x2: usize, 
-    y1: usize, 
-    y2: usize, 
+    py: Python<'_>,
+    num_wires: usize,
+    num_inputs: usize,
+    flag: bool,
+    x1: usize,
+    x2: usize,
+    y1: usize,
+    y2: usize,
     c1_path: &str,
-    c2_path: &str, 
-    fix: usize
+    c2_path: &str,
+    fix: usize,
 ) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
@@ -328,7 +324,7 @@ fn heatmap_mini_slice(
         .unwrap_or_else(|_| panic!("Failed to read circuit file: {}", c1_path));
     let circuit_two_str = fs::read_to_string(c2_path)
         .unwrap_or_else(|_| panic!("Failed to read circuit file: {}", c2_path));
-    
+
     let mask = if num_wires < 256 {
         (u256::one() << num_wires) - u256::one()
     } else {
@@ -347,8 +343,8 @@ fn heatmap_mini_slice(
     let start_time = Instant::now();
     let mut fixed_mask = u256::zero();
     let positions = (0..num_wires).choose_multiple(&mut rng, fix);
-    let x0: u256 = u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128) & mask;
+    let x0: u256 =
+        u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128) & mask;
     for p in positions {
         fixed_mask |= u256::from(1) << p;
     }
@@ -357,9 +353,7 @@ fn heatmap_mini_slice(
             println!("{}/{}", i, num_inputs);
             io::stdout().flush().unwrap();
         }
-        let r: u256 =
-        u256::from(rng.random::<u128>())
-            | (u256::from(rng.random::<u128>()) << 128);
+        let r: u256 = u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128);
 
         let input_bits = ((x0 & fixed_mask) | (r & !fixed_mask)) & mask;
 

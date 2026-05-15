@@ -1,5 +1,5 @@
 use crate::circuit::circuit::CircuitSeq;
-use crate::replace::pairs::{gate_pair_taxonomy, GatePair};
+use crate::replace::pairs::{GatePair, gate_pair_taxonomy};
 use lmdb::{Cursor, Transaction, WriteFlags};
 
 #[cfg(test)]
@@ -54,9 +54,16 @@ mod tests {
         println!("\n--- shard {}/256 ---", shards_done);
         let total: u64 = counts[1..].iter().sum();
         for g in 1..=6 {
-            println!("  {:1} gate(s): {:>12}  ({:.1}%)",
-                g, counts[g],
-                if total > 0 { counts[g] as f64 / total as f64 * 100.0 } else { 0.0 });
+            println!(
+                "  {:1} gate(s): {:>12}  ({:.1}%)",
+                g,
+                counts[g],
+                if total > 0 {
+                    counts[g] as f64 / total as f64 * 100.0
+                } else {
+                    0.0
+                }
+            );
         }
         println!("  total:    {:>12}", total);
     }
@@ -78,7 +85,8 @@ mod tests {
             })
             .collect();
 
-        let comp_db = env.open_db(Some("completion_m2"))
+        let comp_db = env
+            .open_db(Some("completion_m2"))
             .expect("completion_m2 DB not found — run build_completion_m2 first");
 
         let txn = env.begin_ro_txn().expect("ro txn");
@@ -86,7 +94,10 @@ mod tests {
         // Collect all entries so we can drop the cursor before doing shard lookups.
         let mut entries: Vec<(Vec<u8>, Vec<u8>)> = {
             let mut cursor = txn.open_ro_cursor(comp_db).expect("cursor");
-            cursor.iter().map(|(k, v)| (k.to_vec(), v.to_vec())).collect()
+            cursor
+                .iter()
+                .map(|(k, v)| (k.to_vec(), v.to_vec()))
+                .collect()
         };
         entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
 
@@ -111,10 +122,15 @@ mod tests {
                     while pos < sv.len() {
                         let len = sv[pos] as usize;
                         pos += 1;
-                        if pos + len > sv.len() { break; }
+                        if pos + len > sv.len() {
+                            break;
+                        }
                         let c = CircuitSeq::from_blob(&sv[pos..pos + len]);
                         pos += len;
-                        if shortest.as_ref().map_or(true, |s: &CircuitSeq| c.gates.len() < s.gates.len()) {
+                        if shortest
+                            .as_ref()
+                            .map_or(true, |s: &CircuitSeq| c.gates.len() < s.gates.len())
+                        {
                             shortest = Some(c);
                         }
                     }
@@ -131,16 +147,20 @@ mod tests {
             while pos < value.len() {
                 let len = value[pos] as usize;
                 pos += 1;
-                if pos + len > value.len() { break; }
+                if pos + len > value.len() {
+                    break;
+                }
                 completions.push(CircuitSeq::from_blob(&value[pos..pos + len]));
                 pos += len;
             }
 
-            println!("Canonical: {}  [shard {:02x} {}]  ({} completions)",
+            println!(
+                "Canonical: {}  [shard {:02x} {}]  ({} completions)",
                 canonical_label,
                 shard_idx,
                 if shard_val.is_some() { "OK" } else { "MISSING" },
-                completions.len());
+                completions.len()
+            );
             for (i, c) in completions.iter().enumerate() {
                 println!("  {:2}. {}", i + 1, c.repr());
             }
@@ -149,7 +169,11 @@ mod tests {
 
         drop(txn);
 
-        println!("Total: {} canonical circuits, {} missing from shards", entries.len(), missing);
+        println!(
+            "Total: {} canonical circuits, {} missing from shards",
+            entries.len(),
+            missing
+        );
         assert_eq!(missing, 0, "{} hashes not found in shard DBs", missing);
     }
 
@@ -157,7 +181,7 @@ mod tests {
     /// back into the canonical circuit's wire space and verify they compute the same function.
     #[test]
     fn sanity_completion_equivalence() {
-        use crate::circuit::circuit::{polys_repr_blob, Permutation};
+        use crate::circuit::circuit::{Permutation, polys_repr_blob};
         use xxhash_rust::xxh3::xxh3_128;
 
         let env = Environment::new()
@@ -170,29 +194,42 @@ mod tests {
             .map(|s| env.open_db(Some(format!("{:02x}", s).as_str())).unwrap())
             .collect();
 
-        let comp_db = env.open_db(Some("completion_m2"))
+        let comp_db = env
+            .open_db(Some("completion_m2"))
             .expect("completion_m2 DB not found");
 
         let txn = env.begin_ro_txn().expect("ro txn");
 
         let entries: Vec<(Vec<u8>, Vec<u8>)> = {
             let mut cursor = txn.open_ro_cursor(comp_db).expect("cursor");
-            cursor.iter().map(|(k, v)| (k.to_vec(), v.to_vec())).collect()
+            cursor
+                .iter()
+                .map(|(k, v)| (k.to_vec(), v.to_vec()))
+                .collect()
         };
 
         let num_wires = 16usize; // enough headroom for extra-wire assignment
 
         for (key, value) in entries.iter().take(2) {
             // Get the shortest (canonical 2-gate) circuit from the shard.
-            let shard_val = txn.get(shard_dbs[key[0] as usize], key).expect("not in shard");
+            let shard_val = txn
+                .get(shard_dbs[key[0] as usize], key)
+                .expect("not in shard");
             let canon_c = {
                 let mut shortest: Option<CircuitSeq> = None;
                 let mut pos = 0;
                 while pos < shard_val.len() {
-                    let len = shard_val[pos] as usize; pos += 1;
-                    if pos + len > shard_val.len() { break; }
-                    let c = CircuitSeq::from_blob(&shard_val[pos..pos + len]); pos += len;
-                    if shortest.as_ref().map_or(true, |s: &CircuitSeq| c.gates.len() < s.gates.len()) {
+                    let len = shard_val[pos] as usize;
+                    pos += 1;
+                    if pos + len > shard_val.len() {
+                        break;
+                    }
+                    let c = CircuitSeq::from_blob(&shard_val[pos..pos + len]);
+                    pos += len;
+                    if shortest
+                        .as_ref()
+                        .map_or(true, |s: &CircuitSeq| c.gates.len() < s.gates.len())
+                    {
                         shortest = Some(c);
                     }
                 }
@@ -217,12 +254,16 @@ mod tests {
                 }
             };
 
-            if is_reversed { comp.gates.reverse(); }
+            if is_reversed {
+                comp.gates.reverse();
+            }
 
             // Rewire completion: canonical → dense → actual (same as replace_single_pair_with_completion).
             let repl_n = comp.max_wire() + 1;
             let mut order_data = final_order.data.clone();
-            while order_data.len() < repl_n { order_data.push(order_data.len()); }
+            while order_data.len() < repl_n {
+                order_data.push(order_data.len());
+            }
             let order_len = order_data.len().max(final_order.data.len());
             comp.rewire(&Permutation { data: order_data }, order_len);
 
@@ -242,20 +283,31 @@ mod tests {
                 // Build a full input word with `used[i]` set to bit i.
                 let mut input: usize = 0;
                 for (i, &w) in used.iter().enumerate() {
-                    if (bits >> i) & 1 == 1 { input |= 1 << w; }
+                    if (bits >> i) & 1 == 1 {
+                        input |= 1 << w;
+                    }
                 }
-                let out_canon   = canon_c.evaluate(input);
+                let out_canon = canon_c.evaluate(input);
                 let out_rewired = rewired.evaluate(input);
                 // Compare only on the used wires.
                 let mask: usize = used.iter().fold(0, |acc, &w| acc | (1 << w));
                 if out_canon & mask != out_rewired & mask {
                     all_equal = false;
-                    println!("  MISMATCH at input {:b}: canon={:b} rewired={:b}",
-                        input, out_canon & mask, out_rewired & mask);
+                    println!(
+                        "  MISMATCH at input {:b}: canon={:b} rewired={:b}",
+                        input,
+                        out_canon & mask,
+                        out_rewired & mask
+                    );
                 }
             }
 
-            println!("canonical: {}  completion: {}  equal={}", canon_c.repr(), rewired.repr(), all_equal);
+            println!(
+                "canonical: {}  completion: {}  equal={}",
+                canon_c.repr(),
+                rewired.repr(),
+                all_equal
+            );
             assert!(all_equal, "completion does not match canonical circuit");
         }
     }
@@ -290,18 +342,19 @@ fn remove_adjacent_equal(gates: &mut Vec<[u8; 3]>) {
     }
 }
 
-
 pub fn open_id_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
-    let mut txn = env.begin_rw_txn().expect("Failed to begin rw txn for id_db setup");
+    let mut txn = env
+        .begin_rw_txn()
+        .expect("Failed to begin rw txn for id_db setup");
     let dbs: Vec<lmdb::Database> = (0..34)
         .map(|i| {
             let name = format!("id_g{}", i);
-            let db = unsafe { txn.open_db(Some(&name)) }
-                .unwrap_or_else(|_| {
-                    unsafe { txn.create_db(Some(&name), lmdb::DatabaseFlags::empty()) }
-                        .unwrap_or_else(|e| panic!("Failed to create id_g{}: {:?}", i, e))
-                });
-            txn.clear_db(db).unwrap_or_else(|e| panic!("Failed to clear id_g{}: {:?}", i, e));
+            let db = unsafe { txn.open_db(Some(&name)) }.unwrap_or_else(|_| {
+                unsafe { txn.create_db(Some(&name), lmdb::DatabaseFlags::empty()) }
+                    .unwrap_or_else(|e| panic!("Failed to create id_g{}: {:?}", i, e))
+            });
+            txn.clear_db(db)
+                .unwrap_or_else(|e| panic!("Failed to clear id_g{}: {:?}", i, e));
             db
         })
         .collect();
@@ -386,8 +439,13 @@ pub fn generate_identity_db(
                         if seen[ctype].insert(blob.clone()) {
                             let idx = counters[ctype];
                             counters[ctype] += 1;
-                            wtxn.put(id_dbs[ctype], &idx.to_be_bytes(), &blob, WriteFlags::empty())
-                                .expect("put identity");
+                            wtxn.put(
+                                id_dbs[ctype],
+                                &idx.to_be_bytes(),
+                                &blob,
+                                WriteFlags::empty(),
+                            )
+                            .expect("put identity");
                             total += 1;
                         }
                     }
