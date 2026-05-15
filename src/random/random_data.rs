@@ -6568,8 +6568,12 @@ mod tests {
         let c1_rev = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
         let c2_rev = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
 
-        let mappings_1_2 = enumerate_c2_wire_mappings(n1, n2);
-        let mappings_2_1 = enumerate_c2_wire_mappings(n2, n1);
+        let _arc_1_2 = enumerate_c2_wire_mappings_cached(n1, n2);
+        let _arc_2_1 = enumerate_c2_wire_mappings_cached(n2, n1);
+        let (ref mappings_1_2_data, mappings_1_2_stride) = *_arc_1_2;
+        let (ref mappings_2_1_data, mappings_2_1_stride) = *_arc_2_1;
+        let mappings_1_2: Vec<&[u8]> = mappings_1_2_data.chunks(mappings_1_2_stride.max(1)).collect();
+        let mappings_2_1: Vec<&[u8]> = mappings_2_1_data.chunks(mappings_2_1_stride.max(1)).collect();
 
         let mut f = std::fs::File::create("test.txt").unwrap();
 
@@ -6829,7 +6833,7 @@ mod tests {
                 let circuit = CircuitSeq::from_blob(circuit_blob);
 
                 // hash of original
-                let canon = canonicalize_polys_3(circuit.to_polynomial(n, 0, m));
+                let canon = canonicalize_polys_4(circuit.to_polynomial(n, 0, m));
                 let blob = polys_repr_blob(&canon.0);
                 let h: u128 = xxh3_128(&blob);
 
@@ -6838,7 +6842,7 @@ mod tests {
                 rev.gates.reverse();
                 rev.canonicalize();
 
-                let canon_rev = canonicalize_polys_3(rev.to_polynomial(n, 0, m));
+                let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
                 let rev_blob = polys_repr_blob(&canon_rev.0);
                 let h_rev: u128 = xxh3_128(&rev_blob);
 
