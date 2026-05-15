@@ -2195,7 +2195,7 @@ Command::new("rocksdb_2")
                 let circuit = CircuitSeq::from_string(canonical_str);
 
                 // final_order maps canonical wire → dense wire; invert to get dense → canonical
-                let (polys, _, _, final_order, _) = circuit.canonicalize_polys(0);
+                let (polys, _, reversed, final_order, _) = circuit.canonicalize_polys(0);
                 let hash = xxh3_128(&polys_repr_blob(&polys)).to_le_bytes();
 
                 let p_inv = final_order.invert();
@@ -2203,7 +2203,8 @@ Command::new("rocksdb_2")
 
                 let mut value: Vec<u8> = Vec::new();
                 for comp_str in completions {
-                    let comp = CircuitSeq::from_string(comp_str);
+                    let mut comp = CircuitSeq::from_string(comp_str);
+                    if reversed { comp.gates.reverse(); }
                     let max_wire = comp.max_wire() as usize;
 
                     // Extend p_inv with identity for extra wires beyond the 2-gate pair
