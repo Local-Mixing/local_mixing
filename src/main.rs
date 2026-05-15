@@ -1160,6 +1160,11 @@ Command::new("rocksdb_2")
                     .help("LMDB path (source shards and destination id_g* databases)"),
             )
     )
+    .subcommand(
+        Command::new("print_2gate")
+            .about("Print all m-gate circuits from shard DBs")
+            .arg(Arg::new("m").short('m').required(true).value_parser(clap::value_parser!(usize)).help("Number of gates to filter for"))
+    )
     .get_matches();
 
     match matches.subcommand() {
@@ -2108,6 +2113,46 @@ Command::new("rocksdb_2")
             let id_dbs = open_id_dbs(&env);
 
             generate_identity_db(&env, &shard_dbs, &id_dbs);
+        }
+        Some(("print_2gate", sub)) => {
+            let m: usize = *sub.get_one("m").unwrap();
+            use lmdb::{Cursor, Transaction};
+            let env = Environment::new()
+                .set_max_dbs(300)
+                .set_map_size(800 * 1024 * 1024 * 1024)
+                .open(Path::new("./db"))
+                .expect("Failed to open ./db");
+
+            let mut total = 0u64;
+            for shard in 0u16..256 {
+                let name = format!("{:02x}", shard);
+                let db = match env.open_db(Some(name.as_str())) {
+                    Ok(db) => db,
+                    Err(_) => continue,
+                };
+                let txn = env.begin_ro_txn().expect("ro txn");
+                let mut cursor = txn.open_ro_cursor(db).expect("cursor");
+                for (_, value) in cursor.iter() {
+                    let mut pos = 0;
+                    while pos < value.len() {
+                        let len = value[pos] as usize;
+                        pos += 1;
+                        if pos + len > value.len() { break; }
+                        let circuit = CircuitSeq::from_blob(&value[pos..pos + len]);
+                        pos += len;
+                        if circuit.gates.len() == m {
+                            println!("{}", circuit.to_string(circuit.used_wires().len()));
+                            total += 1;
+                        }
+                    }
+                }
+                drop(cursor);
+                drop(txn);
+                if shard % 16 == 15 {
+                    eprintln!("Shard {}/256 done, found {} so far", shard + 1, total);
+                }
+            }
+            eprintln!("Total 2-gate circuits: {}", total);
         }
         _ => unreachable!(),
     }
