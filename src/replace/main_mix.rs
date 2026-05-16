@@ -723,6 +723,7 @@ pub fn main_shooting_game(
     tower: bool,
     stop_multiplier: usize,
     intermediate: &str,
+    full_shuffle: bool,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -744,6 +745,17 @@ pub fn main_shooting_game(
     let dbs = open_all_dbs(env);
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
+    if full_shuffle {
+        loop {
+            let mut shuffled = circuit.clone();
+            insert_wire_m_samfs_every_x(&mut shuffled, n, n, 1, env, &dbs);
+            if shuffled.probably_equal(&circuit, n, 100).is_ok() {
+                circuit = shuffled;
+                break;
+            }
+        }
+        println!("After full shuffle: {} gates", circuit.gates.len());
+    }
     // Repeat `rounds` times
     let mut post_len = 0;
     let mut count = 0;

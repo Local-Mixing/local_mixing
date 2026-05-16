@@ -914,6 +914,13 @@ fn main() {
                     .required(true)
                     .value_parser(clap::value_parser!(String))
                     .help("Path to the intermediate circuit file"),
+            )
+            .arg(
+                Arg::new("full-shuffle")
+                    .long("full-shuffle")
+                    .help("Insert n SAMFs between every gate once before the main loop")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue)
             ),
     )
     .subcommand(
@@ -1621,6 +1628,7 @@ Command::new("rocksdb_2")
             let id_len: usize = *sub.get_one("id_len").unwrap();
             let tower = sub.get_flag("tower");
             let stop: usize = *sub.get_one("stop").unwrap();
+            let full_shuffle = sub.get_flag("full-shuffle");
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
@@ -1651,6 +1659,7 @@ Command::new("rocksdb_2")
                     tower,
                     stop,
                     i,
+                    full_shuffle,
                 );
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
