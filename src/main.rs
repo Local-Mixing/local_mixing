@@ -43,9 +43,7 @@ use local_mixing::random::random_data::build_from_rocks;
 use local_mixing::random::random_data::build_m1;
 use local_mixing::random::random_data::build_from_2rocks;
 use local_mixing::random::random_data::combine_rocks_dbs;
-use local_mixing::random::random_data::rocks_to_fasterkv;
 use local_mixing::random::random_data::rocks_to_lmdb;
-use local_mixing::random::random_data::verify_fasterkv;
 
 fn open_shard_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
     (0u16..=255)
@@ -1097,46 +1095,6 @@ Command::new("rocksdb_2")
             )
     )
     .subcommand(
-        Command::new("rocks_to_fmv")
-            .about("Convert a RocksDB into a FasterMV store")
-            .arg(
-                Arg::new("source")
-                    .short('s')
-                    .long("source")
-                    .required(true)
-                    .value_parser(clap::value_parser!(String))
-                    .help("Path to the source RocksDB"),
-            )
-            .arg(
-                Arg::new("path")
-                    .short('p')
-                    .long("path")
-                    .required(true)
-                    .value_parser(clap::value_parser!(String))
-                    .help("Output path for the FasterMV store"),
-            )
-    )
-    .subcommand(
-        Command::new("verify_fmv")
-            .about("Verify all RocksDB entries exist in the FasterKV shards")
-            .arg(
-                Arg::new("source")
-                    .short('s')
-                    .long("source")
-                    .required(true)
-                    .value_parser(clap::value_parser!(String))
-                    .help("Path to the source RocksDB"),
-            )
-            .arg(
-                Arg::new("path")
-                    .short('p')
-                    .long("path")
-                    .required(true)
-                    .value_parser(clap::value_parser!(String))
-                    .help("Path to the FasterKV shards directory"),
-            )
-    )
-    .subcommand(
         Command::new("rocks_to_lmdb")
             .about("Convert a RocksDB into an LMDB store")
             .arg(
@@ -2083,24 +2041,6 @@ Command::new("rocksdb_2")
         Some(("combine_rocks", sub)) => {
             let path: &String = sub.get_one("path").expect("Missing -p <path>");
             combine_rocks_dbs(path).expect("combine_rocks_dbs failed");
-        }
-        Some(("rocks_to_fmv", sub)) => {
-            let source: &String = sub.get_one("source").expect("Missing -s <source>");
-            let path: &String = sub.get_one("path").expect("Missing -p <path>");
-            if let Err(e) = rocks_to_fasterkv(source, path) {
-                let msg = format!("rocks_to_fasterkv failed: {}", e);
-                eprintln!("{}", msg);
-                let _ = std::fs::OpenOptions::new()
-                    .create(true).append(true)
-                    .open("error.txt")
-                    .and_then(|mut f| { use std::io::Write; writeln!(f, "{}", msg) });
-                std::process::exit(1);
-            }
-        }
-        Some(("verify_fmv", sub)) => {
-            let source: &String = sub.get_one("source").expect("Missing -s <source>");
-            let path: &String = sub.get_one("path").expect("Missing -p <path>");
-            verify_fasterkv(source, path).expect("verify_fasterkv failed");
         }
         Some(("rocks_to_lmdb", sub)) => {
             let source: &String = sub.get_one("source").expect("Missing -s <source>");
