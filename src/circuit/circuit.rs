@@ -19,9 +19,8 @@ use std::os::raw::c_int;
 use num_bigint::BigUint;
 use num_traits::One;
 use num_traits::Zero;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use crate::rainbow::canonical;
 
 // pins are [active, control1, control2] for Toffoli gates
 // We are only concerned with gate r57

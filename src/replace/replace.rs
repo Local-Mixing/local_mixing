@@ -2,7 +2,6 @@
 
 use crate::replace::identities::random_canonical_id;
 use crate::replace::identities::random_id;
-use crate::replace::identities::random_perm_lmdb;
 use crate::replace::mixing::split_into_random_chunk_ranges;
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation},

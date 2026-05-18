@@ -8774,8 +8774,8 @@ pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Er
 /// Copy all entries from a RocksDB into a FasterKV store.
 /// FasterKV uses a hash index with a hybrid log, giving fast O(1) point lookups.
 pub fn rocks_to_fasterkv(
-    rocks_path: &str,
-    faster_dir: &str,
+    _rocks_path: &str,
+    _faster_dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
@@ -8817,8 +8817,8 @@ pub fn rocks_to_lmdb(rocks_path: &str, lmdb_path: &str) -> Result<(), Box<dyn st
 }
 
 pub fn verify_fasterkv(
-    rocks_path: &str,
-    faster_dir: &str,
+    _rocks_path: &str,
+    _faster_dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
