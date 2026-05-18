@@ -28,7 +28,44 @@ use std::{
     time::Instant,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
+use dashmap::DashMap;
+use once_cell::sync::Lazy;
 // use rand::prelude::IndexedRandom;
+
+// Global histogram: (before_gates, after_gates) -> count, accumulated across all rounds
+pub static COMPRESSION_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
+
+pub fn write_compression_histogram(path: &str) {
+    let mut entries: Vec<((u8, u8), u64)> = COMPRESSION_HISTOGRAM
+        .iter()
+        .map(|e| (*e.key(), *e.value()))
+        .collect();
+    entries.sort_by_key(|&((before, after), _)| (before, after));
+    let mut f = File::create(path).expect("Failed to create histogram CSV");
+    writeln!(f, "before,after,count").expect("write");
+    for ((before, after), count) in &entries {
+        writeln!(f, "{},{},{}", before, after, count).expect("write");
+    }
+    println!("Compression histogram written to {}", path);
+
+    let log_path = "compression_log.txt";
+    let mut log = File::create(log_path).expect("Failed to create compression log");
+    let before_vals: Vec<u8> = {
+        let mut v: Vec<u8> = entries.iter().map(|&((b, _), _)| b).collect();
+        v.dedup();
+        v
+    };
+    for before in before_vals {
+        let group: Vec<_> = entries.iter().filter(|&((b, _), _)| *b == before).collect();
+        let total: u64 = group.iter().map(|(_, c)| c).sum();
+        writeln!(log, "{} gates before (total: {}):", before, total).expect("write");
+        for ((_, after), count) in &group {
+            writeln!(log, "  -> {} gates: {}", after, count).expect("write");
+        }
+    }
+    println!("Compression log written to {}", log_path);
+    println!("Written to log");
+}
 
 // Return a random contiguous subcircuit, its starting index (gate), and ending index
 pub fn random_subcircuit(circuit: &CircuitSeq) -> (CircuitSeq, usize, usize) {
@@ -1060,6 +1097,7 @@ pub fn compress_big_ancillas(
                 circuit.gates[start + i] = subcircuit.gates[i];
             }
         } else if repl_len < old_len {
+            *COMPRESSION_HISTOGRAM.entry((old_len as u8, repl_len as u8)).or_insert(0) += 1;
             for i in 0..repl_len {
                 circuit.gates[start + i] = subcircuit.gates[i];
             }

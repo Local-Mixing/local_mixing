@@ -728,35 +728,28 @@ impl CircuitSeq {
         num_wires: usize,
         num_inputs: usize
     ) -> Result<(), String> {
+        use rayon::prelude::*;
 
-        let mut rng = rand::rng();
-
-        // build mask with lowest num_wires bits set
         let mask = if num_wires < 256 {
             (u256::one() << num_wires) - u256::one()
         } else {
             u256::MAX
         };
 
-        for _ in 0..num_inputs {
-
-            // generate random 256-bit input
+        (0..num_inputs).into_par_iter().try_for_each(|_| {
             let mut bytes = [0u8; 32];
-            rng.fill_bytes(&mut bytes);
+            rand::rng().fill_bytes(&mut bytes);
             let random_input = u256::from_little_endian(&bytes) & mask;
 
-            let self_output =
-                Gate::evaluate_index_list_256(random_input, &self.gates);
-
-            let other_output =
-                Gate::evaluate_index_list_256(random_input, &other_circuit.gates);
+            let self_output = Gate::evaluate_index_list_256(random_input, &self.gates);
+            let other_output = Gate::evaluate_index_list_256(random_input, &other_circuit.gates);
 
             if (self_output & mask) != (other_output & mask) {
-                return Err("Circuits are not equal".to_string());
+                Err("Circuits are not equal".to_string())
+            } else {
+                Ok(())
             }
-        }
-
-        Ok(())
+        })
     }
 
     /// Relabel wires in encounter order (first wire seen → 0, second → 1, etc.)

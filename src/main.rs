@@ -33,6 +33,7 @@ use local_mixing::{
             // sequential_compress_big_ancillas,
             compress_loop,
             print_compress_timers,
+            write_compression_histogram,
         }, transpositions::{generate_reversible, insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x}
     },
 };
@@ -1693,6 +1694,8 @@ Command::new("rocksdb_2")
                     do_gadgetize,
                     full_shuffle,
                 );
+                write_compression_histogram("compression_histogram.csv");
+                println!("python3 ./heatmap/compression_hist.py --csv compression_histogram.csv --out compression_histogram.png");
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
