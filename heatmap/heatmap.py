@@ -1,9 +1,10 @@
 import argparse
 import numpy as np
-import local_mixing as heatmap_rust 
+import local_mixing as heatmap_rust
 import matplotlib.pyplot as plt
 import os
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 def plot_heatmap_raw(results, save_path, xlabel, ylabel, vmin=0.0, vmax=1.0):
     points = np.array(results, dtype=float)
@@ -129,34 +130,37 @@ if __name__ == "__main__":
         if not args.c1 or not args.c2:
             raise ValueError("--c1 and --c2 are required when --pieces is used")
 
-        # Determine circuit lengths from files
         c1_len = count_semicolons(args.c1)
         c2_len = count_semicolons(args.c2)
         print(f"Circuit lengths: c1={c1_len}, c2={c2_len}")
 
-        # Compute slices
         chunk = args.chunk
-        for x_start in range(0, c1_len, chunk):
-            x_end = min(x_start + chunk - 1, c1_len - 1)
-            for y_start in range(0, c2_len, chunk):
-                y_end = min(y_start + chunk - 1, c2_len - 1)
+        output_dir = args.path
+        os.makedirs(output_dir, exist_ok=True)
 
-                print(f"Computing slice x[{x_start}:{x_end}], y[{y_start}:{y_end}]...")
-                if args.pieces:
-                    results = heatmap_rust.heatmap_slice(
-                        args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2, args.fix, args.hw
-                    )
-                else:
-                    results = heatmap_rust.heatmap_mini_slice(
-                        args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2, args.fix
-                    )
+        def compute_slice(x_start, x_end, y_start, y_end):
+            import local_mixing as _rust
+            if args.pieces:
+                return _rust.heatmap_slice(
+                    args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2, args.fix, args.hw
+                ), x_start, x_end, y_start, y_end
+            else:
+                return _rust.heatmap_mini_slice(
+                    args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2, args.fix
+                ), x_start, x_end, y_start, y_end
 
-                output_dir = args.path
-                os.makedirs(output_dir, exist_ok=True)
-                output_path = os.path.join(
-                    output_dir, f"heatmap_x{x_start}-{x_end}_y{y_start}-{y_end}.png"
-                )
+        slices = [
+            (x_start, min(x_start + chunk - 1, c1_len - 1),
+             y_start, min(y_start + chunk - 1, c2_len - 1))
+            for x_start in range(0, c1_len, chunk)
+            for y_start in range(0, c2_len, chunk)
+        ]
 
+        with ProcessPoolExecutor() as executor:
+            futures = {executor.submit(compute_slice, *s): s for s in slices}
+            for future in as_completed(futures):
+                results, x_start, x_end, y_start, y_end = future.result()
+                output_path = os.path.join(output_dir, f"heatmap_x{x_start}-{x_end}_y{y_start}-{y_end}.png")
                 if args.std:
                     plot_heatmap_std(results, output_path, xlabel=args.x, ylabel=args.y)
                 else:

@@ -12,6 +12,7 @@ use numpy::ndarray::Array2;
 use std::io::{self, Write};
 use primitive_types::U256 as u256;
 use rand::seq::IteratorRandom;
+use rayon::prelude::*;
 #[inline]
 fn popcount_u256(x: u256) -> u32 {
     let mut count = 0;
@@ -55,9 +56,8 @@ fn heatmap(
     let circuit_two_len = circuit_two.gates.len();
 
     let num_points = (circuit_one_len + 1) * (circuit_two_len + 1);
-    let mut average = vec![0f64; num_points * 3]; // flat 2D array: [x, y, value] per point
-    let mut rng = rand::rng();
     let start_time = Instant::now();
+    let mut rng = rand::rng();
     let mut fixed_mask = u256::zero();
     let positions = (0..num_wires).choose_multiple(&mut rng, fix);
     let x0: u256 = u256::from(rng.random::<u128>())
@@ -65,50 +65,49 @@ fn heatmap(
     for p in positions {
         fixed_mask |= u256::from(1) << p;
     }
-    for i in 0..num_inputs {
-        if i % 10 == 0 {
-            println!("{}/{}", i, num_inputs);
-            io::stdout().flush().unwrap();
-        }
-        let r: u256 =
-        u256::from(rng.random::<u128>())
-            | (u256::from(rng.random::<u128>()) << 128);
 
-        let input_bits = ((x0 & fixed_mask) | (r & !fixed_mask)) & mask;
-
-        let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
-        let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
-
-        for i1 in 0..=circuit_one_len {
-            for i2 in 0..=circuit_two_len {
-                let hamming_dist = if hw {
-                    (popcount_u256(evolution_one[i1]) as f64 - popcount_u256(evolution_two[i2]) as f64).abs()
-                } else {
-                    let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
-                    popcount_u256(diff) as f64
-                };
-                let overlap = if !flag || hw {
-                    hamming_dist / num_wires as f64
-                } else {
-                    let tmp = (2.0 * hamming_dist / num_wires as f64) - 1.0;
-                    tmp.abs()
-                };
-
-                let index = i1 * (circuit_two_len + 1) + i2;
-                average[index * 3] = i1 as f64;
-                average[index * 3 + 1] = i2 as f64;
-                average[index * 3 + 2] += overlap / num_inputs as f64;
-            }
-        }
-    }
+    let values = py.allow_threads(|| {
+        (0..num_inputs).into_par_iter().fold(
+            || vec![0f64; num_points],
+            |mut acc, _| {
+                let mut rng = rand::rng();
+                let r: u256 = u256::from(rng.random::<u128>())
+                    | (u256::from(rng.random::<u128>()) << 128);
+                let input_bits = ((x0 & fixed_mask) | (r & !fixed_mask)) & mask;
+                let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
+                let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
+                for i1 in 0..=circuit_one_len {
+                    for i2 in 0..=circuit_two_len {
+                        let hamming_dist = if hw {
+                            (popcount_u256(evolution_one[i1]) as f64 - popcount_u256(evolution_two[i2]) as f64).abs()
+                        } else {
+                            let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
+                            popcount_u256(diff) as f64
+                        };
+                        let overlap = if !flag || hw {
+                            hamming_dist / num_wires as f64
+                        } else {
+                            let tmp = (2.0 * hamming_dist / num_wires as f64) - 1.0;
+                            tmp.abs()
+                        };
+                        acc[i1 * (circuit_two_len + 1) + i2] += overlap / num_inputs as f64;
+                    }
+                }
+                acc
+            },
+        ).reduce(
+            || vec![0f64; num_points],
+            |mut a, b| { a.iter_mut().zip(b).for_each(|(x, y)| *x += y); a },
+        )
+    });
 
     println!("Time elapsed: {:?}", Instant::now() - start_time);
 
     let mut arr2 = Array2::<f64>::zeros((num_points, 3));
     for i in 0..num_points {
-        arr2[[i, 0]] = average[i * 3];
-        arr2[[i, 1]] = average[i * 3 + 1];
-        arr2[[i, 2]] = average[i * 3 + 2];
+        arr2[[i, 0]] = (i / (circuit_two_len + 1)) as f64;
+        arr2[[i, 1]] = (i % (circuit_two_len + 1)) as f64;
+        arr2[[i, 2]] = values[i];
     }
 
     let pyarray = PyArray2::from_owned_array(py, arr2);
