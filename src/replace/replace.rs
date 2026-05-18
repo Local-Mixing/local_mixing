@@ -810,6 +810,7 @@ pub fn compress_lmdb(
         }
 
         let min_gates = candidates.iter().map(|c| c.gates.len()).min().unwrap();
+        *COMPRESSION_HISTOGRAM.entry((sub.gates.len() as u8, min_gates as u8)).or_insert(0) += 1;
         let mut best: Vec<CircuitSeq> = candidates.into_iter().filter(|c| c.gates.len() == min_gates).collect();
         let idx = rng.random_range(0..best.len());
         let mut repl = best.swap_remove(idx);
@@ -1097,7 +1098,6 @@ pub fn compress_big_ancillas(
                 circuit.gates[start + i] = subcircuit.gates[i];
             }
         } else if repl_len < old_len {
-            *COMPRESSION_HISTOGRAM.entry((old_len as u8, repl_len as u8)).or_insert(0) += 1;
             for i in 0..repl_len {
                 circuit.gates[start + i] = subcircuit.gates[i];
             }
