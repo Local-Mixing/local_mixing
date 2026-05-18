@@ -1618,6 +1618,9 @@ Command::new("rocksdb_2")
                     stop,
                     i,
                 );
+                write_compression_histogram("compression_histogram.csv");
+                println!("python3 ./heatmap/compression_hist.py --csv compression_histogram.csv --out compression_histogram.png");
+                println!("python3 ./heatmap/compression_heatmap.py --csv compression_histogram.csv --out compression_heatmap.png");
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1696,6 +1699,7 @@ Command::new("rocksdb_2")
                 );
                 write_compression_histogram("compression_histogram.csv");
                 println!("python3 ./heatmap/compression_hist.py --csv compression_histogram.csv --out compression_histogram.png");
+                println!("python3 ./heatmap/compression_heatmap.py --csv compression_histogram.csv --out compression_heatmap.png");
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
