@@ -5,13 +5,29 @@ pub mod random;
 use pyo3::prelude::*;
 use numpy::PyArray2;
 use std::fs;
+use std::fs::File;
+use std::io::{self, BufReader, Read, Write};
 use crate::circuit::CircuitSeq;
 use std::time::Instant;
 use rand::Rng;
 use numpy::ndarray::Array2;
-use std::io::{self, Write};
 use primitive_types::U256 as u256;
 use rand::seq::IteratorRandom;
+
+fn read_n_gates(path: &str, n: usize) -> String {
+    let file = File::open(path).unwrap_or_else(|_| panic!("Failed to open {}", path));
+    let mut reader = BufReader::new(file);
+    let mut result = String::new();
+    let mut buf = [0u8; 1];
+    let mut count = 0;
+    while count < n {
+        if reader.read(&mut buf).unwrap_or(0) == 0 { break; }
+        let c = buf[0] as char;
+        result.push(c);
+        if c == ';' { count += 1; }
+    }
+    result
+}
 #[inline]
 fn popcount_u256(x: u256) -> u32 {
     let mut count = 0;
@@ -232,17 +248,13 @@ fn heatmap_slice(
     } else {
         u256::MAX
     };
-    let circuit_one_str = fs::read_to_string(c1_path)
-        .unwrap_or_else(|_| panic!("Failed to read circuit file: {}", c1_path));
-    let circuit_two_str = fs::read_to_string(c2_path)
-        .unwrap_or_else(|_| panic!("Failed to read circuit file: {}", c2_path));
+    let circuit_one_str = read_n_gates(c1_path, x2 + 1);
+    let circuit_two_str = read_n_gates(c2_path, y2 + 1);
 
     let mut circuit_one = CircuitSeq::from_string(&circuit_one_str);
     let mut circuit_two = CircuitSeq::from_string(&circuit_two_str);
     circuit_one.canonicalize();
     circuit_two.canonicalize();
-    circuit_one.gates = circuit_one.gates[..=x2].to_vec();
-    circuit_two.gates = circuit_two.gates[..=y2].to_vec();
     let num_points = (x2 - x1 + 1) * (y2 - y1 + 1);
     let mut average = vec![0f64; num_points * 3]; // flat 2D array: [x, y, value] per point
     let mut rng = rand::rng();
@@ -323,12 +335,8 @@ fn heatmap_mini_slice(
 ) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
-    // Load circuits
-    let circuit_one_str = fs::read_to_string(c1_path)
-        .unwrap_or_else(|_| panic!("Failed to read circuit file: {}", c1_path));
-    let circuit_two_str = fs::read_to_string(c2_path)
-        .unwrap_or_else(|_| panic!("Failed to read circuit file: {}", c2_path));
-    
+    let circuit_one_str = read_n_gates(c1_path, x2 + 1);
+    let circuit_two_str = read_n_gates(c2_path, y2 + 1);
     let mask = if num_wires < 256 {
         (u256::one() << num_wires) - u256::one()
     } else {
