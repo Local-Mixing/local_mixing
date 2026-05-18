@@ -23,7 +23,7 @@ fig, ax = plt.subplots(figsize=(12, 6))
 fig.patch.set_facecolor("#1a1a2e")
 ax.set_facecolor("#1a1a2e")
 
-im = ax.imshow(log_data, aspect="auto", origin="lower", cmap="viridis",
+im = ax.imshow(log_data, aspect="auto", origin="lower", cmap="inferno",
                vmin=0, vmax=np.nanmax(log_data))
 
 for i in range(len(after_vals)):
