@@ -382,6 +382,87 @@ mod tests {
             assert!(all_equal, "completion does not match canonical circuit");
         }
     }
+
+    #[test]
+    fn benchmark_lmdb_reads() {
+        use rayon::prelude::*;
+
+        const TOTAL_READS: usize = 10_000;
+
+        let env = std::sync::Arc::new(
+            Environment::new()
+                .set_max_readers(10000)
+                .set_max_dbs(300)
+                .set_map_size(800 * 1024 * 1024 * 1024)
+                .open(Path::new("./db"))
+                .expect("Failed to open ./db"),
+        );
+
+        // Open all 256 shard DBs.
+        let shard_dbs: Vec<lmdb::Database> = (0u8..=255)
+            .map(|s| env.open_db(Some(format!("{:02x}", s).as_str())).unwrap())
+            .collect();
+
+        // Collect a pool of (shard_idx, key) pairs to sample from.
+        println!("Collecting key pool...");
+        let mut pool: Vec<(usize, Vec<u8>)> = Vec::new();
+        for shard in 0usize..256 {
+            let txn = env.begin_ro_txn().expect("ro txn");
+            let mut cursor = txn.open_ro_cursor(shard_dbs[shard]).expect("cursor");
+            for (k, _) in cursor.iter() {
+                pool.push((shard, k.to_vec()));
+            }
+            drop(cursor);
+            drop(txn);
+        }
+        println!("Pool size: {} keys across 256 shards", pool.len());
+        assert!(!pool.is_empty(), "DB is empty");
+
+        // Build the read list by cycling through the pool.
+        let reads: Vec<(usize, Vec<u8>)> = (0..TOTAL_READS)
+            .map(|i| pool[i % pool.len()].clone())
+            .collect();
+
+        // Warm up the LMDB mmap by doing a small sequential pass first.
+        {
+            let txn = env.begin_ro_txn().expect("ro txn");
+            for (shard, key) in reads.iter().take(100) {
+                let _ = txn.get(shard_dbs[*shard], key);
+            }
+        }
+
+        // --- Parallel benchmark ---
+        let t = Instant::now();
+        let hits: usize = reads
+            .par_iter()
+            .map(|(shard, key)| {
+                let txn = env.begin_ro_txn().expect("ro txn");
+                let found = txn.get(shard_dbs[*shard], key).is_ok() as usize;
+                drop(txn);
+                found
+            })
+            .sum();
+        let elapsed = t.elapsed();
+
+        let reads_per_sec = TOTAL_READS as f64 / elapsed.as_secs_f64();
+        println!(
+            "Parallel: {} reads in {:.3}s  →  {:.0} reads/sec  (hits: {}/{})",
+            TOTAL_READS, elapsed.as_secs_f64(), reads_per_sec, hits, TOTAL_READS
+        );
+
+        // --- Sequential benchmark for comparison ---
+        let t2 = Instant::now();
+        let txn = env.begin_ro_txn().expect("ro txn");
+        for (shard, key) in &reads {
+            let _ = txn.get(shard_dbs[*shard], key);
+        }
+        drop(txn);
+        let elapsed2 = t2.elapsed();
+        println!(
+            "Sequential: {} reads in {:.3}s  →  {:.0} reads/sec",
+            TOTAL_READS, elapsed2.as_secs_f64(), TOTAL_READS as f64 / elapsed2.as_secs_f64()
+        );
+    }
 }
 
 fn decode_circuits(value: &[u8]) -> Vec<CircuitSeq> {
