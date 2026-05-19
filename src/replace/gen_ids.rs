@@ -426,7 +426,8 @@ mod tests {
         let circuit = crate::circuit::circuit::CircuitSeq { gates };
         println!("Circuit: {} gates, {} wires", circuit.gates.len(), N);
 
-        let deadline = Instant::now() + std::time::Duration::from_secs_f64(BENCH_SECS);
+        let bench_start = Instant::now();
+        let deadline = bench_start + std::time::Duration::from_secs_f64(BENCH_SECS);
         let mut iterations = 0u64;
         let mut total_gates_in = 0u64;
         let mut total_gates_out = 0u64;
@@ -441,7 +442,7 @@ mod tests {
             mode = (mode + 1) % 3;
 
             let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
-            let chunks: Vec<Vec<[u8; 3]>> = ranges
+            let compressed_chunks: Vec<Vec<[u8; 3]>> = ranges
                 .into_par_iter()
                 .map(|(start, end)| {
                     let sub = crate::circuit::circuit::CircuitSeq {
@@ -451,17 +452,23 @@ mod tests {
                 })
                 .collect();
 
-            acc.gates = chunks.into_iter().flatten().collect();
+            let total_len: usize = compressed_chunks.iter().map(|c| c.len()).sum();
+            let mut new_gates = Vec::with_capacity(total_len);
+            for chunk in compressed_chunks {
+                new_gates.extend(chunk);
+            }
+            acc.gates = new_gates;
             total_gates_in += before as u64;
             total_gates_out += acc.gates.len() as u64;
             iterations += 1;
         }
 
-        let elapsed = BENCH_SECS;
+        let elapsed = bench_start.elapsed().as_secs_f64();
         println!("Iterations:      {}", iterations);
-        println!("Iterations/sec:  {:.1}", iterations as f64 / elapsed);
-        println!("Gates in/iter:   {:.0}", total_gates_in as f64 / iterations as f64);
-        println!("Gates out/iter:  {:.0}", total_gates_out as f64 / iterations as f64);
+        println!("Iterations/sec:  {:.4}", iterations as f64 / elapsed);
+        println!("Secs/iter:       {:.1}", elapsed / iterations.max(1) as f64);
+        println!("Gates in/iter:   {:.0}", total_gates_in as f64 / iterations.max(1) as f64);
+        println!("Gates out/iter:  {:.0}", total_gates_out as f64 / iterations.max(1) as f64);
         println!("Threads:         {}", rayon::current_num_threads());
     }
 

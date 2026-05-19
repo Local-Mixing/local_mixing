@@ -1249,18 +1249,11 @@ pub fn compress_big_ancillas(
 
     for _ in 0..trials {
         let t0 = Instant::now();
-        let mut subcircuit_gates = vec![];
-        for set_size in (3..=6).rev() {
-            let (gates, _) = match mode {
-                0 => find_convex_subcircuit_max_wires(set_size, num_wires / 2, num_wires, &circuit, &mut rng),
-                2 => find_convex_subcircuit_max_gates(set_size, 21, num_wires, &circuit, &mut rng),
-                _ => simple_find_convex_subcircuit(set_size, 30, num_wires, &circuit, &mut rng),
-            };
-            if !gates.is_empty() {
-                subcircuit_gates = gates;
-                break;
-            }
-        }
+        let (mut subcircuit_gates, _) = match mode {
+            0 => find_convex_subcircuit_max_wires(0, num_wires / 2, num_wires, &circuit, &mut rng),
+            2 => find_convex_subcircuit_max_gates(0, 21, num_wires, &circuit, &mut rng),
+            _ => simple_find_convex_subcircuit(0, 30, num_wires, &circuit, &mut rng),
+        };
         let elapsed = t0.elapsed().as_nanos() as u64;
         CONVEX_FIND_TIME.fetch_add(elapsed, Ordering::Relaxed);
         match mode {
@@ -1372,18 +1365,11 @@ pub fn expand_big_ancillas<'a>(
 
     for _ in 0..trials {
         let t0 = Instant::now();
-        let mut subcircuit_gates = vec![];
-        for set_size in (2..=5).rev() {
-            let (gates, _) = match mode {
-                0 => find_convex_subcircuit_max_wires(set_size, num_wires / 2, num_wires, &circuit, &mut rng),
-                2 => find_convex_subcircuit_max_gates(set_size, 21, num_wires, &circuit, &mut rng),
-                _ => simple_find_convex_subcircuit(set_size, 30, num_wires, &circuit, &mut rng),
-            };
-            if !gates.is_empty() {
-                subcircuit_gates = gates;
-                break;
-            }
-        }
+        let (mut subcircuit_gates, _) = match mode {
+            0 => find_convex_subcircuit_max_wires(0, num_wires / 2, num_wires, &circuit, &mut rng),
+            2 => find_convex_subcircuit_max_gates(0, 21, num_wires, &circuit, &mut rng),
+            _ => simple_find_convex_subcircuit(0, 30, num_wires, &circuit, &mut rng),
+        };
         let elapsed = t0.elapsed().as_nanos() as u64;
         CONVEX_FIND_TIME.fetch_add(elapsed, Ordering::Relaxed);
         match mode {
