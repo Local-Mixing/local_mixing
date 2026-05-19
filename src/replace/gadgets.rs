@@ -264,7 +264,7 @@ mod tests {
 
             let x1  = (s >> 0) & 1;
             let r11 = (s >> 1) & 1;
-            let r12 = (s >> 2) & 1;
+            let _r12 = (s >> 2) & 1;
             let x2  = (s >> 3) & 1;
             let r21 = (s >> 4) & 1;
             let x3  = (s >> 5) & 1;
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn degree_before_after() {
-        use crate::circuit::circuit::{poly_degree, poly_to_str};
+        use crate::circuit::circuit::poly_degree;
 
         let n = 5usize;
         let main = crate::random::random_data::random_circuit(n, 20);

@@ -1100,9 +1100,9 @@ pub fn expand_big(
     c: &CircuitSeq,
     trials: usize,
     num_wires: usize,
-    env: &lmdb::Environment,
+    _env: &lmdb::Environment,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
-    dbs: &HashMap<String, lmdb::Database>,
+    _dbs: &HashMap<String, lmdb::Database>,
 ) -> CircuitSeq {
     let mut circuit = c.clone();
     let mut rng = rand::rng();

@@ -3,8 +3,6 @@ use std::{
     collections::HashMap,
     io::{self, Read},
     os::unix::io::AsRawFd,
-    sync::atomic::Ordering,
-    time::Instant,
 };
 
 use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
@@ -20,7 +18,6 @@ use crate::{
     random::random_data::{random_circuit, shoot_random_gate_gate_ver},
     replace::{
         identities::{get_random_identity, get_random_id_db_identity, random_canonical_id},
-        replace::IDENTITY_TIME,
         transpositions::{Transpositions},
     },
 };

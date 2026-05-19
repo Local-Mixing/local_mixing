@@ -3223,7 +3223,7 @@ mod tests {
             // for (i, poly) in polys.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
             // }
-            let (canonical, _) = canonicalize_polys(polys, true, false);
+            let (_canonical, _) = canonicalize_polys(polys, true, false);
             // println!("Canonical polys:");
             // for (i, poly) in canonical.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
@@ -3238,7 +3238,7 @@ mod tests {
             // for (i, poly) in polys.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
             // }
-            let (canonical, _) = canonicalize_polys(polys, false, false);
+            let (_canonical, _) = canonicalize_polys(polys, false, false);
             // println!("Canonical polys:");
             // for (i, poly) in canonical.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
@@ -3252,7 +3252,7 @@ mod tests {
             // for (i, poly) in polys.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
             // }
-            let (canonical, _) = canonicalize_polys_2(polys);
+            let (_canonical, _) = canonicalize_polys_2(polys);
             // println!("Canonical polys:");
             // for (i, poly) in canonical.iter().enumerate() {
             //     println!("  P{}: {}", i, poly_to_str(poly, 30));
@@ -3346,7 +3346,7 @@ mod tests {
         polynomials: &[Polynomial],
         initial_groups: Vec<Vec<usize>>,
         max_degree: usize,
-        use_backtracking: bool,
+        _use_backtracking: bool,
         rules: &[usize], // ordered subset of [1,2,3,4,5]
     ) -> Vec<usize> {
         let n = polynomials.len();
@@ -3413,8 +3413,8 @@ mod tests {
 
     #[test]
     fn test_all_rule_combinations() {
-        let mut c1 = CircuitSeq { gates: vec![[0,4,2], [1,2,3], [6,7,4], [5,3,7]] };
-        let mut c2 = CircuitSeq { gates: vec![[0,5,4],[1,4,6],[2,7,5],[3,6,7]] };
+        let c1 = CircuitSeq { gates: vec![[0,4,2], [1,2,3], [6,7,4], [5,3,7]] };
+        let c2 = CircuitSeq { gates: vec![[0,5,4],[1,4,6],[2,7,5],[3,6,7]] };
 
         let n = 12;
         let m = 4;
@@ -3453,7 +3453,7 @@ mod tests {
 
         // Summary: which rule sets produce the same canonical form for both circuits
         println!("\n--- Summary: rule sets where c1 == c2 canonically ---");
-        for (combo, order1, order2) in &results {
+        for (combo, _order1, _order2) in &results {
             let groups1 = make_initial_groups(&polys1, max_degree);
             let groups2 = make_initial_groups(&polys2, max_degree);
             let o1 = canonicalize_with_rules(&polys1, groups1, max_degree, true, combo);

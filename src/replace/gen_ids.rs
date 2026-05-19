@@ -418,8 +418,8 @@ mod tests {
             .map(|c| {
                 // keep wires in 0..N and ensure target != controls
                 let t  = c[0] % N as u8;
-                let c1 = (c[1] % (N as u8 - 1) + if c[1] % (N as u8 - 1) >= t { 1 } else { 0 });
-                let c2 = (c[2] % (N as u8 - 2));
+                let c1 = c[1] % (N as u8 - 1) + if c[1] % (N as u8 - 1) >= t { 1 } else { 0 };
+                let c2 = c[2] % (N as u8 - 2);
                 [t, c1, c2]
             })
             .collect();

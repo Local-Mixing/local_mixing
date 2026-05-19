@@ -5878,7 +5878,7 @@ mod tests {
 
         let mut count = 0;
         for item in iter {
-            let (key, value) = item.expect("RocksDB iter error");
+            let (_key, value) = item.expect("RocksDB iter error");
 
             // First pass: collect all circuits for this key
             let mut circuits = Vec::new();
@@ -7089,12 +7089,12 @@ mod tests {
             reversed_key: String,
         }
 
-        let mut left_entries: Vec<Entry> = left_circuits.iter().enumerate().map(|(i, gates)| {
+        let left_entries: Vec<Entry> = left_circuits.iter().enumerate().map(|(i, gates)| {
             let (fk, rk) = circuit_canon_keys(gates, n);
             Entry { label: format!("L{:02}", i), forward_key: fk, reversed_key: rk }
         }).collect();
 
-        let mut right_entries: Vec<Entry> = right_strings.iter().enumerate().map(|(i, s)| {
+        let right_entries: Vec<Entry> = right_strings.iter().enumerate().map(|(i, s)| {
             let gates = parse_gates(s);
             let (fk, rk) = circuit_canon_keys(&gates, n);
             Entry { label: format!("R{:02}", i), forward_key: fk, reversed_key: rk }
@@ -7123,8 +7123,6 @@ mod tests {
 
         for (li, le) in left_entries.iter().enumerate() {
             for (ri, re) in right_entries.iter().enumerate() {
-                let l_keys = [&le.forward_key, &le.reversed_key];
-                let r_keys = [&re.forward_key, &re.reversed_key];
                 let mut match_desc: Vec<&str> = Vec::new();
                 if le.forward_key  == re.forward_key  { match_desc.push("fwd==fwd"); }
                 if le.forward_key  == re.reversed_key { match_desc.push("fwd==rev"); }
@@ -7346,8 +7344,8 @@ mod tests {
         let n = 3 * m;
 
         // The two circuits you observed as duplicates
-        let mut c_a = CircuitSeq { gates: vec![[3, 2, 0], [4, 0, 3], [3, 1, 0]]  };
-        let mut c_b = CircuitSeq { gates: vec![[3, 1, 0], [4, 0, 3], [3, 2, 0]] };
+        let c_a = CircuitSeq { gates: vec![[3, 2, 0], [4, 0, 3], [3, 1, 0]]  };
+        let c_b = CircuitSeq { gates: vec![[3, 1, 0], [4, 0, 3], [3, 2, 0]] };
 
         // Hash c_a canonically
         let canon_a = canonicalize_polys_4(c_a.to_polynomial(n, 0, m));
@@ -7757,7 +7755,7 @@ mod tests {
         for polys in &polys_vec {
             sink ^= xxh3_128(&polys_repr_blob(polys));
         }
-        let elapsed = start.elapsed().as_secs_f64();
+        let _elapsed = start.elapsed().as_secs_f64();
         println!("polys_repr_blob + xxh3: {:.0}/sec (sink={})", rate, sink);
 
         // Benchmark just canonicalize() 
