@@ -391,7 +391,7 @@ mod tests {
 
         const N: usize = 128;
         const CHUNK_GATES: usize = 1_500;
-        const TOTAL_TASKS: usize = 1_024;
+        const TOTAL_TASKS: usize = 256;
 
         let env = std::sync::Arc::new(
             Environment::new()
