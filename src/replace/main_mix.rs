@@ -9,7 +9,7 @@ use itertools::Itertools;
 use crate::{
     circuit::circuit::CircuitSeq,
     replace::{
-        replace::{compress_loop, compress_loop_early},
+        replace::{compress_loop, compress_loop_early, expand_loop, ExpandPairMode},
         mixing::{
             abutterfly_big, butterfly_big, interleave_sequential_big, replace_and_compress_big, replace_and_compress_big_distance, simple_shooting_game, zip_sequential_butterfly
         },
@@ -837,6 +837,117 @@ pub fn main_shooting_game(
     File::create(save)
         .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
         .expect("Failed to write recent_circuit.txt");
+
+    println!("Final circuit written to {}", save);
+}
+
+pub fn main_expansion_game(
+    c: &CircuitSeq,
+    rounds: usize,
+    n: usize,
+    save: &str,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    id_len: usize,
+    tower: bool,
+    target_multiplier: usize,
+    intermediate: &str,
+    curated: bool,
+    use_db: bool,
+) {
+    let save_base = save.strip_suffix(".txt").unwrap_or(save);
+    let progress_path = format!("{}_progress.txt", save_base);
+    OpenOptions::new()
+        .create(true).write(true).truncate(true)
+        .open(&progress_path)
+        .expect("Failed to create progress file");
+
+    let bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
+        .map(|n| {
+            (0..n)
+                .permutations(n)
+                .filter(|p| !p.iter().enumerate().all(|(i, &x)| i == x))
+                .collect::<Vec<Vec<usize>>>()
+        })
+        .collect();
+    let dbs = open_all_dbs(env);
+
+    println!("Starting len: {}", c.gates.len());
+    let mut circuit = c.clone();
+    let mut post_len = 0;
+    let mut count = 0;
+
+    for i in 0..rounds {
+        let pair_mode = if curated {
+            ExpandPairMode::Curated
+        } else if use_db {
+            ExpandPairMode::Db
+        } else {
+            ExpandPairMode::Canonical {
+                bit_shuf_list: &bit_shuf_list,
+                dbs: &dbs,
+                id_len,
+                tower,
+            }
+        };
+
+        println!("Round {}/{}: Expanding to {}x ({} gates)...", i + 1, rounds, target_multiplier, circuit.gates.len());
+        circuit = expand_loop(&circuit, n, env, shard_dbs, target_multiplier, &pair_mode);
+
+        if circuit.gates.is_empty() { break; }
+
+        println!("Round {}/{}: Compressing ({} gates)...", i + 1, rounds, circuit.gates.len());
+        let is_last = i + 1 == rounds;
+        circuit = if is_last {
+            compress_loop(&circuit, n, env, shard_dbs, 12, i + 1, rounds, intermediate)
+        } else {
+            let early_stop = circuit.gates.len() / 2;
+            compress_loop_early(&circuit, n, env, shard_dbs, 12, i + 1, rounds, intermediate, early_stop)
+        };
+
+        if circuit.gates.is_empty() { break; }
+
+        if circuit.gates.len() == post_len {
+            count += 1;
+        } else {
+            post_len = circuit.gates.len();
+            count = 0;
+        }
+        if count > 2 { break; }
+
+        let mut j = 0;
+        while j < circuit.gates.len().saturating_sub(1) {
+            if circuit.gates[j] == circuit.gates[j + 1] {
+                circuit.gates.drain(j..=j + 1);
+                j = j.saturating_sub(2);
+            } else {
+                j += 1;
+            }
+        }
+
+        if c.probably_equal(&circuit, n, 100_000).is_err() {
+            panic!("The functionality has changed");
+        }
+
+        {
+            println!("Updating progress {}", progress_path);
+            let mut f = OpenOptions::new()
+                .create(true).append(true)
+                .open(&progress_path)
+                .expect("Failed to open progress file");
+            writeln!(f, "=== Round {} ===\n{}\n", i + 1, circuit.repr())
+                .expect("Failed to write progress");
+        }
+    }
+
+    println!("Final len: {}", circuit.gates.len());
+    circuit.probably_equal(&c, n, 150_000)
+        .expect("The circuits differ somewhere!");
+
+    let circuit_str = circuit.repr();
+    File::create(save)
+        .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
+        .expect("Failed to write output");
 
     println!("Final circuit written to {}", save);
 }

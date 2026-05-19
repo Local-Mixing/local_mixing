@@ -387,14 +387,11 @@ mod tests {
     fn benchmark_compress_workload() {
         use rayon::prelude::*;
         use crate::replace::replace::compress_big_ancillas;
-        use crate::replace::mixing::split_into_random_chunk_ranges;
         use rand::RngCore;
 
-        // Generate a synthetic circuit of random gates (exercises the full pipeline:
-        // canonicalize → shard lookup → rewire → splice, including cache misses).
         const N: usize = 128;
-        const CIRCUIT_GATES: usize = 10_000;
-        const BENCH_SECS: f64 = 15.0;
+        const CHUNK_GATES: usize = 1_500;
+        const TOTAL_TASKS: usize = 10_000;
 
         let env = std::sync::Arc::new(
             Environment::new()
@@ -409,67 +406,46 @@ mod tests {
             .map(|s| env.open_db(Some(format!("{:02x}", s).as_str())).unwrap())
             .collect();
 
-        // Build a random circuit with wires in 0..N
+        // Pre-generate TOTAL_TASKS independent ~1500-gate chunks from the 10k/128 scenario.
         let mut rng = rand::rng();
-        let mut gate_bytes = vec![0u8; CIRCUIT_GATES * 3];
-        rng.fill_bytes(&mut gate_bytes);
-        let gates: Vec<[u8; 3]> = gate_bytes
-            .chunks(3)
-            .map(|c| {
-                // keep wires in 0..N and ensure target != controls
-                let t  = c[0] % N as u8;
-                let c1 = c[1] % (N as u8 - 1) + if c[1] % (N as u8 - 1) >= t { 1 } else { 0 };
-                let c2 = c[2] % (N as u8 - 2);
-                [t, c1, c2]
+        let chunks: Vec<crate::circuit::circuit::CircuitSeq> = (0..TOTAL_TASKS)
+            .map(|_| {
+                let mut gate_bytes = vec![0u8; CHUNK_GATES * 3];
+                rng.fill_bytes(&mut gate_bytes);
+                let gates = gate_bytes.chunks(3).map(|c| {
+                    let t  = c[0] % N as u8;
+                    let c1 = c[1] % (N as u8 - 1) + if c[1] % (N as u8 - 1) >= t { 1 } else { 0 };
+                    let c2 = c[2] % (N as u8 - 2);
+                    [t, c1, c2]
+                }).collect();
+                crate::circuit::circuit::CircuitSeq { gates }
             })
             .collect();
-        let circuit = crate::circuit::circuit::CircuitSeq { gates };
-        println!("Circuit: {} gates, {} wires", circuit.gates.len(), N);
+
+        println!("Tasks: {}, Gates/task: {}, Wires: {}, Threads: {}",
+            TOTAL_TASKS, CHUNK_GATES, N, rayon::current_num_threads());
 
         let bench_start = Instant::now();
-        let deadline = bench_start + std::time::Duration::from_secs_f64(BENCH_SECS);
-        let mut iterations = 0u64;
-        let mut total_gates_in = 0u64;
-        let mut total_gates_out = 0u64;
-        let mut mode = 0usize;
-        let mut acc = circuit.clone();
 
-        while Instant::now() < deadline {
-            let before = acc.gates.len();
-            let max_chunks = 4 * rayon::current_num_threads().max(1);
-            let k = if before <= 1500 { 1 } else { ((before + 1499) / 1500).min(max_chunks) };
-            let current_mode = [0, 1, 2][mode];
-            mode = (mode + 1) % 3;
-
-            let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
-            let compressed_chunks: Vec<Vec<[u8; 3]>> = ranges
-                .into_par_iter()
-                .map(|(start, end)| {
-                    let sub = crate::circuit::circuit::CircuitSeq {
-                        gates: acc.gates[start..end].to_vec(),
-                    };
-                    compress_big_ancillas(&sub, 100, N, &env, &shard_dbs, current_mode).gates
-                })
-                .collect();
-
-            let total_len: usize = compressed_chunks.iter().map(|c| c.len()).sum();
-            let mut new_gates = Vec::with_capacity(total_len);
-            for chunk in compressed_chunks {
-                new_gates.extend(chunk);
-            }
-            acc.gates = new_gates;
-            total_gates_in += before as u64;
-            total_gates_out += acc.gates.len() as u64;
-            iterations += 1;
-        }
+        let results: Vec<usize> = chunks
+            .par_iter()
+            .enumerate()
+            .map(|(i, chunk)| {
+                let mode = i % 3;
+                compress_big_ancillas(chunk, 100, N, &env, &shard_dbs, mode).gates.len()
+            })
+            .collect();
 
         let elapsed = bench_start.elapsed().as_secs_f64();
-        println!("Iterations:      {}", iterations);
-        println!("Iterations/sec:  {:.4}", iterations as f64 / elapsed);
-        println!("Secs/iter:       {:.1}", elapsed / iterations.max(1) as f64);
-        println!("Gates in/iter:   {:.0}", total_gates_in as f64 / iterations.max(1) as f64);
-        println!("Gates out/iter:  {:.0}", total_gates_out as f64 / iterations.max(1) as f64);
-        println!("Threads:         {}", rayon::current_num_threads());
+        let total_in: usize = chunks.iter().map(|c| c.gates.len()).sum();
+        let total_out: usize = results.iter().sum();
+
+        println!("Total tasks:     {}", TOTAL_TASKS);
+        println!("Elapsed:         {:.2}s", elapsed);
+        println!("Tasks/sec:       {:.1}", TOTAL_TASKS as f64 / elapsed);
+        println!("Gates in:        {}", total_in);
+        println!("Gates out:       {}", total_out);
+        println!("Reduction:       {:.2}%", 100.0 * (1.0 - total_out as f64 / total_in as f64));
     }
 
     #[test]

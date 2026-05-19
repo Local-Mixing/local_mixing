@@ -27,7 +27,7 @@ use local_mixing::{
             // main_butterfly, 
             main_butterfly_big, main_interleave_big, 
             // main_mix, 
-            main_rac_big, main_rac_big_distance, main_sequential_butterfly, main_shuffle_rcs_big, open_all_dbs, main_shooting_game, main_shuffle_shoot_shuffle
+            main_rac_big, main_rac_big_distance, main_sequential_butterfly, main_shuffle_rcs_big, open_all_dbs, main_shooting_game, main_shuffle_shoot_shuffle, main_expansion_game
         }, mixing::install_kill_handler, pairs::{GatePair, gate_pair_taxonomy}, gen_ids::{generate_identity_db, open_id_dbs}, replace::{
             // compress_big_ancillas,
             // sequential_compress_big_ancillas,
@@ -923,6 +923,70 @@ fn main() {
             ),
     )
     .subcommand(
+        Command::new("egg")
+            .about("Expansion game: expand then compress each round")
+            .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
+            .arg(
+                Arg::new("source")
+                    .short('s').long("source").required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the source circuit file"),
+            )
+            .arg(
+                Arg::new("rounds")
+                    .short('r').long("rounds").required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of rounds"),
+            )
+            .arg(
+                Arg::new("destination")
+                    .short('d').long("destination").required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the output circuit file"),
+            )
+            .arg(
+                Arg::new("stop")
+                    .long("stop").required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Target multiplier: expand until gates reach stop * initial_gates"),
+            )
+            .arg(
+                Arg::new("intermediate")
+                    .short('i').long("intermediate").required(true)
+                    .value_parser(clap::value_parser!(String))
+                    .help("Path to the intermediate circuit file"),
+            )
+            .arg(
+                Arg::new("curated")
+                    .long("curated")
+                    .help("Use completion_m2 for 2-gate pairs")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("db")
+                    .long("db")
+                    .help("Force shard DB lookup for 2-gate pairs")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("id_len")
+                    .long("id_len")
+                    .required(false)
+                    .default_value("3")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of wires per identity (canonical mode only)"),
+            )
+            .arg(
+                Arg::new("tower")
+                    .long("tower")
+                    .help("Use tower identities (canonical mode only)")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue)
+            ),
+    )
+    .subcommand(
         Command::new("sss")
             .about("Do simple shooting game on a circuit")
             .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
@@ -1661,6 +1725,51 @@ Command::new("rocksdb_2")
                     --c2 \"{}\" \
                     --path ./{}{}.png",
                         n, x_label, y_label, s, d, path_s, path_d
+                );
+            }
+        }
+        Some(("egg", sub)) => {
+            let rounds: usize = *sub.get_one("rounds").unwrap();
+            let s: &str = sub.get_one::<String>("source").unwrap().as_str();
+            let d: &str = sub.get_one::<String>("destination").unwrap().as_str();
+            let n: usize = *sub.get_one("n").unwrap();
+            let id_len: usize = *sub.get_one("id_len").unwrap();
+            let tower = sub.get_flag("tower");
+            let curated = sub.get_flag("curated");
+            let use_db = sub.get_flag("db");
+            let stop: usize = *sub.get_one("stop").unwrap();
+            let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
+            let data = fs::read_to_string(s).expect("Failed to read source circuit");
+
+            let lmdb = "./db";
+            let _ = std::fs::create_dir_all(lmdb);
+
+            let env = Environment::new()
+                .set_max_readers(10000)
+                .set_max_dbs(300)
+                .set_map_size(800 * 1024 * 1024 * 1024)
+                .open(Path::new(lmdb))
+                .expect("Failed to open lmdb");
+
+            install_kill_handler();
+            if data.trim().is_empty() {
+                println!("Empty file");
+            } else {
+                let c = CircuitSeq::from_string(&data);
+                let shard_dbs = open_shard_dbs(&env);
+                main_expansion_game(
+                    &c,
+                    rounds,
+                    n,
+                    d,
+                    &env,
+                    &shard_dbs,
+                    id_len,
+                    tower,
+                    stop,
+                    i,
+                    curated,
+                    use_db,
                 );
             }
         }
