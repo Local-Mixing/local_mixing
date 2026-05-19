@@ -723,6 +723,7 @@ pub fn main_shooting_game(
     tower: bool,
     stop_multiplier: usize,
     intermediate: &str,
+    curated: bool,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -762,7 +763,8 @@ pub fn main_shooting_game(
             stop_gates,
             intermediate,
             false,
-            100
+            100,
+            curated,
         );
         circuit = new_circuit;
 
@@ -855,6 +857,7 @@ pub fn main_shuffle_shoot_shuffle(
     leave: bool,
     do_gadgetize: bool,
     full_shuffle: bool,
+    curated: bool,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -914,19 +917,20 @@ pub fn main_shuffle_shoot_shuffle(
     for i in 0..rounds {
         loop {
             let new_circuit = simple_shooting_game(
-                &circuit,  
-                n, 
-                env, 
-                i+1, 
-                rounds, 
-                &bit_shuf_list, 
+                &circuit,
+                n,
+                env,
+                i+1,
+                rounds,
+                &bit_shuf_list,
                 &dbs,
                 id_len,
                 tower,
                 4 * circuit.gates.len(),
                 intermediate,
                 true,
-                1
+                1,
+                curated,
             );
             if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
                 circuit = new_circuit;

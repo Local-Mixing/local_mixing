@@ -845,9 +845,14 @@ pub fn simple_shooting_game(
     intermediate: &str,
     ends: bool,
     iter: usize,
+    curated: bool,
 ) -> CircuitSeq {
-    let comp_db = env.open_db(Some("completion_m2"))
-        .expect("completion_m2 DB not found — run build_completion_m2 first");
+    let comp_db = if curated {
+        Some(env.open_db(Some("completion_m2"))
+            .expect("completion_m2 DB not found — run build_completion_m2 first"))
+    } else {
+        None
+    };
 
     let mut gates = c.gates.clone();
     println!("   {}/{}: Starting simple shooting game until {} rounds or {} gates", curr_round, last_round, iter, stop);
@@ -869,11 +874,13 @@ pub fn simple_shooting_game(
             while curr_idx != 0 {
                 let after_idx = shoot_left_vec(&mut gates, curr_idx);
                 if after_idx == 0 { break }
-                match replace_single_pair_with_completion(
-                    &gates[after_idx - 1],
-                    &gates[after_idx],
-                    n, env, comp_db,
-                ) {
+                let id = if let Some(db) = comp_db {
+                    replace_single_pair_with_completion(&gates[after_idx - 1], &gates[after_idx], n, env, db)
+                } else {
+                    let (repl, _) = replace_single_pair(&gates[after_idx - 1], &gates[after_idx], n, env, _bit_shuf_list, _dbs, _tower, _id_len);
+                    Some(repl)
+                };
+                match id {
                     Some(id) => {
                         let new_len = id.len();
                         gates.splice(after_idx - 1..after_idx + 1, id);
@@ -888,11 +895,13 @@ pub fn simple_shooting_game(
             while curr_idx != len {
                 let after_idx = shoot_right_vec(&mut gates, curr_idx);
                 if after_idx == len - 1 { break }
-                match replace_single_pair_with_completion(
-                    &gates[after_idx],
-                    &gates[after_idx + 1],
-                    n, env, comp_db,
-                ) {
+                let id = if let Some(db) = comp_db {
+                    replace_single_pair_with_completion(&gates[after_idx], &gates[after_idx + 1], n, env, db)
+                } else {
+                    let (repl, _) = replace_single_pair(&gates[after_idx], &gates[after_idx + 1], n, env, _bit_shuf_list, _dbs, _tower, _id_len);
+                    Some(repl)
+                };
+                match id {
                     Some(id) => {
                         let new_len = id.len();
                         gates.splice(after_idx..after_idx + 2, id);

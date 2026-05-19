@@ -62,6 +62,53 @@ mod tests {
     }
 
     #[test]
+    fn most_popular_6gate_polynomial() {
+        let env = Environment::new()
+            .set_max_dbs(300)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("Failed to open ./db lmdb environment");
+
+        let mut best_key: Vec<u8> = Vec::new();
+        let mut best_count: usize = 0;
+        let mut best_circuits: Vec<CircuitSeq> = Vec::new();
+        let mut total_entries = 0u64;
+
+        for shard in 0u16..256 {
+            let name = format!("{:02x}", shard);
+            let db = match env.open_db(Some(name.as_str())) {
+                Ok(db) => db,
+                Err(_) => continue,
+            };
+            let txn = env.begin_ro_txn().expect("ro txn");
+            let mut cursor = txn.open_ro_cursor(db).expect("cursor");
+            for (key, value) in cursor.iter() {
+                let six_gate: Vec<CircuitSeq> = decode_circuits(value)
+                    .into_iter()
+                    .filter(|c| c.gates.len() == 6)
+                    .collect();
+                if six_gate.len() > best_count {
+                    best_count = six_gate.len();
+                    best_key = key.to_vec();
+                    best_circuits = six_gate;
+                }
+                total_entries += 1;
+            }
+            drop(cursor);
+            drop(txn);
+        }
+
+        println!("\nTotal entries scanned: {}", total_entries);
+        println!("Most popular 6-gate polynomial: {} circuits", best_count);
+        println!("Key (hex): {}", best_key.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+        println!("Example circuit: {}", best_circuits[0].repr());
+        println!("All {} circuits:", best_count);
+        for (i, c) in best_circuits.iter().enumerate() {
+            println!("  [{}] {}", i, c.repr());
+        }
+    }
+
+    #[test]
     fn list_completion_m2() {
         let env = Environment::new()
             .set_max_dbs(300)
@@ -151,6 +198,50 @@ mod tests {
 
         println!("Total: {} canonical circuits, {} missing from shards", entries.len(), missing);
         assert_eq!(missing, 0, "{} hashes not found in shard DBs", missing);
+    }
+
+    #[test]
+    fn count_completion_m2_circuits() {
+        let env = Environment::new()
+            .set_max_dbs(300)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("Failed to open ./db");
+
+        let comp_db = env.open_db(Some("completion_m2"))
+            .expect("completion_m2 DB not found — run build_completion_m2 first");
+
+        let txn = env.begin_ro_txn().expect("ro txn");
+        let mut cursor = txn.open_ro_cursor(comp_db).expect("cursor");
+
+        let mut num_keys: u64 = 0;
+        let mut total_circuits: u64 = 0;
+        let mut by_size: std::collections::BTreeMap<usize, u64> = std::collections::BTreeMap::new();
+
+        for (_key, value) in cursor.iter() {
+            num_keys += 1;
+            let mut pos = 0;
+            while pos < value.len() {
+                let len = value[pos] as usize;
+                pos += 1;
+                if pos + len > value.len() { break; }
+                let gate_count = len / 3;
+                *by_size.entry(gate_count).or_insert(0) += 1;
+                total_circuits += 1;
+                pos += len;
+            }
+        }
+
+        drop(cursor);
+        drop(txn);
+
+        println!("completion_m2 stats:");
+        println!("  Keys (canonical pairs): {}", num_keys);
+        println!("  Total circuits:         {}", total_circuits);
+        println!("  By gate count:");
+        for (gates, count) in &by_size {
+            println!("    {} gates: {}", gates, count);
+        }
     }
 
     /// Sanity check: rewire the first stored completion for the first 2 canonical circuits

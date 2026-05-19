@@ -12,6 +12,7 @@ use crate::{
 };
 use crate::replace::identities::random_canonical_id;
 use crate::replace::identities::random_id;
+use crate::replace::pairs::{replace_single_pair, replace_single_pair_with_completion};
 use crate::replace::mixing::split_into_random_chunk_ranges;
 use rand::Rng;
 use rayon::iter::IntoParallelIterator;
@@ -302,27 +303,202 @@ pub fn compress_loop_early(
 }
 
 // Expand with ancilla wires or gates
+/// Selects which method to use when a 2-gate subcircuit is sampled in the expand functions.
+/// For subcircuits of 3–5 gates the shard DB is always used regardless of this setting.
+pub enum ExpandPairMode<'a> {
+    /// Use the completion_m2 DB to find a longer equivalent pair.
+    Curated,
+    /// Use replace_single_pair (random identity from id_g{} DBs) to get a longer equivalent.
+    Canonical {
+        bit_shuf_list: &'a Vec<Vec<Vec<usize>>>,
+        dbs: &'a HashMap<String, lmdb::Database>,
+        id_len: usize,
+        tower: bool,
+    },
+    /// Force the shard DB lookup even for 2-gate subcircuits (same path as 3-5 gates).
+    Db,
+}
+
 pub fn expand_lmdb<'a>(
     c: &CircuitSeq,
     trials: usize,
-    _bit_shuf: &Vec<Vec<usize>>,
-    _n: usize,
-    _env: &lmdb::Environment,
-    _old_n: usize,
-    _dbs: &HashMap<String, lmdb::Database>,
+    n: usize,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    pair_mode: &ExpandPairMode<'a>,
 ) -> CircuitSeq {
-    let compressed = c.clone();
-    if compressed.gates.is_empty() {
+    use xxhash_rust::xxh3::xxh3_128;
+    use crate::circuit::circuit::polys_repr_blob;
+
+    let mut expanded = c.clone();
+
+    if expanded.gates.is_empty() {
         return CircuitSeq { gates: Vec::new() };
     }
-    for _ in 0..trials {
-        let (mut subcircuit, start, end) = random_subcircuit(&compressed);
-        subcircuit.canonicalize();
 
-        let _ = (subcircuit, start, end);
+    // Open completion DB once if we'll need it for 2-gate curated pairs.
+    let comp_db: Option<lmdb::Database> = match pair_mode {
+        ExpandPairMode::Curated => Some(
+            env.open_db(Some("completion_m2"))
+                .expect("completion_m2 DB not found — run build_completion_m2 first"),
+        ),
+        _ => None,
+    };
+
+    let mut rng = rand::rng();
+
+    for _ in 0..trials {
+        let t_trial = Instant::now();
+
+        let (sub, start, end) = random_subcircuit_max(&expanded, 5);
+
+        // Require at least 2 gates; 1-gate subcircuits cannot be expanded meaningfully.
+        if sub.gates.len() < 2 {
+            continue;
+        }
+
+        // --- 2-gate path: bypass the shard DB and use pair functions ---
+        if sub.gates.len() == 2 {
+            match pair_mode {
+                ExpandPairMode::Curated => {
+                    if let Some(db) = comp_db {
+                        if let Some(repl) = replace_single_pair_with_completion(
+                            &sub.gates[0], &sub.gates[1], n, env, db,
+                        ) {
+                            if repl.len() > 2 {
+                                expanded.gates.splice(start..end, repl);
+                            }
+                        }
+                    }
+                    TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    continue;
+                }
+                ExpandPairMode::Canonical { bit_shuf_list, dbs, id_len, tower } => {
+                    let (repl, _) = replace_single_pair(
+                        &sub.gates[0], &sub.gates[1], n, env,
+                        bit_shuf_list, dbs, *tower, *id_len,
+                    );
+                    if repl.len() > 2 {
+                        expanded.gates.splice(start..end, repl);
+                    }
+                    TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    continue;
+                }
+                ExpandPairMode::Db => { /* fall through to shard DB path */ }
+            }
+        }
+
+        let t_canon = Instant::now();
+        let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
+        CANONICALIZE_TIME.fetch_add(t_canon.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        if fwd_polys.is_empty() {
+            continue;
+        }
+
+        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes().to_vec();
+        let fwd_shard = fwd_key[0] as usize;
+
+        let t_txn = Instant::now();
+        let txn = match env.begin_ro_txn() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let t_lookup = Instant::now();
+        let fwd_result = txn.get(shard_dbs[fwd_shard], &fwd_key).map(|v: &[u8]| v.to_vec());
+        LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let (value, final_order, is_reversed) = if let Ok(v) = fwd_result {
+            (v, fwd_order, false)
+        } else {
+            let t_canon2 = Instant::now();
+            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
+            CANONICALIZE_TIME.fetch_add(t_canon2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            if rev_polys.is_empty() {
+                continue;
+            }
+
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes().to_vec();
+            let rev_shard = rev_key[0] as usize;
+
+            let t_lookup2 = Instant::now();
+            let rev_result = txn.get(shard_dbs[rev_shard], &rev_key).map(|v: &[u8]| v.to_vec());
+            LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            match rev_result {
+                Ok(v) => (v, rev_order, true),
+                Err(_) => continue,
+            }
+        };
+
+        let t_blob = Instant::now();
+        let mut candidates: Vec<CircuitSeq> = Vec::new();
+        let mut pos = 0;
+        while pos < value.len() {
+            if pos + 1 > value.len() { break; }
+            let len = value[pos] as usize;
+            pos += 1;
+            if pos + len > value.len() { break; }
+            let candidate = CircuitSeq::from_blob(&value[pos..pos + len]);
+            pos += len;
+            if candidate.gates.len() > sub.gates.len() {
+                candidates.push(candidate);
+            }
+        }
+        FROM_BLOB_TIME.fetch_add(t_blob.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        if candidates.is_empty() {
+            continue;
+        }
+
+        let max_gates = candidates.iter().map(|c| c.gates.len()).max().unwrap();
+        let mut best: Vec<CircuitSeq> = candidates.into_iter().filter(|c| c.gates.len() == max_gates).collect();
+        let idx = rng.random_range(0..best.len());
+        let mut repl = best.swap_remove(idx);
+
+        if is_reversed {
+            repl.gates.reverse();
+        }
+
+        let t_rewire = Instant::now();
+        let repl_n = repl.max_wire() + 1;
+        let mut order_data = final_order.data.clone();
+        while order_data.len() < repl_n {
+            let i = order_data.len();
+            order_data.push(i);
+        }
+
+        repl.rewire(&Permutation { data: order_data }, std::cmp::max(repl_n, final_order.data.len()));
+
+        let repl_n_b = repl.max_wire() + 1;
+        let mut used_ext = used.clone();
+        if used_ext.len() < repl_n_b {
+            let mut available: Vec<u8> = (0..n as u8)
+                .filter(|w| !used_ext.contains(w))
+                .collect();
+            rand::seq::SliceRandom::shuffle(available.as_mut_slice(), &mut rng);
+            let mut avail = available.into_iter();
+            while used_ext.len() < repl_n_b {
+                match avail.next() {
+                    Some(w) => used_ext.push(w),
+                    None => break,
+                }
+            }
+        }
+        let repl = CircuitSeq::unrewire_subcircuit(&repl, &used_ext);
+        REWIRE_TIME.fetch_add(t_rewire.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let t_splice = Instant::now();
+        expanded.gates.splice(start..end, repl.gates);
+        SPLICE_TIME.fetch_add(t_splice.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    compressed
+    expanded
 }
 
 pub fn compress_big(
@@ -935,10 +1111,7 @@ pub fn expand_big(
         subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
 
         
-        let bit_shuf = &bit_shuf_list[new_wires - 3];
-
-        let subcircuit_temp = expand_lmdb(&subcircuit, 10, &bit_shuf, new_wires, &env, n_wires, dbs);
-        subcircuit = subcircuit_temp;
+        let _bit_shuf = &bit_shuf_list[new_wires - 3];
 
         subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
         if subcircuit.gates.len() == end+1 - start {
@@ -1122,6 +1295,123 @@ pub fn compress_big_ancillas(
         }
     }
     DEDUP_TIME.fetch_add(t7.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+    circuit
+}
+
+pub fn expand_big_ancillas<'a>(
+    c: &CircuitSeq,
+    trials: usize,
+    num_wires: usize,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    mode: usize,
+    pair_mode: &ExpandPairMode<'a>,
+) -> CircuitSeq {
+    let mut circuit = c.clone();
+    let mut rng = rand::rng();
+
+    // Open completion DB once if we'll need it for 2-gate curated pairs.
+    let comp_db: Option<lmdb::Database> = match pair_mode {
+        ExpandPairMode::Curated => Some(
+            env.open_db(Some("completion_m2"))
+                .expect("completion_m2 DB not found — run build_completion_m2 first"),
+        ),
+        _ => None,
+    };
+
+    for _ in 0..trials {
+        let t0 = Instant::now();
+        let mut subcircuit_gates = vec![];
+        for set_size in (2..=5).rev() {
+            let (gates, _) = match mode {
+                0 => find_convex_subcircuit_max_wires(set_size, num_wires / 2, num_wires, &circuit, &mut rng),
+                2 => find_convex_subcircuit_max_gates(set_size, 21, num_wires, &circuit, &mut rng),
+                _ => simple_find_convex_subcircuit(set_size, 30, num_wires, &circuit, &mut rng),
+            };
+            if !gates.is_empty() {
+                subcircuit_gates = gates;
+                break;
+            }
+        }
+        let elapsed = t0.elapsed().as_nanos() as u64;
+        CONVEX_FIND_TIME.fetch_add(elapsed, Ordering::Relaxed);
+        match mode {
+            0 => CONVEX_MAX_WIRES_TIME.fetch_add(elapsed, Ordering::Relaxed),
+            2 => CONVEX_MAX_GATES_TIME.fetch_add(elapsed, Ordering::Relaxed),
+            _ => CONVEX_SIMPLE_TIME.fetch_add(elapsed, Ordering::Relaxed),
+        };
+
+        if subcircuit_gates.is_empty() {
+            continue;
+        }
+
+        let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
+
+        if gates.len() < 2 {
+            continue;
+        }
+
+        subcircuit_gates.sort();
+
+        let t1 = Instant::now();
+        let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
+        CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let subcircuit = CircuitSeq { gates };
+
+        let expected_slice: Vec<_> = subcircuit_gates.iter().map(|&i| circuit.gates[i]).collect();
+        let actual_slice = &circuit.gates[start..=end];
+        if actual_slice != &expected_slice[..] {
+            continue;
+        }
+
+        // --- 2-gate path: use pair functions directly on circuit wire values ---
+        if subcircuit.gates.len() == 2 {
+            let t6 = Instant::now();
+            let repl_opt: Option<Vec<[u8; 3]>> = match pair_mode {
+                ExpandPairMode::Curated => {
+                    comp_db.and_then(|db| {
+                        replace_single_pair_with_completion(
+                            &circuit.gates[start], &circuit.gates[end], num_wires, env, db,
+                        )
+                    })
+                }
+                ExpandPairMode::Canonical { bit_shuf_list, dbs, id_len, tower } => {
+                    let (repl, _) = replace_single_pair(
+                        &circuit.gates[start], &circuit.gates[end], num_wires, env,
+                        bit_shuf_list, dbs, *tower, *id_len,
+                    );
+                    Some(repl)
+                }
+                ExpandPairMode::Db => None, // handled by expand_lmdb below
+            };
+            if let Some(repl) = repl_opt {
+                if repl.len() > 2 {
+                    circuit.gates.splice(start..=end, repl);
+                }
+                REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                continue;
+            }
+            // Db mode falls through to expand_lmdb
+            REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+
+        // --- 3-5 gate path (and 2-gate Db mode): use shard DB via expand_lmdb ---
+        // Pass num_wires (full circuit wire count) so extra wires are assigned correctly.
+        let t4 = Instant::now();
+        let subcircuit_temp = expand_lmdb(&subcircuit, 10, num_wires, env, shard_dbs, &ExpandPairMode::Db);
+        COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let t6 = Instant::now();
+        let repl_len = subcircuit_temp.gates.len();
+        let old_len = end - start + 1;
+
+        if repl_len > old_len {
+            circuit.gates.splice(start..=end, subcircuit_temp.gates);
+        }
+        REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
 
     circuit
 }

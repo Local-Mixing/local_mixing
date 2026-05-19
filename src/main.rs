@@ -913,6 +913,13 @@ fn main() {
                     .required(true)
                     .value_parser(clap::value_parser!(String))
                     .help("Path to the intermediate circuit file"),
+            )
+            .arg(
+                Arg::new("curated")
+                    .long("curated")
+                    .help("Use completion-based identities instead of random canonical ids")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue)
             ),
     )
     .subcommand(
@@ -992,6 +999,13 @@ fn main() {
                 Arg::new("full-shuffle")
                     .long("full-shuffle")
                     .help("Insert n SAMFs between every gate once before the main loop")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("curated")
+                    .long("curated")
+                    .help("Use completion-based identities instead of random canonical ids")
                     .required(false)
                     .action(clap::ArgAction::SetTrue)
             ),
@@ -1586,6 +1600,7 @@ Command::new("rocksdb_2")
             let n: usize = *sub.get_one("n").unwrap();
             let id_len: usize = *sub.get_one("id_len").unwrap();
             let tower = sub.get_flag("tower");
+            let curated = sub.get_flag("curated");
             let stop: usize = *sub.get_one("stop").unwrap();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
@@ -1617,6 +1632,7 @@ Command::new("rocksdb_2")
                     tower,
                     stop,
                     i,
+                    curated,
                 );
                 write_compression_histogram("compression_histogram.csv");
                 println!("python3 ./heatmap/compression_hist.py --csv compression_histogram.csv --out compression_histogram.png");
@@ -1660,6 +1676,7 @@ Command::new("rocksdb_2")
             let leave = sub.get_flag("interleave");
             let do_gadgetize = sub.get_flag("gadgetize");
             let full_shuffle = sub.get_flag("full-shuffle");
+            let curated = sub.get_flag("curated");
             let stop: usize = *sub.get_one("stop").unwrap();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
@@ -1696,6 +1713,7 @@ Command::new("rocksdb_2")
                     leave,
                     do_gadgetize,
                     full_shuffle,
+                    curated,
                 );
                 write_compression_histogram("compression_histogram.csv");
                 println!("python3 ./heatmap/compression_hist.py --csv compression_histogram.csv --out compression_histogram.png");

@@ -586,6 +586,74 @@ pub fn get_random_wide_identity_via_pairs(
     id
 }
 
+/// Given a 2-gate pair, looks up a random completion from the `completion_m2` DB
+/// and rewires it back to the actual wires. Returns `None` if the pair has no completion.
+pub fn random_completion_id(
+    left: &[u8; 3],
+    right: &[u8; 3],
+    num_wires: usize,
+    env: &Environment,
+    comp_db: Database,
+) -> Option<CircuitSeq> {
+    use xxhash_rust::xxh3::xxh3_128;
+    use crate::circuit::circuit::polys_repr_blob;
+
+    let mut rng = rand::rng();
+    let pair = CircuitSeq { gates: vec![*left, *right] };
+    let txn = env.begin_ro_txn().ok()?;
+
+    let (value, final_order, used, is_reversed): (Vec<u8>, _, Vec<u8>, bool) = {
+        let (fwd_polys, fwd_order, fwd_used) = pair.canonicalize_polys_single(false);
+        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
+        match txn.get(comp_db, &fwd_key) {
+            Ok(v) => (v.to_vec(), fwd_order, fwd_used, false),
+            Err(_) => {
+                let (rev_polys, rev_order, rev_used) = pair.canonicalize_polys_single(true);
+                if rev_polys.is_empty() { return None; }
+                let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
+                match txn.get(comp_db, &rev_key) {
+                    Ok(v) => (v.to_vec(), rev_order, rev_used, true),
+                    Err(_) => return None,
+                }
+            }
+        }
+    };
+
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut pos = 0usize;
+    while pos < value.len() {
+        let len = value[pos] as usize;
+        pos += 1;
+        if pos + len > value.len() { break; }
+        spans.push((pos, len));
+        pos += len;
+    }
+    if spans.is_empty() { return None; }
+    let (start, len) = spans[rng.random_range(0..spans.len())];
+    let mut repl = CircuitSeq::from_blob(&value[start..start + len]);
+
+    if is_reversed { repl.gates.reverse(); }
+
+    let repl_n = repl.max_wire() + 1;
+    let mut order_data = final_order.data.clone();
+    while order_data.len() < repl_n { order_data.push(order_data.len()); }
+    let order_len = order_data.len().max(final_order.data.len());
+    repl.rewire(&Permutation { data: order_data }, order_len);
+
+    let repl_n_b = repl.max_wire() + 1;
+    let mut used_ext = used.clone();
+    if used_ext.len() < repl_n_b {
+        let mut avail: Vec<u8> = (0..num_wires as u8)
+            .filter(|w| !used_ext.contains(w))
+            .collect();
+        avail.shuffle(&mut rng);
+        let mut avail = avail.into_iter();
+        while used_ext.len() < repl_n_b { used_ext.push(avail.next()?); }
+    }
+
+    Some(CircuitSeq::unrewire_subcircuit(&repl, &used_ext))
+}
+
 // To just get a completely random circuit and reverse for identity, rather than using canonical ones from our rainbow table
 pub fn random_id(n: usize, m: usize) -> (CircuitSeq, CircuitSeq) {
     let circuit = random_circuit(n, m);
