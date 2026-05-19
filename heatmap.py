@@ -121,7 +121,10 @@ if __name__ == "__main__":
     parser.add_argument("--fix", type=int, default=0, help="Number of fixed bits in each random input")
     parser.add_argument("--hw", action="store_true", help="Use hamming weight difference mode")
     parser.add_argument("--std", action="store_true", help="Use standard deviation for heatmaps")
+    parser.add_argument("--enhance", action="store_true", help="Tighten color scale to 0.45-0.55 to amplify small differences")
     args = parser.parse_args()
+
+    vmin, vmax = (0.45, 0.55) if args.enhance else (0.0, 1.0)
 
     flag = False
 
@@ -160,7 +163,7 @@ if __name__ == "__main__":
                 if args.std:
                     plot_heatmap_std(results, output, xlabel=args.x, ylabel=args.y)
                 else:
-                    plot_heatmap_raw(results, output, xlabel=args.x, ylabel=args.y)
+                    plot_heatmap_raw(results, output, xlabel=args.x, ylabel=args.y, vmin=vmin, vmax=vmax)
                 print(f"Saved {output_path}")
 
     elif args.small:
@@ -170,7 +173,7 @@ if __name__ == "__main__":
         if args.std:
             plot_heatmap_std(results, output, xlabel=args.x, ylabel=args.y)
         else:
-            plot_heatmap_raw(results, output, xlabel=args.x, ylabel=args.y)
+            plot_heatmap_raw(results, output, xlabel=args.x, ylabel=args.y, vmin=vmin, vmax=vmax)
         print(f"Heatmap saved to {output}")
 
     else:
@@ -180,5 +183,5 @@ if __name__ == "__main__":
         if args.std:
             plot_heatmap_std(results, output, xlabel=args.x, ylabel=args.y)
         else:
-            plot_heatmap_raw(results, output, xlabel=args.x, ylabel=args.y)
+            plot_heatmap_raw(results, output, xlabel=args.x, ylabel=args.y, vmin=vmin, vmax=vmax)
         print(f"Heatmap saved to {output}")

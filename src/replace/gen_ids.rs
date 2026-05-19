@@ -384,6 +384,87 @@ mod tests {
     }
 
     #[test]
+    fn benchmark_compress_workload() {
+        use rayon::prelude::*;
+        use crate::replace::replace::{compress_big_ancillas, split_into_random_chunk_ranges};
+        use rand::RngCore;
+
+        // Generate a synthetic circuit of random gates (exercises the full pipeline:
+        // canonicalize → shard lookup → rewire → splice, including cache misses).
+        const N: usize = 128;
+        const CIRCUIT_GATES: usize = 10_000;
+        const BENCH_SECS: f64 = 15.0;
+
+        let env = std::sync::Arc::new(
+            Environment::new()
+                .set_max_readers(10000)
+                .set_max_dbs(300)
+                .set_map_size(800 * 1024 * 1024 * 1024)
+                .open(Path::new("./db"))
+                .expect("Failed to open ./db"),
+        );
+
+        let shard_dbs: Vec<lmdb::Database> = (0u8..=255)
+            .map(|s| env.open_db(Some(format!("{:02x}", s).as_str())).unwrap())
+            .collect();
+
+        // Build a random circuit with wires in 0..N
+        let mut rng = rand::rng();
+        let mut gate_bytes = vec![0u8; CIRCUIT_GATES * 3];
+        rng.fill_bytes(&mut gate_bytes);
+        let gates: Vec<[u8; 3]> = gate_bytes
+            .chunks(3)
+            .map(|c| {
+                // keep wires in 0..N and ensure target != controls
+                let t  = c[0] % N as u8;
+                let c1 = (c[1] % (N as u8 - 1) + if c[1] % (N as u8 - 1) >= t { 1 } else { 0 });
+                let c2 = (c[2] % (N as u8 - 2));
+                [t, c1, c2]
+            })
+            .collect();
+        let circuit = crate::circuit::circuit::CircuitSeq { gates };
+        println!("Circuit: {} gates, {} wires", circuit.gates.len(), N);
+
+        let deadline = Instant::now() + std::time::Duration::from_secs_f64(BENCH_SECS);
+        let mut iterations = 0u64;
+        let mut total_gates_in = 0u64;
+        let mut total_gates_out = 0u64;
+        let mut mode = 0usize;
+        let mut acc = circuit.clone();
+
+        while Instant::now() < deadline {
+            let before = acc.gates.len();
+            let max_chunks = 4 * rayon::current_num_threads().max(1);
+            let k = if before <= 1500 { 1 } else { ((before + 1499) / 1500).min(max_chunks) };
+            let current_mode = [0, 1, 2][mode];
+            mode = (mode + 1) % 3;
+
+            let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
+            let chunks: Vec<Vec<[u8; 3]>> = ranges
+                .into_par_iter()
+                .map(|(start, end)| {
+                    let sub = crate::circuit::circuit::CircuitSeq {
+                        gates: acc.gates[start..end].to_vec(),
+                    };
+                    compress_big_ancillas(&sub, 100, N, &env, &shard_dbs, current_mode).gates
+                })
+                .collect();
+
+            acc.gates = chunks.into_iter().flatten().collect();
+            total_gates_in += before as u64;
+            total_gates_out += acc.gates.len() as u64;
+            iterations += 1;
+        }
+
+        let elapsed = BENCH_SECS;
+        println!("Iterations:      {}", iterations);
+        println!("Iterations/sec:  {:.1}", iterations as f64 / elapsed);
+        println!("Gates in/iter:   {:.0}", total_gates_in as f64 / iterations as f64);
+        println!("Gates out/iter:  {:.0}", total_gates_out as f64 / iterations as f64);
+        println!("Threads:         {}", rayon::current_num_threads());
+    }
+
+    #[test]
     fn benchmark_lmdb_reads() {
         use rayon::prelude::*;
 
