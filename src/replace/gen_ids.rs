@@ -62,6 +62,46 @@ mod tests {
     }
 
     #[test]
+    fn count_id_g_circuits() {
+        let env = Environment::new()
+            .set_max_dbs(300)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("Failed to open ./db");
+
+        let mut grand_total_keys: u64 = 0;
+        let mut grand_total_circuits: u64 = 0;
+
+        for i in 0..34 {
+            let name = format!("id_g{}", i);
+            let db = match env.open_db(Some(name.as_str())) {
+                Ok(db) => db,
+                Err(_) => continue,
+            };
+            let txn = env.begin_ro_txn().expect("ro txn");
+            let mut cursor = txn.open_ro_cursor(db).expect("cursor");
+
+            let mut num_keys: u64 = 0;
+            let mut num_circuits: u64 = 0;
+            for (_, value) in cursor.iter() {
+                num_keys += 1;
+                num_circuits += decode_circuits(value).len() as u64;
+            }
+            drop(cursor);
+            drop(txn);
+
+            if num_keys > 0 {
+                println!("id_g{:2}: {:>10} keys, {:>10} circuits", i, num_keys, num_circuits);
+                grand_total_keys += num_keys;
+                grand_total_circuits += num_circuits;
+            }
+        }
+
+        println!("---");
+        println!("Total:    {:>10} keys, {:>10} circuits", grand_total_keys, grand_total_circuits);
+    }
+
+    #[test]
     fn most_popular_6gate_polynomial() {
         let env = Environment::new()
             .set_max_dbs(300)
