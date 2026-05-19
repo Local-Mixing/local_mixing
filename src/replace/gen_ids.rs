@@ -387,7 +387,7 @@ mod tests {
     fn benchmark_lmdb_reads() {
         use rayon::prelude::*;
 
-        const TOTAL_READS: usize = 10_000;
+        const TOTAL_READS: usize = 1_000_000;
 
         let env = std::sync::Arc::new(
             Environment::new()
@@ -398,12 +398,11 @@ mod tests {
                 .expect("Failed to open ./db"),
         );
 
-        // Open all 256 shard DBs.
         let shard_dbs: Vec<lmdb::Database> = (0u8..=255)
             .map(|s| env.open_db(Some(format!("{:02x}", s).as_str())).unwrap())
             .collect();
 
-        // Collect a pool of (shard_idx, key) pairs to sample from.
+        // Collect all keys into RAM so we can sample them.
         println!("Collecting key pool...");
         let mut pool: Vec<(usize, Vec<u8>)> = Vec::new();
         for shard in 0usize..256 {
@@ -415,42 +414,32 @@ mod tests {
             drop(cursor);
             drop(txn);
         }
-        println!("Pool size: {} keys across 256 shards", pool.len());
+        println!("Pool: {} keys across 256 shards", pool.len());
         assert!(!pool.is_empty(), "DB is empty");
 
-        // Build the read list by cycling through the pool.
+        // Build read list by sampling pool (wrapping if needed).
         let reads: Vec<(usize, Vec<u8>)> = (0..TOTAL_READS)
             .map(|i| pool[i % pool.len()].clone())
             .collect();
 
-        // Warm up the LMDB mmap by doing a small sequential pass first.
-        {
-            let txn = env.begin_ro_txn().expect("ro txn");
-            for (shard, key) in reads.iter().take(100) {
-                let _ = txn.get(shard_dbs[*shard], key);
-            }
-        }
-
-        // --- Parallel benchmark ---
+        // --- Parallel: each task opens its own read transaction and does a real B-tree lookup ---
         let t = Instant::now();
         let hits: usize = reads
             .par_iter()
             .map(|(shard, key)| {
                 let txn = env.begin_ro_txn().expect("ro txn");
-                let found = txn.get(shard_dbs[*shard], key).is_ok() as usize;
-                drop(txn);
-                found
+                txn.get(shard_dbs[*shard], key).is_ok() as usize
             })
             .sum();
         let elapsed = t.elapsed();
-
-        let reads_per_sec = TOTAL_READS as f64 / elapsed.as_secs_f64();
         println!(
-            "Parallel: {} reads in {:.3}s  →  {:.0} reads/sec  (hits: {}/{})",
-            TOTAL_READS, elapsed.as_secs_f64(), reads_per_sec, hits, TOTAL_READS
+            "Parallel:   {} reads in {:.3}s  →  {:.0} reads/sec  (hits: {}/{})",
+            TOTAL_READS, elapsed.as_secs_f64(),
+            TOTAL_READS as f64 / elapsed.as_secs_f64(),
+            hits, TOTAL_READS
         );
 
-        // --- Sequential benchmark for comparison ---
+        // --- Sequential: single transaction, same lookups ---
         let t2 = Instant::now();
         let txn = env.begin_ro_txn().expect("ro txn");
         for (shard, key) in &reads {
@@ -460,7 +449,8 @@ mod tests {
         let elapsed2 = t2.elapsed();
         println!(
             "Sequential: {} reads in {:.3}s  →  {:.0} reads/sec",
-            TOTAL_READS, elapsed2.as_secs_f64(), TOTAL_READS as f64 / elapsed2.as_secs_f64()
+            TOTAL_READS, elapsed2.as_secs_f64(),
+            TOTAL_READS as f64 / elapsed2.as_secs_f64()
         );
     }
 }
