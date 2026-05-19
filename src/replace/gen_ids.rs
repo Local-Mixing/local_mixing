@@ -386,7 +386,8 @@ mod tests {
     #[test]
     fn benchmark_compress_workload() {
         use rayon::prelude::*;
-        use crate::replace::replace::{compress_big_ancillas, split_into_random_chunk_ranges};
+        use crate::replace::replace::compress_big_ancillas;
+        use crate::replace::mixing::split_into_random_chunk_ranges;
         use rand::RngCore;
 
         // Generate a synthetic circuit of random gates (exercises the full pipeline:
