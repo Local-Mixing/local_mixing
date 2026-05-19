@@ -402,19 +402,27 @@ mod tests {
             .map(|s| env.open_db(Some(format!("{:02x}", s).as_str())).unwrap())
             .collect();
 
-        // Collect all keys into RAM so we can sample them.
-        println!("Collecting key pool...");
+        // Collect a capped sample of keys (1 in every SAMPLE_STRIDE) so RAM usage stays bounded.
+        const POOL_CAP: usize = 1_000_000;
+        println!("Collecting key pool (capped at {})...", POOL_CAP);
         let mut pool: Vec<(usize, Vec<u8>)> = Vec::new();
-        for shard in 0usize..256 {
+        let mut seen = 0usize;
+        'outer: for shard in 0usize..256 {
             let txn = env.begin_ro_txn().expect("ro txn");
             let mut cursor = txn.open_ro_cursor(shard_dbs[shard]).expect("cursor");
             for (k, _) in cursor.iter() {
-                pool.push((shard, k.to_vec()));
+                seen += 1;
+                if seen % 3000 == 0 {
+                    pool.push((shard, k.to_vec()));
+                    if pool.len() >= POOL_CAP {
+                        break 'outer;
+                    }
+                }
             }
             drop(cursor);
             drop(txn);
         }
-        println!("Pool: {} keys across 256 shards", pool.len());
+        println!("Pool: {} keys sampled from {} total scanned", pool.len(), seen);
         assert!(!pool.is_empty(), "DB is empty");
 
         // Build read list by sampling pool (wrapping if needed).
