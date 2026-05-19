@@ -69,8 +69,7 @@ mod tests {
             .open(Path::new("./db"))
             .expect("Failed to open ./db");
 
-        let mut grand_total_keys: u64 = 0;
-        let mut grand_total_circuits: u64 = 0;
+        let mut grand_total: u64 = 0;
 
         for i in 0..34 {
             let name = format!("id_g{}", i);
@@ -80,25 +79,18 @@ mod tests {
             };
             let txn = env.begin_ro_txn().expect("ro txn");
             let mut cursor = txn.open_ro_cursor(db).expect("cursor");
-
-            let mut num_keys: u64 = 0;
-            let mut num_circuits: u64 = 0;
-            for (_, value) in cursor.iter() {
-                num_keys += 1;
-                num_circuits += decode_circuits(value).len() as u64;
-            }
+            let count = cursor.iter().count() as u64;
             drop(cursor);
             drop(txn);
 
-            if num_keys > 0 {
-                println!("id_g{:2}: {:>10} keys, {:>10} circuits", i, num_keys, num_circuits);
-                grand_total_keys += num_keys;
-                grand_total_circuits += num_circuits;
+            if count > 0 {
+                println!("id_g{:2}: {:>10} circuits", i, count);
+                grand_total += count;
             }
         }
 
         println!("---");
-        println!("Total:    {:>10} keys, {:>10} circuits", grand_total_keys, grand_total_circuits);
+        println!("Total:    {:>10} circuits", grand_total);
     }
 
     #[test]
