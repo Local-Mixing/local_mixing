@@ -1698,6 +1698,7 @@ Command::new("rocksdb_2")
                     i,
                     curated,
                 );
+                print_compress_timers();
                 write_compression_histogram("compression_histogram.csv");
                 println!("python3 ./heatmap/compression_hist.py --csv compression_histogram.csv --out compression_histogram.png");
                 println!("python3 ./heatmap/compression_heatmap.py --csv compression_histogram.csv --out compression_heatmap.png");
@@ -1771,6 +1772,7 @@ Command::new("rocksdb_2")
                     curated,
                     use_db,
                 );
+                print_compress_timers();
             }
         }
         Some(("sss", sub)) => {
@@ -1824,6 +1826,7 @@ Command::new("rocksdb_2")
                     full_shuffle,
                     curated,
                 );
+                print_compress_timers();
                 write_compression_histogram("compression_histogram.csv");
                 println!("python3 ./heatmap/compression_hist.py --csv compression_histogram.csv --out compression_histogram.png");
                 println!("python3 ./heatmap/compression_heatmap.py --csv compression_histogram.csv --out compression_heatmap.png");
