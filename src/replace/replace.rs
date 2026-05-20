@@ -529,7 +529,8 @@ pub fn expand_lmdb<'a>(
         let repl_n_b = repl.max_wire() + 1;
         let mut used_ext = used.clone();
         if used_ext.len() < repl_n_b {
-            let mut available: Vec<u8> = (0..n as u8)
+            let mut available: Vec<u8> = (0..n.min(256))
+                .map(|w| w as u8)
                 .filter(|w| !used_ext.contains(w))
                 .collect();
             rand::seq::SliceRandom::shuffle(available.as_mut_slice(), &mut rng);
@@ -1073,7 +1074,8 @@ pub fn compress_lmdb(
         let repl_n_b = repl.max_wire() + 1;
         let mut used_ext = used.clone();
         if used_ext.len() < repl_n_b {
-            let mut available: Vec<u8> = (0..n as u8)
+            let mut available: Vec<u8> = (0..n.min(256))
+                .map(|w| w as u8)
                 .filter(|w| !used_ext.contains(w))
                 .collect();
             rand::seq::SliceRandom::shuffle(available.as_mut_slice(), &mut rng);

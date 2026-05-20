@@ -1,5 +1,6 @@
 // Basic implementation for circuit, gate, and permutations
 use primitive_types::U256 as u256;
+use primitive_types::U512 as u512;
 use rand::{seq::SliceRandom, RngCore,};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -104,6 +105,13 @@ impl Gate {
         state ^ ((c1 | (one ^ c2)) << gate[0])
     }
 
+    pub fn evaluate_index_512(state: u512, gate: [u8;3]) -> u512 {
+        let one = u512::one();
+        let c1 = (state >> gate[1]) & one;
+        let c2 = (state >> gate[2]) & one;
+        state ^ ((c1 | (one ^ c2)) << gate[0])
+    }
+
     // Evaluate a list of gates
     #[inline(always)]
     pub fn evaluate_index_list(state: usize, gates: &Vec<[u8;3]>) -> usize {
@@ -128,6 +136,15 @@ impl Gate {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_256(current_wires, *g);
+        }
+        current_wires
+    }
+
+    #[inline(always)]
+    pub fn evaluate_index_list_512(state: u512, gates: &Vec<[u8;3]>) -> u512 {
+        let mut current_wires = state;
+        for g in gates {
+            current_wires = Self::evaluate_index_512(current_wires, *g);
         }
         current_wires
     }
@@ -729,6 +746,26 @@ impl CircuitSeq {
         num_inputs: usize
     ) -> Result<(), String> {
         use rayon::prelude::*;
+
+        if num_wires > 256 {
+            let mask = if num_wires < 512 {
+                (u512::one() << num_wires) - u512::one()
+            } else {
+                u512::MAX
+            };
+            return (0..num_inputs).into_par_iter().try_for_each(|_| {
+                let mut bytes = [0u8; 64];
+                rand::rng().fill_bytes(&mut bytes);
+                let random_input = u512::from_little_endian(&bytes) & mask;
+                let self_output = Gate::evaluate_index_list_512(random_input, &self.gates);
+                let other_output = Gate::evaluate_index_list_512(random_input, &other_circuit.gates);
+                if (self_output & mask) != (other_output & mask) {
+                    Err("Circuits are not equal".to_string())
+                } else {
+                    Ok(())
+                }
+            });
+        }
 
         let mask = if num_wires < 256 {
             (u256::one() << num_wires) - u256::one()
