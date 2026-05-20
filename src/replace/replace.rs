@@ -1268,7 +1268,7 @@ pub fn compress_big_ancillas(
     for _ in 0..trials {
         let t0 = Instant::now();
         let (mut subcircuit_gates, _) = match mode {
-            0 => find_convex_subcircuit_max_wires(0, num_wires / 2, num_wires, &circuit, &mut rng),
+            0 => find_convex_subcircuit_max_wires(0, 30, num_wires, &circuit, &mut rng),
             2 => find_convex_subcircuit_max_gates(0, 21, num_wires, &circuit, &mut rng),
             _ => simple_find_convex_subcircuit(0, 30, num_wires, &circuit, &mut rng),
         };
@@ -1384,7 +1384,7 @@ pub fn expand_big_ancillas<'a>(
     for _ in 0..trials {
         let t0 = Instant::now();
         let (mut subcircuit_gates, _) = match mode {
-            0 => find_convex_subcircuit_max_wires(0, num_wires / 2, num_wires, &circuit, &mut rng),
+            0 => find_convex_subcircuit_max_wires(0, 30, num_wires, &circuit, &mut rng),
             2 => find_convex_subcircuit_max_gates(0, 21, num_wires, &circuit, &mut rng),
             _ => simple_find_convex_subcircuit(0, 30, num_wires, &circuit, &mut rng),
         };

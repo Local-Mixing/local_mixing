@@ -966,13 +966,14 @@ pub fn insert_wire_shuffles_x(
 
 // Insert m samf between each gate
 pub fn insert_wire_m_samfs_every_x(
-    circuit: &mut CircuitSeq, 
+    circuit: &mut CircuitSeq,
     n: usize,
     m: usize,
     x: usize,
     env: &Environment,
     dbs: &HashMap<String, Database>,
 ) {
+    let n = n.min(256);
     println!("Inserting {} samfs between each gate", m);
     println!("Starting len: {} gates", circuit.gates.len());
     let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
