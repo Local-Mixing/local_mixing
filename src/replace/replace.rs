@@ -149,6 +149,9 @@ pub static REPLACE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static DEDUP_TIME: AtomicU64 = AtomicU64::new(0);
 pub static PICK_SUBCIRCUIT_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CANONICALIZE_TIME: AtomicU64 = AtomicU64::new(0);
+pub static CANONICALIZE_TIME_MAX_WIRES: AtomicU64 = AtomicU64::new(0);
+pub static CANONICALIZE_TIME_SIMPLE: AtomicU64 = AtomicU64::new(0);
+pub static CANONICALIZE_TIME_MAX_GATES: AtomicU64 = AtomicU64::new(0);
 pub static ROW_FETCH_TIME: AtomicU64 = AtomicU64::new(0);
 pub static SROW_FETCH_TIME: AtomicU64 = AtomicU64::new(0);
 pub static SIXROW_FETCH_TIME: AtomicU64 = AtomicU64::new(0);
@@ -621,7 +624,7 @@ pub fn compress_big(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs, 1);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -744,7 +747,7 @@ pub fn sequential_compress_big(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs, 1);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -883,7 +886,7 @@ pub fn sequential_compress_big_ancillas(
         PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs, 1);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -938,6 +941,7 @@ pub fn compress_lmdb(
     n: usize,
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
+    mode: usize,
 ) -> CircuitSeq {
     use xxhash_rust::xxh3::xxh3_128;
     use crate::circuit::circuit::polys_repr_blob;
@@ -971,7 +975,13 @@ pub fn compress_lmdb(
 
         let t_canon = Instant::now();
         let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
-        CANONICALIZE_TIME.fetch_add(t_canon.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let canon_elapsed = t_canon.elapsed().as_nanos() as u64;
+        CANONICALIZE_TIME.fetch_add(canon_elapsed, Ordering::Relaxed);
+        match mode {
+            0 => CANONICALIZE_TIME_MAX_WIRES.fetch_add(canon_elapsed, Ordering::Relaxed),
+            2 => CANONICALIZE_TIME_MAX_GATES.fetch_add(canon_elapsed, Ordering::Relaxed),
+            _ => CANONICALIZE_TIME_SIMPLE.fetch_add(canon_elapsed, Ordering::Relaxed),
+        };
 
         if fwd_polys.is_empty() {
             continue;
@@ -996,7 +1006,13 @@ pub fn compress_lmdb(
         } else {
             let t_canon2 = Instant::now();
             let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
-            CANONICALIZE_TIME.fetch_add(t_canon2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let canon2_elapsed = t_canon2.elapsed().as_nanos() as u64;
+            CANONICALIZE_TIME.fetch_add(canon2_elapsed, Ordering::Relaxed);
+            match mode {
+                0 => CANONICALIZE_TIME_MAX_WIRES.fetch_add(canon2_elapsed, Ordering::Relaxed),
+                2 => CANONICALIZE_TIME_MAX_GATES.fetch_add(canon2_elapsed, Ordering::Relaxed),
+                _ => CANONICALIZE_TIME_SIMPLE.fetch_add(canon2_elapsed, Ordering::Relaxed),
+            };
 
             if rev_polys.is_empty() {
                 continue;
@@ -1300,7 +1316,7 @@ pub fn compress_big_ancillas(
         let sub_num_wires = used_wires.len();
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs);
+        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs, mode);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         subcircuit = subcircuit_temp;
@@ -1488,12 +1504,9 @@ pub fn random_gate_replacements(c: &mut CircuitSeq, x: usize, n: usize, env: &lm
 
 // For timing and benchmarking purposes
 pub fn print_compress_timers() {
-    let perm = PERMUTATION_TIME.load(Ordering::Relaxed);
-    let sql = DUCKDB_TIME.load(Ordering::Relaxed);
     let canon = CANON_TIME.load(Ordering::Relaxed);
     let compress = COMPRESS_TIME.load(Ordering::Relaxed);
     let rewire = REWIRE_TIME.load(Ordering::Relaxed);
-    let unrewire = UNREWIRE_TIME.load(Ordering::Relaxed);
     let convex_find = CONVEX_FIND_TIME.load(Ordering::Relaxed);
     let convex_max_wires = CONVEX_MAX_WIRES_TIME.load(Ordering::Relaxed);
     let convex_max_gates = CONVEX_MAX_GATES_TIME.load(Ordering::Relaxed);
@@ -1501,45 +1514,35 @@ pub fn print_compress_timers() {
     let contiguous = CONTIGUOUS_TIME.load(Ordering::Relaxed);
     let replace = REPLACE_TIME.load(Ordering::Relaxed);
     let dedup = DEDUP_TIME.load(Ordering::Relaxed);
-    let pick = PICK_SUBCIRCUIT_TIME.load(Ordering::Relaxed);
     let canonicalize = CANONICALIZE_TIME.load(Ordering::Relaxed);
-    let row_fetch = ROW_FETCH_TIME.load(Ordering::Relaxed);
-    let srow_fetch = SROW_FETCH_TIME.load(Ordering::Relaxed);
-    let sixrow_fetch = SIXROW_FETCH_TIME.load(Ordering::Relaxed);
-    let lrow_fetch = LROW_FETCH_TIME.load(Ordering::Relaxed);
-    let db_open = DB_OPEN_TIME.load(Ordering::Relaxed);
+    let canon_max_wires = CANONICALIZE_TIME_MAX_WIRES.load(Ordering::Relaxed);
+    let canon_simple = CANONICALIZE_TIME_SIMPLE.load(Ordering::Relaxed);
+    let canon_max_gates = CANONICALIZE_TIME_MAX_GATES.load(Ordering::Relaxed);
     let txn = TXN_TIME.load(Ordering::Relaxed);
     let lmdb_lookup = LMDB_LOOKUP_TIME.load(Ordering::Relaxed);
     let from_blob = FROM_BLOB_TIME.load(Ordering::Relaxed);
-    let splice = SPLICE_TIME.load(Ordering::Relaxed);
     let trial = TRIAL_TIME.load(Ordering::Relaxed);
     let id = IDENTITY_TIME.load(Ordering::Relaxed);
 
+    let ns = 60_000_000_000.0f64;
     println!("--- Compression Timing Totals (minutes) ---");
-    println!("Permutation computation time: {:.2} min", perm as f64 / 60_000_000_000.0);
-    println!("DUCKDB lookup time: {:.2} min", sql as f64 / 60_000_000_000.0);
-    println!("Canonicalization time: {:.2} min", canon as f64 / 60_000_000_000.0);
-    println!("Compress LMDB time: {:.2} min", compress as f64 / 60_000_000_000.0);
-    println!("Rewire subcircuit time: {:.2} min", rewire as f64 / 60_000_000_000.0);
-    println!("Unrewire subcircuit time: {:.2} min", unrewire as f64 / 60_000_000_000.0);
-    println!("Convex subcircuit find time: {:.2} min", convex_find as f64 / 60_000_000_000.0);
-    println!("  max_wires: {:.2} min", convex_max_wires as f64 / 60_000_000_000.0);
-    println!("  max_gates: {:.2} min", convex_max_gates as f64 / 60_000_000_000.0);
-    println!("  simple:    {:.2} min", convex_simple as f64 / 60_000_000_000.0);
-    println!("Contiguous convex subcircuit time: {:.2} min", contiguous as f64 / 60_000_000_000.0);
-    println!("Replacement time: {:.2} min", replace as f64 / 60_000_000_000.0);
-    println!("Deduplication time: {:.2} min", dedup as f64 / 60_000_000_000.0);
-    println!("Pick subcircuit time: {:.2} min", pick as f64 / 60_000_000_000.0);
-    println!("Subcircuit canonicalize time: {:.2} min", canonicalize as f64 / 60_000_000_000.0);
-    println!("DUCKDB row fetch time: {:.2} min", row_fetch as f64 / 60_000_000_000.0);
-    println!("DUCKDB n7m4 prepared row fetch time: {:.2} min", srow_fetch as f64 / 60_000_000_000.0);
-    println!("DUCKDB n6m5 prepared row fetch time: {:.2} min", sixrow_fetch as f64 / 60_000_000_000.0);
-    println!("LMDB row fetch time: {:.2} min", lrow_fetch as f64 / 60_000_000_000.0);
-    println!("LMDB DB open time: {:.2} min", db_open as f64 / 60_000_000_000.0);
-    println!("LMDB transaction begin time: {:.2} min", txn as f64 / 60_000_000_000.0);
-    println!("LMDB lookup time: {:.2} min", lmdb_lookup as f64 / 60_000_000_000.0);
-    println!("CircuitSeq from_blob time: {:.2} min", from_blob as f64 / 60_000_000_000.0);
-    println!("Gate splice time: {:.2} min", splice as f64 / 60_000_000_000.0);
-    println!("Trial loop time: {:.2} min", trial as f64 / 60_000_000_000.0);
-    println!("Identity Sampling Time: {:.2} min", id as f64 / 60_000_000_000.0);
+    println!("Canonicalization time: {:.2} min", canon as f64 / ns);
+    println!("Compress LMDB time: {:.2} min", compress as f64 / ns);
+    println!("Rewire subcircuit time: {:.2} min", rewire as f64 / ns);
+    println!("Convex subcircuit find time: {:.2} min", convex_find as f64 / ns);
+    println!("  max_wires: {:.2} min", convex_max_wires as f64 / ns);
+    println!("  max_gates: {:.2} min", convex_max_gates as f64 / ns);
+    println!("  simple:    {:.2} min", convex_simple as f64 / ns);
+    println!("Contiguous convex subcircuit time: {:.2} min", contiguous as f64 / ns);
+    println!("Replacement time: {:.2} min", replace as f64 / ns);
+    println!("Deduplication time: {:.2} min", dedup as f64 / ns);
+    println!("Subcircuit canonicalize time: {:.2} min", canonicalize as f64 / ns);
+    println!("  max_wires: {:.2} min", canon_max_wires as f64 / ns);
+    println!("  max_gates: {:.2} min", canon_max_gates as f64 / ns);
+    println!("  simple:    {:.2} min", canon_simple as f64 / ns);
+    println!("LMDB transaction begin time: {:.2} min", txn as f64 / ns);
+    println!("LMDB lookup time: {:.2} min", lmdb_lookup as f64 / ns);
+    println!("CircuitSeq from_blob time: {:.2} min", from_blob as f64 / ns);
+    println!("Trial loop time: {:.2} min", trial as f64 / ns);
+    println!("Identity Sampling Time: {:.2} min", id as f64 / ns);
 }

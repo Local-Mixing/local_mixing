@@ -994,10 +994,10 @@ pub fn main_shuffle_shoot_shuffle(
     let mut post_len = 0;
     let mut count = 0;
     if do_gadgetize {
-        let aux = CircuitSeq { gates: Vec::new() };
-        circuit = gadgetize(&circuit, &aux, n);
+        let mut rng = rand::rng();
+        circuit = gadgetize(&circuit, n, &mut rng);
     }
-    let n = if do_gadgetize { 3 * n } else { n };
+    let n = if do_gadgetize { 2 * n + 1 } else { n };
     if leave {
         circuit = interleave(
             &circuit,
@@ -1088,7 +1088,7 @@ pub fn main_shuffle_shoot_shuffle(
             }
         }
         let n = if leave { n / 2 } else { n };
-        let n = if do_gadgetize { n / 3 } else { n };
+        let n = if do_gadgetize { (n - 1) / 2 } else { n };
         if c.probably_equal(&circuit, n, 100_000).is_err() {
             panic!("The functionality has changed");
         }
