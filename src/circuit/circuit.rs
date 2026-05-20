@@ -270,6 +270,19 @@ impl CircuitSeq {
         false
     }
 
+    pub fn remove_adjacent_id(&mut self) -> &mut Self {
+        let mut i = 0usize;
+        while i < self.gates.len().saturating_sub(1) {
+            if self.gates[i] == self.gates[i + 1] {
+                self.gates.drain(i..=i + 1);
+                i = i.saturating_sub(2);
+            } else {
+                i += 1;
+            }
+        }
+        self
+    }
+
     // Evaluate the entire circuit with a starting input
     pub fn evaluate(&self, input: usize) -> usize {
         Gate::evaluate_index_list(input, &self.gates)
@@ -841,6 +854,25 @@ impl CircuitSeq {
         deg
     }
 
+    /// Remap to minimal wires: e.g. [3,7,11] -> [0,1,2].
+    /// Returns (remapped_circuit, used_wires) where `used` allows unrewiring back to original wires.
+    pub fn rewire_min(&self) -> (CircuitSeq, Vec<u8>) {
+        let used = self.used_wires();
+        let wire_map: HashMap<u8, u8> = used
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| (w, i as u8))
+            .collect();
+        let remapped = CircuitSeq {
+            gates: self
+                .gates
+                .iter()
+                .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+                .collect(),
+        };
+        (remapped, used)
+    }
+
     // Returns (canonical_polys, canonical_circuit, reversed)
     // where reversed=true means the reversed circuit produced the canonical form.
     pub fn canonicalize_polys(
@@ -857,21 +889,7 @@ impl CircuitSeq {
                 })
                 .collect()
         }
-        // Remap to minimal wires: e.g. [3,7,11] -> [0,1,2].
-        // `used` is returned so callers can unrewire canonical circuits back to original wires.
-        let used = self.used_wires();
-        let wire_map: HashMap<u8, u8> = used
-            .iter()
-            .enumerate()
-            .map(|(i, &w)| (w, i as u8))
-            .collect();
-        let remapped = CircuitSeq {
-            gates: self
-                .gates
-                .iter()
-                .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
-                .collect(),
-        };
+        let (remapped, used) = self.rewire_min();
         let mut c1 = remapped.clone();
         c1.canonicalize();
         let mut c2 = remapped.clone();

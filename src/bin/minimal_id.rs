@@ -2,6 +2,8 @@ use std::{collections::HashMap, path::Path, sync::Mutex};
 
 use dashmap::DashMap;
 use lmdb::{Cursor, Environment, Transaction};
+use local_mixing::replace::pairs::GatePair;
+use local_mixing::replace::pairs::gate_pair_taxonomy;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -104,11 +106,20 @@ fn main() {
     let shard_dbs = open_shard_dbs(&env);
     let matches = Command::new("minimal_id")
         .arg(
-            Arg::new("friends").long("friends")
+            Arg::new("friends")
+                .long("friends")
                 .action(clap::ArgAction::SetTrue),
         )
-        .arg(Arg::new("gen-ids").long("gen-ids").action(clap::ArgAction::SetTrue))
-        .arg(Arg::new("print-ids").long("print-ids").action(clap::ArgAction::SetTrue))
+        .arg(
+            Arg::new("gen-ids")
+                .long("gen-ids")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("print-ids")
+                .long("print-ids")
+                .action(clap::ArgAction::SetTrue),
+        )
         .group(clap::ArgGroup::new("mode").args(["friends", "gen-ids", "print-ids"]))
         .get_matches();
 
@@ -185,7 +196,9 @@ fn friends(
 fn print_ids(env: &Environment, shard_dbs: &Vec<lmdb::Database>) {
     use std::collections::BTreeMap;
 
-    let txn = env.begin_ro_txn().expect("Failed to begin read-only transaction");
+    let txn = env
+        .begin_ro_txn()
+        .expect("Failed to begin read-only transaction");
     let mut histogram: BTreeMap<usize, usize> = BTreeMap::new();
 
     for ctype in 0..34 {
@@ -201,6 +214,11 @@ fn print_ids(env: &Environment, shard_dbs: &Vec<lmdb::Database>) {
 
         for (_, value) in cursor.iter_start() {
             let circuit = CircuitSeq::from_blob(value);
+
+            if circuit.gates.len() % 2 == 1 {
+                println!("{}", circuit.repr());
+            }
+
             *histogram.entry(circuit.gates.len()).or_insert(0) += 1;
         }
     }
@@ -259,10 +277,27 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
                 continue;
             }
 
+            let minimal_ckt_len = circuits
+                .iter()
+                .map(|c| c.gates.len())
+                .min()
+                .expect("minimal ckt failed");
+
             for i in 0..circuits.len() {
+                let a = &circuits[i];
+
+                // ckt a MUST be minimal
+                if a.gates.len() > minimal_ckt_len {
+                    continue;
+                }
+
                 for j in (i + 1)..circuits.len() {
-                    let a = &circuits[i];
                     let b = &circuits[j];
+
+                    // ckt b must be minimal or + 1
+                    if b.gates.len() > minimal_ckt_len + 1 {
+                        continue;
+                    }
 
                     // Build identity: a + reverse(b)
                     let mut gates = a.gates.clone();
@@ -270,27 +305,33 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
                     b_rev.reverse();
                     gates.extend(b_rev);
 
-                    let mut identity = CircuitSeq { gates };
-                    identity.canonicalize();
-                    // remove trivial cancellations
-                    // reuse function from gen_ids.rs logic if available; inline simple removal:
-                    // remove_adjacent_equal equivalent
-                    let mut k = 0usize;
-                    while k + 1 < identity.gates.len() {
-                        if identity.gates[k] == identity.gates[k + 1] {
-                            identity.gates.drain(k..=k + 1);
-                            if k > 0 {
-                                k -= 1;
-                            }
-                        } else {
-                            k += 1;
+                    let (mut identity, _) = CircuitSeq { gates }.rewire_min();
+
+                    // Simplify until circuit is empty or size plateaus
+                    loop {
+                        let len_before = identity.gates.len();
+
+                        identity.canonicalize();
+                        identity.remove_adjacent_id();
+
+                        if identity.gates.is_empty() {
+                            break;
+                        }
+
+                        let len_after = identity.gates.len();
+                        if len_before == len_after {
+                            break;
                         }
                     }
 
-                    if identity.gates.len() < 2 {
-                        // Trivial simplification
+                    if identity.gates.is_empty() {
                         continue;
                     }
+
+                    identity.canonicalize();
+                    assert!(!identity.adjacent_id());
+
+                    let (identity, _) = identity.rewire_min();
 
                     // Minimality check: every half-length contiguous subcircuit must be absent.
                     let len = identity.gates.len();
@@ -320,7 +361,8 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
 
                     // println!("Minimal: {}", identity.repr());
 
-                    let ctype = 0usize;
+                    let ctype =
+                        GatePair::to_int(&gate_pair_taxonomy(&identity.gates[0], &identity.gates[1]));
                     let blob = identity.repr_blob();
                     let mut guard = seen[ctype].lock().unwrap();
                     if guard.insert(blob) {
@@ -336,6 +378,15 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
     let _ = printer.join();
     // Open id DBs (reuse gen_ids open_id_dbs if available) — here we'll create simple names id_g0..id_g33
     let mut wtxn = env.begin_rw_txn().expect("rw txn");
+
+    // Drop any existing identity DB.
+    for i in 0..34 {
+        let name = format!("id_g{}", i);
+        if let Ok(db) = unsafe { wtxn.open_db(Some(&name)) } {
+            let _ = unsafe { wtxn.drop_db(db) };
+        }
+    }
+
     let id_dbs: Vec<lmdb::Database> = (0..34)
         .map(|i| {
             let name = format!("id_g{}", i);
