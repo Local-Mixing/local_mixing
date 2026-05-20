@@ -996,7 +996,9 @@ pub fn main_shuffle_shoot_shuffle(
     let mut count = 0;
     if do_gadgetize {
         let mut rng = rand::rng();
+        let before = circuit.gates.len();
         circuit = gadgetize(&circuit, n, &mut rng);
+        println!("Gadgetized: {} gates → {} gates, {} wires", before, circuit.gates.len(), 2 * n + 1);
     }
     let n = if do_gadgetize { 2 * n + 1 } else { n };
     if leave {
