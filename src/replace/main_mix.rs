@@ -969,6 +969,7 @@ pub fn main_shuffle_shoot_shuffle(
     do_gadgetize: bool,
     full_shuffle: bool,
     curated: bool,
+    egg: bool,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -1026,26 +1027,40 @@ pub fn main_shuffle_shoot_shuffle(
         println!("After full shuffle: {} gates", circuit.gates.len());
     }
     for i in 0..rounds {
-        loop {
-            let new_circuit = simple_shooting_game(
-                &circuit,
-                n,
-                env,
-                i+1,
-                rounds,
-                &bit_shuf_list,
-                &dbs,
-                id_len,
-                tower,
-                4 * circuit.gates.len(),
-                intermediate,
-                true,
-                1,
-                curated,
-            );
-            if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
-                circuit = new_circuit;
-                break;
+        if egg {
+            let pair_mode = if curated {
+                ExpandPairMode::Curated
+            } else {
+                ExpandPairMode::Canonical {
+                    bit_shuf_list: &bit_shuf_list,
+                    dbs: &dbs,
+                    id_len,
+                    tower,
+                }
+            };
+            circuit = expand_loop(&circuit, n, env, shard_dbs, 2, &pair_mode);
+        } else {
+            loop {
+                let new_circuit = simple_shooting_game(
+                    &circuit,
+                    n,
+                    env,
+                    i+1,
+                    rounds,
+                    &bit_shuf_list,
+                    &dbs,
+                    id_len,
+                    tower,
+                    4 * circuit.gates.len(),
+                    intermediate,
+                    true,
+                    1,
+                    curated,
+                );
+                if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
+                    circuit = new_circuit;
+                    break;
+                }
             }
         }
         println!("After shooting game: {} gates", circuit.gates.len());

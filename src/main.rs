@@ -1072,6 +1072,13 @@ fn main() {
                     .help("Use completion-based identities instead of random canonical ids")
                     .required(false)
                     .action(clap::ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("egg")
+                    .long("egg")
+                    .help("Use expansion game (expand_loop 2x) instead of simple shooting game")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue)
             ),
     )
     .subcommand(
@@ -1788,6 +1795,7 @@ Command::new("rocksdb_2")
             let do_gadgetize = sub.get_flag("gadgetize");
             let full_shuffle = sub.get_flag("full-shuffle");
             let curated = sub.get_flag("curated");
+            let egg = sub.get_flag("egg");
             let stop: usize = *sub.get_one("stop").unwrap();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
@@ -1825,6 +1833,7 @@ Command::new("rocksdb_2")
                     do_gadgetize,
                     full_shuffle,
                     curated,
+                    egg,
                 );
                 print_compress_timers();
                 write_compression_histogram("compression_histogram.csv");
