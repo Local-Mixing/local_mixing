@@ -281,6 +281,34 @@ pub fn expand_loop<'a>(
     acc
 }
 
+/// Single pass of expansion: one round of chunked `expand_big_ancillas` with no loop.
+pub fn expand_once<'a>(
+    circuit: &CircuitSeq,
+    n: usize,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    pair_mode: &ExpandPairMode<'a>,
+) -> CircuitSeq {
+    let mut rng = rand::rng();
+    let before = circuit.gates.len();
+    let max_chunks = 4 * rayon::current_num_threads().max(1);
+    let k = if before <= 1500 { 1 } else { ((before + 1499) / 1500).min(max_chunks) };
+    let ranges = split_into_random_chunk_ranges(before, k, &mut rng);
+    let expanded_chunks: Vec<Vec<[u8; 3]>> = ranges
+        .into_par_iter()
+        .map(|(start, end)| {
+            let sub = CircuitSeq { gates: circuit.gates[start..end].to_vec() };
+            expand_big_ancillas(&sub, 100, n, env, shard_dbs, 0, pair_mode).gates
+        })
+        .collect();
+    let mut new_gates = Vec::with_capacity(expanded_chunks.iter().map(|c| c.len()).sum());
+    for chunk in expanded_chunks {
+        new_gates.extend(chunk);
+    }
+    println!("  Expand: {} gates", new_gates.len());
+    CircuitSeq { gates: new_gates }
+}
+
 /// Like `compress_loop` but exits as soon as the circuit drops below `stop` gates.
 /// On the final round use the plain `compress_loop` instead.
 pub fn compress_loop_early(

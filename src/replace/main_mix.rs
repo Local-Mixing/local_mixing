@@ -9,7 +9,7 @@ use itertools::Itertools;
 use crate::{
     circuit::circuit::CircuitSeq,
     replace::{
-        replace::{compress_loop, compress_loop_early, expand_loop, ExpandPairMode},
+        replace::{compress_loop, compress_loop_early, expand_loop, expand_once, ExpandPairMode},
         mixing::{
             abutterfly_big, butterfly_big, interleave_sequential_big, replace_and_compress_big, replace_and_compress_big_distance, simple_shooting_game, zip_sequential_butterfly
         },
@@ -1041,7 +1041,7 @@ pub fn main_shuffle_shoot_shuffle(
                     tower,
                 }
             };
-            circuit = expand_loop(&circuit, n, env, shard_dbs, 2, &pair_mode);
+            circuit = expand_once(&circuit, n, env, shard_dbs, &pair_mode);
         } else {
             loop {
                 let new_circuit = simple_shooting_game(
