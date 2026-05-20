@@ -994,6 +994,7 @@ pub fn main_shuffle_shoot_shuffle(
     // Repeat `rounds` times
     let mut post_len = 0;
     let mut count = 0;
+    let orig_n = n;
     if do_gadgetize {
         let mut rng = rand::rng();
         let before = circuit.gates.len();
@@ -1021,7 +1022,7 @@ pub fn main_shuffle_shoot_shuffle(
         loop {
             let mut shuffled = circuit.clone();
             insert_wire_m_samfs_every_x(&mut shuffled, n, n, 1, env, &dbs);
-            if shuffled.probably_equal(&circuit, n, 100).is_ok() {
+            if shuffled.probably_equal(&circuit, orig_n, 100).is_ok() {
                 circuit = shuffled;
                 break;
             }
@@ -1059,7 +1060,7 @@ pub fn main_shuffle_shoot_shuffle(
                     1,
                     curated,
                 );
-                if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
+                if new_circuit.probably_equal(&circuit, orig_n, 100).is_ok() {
                     circuit = new_circuit;
                     break;
                 }
@@ -1069,7 +1070,7 @@ pub fn main_shuffle_shoot_shuffle(
         let mut new_circuit = circuit.clone();
         loop {
             insert_wire_m_samfs_every_x(&mut new_circuit, n, m, x, env, &dbs);
-            if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
+            if new_circuit.probably_equal(&circuit, orig_n, 100).is_ok() {
                 circuit = new_circuit;
                 break;
             }
