@@ -721,9 +721,10 @@ pub fn main_shooting_game(
     shard_dbs: &[lmdb::Database],
     id_len: usize,
     tower: bool,
-    stop_multiplier: usize,
+    stop_multiplier: f64,
     intermediate: &str,
     curated: bool,
+    partial_stop: f64,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -749,7 +750,7 @@ pub fn main_shooting_game(
     let mut post_len = 0;
     let mut count = 0;
     for i in 0..rounds {
-        let stop_gates = circuit.gates.len() * stop_multiplier;
+        let stop_gates = (circuit.gates.len() as f64 * stop_multiplier) as usize;
         let new_circuit = simple_shooting_game(
             &circuit,
             n,
@@ -776,7 +777,7 @@ pub fn main_shooting_game(
         circuit = if is_last {
             compress_loop(&circuit, n, env, shard_dbs, 12, i + 1, rounds, "temp_compression.txt")
         } else {
-            let early_stop = circuit.gates.len() / 2;
+            let early_stop = (circuit.gates.len() as f64 * partial_stop) as usize;
             compress_loop_early(&circuit, n, env, shard_dbs, 12, i + 1, rounds, "temp_compression.txt", early_stop)
         };
 

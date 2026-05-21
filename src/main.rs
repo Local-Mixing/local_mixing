@@ -903,8 +903,16 @@ fn main() {
                 Arg::new("stop")
                     .long("stop")
                     .required(true)
-                    .value_parser(clap::value_parser!(usize))
-                    .help("Gate-count multiplier: shoot until gates reach stop * initial_gates (e.g. 2 = double)")
+                    .value_parser(clap::value_parser!(f64))
+                    .help("Gate-count multiplier: shoot until gates reach stop * initial_gates (e.g. 1.5 = 1.5x)")
+            )
+            .arg(
+                Arg::new("partial_stop")
+                    .long("partial_stop")
+                    .required(false)
+                    .default_value("0.5")
+                    .value_parser(clap::value_parser!(f64))
+                    .help("Partial compression threshold multiplier (default 0.5 = compress to half current size)")
             )
             .arg(
                 Arg::new("intermediate")
@@ -1672,7 +1680,8 @@ Command::new("rocksdb_2")
             let id_len: usize = *sub.get_one("id_len").unwrap();
             let tower = sub.get_flag("tower");
             let curated = sub.get_flag("curated");
-            let stop: usize = *sub.get_one("stop").unwrap();
+            let stop: f64 = *sub.get_one("stop").unwrap();
+            let partial_stop: f64 = *sub.get_one("partial_stop").unwrap();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
@@ -1704,6 +1713,7 @@ Command::new("rocksdb_2")
                     stop,
                     i,
                     curated,
+                    partial_stop,
                 );
                 print_compress_timers();
                 write_compression_histogram("compression_histogram.csv");
