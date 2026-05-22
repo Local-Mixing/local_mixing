@@ -871,19 +871,43 @@ pub fn simple_shooting_game(
             let mut curr_idx = starting_idx;
             while curr_idx != 0 {
                 let after_idx = shoot_left_vec(&mut gates, curr_idx);
-                if after_idx < gates_ahead - 1 { break }
-                let w_start = after_idx + 1 - gates_ahead;
-                let repl = if gates_ahead == 2 {
-                    let (r, _) = replace_single_pair(&gates[w_start], &gates[w_start + 1], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs);
-                    if r.is_empty() { None } else { Some(r) }
-                } else {
-                    replace_subcircuit_curated(&gates[w_start..after_idx + 1], n, env, curated_shard_dbs)
-                };
-                match repl {
-                    Some(repl) => {
+                // need at least a collision pair (after_idx-1, after_idx)
+                if after_idx < 1 { break }
+
+                // (replacement, number of gates consumed from the window)
+                let repl_result: Option<(Vec<[u8; 3]>, usize)> =
+                    if gates_ahead > 2 && after_idx + 1 >= gates_ahead {
+                        let w_start = after_idx + 1 - gates_ahead;
+                        if let Some(repl) = replace_subcircuit_curated(&gates[w_start..after_idx + 1], n, env, curated_shard_dbs) {
+                            Some((repl, gates_ahead))
+                        } else {
+                            // fallback: pair-replace the collision (after_idx-1, after_idx)
+                            let (pr, _) = replace_single_pair(&gates[after_idx - 1], &gates[after_idx], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs);
+                            if pr.is_empty() {
+                                None
+                            } else if after_idx >= 2 {
+                                // seam: replace [gates[after_idx-2], pr[0]]
+                                let c_gate = gates[after_idx - 2];
+                                let (sr, _) = replace_single_pair(&c_gate, &pr[0], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs);
+                                assert!(!sr.is_empty(), "seam replacement missed — curated DB should contain every 2-gate pair");
+                                let mut final_r = sr;
+                                final_r.extend_from_slice(&pr[1..]);
+                                Some((final_r, 3))
+                            } else {
+                                Some((pr, 2))
+                            }
+                        }
+                    } else {
+                        let (r, _) = replace_single_pair(&gates[after_idx - 1], &gates[after_idx], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs);
+                        if r.is_empty() { None } else { Some((r, 2)) }
+                    };
+
+                match repl_result {
+                    Some((repl, consumed)) => {
                         let new_len = repl.len();
+                        let w_start = after_idx + 1 - consumed;
                         gates.splice(w_start..after_idx + 1, repl);
-                        len = len - gates_ahead + new_len;
+                        len = len - consumed + new_len;
                         curr_idx = w_start;
                     }
                     None => break,
@@ -893,18 +917,42 @@ pub fn simple_shooting_game(
             let mut curr_idx = starting_idx;
             while curr_idx != len {
                 let after_idx = shoot_right_vec(&mut gates, curr_idx);
-                if after_idx + gates_ahead > len { break }
-                let repl = if gates_ahead == 2 {
-                    let (r, _) = replace_single_pair(&gates[after_idx], &gates[after_idx + 1], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs);
-                    if r.is_empty() { None } else { Some(r) }
-                } else {
-                    replace_subcircuit_curated(&gates[after_idx..after_idx + gates_ahead], n, env, curated_shard_dbs)
-                };
-                match repl {
-                    Some(repl) => {
+                // need at least a collision pair (after_idx, after_idx+1)
+                if after_idx + 2 > len { break }
+
+                let repl_result: Option<(Vec<[u8; 3]>, usize)> =
+                    if gates_ahead > 2 && after_idx + gates_ahead <= len {
+                        if let Some(repl) = replace_subcircuit_curated(&gates[after_idx..after_idx + gates_ahead], n, env, curated_shard_dbs) {
+                            Some((repl, gates_ahead))
+                        } else {
+                            // fallback: pair-replace the collision (after_idx, after_idx+1)
+                            let (pr, _) = replace_single_pair(&gates[after_idx], &gates[after_idx + 1], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs);
+                            if pr.is_empty() {
+                                None
+                            } else if after_idx + 3 <= len {
+                                // seam: replace [pr.last(), gates[after_idx+2]]
+                                let c_gate = gates[after_idx + 2];
+                                let last_of_pr = *pr.last().unwrap();
+                                let (sr, _) = replace_single_pair(&last_of_pr, &c_gate, n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs);
+                                assert!(!sr.is_empty(), "seam replacement missed — curated DB should contain every 2-gate pair");
+                                let mut final_r = pr;
+                                final_r.pop();
+                                final_r.extend_from_slice(&sr);
+                                Some((final_r, 3))
+                            } else {
+                                Some((pr, 2))
+                            }
+                        }
+                    } else {
+                        let (r, _) = replace_single_pair(&gates[after_idx], &gates[after_idx + 1], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs);
+                        if r.is_empty() { None } else { Some((r, 2)) }
+                    };
+
+                match repl_result {
+                    Some((repl, consumed)) => {
                         let new_len = repl.len();
-                        gates.splice(after_idx..after_idx + gates_ahead, repl);
-                        len = len - gates_ahead + new_len;
+                        gates.splice(after_idx..after_idx + consumed, repl);
+                        len = len - consumed + new_len;
                         curr_idx = after_idx + new_len - 1;
                     }
                     None => break,
