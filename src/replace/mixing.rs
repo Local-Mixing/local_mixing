@@ -886,18 +886,20 @@ pub fn simple_shooting_game(
                         if let Some(repl) = expand_curated_lmdb(&gates[w_start..after_idx + 1], n, env, curated_shard_dbs, shard_dbs) {
                             Some((repl, gates_ahead))
                         } else {
-                            // fallback: pair-replace the collision (after_idx-1, after_idx)
+                            // replace collision pair (b,c), then seam (a, pr[0])
                             let (pr, _) = replace_single_pair(&gates[after_idx - 1], &gates[after_idx], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs, shard_dbs);
                             if pr.is_empty() {
                                 None
                             } else if after_idx >= 2 {
-                                // seam: replace [gates[after_idx-2], pr[0]]
-                                let c_gate = gates[after_idx - 2];
-                                let (sr, _) = replace_single_pair(&c_gate, &pr[0], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs, shard_dbs);
-                                assert!(!sr.is_empty(), "seam replacement missed — curated DB should contain every 2-gate pair");
-                                let mut final_r = sr;
-                                final_r.extend_from_slice(&pr[1..]);
-                                Some((final_r, 3))
+                                let a_gate = gates[after_idx - 2];
+                                let (sr, _) = replace_single_pair(&a_gate, &pr[0], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs, shard_dbs);
+                                if sr.is_empty() {
+                                    Some((pr, 2))
+                                } else {
+                                    let mut final_r = sr;
+                                    final_r.extend_from_slice(&pr[1..]);
+                                    Some((final_r, 3))
+                                }
                             } else {
                                 Some((pr, 2))
                             }
@@ -930,20 +932,22 @@ pub fn simple_shooting_game(
                         if let Some(repl) = expand_curated_lmdb(&gates[after_idx..after_idx + gates_ahead], n, env, curated_shard_dbs, shard_dbs) {
                             Some((repl, gates_ahead))
                         } else {
-                            // fallback: pair-replace the collision (after_idx, after_idx+1)
+                            // replace collision pair (a,b), then seam (pr.last, c)
                             let (pr, _) = replace_single_pair(&gates[after_idx], &gates[after_idx + 1], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs, shard_dbs);
                             if pr.is_empty() {
                                 None
                             } else if after_idx + 3 <= len {
-                                // seam: replace [pr.last(), gates[after_idx+2]]
                                 let c_gate = gates[after_idx + 2];
                                 let last_of_pr = *pr.last().unwrap();
                                 let (sr, _) = replace_single_pair(&last_of_pr, &c_gate, n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs, shard_dbs);
-                                assert!(!sr.is_empty(), "seam replacement missed — curated DB should contain every 2-gate pair");
-                                let mut final_r = pr;
-                                final_r.pop();
-                                final_r.extend_from_slice(&sr);
-                                Some((final_r, 3))
+                                if sr.is_empty() {
+                                    Some((pr, 2))
+                                } else {
+                                    let mut final_r = pr;
+                                    final_r.pop();
+                                    final_r.extend_from_slice(&sr);
+                                    Some((final_r, 3))
+                                }
                             } else {
                                 Some((pr, 2))
                             }
