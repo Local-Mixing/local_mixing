@@ -3130,6 +3130,7 @@ pub fn build_from_rocks(
 
     let upper_bound_gates = base_gates(3 * m).len();
     let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let skipped_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     {
@@ -3145,6 +3146,7 @@ pub fn build_from_rocks(
     let stop_flag_clone = stop_flag.clone();
     let new_db_writer = Arc::clone(new_db);
     let total_gates_tried_insert = Arc::clone(&total_gates_tried);
+    let skipped_count_insert = Arc::clone(&skipped_count);
 
     let insert_handle = std::thread::spawn(move || {
         let start_time = std::time::Instant::now();
@@ -3166,6 +3168,7 @@ pub fn build_from_rocks(
             }
 
             attempted_inserts += batch.len();
+            let skipped = skipped_count_insert.load(Ordering::Relaxed);
             let tried = total_gates_tried_insert.load(Ordering::Relaxed);
             let elapsed = start_time.elapsed().as_secs_f64();
             let rate = if elapsed > 0.0 { tried as f64 / elapsed } else { 0.0 };
@@ -3180,7 +3183,7 @@ pub fn build_from_rocks(
             let remaining_s = remaining_secs % 60;
             println!(
                 "Attempted inserts: {} / {} ({:.2}%) | elapsed: {:.0}s | rate: {:.0}/s | eta: {:02}:{:02}:{:02}",
-                attempted_inserts,
+                attempted_inserts + skipped,
                 total_circuits,
                 if tried > 0 {
                     (tried as f64 / total_circuits as f64) * 100.0
@@ -3234,6 +3237,7 @@ pub fn build_from_rocks(
         let stop_flag_par = Arc::clone(&stop_flag);
         let tx_par = tx.clone();
         let total_gates_tried_par = Arc::clone(&total_gates_tried);
+        let skipped_par = Arc::clone(&skipped_count);
 
         entries.par_chunks(20).for_each(|entry_chunk| {
             if stop_flag_par.load(Ordering::SeqCst) {
@@ -3241,6 +3245,8 @@ pub fn build_from_rocks(
             }
 
             let mut local_results = Vec::new();
+            let mut local_tried = 0usize;
+            let mut local_skipped = 0usize;
 
             for (_key, value) in entry_chunk {
                 if value.is_empty() {
@@ -3263,11 +3269,12 @@ pub fn build_from_rocks(
                     let old_circuit = CircuitSeq::from_blob(circuit_blob);
 
                     if old_circuit.used_wires().len() < min_n {
-                        total_gates_tried_par.fetch_add(upper_bound_gates * 2, Ordering::Relaxed);
+                        local_tried += upper_bound_gates * 2;
+                        local_skipped += upper_bound_gates * 2;
                         continue;
                     }
 
-                    total_gates_tried_par.fetch_add(upper_bound_gates * 2, Ordering::Relaxed);
+                    local_tried += upper_bound_gates * 2;
 
                     let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
                     prefix.extend_from_slice(&old_circuit.gates);
@@ -3329,6 +3336,8 @@ pub fn build_from_rocks(
                     eprintln!("Failed to send remaining batch: {:?}", e);
                 }
             }
+            total_gates_tried_par.fetch_add(local_tried, Ordering::Relaxed);
+            skipped_par.fetch_add(local_skipped, Ordering::Relaxed);
         });
     }
 
@@ -3794,6 +3803,7 @@ pub fn build_from_2rocks(
     new_db: &Arc<DB>,
     m1: usize,
     m2: usize,
+    min_n: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let m = m1 + m2;
     let n = 3 * m;
@@ -3904,6 +3914,7 @@ pub fn build_from_2rocks(
 
     let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let total_results_generated = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let skipped_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let build_start = std::time::Instant::now();
 
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -3922,6 +3933,7 @@ pub fn build_from_2rocks(
     let new_db_writer = Arc::clone(new_db);
     let total_gates_tried_insert = Arc::clone(&total_gates_tried);
     let total_results_insert = Arc::clone(&total_results_generated);
+    let skipped_count_insert = Arc::clone(&skipped_count);
 
     let insert_handle = std::thread::spawn(move || {
         let start_time = std::time::Instant::now();
@@ -3941,6 +3953,7 @@ pub fn build_from_2rocks(
             }
 
             let pairs_done = total_gates_tried_insert.load(Ordering::Relaxed);
+            let skipped = skipped_count_insert.load(Ordering::Relaxed);
             let results_so_far = total_results_insert.load(Ordering::Relaxed);
             let elapsed = start_time.elapsed().as_secs_f64();
             let pairs_rate = if elapsed > 0.0 { pairs_done as f64 / elapsed } else { 0.0 };
@@ -3953,7 +3966,7 @@ pub fn build_from_2rocks(
                 (pairs_done as f64 / total_pairs_est as f64) * 100.0,
                 pairs_rate,
                 eta_secs / 3600, (eta_secs % 3600) / 60, eta_secs % 60,
-                attempted_inserts,
+                attempted_inserts + skipped,
                 results_so_far,
                 dedup_ratio,
                 pending.len(),
@@ -4018,8 +4031,9 @@ pub fn build_from_2rocks(
             })
             .collect();
 
-        // Decode all c1 circuits from this chunk
+        // Decode all c1 circuits from this chunk, skipping those with too few wires
         let mut c1_circuits: Vec<CircuitSeq> = Vec::new();
+        let mut local_skipped_pairs = 0usize;
         for (_key, value) in &entries {
             let mut pos = 0;
             while pos < value.len() {
@@ -4027,9 +4041,18 @@ pub fn build_from_2rocks(
                 let len = value[pos] as usize;
                 pos += 1;
                 if pos + len > value.len() { break; }
-                c1_circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
+                let c = CircuitSeq::from_blob(&value[pos..pos + len]);
                 pos += len;
+                if c.used_wires().len() < min_n {
+                    local_skipped_pairs += nc2;
+                    continue;
+                }
+                c1_circuits.push(c);
             }
+        }
+        if local_skipped_pairs > 0 {
+            total_gates_tried.fetch_add(local_skipped_pairs, Ordering::Relaxed);
+            skipped_count.fetch_add(local_skipped_pairs, Ordering::Relaxed);
         }
 
         // Precompute per-c1 data in parallel

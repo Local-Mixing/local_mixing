@@ -1183,6 +1183,14 @@ Command::new("rocksdb_2")
                     .value_parser(clap::value_parser!(usize))
                     .help("Number of gates"),
             )
+            .arg(
+                Arg::new("min_n")
+                    .long("min_n")
+                    .required(false)
+                    .default_value("0")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Minimum number of used wires in c1; candidates with fewer are skipped"),
+            )
     )
     .subcommand(
         Command::new("combine_rocks")
@@ -2198,10 +2206,11 @@ Command::new("rocksdb_2")
         Some(("rocksdb_2", sub)) => {
             let m1: usize = *sub.get_one("m1").expect("Missing -m1 <wires>");
             let m2: usize = *sub.get_one("m2").expect("Missing -m2 <wires>");
+            let min_n: usize = *sub.get_one("min_n").unwrap_or(&0);
             let new_db = Arc::new(open_db_for_write(m1 + m2));
             let old_db1 = Arc::new(open_db_for_read(m1));
             let old_db2 = Arc::new(open_db_for_read(m2));
-            build_from_2rocks(&old_db1, &old_db2, &new_db, m1, m2).expect("build_from_2rocks failed");
+            build_from_2rocks(&old_db1, &old_db2, &new_db, m1, m2, min_n).expect("build_from_2rocks failed");
         }
         Some(("combine_rocks", sub)) => {
             let path: &String = sub.get_one("path").expect("Missing -p <path>");
