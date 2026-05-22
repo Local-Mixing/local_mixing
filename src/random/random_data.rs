@@ -3263,6 +3263,7 @@ pub fn build_from_rocks(
                     let old_circuit = CircuitSeq::from_blob(circuit_blob);
 
                     if old_circuit.used_wires().len() < min_n {
+                        total_gates_tried_par.fetch_add(upper_bound_gates * 2, Ordering::Relaxed);
                         continue;
                     }
 

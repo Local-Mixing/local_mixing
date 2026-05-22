@@ -15,14 +15,13 @@ fn append_merge(
 }
 
 fn main() {
-    std::fs::create_dir_all("./curated_lmdb").expect("create curated_lmdb");
     let env = Environment::new()
         .set_flags(EnvironmentFlags::WRITE_MAP | EnvironmentFlags::MAP_ASYNC | EnvironmentFlags::NO_SYNC)
         .set_max_dbs(600)
         .set_max_readers(10000)
         .set_map_size(800 * 1024 * 1024 * 1024)
-        .open(Path::new("./curated_lmdb"))
-        .expect("Failed to open ./curated_lmdb");
+        .open(Path::new("./db"))
+        .expect("Failed to open ./db");
 
     println!("Creating curated_{{}} shard databases...");
     let dbs: Vec<lmdb::Database> = (0u16..=255)
@@ -66,5 +65,5 @@ fn main() {
         eprintln!("FINAL COMMIT FAILED at count={}: {:?}", count, e);
         std::process::exit(1);
     }
-    println!("Done. {}/{} entries written to ./curated_lmdb curated_{{}} shards.", count, total);
+    println!("Done. {}/{} entries written to ./db curated_{{}} shards.", count, total);
 }
