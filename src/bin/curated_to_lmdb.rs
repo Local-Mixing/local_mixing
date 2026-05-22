@@ -17,7 +17,7 @@ fn append_merge(
 fn main() {
     std::fs::create_dir_all("./curated_lmdb").expect("create curated_lmdb");
     let env = Environment::new()
-        .set_flags(EnvironmentFlags::MAP_ASYNC | EnvironmentFlags::NO_SYNC)
+        .set_flags(EnvironmentFlags::WRITE_MAP | EnvironmentFlags::MAP_ASYNC | EnvironmentFlags::NO_SYNC)
         .set_max_dbs(600)
         .set_max_readers(10000)
         .set_map_size(800 * 1024 * 1024 * 1024)
@@ -51,7 +51,10 @@ fn main() {
             .expect("lmdb put");
         count += 1;
         if count % 10_000 == 0 {
-            txn.commit().expect("commit");
+            if let Err(e) = txn.commit() {
+                eprintln!("COMMIT FAILED at count={}: {:?}", count, e);
+                std::process::exit(1);
+            }
             txn = env.begin_rw_txn().expect("rw txn");
             if count % 500_000 == 0 {
                 println!("  {}/{} entries...", count, total);
@@ -59,6 +62,9 @@ fn main() {
         }
     }
 
-    txn.commit().expect("final commit");
-    println!("Done. {}/{} entries written to ./db curated_{{}} shards.", count, total);
+    if let Err(e) = txn.commit() {
+        eprintln!("FINAL COMMIT FAILED at count={}: {:?}", count, e);
+        std::process::exit(1);
+    }
+    println!("Done. {}/{} entries written to ./curated_lmdb curated_{{}} shards.", count, total);
 }
