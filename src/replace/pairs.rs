@@ -532,11 +532,12 @@ pub fn replace_single_pair_with_completion(
     Some(CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates)
 }
 
-pub fn replace_subcircuit_curated(
+pub fn expand_curated_lmdb(
     gates: &[[u8; 3]],
     n: usize,
     env: &lmdb::Environment,
     curated_shard_dbs: &[lmdb::Database],
+    shard_dbs: &[lmdb::Database],
 ) -> Option<Vec<[u8; 3]>> {
     use xxhash_rust::xxh3::xxh3_128;
     use crate::circuit::circuit::{polys_repr_blob, Permutation};
@@ -554,18 +555,33 @@ pub fn replace_subcircuit_curated(
 
     let txn = env.begin_ro_txn().ok()?;
 
-    let (value, final_order, is_reversed) = match txn.get(curated_shard_dbs[fwd_shard], &fwd_key).map(|v: &[u8]| v.to_vec()) {
-        Ok(v) => (v, fwd_order, false),
-        Err(_) => {
+    // Try curated DBs first (forward direction only — no reversal needed for curated).
+    let curated_hit = if !curated_shard_dbs.is_empty() {
+        txn.get(curated_shard_dbs[fwd_shard], &fwd_key)
+            .map(|v: &[u8]| v.to_vec())
+            .ok()
+    } else {
+        None
+    };
+
+    let (value, final_order, is_reversed) = if let Some(v) = curated_hit {
+        (v, fwd_order, false)
+    } else if !shard_dbs.is_empty() {
+        // Fallback: try regular shard DBs (both forward and reverse, same as expand_lmdb).
+        if let Ok(v) = txn.get(shard_dbs[fwd_shard], &fwd_key).map(|v: &[u8]| v.to_vec()) {
+            (v, fwd_order, false)
+        } else {
             let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
             if rev_polys.is_empty() { return None; }
             let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes().to_vec();
             let rev_shard = rev_key[0] as usize;
-            match txn.get(curated_shard_dbs[rev_shard], &rev_key).map(|v: &[u8]| v.to_vec()) {
+            match txn.get(shard_dbs[rev_shard], &rev_key).map(|v: &[u8]| v.to_vec()) {
                 Ok(v) => (v, rev_order, true),
                 Err(_) => return None,
             }
         }
+    } else {
+        return None;
     };
 
     let mut candidates: Vec<CircuitSeq> = Vec::new();
@@ -625,9 +641,10 @@ pub fn replace_single_pair(
     tower: bool,
     id_len: usize,
     curated_shard_dbs: &[lmdb::Database],
+    shard_dbs: &[lmdb::Database],
 ) -> (Vec<[u8;3]>, usize) {
     if !curated_shard_dbs.is_empty() {
-        return match replace_subcircuit_curated(&[*left, *right], num_wires, env, curated_shard_dbs) {
+        return match expand_curated_lmdb(&[*left, *right], num_wires, env, curated_shard_dbs, shard_dbs) {
             Some(repl) => (repl, 0),
             None => (vec![], 0),
         };
@@ -755,6 +772,7 @@ pub fn replace_pair_distances(
                     dbs,
                     tower,
                     id_len,
+                    &[],
                     &[],
                 );
 
@@ -884,6 +902,7 @@ pub fn replace_pair_distances_linear(
                     dbs,
                     tower,
                     id_len,
+                    &[],
                     &[],
                 );
 
@@ -1170,6 +1189,7 @@ pub fn interleave(
                     dbs,
                     tower,
                     id_len,
+                    &[],
                     &[],
                 ).0;
             gates.extend_from_slice(&replaced_pair);

@@ -760,6 +760,7 @@ pub fn zip_escalators(
                                                         tower,
                                                         id_len,
                                                         &[],
+                                                        &[],
                                                     );
                 
                 combined.extend_from_slice(&paired_up);

@@ -778,6 +778,7 @@ pub fn main_shooting_game(
             100,
             gates_ahead,
             &curated_shard_dbs,
+            shard_dbs,
         );
         circuit = new_circuit;
 
@@ -1064,6 +1065,7 @@ pub fn main_shuffle_shoot_shuffle(
                     1,
                     gates_ahead,
                     &curated_shard_dbs,
+                    shard_dbs,
                 );
                 if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
                     circuit = new_circuit;
