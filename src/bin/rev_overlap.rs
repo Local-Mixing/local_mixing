@@ -27,19 +27,18 @@ fn pipeline(
     rtxn: &lmdb::RoTransaction,
     shard_dbs: &[lmdb::Database],
 ) -> Option<Vec<u8>> {
-    let (mut identity, _) = CircuitSeq { gates }.rewire_min();
+    let mut identity = CircuitSeq { gates };
 
     loop {
         let len_before = identity.gates.len();
         identity.canonicalize();
-        identity.remove_adjacent_id();
         if identity.gates.is_empty() { break; }
         if identity.gates.len() == len_before { break; }
     }
     if identity.gates.is_empty() { return None; }
 
     identity.canonicalize();
-    let (identity, _) = identity.rewire_min();
+    let identity = identity;
 
     let len = identity.gates.len();
     let half_len = len / 2;

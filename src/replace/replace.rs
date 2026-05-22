@@ -457,7 +457,7 @@ pub fn expand_lmdb<'a>(
                 ExpandPairMode::Canonical { bit_shuf_list, dbs, id_len, tower } => {
                     let (repl, _) = replace_single_pair(
                         &sub.gates[0], &sub.gates[1], n, env,
-                        bit_shuf_list, dbs, *tower, *id_len,
+                        bit_shuf_list, dbs, *tower, *id_len, &[],
                     );
                     if repl.len() > 2 {
                         expanded.gates.splice(start..end, repl);
@@ -1462,7 +1462,7 @@ pub fn expand_big_ancillas<'a>(
                 ExpandPairMode::Canonical { bit_shuf_list, dbs, id_len, tower } => {
                     let (repl, _) = replace_single_pair(
                         &circuit.gates[start], &circuit.gates[end], num_wires, env,
-                        bit_shuf_list, dbs, *tower, *id_len,
+                        bit_shuf_list, dbs, *tower, *id_len, &[],
                     );
                     Some(repl)
                 }

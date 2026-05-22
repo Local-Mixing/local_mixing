@@ -33,6 +33,16 @@ use crate::{
 // nXmYperms stores all circuits canonicalized only up to gate ordering
 // ids_nXgK stores identities on X wires with gate pair taxonomy K on the first two gates. See Taxonomies to_int to see
 // Last row of tables is used for swapping wires, CNOTS, NOTS
+pub fn open_curated_shard_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
+    (0u16..=255)
+        .map(|s| {
+            let name = format!("curated_{:02x}", s);
+            env.open_db(Some(name.as_str()))
+                .unwrap_or_else(|e| panic!("Failed to open curated shard db {:02x}: {:?}", s, e))
+        })
+        .collect()
+}
+
 pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> {
     let mut dbs = HashMap::new();
 
@@ -723,7 +733,7 @@ pub fn main_shooting_game(
     tower: bool,
     stop_multiplier: f64,
     intermediate: &str,
-    curated: bool,
+    gates_ahead: usize,
     partial_stop: f64,
 ) {
     // Start with the input circuit
@@ -744,6 +754,7 @@ pub fn main_shooting_game(
         })
         .collect();
     let dbs = open_all_dbs(env);
+    let curated_shard_dbs = open_curated_shard_dbs(env);
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat `rounds` times
@@ -765,7 +776,8 @@ pub fn main_shooting_game(
             intermediate,
             false,
             100,
-            curated,
+            gates_ahead,
+            &curated_shard_dbs,
         );
         circuit = new_circuit;
 
@@ -969,7 +981,7 @@ pub fn main_shuffle_shoot_shuffle(
     leave: bool,
     do_gadgetize: bool,
     full_shuffle: bool,
-    curated: bool,
+    gates_ahead: usize,
     egg: bool,
 ) {
     // Start with the input circuit
@@ -990,6 +1002,7 @@ pub fn main_shuffle_shoot_shuffle(
         })
         .collect();
     let dbs = open_all_dbs(env);
+    let curated_shard_dbs = open_curated_shard_dbs(env);
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat `rounds` times
@@ -1031,16 +1044,7 @@ pub fn main_shuffle_shoot_shuffle(
     }
     for i in 0..rounds {
         if egg {
-            let pair_mode = if curated {
-                ExpandPairMode::Curated
-            } else {
-                ExpandPairMode::Canonical {
-                    bit_shuf_list: &bit_shuf_list,
-                    dbs: &dbs,
-                    id_len,
-                    tower,
-                }
-            };
+            let pair_mode = ExpandPairMode::Curated;
             circuit = expand_once(&circuit, n, env, shard_dbs, &pair_mode);
         } else {
             loop {
@@ -1058,7 +1062,8 @@ pub fn main_shuffle_shoot_shuffle(
                     intermediate,
                     true,
                     1,
-                    curated,
+                    gates_ahead,
+                    &curated_shard_dbs,
                 );
                 if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
                     circuit = new_circuit;

@@ -758,7 +758,8 @@ pub fn zip_escalators(
                                                         _bit_shuf_list,
                                                         dbs,
                                                         tower,
-                                                        id_len
+                                                        id_len,
+                                                        &[],
                                                     );
                 
                 combined.extend_from_slice(&paired_up);

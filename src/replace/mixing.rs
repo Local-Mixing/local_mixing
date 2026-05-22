@@ -38,7 +38,7 @@ use crate::{
             replace_pairs,
             replace_sequential_pairs,
             replace_single_pair,
-            replace_single_pair_with_completion,
+            replace_subcircuit_curated,
         }, replace::{
             // compress,
             compress_big,
@@ -697,16 +697,17 @@ pub fn sequential_butterfly(
                 let after_idx = shoot_left_vec_track(&mut gates_track, i, true);
                 if after_idx != 0 {
                     let (pair_repl, _) = replace_single_pair(
-                         &gates_track[after_idx - 1].0, 
-                        &gates_track[after_idx].0, 
-                        n, 
-                        env, 
-                        bit_shuf_list, 
-                        dbs, 
+                         &gates_track[after_idx - 1].0,
+                        &gates_track[after_idx].0,
+                        n,
+                        env,
+                        bit_shuf_list,
+                        dbs,
                         tower_left,
                         id_len,
+                        &[],
                     );
-                    let pair_repl = 
+                    let pair_repl =
                     pair_repl
                     .into_iter()
                     .map(|v| (v, 0))
@@ -723,14 +724,15 @@ pub fn sequential_butterfly(
                 let after_idx = shoot_left_vec_track(&mut gates_track, i, true);
                 if after_idx != 0 {
                     let (pair_repl, _) = replace_single_pair(
-                         &gates_track[after_idx - 1].0, 
-                        &gates_track[after_idx].0, 
-                        n, 
-                        env, 
-                        bit_shuf_list, 
-                        dbs, 
+                         &gates_track[after_idx - 1].0,
+                        &gates_track[after_idx].0,
+                        n,
+                        env,
+                        bit_shuf_list,
+                        dbs,
                         tower_left,
                         id_len,
+                        &[],
                     );
                     let pair_repl = 
                     pair_repl
@@ -761,16 +763,17 @@ pub fn sequential_butterfly(
                 let after_idx = shoot_right_vec_track(&mut gates_track, i, false);
                 if after_idx != curr_len {
                     let (pair_repl, _) = replace_single_pair(
-                        &gates_track[after_idx].0, 
-                        &gates_track[after_idx + 1].0, 
-                        n, 
-                        env, 
-                        bit_shuf_list, 
-                        dbs, 
+                        &gates_track[after_idx].0,
+                        &gates_track[after_idx + 1].0,
+                        n,
+                        env,
+                        bit_shuf_list,
+                        dbs,
                         tower_left,
-                        id_len
+                        id_len,
+                        &[],
                     );
-                    let pair_repl = 
+                    let pair_repl =
                     pair_repl
                     .into_iter()
                     .map(|v| (v, 0))
@@ -788,16 +791,17 @@ pub fn sequential_butterfly(
                 let curr_len = gates_track.len();
                 if after_idx != curr_len {
                     let (pair_repl, _) = replace_single_pair(
-                        &gates_track[after_idx].0, 
-                        &gates_track[after_idx + 1].0, 
-                        n, 
-                        env, 
-                        bit_shuf_list, 
-                        dbs, 
+                        &gates_track[after_idx].0,
+                        &gates_track[after_idx + 1].0,
+                        n,
+                        env,
+                        bit_shuf_list,
+                        dbs,
                         tower_left,
-                        id_len
+                        id_len,
+                        &[],
                     );
-                    let pair_repl = 
+                    let pair_repl =
                     pair_repl
                     .into_iter()
                     .map(|v| (v, 0))
@@ -845,15 +849,9 @@ pub fn simple_shooting_game(
     intermediate: &str,
     ends: bool,
     iter: usize,
-    curated: bool,
+    gates_ahead: usize,
+    curated_shard_dbs: &[lmdb::Database],
 ) -> CircuitSeq {
-    let comp_db = if curated {
-        Some(env.open_db(Some("completion_m2"))
-            .expect("completion_m2 DB not found — run build_completion_m2 first"))
-    } else {
-        None
-    };
-
     let mut gates = c.gates.clone();
     println!("   {}/{}: Starting simple shooting game until {} rounds or {} gates", curr_round, last_round, iter, stop);
     let mut len = gates.len();
@@ -873,19 +871,20 @@ pub fn simple_shooting_game(
             let mut curr_idx = starting_idx;
             while curr_idx != 0 {
                 let after_idx = shoot_left_vec(&mut gates, curr_idx);
-                if after_idx == 0 { break }
-                let id = if let Some(db) = comp_db {
-                    replace_single_pair_with_completion(&gates[after_idx - 1], &gates[after_idx], n, env, db)
+                if after_idx < gates_ahead - 1 { break }
+                let w_start = after_idx + 1 - gates_ahead;
+                let repl = if gates_ahead == 2 {
+                    let (r, _) = replace_single_pair(&gates[w_start], &gates[w_start + 1], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs);
+                    if r.is_empty() { None } else { Some(r) }
                 } else {
-                    let (repl, _) = replace_single_pair(&gates[after_idx - 1], &gates[after_idx], n, env, _bit_shuf_list, _dbs, _tower, _id_len);
-                    Some(repl)
+                    replace_subcircuit_curated(&gates[w_start..after_idx + 1], n, env, curated_shard_dbs)
                 };
-                match id {
-                    Some(id) => {
-                        let new_len = id.len();
-                        gates.splice(after_idx - 1..after_idx + 1, id);
-                        len = len - 2 + new_len;
-                        curr_idx = after_idx - 1;
+                match repl {
+                    Some(repl) => {
+                        let new_len = repl.len();
+                        gates.splice(w_start..after_idx + 1, repl);
+                        len = len - gates_ahead + new_len;
+                        curr_idx = w_start;
                     }
                     None => break,
                 }
@@ -894,18 +893,18 @@ pub fn simple_shooting_game(
             let mut curr_idx = starting_idx;
             while curr_idx != len {
                 let after_idx = shoot_right_vec(&mut gates, curr_idx);
-                if after_idx == len - 1 { break }
-                let id = if let Some(db) = comp_db {
-                    replace_single_pair_with_completion(&gates[after_idx], &gates[after_idx + 1], n, env, db)
+                if after_idx + gates_ahead > len { break }
+                let repl = if gates_ahead == 2 {
+                    let (r, _) = replace_single_pair(&gates[after_idx], &gates[after_idx + 1], n, env, _bit_shuf_list, _dbs, _tower, _id_len, curated_shard_dbs);
+                    if r.is_empty() { None } else { Some(r) }
                 } else {
-                    let (repl, _) = replace_single_pair(&gates[after_idx], &gates[after_idx + 1], n, env, _bit_shuf_list, _dbs, _tower, _id_len);
-                    Some(repl)
+                    replace_subcircuit_curated(&gates[after_idx..after_idx + gates_ahead], n, env, curated_shard_dbs)
                 };
-                match id {
-                    Some(id) => {
-                        let new_len = id.len();
-                        gates.splice(after_idx..after_idx + 2, id);
-                        len = len - 2 + new_len;
+                match repl {
+                    Some(repl) => {
+                        let new_len = repl.len();
+                        gates.splice(after_idx..after_idx + gates_ahead, repl);
+                        len = len - gates_ahead + new_len;
                         curr_idx = after_idx + new_len - 1;
                     }
                     None => break,
@@ -1085,6 +1084,7 @@ pub fn mix_seams(
             dbs,
             tower,
             id_len,
+            &[],
         );
         let lr = CircuitSeq { gates: vec![*left, *right] };
         if lr.probably_equal(&CircuitSeq { gates: replaced.clone() }, n, 1_000).is_err() {
@@ -1195,6 +1195,7 @@ pub fn interleave_sequential_big(
                 dbs,
                 tower,
                 id_len,
+                &[],
             );
 
             new_gates.extend_from_slice(&replaced);

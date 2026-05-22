@@ -532,7 +532,89 @@ pub fn replace_single_pair_with_completion(
     Some(CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates)
 }
 
-// returns the id-2 and the length
+pub fn replace_subcircuit_curated(
+    gates: &[[u8; 3]],
+    n: usize,
+    env: &lmdb::Environment,
+    curated_shard_dbs: &[lmdb::Database],
+) -> Option<Vec<[u8; 3]>> {
+    use xxhash_rust::xxh3::xxh3_128;
+    use crate::circuit::circuit::{polys_repr_blob, Permutation};
+    use lmdb::Transaction;
+    use rand::prelude::SliceRandom;
+
+    let mut rng = rand::rng();
+    let sub = CircuitSeq { gates: gates.to_vec() };
+
+    let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
+    if fwd_polys.is_empty() { return None; }
+
+    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes().to_vec();
+    let fwd_shard = fwd_key[0] as usize;
+
+    let txn = env.begin_ro_txn().ok()?;
+
+    let (value, final_order, is_reversed) = match txn.get(curated_shard_dbs[fwd_shard], &fwd_key).map(|v: &[u8]| v.to_vec()) {
+        Ok(v) => (v, fwd_order, false),
+        Err(_) => {
+            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
+            if rev_polys.is_empty() { return None; }
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes().to_vec();
+            let rev_shard = rev_key[0] as usize;
+            match txn.get(curated_shard_dbs[rev_shard], &rev_key).map(|v: &[u8]| v.to_vec()) {
+                Ok(v) => (v, rev_order, true),
+                Err(_) => return None,
+            }
+        }
+    };
+
+    let mut candidates: Vec<CircuitSeq> = Vec::new();
+    let mut pos = 0;
+    while pos < value.len() {
+        let len = value[pos] as usize;
+        pos += 1;
+        if pos + len > value.len() { break; }
+        let candidate = CircuitSeq::from_blob(&value[pos..pos + len]);
+        pos += len;
+        if candidate.gates.len() > gates.len() {
+            candidates.push(candidate);
+        }
+    }
+    if candidates.is_empty() { return None; }
+
+    let max_gates = candidates.iter().map(|c| c.gates.len()).max().unwrap();
+    let mut best: Vec<CircuitSeq> = candidates.into_iter().filter(|c| c.gates.len() == max_gates).collect();
+    let idx = rng.random_range(0..best.len());
+    let mut repl = best.swap_remove(idx);
+
+    if is_reversed { repl.gates.reverse(); }
+
+    let repl_n = repl.max_wire() + 1;
+    let mut order_data = final_order.data.clone();
+    while order_data.len() < repl_n {
+        let i = order_data.len();
+        order_data.push(i);
+    }
+    repl.rewire(&Permutation { data: order_data }, std::cmp::max(repl_n, final_order.data.len()));
+
+    let repl_n_b = repl.max_wire() + 1;
+    let mut used_ext = used.clone();
+    if used_ext.len() < repl_n_b {
+        let mut available: Vec<u8> = (0..n.min(256))
+            .map(|w| w as u8)
+            .filter(|w| !used_ext.contains(w))
+            .collect();
+        available.shuffle(&mut rng);
+        let mut avail = available.into_iter();
+        while used_ext.len() < repl_n_b {
+            avail.next().map(|w| used_ext.push(w))?;
+        }
+    }
+
+    Some(CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates)
+}
+
+// returns the replacement gates and the id length (0 when using curated path)
 pub fn replace_single_pair(
     left: &[u8;3],
     right: &[u8;3],
@@ -542,7 +624,14 @@ pub fn replace_single_pair(
     dbs: &HashMap<String, lmdb::Database>,
     tower: bool,
     id_len: usize,
+    curated_shard_dbs: &[lmdb::Database],
 ) -> (Vec<[u8;3]>, usize) {
+    if !curated_shard_dbs.is_empty() {
+        return match replace_subcircuit_curated(&[*left, *right], num_wires, env, curated_shard_dbs) {
+            Some(repl) => (repl, 0),
+            None => (vec![], 0),
+        };
+    }
     make_stdin_nonblocking();
     let mut rng = rand::rng();
     let tax = gate_pair_taxonomy(&left, &right);
@@ -665,7 +754,8 @@ pub fn replace_pair_distances(
                     bit_shuf_list,
                     dbs,
                     tower,
-                    id_len
+                    id_len,
+                    &[],
                 );
 
                 // Save what to do later
@@ -794,6 +884,7 @@ pub fn replace_pair_distances_linear(
                     dbs,
                     tower,
                     id_len,
+                    &[],
                 );
 
                 if id_len > 0 {
@@ -1071,14 +1162,15 @@ pub fn interleave(
         let choice = rng.random_range(0..2);
         if choice == 0 {
             let replaced_pair = replace_single_pair(
-                    &circuit.gates[i], 
-                    &random.gates[i], 
-                    2 * n, 
-                    env, 
-                    bit_shuf_list, 
-                    dbs, 
-                    tower, 
-                    id_len
+                    &circuit.gates[i],
+                    &random.gates[i],
+                    2 * n,
+                    env,
+                    bit_shuf_list,
+                    dbs,
+                    tower,
+                    id_len,
+                    &[],
                 ).0;
             gates.extend_from_slice(&replaced_pair);
         } else if choice == 2 {

@@ -25,8 +25,8 @@ use local_mixing::{
             // random_canonical_id
         }, main_mix::{
             // main_butterfly, 
-            main_butterfly_big, main_interleave_big, 
-            // main_mix, 
+            main_butterfly_big, main_interleave_big,
+            // main_mix,
             main_rac_big, main_rac_big_distance, main_sequential_butterfly, main_shuffle_rcs_big, open_all_dbs, main_shooting_game, main_shuffle_shoot_shuffle, main_expansion_game
         }, mixing::install_kill_handler, pairs::{GatePair, gate_pair_taxonomy}, gen_ids::{generate_identity_db, open_id_dbs}, replace::{
             // compress_big_ancillas,
@@ -923,11 +923,11 @@ fn main() {
                     .help("Path to the intermediate circuit file"),
             )
             .arg(
-                Arg::new("curated")
-                    .long("curated")
-                    .help("Use completion-based identities instead of random canonical ids")
-                    .required(false)
-                    .action(clap::ArgAction::SetTrue)
+                Arg::new("gates_ahead")
+                    .long("gates_ahead")
+                    .required(true)
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of gates to include in each replacement window (2 = pair, >2 uses curated shard lookup)")
             ),
     )
     .subcommand(
@@ -1075,11 +1075,12 @@ fn main() {
                     .action(clap::ArgAction::SetTrue)
             )
             .arg(
-                Arg::new("curated")
-                    .long("curated")
-                    .help("Use completion-based identities instead of random canonical ids")
+                Arg::new("gates_ahead")
+                    .long("gates_ahead")
                     .required(false)
-                    .action(clap::ArgAction::SetTrue)
+                    .default_value("2")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of gates to include in each replacement window (2 = pair, >2 uses curated shard lookup)")
             )
             .arg(
                 Arg::new("egg")
@@ -1695,7 +1696,7 @@ Command::new("rocksdb_2")
             let n: usize = *sub.get_one("n").unwrap();
             let id_len: usize = *sub.get_one("id_len").unwrap();
             let tower = sub.get_flag("tower");
-            let curated = sub.get_flag("curated");
+            let gates_ahead: usize = *sub.get_one("gates_ahead").unwrap();
             let stop: f64 = *sub.get_one("stop").unwrap();
             let partial_stop: f64 = *sub.get_one("partial_stop").unwrap();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
@@ -1728,7 +1729,7 @@ Command::new("rocksdb_2")
                     tower,
                     stop,
                     i,
-                    curated,
+                    gates_ahead,
                     partial_stop,
                 );
                 print_compress_timers();
@@ -1820,7 +1821,7 @@ Command::new("rocksdb_2")
             let leave = sub.get_flag("interleave");
             let do_gadgetize = sub.get_flag("gadgetize");
             let full_shuffle = sub.get_flag("full-shuffle");
-            let curated = sub.get_flag("curated");
+            let gates_ahead: usize = *sub.get_one("gates_ahead").unwrap();
             let egg = sub.get_flag("egg");
             let stop: usize = *sub.get_one("stop").unwrap();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
@@ -1858,7 +1859,7 @@ Command::new("rocksdb_2")
                     leave,
                     do_gadgetize,
                     full_shuffle,
-                    curated,
+                    gates_ahead,
                     egg,
                 );
                 print_compress_timers();
