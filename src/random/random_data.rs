@@ -3268,12 +3268,6 @@ pub fn build_from_rocks(
 
                     let old_circuit = CircuitSeq::from_blob(circuit_blob);
 
-                    if old_circuit.used_wires().len() < min_n {
-                        local_tried += upper_bound_gates * 2;
-                        local_skipped += upper_bound_gates * 2;
-                        continue;
-                    }
-
                     local_tried += upper_bound_gates * 2;
 
                     let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
@@ -3286,7 +3280,9 @@ pub fn build_from_rocks(
                         q1.push(*g);
                         let mut c1 = CircuitSeq { gates: q1.to_vec() };
                         c1.canonicalize();
-                        if !c1.adjacent_id() {
+                        if c1.used_wires().len() < min_n {
+                            local_skipped += 1;
+                        } else if !c1.adjacent_id() {
                             // double_canon_check(&c1, 3 * m, "c1");
                             let canon1 = c1.canonicalize_polys(3 * m);
                             // double_canon_check(&canon1.1, 3 * m, "canon1");
@@ -3303,7 +3299,9 @@ pub fn build_from_rocks(
                         q2.extend_from_slice(&prefix);
                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
                         c2.canonicalize();
-                        if !c2.adjacent_id() {
+                        if c2.used_wires().len() < min_n {
+                            local_skipped += 1;
+                        } else if !c2.adjacent_id() {
                             // double_canon_check(&c2, 3 * m, "c2");
                             let canon2 = c2.canonicalize_polys(3 * m);
                             // double_canon_check(&canon2.1, 3 * m, "canon2");
@@ -4031,9 +4029,8 @@ pub fn build_from_2rocks(
             })
             .collect();
 
-        // Decode all c1 circuits from this chunk, skipping those with too few wires
+        // Decode all c1 circuits from this chunk
         let mut c1_circuits: Vec<CircuitSeq> = Vec::new();
-        let mut local_skipped_pairs = 0usize;
         for (_key, value) in &entries {
             let mut pos = 0;
             while pos < value.len() {
@@ -4041,18 +4038,9 @@ pub fn build_from_2rocks(
                 let len = value[pos] as usize;
                 pos += 1;
                 if pos + len > value.len() { break; }
-                let c = CircuitSeq::from_blob(&value[pos..pos + len]);
+                c1_circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
                 pos += len;
-                if c.used_wires().len() < min_n {
-                    local_skipped_pairs += nc2;
-                    continue;
-                }
-                c1_circuits.push(c);
             }
-        }
-        if local_skipped_pairs > 0 {
-            total_gates_tried.fetch_add(local_skipped_pairs, Ordering::Relaxed);
-            skipped_count.fetch_add(local_skipped_pairs, Ordering::Relaxed);
         }
 
         // Precompute per-c1 data in parallel
@@ -4104,6 +4092,7 @@ pub fn build_from_2rocks(
         let tx_par = tx.clone();
         let total_gates_tried_par = Arc::clone(&total_gates_tried);
         let total_results_par = Arc::clone(&total_results_generated);
+        let skipped_par = Arc::clone(&skipped_count);
 
         let total_c1 = c1_data.len();
         let c1_done = std::sync::atomic::AtomicUsize::new(0);
@@ -4117,13 +4106,15 @@ pub fn build_from_2rocks(
                 }
 
                 let mut local: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+                let mut local_tried = 0usize;
+                let mut local_skipped = 0usize;
 
                 for (j, c2) in db2_ref.iter().enumerate() {
                     let n2     = db2_n2_ref[j];
                     let c2_rev = &db2_rev_ref[j];
                     let n2_rev = db2_rev_n2_ref[j];
 
-                    total_gates_tried_par.fetch_add(1, Ordering::Relaxed);
+                    local_tried += 1;
 
                     // Helper closure: concatenate, canonicalize, push if non-trivial
                     let mut try_push = |first_gates: &[[u8; 3]], second_gates: &[[u8; 3]]| {
@@ -4132,6 +4123,10 @@ pub fn build_from_2rocks(
                         gates.extend_from_slice(second_gates);
                         let mut combined = CircuitSeq { gates };
                         combined.canonicalize();
+                        if combined.used_wires().len() < min_n {
+                            local_skipped += 1;
+                            return;
+                        }
                         if combined.adjacent_id() { return; }
                         let (canon_polys, canon_circuit, _, _, _) = combined.canonicalize_polys(n);
                         let key = xxh3_128(&polys_repr_blob(&canon_polys)).to_le_bytes().to_vec();
@@ -4210,6 +4205,8 @@ pub fn build_from_2rocks(
                     }
                 }
                 chunk_total.fetch_add(n_local, Ordering::Relaxed);
+                total_gates_tried_par.fetch_add(local_tried, Ordering::Relaxed);
+                skipped_par.fetch_add(local_skipped, Ordering::Relaxed);
 
                 let done = c1_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 if done % 50 == 0 || done == total_c1 {
