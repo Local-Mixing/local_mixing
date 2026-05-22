@@ -1,0 +1,64 @@
+use lmdb::{DatabaseFlags, Environment, EnvironmentFlags, Transaction, WriteFlags};
+use rocksdb::{DB, MergeOperands, Options};
+use std::path::Path;
+
+fn append_merge(
+    _key: &[u8],
+    existing: Option<&[u8]>,
+    operands: &MergeOperands,
+) -> Option<Vec<u8>> {
+    let mut result = existing.map_or_else(Vec::new, |v| v.to_vec());
+    for op in operands {
+        result.extend_from_slice(op);
+    }
+    Some(result)
+}
+
+fn main() {
+    std::fs::create_dir_all("./curated_lmdb").expect("create curated_lmdb");
+    let env = Environment::new()
+        .set_flags(EnvironmentFlags::MAP_ASYNC | EnvironmentFlags::NO_SYNC)
+        .set_max_dbs(600)
+        .set_max_readers(10000)
+        .set_map_size(800 * 1024 * 1024 * 1024)
+        .open(Path::new("./curated_lmdb"))
+        .expect("Failed to open ./curated_lmdb");
+
+    println!("Creating curated_{{}} shard databases...");
+    let dbs: Vec<lmdb::Database> = (0u16..=255)
+        .map(|s| {
+            let name = format!("curated_{:02x}", s);
+            env.create_db(Some(name.as_str()), DatabaseFlags::empty())
+                .unwrap_or_else(|e| panic!("Failed to create {}: {:?}", name, e))
+        })
+        .collect();
+
+    let mut opts = Options::default();
+    opts.set_merge_operator_associative("append_merge", append_merge);
+    let rocks = DB::open_for_read_only(&opts, "rocks_curated_db", false)
+        .expect("Failed to open rocks_curated_db");
+
+    let total: u64 = rocks.iterator(rocksdb::IteratorMode::Start).count() as u64;
+    println!("RocksDB total entries: {}", total);
+
+    let mut count = 0u64;
+    let mut txn = env.begin_rw_txn().expect("rw txn");
+
+    for item in rocks.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = item.expect("iterator error");
+        let shard = key[0] as usize;
+        txn.put(dbs[shard], &key, &value, WriteFlags::empty())
+            .expect("lmdb put");
+        count += 1;
+        if count % 10_000 == 0 {
+            txn.commit().expect("commit");
+            txn = env.begin_rw_txn().expect("rw txn");
+            if count % 500_000 == 0 {
+                println!("  {}/{} entries...", count, total);
+            }
+        }
+    }
+
+    txn.commit().expect("final commit");
+    println!("Done. {}/{} entries written to ./db curated_{{}} shards.", count, total);
+}

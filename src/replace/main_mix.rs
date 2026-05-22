@@ -995,7 +995,6 @@ pub fn main_shuffle_shoot_shuffle(
     // Repeat `rounds` times
     let mut post_len = 0;
     let mut count = 0;
-    let orig_n = n;
     if do_gadgetize {
         let mut rng = rand::rng();
         let before = circuit.gates.len();

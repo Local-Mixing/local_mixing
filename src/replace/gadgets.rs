@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn verify_6gate_gadget_semantics() {
-        let mut rng = test_rng();
+        let rng = test_rng();
         // Fixed pairing for determinism: wire i paired to n+i, free = 2n
         let n = 3;
         let sched = GadgetScheduler {

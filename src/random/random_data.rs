@@ -3110,6 +3110,7 @@ pub fn build_from_rocks(
     old_db: &Arc<DB>,
     new_db: &Arc<DB>,
     m: usize,
+    min_n: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Running build (max CPU)");
 
@@ -3260,6 +3261,10 @@ pub fn build_from_rocks(
                     pos += len;
 
                     let old_circuit = CircuitSeq::from_blob(circuit_blob);
+
+                    if old_circuit.used_wires().len() < min_n {
+                        continue;
+                    }
 
                     total_gates_tried_par.fetch_add(upper_bound_gates * 2, Ordering::Relaxed);
 
