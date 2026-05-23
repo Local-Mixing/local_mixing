@@ -3153,8 +3153,7 @@ pub fn build_from_rocks(
 
     let insert_handle = std::thread::spawn(move || {
         let start_time = std::time::Instant::now();
-        let total_circuits = total_rows as usize * upper_bound_gates * 2;
-        let mut attempted_inserts = 0;
+        let mut attempted_inserts = 0usize;
         let mut sst_index = 0usize;
         let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
 
@@ -3172,11 +3171,14 @@ pub fn build_from_rocks(
 
             attempted_inserts += batch.len();
             let skipped = skipped_count_insert.load(Ordering::Relaxed);
-            let tried = total_gates_tried_insert.load(Ordering::Relaxed);
+            let done = attempted_inserts + skipped;
             let elapsed = start_time.elapsed().as_secs_f64();
-            let rate = if elapsed > 0.0 { tried as f64 / elapsed } else { 0.0 };
-            let remaining = if rate > 0.0 {
-                (total_circuits as f64 - tried as f64) / rate
+            // Estimate input rows processed: each row yields up to upper_bound_gates*2 outputs.
+            let rows_done = done / upper_bound_gates.max(1) / 2 + 1;
+            let rate_rows = if elapsed > 0.0 { rows_done as f64 / elapsed } else { 0.0 };
+            let pct = if total_rows > 0 { rows_done as f64 / total_rows as f64 * 100.0 } else { 0.0 };
+            let remaining = if rate_rows > 0.0 {
+                (total_rows.saturating_sub(rows_done as u64)) as f64 / rate_rows
             } else {
                 f64::INFINITY
             };
@@ -3185,16 +3187,14 @@ pub fn build_from_rocks(
             let remaining_m = (remaining_secs % 3600) / 60;
             let remaining_s = remaining_secs % 60;
             println!(
-                "Attempted inserts: {} / {} ({:.2}%) | elapsed: {:.0}s | rate: {:.0}/s | eta: {:02}:{:02}:{:02}",
-                attempted_inserts + skipped,
-                total_circuits,
-                if tried > 0 {
-                    (tried as f64 / total_circuits as f64) * 100.0
-                } else {
-                    0.0
-                },
+                "Inserted: {} | skipped: {} | input rows ~{}/{} ({:.2}%) | elapsed: {:.0}s | rate: {:.0} rows/s | eta: {:02}:{:02}:{:02}",
+                attempted_inserts,
+                skipped,
+                rows_done,
+                total_rows,
+                pct,
                 elapsed,
-                rate,
+                rate_rows,
                 remaining_h,
                 remaining_m,
                 remaining_s,
@@ -3216,9 +3216,8 @@ pub fn build_from_rocks(
 
         let elapsed = start_time.elapsed().as_secs_f64();
         println!(
-            "Insertion thread finished. Total attempted: {} / {} | elapsed: {:.0}s",
+            "Insertion thread finished. Total inserted: {} | elapsed: {:.0}s",
             attempted_inserts,
-            total_circuits,
             elapsed,
         );
     });
