@@ -3112,6 +3112,7 @@ pub fn build_from_rocks(
     m: usize,
     min_n: usize,
     max_n: usize,
+    no_rule_l: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Running build (max CPU)");
 
@@ -3132,6 +3133,7 @@ pub fn build_from_rocks(
     let upper_bound_gates = base_gates(3 * m).len();
     let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let skipped_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let no_rule_l_skipped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     {
@@ -3239,6 +3241,7 @@ pub fn build_from_rocks(
         let tx_par = tx.clone();
         let total_gates_tried_par = Arc::clone(&total_gates_tried);
         let skipped_par = Arc::clone(&skipped_count);
+        let no_rule_l_skipped_par = Arc::clone(&no_rule_l_skipped);
 
         entries.par_chunks(20).for_each(|entry_chunk| {
             if stop_flag_par.load(Ordering::SeqCst) {
@@ -3248,6 +3251,7 @@ pub fn build_from_rocks(
             let mut local_results = Vec::new();
             let mut local_tried = 0usize;
             let mut local_skipped = 0usize;
+            let mut local_no_rule_l_skipped = 0usize;
 
             for (_key, value) in entry_chunk {
                 if value.is_empty() {
@@ -3285,15 +3289,13 @@ pub fn build_from_rocks(
                         if c1_used < min_n || (max_n > 0 && c1_used > max_n) {
                             local_skipped += 1;
                         } else if !c1.adjacent_id() {
-                            // double_canon_check(&c1, 3 * m, "c1");
-                            let canon1 = c1.canonicalize_polys(3 * m);
-                            // double_canon_check(&canon1.1, 3 * m, "canon1");
-                            let c1_hash: u128 = xxh3_128(&polys_repr_blob(&canon1.0));
-                            local_results.push((
-                                canon1.1,
-                                canon1.0,
-                                c1_hash.to_le_bytes().to_vec(),
-                            ));
+                            match c1.canonicalize_polys(3 * m, !no_rule_l) {
+                                None => { local_no_rule_l_skipped += 1; }
+                                Some(canon1) => {
+                                    let c1_hash: u128 = xxh3_128(&polys_repr_blob(&canon1.0));
+                                    local_results.push((canon1.1, canon1.0, c1_hash.to_le_bytes().to_vec()));
+                                }
+                            }
                         }
 
                         let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
@@ -3305,15 +3307,13 @@ pub fn build_from_rocks(
                         if c2_used < min_n || (max_n > 0 && c2_used > max_n) {
                             local_skipped += 1;
                         } else if !c2.adjacent_id() {
-                            // double_canon_check(&c2, 3 * m, "c2");
-                            let canon2 = c2.canonicalize_polys(3 * m);
-                            // double_canon_check(&canon2.1, 3 * m, "canon2");
-                            let c2_hash: u128 = xxh3_128(&polys_repr_blob(&canon2.0));
-                            local_results.push((
-                                canon2.1,
-                                canon2.0,
-                                c2_hash.to_le_bytes().to_vec(),
-                            ));
+                            match c2.canonicalize_polys(3 * m, !no_rule_l) {
+                                None => { local_no_rule_l_skipped += 1; }
+                                Some(canon2) => {
+                                    let c2_hash: u128 = xxh3_128(&polys_repr_blob(&canon2.0));
+                                    local_results.push((canon2.1, canon2.0, c2_hash.to_le_bytes().to_vec()));
+                                }
+                            }
                         }
                     }
 
@@ -3339,11 +3339,15 @@ pub fn build_from_rocks(
             }
             total_gates_tried_par.fetch_add(local_tried, Ordering::Relaxed);
             skipped_par.fetch_add(local_skipped, Ordering::Relaxed);
+            no_rule_l_skipped_par.fetch_add(local_no_rule_l_skipped, Ordering::Relaxed);
         });
     }
 
     drop(tx);
     insert_handle.join().expect("Insertion thread panicked");
+    if no_rule_l {
+        println!("Skipped (rule L required): {}", no_rule_l_skipped.load(Ordering::Relaxed));
+    }
 
     if !stop_flag.load(Ordering::SeqCst) {
         println!("Compacting new_db for optimal read performance...");
@@ -3511,7 +3515,7 @@ pub fn build_from_rocks(
 //                         let mut c1 = CircuitSeq { gates: q1.to_vec() };
 //                         c1.canonicalize();
 //                         if !c1.adjacent_id() {
-//                             let canon1 = c1.canonicalize_polys(3 * m);
+//                             let canon1 = c1.canonicalize_polys(3 * m, true).unwrap();
 //                             let hash: u128 = xxh3_128(&polys_repr_blob(&canon1.0));
 //                             local_results.push((canon1.1, canon1.0, hash.to_le_bytes().to_vec()));
 //                         }
@@ -3523,7 +3527,7 @@ pub fn build_from_rocks(
 //                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
 //                         c2.canonicalize();
 //                         if !c2.adjacent_id() {
-//                             let canon2 = c2.canonicalize_polys(3 * m);
+//                             let canon2 = c2.canonicalize_polys(3 * m, true).unwrap();
 //                             let hash: u128 = xxh3_128(&polys_repr_blob(&canon2.0));
 //                             local_results.push((canon2.1, canon2.0, hash.to_le_bytes().to_vec()));
 //                         }
@@ -3860,7 +3864,7 @@ pub fn build_from_2rocks(
             };
             r.canonicalize();
             let n2 = r.max_wire() as usize + 1;
-            let canon = canonicalize_polys_4(r.to_polynomial(n2, 0, r.gates.len()));
+            let canon = canonicalize_polys_4(r.to_polynomial(n2, 0, r.gates.len()), true).unwrap();
             r.rewire(&canon.1.invert(), n2);
             r.canonicalize();
             let done = c2_rev_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -4072,7 +4076,7 @@ pub fn build_from_2rocks(
                     };
                     r.canonicalize();
                     let n1r = r.max_wire() as usize + 1;
-                    let canon = canonicalize_polys_4(r.to_polynomial(n1r, 0, r.gates.len()));
+                    let canon = canonicalize_polys_4(r.to_polynomial(n1r, 0, r.gates.len()), true).unwrap();
                     r.rewire(&canon.1.invert(), n1r);
                     r.canonicalize();
                     r
@@ -4131,7 +4135,7 @@ pub fn build_from_2rocks(
                             return;
                         }
                         if combined.adjacent_id() { return; }
-                        let (canon_polys, canon_circuit, _, _, _) = combined.canonicalize_polys(n);
+                        let (canon_polys, canon_circuit, _, _, _) = combined.canonicalize_polys(n, true).unwrap();
                         let key = xxh3_128(&polys_repr_blob(&canon_polys)).to_le_bytes().to_vec();
                         let value = encode_circuit(&canon_circuit.repr_blob());
                         local.push((key, value));
@@ -5927,7 +5931,7 @@ mod tests {
             if circuits.len() > 1 {
                 // Canonicalize the first circuit and use that as the header
                 let polys = circuits[0].to_polynomial(n, 0, m);
-                let (canonical, _) = canonicalize_polys_4(polys);
+                let (canonical, _) = canonicalize_polys_4(polys, true).unwrap();
                 for (i, poly) in canonical.iter().enumerate() {
                     writeln!(file, "  P{}: {}", i, poly_to_str(poly, n)).expect("write failed");
                 }
@@ -6062,7 +6066,7 @@ mod tests {
                     let circuit = CircuitSeq::from_blob(circuit_blob);
 
                     // Recompute the key from the circuit itself
-                    let canonical = circuit.canonicalize_polys(n);
+                    let canonical = circuit.canonicalize_polys(n, true).unwrap();
                     let hash: u128 = xxh3_128(&polys_repr_blob(&canonical.0));
                     let computed_key = hash.to_le_bytes().to_vec();
 
@@ -6085,7 +6089,7 @@ mod tests {
         let canon_poly_str = |circuit: &CircuitSeq| -> String {
             use crate::circuit::circuit::poly_to_str;
             let polys = circuit.to_polynomial(n, 0, m);
-            let (canonical, _) = canonicalize_polys_4(polys);
+            let (canonical, _) = canonicalize_polys_4(polys, true).unwrap();
             canonical.iter().enumerate()
                 .map(|(i, poly)| format!("P{}: {}", i, poly_to_str(poly, n)))
                 .collect::<Vec<_>>()
@@ -6150,7 +6154,7 @@ mod tests {
                     let mut rev = circuit.clone();
                     rev.gates.reverse();
                     rev.canonicalize();
-                    let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
+                    let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m), true).unwrap();
                     let rev_hash: u128 = xxh3_128(&polys_repr_blob(&canon_rev.0));
                     let rev_key = rev_hash.to_le_bytes().to_vec();
                     if dst_map.contains_key(&rev_key) {
@@ -6378,7 +6382,7 @@ mod tests {
                 Some(c) => c,
                 None => continue,
             };
-            let canon4 = circuit.canonicalize_polys(n);
+            let canon4 = circuit.canonicalize_polys(n, true).unwrap();
             let hash4: u128 = xxh3_128(&polys_repr_blob(&canon4.0));
             let key4 = hash4.to_le_bytes().to_vec();
 
@@ -6495,7 +6499,7 @@ mod tests {
             };
             total += 1;
 
-            let canonical = circuit.canonicalize_polys(n);
+            let canonical = circuit.canonicalize_polys(n, true).unwrap();
             let hash: u128 = xxh3_128(&polys_repr_blob(&canonical.0));
             let key = hash.to_le_bytes().to_vec();
 
@@ -6770,7 +6774,7 @@ mod tests {
 
         let check = |gates: Vec<[u8; 3]>, label: &str| -> bool {
             let mut circuit = CircuitSeq { gates };
-            let canon = circuit.canonicalize_polys(n);
+            let canon = circuit.canonicalize_polys(n, true).unwrap();
             circuit = canon.1;
             println!("{}: canonicalized circuit: {:?}", label, circuit.gates);
             let blob = polys_repr_blob(&canon.0);
@@ -6862,7 +6866,7 @@ mod tests {
                 let circuit = CircuitSeq::from_blob(circuit_blob);
 
                 // hash of original
-                let canon = canonicalize_polys_4(circuit.to_polynomial(n, 0, m));
+                let canon = canonicalize_polys_4(circuit.to_polynomial(n, 0, m), true).unwrap();
                 let blob = polys_repr_blob(&canon.0);
                 let h: u128 = xxh3_128(&blob);
 
@@ -6871,7 +6875,7 @@ mod tests {
                 rev.gates.reverse();
                 rev.canonicalize();
 
-                let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
+                let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m), true).unwrap();
                 let rev_blob = polys_repr_blob(&canon_rev.0);
                 let h_rev: u128 = xxh3_128(&rev_blob);
 
@@ -6951,14 +6955,14 @@ mod tests {
                 let circuit = CircuitSeq::from_blob(circuit_blob);
 
                 // forward canonical hash
-                let canon = canonicalize_polys_4(circuit.to_polynomial(n, 0, m));
+                let canon = canonicalize_polys_4(circuit.to_polynomial(n, 0, m), true).unwrap();
                 let h: u128 = xxh3_128(&polys_repr_blob(&canon.0));
 
                 // reversed canonical hash
                 let mut rev = circuit.clone();
                 rev.gates.reverse();
                 rev.canonicalize();
-                let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m));
+                let canon_rev = canonicalize_polys_4(rev.to_polynomial(n, 0, m), true).unwrap();
                 let h_rev: u128 = xxh3_128(&polys_repr_blob(&canon_rev.0));
 
                 let pair_key = h.min(h_rev);
@@ -7326,8 +7330,8 @@ mod tests {
             println!("  P{}: {}", i, poly_to_str(poly, m * 3));
         }
 
-        let canon_1 = c1.canonicalize_polys(m * 3);
-        let canon_2 = c2.canonicalize_polys(m * 3);
+        let canon_1 = c1.canonicalize_polys(m * 3, true).unwrap();
+        let canon_2 = c2.canonicalize_polys(m * 3, true).unwrap();
         println!("c1 used: {}", if canon_1.2 { "reverse" } else { "forward" });
         println!("c2 used: {}", if canon_2.2 { "reverse" } else { "forward" });
         println!("Canonical c1: ");
@@ -7349,7 +7353,7 @@ mod tests {
         let c = CircuitSeq { gates: vec![[8,40,28]] };
         let m = c.gates.len();
 
-        let (canon_polys, rewired, reversed, final_order, _) = c.canonicalize_polys(m * 3);
+        let (canon_polys, rewired, reversed, final_order, _) = c.canonicalize_polys(m * 3, true).unwrap();
 
         println!("=== Canonical Polynomials ===");
         for (i, poly) in canon_polys.iter().enumerate() {
@@ -7377,25 +7381,25 @@ mod tests {
         let c_b = CircuitSeq { gates: vec![[3, 1, 0], [4, 0, 3], [3, 2, 0]] };
 
         // Hash c_a canonically
-        let canon_a = canonicalize_polys_4(c_a.to_polynomial(n, 0, m));
+        let canon_a = canonicalize_polys_4(c_a.to_polynomial(n, 0, m), true).unwrap();
         let hash_a = xxh3_128(&polys_repr_blob(&canon_a.0));
 
         // Hash c_b canonically
-        let canon_b = canonicalize_polys_4(c_b.to_polynomial(n, 0, m));
+        let canon_b = canonicalize_polys_4(c_b.to_polynomial(n, 0, m), true).unwrap();
         let hash_b = xxh3_128(&polys_repr_blob(&canon_b.0));
 
         // Compute c_a's reversal and hash it
         let mut c_a_rev = c_a.clone();
         c_a_rev.gates.reverse();
         c_a_rev.canonicalize();
-        let canon_a_rev = canonicalize_polys_4(c_a_rev.to_polynomial(n, 0, m));
+        let canon_a_rev = canonicalize_polys_4(c_a_rev.to_polynomial(n, 0, m), true).unwrap();
         let hash_a_rev = xxh3_128(&polys_repr_blob(&canon_a_rev.0));
 
         // Compute c_b's reversal and hash it
         let mut c_b_rev = c_b.clone();
         c_b_rev.gates.reverse();
         c_b_rev.canonicalize();
-        let canon_b_rev = canonicalize_polys_4(c_b_rev.to_polynomial(n, 0, m));
+        let canon_b_rev = canonicalize_polys_4(c_b_rev.to_polynomial(n, 0, m), true).unwrap();
         let hash_b_rev = xxh3_128(&polys_repr_blob(&canon_b_rev.0));
 
         println!("hash_a:     {:032x}", hash_a);
@@ -7469,7 +7473,7 @@ mod tests {
                     let mut circuit = CircuitSeq { gates: vec![g1, g2, g3, g4] };
                     circuit.canonicalize();
                     if circuit.adjacent_id() { continue; }
-                    let (canon_polys, _, _, _, _) = circuit.canonicalize_polys(n);
+                    let (canon_polys, _, _, _, _) = circuit.canonicalize_polys(n, true).unwrap();
                     let hash: u128 = xxh3_128(&polys_repr_blob(&canon_polys));
                     local_seen.insert(hash);
                 }
@@ -7555,7 +7559,7 @@ mod tests {
                 let value5 = db5.get(key).unwrap().unwrap();
                 let circuits5 = decode_circuits(&value5);
 
-                let (canon_polys, _, _, _, _) = circuits4[0].clone().canonicalize_polys(n);
+                let (canon_polys, _, _, _, _) = circuits4[0].clone().canonicalize_polys(n, true).unwrap();
                 let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
 
                 out.push_str(&format!("\n[{}] hash={} | m4 circuits={} | m5 circuits={}\n",
@@ -7650,7 +7654,7 @@ mod tests {
             for (rank, (key, count)) in ranked.iter().enumerate() {
                 let value = db.get(key).unwrap().unwrap();
                 let circuits = decode_circuits(&value);
-                let (canon_polys, _, _, _, _) = circuits[0].clone().canonicalize_polys(n);
+                let (canon_polys, _, _, _, _) = circuits[0].clone().canonicalize_polys(n, true).unwrap();
                 let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
 
                 out.push_str(&format!("\n[{}] hash={} | circuits={}\n", rank + 1, hash_str, count));
@@ -7721,7 +7725,7 @@ mod tests {
             let circuits5 = decode_circuits(&value5);
 
             // Use the m2 circuit to get the canonical poly (n = 3*2 = 6)
-            let (canon_polys, _, _, _, _) = circuits2[0].clone().canonicalize_polys(3 * 2);
+            let (canon_polys, _, _, _, _) = circuits2[0].clone().canonicalize_polys(3 * 2, true).unwrap();
             let hash_str: String = key[..8].iter().map(|b| format!("{:02x}", b)).collect();
 
             out.push_str(&format!(
@@ -7768,7 +7772,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mut sink = 0u128;
         for c in &circuits {
-            let (polys, _, _, _, _) = c.canonicalize_polys(n);
+            let (polys, _, _, _, _) = c.canonicalize_polys(n, true).unwrap();
             sink ^= xxh3_128(&polys_repr_blob(&polys));
         }
         let elapsed = start.elapsed().as_secs_f64();
@@ -7777,7 +7781,7 @@ mod tests {
 
         // Benchmark just polys_repr_blob + hash
         let polys_vec: Vec<Vec<Polynomial>> = circuits.iter()
-            .map(|c| c.canonicalize_polys(n).0)
+            .map(|c| c.canonicalize_polys(n, true).unwrap().0)
             .collect();
         let start = std::time::Instant::now();
         let mut sink = 0u128;
@@ -7815,7 +7819,7 @@ mod tests {
         // Parallel throughput
         let start = std::time::Instant::now();
         let sink: u128 = circuits.par_iter().map(|c| {
-            let (polys, _, _, _, _) = c.canonicalize_polys(n);
+            let (polys, _, _, _, _) = c.canonicalize_polys(n, true).unwrap();
             xxh3_128(&polys_repr_blob(&polys))
         }).reduce(|| 0u128, |a, b| a ^ b);
         let elapsed = start.elapsed().as_secs_f64();
@@ -7857,7 +7861,7 @@ mod tests {
             let circuits = decode_circuits(&value);
             let first = &circuits[0];
             let n = 3 * first.gates.len().max(1);
-            let (canon_polys, _, _, _, _) = first.clone().canonicalize_polys(n);
+            let (canon_polys, _, _, _, _) = first.clone().canonicalize_polys(n, true).unwrap();
             let hash_str: String = key.iter().map(|b| format!("{:02x}", b)).collect();
 
             out.push_str(&format!(

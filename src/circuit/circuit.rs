@@ -885,7 +885,7 @@ impl CircuitSeq {
 
     // Returns (canonical_polys, canonical_circuit, reversed)
     // where reversed=true means the reversed circuit produced the canonical form.
-    pub fn canonicalize_polys(&self, _n: usize) -> (Vec<Polynomial>, CircuitSeq, bool, Permutation, Vec<u8>) {
+    pub fn canonicalize_polys(&self, _n: usize, allow_rule_l: bool) -> Option<(Vec<Polynomial>, CircuitSeq, bool, Permutation, Vec<u8>)> {
         fn poly_vec_key(polys: &Vec<Polynomial>) -> Vec<Vec<u64>> {
             polys.iter().map(|p| {
                 let mut v: Vec<u64> = p.iter().copied().collect();
@@ -913,8 +913,8 @@ impl CircuitSeq {
         let n2 = c2.max_wire() as usize + 1;
         let polys_fwd = c1.to_polynomial(n1, 0, c1.gates.len());
         let polys_rev = c2.to_polynomial(n2, 0, c2.gates.len());
-        let canon1 = canonicalize_polys_4(polys_fwd);
-        let canon2 = canonicalize_polys_4(polys_rev);
+        let canon1 = canonicalize_polys_4(polys_fwd, allow_rule_l).ok()?;
+        let canon2 = canonicalize_polys_4(polys_rev, allow_rule_l).ok()?;
         c1.rewire(&canon1.1.invert(), n1);
         c1.canonicalize();
         c2.rewire(&canon2.1.invert(), n2);
@@ -922,7 +922,7 @@ impl CircuitSeq {
         // final_order.data[canonical_pos] = wire in the dense remapped space (0..k-1).
         // To unrewire a canonical circuit back to original wires, apply final_order first
         // (canonical → dense), then apply `used` (dense → original).
-        if poly_vec_key(&canon1.0) < poly_vec_key(&canon2.0) {
+        Some(if poly_vec_key(&canon1.0) < poly_vec_key(&canon2.0) {
             (canon1.0, c1, false, canon1.1, used)
         } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0) {
             (canon2.0, c2, true, canon2.1, used)
@@ -930,7 +930,7 @@ impl CircuitSeq {
             (canon1.0, c1, false, canon1.1, used)
         } else {
             (canon2.0, c2, true, canon2.1, used)
-        }
+        })
     }
 
     /// Compute canonical polynomials for one direction only (forward or reversed).
@@ -950,7 +950,7 @@ impl CircuitSeq {
         c.canonicalize();
         let n = c.max_wire() as usize + 1;
         let polys = c.to_polynomial(n, 0, c.gates.len());
-        let canon = canonicalize_polys_4(polys);
+        let canon = canonicalize_polys_4(polys, true).unwrap();
         (canon.0, canon.1, used)
     }
 
@@ -2546,7 +2546,8 @@ fn canon4_run(
     polynomials: &[Polynomial],
     class_polys: &[BTreeMap<Monomial, usize>],
     mut vr: Vec<usize>,
-) -> Vec<usize> {
+    allow_rule_l: bool,
+) -> Result<Vec<usize>, ()> {
     let n = polynomials.len();
 
     'master: loop {
@@ -2622,6 +2623,9 @@ fn canon4_run(
             .min();
 
         if let Some(tr) = tied_rank {
+            if !allow_rule_l {
+                return Err(());
+            }
             let candidates: Vec<usize> = (0..n).filter(|&v| vr[v] == tr).collect();
             let mut best_canonical: Option<Vec<Vec<u64>>> = None;
             let mut best_order: Vec<usize> = Vec::new();
@@ -2631,7 +2635,7 @@ fn canon4_run(
                 for v in 0..n { if trial_vr[v] > tr { trial_vr[v] += 1; } }
                 for &other in &candidates { if other != w { trial_vr[other] = tr + 1; } }
 
-                let trial_order = canon4_run(polynomials, class_polys, trial_vr);
+                let trial_order = canon4_run(polynomials, class_polys, trial_vr, true)?;
 
                 let mut wire_to_pos = vec![0usize; n];
                 for (pos, &wire) in trial_order.iter().enumerate() { wire_to_pos[wire] = pos; }
@@ -2650,7 +2654,7 @@ fn canon4_run(
                     best_order = trial_order;
                 }
             }
-            return best_order;
+            return Ok(best_order);
         }
 
         break;
@@ -2658,15 +2662,16 @@ fn canon4_run(
 
     let mut final_order: Vec<usize> = (0..n).collect();
     final_order.sort_by_key(|&w| (vr[w], w));
-    final_order
+    Ok(final_order)
 }
 
 pub fn canonicalize_polys_4(
     polynomials: Vec<Polynomial>,
-) -> (Vec<Polynomial>, Permutation) {
+    allow_rule_l: bool,
+) -> Result<(Vec<Polynomial>, Permutation), ()> {
     let n = polynomials.len();
     if n == 0 {
-        return (vec![], Permutation { data: vec![] });
+        return Ok((vec![], Permutation { data: vec![] }));
     }
     let max_degree = n;
 
@@ -2702,7 +2707,7 @@ pub fn canonicalize_polys_4(
     }).collect();
 
     // All wires start tied; canon4_run refines iteratively.
-    let final_order = canon4_run(&polynomials, &class_polys, vec![0usize; n]);
+    let final_order = canon4_run(&polynomials, &class_polys, vec![0usize; n], allow_rule_l)?;
 
     let mut wire_to_pos = vec![0usize; n];
     for (pos, &wire) in final_order.iter().enumerate() {
@@ -2720,7 +2725,7 @@ pub fn canonicalize_polys_4(
         .map(|&wire| polynomials[wire].iter().map(|&m| remap_monomial(m)).collect())
         .collect();
     let canonical = trim_canonicalized(canonical);
-    (canonical, Permutation { data: final_order })
+    Ok((canonical, Permutation { data: final_order }))
 }
 
 // pub fn canonicalize_polys_4(

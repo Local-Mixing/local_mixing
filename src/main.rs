@@ -1174,6 +1174,12 @@ Command::new("rocksdb_1")
                     .value_parser(clap::value_parser!(usize))
                     .help("Maximum number of used wires; candidates with more are skipped (0 = no limit)"),
             )
+            .arg(
+                Arg::new("no_L")
+                    .long("no_L")
+                    .action(clap::ArgAction::SetTrue)
+                    .help("Skip circuits that require Rule L during canonicalization"),
+            )
     )
     .subcommand(
 Command::new("rocksdb_2")
@@ -2205,12 +2211,13 @@ Command::new("rocksdb_2")
             let m: usize = *sub.get_one("m").expect("Missing -n <wires>");
             let min_n: usize = *sub.get_one("min_n").unwrap_or(&0);
             let max_n: usize = *sub.get_one("max_n").unwrap_or(&0);
+            let no_rule_l: bool = *sub.get_one::<bool>("no_L").unwrap_or(&false);
             let new_db = Arc::new(open_db_for_write(m));
             if m == 1 {
                 build_m1(&new_db).expect("build_m1 failed");
             } else {
                 let old_db = Arc::new(open_db_for_read(m - 1));
-                build_from_rocks(&old_db, &new_db, m, min_n, max_n).expect("build_from_rocks failed");
+                build_from_rocks(&old_db, &new_db, m, min_n, max_n, no_rule_l).expect("build_from_rocks failed");
             }
         }
         Some(("rocksdb_2", sub)) => {
@@ -2330,7 +2337,7 @@ Command::new("rocksdb_2")
                 let circuit = CircuitSeq::from_string(canonical_str);
 
                 // final_order maps canonical wire → dense wire; invert to get dense → canonical
-                let (polys, _, reversed, final_order, _) = circuit.canonicalize_polys(0);
+                let (polys, _, reversed, final_order, _) = circuit.canonicalize_polys(0, true).unwrap();
                 let hash = xxh3_128(&polys_repr_blob(&polys)).to_le_bytes();
 
                 let p_inv = final_order.invert();

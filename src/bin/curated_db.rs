@@ -86,7 +86,7 @@ fn main() {
                     if prefix_polys.is_empty() {
                         continue;
                     }
-                    let (canonical, perm) = canonicalize_polys_4(prefix_polys);
+                    let (canonical, perm) = canonicalize_polys_4(prefix_polys, true).unwrap();
                     if canonical.is_empty() {
                         continue;
                     }
