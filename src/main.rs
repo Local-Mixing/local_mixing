@@ -1166,6 +1166,14 @@ Command::new("rocksdb_1")
                     .value_parser(clap::value_parser!(usize))
                     .help("Minimum number of used wires; candidates with fewer are skipped"),
             )
+            .arg(
+                Arg::new("max_n")
+                    .long("max_n")
+                    .required(false)
+                    .default_value("0")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Maximum number of used wires; candidates with more are skipped (0 = no limit)"),
+            )
     )
     .subcommand(
 Command::new("rocksdb_2")
@@ -2196,12 +2204,13 @@ Command::new("rocksdb_2")
         Some(("rocksdb_1", sub)) => {
             let m: usize = *sub.get_one("m").expect("Missing -n <wires>");
             let min_n: usize = *sub.get_one("min_n").unwrap_or(&0);
+            let max_n: usize = *sub.get_one("max_n").unwrap_or(&0);
             let new_db = Arc::new(open_db_for_write(m));
             if m == 1 {
                 build_m1(&new_db).expect("build_m1 failed");
             } else {
                 let old_db = Arc::new(open_db_for_read(m - 1));
-                build_from_rocks(&old_db, &new_db, m, min_n).expect("build_from_rocks failed");
+                build_from_rocks(&old_db, &new_db, m, min_n, max_n).expect("build_from_rocks failed");
             }
         }
         Some(("rocksdb_2", sub)) => {

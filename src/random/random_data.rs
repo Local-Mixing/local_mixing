@@ -3111,6 +3111,7 @@ pub fn build_from_rocks(
     new_db: &Arc<DB>,
     m: usize,
     min_n: usize,
+    max_n: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Running build (max CPU)");
 
@@ -3280,7 +3281,8 @@ pub fn build_from_rocks(
                         q1.push(*g);
                         let mut c1 = CircuitSeq { gates: q1.to_vec() };
                         c1.canonicalize();
-                        if c1.used_wires().len() < min_n {
+                        let c1_used = c1.used_wires().len();
+                        if c1_used < min_n || (max_n > 0 && c1_used > max_n) {
                             local_skipped += 1;
                         } else if !c1.adjacent_id() {
                             // double_canon_check(&c1, 3 * m, "c1");
@@ -3299,7 +3301,8 @@ pub fn build_from_rocks(
                         q2.extend_from_slice(&prefix);
                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
                         c2.canonicalize();
-                        if c2.used_wires().len() < min_n {
+                        let c2_used = c2.used_wires().len();
+                        if c2_used < min_n || (max_n > 0 && c2_used > max_n) {
                             local_skipped += 1;
                         } else if !c2.adjacent_id() {
                             // double_canon_check(&c2, 3 * m, "c2");
@@ -7886,7 +7889,7 @@ pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Er
 
     // Open all existing source DBs read-only
     let mut dbs: Vec<DB> = Vec::new();
-    for m in 1..=6 {
+    for m in 1..=8 {
         let path = format!("rocks_db_m{}", m);
         let mut read_opts = Options::default();
         read_opts.set_merge_operator_associative("append_merge", append_merge);
