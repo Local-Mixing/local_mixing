@@ -5551,23 +5551,23 @@ mod tests {
             CircuitSeq::from_string(&first).permutation(4)
         }
 
-        let targets: &[(&str, &str, usize, usize)] = &[
-            // (output file, source 3-wire file, min_depth, max_depth)
-            ("c1not2_4w.txt",     "c1not2.txt",     2, 12),
-            ("swap12_4w.txt",     "swap12.txt",      6, 16),
-            ("swap12n1_4w.txt",   "swap12n1.txt",    6, 16),
-            ("swap12n2_4w.txt",   "swap12n2.txt",    6, 16),
-            ("swap12n1n2_4w.txt", "swap12n1n2.txt",  6, 16),
-            ("not1_4w.txt",       "not1.txt",        2, 12),
+        let targets: &[(&str, &str, usize)] = &[
+            // (output file, source 3-wire file, min_depth)  — all max at 8
+            ("c1not2_4w.txt",     "c1not2.txt",     2),
+            ("swap12_4w.txt",     "swap12.txt",      4),
+            ("swap12n1_4w.txt",   "swap12n1.txt",    4),
+            ("swap12n2_4w.txt",   "swap12n2.txt",    4),
+            ("swap12n1n2_4w.txt", "swap12n1n2.txt",  4),
+            ("not1_4w.txt",       "not1.txt",        2),
         ];
 
-        for &(fname, src, min_m, max_m) in targets {
+        for &(fname, src, min_m) in targets {
             let perm4 = perm4_from_file(src);
             println!("{fname}: target perm = {:?}", perm4.data);
 
-            // Parallel over gate counts: each thread searches independently
+            // Parallel over gate counts min_m..=8: each depth runs on its own thread
             let circuits: Mutex<HashSet<CircuitSeq>> = Mutex::new(HashSet::new());
-            (min_m..=max_m).into_par_iter().for_each(|m| {
+            (min_m..=8).into_par_iter().for_each(|m| {
                 let mut local: HashSet<CircuitSeq> = HashSet::new();
                 for _ in 0..5_000_000 {
                     let mut r = random_circuit(4, m);
