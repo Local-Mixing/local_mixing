@@ -928,6 +928,14 @@ fn main() {
                     .required(true)
                     .value_parser(clap::value_parser!(usize))
                     .help("Number of gates to include in each replacement window (2 = pair, >2 uses curated shard lookup)")
+            )
+            .arg(
+                Arg::new("rg_frequency")
+                    .long("rg-frequency")
+                    .required(false)
+                    .default_value("2")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of SG gadgets between each RG gadget (2 = two SGs then one RG)")
             ),
     )
     .subcommand(
@@ -1081,6 +1089,14 @@ fn main() {
                     .default_value("2")
                     .value_parser(clap::value_parser!(usize))
                     .help("Number of gates to include in each replacement window (2 = pair, >2 uses curated shard lookup)")
+            )
+            .arg(
+                Arg::new("rg_frequency")
+                    .long("rg-frequency")
+                    .required(false)
+                    .default_value("2")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Number of SG gadgets between each RG gadget (2 = two SGs then one RG)")
             )
             .arg(
                 Arg::new("egg")
@@ -1713,6 +1729,7 @@ Command::new("rocksdb_2")
             let gates_ahead: usize = *sub.get_one("gates_ahead").unwrap();
             let stop: f64 = *sub.get_one("stop").unwrap();
             let partial_stop: f64 = *sub.get_one("partial_stop").unwrap();
+            let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
 
@@ -1745,6 +1762,7 @@ Command::new("rocksdb_2")
                     i,
                     gates_ahead,
                     partial_stop,
+                    rg_freq,
                 );
                 print_compress_timers();
                 write_compression_histogram("compression_histogram.csv");
@@ -1837,6 +1855,7 @@ Command::new("rocksdb_2")
             let full_shuffle = sub.get_flag("full-shuffle");
             let gates_ahead: usize = *sub.get_one("gates_ahead").unwrap();
             let egg = sub.get_flag("egg");
+            let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
             let stop: usize = *sub.get_one("stop").unwrap();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
             let data = fs::read_to_string(s).expect("Failed to read initial.txt");
@@ -1875,6 +1894,7 @@ Command::new("rocksdb_2")
                     full_shuffle,
                     gates_ahead,
                     egg,
+                    rg_freq,
                 );
                 print_compress_timers();
                 write_compression_histogram("compression_histogram.csv");

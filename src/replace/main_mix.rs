@@ -735,6 +735,7 @@ pub fn main_shooting_game(
     intermediate: &str,
     gates_ahead: usize,
     partial_stop: f64,
+    _rg_freq: usize,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -984,6 +985,7 @@ pub fn main_shuffle_shoot_shuffle(
     full_shuffle: bool,
     gates_ahead: usize,
     egg: bool,
+    rg_freq: usize,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -1012,10 +1014,10 @@ pub fn main_shuffle_shoot_shuffle(
     if do_gadgetize {
         let mut rng = rand::rng();
         let before = circuit.gates.len();
-        circuit = gadgetize(&circuit, n, &mut rng);
-        println!("Gadgetized: {} gates → {} gates, {} wires", before, circuit.gates.len(), 2 * n + 1);
+        circuit = gadgetize(&circuit, n, rg_freq, &mut rng);
+        println!("Gadgetized: {} gates → {} gates, {} wires", before, circuit.gates.len(), 2 * n);
     }
-    let n = if do_gadgetize { 2 * n + 1 } else { n };
+    let n = if do_gadgetize { 2 * n } else { n };
     if leave {
         circuit = interleave(
             &circuit,
@@ -1113,7 +1115,7 @@ pub fn main_shuffle_shoot_shuffle(
             }
         }
         let n = if leave { n / 2 } else { n };
-        let n = if do_gadgetize { (n - 1) / 2 } else { n };
+        let n = if do_gadgetize { n / 2 } else { n };
         if c.probably_equal(&circuit, n, 100_000).is_err() {
             panic!("The functionality has changed");
         }

@@ -121,10 +121,14 @@ if __name__ == "__main__":
     parser.add_argument("--fix", type=int, default=0, help="Number of fixed bits in each random input")
     parser.add_argument("--hw", action="store_true", help="Use hamming weight difference mode")
     parser.add_argument("--std", action="store_true", help="Use standard deviation for heatmaps")
-    parser.add_argument("--enhance", action="store_true", help="Tighten color scale to 0.45-0.55 to amplify small differences")
+    parser.add_argument("--enhance", type=float, nargs="?", const=0.05, default=None,
+                        help="Tighten color scale around 0.5 by ENHANCE (e.g. --enhance 0.1 → [0.4, 0.6]); default window is 0.05")
     args = parser.parse_args()
 
-    vmin, vmax = (0.45, 0.55) if args.enhance else (0.0, 1.0)
+    if args.enhance is not None:
+        vmin, vmax = 0.5 - args.enhance, 0.5 + args.enhance
+    else:
+        vmin, vmax = 0.0, 1.0
 
     flag = False
 

@@ -23,8 +23,9 @@ use num_traits::Zero;
 use num_traits::One;
 use std::collections::BTreeMap;
 
-// pins are [active, control1, control2] for Toffoli gates
-// We are only concerned with gate r57
+// Gate [a, pos_ctrl, neg_ctrl]: flip a UNLESS neg_ctrl=1 AND NOT pos_ctrl
+// (flips when pos_ctrl=1 OR neg_ctrl=0)
+// We are only concerned with gate g57
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Gate{
     pub pins: [usize;3], //one active wire (0) and two control wires (1,2)
