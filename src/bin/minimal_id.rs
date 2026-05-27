@@ -309,61 +309,66 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
                         continue;
                     }
 
-                    // Build identity: a + reverse(b)
-                    let mut gates = a.gates.clone();
-                    let mut b_rev = b.gates.clone();
-                    b_rev.reverse();
-                    gates.extend(b_rev);
+                    let a_rev: Vec<[u8; 3]> = a.gates.iter().rev().cloned().collect();
+                    let b_rev: Vec<[u8; 3]> = b.gates.iter().rev().cloned().collect();
 
-                    let (mut identity, _) = CircuitSeq { gates }.rewire_min();
+                    let candidates: [Vec<[u8; 3]>; 2] = [
+                        // a || rev(b)
+                        a.gates.iter().cloned().chain(b_rev.iter().cloned()).collect(),
+                        // rev(a) || b
+                        a_rev.iter().cloned().chain(b.gates.iter().cloned()).collect(),
+                    ];
 
-                    // Simplify until circuit is empty or size plateaus
-                    loop {
-                        let len_before = identity.gates.len();
+                    for gates in candidates {
+                        let (mut identity, _) = CircuitSeq { gates }.rewire_min();
 
-                        identity.canonicalize();
-                        identity.remove_adjacent_id();
+                        // Simplify until circuit is empty or size plateaus
+                        loop {
+                            let len_before = identity.gates.len();
+
+                            identity.canonicalize();
+                            identity.remove_adjacent_id();
+
+                            if identity.gates.is_empty() {
+                                break;
+                            }
+
+                            let len_after = identity.gates.len();
+                            if len_before == len_after {
+                                break;
+                            }
+                        }
 
                         if identity.gates.is_empty() {
-                            break;
+                            continue;
                         }
 
-                        let len_after = identity.gates.len();
-                        if len_before == len_after {
-                            break;
+                        identity.canonicalize();
+                        assert!(!identity.adjacent_id());
+
+                        let (identity, _) = identity.rewire_min();
+
+                        // Minimality check: every half-length contiguous subcircuit must be absent.
+                        let len = identity.gates.len();
+                        let half_len = len / 2;
+                        if half_len == 0 {
+                            continue;
                         }
-                    }
 
-                    if identity.gates.is_empty() {
-                        continue;
-                    }
+                        let mut non_minimal = false;
+                        let wire_count = identity.max_wire() + 1;
+                        for start in 0..=(len - half_len) {
+                            let end = start + half_len;
+                            let polys = identity.to_polynomial(wire_count, start, end);
+                            let (canonical, _) = canonicalize_polys(polys, true, false);
+                            let key = xxh3_128(&polys_repr_blob(&canonical)).to_le_bytes();
+                            let shard = key[0] as usize;
 
-                    identity.canonicalize();
-                    assert!(!identity.adjacent_id());
-
-                    let (identity, _) = identity.rewire_min();
-
-                    // Minimality check: every half-length contiguous subcircuit must be absent.
-                    let len = identity.gates.len();
-                    let half_len = len / 2;
-                    if half_len == 0 {
-                        continue;
-                    }
-
-                    let mut non_minimal = false;
-                    let wire_count = identity.max_wire() + 1;
-                    for start in 0..=(len - half_len) {
-                        let end = start + half_len;
-                        let polys = identity.to_polynomial(wire_count, start, end);
-                        let (canonical, _) = canonicalize_polys(polys, true, false);
-                        let key = xxh3_128(&polys_repr_blob(&canonical)).to_le_bytes();
-                        let shard = key[0] as usize;
-
-                        if rtxn.get(shard_dbs[shard], &key).is_ok() {
-                            non_minimal = true;
-                            break;
+                            if rtxn.get(shard_dbs[shard], &key).is_ok() {
+                                non_minimal = true;
+                                break;
+                            }
                         }
-                    }
 
                     if non_minimal {
                         continue;
@@ -371,6 +376,13 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
 
                     // println!("Minimal: {}", identity.repr());
 
+                        let ctype =
+                            GatePair::to_int(&gate_pair_taxonomy(&identity.gates[0], &identity.gates[1]));
+                        let blob = identity.repr_blob();
+                        let mut guard = seen[ctype].lock().unwrap();
+                        if guard.insert(blob) {
+                            counter.fetch_add(1, Ordering::Relaxed);
+                        }
                     let ctype = GatePair::to_int(&gate_pair_taxonomy(
                         &identity.gates[0],
                         &identity.gates[1],
