@@ -18,12 +18,11 @@ const RG1: [[u8; 3]; 6] = [
     [1,2,3],[0,3,2],[3,1,0],[2,0,1],[0,3,2],[1,2,3],
 ];
 
-/// RG2: 4-gate re-pairing while preserving virtual values.
+/// RG2: 6-gate re-pairing while preserving virtual values.
 /// Wire map: 0=comp_i, 1=aux_i, 2=aux_j, 3=comp_j.
 /// After: (w0'^w2')=s_j, (w1'^w3')=s_i — comp_i now paired with aux_j.
-/// Gates [aux,c,d]+[aux,d,c] flip aux by (c XOR d): implements aux ^= comp_i^comp_j.
-const RG2: [[u8; 3]; 4] = [
-    [1,0,3],[1,3,0],[2,0,3],[2,3,0],
+const RG2: [[u8; 3]; 6] = [
+    [0,2,3],[1,0,2],[2,0,3],[2,3,0],[1,3,2],[3,2,0],
 ];
 
 /// Manages 2n-wire secret-sharing state.

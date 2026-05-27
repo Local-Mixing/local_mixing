@@ -5529,6 +5529,78 @@ mod tests {
     }
 
     #[test]
+    fn find_swaps_4wire() {
+        // Same approach as find_swaps but for 4 wires (24 gate types vs 6).
+        // "depth" = gate count (number of gates in the circuit).
+        // With 24 gates, depth-m has 24^m possible sequences (vs 6^m for 3 wires),
+        // so we need far more samples. Parallelize over gate counts using rayon.
+        //
+        // Run with: cargo test --release -p local_mixing --lib find_swaps_4wire -- --nocapture
+        use std::io::Write;
+        use std::fs::OpenOptions;
+        use std::sync::Mutex;
+
+        // Derive 4-wire target permutation from first circuit in the 3-wire file.
+        // CircuitSeq::from_string parses the semicolon-separated gate format,
+        // and .permutation(4) computes the 16-state permutation directly.
+        fn perm4_from_file(src: &str) -> Permutation {
+            use std::io::BufRead;
+            let f = std::fs::File::open(src).unwrap_or_else(|_| panic!("missing {src}"));
+            let first = std::io::BufReader::new(f)
+                .lines().next().unwrap().unwrap();
+            CircuitSeq::from_string(&first).permutation(4)
+        }
+
+        let targets: &[(&str, &str, usize, usize)] = &[
+            // (output file, source 3-wire file, min_depth, max_depth)
+            ("c1not2_4w.txt",     "c1not2.txt",     2, 12),
+            ("swap12_4w.txt",     "swap12.txt",      6, 16),
+            ("swap12n1_4w.txt",   "swap12n1.txt",    6, 16),
+            ("swap12n2_4w.txt",   "swap12n2.txt",    6, 16),
+            ("swap12n1n2_4w.txt", "swap12n1n2.txt",  6, 16),
+            ("not1_4w.txt",       "not1.txt",        2, 12),
+        ];
+
+        for &(fname, src, min_m, max_m) in targets {
+            let perm4 = perm4_from_file(src);
+            println!("{fname}: target perm = {:?}", perm4.data);
+
+            // Parallel over gate counts: each thread searches independently
+            let circuits: Mutex<HashSet<CircuitSeq>> = Mutex::new(HashSet::new());
+            (min_m..=max_m).into_par_iter().for_each(|m| {
+                let mut local: HashSet<CircuitSeq> = HashSet::new();
+                for _ in 0..5_000_000 {
+                    let mut r = random_circuit(4, m);
+                    r.canonicalize();
+                    let mut i = 0;
+                    while i < r.gates.len().saturating_sub(1) {
+                        if r.gates[i] == r.gates[i + 1] {
+                            r.gates.drain(i..=i + 1);
+                            i = i.saturating_sub(2);
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    if r.permutation(4) == perm4 {
+                        local.insert(r);
+                    }
+                }
+                circuits.lock().unwrap().extend(local);
+            });
+
+            let circuits = circuits.into_inner().unwrap();
+            println!("{fname}: found {} circuits", circuits.len());
+
+            let mut file = OpenOptions::new()
+                .create(true).append(true).open(fname)
+                .expect("Failed to open file");
+            for c in &circuits {
+                writeln!(file, "{}", c.repr()).expect("Failed to write");
+            }
+        }
+    }
+
+    #[test]
     fn find_gadget_circuits() {
         // Wires: 0=x1, 1=r11, 2=r12, 3=x2, 4=r21, 5=x3, 6=r31
         // w0' = x1^r11^r12^((x2^r21)&(x3^r31))^x2^r21^1, w1..w6 unchanged
