@@ -47,6 +47,7 @@ pub struct Permutation {
     pub data: Vec<usize>,
 }
 
+#[allow(unused)]
 fn count_ones_u256(x: u256) -> u32 {
     x.0.iter().map(|w| w.count_ones()).sum()
 }
@@ -1213,6 +1214,7 @@ fn split_by_scores(mut scored: Vec<(usize, Vec<usize>)>) -> Vec<Vec<usize>> {
 
 /// Partition a list of (index, ranked-monomial-list) pairs into sub-groups
 /// by descending lexicographic order of their monomial lists.
+#[allow(unused)]
 fn split_by_monomial_lists(mut scored: Vec<(usize, Vec<Monomial>)>) -> Vec<Vec<usize>> {
     scored.sort_by(|a, b| b.1.cmp(&a.1));
     let mut result: Vec<Vec<usize>> = Vec::new();
@@ -1238,6 +1240,7 @@ fn split_by_monomial_lists(mut scored: Vec<(usize, Vec<Monomial>)>) -> Vec<Vec<u
 ///
 /// `var_rank[i]` = rank of variable x_i, where lower value = higher rank (0 = best).
 /// Variables in the same tied group share the same rank value.
+#[allow(unused)]
 fn monomial_sort_key(m: Monomial, var_rank: &[usize]) -> Vec<isize> {
     let degree = m.count_ones() as usize;
     // Collect ranks of variables present in this monomial, sorted best-first (ascending value)
@@ -1256,6 +1259,7 @@ fn monomial_sort_key(m: Monomial, var_rank: &[usize]) -> Vec<isize> {
 /// Sort a list of monomials by their rank under the current partial variable ordering.
 /// Higher-ranked monomials come first. Monomials equal under the partial ordering
 /// retain a consistent order (by monomial bitmask value).
+#[allow(unused)]
 fn rank_monomials(monomials: &[Monomial], var_rank: &[usize]) -> Vec<Monomial> {
     let mut sorted: Vec<Monomial> = monomials.to_vec();
     sorted.sort_by(|&a, &b| {
