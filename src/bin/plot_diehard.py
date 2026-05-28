@@ -95,6 +95,7 @@ def plot_file(path: Path, ax: plt.Axes) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Plot median/min/max and middle 50% from data files.")
     parser.add_argument("files", nargs="+", type=Path, help="Input file(s) to plot")
+    parser.add_argument("--logy", action='store_true', help="Log y axis")
     args = parser.parse_args()
 
     fig, ax = plt.subplots()
@@ -105,7 +106,9 @@ def main() -> int:
     ax.set_xlabel("circuit length")
     ax.set_ylabel("# failed tests")
     ax.semilogx(base=2)
-    ax.semilogy()
+
+    if args.logy:
+        ax.semilogy()
     ax.grid(True, alpha=0.3)
     ax.legend()
 

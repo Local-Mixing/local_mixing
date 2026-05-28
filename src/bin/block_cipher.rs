@@ -1,6 +1,7 @@
 use clap::{Parser, ValueEnum};
 use entropy::{diehard, dieharder};
 use entropy::{nist, rng::Rng};
+use cryptography::{Aes128, BlockCipher};
 use fastrand::shuffle;
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::random::random_data::random_circuit;
@@ -16,28 +17,65 @@ enum OperationMode {
 enum CircuitGenerationMode {
     Balanced,
     Random,
+    Aes,
 }
 
 struct CircuitPrg {
     circuit: CircuitSeq,
     counter: u128,
     operation_mode: OperationMode,
+    word_index: u8,
+    current_state: u128,
 }
 
 impl CircuitPrg {
     fn new(circuit: CircuitSeq, operation_mode: OperationMode) -> Self {
         Self {
             circuit,
-            counter: 0,
+            // Random IV
+            counter: fastrand::u128(..),
             operation_mode,
+            word_index: 4,
+            current_state: 0,
         }
     }
 
     fn next_state(&mut self) -> u128 {
-        let input = self.counter;
-        let output = self.circuit.evaluate_128(input);
+        let output = self.circuit.evaluate_128(self.counter);
         self.counter = match self.operation_mode {
-            OperationMode::Ctr => input + 1,
+            OperationMode::Ctr => self.counter + 1,
+            OperationMode::Ofb => output,
+        };
+        output
+    }
+}
+
+struct AesPrg {
+    cipher: Aes128,
+    counter: u128,
+    operation_mode: OperationMode,
+    word_index: u8,
+    current_state: u128,
+}
+
+impl AesPrg {
+    fn new(operation_mode: OperationMode) -> Self {
+        let key = fastrand::u128(..).to_be_bytes();
+        Self {
+            cipher: Aes128::new(&key),
+            counter: fastrand::u128(..),
+            operation_mode,
+            word_index: 4,
+            current_state: 0,
+        }
+    }
+
+    fn next_state(&mut self) -> u128 {
+        let mut block = self.counter.to_be_bytes();
+        self.cipher.encrypt(&mut block);
+        let output = u128::from_be_bytes(block);
+        self.counter = match self.operation_mode {
+            OperationMode::Ctr => self.counter + 1,
             OperationMode::Ofb => output,
         };
         output
@@ -46,13 +84,41 @@ impl CircuitPrg {
 
 impl Rng for CircuitPrg {
     fn next_u32(&mut self) -> u32 {
-        let s = self.next_state();
-        ((s >> (3 * 32)) ^ (s >> (2 * 32)) ^ (s >> (1 * 32)) ^ s) as u32
-    }
+        if self.word_index >= 4 {
+            self.current_state = self.next_state();
+            self.word_index = 0;
+        }
 
-    fn next_u64(&mut self) -> u64 {
-        let s = self.next_state();
-        ((s >> 64) ^ s) as u64
+        let word = (self.current_state >> (32 * self.word_index)) as u32;
+        self.word_index += 1;
+        word
+    }
+}
+
+impl Rng for AesPrg {
+    fn next_u32(&mut self) -> u32 {
+        if self.word_index >= 4 {
+            self.current_state = self.next_state();
+            self.word_index = 0;
+        }
+
+        let word = (self.current_state >> (32 * self.word_index)) as u32;
+        self.word_index += 1;
+        word
+    }
+}
+
+enum BlockPrg {
+    Circuit(CircuitPrg),
+    Aes(AesPrg),
+}
+
+impl Rng for BlockPrg {
+    fn next_u32(&mut self) -> u32 {
+        match self {
+            BlockPrg::Circuit(rng) => rng.next_u32(),
+            BlockPrg::Aes(rng) => rng.next_u32(),
+        }
     }
 }
 
@@ -162,12 +228,17 @@ fn main() {
     let failed_counts: Vec<usize> = (0..reps)
         .into_par_iter()
         .map(|_| {
-            let circuit = match gen_mode {
-                CircuitGenerationMode::Random => random_circuit(wires, gates),
-                CircuitGenerationMode::Balanced => balanced_ckt_ord(wires, gates),
+            let mut rng = match gen_mode {
+                CircuitGenerationMode::Random => {
+                    let circuit = random_circuit(wires, gates);
+                    BlockPrg::Circuit(CircuitPrg::new(circuit, operation_mode))
+                }
+                CircuitGenerationMode::Balanced => {
+                    let circuit = balanced_ckt_ord(wires, gates);
+                    BlockPrg::Circuit(CircuitPrg::new(circuit, operation_mode))
+                }
+                CircuitGenerationMode::Aes => BlockPrg::Aes(AesPrg::new(operation_mode)),
             };
-
-            let mut rng = CircuitPrg::new(circuit, operation_mode);
             let results = [
                 nist::run_all(&mut rng, length),
                 diehard::run_all(&mut rng, length, true),

@@ -1164,6 +1164,7 @@ dependencies = [
  "clap",
  "crossbeam",
  "crossbeam-channel",
+ "cryptography-rs",
  "ctrlc",
  "dashmap",
  "fastrand",
