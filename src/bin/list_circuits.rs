@@ -12,8 +12,8 @@ fn canon_key(circuit: &CircuitSeq) -> [u8; 16] {
 }
 
 fn process(
-    gates: &[[u8; 3]],
-    current: &mut Vec<[u8; 3]>,
+    gates: &[[u16; 3]],
+    current: &mut Vec<[u16; 3]>,
     target_len: usize,
     not_up_to_rev: &DashMap<[u8; 16], String>,
     up_to_rev: &DashMap<([u8; 16], [u8; 16]), String>,
@@ -37,10 +37,10 @@ fn process(
 }
 
 fn list_n_gate_circuits(gate_count: usize, n_wires: usize) {
-    let gates: Vec<[u8; 3]> = (0..n_wires as u8)
+    let gates: Vec<[u16; 3]> = (0..n_wires as u16)
         .flat_map(|t| {
-            (0..n_wires as u8).flat_map(move |c1| {
-                (0..n_wires as u8)
+            (0..n_wires as u16).flat_map(move |c1| {
+                (0..n_wires as u16)
                     .filter(move |&c2| t != c1 && t != c2 && c1 != c2)
                     .map(move |c2| [t, c1, c2])
             })

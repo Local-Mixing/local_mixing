@@ -178,7 +178,7 @@ impl GatePair {
     }
 }
 
-pub fn get_collision_type(g1: &[u8; 3], pin: u8) -> CollisionType {
+pub fn get_collision_type(g1: &[u16; 3], pin: u16) -> CollisionType {
     match pin {
         x if x == g1[0] => CollisionType::OnActive,
         x if x == g1[1] => CollisionType::OnCtrl1,
@@ -187,7 +187,7 @@ pub fn get_collision_type(g1: &[u8; 3], pin: u8) -> CollisionType {
     }
 }
 
-pub fn gate_pair_taxonomy(g1: &[u8;3], g2: &[u8;3]) -> GatePair {
+pub fn gate_pair_taxonomy(g1: &[u16;3], g2: &[u16;3]) -> GatePair {
     GatePair {
         a: get_collision_type(&g1, g2[0]),
         c1: get_collision_type(&g1, g2[1]),
@@ -195,7 +195,7 @@ pub fn gate_pair_taxonomy(g1: &[u8;3], g2: &[u8;3]) -> GatePair {
     }
 }
 
-fn gate_tri_taxonomy(g0: &[u8;3], g1: &[u8;3], g2: &[u8;3]) -> GateTri {
+fn gate_tri_taxonomy(g0: &[u16;3], g1: &[u16;3], g2: &[u16;3]) -> GateTri {
     GateTri {
         first: gate_pair_taxonomy(g0, g1),
         second: gate_pair_taxonomy(g1, g2),
@@ -211,7 +211,7 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, env: &lmdb::Env
     let gates = circuit.gates.clone();
     let m = circuit.gates.len();
     let mut replaced = 0;
-    let mut to_replace: Vec<(Vec<[u8;3]>, Vec<[u8;3]>)> = vec![(Vec::new(), Vec::new()); m / 2];
+    let mut to_replace: Vec<(Vec<[u16;3]>, Vec<[u16;3]>)> = vec![(Vec::new(), Vec::new()); m / 2];
     if m < 2 {
         println!("Circuit too small, returning");
         return;
@@ -365,10 +365,6 @@ pub fn replace_pairs(circuit: &mut CircuitSeq, num_wires: usize, env: &lmdb::Env
         // if replacement.probably_equal(&CircuitSeq { gates: vec![[1,2,3], [1,2,3]]}, 64, 100000).is_err() {
         //     panic!("Replacement is not an id");
         // }
-        let used_wires: Vec<u8> = used_wires.into_iter()
-            .map(|x| u8::try_from(x).expect("value too big for u8"))
-            .collect();
-
         circuit.gates.splice(
             index..=index + 1,
             CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
@@ -419,7 +415,7 @@ pub fn replace_sequential_pairs(
         .expect("completion_m2 DB not found — run build_completion_m2 first");
 
     let mut already_collided = 0;
-    let mut out: Vec<[u8; 3]> = Vec::new();
+    let mut out: Vec<[u16; 3]> = Vec::new();
 
     let mut left = gates[0];
     let mut i = 1;
@@ -457,12 +453,12 @@ pub fn replace_sequential_pairs(
 /// Mirrors the rewiring logic of compress_lmdb: canonicalize → hash → lookup → rewire back.
 /// Returns None if the pair has no entry in the DB.
 pub fn replace_single_pair_with_completion(
-    left: &[u8; 3],
-    right: &[u8; 3],
+    left: &[u16; 3],
+    right: &[u16; 3],
     num_wires: usize,
     env: &lmdb::Environment,
     comp_db: lmdb::Database,
-) -> Option<Vec<[u8; 3]>> {
+) -> Option<Vec<[u16; 3]>> {
     use xxhash_rust::xxh3::xxh3_128;
     use crate::circuit::circuit::{polys_repr_blob, Permutation};
     use lmdb::Transaction;
@@ -474,7 +470,7 @@ pub fn replace_single_pair_with_completion(
     let txn = env.begin_ro_txn().ok()?;
 
     // Try forward canonicalization, fall back to reversed (same as compress_lmdb).
-    let (value, final_order, used, is_reversed): (Vec<u8>, _, Vec<u8>, bool) = {
+    let (value, final_order, used, is_reversed): (Vec<u8>, _, Vec<u16>, bool) = {
         let (fwd_polys, fwd_order, fwd_used) = pair.canonicalize_polys_single(false);
         let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
         match txn.get(comp_db, &fwd_key) {
@@ -519,7 +515,7 @@ pub fn replace_single_pair_with_completion(
     let repl_n_b = repl.max_wire() + 1;
     let mut used_ext = used.clone();
     if used_ext.len() < repl_n_b {
-        let mut avail: Vec<u8> = (0..num_wires as u8)
+        let mut avail: Vec<u16> = (0..num_wires as u16)
             .filter(|w| !used_ext.contains(w))
             .collect();
         avail.shuffle(&mut rng);
@@ -533,12 +529,12 @@ pub fn replace_single_pair_with_completion(
 }
 
 pub fn expand_curated_lmdb(
-    gates: &[[u8; 3]],
+    gates: &[[u16; 3]],
     n: usize,
     env: &lmdb::Environment,
     curated_shard_dbs: &[lmdb::Database],
     shard_dbs: &[lmdb::Database],
-) -> Option<Vec<[u8; 3]>> {
+) -> Option<Vec<[u16; 3]>> {
     use xxhash_rust::xxh3::xxh3_128;
     use crate::circuit::circuit::{polys_repr_blob, Permutation};
     use lmdb::Transaction;
@@ -616,8 +612,7 @@ pub fn expand_curated_lmdb(
     let repl_n_b = repl.max_wire() + 1;
     let mut used_ext = used.clone();
     if used_ext.len() < repl_n_b {
-        let mut available: Vec<u8> = (0..n.min(256))
-            .map(|w| w as u8)
+        let mut available: Vec<u16> = (0..n as u16)
             .filter(|w| !used_ext.contains(w))
             .collect();
         available.shuffle(&mut rng);
@@ -632,8 +627,8 @@ pub fn expand_curated_lmdb(
 
 // returns the replacement gates and the id length (0 when using curated path)
 pub fn replace_single_pair(
-    left: &[u8;3],
-    right: &[u8;3],
+    left: &[u16;3],
+    right: &[u16;3],
     num_wires: usize,
     env: &lmdb::Environment,
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
@@ -642,7 +637,7 @@ pub fn replace_single_pair(
     id_len: usize,
     curated_shard_dbs: &[lmdb::Database],
     shard_dbs: &[lmdb::Database],
-) -> (Vec<[u8;3]>, usize) {
+) -> (Vec<[u16;3]>, usize) {
     if !curated_shard_dbs.is_empty() {
         return match expand_curated_lmdb(&[*left, *right], num_wires, env, curated_shard_dbs, shard_dbs) {
             Some(repl) => (repl, 0),
@@ -716,10 +711,6 @@ pub fn replace_single_pair(
         }
     }
 
-    let used_wires: Vec<u8> = used_wires.into_iter()
-    .map(|x| u8::try_from(x).expect("value too big for u8"))
-    .collect();
-
     (CircuitSeq::unrewire_subcircuit(&replacement_circ, &used_wires)
         .gates
         .into_iter()
@@ -750,7 +741,7 @@ pub fn replace_pair_distances(
         if curr >= min {
             break;
         }
-        let mut pending: Vec<(usize, usize, Vec<[u8; 3]>)> = Vec::new();
+        let mut pending: Vec<(usize, usize, Vec<[u16; 3]>)> = Vec::new();
 
         // scan
         let mut i = left + 1;
@@ -971,7 +962,7 @@ pub fn replace_tri(
     let m = gates.len();
     let mut replaced = 0;
 
-    let mut to_replace: Vec<(Vec<[u8;3]>, Vec<[u8;3]>)> = vec![(Vec::new(), Vec::new()); m / 3];
+    let mut to_replace: Vec<(Vec<[u16;3]>, Vec<[u16;3]>)> = vec![(Vec::new(), Vec::new()); m / 3];
     if m < 3 {
         println!("Circuit too small, returning");
         return;
@@ -1100,8 +1091,8 @@ pub fn replace_tri(
 
         let replacement_circ = CircuitSeq { gates: replacement.0 };
 
-        let mut used_wires =
-            vec![(num_wires + 1) as u8; max(replacement_circ.max_wire(), CircuitSeq { gates: replacement.1.clone() }.max_wire()) + 1];
+        let mut used_wires: Vec<u16> =
+            vec![(num_wires + 1) as u16; max(replacement_circ.max_wire(), CircuitSeq { gates: replacement.1.clone() }.max_wire()) + 1];
 
 
         used_wires[replacement.1[0][0] as usize] = g0[0];
@@ -1128,9 +1119,9 @@ pub fn replace_tri(
 
         // Fill any remaining placeholders
         for i in 0..used_wires.len() {
-            if used_wires[i] == (num_wires + 1) as u8 {
+            if used_wires[i] == (num_wires + 1) as u16 {
                 loop {
-                    let wire = rng.random_range(0..num_wires) as u8;
+                    let wire = rng.random_range(0..num_wires) as u16;
                     if used_wires.contains(&wire) {
                         continue
                     }
@@ -1172,7 +1163,7 @@ pub fn interleave(
     let mut gates = Vec::new();
     for gate in random.gates.iter_mut() {
         for pin in gate.iter_mut() {
-            *pin += n as u8;
+            *pin += n as u16;
         }
     }
     for i in 0..m {
@@ -1196,10 +1187,10 @@ pub fn interleave(
         } else if choice == 2 {
             gates.push(circuit.gates[i]);
             gates.push(random.gates[i]);
-            let mut wires: Vec<_> = (0..n as u8).collect();
+            let mut wires: Vec<u16> = (0..n as u16).collect();
             wires.shuffle(&mut rng);
             for wire in wires {
-                let n_wire = rng.random_range(n..2 * n) as u8;
+                let n_wire = rng.random_range(n..2 * n) as u16;
                 gates.extend_from_slice(
                     &Transpositions::gen_gates_cnot(
                         2 * n,

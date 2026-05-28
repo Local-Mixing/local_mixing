@@ -386,7 +386,7 @@ pub fn abutterfly_big(
     acc
 }
 
-pub fn make_steps(n: usize, gate: &[u8; 3]) -> Vec<Vec<usize>> {
+pub fn make_steps(n: usize, gate: &[u16; 3]) -> Vec<Vec<usize>> {
     let mut rng = rand::rng();
 
     let gate: Vec<usize> = gate.iter().map(|&x| x as usize).collect();
@@ -495,10 +495,10 @@ pub fn zip_sequential_butterfly(
     println!("   {}/{}: Step 1a: Inserting Identities", curr_round, last_round);
     // Keeps track of the gates and whether it can stay in place `0`, needs to be shot left `1`, or needs to be shot right `2`
     // After, `4` means to collide to the left and `5` to collide to the right
-    let mut gates_track: Vec<[u8;3]> = Vec::new();
+    let mut gates_track: Vec<[u16;3]> = Vec::new();
     gates_track.push(circuit.gates[0]);
     let mut last_steps: Vec<Vec<usize>> = Vec::new();
-    let mut last_second: Vec<Vec<[u8;3]>> = Vec::new();
+    let mut last_second: Vec<Vec<[u16;3]>> = Vec::new();
     for i in 1..len {
         let first_steps = if last_steps.is_empty() {
             make_steps(n, &circuit.gates[0])
@@ -527,7 +527,7 @@ pub fn zip_sequential_butterfly(
             gates_track.extend_from_slice(&combined.gates);
         } else {
             gates_track.extend_from_slice(
-                &first.into_iter().flatten().collect::<Vec<[u8;3]>>()
+                &first.into_iter().flatten().collect::<Vec<[u16;3]>>()
             );
         }
         gates_track.extend_from_slice(&middle.gates);
@@ -535,7 +535,7 @@ pub fn zip_sequential_butterfly(
         last_second = second;
     }
     gates_track.extend_from_slice(
-        &last_second.into_iter().flatten().collect::<Vec<[u8;3]>>()
+        &last_second.into_iter().flatten().collect::<Vec<[u16;3]>>()
     );
     gates_track.push(circuit.gates[circuit.gates.len() - 1]);
     circuit.gates = gates_track;
@@ -586,7 +586,7 @@ pub fn sequential_butterfly(
     // }
     // Keeps track of the gates and whether it can stay in place `0`, needs to be shot left `1`, or needs to be shot right `2`
     // After, `4` means to collide to the left and `5` to collide to the right
-    let mut gates_track: Vec<([u8;3], u8)> = Vec::new();
+    let mut gates_track: Vec<([u16;3], u8)> = Vec::new();
     gates_track.push((circuit.gates[0], 0));
     let mut last_steps: Vec<Vec<usize>> = Vec::new();
     for i in 1..len {
@@ -880,7 +880,7 @@ pub fn simple_shooting_game(
                 if after_idx < 1 { break }
 
                 // (replacement, number of gates consumed from the window)
-                let repl_result: Option<(Vec<[u8; 3]>, usize)> =
+                let repl_result: Option<(Vec<[u16; 3]>, usize)> =
                     if gates_ahead > 2 && after_idx + 1 >= gates_ahead {
                         let w_start = after_idx + 1 - gates_ahead;
                         if let Some(repl) = expand_curated_lmdb(&gates[w_start..after_idx + 1], n, env, curated_shard_dbs, shard_dbs) {
@@ -927,7 +927,7 @@ pub fn simple_shooting_game(
                 // need at least a collision pair (after_idx, after_idx+1)
                 if after_idx + 2 > len { break }
 
-                let repl_result: Option<(Vec<[u8; 3]>, usize)> =
+                let repl_result: Option<(Vec<[u16; 3]>, usize)> =
                     if gates_ahead > 2 && after_idx + gates_ahead <= len {
                         if let Some(repl) = expand_curated_lmdb(&gates[after_idx..after_idx + gates_ahead], n, env, curated_shard_dbs, shard_dbs) {
                             Some((repl, gates_ahead))
@@ -1045,7 +1045,7 @@ pub fn replace_and_compress_big(
             "Starting replace_sequential_pairs , circuit length: {} , num_wires: {}",
             c.gates.len(), n
         );
-        let replaced_chunks: Vec<Vec<[u8;3]>> =
+        let replaced_chunks: Vec<Vec<[u16;3]>> =
         chunks
             .into_par_iter()
             .map(|chunk| {
@@ -1107,18 +1107,18 @@ pub fn replace_and_compress_big(
 // To address the problem of seams being unmixed after doing rcs with parallelization
 // Returns [..chunk.len() - 1][replace_pair(last, next)][1..chunk.len()-1][replace_pair(last, next)]...[1..]
 pub fn mix_seams(
-    gates: Vec<Vec<[u8;3]>>,
+    gates: Vec<Vec<[u16;3]>>,
     n: usize,
     env: &lmdb::Environment,
     bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     dbs: &HashMap<String, lmdb::Database>,
     tower: bool,
     id_len: usize,
-) -> Vec<[u8;3]> {
+) -> Vec<[u16;3]> {
     if gates.len() == 1 {
         return gates.into_iter().flatten().collect()
     }
-    let mut new_gates: Vec<[u8; 3]> = Vec::new();
+    let mut new_gates: Vec<[u16; 3]> = Vec::new();
     let len = gates.len();
     for i in 0..len - 1 {
         let chunk = &gates[i];
@@ -1153,7 +1153,7 @@ pub fn mix_seams(
 
     let last = gates.last().unwrap();
     new_gates.extend_from_slice(&last[1..]);
-    let temp: Vec<[u8;3]> = gates.into_iter().flatten().collect();
+    let temp: Vec<[u16;3]> = gates.into_iter().flatten().collect();
     let c1 = CircuitSeq { gates: temp };
     let c2 = CircuitSeq { gates: new_gates.clone() };
     if c1.probably_equal(&c2, n, 1_000).is_err() {
@@ -1214,7 +1214,7 @@ pub fn interleave_sequential_big(
             "Starting replace_sequential_pairs , circuit length: {} , num_wires: {}",
             c.gates.len(), n
         );
-        let replaced_chunks: Vec<Vec<[u8;3]>> =
+        let replaced_chunks: Vec<Vec<[u16;3]>> =
         chunks
             .into_par_iter()
             .map(|chunk| {
@@ -1228,7 +1228,7 @@ pub fn interleave_sequential_big(
                 sub.gates
             })
             .collect();
-        let mut new_gates: Vec<[u8; 3]> = Vec::new();
+        let mut new_gates: Vec<[u16; 3]> = Vec::new();
         let len = replaced_chunks.len();
 
         for i in 0..len - 1 {
@@ -1352,10 +1352,10 @@ pub fn replace_and_compress_big_distance(
 
 // For paralellization. Split a circuit into many random chunks for threads to each work on
 pub fn split_into_random_chunks(
-    v: &Vec<[u8;3]>,
+    v: &Vec<[u16;3]>,
     k: usize,
     rng: &mut impl Rng,
-) -> Vec<Vec<[u8;3]>> {
+) -> Vec<Vec<[u16;3]>> {
     split_into_random_chunk_ranges(v.len(), k, rng)
         .into_iter()
         .map(|(start, end)| v[start..end].to_vec())
@@ -1414,11 +1414,11 @@ mod tests {
         let k = 60;
 
         // Build v = 4 concatenated copies of 0..999
-        let mut v: Vec<[u8; 3]> = (0..n)
-            .map(|i| [i as u8, i as u8, i as u8])
+        let mut v: Vec<[u16; 3]> = (0..n)
+            .map(|i| [i as u16, i as u16, i as u16])
             .collect();
         for _ in 0..100 { // append 3 more copies
-            v.extend((0..n).map(|i| [i as u8, i as u8, i as u8]));
+            v.extend((0..n).map(|i| [i as u16, i as u16, i as u16]));
         }
 
         let chunks = split_into_random_chunks(
@@ -1443,7 +1443,7 @@ mod tests {
         assert_eq!(total_len, v.len(), "Total elements mismatch");
 
         // Flatten without sorting
-        let all_elements: Vec<[u8; 3]> = chunks.into_iter().flatten().collect();
+        let all_elements: Vec<[u16; 3]> = chunks.into_iter().flatten().collect();
 
         // Check that the flattened elements are exactly equal to the original v
         for (i, &elem) in all_elements.iter().enumerate() {

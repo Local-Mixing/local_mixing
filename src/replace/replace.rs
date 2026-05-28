@@ -193,7 +193,7 @@ pub fn compress_loop(
         mode = (mode + 1) % 3;
 
         let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
-        let compressed_chunks: Vec<Vec<[u8; 3]>> = ranges
+        let compressed_chunks: Vec<Vec<[u16; 3]>> = ranges
             .into_par_iter()
             .map(|(start, end)| {
                 let sub = CircuitSeq {
@@ -258,7 +258,7 @@ pub fn expand_loop<'a>(
         mode = (mode + 1) % 3;
 
         let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
-        let expanded_chunks: Vec<Vec<[u8; 3]>> = ranges
+        let expanded_chunks: Vec<Vec<[u16; 3]>> = ranges
             .into_par_iter()
             .map(|(start, end)| {
                 let sub = CircuitSeq {
@@ -294,7 +294,7 @@ pub fn expand_once<'a>(
     let max_chunks = 4 * rayon::current_num_threads().max(1);
     let k = if before <= 1500 { 1 } else { ((before + 1499) / 1500).min(max_chunks) };
     let ranges = split_into_random_chunk_ranges(before, k, &mut rng);
-    let expanded_chunks: Vec<Vec<[u8; 3]>> = ranges
+    let expanded_chunks: Vec<Vec<[u16; 3]>> = ranges
         .into_par_iter()
         .map(|(start, end)| {
             let sub = CircuitSeq { gates: circuit.gates[start..end].to_vec() };
@@ -341,7 +341,7 @@ pub fn compress_loop_early(
         mode = (mode + 1) % 3;
 
         let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
-        let compressed_chunks: Vec<Vec<[u8; 3]>> = ranges
+        let compressed_chunks: Vec<Vec<[u16; 3]>> = ranges
             .into_par_iter()
             .map(|(start, end)| {
                 let sub = CircuitSeq {
@@ -557,8 +557,7 @@ pub fn expand_lmdb<'a>(
         let repl_n_b = repl.max_wire() + 1;
         let mut used_ext = used.clone();
         if used_ext.len() < repl_n_b {
-            let mut available: Vec<u8> = (0..n.min(256))
-                .map(|w| w as u8)
+            let mut available: Vec<u16> = (0..n as u16)
                 .filter(|w| !used_ext.contains(w))
                 .collect();
             rand::seq::SliceRandom::shuffle(available.as_mut_slice(), &mut rng);
@@ -628,7 +627,7 @@ pub fn compress_big(
             continue;
         }
 
-        let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
+        let gates: Vec<[u16; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
         subcircuit_gates.sort();
 
         let t1 = Instant::now();
@@ -750,7 +749,7 @@ pub fn sequential_compress_big(
             continue;
         }
 
-        let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
+        let gates: Vec<[u16; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
         subcircuit_gates.sort();
 
         let t1 = Instant::now();
@@ -875,7 +874,7 @@ pub fn sequential_compress_big_ancillas(
             continue;
         }
 
-        let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
+        let gates: Vec<[u16; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
         subcircuit_gates.sort();
 
         let t1 = Instant::now();
@@ -900,10 +899,10 @@ pub fn sequential_compress_big_ancillas(
             let mut count = n_wires;
             while count < new_wires {
                 let random = rng.random_range(0..num_wires);
-                if used_wires.contains(&(random as u8)) {
+                if used_wires.contains(&(random as u16)) {
                     continue
                 }
-                used_wires.push(random as u8);
+                used_wires.push(random as u16);
                 count += 1;
             }
         }
@@ -1102,8 +1101,7 @@ pub fn compress_lmdb(
         let repl_n_b = repl.max_wire() + 1;
         let mut used_ext = used.clone();
         if used_ext.len() < repl_n_b {
-            let mut available: Vec<u8> = (0..n.min(256))
-                .map(|w| w as u8)
+            let mut available: Vec<u16> = (0..n as u16)
                 .filter(|w| !used_ext.contains(w))
                 .collect();
             rand::seq::SliceRandom::shuffle(available.as_mut_slice(), &mut rng);
@@ -1171,7 +1169,7 @@ pub fn expand_big(
             return circuit
         }
         
-        let mut gates: Vec<[u8;3]> = vec![[0,0,0]; subcircuit_gates.len()];
+        let mut gates: Vec<[u16;3]> = vec![[0,0,0]; subcircuit_gates.len()];
         for (i, g) in subcircuit_gates.iter().enumerate() {
             gates[i] = circuit.gates[*g];
         }
@@ -1196,10 +1194,10 @@ pub fn expand_big(
             let mut count = n_wires;
             while count < new_wires {
                 let random = rng.random_range(0..num_wires);
-                if used_wires.contains(&(random as u8)) {
+                if used_wires.contains(&(random as u16)) {
                     continue
                 }
-                used_wires.push(random as u8);
+                used_wires.push(random as u16);
                 count += 1;
             }
         }
@@ -1312,7 +1310,7 @@ pub fn compress_big_ancillas(
             continue;
         }
 
-        let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
+        let gates: Vec<[u16; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
         subcircuit_gates.sort();
 
         let t1 = Instant::now();
@@ -1335,10 +1333,10 @@ pub fn compress_big_ancillas(
             let mut count = n_wires;
             while count < new_wires {
                 let random = rng.random_range(0..num_wires);
-                if used_wires.contains(&(random as u8)) {
+                if used_wires.contains(&(random as u16)) {
                     continue
                 }
-                used_wires.push(random as u8);
+                used_wires.push(random as u16);
                 count += 1;
             }
         }
@@ -1428,7 +1426,7 @@ pub fn expand_big_ancillas<'a>(
             continue;
         }
 
-        let gates: Vec<[u8; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
+        let gates: Vec<[u16; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
 
         if gates.len() < 2 {
             continue;
@@ -1451,7 +1449,7 @@ pub fn expand_big_ancillas<'a>(
         // --- 2-gate path: use pair functions directly on circuit wire values ---
         if subcircuit.gates.len() == 2 {
             let t6 = Instant::now();
-            let repl_opt: Option<Vec<[u8; 3]>> = match pair_mode {
+            let repl_opt: Option<Vec<[u16; 3]>> = match pair_mode {
                 ExpandPairMode::Curated => {
                     comp_db.and_then(|db| {
                         replace_single_pair_with_completion(
@@ -1515,10 +1513,10 @@ pub fn random_gate_replacements(c: &mut CircuitSeq, x: usize, n: usize, env: &lm
             let mut count = 3;
             while count < num {
                 let random = rng.random_range(0..n);
-                if used_wires.contains(&(random as u8)) {
+                if used_wires.contains(&(random as u16)) {
                     continue
                 }
-                used_wires.push(random as u8);
+                used_wires.push(random as u16);
                 count += 1;
             }
             used_wires.sort();

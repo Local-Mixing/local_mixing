@@ -23,7 +23,7 @@ fn decode_circuits(value: &[u8]) -> Vec<CircuitSeq> {
 // Apply the exact same pipeline as generate_identities_parallel.
 // Returns None if the circuit is trivial or non-minimal.
 fn pipeline(
-    gates: Vec<[u8; 3]>,
+    gates: Vec<[u16; 3]>,
     rtxn: &lmdb::RoTransaction,
     shard_dbs: &[lmdb::Database],
 ) -> Option<Vec<u8>> {
@@ -123,7 +123,7 @@ fn main() {
                     if b.gates.len() > minimal_len + 1 { continue; }
 
                     // rev(a) || b
-                    let mut gates: Vec<[u8; 3]> = a.gates.iter().rev().cloned().collect();
+                    let mut gates: Vec<[u16; 3]> = a.gates.iter().rev().cloned().collect();
                     gates.extend_from_slice(&b.gates);
 
                     if let Some(blob) = pipeline(gates, &rtxn, &shard_dbs) {

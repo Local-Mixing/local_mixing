@@ -68,12 +68,12 @@ fn main() {
         }
         let wire_count = circuit.max_wire() + 1;
 
-        let forward: Vec<[u8; 3]> = circuit.gates.clone();
-        let reversed: Vec<[u8; 3]> = circuit.gates.iter().rev().cloned().collect();
+        let forward: Vec<[u16; 3]> = circuit.gates.clone();
+        let reversed: Vec<[u16; 3]> = circuit.gates.iter().rev().cloned().collect();
 
         for direction in [&forward, &reversed] {
             for rot in 0..n {
-                let rotation: Vec<[u8; 3]> = direction[rot..]
+                let rotation: Vec<[u16; 3]> = direction[rot..]
                     .iter()
                     .chain(direction[..rot].iter())
                     .cloned()
@@ -94,11 +94,11 @@ fn main() {
 
                     // Apply inv(perm) to the reversed tail → replacement in canonical wire coords
                     let perm_inv = perm.invert();
-                    let tail_gates: Vec<[u8; 3]> = rotation[k..].iter().rev()
+                    let tail_gates: Vec<[u16; 3]> = rotation[k..].iter().rev()
                         .map(|&[t, c1, c2]| [
-                            perm_inv.data[t as usize] as u8,
-                            perm_inv.data[c1 as usize] as u8,
-                            perm_inv.data[c2 as usize] as u8,
+                            perm_inv.data[t as usize] as u16,
+                            perm_inv.data[c1 as usize] as u16,
+                            perm_inv.data[c2 as usize] as u16,
                         ])
                         .collect();
                     let tail_blob = CircuitSeq { gates: tail_gates }.repr_blob();

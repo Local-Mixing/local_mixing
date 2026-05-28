@@ -398,7 +398,7 @@ pub fn get_random_wide_identity(
         if id.clone().gates.is_empty() {
             id = i;
         } else {
-            let mut wires: HashMap<u8, Vec<usize>> = HashMap::new();
+            let mut wires: HashMap<u16, Vec<usize>> = HashMap::new();
             for (idx, gates) in id.clone().gates.into_iter().enumerate() {
                 for pins in gates {
                     wires.entry(pins)
@@ -411,14 +411,14 @@ pub fn get_random_wide_identity(
                 .min_by_key(|(_, v)| v.len())
                 .map(|(_, v)| v)
                 .unwrap();
-            let mut min_keys: Vec<u8> = wires.keys().cloned().collect();
+            let mut min_keys: Vec<u16> = wires.keys().cloned().collect();
             min_keys.sort_by_key(|k| wires.get(k).map(|v| v.len()).unwrap_or(0));
             let mut min = min_vals[0];
             if tower {
                 min = id.gates.len()/2;
             }
             let mut used_wires = vec![id.gates[min][0], id.gates[min][1], id.gates[min][2]];
-            let mut unused_wires: Vec<u8> = (0..=(n-1) as u8)
+            let mut unused_wires: Vec<u16> = (0..n as u16)
                 .filter(|w| !used_wires.contains(w) && !uw.contains(w))
                 .collect();
             let mut count = 3;
@@ -484,7 +484,7 @@ pub fn get_random_wide_identity_via_pairs(
         if id.clone().gates.is_empty() {
             id = i;
         } else {
-            let mut wires: HashMap<u8, Vec<usize>> = HashMap::new();
+            let mut wires: HashMap<u16, Vec<usize>> = HashMap::new();
             for (idx, gates) in id.clone().gates.into_iter().enumerate() {
                 for pins in gates {
                     wires.entry(pins)
@@ -497,7 +497,7 @@ pub fn get_random_wide_identity_via_pairs(
                 .min_by_key(|(_, v)| v.len())
                 .map(|(_, v)| v)
                 .unwrap();
-            let mut min_keys: Vec<u8> = wires.keys().cloned().collect();
+            let mut min_keys: Vec<u16> = wires.keys().cloned().collect();
             min_keys.sort_by_key(|k| wires.get(k).map(|v| v.len()).unwrap_or(0));
             let mut min = min_vals[0];
             if min == id.gates.len() - 1 {
@@ -522,8 +522,8 @@ pub fn get_random_wide_identity_via_pairs(
             }
             let new_circuit = i.gates[2..].to_vec();
             let replacement_circ = CircuitSeq { gates: new_circuit };
-            let mut used_wires: Vec<u8> = vec![
-                (n + 1) as u8;
+            let mut used_wires: Vec<u16> = vec![
+                (n + 1) as u16;
                 std::cmp::max(
                     replacement_circ.max_wire(),
                     CircuitSeq {
@@ -545,7 +545,7 @@ pub fn get_random_wide_identity_via_pairs(
                 k += 1;
             }
 
-            let mut unused_wires: Vec<u8> = (0..=(n-1) as u8)
+            let mut unused_wires: Vec<u16> = (0..n as u16)
                 .filter(|w| !used_wires.contains(w) && !uw.contains(w))
                 .collect();
             let mut count = 3;
@@ -589,8 +589,8 @@ pub fn get_random_wide_identity_via_pairs(
 /// Given a 2-gate pair, looks up a random completion from the `completion_m2` DB
 /// and rewires it back to the actual wires. Returns `None` if the pair has no completion.
 pub fn random_completion_id(
-    left: &[u8; 3],
-    right: &[u8; 3],
+    left: &[u16; 3],
+    right: &[u16; 3],
     num_wires: usize,
     env: &Environment,
     comp_db: Database,
@@ -602,7 +602,7 @@ pub fn random_completion_id(
     let pair = CircuitSeq { gates: vec![*left, *right] };
     let txn = env.begin_ro_txn().ok()?;
 
-    let (value, final_order, used, is_reversed): (Vec<u8>, _, Vec<u8>, bool) = {
+    let (value, final_order, used, is_reversed): (Vec<u8>, _, Vec<u16>, bool) = {
         let (fwd_polys, fwd_order, fwd_used) = pair.canonicalize_polys_single(false);
         let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
         match txn.get(comp_db, &fwd_key) {
@@ -643,7 +643,7 @@ pub fn random_completion_id(
     let repl_n_b = repl.max_wire() + 1;
     let mut used_ext = used.clone();
     if used_ext.len() < repl_n_b {
-        let mut avail: Vec<u8> = (0..num_wires as u8)
+        let mut avail: Vec<u16> = (0..num_wires as u16)
             .filter(|w| !used_ext.contains(w))
             .collect();
         avail.shuffle(&mut rng);
@@ -661,7 +661,7 @@ pub fn random_id(n: usize, m: usize) -> (CircuitSeq, CircuitSeq) {
     // Preallocate reversed gates so we don't need to run through circuit twice
     let mut rev_gates = Vec::with_capacity(circuit.gates.len());
     for g in circuit.gates.iter().rev() {
-        rev_gates.push(*g); // copy [u8;3]
+        rev_gates.push(*g); // copy [u16;3]
     }
 
     let rev = CircuitSeq { gates: rev_gates };
@@ -703,9 +703,9 @@ pub fn create_ri_identities_32() -> (Transpositions, Transpositions, Transpositi
 }
 
 pub fn zip_escalators(
-    left: &Vec<Vec<[u8;3]>>, 
-    right: &Vec<Vec<[u8;3]>>, 
-    gate: &[u8;3], 
+    left: &Vec<Vec<[u16;3]>>, 
+    right: &Vec<Vec<[u16;3]>>, 
+    gate: &[u16;3], 
     steps: &Vec<Vec<usize>>,
     n: usize,
     _tran: &mut Transpositions,
@@ -733,7 +733,7 @@ pub fn zip_escalators(
     writeln!(left_file, "{:?}", left).unwrap();
     writeln!(right_file, "{:?}", right).unwrap();
 
-    let mut combined: Vec<[u8;3]> = Vec::new();
+    let mut combined: Vec<[u16;3]> = Vec::new();
     let min = std::cmp::min(left.len(), right.len());
     for i in 0..min {
         let l = &left[i];
@@ -798,7 +798,7 @@ pub fn insert_ri_identities(c: &mut CircuitSeq, env: &Environment, dbs: &HashMap
     let mut t_rewired: Vec<(Transpositions, Permutation)> = Vec::new();
     let mut rng = rand::rng();
     let len = c.gates.len();
-    let mut used_wires:[u8;3] = [c.gates[0][0], c.gates[0][1], c.gates[0][2]];
+    let mut used_wires:[u16;3] = [c.gates[0][0], c.gates[0][1], c.gates[0][2]];
     // Create and rewire all the RI identities
     for i in 1..len {
         let (first, middle, second, _, _) = create_ri_identities_32();
@@ -917,14 +917,14 @@ pub fn create_escalator_identities(
     second_steps: &Vec<Vec<usize>>,
     env: &Environment,
     dbs: &HashMap<String, Database>,
-) -> (Vec<Vec<[u8;3]>>, CircuitSeq, Vec<Vec<[u8;3]>>, usize) {
+) -> (Vec<Vec<[u16;3]>>, CircuitSeq, Vec<Vec<[u16;3]>>, usize) {
     let mut allowed_wires: Vec<usize> = Vec::new();
     let all_wires: Vec<usize> = (0..n).collect();
     let mut restricted_wires: Vec<usize> = Vec::new();
     let mut first_circuit = CircuitSeq { gates: Vec::new() };
     let mut second_circuit = CircuitSeq { gates: Vec::new() };
-    let mut first_step_gates: Vec<Vec<[u8;3]>> = Vec::new();
-    let mut second_step_gates: Vec<Vec<[u8;3]>> = Vec::new();
+    let mut first_step_gates: Vec<Vec<[u16;3]>> = Vec::new();
+    let mut second_step_gates: Vec<Vec<[u16;3]>> = Vec::new();
     let mut first = Transpositions { transpositions: Vec::new() };
     let mut middle = Transpositions { transpositions: Vec::new() };
     let mut second = Transpositions { transpositions: Vec::new() };
@@ -979,7 +979,7 @@ pub fn create_escalator_identities(
         let mut new_middle = Transpositions::from_perm(&perm);
         
         // Use negation mask to update middle
-        let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
+        let mut wire_transpositions: HashMap<u16, (usize, usize)> = HashMap::new();
 
         for (i, (a, b, _)) in new_middle.transpositions.iter().enumerate() {
             wire_transpositions.insert(*a, (i, 0));
@@ -995,13 +995,13 @@ pub fn create_escalator_identities(
 
         for (i, val) in negation_mask.into_iter().enumerate() {
             if val == 1 {
-                if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
+                if let Some(swaps) = wire_transpositions.get(&(i as u16)) {
                     let &(swap_idx, pos) = swaps;
                     let curr_neg_type = new_middle.transpositions[swap_idx].2;
                     if pos > 1 || curr_neg_type > 3 {
                         panic!("Invalid pos or curr_neg_type");
                     }
-                    new_middle.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
+                    new_middle.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize] as u16;
                     
                 }
             }
@@ -1042,11 +1042,11 @@ pub fn create_escalator_identities_tracked(
     second_steps: &Vec<Vec<usize>>,
     env: &Environment,
     dbs: &HashMap<String, Database>,
-) -> (Vec<([u8;3], u8)>, Transpositions, Transpositions, Transpositions, usize) {
+) -> (Vec<([u16;3], u8)>, Transpositions, Transpositions, Transpositions, usize) {
     let mut first = Transpositions { transpositions: Vec::new() };
     let mut middle = Transpositions { transpositions: Vec::new() };
     let mut second = Transpositions { transpositions: Vec::new() };
-    let mut gates_track: Vec<([u8;3], u8)> = Vec::new();
+    let mut gates_track: Vec<([u16;3], u8)> = Vec::new();
     let m = 30;
     loop { 
         let mut allowed_wires: Vec<usize> = Vec::new();
@@ -1099,7 +1099,7 @@ pub fn create_escalator_identities_tracked(
         let mut new_middle = Transpositions::from_perm(&perm);
         
         // Use negation mask to update middle
-        let mut wire_transpositions: HashMap<u8, (usize, usize)> = HashMap::new();
+        let mut wire_transpositions: HashMap<u16, (usize, usize)> = HashMap::new();
 
         for (i, (a, b, _)) in new_middle.transpositions.iter().enumerate() {
             wire_transpositions.insert(*a, (i, 0));
@@ -1115,13 +1115,13 @@ pub fn create_escalator_identities_tracked(
 
         for (i, val) in negation_mask.into_iter().enumerate() {
             if val == 1 {
-                if let Some(swaps) = wire_transpositions.get(&(i as u8)) {
+                if let Some(swaps) = wire_transpositions.get(&(i as u16)) {
                     let &(swap_idx, pos) = swaps;
                     let curr_neg_type = new_middle.transpositions[swap_idx].2;
                     if pos > 1 || curr_neg_type > 3 {
                         panic!("Invalid pos or curr_neg_type");
                     }
-                    new_middle.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize];
+                    new_middle.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize] as u16;
                     
                 }
             }

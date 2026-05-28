@@ -2377,9 +2377,9 @@ Command::new("rocksdb_2")
 
                     let rewired = CircuitSeq {
                         gates: comp.gates.iter().map(|&[t, c1, c2]| [
-                            ext[t as usize] as u8,
-                            ext[c1 as usize] as u8,
-                            ext[c2 as usize] as u8,
+                            ext[t as usize] as u16,
+                            ext[c1 as usize] as u16,
+                            ext[c2 as usize] as u16,
                         ]).collect(),
                     };
 

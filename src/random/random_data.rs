@@ -97,10 +97,10 @@ pub fn random_circuit(n: usize, m: usize) -> CircuitSeq {
             }
 
             // pick 3 distinct pins
-            let mut gate = [0u8; 3];
+            let mut gate = [0u16; 3];
             for j in 0..3 {
                 loop {
-                    let v = fastrand::u8(..255);
+                    let v = fastrand::u16(..255);
                     if !set[v as usize] {
                         set[v as usize] = true;
                         gate[j] = v;
@@ -1768,7 +1768,7 @@ pub fn random_sulking(circuit: &mut CircuitSeq) {
     if len == 0 {
         return
     }
-    let mut out: Vec<[u8;3]> = Vec::new();
+    let mut out: Vec<[u16;3]> = Vec::new();
     for gate_idx in 0..len{
         // Shoot left
         let mut target = gate_idx;
@@ -1793,7 +1793,7 @@ pub fn random_sulking(circuit: &mut CircuitSeq) {
     circuit.gates = out;
 }
 
-pub fn shoot_random_gate_gate_ver(circuit: &mut Vec<[u8;3]>, rounds: usize) {
+pub fn shoot_random_gate_gate_ver(circuit: &mut Vec<[u16;3]>, rounds: usize) {
     let mut rng = rand::rng();
     let len = circuit.len();
 
@@ -1837,7 +1837,7 @@ pub fn shoot_random_gate_gate_ver(circuit: &mut Vec<[u8;3]>, rounds: usize) {
     }
 }
 
-pub fn shoot_left_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize { 
+pub fn shoot_left_vec(circuit: &mut Vec<[u16;3]>, gate_idx: usize) -> usize { 
     let mut target = gate_idx;
     while target > 0 {
         if Gate::collides_index(&circuit[target - 1], &circuit[gate_idx]) {
@@ -1854,7 +1854,7 @@ pub fn shoot_left_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize {
     target
 }
 
-pub fn shoot_left_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, max: bool) -> usize { 
+pub fn shoot_left_vec_track(circuit: &mut Vec<([u16;3], u8)>, gate_idx: usize, max: bool) -> usize { 
     let mut target = gate_idx;
     let mut rng = rand::rng();
     while target > 0 {
@@ -1876,7 +1876,7 @@ pub fn shoot_left_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, ma
     target
 }
 
-pub fn shoot_right_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize { 
+pub fn shoot_right_vec(circuit: &mut Vec<[u16;3]>, gate_idx: usize) -> usize { 
     let mut target = gate_idx;
     let len = circuit.len();
     while target + 1 < len {
@@ -1894,7 +1894,7 @@ pub fn shoot_right_vec(circuit: &mut Vec<[u8;3]>, gate_idx: usize) -> usize {
     target
 }
 
-pub fn shoot_right_vec_track(circuit: &mut Vec<([u8;3], u8)>, gate_idx: usize, max: bool) -> usize { 
+pub fn shoot_right_vec_track(circuit: &mut Vec<([u16;3], u8)>, gate_idx: usize, max: bool) -> usize { 
     let mut target = gate_idx;
     let len = circuit.len();
     let mut rng = rand::rng();
@@ -1934,7 +1934,7 @@ pub fn is_level_zero(circuit: &CircuitSeq, index: usize) -> bool {
 pub fn left_ordering(circuit: &CircuitSeq) -> CircuitSeq{
     let mut circuit = circuit.clone();
     circuit.canonicalize();
-    let mut new_gates: Vec<[u8;3]> = Vec::new();
+    let mut new_gates: Vec<[u16;3]> = Vec::new();
     let mut c = circuit.clone();
     while !c.gates.is_empty() {
         let mut to_remove: Vec<usize> = Vec::new();
@@ -1961,7 +1961,7 @@ pub fn left_ordering(circuit: &CircuitSeq) -> CircuitSeq{
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Node {
     key: usize,
-    val: [u8; 3],
+    val: [u16; 3],
     parents: Vec<usize>,
     children: Vec<usize>,
     level: usize,
@@ -2548,9 +2548,9 @@ pub fn count_distinct(n: usize, m: usize) -> duckdb::Result<usize> {
     Ok(count)
 }
 
-pub fn base_gates(n: usize) -> Vec<[u8; 3]> {
-    let n = n as u8;
-    let mut gates: Vec<[u8;3]> = Vec::new();
+pub fn base_gates(n: usize) -> Vec<[u16; 3]> {
+    let n = n as u16;
+    let mut gates: Vec<[u16;3]> = Vec::new();
     for a in 0..n {
         for b in 0..n {
             if b == a { continue; }
@@ -2578,7 +2578,7 @@ pub fn build_from_sql(
 
     create_table(conn, &new_table)?;
 
-    let base_gates: Arc<Vec<[u8; 3]>> = Arc::new(base_gates(n));
+    let base_gates: Arc<Vec<[u16; 3]>> = Arc::new(base_gates(n));
     let base_gates_for_thread = Arc::clone(&base_gates);
     let bit_shuf = Arc::new(bit_shuf.clone());
 
@@ -2673,7 +2673,7 @@ pub fn build_from_sql(
 
             for blob in row_chunk {
                 let old_circuit = CircuitSeq::from_blob(blob);
-                let mut prefix: SmallVec<[[u8; 3]; 64]> =
+                let mut prefix: SmallVec<[[u16; 3]; 64]> =
                     SmallVec::with_capacity(m);
                 prefix.extend_from_slice(&old_circuit.gates);
 
@@ -2684,7 +2684,7 @@ pub fn build_from_sql(
                     c1.canonicalize();
                     let canon1 = c1.permutation(n).canon_simple(&bit_shuf);
 
-                    let mut q2 = SmallVec::<[[u8; 3]; 64]>::with_capacity(m + 1);
+                    let mut q2 = SmallVec::<[[u16; 3]; 64]>::with_capacity(m + 1);
                     q2.push(*g);
                     q2.extend_from_slice(&prefix);
                     let mut c2 = CircuitSeq { gates: q2.to_vec() };
@@ -2948,8 +2948,8 @@ fn flush_to_sst(db: &Arc<DB>, pending: &mut Vec<(Vec<u8>, Vec<u8>)>, sst_index: 
 }
 
 /// Returns the set of wires actually touched by the circuit (appearing in any gate).
-fn touched_wires(circuit: &CircuitSeq) -> Vec<u8> {
-    let mut touched: Vec<u8> = Vec::new();
+fn touched_wires(circuit: &CircuitSeq) -> Vec<u16> {
+    let mut touched: Vec<u16> = Vec::new();
     for gate in &circuit.gates {
         for &w in gate.iter() {
             if !touched.contains(&w) {
@@ -2964,8 +2964,8 @@ fn touched_wires(circuit: &CircuitSeq) -> Vec<u8> {
 /// Expand an abstract gate (possibly containing UNUSED sentinel) into concrete gates
 /// by substituting actual unused wires into the UNUSED slots.
 /// UNUSED slots are filled with ordered distinct selections from `untouched`.
-fn expand_abstract_gate(gate: [u8; 3], untouched: &[u8]) -> Vec<[u8; 3]> {
-    const UNUSED: u8 = u8::MAX;
+fn expand_abstract_gate(gate: [u16; 3], untouched: &[u16]) -> Vec<[u16; 3]> {
+    const UNUSED: u16 = 512;
     let slots: Vec<usize> = gate
         .iter()
         .enumerate()
@@ -3036,11 +3036,11 @@ fn expand_abstract_gate(gate: [u8; 3], untouched: &[u8]) -> Vec<[u8; 3]> {
 ///   + 1                    -- all three untouched (if n-k >= 3)
 /// Each abstract option expands to 1, (n-k), (n-k)*(n-k-1), or (n-k)*(n-k-1)*(n-k-2)
 /// concrete gates respectively.
-pub fn abstract_gates_for_circuit(circuit: &CircuitSeq, n: usize) -> Vec<[u8; 3]> {
-    const UNUSED: u8 = u8::MAX;
+pub fn abstract_gates_for_circuit(circuit: &CircuitSeq, n: usize) -> Vec<[u16; 3]> {
+    const UNUSED: u16 = 512;
 
     let touched = touched_wires(circuit);
-    let untouched: Vec<u8> = (0..n as u8)
+    let untouched: Vec<u16> = (0..n as u16)
         .filter(|w| !touched.contains(w))
         .collect();
 
@@ -3148,7 +3148,6 @@ pub fn build_from_rocks(
     let (tx, rx) = bounded::<Vec<(CircuitSeq, Vec<Polynomial>, Vec<u8>)>>(1_000);
     let stop_flag_clone = stop_flag.clone();
     let new_db_writer = Arc::clone(new_db);
-    let total_gates_tried_insert = Arc::clone(&total_gates_tried);
     let skipped_count_insert = Arc::clone(&skipped_count);
 
     let insert_handle = std::thread::spawn(move || {
@@ -3274,7 +3273,7 @@ pub fn build_from_rocks(
 
                     local_tried += upper_bound_gates * 2;
 
-                    let mut prefix: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m);
+                    let mut prefix: SmallVec<[[u16; 3]; 64]> = SmallVec::with_capacity(m);
                     prefix.extend_from_slice(&old_circuit.gates);
 
                     let gates = abstract_gates_for_circuit(&old_circuit, 3 * m);
@@ -3297,7 +3296,7 @@ pub fn build_from_rocks(
                             }
                         }
 
-                        let mut q2: SmallVec<[[u8; 3]; 64]> = SmallVec::with_capacity(m + 1);
+                        let mut q2: SmallVec<[[u16; 3]; 64]> = SmallVec::with_capacity(m + 1);
                         q2.push(*g);
                         q2.extend_from_slice(&prefix);
                         let mut c2 = CircuitSeq { gates: q2.to_vec() };
@@ -3612,7 +3611,7 @@ pub fn build_m1(new_db: &Arc<DB>) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Apply a wire mapping to a circuit — remap C2's internal wires
 /// to their positions in the combined circuit.
-fn apply_wire_mapping(circuit: &CircuitSeq, mapping: &[u8]) -> CircuitSeq {
+fn apply_wire_mapping(circuit: &CircuitSeq, mapping: &[u16]) -> CircuitSeq {
     CircuitSeq {
         gates: circuit
             .gates
@@ -3630,14 +3629,14 @@ const LARGE_MAPPING_THRESHOLD: usize = 200_000;
 // Max number of entries kept in the LRU cache.
 const MAPPING_CACHE_CAP: usize = 256;
 
-static MAPPING_CACHE: Lazy<std::sync::Mutex<lru::LruCache<(usize, usize), Arc<(Vec<u8>, usize)>>>> =
+static MAPPING_CACHE: Lazy<std::sync::Mutex<lru::LruCache<(usize, usize), Arc<(Vec<u16>, usize)>>>> =
     Lazy::new(|| std::sync::Mutex::new(lru::LruCache::new(
         std::num::NonZeroUsize::new(MAPPING_CACHE_CAP).unwrap()
     )));
 
 /// Call `f` once per mapping for the (n1, n2) pair.
 /// Small pairs are cached in an LRU; large pairs are enumerated on-the-fly.
-pub fn for_each_mapping<F: FnMut(&[u8])>(n1: usize, n2: usize, mut f: F) {
+pub fn for_each_mapping<F: FnMut(&[u16])>(n1: usize, n2: usize, mut f: F) {
     let total = count_mappings(n1, n2);
     if total <= LARGE_MAPPING_THRESHOLD {
         // Try cache first
@@ -3659,14 +3658,14 @@ pub fn for_each_mapping<F: FnMut(&[u8])>(n1: usize, n2: usize, mut f: F) {
         }
     } else {
         // Large: enumerate directly without caching
-        let mut c2_to_wire = vec![0u8; n2];
+        let mut c2_to_wire = vec![0u16; n2];
         let mut used = vec![false; n2];
         enumerate_direct_callback(0, n1, n2, &mut c2_to_wire, &mut used, &mut f);
     }
 }
 
 // Keep the old cached accessor for the warmup step.
-pub fn enumerate_c2_wire_mappings_cached(n1: usize, n2: usize) -> Arc<(Vec<u8>, usize)> {
+pub fn enumerate_c2_wire_mappings_cached(n1: usize, n2: usize) -> Arc<(Vec<u16>, usize)> {
     let total = count_mappings(n1, n2);
     if total > LARGE_MAPPING_THRESHOLD {
         return Arc::new((vec![], 0)); // sentinel: will be streamed on-the-fly
@@ -3698,11 +3697,11 @@ fn count_mappings(n1: usize, n2: usize) -> usize {
     total
 }
 
-fn compute_mappings(n1: usize, n2: usize) -> (Vec<u8>, usize) {
+fn compute_mappings(n1: usize, n2: usize) -> (Vec<u16>, usize) {
     let total = count_mappings(n1, n2);
-    let mut flat = vec![0u8; total * n2.max(1)];
+    let mut flat = vec![0u16; total * n2.max(1)];
     let mut idx = 0usize;
-    let mut c2_to_wire = vec![0u8; n2];
+    let mut c2_to_wire = vec![0u16; n2];
     let mut used = vec![false; n2];
 
     enumerate_direct(
@@ -3721,9 +3720,9 @@ fn enumerate_direct(
     pos: usize,
     n1: usize,
     n2: usize,
-    c2_to_wire: &mut Vec<u8>,
+    c2_to_wire: &mut Vec<u16>,
     used: &mut Vec<bool>,
-    flat: &mut Vec<u8>,
+    flat: &mut Vec<u16>,
     idx: &mut usize,
 ) {
     if pos == n1 {
@@ -3731,7 +3730,7 @@ fn enumerate_direct(
         let mut fresh = n1;
         for j in 0..n2 {
             if !used[j] {
-                c2_to_wire[j] = fresh as u8;
+                c2_to_wire[j] = fresh as u16;
                 fresh += 1;
             }
         }
@@ -3757,7 +3756,7 @@ fn enumerate_direct(
     for j in 0..n2 {
         if !used[j] {
             used[j] = true;
-            c2_to_wire[j] = pos as u8;
+            c2_to_wire[j] = pos as u16;
             enumerate_direct(pos + 1, n1, n2, c2_to_wire, used, flat, idx);
             used[j] = false;
             c2_to_wire[j] = 0;
@@ -3765,11 +3764,11 @@ fn enumerate_direct(
     }
 }
 
-fn enumerate_direct_callback<F: FnMut(&[u8])>(
+fn enumerate_direct_callback<F: FnMut(&[u16])>(
     pos: usize,
     n1: usize,
     n2: usize,
-    c2_to_wire: &mut Vec<u8>,
+    c2_to_wire: &mut Vec<u16>,
     used: &mut Vec<bool>,
     f: &mut F,
 ) {
@@ -3777,7 +3776,7 @@ fn enumerate_direct_callback<F: FnMut(&[u8])>(
         let mut fresh = n1;
         for j in 0..n2 {
             if !used[j] {
-                c2_to_wire[j] = fresh as u8;
+                c2_to_wire[j] = fresh as u16;
                 fresh += 1;
             }
         }
@@ -3793,7 +3792,7 @@ fn enumerate_direct_callback<F: FnMut(&[u8])>(
     for j in 0..n2 {
         if !used[j] {
             used[j] = true;
-            c2_to_wire[j] = pos as u8;
+            c2_to_wire[j] = pos as u16;
             enumerate_direct_callback(pos + 1, n1, n2, c2_to_wire, used, f);
             used[j] = false;
             c2_to_wire[j] = 0;
@@ -3853,8 +3852,8 @@ pub fn build_from_2rocks(
             r.canonicalize();
             // Remap to minimal wires
             let used = r.used_wires();
-            let wire_map: HashMap<u8, u8> = used.iter().enumerate()
-                .map(|(i, &w)| (w, i as u8))
+            let wire_map: HashMap<u16, u16> = used.iter().enumerate()
+                .map(|(i, &w)| (w, i as u16))
                 .collect();
             r = CircuitSeq {
                 gates: r.gates.iter().map(|&[t, c1, c2]| [
@@ -4065,8 +4064,8 @@ pub fn build_from_2rocks(
                     let mut r = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
                     r.canonicalize();
                     let used = r.used_wires();
-                    let wire_map: HashMap<u8, u8> = used.iter().enumerate()
-                        .map(|(i, &w)| (w, i as u8))
+                    let wire_map: HashMap<u16, u16> = used.iter().enumerate()
+                        .map(|(i, &w)| (w, i as u16))
                         .collect();
                     r = CircuitSeq {
                         gates: r.gates.iter().map(|&[t, c1, c2]| [
@@ -4123,7 +4122,7 @@ pub fn build_from_2rocks(
                     local_tried += 1;
 
                     // Helper closure: concatenate, canonicalize, push if non-trivial
-                    let mut try_push = |first_gates: &[[u8; 3]], second_gates: &[[u8; 3]]| {
+                    let mut try_push = |first_gates: &[[u16; 3]], second_gates: &[[u16; 3]]| {
                         let mut gates = Vec::with_capacity(first_gates.len() + second_gates.len());
                         gates.extend_from_slice(first_gates);
                         gates.extend_from_slice(second_gates);
@@ -4430,7 +4429,7 @@ mod tests {
     #[test]
     fn test_convexity() {
         // Dummy 16-wire circuit with 30 gates
-        let gates: Vec<[u8; 3]> = vec!
+        let gates: Vec<[u16; 3]> = vec!
             [[13, 6, 5], [7, 10, 1], [8, 12, 7], [5, 1, 11], [10, 5, 3], [1, 5, 9], [1, 15, 9], [14, 7, 10], [4, 9, 14], [14, 13, 9], [10, 12, 6], [5, 7, 13], [2, 1, 10], [11, 12, 6], [12, 9, 10], [8, 0, 9], [5, 3, 4], [2, 8, 10], [11, 10, 2], [9, 5, 12], [11, 1, 15], [14, 2, 3], [11, 1, 15], [9, 5, 12], [11, 10, 2], [2, 8, 10], [5, 3, 4], [8, 0, 9], [12, 9, 10], [11, 12, 6], [2, 1, 10], [1, 15, 9], [5, 7, 13], [10, 12, 6], [14, 13, 9], [1, 5, 9], [4, 9, 14], [14, 7, 10], [10, 5, 3], [5, 1, 11], [8, 12, 7], [7, 10, 1], [13, 6, 5]]
         ;
 
@@ -5645,9 +5644,9 @@ mod tests {
             for _ in 0..1_000_000 {
                 let mut random = CircuitSeq {
                     gates: (0..m).map(|_| [
-                        rng.random_range(0u8..7),
-                        rng.random_range(0u8..7),
-                        rng.random_range(0u8..7),
+                        rng.random_range(0u16..7),
+                        rng.random_range(0u16..7),
+                        rng.random_range(0u16..7),
                     ]).collect(),
                 };
                 random.canonicalize();
@@ -6651,7 +6650,7 @@ mod tests {
         println!("No mismatch found");
     }
 
-    fn canonicalize_circuit(gates: Vec<[u8; 3]>, n: usize, m: usize) -> (CircuitSeq, Permutation) {
+    fn canonicalize_circuit(gates: Vec<[u16; 3]>, n: usize, m: usize) -> (CircuitSeq, Permutation) {
         let mut c = CircuitSeq { gates };
         let canon = canonicalize_polys(c.to_polynomial(n, 0, m), true, false);
         c.rewire(&canon.1.invert(), n);
@@ -6676,8 +6675,8 @@ mod tests {
         let _arc_2_1 = enumerate_c2_wire_mappings_cached(n2, n1);
         let (ref mappings_1_2_data, mappings_1_2_stride) = *_arc_1_2;
         let (ref mappings_2_1_data, mappings_2_1_stride) = *_arc_2_1;
-        let mappings_1_2: Vec<&[u8]> = mappings_1_2_data.chunks(mappings_1_2_stride.max(1)).collect();
-        let mappings_2_1: Vec<&[u8]> = mappings_2_1_data.chunks(mappings_2_1_stride.max(1)).collect();
+        let mappings_1_2: Vec<&[u16]> = mappings_1_2_data.chunks(mappings_1_2_stride.max(1)).collect();
+        let mappings_2_1: Vec<&[u16]> = mappings_2_1_data.chunks(mappings_2_1_stride.max(1)).collect();
 
         let mut f = std::fs::File::create("test.txt").unwrap();
 
@@ -6775,14 +6774,14 @@ mod tests {
 
         // Case 9: full circuit
         writeln!(f, "\n=== Case 9: full circuit [[0,5,4],[1,4,6],[2,7,5],[3,6,7]] ===").unwrap();
-        let hardcoded = vec![[0u8,5,4],[1,4,6],[2,7,5],[3,6,7]];
+        let hardcoded = vec![[0u16,5,4],[1,4,6],[2,7,5],[3,6,7]];
         let m_combined = hardcoded.len();
         let (result, _) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
 
         // Case 10: first part
         writeln!(f, "\n=== Case 10: first part [[0,5,4],[1,4,6]] ===").unwrap();
-        let hardcoded = vec![[0u8,5,4],[1,4,6]];
+        let hardcoded = vec![[0u16,5,4],[1,4,6]];
         let m_combined = hardcoded.len();
         let (result,perm) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
@@ -6790,7 +6789,7 @@ mod tests {
 
         // Case 11: second part
         writeln!(f, "\n=== Case 11: second part [[2,7,5],[3,6,7]] ===").unwrap();
-        let hardcoded = vec![[2u8,7,5],[3,6,7]];
+        let hardcoded = vec![[2u16,7,5],[3,6,7]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  {:?}", result.gates).unwrap();
@@ -6814,7 +6813,7 @@ mod tests {
 
         // Case 14: Canon twice
         writeln!(f, "\n=== Case 14: Canon twice on [[1, 2, 3], [0, 4, 2]] ===").unwrap();
-        let hardcoded = vec![[1u8, 2, 3], [0, 4, 2]];
+        let hardcoded = vec![[1u16, 2, 3], [0, 4, 2]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 8, m_combined);
         writeln!(f, "  After first canon: {:?}", result.gates).unwrap();
@@ -6822,7 +6821,7 @@ mod tests {
 
         // Case 15: Two disjoint [[0, 4, 2], [1, 2, 3], [6, 7, 4], [5, 3, 7]]]
         writeln!(f, "\n=== Case 15: Two disjoint [[0, 4, 2], [1, 2, 3], [6, 7, 4], [5, 3, 7]] ===").unwrap();
-        let hardcoded = vec![[0u8, 4, 2], [1, 2, 3], [6, 7, 4], [5, 3, 7]];
+        let hardcoded = vec![[0u16, 4, 2], [1, 2, 3], [6, 7, 4], [5, 3, 7]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 12, m_combined);
         writeln!(f, "  After first canon: {:?}", result.gates).unwrap();
@@ -6830,7 +6829,7 @@ mod tests {
 
         // Case 16: Rewired second [[6, 7, 4], [5, 3, 7]]
         writeln!(f, "\n=== Case 16: Rewired second [[6, 7, 4], [5, 3, 7]] ===").unwrap();
-        let hardcoded = vec![[6u8, 7, 4], [5, 3, 7]];
+        let hardcoded = vec![[6u16, 7, 4], [5, 3, 7]];
         let m_combined = hardcoded.len();
         let (result, perm) = canonicalize_circuit(hardcoded, 12, m_combined);
         writeln!(f, "  After first canon: {:?}", result.gates).unwrap();
@@ -6843,7 +6842,7 @@ mod tests {
         let n = 3 * m;
         let db = Arc::new(open_db_for_read(m));
 
-        let check = |gates: Vec<[u8; 3]>, label: &str| -> bool {
+        let check = |gates: Vec<[u16; 3]>, label: &str| -> bool {
             let mut circuit = CircuitSeq { gates };
             let canon = circuit.canonicalize_polys(n, true).unwrap();
             circuit = canon.1;
@@ -6995,12 +6994,12 @@ mod tests {
 
         #[derive(Clone, Debug)]
         struct Entry {
-            gates:       Vec<[u8; 3]>,
+            gates:       Vec<[u16; 3]>,
             forward_key: String,
             reversed_key: String,
         }
 
-        let make_key = |gates: &[[u8; 3]]| -> String {
+        let make_key = |gates: &[[u16; 3]]| -> String {
             let circuit = CircuitSeq { gates: gates.to_vec() };
             let polys = circuit.to_polynomial(n, 0, m);
             let (canonical, _) = canonicalize_polys(polys, true, false);
@@ -7099,7 +7098,7 @@ mod tests {
     fn test_compare_circuit_lists() {
         use crate::circuit::{circuit::poly_to_str, CircuitSeq};
 
-        let left_circuits: Vec<Vec<[u8; 3]>> = vec![
+        let left_circuits: Vec<Vec<[u16; 3]>> = vec![
             vec![[3,1,2],[1,3,0]],
             vec![[3,0,2],[3,1,0]],
             vec![[3,1,0],[4,0,2]],
@@ -7152,19 +7151,19 @@ mod tests {
             "130;012;",
         ];
 
-        fn parse_gates(s: &str) -> Vec<[u8; 3]> {
+        fn parse_gates(s: &str) -> Vec<[u16; 3]> {
             s.split(';')
                 .filter(|p| !p.is_empty())
                 .map(|g| {
                     let bytes: Vec<u8> = g.bytes().map(|b| b - b'0').collect();
-                    [bytes[0], bytes[1], bytes[2]]
+                    [bytes[0] as u16, bytes[1] as u16, bytes[2] as u16]
                 })
                 .collect()
         }
 
         // Returns (forward_key, reversed_key)
-        fn circuit_canon_keys(gates: &[[u8; 3]], n: usize) -> (String, String) {
-            let make_key = |g: &[[u8; 3]]| -> String {
+        fn circuit_canon_keys(gates: &[[u16; 3]], n: usize) -> (String, String) {
+            let make_key = |g: &[[u16; 3]]| -> String {
                 let circuit = CircuitSeq { gates: g.to_vec() };
                 let polys = circuit.to_polynomial(n, 0, g.len());
                 let (canonical, _) = canonicalize_polys(polys, true, false);
@@ -7294,7 +7293,7 @@ mod tests {
 
     #[test]
     fn test_group_relabelings_with_reversal() {
-        fn cs(gates: &[[u8; 3]]) -> CircuitSeq {
+        fn cs(gates: &[[u16; 3]]) -> CircuitSeq {
             CircuitSeq { gates: gates.to_vec() }
         }
 
@@ -7528,7 +7527,7 @@ mod tests {
 
         // Parallelize at (g1, g2) level — num_gates^2 tasks
         // Each task owns its inner (g3, g4) loop = num_gates^2 circuits
-        let pairs: Vec<([u8; 3], [u8; 3])> = gates.iter()
+        let pairs: Vec<([u16; 3], [u16; 3])> = gates.iter()
             .flat_map(|&g1| gates.iter().map(move |&g2| (g1, g2)))
             .collect();
 

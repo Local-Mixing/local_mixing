@@ -1,96 +1,58 @@
-use std::collections::VecDeque;
 use rand::{Rng, prelude::SliceRandom};
+use std::collections::VecDeque;
 use crate::circuit::circuit::CircuitSeq;
 
 /// 6-gate homomorphic gadget for secret-shared g57.
-/// Gate [a, pos_ctrl, neg_ctrl] flips wire a UNLESS neg_ctrl=1 AND NOT pos_ctrl
-/// ("flip a UNLESS b AND NOT c" where b=gate[2]=neg_ctrl, c=gate[1]=pos_ctrl).
-/// Equivalently: flips when pos_ctrl=1 OR neg_ctrl=0.
-/// Local wire mapping: 0=x_a, 3=x_c, 4=r_c, 5=x_b, 6=r_b (slots 1,2 unused).
-const GADGET: [[u8; 3]; 6] = [
+/// Local wire map: 0=share_a, 3=share_c, 4=pad_c, 5=share_b, 6=pad_b.
+const GADGET: [[u16; 3]; 6] = [
     [4,5,6],[0,4,6],[0,5,4],[4,5,6],[0,6,3],[0,3,5],
 ];
 
-/// RG1: 6-gate virtual value swap between two pairs.
-/// Wire map: 0=comp_i, 1=aux_i, 2=aux_j, 3=comp_j.
-/// After: (w0'^w1')=s_j, (w2'^w3')=s_i — pairings unchanged, values swapped.
-const RG1: [[u8; 3]; 6] = [
+/// RG1: swap virtual values between two pairs.
+/// Wire map: 0=share_i, 1=pad_i, 2=pad_j, 3=share_j.
+const RG1: [[u16; 3]; 6] = [
     [1,2,3],[0,3,2],[3,1,0],[2,0,1],[0,3,2],[1,2,3],
 ];
 
-/// RG2: 6-gate re-pairing while preserving virtual values.
-/// Wire map: 0=comp_i, 1=aux_i, 2=aux_j, 3=comp_j.
-/// After: (w0'^w2')=s_j, (w1'^w3')=s_i — comp_i now paired with aux_j.
-const RG2: [[u8; 3]; 6] = [
+/// RG2: swap pad wires between two pairs.
+/// Wire map: 0=share_i, 1=pad_i, 2=pad_j, 3=share_j.
+const RG2: [[u16; 3]; 6] = [
     [0,2,3],[1,0,2],[2,0,3],[2,3,0],[1,3,2],[3,2,0],
 ];
 
-/// Manages 2n-wire secret-sharing state.
-/// Wire layout: comp wires 0..n, aux wires n..2n.
-pub struct GadgetScheduler {
+/// 20-gate W_i sequence (Ran Canetti's design, g57 gates only).
+/// Local wires: 0=w0(i), 1=w1(n+i), 2=w2(p(i)), 3=w3(p(n+i)).
+/// Effect: (w0,w1,w2,w3) -> (w2, w3, w0 XOR w1, w1).
+/// Reversed sequence gives W_i^{-1} (each g57 gate is self-inverse).
+const W_I_GATES: [[u16; 3]; 20] = [
+    [0,1,2],[0,2,1],[1,0,2],[1,2,0],[2,1,0],[2,0,1],
+    [0,2,1],[0,1,2],[1,0,3],[1,3,0],[3,0,1],[3,1,0],
+    [1,3,0],[1,0,3],[3,2,1],[2,1,3],[1,3,2],[2,3,1],
+    [1,2,3],[3,1,2],
+];
+
+/// Secret-sharing state: pairs[v] = (share_wire, pad_wire) for virtual value v.
+pub struct GadgetState {
     pub n: usize,
-    pub pairing: Vec<usize>,                     // pairing[i] = aux wire for comp wire i
-    pub rg_pair_queue: VecDeque<(usize, usize)>,  // shuffled pairs of comp indices
-    pub rg3_queue: VecDeque<usize>,               // shuffled comp indices for RG3
-    pub rg_type_counter: usize,                   // cycles 0=RG1, 1=RG2, 2=RG3
+    pub pairs: Vec<(usize, usize)>,
 }
 
-impl GadgetScheduler {
-    pub fn new_random(n: usize, rng: &mut impl Rng) -> Self {
-        assert!(n >= 2);
-        let mut aux: Vec<usize> = (n..2 * n).collect();
-        aux.shuffle(rng);
-        GadgetScheduler {
-            n,
-            pairing: aux,
-            rg_pair_queue: VecDeque::new(),
-            rg3_queue: VecDeque::new(),
-            rg_type_counter: 0,
-        }
-    }
-
-    pub fn total_wires(&self) -> usize { 2 * self.n }
-
-    pub fn current_aux(&self, i: usize) -> usize { self.pairing[i] }
-
-    pub fn next_rg_type(&mut self) -> usize {
-        let t = self.rg_type_counter % 3;
-        self.rg_type_counter += 1;
-        t
-    }
-
-    pub fn apply_rg2(&mut self, i: usize, j: usize) {
-        self.pairing.swap(i, j);
-    }
-
-    pub fn next_rg_pair(&mut self, rng: &mut impl Rng) -> (usize, usize) {
-        if self.rg_pair_queue.is_empty() {
-            let mut pairs: Vec<(usize, usize)> = (0..self.n)
-                .flat_map(|i| (i + 1..self.n).map(move |j| (i, j)))
-                .collect();
-            pairs.shuffle(rng);
-            self.rg_pair_queue.extend(pairs);
-        }
-        self.rg_pair_queue.pop_front().unwrap()
-    }
-
-    pub fn next_rg3_wire(&mut self, rng: &mut impl Rng) -> usize {
-        if self.rg3_queue.is_empty() {
-            let mut wires: Vec<usize> = (0..self.n).collect();
-            wires.shuffle(rng);
-            self.rg3_queue.extend(wires);
-        }
-        self.rg3_queue.pop_front().unwrap()
+fn emit_w_i(w0: usize, w1: usize, w2: usize, w3: usize, out: &mut Vec<[u16; 3]>) {
+    let map = [w0 as u16, w1 as u16, w2 as u16, w3 as u16];
+    for &[a, b, c] in &W_I_GATES {
+        out.push([map[a as usize], map[b as usize], map[c as usize]]);
     }
 }
 
-// CNOT(a <- b) with helper h; works for any h value, h is always restored.
-fn cnot_gates(a: u8, b: u8, h: u8) -> [[u8; 3]; 6] {
-    [[b,a,h],[h,b,a],[a,b,h],[b,h,a],[a,h,b],[h,a,b]]
+fn emit_w_i_inv(w0: usize, w1: usize, w2: usize, w3: usize, out: &mut Vec<[u16; 3]>) {
+    let map = [w0 as u16, w1 as u16, w2 as u16, w3 as u16];
+    for &[a, b, c] in W_I_GATES.iter().rev() {
+        out.push([map[a as usize], map[b as usize], map[c as usize]]);
+    }
 }
 
-// m balanced random gates on aux wires (n..2n), controls from all 2n wires.
-fn rand_z_gates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<[u8; 3]> {
+/// Balanced random gates on aux wires (n..2n), controls from all 2n wires.
+fn rand_z_gates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<[u16; 3]> {
     let total = 2 * n;
     let mut gates = Vec::with_capacity(m);
     let mut round: Vec<usize> = (n..2 * n).collect();
@@ -100,14 +62,14 @@ fn rand_z_gates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<[u8; 3]> {
             round.shuffle(rng);
             pos = 0;
         }
-        let active = round[pos] as u8;
+        let active = round[pos] as u16;
         pos += 1;
         let ctrl1 = loop {
-            let w = rng.random_range(0..total) as u8;
+            let w = rng.random_range(0..total) as u16;
             if w != active { break w; }
         };
         let ctrl2 = loop {
-            let w = rng.random_range(0..total) as u8;
+            let w = rng.random_range(0..total) as u16;
             if w != active { break w; }
         };
         gates.push([active, ctrl1, ctrl2]);
@@ -115,141 +77,144 @@ fn rand_z_gates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<[u8; 3]> {
     gates
 }
 
-// m random aux gates + XOR masking x_i ^= z_{perm[i]}.
-// Returns (gates, pairing) where pairing[i] = aux wire paired with comp wire i.
-fn bookend(n: usize, m: usize, rng: &mut impl Rng) -> (Vec<[u8; 3]>, Vec<usize>) {
-    let mut gates = rand_z_gates(n, m, rng);
-    let mut perm: Vec<usize> = (n..2 * n).collect();
-    perm.shuffle(rng);
-    for i in 0..n {
-        let z_j = perm[i] as u8;
-        let helper = perm[(i + 1) % n] as u8;
-        for &g in &cnot_gates(i as u8, z_j, helper) {
-            gates.push(g);
-        }
-    }
-    (gates, perm)
-}
-
-pub fn emit_gadget(sched: &GadgetScheduler, gate: [u8; 3], out: &mut Vec<[u8; 3]>) {
+pub fn emit_gadget(state: &GadgetState, gate: [u16; 3], out: &mut Vec<[u16; 3]>) {
     let a = gate[0] as usize;
     let b = gate[1] as usize;
     let c = gate[2] as usize;
-    let r_b = sched.current_aux(b);
-    let r_c = sched.current_aux(c);
-    let map: [u8; 7] = [a as u8, 0, 0, c as u8, r_c as u8, b as u8, r_b as u8];
+    let map: [u16; 7] = [
+        state.pairs[a].0 as u16,
+        0,
+        0,
+        state.pairs[c].0 as u16,
+        state.pairs[c].1 as u16,
+        state.pairs[b].0 as u16,
+        state.pairs[b].1 as u16,
+    ];
     for &[ga, gb, gc] in &GADGET {
         out.push([map[ga as usize], map[gb as usize], map[gc as usize]]);
     }
 }
 
-pub fn emit_rg1(sched: &GadgetScheduler, i: usize, j: usize, out: &mut Vec<[u8; 3]>) {
-    let map = [i as u8, sched.pairing[i] as u8, sched.pairing[j] as u8, j as u8];
+pub fn emit_rg1(state: &mut GadgetState, i: usize, j: usize, out: &mut Vec<[u16; 3]>) {
+    let map = [
+        state.pairs[i].0 as u16,
+        state.pairs[i].1 as u16,
+        state.pairs[j].1 as u16,
+        state.pairs[j].0 as u16,
+    ];
     for &[a, b, c] in &RG1 {
         out.push([map[a as usize], map[b as usize], map[c as usize]]);
     }
+    state.pairs.swap(i, j);
 }
 
-pub fn emit_rg2(sched: &mut GadgetScheduler, i: usize, j: usize, out: &mut Vec<[u8; 3]>) {
-    let map = [i as u8, sched.pairing[i] as u8, sched.pairing[j] as u8, j as u8];
+pub fn emit_rg2(state: &mut GadgetState, i: usize, j: usize, out: &mut Vec<[u16; 3]>) {
+    let map = [
+        state.pairs[i].0 as u16,
+        state.pairs[i].1 as u16,
+        state.pairs[j].1 as u16,
+        state.pairs[j].0 as u16,
+    ];
     for &[a, b, c] in &RG2 {
         out.push([map[a as usize], map[b as usize], map[c as usize]]);
     }
-    sched.apply_rg2(i, j);
+    let tmp = state.pairs[i].1;
+    state.pairs[i].1 = state.pairs[j].1;
+    state.pairs[j].1 = tmp;
 }
 
-pub fn emit_rg3(sched: &GadgetScheduler, i: usize, r1: usize, r2: usize, out: &mut Vec<[u8; 3]>) {
-    out.push([i as u8, r1 as u8, r2 as u8]);
-    out.push([sched.pairing[i] as u8, r1 as u8, r2 as u8]);
+pub fn emit_rg3(state: &GadgetState, i: usize, r1: usize, r2: usize, out: &mut Vec<[u16; 3]>) {
+    out.push([state.pairs[i].0 as u16, r1 as u16, r2 as u16]);
+    out.push([state.pairs[i].1 as u16, r1 as u16, r2 as u16]);
 }
 
+fn next_pair(queue: &mut VecDeque<(usize, usize)>, n: usize, rng: &mut impl Rng) -> (usize, usize) {
+    if queue.is_empty() {
+        let mut pairs: Vec<(usize, usize)> = (0..n)
+            .flat_map(|i| (i + 1..n).map(move |j| (i, j)))
+            .collect();
+        pairs.shuffle(rng);
+        queue.extend(pairs);
+    }
+    queue.pop_front().unwrap()
+}
 
-/// Gadgetize a circuit: add n aux wires (total 2n), secret-share each wire,
-/// process original gates as 6-gate SG gadgets interleaved with RG gadgets.
+fn next_single(queue: &mut VecDeque<usize>, n: usize, rng: &mut impl Rng) -> usize {
+    if queue.is_empty() {
+        let mut wires: Vec<usize> = (0..n).collect();
+        wires.shuffle(rng);
+        queue.extend(wires);
+    }
+    queue.pop_front().unwrap()
+}
+
+/// Gadgetize a circuit: add n aux wires (total 2n), secret-share all values via
+/// Latin-square Z + matching permutation M_p, process gates as SG gadgets
+/// interleaved with RG gadgets, then restore via M_p^{-1} + Z.
 pub fn gadgetize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng) -> CircuitSeq {
-    const BOOKEND: usize = 640;
-    let mut out = Vec::new();
+    let bookend_size = (2 * n * (n as f64).ln() as usize).max(64);
+    let mut out: Vec<[u16; 3]> = Vec::new();
 
-    let (begin_gates, init_pairing) = bookend(n, BOOKEND, rng);
-    out.extend(begin_gates);
+    // Left bookend: Z — randomize aux wires n..2n
+    out.extend(rand_z_gates(n, bookend_size, rng));
 
-    let mut sched = GadgetScheduler {
-        n,
-        pairing: init_pairing,
-        rg_pair_queue: VecDeque::new(),
-        rg3_queue: VecDeque::new(),
-        rg_type_counter: 0,
-    };
+    // Left bookend: M_p — W_i for i=0..n-1 with random permutation p on [2n]
+    let mut perm: Vec<usize> = (0..2 * n).collect();
+    perm.shuffle(rng);
 
-    // phys[v] = physical comp wire currently holding virtual wire v's value; starts as identity.
-    let mut phys: Vec<usize> = (0..n).collect();
+    let mut pairs = vec![(0usize, 0usize); n];
+    for i in 0..n {
+        emit_w_i(i, n + i, perm[i], perm[n + i], &mut out);
+        pairs[i] = (perm[i], perm[n + i]);
+    }
+
+    let mut state = GadgetState { n, pairs };
+    let mut rg_pair_queue: VecDeque<(usize, usize)> = VecDeque::new();
+    let mut rg3_queue: VecDeque<usize> = VecDeque::new();
+    let mut rg_type_counter = 0usize;
 
     for (idx, &gate) in main.gates.iter().enumerate() {
-        let pa = phys[gate[0] as usize];
-        let pb = phys[gate[1] as usize];
-        let pc = phys[gate[2] as usize];
-        emit_gadget(&sched, [pa as u8, pb as u8, pc as u8], &mut out);
+        emit_gadget(&state, gate, &mut out);
 
         if (idx + 1) % rg_freq == 0 {
-            let rg_type = sched.next_rg_type();
+            let rg_type = rg_type_counter % 3;
+            rg_type_counter += 1;
             match rg_type {
                 0 => {
-                    let (i, j) = sched.next_rg_pair(rng);
-                    emit_rg1(&sched, i, j, &mut out);
-                    let vi = (0..n).find(|&v| phys[v] == i).unwrap();
-                    let vj = (0..n).find(|&v| phys[v] == j).unwrap();
-                    phys[vi] = j;
-                    phys[vj] = i;
+                    let (i, j) = next_pair(&mut rg_pair_queue, n, rng);
+                    emit_rg1(&mut state, i, j, &mut out);
                 }
                 1 => {
-                    let (i, j) = sched.next_rg_pair(rng);
-                    emit_rg2(&mut sched, i, j, &mut out);
-                    let vi = (0..n).find(|&v| phys[v] == i).unwrap();
-                    let vj = (0..n).find(|&v| phys[v] == j).unwrap();
-                    phys[vi] = j;
-                    phys[vj] = i;
+                    let (i, j) = next_pair(&mut rg_pair_queue, n, rng);
+                    emit_rg2(&mut state, i, j, &mut out);
                 }
                 _ => {
-                    let i = sched.next_rg3_wire(rng);
-                    let total = 2 * sched.n;
-                    let comp_i = i;
-                    let aux_i = sched.pairing[i];
+                    let i = next_single(&mut rg3_queue, n, rng);
+                    let s = state.pairs[i].0;
+                    let p = state.pairs[i].1;
+                    let total = 2 * n;
                     let r1 = loop {
                         let w = rng.random_range(0..total);
-                        if w != comp_i && w != aux_i { break w; }
+                        if w != s && w != p { break w; }
                     };
                     let r2 = loop {
                         let w = rng.random_range(0..total);
-                        if w != comp_i && w != aux_i { break w; }
+                        if w != s && w != p { break w; }
                     };
-                    emit_rg3(&sched, i, r1, r2, &mut out);
+                    emit_rg3(&state, i, r1, r2, &mut out);
                 }
             }
         }
     }
 
-    // Restore identity permutation: bring each virtual wire v back to physical position v.
-    // Each iteration does one RG1 swap and places exactly one virtual wire correctly.
-    for v in 0..n {
-        if phys[v] != v {
-            let p = phys[v];
-            emit_rg1(&sched, v, p, &mut out);
-            let w = (0..n).find(|&x| phys[x] == v).unwrap();
-            phys[w] = p;
-            phys[v] = v;
-        }
+    // Right bookend: M_p^{-1} — W_i^{-1} for i=n-1..0
+    // W_i^{-1} on (i, n+i, pairs[i].1, pairs[i].0) decodes x'_i onto wire i
+    for i in (0..n).rev() {
+        emit_w_i_inv(i, n + i, state.pairs[i].1, state.pairs[i].0, &mut out);
     }
 
-    // End XOR unmasking: x_i ^= z_{pairing[i]}.
-    for i in 0..n {
-        let aux_i = sched.pairing[i] as u8;
-        let helper = sched.pairing[(i + 1) % n] as u8;
-        for &g in &cnot_gates(i as u8, aux_i, helper) {
-            out.push(g);
-        }
-    }
-
-    out.extend(rand_z_gates(n, BOOKEND, rng));
+    // Right bookend: Z — randomize aux wires
+    out.extend(rand_z_gates(n, bookend_size, rng));
 
     CircuitSeq { gates: out }
 }
@@ -261,54 +226,61 @@ mod tests {
     fn test_rng() -> impl Rng { rand::rng() }
 
     #[test]
-    fn scheduler_initial_state() {
-        let mut rng = test_rng();
-        let sched = GadgetScheduler::new_random(4, &mut rng);
-        assert_eq!(sched.total_wires(), 8);
-        let paired: std::collections::HashSet<usize> = (0..4).map(|i| sched.current_aux(i)).collect();
-        assert_eq!(paired.len(), 4);
-        assert!(paired.iter().all(|&w| w >= 4 && w < 8));
-    }
-
-    #[test]
-    fn rg_pair_queue_covers_all_pairs() {
-        let mut rng = test_rng();
-        let mut sched = GadgetScheduler::new_random(4, &mut rng);
-        let mut seen = std::collections::HashSet::new();
-        for _ in 0..6 {
-            seen.insert(sched.next_rg_pair(&mut rng));
-        }
-        for i in 0..4usize {
-            for j in i+1..4 {
-                assert!(seen.contains(&(i, j)), "missing pair ({},{})", i, j);
-            }
-        }
-    }
-
-    #[test]
-    fn rg2_updates_pairing() {
-        let mut rng = test_rng();
-        let mut sched = GadgetScheduler::new_random(4, &mut rng);
-        let orig_aux_0 = sched.current_aux(0);
-        let orig_aux_1 = sched.current_aux(1);
+    fn verify_w_i_mapping() {
         let mut out = Vec::new();
-        emit_rg2(&mut sched, 0, 1, &mut out);
-        assert_eq!(sched.current_aux(0), orig_aux_1);
-        assert_eq!(sched.current_aux(1), orig_aux_0);
+        emit_w_i(0, 1, 2, 3, &mut out);
+        let circ = CircuitSeq { gates: out };
+        for s in 0usize..(1 << 4) {
+            let w0 = (s >> 0) & 1;
+            let w1 = (s >> 1) & 1;
+            let w2 = (s >> 2) & 1;
+            let w3 = (s >> 3) & 1;
+            let out_state = circ.evaluate(s);
+            assert_eq!((out_state >> 0) & 1, w2,      "w0 wrong for s={}", s);
+            assert_eq!((out_state >> 1) & 1, w3,      "w1 wrong for s={}", s);
+            assert_eq!((out_state >> 2) & 1, w0 ^ w1, "w2 wrong for s={}", s);
+            assert_eq!((out_state >> 3) & 1, w1,      "w3 wrong for s={}", s);
+        }
+    }
+
+    #[test]
+    fn verify_w_i_inv_is_inverse() {
+        let mut out = Vec::new();
+        emit_w_i(0, 1, 2, 3, &mut out);
+        emit_w_i_inv(0, 1, 2, 3, &mut out);
+        let circ = CircuitSeq { gates: out };
+        for s in 0usize..(1 << 4) {
+            assert_eq!(circ.evaluate(s), s, "W_i composed W_i_inv != identity for s={}", s);
+        }
+    }
+
+    #[test]
+    fn rg1_swaps_pairs() {
+        let mut state = GadgetState { n: 4, pairs: vec![(0,4),(1,5),(2,6),(3,7)] };
+        let mut out = Vec::new();
+        emit_rg1(&mut state, 0, 1, &mut out);
+        assert_eq!(state.pairs[0], (1, 5));
+        assert_eq!(state.pairs[1], (0, 4));
+    }
+
+    #[test]
+    fn rg2_swaps_pads() {
+        let mut state = GadgetState { n: 4, pairs: vec![(0,4),(1,5),(2,6),(3,7)] };
+        let mut out = Vec::new();
+        emit_rg2(&mut state, 0, 1, &mut out);
+        assert_eq!(state.pairs[0], (0, 5));
+        assert_eq!(state.pairs[1], (1, 4));
     }
 
     #[test]
     fn verify_6gate_gadget_semantics() {
-        let n = 3;
-        let sched = GadgetScheduler {
-            n, pairing: vec![3, 4, 5],
-            rg_pair_queue: VecDeque::new(), rg3_queue: VecDeque::new(), rg_type_counter: 0,
-        };
+        // pairs: share_a=0 pad_a=3  share_b=1 pad_b=4  share_c=2 pad_c=5
+        let state = GadgetState { n: 3, pairs: vec![(0,3),(1,4),(2,5)] };
         let mut out = Vec::new();
-        emit_gadget(&sched, [0, 1, 2], &mut out);
+        emit_gadget(&state, [0, 1, 2], &mut out);
         let gadget_circ = CircuitSeq { gates: out };
 
-        for s in 0usize..(1 << 7) {
+        for s in 0usize..(1 << 6) {
             let x_a = (s >> 0) & 1;
             let x_b = (s >> 1) & 1;
             let x_c = (s >> 2) & 1;
@@ -323,94 +295,79 @@ mod tests {
 
             for wire in [1usize, 2, 3, 4, 5] {
                 assert_eq!((s >> wire) & 1, (out_state >> wire) & 1,
-                    "wire {} changed for input {:#09b}", wire, s);
+                    "wire {} changed for input {:#08b}", wire, s);
             }
             let new_x_a = (out_state >> 0) & 1;
             let expected = 1 ^ s_a ^ (s_c & (1 ^ s_b));
             assert_eq!(new_x_a ^ r_a, expected,
-                "gadget invariant failed: s={:#09b}", s);
+                "gadget invariant failed: s={:#08b}", s);
         }
     }
 
     #[test]
     fn verify_rg1_semantics() {
-        let n = 4;
-        let sched = GadgetScheduler {
-            n, pairing: vec![4, 5, 6, 7],
-            rg_pair_queue: VecDeque::new(), rg3_queue: VecDeque::new(), rg_type_counter: 0,
-        };
+        let mut state = GadgetState { n: 4, pairs: vec![(0,4),(1,5),(2,6),(3,7)] };
         let mut out = Vec::new();
-        emit_rg1(&sched, 0, 1, &mut out);
+        emit_rg1(&mut state, 0, 1, &mut out);
         let circ = CircuitSeq { gates: out };
         for s in 0usize..(1 << 8) {
-            let w0 = (s >> 0) & 1; // comp_0
-            let w1 = (s >> 4) & 1; // aux_0
-            let w2 = (s >> 5) & 1; // aux_1
-            let w3 = (s >> 1) & 1; // comp_1
-            let s1 = w0 ^ w1;
-            let s2 = w2 ^ w3;
+            let w0 = (s >> 0) & 1; // share_i=wire 0
+            let w1 = (s >> 4) & 1; // pad_i=wire 4
+            let w2 = (s >> 5) & 1; // pad_j=wire 5
+            let w3 = (s >> 1) & 1; // share_j=wire 1
+            let s_i = w0 ^ w1;
+            let s_j = w2 ^ w3;
             let out_state = circ.evaluate(s);
             let nw0 = (out_state >> 0) & 1;
             let nw1 = (out_state >> 4) & 1;
             let nw2 = (out_state >> 5) & 1;
             let nw3 = (out_state >> 1) & 1;
-            assert_eq!(nw0 ^ nw1, s2,
-                "pair (comp_0,aux_0) should carry s2 after RG1, s={:#010b}", s);
-            assert_eq!(nw2 ^ nw3, s1,
-                "pair (comp_1,aux_1) should carry s1 after RG1, s={:#010b}", s);
+            assert_eq!(nw0 ^ nw1, s_j, "pair i should carry s_j after RG1, s={:#010b}", s);
+            assert_eq!(nw2 ^ nw3, s_i, "pair j should carry s_i after RG1, s={:#010b}", s);
         }
     }
 
     #[test]
     fn verify_rg2_semantics() {
-        let n = 4;
-        let mut sched = GadgetScheduler {
-            n, pairing: vec![4, 5, 6, 7],
-            rg_pair_queue: VecDeque::new(), rg3_queue: VecDeque::new(), rg_type_counter: 0,
-        };
+        let mut state = GadgetState { n: 4, pairs: vec![(0,4),(1,5),(2,6),(3,7)] };
         let mut out = Vec::new();
-        emit_rg2(&mut sched, 0, 1, &mut out);
+        emit_rg2(&mut state, 0, 1, &mut out);
         let circ = CircuitSeq { gates: out };
-        assert_eq!(sched.current_aux(0), 5, "comp_0 should now be paired with aux_1");
-        assert_eq!(sched.current_aux(1), 4, "comp_1 should now be paired with aux_0");
+        assert_eq!(state.pairs[0], (0, 5));
+        assert_eq!(state.pairs[1], (1, 4));
         for s in 0usize..(1 << 8) {
-            let w0 = (s >> 0) & 1; // comp_0
-            let w1 = (s >> 4) & 1; // aux_0
-            let w2 = (s >> 5) & 1; // aux_1
-            let w3 = (s >> 1) & 1; // comp_1
-            let s1 = w0 ^ w1;
-            let s2 = w2 ^ w3;
+            let w0 = (s >> 0) & 1; // share_i=wire 0
+            let w1 = (s >> 4) & 1; // pad_i=wire 4
+            let w2 = (s >> 5) & 1; // pad_j=wire 5
+            let w3 = (s >> 1) & 1; // share_j=wire 1
+            let s_i = w0 ^ w1;
+            let s_j = w2 ^ w3;
             let out_state = circ.evaluate(s);
-            let nw0 = (out_state >> 0) & 1;
-            let nw2 = (out_state >> 5) & 1;
-            let nw1 = (out_state >> 4) & 1;
-            let nw3 = (out_state >> 1) & 1;
-            assert_eq!(nw0 ^ nw2, s2,
-                "new pair (comp_0,aux_1) should carry s2, s={:#010b}", s);
-            assert_eq!(nw1 ^ nw3, s1,
-                "new pair (comp_1,aux_0) should carry s1, s={:#010b}", s);
+            let nw0 = (out_state >> 0) & 1; // share_i unchanged
+            let nw2 = (out_state >> 5) & 1; // new pad_i (was pad_j)
+            let nw1 = (out_state >> 4) & 1; // new pad_j (was pad_i)
+            let nw3 = (out_state >> 1) & 1; // share_j unchanged
+            assert_eq!(nw0 ^ nw2, s_i,
+                "new pair i (share_i, old_pad_j) should carry s_i, s={:#010b}", s);
+            assert_eq!(nw1 ^ nw3, s_j,
+                "new pair j (share_j, old_pad_i) should carry s_j, s={:#010b}", s);
         }
     }
 
     #[test]
     fn verify_rg3_semantics() {
-        let n = 4;
-        let sched = GadgetScheduler {
-            n, pairing: vec![4, 5, 6, 7],
-            rg_pair_queue: VecDeque::new(), rg3_queue: VecDeque::new(), rg_type_counter: 0,
-        };
+        let state = GadgetState { n: 4, pairs: vec![(0,4),(1,5),(2,6),(3,7)] };
         let mut out = Vec::new();
-        emit_rg3(&sched, 0, 2, 3, &mut out);
+        emit_rg3(&state, 0, 2, 3, &mut out);
         let circ = CircuitSeq { gates: out };
         for s in 0usize..(1 << 8) {
             let w0 = (s >> 0) & 1;
             let w1 = (s >> 4) & 1;
-            let s1 = w0 ^ w1;
+            let s_val = w0 ^ w1;
             let out_state = circ.evaluate(s);
             let nw0 = (out_state >> 0) & 1;
             let nw1 = (out_state >> 4) & 1;
-            assert_eq!(nw0 ^ nw1, s1,
-                "RG3 must preserve virtual value, s={:#010b}", s);
+            assert_eq!(nw0 ^ nw1, s_val, "RG3 must preserve virtual value, s={:#010b}", s);
         }
     }
 
@@ -419,7 +376,7 @@ mod tests {
         let n = 3;
         let main = CircuitSeq { gates: vec![[0,1,2],[1,2,0],[2,0,1],[0,2,1]] };
         let mut rng = rand::rng();
-        let gadgetized = gadgetize(&main, n, 3,&mut rng);
+        let gadgetized = gadgetize(&main, n, 3, &mut rng);
         let mask = (1usize << n) - 1;
         for input in 0usize..(1 << n) {
             let expected = main.evaluate(input) & mask;
@@ -448,7 +405,7 @@ mod tests {
         let n = 32;
         let main = crate::random::random_data::random_circuit(n, 200);
         let mut rng = rand::rng();
-        let gadgetized = gadgetize(&main, n, 3,&mut rng);
+        let gadgetized = gadgetize(&main, n, 3, &mut rng);
         main.probably_equal(&gadgetized, n, 10_000)
             .expect("gadgetized circuit changed functionality on first 32 wires");
     }
@@ -461,7 +418,7 @@ mod tests {
         let total = 2 * n;
         let main = crate::random::random_data::random_circuit(n, 100);
         let mut rng = rand::rng();
-        let gadgetized = gadgetize(&main, n, 3,&mut rng);
+        let gadgetized = gadgetize(&main, n, 3, &mut rng);
 
         let g = &gadgetized.gates;
         let total_gates = g.len();

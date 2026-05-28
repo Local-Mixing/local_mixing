@@ -31,11 +31,11 @@ pub struct Gate{
     pub pins: [usize;3], //one active wire (0) and two control wires (1,2)
 }
 
-// Circuits stored as a sequence of gates [u8;3]
+// Circuits stored as a sequence of gates [u16;3]
 // Gate type is legacy
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, Hash, PartialEq)]
 pub struct CircuitSeq {
-    pub gates: Vec<[u8;3]>, 
+    pub gates: Vec<[u16;3]>,
 }
 
 // Polynomial representation of circuit
@@ -58,7 +58,7 @@ impl Gate {
     }
 
     // Gates collide iff either active pin shares a wire with any other pin
-    pub fn collides_index(gate: &[u8;3], other: &[u8;3]) -> bool {
+    pub fn collides_index(gate: &[u16;3], other: &[u16;3]) -> bool {
         gate[0] == other[1] 
             || gate[0] == other[2]
             || gate[1] == other[0] 
@@ -66,7 +66,7 @@ impl Gate {
     }
 
     //b is "larger"
-    pub fn ordered_index(gate: &[u8;3], other: &[u8;3]) -> bool {
+    pub fn ordered_index(gate: &[u16;3], other: &[u16;3]) -> bool {
         if gate[0] > other[0] {
             return false
         }
@@ -83,7 +83,7 @@ impl Gate {
 
     // Evaluate a bit string after a single gate under gate r57
     #[inline(always)]
-    pub fn evaluate_index(state: usize, gate: [u8;3]) -> usize {
+    pub fn evaluate_index(state: usize, gate: [u16;3]) -> usize {
         let c1 = (state >> gate[1]) & 1;
         let c2 = (state >> gate[2]) & 1;
         state ^ (c1 | ((!c2) & 1)) << gate[0]
@@ -91,7 +91,7 @@ impl Gate {
 
     // Evaluate up to 128 bits
     #[inline(always)]
-    pub fn evaluate_index_128(state: u128, gate: [u8;3]) -> u128 {
+    pub fn evaluate_index_128(state: u128, gate: [u16;3]) -> u128 {
         let c1 = (state >> gate[1]) & 1;
         let c2 = (state >> gate[2]) & 1;
         state ^ (c1 | ((!c2) & 1)) << gate[0]
@@ -99,14 +99,14 @@ impl Gate {
 
     // Evaluate up to 256 bits
     #[inline(always)]
-    pub fn evaluate_index_256(state: u256, gate: [u8;3]) -> u256 {
+    pub fn evaluate_index_256(state: u256, gate: [u16;3]) -> u256 {
         let one = u256::one();
         let c1 = (state >> gate[1]) & one;
         let c2 = (state >> gate[2]) & one;
         state ^ ((c1 | (one ^ c2)) << gate[0])
     }
 
-    pub fn evaluate_index_512(state: u512, gate: [u8;3]) -> u512 {
+    pub fn evaluate_index_512(state: u512, gate: [u16;3]) -> u512 {
         let one = u512::one();
         let c1 = (state >> gate[1]) & one;
         let c2 = (state >> gate[2]) & one;
@@ -115,7 +115,7 @@ impl Gate {
 
     // Evaluate a list of gates
     #[inline(always)]
-    pub fn evaluate_index_list(state: usize, gates: &Vec<[u8;3]>) -> usize {
+    pub fn evaluate_index_list(state: usize, gates: &Vec<[u16;3]>) -> usize {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index(current_wires, *g);
@@ -124,7 +124,7 @@ impl Gate {
     }
 
     #[inline(always)]
-    pub fn evaluate_index_list_128(state: u128, gates: &Vec<[u8;3]>) -> u128 {
+    pub fn evaluate_index_list_128(state: u128, gates: &Vec<[u16;3]>) -> u128 {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_128(current_wires, *g);
@@ -133,7 +133,7 @@ impl Gate {
     }
 
     #[inline(always)]
-    pub fn evaluate_index_list_256(state: u256, gates: &Vec<[u8;3]>) -> u256 {
+    pub fn evaluate_index_list_256(state: u256, gates: &Vec<[u16;3]>) -> u256 {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_256(current_wires, *g);
@@ -142,7 +142,7 @@ impl Gate {
     }
 
     #[inline(always)]
-    pub fn evaluate_index_list_512(state: u512, gates: &Vec<[u8;3]>) -> u512 {
+    pub fn evaluate_index_list_512(state: u512, gates: &Vec<[u16;3]>) -> u512 {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_512(current_wires, *g);
@@ -351,9 +351,9 @@ impl CircuitSeq {
     /// Reconstruct CircuitSeq from a BLOB
     pub fn from_blob(blob: &[u8]) -> Self {
         assert!(blob.len() % 3 == 0, "Invalid blob length");
-        let gates: Vec<[u8; 3]> = blob
+        let gates: Vec<[u16; 3]> = blob
             .chunks(3)
-            .map(|chunk| [chunk[0], chunk[1], chunk[2]])
+            .map(|chunk| [chunk[0] as u16, chunk[1] as u16, chunk[2] as u16])
             .collect();
         CircuitSeq { gates }
     }
@@ -378,15 +378,15 @@ impl CircuitSeq {
 
         for gate in &mut self.gates {
             *gate = [
-                perm.data[gate[0] as usize] as u8,
-                perm.data[gate[1] as usize] as u8,
-                perm.data[gate[2] as usize] as u8,
+                perm.data[gate[0] as usize] as u16,
+                perm.data[gate[1] as usize] as u16,
+                perm.data[gate[2] as usize] as u16,
             ];
         }
     }
 
     // Rewires the first gate to match `gate`, and adjusts remaining wires to a valid permutation
-    pub fn rewire_first_gate(&mut self, target_gate: [u8; 3], num_wires: usize) {
+    pub fn rewire_first_gate(&mut self, target_gate: [u16; 3], num_wires: usize) {
         if self.gates.is_empty() {
             return
         }
@@ -515,7 +515,7 @@ impl CircuitSeq {
 
         const BASE: u32 = 83;
 
-        let gates: Vec<[u8; 3]> = s
+        let gates: Vec<[u16; 3]> = s
             .trim()
             .split(';')
             .filter(|part| !part.is_empty())
@@ -534,7 +534,7 @@ impl CircuitSeq {
                     // Next character is the base wire
                     let c = chars.next().expect("Expected wire character after ~");
                     let wire = char_to_wire(c) as u32 + overflow * BASE;
-                    wires.push(wire as u8);
+                    wires.push(wire as u16);
                 }
 
                 if wires.len() != 3 {
@@ -561,11 +561,11 @@ impl CircuitSeq {
         for wire in 0..num_wires {
             result += &format!("{:<2} --", wire);
             for gate in &self.gates {
-                if gate[0] == wire as u8 {
+                if gate[0] == wire as u16 {
                     result += "( )";
-                } else if gate[1] == wire as u8{
+                } else if gate[1] == wire as u16 {
                     result += "-●-";
-                } else if gate[2] == wire as u8 {
+                } else if gate[2] == wire as u16 {
                     result += "-○-";
                 } else {
                     result += "-|-";
@@ -606,14 +606,14 @@ impl CircuitSeq {
     }
 
     // Returns the wires touched by a circuit
-    pub fn used_wires(&self) -> Vec<u8> {
-        let mut used: HashSet<u8> = HashSet::new();
+    pub fn used_wires(&self) -> Vec<u16> {
+        let mut used: HashSet<u16> = HashSet::new();
         for gates in &self.gates {
             used.insert(gates[0]);
             used.insert(gates[1]);
             used.insert(gates[2]);
         }
-        let mut wires: Vec<u8> = used.into_iter().collect();
+        let mut wires: Vec<u16> = used.into_iter().collect();
         wires.sort();
         wires
     }
@@ -631,17 +631,17 @@ impl CircuitSeq {
     pub fn rewire_subcircuit(
         circuit: &CircuitSeq,
         subcircuit_gates: &[usize],
-        used_wires: &[u8],
+        used_wires: &[u16],
     ) -> CircuitSeq {
         // Build a mapping from old wire -> new wire (0..num_wires-1)
-        let wire_map: HashMap<u8, u8> = used_wires
+        let wire_map: HashMap<u16, u16> = used_wires
             .iter()
             .enumerate()
-            .map(|(new_idx, &old_wire)| (old_wire, new_idx as u8))
+            .map(|(new_idx, &old_wire)| (old_wire, new_idx as u16))
             .collect();
 
         // Build new gates with remapped wires
-        let new_gates: Vec<[u8; 3]> = subcircuit_gates
+        let new_gates: Vec<[u16; 3]> = subcircuit_gates
             .iter()
             .map(|&idx| {
                 let [t, c1, c2] = circuit.gates[idx];
@@ -657,16 +657,16 @@ impl CircuitSeq {
     }
 
     // Undo rewiring. Note: Recall that the number of wires in CircuitSeq is not stored
-    pub fn unrewire_subcircuit(subcircuit: &CircuitSeq, used_wires: &[u8]) -> CircuitSeq {
+    pub fn unrewire_subcircuit(subcircuit: &CircuitSeq, used_wires: &[u16]) -> CircuitSeq {
         // Build a mapping from new wire -> original wire
-        let wire_map: HashMap<u8, u8> = used_wires
+        let wire_map: HashMap<u16, u16> = used_wires
             .iter()
             .enumerate()
-            .map(|(new_idx, &orig_wire)| (new_idx as u8, orig_wire))
+            .map(|(new_idx, &orig_wire)| (new_idx as u16, orig_wire))
             .collect();
 
         // Replace wires in each gate with original wires
-        let new_gates: Vec<[u8; 3]> = subcircuit
+        let new_gates: Vec<[u16; 3]> = subcircuit
             .gates
             .iter()
             .map(|&[t, c1, c2]| [
@@ -791,9 +791,9 @@ impl CircuitSeq {
     }
 
     /// Relabel wires in encounter order (first wire seen → 0, second → 1, etc.)
-    fn first_wire_form(&self) -> Vec<[u8; 3]> {
-        let mut map: HashMap<u8, u8> = HashMap::new();
-        let mut counter: u8 = 0;
+    fn first_wire_form(&self) -> Vec<[u16; 3]> {
+        let mut map: HashMap<u16, u16> = HashMap::new();
+        let mut counter: u16 = 0;
 
         self.gates.iter().map(|gate| {
             gate.map(|wire| {
@@ -810,13 +810,28 @@ impl CircuitSeq {
         self.first_wire_form() == other.first_wire_form()
     }
 
+    pub fn init_polys(n: usize) -> Vec<Polynomial> {
+        (0..n).map(|i| HashSet::from([1u64 << i])).collect()
+    }
+
+    pub fn apply_gate_to_polys(polys: &mut Vec<Polynomial>, gate: [u16; 3]) {
+        let [a, b, c] = gate;
+        let not_c = poly_not(polys[c as usize].clone());
+        let term = poly_and(&polys[b as usize], &not_c);
+        let mut new_a = poly_xor(polys[a as usize].clone(), term);
+        if !new_a.remove(&0u64) {
+            new_a.insert(0u64);
+        }
+        polys[a as usize] = new_a;
+    }
+
     pub fn to_polynomial(&self, n: usize, start: usize, end: usize) -> Vec<Polynomial> {
         let gates = &self.gates[start..end];
         // Wire i starts as degree 1 monomial
         let mut polys: Vec<Polynomial> = (0..n)
         .map(|i| HashSet::from([1u64 << i]))
         .collect();
-    
+
         for &[a, b, c] in gates {
             // a' = a + bc + b + 1 = a + b(c+1) = a + b*NOT(c) + 1
             let not_c = poly_not(polys[c as usize].clone());
@@ -886,7 +901,7 @@ impl CircuitSeq {
 
     // Returns (canonical_polys, canonical_circuit, reversed)
     // where reversed=true means the reversed circuit produced the canonical form.
-    pub fn canonicalize_polys(&self, _n: usize, allow_rule_l: bool) -> Option<(Vec<Polynomial>, CircuitSeq, bool, Permutation, Vec<u8>)> {
+    pub fn canonicalize_polys(&self, _n: usize, allow_rule_l: bool) -> Option<(Vec<Polynomial>, CircuitSeq, bool, Permutation, Vec<u16>)> {
         fn poly_vec_key(polys: &Vec<Polynomial>) -> Vec<Vec<u64>> {
             polys.iter().map(|p| {
                 let mut v: Vec<u64> = p.iter().copied().collect();
@@ -897,8 +912,8 @@ impl CircuitSeq {
         // Remap to minimal wires: e.g. [3,7,11] -> [0,1,2].
         // `used` is returned so callers can unrewire canonical circuits back to original wires.
         let used = self.used_wires();
-        let wire_map: HashMap<u8, u8> = used.iter().enumerate()
-            .map(|(i, &w)| (w, i as u8))
+        let wire_map: HashMap<u16, u16> = used.iter().enumerate()
+            .map(|(i, &w)| (w, i as u16))
             .collect();
         let remapped = CircuitSeq {
             gates: self.gates.iter().map(|&[t, c1, c2]| [
@@ -937,10 +952,10 @@ impl CircuitSeq {
     /// Compute canonical polynomials for one direction only (forward or reversed).
     /// Returns (canonical_polys, final_order, used_wires).
     /// Used by compress_lmdb to try forward first, then reverse on miss.
-    pub fn canonicalize_polys_single(&self, reversed: bool) -> (Vec<Polynomial>, Permutation, Vec<u8>) {
+    pub fn canonicalize_polys_single(&self, reversed: bool) -> (Vec<Polynomial>, Permutation, Vec<u16>) {
         let used = self.used_wires();
-        let wire_map: HashMap<u8, u8> = used.iter().enumerate()
-            .map(|(i, &w)| (w, i as u8))
+        let wire_map: HashMap<u16, u16> = used.iter().enumerate()
+            .map(|(i, &w)| (w, i as u16))
             .collect();
         let mut c = CircuitSeq {
             gates: self.gates.iter().map(|&[t, c1, c2]| [
@@ -964,8 +979,8 @@ impl CircuitSeq {
             }).collect()
         }
         let used = self.used_wires();
-        let wire_map: HashMap<u8, u8> = used.iter().enumerate()
-            .map(|(i, &w)| (w, i as u8))
+        let wire_map: HashMap<u16, u16> = used.iter().enumerate()
+            .map(|(i, &w)| (w, i as u16))
             .collect();
         let remapped = CircuitSeq {
             gates: self.gates.iter().map(|&[t, c1, c2]| [
@@ -1084,7 +1099,7 @@ pub fn polys_repr_blob(polys: &Vec<Polynomial>) -> Vec<u8> {
 }
 
 // Rewire wire i -> perm[i]
-pub fn rewire_gate_ver(gates: &mut Vec<[u8;3]>, perm: &Permutation, n: usize) {
+pub fn rewire_gate_ver(gates: &mut Vec<[u16;3]>, perm: &Permutation, n: usize) {
     if perm.data.is_empty() {
         return;
     }
@@ -1103,17 +1118,17 @@ pub fn rewire_gate_ver(gates: &mut Vec<[u8;3]>, perm: &Permutation, n: usize) {
 
     for gate in gates {
         *gate = [
-            perm.data[gate[0] as usize] as u8,
-            perm.data[gate[1] as usize] as u8,
-            perm.data[gate[2] as usize] as u8,
+            perm.data[gate[0] as usize] as u16,
+            perm.data[gate[1] as usize] as u16,
+            perm.data[gate[2] as usize] as u16,
         ];
     }
 }
 
 // Possible gates on n wires
-pub fn base_gates(n: usize) -> Vec<[u8; 3]> {
-    let n = n as u8;
-    let mut gates: Vec<[u8;3]> = Vec::new();
+pub fn base_gates(n: usize) -> Vec<[u16; 3]> {
+    let n = n as u16;
+    let mut gates: Vec<[u16;3]> = Vec::new();
     for a in 0..n {
         for b in 0..n {
             if b == a { continue; }
@@ -3222,7 +3237,7 @@ mod tests {
         // Gates are disjoint on wires 0-5. Test verified by hand
         // Test on two different ones. Should canonicalize to the same thing both times, with the same permutation.
         let mut rng = rand::rng();
-        let mut pins: [u8; 6] = [0, 1, 2, 3, 4, 5];
+        let mut pins: [u16; 6] = [0, 1, 2, 3, 4, 5];
         pins.shuffle(&mut rng);
         let circuit = CircuitSeq { gates: vec![
             [pins[0], pins[1], pins[2]], 

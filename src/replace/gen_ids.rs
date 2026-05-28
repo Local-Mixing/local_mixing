@@ -351,7 +351,7 @@ mod tests {
 
             let repl_n_b = comp.max_wire() + 1;
             let mut used_ext = used.clone();
-            let mut next_wire = num_wires as u8;
+            let mut next_wire = num_wires as u16;
             while used_ext.len() < repl_n_b {
                 used_ext.push(next_wire);
                 next_wire += 1;
@@ -514,7 +514,7 @@ fn decode_circuits(value: &[u8]) -> Vec<CircuitSeq> {
     circuits
 }
 
-fn remove_adjacent_equal(gates: &mut Vec<[u8; 3]>) {
+fn remove_adjacent_equal(gates: &mut Vec<[u16; 3]>) {
     let mut i = 0;
     while i + 1 < gates.len() {
         if gates[i] == gates[i + 1] {
