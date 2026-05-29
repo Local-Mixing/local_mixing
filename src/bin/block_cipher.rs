@@ -5,6 +5,7 @@ use cryptography::{Aes128, BlockCipher};
 use fastrand::shuffle;
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::random::random_data::random_circuit;
+use primitive_types::U256 as u256;
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -20,35 +21,6 @@ enum CircuitGenerationMode {
     Aes,
 }
 
-struct CircuitPrg {
-    circuit: CircuitSeq,
-    counter: u128,
-    operation_mode: OperationMode,
-    word_index: u8,
-    current_state: u128,
-}
-
-impl CircuitPrg {
-    fn new(circuit: CircuitSeq, operation_mode: OperationMode) -> Self {
-        Self {
-            circuit,
-            // Random IV
-            counter: fastrand::u128(..),
-            operation_mode,
-            word_index: 4,
-            current_state: 0,
-        }
-    }
-
-    fn next_state(&mut self) -> u128 {
-        let output = self.circuit.evaluate_128(self.counter);
-        self.counter = match self.operation_mode {
-            OperationMode::Ctr => self.counter + 1,
-            OperationMode::Ofb => output,
-        };
-        output
-    }
-}
 
 struct AesPrg {
     cipher: Aes128,
@@ -82,18 +54,6 @@ impl AesPrg {
     }
 }
 
-impl Rng for CircuitPrg {
-    fn next_u32(&mut self) -> u32 {
-        if self.word_index >= 4 {
-            self.current_state = self.next_state();
-            self.word_index = 0;
-        }
-
-        let word = (self.current_state >> (32 * self.word_index)) as u32;
-        self.word_index += 1;
-        word
-    }
-}
 
 impl Rng for AesPrg {
     fn next_u32(&mut self) -> u32 {
@@ -107,6 +67,56 @@ impl Rng for AesPrg {
         word
     }
 }
+
+struct CircuitPrg {
+    circuit: CircuitSeq,
+    counter: u256,
+    operation_mode: OperationMode,
+    max_word_idx: u8,
+    word_index: u8,
+    current_state: u256,
+}
+
+impl CircuitPrg {
+    fn new(circuit: CircuitSeq, operation_mode: OperationMode) -> Self {
+        let n = &circuit.max_wire()+1;
+        let mut p = Self {
+            circuit,
+            // Random IV
+            counter: fastrand::u128(..).into(),
+            operation_mode,
+            max_word_idx: (n / 32) as u8,
+            word_index: 0,
+            current_state: 0.into(),
+        };
+        p.word_index = p.max_word_idx;
+        p
+    }
+
+    fn next_state(&mut self) -> u256 {
+        let output = self.circuit.evaluate_256(self.counter);
+        self.counter = match self.operation_mode {
+            OperationMode::Ctr => self.counter + 1,
+            OperationMode::Ofb => output,
+        };
+        output
+    }
+}
+
+
+impl Rng for CircuitPrg {
+    fn next_u32(&mut self) -> u32 {
+        if self.word_index >= self.max_word_idx {
+            self.current_state = self.next_state();
+            self.word_index = 0;
+        }
+
+        let word = (self.current_state >> (32 * self.word_index)).low_u32();
+        self.word_index += 1;
+        word
+    }
+}
+
 
 enum BlockPrg {
     Circuit(CircuitPrg),
@@ -126,7 +136,7 @@ fn balanced_ckt_ord(n: usize, m: usize) -> CircuitSeq {
     let mut c = Vec::with_capacity(m);
     let mut active_counts = vec![0usize; n];
 
-    let n8 = n as u8;
+    let maxw = (n - 1) as u8;
 
     for _ in 0..m {
         loop {
@@ -138,8 +148,8 @@ fn balanced_ckt_ord(n: usize, m: usize) -> CircuitSeq {
                 .collect();
 
             let gate0 = least_popular[fastrand::usize(..least_popular.len())] as u8;
-            let gate1 = fastrand::u8(..n8);
-            let gate2 = fastrand::u8(..n8);
+            let gate1 = fastrand::u8(..=maxw);
+            let gate2 = fastrand::u8(..=maxw);
             let gate = [gate0, gate1, gate2];
 
             // No trivial identites, no duplicated pins

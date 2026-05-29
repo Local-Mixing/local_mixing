@@ -81,9 +81,10 @@ def plot_file(path: Path, ax: plt.Axes) -> None:
     q3s = [item[3] for item in summaries]
     maxs = [item[4] for item in summaries]
 
-    color = colors[path.stem]
+    color = colors.get(path.stem, None)
 
     L = ax.plot(xs, meds, color=color, linewidth=2.5, label=path.stem.replace('.', ' '))
+    color = L[0].get_color()
     ax.fill_between(xs, q1s, q3s, color=color, alpha=0.2, linewidth=0)
 
     ax.plot(xs, mins, color=color, linewidth=1.0, linestyle=':')
@@ -109,10 +110,12 @@ def main() -> int:
 
     if args.logy:
         ax.semilogy()
+    else:
+        plt.ylim(bottom=0)
+
     ax.grid(True, alpha=0.3)
     ax.legend()
 
-    plt.ylim(bottom=0)
     plt.title(f"Diehard(er) results ({count} circuits each)")
 
     fig.tight_layout()
