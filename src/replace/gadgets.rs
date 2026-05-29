@@ -14,27 +14,79 @@ const RG1: [[u16; 3]; 6] = [
     [1,2,3],[0,3,2],[3,1,0],[2,0,1],[0,3,2],[1,2,3],
 ];
 
-/// RG2: swap pad wires between two pairs.
+/// RG2: re-pair two pairs (break the pairings) while keeping virtual values intact.
 /// Wire map: 0=share_i, 1=pad_i, 2=pad_j, 3=share_j.
+/// Under r57 this yields (degrees 2/3, found by search):
+///   w0' = 1+w0+w2+w2w3
+///   w1' = 1+w0+w1+w2+w3+w0w2+w0w3+w2w3
+///   w2' = 1+w0+w3+w2w3
+///   w3' = 1+w2+w3+w0w2+w0w3+w2w3
+/// so w0'+w2' = w2+w3 = s_j  and  w1'+w3' = w0+w1 = s_i, i.e. virtual_i moves to
+/// wires (pad_i, share_j) and virtual_j moves to wires (share_i, pad_j).
 const RG2: [[u16; 3]; 6] = [
-    [0,2,3],[1,0,2],[2,0,3],[2,3,0],[1,3,2],[3,2,0],
+    [0,3,2],[1,0,2],[2,0,3],[2,3,0],[1,3,2],[3,0,2],
 ];
 
-/// 20-gate W_i sequence (Ran Canetti's design, g57 gates only).
+/// 11-gate W_i sequence for the r57 gate (a ^= pos | !neg) used in this codebase.
 /// Local wires: 0=w0(i), 1=w1(n+i), 2=w2(p(i)), 3=w3(p(n+i)).
 /// Effect: (w0,w1,w2,w3) -> (w2, w3, w0 XOR w1, w1).
-/// Reversed sequence gives W_i^{-1} (each g57 gate is self-inverse).
-const W_I_GATES: [[u16; 3]; 20] = [
-    [0,1,2],[0,2,1],[1,0,2],[1,2,0],[2,1,0],[2,0,1],
-    [0,2,1],[0,1,2],[1,0,3],[1,3,0],[3,0,1],[3,1,0],
-    [1,3,0],[1,0,3],[3,2,1],[2,1,3],[1,3,2],[2,3,1],
-    [1,2,3],[3,1,2],
+/// All pins distinct; reversed sequence gives W_i^{-1} (each r57 gate is self-inverse).
+/// Found by meet-in-the-middle search over r57 gates.
+const W_I_GATES: [[u16; 3]; 11] = [
+    [0,3,2],[3,2,1],[1,3,2],[2,0,1],[2,1,0],[0,1,2],
+    [0,2,1],[1,0,3],[3,0,1],[3,1,0],[1,3,0],
 ];
 
 /// Secret-sharing state: pairs[v] = (share_wire, pad_wire) for virtual value v.
 pub struct GadgetState {
     pub n: usize,
     pub pairs: Vec<(usize, usize)>,
+}
+
+/// What a physical wire currently holds, used by the bookends to track live
+/// locations of every value as W_i gadgets relocate wire contents.
+#[derive(Clone, Copy, PartialEq)]
+enum Slot {
+    Data(usize),   // raw data value v (left bookend, not yet shared)
+    Aux(usize),    // raw aux value v
+    Pair(usize),   // a share/pad of virtual value v
+    Output(usize), // decoded output (right bookend), or sentinel
+}
+
+/// A value moved from wire `frm` to wire `to`; update whichever tracker owns it.
+fn reloc(
+    slot: Slot,
+    frm: usize,
+    to: usize,
+    dloc: &mut [usize],
+    aloc: &mut [usize],
+    pairs: &mut [(usize, usize)],
+) {
+    match slot {
+        Slot::Data(v) => dloc[v] = to,
+        Slot::Aux(v) => aloc[v] = to,
+        Slot::Pair(u) => {
+            let (sw, pw) = pairs[u];
+            pairs[u] = (if sw == frm { to } else { sw }, if pw == frm { to } else { pw });
+        }
+        Slot::Output(_) => {}
+    }
+}
+
+/// Two distinct wires not in `exclude`, used as read-only scratch for transvections.
+fn pick_two_helpers(total: usize, exclude: &[usize]) -> (usize, usize) {
+    let mut it = (0..total).filter(|w| !exclude.contains(w));
+    (it.next().unwrap(), it.next().unwrap())
+}
+
+/// Emit r57 gates computing `wire a ^= wire s`, leaving s, h1, h2 unchanged.
+/// (Single transvection; needs two read-only helper wires under the r57 gate.)
+fn emit_transvection(a: usize, s: usize, h1: usize, h2: usize, out: &mut Vec<[u16; 3]>) {
+    let (a, s, h1, h2) = (a as u16, s as u16, h1 as u16, h2 as u16);
+    out.push([s, h1, h2]);
+    out.push([a, s, h1]);
+    out.push([s, h1, h2]);
+    out.push([a, h1, s]);
 }
 
 fn emit_w_i(w0: usize, w1: usize, w2: usize, w3: usize, out: &mut Vec<[u16; 3]>) {
@@ -70,7 +122,7 @@ fn rand_z_gates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<[u16; 3]> {
         };
         let ctrl2 = loop {
             let w = rng.random_range(0..total) as u16;
-            if w != active { break w; }
+            if w != active && w != ctrl1 { break w; }
         };
         gates.push([active, ctrl1, ctrl2]);
     }
@@ -118,9 +170,12 @@ pub fn emit_rg2(state: &mut GadgetState, i: usize, j: usize, out: &mut Vec<[u16;
     for &[a, b, c] in &RG2 {
         out.push([map[a as usize], map[b as usize], map[c as usize]]);
     }
-    let tmp = state.pairs[i].1;
-    state.pairs[i].1 = state.pairs[j].1;
-    state.pairs[j].1 = tmp;
+    // After RG2: virtual_i now lives on (pad_i, share_j); virtual_j on (share_i, pad_j).
+    // (SG is symmetric in a pair's two shares, so .0/.1 order is free.)
+    let new_i = (state.pairs[i].1, state.pairs[j].0);
+    let new_j = (state.pairs[i].0, state.pairs[j].1);
+    state.pairs[i] = new_i;
+    state.pairs[j] = new_j;
 }
 
 pub fn emit_rg3(state: &GadgetState, i: usize, r1: usize, r2: usize, out: &mut Vec<[u16; 3]>) {
@@ -158,28 +213,46 @@ pub fn gadgetize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng
     // Left bookend: Z — randomize aux wires n..2n
     out.extend(rand_z_gates(n, bookend_size, rng));
 
-    // Left bookend: M_p — W_i for i=0..n-1 with random permutation p on [2n]
-    let mut perm: Vec<usize> = (0..2 * n).collect();
-    perm.shuffle(rng);
-
+    // Left bookend: M_p via live-tracking W_i. Each data value is secret-shared and the
+    // shares placed at randomly chosen wires. We track the live location of every value
+    // (data, aux, finished pair) so that the wire relocations done by one W_i never
+    // corrupt a wire a later W_i needs — fixing the fixed-permutation interference hazard.
+    let total = 2 * n;
+    let mut dloc: Vec<usize> = (0..n).collect();
+    let mut aloc: Vec<usize> = (n..2 * n).collect();
+    let mut on: Vec<Slot> = (0..total)
+        .map(|w| if w < n { Slot::Data(w) } else { Slot::Aux(w - n) })
+        .collect();
     let mut pairs = vec![(0usize, 0usize); n];
-    for i in 0..n {
-        emit_w_i(i, n + i, perm[i], perm[n + i], &mut out);
-        pairs[i] = (perm[i], perm[n + i]);
+
+    for v in 0..n {
+        let d = dloc[v];
+        let a = aloc[v];
+        // Targets s (share), t (pad): any two distinct wires other than d, a.
+        let s = loop { let w = rng.random_range(0..total); if w != d && w != a { break w; } };
+        let t = loop { let w = rng.random_range(0..total); if w != d && w != a && w != s { break w; } };
+        emit_w_i(d, a, s, t, &mut out);
+        let moved_s = on[s];
+        let moved_t = on[t];
+        on[s] = Slot::Pair(v);
+        on[t] = Slot::Pair(v);
+        pairs[v] = (s, t);
+        // W_i relocates old(s) -> d and old(t) -> a; keep all trackers consistent.
+        reloc(moved_s, s, d, &mut dloc, &mut aloc, &mut pairs);
+        reloc(moved_t, t, a, &mut dloc, &mut aloc, &mut pairs);
+        on[d] = moved_s;
+        on[a] = moved_t;
     }
 
     let mut state = GadgetState { n, pairs };
     let mut rg_pair_queue: VecDeque<(usize, usize)> = VecDeque::new();
     let mut rg3_queue: VecDeque<usize> = VecDeque::new();
-    let mut rg_type_counter = 0usize;
 
     for (idx, &gate) in main.gates.iter().enumerate() {
         emit_gadget(&state, gate, &mut out);
 
         if (idx + 1) % rg_freq == 0 {
-            let rg_type = rg_type_counter % 3;
-            rg_type_counter += 1;
-            match rg_type {
+            match rng.random_range(0..3u32) {
                 0 => {
                     let (i, j) = next_pair(&mut rg_pair_queue, n, rng);
                     emit_rg1(&mut state, i, j, &mut out);
@@ -192,14 +265,13 @@ pub fn gadgetize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng
                     let i = next_single(&mut rg3_queue, n, rng);
                     let s = state.pairs[i].0;
                     let p = state.pairs[i].1;
-                    let total = 2 * n;
                     let r1 = loop {
                         let w = rng.random_range(0..total);
                         if w != s && w != p { break w; }
                     };
                     let r2 = loop {
                         let w = rng.random_range(0..total);
-                        if w != s && w != p { break w; }
+                        if w != s && w != p && w != r1 { break w; }
                     };
                     emit_rg3(&state, i, r1, r2, &mut out);
                 }
@@ -207,10 +279,41 @@ pub fn gadgetize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng
         }
     }
 
-    // Right bookend: M_p^{-1} — W_i^{-1} for i=n-1..0
-    // W_i^{-1} on (i, n+i, pairs[i].1, pairs[i].0) decodes x'_i onto wire i
-    for i in (0..n).rev() {
-        emit_w_i_inv(i, n + i, state.pairs[i].1, state.pairs[i].0, &mut out);
+    // Right bookend: live-tracking decode. Only wires 0..n must end correct (the upper
+    // n are allowed to be random). For each virtual value v we place its decoded value
+    // (share ^ pad) onto wire v, relocating any displaced value so nothing is lost.
+    // Processing v in increasing order guarantees pair v's wires are never an already
+    // decoded wire (< v), so finished outputs are never clobbered.
+    for w in 0..total { on[w] = Slot::Output(usize::MAX); }
+    for v in 0..n {
+        on[state.pairs[v].0] = Slot::Pair(v);
+        on[state.pairs[v].1] = Slot::Pair(v);
+    }
+    let mut finalized = vec![false; total];
+    for v in 0..n {
+        let (sw, pw) = state.pairs[v];
+        if sw == v {
+            // share already on wire v: wire v ^= wire pw  ->  v = share ^ pad
+            let (h1, h2) = pick_two_helpers(total, &[v, pw]);
+            emit_transvection(v, pw, h1, h2, &mut out);
+        } else if pw == v {
+            let (h1, h2) = pick_two_helpers(total, &[v, sw]);
+            emit_transvection(v, sw, h1, h2, &mut out);
+        } else {
+            // W_i^{-1}(v, b, sw, pw): wire v <- share^pad; relocates old(v)->sw, old(b)->pw.
+            let b = (0..total)
+                .find(|&w| !finalized[w] && w != v && w != sw && w != pw)
+                .unwrap();
+            let moved_v = on[v];
+            let moved_b = on[b];
+            emit_w_i_inv(v, b, sw, pw, &mut out);
+            reloc(moved_v, v, sw, &mut dloc, &mut aloc, &mut state.pairs);
+            reloc(moved_b, b, pw, &mut dloc, &mut aloc, &mut state.pairs);
+            on[sw] = moved_v;
+            on[pw] = moved_b;
+        }
+        finalized[v] = true;
+        on[v] = Slot::Output(v);
     }
 
     // Right bookend: Z — randomize aux wires
@@ -264,12 +367,13 @@ mod tests {
     }
 
     #[test]
-    fn rg2_swaps_pads() {
+    fn rg2_repairs() {
         let mut state = GadgetState { n: 4, pairs: vec![(0,4),(1,5),(2,6),(3,7)] };
         let mut out = Vec::new();
         emit_rg2(&mut state, 0, 1, &mut out);
-        assert_eq!(state.pairs[0], (0, 5));
-        assert_eq!(state.pairs[1], (1, 4));
+        // virtual_i -> (pad_i, share_j); virtual_j -> (share_i, pad_j)
+        assert_eq!(state.pairs[0], (4, 1));
+        assert_eq!(state.pairs[1], (0, 5));
     }
 
     #[test]
@@ -329,28 +433,25 @@ mod tests {
 
     #[test]
     fn verify_rg2_semantics() {
+        // pairs: i=0 -> (share_i=0, pad_i=4); j=1 -> (share_j=1, pad_j=5)
         let mut state = GadgetState { n: 4, pairs: vec![(0,4),(1,5),(2,6),(3,7)] };
         let mut out = Vec::new();
         emit_rg2(&mut state, 0, 1, &mut out);
         let circ = CircuitSeq { gates: out };
-        assert_eq!(state.pairs[0], (0, 5));
-        assert_eq!(state.pairs[1], (1, 4));
+        // RG2 re-pairs: virtual_i moves to (pad_i, share_j)=(4,1); virtual_j to (share_i, pad_j)=(0,5).
+        assert_eq!(state.pairs[0], (4, 1));
+        assert_eq!(state.pairs[1], (0, 5));
         for s in 0usize..(1 << 8) {
-            let w0 = (s >> 0) & 1; // share_i=wire 0
-            let w1 = (s >> 4) & 1; // pad_i=wire 4
-            let w2 = (s >> 5) & 1; // pad_j=wire 5
-            let w3 = (s >> 1) & 1; // share_j=wire 1
-            let s_i = w0 ^ w1;
-            let s_j = w2 ^ w3;
+            let s_i = ((s >> 0) & 1) ^ ((s >> 4) & 1); // virtual_i = share_i ^ pad_i
+            let s_j = ((s >> 1) & 1) ^ ((s >> 5) & 1); // virtual_j = share_j ^ pad_j
             let out_state = circ.evaluate(s);
-            let nw0 = (out_state >> 0) & 1; // share_i unchanged
-            let nw2 = (out_state >> 5) & 1; // new pad_i (was pad_j)
-            let nw1 = (out_state >> 4) & 1; // new pad_j (was pad_i)
-            let nw3 = (out_state >> 1) & 1; // share_j unchanged
-            assert_eq!(nw0 ^ nw2, s_i,
-                "new pair i (share_i, old_pad_j) should carry s_i, s={:#010b}", s);
-            assert_eq!(nw1 ^ nw3, s_j,
-                "new pair j (share_j, old_pad_i) should carry s_j, s={:#010b}", s);
+            // each pair, after RG2, must still carry its own virtual value
+            let pi = state.pairs[0];
+            let pj = state.pairs[1];
+            let vi = ((out_state >> pi.0) & 1) ^ ((out_state >> pi.1) & 1);
+            let vj = ((out_state >> pj.0) & 1) ^ ((out_state >> pj.1) & 1);
+            assert_eq!(vi, s_i, "pair i must still carry s_i after RG2, s={:#010b}", s);
+            assert_eq!(vj, s_j, "pair j must still carry s_j after RG2, s={:#010b}", s);
         }
     }
 
@@ -408,6 +509,45 @@ mod tests {
         let gadgetized = gadgetize(&main, n, 3, &mut rng);
         main.probably_equal(&gadgetized, n, 10_000)
             .expect("gadgetized circuit changed functionality on first 32 wires");
+    }
+
+    #[test]
+    fn gadgetize_random_sweep_with_random_aux() {
+        // Sweep n / gate-count / rg_freq over many random circuits, and explicitly
+        // drive the upper n (aux) input wires with RANDOM values (probably_equal only
+        // feeds aux=0). Only the original n output wires must match.
+        let mut rng = rand::rng();
+        for &n in &[3usize, 4, 5, 8, 16] {
+            let mask: usize = (1 << n) - 1;
+            for &m in &[1usize, 7, 50, 150] {
+                for &rg_freq in &[1usize, 2, 3] {
+                    let main = crate::random::random_data::random_circuit(n, m);
+                    let gz = gadgetize(&main, n, rg_freq, &mut rng);
+                    for _ in 0..256 {
+                        let x: usize = rng.random_range(0..(1 << n));
+                        let aux: usize = rng.random_range(0..(1 << n));
+                        let full = x | (aux << n);
+                        let expected = main.evaluate(x) & mask;
+                        let got = gz.evaluate(full) & mask;
+                        assert_eq!(got, expected,
+                            "mismatch n={n} m={m} rg_freq={rg_freq} x={x:#b} aux={aux:#b}: \
+                             got {got:#b} expected {expected:#b}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gadgetize_bookends_only_probably_equal() {
+        // RG disabled (rg_freq > #gates) -> exercises only Z + W_i + SG + W_i^{-1} + Z.
+        // Isolates W_i / SG / bookend correctness from the RG gadgets.
+        let n = 32;
+        let main = crate::random::random_data::random_circuit(n, 200);
+        let mut rng = rand::rng();
+        let gadgetized = gadgetize(&main, n, 1_000_000, &mut rng);
+        main.probably_equal(&gadgetized, n, 10_000)
+            .expect("bookend-only gadgetized circuit changed functionality on first 32 wires");
     }
 
     #[test]

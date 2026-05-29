@@ -1,9 +1,160 @@
 // For adding wire shuffles and bit flips
 use std::collections::HashMap;
 use rand::Rng;
-use lmdb::{Cursor, Database, Environment, Transaction};
+use rand::seq::IndexedRandom;
+use lmdb::{Database, Environment};
 use crate::circuit::{circuit::CircuitSeq, Permutation};
 use crate::circuit::circuit::rewire_gate_ver;
+
+// Hardcoded circuits: min-2 depths per function, 3-wire and 4-wire.
+// Wire convention: wire 1↔2 swapped (swap), wire 1 flipped (not), wire 1 controls wire 2 (cnot).
+// Wire 0 (and wire 3 in 4-wire) are ancilla.
+static SWAP_3W: &[&[[u16;3]]] = &[
+    &[[1,0,2],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,1,0]],
+    &[[0,1,2],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[0,2,1]],
+    &[[1,2,0],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[2,1,0]],
+    &[[0,2,1],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[0,1,2]],
+    &[[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2]],
+    &[[0,1,2],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[0,2,1]],
+    &[[0,2,1],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[0,1,2]],
+    &[[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0]],
+    &[[2,0,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,2,0]],
+    &[[1,0,2],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[2,0,1]],
+    &[[0,1,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[0,2,1]],
+    &[[0,2,1],[2,0,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,2,0],[0,1,2]],
+    &[[2,1,0],[1,0,2],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,1,0],[1,2,0]],
+    &[[2,1,0],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[1,2,0]],
+    &[[0,1,2],[2,0,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,2,0],[0,2,1]],
+    &[[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1]],
+    &[[1,0,2],[2,0,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,2,0],[2,0,1]],
+    &[[1,2,0],[2,0,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,2,0],[2,1,0]],
+    &[[2,0,1],[1,0,2],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,1,0],[1,0,2]],
+    &[[2,0,1],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[1,0,2]],
+    &[[0,1,2],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[0,2,1]],
+    &[[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0]],
+];
+static SWAP_4W: &[&[[u16;3]]] = &[
+    &[[1,2,3],[1,3,2],[2,1,3],[2,3,1],[1,2,3],[1,3,2]],
+    &[[1,2,3],[2,1,3],[2,3,1],[1,2,3],[1,3,2],[2,3,1]],
+    &[[1,2,3],[1,3,2],[2,1,3],[2,3,1],[1,0,2],[1,0,3],[1,2,0],[1,3,0]],
+    &[[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0]],
+    &[[2,0,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,2,0]],
+    &[[1,3,2],[2,1,3],[2,3,1],[1,2,3],[1,3,2],[2,1,3]],
+    &[[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1]],
+];
+static SWAP_N1_3W: &[&[[u16;3]]] = &[
+    &[[1,2,0],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[2,0,1]],
+    &[[1,0,2],[2,0,1],[1,0,2],[2,1,0],[1,2,0],[2,1,0]],
+    &[[1,0,2],[1,0,2],[1,2,0],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[2,0,1]],
+    &[[0,1,2],[1,0,2],[2,1,0],[1,2,0],[0,2,1],[2,1,0],[1,2,0],[2,0,1]],
+    &[[2,0,1],[1,2,0],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[2,0,1],[1,0,2]],
+    &[[1,2,0],[0,1,2],[1,2,0],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[0,1,2]],
+    &[[2,1,0],[1,2,0],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[2,0,1],[1,2,0]],
+];
+static SWAP_N1_4W: &[&[[u16;3]]] = &[
+    &[[1,0,3],[1,2,3],[2,1,3],[1,2,3],[2,3,1],[1,3,2],[2,0,3],[2,3,1]],
+    &[[1,3,2],[2,0,1],[1,0,2],[2,1,0],[1,2,0],[2,1,3]],
+];
+static SWAP_N2_3W: &[&[[u16;3]]] = &[
+    &[[2,0,1],[1,2,0],[2,1,0],[0,2,1],[1,2,0],[2,1,0],[1,0,2],[0,1,2]],
+    &[[0,2,1],[2,0,1],[1,2,0],[2,1,0],[0,1,2],[1,2,0],[2,1,0],[1,0,2]],
+    &[[2,0,1],[1,0,2],[2,0,1],[1,2,0],[2,1,0],[1,2,0]],
+    &[[0,1,2],[1,0,2],[2,0,1],[1,2,0],[2,1,0],[1,2,0],[0,1,2],[1,2,0]],
+    &[[0,2,1],[1,2,0],[2,1,0],[1,0,2],[2,0,1],[1,0,2],[0,2,1],[1,0,2]],
+    &[[2,1,0],[1,0,2],[2,0,1],[0,1,2],[1,0,2],[2,0,1],[1,2,0],[0,2,1]],
+    &[[0,2,1],[1,0,2],[2,0,1],[0,1,2],[1,0,2],[2,0,1],[1,0,2],[1,2,0]],
+    &[[2,0,1],[0,2,1],[1,0,2],[2,0,1],[1,2,0],[2,1,0],[0,2,1],[1,2,0]],
+    &[[2,1,0],[1,2,0],[2,1,0],[1,0,2],[2,0,1],[1,0,2]],
+];
+static SWAP_N2_4W: &[&[[u16;3]]] = &[
+    &[[2,1,0],[1,2,3],[2,1,3],[1,3,2],[2,3,1],[1,0,2]],
+    &[[2,1,3],[1,2,0],[2,1,0],[1,0,2],[2,0,1],[1,3,2]],
+];
+static SWAP_N12_3W: &[&[[u16;3]]] = &[
+    &[[2,0,1],[2,1,0],[0,2,1],[1,0,2],[2,0,1],[0,1,2],[1,0,2],[2,0,1]],
+    &[[0,1,2],[1,0,2],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[2,1,0],[0,1,2]],
+    &[[0,1,2],[1,0,2],[2,0,1],[1,2,0],[0,2,1],[1,2,0],[2,0,1],[1,0,2]],
+    &[[1,0,2],[1,2,0],[0,2,1],[2,1,0],[1,2,0],[0,1,2],[2,1,0],[1,2,0]],
+    &[[2,1,0],[1,2,0],[0,2,1],[2,1,0],[1,2,0],[0,1,2],[2,0,1],[2,1,0]],
+    &[[1,2,0],[2,0,1],[1,0,2],[2,1,0],[1,2,0],[2,0,1]],
+    &[[0,2,1],[1,2,0],[2,1,0],[1,0,2],[0,1,2],[1,0,2],[2,1,0],[1,2,0]],
+    &[[1,0,2],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[2,1,0]],
+    &[[1,0,2],[2,0,1],[1,2,0],[0,2,1],[1,2,0],[2,0,1],[1,0,2],[0,1,2]],
+    &[[1,0,2],[0,2,1],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[0,2,1],[2,1,0]],
+    &[[0,1,2],[2,1,0],[1,0,2],[2,0,1],[1,2,0],[2,1,0],[1,0,2],[0,1,2]],
+    &[[2,0,1],[1,2,0],[2,1,0],[1,0,2],[2,0,1],[1,2,0]],
+    &[[1,2,0],[2,1,0],[0,1,2],[1,2,0],[2,1,0],[0,2,1],[1,0,2],[1,2,0]],
+    &[[1,2,0],[2,1,0],[1,0,2],[0,1,2],[1,0,2],[2,1,0],[1,2,0],[0,2,1]],
+    &[[2,1,0],[1,0,2],[2,0,1],[1,2,0],[2,1,0],[1,0,2]],
+    &[[0,1,2],[1,2,0],[2,0,1],[1,0,2],[2,1,0],[1,2,0],[2,0,1],[0,1,2]],
+];
+static SWAP_N12_4W: &[&[[u16;3]]] = &[
+    &[[1,3,2],[2,1,3],[1,2,3],[2,3,1],[1,3,2],[2,1,3]],
+    &[[2,1,3],[1,3,2],[2,3,1],[1,2,3],[2,1,3],[1,3,2]],
+    &[[1,2,0],[2,3,1],[1,3,2],[2,1,3],[1,2,3],[2,0,1]],
+];
+// NOT 3-wire at min-2 depths (6,7) is empty — those depths only exist for 4-wire.
+static NOT_3W: &[&[[u16;3]]] = &[];
+static NOT_4W: &[&[[u16;3]]] = &[
+    &[[0,2,3],[1,0,2],[1,0,3],[0,2,3],[1,2,0],[1,2,3],[1,3,0]],
+    &[[1,0,2],[1,0,3],[1,3,2],[2,3,0],[1,0,2],[1,3,2],[2,3,0]],
+    &[[1,0,2],[1,0,3],[3,0,2],[0,2,3],[1,3,0],[0,2,3],[3,0,2]],
+    &[[2,0,3],[1,2,0],[1,3,2],[2,0,3],[1,0,2],[1,2,3]],
+    &[[0,2,3],[1,0,2],[1,3,0],[0,2,3],[1,0,3],[1,2,0]],
+    &[[1,0,2],[2,3,0],[3,0,2],[1,0,3],[3,0,2],[1,0,3],[2,3,0]],
+    &[[1,0,2],[1,3,0],[2,0,3],[1,0,2],[1,3,2],[2,0,3],[1,3,2]],
+    &[[1,0,3],[2,0,3],[1,0,2],[2,0,3],[2,3,0],[1,0,2],[2,3,0]],
+    &[[0,1,3],[0,3,2],[1,3,0],[0,3,2],[1,3,2],[0,1,3],[1,3,0]],
+    &[[1,2,0],[1,2,3],[3,2,0],[1,3,0],[1,3,2],[3,2,0],[1,0,3]],
+    &[[1,0,2],[1,0,3],[1,3,2],[2,0,3],[1,2,0],[1,2,3],[2,0,3]],
+    &[[1,2,0],[1,3,2],[2,0,3],[1,0,2],[1,2,3],[2,0,3]],
+    &[[1,3,0],[2,0,3],[2,3,0],[1,2,0],[2,0,3],[2,3,0],[1,2,0]],
+    &[[1,0,2],[1,2,3],[2,0,3],[1,2,0],[1,3,2],[2,0,3]],
+    &[[1,0,2],[3,0,2],[3,2,0],[1,3,2],[3,0,2],[3,2,0],[1,3,2]],
+    &[[1,0,2],[1,3,0],[0,2,3],[1,0,3],[1,2,0],[0,2,3]],
+    &[[3,0,2],[1,2,3],[3,0,2],[1,3,0],[0,3,2],[1,3,0],[0,3,2]],
+    &[[0,2,1],[0,3,2],[1,0,2],[0,3,2],[1,3,2],[0,2,1],[1,0,2]],
+    &[[0,3,2],[1,0,2],[1,3,0],[0,3,2],[1,0,3],[1,2,0]],
+    &[[1,0,2],[1,3,2],[3,2,0],[0,3,2],[1,0,2],[0,3,2],[3,2,0]],
+    &[[0,2,1],[1,3,2],[3,0,2],[1,3,2],[3,0,2],[0,2,1],[1,0,2]],
+    &[[0,3,2],[1,2,0],[1,2,3],[1,3,0],[0,3,2],[1,2,0],[1,3,0]],
+    &[[3,2,0],[1,0,3],[1,3,2],[3,2,0],[1,2,3],[1,3,0]],
+    &[[1,0,2],[3,2,0],[1,0,3],[1,2,3],[3,2,0],[1,0,3],[1,2,3]],
+    &[[1,0,3],[1,2,0],[0,3,2],[1,0,2],[1,3,0],[0,3,2]],
+    &[[2,0,3],[1,0,2],[1,2,3],[2,0,3],[1,2,0],[1,3,2]],
+    &[[1,0,2],[0,3,2],[1,0,3],[1,2,0],[0,3,2],[1,3,0]],
+    &[[1,0,2],[1,2,3],[2,3,0],[1,2,0],[1,3,2],[2,3,0]],
+    &[[3,0,2],[1,3,2],[3,0,2],[2,0,3],[1,2,0],[2,0,3],[1,3,2]],
+    &[[1,0,3],[1,3,2],[2,0,3],[1,2,0],[1,2,3],[2,0,3],[1,0,2]],
+    &[[2,3,0],[1,2,0],[1,3,2],[2,3,0],[1,0,2],[1,2,3]],
+    &[[0,1,3],[1,0,2],[2,0,3],[1,0,2],[2,0,3],[0,1,3],[1,3,0]],
+    &[[1,0,2],[3,0,2],[1,0,3],[1,2,3],[3,0,2],[1,3,0],[1,3,2]],
+    &[[1,3,0],[2,0,3],[1,2,0],[2,0,3],[2,3,0],[1,2,0],[2,3,0]],
+];
+// CNOT 3-wire at min-2 depths (4,5) is empty — those depths only exist for 4-wire.
+static CNOT_3W: &[&[[u16;3]]] = &[];
+static CNOT_4W: &[&[[u16;3]]] = &[
+    &[[1,3,0],[2,3,0],[2,3,1],[1,3,0],[2,1,3]],
+    &[[2,0,1],[1,0,3],[2,1,0],[1,0,3]],
+    &[[2,3,1],[3,1,0],[2,3,1],[3,1,0]],
+    &[[2,1,3],[2,3,0],[0,3,1],[2,3,0],[0,3,1]],
+    &[[2,1,0],[3,1,0],[2,1,3],[3,1,0],[2,1,3]],
+    &[[1,3,0],[2,1,3],[1,3,0],[2,3,1]],
+    &[[0,3,1],[2,1,3],[2,3,0],[0,3,1],[2,3,0]],
+    &[[2,0,1],[0,1,3],[2,0,1],[0,1,3]],
+    &[[0,1,3],[2,0,1],[0,1,3],[2,0,1]],
+    &[[3,1,0],[2,3,1],[3,1,0],[2,3,1]],
+    &[[2,0,3],[2,1,0],[3,0,1],[2,0,3],[3,0,1]],
+    &[[2,1,0],[0,1,3],[2,1,0],[0,1,3],[2,1,3]],
+    &[[0,1,3],[2,1,0],[0,1,3],[2,1,0],[2,1,3]],
+    &[[2,0,3],[2,1,0],[1,0,3],[2,0,1],[1,0,3]],
+    &[[2,1,0],[3,0,1],[2,0,3],[3,0,1],[2,0,3]],
+    &[[1,0,3],[2,0,1],[1,0,3],[2,0,3],[2,1,0]],
+    &[[1,0,3],[2,1,0],[1,0,3],[2,0,1]],
+    &[[2,1,0],[2,1,3],[3,1,0],[2,1,3],[3,1,0]],
+    &[[2,1,3],[1,3,0],[2,3,0],[2,3,1],[1,3,0]],
+    &[[2,3,1],[1,3,0],[2,1,3],[1,3,0]],
+];
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Transpositions {
     pub transpositions: Vec<(u16, u16, u16)>
@@ -246,194 +397,135 @@ impl Transpositions {
         }
     }
 
-    // Generate from the LMDB
-    // LMDB swaps wire 1 and wire 2
-    // This relabels wire 1 to swap.0 and and wire 2 to swap.1
+    // Swaps wire 1 and wire 2 in the template; relabels to swap.0 and swap.1.
+    // Randomly selects from hardcoded 3-wire or 4-wire circuits at min depths.
     pub fn gen_gates_swap(
         n: usize,
         swap: (u16, u16, u16),
-        env: &lmdb::Environment,
-        dbs: &HashMap<String, Database>,
+        _env: &lmdb::Environment,
+        _dbs: &HashMap<String, Database>,
     ) -> Vec<[u16;3]> {
         let (a, b, negation_type) = swap;
-        let (db_name, max_entries) = if negation_type == 0 {
-            ("swap", 36)
-        } else if negation_type == 1 {
-            ("swapnot1", 21)
-        } else if negation_type == 2 {
-            ("swapnot2", 16)
-        } else if negation_type == 3 {
-            ("swapnot12", 25)
-        } else {
-            panic!("Invalid negation type")
+        let (pool_3w, pool_4w): (&[&[[u16;3]]], &[&[[u16;3]]]) = match negation_type {
+            0 => (SWAP_3W, SWAP_4W),
+            1 => (SWAP_N1_3W, SWAP_N1_4W),
+            2 => (SWAP_N2_3W, SWAP_N2_4W),
+            3 => (SWAP_N12_3W, SWAP_N12_4W),
+            _ => panic!("Invalid negation type"),
         };
-
-        let db = dbs.get(db_name).unwrap_or_else(|| {
-            panic!("Failed to get DB with name: {}", db_name);
-        });
-
         let mut rng = rand::rng();
-        let random_index = rng.random_range(0..max_entries);
-
-        let txn = env.begin_ro_txn().expect("Failed to start txn");
-        let mut cursor = txn.open_ro_cursor(*db).expect("Failed to open ro cursor");
-
-        let value_bytes = 
-            cursor.iter_start()
-            .nth(random_index)
-            .map(|(k, _v)| k)
-            .expect("Failed to get random key");
-        
-        let out = CircuitSeq::from_blob(value_bytes);
-
-        let mut c;
-        loop {
-            c = rng.random_range(0..n) as u16;
-            if c != a && c != b {
-                break;
-            }
+        let use_4w = n >= 4 && !pool_4w.is_empty();
+        let total = pool_3w.len() + if use_4w { pool_4w.len() } else { 0 };
+        let idx = rng.random_range(0..total);
+        if idx < pool_3w.len() {
+            let circuit = pool_3w[idx];
+            let mut c;
+            loop { c = rng.random_range(0..n) as u16; if c != a && c != b { break; } }
+            let out = CircuitSeq { gates: circuit.to_vec() };
+            CircuitSeq::unrewire_subcircuit(&out, &[c, a, b]).gates
+        } else {
+            let circuit = pool_4w[idx - pool_3w.len()];
+            let mut c1;
+            loop { c1 = rng.random_range(0..n) as u16; if c1 != a && c1 != b { break; } }
+            let mut c2;
+            loop { c2 = rng.random_range(0..n) as u16; if c2 != a && c2 != b && c2 != c1 { break; } }
+            let out = CircuitSeq { gates: circuit.to_vec() };
+            CircuitSeq::unrewire_subcircuit(&out, &[c1, a, b, c2]).gates
         }
-        let used_wires = vec![c, a, b];
-        CircuitSeq::unrewire_subcircuit(&out, &used_wires).gates
     }
 
-    // Generate from the LMDB
-    // LMDB swaps wire 1 and wire 2
-    // This relabels wire 1 to swap.0 and and wire 2 to swap.1
     pub fn gen_gates_swap_restricted(
         n: usize,
         swap: (u16, u16, u16),
-        env: &lmdb::Environment,
-        dbs: &HashMap<String, Database>,
+        _env: &lmdb::Environment,
+        _dbs: &HashMap<String, Database>,
         restricted: &Vec<usize>,
     ) -> Vec<[u16;3]> {
         let (a, b, negation_type) = swap;
-        let (db_name, max_entries) = if negation_type == 0 {
-            ("swap", 36)
-        } else if negation_type == 1 {
-            ("swapnot1", 21)
-        } else if negation_type == 2 {
-            ("swapnot2", 16)
-        } else if negation_type == 3 {
-            ("swapnot12", 25)
-        } else {
-            panic!("Invalid negation type")
+        let (pool_3w, pool_4w): (&[&[[u16;3]]], &[&[[u16;3]]]) = match negation_type {
+            0 => (SWAP_3W, SWAP_4W),
+            1 => (SWAP_N1_3W, SWAP_N1_4W),
+            2 => (SWAP_N2_3W, SWAP_N2_4W),
+            3 => (SWAP_N12_3W, SWAP_N12_4W),
+            _ => panic!("Invalid negation type"),
         };
-
-        let db = dbs.get(db_name).unwrap_or_else(|| {
-            panic!("Failed to get DB with name: {}", db_name);
-        });
-
         let mut rng = rand::rng();
-        let random_index = rng.random_range(0..max_entries);
-
-        let txn = env.begin_ro_txn().expect("Failed to start txn");
-        let mut cursor = txn.open_ro_cursor(*db).expect("Failed to open ro cursor");
-
-        let value_bytes = 
-            cursor.iter_start()
-            .nth(random_index)
-            .map(|(k, _v)| k)
-            .expect("Failed to get random key");
-        
-        let out = CircuitSeq::from_blob(value_bytes);
-
-        let mut c;
-        loop {
-            c = rng.random_range(0..n) as u16;
-            if c != a && c != b && !restricted.contains(&(c as usize)){
-                break;
+        let use_4w = n >= 4 && !pool_4w.is_empty();
+        let total = pool_3w.len() + if use_4w { pool_4w.len() } else { 0 };
+        let idx = rng.random_range(0..total);
+        if idx < pool_3w.len() {
+            let circuit = pool_3w[idx];
+            let mut c;
+            loop {
+                c = rng.random_range(0..n) as u16;
+                if c != a && c != b && !restricted.contains(&(c as usize)) { break; }
             }
+            let out = CircuitSeq { gates: circuit.to_vec() };
+            CircuitSeq::unrewire_subcircuit(&out, &[c, a, b]).gates
+        } else {
+            let circuit = pool_4w[idx - pool_3w.len()];
+            let mut c1;
+            loop {
+                c1 = rng.random_range(0..n) as u16;
+                if c1 != a && c1 != b && !restricted.contains(&(c1 as usize)) { break; }
+            }
+            let mut c2;
+            loop {
+                c2 = rng.random_range(0..n) as u16;
+                if c2 != a && c2 != b && c2 != c1 && !restricted.contains(&(c2 as usize)) { break; }
+            }
+            let out = CircuitSeq { gates: circuit.to_vec() };
+            CircuitSeq::unrewire_subcircuit(&out, &[c1, a, b, c2]).gates
         }
-        let used_wires = vec![c, a, b];
-        CircuitSeq::unrewire_subcircuit(&out, &used_wires).gates
     }
 
-    // LMDB wire 1 gets flipped
+    // Wire 1 gets flipped in the template; relabels wire 1 to `wire`.
+    // Uses 4-wire circuits (min depth 6-7) with 3 ancilla wires.
     pub fn gen_gates_not(
         n: usize,
         wire: u16,
-        env: &lmdb::Environment,
-        dbs: &HashMap<String, Database>,
+        _env: &lmdb::Environment,
+        _dbs: &HashMap<String, Database>,
     ) -> Vec<[u16;3]> {
-        let db_name= "not";
-
-        let db = dbs.get(db_name).unwrap_or_else(|| {
-            panic!("Failed to get DB with name: {}", db_name);
-        });
-
-        let max_entries: usize = 18;
-
         let mut rng = rand::rng();
-        let random_index = rng.random_range(0..max_entries);
-
-        let txn = env.begin_ro_txn().expect("Failed to start txn");
-        let mut cursor = txn.open_ro_cursor(*db).expect("Failed to open ro cursor");
-
-        let value_bytes = 
-            cursor.iter_start()
-            .nth(random_index)
-            .map(|(k, _v)| k)
-            .expect("Failed to get random key");
-        
-        let out = CircuitSeq::from_blob(value_bytes);
-
-        let mut a;
-        loop {
-            a = rng.random_range(0..n) as u16;
-            if a != wire {
-                break;
-            }
+        let pool = if !NOT_4W.is_empty() { NOT_4W } else { NOT_3W };
+        let circuit = pool.choose(&mut rng).expect("NOT pool is empty");
+        if pool.as_ptr() == NOT_4W.as_ptr() {
+            let mut a; loop { a = rng.random_range(0..n) as u16; if a != wire { break; } }
+            let mut b; loop { b = rng.random_range(0..n) as u16; if b != wire && b != a { break; } }
+            let mut c; loop { c = rng.random_range(0..n) as u16; if c != wire && c != a && c != b { break; } }
+            let out = CircuitSeq { gates: circuit.to_vec() };
+            CircuitSeq::unrewire_subcircuit(&out, &[a, wire, b, c]).gates
+        } else {
+            let mut a; loop { a = rng.random_range(0..n) as u16; if a != wire { break; } }
+            let mut b; loop { b = rng.random_range(0..n) as u16; if b != wire && b != a { break; } }
+            let out = CircuitSeq { gates: circuit.to_vec() };
+            CircuitSeq::unrewire_subcircuit(&out, &[a, wire, b]).gates
         }
-        let mut b;
-        loop {
-            b = rng.random_range(0..n) as u16;
-            if b != wire && b != a{
-                break;
-            }
-        }
-        let used_wires = vec![a, wire, b];
-        CircuitSeq::unrewire_subcircuit(&out, &used_wires).gates
     }
 
-    // LMDB wire 2 gets flipped if wire 1 is true
+    // Wire 2 gets flipped if wire 1 is true in the template; relabels to con/not.
+    // Uses 4-wire circuits (min depth 4-5) with 2 ancilla wires.
     pub fn gen_gates_cnot(
         n: usize,
         con: u16,
         not: u16,
-        env: &lmdb::Environment,
-        dbs: &HashMap<String, Database>,
+        _env: &lmdb::Environment,
+        _dbs: &HashMap<String, Database>,
     ) -> Vec<[u16;3]> {
-        let db_name = "cnot";
-        let max_entries = 19;
-
-        let db = dbs.get(db_name).unwrap_or_else(|| {
-            panic!("Failed to get DB with name: {}", db_name);
-        });
-
         let mut rng = rand::rng();
-        let random_index = rng.random_range(0..max_entries);
-
-        let txn = env.begin_ro_txn().expect("Failed to start txn");
-        let mut cursor = txn.open_ro_cursor(*db).expect("Failed to open ro cursor");
-
-        let value_bytes = 
-            cursor.iter_start()
-            .nth(random_index)
-            .map(|(k, _v)| k)
-            .expect("Failed to get random key");
-        
-        let out = CircuitSeq::from_blob(value_bytes);
-
-        let mut c;
-        loop {
-            c = rng.random_range(0..n) as u16;
-            if c != con && c != not {
-                break;
-            }
+        let pool = if !CNOT_4W.is_empty() { CNOT_4W } else { CNOT_3W };
+        let circuit = pool.choose(&mut rng).expect("CNOT pool is empty");
+        if pool.as_ptr() == CNOT_4W.as_ptr() {
+            let mut c1; loop { c1 = rng.random_range(0..n) as u16; if c1 != con && c1 != not { break; } }
+            let mut c2; loop { c2 = rng.random_range(0..n) as u16; if c2 != con && c2 != not && c2 != c1 { break; } }
+            let out = CircuitSeq { gates: circuit.to_vec() };
+            CircuitSeq::unrewire_subcircuit(&out, &[c1, con, not, c2]).gates
+        } else {
+            let mut c; loop { c = rng.random_range(0..n) as u16; if c != con && c != not { break; } }
+            let out = CircuitSeq { gates: circuit.to_vec() };
+            CircuitSeq::unrewire_subcircuit(&out, &[c, con, not]).gates
         }
-        let used_wires = vec![c, con, not];
-        CircuitSeq::unrewire_subcircuit(&out, &used_wires).gates
     }
 
     pub fn to_circuit(
@@ -1106,6 +1198,180 @@ pub fn replace_disjoint_pair((a,b, t1): (u16, u16, u16), (c,d, t2): (u16, u16, u
     }
     
     t
+}
+
+fn gates_collide(g1: [u16; 3], g2: [u16; 3]) -> bool {
+    g1[0] == g2[1] || g1[0] == g2[2] || g2[0] == g1[1] || g2[0] == g1[2]
+}
+
+// For each collision (adjacent gates that can't commute), try inserting the first 3 gates of a
+// randomly chosen SAMF (swap-and-maybe-flip circuit) after the collision window and look up an
+// equal-or-shorter replacement in the curated DB.
+//
+// When gates_ahead > 2, first tries a wider window of gates_ahead gates + samf[0..3]. Falls back
+// to the 2-gate collision pair + samf[0..3] if the wider lookup misses.
+//
+// If a replacement is found, output it followed by the remaining SAMF gates. Future gates are
+// relabeled by the SAMF's wire permutation, and the accumulated permutation is undone at the end.
+pub fn shuffled_shooting_game(
+    circuit: &mut CircuitSeq,
+    n: usize,
+    env: &Environment,
+    dbs: &HashMap<String, Database>,
+    curated_shard_dbs: &[Database],
+    shard_dbs: &[Database],
+    gates_ahead: usize,
+) {
+    use crate::replace::pairs::compress_curated_lmdb;
+
+    let mut rng = rand::rng();
+    let mut output: Vec<[u16; 3]> = Vec::new();
+    let mut t_list = Transpositions { transpositions: Vec::new() };
+    let mut negation_mask = vec![0u8; n];
+    let mut compressions: usize = 0;
+
+    let input = circuit.gates.clone();
+    let mut i = 0;
+
+    while i < input.len() {
+        let gate = input[i];
+        let a = t_list.evaluate(gate[0]);
+        let b = t_list.evaluate(gate[1]);
+        let c = t_list.evaluate(gate[2]);
+
+        // Attempt SAMF-assisted replacement when this gate and the next collide.
+        let replaced = 'try_replace: {
+            if i + 1 >= input.len() { break 'try_replace false; }
+
+            let next = input[i + 1];
+            let na = t_list.evaluate(next[0]);
+            let nb = t_list.evaluate(next[1]);
+            let nc = t_list.evaluate(next[2]);
+
+            if !gates_collide([a, b, c], [na, nb, nc]) { break 'try_replace false; }
+
+            // Collision pair controls must be clean (no pending negation corrections).
+            if negation_mask[b as usize] != 0 || negation_mask[c as usize] != 0
+                || negation_mask[nb as usize] != 0 || negation_mask[nc as usize] != 0
+            {
+                break 'try_replace false;
+            }
+
+            // Generate a random SAMF once — reuse for both wide and narrow attempts.
+            let swap_lo: u16 = rng.random_range(0..n as u16);
+            let swap_hi: u16 = loop {
+                let w: u16 = rng.random_range(0..n as u16);
+                if w != swap_lo { break w; }
+            };
+            let (swap_lo, swap_hi) = if swap_lo < swap_hi { (swap_lo, swap_hi) } else { (swap_hi, swap_lo) };
+            let neg_type: u16 = rng.random_range(0..4);
+            let samf_swap = (swap_lo, swap_hi, neg_type);
+            let samf = Transpositions::gen_gates_swap(n, samf_swap, env, dbs);
+            if samf.len() < 3 { break 'try_replace false; }
+
+            // Try wider window first (gates_ahead gates + samf[0..3]) if enough gates remain
+            // and all gates in the window have clean control-wire negations.
+            let wide_result: Option<(Vec<[u16; 3]>, usize)> =
+                if gates_ahead > 2 && i + gates_ahead <= input.len() {
+                    // Build relabeled window, bailing if any gate has dirty control negations.
+                    let mut wide: Vec<[u16; 3]> = Vec::with_capacity(gates_ahead + 3);
+                    let mut clean = true;
+                    for k in 0..gates_ahead {
+                        let g = input[i + k];
+                        let ga = t_list.evaluate(g[0]);
+                        let gb = t_list.evaluate(g[1]);
+                        let gc = t_list.evaluate(g[2]);
+                        if negation_mask[gb as usize] != 0 || negation_mask[gc as usize] != 0 {
+                            clean = false;
+                            break;
+                        }
+                        wide.push([ga, gb, gc]);
+                    }
+                    if clean {
+                        wide.extend_from_slice(&samf[..3]);
+                        compress_curated_lmdb(&wide, n, env, curated_shard_dbs, shard_dbs)
+                            .map(|r| (r, gates_ahead))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+            // Fall back to the 2-gate collision pair + samf[0..3] if the wide lookup missed.
+            let result = if wide_result.is_some() {
+                wide_result
+            } else {
+                let mut narrow: Vec<[u16; 3]> = vec![[a, b, c], [na, nb, nc]];
+                narrow.extend_from_slice(&samf[..3]);
+                compress_curated_lmdb(&narrow, n, env, curated_shard_dbs, shard_dbs)
+                    .map(|r| (r, 2))
+            };
+
+            match result {
+                None => false,
+                Some((repl, consumed)) => {
+                    // Only on a successful compression do we emit the SAMF remainder and record
+                    // the wire shuffle — if no replacement is found, nothing from the SAMF is added.
+                    output.extend_from_slice(&repl);
+                    output.extend_from_slice(&samf[3..]);
+                    compressions += 1;
+
+                    // Record the SAMF so future gates are relabeled through it.
+                    t_list.transpositions.push(samf_swap);
+                    let tmp = negation_mask[swap_lo as usize];
+                    negation_mask[swap_lo as usize] = negation_mask[swap_hi as usize];
+                    negation_mask[swap_hi as usize] = tmp;
+                    if neg_type == 1 || neg_type == 3 { negation_mask[swap_lo as usize] ^= 1; }
+                    if neg_type == 2 || neg_type == 3 { negation_mask[swap_hi as usize] ^= 1; }
+
+                    i += consumed;
+                    true
+                }
+            }
+        };
+
+        if !replaced {
+            // Normal path: flush any pending negations on control wires, then emit the gate.
+            if negation_mask[b as usize] == 1 {
+                output.extend_from_slice(&Transpositions::gen_gates_not(n, b, env, dbs));
+                negation_mask[b as usize] = 0;
+            }
+            if negation_mask[c as usize] == 1 {
+                output.extend_from_slice(&Transpositions::gen_gates_not(n, c, env, dbs));
+                negation_mask[c as usize] = 0;
+            }
+            output.push([a, b, c]);
+            i += 1;
+        }
+    }
+
+    // Undo accumulated wire permutation (and absorbed negations) — same pattern as
+    // insert_wire_shuffles_knuth.
+    let p = t_list.to_perm(n);
+    let mut t = Transpositions::from_perm(&p);
+    let mut wire_positions: HashMap<u16, (usize, usize)> = HashMap::new();
+    for (idx, (wa, wb, _)) in t.transpositions.iter().enumerate() {
+        wire_positions.insert(*wa, (idx, 0));
+        wire_positions.insert(*wb, (idx, 1));
+    }
+    const TRANSITION: [[u8; 4]; 2] = [[1, 0, 3, 2], [2, 3, 0, 1]];
+    for (wire, &val) in negation_mask.iter().enumerate() {
+        if val == 1 {
+            if let Some(&(swap_idx, pos)) = wire_positions.get(&(wire as u16)) {
+                let curr = t.transpositions[swap_idx].2;
+                t.transpositions[swap_idx].2 = TRANSITION[pos][curr as usize] as u16;
+            }
+        }
+    }
+    let mut undo = t.to_circuit(n, env, dbs).gates;
+    undo.reverse();
+    output.extend_from_slice(&undo);
+
+    println!("shuffled_shooting_game: {} compressions made ({} -> {} gates)",
+        compressions, input.len(), output.len());
+
+    circuit.gates = output;
 }
 
 #[cfg(test)]
