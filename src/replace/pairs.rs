@@ -612,6 +612,13 @@ pub fn compress_curated_lmdb(
     // Pick minimum-gate replacement for maximum compression.
     let min_gates = candidates.iter().map(|c| c.gates.len()).min().unwrap();
     let mut best: Vec<CircuitSeq> = candidates.into_iter().filter(|c| c.gates.len() == min_gates).collect();
+
+    // Equal-length replacement only counts if there are multiple friends (alternatives).
+    // A single equal-length option adds no obfuscation value.
+    if min_gates == gates.len() && best.len() <= 1 {
+        return None;
+    }
+
     let idx = rng.random_range(0..best.len());
     let mut repl = best.swap_remove(idx);
 

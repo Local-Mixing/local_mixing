@@ -1,10 +1,14 @@
 // For adding wire shuffles and bit flips
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use rand::Rng;
 use rand::seq::IndexedRandom;
 use lmdb::{Database, Environment};
 use crate::circuit::{circuit::CircuitSeq, Permutation};
 use crate::circuit::circuit::rewire_gate_ver;
+
+pub static SAMF_COMPRESSIONS_MADE: AtomicUsize = AtomicUsize::new(0);
+pub static SAMF_COMPRESSIONS_FAILED: AtomicUsize = AtomicUsize::new(0);
 
 // Hardcoded circuits: min-2 depths per function, 3-wire and 4-wire.
 // Wire convention: wire 1↔2 swapped (swap), wire 1 flipped (not), wire 1 controls wire 2 (cnot).
@@ -1302,14 +1306,25 @@ pub fn shuffled_shooting_game(
                     let mut window: Vec<[u16; 3]> = (start..ga).map(|k| ctx[k].0).collect();
                     window.extend_from_slice(&samf[..samf_count]);
                     if let Some(repl) = compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs) {
-                        found = Some((start, samf_count, repl));
-                        break 'outer;
+                        // Reject if the SAMF gates appear verbatim in the replacement —
+                        // that means the compressor only touched the context and left the
+                        // SAMF unhidden.
+                        let samf_slice = &samf[..samf_count];
+                        let samf_hidden = repl.len() < samf_count ||
+                            !repl.windows(samf_count).any(|w| w == samf_slice);
+                        if samf_hidden {
+                            found = Some((start, samf_count, repl));
+                            break 'outer;
+                        }
                     }
                 }
             }
 
             match found {
-                None => false,
+                None => {
+                    SAMF_COMPRESSIONS_FAILED.fetch_add(1, Ordering::Relaxed);
+                    false
+                }
                 Some((start, samf_used, repl)) => {
                     // Output any context gates before the window start normally.
                     // These are clean (verified above), so no NOT corrections needed.
@@ -1319,6 +1334,7 @@ pub fn shuffled_shooting_game(
                     output.extend_from_slice(&repl);
                     output.extend_from_slice(&samf[samf_used..]);
                     compressions += 1;
+                    SAMF_COMPRESSIONS_MADE.fetch_add(1, Ordering::Relaxed);
 
                     t_list.transpositions.push(samf_swap);
                     let tmp = negation_mask[swap_lo as usize];
@@ -1369,9 +1385,6 @@ pub fn shuffled_shooting_game(
     let mut undo = t.to_circuit(n, env, dbs).gates;
     undo.reverse();
     output.extend_from_slice(&undo);
-
-    println!("shuffled_shooting_game: {} compressions made ({} -> {} gates)",
-        compressions, input.len(), output.len());
 
     circuit.gates = output;
     compressions

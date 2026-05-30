@@ -1528,8 +1528,9 @@ pub fn random_gate_replacements(c: &mut CircuitSeq, x: usize, n: usize, env: &lm
 
 // For timing and benchmarking purposes
 pub fn print_compress_timers() {
+    use crate::replace::transpositions::{SAMF_COMPRESSIONS_MADE, SAMF_COMPRESSIONS_FAILED};
+
     let canon = CANON_TIME.load(Ordering::Relaxed);
-    let compress = COMPRESS_TIME.load(Ordering::Relaxed);
     let rewire = REWIRE_TIME.load(Ordering::Relaxed);
     let convex_find = CONVEX_FIND_TIME.load(Ordering::Relaxed);
     let convex_max_wires = CONVEX_MAX_WIRES_TIME.load(Ordering::Relaxed);
@@ -1546,27 +1547,34 @@ pub fn print_compress_timers() {
     let lmdb_lookup = LMDB_LOOKUP_TIME.load(Ordering::Relaxed);
     let from_blob = FROM_BLOB_TIME.load(Ordering::Relaxed);
     let trial = TRIAL_TIME.load(Ordering::Relaxed);
-    let id = IDENTITY_TIME.load(Ordering::Relaxed);
+
+    let samf_made = SAMF_COMPRESSIONS_MADE.load(Ordering::Relaxed);
+    let samf_failed = SAMF_COMPRESSIONS_FAILED.load(Ordering::Relaxed);
 
     let ns = 60_000_000_000.0f64;
+    let threshold_ns = 15.0 * ns; // 15 minutes in nanoseconds
+
     println!("--- Compression Timing Totals (minutes) ---");
-    println!("Canonicalization time: {:.2} min", canon as f64 / ns);
-    println!("Compress LMDB time: {:.2} min", compress as f64 / ns);
-    println!("Rewire subcircuit time: {:.2} min", rewire as f64 / ns);
-    println!("Convex subcircuit find time: {:.2} min", convex_find as f64 / ns);
-    println!("  max_wires: {:.2} min", convex_max_wires as f64 / ns);
-    println!("  max_gates: {:.2} min", convex_max_gates as f64 / ns);
-    println!("  simple:    {:.2} min", convex_simple as f64 / ns);
-    println!("Contiguous convex subcircuit time: {:.2} min", contiguous as f64 / ns);
-    println!("Replacement time: {:.2} min", replace as f64 / ns);
-    println!("Deduplication time: {:.2} min", dedup as f64 / ns);
-    println!("Subcircuit canonicalize time: {:.2} min", canonicalize as f64 / ns);
-    println!("  max_wires: {:.2} min", canon_max_wires as f64 / ns);
-    println!("  max_gates: {:.2} min", canon_max_gates as f64 / ns);
-    println!("  simple:    {:.2} min", canon_simple as f64 / ns);
-    println!("LMDB transaction begin time: {:.2} min", txn as f64 / ns);
-    println!("LMDB lookup time: {:.2} min", lmdb_lookup as f64 / ns);
-    println!("CircuitSeq from_blob time: {:.2} min", from_blob as f64 / ns);
-    println!("Trial loop time: {:.2} min", trial as f64 / ns);
-    println!("Identity Sampling Time: {:.2} min", id as f64 / ns);
+    if canon as f64 >= threshold_ns { println!("Canonicalization time: {:.2} min", canon as f64 / ns); }
+    if rewire as f64 >= threshold_ns { println!("Rewire subcircuit time: {:.2} min", rewire as f64 / ns); }
+    if convex_find as f64 >= threshold_ns {
+        println!("Convex subcircuit find time: {:.2} min", convex_find as f64 / ns);
+        if convex_max_wires as f64 >= threshold_ns { println!("  max_wires: {:.2} min", convex_max_wires as f64 / ns); }
+        if convex_max_gates as f64 >= threshold_ns { println!("  max_gates: {:.2} min", convex_max_gates as f64 / ns); }
+        if convex_simple as f64 >= threshold_ns   { println!("  simple:    {:.2} min", convex_simple as f64 / ns); }
+    }
+    if contiguous as f64 >= threshold_ns { println!("Contiguous convex subcircuit time: {:.2} min", contiguous as f64 / ns); }
+    if replace as f64 >= threshold_ns    { println!("Replacement time: {:.2} min", replace as f64 / ns); }
+    if dedup as f64 >= threshold_ns      { println!("Deduplication time: {:.2} min", dedup as f64 / ns); }
+    if canonicalize as f64 >= threshold_ns {
+        println!("Subcircuit canonicalize time: {:.2} min", canonicalize as f64 / ns);
+        if canon_max_wires as f64 >= threshold_ns { println!("  max_wires: {:.2} min", canon_max_wires as f64 / ns); }
+        if canon_max_gates as f64 >= threshold_ns { println!("  max_gates: {:.2} min", canon_max_gates as f64 / ns); }
+        if canon_simple as f64 >= threshold_ns    { println!("  simple:    {:.2} min", canon_simple as f64 / ns); }
+    }
+    if txn as f64 >= threshold_ns        { println!("LMDB transaction begin time: {:.2} min", txn as f64 / ns); }
+    if lmdb_lookup as f64 >= threshold_ns { println!("LMDB lookup time: {:.2} min", lmdb_lookup as f64 / ns); }
+    if from_blob as f64 >= threshold_ns  { println!("CircuitSeq from_blob time: {:.2} min", from_blob as f64 / ns); }
+    if trial as f64 >= threshold_ns      { println!("Trial loop time: {:.2} min", trial as f64 / ns); }
+    println!("SAMF compressions made: {}  failed: {}", samf_made, samf_failed);
 }
