@@ -1104,6 +1104,13 @@ fn main() {
                     .help("Use expansion game (expand_loop 2x) instead of simple shooting game")
                     .required(false)
                     .action(clap::ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("shuffled")
+                    .long("shuffled")
+                    .help("Use shuffled shooting game (SAMF-assisted curated DB compression) instead of simple shooting game")
+                    .required(false)
+                    .action(clap::ArgAction::SetTrue)
             ),
     )
     .subcommand(
@@ -1858,6 +1865,7 @@ Command::new("rocksdb_2")
             let full_shuffle = sub.get_flag("full-shuffle");
             let gates_ahead: usize = *sub.get_one("gates_ahead").unwrap();
             let egg = sub.get_flag("egg");
+            let shuffled = sub.get_flag("shuffled");
             let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
             let stop: usize = *sub.get_one("stop").unwrap();
             let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
@@ -1899,6 +1907,7 @@ Command::new("rocksdb_2")
                     gates_ahead,
                     egg,
                     rg_freq,
+                    shuffled,
                 );
                 print_compress_timers();
                 write_compression_histogram("compression_histogram.csv");

@@ -979,6 +979,7 @@ pub fn main_shuffle_shoot_shuffle(
     gates_ahead: usize,
     egg: bool,
     rg_freq: usize,
+    shuffled: bool,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -1041,6 +1042,16 @@ pub fn main_shuffle_shoot_shuffle(
         if egg {
             let pair_mode = ExpandPairMode::Curated { curated_shard_dbs: &curated_shard_dbs };
             circuit = expand_once(&circuit, n, env, shard_dbs, &pair_mode);
+        } else if shuffled {
+            use crate::replace::transpositions::shuffled_shooting_game;
+            loop {
+                let mut candidate = circuit.clone();
+                shuffled_shooting_game(&mut candidate, n, env, &dbs, curated_shard_dbs, shard_dbs, gates_ahead);
+                if candidate.probably_equal(&circuit, n, 100).is_ok() {
+                    circuit = candidate;
+                    break;
+                }
+            }
         } else {
             loop {
                 let new_circuit = simple_shooting_game(

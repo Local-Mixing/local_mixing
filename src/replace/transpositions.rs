@@ -1257,7 +1257,7 @@ pub fn shuffled_shooting_game(
                 break 'try_replace false;
             }
 
-            // Generate a random SAMF once — reuse for both wide and narrow attempts.
+            // Generate SAMF.
             let swap_lo: u16 = rng.random_range(0..n as u16);
             let swap_hi: u16 = loop {
                 let w: u16 = rng.random_range(0..n as u16);
@@ -1269,55 +1269,57 @@ pub fn shuffled_shooting_game(
             let samf = Transpositions::gen_gates_swap(n, samf_swap, env, dbs);
             if samf.len() < 3 { break 'try_replace false; }
 
-            // Try wider window first (gates_ahead gates + samf[0..3]) if enough gates remain
-            // and all gates in the window have clean control-wire negations.
-            let wide_result: Option<(Vec<[u16; 3]>, usize)> =
-                if gates_ahead > 2 && i + gates_ahead <= input.len() {
-                    // Build relabeled window, bailing if any gate has dirty control negations.
-                    let mut wide: Vec<[u16; 3]> = Vec::with_capacity(gates_ahead + 3);
-                    let mut clean = true;
-                    for k in 0..gates_ahead {
-                        let g = input[i + k];
-                        let ga = t_list.evaluate(g[0]);
-                        let gb = t_list.evaluate(g[1]);
-                        let gc = t_list.evaluate(g[2]);
-                        if negation_mask[gb as usize] != 0 || negation_mask[gc as usize] != 0 {
-                            clean = false;
-                            break;
-                        }
-                        wide.push([ga, gb, gc]);
-                    }
-                    if clean {
-                        wide.extend_from_slice(&samf[..3]);
-                        compress_curated_lmdb(&wide, n, env, curated_shard_dbs, shard_dbs)
-                            .map(|r| (r, gates_ahead))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+            // Build all available context gates (up to gates_ahead) with clean flags.
+            // Positions 0 and 1 (collision pair controls) are already verified clean.
+            let ga = gates_ahead.min(input.len() - i);
+            let mut ctx: Vec<([u16; 3], bool)> = Vec::with_capacity(ga);
+            ctx.push(([a, b, c], true));
+            if ga >= 2 { ctx.push(([na, nb, nc], true)); }
+            for k in 2..ga {
+                let g = input[i + k];
+                let gw0 = t_list.evaluate(g[0]);
+                let gw1 = t_list.evaluate(g[1]);
+                let gw2 = t_list.evaluate(g[2]);
+                let clean = negation_mask[gw1 as usize] == 0 && negation_mask[gw2 as usize] == 0;
+                ctx.push(([gw0, gw1, gw2], clean));
+            }
 
-            // Fall back to the 2-gate collision pair + samf[0..3] if the wide lookup missed.
-            let result = if wide_result.is_some() {
-                wide_result
-            } else {
-                let mut narrow: Vec<[u16; 3]> = vec![[a, b, c], [na, nb, nc]];
-                narrow.extend_from_slice(&samf[..3]);
-                compress_curated_lmdb(&narrow, n, env, curated_shard_dbs, shard_dbs)
-                    .map(|r| (r, 2))
-            };
+            // Try all contiguous sub-windows of [context(0..ga), samf(0..3)] with:
+            //   - length ≥ 4
+            //   - at least 1 SAMF gate  (end > ga)
+            //   - all context gates in the window have clean controls
+            // Order: longest first, within same length more-SAMF-first (start descending).
+            let mut found: Option<(usize, usize, Vec<[u16; 3]>)> = None; // (start, samf_used, repl)
+            'outer: for len in (4..=ga + 3).rev() {
+                for start in (0..ga).rev() {
+                    let end = start + len;
+                    if end > ga + 3 { continue; } // beyond full window
+                    if end <= ga   { continue; }   // no SAMF gate
+                    // All context gates in [start..end.min(ga)] must be clean.
+                    if !(start..end.min(ga)).all(|k| ctx[k].1) { continue; }
+                    // Build sub-window: context[start..ga] ++ samf[0..end-ga]
+                    let samf_count = end - ga;
+                    let mut window: Vec<[u16; 3]> = (start..ga).map(|k| ctx[k].0).collect();
+                    window.extend_from_slice(&samf[..samf_count]);
+                    if let Some(repl) = compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs) {
+                        found = Some((start, samf_count, repl));
+                        break 'outer;
+                    }
+                }
+            }
 
-            match result {
+            match found {
                 None => false,
-                Some((repl, consumed)) => {
-                    // Only on a successful compression do we emit the SAMF remainder and record
-                    // the wire shuffle — if no replacement is found, nothing from the SAMF is added.
+                Some((start, samf_used, repl)) => {
+                    // Output any context gates before the window start normally.
+                    // These are clean (verified above), so no NOT corrections needed.
+                    for k in 0..start {
+                        output.push(ctx[k].0);
+                    }
                     output.extend_from_slice(&repl);
-                    output.extend_from_slice(&samf[3..]);
+                    output.extend_from_slice(&samf[samf_used..]);
                     compressions += 1;
 
-                    // Record the SAMF so future gates are relabeled through it.
                     t_list.transpositions.push(samf_swap);
                     let tmp = negation_mask[swap_lo as usize];
                     negation_mask[swap_lo as usize] = negation_mask[swap_hi as usize];
@@ -1325,7 +1327,7 @@ pub fn shuffled_shooting_game(
                     if neg_type == 1 || neg_type == 3 { negation_mask[swap_lo as usize] ^= 1; }
                     if neg_type == 2 || neg_type == 3 { negation_mask[swap_hi as usize] ^= 1; }
 
-                    i += consumed;
+                    i += ga; // advance past all context gates
                     true
                 }
             }
@@ -1766,7 +1768,7 @@ mod tests {
 
     #[test]
     fn test_shuffled_shooting_game() {
-        use crate::replace::main_mix::{open_all_dbs, open_shard_dbs};
+        use crate::replace::main_mix::open_all_dbs;
         use crate::replace::transpositions::shuffled_shooting_game;
         use std::path::Path;
 
@@ -1780,11 +1782,8 @@ mod tests {
         let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
         let n = 32;
 
-        let base = CircuitSeq::from_string(
-            std::fs::read_to_string("initial.txt")
-                .expect("failed to read initial.txt")
-                .trim()
-        );
+        use crate::random::random_data::random_circuit;
+        let base = random_circuit(n, 100);
 
         // Keep trying until at least one SAMF compression actually fires,
         // which confirms the SAMF path is exercised and functionality is maintained.
@@ -1811,13 +1810,11 @@ mod tests {
     fn test_gadgetize_maintains_original_wires() {
         use crate::replace::gadgets::gadgetize;
         use crate::circuit::circuit::Gate;
+        use rand::Rng;
 
+        use crate::random::random_data::random_circuit;
         let n = 32;
-        let base = CircuitSeq::from_string(
-            std::fs::read_to_string("initial.txt")
-                .expect("failed to read initial.txt")
-                .trim()
-        );
+        let base = random_circuit(n, 100);
 
         let mut rng = rand::rng();
         let gadgetized = gadgetize(&base, n, 1, &mut rng);
@@ -1830,9 +1827,7 @@ mod tests {
         let mut failures = 0;
         for _ in 0..1000 {
             // Random input with both original and aux wires set.
-            let mut bytes = [0u8; 16];
-            rand::rng().fill_bytes(&mut bytes);
-            let full_input = u128::from_le_bytes(bytes) & two_n_mask;
+            let full_input = rand::rng().random_range(0u128..=u128::MAX) & two_n_mask;
 
             let gadget_out = Gate::evaluate_index_list_128(full_input, &gadgetized.gates);
             let orig_out   = Gate::evaluate_index_list_128(full_input & n_mask, &base.gates);
