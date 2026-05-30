@@ -1141,6 +1141,10 @@ pub fn main_shuffle_shoot_shuffle(
     }
 
     println!("Final len: {}", circuit.gates.len());
+    // Compare against the original circuit on its own wires only: gadgetize/interleave
+    // expand the wire count, but functionality is preserved only on the original n wires.
+    let n = if leave { n / 2 } else { n };
+    let n = if do_gadgetize { n / 2 } else { n };
     circuit
     .probably_equal(&c, n, 150_000)
     .expect("The circuits differ somewhere!");
