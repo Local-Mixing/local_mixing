@@ -101,8 +101,13 @@ fn main() {
 
     println!("{}", pf.repr());
 
-    println!("0 => {}", pf.evaluate(0));
-    let r = fastrand::usize(0..(1 << n));
-    println!("{} => {}", r, pf.evaluate(r));
+    println!("len = {}", pf.gates.len());
 
+    println!("0 => {}", pf.evaluate_256(0.into()));
+    let r = if n < 128 {
+        fastrand::usize(0..(1usize << n))
+    } else {
+        fastrand::usize(..)
+    };
+    println!("{} => {}", r, pf.evaluate_256(r.into()));
 }
