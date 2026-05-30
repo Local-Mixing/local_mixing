@@ -1221,7 +1221,7 @@ pub fn shuffled_shooting_game(
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
     gates_ahead: usize,
-) {
+) -> usize {
     use crate::replace::pairs::compress_curated_lmdb;
 
     let mut rng = rand::rng();
@@ -1372,6 +1372,7 @@ pub fn shuffled_shooting_game(
         compressions, input.len(), output.len());
 
     circuit.gates = output;
+    compressions
 }
 
 #[cfg(test)]
@@ -1761,5 +1762,87 @@ mod tests {
         if c.probably_equal(&id, 32, 1000).is_err() {
             panic!("Stupid identities via tranpose");
         }
+    }
+
+    #[test]
+    fn test_shuffled_shooting_game() {
+        use crate::replace::main_mix::{open_all_dbs, open_shard_dbs};
+        use crate::replace::transpositions::shuffled_shooting_game;
+        use std::path::Path;
+
+        let env = Environment::new()
+            .set_max_dbs(600)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new("./db"))
+            .expect("failed to open lmdb");
+
+        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
+        let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
+        let n = 32;
+
+        let base = CircuitSeq::from_string(
+            std::fs::read_to_string("initial.txt")
+                .expect("failed to read initial.txt")
+                .trim()
+        );
+
+        // Keep trying until at least one SAMF compression actually fires,
+        // which confirms the SAMF path is exercised and functionality is maintained.
+        let mut total_compressions = 0;
+        for attempt in 0..200 {
+            let mut circuit = base.clone();
+            let compressions = shuffled_shooting_game(
+                &mut circuit, n, &env, &dbs, &curated_shard_dbs, &shard_dbs, 5,
+            );
+            total_compressions += compressions;
+            if base.probably_equal(&circuit, n, 500).is_err() {
+                panic!("attempt {}: functionality broken on all {} wires", attempt, n);
+            }
+            if total_compressions > 0 {
+                println!("SAMF compression confirmed after {} attempts ({} total compressions)",
+                    attempt + 1, total_compressions);
+                return;
+            }
+        }
+        panic!("no SAMF compressions fired in 200 attempts — curated DB may be missing entries");
+    }
+
+    #[test]
+    fn test_gadgetize_maintains_original_wires() {
+        use crate::replace::gadgets::gadgetize;
+        use crate::circuit::circuit::Gate;
+
+        let n = 32;
+        let base = CircuitSeq::from_string(
+            std::fs::read_to_string("initial.txt")
+                .expect("failed to read initial.txt")
+                .trim()
+        );
+
+        let mut rng = rand::rng();
+        let gadgetized = gadgetize(&base, n, 1, &mut rng);
+
+        // For each random 2n-bit input, the low-n bits of the gadgetized output
+        // must match what the original circuit produces on the low-n bits of that input.
+        let n_mask: u128 = (1u128 << n) - 1;
+        let two_n_mask: u128 = (1u128 << (2 * n)) - 1;
+
+        let mut failures = 0;
+        for _ in 0..1000 {
+            // Random input with both original and aux wires set.
+            let mut bytes = [0u8; 16];
+            rand::rng().fill_bytes(&mut bytes);
+            let full_input = u128::from_le_bytes(bytes) & two_n_mask;
+
+            let gadget_out = Gate::evaluate_index_list_128(full_input, &gadgetized.gates);
+            let orig_out   = Gate::evaluate_index_list_128(full_input & n_mask, &base.gates);
+
+            if gadget_out & n_mask != orig_out & n_mask {
+                failures += 1;
+            }
+        }
+        assert_eq!(failures, 0,
+            "gadgetize broke functionality on original {} wires ({} / 1000 inputs failed)",
+            n, failures);
     }
 }
