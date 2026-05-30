@@ -14,7 +14,8 @@ use xxhash_rust::xxh3::xxh3_128;
 use clap::{Arg, Command};
 use local_mixing::{
     circuit::{
-        CircuitSeq, circuit::canonicalize_polys, circuit::poly_degree, circuit::polys_repr_blob, circuit::poly_to_str,
+        CircuitSeq, circuit::canonicalize_polys, circuit::poly_degree, circuit::poly_to_str,
+        circuit::polys_repr_blob,
     },
     open_shard_dbs,
 };
@@ -226,7 +227,7 @@ fn print_ids(env: &Environment, shard_dbs: &Vec<lmdb::Database>) {
         for (_, value) in cursor.iter_start() {
             let circuit = CircuitSeq::from_blob(value);
 
-            if circuit.gates.len() < 12 {
+            if circuit.gates.len() == 6 {
                 println!("{}", circuit.repr());
             }
             *histogram.entry(circuit.gates.len()).or_insert(0) += 1;
@@ -314,9 +315,17 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
 
                     let candidates: [Vec<[u8; 3]>; 2] = [
                         // a || rev(b)
-                        a.gates.iter().cloned().chain(b_rev.iter().cloned()).collect(),
+                        a.gates
+                            .iter()
+                            .cloned()
+                            .chain(b_rev.iter().cloned())
+                            .collect(),
                         // rev(a) || b
-                        a_rev.iter().cloned().chain(b.gates.iter().cloned()).collect(),
+                        a_rev
+                            .iter()
+                            .cloned()
+                            .chain(b.gates.iter().cloned())
+                            .collect(),
                     ];
 
                     for gates in candidates {
@@ -370,27 +379,30 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
                             }
                         }
 
-                    if non_minimal {
-                        continue;
-                    }
+                        if non_minimal {
+                            continue;
+                        }
 
-                    // println!("Minimal: {}", identity.repr());
+                        // println!("Minimal: {}", identity.repr());
 
-                        let ctype =
-                            GatePair::to_int(&gate_pair_taxonomy(&identity.gates[0], &identity.gates[1]));
+                        let ctype = GatePair::to_int(&gate_pair_taxonomy(
+                            &identity.gates[0],
+                            &identity.gates[1],
+                        ));
                         let blob = identity.repr_blob();
                         let mut guard = seen[ctype].lock().unwrap();
                         if guard.insert(blob) {
                             counter.fetch_add(1, Ordering::Relaxed);
                         }
-                    let ctype = GatePair::to_int(&gate_pair_taxonomy(
-                        &identity.gates[0],
-                        &identity.gates[1],
-                    ));
-                    let blob = identity.repr_blob();
-                    let mut guard = seen[ctype].lock().unwrap();
-                    if guard.insert(blob) {
-                        counter.fetch_add(1, Ordering::Relaxed);
+                        let ctype = GatePair::to_int(&gate_pair_taxonomy(
+                            &identity.gates[0],
+                            &identity.gates[1],
+                        ));
+                        let blob = identity.repr_blob();
+                        let mut guard = seen[ctype].lock().unwrap();
+                        if guard.insert(blob) {
+                            counter.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
             }
@@ -453,23 +465,36 @@ fn check(env: &Environment, shard_dbs: &Vec<lmdb::Database>, circuit: &CircuitSe
         println!("  P{}: {}", i, poly_to_str(poly, n));
     }
 
-    for start in 0..=(len - half_len) {
-        for sublen in 2..=half_len {
-            let end = start + sublen;
-            let polys = circuit.to_polynomial(n, start, end);
-            let (canonical, _) = canonicalize_polys(polys, true, false);
-            let key = xxh3_128(&polys_repr_blob(&canonical)).to_le_bytes();
-            let shard = key[0] as usize;
+    let poly = circuit.to_polynomial(4, 0, len);
+    let (canonical, _) = canonicalize_polys(poly, true, false);
+    let key = xxh3_128(&polys_repr_blob(&canonical)).to_le_bytes();
+    let shard = key[0] as usize;
 
-            if rtxn.get(shard_dbs[shard], &key).is_ok() {
-                println!("{}-{} non minimal", start, end);
-            } else {
-                println!("{}-{} not in db", start, end)
-            }
+    if let Ok(v) = rtxn.get(shard_dbs[shard], &key) {
+        let cs = decode_circuits(v);
 
-            for (i, poly) in canonical.iter().enumerate() {
-                println!("  P{}: {}", i, poly_to_str(poly, n));
-            }
+        for c in cs {
+            println!("{}", c.repr());
         }
     }
+
+    // for start in 0..=(len - half_len) {
+    //     for sublen in 2..=half_len {
+    //         let end = start + sublen;
+    //         let polys = circuit.to_polynomial(n, start, end);
+    //         let (canonical, _) = canonicalize_polys(polys, true, false);
+    //         let key = xxh3_128(&polys_repr_blob(&canonical)).to_le_bytes();
+    //         let shard = key[0] as usize;
+
+    //         if rtxn.get(shard_dbs[shard], &key).is_ok() {
+    //             println!("{}-{} non minimal", start, end);
+    //         } else {
+    //             println!("{}-{} not in db", start, end)
+    //         }
+
+    //         for (i, poly) in canonical.iter().enumerate() {
+    //             println!("  P{}: {}", i, poly_to_str(poly, n));
+    //         }
+    //     }
+    // }
 }

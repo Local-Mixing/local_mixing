@@ -45,6 +45,60 @@ fn tof_to_g57(wires: u8, g: &[u8; 3]) -> Vec<[u8; 3]> {
     ]
 }
 
+// 6 gates on 4 wires
+fn not_to_g57(wires: u8, a: u8) -> Vec<[u8; 3]> {
+    let mut chosen = [a; 3];
+
+    for i in 0..3 {
+        loop {
+            let w = fastrand::u8(0..wires);
+            if !chosen[..=i].contains(&w) {
+                chosen[i] = w;
+                break;
+            }
+        }
+    }
+
+    let [b, c, d] = chosen;
+
+    vec![
+        [a, c, d],
+        [c, d, b],
+        [a, c, b],
+        [a, d, c],
+        [c, d, b],
+        [a, b, c],
+    ]
+}
+
+// 6 gate nontrivial on 4 wires
+// TODO: choose different ones each time
+fn id_to_g57(wires: u8, a: u8) -> Vec<[u8; 3]> {
+    // one of the wires will be the active one
+    // Choose three random values from the range 0..wires
+    let mut chosen = [a; 3];
+
+    for i in 0..3 {
+        loop {
+            let w = fastrand::u8(0..wires);
+            if !chosen[..=i].contains(&w) {
+                chosen[i] = w;
+                break;
+            }
+        }
+    }
+
+    let [b, c, d] = chosen;
+    vec![
+        [d, c, a],
+        [a, b, c],
+        [c, b, a],
+        [d, a, c],
+        [c, b, a],
+        [a, b, c],
+    ]
+}
+
 fn big_tof(n: u8, active: u8, controls: Range<u8>) -> CircuitSeq {
     // Build the staircase
     let mut empty: Vec<u8> = (0..n + 2).collect();
@@ -84,6 +138,22 @@ fn big_tof(n: u8, active: u8, controls: Range<u8>) -> CircuitSeq {
     }
 }
 
+fn key_to_gates(wires: u8, key: usize) -> CircuitSeq {
+    let mut c = CircuitSeq { gates: vec![] };
+
+    for i in 0..wires {
+        let gates = if (key >> i) & 1 == 0 {
+            id_to_g57(wires, i)
+        } else {
+            not_to_g57(wires, i)
+        };
+
+        c.gates.extend(gates);
+    }
+
+    c
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -101,19 +171,16 @@ fn main() {
     println!("{:?}", args);
 
     let key_bits = (usize::BITS as u32 - args.key.leading_zeros()) as u8;
-    assert!(key_bits < n);
+    assert!(key_bits <= n);
 
     let b = n.div_ceil(2);
 
-    // TODO: Insert the NOTs
-
-    let mut pf = big_tof(n, n, 0..b)
+    let pf = key_to_gates(n, args.key)
+        .concat(&big_tof(n, n, 0..b))
         .concat(&big_tof(n, n + 1, b..n + 1))
         .concat(&big_tof(n, n, 0..b))
-        .concat(&big_tof(n, n + 1, b..n + 1));
-
-    // TODO: id or pf
-    // Insert the NOTs
+        .concat(&big_tof(n, n + 1, b..n + 1))
+        .concat(&key_to_gates(n, args.key));
 
     println!("{}", pf.repr());
 
@@ -121,22 +188,17 @@ fn main() {
 
     let comp = compress_loop(&pf, pf.max_wire() + 1, &env, &shard_dbs, 6, 0, 0, ".");
 
-    // loop {
-    //     comp = compress_lmdb(&pf, 100, pf.max_wire() + 1, &env, &shard_dbs);
-    //     println!("Compressed: {}", comp.gates.len());
-    //     if comp.gates.len() == pf.gates.len() {
-    //         break
-    //     }
-    //     pf = comp
-    // }
-
     println!("{}", comp.repr());
 
-    println!("0 => {}", comp.evaluate_256(0.into()));
-    let r = if n < 128 {
-        fastrand::usize(0..(1usize << n))
-    } else {
-        fastrand::usize(..)
-    };
-    println!("{} => {}", r, comp.evaluate_256(r.into()));
+    println!("0 => {}", pf.evaluate_256(0.into()));
+    println!("{} => {}", args.key, pf.evaluate_256(args.key.into()));
+
+    for _ in 0..10 {
+        let r = if n < 128 {
+            fastrand::usize(0..(1usize << n))
+        } else {
+            fastrand::usize(..)
+        };
+        println!(" {} => {}", r, pf.evaluate_256(r.into()));
+    }
 }
