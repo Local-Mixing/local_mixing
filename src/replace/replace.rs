@@ -176,10 +176,13 @@ pub fn compress_loop(
 ) -> CircuitSeq {
     let mut acc = circuit.clone();
     let mut rng = rand::rng();
-    let mut stable_count = 0;
     let mut mode = 0usize;
+    // Ring buffer of the last stable_max+1 gate counts. Stop when total reduction
+    // over the last stable_max iterations is less than 100 gates.
+    let mut recent: std::collections::VecDeque<usize> = std::collections::VecDeque::with_capacity(stable_max + 1);
+    recent.push_back(acc.gates.len());
 
-    while stable_count < stable_max {
+    loop {
         let before = acc.gates.len();
 
         let max_chunks = 4 * rayon::current_num_threads().max(1);
@@ -212,11 +215,24 @@ pub fn compress_loop(
         acc.gates = new_gates;
         let after = acc.gates.len();
 
+        recent.push_back(after);
+        if recent.len() > stable_max + 1 {
+            recent.pop_front();
+        }
+
+        // Stop if the total reduction over the last stable_max iterations is < 100.
+        if recent.len() == stable_max + 1 {
+            let window_reduction = recent.front().unwrap().saturating_sub(after);
+            if window_reduction < 100 {
+                println!("  {}/{}: Early stop — only {} gates reduced over last {} iterations ({} gates)",
+                    curr_round, last_round, window_reduction, stable_max, after);
+                break;
+            }
+        }
+
         if after == before {
-            stable_count += 1;
-            println!("  {}/{}: Stable {}/{}: {} gates", curr_round, last_round, stable_count, stable_max, after);
+            println!("  {}/{}: Stable ({} gates)", curr_round, last_round, after);
         } else {
-            stable_count = 0;
             println!("  {}/{}: Reduced: {} gates", curr_round, last_round, after);
         }
 
