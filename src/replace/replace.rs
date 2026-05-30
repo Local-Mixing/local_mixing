@@ -223,7 +223,7 @@ pub fn compress_loop(
         // Stop if the total reduction over the last stable_max iterations is < 100.
         if recent.len() == stable_max + 1 {
             let window_reduction = recent.front().unwrap().saturating_sub(after);
-            if window_reduction < 100 {
+            if window_reduction < 50 {
                 println!("  {}/{}: Early stop — only {} gates reduced over last {} iterations ({} gates)",
                     curr_round, last_round, window_reduction, stable_max, after);
                 break;
