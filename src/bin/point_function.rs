@@ -1,10 +1,17 @@
 // Build a point function (or an identity that looks like one!)
 
-use std::{ops::Range, slice::IterMut};
+use std::{ops::Range, path::Path};
 
 use clap::Parser;
 use itertools::chain;
-use local_mixing::circuit::{CircuitSeq, Gate};
+use lmdb::Environment;
+use local_mixing::{
+    circuit::CircuitSeq,
+    open_shard_dbs,
+    replace::replace::{compress_lmdb, compress_loop},
+};
+
+const LMDB_PATH: &str = "./db";
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -48,7 +55,7 @@ fn big_tof(n: u8, active: u8, controls: Range<u8>) -> CircuitSeq {
     // Shuffle the remaining indices
     fastrand::shuffle(&mut empty);
 
-    let mut ctrl: Vec<u8> = controls.collect();
+    let ctrl: Vec<u8> = controls.collect();
 
     let stair: Vec<[u8; 3]> = (1..(ctrl.len() - 2))
         .map(|i| [empty[i - 1], ctrl[i], empty[i]])
@@ -80,6 +87,15 @@ fn big_tof(n: u8, active: u8, controls: Range<u8>) -> CircuitSeq {
 fn main() {
     let args = Args::parse();
 
+    let env = Environment::new()
+        .set_max_readers(10000)
+        .set_max_dbs(256 + 40)
+        .set_map_size(800 * 1024 * 1024 * 1024)
+        .open(Path::new(LMDB_PATH))
+        .expect("Failed to open database.");
+
+    let shard_dbs = open_shard_dbs(&env);
+
     let n = args.wires;
 
     println!("{:?}", args);
@@ -91,7 +107,7 @@ fn main() {
 
     // TODO: Insert the NOTs
 
-    let pf = big_tof(n, n, 0..b)
+    let mut pf = big_tof(n, n, 0..b)
         .concat(&big_tof(n, n + 1, b..n + 1))
         .concat(&big_tof(n, n, 0..b))
         .concat(&big_tof(n, n + 1, b..n + 1));
@@ -103,11 +119,24 @@ fn main() {
 
     println!("len = {}", pf.gates.len());
 
-    println!("0 => {}", pf.evaluate_256(0.into()));
+    let comp = compress_loop(&pf, pf.max_wire() + 1, &env, &shard_dbs, 6, 0, 0, ".");
+
+    // loop {
+    //     comp = compress_lmdb(&pf, 100, pf.max_wire() + 1, &env, &shard_dbs);
+    //     println!("Compressed: {}", comp.gates.len());
+    //     if comp.gates.len() == pf.gates.len() {
+    //         break
+    //     }
+    //     pf = comp
+    // }
+
+    println!("{}", comp.repr());
+
+    println!("0 => {}", comp.evaluate_256(0.into()));
     let r = if n < 128 {
         fastrand::usize(0..(1usize << n))
     } else {
         fastrand::usize(..)
     };
-    println!("{} => {}", r, pf.evaluate_256(r.into()));
+    println!("{} => {}", r, comp.evaluate_256(r.into()));
 }
