@@ -394,7 +394,7 @@ fn make_stdin_nonblocking() {
     }
 }
 
-// Do sequential method of replacing pairs
+// Do sequential method of replacing pairs using the curated shard DBs.
 pub fn replace_sequential_pairs(
     circuit: &mut CircuitSeq,
     num_wires: usize,
@@ -402,6 +402,8 @@ pub fn replace_sequential_pairs(
     _bit_shuf_list: &Vec<Vec<Vec<usize>>>,
     _dbs: &HashMap<String, lmdb::Database>,
     _tower: bool,
+    curated_shard_dbs: &[lmdb::Database],
+    shard_dbs: &[lmdb::Database],
 ) -> (usize, usize, usize, usize) {
     make_stdin_nonblocking();
     let gates = circuit.gates.clone();
@@ -410,9 +412,6 @@ pub fn replace_sequential_pairs(
         println!("Circuit too small, returning");
         return (0, 0, 0, 0);
     }
-
-    let comp_db = env.open_db(Some("completion_m2"))
-        .expect("completion_m2 DB not found — run build_completion_m2 first");
 
     let mut already_collided = 0;
     let mut out: Vec<[u16; 3]> = Vec::new();
@@ -430,7 +429,7 @@ pub fn replace_sequential_pairs(
         let right = gates[i];
 
         already_collided += 1;
-        let produced = replace_single_pair_with_completion(&left, &right, num_wires, env, comp_db);
+        let produced = expand_curated_lmdb(&[left, right], num_wires, env, curated_shard_dbs, shard_dbs);
 
         if let Some(mut gates_out) = produced {
             out.append(&mut gates_out);
@@ -447,85 +446,6 @@ pub fn replace_sequential_pairs(
     circuit.gates = out;
 
     (already_collided, 0, 0, 0)
-}
-
-/// Replace a 2-gate pair with a functionally equivalent completion from the completion_m2 DB.
-/// Mirrors the rewiring logic of compress_lmdb: canonicalize → hash → lookup → rewire back.
-/// Returns None if the pair has no entry in the DB.
-pub fn replace_single_pair_with_completion(
-    left: &[u16; 3],
-    right: &[u16; 3],
-    num_wires: usize,
-    env: &lmdb::Environment,
-    comp_db: lmdb::Database,
-) -> Option<Vec<[u16; 3]>> {
-    use xxhash_rust::xxh3::xxh3_128;
-    use crate::circuit::circuit::{polys_repr_blob, Permutation};
-    use lmdb::Transaction;
-    use rand::prelude::SliceRandom;
-
-    let mut rng = rand::rng();
-    let pair = CircuitSeq { gates: vec![*left, *right] };
-
-    let txn = env.begin_ro_txn().ok()?;
-
-    // Try forward canonicalization, fall back to reversed (same as compress_lmdb).
-    let (value, final_order, used, is_reversed): (Vec<u8>, _, Vec<u16>, bool) = {
-        let (fwd_polys, fwd_order, fwd_used) = pair.canonicalize_polys_single(false);
-        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
-        match txn.get(comp_db, &fwd_key) {
-            Ok(v) => (v.to_vec(), fwd_order, fwd_used, false),
-            Err(_) => {
-                let (rev_polys, rev_order, rev_used) = pair.canonicalize_polys_single(true);
-                if rev_polys.is_empty() { return None; }
-                let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
-                match txn.get(comp_db, &rev_key) {
-                    Ok(v) => (v.to_vec(), rev_order, rev_used, true),
-                    Err(_) => return None,
-                }
-            }
-        }
-    };
-
-    // Decode length-blob list, pick a random completion.
-    let mut spans: Vec<(usize, usize)> = Vec::new();
-    let mut pos = 0usize;
-    while pos < value.len() {
-        let len = value[pos] as usize;
-        pos += 1;
-        if pos + len > value.len() { break; }
-        spans.push((pos, len));
-        pos += len;
-    }
-    if spans.is_empty() { return None; }
-    let (start, len) = spans[rng.random_range(0..spans.len())];
-    let mut repl = CircuitSeq::from_blob(&value[start..start + len]);
-
-    if is_reversed { repl.gates.reverse(); }
-
-    // Rewire canonical → dense → actual (identical to compress_lmdb).
-    let repl_n = repl.max_wire() + 1;
-    let mut order_data = final_order.data.clone();
-    while order_data.len() < repl_n {
-        order_data.push(order_data.len());
-    }
-    let order_len = order_data.len().max(final_order.data.len());
-    repl.rewire(&Permutation { data: order_data }, order_len);
-
-    let repl_n_b = repl.max_wire() + 1;
-    let mut used_ext = used.clone();
-    if used_ext.len() < repl_n_b {
-        let mut avail: Vec<u16> = (0..num_wires as u16)
-            .filter(|w| !used_ext.contains(w))
-            .collect();
-        avail.shuffle(&mut rng);
-        let mut avail = avail.into_iter();
-        while used_ext.len() < repl_n_b {
-            used_ext.push(avail.next()?);
-        }
-    }
-
-    Some(CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates)
 }
 
 pub fn expand_curated_lmdb(
@@ -1322,7 +1242,7 @@ mod tests {
             .open(Path::new("./db"))
             .expect("failed to open lmdb");
 
-        let dbs = open_all_dbs(&env);
+        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
         let bit_shuf_list = (3..=7)
         .map(|n| {
             (0..n)

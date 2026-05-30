@@ -1410,7 +1410,7 @@ mod tests {
             .open(Path::new("./db"))
             .expect("failed to open lmdb");
 
-        let dbs = open_all_dbs(&env);
+        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
 
         let mut gates: Vec<[u16; 3]> = Vec::new();
         let mut last = Transpositions { transpositions: Vec::new() };
@@ -1468,7 +1468,7 @@ mod tests {
             .open(Path::new("./db"))
             .expect("failed to open lmdb");
 
-        let dbs = open_all_dbs(&env);
+        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
 
         let mut t = Transpositions::gen_random_knuth(128, 500, &mut vec![0u8; 128]);
         let base = t.to_circuit(128, &env, &dbs);
@@ -1510,7 +1510,7 @@ mod tests {
             .open(Path::new("./db"))
             .expect("failed to open lmdb");
 
-        let dbs = open_all_dbs(&env);
+        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
 
         let mut new_circuit = base.clone();
         insert_wire_shuffles_x(&mut new_circuit, 64, &env, &dbs, 50);
@@ -1536,7 +1536,7 @@ mod tests {
             .open(Path::new("./db"))
             .expect("failed to open lmdb");
 
-        let dbs = open_all_dbs(&env);
+        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
         let n = 64;
         let mut gates: Vec<[u16;3]> = Vec::new();
         let mut negation_mask = vec![0u8; n];
@@ -1601,7 +1601,7 @@ mod tests {
             .open(Path::new("./db"))
             .expect("failed to open lmdb");
 
-        let dbs = open_all_dbs(&env);
+        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
         let t = Transpositions::gen_random_knuth(64, 100, &mut Vec::new());
         let mut gates: Vec<[u16; 3]> = Vec::new();
         gates.extend(t.to_circuit(64, &env, &dbs).gates);
@@ -1679,7 +1679,7 @@ mod tests {
             .open(Path::new("./db"))
             .expect("failed to open lmdb");
 
-        let dbs = open_all_dbs(&env);
+        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
 
         let mut file = File::create("test_id.txt").expect("Failed to create file");
 
@@ -1724,7 +1724,7 @@ mod tests {
             .set_map_size(800 * 1024 * 1024 * 1024)
             .open(Path::new("./db"))
             .expect("failed to open lmdb");
-        let dbs = open_all_dbs(&env);
+        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
 
         let mut file = File::create("test_id.txt").expect("Failed to create file");
 
@@ -1750,7 +1750,7 @@ mod tests {
             .set_map_size(800 * 1024 * 1024 * 1024)
             .open(Path::new("./db"))
             .expect("failed to open lmdb");
-        let dbs = open_all_dbs(&env);
+        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
 
         let mut negation_mask: Vec<u8> = vec![0u8;3];
         let t = Transpositions::gen_random_simple(32, 50, &mut negation_mask);

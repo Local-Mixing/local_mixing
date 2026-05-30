@@ -43,33 +43,23 @@ pub fn open_curated_shard_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
         .collect()
 }
 
-pub fn open_all_dbs(env: &lmdb::Environment) -> HashMap<String, lmdb::Database> {
-    let mut dbs = HashMap::new();
+pub fn open_shard_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
+    (0u16..=255)
+        .map(|s| {
+            let name = format!("{:02x}", s);
+            env.open_db(Some(name.as_str()))
+                .unwrap_or_else(|e| panic!("Failed to open shard db {:02x}: {:?}", s, e))
+        })
+        .collect()
+}
 
-    let named = [
-        "swap", "not", "swapnot1", "swapnot2", "swapnot12", "cnot", "homgad"
-    ];
-    for name in named.iter() {
-        match env.open_db(Some(name)) {
-            Ok(db) => { dbs.insert(name.to_string(), db); }
-            Err(lmdb::Error::NotFound) => {}
-            Err(e) => panic!("Failed to open LMDB database {}: {:?}", name, e),
-        }
-    }
-
-    for i in 0..34usize {
-        let name = format!("id_g{}", i);
-        match env.open_db(Some(name.as_str())) {
-            Ok(db) => { dbs.insert(name, db); }
-            Err(lmdb::Error::NotFound) => {}
-            Err(e) => panic!("Failed to open id_g{}: {:?}", i, e),
-        }
-    }
-
-    dbs
+pub fn open_all_dbs(env: &lmdb::Environment) -> (Vec<lmdb::Database>, Vec<lmdb::Database>) {
+    let shard_dbs = open_shard_dbs(env);
+    let curated_shard_dbs = open_curated_shard_dbs(env);
+    (shard_dbs, curated_shard_dbs)
 }
 pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, n: usize, asymmetric: bool, save: &str, env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],) {
+    shard_dbs: &[lmdb::Database], curated_shard_dbs: &[lmdb::Database]) {
     // Start with the input circuit
     let bit_shuf_list = (3..=7)
         .map(|n| {
@@ -79,7 +69,7 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, n: usize, asymmetric: b
                 .collect::<Vec<Vec<usize>>>()
         })
         .collect();
-    let dbs = open_all_dbs(env);
+    let dbs: HashMap<String, lmdb::Database> = HashMap::new();
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat obfuscate + compress 'rounds' times
@@ -164,7 +154,7 @@ pub fn main_butterfly_big(c: &CircuitSeq, rounds: usize, n: usize, asymmetric: b
 }
 
 pub fn main_rac_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database], intermediate: &str, tower: bool, id_len: usize) {
+    shard_dbs: &[lmdb::Database], curated_shard_dbs: &[lmdb::Database], intermediate: &str, tower: bool, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -186,7 +176,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &l
                 .collect::<Vec<Vec<usize>>>()
         })
         .collect();
-    let dbs = open_all_dbs(env);
+    let dbs: HashMap<String, lmdb::Database> = HashMap::new();
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat obfuscate + compress 'rounds' times
@@ -194,7 +184,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &l
     let mut count = 0;
     for i in 0..rounds {
         let _stop = 1000;
-        let (new_circuit, already_coll, shoot, made_left, traverse_left)  = replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len);
+        let (new_circuit, already_coll, shoot, made_left, traverse_left)  = replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len, &curated_shard_dbs);
         circuit = new_circuit;
 
         sum_already_coll += already_coll;
@@ -308,7 +298,7 @@ pub fn main_rac_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &l
 }
 
 pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database], intermediate: &str, tower: bool, id_len: usize) {
+    shard_dbs: &[lmdb::Database], curated_shard_dbs: &[lmdb::Database], intermediate: &str, tower: bool, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -326,7 +316,7 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, 
                 .collect::<Vec<Vec<usize>>>()
         })
         .collect();
-    let dbs = open_all_dbs(env);
+    let dbs: HashMap<String, lmdb::Database> = HashMap::new();
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat obfuscate + compress 'rounds' times
@@ -336,11 +326,11 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, 
     for i in 0..rounds {
         let _stop = 1000;
         let (new_circuit, _, _, _, _) = if i == 0 {
-            let x = interleave_sequential_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len);
+            let x = interleave_sequential_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len, &curated_shard_dbs);
             n *= 2;
             x
         } else {
-            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len)
+            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len, &curated_shard_dbs)
         };
         circuit = new_circuit;
 
@@ -407,7 +397,7 @@ pub fn main_interleave_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, 
 }
 
 pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database], intermediate: &str, tower: bool, x: usize, id_len: usize) {
+    shard_dbs: &[lmdb::Database], curated_shard_dbs: &[lmdb::Database], intermediate: &str, tower: bool, x: usize, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -425,7 +415,7 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str,
                 .collect::<Vec<Vec<usize>>>()
         })
         .collect();
-    let dbs = open_all_dbs(env);
+    let dbs: HashMap<String, lmdb::Database> = HashMap::new();
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat obfuscate + compress 'rounds' times
@@ -445,7 +435,7 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str,
             insert_wire_shuffles_x(&mut circuit, n, env, &dbs, x);
         }
         let (new_circuit, _, _, _, _) =
-            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len);
+            replace_and_compress_big(&circuit, n, i != rounds-1, 100, env, i+1, rounds, &bit_shuf_list, &dbs, shard_dbs, intermediate, tower, id_len, &curated_shard_dbs);
         circuit = new_circuit;
 
         if circuit.gates.len() == 0 {
@@ -511,7 +501,7 @@ pub fn main_shuffle_rcs_big(c: &CircuitSeq, rounds: usize, n: usize, save: &str,
 }
 
 pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database], intermediate: &str, min: usize, tower: bool, id_len: usize) {
+    shard_dbs: &[lmdb::Database], curated_shard_dbs: &[lmdb::Database], intermediate: &str, min: usize, tower: bool, id_len: usize) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
@@ -529,7 +519,7 @@ pub fn main_rac_big_distance(c: &CircuitSeq, rounds: usize, n: usize, save: &str
                 .collect::<Vec<Vec<usize>>>()
         })
         .collect();
-    let dbs = open_all_dbs(env);
+    let dbs: HashMap<String, lmdb::Database> = HashMap::new();
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat obfuscate + compress 'rounds' times
@@ -609,6 +599,7 @@ pub fn main_sequential_butterfly(
     save: &str,
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
+    curated_shard_dbs: &[lmdb::Database],
     id_len: usize,
     reverse_order_left: bool,
     tower_left: bool,
@@ -634,7 +625,7 @@ pub fn main_sequential_butterfly(
                 .collect::<Vec<Vec<usize>>>()
         })
         .collect();
-    let dbs = open_all_dbs(env);
+    let dbs: HashMap<String, lmdb::Database> = HashMap::new();
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat obfuscate + compress 'rounds' times
@@ -729,6 +720,7 @@ pub fn main_shooting_game(
     save: &str,
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
+    curated_shard_dbs: &[lmdb::Database],
     id_len: usize,
     tower: bool,
     stop_multiplier: f64,
@@ -754,8 +746,7 @@ pub fn main_shooting_game(
                 .collect::<Vec<Vec<usize>>>()
         })
         .collect();
-    let dbs = open_all_dbs(env);
-    let curated_shard_dbs = open_curated_shard_dbs(env);
+    let dbs: HashMap<String, lmdb::Database> = HashMap::new();
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat `rounds` times
@@ -863,6 +854,7 @@ pub fn main_expansion_game(
     save: &str,
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
+    curated_shard_dbs: &[lmdb::Database],
     id_len: usize,
     tower: bool,
     target_multiplier: usize,
@@ -885,8 +877,8 @@ pub fn main_expansion_game(
                 .collect::<Vec<Vec<usize>>>()
         })
         .collect();
-    let dbs = open_all_dbs(env);
 
+    let dbs: HashMap<String, lmdb::Database> = HashMap::new();
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     let mut post_len = 0;
@@ -894,7 +886,7 @@ pub fn main_expansion_game(
 
     for i in 0..rounds {
         let pair_mode = if curated {
-            ExpandPairMode::Curated
+            ExpandPairMode::Curated { curated_shard_dbs: &curated_shard_dbs }
         } else if use_db {
             ExpandPairMode::Db
         } else {
@@ -976,6 +968,7 @@ pub fn main_shuffle_shoot_shuffle(
     save: &str,
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
+    curated_shard_dbs: &[lmdb::Database],
     id_len: usize,
     tower: bool,
     _stop: usize,
@@ -1004,8 +997,7 @@ pub fn main_shuffle_shoot_shuffle(
                 .collect::<Vec<Vec<usize>>>()
         })
         .collect();
-    let dbs = open_all_dbs(env);
-    let curated_shard_dbs = open_curated_shard_dbs(env);
+    let dbs: HashMap<String, lmdb::Database> = HashMap::new();
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat `rounds` times
@@ -1047,7 +1039,7 @@ pub fn main_shuffle_shoot_shuffle(
     }
     for i in 0..rounds {
         if egg {
-            let pair_mode = ExpandPairMode::Curated;
+            let pair_mode = ExpandPairMode::Curated { curated_shard_dbs: &curated_shard_dbs };
             circuit = expand_once(&circuit, n, env, shard_dbs, &pair_mode);
         } else {
             loop {
@@ -1153,8 +1145,7 @@ pub fn main_shuffle_shoot_shuffle(
 
 //do targeted compression
 pub fn main_compression(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],) {
-    let _dbs = open_all_dbs(env);
+    shard_dbs: &[lmdb::Database], curated_shard_dbs: &[lmdb::Database]) {
     // Start with the input circuit
     let _bit_shuf_list: Vec<Vec<Vec<usize>>> = (3..=7)
         .map(|n| {
@@ -1164,6 +1155,7 @@ pub fn main_compression(c: &CircuitSeq, rounds: usize, n: usize, save: &str, env
                 .collect::<Vec<Vec<usize>>>()
         })
         .collect();
+    let dbs: HashMap<String, lmdb::Database> = HashMap::new();
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat obfuscate + compress 'rounds' times

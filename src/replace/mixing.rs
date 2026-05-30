@@ -1012,6 +1012,7 @@ pub fn replace_and_compress_big(
     intermediate: &str,
     tower: bool,
     id_len: usize,
+    curated_shard_dbs: &[lmdb::Database],
 ) -> (CircuitSeq, usize, usize, usize, usize) {
     println!("Current round: {}/{}", curr_round, last_round);
 
@@ -1051,7 +1052,7 @@ pub fn replace_and_compress_big(
             .map(|chunk| {
                 let mut sub = CircuitSeq { gates: chunk };
                 // Only do a forward sequential pass. A reverse pass afterwards could be useful
-                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &env, &bit_shuf_list, dbs, tower);
+                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &env, &bit_shuf_list, dbs, tower, curated_shard_dbs, shard_dbs);
                 ALREADY_COLLIDED.fetch_add(col, Ordering::SeqCst);
                 SHOOT_COUNT.fetch_add(shoot, Ordering::SeqCst);
                 MADE_LEFT.fetch_add(zero, Ordering::SeqCst);
@@ -1179,6 +1180,7 @@ pub fn interleave_sequential_big(
     intermediate: &str,
     tower: bool,
     id_len: usize,
+    curated_shard_dbs: &[lmdb::Database],
 ) -> (CircuitSeq, usize, usize, usize, usize) {
     println!("Current round: {}/{}", curr_round, last_round);
 
@@ -1219,7 +1221,7 @@ pub fn interleave_sequential_big(
             .into_par_iter()
             .map(|chunk| {
                 let mut sub = CircuitSeq { gates: chunk };
-                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &env, &bit_shuf_list, dbs, tower);
+                let (col, shoot, zero, trav) = replace_sequential_pairs(&mut sub, n, &env, &bit_shuf_list, dbs, tower, curated_shard_dbs, shard_dbs);
                 ALREADY_COLLIDED.fetch_add(col, Ordering::SeqCst);
                 SHOOT_COUNT.fetch_add(shoot, Ordering::SeqCst);
                 MADE_LEFT.fetch_add(zero, Ordering::SeqCst);

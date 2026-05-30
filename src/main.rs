@@ -1380,15 +1380,15 @@ Command::new("rocksdb_2")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let shard_dbs = open_shard_dbs(&env);
+            let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
             if data.trim().is_empty() {
                 println!("Generating random");
                 let c1 = random_circuit(n, 30);
                 println!("Starting Len: {}", c1.gates.len());
-                main_butterfly_big(&c1, rounds, n, false, path, &env, &shard_dbs);
+                main_butterfly_big(&c1, rounds, n, false, path, &env, &shard_dbs, &curated_shard_dbs);
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_butterfly_big(&c, rounds, n, false, path, &env, &shard_dbs);
+                main_butterfly_big(&c, rounds, n, false, path, &env, &shard_dbs, &curated_shard_dbs);
             }
         }
 
@@ -1409,7 +1409,7 @@ Command::new("rocksdb_2")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let shard_dbs = open_shard_dbs(&env);
+            let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Generating random");
@@ -1418,14 +1418,14 @@ Command::new("rocksdb_2")
                 if bookendless {
                     // main_butterfly_big_bookendsless(&c1, rounds, n, true, path, &env);
                 } else {
-                    main_butterfly_big(&c1, rounds, n, true, path, &env, &shard_dbs);
+                    main_butterfly_big(&c1, rounds, n, true, path, &env, &shard_dbs, &curated_shard_dbs);
                 }
             } else {
                 let c = CircuitSeq::from_string(&data);
                 if bookendless {
                     // main_butterfly_big_bookendsless(&c, rounds, n, true, path, &env);
                 } else {
-                    main_butterfly_big(&c, rounds, n, true, path, &env, &shard_dbs);
+                    main_butterfly_big(&c, rounds, n, true, path, &env, &shard_dbs, &curated_shard_dbs);
                 }
             }
         }
@@ -1449,13 +1449,13 @@ Command::new("rocksdb_2")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let shard_dbs = open_shard_dbs(&env);
+            let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_rac_big(&c, rounds, n, d, &env, &shard_dbs, i, tower, id_len);
+                main_rac_big(&c, rounds, n, d, &env, &shard_dbs, &curated_shard_dbs, i, tower, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1504,13 +1504,13 @@ Command::new("rocksdb_2")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let shard_dbs = open_shard_dbs(&env);
+            let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_shuffle_rcs_big(&c, rounds, n, d, &env, &shard_dbs, i, tower, x, id_len);
+                main_shuffle_rcs_big(&c, rounds, n, d, &env, &shard_dbs, &curated_shard_dbs, i, tower, x, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1558,13 +1558,13 @@ Command::new("rocksdb_2")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let shard_dbs = open_shard_dbs(&env);
+            let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_interleave_big(&c, rounds, n, d, &env, &shard_dbs, i, tower, id_len);
+                main_interleave_big(&c, rounds, n, d, &env, &shard_dbs, &curated_shard_dbs, i, tower, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1613,13 +1613,13 @@ Command::new("rocksdb_2")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let shard_dbs = open_shard_dbs(&env);
+            let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                main_rac_big_distance(&c, rounds, n, d, &env, &shard_dbs, i, m, tower, id_len);
+                main_rac_big_distance(&c, rounds, n, d, &env, &shard_dbs, &curated_shard_dbs, i, m, tower, id_len);
                 let x_label = {
                     let stem = std::path::Path::new(s).file_stem().unwrap().to_str().unwrap();
                     let num = stem.strip_prefix("circuit").unwrap_or(stem);
@@ -1671,7 +1671,7 @@ Command::new("rocksdb_2")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let shard_dbs = open_shard_dbs(&env);
+            let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
@@ -1684,6 +1684,7 @@ Command::new("rocksdb_2")
                     d,
                     &env,
                     &shard_dbs,
+                    &curated_shard_dbs,
                     id_len,
                     rev_left,
                     tower_left,
@@ -1748,7 +1749,7 @@ Command::new("rocksdb_2")
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                let shard_dbs = open_shard_dbs(&env);
+                let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
                 main_shooting_game(
                     &c,
                     rounds,
@@ -1756,6 +1757,7 @@ Command::new("rocksdb_2")
                     d,
                     &env,
                     &shard_dbs,
+                    &curated_shard_dbs,
                     id_len,
                     tower,
                     stop,
@@ -1823,7 +1825,7 @@ Command::new("rocksdb_2")
                 println!("Empty file");
             } else {
                 let c = CircuitSeq::from_string(&data);
-                let shard_dbs = open_shard_dbs(&env);
+                let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
                 main_expansion_game(
                     &c,
                     rounds,
@@ -1831,6 +1833,7 @@ Command::new("rocksdb_2")
                     d,
                     &env,
                     &shard_dbs,
+                    &curated_shard_dbs,
                     id_len,
                     tower,
                     stop,
@@ -1870,7 +1873,7 @@ Command::new("rocksdb_2")
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
 
-            let shard_dbs = open_shard_dbs(&env);
+            let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
             install_kill_handler();
             if data.trim().is_empty() {
                 println!("Empty file");
@@ -1885,6 +1888,7 @@ Command::new("rocksdb_2")
                     d,
                     &env,
                     &shard_dbs,
+                    &curated_shard_dbs,
                     id_len,
                     tower,
                     stop,
@@ -1942,7 +1946,7 @@ Command::new("rocksdb_2")
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
-            let dbs = open_all_dbs(&env);
+            let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
 
             let contents = fs::read_to_string(from_path)
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", from_path));
@@ -1984,7 +1988,7 @@ Command::new("rocksdb_2")
 
             // Call compression logic
             println!("Starting compression");
-            let shard_dbs = open_shard_dbs(&env);
+            let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
             acc = compress_loop(&acc, n, &env, &shard_dbs, 12, 1, 1, d);
             print_compress_timers();
             let mut file = fs::File::create(d)
@@ -2006,7 +2010,7 @@ Command::new("rocksdb_2")
                 .set_map_size(800 * 1024 * 1024 * 1024) 
                 .open(Path::new(lmdb))
                 .expect("Failed to open lmdb");
-            let dbs = open_all_dbs(&env);
+            let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
 
             let contents = fs::read_to_string(from_path)
                 .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", from_path));
@@ -2276,7 +2280,7 @@ Command::new("rocksdb_2")
                 .open(Path::new(src.as_str()))
                 .expect("Failed to open LMDB");
 
-            let shard_dbs = open_shard_dbs(&env);
+            let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
             let id_dbs = open_id_dbs(&env);
 
             generate_identity_db(&env, &shard_dbs, &id_dbs);
@@ -2985,7 +2989,7 @@ pub fn fill_n_id(n: usize) {
             .set_max_readers(512)
             .open(Path::new("./db")).expect("Failed to open env")
     );
-    let dbs = Arc::new(open_all_dbs(&env));
+    let (_shard_dbs_arc, _curated_dbs_arc) = open_all_dbs(&env); let dbs = Arc::new(std::collections::HashMap::<String, lmdb::Database>::new());
     // Drop existing DBs
     for g in 0..34 {
         let db_name = format!("ids_n{}g{}single", n, g);

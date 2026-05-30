@@ -1171,7 +1171,7 @@ mod test {
             .open(Path::new("./db"))
             .expect("failed to open lmdb");
 
-        let dbs = open_all_dbs(&env);
+        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
 
         let mut file = File::create("test_id.txt").expect("Failed to create file");
         let mut simple1: Vec<Vec<usize>> = vec![

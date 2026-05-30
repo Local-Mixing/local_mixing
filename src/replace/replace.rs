@@ -12,7 +12,7 @@ use crate::{
 };
 use crate::replace::identities::random_canonical_id;
 use crate::replace::identities::random_id;
-use crate::replace::pairs::{replace_single_pair, replace_single_pair_with_completion};
+use crate::replace::pairs::replace_single_pair;
 use crate::replace::mixing::split_into_random_chunk_ranges;
 use rand::Rng;
 use rayon::iter::IntoParallelIterator;
@@ -387,8 +387,8 @@ pub fn compress_loop_early(
 /// Selects which method to use when a 2-gate subcircuit is sampled in the expand functions.
 /// For subcircuits of 3–5 gates the shard DB is always used regardless of this setting.
 pub enum ExpandPairMode<'a> {
-    /// Use the completion_m2 DB to find a longer equivalent pair.
-    Curated,
+    /// Use the curated shard DBs to find a longer equivalent pair.
+    Curated { curated_shard_dbs: &'a [lmdb::Database] },
     /// Use replace_single_pair (random identity from id_g{} DBs) to get a longer equivalent.
     Canonical {
         bit_shuf_list: &'a Vec<Vec<Vec<usize>>>,
@@ -417,15 +417,6 @@ pub fn expand_lmdb<'a>(
         return CircuitSeq { gates: Vec::new() };
     }
 
-    // Open completion DB once if we'll need it for 2-gate curated pairs.
-    let comp_db: Option<lmdb::Database> = match pair_mode {
-        ExpandPairMode::Curated => Some(
-            env.open_db(Some("completion_m2"))
-                .expect("completion_m2 DB not found — run build_completion_m2 first"),
-        ),
-        _ => None,
-    };
-
     let mut rng = rand::rng();
 
     for _ in 0..trials {
@@ -441,14 +432,13 @@ pub fn expand_lmdb<'a>(
         // --- 2-gate path: bypass the shard DB and use pair functions ---
         if sub.gates.len() == 2 {
             match pair_mode {
-                ExpandPairMode::Curated => {
-                    if let Some(db) = comp_db {
-                        if let Some(repl) = replace_single_pair_with_completion(
-                            &sub.gates[0], &sub.gates[1], n, env, db,
-                        ) {
-                            if repl.len() > 2 {
-                                expanded.gates.splice(start..end, repl);
-                            }
+                ExpandPairMode::Curated { curated_shard_dbs } => {
+                    use crate::replace::pairs::expand_curated_lmdb;
+                    if let Some(repl) = expand_curated_lmdb(
+                        &sub.gates, n, env, curated_shard_dbs, shard_dbs,
+                    ) {
+                        if repl.len() > 2 {
+                            expanded.gates.splice(start..end, repl);
                         }
                     }
                     TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1398,15 +1388,6 @@ pub fn expand_big_ancillas<'a>(
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
-    // Open completion DB once if we'll need it for 2-gate curated pairs.
-    let comp_db: Option<lmdb::Database> = match pair_mode {
-        ExpandPairMode::Curated => Some(
-            env.open_db(Some("completion_m2"))
-                .expect("completion_m2 DB not found — run build_completion_m2 first"),
-        ),
-        _ => None,
-    };
-
     for _ in 0..trials {
         let t0 = Instant::now();
         let (mut subcircuit_gates, _) = match mode {
@@ -1450,12 +1431,11 @@ pub fn expand_big_ancillas<'a>(
         if subcircuit.gates.len() == 2 {
             let t6 = Instant::now();
             let repl_opt: Option<Vec<[u16; 3]>> = match pair_mode {
-                ExpandPairMode::Curated => {
-                    comp_db.and_then(|db| {
-                        replace_single_pair_with_completion(
-                            &circuit.gates[start], &circuit.gates[end], num_wires, env, db,
-                        )
-                    })
+                ExpandPairMode::Curated { curated_shard_dbs } => {
+                    use crate::replace::pairs::expand_curated_lmdb;
+                    expand_curated_lmdb(
+                        &[circuit.gates[start], circuit.gates[end]], num_wires, env, curated_shard_dbs, shard_dbs,
+                    )
                 }
                 ExpandPairMode::Canonical { bit_shuf_list, dbs, id_len, tower } => {
                     let (repl, _) = replace_single_pair(

@@ -1,6 +1,7 @@
 use rand::{Rng, prelude::SliceRandom};
 use std::collections::VecDeque;
 use crate::circuit::circuit::CircuitSeq;
+use crate::random::random_data::shoot_random_gate;
 
 /// 6-gate homomorphic gadget for secret-shared g57.
 /// Local wire map: 0=share_a, 3=share_c, 4=pad_c, 5=share_b, 6=pad_b.
@@ -207,6 +208,13 @@ fn next_single(queue: &mut VecDeque<usize>, n: usize, rng: &mut impl Rng) -> usi
 /// Latin-square Z + matching permutation M_p, process gates as SG gadgets
 /// interleaved with RG gadgets, then restore via M_p^{-1} + Z.
 pub fn gadgetize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng) -> CircuitSeq {
+    // Start by randomizing the gate order of the input circuit (functionality-preserving:
+    // shoot_random_gate only slides gates past non-colliding neighbors).
+    let mut main = main.clone();
+    let rounds = main.gates.len();
+    shoot_random_gate(&mut main, rounds);
+    let main = &main;
+
     let bookend_size = (2 * n * (n as f64).ln() as usize).max(64);
     let mut out: Vec<[u16; 3]> = Vec::new();
 
@@ -325,8 +333,6 @@ pub fn gadgetize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_rng() -> impl Rng { rand::rng() }
 
     #[test]
     fn verify_w_i_mapping() {
