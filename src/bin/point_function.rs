@@ -142,7 +142,9 @@ fn key_to_gates(wires: u16, key: usize) -> CircuitSeq {
     let mut c = CircuitSeq { gates: vec![] };
 
     for i in 0..wires {
-        let gates = if (key >> i) & 1 == 0 {
+        // Bit `i` of the key; any wire beyond the key's bit width (usize::BITS) is 0.
+        let bit_set = (i as u32) < usize::BITS && (key >> i) & 1 == 1;
+        let gates = if !bit_set {
             id_to_g57(wires, i)
         } else {
             not_to_g57(wires, i)
@@ -194,7 +196,7 @@ fn main() {
     println!("{} => {}", args.key, pf.evaluate_256(args.key.into()));
 
     for _ in 0..10 {
-        let r = if n < 128 {
+        let r = if (n as u32) < usize::BITS {
             fastrand::usize(0..(1usize << n))
         } else {
             fastrand::usize(..)
