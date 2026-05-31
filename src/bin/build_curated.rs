@@ -94,10 +94,12 @@ fn process_shard(
     };
     eprintln!("  shard {:02x}: {} qualifying entries, processing...", shard_idx, entries.len());
 
-    // Per-shard dedup: track u64 hashes of encoded tails already merged per key.
-    // Using a hash (8 bytes) instead of the full blob keeps memory bounded:
-    // ~400k keys × avg 17 tails × 8 bytes ≈ 55 MB per shard.
-    let mut seen: HashMap<Vec<u8>, HashSet<u64>> = HashMap::new();
+    // Per-shard local accumulation. Merging into RocksDB per-circuit makes short
+    // prefixes into hot keys (few distinct functions, hammered by all 256 threads),
+    // which builds O(n^2) merge-operand chains and livelocks compaction. Instead keep,
+    // per key, the deduped + length-capped concatenation of encoded circuits, and
+    // merge each key into RocksDB exactly once at the end of the shard.
+    let mut buf: HashMap<Vec<u8>, (HashSet<u64>, Vec<u8>)> = HashMap::new();
     let mut merged = 0usize;
 
     for (entry_idx, value) in entries.iter().enumerate() {
@@ -201,21 +203,22 @@ fn process_shard(
                                 let mut tail_seq = CircuitSeq { gates: tail_gates };
                                 tail_seq.canonicalize();
 
-                                // Blob = [prefix_db || tail_db] — full identity in DB wire space.
-                                let mut combined = prefix_db_seq.gates;
-                                combined.extend(tail_seq.gates);
-                                let combined_blob = CircuitSeq { gates: combined }.repr_blob();
-                                if combined_blob.len() > 255 { continue; }
-
-                                let encoded = encode_circuit(&combined_blob);
-
-                                // Dedup: only merge if this exact tail hasn't been
-                                // sent to RocksDB yet for this key (this shard).
-                                let tail_hash = xxh3_64(&encoded);
-                                let key_seen = seen.entry(key.clone()).or_default();
-                                if key_seen.insert(tail_hash) {
-                                    rdb.merge(&key, &encoded).expect("rocksdb merge");
-                                    merged += 1;
+                                // Under key = hash(prefix's canonical function), insert BOTH
+                                // equivalents of that function as separate circuits:
+                                //   - the rewired prefix            (length k)
+                                //   - the reversed, rewired suffix  (length n-k)
+                                // Both compute the prefix's function, so both canonicalize to `key`.
+                                for seq in [&prefix_db_seq, &tail_seq] {
+                                    let blob = seq.repr_blob();
+                                    if blob.len() > 255 { continue; }
+                                    let encoded = encode_circuit(&blob);
+                                    // Accumulate locally: dedup per key, cap concatenated length.
+                                    let h = xxh3_64(&encoded);
+                                    let (seen_h, val) = buf.entry(key.clone()).or_default();
+                                    if val.len() + encoded.len() <= MAX_VALUE_BYTES && seen_h.insert(h) {
+                                        val.extend_from_slice(&encoded);
+                                        merged += 1;
+                                    }
                                 }
                             }
                         }
@@ -225,7 +228,11 @@ fn process_shard(
         }
     }
 
-    eprintln!("  shard {:02x}: done, {} unique tails merged", shard_idx, merged);
+    // Flush the shard's buffer to RocksDB: one merge per distinct key (no hot-key storm).
+    for (key, (_seen, val)) in buf {
+        rdb.merge(&key, &val).expect("rocksdb merge");
+    }
+    eprintln!("  shard {:02x}: done, {} unique circuits merged", shard_idx, merged);
 }
 
 fn main() {

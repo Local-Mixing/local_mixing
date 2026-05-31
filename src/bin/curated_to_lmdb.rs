@@ -32,6 +32,17 @@ fn main() {
         })
         .collect();
 
+    // Wipe any existing curated shard data first: a put only overwrites matching keys,
+    // so stale entries from a previous (e.g. buggy) build would otherwise linger.
+    {
+        let mut txn = env.begin_rw_txn().expect("rw txn");
+        for &db in &dbs {
+            txn.clear_db(db).expect("clear curated shard");
+        }
+        txn.commit().expect("commit clear");
+    }
+    println!("Cleared existing curated_{{}} shards.");
+
     let mut opts = Options::default();
     opts.set_merge_operator_associative("append_merge", append_merge);
     let rocks = DB::open_for_read_only(&opts, "rocks_curated_db", false)

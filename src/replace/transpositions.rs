@@ -1402,6 +1402,171 @@ mod tests {
     use crate::{CircuitSeq, replace::identities::insert_ri_identities};
     use crate::replace::transpositions::Transpositions;
     #[test]
+    fn count_distinct_samf_prefixes() {
+        use std::collections::HashSet;
+        use crate::circuit::circuit::polys_repr_blob;
+        use crate::replace::transpositions::{
+            SWAP_3W, SWAP_4W, SWAP_N1_3W, SWAP_N1_4W,
+            SWAP_N2_3W, SWAP_N2_4W, SWAP_N12_3W, SWAP_N12_4W,
+        };
+
+        let pools: &[(&str, &[&[[u16; 3]]])] = &[
+            ("SWAP_3W",     SWAP_3W),
+            ("SWAP_4W",     SWAP_4W),
+            ("SWAP_N1_3W",  SWAP_N1_3W),
+            ("SWAP_N1_4W",  SWAP_N1_4W),
+            ("SWAP_N2_3W",  SWAP_N2_3W),
+            ("SWAP_N2_4W",  SWAP_N2_4W),
+            ("SWAP_N12_3W", SWAP_N12_3W),
+            ("SWAP_N12_4W", SWAP_N12_4W),
+        ];
+
+        let mut global: HashSet<Vec<u8>> = HashSet::new();
+        println!("\n=== Distinct canonical SAMF circuits (full, adjacent-equal cancelled) ===");
+        for (name, pool) in pools {
+            let mut local: HashSet<Vec<u8>> = HashSet::new();
+            for circuit in pool.iter() {
+                // Cancel adjacent equal gates (each gate is an involution, so a
+                // repeated pair is the identity) until none remain.
+                let mut gates = circuit.to_vec();
+                loop {
+                    let mut i = 0;
+                    let mut changed = false;
+                    let mut out: Vec<[u16; 3]> = Vec::with_capacity(gates.len());
+                    while i < gates.len() {
+                        if i + 1 < gates.len() && gates[i] == gates[i + 1] {
+                            i += 2;
+                            changed = true;
+                        } else {
+                            out.push(gates[i]);
+                            i += 1;
+                        }
+                    }
+                    gates = out;
+                    if !changed { break; }
+                }
+                let full = CircuitSeq { gates };
+                // Canonicalize exactly like build_from_rocks: remap wires +
+                // canonicalize() + canonical polynomials as the distinctness key.
+                let canon = full
+                    .canonicalize_polys(9, true)
+                    .expect("canonicalize_polys returned None");
+                let key = polys_repr_blob(&canon.0);
+                local.insert(key.clone());
+                global.insert(key);
+            }
+            println!("{:<12} {:>3} circuits -> {:>3} distinct circuits",
+                name, pool.len(), local.len());
+        }
+        println!("{:<12} {:>3} total    -> {:>3} distinct circuits overall",
+            "ALL", pools.iter().map(|(_, p)| p.len()).sum::<usize>(), global.len());
+    }
+
+    #[test]
+    fn check_samf_equals_rev() {
+        use crate::replace::transpositions::{
+            SWAP_3W, SWAP_4W, SWAP_N1_3W, SWAP_N1_4W,
+            SWAP_N2_3W, SWAP_N2_4W, SWAP_N12_3W, SWAP_N12_4W,
+        };
+
+        let pools: &[(&str, &[&[[u16; 3]]])] = &[
+            ("SWAP_3W",     SWAP_3W),
+            ("SWAP_4W",     SWAP_4W),
+            ("SWAP_N1_3W",  SWAP_N1_3W),
+            ("SWAP_N1_4W",  SWAP_N1_4W),
+            ("SWAP_N2_3W",  SWAP_N2_3W),
+            ("SWAP_N2_4W",  SWAP_N2_4W),
+            ("SWAP_N12_3W", SWAP_N12_3W),
+            ("SWAP_N12_4W", SWAP_N12_4W),
+        ];
+
+        println!("\n=== samf == rev(samf)?  (reverse computes the inverse) ===");
+        for (name, pool) in pools {
+            let mut equal = 0;
+            for circuit in pool.iter() {
+                let fwd = CircuitSeq { gates: circuit.to_vec() };
+                let n = fwd.max_wire() + 1;
+                let mut rev = fwd.clone();
+                rev.gates.reverse();
+                if fwd.permutation(n).data == rev.permutation(n).data {
+                    equal += 1;
+                }
+            }
+            println!("{:<12} {:>3}/{:>3} circuits are self-inverse (samf == rev)",
+                name, equal, pool.len());
+        }
+    }
+
+    #[test]
+    fn check_samf_negate_swap_order() {
+        use crate::replace::transpositions::{
+            SWAP_3W, SWAP_4W, SWAP_N1_3W, SWAP_N1_4W,
+            SWAP_N2_3W, SWAP_N2_4W, SWAP_N12_3W, SWAP_N12_4W,
+        };
+
+        // (name, pool, negation_type). Logical wires are 1 (=j, lower) and 2 (=i, higher);
+        // wire 0 and (for 4-wire) wire 3 are ancilla, fixed at 0.
+        // type 1 flips wire 1, type 2 flips wire 2, type 3 flips both.
+        let pools: &[(&str, &[&[[u16; 3]]], u16)] = &[
+            ("SWAP_3W",     SWAP_3W,     0),
+            ("SWAP_4W",     SWAP_4W,     0),
+            ("SWAP_N1_3W",  SWAP_N1_3W,  1),
+            ("SWAP_N1_4W",  SWAP_N1_4W,  1),
+            ("SWAP_N2_3W",  SWAP_N2_3W,  2),
+            ("SWAP_N2_4W",  SWAP_N2_4W,  2),
+            ("SWAP_N12_3W", SWAP_N12_3W, 3),
+            ("SWAP_N12_4W", SWAP_N12_4W, 3),
+        ];
+
+        // Extract the logical (out1,out2) for a given input (x1,x2) with all ancilla = 0.
+        let logical = |circuit: &CircuitSeq, x1: usize, x2: usize| -> (usize, usize) {
+            let inp = (x1 << 1) | (x2 << 2); // ancilla bits 0 and 3 are 0
+            let out = circuit.evaluate(inp);
+            assert_eq!(out & 1, 0, "ancilla wire 0 not restored to 0");
+            assert_eq!((out >> 3) & 1, 0, "ancilla wire 3 not restored to 0");
+            ((out >> 1) & 1, (out >> 2) & 1)
+        };
+
+        // Candidate models. flip1/flip2 = which logical wire is negated.
+        let flips = |neg: u16| -> (usize, usize) {
+            match neg { 0 => (0,0), 1 => (1,0), 2 => (0,1), 3 => (1,1), _ => unreachable!() }
+        };
+        // negate THEN swap: out = ( x2^flip2 , x1^flip1 )
+        let negate_then_swap = |x1: usize, x2: usize, f: (usize,usize)| (x2 ^ f.1, x1 ^ f.0);
+        // swap THEN negate: out = ( x2^flip1 , x1^flip2 )
+        let swap_then_negate = |x1: usize, x2: usize, f: (usize,usize)| (x2 ^ f.0, x1 ^ f.1);
+
+        let matches = |circuit: &CircuitSeq, model: &dyn Fn(usize,usize,(usize,usize))->(usize,usize), f:(usize,usize)| -> bool {
+            (0..2).all(|x1| (0..2).all(|x2| logical(circuit, x1, x2) == model(x1, x2, f)))
+        };
+
+        println!("\n=== SAMF operation order (logical op on swap wires) ===");
+        for (name, pool, neg) in pools {
+            let f = flips(*neg);
+            let mut fwd_nts = 0; let mut fwd_stn = 0;
+            let mut rev_nts = 0; let mut rev_stn = 0;
+            for circuit in pool.iter() {
+                let fwd = CircuitSeq { gates: circuit.to_vec() };
+                let mut rev = fwd.clone();
+                rev.gates.reverse();
+                if matches(&fwd, &negate_then_swap, f) { fwd_nts += 1; }
+                if matches(&fwd, &swap_then_negate, f) { fwd_stn += 1; }
+                if matches(&rev, &negate_then_swap, f) { rev_nts += 1; }
+                if matches(&rev, &swap_then_negate, f) { rev_stn += 1; }
+            }
+            let total = pool.len();
+            let describe = |nts: usize, stn: usize| -> String {
+                if nts == total && stn == total { "negate-then-swap == swap-then-negate".to_string() }
+                else if nts == total { "negate THEN swap".to_string() }
+                else if stn == total { "swap THEN negate".to_string() }
+                else { format!("MIXED/neither (nts={}/{}, stn={}/{})", nts, total, stn, total) }
+            };
+            println!("{:<12} (neg={})  fwd: {:<22}  rev: {}",
+                name, neg, describe(fwd_nts, fwd_stn), describe(rev_nts, rev_stn));
+        }
+    }
+
+    #[test]
     fn test_wire_shifting() {
         use crate::replace::main_mix::open_all_dbs;
         let file = File::open("initial.txt").expect("failed to open initial.txt");
