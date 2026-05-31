@@ -17,7 +17,7 @@ use local_mixing::{
         CircuitSeq, circuit::canonicalize_polys, circuit::poly_degree, circuit::poly_to_str,
         circuit::polys_repr_blob,
     },
-    open_shard_dbs,
+    replace::main_mix::open_shard_dbs,
 };
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
@@ -54,6 +54,47 @@ type CktShape = Option<(WireCount, GateCount)>;
 
 fn make_shape(a: CktShape, b: CktShape) -> (CktShape, CktShape) {
     if a <= b { (a, b) } else { (b, a) }
+}
+
+/// Compact the wire labels of a circuit to 0..k, returning the rewired circuit
+/// and the sorted list of original wires used. (Ported from eb/dev `CircuitSeq::rewire_min`.)
+fn rewire_min(c: &CircuitSeq) -> (CircuitSeq, Vec<usize>) {
+    let mut wires: Vec<usize> = c.gates.iter().flatten().map(|&w| w as usize).collect();
+    wires.sort_unstable();
+    wires.dedup();
+
+    let mut wire_map = std::collections::HashMap::new();
+    for (new_idx, &old_wire) in wires.iter().enumerate() {
+        wire_map.insert(old_wire, new_idx);
+    }
+
+    let new_gates: Vec<[u16; 3]> = c
+        .gates
+        .iter()
+        .map(|gate| {
+            [
+                wire_map[&(gate[0] as usize)] as u16,
+                wire_map[&(gate[1] as usize)] as u16,
+                wire_map[&(gate[2] as usize)] as u16,
+            ]
+        })
+        .collect();
+
+    (CircuitSeq { gates: new_gates }, wires)
+}
+
+/// Remove adjacent duplicate gates (a gate immediately followed by an identical
+/// gate is an identity). (Ported from eb/dev `CircuitSeq::remove_adjacent_id`.)
+fn remove_adjacent_id(c: &mut CircuitSeq) {
+    let mut i = 0usize;
+    while i < c.gates.len().saturating_sub(1) {
+        if c.gates[i] == c.gates[i + 1] {
+            c.gates.drain(i..=i + 1);
+            i = i.saturating_sub(2);
+        } else {
+            i += 1;
+        }
+    }
 }
 
 // fn poly_complexity(env: &Environment) {
@@ -310,10 +351,10 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
                         continue;
                     }
 
-                    let a_rev: Vec<[u8; 3]> = a.gates.iter().rev().cloned().collect();
-                    let b_rev: Vec<[u8; 3]> = b.gates.iter().rev().cloned().collect();
+                    let a_rev: Vec<[u16; 3]> = a.gates.iter().rev().cloned().collect();
+                    let b_rev: Vec<[u16; 3]> = b.gates.iter().rev().cloned().collect();
 
-                    let candidates: [Vec<[u8; 3]>; 2] = [
+                    let candidates: [Vec<[u16; 3]>; 2] = [
                         // a || rev(b)
                         a.gates
                             .iter()
@@ -329,14 +370,14 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
                     ];
 
                     for gates in candidates {
-                        let (mut identity, _) = CircuitSeq { gates }.rewire_min();
+                        let (mut identity, _) = rewire_min(&CircuitSeq { gates });
 
                         // Simplify until circuit is empty or size plateaus
                         loop {
                             let len_before = identity.gates.len();
 
                             identity.canonicalize();
-                            identity.remove_adjacent_id();
+                            remove_adjacent_id(&mut identity);
 
                             if identity.gates.is_empty() {
                                 break;
@@ -355,7 +396,7 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
                         identity.canonicalize();
                         assert!(!identity.adjacent_id());
 
-                        let (identity, _) = identity.rewire_min();
+                        let (identity, _) = rewire_min(&identity);
 
                         // Minimality check: every half-length contiguous subcircuit must be absent.
                         let len = identity.gates.len();

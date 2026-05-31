@@ -136,7 +136,7 @@ fn balanced_ckt_ord(n: usize, m: usize) -> CircuitSeq {
     let mut c = Vec::with_capacity(m);
     let mut active_counts = vec![0usize; n];
 
-    let maxw = (n - 1) as u8;
+    let maxw = (n - 1) as u16;
 
     for _ in 0..m {
         loop {
@@ -147,9 +147,9 @@ fn balanced_ckt_ord(n: usize, m: usize) -> CircuitSeq {
                 .filter_map(|(wire, &count)| (count == min_count).then_some(wire))
                 .collect();
 
-            let gate0 = least_popular[fastrand::usize(..least_popular.len())] as u8;
-            let gate1 = fastrand::u8(..=maxw);
-            let gate2 = fastrand::u8(..=maxw);
+            let gate0 = least_popular[fastrand::usize(..least_popular.len())] as u16;
+            let gate1 = fastrand::u16(..=maxw);
+            let gate2 = fastrand::u16(..=maxw);
             let gate = [gate0, gate1, gate2];
 
             // No trivial identites, no duplicated pins
@@ -171,11 +171,11 @@ fn balanced_ckt_ord(n: usize, m: usize) -> CircuitSeq {
 fn balanced_ckt_uniform(n: usize, m: usize) -> CircuitSeq {
     let mut c = Vec::with_capacity(m);
 
-    let n8 = n as u8;
+    let n16 = n as u16;
 
     for i in 0..m {
         loop {
-            let gate = [(i % n) as u8, fastrand::u8(..n8), fastrand::u8(..n8)];
+            let gate = [(i % n) as u16, fastrand::u16(..n16), fastrand::u16(..n16)];
 
             if c.last() == Some(&gate)
                 || (gate[0] == gate[1] || gate[0] == gate[2] || gate[1] == gate[2])

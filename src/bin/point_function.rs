@@ -7,7 +7,7 @@ use itertools::chain;
 use lmdb::Environment;
 use local_mixing::{
     circuit::CircuitSeq,
-    open_shard_dbs,
+    replace::main_mix::open_shard_dbs,
     replace::replace::{compress_lmdb, compress_loop},
 };
 
@@ -26,16 +26,16 @@ struct Args {
     identity: bool,
 }
 
-fn tof_to_g57(wires: u8, g: &[u8; 3]) -> Vec<[u8; 3]> {
+fn tof_to_g57(wires: u16, g: &[u16; 3]) -> Vec<[u16; 3]> {
     // Let r be a random wire from the range 0..wires, NOT including any of the values in g.
-    let mut r = fastrand::u8(0..wires);
+    let mut r = fastrand::u16(0..wires);
     while g.contains(&r) {
-        r = fastrand::u8(0..wires);
+        r = fastrand::u16(0..wires);
     }
 
-    let active = g[0] as u8;
-    let ctrl1 = g[1] as u8;
-    let ctrl2 = g[2] as u8;
+    let active = g[0];
+    let ctrl1 = g[1];
+    let ctrl2 = g[2];
 
     vec![
         [active, ctrl1, r],
@@ -46,12 +46,12 @@ fn tof_to_g57(wires: u8, g: &[u8; 3]) -> Vec<[u8; 3]> {
 }
 
 // 6 gates on 4 wires
-fn not_to_g57(wires: u8, a: u8) -> Vec<[u8; 3]> {
+fn not_to_g57(wires: u16, a: u16) -> Vec<[u16; 3]> {
     let mut chosen = [a; 3];
 
     for i in 0..3 {
         loop {
-            let w = fastrand::u8(0..wires);
+            let w = fastrand::u16(0..wires);
             if !chosen[..=i].contains(&w) {
                 chosen[i] = w;
                 break;
@@ -73,14 +73,14 @@ fn not_to_g57(wires: u8, a: u8) -> Vec<[u8; 3]> {
 
 // 6 gate nontrivial on 4 wires
 // TODO: choose different ones each time
-fn id_to_g57(wires: u8, a: u8) -> Vec<[u8; 3]> {
+fn id_to_g57(wires: u16, a: u16) -> Vec<[u16; 3]> {
     // one of the wires will be the active one
     // Choose three random values from the range 0..wires
     let mut chosen = [a; 3];
 
     for i in 0..3 {
         loop {
-            let w = fastrand::u8(0..wires);
+            let w = fastrand::u16(0..wires);
             if !chosen[..=i].contains(&w) {
                 chosen[i] = w;
                 break;
@@ -99,9 +99,9 @@ fn id_to_g57(wires: u8, a: u8) -> Vec<[u8; 3]> {
     ]
 }
 
-fn big_tof(n: u8, active: u8, controls: Range<u8>) -> CircuitSeq {
+fn big_tof(n: u16, active: u16, controls: Range<u16>) -> CircuitSeq {
     // Build the staircase
-    let mut empty: Vec<u8> = (0..n + 2).collect();
+    let mut empty: Vec<u16> = (0..n + 2).collect();
 
     // Delete index `active`, and all indices in `controls` from the vector
     empty.retain(|x| *x != active && !controls.contains(x));
@@ -109,9 +109,9 @@ fn big_tof(n: u8, active: u8, controls: Range<u8>) -> CircuitSeq {
     // Shuffle the remaining indices
     fastrand::shuffle(&mut empty);
 
-    let ctrl: Vec<u8> = controls.collect();
+    let ctrl: Vec<u16> = controls.collect();
 
-    let stair: Vec<[u8; 3]> = (1..(ctrl.len() - 2))
+    let stair: Vec<[u16; 3]> = (1..(ctrl.len() - 2))
         .map(|i| [empty[i - 1], ctrl[i], empty[i]])
         .collect();
 
@@ -138,7 +138,7 @@ fn big_tof(n: u8, active: u8, controls: Range<u8>) -> CircuitSeq {
     }
 }
 
-fn key_to_gates(wires: u8, key: usize) -> CircuitSeq {
+fn key_to_gates(wires: u16, key: usize) -> CircuitSeq {
     let mut c = CircuitSeq { gates: vec![] };
 
     for i in 0..wires {
@@ -166,11 +166,11 @@ fn main() {
 
     let shard_dbs = open_shard_dbs(&env);
 
-    let n = args.wires;
+    let n = args.wires as u16;
 
     println!("{:?}", args);
 
-    let key_bits = (usize::BITS as u32 - args.key.leading_zeros()) as u8;
+    let key_bits = (usize::BITS as u32 - args.key.leading_zeros()) as u16;
     assert!(key_bits <= n);
 
     let b = n.div_ceil(2);
