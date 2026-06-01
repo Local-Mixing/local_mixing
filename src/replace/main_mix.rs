@@ -1038,6 +1038,10 @@ pub fn main_shuffle_shoot_shuffle(
         }
         println!("After full shuffle: {} gates", circuit.gates.len());
     }
+    // Per-round SAMF (shuffled shooting game) compression stats, snapshotted each round.
+    let mut per_round_samf: Vec<(usize, usize)> = Vec::new();
+    let mut prev_samf_made = crate::replace::transpositions::SAMF_COMPRESSIONS_MADE.load(std::sync::atomic::Ordering::Relaxed);
+    let mut prev_samf_failed = crate::replace::transpositions::SAMF_COMPRESSIONS_FAILED.load(std::sync::atomic::Ordering::Relaxed);
     for i in 0..rounds {
         if egg {
             let pair_mode = ExpandPairMode::Curated { curated_shard_dbs: &curated_shard_dbs };
@@ -1091,6 +1095,14 @@ pub fn main_shuffle_shoot_shuffle(
         println!("After inserting samfs: {} gates", circuit.gates.len());
         circuit = compress_loop(&circuit, n, env, shard_dbs, 6, i+1, rounds, "temp_compression.txt");
         println!("After compression: {} gates", circuit.gates.len());
+        // Record this round's SAMF compression stats (delta from previous round).
+        {
+            let cm = crate::replace::transpositions::SAMF_COMPRESSIONS_MADE.load(std::sync::atomic::Ordering::Relaxed);
+            let cf = crate::replace::transpositions::SAMF_COMPRESSIONS_FAILED.load(std::sync::atomic::Ordering::Relaxed);
+            per_round_samf.push((cm - prev_samf_made, cf - prev_samf_failed));
+            prev_samf_made = cm;
+            prev_samf_failed = cf;
+        }
         if circuit.gates.len() == 0 {
             break;
         }
@@ -1156,6 +1168,17 @@ pub fn main_shuffle_shoot_shuffle(
         .expect("Failed to write recent_circuit.txt");
 
     println!("Final circuit written to {}", save);
+
+    if shuffled {
+        println!("--- SAMF compressions per round (shuffled shooting game) ---");
+        let (mut tot_made, mut tot_failed) = (0usize, 0usize);
+        for (r, (made, failed)) in per_round_samf.iter().enumerate() {
+            println!("Round {}: made {}  failed {}", r + 1, made, failed);
+            tot_made += made;
+            tot_failed += failed;
+        }
+        println!("Total (this run): made {}  failed {}", tot_made, tot_failed);
+    }
 }
 
 //do targeted compression

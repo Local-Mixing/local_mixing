@@ -115,6 +115,7 @@ if __name__ == "__main__":
     parser.add_argument("--c2", type=str, required=False, help="Path to second circuit file")
     parser.add_argument("--chunk", type=int, default=10_000, help="Size of each chunk (default 10000)")
     parser.add_argument("--path", type=str, default="./heatmap.png", help="Path to the heatmap generation")
+    parser.add_argument("--corner", action="store_true", help="Only compute the bottom corner (first 5000 gates of both circuits); supports --incremental")
     parser.add_argument("--canonless", action="store_true", help="Don't canonicalize before heatmap")
     parser.add_argument("--small", action="store_true", help="Only check small inputs")
     parser.add_argument("--mini", action="store_true", help="Check with mini chunks inputs")
@@ -170,6 +171,17 @@ if __name__ == "__main__":
                 else:
                     plot_heatmap_raw(results, output_path, xlabel=args.x, ylabel=args.y, vmin=vmin, vmax=vmax)
                 print(f"Saved {output_path}")
+
+    elif args.corner:
+        mode = "incremental " if args.incremental else ""
+        print(f"Generating {mode}corner heatmap (first 5000 gates of both circuits)...")
+        results = heatmap_rust.heatmap_corner(args.n, args.i, flag, args.c1, args.c2, args.fix, args.hw, args.incremental)
+        output = args.path
+        if args.std:
+            plot_heatmap_std(results, output, xlabel=args.x, ylabel=args.y)
+        else:
+            plot_heatmap_raw(results, output, xlabel=args.x, ylabel=args.y, vmin=vmin, vmax=vmax)
+        print(f"Heatmap saved to {output}")
 
     elif args.small:
         print("Generating full heatmap...")
