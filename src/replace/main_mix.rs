@@ -966,6 +966,7 @@ pub fn main_shuffle_shoot_shuffle(
     m: usize,
     x: usize,
     save: &str,
+    source: &str,
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
     curated_shard_dbs: &[lmdb::Database],
@@ -1009,6 +1010,18 @@ pub fn main_shuffle_shoot_shuffle(
         let before = circuit.gates.len();
         circuit = gadgetize(&circuit, n, rg_freq, &mut rng);
         println!("Gadgetized: {} gates → {} gates, {} wires", before, circuit.gates.len(), 2 * n);
+        // Save the gadgetized circuit to ./gadgetized/{final path component of source}
+        let file_name = std::path::Path::new(source)
+            .file_name()
+            .expect("Source path has no final component")
+            .to_str()
+            .expect("Source file name is not valid UTF-8");
+        std::fs::create_dir_all("./gadgetized").expect("Failed to create ./gadgetized");
+        let gadget_path = format!("./gadgetized/{}", file_name);
+        File::create(&gadget_path)
+            .and_then(|mut f| f.write_all(circuit.repr().as_bytes()))
+            .expect("Failed to write gadgetized circuit");
+        println!("Gadgetized circuit written to {}", gadget_path);
     }
     let n = if do_gadgetize { 2 * n } else { n };
     if leave {

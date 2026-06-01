@@ -1894,6 +1894,7 @@ Command::new("rocksdb_2")
                     m,
                     x,
                     d,
+                    s,
                     &env,
                     &shard_dbs,
                     &curated_shard_dbs,
