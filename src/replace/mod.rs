@@ -5,4 +5,3 @@ pub mod identities;
 pub mod pairs;
 pub mod main_mix;
 pub mod gadgets;
-pub mod gen_ids;

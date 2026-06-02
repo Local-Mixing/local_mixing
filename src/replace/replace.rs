@@ -5,14 +5,9 @@ use crate::{
         contiguous_convex,
         find_convex_subcircuit_max_gates,
         find_convex_subcircuit_max_wires,
-        shoot_random_gate,
         simple_find_convex_subcircuit,
-        targeted_find_convex_subcircuit_deep,
     }
 };
-use crate::replace::identities::random_canonical_id;
-use crate::replace::identities::random_id;
-use crate::replace::pairs::replace_single_pair;
 use crate::replace::mixing::split_into_random_chunk_ranges;
 use rand::Rng;
 use rayon::iter::IntoParallelIterator;
@@ -25,7 +20,6 @@ extern crate lmdb_sys;
 
 use std::{
     cmp::{max, min},
-    collections::{HashMap},
     time::Instant,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -133,9 +127,6 @@ pub fn random_subcircuit_max(circuit: &CircuitSeq, max_len: usize) -> (CircuitSe
     (CircuitSeq { gates: subcircuit }, start, end)
 }
 
-// Timing variables for benchmarking
-pub static PERMUTATION_TIME: AtomicU64 = AtomicU64::new(0);
-pub static DUCKDB_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CANON_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONVEX_FIND_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONVEX_MAX_WIRES_TIME: AtomicU64 = AtomicU64::new(0);
@@ -144,25 +135,17 @@ pub static CONVEX_SIMPLE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONTIGUOUS_TIME: AtomicU64 = AtomicU64::new(0);
 pub static REWIRE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static COMPRESS_TIME: AtomicU64 = AtomicU64::new(0);
-pub static UNREWIRE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static REPLACE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static DEDUP_TIME: AtomicU64 = AtomicU64::new(0);
-pub static PICK_SUBCIRCUIT_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CANONICALIZE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CANONICALIZE_TIME_MAX_WIRES: AtomicU64 = AtomicU64::new(0);
 pub static CANONICALIZE_TIME_SIMPLE: AtomicU64 = AtomicU64::new(0);
 pub static CANONICALIZE_TIME_MAX_GATES: AtomicU64 = AtomicU64::new(0);
-pub static ROW_FETCH_TIME: AtomicU64 = AtomicU64::new(0);
-pub static SROW_FETCH_TIME: AtomicU64 = AtomicU64::new(0);
-pub static SIXROW_FETCH_TIME: AtomicU64 = AtomicU64::new(0);
-pub static LROW_FETCH_TIME: AtomicU64 = AtomicU64::new(0);
-pub static DB_OPEN_TIME: AtomicU64 = AtomicU64::new(0);
 pub static TXN_TIME: AtomicU64 = AtomicU64::new(0);
 pub static LMDB_LOOKUP_TIME: AtomicU64 = AtomicU64::new(0);
 pub static FROM_BLOB_TIME: AtomicU64 = AtomicU64::new(0);
 pub static SPLICE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static TRIAL_TIME: AtomicU64 = AtomicU64::new(0);
-pub static IDENTITY_TIME: AtomicU64 = AtomicU64::new(0);
 
 pub fn compress_loop(
     circuit: &CircuitSeq,
@@ -247,55 +230,6 @@ pub fn compress_loop(
     acc
 }
 
-pub fn expand_loop<'a>(
-    circuit: &CircuitSeq,
-    n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-    target_multiplier: usize,
-    pair_mode: &ExpandPairMode<'a>,
-) -> CircuitSeq {
-    let target = circuit.gates.len() * target_multiplier;
-    let mut acc = circuit.clone();
-    let mut rng = rand::rng();
-    let mut mode = 0usize;
-
-    while acc.gates.len() < target {
-        let before = acc.gates.len();
-
-        let max_chunks = 4 * rayon::current_num_threads().max(1);
-        let k = if before <= 1500 {
-            1
-        } else {
-            ((before + 1499) / 1500).min(max_chunks)
-        };
-
-        let current_mode = [0, 1, 2][mode];
-        mode = (mode + 1) % 3;
-
-        let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
-        let expanded_chunks: Vec<Vec<[u16; 3]>> = ranges
-            .into_par_iter()
-            .map(|(start, end)| {
-                let sub = CircuitSeq {
-                    gates: acc.gates[start..end].to_vec(),
-                };
-                expand_big_ancillas(&sub, 100, n, env, shard_dbs, current_mode, pair_mode).gates
-            })
-            .collect();
-
-        let total_len: usize = expanded_chunks.iter().map(|chunk| chunk.len()).sum();
-        let mut new_gates = Vec::with_capacity(total_len);
-        for chunk in expanded_chunks {
-            new_gates.extend(chunk);
-        }
-
-        acc.gates = new_gates;
-        println!("  Expand: {} gates (target {})", acc.gates.len(), target);
-    }
-
-    acc
-}
 
 /// Single pass of expansion: one round of chunked `expand_big_ancillas` with no loop.
 pub fn expand_once<'a>(
@@ -325,79 +259,6 @@ pub fn expand_once<'a>(
     CircuitSeq { gates: new_gates }
 }
 
-/// Like `compress_loop` but exits as soon as the circuit drops below `stop` gates.
-/// On the final round use the plain `compress_loop` instead.
-pub fn compress_loop_early(
-    circuit: &CircuitSeq,
-    n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-    stable_max: usize,
-    curr_round: usize,
-    last_round: usize,
-    output_path: &str,
-    stop: usize,
-) -> CircuitSeq {
-    let mut acc = circuit.clone();
-    let mut rng = rand::rng();
-    let mut stable_count = 0;
-    let mut mode = 0usize;
-
-    while stable_count < stable_max {
-        let before = acc.gates.len();
-
-        let max_chunks = 4 * rayon::current_num_threads().max(1);
-        let k = if before <= 1500 {
-            1
-        } else {
-            ((before + 1499) / 1500).min(max_chunks)
-        };
-
-        let current_mode = [0, 1, 2][mode];
-        mode = (mode + 1) % 3;
-
-        let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
-        let compressed_chunks: Vec<Vec<[u16; 3]>> = ranges
-            .into_par_iter()
-            .map(|(start, end)| {
-                let sub = CircuitSeq {
-                    gates: acc.gates[start..end].to_vec(),
-                };
-                compress_big_ancillas(&sub, 100, n, env, shard_dbs, current_mode).gates
-            })
-            .collect();
-
-        let total_len: usize = compressed_chunks.iter().map(|c| c.len()).sum();
-        let mut new_gates = Vec::with_capacity(total_len);
-        for chunk in compressed_chunks {
-            new_gates.extend(chunk);
-        }
-
-        acc.gates = new_gates;
-        let after = acc.gates.len();
-
-        if after < stop {
-            println!("  {}/{}: Early stop at {} gates (below {})", curr_round, last_round, after, stop);
-            break;
-        }
-
-        if after == before {
-            stable_count += 1;
-            println!("  {}/{}: Stable {}/{}: {} gates", curr_round, last_round, stable_count, stable_max, after);
-        } else {
-            stable_count = 0;
-            println!("  {}/{}: Reduced: {} gates", curr_round, last_round, after);
-        }
-
-        if std::path::Path::new("write_now").exists() {
-            std::fs::remove_file("write_now").ok();
-            let mut f = File::create(output_path).expect("create");
-            writeln!(f, "{}", acc.repr()).expect("write");
-            eprintln!("Wrote {}", output_path);
-        }
-    }
-    acc
-}
 
 // Expand with ancilla wires or gates
 /// Selects which method to use when a 2-gate subcircuit is sampled in the expand functions.
@@ -405,13 +266,6 @@ pub fn compress_loop_early(
 pub enum ExpandPairMode<'a> {
     /// Use the curated shard DBs to find a longer equivalent pair.
     Curated { curated_shard_dbs: &'a [lmdb::Database] },
-    /// Use replace_single_pair (random identity from id_g{} DBs) to get a longer equivalent.
-    Canonical {
-        bit_shuf_list: &'a Vec<Vec<Vec<usize>>>,
-        dbs: &'a HashMap<String, lmdb::Database>,
-        id_len: usize,
-        tower: bool,
-    },
     /// Force the shard DB lookup even for 2-gate subcircuits (same path as 3-5 gates).
     Db,
 }
@@ -456,17 +310,6 @@ pub fn expand_lmdb<'a>(
                         if repl.len() > 2 {
                             expanded.gates.splice(start..end, repl);
                         }
-                    }
-                    TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                    continue;
-                }
-                ExpandPairMode::Canonical { bit_shuf_list, dbs, id_len, tower } => {
-                    let (repl, _) = replace_single_pair(
-                        &sub.gates[0], &sub.gates[1], n, env,
-                        bit_shuf_list, dbs, *tower, *id_len, &[], &[],
-                    );
-                    if repl.len() > 2 {
-                        expanded.gates.splice(start..end, repl);
                     }
                     TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     continue;
@@ -588,385 +431,8 @@ pub fn expand_lmdb<'a>(
     expanded
 }
 
-pub fn compress_big(
-    c: &CircuitSeq,
-    trials: usize,
-    num_wires: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-) -> CircuitSeq {
-    let mut circuit = c.clone();
-    let mut rng = rand::rng();
 
-    let mut i = 0;
-    while i < circuit.gates.len().saturating_sub(1) {
-        if circuit.gates[i] == circuit.gates[i + 1] {
-            circuit.gates.drain(i..=i + 1);
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
 
-    for _ in 0..trials {
-        shoot_random_gate(&mut circuit, 100_000);
-        let t0 = Instant::now();
-        let mut subcircuit_gates = vec![];
-        let random_max_wires = rng.random_range(5..=7);
-        let size = if random_max_wires == 7 {
-            6
-        } else if random_max_wires == 6 {
-            4
-        } else {
-            3
-        };
-        for set_size in (3..=size).rev() {
-            let (gates, _) = simple_find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
-            if !gates.is_empty() {
-                subcircuit_gates = gates;
-                break;
-            }
-        }
-        CONVEX_FIND_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        if subcircuit_gates.is_empty() {
-            continue;
-        }
-
-        let gates: Vec<[u16; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
-        subcircuit_gates.sort();
-
-        let t1 = Instant::now();
-        let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
-        CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let mut subcircuit = CircuitSeq { gates };
-
-        let expected_slice: Vec<_> = subcircuit_gates.iter().map(|&i| circuit.gates[i]).collect();
-        let actual_slice = &circuit.gates[start..=end];
-        if actual_slice != &expected_slice[..] {
-            continue;
-        }
-
-        let t2 = Instant::now();
-        let used_wires = subcircuit.used_wires();
-        subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
-        REWIRE_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let t3 = Instant::now();
-        let sub_num_wires = used_wires.len();
-        PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs, 1);
-        COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        subcircuit = subcircuit_temp;
-
-        let t5 = Instant::now();
-        subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
-        UNREWIRE_TIME.fetch_add(t5.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let t6 = Instant::now();
-        let repl_len = subcircuit.gates.len();
-        let old_len = end - start + 1;
-
-        if repl_len == old_len {
-            for i in 0..repl_len {
-                circuit.gates[start + i] = subcircuit.gates[i];
-            }
-        } else if repl_len < old_len {
-            for i in 0..repl_len {
-                circuit.gates[start + i] = subcircuit.gates[i];
-            }
-            for i in (end + 1)..circuit.gates.len() {
-                circuit.gates[i - (old_len - repl_len)] = circuit.gates[i];
-            }
-            circuit.gates.truncate(circuit.gates.len() - (old_len - repl_len));
-        } else {
-            panic!("Replacement grew, which is not allowed");
-        }
-        REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
-    }
-
-    let t7 = Instant::now();
-    let mut i = 0;
-    while i < circuit.gates.len().saturating_sub(1) {
-        if circuit.gates[i] == circuit.gates[i + 1] {
-            circuit.gates.drain(i..=i + 1);
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
-    DEDUP_TIME.fetch_add(t7.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-    circuit
-}
-
-// Sequential compression method
-pub fn sequential_compress_big(
-    c: &CircuitSeq,
-    num_wires: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-) -> CircuitSeq {
-    let mut circuit = c.clone();
-    let mut rng = rand::rng();
-
-    let mut i = 0;
-    while i < circuit.gates.len().saturating_sub(1) {
-        if circuit.gates[i] == circuit.gates[i + 1] {
-            circuit.gates.drain(i..=i + 1);
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
-
-    let mut len = circuit.gates.len();
-    let mut i = 0;
-    while i < len {
-        let t0 = Instant::now();
-        let mut subcircuit_gates = vec![];
-        let random_max_wires = rng.random_range(5..=7);
-        let size = if random_max_wires == 7 {
-            6
-        } else if random_max_wires == 6 {
-            4
-        } else {
-            3
-        };
-        for set_size in (3..=size).rev() {
-            let (gates, _) = targeted_find_convex_subcircuit_deep(set_size, random_max_wires, num_wires, &circuit, &mut rng, i);
-            if !gates.is_empty() {
-                subcircuit_gates = gates;
-                break;
-            }
-            if set_size == 3 {
-                let (gates, _) = targeted_find_convex_subcircuit_deep(set_size, 7, num_wires, &circuit, &mut rng, i);
-                subcircuit_gates = gates;
-            }
-        }
-        CONVEX_FIND_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        if subcircuit_gates.is_empty() {
-            i+=1;
-            continue;
-        }
-
-        let gates: Vec<[u16; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
-        subcircuit_gates.sort();
-
-        let t1 = Instant::now();
-        let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
-        CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let mut subcircuit = CircuitSeq { gates };
-
-        let expected_slice: Vec<_> = subcircuit_gates.iter().map(|&i| circuit.gates[i]).collect();
-        let actual_slice = &circuit.gates[start..=end];
-        if actual_slice != &expected_slice[..] {
-            i+=1;
-            continue;
-        }
-
-        let t2 = Instant::now();
-        let used_wires = subcircuit.used_wires();
-        subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
-        REWIRE_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let t3 = Instant::now();
-        let sub_num_wires = used_wires.len();
-        PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs, 1);
-        COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        subcircuit = subcircuit_temp;
-
-        let t5 = Instant::now();
-        subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
-        UNREWIRE_TIME.fetch_add(t5.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let t6 = Instant::now();
-        let repl_len = subcircuit.gates.len();
-        let old_len = end - start + 1;
-
-        if repl_len == old_len {
-            for i in 0..repl_len {
-                circuit.gates[start + i] = subcircuit.gates[i];
-            }
-        } else if repl_len < old_len {
-            for i in 0..repl_len {
-                circuit.gates[start + i] = subcircuit.gates[i];
-            }
-            for i in (end + 1)..circuit.gates.len() {
-                circuit.gates[i - (old_len - repl_len)] = circuit.gates[i];
-            }
-            circuit.gates.truncate(circuit.gates.len() - (old_len - repl_len));
-        } else {
-            panic!("Replacement grew, which is not allowed");
-        }
-        REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        i += 1;
-        len = circuit.gates.len();
-    }
-
-    let t7 = Instant::now();
-    let mut i = 0;
-    while i < circuit.gates.len().saturating_sub(1) {
-        if circuit.gates[i] == circuit.gates[i + 1] {
-            circuit.gates.drain(i..=i + 1);
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
-    DEDUP_TIME.fetch_add(t7.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-    circuit
-}
-
-// Allow ancillas in compression
-pub fn sequential_compress_big_ancillas(
-    c: &CircuitSeq,
-    num_wires: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-) -> CircuitSeq {
-    let mut circuit = c.clone();
-    let mut rng = rand::rng();
-
-    let mut i = 0;
-    while i < circuit.gates.len().saturating_sub(1) {
-        if circuit.gates[i] == circuit.gates[i + 1] {
-            circuit.gates.drain(i..=i + 1);
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
-
-    let mut len = circuit.gates.len();
-    let mut i = 0;
-    while i < len {
-        let t0 = Instant::now();
-        let mut subcircuit_gates = vec![];
-        let random_max_wires = rng.random_range(5..=7);
-        let size = if random_max_wires == 7 {
-            6
-        } else if random_max_wires == 6 {
-            4
-        } else {
-            3
-        };
-        for set_size in (3..=size).rev() {
-            let (gates, _) = targeted_find_convex_subcircuit_deep(set_size, random_max_wires, num_wires, &circuit, &mut rng, i);
-            if !gates.is_empty() {
-                subcircuit_gates = gates;
-                break;
-            }
-            if set_size == 3 {
-                let (gates, _) = targeted_find_convex_subcircuit_deep(set_size, 7, num_wires, &circuit, &mut rng, i);
-                subcircuit_gates = gates;
-            }
-        }
-        CONVEX_FIND_TIME.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        if subcircuit_gates.is_empty() {
-            i+=1;
-            continue;
-        }
-
-        let gates: Vec<[u16; 3]> = subcircuit_gates.iter().map(|&g| circuit.gates[g]).collect();
-        subcircuit_gates.sort();
-
-        let t1 = Instant::now();
-        let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
-        CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let mut subcircuit = CircuitSeq { gates };
-
-        let expected_slice: Vec<_> = subcircuit_gates.iter().map(|&i| circuit.gates[i]).collect();
-        let actual_slice = &circuit.gates[start..=end];
-        if actual_slice != &expected_slice[..] {
-            i+=1;
-            continue;
-        }
-
-        let t2 = Instant::now();
-        let mut used_wires = subcircuit.used_wires();
-        let n_wires = used_wires.len();
-        let max = 7;
-        let new_wires = rng.random_range(n_wires..=max);
-        if new_wires > n_wires {
-            let mut count = n_wires;
-            while count < new_wires {
-                let random = rng.random_range(0..num_wires);
-                if used_wires.contains(&(random as u16)) {
-                    continue
-                }
-                used_wires.push(random as u16);
-                count += 1;
-            }
-        }
-        subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
-        REWIRE_TIME.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let t3 = Instant::now();
-        let sub_num_wires = used_wires.len();
-        PERMUTATION_TIME.fetch_add(t3.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs, 1);
-        COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        subcircuit = subcircuit_temp;
-
-        let t5 = Instant::now();
-        subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
-        UNREWIRE_TIME.fetch_add(t5.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let t6 = Instant::now();
-        let repl_len = subcircuit.gates.len();
-        let old_len = end - start + 1;
-
-        if repl_len == old_len {
-            for i in 0..repl_len {
-                circuit.gates[start + i] = subcircuit.gates[i];
-            }
-        } else if repl_len < old_len {
-            for i in 0..repl_len {
-                circuit.gates[start + i] = subcircuit.gates[i];
-            }
-            for i in (end + 1)..circuit.gates.len() {
-                circuit.gates[i - (old_len - repl_len)] = circuit.gates[i];
-            }
-            circuit.gates.truncate(circuit.gates.len() - (old_len - repl_len));
-        } else {
-            panic!("Replacement grew, which is not allowed");
-        }
-        REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        i += 1;
-        len = circuit.gates.len();
-    }
-
-    let t7 = Instant::now();
-    let mut i = 0;
-    while i < circuit.gates.len().saturating_sub(1) {
-        if circuit.gates[i] == circuit.gates[i + 1] {
-            circuit.gates.drain(i..=i + 1);
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
-    DEDUP_TIME.fetch_add(t7.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-    circuit
-}
 
 
 pub fn compress_lmdb(
@@ -1146,135 +612,7 @@ pub fn compress_lmdb(
     compressed
 }
 
-pub fn expand_big(
-    c: &CircuitSeq,
-    trials: usize,
-    num_wires: usize,
-    _env: &lmdb::Environment,
-    bit_shuf_list: &Vec<Vec<Vec<usize>>>,
-    _dbs: &HashMap<String, lmdb::Database>,
-) -> CircuitSeq {
-    let mut circuit = c.clone();
-    let mut rng = rand::rng();
 
-    for _i in 0..trials {
-        // if i % 20 == 0 {
-        //     println!("{} trials so far, {} more to go", i, trials - i);
-        // }
-        let mut subcircuit_gates = vec![];
-        let random_max_wires = rng.random_range(3..=7);
-        for set_size in (3..=7).rev() {
-            let (gates, _) = simple_find_convex_subcircuit(set_size, random_max_wires, num_wires, &circuit, &mut rng);
-            if !gates.is_empty() {
-                subcircuit_gates = gates;
-                break;
-            }
-        }
-
-        if subcircuit_gates.is_empty() {
-            return circuit
-        }
-        
-        let mut gates: Vec<[u16;3]> = vec![[0,0,0]; subcircuit_gates.len()];
-        for (i, g) in subcircuit_gates.iter().enumerate() {
-            gates[i] = circuit.gates[*g];
-        }
-
-        subcircuit_gates.sort();
-        let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
-        let mut subcircuit = CircuitSeq { gates };
-        // let sub_ref = subcircuit.clone();
-        let expected_slice: Vec<_> = subcircuit_gates.iter().map(|&i| circuit.gates[i]).collect();
-        let actual_slice = &circuit.gates[start..=end];
-
-        if actual_slice != &expected_slice[..] {
-            break;
-        }
-
-        let mut used_wires = subcircuit.used_wires();
-        let n_wires = used_wires.len();
-        let max = 7;
-        let new_wires = rng.random_range(n_wires..=max);
-
-        if new_wires > n_wires {
-            let mut count = n_wires;
-            while count < new_wires {
-                let random = rng.random_range(0..num_wires);
-                if used_wires.contains(&(random as u16)) {
-                    continue
-                }
-                used_wires.push(random as u16);
-                count += 1;
-            }
-        }
-        used_wires.sort();
-        subcircuit = CircuitSeq::rewire_subcircuit(&mut circuit, &mut subcircuit_gates, &used_wires);
-
-        
-        let _bit_shuf = &bit_shuf_list[new_wires - 3];
-
-        subcircuit = CircuitSeq::unrewire_subcircuit(&subcircuit, &used_wires);
-        if subcircuit.gates.len() == end+1 - start {
-            circuit.gates[start..end+1].copy_from_slice(&subcircuit.gates);
-        } else {    
-            circuit.gates.splice(start..end+1, subcircuit.gates);
-        }
-        // if c.permutation(num_wires).data != circuit.permutation(num_wires).data {
-        //     panic!("splice changed something");
-        // }
-    }
-    let mut i = 0;
-    while i < circuit.gates.len().saturating_sub(1) {
-        if circuit.gates[i] == circuit.gates[i + 1] {
-            circuit.gates.drain(i..=i + 1);
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
-    circuit
-}
-
-// Old legacy code to obfuscate/inflate
-pub fn obfuscate(c: &CircuitSeq, num_wires: usize) -> (CircuitSeq, Vec<usize>) {
-    if c.gates.len() == 0 {
-        return (CircuitSeq { gates: Vec::new() }, Vec::new() )
-    }
-    let mut obfuscated = CircuitSeq { gates: Vec::new() };
-    let mut inverse_starts = Vec::new();
-
-    let mut rng = rand::rng();
-
-    // for butterfly
-    let (r, r_inv) = random_id(num_wires, rng.random_range(3..=25));
-
-    for gate in &c.gates {
-        // Generate a random identity r ⋅ r⁻¹
-        // let (r, r_inv) = random_id(num_wires as u8, rng.random_range(3..=25), seed);
-
-        // Add r
-        obfuscated.gates.extend(&r.gates);
-
-        // Record where r⁻¹ starts
-        inverse_starts.push(obfuscated.gates.len());
-
-        // Add r⁻¹
-        obfuscated.gates.extend(&r_inv.gates);
-
-        // Now add the original gate
-        obfuscated.gates.push(*gate);
-    }
-
-    // Add a final padding random identity
-    //let (r0, r0_inv) = random_id(num_wires as u8, rng.random_range(3..=5), seed);
-    //obfuscated.gates.extend(&r0.gates);
-    obfuscated.gates.extend(&r.gates);
-    inverse_starts.push(obfuscated.gates.len());
-    //obfuscated.gates.extend(&r0_inv.gates);
-    obfuscated.gates.extend(&r_inv.gates);
-
-    (obfuscated, inverse_starts)
-}
 
 pub fn compress_big_ancillas(
     c: &CircuitSeq,
@@ -1300,9 +638,9 @@ pub fn compress_big_ancillas(
     for _ in 0..trials {
         let t0 = Instant::now();
         let (mut subcircuit_gates, _) = match mode {
-            0 => find_convex_subcircuit_max_wires(0, 30, num_wires, &circuit, &mut rng),
-            2 => find_convex_subcircuit_max_gates(0, 21, num_wires, &circuit, &mut rng),
-            _ => simple_find_convex_subcircuit(0, 30, num_wires, &circuit, &mut rng),
+            0 => find_convex_subcircuit_max_wires(30, num_wires, &circuit, &mut rng),
+            2 => find_convex_subcircuit_max_gates(21, num_wires, &circuit, &mut rng),
+            _ => simple_find_convex_subcircuit( num_wires, &circuit, &mut rng),
         };
         let elapsed = t0.elapsed().as_nanos() as u64;
         CONVEX_FIND_TIME.fetch_add(elapsed, Ordering::Relaxed);
@@ -1407,9 +745,9 @@ pub fn expand_big_ancillas<'a>(
     for _ in 0..trials {
         let t0 = Instant::now();
         let (mut subcircuit_gates, _) = match mode {
-            0 => find_convex_subcircuit_max_wires(0, 30, num_wires, &circuit, &mut rng),
-            2 => find_convex_subcircuit_max_gates(0, 21, num_wires, &circuit, &mut rng),
-            _ => simple_find_convex_subcircuit(0, 30, num_wires, &circuit, &mut rng),
+            0 => find_convex_subcircuit_max_wires(30, num_wires, &circuit, &mut rng),
+            2 => find_convex_subcircuit_max_gates(21, num_wires, &circuit, &mut rng),
+            _ => simple_find_convex_subcircuit( num_wires, &circuit, &mut rng),
         };
         let elapsed = t0.elapsed().as_nanos() as u64;
         CONVEX_FIND_TIME.fetch_add(elapsed, Ordering::Relaxed);
@@ -1453,13 +791,6 @@ pub fn expand_big_ancillas<'a>(
                         &[circuit.gates[start], circuit.gates[end]], num_wires, env, curated_shard_dbs, shard_dbs,
                     )
                 }
-                ExpandPairMode::Canonical { bit_shuf_list, dbs, id_len, tower } => {
-                    let (repl, _) = replace_single_pair(
-                        &circuit.gates[start], &circuit.gates[end], num_wires, env,
-                        bit_shuf_list, dbs, *tower, *id_len, &[], &[],
-                    );
-                    Some(repl)
-                }
                 ExpandPairMode::Db => None, // handled by expand_lmdb below
             };
             if let Some(repl) = repl_opt {
@@ -1492,39 +823,6 @@ pub fn expand_big_ancillas<'a>(
     circuit
 }
 
-// Replace a single gate
-pub fn random_gate_replacements(c: &mut CircuitSeq, x: usize, n: usize, env: &lmdb::Environment) {
-    let mut rng = rand::rng();
-    for _ in 0..x {
-        if c.gates.is_empty() {
-            break;
-        }
-
-        let i = rng.random_range(0..c.gates.len());
-        let g = &c.gates[i];
-
-        let num = rng.random_range(3..=7);
-        if let Ok(mut id) = random_canonical_id(env, num) {
-            let mut used_wires = vec![g[0], g[1], g[2]];
-            let mut count = 3;
-            while count < num {
-                let random = rng.random_range(0..n);
-                if used_wires.contains(&(random as u16)) {
-                    continue
-                }
-                used_wires.push(random as u16);
-                count += 1;
-            }
-            used_wires.sort();
-            let rewired_g = CircuitSeq::rewire_subcircuit(&c, &vec![i], &used_wires);
-            // println!("rewired_g {:?} vs len: {}", rewired_g, num);
-            id.rewire_first_gate(rewired_g.gates[0], num);
-            id = CircuitSeq::unrewire_subcircuit(&id, &used_wires);
-            id.gates.remove(0);
-            c.gates.splice(i..i+1, id.gates);
-        } 
-    }
-}
 
 // For timing and benchmarking purposes
 pub fn print_compress_timers() {

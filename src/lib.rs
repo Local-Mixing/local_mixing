@@ -143,13 +143,14 @@ fn heatmap_incremental(
     canon: bool,
     _fix: usize,
     hw: bool,
+    x0_arg: Option<u128>,
 ) -> Py<PyArray2<f64>> {
     let mask = if num_wires < 256 {
         (u256::one() << num_wires) - u256::one()
     } else {
         u256::MAX
     };
-    println!("Running incremental heatmap on {} inputs (random base + increments)", num_inputs);
+    println!("Running incremental heatmap on {} inputs ({} base + increments)", num_inputs, if x0_arg.is_some() { "chosen" } else { "random" });
     io::stdout().flush().unwrap();
     let circuit_one_str = fs::read_to_string(c1).expect("Failed to read c1");
     let circuit_two_str = fs::read_to_string(c2).expect("Failed to read c2");
@@ -166,9 +167,12 @@ fn heatmap_incremental(
     let mut average = vec![0f64; num_points * 3];
     let mut rng = rand::rng();
     let start_time = Instant::now();
-    // One random base input; subsequent inputs are x0+1, x0+2, ... (mod 2^num_wires).
-    let x0: u256 = (u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128)) & mask;
+    // Base input x0: caller-provided if given, else random. Subsequent inputs are x0+1, x0+2, ... (mod 2^num_wires).
+    let x0: u256 = match x0_arg {
+        Some(v) => u256::from(v) & mask,
+        None => (u256::from(rng.random::<u128>())
+                | (u256::from(rng.random::<u128>()) << 128)) & mask,
+    };
     for i in 0..num_inputs {
         if i % 10 == 0 {
             println!("{}/{}", i, num_inputs);
@@ -505,6 +509,7 @@ fn heatmap_corner(
     fix: usize,
     hw: bool,
     incremental: bool,
+    x0_arg: Option<u128>,
 ) -> Py<PyArray2<f64>> {
     const CORNER: usize = 5000;
     let mask = if num_wires < 256 {
@@ -513,7 +518,7 @@ fn heatmap_corner(
         u256::MAX
     };
     if incremental {
-        println!("Running corner heatmap on {} inputs (incremental: random base + increments)", num_inputs);
+        println!("Running corner heatmap on {} inputs (incremental: {} base + increments)", num_inputs, if x0_arg.is_some() { "chosen" } else { "random" });
     } else {
         println!("Running corner heatmap on {} inputs", num_inputs);
     }
@@ -540,8 +545,12 @@ fn heatmap_corner(
     for p in positions {
         fixed_mask |= u256::from(1) << p;
     }
-    let x0: u256 = (u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128)) & mask;
+    // Incremental base x0: caller-provided if given, else random (also holds the fixed bits for random mode).
+    let x0: u256 = match x0_arg {
+        Some(v) => u256::from(v) & mask,
+        None => (u256::from(rng.random::<u128>())
+                | (u256::from(rng.random::<u128>()) << 128)) & mask,
+    };
 
     for i in 0..num_inputs {
         if i % 10 == 0 {

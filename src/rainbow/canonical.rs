@@ -640,21 +640,7 @@ impl CandSet {
 }
 
 impl PermStore {
-    pub fn new_perm_store(perm: Permutation) -> Self {
-        Self {
-            perm,
-            circuits: HashMap::new(),
-            count: 0,
-            contains_any_circuit: false,
-            contains_canonical: false,
-            already_visited: false,
-        }
-    }
 
-    pub fn add_circuit(&mut self, repr: &Vec<u8>) {
-        self.count += 1;
-        self.circuits.insert(repr.to_vec(), true);
-    }
 
     pub fn replace(&mut self, repr: &Vec<u8>) {
         self.count += 1;
@@ -662,9 +648,6 @@ impl PermStore {
         self.circuits.insert(repr.to_vec(),true);
     }
 
-    pub fn increment(&mut self) {
-        self.count += 1;
-    }
 }
 
 // Choose the smallest lexigraphical ordering

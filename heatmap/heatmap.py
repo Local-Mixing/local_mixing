@@ -122,6 +122,7 @@ if __name__ == "__main__":
     parser.add_argument("--fix", type=int, default=0, help="Number of fixed bits in each random input")
     parser.add_argument("--hw", action="store_true", help="Use hamming weight difference mode")
     parser.add_argument("--incremental", action="store_true", help="First input random, then x0+1, x0+2, ... instead of random each iteration")
+    parser.add_argument("--x0", type=int, default=None, help="Incremental mode: starting input x0 (default: random)")
     parser.add_argument("--std", action="store_true", help="Use standard deviation for heatmaps")
     parser.add_argument("--enhance", type=float, nargs="?", const=0.05, default=None,
                         help="Tighten color scale around 0.5 by ENHANCE (e.g. --enhance 0.1 → [0.4, 0.6]); default window is 0.05")
@@ -175,7 +176,7 @@ if __name__ == "__main__":
     elif args.corner:
         mode = "incremental " if args.incremental else ""
         print(f"Generating {mode}corner heatmap (first 5000 gates of both circuits)...")
-        results = heatmap_rust.heatmap_corner(args.n, args.i, flag, args.c1, args.c2, args.fix, args.hw, args.incremental)
+        results = heatmap_rust.heatmap_corner(args.n, args.i, flag, args.c1, args.c2, args.fix, args.hw, args.incremental, args.x0)
         output = args.path
         if args.std:
             plot_heatmap_std(results, output, xlabel=args.x, ylabel=args.y)
@@ -196,7 +197,7 @@ if __name__ == "__main__":
     else:
         print("Generating full heatmap...")
         if args.incremental:
-            results = heatmap_rust.heatmap_incremental(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix, args.hw)
+            results = heatmap_rust.heatmap_incremental(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix, args.hw, args.x0)
         else:
             results = heatmap_rust.heatmap(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix, args.hw)
         output = args.path

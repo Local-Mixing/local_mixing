@@ -5,7 +5,6 @@ use rand::Rng;
 use rand::seq::IndexedRandom;
 use lmdb::{Database, Environment};
 use crate::circuit::{circuit::CircuitSeq, Permutation};
-use crate::circuit::circuit::rewire_gate_ver;
 
 pub static SAMF_COMPRESSIONS_MADE: AtomicUsize = AtomicUsize::new(0);
 pub static SAMF_COMPRESSIONS_FAILED: AtomicUsize = AtomicUsize::new(0);
@@ -136,29 +135,6 @@ static NOT_4W: &[&[[u16;3]]] = &[
     &[[1,3,0],[2,0,3],[1,2,0],[2,0,3],[2,3,0],[1,2,0],[2,3,0]],
 ];
 // CNOT 3-wire at min-2 depths (4,5) is empty — those depths only exist for 4-wire.
-static CNOT_3W: &[&[[u16;3]]] = &[];
-static CNOT_4W: &[&[[u16;3]]] = &[
-    &[[1,3,0],[2,3,0],[2,3,1],[1,3,0],[2,1,3]],
-    &[[2,0,1],[1,0,3],[2,1,0],[1,0,3]],
-    &[[2,3,1],[3,1,0],[2,3,1],[3,1,0]],
-    &[[2,1,3],[2,3,0],[0,3,1],[2,3,0],[0,3,1]],
-    &[[2,1,0],[3,1,0],[2,1,3],[3,1,0],[2,1,3]],
-    &[[1,3,0],[2,1,3],[1,3,0],[2,3,1]],
-    &[[0,3,1],[2,1,3],[2,3,0],[0,3,1],[2,3,0]],
-    &[[2,0,1],[0,1,3],[2,0,1],[0,1,3]],
-    &[[0,1,3],[2,0,1],[0,1,3],[2,0,1]],
-    &[[3,1,0],[2,3,1],[3,1,0],[2,3,1]],
-    &[[2,0,3],[2,1,0],[3,0,1],[2,0,3],[3,0,1]],
-    &[[2,1,0],[0,1,3],[2,1,0],[0,1,3],[2,1,3]],
-    &[[0,1,3],[2,1,0],[0,1,3],[2,1,0],[2,1,3]],
-    &[[2,0,3],[2,1,0],[1,0,3],[2,0,1],[1,0,3]],
-    &[[2,1,0],[3,0,1],[2,0,3],[3,0,1],[2,0,3]],
-    &[[1,0,3],[2,0,1],[1,0,3],[2,0,3],[2,1,0]],
-    &[[1,0,3],[2,1,0],[1,0,3],[2,0,1]],
-    &[[2,1,0],[2,1,3],[3,1,0],[2,1,3],[3,1,0]],
-    &[[2,1,3],[1,3,0],[2,3,0],[2,3,1],[1,3,0]],
-    &[[2,3,1],[1,3,0],[2,1,3],[1,3,0]],
-];
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Transpositions {
     pub transpositions: Vec<(u16, u16, u16)>
@@ -229,49 +205,6 @@ impl Transpositions {
         Self { transpositions }
     }
 
-    // Simple random wire shuffle with negation
-    // Restricted wires are never chosen
-    pub fn gen_random_simple_restricted(n: usize, m: usize, negation_mask: &mut Vec<u8>, restricted: &Vec<usize>) -> Self {
-        assert!(n >= 2, "n must be at least 2");
-        let mut rng = rand::rng();
-        let mut transpositions = Vec::with_capacity(m);
-        for _ in 0..m {
-            let negation_type = rng.random_range(0..=3);
-            let mut i: usize;
-            loop {
-                i = rng.random_range(0..n);
-                if !restricted.contains(&i) {
-                    break;
-                }
-            }
-            let mut j: usize;
-            loop {
-                j = rng.random_range(0..n);
-                if i != j && !restricted.contains(&j) {
-                    break;
-                }
-            }
-            // Maintain correct ordering
-            if i < j {
-                let temp = i;
-                i = j;
-                j = temp;
-            }
-            transpositions.push((j as u16, i as u16, negation_type as u16));
-            // Adjust negation mask appropriately
-            let temp = negation_mask[j];
-            negation_mask[j as usize] = negation_mask[i as usize];
-            negation_mask[i as usize] = temp;
-            if negation_type == 1 || negation_type == 3{
-                negation_mask[j as usize] ^= 1;
-            }
-            if negation_type == 2 || negation_type == 3 {
-                negation_mask[i as usize] ^= 1;
-            }
-        }
-
-        Self { transpositions }
-    }
 
     pub fn to_perm(&self, n: usize) -> Permutation {
         let mut perm = Permutation { data: Vec::with_capacity(n) };
@@ -315,51 +248,6 @@ impl Transpositions {
         b1 == b2
     }
 
-    // Simple randomization
-    // Unused
-    pub fn shoot_random_transpositions(transpositions: &mut Transpositions, rounds: usize) {
-        let mut rng = rand::rng();
-        let len = transpositions.transpositions.len();
-
-        if len == 0 {
-            return
-        }
-
-        for _ in 0..rounds {
-            let gate_idx = rng.random_range(0..len);
-            let go_left: bool = rng.random_bool(0.5);
-
-            if go_left {
-                // Shoot left
-                let mut target = gate_idx;
-                while target > 0 {
-                    if Transpositions::collides(&transpositions.transpositions[target - 1], &transpositions.transpositions[gate_idx]) {
-                        break;
-                    }
-                    target -= 1;
-                }
-                target = rng.random_range(target..=gate_idx);
-                if target != gate_idx {
-                    let gate = transpositions.transpositions.remove(gate_idx);
-                    transpositions.transpositions.insert(target, gate);
-                }
-            } else {
-                // Shoot right
-                let mut target = gate_idx;
-                while target + 1 < len {
-                    if Transpositions::collides(&transpositions.transpositions[target + 1], &transpositions.transpositions[gate_idx]) {
-                        break;
-                    }
-                    target += 1;
-                }
-                target = rng.random_range(gate_idx..=target);
-                if target != gate_idx {
-                    let gate = transpositions.transpositions.remove(gate_idx);
-                    transpositions.transpositions.insert(target, gate);
-                }
-            }
-        }
-    }
 
     //b is greater
     pub fn ordered(s1: &(u16, u16, u16), s2: &(u16, u16, u16)) -> bool {
@@ -406,8 +294,6 @@ impl Transpositions {
     pub fn gen_gates_swap(
         n: usize,
         swap: (u16, u16, u16),
-        _env: &lmdb::Environment,
-        _dbs: &HashMap<String, Database>,
     ) -> Vec<[u16;3]> {
         let (a, b, negation_type) = swap;
         let (pool_3w, pool_4w): (&[&[[u16;3]]], &[&[[u16;3]]]) = match negation_type {
@@ -438,58 +324,12 @@ impl Transpositions {
         }
     }
 
-    pub fn gen_gates_swap_restricted(
-        n: usize,
-        swap: (u16, u16, u16),
-        _env: &lmdb::Environment,
-        _dbs: &HashMap<String, Database>,
-        restricted: &Vec<usize>,
-    ) -> Vec<[u16;3]> {
-        let (a, b, negation_type) = swap;
-        let (pool_3w, pool_4w): (&[&[[u16;3]]], &[&[[u16;3]]]) = match negation_type {
-            0 => (SWAP_3W, SWAP_4W),
-            1 => (SWAP_N1_3W, SWAP_N1_4W),
-            2 => (SWAP_N2_3W, SWAP_N2_4W),
-            3 => (SWAP_N12_3W, SWAP_N12_4W),
-            _ => panic!("Invalid negation type"),
-        };
-        let mut rng = rand::rng();
-        let use_4w = n >= 4 && !pool_4w.is_empty();
-        let total = pool_3w.len() + if use_4w { pool_4w.len() } else { 0 };
-        let idx = rng.random_range(0..total);
-        if idx < pool_3w.len() {
-            let circuit = pool_3w[idx];
-            let mut c;
-            loop {
-                c = rng.random_range(0..n) as u16;
-                if c != a && c != b && !restricted.contains(&(c as usize)) { break; }
-            }
-            let out = CircuitSeq { gates: circuit.to_vec() };
-            CircuitSeq::unrewire_subcircuit(&out, &[c, a, b]).gates
-        } else {
-            let circuit = pool_4w[idx - pool_3w.len()];
-            let mut c1;
-            loop {
-                c1 = rng.random_range(0..n) as u16;
-                if c1 != a && c1 != b && !restricted.contains(&(c1 as usize)) { break; }
-            }
-            let mut c2;
-            loop {
-                c2 = rng.random_range(0..n) as u16;
-                if c2 != a && c2 != b && c2 != c1 && !restricted.contains(&(c2 as usize)) { break; }
-            }
-            let out = CircuitSeq { gates: circuit.to_vec() };
-            CircuitSeq::unrewire_subcircuit(&out, &[c1, a, b, c2]).gates
-        }
-    }
 
     // Wire 1 gets flipped in the template; relabels wire 1 to `wire`.
     // Uses 4-wire circuits (min depth 6-7) with 3 ancilla wires.
     pub fn gen_gates_not(
         n: usize,
         wire: u16,
-        _env: &lmdb::Environment,
-        _dbs: &HashMap<String, Database>,
     ) -> Vec<[u16;3]> {
         let mut rng = rand::rng();
         let pool = if !NOT_4W.is_empty() { NOT_4W } else { NOT_3W };
@@ -508,300 +348,24 @@ impl Transpositions {
         }
     }
 
-    // Wire 2 gets flipped if wire 1 is true in the template; relabels to con/not.
-    // Uses 4-wire circuits (min depth 4-5) with 2 ancilla wires.
-    pub fn gen_gates_cnot(
-        n: usize,
-        con: u16,
-        not: u16,
-        _env: &lmdb::Environment,
-        _dbs: &HashMap<String, Database>,
-    ) -> Vec<[u16;3]> {
-        let mut rng = rand::rng();
-        let pool = if !CNOT_4W.is_empty() { CNOT_4W } else { CNOT_3W };
-        let circuit = pool.choose(&mut rng).expect("CNOT pool is empty");
-        if pool.as_ptr() == CNOT_4W.as_ptr() {
-            let mut c1; loop { c1 = rng.random_range(0..n) as u16; if c1 != con && c1 != not { break; } }
-            let mut c2; loop { c2 = rng.random_range(0..n) as u16; if c2 != con && c2 != not && c2 != c1 { break; } }
-            let out = CircuitSeq { gates: circuit.to_vec() };
-            CircuitSeq::unrewire_subcircuit(&out, &[c1, con, not, c2]).gates
-        } else {
-            let mut c; loop { c = rng.random_range(0..n) as u16; if c != con && c != not { break; } }
-            let out = CircuitSeq { gates: circuit.to_vec() };
-            CircuitSeq::unrewire_subcircuit(&out, &[c, con, not]).gates
-        }
-    }
 
     pub fn to_circuit(
         &self,
         n: usize,
-        env: &lmdb::Environment,
-        dbs: &HashMap<String, Database>,
     ) -> CircuitSeq {
         let mut gates: Vec<[u16; 3]> = Vec::new();
 
         for &swap in &self.transpositions {
-            gates.extend_from_slice(&Self::gen_gates_swap(n, swap, env, dbs));
+            gates.extend_from_slice(&Self::gen_gates_swap(n, swap));
         }
 
         CircuitSeq { gates }
     }
 
-    pub fn restricted_to_circuit(
-        &self,
-        n: usize,
-        env: &lmdb::Environment,
-        dbs: &HashMap<String, Database>,
-        restricted: &Vec<usize>
-    ) -> CircuitSeq {
-        let mut gates: Vec<[u16; 3]> = Vec::new();
 
-        for &swap in &self.transpositions {
-            gates.extend_from_slice(&Self::gen_gates_swap_restricted(n, swap, env, dbs, restricted));
-        }
 
-        CircuitSeq { gates }
-    }
 
-    pub fn restricted_to_circuit_ri(
-        first: Transpositions,
-        middle: Transpositions,
-        second: Transpositions,
-        n: usize,
-        env: &lmdb::Environment,
-        dbs: &HashMap<String, Database>,
-        first_bounds: (usize, usize),
-        second_bounds: (usize, usize),
-        
-    ) -> CircuitSeq {
-        let mut gates: Vec<[u16; 3]> = Vec::new();
 
-        for i in 0..first.transpositions.len() {
-            let mut swap = first.transpositions[i];
-            let n = first_bounds.1 - first_bounds.0 + 1;
-            let offset = first_bounds.0 as u16;
-            swap.0 -= offset;
-            swap.1 -= offset;
-            let first_circuit = Self::gen_gates_swap(n, swap, env, dbs);
-            let first_circuit: Vec<[u16; 3]> = first_circuit
-                .into_iter()
-                .map(|[a, b, c]| [a + offset, b + offset, c + offset])
-                .collect();
-
-            gates.extend_from_slice(&first_circuit);
-        }
-
-        for i in (0..middle.transpositions.len()).rev() {
-            let swap = middle.transpositions[i];
-            let mut middle_circuit = Self::gen_gates_swap(n, swap, env, dbs);
-            middle_circuit.reverse();
-            gates.extend_from_slice(&middle_circuit);
-        }
-
-        for i in 0..second.transpositions.len() {
-            let mut swap = second.transpositions[i];
-            let n = second_bounds.1 - second_bounds.0 + 1;
-            let offset = second_bounds.0 as u16;
-            swap.0 -= offset;
-            swap.1 -= offset;
-            let second_circuit = Self::gen_gates_swap(n, swap, env, dbs);
-            let second_circuit: Vec<[u16; 3]> = second_circuit
-                .into_iter()
-                .map(|[a, b, c]| [a + offset, b + offset, c + offset])
-                .collect();
-            
-            gates.extend_from_slice(&second_circuit);
-        }
-        CircuitSeq { gates }
-    }
-
-    pub fn restricted_to_circuit_rewired_and_insert(
-        t_rewired: Vec<(Transpositions, Permutation)>,
-        c: CircuitSeq,
-        n: usize,
-        env: &lmdb::Environment,
-        dbs: &HashMap<String, Database>,
-        first_bounds: (usize, usize),
-        second_bounds: (usize, usize), 
-    ) -> CircuitSeq {
-        let mut gates: Vec<[u16; 3]> = Vec::new();
-        let first = &t_rewired[0].0;
-        let mut first_gates: Vec<[u16;3]> = Vec::new();
-        for i in 0..first.transpositions.len() {
-            let mut swap = first.transpositions[i];
-            if swap.0 == swap.1 {
-                continue;
-            }
-            let n = first_bounds.1 - first_bounds.0 + 1;
-            let offset = first_bounds.0 as u16;
-            swap.0 -= offset;
-            swap.1 -= offset;
-            let first_circuit = Self::gen_gates_swap(n, swap, env, dbs);
-            let first_circuit: Vec<[u16; 3]> = first_circuit
-                .into_iter()
-                .map(|[a, b, c]| [a + offset, b + offset, c + offset])
-                .collect();
-
-            first_gates.extend_from_slice(&first_circuit);
-        }
-        rewire_gate_ver(&mut first_gates, &t_rewired[0].1, n);
-        let curr_len = first_gates.len();
-        first_gates.insert(curr_len/2, c.gates[0]);
-        gates.extend_from_slice(&first_gates);
-
-        let t_len = t_rewired.len();
-        let mut j = 1;
-        while j < t_len-1 {
-            // m's
-            let middle = &t_rewired[j].0;
-            let mut middle_gates: Vec<[u16;3]> = Vec::new();
-            for i in (0..middle.transpositions.len()).rev() {
-                let swap = middle.transpositions[i];
-                if swap.0 == swap.1 {
-                    continue;
-                }
-                let mut middle_circuit = Self::gen_gates_swap(n, swap, env, dbs);
-                middle_circuit.reverse();
-                middle_gates.extend_from_slice(&middle_circuit);
-            }
-            rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
-            gates.extend_from_slice(&middle_gates);
-            j += 1;
-            if j == t_len-1 {
-                break;
-            }
-            // B's
-            let middle = &t_rewired[j].0;
-            let mut middle_gates: Vec<[u16;3]> = Vec::new();
-            for i in 0..middle.transpositions.len() {
-                let swap = middle.transpositions[i];
-                if swap.0 == swap.1 {
-                    continue;
-                }
-                let middle_circuit = Self::gen_gates_swap_restricted(n, swap, env, dbs, &vec![13,14,15,29,30,31]);
-                middle_gates.extend_from_slice(&middle_circuit);
-            }
-            rewire_gate_ver(&mut middle_gates, &t_rewired[j].1, n);
-            let curr_len = middle_gates.len();
-            middle_gates.insert(curr_len/2, c.gates[j/2]);
-            gates.extend_from_slice(&middle_gates);
-            j += 1;
-        }
-        
-        let second = &t_rewired[t_rewired.len()-1];
-        let mut second_gates: Vec<[u16;3]> = Vec::new();
-        for i in 0..second.0.transpositions.len() {
-            let mut swap = second.0.transpositions[i];
-            if swap.0 == swap.1 {
-                continue;
-            }
-            let n = second_bounds.1 - second_bounds.0 + 1;
-            let offset = second_bounds.0 as u16;
-            swap.0 -= offset;
-            swap.1 -= offset;
-            let second_circuit = Self::gen_gates_swap(n, swap, env, dbs);
-            let second_circuit: Vec<[u16; 3]> = second_circuit
-                .into_iter()
-                .map(|[a, b, c]| [a + offset, b + offset, c + offset])
-                .collect();
-            
-            second_gates.extend_from_slice(&second_circuit);
-        }
-        rewire_gate_ver(&mut second_gates, &t_rewired[t_rewired.len()-1].1, n);
-        let curr_len = second_gates.len();
-        let len = c.gates.len();
-        second_gates.insert(curr_len/2, c.gates[len-1]);
-        gates.extend_from_slice(&second_gates);
-        CircuitSeq { gates }
-    }
-
-    pub fn restricted_to_circuit_rewired_and_insert_no_seams(
-        t_rewired: Vec<(Transpositions, Permutation)>,
-        c: CircuitSeq,
-        n: usize,
-        env: &lmdb::Environment,
-        dbs: &HashMap<String, Database>,
-        first_bounds: (usize, usize),
-        second_bounds: (usize, usize), 
-    ) -> CircuitSeq {
-        let mut gates: Vec<[u16; 3]> = Vec::new();
-        for i in 0..c.gates.len()-1 {
-            // gates.push(c.gates[i]);
-            let i = 3*i;
-            let first = &t_rewired[i].0;
-            let mut first_gates: Vec<[u16;3]> = Vec::new();
-            for i in 0..first.transpositions.len() {
-                let mut swap = first.transpositions[i];
-                if swap.0 == swap.1 {
-                    continue;
-                }
-                let n = first_bounds.1 - first_bounds.0 + 1;
-                let offset = first_bounds.0 as u16;
-                swap.0 -= offset;
-                swap.1 -= offset;
-                let first_circuit = Self::gen_gates_swap(n, swap, env, dbs);
-                let first_circuit: Vec<[u16; 3]> = first_circuit
-                    .into_iter()
-                    .map(|[a, b, c]| [a + offset, b + offset, c + offset])
-                    .collect();
-
-                first_gates.extend_from_slice(&first_circuit);
-            }
-            rewire_gate_ver(&mut first_gates, &t_rewired[i].1, n);
-            gates.extend_from_slice(&first_gates);
-
-            let middle = &t_rewired[i+1].0;
-            let mut middle_gates: Vec<[u16;3]> = Vec::new();
-            for i in (0..middle.transpositions.len()).rev() {
-                let swap = middle.transpositions[i];
-                if swap.0 == swap.1 {
-                    continue;
-                }
-
-                let mut middle_circuit = Self::gen_gates_swap(n, swap, env, dbs);
-                middle_circuit.reverse();
-                middle_gates.extend_from_slice(&middle_circuit);
-            }
-            rewire_gate_ver(&mut middle_gates, &t_rewired[i+1].1, n);
-            gates.extend_from_slice(&middle_gates);
-
-            let second = &t_rewired[i+2].0;
-            let mut second_gates: Vec<[u16;3]> = Vec::new();
-            for i in 0..second.transpositions.len() {
-                let mut swap = second.transpositions[i];
-                if swap.0 == swap.1 {
-                    continue;
-                }
-                let n = second_bounds.1 - second_bounds.0 + 1;
-                let offset = second_bounds.0 as u16;
-                swap.0 -= offset;
-                swap.1 -= offset;
-                let second_circuit = Self::gen_gates_swap(n, swap, env, dbs);
-                let second_circuit: Vec<[u16; 3]> = second_circuit
-                    .into_iter()
-                    .map(|[a, b, c]| [a + offset, b + offset, c + offset])
-                    .collect();
-
-                second_gates.extend_from_slice(&second_circuit);
-            }
-            rewire_gate_ver(&mut second_gates, &t_rewired[i+2].1, n);
-            gates.extend_from_slice(&second_gates);
-        }
-        // gates.push(c.gates[c.gates.len()-1]);
-        CircuitSeq { gates }
-    }
-
-    pub fn filter_repeats(&mut self) {
-        let mut i = 0;
-        while i < self.transpositions.len().saturating_sub(1) {
-            if self.transpositions[i] == self.transpositions[i + 1] {
-                self.transpositions.drain(i..=i + 1);
-                i = i.saturating_sub(2);
-            } else {
-                i += 1;
-            }
-        }
-    }
 
     pub fn evaluate(&self, input: u16) -> u16 {
         let mut val = input;
@@ -826,8 +390,6 @@ impl Transpositions {
 pub fn insert_wire_shuffles_knuth(
     circuit: &mut CircuitSeq, 
     n: usize,
-    env: &Environment,
-    dbs: &HashMap<String, Database>,
 ) {
     println!("Inserting wire shuffles (knuth)");
     println!("Starting len: {} gates", circuit.gates.len());
@@ -837,18 +399,18 @@ pub fn insert_wire_shuffles_knuth(
 
     for &gate in &circuit.gates {
         let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
-        gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
+        gates.extend_from_slice(&t.to_circuit(n).gates);
         t_list.transpositions.extend_from_slice(&t.transpositions);
         let a = t_list.evaluate(gate[0]);
         let b = t_list.evaluate(gate[1]);
         let c = t_list.evaluate(gate[2]);
         let gate = [a, b, c];
         if negation_mask[b as usize] == 1 {
-            gates.extend_from_slice(&Transpositions::gen_gates_not(n, b, env, dbs));
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, b));
             negation_mask[b as usize] = 0;
         }
         if negation_mask[c as usize] == 1 {
-            gates.extend_from_slice(&Transpositions::gen_gates_not(n, c, env, dbs));
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, c));
             negation_mask[c as usize] = 0;
         }
         gates.push(gate);
@@ -883,7 +445,7 @@ pub fn insert_wire_shuffles_knuth(
         }
     }
 
-    let mut c = t.to_circuit(n, env, dbs).gates;
+    let mut c = t.to_circuit(n).gates;
     c.reverse();
     gates.extend_from_slice(&c);
     circuit.gates = gates;
@@ -893,8 +455,6 @@ pub fn insert_wire_shuffles_knuth(
 pub fn insert_wire_shuffles_simple(
     circuit: &mut CircuitSeq, 
     n: usize,
-    env: &Environment,
-    dbs: &HashMap<String, Database>,
 ) {
     println!("Inserting wire shuffles (simple)");
     println!("Starting len: {} gates", circuit.gates.len());
@@ -926,18 +486,18 @@ pub fn insert_wire_shuffles_simple(
     for (i, gate) in circuit.gates.iter().enumerate() {
         let t = Transpositions::gen_random_simple(n, points[i] - last, &mut negation_mask);
         last = points[i];
-        gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
+        gates.extend_from_slice(&t.to_circuit(n).gates);
         t_list.transpositions.extend_from_slice(&t.transpositions);
         let a = t_list.evaluate(gate[0]);
         let b = t_list.evaluate(gate[1]);
         let c = t_list.evaluate(gate[2]);
         let gate = [a, b, c];
         if negation_mask[b as usize] == 1 {
-            gates.extend_from_slice(&Transpositions::gen_gates_not(n, b, env, dbs));
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, b));
             negation_mask[b as usize] = 0;
         }
         if negation_mask[c as usize] == 1 {
-            gates.extend_from_slice(&Transpositions::gen_gates_not(n, c, env, dbs));
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, c));
             negation_mask[c as usize] = 0;
         }
         gates.push(gate);
@@ -972,7 +532,7 @@ pub fn insert_wire_shuffles_simple(
         }
     }
 
-    let mut c = t.to_circuit(n, env, dbs).gates;
+    let mut c = t.to_circuit(n).gates;
     c.reverse();
     gates.extend_from_slice(&c);
     circuit.gates = gates;
@@ -983,8 +543,6 @@ pub fn insert_wire_shuffles_simple(
 pub fn insert_wire_shuffles_x(
     circuit: &mut CircuitSeq, 
     n: usize,
-    env: &Environment,
-    dbs: &HashMap<String, Database>,
     x: usize,
 ) {
     println!("Inserting wire shuffles");
@@ -1006,7 +564,7 @@ pub fn insert_wire_shuffles_x(
     for (i, gate) in circuit.gates.iter().enumerate() {
         if nums.contains(&i) {
             let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
-            gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
+            gates.extend_from_slice(&t.to_circuit(n).gates);
             t_list.transpositions.extend_from_slice(&t.transpositions);
         }   
         let a = t_list.evaluate(gate[0]);
@@ -1014,11 +572,11 @@ pub fn insert_wire_shuffles_x(
         let c = t_list.evaluate(gate[2]);
         let gate = [a, b, c];
         if negation_mask[b as usize] == 1 {
-            gates.extend_from_slice(&Transpositions::gen_gates_not(n, b, env, dbs));
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, b));
             negation_mask[b as usize] = 0;
         }
         if negation_mask[c as usize] == 1 {
-            gates.extend_from_slice(&Transpositions::gen_gates_not(n, c, env, dbs));
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, c));
             negation_mask[c as usize] = 0;
         }
         gates.push(gate);
@@ -1053,7 +611,7 @@ pub fn insert_wire_shuffles_x(
         }
     }
 
-    let mut c = t.to_circuit(n, env, dbs).gates;
+    let mut c = t.to_circuit(n).gates;
     c.reverse();
     gates.extend_from_slice(&c);
     circuit.gates = gates;
@@ -1066,8 +624,6 @@ pub fn insert_wire_m_samfs_every_x(
     n: usize,
     m: usize,
     x: usize,
-    env: &Environment,
-    dbs: &HashMap<String, Database>,
 ) {
     let n = n;
     println!("Inserting {} samfs between each gate", m);
@@ -1079,7 +635,7 @@ pub fn insert_wire_m_samfs_every_x(
     for (i, gate) in circuit.gates.iter().enumerate() {
         if i % x == 0 {
             let t = Transpositions::gen_random_simple(n, m, &mut negation_mask);
-            gates.extend_from_slice(&t.to_circuit(n, env, dbs).gates);
+            gates.extend_from_slice(&t.to_circuit(n).gates);
             t_list.transpositions.extend_from_slice(&t.transpositions);
         }
         let a = t_list.evaluate(gate[0]);
@@ -1087,11 +643,11 @@ pub fn insert_wire_m_samfs_every_x(
         let c = t_list.evaluate(gate[2]);
         let gate = [a, b, c];
         if negation_mask[b as usize] == 1 {
-            gates.extend_from_slice(&Transpositions::gen_gates_not(n, b, env, dbs));
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, b));
             negation_mask[b as usize] = 0;
         }
         if negation_mask[c as usize] == 1 {
-            gates.extend_from_slice(&Transpositions::gen_gates_not(n, c, env, dbs));
+            gates.extend_from_slice(&Transpositions::gen_gates_not(n, c));
             negation_mask[c as usize] = 0;
         }
         gates.push(gate);
@@ -1126,83 +682,14 @@ pub fn insert_wire_m_samfs_every_x(
         }
     }
 
-    let mut c = t.to_circuit(n, env, dbs).gates;
+    let mut c = t.to_circuit(n).gates;
     c.reverse();
     gates.extend_from_slice(&c);
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
 
-// Generate a circuit R R*, but then insert a series of CNOTS in between so that the first n wires are reversible, but the last n wires can be used to compute R
-pub fn generate_reversible(
-    c: &CircuitSeq,
-    n: usize,
-    env: &Environment,
-    dbs: &HashMap<String, Database>, 
-) -> CircuitSeq {
-    let mut rev = c.clone();
-    rev.gates.reverse();
-    let mut gates = Vec::new();
-    gates.extend_from_slice(&c.gates.clone());
-    for i in 0..n {
-        gates.extend_from_slice(&Transpositions::gen_gates_cnot(2 * n, i as u16, (i + n) as u16, env, dbs));
-    }
-    gates.extend_from_slice(&rev.gates);
-    CircuitSeq { gates }
-}
 
-pub fn replace_disjoint_pair((a,b, t1): (u16, u16, u16), (c,d, t2): (u16, u16, u16)) -> Vec<(u16, u16, u16)> {
-    let possibilities = [
-        vec![(a,c,0),(b,d,0),(a,d,0),(b,c,0)],
-        vec![(b,c,0),(a,d,0),(b,d,0),(a,c,0)],
-    ];
-
-    let mut rng = rand::rng();
-    let idx = rng.random_range(0..possibilities.len());
-    
-    let mut t = possibilities[idx].clone();
-
-    let mut wire_transpositions: HashMap<u16, (usize, usize)> = HashMap::new();
-
-    for (i, (a, b, _)) in t.iter().enumerate() {
-        wire_transpositions.insert(*a, (i, 0));
-        wire_transpositions.insert(*b, (i, 1));
-    }
-
-    const TRANSITION: [[u8; 4]; 2] = [
-        // pos = 0
-        [1, 0, 3, 2],
-        // pos = 1
-        [2, 3, 0, 1],
-    ];
-
-    let mut negation_mask: Vec<u16> = Vec::new();
-    if t1 == 1 || t1 == 3 {
-        negation_mask.push(a);
-    }
-    if t1 == 2 || t1 == 3 {
-        negation_mask.push(b);
-    }
-    if t2 == 1 || t2 == 3 {
-        negation_mask.push(c);
-    }
-    if t2 == 2 || t2 == 3 {
-        negation_mask.push(d);
-    }
-    for val in negation_mask {
-        if let Some(swaps) = wire_transpositions.get(&val) {
-            let &(swap_idx, pos) = swaps;
-            let curr_neg_type = t[swap_idx].2;
-            if pos > 1 || curr_neg_type > 3 {
-                panic!("Invalid pos or curr_neg_type");
-            }
-            t[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize] as u16;
-            
-        }
-    }
-    
-    t
-}
 
 fn gates_collide(g1: [u16; 3], g2: [u16; 3]) -> bool {
     g1[0] == g2[1] || g1[0] == g2[2] || g2[0] == g1[1] || g2[0] == g1[2]
@@ -1221,7 +708,6 @@ pub fn shuffled_shooting_game(
     circuit: &mut CircuitSeq,
     n: usize,
     env: &Environment,
-    dbs: &HashMap<String, Database>,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
     gates_ahead: usize,
@@ -1270,7 +756,7 @@ pub fn shuffled_shooting_game(
             let (swap_lo, swap_hi) = if swap_lo < swap_hi { (swap_lo, swap_hi) } else { (swap_hi, swap_lo) };
             let neg_type: u16 = rng.random_range(0..4);
             let samf_swap = (swap_lo, swap_hi, neg_type);
-            let samf = Transpositions::gen_gates_swap(n, samf_swap, env, dbs);
+            let samf = Transpositions::gen_gates_swap(n, samf_swap);
             if samf.len() < 3 { break 'try_replace false; }
 
             // Build all available context gates (up to gates_ahead) with clean flags.
@@ -1352,11 +838,11 @@ pub fn shuffled_shooting_game(
         if !replaced {
             // Normal path: flush any pending negations on control wires, then emit the gate.
             if negation_mask[b as usize] == 1 {
-                output.extend_from_slice(&Transpositions::gen_gates_not(n, b, env, dbs));
+                output.extend_from_slice(&Transpositions::gen_gates_not(n, b));
                 negation_mask[b as usize] = 0;
             }
             if negation_mask[c as usize] == 1 {
-                output.extend_from_slice(&Transpositions::gen_gates_not(n, c, env, dbs));
+                output.extend_from_slice(&Transpositions::gen_gates_not(n, c));
                 negation_mask[c as usize] = 0;
             }
             output.push([a, b, c]);
@@ -1382,7 +868,7 @@ pub fn shuffled_shooting_game(
             }
         }
     }
-    let mut undo = t.to_circuit(n, env, dbs).gates;
+    let mut undo = t.to_circuit(n).gates;
     undo.reverse();
     output.extend_from_slice(&undo);
 
@@ -1390,632 +876,3 @@ pub fn shuffled_shooting_game(
     compressions
 }
 
-#[cfg(test)]
-mod tests {
-    use lmdb::Environment;
-    use std::{
-        fs::File,
-        io::{BufRead, BufReader},
-        path::Path,
-    };
-    use rand::prelude::IndexedRandom;
-    use crate::{CircuitSeq, replace::identities::insert_ri_identities};
-    use crate::replace::transpositions::Transpositions;
-    #[test]
-    fn count_distinct_samf_prefixes() {
-        use std::collections::HashSet;
-        use crate::circuit::circuit::polys_repr_blob;
-        use crate::replace::transpositions::{
-            SWAP_3W, SWAP_4W, SWAP_N1_3W, SWAP_N1_4W,
-            SWAP_N2_3W, SWAP_N2_4W, SWAP_N12_3W, SWAP_N12_4W,
-        };
-
-        let pools: &[(&str, &[&[[u16; 3]]])] = &[
-            ("SWAP_3W",     SWAP_3W),
-            ("SWAP_4W",     SWAP_4W),
-            ("SWAP_N1_3W",  SWAP_N1_3W),
-            ("SWAP_N1_4W",  SWAP_N1_4W),
-            ("SWAP_N2_3W",  SWAP_N2_3W),
-            ("SWAP_N2_4W",  SWAP_N2_4W),
-            ("SWAP_N12_3W", SWAP_N12_3W),
-            ("SWAP_N12_4W", SWAP_N12_4W),
-        ];
-
-        let mut global: HashSet<Vec<u8>> = HashSet::new();
-        println!("\n=== Distinct canonical SAMF circuits (full, adjacent-equal cancelled) ===");
-        for (name, pool) in pools {
-            let mut local: HashSet<Vec<u8>> = HashSet::new();
-            for circuit in pool.iter() {
-                // Cancel adjacent equal gates (each gate is an involution, so a
-                // repeated pair is the identity) until none remain.
-                let mut gates = circuit.to_vec();
-                loop {
-                    let mut i = 0;
-                    let mut changed = false;
-                    let mut out: Vec<[u16; 3]> = Vec::with_capacity(gates.len());
-                    while i < gates.len() {
-                        if i + 1 < gates.len() && gates[i] == gates[i + 1] {
-                            i += 2;
-                            changed = true;
-                        } else {
-                            out.push(gates[i]);
-                            i += 1;
-                        }
-                    }
-                    gates = out;
-                    if !changed { break; }
-                }
-                let full = CircuitSeq { gates };
-                // Canonicalize exactly like build_from_rocks: remap wires +
-                // canonicalize() + canonical polynomials as the distinctness key.
-                let canon = full
-                    .canonicalize_polys(9, true)
-                    .expect("canonicalize_polys returned None");
-                let key = polys_repr_blob(&canon.0);
-                local.insert(key.clone());
-                global.insert(key);
-            }
-            println!("{:<12} {:>3} circuits -> {:>3} distinct circuits",
-                name, pool.len(), local.len());
-        }
-        println!("{:<12} {:>3} total    -> {:>3} distinct circuits overall",
-            "ALL", pools.iter().map(|(_, p)| p.len()).sum::<usize>(), global.len());
-    }
-
-    #[test]
-    fn check_samf_equals_rev() {
-        use crate::replace::transpositions::{
-            SWAP_3W, SWAP_4W, SWAP_N1_3W, SWAP_N1_4W,
-            SWAP_N2_3W, SWAP_N2_4W, SWAP_N12_3W, SWAP_N12_4W,
-        };
-
-        let pools: &[(&str, &[&[[u16; 3]]])] = &[
-            ("SWAP_3W",     SWAP_3W),
-            ("SWAP_4W",     SWAP_4W),
-            ("SWAP_N1_3W",  SWAP_N1_3W),
-            ("SWAP_N1_4W",  SWAP_N1_4W),
-            ("SWAP_N2_3W",  SWAP_N2_3W),
-            ("SWAP_N2_4W",  SWAP_N2_4W),
-            ("SWAP_N12_3W", SWAP_N12_3W),
-            ("SWAP_N12_4W", SWAP_N12_4W),
-        ];
-
-        println!("\n=== samf == rev(samf)?  (reverse computes the inverse) ===");
-        for (name, pool) in pools {
-            let mut equal = 0;
-            for circuit in pool.iter() {
-                let fwd = CircuitSeq { gates: circuit.to_vec() };
-                let n = fwd.max_wire() + 1;
-                let mut rev = fwd.clone();
-                rev.gates.reverse();
-                if fwd.permutation(n).data == rev.permutation(n).data {
-                    equal += 1;
-                }
-            }
-            println!("{:<12} {:>3}/{:>3} circuits are self-inverse (samf == rev)",
-                name, equal, pool.len());
-        }
-    }
-
-    #[test]
-    fn check_samf_negate_swap_order() {
-        use crate::replace::transpositions::{
-            SWAP_3W, SWAP_4W, SWAP_N1_3W, SWAP_N1_4W,
-            SWAP_N2_3W, SWAP_N2_4W, SWAP_N12_3W, SWAP_N12_4W,
-        };
-
-        // (name, pool, negation_type). Logical wires are 1 (=j, lower) and 2 (=i, higher);
-        // wire 0 and (for 4-wire) wire 3 are ancilla, fixed at 0.
-        // type 1 flips wire 1, type 2 flips wire 2, type 3 flips both.
-        let pools: &[(&str, &[&[[u16; 3]]], u16)] = &[
-            ("SWAP_3W",     SWAP_3W,     0),
-            ("SWAP_4W",     SWAP_4W,     0),
-            ("SWAP_N1_3W",  SWAP_N1_3W,  1),
-            ("SWAP_N1_4W",  SWAP_N1_4W,  1),
-            ("SWAP_N2_3W",  SWAP_N2_3W,  2),
-            ("SWAP_N2_4W",  SWAP_N2_4W,  2),
-            ("SWAP_N12_3W", SWAP_N12_3W, 3),
-            ("SWAP_N12_4W", SWAP_N12_4W, 3),
-        ];
-
-        // Extract the logical (out1,out2) for a given input (x1,x2) with all ancilla = 0.
-        let logical = |circuit: &CircuitSeq, x1: usize, x2: usize| -> (usize, usize) {
-            let inp = (x1 << 1) | (x2 << 2); // ancilla bits 0 and 3 are 0
-            let out = circuit.evaluate(inp);
-            assert_eq!(out & 1, 0, "ancilla wire 0 not restored to 0");
-            assert_eq!((out >> 3) & 1, 0, "ancilla wire 3 not restored to 0");
-            ((out >> 1) & 1, (out >> 2) & 1)
-        };
-
-        // Candidate models. flip1/flip2 = which logical wire is negated.
-        let flips = |neg: u16| -> (usize, usize) {
-            match neg { 0 => (0,0), 1 => (1,0), 2 => (0,1), 3 => (1,1), _ => unreachable!() }
-        };
-        // negate THEN swap: out = ( x2^flip2 , x1^flip1 )
-        let negate_then_swap = |x1: usize, x2: usize, f: (usize,usize)| (x2 ^ f.1, x1 ^ f.0);
-        // swap THEN negate: out = ( x2^flip1 , x1^flip2 )
-        let swap_then_negate = |x1: usize, x2: usize, f: (usize,usize)| (x2 ^ f.0, x1 ^ f.1);
-
-        let matches = |circuit: &CircuitSeq, model: &dyn Fn(usize,usize,(usize,usize))->(usize,usize), f:(usize,usize)| -> bool {
-            (0..2).all(|x1| (0..2).all(|x2| logical(circuit, x1, x2) == model(x1, x2, f)))
-        };
-
-        println!("\n=== SAMF operation order (logical op on swap wires) ===");
-        for (name, pool, neg) in pools {
-            let f = flips(*neg);
-            let mut fwd_nts = 0; let mut fwd_stn = 0;
-            let mut rev_nts = 0; let mut rev_stn = 0;
-            for circuit in pool.iter() {
-                let fwd = CircuitSeq { gates: circuit.to_vec() };
-                let mut rev = fwd.clone();
-                rev.gates.reverse();
-                if matches(&fwd, &negate_then_swap, f) { fwd_nts += 1; }
-                if matches(&fwd, &swap_then_negate, f) { fwd_stn += 1; }
-                if matches(&rev, &negate_then_swap, f) { rev_nts += 1; }
-                if matches(&rev, &swap_then_negate, f) { rev_stn += 1; }
-            }
-            let total = pool.len();
-            let describe = |nts: usize, stn: usize| -> String {
-                if nts == total && stn == total { "negate-then-swap == swap-then-negate".to_string() }
-                else if nts == total { "negate THEN swap".to_string() }
-                else if stn == total { "swap THEN negate".to_string() }
-                else { format!("MIXED/neither (nts={}/{}, stn={}/{})", nts, total, stn, total) }
-            };
-            println!("{:<12} (neg={})  fwd: {:<22}  rev: {}",
-                name, neg, describe(fwd_nts, fwd_stn), describe(rev_nts, rev_stn));
-        }
-    }
-
-    #[test]
-    fn test_wire_shifting() {
-        use crate::replace::main_mix::open_all_dbs;
-        let file = File::open("initial.txt").expect("failed to open initial.txt");
-        let reader = BufReader::new(file);
-
-        let circuits: Vec<String> = reader
-            .lines()
-            .map(|l| l.unwrap())
-            .filter(|l| !l.trim().is_empty())
-            .collect();
-
-        let mut rng = rand::rng();
-        let circuit_str = circuits
-            .choose(&mut rng)
-            .expect("no circuits found");
-
-        let base = CircuitSeq::from_string(circuit_str);
-
-        let env = Environment::new()
-            .set_max_dbs(262)
-            .set_map_size(800 * 1024 * 1024 * 1024)
-            .open(Path::new("./db"))
-            .expect("failed to open lmdb");
-
-        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
-
-        let mut gates: Vec<[u16; 3]> = Vec::new();
-        let mut last = Transpositions { transpositions: Vec::new() };
-        for &gate in &base.gates {
-
-            let t = Transpositions::gen_random_knuth(64, 100, &mut Vec::new());
-            // println!("t: {}", t.transpositions.len());
-            if last.transpositions.is_empty() {
-                gates.extend(t.to_circuit(64, &env, &dbs).gates);
-            } else {
-                let mut combined = last.concat(&t);
-                combined.canonicalize();
-                combined.filter_repeats();
-                Transpositions::shoot_random_transpositions(&mut combined, 100_000);
-                gates.extend(combined.to_circuit(64, &env, &dbs).gates);
-            }
-            let a = t.evaluate(gate[0]);
-            let b = t.evaluate(gate[1]);
-            let c = t.evaluate(gate[2]);
-            gates.push([a, b, c]);
-            last = t;
-            last.transpositions.reverse();
-        }
-        gates.extend(last.to_circuit(64, &env, &dbs).gates);
-        let new_circuit = CircuitSeq { gates };
-        if base.probably_equal(&new_circuit, 64, 1_000).is_err() {
-            panic!("Failed to retain functionality");
-        }
-        std::fs::write("test.txt", new_circuit.repr())
-            .expect("failed to write test.txt");
-    }
-
-    #[test]
-    fn test_transpose_shooting() {
-        use crate::replace::main_mix::open_all_dbs;
-        // let file = File::open("initial.txt").expect("failed to open initial.txt");
-        // let reader = BufReader::new(file);
-
-        // let circuits: Vec<String> = reader
-        //     .lines()
-        //     .map(|l| l.unwrap())
-        //     .filter(|l| !l.trim().is_empty())
-        //     .collect();
-
-        // let mut rng = rand::rng();
-        // let _circuit_str = circuits
-        //     .choose(&mut rng)
-        //     .expect("no circuits found");
-
-        // let base = CircuitSeq::from_string(circuit_str);
-
-        let env = Environment::new()
-            .set_max_dbs(262)
-            .set_map_size(800 * 1024 * 1024 * 1024)
-            .open(Path::new("./db"))
-            .expect("failed to open lmdb");
-
-        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
-
-        let mut t = Transpositions::gen_random_knuth(128, 500, &mut vec![0u8; 128]);
-        let base = t.to_circuit(128, &env, &dbs);
-        Transpositions::shoot_random_transpositions(&mut t, 100_000);
-        let new_circuit = t.to_circuit(128, &env, &dbs);
-        if base.probably_equal(&new_circuit, 128, 1_000).is_err() {
-            panic!("Failed to retain functionality after shooting");
-        }
-        t.canonicalize();
-        t.filter_repeats();
-        let new_circuit = t.to_circuit(128, &env, &dbs);
-        if base.probably_equal(&new_circuit, 128, 1_000).is_err() {
-            panic!("Failed to retain functionality after filtering");
-        }
-        println!("They are equal");
-    }
-
-    #[test]
-    fn test_insert_shuffles() {
-        use crate::replace::main_mix::open_all_dbs;
-        use std::io::Write;
-        use crate::replace::transpositions::insert_wire_shuffles_x;
-        let file = File::open("initial.txt").expect("failed to open initial.txt");
-        let mut reader = BufReader::new(file);
-
-        let mut circuit_str = String::new();
-        reader
-            .read_line(&mut circuit_str)
-            .expect("failed to read circuit");
-
-        let circuit_str = circuit_str.trim();
-        assert!(!circuit_str.is_empty(), "initial.txt is empty");
-
-        let base = CircuitSeq::from_string(circuit_str);
-
-        let env = Environment::new()
-            .set_max_dbs(262)
-            .set_map_size(800 * 1024 * 1024 * 1024)
-            .open(Path::new("./db"))
-            .expect("failed to open lmdb");
-
-        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
-
-        let mut new_circuit = base.clone();
-        insert_wire_shuffles_x(&mut new_circuit, 64, &env, &dbs, 50);
-
-        if base.probably_equal(&new_circuit, 64, 1_000).is_err() {
-            panic!("Failed to retain functionality");
-        }
-
-        let mut out = File::create("shuffled.txt")
-            .expect("failed to create shuffled.txt");
-        writeln!(out, "{}", new_circuit.repr()).unwrap();
-
-        println!("They are equal and written to shuffled.txt");
-    }
-
-    #[test]
-    fn test_transposition_rev() {
-        use crate::replace::main_mix::open_all_dbs;
-        use crate::replace::transpositions::HashMap;
-        let env = Environment::new()
-            .set_max_dbs(262)
-            .set_map_size(800 * 1024 * 1024 * 1024)
-            .open(Path::new("./db"))
-            .expect("failed to open lmdb");
-
-        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
-        let n = 64;
-        let mut gates: Vec<[u16;3]> = Vec::new();
-        let mut negation_mask = vec![0u8; n];
-        let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
-        gates.extend_from_slice(&t.to_circuit(n, &env, &dbs).gates);
-        let p = t.to_perm(n);
-        let t = Transpositions::from_perm(&p);
-        let mut wire_transpositions: HashMap<u16, Vec<(usize, usize)>> = HashMap::new();
-        for (i, (a, b, _)) in t.transpositions.clone().into_iter().enumerate() {
-            wire_transpositions
-            .entry(a)
-            .or_default()
-            .push((i, 0));
-
-            wire_transpositions
-                .entry(b)
-                .or_default()
-                .push((i, 1));
-        }
-
-        for (i, val) in negation_mask.into_iter().enumerate() {
-            if val == 1 {
-                gates.extend_from_slice(&Transpositions::gen_gates_not(n, i as u16, &env, &dbs));
-            }
-        }
-        let mut tr: Vec<(u16, u16, u16)> = Vec::new();
-        for (a,b,_) in t.transpositions{
-            tr.push((a,b,0u16));
-        }
-        let t = Transpositions { transpositions: tr }; 
-        let mut c = t.to_circuit(n, &env, &dbs).gates;
-        c.reverse();
-        gates.extend_from_slice(&c);
-
-        let c = CircuitSeq { gates };
-        if c.probably_equal(&CircuitSeq{ gates: Vec::new() }, 64, 1_000).is_err() {
-            panic!("Lost functionality");
-        }
-    }
-    #[test]
-    fn test_wire_shifting2() {
-        use crate::replace::main_mix::open_all_dbs;
-        let file = File::open("initial.txt").expect("failed to open initial.txt");
-        let reader = BufReader::new(file);
-
-        let circuits: Vec<String> = reader
-            .lines()
-            .map(|l| l.unwrap())
-            .filter(|l| !l.trim().is_empty())
-            .collect();
-
-        let mut rng = rand::rng();
-        let circuit_str = circuits
-            .choose(&mut rng)
-            .expect("no circuits found");
-
-        let base = CircuitSeq::from_string(circuit_str);
-
-        let env = Environment::new()
-            .set_max_dbs(262)
-            .set_map_size(800 * 1024 * 1024 * 1024)
-            .open(Path::new("./db"))
-            .expect("failed to open lmdb");
-
-        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
-        let t = Transpositions::gen_random_knuth(64, 100, &mut Vec::new());
-        let mut gates: Vec<[u16; 3]> = Vec::new();
-        gates.extend(t.to_circuit(64, &env, &dbs).gates);
-        for &gate in &base.gates {
-            let a = t.evaluate(gate[0]);
-            let b = t.evaluate(gate[1]);
-            let c = t.evaluate(gate[2]);
-            gates.push([a, b, c]);
-        }
-        let mut tc = t.to_circuit(64, &env, &dbs).gates;
-        tc.reverse();
-        gates.extend(&tc);
-        let new_circuit = CircuitSeq { gates };
-        if base.probably_equal(&new_circuit, 64, 1_000).is_err() {
-            panic!("Failed to retain functionality");
-        }
-        std::fs::write("test.txt", new_circuit.repr())
-            .expect("failed to write test.txt");
-    }
-
-    #[test]
-    fn test_reversible() {
-        use std::fs;
-        use rand::Rng;
-        let circuit_str = fs::read_to_string("initial.txt")
-            .expect("failed to read initial.txt");
-        let circuit = CircuitSeq::from_string(&circuit_str);
-
-        let mut c100 = circuit.clone();
-        c100.gates.truncate(100);
-
-        let mut rng = rand::rng();
-        let rand64: u128 = rng.random::<u64>() as u128;
-        let input: u128 = rand64; 
-
-        let out_full = circuit.evaluate_128(input);
-        let out_100 = c100.evaluate_128(input);
-
-        let low_mask: u128 = (1u128 << 64) - 1;
-        let high_mask: u128 = !low_mask;
-
-        assert_eq!(
-            out_full & low_mask,
-            input & low_mask,
-            "first 64 bits changed"
-        );
-
-        assert_eq!(
-            out_full & high_mask,
-            (out_100 & low_mask) << 64,
-            "last 64 bits differ from c100 result"
-        );
-
-        let mut rev = circuit.clone();
-        rev.gates.reverse();
-        let out_full_rev = rev.evaluate_128(input);
-        assert_eq!(
-            out_full,
-            out_full_rev,
-            "the circuit isn't reversible"
-        );
-    }
-
-    #[test]
-    fn test_ri_32() {
-        use crate::replace::identities::create_ri_identities_32;
-        use crate::replace::main_mix::open_all_dbs;
-        use std::io::Write;
-        use rand::seq::SliceRandom;
-        use crate::replace::transpositions::Permutation;
-        let (first, middle, second, _, _) = create_ri_identities_32();
-        let env = Environment::new()
-            .set_max_dbs(262)
-            .set_map_size(800 * 1024 * 1024 * 1024)
-            .open(Path::new("./db"))
-            .expect("failed to open lmdb");
-
-        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
-
-        let mut file = File::create("test_id.txt").expect("Failed to create file");
-
-        let f = first.to_circuit(32, &env, &dbs);
-        let mut m = middle.to_circuit(32, &env, &dbs);
-        m.gates.reverse();
-        let s = second.to_circuit(32, &env, &dbs);
-
-        let mut c = CircuitSeq {gates: Vec::new() };
-        c.gates.extend_from_slice(&f.gates);
-        c.gates.extend_from_slice(&m.gates);
-        c.gates.extend_from_slice(&s.gates);
-        let id = CircuitSeq {gates: Vec::new() };
-        if c.probably_equal(&id, 32, 1000).is_err() {
-            panic!("Not an id");
-        }
-        let mut id = first.restricted_to_circuit(32, &env, &dbs, &vec![]);
-        let stupid_id = CircuitSeq { gates: Vec::new() };
-        if id.probably_equal(&stupid_id, 32, 1000).is_err() {
-            panic!("Not an id identity");
-        }
-        // let repr = id.repr();
-        let mut shuffle: Permutation = Permutation { data: (0..32).collect() };
-        shuffle.data.shuffle(&mut rand::rng());
-        id.rewire(&shuffle, 32);
-        if id.probably_equal(&stupid_id, 32, 1000).is_err() {
-            panic!("Shuffling destroyed identity");
-        }
-        let repr = id.repr();
-        writeln!(file, "{}", repr)
-            .expect("Failed to write to file");
-
-        println!("Wrote test circuit to file");
-    }
-
-    #[test]
-    fn test_insert_ri_identities() {
-        use crate::replace::main_mix::open_all_dbs;
-        use std::io::Write;
-        let env = Environment::new()
-            .set_max_dbs(262)
-            .set_map_size(800 * 1024 * 1024 * 1024)
-            .open(Path::new("./db"))
-            .expect("failed to open lmdb");
-        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
-
-        let mut file = File::create("test_id.txt").expect("Failed to create file");
-
-        let c_old = CircuitSeq::from_string("vnt;otv;k3c;g8d;hkm;fn8;3p0;v92;0id;l4a;pq0;sn3;06k;roh;cld;pef;s3j;dh7;jum;l41;gio;1pf;rge;ont;3qa;731;3rg;2eg;2sl;ebg;ovf;opk;tel;hts;cql;06h;u9i;gov;lbc;04i;0as;kp9;iro;e38;bc8;0ue;hst;p9i;gom;908;0do;l5s;t9g;abd;7rs;0hk;fq9;o49;14l;7j0;vu6;clf;4mn;9g6;4vc;lkp;p73;4mi;h9k;7rg;d4a;674;73f;ojr;fpj;gct;94k;nab;3is;q2h;dvp;huv;bsp;lb7;vr2;nd7;ud3;9bv;ljg;q1e;av9;8du;3hl;cd1;mir;ris;uoc;btq;ibc;bds;");
-        let mut c = CircuitSeq::from_string("vnt;otv;k3c;g8d;hkm;fn8;3p0;v92;0id;l4a;pq0;sn3;06k;roh;cld;pef;s3j;dh7;jum;l41;gio;1pf;rge;ont;3qa;731;3rg;2eg;2sl;ebg;ovf;opk;tel;hts;cql;06h;u9i;gov;lbc;04i;0as;kp9;iro;e38;bc8;0ue;hst;p9i;gom;908;0do;l5s;t9g;abd;7rs;0hk;fq9;o49;14l;7j0;vu6;clf;4mn;9g6;4vc;lkp;p73;4mi;h9k;7rg;d4a;674;73f;ojr;fpj;gct;94k;nab;3is;q2h;dvp;huv;bsp;lb7;vr2;nd7;ud3;9bv;ljg;q1e;av9;8du;3hl;cd1;mir;ris;uoc;btq;ibc;bds;");
-        // let c_old = CircuitSeq::from_string("k3c;k3c;k3c");
-        // let mut c = CircuitSeq::from_string("k3c;k3c;k3c");
-        insert_ri_identities(&mut c, &env, &dbs);
-
-        writeln!(file, "{}", c.repr())
-            .expect("Failed to write to file");
-        let _id = CircuitSeq { gates: Vec::new() };
-        if c.probably_equal(&c_old, 32, 1000).is_err() {
-            panic!("Changed functionality somewhere");
-        }
-    }
-
-    #[test]
-    fn test_transpose_reverse_id() {
-        use crate::replace::main_mix::open_all_dbs;
-        let env = Environment::new()
-            .set_max_dbs(262)
-            .set_map_size(800 * 1024 * 1024 * 1024)
-            .open(Path::new("./db"))
-            .expect("failed to open lmdb");
-        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env); let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
-
-        let mut negation_mask: Vec<u8> = vec![0u8;3];
-        let t = Transpositions::gen_random_simple(32, 50, &mut negation_mask);
-        let mut t2 = t.clone();
-        t2.transpositions.reverse();
-        let c = t.to_circuit(32, &env, &dbs).concat(&t2.to_circuit(32, &env, &dbs));
-        let id = CircuitSeq { gates: Vec::new() };
-        if c.probably_equal(&id, 32, 1000).is_err() {
-            panic!("Stupid identities via tranpose");
-        }
-    }
-
-    #[test]
-    fn test_shuffled_shooting_game() {
-        use crate::replace::main_mix::open_all_dbs;
-        use crate::replace::transpositions::shuffled_shooting_game;
-        use std::path::Path;
-
-        let env = Environment::new()
-            .set_max_dbs(600)
-            .set_map_size(800 * 1024 * 1024 * 1024)
-            .open(Path::new("./db"))
-            .expect("failed to open lmdb");
-
-        let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
-        let dbs = std::collections::HashMap::<String, lmdb::Database>::new();
-        let n = 32;
-
-        use crate::random::random_data::random_circuit;
-        let base = random_circuit(n, 100);
-
-        // Keep trying until at least one SAMF compression actually fires,
-        // which confirms the SAMF path is exercised and functionality is maintained.
-        let mut total_compressions = 0;
-        for attempt in 0..200 {
-            let mut circuit = base.clone();
-            let compressions = shuffled_shooting_game(
-                &mut circuit, n, &env, &dbs, &curated_shard_dbs, &shard_dbs, 5,
-            );
-            total_compressions += compressions;
-            if base.probably_equal(&circuit, n, 500).is_err() {
-                panic!("attempt {}: functionality broken on all {} wires", attempt, n);
-            }
-            if total_compressions > 0 {
-                println!("SAMF compression confirmed after {} attempts ({} total compressions)",
-                    attempt + 1, total_compressions);
-                return;
-            }
-        }
-        panic!("no SAMF compressions fired in 200 attempts — curated DB may be missing entries");
-    }
-
-    #[test]
-    fn test_gadgetize_maintains_original_wires() {
-        use crate::replace::gadgets::gadgetize;
-        use crate::circuit::circuit::Gate;
-        use rand::Rng;
-
-        use crate::random::random_data::random_circuit;
-        let n = 32;
-        let base = random_circuit(n, 100);
-
-        let mut rng = rand::rng();
-        let gadgetized = gadgetize(&base, n, 1, &mut rng);
-
-        // For each random 2n-bit input, the low-n bits of the gadgetized output
-        // must match what the original circuit produces on the low-n bits of that input.
-        let n_mask: u128 = (1u128 << n) - 1;
-        let two_n_mask: u128 = (1u128 << (2 * n)) - 1;
-
-        let mut failures = 0;
-        for _ in 0..1000 {
-            // Random input with both original and aux wires set.
-            let full_input = rand::rng().random_range(0u128..=u128::MAX) & two_n_mask;
-
-            let gadget_out = Gate::evaluate_index_list_128(full_input, &gadgetized.gates);
-            let orig_out   = Gate::evaluate_index_list_128(full_input & n_mask, &base.gates);
-
-            if gadget_out & n_mask != orig_out & n_mask {
-                failures += 1;
-            }
-        }
-        assert_eq!(failures, 0,
-            "gadgetize broke functionality on original {} wires ({} / 1000 inputs failed)",
-            n, failures);
-    }
-}
