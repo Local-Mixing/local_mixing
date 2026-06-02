@@ -1,29 +1,20 @@
 use std::{
     fs::OpenOptions,
-    io::{Write},
+    io::Write,
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use rand::{prelude::SliceRandom, Rng};
+use rand::{Rng, prelude::SliceRandom};
 
 use crate::{
     circuit::circuit::CircuitSeq,
     random::random_data::{
-        // random_circuit, 
-        shoot_left_vec, 
-        shoot_right_vec
+        // random_circuit,
+        shoot_left_vec,
+        shoot_right_vec,
     },
-    replace::pairs::{
-            replace_single_pair,
-            expand_curated_lmdb,
-        },
+    replace::pairs::{expand_curated_lmdb, replace_single_pair},
 };
-
-
-
-
-
-
 
 // Help with early stops without losing all data
 pub static SHOULD_DUMP: AtomicBool = AtomicBool::new(false);
@@ -35,18 +26,13 @@ pub fn install_kill_handler() {
     let mut signals = Signals::new([SIGINT, SIGTERM]).expect("signals");
 
     thread::spawn(move || {
-        for _ in signals.forever() {
+        // Block until the first SIGINT/SIGTERM, then flag a dump.
+        if signals.forever().next().is_some() {
             eprintln!("Received termination signal, dumping acc...");
             SHOULD_DUMP.store(true, Ordering::SeqCst);
-            break;
         }
     });
 }
-
-
-
-
-
 
 // Simple shooting game method. Send a gate to the right until a collision is made, then make a replacement. Continue the same from the right-most gate
 // Repeat until the blowup is `enough` and then compress
@@ -65,7 +51,10 @@ pub fn simple_shooting_game(
     shard_dbs: &[lmdb::Database],
 ) -> CircuitSeq {
     let mut gates = c.gates.clone();
-    println!("   {}/{}: Starting simple shooting game until {} rounds or {} gates", curr_round, last_round, iter, stop);
+    println!(
+        "   {}/{}: Starting simple shooting game until {} rounds or {} gates",
+        curr_round, last_round, iter, stop
+    );
     let mut len = gates.len();
     println!("Starting gates: {}", len);
     let mut rng = rand::rng();
@@ -84,22 +73,44 @@ pub fn simple_shooting_game(
             while curr_idx != 0 {
                 let after_idx = shoot_left_vec(&mut gates, curr_idx);
                 // need at least a collision pair (after_idx-1, after_idx)
-                if after_idx < 1 { break }
+                if after_idx < 1 {
+                    break;
+                }
 
                 // (replacement, number of gates consumed from the window)
                 let repl_result: Option<(Vec<[u16; 3]>, usize)> =
                     if gates_ahead > 2 && after_idx + 1 >= gates_ahead {
                         let w_start = after_idx + 1 - gates_ahead;
-                        if let Some(repl) = expand_curated_lmdb(&gates[w_start..after_idx + 1], n, env, curated_shard_dbs, shard_dbs) {
+                        if let Some(repl) = expand_curated_lmdb(
+                            &gates[w_start..after_idx + 1],
+                            n,
+                            env,
+                            curated_shard_dbs,
+                            shard_dbs,
+                        ) {
                             Some((repl, gates_ahead))
                         } else {
                             // replace collision pair (b,c), then seam (a, pr[0])
-                            let (pr, _) = replace_single_pair(&gates[after_idx - 1], &gates[after_idx], n, env, curated_shard_dbs, shard_dbs);
+                            let (pr, _) = replace_single_pair(
+                                &gates[after_idx - 1],
+                                &gates[after_idx],
+                                n,
+                                env,
+                                curated_shard_dbs,
+                                shard_dbs,
+                            );
                             if pr.is_empty() {
                                 None
                             } else if after_idx >= 2 {
                                 let a_gate = gates[after_idx - 2];
-                                let (sr, _) = replace_single_pair(&a_gate, &pr[0], n, env, curated_shard_dbs, shard_dbs);
+                                let (sr, _) = replace_single_pair(
+                                    &a_gate,
+                                    &pr[0],
+                                    n,
+                                    env,
+                                    curated_shard_dbs,
+                                    shard_dbs,
+                                );
                                 if sr.is_empty() {
                                     Some((pr, 2))
                                 } else {
@@ -112,7 +123,14 @@ pub fn simple_shooting_game(
                             }
                         }
                     } else {
-                        let (r, _) = replace_single_pair(&gates[after_idx - 1], &gates[after_idx], n, env, curated_shard_dbs, shard_dbs);
+                        let (r, _) = replace_single_pair(
+                            &gates[after_idx - 1],
+                            &gates[after_idx],
+                            n,
+                            env,
+                            curated_shard_dbs,
+                            shard_dbs,
+                        );
                         if r.is_empty() { None } else { Some((r, 2)) }
                     };
 
@@ -132,21 +150,43 @@ pub fn simple_shooting_game(
             while curr_idx != len {
                 let after_idx = shoot_right_vec(&mut gates, curr_idx);
                 // need at least a collision pair (after_idx, after_idx+1)
-                if after_idx + 2 > len { break }
+                if after_idx + 2 > len {
+                    break;
+                }
 
                 let repl_result: Option<(Vec<[u16; 3]>, usize)> =
                     if gates_ahead > 2 && after_idx + gates_ahead <= len {
-                        if let Some(repl) = expand_curated_lmdb(&gates[after_idx..after_idx + gates_ahead], n, env, curated_shard_dbs, shard_dbs) {
+                        if let Some(repl) = expand_curated_lmdb(
+                            &gates[after_idx..after_idx + gates_ahead],
+                            n,
+                            env,
+                            curated_shard_dbs,
+                            shard_dbs,
+                        ) {
                             Some((repl, gates_ahead))
                         } else {
                             // replace collision pair (a,b), then seam (pr.last, c)
-                            let (pr, _) = replace_single_pair(&gates[after_idx], &gates[after_idx + 1], n, env, curated_shard_dbs, shard_dbs);
+                            let (pr, _) = replace_single_pair(
+                                &gates[after_idx],
+                                &gates[after_idx + 1],
+                                n,
+                                env,
+                                curated_shard_dbs,
+                                shard_dbs,
+                            );
                             if pr.is_empty() {
                                 None
                             } else if after_idx + 3 <= len {
                                 let c_gate = gates[after_idx + 2];
                                 let last_of_pr = *pr.last().unwrap();
-                                let (sr, _) = replace_single_pair(&last_of_pr, &c_gate, n, env, curated_shard_dbs, shard_dbs);
+                                let (sr, _) = replace_single_pair(
+                                    &last_of_pr,
+                                    &c_gate,
+                                    n,
+                                    env,
+                                    curated_shard_dbs,
+                                    shard_dbs,
+                                );
                                 if sr.is_empty() {
                                     Some((pr, 2))
                                 } else {
@@ -160,7 +200,14 @@ pub fn simple_shooting_game(
                             }
                         }
                     } else {
-                        let (r, _) = replace_single_pair(&gates[after_idx], &gates[after_idx + 1], n, env, curated_shard_dbs, shard_dbs);
+                        let (r, _) = replace_single_pair(
+                            &gates[after_idx],
+                            &gates[after_idx + 1],
+                            n,
+                            env,
+                            curated_shard_dbs,
+                            shard_dbs,
+                        );
                         if r.is_empty() { None } else { Some((r, 2)) }
                     };
 
@@ -195,12 +242,6 @@ pub fn simple_shooting_game(
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Pair Replacement Methods
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-
-
-
-
 
 pub fn split_into_random_chunk_ranges(
     len: usize,
@@ -240,4 +281,3 @@ pub fn split_into_random_chunk_ranges(
 
     ranges
 }
-

@@ -1,10 +1,10 @@
 // For adding wire shuffles and bit flips
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::circuit::{Permutation, circuit::CircuitSeq};
+use lmdb::{Database, Environment};
 use rand::Rng;
 use rand::seq::IndexedRandom;
-use lmdb::{Database, Environment};
-use crate::circuit::{circuit::CircuitSeq, Permutation};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub static SAMF_COMPRESSIONS_MADE: AtomicUsize = AtomicUsize::new(0);
 pub static SAMF_COMPRESSIONS_FAILED: AtomicUsize = AtomicUsize::new(0);
@@ -12,132 +12,952 @@ pub static SAMF_COMPRESSIONS_FAILED: AtomicUsize = AtomicUsize::new(0);
 // Hardcoded circuits: min-2 depths per function, 3-wire and 4-wire.
 // Wire convention: wire 1↔2 swapped (swap), wire 1 flipped (not), wire 1 controls wire 2 (cnot).
 // Wire 0 (and wire 3 in 4-wire) are ancilla.
-static SWAP_3W: &[&[[u16;3]]] = &[
-    &[[1,0,2],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,1,0]],
-    &[[0,1,2],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[0,2,1]],
-    &[[1,2,0],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[2,1,0]],
-    &[[0,2,1],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[0,1,2]],
-    &[[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2]],
-    &[[0,1,2],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[0,2,1]],
-    &[[0,2,1],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[0,1,2]],
-    &[[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0]],
-    &[[2,0,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,2,0]],
-    &[[1,0,2],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[2,0,1]],
-    &[[0,1,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[0,2,1]],
-    &[[0,2,1],[2,0,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,2,0],[0,1,2]],
-    &[[2,1,0],[1,0,2],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,1,0],[1,2,0]],
-    &[[2,1,0],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[1,2,0]],
-    &[[0,1,2],[2,0,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,2,0],[0,2,1]],
-    &[[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1]],
-    &[[1,0,2],[2,0,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,2,0],[2,0,1]],
-    &[[1,2,0],[2,0,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,2,0],[2,1,0]],
-    &[[2,0,1],[1,0,2],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,1,0],[1,0,2]],
-    &[[2,0,1],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[1,0,2]],
-    &[[0,1,2],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[0,2,1]],
-    &[[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0]],
+static SWAP_3W: &[&[[u16; 3]]] = &[
+    &[
+        [1, 0, 2],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 1, 0],
+    ],
+    &[
+        [0, 1, 2],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [0, 2, 1],
+    ],
+    &[
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [2, 1, 0],
+    ],
+    &[
+        [0, 2, 1],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [0, 1, 2],
+    ],
+    &[
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+    ],
+    &[
+        [0, 1, 2],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [0, 2, 1],
+    ],
+    &[
+        [0, 2, 1],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [0, 1, 2],
+    ],
+    &[
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ],
+    &[
+        [2, 0, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 2, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [2, 0, 1],
+    ],
+    &[
+        [0, 1, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [0, 2, 1],
+    ],
+    &[
+        [0, 2, 1],
+        [2, 0, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 2, 0],
+        [0, 1, 2],
+    ],
+    &[
+        [2, 1, 0],
+        [1, 0, 2],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 2, 0],
+    ],
+    &[
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 2, 0],
+    ],
+    &[
+        [0, 1, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 2, 0],
+        [0, 2, 1],
+    ],
+    &[
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+    ],
+    &[
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+    ],
+    &[
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 1, 0],
+    ],
+    &[
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 0, 2],
+    ],
+    &[
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+    ],
+    &[
+        [0, 1, 2],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [0, 2, 1],
+    ],
+    &[
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+    ],
 ];
-static SWAP_4W: &[&[[u16;3]]] = &[
-    &[[1,2,3],[1,3,2],[2,1,3],[2,3,1],[1,2,3],[1,3,2]],
-    &[[1,2,3],[2,1,3],[2,3,1],[1,2,3],[1,3,2],[2,3,1]],
-    &[[1,2,3],[1,3,2],[2,1,3],[2,3,1],[1,0,2],[1,0,3],[1,2,0],[1,3,0]],
-    &[[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1],[2,1,0]],
-    &[[2,0,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0],[1,2,0]],
-    &[[1,3,2],[2,1,3],[2,3,1],[1,2,3],[1,3,2],[2,1,3]],
-    &[[1,2,0],[2,0,1],[2,1,0],[1,0,2],[1,2,0],[2,0,1]],
+static SWAP_4W: &[&[[u16; 3]]] = &[
+    &[
+        [1, 2, 3],
+        [1, 3, 2],
+        [2, 1, 3],
+        [2, 3, 1],
+        [1, 2, 3],
+        [1, 3, 2],
+    ],
+    &[
+        [1, 2, 3],
+        [2, 1, 3],
+        [2, 3, 1],
+        [1, 2, 3],
+        [1, 3, 2],
+        [2, 3, 1],
+    ],
+    &[
+        [1, 2, 3],
+        [1, 3, 2],
+        [2, 1, 3],
+        [2, 3, 1],
+        [1, 0, 2],
+        [1, 0, 3],
+        [1, 2, 0],
+        [1, 3, 0],
+    ],
+    &[
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ],
+    &[
+        [2, 0, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 2, 0],
+    ],
+    &[
+        [1, 3, 2],
+        [2, 1, 3],
+        [2, 3, 1],
+        [1, 2, 3],
+        [1, 3, 2],
+        [2, 1, 3],
+    ],
+    &[
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+    ],
 ];
-static SWAP_N1_3W: &[&[[u16;3]]] = &[
-    &[[1,2,0],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[2,0,1]],
-    &[[1,0,2],[2,0,1],[1,0,2],[2,1,0],[1,2,0],[2,1,0]],
-    &[[1,0,2],[1,0,2],[1,2,0],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[2,0,1]],
-    &[[0,1,2],[1,0,2],[2,1,0],[1,2,0],[0,2,1],[2,1,0],[1,2,0],[2,0,1]],
-    &[[2,0,1],[1,2,0],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[2,0,1],[1,0,2]],
-    &[[1,2,0],[0,1,2],[1,2,0],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[0,1,2]],
-    &[[2,1,0],[1,2,0],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[2,0,1],[1,2,0]],
+static SWAP_N1_3W: &[&[[u16; 3]]] = &[
+    &[
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+    ],
+    &[
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 1, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+    ],
+    &[
+        [0, 1, 2],
+        [1, 0, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+        [0, 2, 1],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+    ],
+    &[
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+    ],
+    &[
+        [1, 2, 0],
+        [0, 1, 2],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [0, 1, 2],
+    ],
+    &[
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+    ],
 ];
-static SWAP_N1_4W: &[&[[u16;3]]] = &[
-    &[[1,0,3],[1,2,3],[2,1,3],[1,2,3],[2,3,1],[1,3,2],[2,0,3],[2,3,1]],
-    &[[1,3,2],[2,0,1],[1,0,2],[2,1,0],[1,2,0],[2,1,3]],
+static SWAP_N1_4W: &[&[[u16; 3]]] = &[
+    &[
+        [1, 0, 3],
+        [1, 2, 3],
+        [2, 1, 3],
+        [1, 2, 3],
+        [2, 3, 1],
+        [1, 3, 2],
+        [2, 0, 3],
+        [2, 3, 1],
+    ],
+    &[
+        [1, 3, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 1, 3],
+    ],
 ];
-static SWAP_N2_3W: &[&[[u16;3]]] = &[
-    &[[2,0,1],[1,2,0],[2,1,0],[0,2,1],[1,2,0],[2,1,0],[1,0,2],[0,1,2]],
-    &[[0,2,1],[2,0,1],[1,2,0],[2,1,0],[0,1,2],[1,2,0],[2,1,0],[1,0,2]],
-    &[[2,0,1],[1,0,2],[2,0,1],[1,2,0],[2,1,0],[1,2,0]],
-    &[[0,1,2],[1,0,2],[2,0,1],[1,2,0],[2,1,0],[1,2,0],[0,1,2],[1,2,0]],
-    &[[0,2,1],[1,2,0],[2,1,0],[1,0,2],[2,0,1],[1,0,2],[0,2,1],[1,0,2]],
-    &[[2,1,0],[1,0,2],[2,0,1],[0,1,2],[1,0,2],[2,0,1],[1,2,0],[0,2,1]],
-    &[[0,2,1],[1,0,2],[2,0,1],[0,1,2],[1,0,2],[2,0,1],[1,0,2],[1,2,0]],
-    &[[2,0,1],[0,2,1],[1,0,2],[2,0,1],[1,2,0],[2,1,0],[0,2,1],[1,2,0]],
-    &[[2,1,0],[1,2,0],[2,1,0],[1,0,2],[2,0,1],[1,0,2]],
+static SWAP_N2_3W: &[&[[u16; 3]]] = &[
+    &[
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [0, 2, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 0, 2],
+        [0, 1, 2],
+    ],
+    &[
+        [0, 2, 1],
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [0, 1, 2],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 0, 2],
+    ],
+    &[
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 2, 0],
+    ],
+    &[
+        [0, 1, 2],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 2, 0],
+        [0, 1, 2],
+        [1, 2, 0],
+    ],
+    &[
+        [0, 2, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+    ],
+    &[
+        [2, 1, 0],
+        [1, 0, 2],
+        [2, 0, 1],
+        [0, 1, 2],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [0, 2, 1],
+    ],
+    &[
+        [0, 2, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+        [0, 1, 2],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+    ],
+    &[
+        [2, 0, 1],
+        [0, 2, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [0, 2, 1],
+        [1, 2, 0],
+    ],
+    &[
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+    ],
 ];
-static SWAP_N2_4W: &[&[[u16;3]]] = &[
-    &[[2,1,0],[1,2,3],[2,1,3],[1,3,2],[2,3,1],[1,0,2]],
-    &[[2,1,3],[1,2,0],[2,1,0],[1,0,2],[2,0,1],[1,3,2]],
+static SWAP_N2_4W: &[&[[u16; 3]]] = &[
+    &[
+        [2, 1, 0],
+        [1, 2, 3],
+        [2, 1, 3],
+        [1, 3, 2],
+        [2, 3, 1],
+        [1, 0, 2],
+    ],
+    &[
+        [2, 1, 3],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 3, 2],
+    ],
 ];
-static SWAP_N12_3W: &[&[[u16;3]]] = &[
-    &[[2,0,1],[2,1,0],[0,2,1],[1,0,2],[2,0,1],[0,1,2],[1,0,2],[2,0,1]],
-    &[[0,1,2],[1,0,2],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[2,1,0],[0,1,2]],
-    &[[0,1,2],[1,0,2],[2,0,1],[1,2,0],[0,2,1],[1,2,0],[2,0,1],[1,0,2]],
-    &[[1,0,2],[1,2,0],[0,2,1],[2,1,0],[1,2,0],[0,1,2],[2,1,0],[1,2,0]],
-    &[[2,1,0],[1,2,0],[0,2,1],[2,1,0],[1,2,0],[0,1,2],[2,0,1],[2,1,0]],
-    &[[1,2,0],[2,0,1],[1,0,2],[2,1,0],[1,2,0],[2,0,1]],
-    &[[0,2,1],[1,2,0],[2,1,0],[1,0,2],[0,1,2],[1,0,2],[2,1,0],[1,2,0]],
-    &[[1,0,2],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[2,1,0]],
-    &[[1,0,2],[2,0,1],[1,2,0],[0,2,1],[1,2,0],[2,0,1],[1,0,2],[0,1,2]],
-    &[[1,0,2],[0,2,1],[2,1,0],[1,2,0],[2,0,1],[1,0,2],[0,2,1],[2,1,0]],
-    &[[0,1,2],[2,1,0],[1,0,2],[2,0,1],[1,2,0],[2,1,0],[1,0,2],[0,1,2]],
-    &[[2,0,1],[1,2,0],[2,1,0],[1,0,2],[2,0,1],[1,2,0]],
-    &[[1,2,0],[2,1,0],[0,1,2],[1,2,0],[2,1,0],[0,2,1],[1,0,2],[1,2,0]],
-    &[[1,2,0],[2,1,0],[1,0,2],[0,1,2],[1,0,2],[2,1,0],[1,2,0],[0,2,1]],
-    &[[2,1,0],[1,0,2],[2,0,1],[1,2,0],[2,1,0],[1,0,2]],
-    &[[0,1,2],[1,2,0],[2,0,1],[1,0,2],[2,1,0],[1,2,0],[2,0,1],[0,1,2]],
+static SWAP_N12_3W: &[&[[u16; 3]]] = &[
+    &[
+        [2, 0, 1],
+        [2, 1, 0],
+        [0, 2, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+        [0, 1, 2],
+        [1, 0, 2],
+        [2, 0, 1],
+    ],
+    &[
+        [0, 1, 2],
+        [1, 0, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 1, 0],
+        [0, 1, 2],
+    ],
+    &[
+        [0, 1, 2],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [0, 2, 1],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+    ],
+    &[
+        [1, 0, 2],
+        [1, 2, 0],
+        [0, 2, 1],
+        [2, 1, 0],
+        [1, 2, 0],
+        [0, 1, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+    ],
+    &[
+        [2, 1, 0],
+        [1, 2, 0],
+        [0, 2, 1],
+        [2, 1, 0],
+        [1, 2, 0],
+        [0, 1, 2],
+        [2, 0, 1],
+        [2, 1, 0],
+    ],
+    &[
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+    ],
+    &[
+        [0, 2, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 0, 2],
+        [0, 1, 2],
+        [1, 0, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 1, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [0, 2, 1],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [0, 1, 2],
+    ],
+    &[
+        [1, 0, 2],
+        [0, 2, 1],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [0, 2, 1],
+        [2, 1, 0],
+    ],
+    &[
+        [0, 1, 2],
+        [2, 1, 0],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 0, 2],
+        [0, 1, 2],
+    ],
+    &[
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+    ],
+    &[
+        [1, 2, 0],
+        [2, 1, 0],
+        [0, 1, 2],
+        [1, 2, 0],
+        [2, 1, 0],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+    ],
+    &[
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 0, 2],
+        [0, 1, 2],
+        [1, 0, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+        [0, 2, 1],
+    ],
+    &[
+        [2, 1, 0],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 0, 2],
+    ],
+    &[
+        [0, 1, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+        [0, 1, 2],
+    ],
 ];
-static SWAP_N12_4W: &[&[[u16;3]]] = &[
-    &[[1,3,2],[2,1,3],[1,2,3],[2,3,1],[1,3,2],[2,1,3]],
-    &[[2,1,3],[1,3,2],[2,3,1],[1,2,3],[2,1,3],[1,3,2]],
-    &[[1,2,0],[2,3,1],[1,3,2],[2,1,3],[1,2,3],[2,0,1]],
+static SWAP_N12_4W: &[&[[u16; 3]]] = &[
+    &[
+        [1, 3, 2],
+        [2, 1, 3],
+        [1, 2, 3],
+        [2, 3, 1],
+        [1, 3, 2],
+        [2, 1, 3],
+    ],
+    &[
+        [2, 1, 3],
+        [1, 3, 2],
+        [2, 3, 1],
+        [1, 2, 3],
+        [2, 1, 3],
+        [1, 3, 2],
+    ],
+    &[
+        [1, 2, 0],
+        [2, 3, 1],
+        [1, 3, 2],
+        [2, 1, 3],
+        [1, 2, 3],
+        [2, 0, 1],
+    ],
 ];
 // NOT 3-wire at min-2 depths (6,7) is empty — those depths only exist for 4-wire.
-static NOT_3W: &[&[[u16;3]]] = &[];
-static NOT_4W: &[&[[u16;3]]] = &[
-    &[[0,2,3],[1,0,2],[1,0,3],[0,2,3],[1,2,0],[1,2,3],[1,3,0]],
-    &[[1,0,2],[1,0,3],[1,3,2],[2,3,0],[1,0,2],[1,3,2],[2,3,0]],
-    &[[1,0,2],[1,0,3],[3,0,2],[0,2,3],[1,3,0],[0,2,3],[3,0,2]],
-    &[[2,0,3],[1,2,0],[1,3,2],[2,0,3],[1,0,2],[1,2,3]],
-    &[[0,2,3],[1,0,2],[1,3,0],[0,2,3],[1,0,3],[1,2,0]],
-    &[[1,0,2],[2,3,0],[3,0,2],[1,0,3],[3,0,2],[1,0,3],[2,3,0]],
-    &[[1,0,2],[1,3,0],[2,0,3],[1,0,2],[1,3,2],[2,0,3],[1,3,2]],
-    &[[1,0,3],[2,0,3],[1,0,2],[2,0,3],[2,3,0],[1,0,2],[2,3,0]],
-    &[[0,1,3],[0,3,2],[1,3,0],[0,3,2],[1,3,2],[0,1,3],[1,3,0]],
-    &[[1,2,0],[1,2,3],[3,2,0],[1,3,0],[1,3,2],[3,2,0],[1,0,3]],
-    &[[1,0,2],[1,0,3],[1,3,2],[2,0,3],[1,2,0],[1,2,3],[2,0,3]],
-    &[[1,2,0],[1,3,2],[2,0,3],[1,0,2],[1,2,3],[2,0,3]],
-    &[[1,3,0],[2,0,3],[2,3,0],[1,2,0],[2,0,3],[2,3,0],[1,2,0]],
-    &[[1,0,2],[1,2,3],[2,0,3],[1,2,0],[1,3,2],[2,0,3]],
-    &[[1,0,2],[3,0,2],[3,2,0],[1,3,2],[3,0,2],[3,2,0],[1,3,2]],
-    &[[1,0,2],[1,3,0],[0,2,3],[1,0,3],[1,2,0],[0,2,3]],
-    &[[3,0,2],[1,2,3],[3,0,2],[1,3,0],[0,3,2],[1,3,0],[0,3,2]],
-    &[[0,2,1],[0,3,2],[1,0,2],[0,3,2],[1,3,2],[0,2,1],[1,0,2]],
-    &[[0,3,2],[1,0,2],[1,3,0],[0,3,2],[1,0,3],[1,2,0]],
-    &[[1,0,2],[1,3,2],[3,2,0],[0,3,2],[1,0,2],[0,3,2],[3,2,0]],
-    &[[0,2,1],[1,3,2],[3,0,2],[1,3,2],[3,0,2],[0,2,1],[1,0,2]],
-    &[[0,3,2],[1,2,0],[1,2,3],[1,3,0],[0,3,2],[1,2,0],[1,3,0]],
-    &[[3,2,0],[1,0,3],[1,3,2],[3,2,0],[1,2,3],[1,3,0]],
-    &[[1,0,2],[3,2,0],[1,0,3],[1,2,3],[3,2,0],[1,0,3],[1,2,3]],
-    &[[1,0,3],[1,2,0],[0,3,2],[1,0,2],[1,3,0],[0,3,2]],
-    &[[2,0,3],[1,0,2],[1,2,3],[2,0,3],[1,2,0],[1,3,2]],
-    &[[1,0,2],[0,3,2],[1,0,3],[1,2,0],[0,3,2],[1,3,0]],
-    &[[1,0,2],[1,2,3],[2,3,0],[1,2,0],[1,3,2],[2,3,0]],
-    &[[3,0,2],[1,3,2],[3,0,2],[2,0,3],[1,2,0],[2,0,3],[1,3,2]],
-    &[[1,0,3],[1,3,2],[2,0,3],[1,2,0],[1,2,3],[2,0,3],[1,0,2]],
-    &[[2,3,0],[1,2,0],[1,3,2],[2,3,0],[1,0,2],[1,2,3]],
-    &[[0,1,3],[1,0,2],[2,0,3],[1,0,2],[2,0,3],[0,1,3],[1,3,0]],
-    &[[1,0,2],[3,0,2],[1,0,3],[1,2,3],[3,0,2],[1,3,0],[1,3,2]],
-    &[[1,3,0],[2,0,3],[1,2,0],[2,0,3],[2,3,0],[1,2,0],[2,3,0]],
+static NOT_3W: &[&[[u16; 3]]] = &[];
+static NOT_4W: &[&[[u16; 3]]] = &[
+    &[
+        [0, 2, 3],
+        [1, 0, 2],
+        [1, 0, 3],
+        [0, 2, 3],
+        [1, 2, 0],
+        [1, 2, 3],
+        [1, 3, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [1, 0, 3],
+        [1, 3, 2],
+        [2, 3, 0],
+        [1, 0, 2],
+        [1, 3, 2],
+        [2, 3, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [1, 0, 3],
+        [3, 0, 2],
+        [0, 2, 3],
+        [1, 3, 0],
+        [0, 2, 3],
+        [3, 0, 2],
+    ],
+    &[
+        [2, 0, 3],
+        [1, 2, 0],
+        [1, 3, 2],
+        [2, 0, 3],
+        [1, 0, 2],
+        [1, 2, 3],
+    ],
+    &[
+        [0, 2, 3],
+        [1, 0, 2],
+        [1, 3, 0],
+        [0, 2, 3],
+        [1, 0, 3],
+        [1, 2, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [2, 3, 0],
+        [3, 0, 2],
+        [1, 0, 3],
+        [3, 0, 2],
+        [1, 0, 3],
+        [2, 3, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [1, 3, 0],
+        [2, 0, 3],
+        [1, 0, 2],
+        [1, 3, 2],
+        [2, 0, 3],
+        [1, 3, 2],
+    ],
+    &[
+        [1, 0, 3],
+        [2, 0, 3],
+        [1, 0, 2],
+        [2, 0, 3],
+        [2, 3, 0],
+        [1, 0, 2],
+        [2, 3, 0],
+    ],
+    &[
+        [0, 1, 3],
+        [0, 3, 2],
+        [1, 3, 0],
+        [0, 3, 2],
+        [1, 3, 2],
+        [0, 1, 3],
+        [1, 3, 0],
+    ],
+    &[
+        [1, 2, 0],
+        [1, 2, 3],
+        [3, 2, 0],
+        [1, 3, 0],
+        [1, 3, 2],
+        [3, 2, 0],
+        [1, 0, 3],
+    ],
+    &[
+        [1, 0, 2],
+        [1, 0, 3],
+        [1, 3, 2],
+        [2, 0, 3],
+        [1, 2, 0],
+        [1, 2, 3],
+        [2, 0, 3],
+    ],
+    &[
+        [1, 2, 0],
+        [1, 3, 2],
+        [2, 0, 3],
+        [1, 0, 2],
+        [1, 2, 3],
+        [2, 0, 3],
+    ],
+    &[
+        [1, 3, 0],
+        [2, 0, 3],
+        [2, 3, 0],
+        [1, 2, 0],
+        [2, 0, 3],
+        [2, 3, 0],
+        [1, 2, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [1, 2, 3],
+        [2, 0, 3],
+        [1, 2, 0],
+        [1, 3, 2],
+        [2, 0, 3],
+    ],
+    &[
+        [1, 0, 2],
+        [3, 0, 2],
+        [3, 2, 0],
+        [1, 3, 2],
+        [3, 0, 2],
+        [3, 2, 0],
+        [1, 3, 2],
+    ],
+    &[
+        [1, 0, 2],
+        [1, 3, 0],
+        [0, 2, 3],
+        [1, 0, 3],
+        [1, 2, 0],
+        [0, 2, 3],
+    ],
+    &[
+        [3, 0, 2],
+        [1, 2, 3],
+        [3, 0, 2],
+        [1, 3, 0],
+        [0, 3, 2],
+        [1, 3, 0],
+        [0, 3, 2],
+    ],
+    &[
+        [0, 2, 1],
+        [0, 3, 2],
+        [1, 0, 2],
+        [0, 3, 2],
+        [1, 3, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+    ],
+    &[
+        [0, 3, 2],
+        [1, 0, 2],
+        [1, 3, 0],
+        [0, 3, 2],
+        [1, 0, 3],
+        [1, 2, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [1, 3, 2],
+        [3, 2, 0],
+        [0, 3, 2],
+        [1, 0, 2],
+        [0, 3, 2],
+        [3, 2, 0],
+    ],
+    &[
+        [0, 2, 1],
+        [1, 3, 2],
+        [3, 0, 2],
+        [1, 3, 2],
+        [3, 0, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+    ],
+    &[
+        [0, 3, 2],
+        [1, 2, 0],
+        [1, 2, 3],
+        [1, 3, 0],
+        [0, 3, 2],
+        [1, 2, 0],
+        [1, 3, 0],
+    ],
+    &[
+        [3, 2, 0],
+        [1, 0, 3],
+        [1, 3, 2],
+        [3, 2, 0],
+        [1, 2, 3],
+        [1, 3, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [3, 2, 0],
+        [1, 0, 3],
+        [1, 2, 3],
+        [3, 2, 0],
+        [1, 0, 3],
+        [1, 2, 3],
+    ],
+    &[
+        [1, 0, 3],
+        [1, 2, 0],
+        [0, 3, 2],
+        [1, 0, 2],
+        [1, 3, 0],
+        [0, 3, 2],
+    ],
+    &[
+        [2, 0, 3],
+        [1, 0, 2],
+        [1, 2, 3],
+        [2, 0, 3],
+        [1, 2, 0],
+        [1, 3, 2],
+    ],
+    &[
+        [1, 0, 2],
+        [0, 3, 2],
+        [1, 0, 3],
+        [1, 2, 0],
+        [0, 3, 2],
+        [1, 3, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [1, 2, 3],
+        [2, 3, 0],
+        [1, 2, 0],
+        [1, 3, 2],
+        [2, 3, 0],
+    ],
+    &[
+        [3, 0, 2],
+        [1, 3, 2],
+        [3, 0, 2],
+        [2, 0, 3],
+        [1, 2, 0],
+        [2, 0, 3],
+        [1, 3, 2],
+    ],
+    &[
+        [1, 0, 3],
+        [1, 3, 2],
+        [2, 0, 3],
+        [1, 2, 0],
+        [1, 2, 3],
+        [2, 0, 3],
+        [1, 0, 2],
+    ],
+    &[
+        [2, 3, 0],
+        [1, 2, 0],
+        [1, 3, 2],
+        [2, 3, 0],
+        [1, 0, 2],
+        [1, 2, 3],
+    ],
+    &[
+        [0, 1, 3],
+        [1, 0, 2],
+        [2, 0, 3],
+        [1, 0, 2],
+        [2, 0, 3],
+        [0, 1, 3],
+        [1, 3, 0],
+    ],
+    &[
+        [1, 0, 2],
+        [3, 0, 2],
+        [1, 0, 3],
+        [1, 2, 3],
+        [3, 0, 2],
+        [1, 3, 0],
+        [1, 3, 2],
+    ],
+    &[
+        [1, 3, 0],
+        [2, 0, 3],
+        [1, 2, 0],
+        [2, 0, 3],
+        [2, 3, 0],
+        [1, 2, 0],
+        [2, 3, 0],
+    ],
 ];
 // CNOT 3-wire at min-2 depths (4,5) is empty — those depths only exist for 4-wire.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Transpositions {
-    pub transpositions: Vec<(u16, u16, u16)>
+    pub transpositions: Vec<(u16, u16, u16)>,
 }
 
 impl Transpositions {
@@ -157,7 +977,7 @@ impl Transpositions {
             let temp = negation_mask[j as usize];
             negation_mask[j as usize] = negation_mask[i as usize];
             negation_mask[i as usize] = temp;
-            if negation_type == 1 || negation_type == 3{
+            if negation_type == 1 || negation_type == 3 {
                 negation_mask[j as usize] ^= 1;
             }
             if negation_type == 2 || negation_type == 3 {
@@ -194,7 +1014,7 @@ impl Transpositions {
             let temp = negation_mask[j];
             negation_mask[j as usize] = negation_mask[i as usize];
             negation_mask[i as usize] = temp;
-            if negation_type == 1 || negation_type == 3{
+            if negation_type == 1 || negation_type == 3 {
                 negation_mask[j as usize] ^= 1;
             }
             if negation_type == 2 || negation_type == 3 {
@@ -205,12 +1025,13 @@ impl Transpositions {
         Self { transpositions }
     }
 
-
     pub fn to_perm(&self, n: usize) -> Permutation {
-        let mut perm = Permutation { data: Vec::with_capacity(n) };
+        let mut perm = Permutation {
+            data: Vec::with_capacity(n),
+        };
         for i in 0..n {
             perm.data.push(self.evaluate(i as u16) as usize);
-        } 
+        }
         perm
     }
 
@@ -236,28 +1057,26 @@ impl Transpositions {
             }
         }
 
-        Transpositions { transpositions: swaps }
+        Transpositions {
+            transpositions: swaps,
+        }
     }
 
     pub fn collides(s1: &(u16, u16, u16), s2: &(u16, u16, u16)) -> bool {
         let (a1, b1, _) = s1;
         let (a2, b2, _) = s2;
-        a1 == a2 ||
-        a1 == b2 ||
-        b1 == a2 ||
-        b1 == b2
+        a1 == a2 || a1 == b2 || b1 == a2 || b1 == b2
     }
-
 
     //b is greater
     pub fn ordered(s1: &(u16, u16, u16), s2: &(u16, u16, u16)) -> bool {
         let (a_1, b_1, _) = s1;
         let (a_2, b_2, _) = s2;
         if a_1 > a_2 {
-            return false
-        } else if a_1 == a_2{
+            return false;
+        } else if a_1 == a_2 {
             if b_1 > b_2 {
-                return false
+                return false;
             }
         }
         true
@@ -291,12 +1110,9 @@ impl Transpositions {
 
     // Swaps wire 1 and wire 2 in the template; relabels to swap.0 and swap.1.
     // Randomly selects from hardcoded 3-wire or 4-wire circuits at min depths.
-    pub fn gen_gates_swap(
-        n: usize,
-        swap: (u16, u16, u16),
-    ) -> Vec<[u16;3]> {
+    pub fn gen_gates_swap(n: usize, swap: (u16, u16, u16)) -> Vec<[u16; 3]> {
         let (a, b, negation_type) = swap;
-        let (pool_3w, pool_4w): (&[&[[u16;3]]], &[&[[u16;3]]]) = match negation_type {
+        let (pool_3w, pool_4w): (&[&[[u16; 3]]], &[&[[u16; 3]]]) = match negation_type {
             0 => (SWAP_3W, SWAP_4W),
             1 => (SWAP_N1_3W, SWAP_N1_4W),
             2 => (SWAP_N2_3W, SWAP_N2_4W),
@@ -310,49 +1126,94 @@ impl Transpositions {
         if idx < pool_3w.len() {
             let circuit = pool_3w[idx];
             let mut c;
-            loop { c = rng.random_range(0..n) as u16; if c != a && c != b { break; } }
-            let out = CircuitSeq { gates: circuit.to_vec() };
+            loop {
+                c = rng.random_range(0..n) as u16;
+                if c != a && c != b {
+                    break;
+                }
+            }
+            let out = CircuitSeq {
+                gates: circuit.to_vec(),
+            };
             CircuitSeq::unrewire_subcircuit(&out, &[c, a, b]).gates
         } else {
             let circuit = pool_4w[idx - pool_3w.len()];
             let mut c1;
-            loop { c1 = rng.random_range(0..n) as u16; if c1 != a && c1 != b { break; } }
+            loop {
+                c1 = rng.random_range(0..n) as u16;
+                if c1 != a && c1 != b {
+                    break;
+                }
+            }
             let mut c2;
-            loop { c2 = rng.random_range(0..n) as u16; if c2 != a && c2 != b && c2 != c1 { break; } }
-            let out = CircuitSeq { gates: circuit.to_vec() };
+            loop {
+                c2 = rng.random_range(0..n) as u16;
+                if c2 != a && c2 != b && c2 != c1 {
+                    break;
+                }
+            }
+            let out = CircuitSeq {
+                gates: circuit.to_vec(),
+            };
             CircuitSeq::unrewire_subcircuit(&out, &[c1, a, b, c2]).gates
         }
     }
 
-
     // Wire 1 gets flipped in the template; relabels wire 1 to `wire`.
     // Uses 4-wire circuits (min depth 6-7) with 3 ancilla wires.
-    pub fn gen_gates_not(
-        n: usize,
-        wire: u16,
-    ) -> Vec<[u16;3]> {
+    pub fn gen_gates_not(n: usize, wire: u16) -> Vec<[u16; 3]> {
         let mut rng = rand::rng();
         let pool = if !NOT_4W.is_empty() { NOT_4W } else { NOT_3W };
         let circuit = pool.choose(&mut rng).expect("NOT pool is empty");
         if pool.as_ptr() == NOT_4W.as_ptr() {
-            let mut a; loop { a = rng.random_range(0..n) as u16; if a != wire { break; } }
-            let mut b; loop { b = rng.random_range(0..n) as u16; if b != wire && b != a { break; } }
-            let mut c; loop { c = rng.random_range(0..n) as u16; if c != wire && c != a && c != b { break; } }
-            let out = CircuitSeq { gates: circuit.to_vec() };
+            let mut a;
+            loop {
+                a = rng.random_range(0..n) as u16;
+                if a != wire {
+                    break;
+                }
+            }
+            let mut b;
+            loop {
+                b = rng.random_range(0..n) as u16;
+                if b != wire && b != a {
+                    break;
+                }
+            }
+            let mut c;
+            loop {
+                c = rng.random_range(0..n) as u16;
+                if c != wire && c != a && c != b {
+                    break;
+                }
+            }
+            let out = CircuitSeq {
+                gates: circuit.to_vec(),
+            };
             CircuitSeq::unrewire_subcircuit(&out, &[a, wire, b, c]).gates
         } else {
-            let mut a; loop { a = rng.random_range(0..n) as u16; if a != wire { break; } }
-            let mut b; loop { b = rng.random_range(0..n) as u16; if b != wire && b != a { break; } }
-            let out = CircuitSeq { gates: circuit.to_vec() };
+            let mut a;
+            loop {
+                a = rng.random_range(0..n) as u16;
+                if a != wire {
+                    break;
+                }
+            }
+            let mut b;
+            loop {
+                b = rng.random_range(0..n) as u16;
+                if b != wire && b != a {
+                    break;
+                }
+            }
+            let out = CircuitSeq {
+                gates: circuit.to_vec(),
+            };
             CircuitSeq::unrewire_subcircuit(&out, &[a, wire, b]).gates
         }
     }
 
-
-    pub fn to_circuit(
-        &self,
-        n: usize,
-    ) -> CircuitSeq {
+    pub fn to_circuit(&self, n: usize) -> CircuitSeq {
         let mut gates: Vec<[u16; 3]> = Vec::new();
 
         for &swap in &self.transpositions {
@@ -361,11 +1222,6 @@ impl Transpositions {
 
         CircuitSeq { gates }
     }
-
-
-
-
-
 
     pub fn evaluate(&self, input: u16) -> u16 {
         let mut val = input;
@@ -387,14 +1243,13 @@ impl Transpositions {
     }
 }
 
-pub fn insert_wire_shuffles_knuth(
-    circuit: &mut CircuitSeq, 
-    n: usize,
-) {
+pub fn insert_wire_shuffles_knuth(circuit: &mut CircuitSeq, n: usize) {
     println!("Inserting wire shuffles (knuth)");
     println!("Starting len: {} gates", circuit.gates.len());
-    let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
-    let mut gates: Vec<[u16;3]> = Vec::new();
+    let mut t_list: Transpositions = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut gates: Vec<[u16; 3]> = Vec::new();
     let mut negation_mask = vec![0u8; n];
 
     for &gate in &circuit.gates {
@@ -431,6 +1286,7 @@ pub fn insert_wire_shuffles_knuth(
         [2, 3, 0, 1],
     ];
 
+    let mut leftover_nots: Vec<u16> = Vec::new();
     for (i, val) in negation_mask.into_iter().enumerate() {
         if val == 1 {
             if let Some(swaps) = wire_transpositions.get(&(i as u16)) {
@@ -440,7 +1296,11 @@ pub fn insert_wire_shuffles_knuth(
                     panic!("Invalid pos or curr_neg_type");
                 }
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize] as u16;
-                
+            } else {
+                // This wire is a fixed point of the permutation, so it has no
+                // transposition to fold the residual negation into. Undo it with
+                // an explicit NOT, emitted after the permutation is restored.
+                leftover_nots.push(i as u16);
             }
         }
     }
@@ -448,18 +1308,20 @@ pub fn insert_wire_shuffles_knuth(
     let mut c = t.to_circuit(n).gates;
     c.reverse();
     gates.extend_from_slice(&c);
+    for wire in leftover_nots {
+        gates.extend_from_slice(&Transpositions::gen_gates_not(n, wire));
+    }
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
 
-pub fn insert_wire_shuffles_simple(
-    circuit: &mut CircuitSeq, 
-    n: usize,
-) {
+pub fn insert_wire_shuffles_simple(circuit: &mut CircuitSeq, n: usize) {
     println!("Inserting wire shuffles (simple)");
     println!("Starting len: {} gates", circuit.gates.len());
-    let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
-    let mut gates: Vec<[u16;3]> = Vec::new();
+    let mut t_list: Transpositions = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut gates: Vec<[u16; 3]> = Vec::new();
     let mut negation_mask = vec![0u8; n];
 
     // Generate random points. m needed in k = m * n
@@ -471,7 +1333,7 @@ pub fn insert_wire_shuffles_simple(
         let center = i * n + n / 2;
 
         // allow significant variance but keep spacing structure
-        let jitter = rng.random_range(-(n as i64)/2 ..= (n as i64)/2);
+        let jitter = rng.random_range(-(n as i64) / 2..=(n as i64) / 2);
 
         let mut p = center as i64 + jitter;
 
@@ -518,6 +1380,7 @@ pub fn insert_wire_shuffles_simple(
         [2, 3, 0, 1],
     ];
 
+    let mut leftover_nots: Vec<u16> = Vec::new();
     for (i, val) in negation_mask.into_iter().enumerate() {
         if val == 1 {
             if let Some(swaps) = wire_transpositions.get(&(i as u16)) {
@@ -527,7 +1390,11 @@ pub fn insert_wire_shuffles_simple(
                     panic!("Invalid pos or curr_neg_type");
                 }
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize] as u16;
-                
+            } else {
+                // This wire is a fixed point of the permutation, so it has no
+                // transposition to fold the residual negation into. Undo it with
+                // an explicit NOT, emitted after the permutation is restored.
+                leftover_nots.push(i as u16);
             }
         }
     }
@@ -535,20 +1402,21 @@ pub fn insert_wire_shuffles_simple(
     let mut c = t.to_circuit(n).gates;
     c.reverse();
     gates.extend_from_slice(&c);
+    for wire in leftover_nots {
+        gates.extend_from_slice(&Transpositions::gen_gates_not(n, wire));
+    }
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
 
 // Insert 2 shuffles are the beginning and end, and then an additional x number of shuffles
-pub fn insert_wire_shuffles_x(
-    circuit: &mut CircuitSeq, 
-    n: usize,
-    x: usize,
-) {
+pub fn insert_wire_shuffles_x(circuit: &mut CircuitSeq, n: usize, x: usize) {
     println!("Inserting wire shuffles");
     println!("Starting len: {} gates", circuit.gates.len());
-    let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
-    let mut gates: Vec<[u16;3]> = Vec::new();
+    let mut t_list: Transpositions = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut gates: Vec<[u16; 3]> = Vec::new();
     let mut negation_mask = vec![0u8; n];
 
     let start = 1;
@@ -566,7 +1434,7 @@ pub fn insert_wire_shuffles_x(
             let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
             gates.extend_from_slice(&t.to_circuit(n).gates);
             t_list.transpositions.extend_from_slice(&t.transpositions);
-        }   
+        }
         let a = t_list.evaluate(gate[0]);
         let b = t_list.evaluate(gate[1]);
         let c = t_list.evaluate(gate[2]);
@@ -597,6 +1465,7 @@ pub fn insert_wire_shuffles_x(
         [2, 3, 0, 1],
     ];
 
+    let mut leftover_nots: Vec<u16> = Vec::new();
     for (i, val) in negation_mask.into_iter().enumerate() {
         if val == 1 {
             if let Some(swaps) = wire_transpositions.get(&(i as u16)) {
@@ -606,7 +1475,11 @@ pub fn insert_wire_shuffles_x(
                     panic!("Invalid pos or curr_neg_type");
                 }
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize] as u16;
-                
+            } else {
+                // This wire is a fixed point of the permutation, so it has no
+                // transposition to fold the residual negation into. Undo it with
+                // an explicit NOT, emitted after the permutation is restored.
+                leftover_nots.push(i as u16);
             }
         }
     }
@@ -614,22 +1487,22 @@ pub fn insert_wire_shuffles_x(
     let mut c = t.to_circuit(n).gates;
     c.reverse();
     gates.extend_from_slice(&c);
+    for wire in leftover_nots {
+        gates.extend_from_slice(&Transpositions::gen_gates_not(n, wire));
+    }
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
 
 // Insert m samf between each gate
-pub fn insert_wire_m_samfs_every_x(
-    circuit: &mut CircuitSeq,
-    n: usize,
-    m: usize,
-    x: usize,
-) {
+pub fn insert_wire_m_samfs_every_x(circuit: &mut CircuitSeq, n: usize, m: usize, x: usize) {
     let n = n;
     println!("Inserting {} samfs between each gate", m);
     println!("Starting len: {} gates", circuit.gates.len());
-    let mut t_list: Transpositions = Transpositions { transpositions: Vec::new() };
-    let mut gates: Vec<[u16;3]> = Vec::new();
+    let mut t_list: Transpositions = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut gates: Vec<[u16; 3]> = Vec::new();
     let mut negation_mask = vec![0u8; n];
 
     for (i, gate) in circuit.gates.iter().enumerate() {
@@ -668,6 +1541,7 @@ pub fn insert_wire_m_samfs_every_x(
         [2, 3, 0, 1],
     ];
 
+    let mut leftover_nots: Vec<u16> = Vec::new();
     for (i, val) in negation_mask.into_iter().enumerate() {
         if val == 1 {
             if let Some(swaps) = wire_transpositions.get(&(i as u16)) {
@@ -677,7 +1551,11 @@ pub fn insert_wire_m_samfs_every_x(
                     panic!("Invalid pos or curr_neg_type");
                 }
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize] as u16;
-                
+            } else {
+                // This wire is a fixed point of the permutation, so it has no
+                // transposition to fold the residual negation into. Undo it with
+                // an explicit NOT, emitted after the permutation is restored.
+                leftover_nots.push(i as u16);
             }
         }
     }
@@ -685,11 +1563,12 @@ pub fn insert_wire_m_samfs_every_x(
     let mut c = t.to_circuit(n).gates;
     c.reverse();
     gates.extend_from_slice(&c);
+    for wire in leftover_nots {
+        gates.extend_from_slice(&Transpositions::gen_gates_not(n, wire));
+    }
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
-
-
 
 fn gates_collide(g1: [u16; 3], g2: [u16; 3]) -> bool {
     g1[0] == g2[1] || g1[0] == g2[2] || g2[0] == g1[1] || g2[0] == g1[2]
@@ -716,7 +1595,9 @@ pub fn shuffled_shooting_game(
 
     let mut rng = rand::rng();
     let mut output: Vec<[u16; 3]> = Vec::new();
-    let mut t_list = Transpositions { transpositions: Vec::new() };
+    let mut t_list = Transpositions {
+        transpositions: Vec::new(),
+    };
     let mut negation_mask = vec![0u8; n];
     let mut compressions: usize = 0;
 
@@ -731,18 +1612,24 @@ pub fn shuffled_shooting_game(
 
         // Attempt SAMF-assisted replacement when this gate and the next collide.
         let replaced = 'try_replace: {
-            if i + 1 >= input.len() { break 'try_replace false; }
+            if i + 1 >= input.len() {
+                break 'try_replace false;
+            }
 
             let next = input[i + 1];
             let na = t_list.evaluate(next[0]);
             let nb = t_list.evaluate(next[1]);
             let nc = t_list.evaluate(next[2]);
 
-            if !gates_collide([a, b, c], [na, nb, nc]) { break 'try_replace false; }
+            if !gates_collide([a, b, c], [na, nb, nc]) {
+                break 'try_replace false;
+            }
 
             // Collision pair controls must be clean (no pending negation corrections).
-            if negation_mask[b as usize] != 0 || negation_mask[c as usize] != 0
-                || negation_mask[nb as usize] != 0 || negation_mask[nc as usize] != 0
+            if negation_mask[b as usize] != 0
+                || negation_mask[c as usize] != 0
+                || negation_mask[nb as usize] != 0
+                || negation_mask[nc as usize] != 0
             {
                 break 'try_replace false;
             }
@@ -751,20 +1638,30 @@ pub fn shuffled_shooting_game(
             let swap_lo: u16 = rng.random_range(0..n as u16);
             let swap_hi: u16 = loop {
                 let w: u16 = rng.random_range(0..n as u16);
-                if w != swap_lo { break w; }
+                if w != swap_lo {
+                    break w;
+                }
             };
-            let (swap_lo, swap_hi) = if swap_lo < swap_hi { (swap_lo, swap_hi) } else { (swap_hi, swap_lo) };
+            let (swap_lo, swap_hi) = if swap_lo < swap_hi {
+                (swap_lo, swap_hi)
+            } else {
+                (swap_hi, swap_lo)
+            };
             let neg_type: u16 = rng.random_range(0..4);
             let samf_swap = (swap_lo, swap_hi, neg_type);
             let samf = Transpositions::gen_gates_swap(n, samf_swap);
-            if samf.len() < 3 { break 'try_replace false; }
+            if samf.len() < 3 {
+                break 'try_replace false;
+            }
 
             // Build all available context gates (up to gates_ahead) with clean flags.
             // Positions 0 and 1 (collision pair controls) are already verified clean.
             let ga = gates_ahead.min(input.len() - i);
             let mut ctx: Vec<([u16; 3], bool)> = Vec::with_capacity(ga);
             ctx.push(([a, b, c], true));
-            if ga >= 2 { ctx.push(([na, nb, nc], true)); }
+            if ga >= 2 {
+                ctx.push(([na, nb, nc], true));
+            }
             for k in 2..ga {
                 let g = input[i + k];
                 let gw0 = t_list.evaluate(g[0]);
@@ -783,21 +1680,29 @@ pub fn shuffled_shooting_game(
             'outer: for len in (4..=ga + 3).rev() {
                 for start in (0..ga).rev() {
                     let end = start + len;
-                    if end > ga + 3 { continue; } // beyond full window
-                    if end <= ga   { continue; }   // no SAMF gate
+                    if end > ga + 3 {
+                        continue;
+                    } // beyond full window
+                    if end <= ga {
+                        continue;
+                    } // no SAMF gate
                     // All context gates in [start..end.min(ga)] must be clean.
-                    if !(start..end.min(ga)).all(|k| ctx[k].1) { continue; }
+                    if !(start..end.min(ga)).all(|k| ctx[k].1) {
+                        continue;
+                    }
                     // Build sub-window: context[start..ga] ++ samf[0..end-ga]
                     let samf_count = end - ga;
                     let mut window: Vec<[u16; 3]> = (start..ga).map(|k| ctx[k].0).collect();
                     window.extend_from_slice(&samf[..samf_count]);
-                    if let Some(repl) = compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs) {
+                    if let Some(repl) =
+                        compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs)
+                    {
                         // Reject if the SAMF gates appear verbatim in the replacement —
                         // that means the compressor only touched the context and left the
                         // SAMF unhidden.
                         let samf_slice = &samf[..samf_count];
-                        let samf_hidden = repl.len() < samf_count ||
-                            !repl.windows(samf_count).any(|w| w == samf_slice);
+                        let samf_hidden = repl.len() < samf_count
+                            || !repl.windows(samf_count).any(|w| w == samf_slice);
                         if samf_hidden {
                             found = Some((start, samf_count, repl));
                             break 'outer;
@@ -826,8 +1731,12 @@ pub fn shuffled_shooting_game(
                     let tmp = negation_mask[swap_lo as usize];
                     negation_mask[swap_lo as usize] = negation_mask[swap_hi as usize];
                     negation_mask[swap_hi as usize] = tmp;
-                    if neg_type == 1 || neg_type == 3 { negation_mask[swap_lo as usize] ^= 1; }
-                    if neg_type == 2 || neg_type == 3 { negation_mask[swap_hi as usize] ^= 1; }
+                    if neg_type == 1 || neg_type == 3 {
+                        negation_mask[swap_lo as usize] ^= 1;
+                    }
+                    if neg_type == 2 || neg_type == 3 {
+                        negation_mask[swap_hi as usize] ^= 1;
+                    }
 
                     i += ga; // advance past all context gates
                     true
@@ -860,19 +1769,27 @@ pub fn shuffled_shooting_game(
         wire_positions.insert(*wb, (idx, 1));
     }
     const TRANSITION: [[u8; 4]; 2] = [[1, 0, 3, 2], [2, 3, 0, 1]];
+    let mut leftover_nots: Vec<u16> = Vec::new();
     for (wire, &val) in negation_mask.iter().enumerate() {
         if val == 1 {
             if let Some(&(swap_idx, pos)) = wire_positions.get(&(wire as u16)) {
                 let curr = t.transpositions[swap_idx].2;
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr as usize] as u16;
+            } else {
+                // Wire is a fixed point of the permutation, so it has no
+                // transposition to fold the residual negation into. Undo it with
+                // an explicit NOT after the permutation is restored.
+                leftover_nots.push(wire as u16);
             }
         }
     }
     let mut undo = t.to_circuit(n).gates;
     undo.reverse();
     output.extend_from_slice(&undo);
+    for w in leftover_nots {
+        output.extend_from_slice(&Transpositions::gen_gates_not(n, w));
+    }
 
     circuit.gates = output;
     compressions
 }
-

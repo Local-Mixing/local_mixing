@@ -3,15 +3,14 @@ use std::{
     io::Write,
 };
 
-
 use crate::{
     circuit::circuit::CircuitSeq,
     replace::{
-        replace::{compress_loop, expand_once, ExpandPairMode},
-        mixing::simple_shooting_game,
-        transpositions::insert_wire_m_samfs_every_x,
-        pairs::{interleave},
         gadgets::gadgetize,
+        mixing::simple_shooting_game,
+        pairs::interleave,
+        replace::{ExpandPairMode, compress_loop, expand_once},
+        transpositions::insert_wire_m_samfs_every_x,
     },
 };
 
@@ -74,11 +73,11 @@ pub fn main_shuffle_shoot_shuffle(
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
     let progress_path = format!("{}_progress.txt", save_base);
     OpenOptions::new()
-    .create(true)
-    .write(true)
-    .truncate(true)
-    .open(&progress_path)
-    .expect("Failed to create progress file");
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&progress_path)
+        .expect("Failed to create progress file");
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat `rounds` times
@@ -88,7 +87,12 @@ pub fn main_shuffle_shoot_shuffle(
         let mut rng = rand::rng();
         let before = circuit.gates.len();
         circuit = gadgetize(&circuit, n, rg_freq, &mut rng);
-        println!("Gadgetized: {} gates → {} gates, {} wires", before, circuit.gates.len(), 2 * n);
+        println!(
+            "Gadgetized: {} gates → {} gates, {} wires",
+            before,
+            circuit.gates.len(),
+            2 * n
+        );
         // Save the gadgetized circuit to ./gadgetized/{final path component of source}
         let file_name = std::path::Path::new(source)
             .file_name()
@@ -104,85 +108,72 @@ pub fn main_shuffle_shoot_shuffle(
     }
     let n = if do_gadgetize { 2 * n } else { n };
     if leave {
-        circuit = interleave(
-            &circuit,
-            n,
-            env,
-        );
+        circuit = interleave(&circuit, n, env);
     }
-    let n = if leave {
-        2 * n
-    } else {
-        n
-    };
+    let n = if leave { 2 * n } else { n };
     if full_shuffle {
-        loop {
-            let mut shuffled = circuit.clone();
-            insert_wire_m_samfs_every_x(&mut shuffled, n, n, 1);
-            if shuffled.probably_equal(&circuit, n, 100).is_ok() {
-                circuit = shuffled;
-                break;
-            }
-        }
+        // SAMF insertion is equivalence-preserving by construction, so no retry guard.
+        insert_wire_m_samfs_every_x(&mut circuit, n, n, 1);
         println!("After full shuffle: {} gates", circuit.gates.len());
     }
     // Per-round SAMF (shuffled shooting game) compression stats, snapshotted each round.
     let mut per_round_samf: Vec<(usize, usize)> = Vec::new();
-    let mut prev_samf_made = crate::replace::transpositions::SAMF_COMPRESSIONS_MADE.load(std::sync::atomic::Ordering::Relaxed);
-    let mut prev_samf_failed = crate::replace::transpositions::SAMF_COMPRESSIONS_FAILED.load(std::sync::atomic::Ordering::Relaxed);
+    let mut prev_samf_made = crate::replace::transpositions::SAMF_COMPRESSIONS_MADE
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let mut prev_samf_failed = crate::replace::transpositions::SAMF_COMPRESSIONS_FAILED
+        .load(std::sync::atomic::Ordering::Relaxed);
     for i in 0..rounds {
         if egg {
-            let pair_mode = ExpandPairMode::Curated { curated_shard_dbs: &curated_shard_dbs };
+            let pair_mode = ExpandPairMode::Curated {
+                curated_shard_dbs: &curated_shard_dbs,
+            };
             circuit = expand_once(&circuit, n, env, shard_dbs, &pair_mode);
         } else if shuffled {
             use crate::replace::transpositions::shuffled_shooting_game;
-            loop {
-                let mut candidate = circuit.clone();
-                shuffled_shooting_game(&mut candidate, n, env, curated_shard_dbs, shard_dbs, gates_ahead);
-                if candidate.probably_equal(&circuit, n, 100).is_ok() {
-                    circuit = candidate;
-                    break;
-                }
-            }
+            shuffled_shooting_game(
+                &mut circuit,
+                n,
+                env,
+                curated_shard_dbs,
+                shard_dbs,
+                gates_ahead,
+            );
         } else {
-            loop {
-                let new_circuit = simple_shooting_game(
-                    &circuit,
-                    n,
-                    env,
-                    i+1,
-                    rounds,
-                    4 * circuit.gates.len(),
-                    intermediate,
-                    true,
-                    1,
-                    gates_ahead,
-                    &curated_shard_dbs,
-                    shard_dbs,
-                );
-                if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
-                    circuit = new_circuit;
-                    break;
-                }
-            }
+            circuit = simple_shooting_game(
+                &circuit,
+                n,
+                env,
+                i + 1,
+                rounds,
+                4 * circuit.gates.len(),
+                intermediate,
+                true,
+                1,
+                gates_ahead,
+                &curated_shard_dbs,
+                shard_dbs,
+            );
         }
         println!("After shooting game: {} gates", circuit.gates.len());
-        let mut new_circuit = circuit.clone();
-        loop {
-            insert_wire_m_samfs_every_x(&mut new_circuit, n, m, x);
-            if new_circuit.probably_equal(&circuit, n, 100).is_ok() {
-                circuit = new_circuit;
-                break;
-            }
-            new_circuit = circuit.clone();
-        }
+        insert_wire_m_samfs_every_x(&mut circuit, n, m, x);
         println!("After inserting samfs: {} gates", circuit.gates.len());
-        circuit = compress_loop(&circuit, n, env, shard_dbs, 6, i+1, rounds, "temp_compression.txt");
+        circuit = compress_loop(
+            &circuit,
+            n,
+            env,
+            shard_dbs,
+            6,
+            i + 1,
+            rounds,
+            "temp_compression.txt",
+        );
         println!("After compression: {} gates", circuit.gates.len());
         // Record this round's SAMF compression stats (delta from previous round).
         {
-            let cm = crate::replace::transpositions::SAMF_COMPRESSIONS_MADE.load(std::sync::atomic::Ordering::Relaxed);
-            let cf = crate::replace::transpositions::SAMF_COMPRESSIONS_FAILED.load(std::sync::atomic::Ordering::Relaxed);
+            let cm = crate::replace::transpositions::SAMF_COMPRESSIONS_MADE
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let cf = crate::replace::transpositions::SAMF_COMPRESSIONS_FAILED
+                .load(std::sync::atomic::Ordering::Relaxed);
             per_round_samf.push((cm - prev_samf_made, cf - prev_samf_failed));
             prev_samf_made = cm;
             prev_samf_failed = cf;
@@ -190,7 +181,7 @@ pub fn main_shuffle_shoot_shuffle(
         if circuit.gates.len() == 0 {
             break;
         }
-        
+
         if circuit.gates.len() == post_len {
             count += 1;
         } else {
@@ -219,20 +210,15 @@ pub fn main_shuffle_shoot_shuffle(
             panic!("The functionality has changed");
         }
         {
-        println!("Updating progress {}", progress_path);
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&progress_path)
-            .expect("Failed to open progress file");
+            println!("Updating progress {}", progress_path);
+            let mut f = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&progress_path)
+                .expect("Failed to open progress file");
 
-        writeln!(
-            f,
-            "=== Round {} ===\n{}\n",
-            i + 1,
-            circuit.repr()
-        )
-        .expect("Failed to write progress");
+            writeln!(f, "=== Round {} ===\n{}\n", i + 1, circuit.repr())
+                .expect("Failed to write progress");
         }
     }
 
@@ -242,8 +228,8 @@ pub fn main_shuffle_shoot_shuffle(
     let n = if leave { n / 2 } else { n };
     let n = if do_gadgetize { n / 2 } else { n };
     circuit
-    .probably_equal(&c, n, 150_000)
-    .expect("The circuits differ somewhere!");
+        .probably_equal(&c, n, 150_000)
+        .expect("The circuits differ somewhere!");
 
     // Write to file
     let circuit_str = circuit.repr();

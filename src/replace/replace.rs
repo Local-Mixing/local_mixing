@@ -1,30 +1,29 @@
 // Replacement code used in the mixing methods
 
-use crate::{
-    circuit::circuit::{CircuitSeq, Permutation}, random::random_data::{
-        contiguous_convex,
-        find_convex_subcircuit_max_gates,
-        find_convex_subcircuit_max_wires,
-        simple_find_convex_subcircuit,
-    }
-};
 use crate::replace::mixing::split_into_random_chunk_ranges;
+use crate::{
+    circuit::circuit::{CircuitSeq, Permutation},
+    random::random_data::{
+        contiguous_convex, find_convex_subcircuit_max_gates, find_convex_subcircuit_max_wires,
+        simple_find_convex_subcircuit,
+    },
+};
+use lmdb::Transaction;
 use rand::Rng;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use std::fs::File;
 use std::io::Write;
-use lmdb::Transaction;
 
 extern crate lmdb_sys;
 
+use dashmap::DashMap;
+use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     cmp::{max, min},
     time::Instant,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
 // use rand::prelude::IndexedRandom;
 
 // Global histogram: (before_gates, after_gates) -> count, accumulated across all rounds
@@ -65,9 +64,9 @@ pub fn write_compression_histogram(path: &str) {
 // Return a random contiguous subcircuit, its starting index (gate), and ending index
 pub fn random_subcircuit(circuit: &CircuitSeq) -> (CircuitSeq, usize, usize) {
     let len = circuit.gates.len();
-    
+
     if circuit.gates.len() == 0 {
-        return (CircuitSeq{gates: Vec::new()}, 0, 0)
+        return (CircuitSeq { gates: Vec::new() }, 0, 0);
     }
 
     let mut rng = rand::rng();
@@ -92,12 +91,12 @@ pub fn random_subcircuit(circuit: &CircuitSeq) -> (CircuitSeq, usize, usize) {
         }
     }
 
-    let start = min(a,b);
-    let end = max(a,b);
+    let start = min(a, b);
+    let end = max(a, b);
 
     let subcircuit = circuit.gates[start..end].to_vec();
 
-    (CircuitSeq{ gates: subcircuit }, start, end)
+    (CircuitSeq { gates: subcircuit }, start, end)
 }
 
 pub fn random_subcircuit_max(circuit: &CircuitSeq, max_len: usize) -> (CircuitSeq, usize, usize) {
@@ -114,7 +113,7 @@ pub fn random_subcircuit_max(circuit: &CircuitSeq, max_len: usize) -> (CircuitSe
     let allowed_len = remaining.min(max_len);
 
     let shift = rng.random_range(0..4); // 0..3
-    let mut sub_len = 1 << shift;        // 1,2,4,8
+    let mut sub_len = 1 << shift; // 1,2,4,8
     if sub_len > allowed_len {
         sub_len = allowed_len;
     }
@@ -162,7 +161,8 @@ pub fn compress_loop(
     let mut mode = 0usize;
     // Ring buffer of the last stable_max+1 gate counts. Stop when total reduction
     // over the last stable_max iterations is less than 100 gates.
-    let mut recent: std::collections::VecDeque<usize> = std::collections::VecDeque::with_capacity(stable_max + 1);
+    let mut recent: std::collections::VecDeque<usize> =
+        std::collections::VecDeque::with_capacity(stable_max + 1);
     recent.push_back(acc.gates.len());
 
     loop {
@@ -207,8 +207,10 @@ pub fn compress_loop(
         if recent.len() == stable_max + 1 {
             let window_reduction = recent.front().unwrap().saturating_sub(after);
             if window_reduction < 50 {
-                println!("  {}/{}: Early stop — only {} gates reduced over last {} iterations ({} gates)",
-                    curr_round, last_round, window_reduction, stable_max, after);
+                println!(
+                    "  {}/{}: Early stop — only {} gates reduced over last {} iterations ({} gates)",
+                    curr_round, last_round, window_reduction, stable_max, after
+                );
                 break;
             }
         }
@@ -230,7 +232,6 @@ pub fn compress_loop(
     acc
 }
 
-
 /// Single pass of expansion: one round of chunked `expand_big_ancillas` with no loop.
 pub fn expand_once<'a>(
     circuit: &CircuitSeq,
@@ -242,12 +243,18 @@ pub fn expand_once<'a>(
     let mut rng = rand::rng();
     let before = circuit.gates.len();
     let max_chunks = 4 * rayon::current_num_threads().max(1);
-    let k = if before <= 1500 { 1 } else { ((before + 1499) / 1500).min(max_chunks) };
+    let k = if before <= 1500 {
+        1
+    } else {
+        ((before + 1499) / 1500).min(max_chunks)
+    };
     let ranges = split_into_random_chunk_ranges(before, k, &mut rng);
     let expanded_chunks: Vec<Vec<[u16; 3]>> = ranges
         .into_par_iter()
         .map(|(start, end)| {
-            let sub = CircuitSeq { gates: circuit.gates[start..end].to_vec() };
+            let sub = CircuitSeq {
+                gates: circuit.gates[start..end].to_vec(),
+            };
             expand_big_ancillas(&sub, 100, n, env, shard_dbs, 0, pair_mode).gates
         })
         .collect();
@@ -259,13 +266,14 @@ pub fn expand_once<'a>(
     CircuitSeq { gates: new_gates }
 }
 
-
 // Expand with ancilla wires or gates
 /// Selects which method to use when a 2-gate subcircuit is sampled in the expand functions.
 /// For subcircuits of 3–5 gates the shard DB is always used regardless of this setting.
 pub enum ExpandPairMode<'a> {
     /// Use the curated shard DBs to find a longer equivalent pair.
-    Curated { curated_shard_dbs: &'a [lmdb::Database] },
+    Curated {
+        curated_shard_dbs: &'a [lmdb::Database],
+    },
     /// Force the shard DB lookup even for 2-gate subcircuits (same path as 3-5 gates).
     Db,
 }
@@ -278,8 +286,8 @@ pub fn expand_lmdb<'a>(
     shard_dbs: &[lmdb::Database],
     pair_mode: &ExpandPairMode<'a>,
 ) -> CircuitSeq {
-    use xxhash_rust::xxh3::xxh3_128;
     use crate::circuit::circuit::polys_repr_blob;
+    use xxhash_rust::xxh3::xxh3_128;
 
     let mut expanded = c.clone();
 
@@ -304,9 +312,9 @@ pub fn expand_lmdb<'a>(
             match pair_mode {
                 ExpandPairMode::Curated { curated_shard_dbs } => {
                     use crate::replace::pairs::expand_curated_lmdb;
-                    if let Some(repl) = expand_curated_lmdb(
-                        &sub.gates, n, env, curated_shard_dbs, shard_dbs,
-                    ) {
+                    if let Some(repl) =
+                        expand_curated_lmdb(&sub.gates, n, env, curated_shard_dbs, shard_dbs)
+                    {
                         if repl.len() > 2 {
                             expanded.gates.splice(start..end, repl);
                         }
@@ -326,7 +334,9 @@ pub fn expand_lmdb<'a>(
             continue;
         }
 
-        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes().to_vec();
+        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
+            .to_le_bytes()
+            .to_vec();
         let fwd_shard = fwd_key[0] as usize;
 
         let t_txn = Instant::now();
@@ -337,7 +347,9 @@ pub fn expand_lmdb<'a>(
         TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t_lookup = Instant::now();
-        let fwd_result = txn.get(shard_dbs[fwd_shard], &fwd_key).map(|v: &[u8]| v.to_vec());
+        let fwd_result = txn
+            .get(shard_dbs[fwd_shard], &fwd_key)
+            .map(|v: &[u8]| v.to_vec());
         LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let (value, final_order, is_reversed) = if let Ok(v) = fwd_result {
@@ -351,11 +363,15 @@ pub fn expand_lmdb<'a>(
                 continue;
             }
 
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes().to_vec();
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
+                .to_le_bytes()
+                .to_vec();
             let rev_shard = rev_key[0] as usize;
 
             let t_lookup2 = Instant::now();
-            let rev_result = txn.get(shard_dbs[rev_shard], &rev_key).map(|v: &[u8]| v.to_vec());
+            let rev_result = txn
+                .get(shard_dbs[rev_shard], &rev_key)
+                .map(|v: &[u8]| v.to_vec());
             LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             match rev_result {
@@ -368,10 +384,14 @@ pub fn expand_lmdb<'a>(
         let mut candidates: Vec<CircuitSeq> = Vec::new();
         let mut pos = 0;
         while pos < value.len() {
-            if pos + 1 > value.len() { break; }
+            if pos + 1 > value.len() {
+                break;
+            }
             let len = value[pos] as usize;
             pos += 1;
-            if pos + len > value.len() { break; }
+            if pos + len > value.len() {
+                break;
+            }
             let candidate = CircuitSeq::from_blob(&value[pos..pos + len]);
             pos += len;
             if candidate.gates.len() > sub.gates.len() {
@@ -385,7 +405,10 @@ pub fn expand_lmdb<'a>(
         }
 
         let max_gates = candidates.iter().map(|c| c.gates.len()).max().unwrap();
-        let mut best: Vec<CircuitSeq> = candidates.into_iter().filter(|c| c.gates.len() == max_gates).collect();
+        let mut best: Vec<CircuitSeq> = candidates
+            .into_iter()
+            .filter(|c| c.gates.len() == max_gates)
+            .collect();
         let idx = rng.random_range(0..best.len());
         let mut repl = best.swap_remove(idx);
 
@@ -401,14 +424,15 @@ pub fn expand_lmdb<'a>(
             order_data.push(i);
         }
 
-        repl.rewire(&Permutation { data: order_data }, std::cmp::max(repl_n, final_order.data.len()));
+        repl.rewire(
+            &Permutation { data: order_data },
+            std::cmp::max(repl_n, final_order.data.len()),
+        );
 
         let repl_n_b = repl.max_wire() + 1;
         let mut used_ext = used.clone();
         if used_ext.len() < repl_n_b {
-            let mut available: Vec<u16> = (0..n as u16)
-                .filter(|w| !used_ext.contains(w))
-                .collect();
+            let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
             rand::seq::SliceRandom::shuffle(available.as_mut_slice(), &mut rng);
             let mut avail = available.into_iter();
             while used_ext.len() < repl_n_b {
@@ -431,10 +455,6 @@ pub fn expand_lmdb<'a>(
     expanded
 }
 
-
-
-
-
 pub fn compress_lmdb(
     c: &CircuitSeq,
     trials: usize,
@@ -443,8 +463,8 @@ pub fn compress_lmdb(
     shard_dbs: &[lmdb::Database],
     mode: usize,
 ) -> CircuitSeq {
-    use xxhash_rust::xxh3::xxh3_128;
     use crate::circuit::circuit::polys_repr_blob;
+    use xxhash_rust::xxh3::xxh3_128;
 
     let mut compressed = c.clone();
 
@@ -487,7 +507,9 @@ pub fn compress_lmdb(
             continue;
         }
 
-        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes().to_vec();
+        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
+            .to_le_bytes()
+            .to_vec();
         let fwd_shard = fwd_key[0] as usize;
 
         let t_txn = Instant::now();
@@ -498,7 +520,9 @@ pub fn compress_lmdb(
         TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t_lookup = Instant::now();
-        let fwd_result = txn.get(shard_dbs[fwd_shard], &fwd_key).map(|v: &[u8]| v.to_vec());
+        let fwd_result = txn
+            .get(shard_dbs[fwd_shard], &fwd_key)
+            .map(|v: &[u8]| v.to_vec());
         LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let (value, final_order, is_reversed) = if let Ok(v) = fwd_result {
@@ -518,11 +542,15 @@ pub fn compress_lmdb(
                 continue;
             }
 
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes().to_vec();
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
+                .to_le_bytes()
+                .to_vec();
             let rev_shard = rev_key[0] as usize;
 
             let t_lookup2 = Instant::now();
-            let rev_result = txn.get(shard_dbs[rev_shard], &rev_key).map(|v: &[u8]| v.to_vec());
+            let rev_result = txn
+                .get(shard_dbs[rev_shard], &rev_key)
+                .map(|v: &[u8]| v.to_vec());
             LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             match rev_result {
@@ -535,10 +563,14 @@ pub fn compress_lmdb(
         let mut candidates: Vec<CircuitSeq> = Vec::new();
         let mut pos = 0;
         while pos < value.len() {
-            if pos + 1 > value.len() { break; }
+            if pos + 1 > value.len() {
+                break;
+            }
             let len = value[pos] as usize;
             pos += 1;
-            if pos + len > value.len() { break; }
+            if pos + len > value.len() {
+                break;
+            }
             let candidate = CircuitSeq::from_blob(&value[pos..pos + len]);
             pos += len;
             if candidate.gates.len() < sub.gates.len() {
@@ -552,8 +584,13 @@ pub fn compress_lmdb(
         }
 
         let min_gates = candidates.iter().map(|c| c.gates.len()).min().unwrap();
-        *COMPRESSION_HISTOGRAM.entry((sub.gates.len() as u8, min_gates as u8)).or_insert(0) += 1;
-        let mut best: Vec<CircuitSeq> = candidates.into_iter().filter(|c| c.gates.len() == min_gates).collect();
+        *COMPRESSION_HISTOGRAM
+            .entry((sub.gates.len() as u8, min_gates as u8))
+            .or_insert(0) += 1;
+        let mut best: Vec<CircuitSeq> = candidates
+            .into_iter()
+            .filter(|c| c.gates.len() == min_gates)
+            .collect();
         let idx = rng.random_range(0..best.len());
         let mut repl = best.swap_remove(idx);
 
@@ -568,14 +605,15 @@ pub fn compress_lmdb(
             let i = order_data.len();
             order_data.push(i);
         }
-        repl.rewire(&Permutation { data: order_data }, std::cmp::max(repl_n, final_order.data.len()));
+        repl.rewire(
+            &Permutation { data: order_data },
+            std::cmp::max(repl_n, final_order.data.len()),
+        );
 
         let repl_n_b = repl.max_wire() + 1;
         let mut used_ext = used.clone();
         if used_ext.len() < repl_n_b {
-            let mut available: Vec<u16> = (0..n as u16)
-                .filter(|w| !used_ext.contains(w))
-                .collect();
+            let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
             rand::seq::SliceRandom::shuffle(available.as_mut_slice(), &mut rng);
             let mut avail = available.into_iter();
             while used_ext.len() < repl_n_b {
@@ -612,8 +650,6 @@ pub fn compress_lmdb(
     compressed
 }
 
-
-
 pub fn compress_big_ancillas(
     c: &CircuitSeq,
     trials: usize,
@@ -640,7 +676,7 @@ pub fn compress_big_ancillas(
         let (mut subcircuit_gates, _) = match mode {
             0 => find_convex_subcircuit_max_wires(30, num_wires, &circuit, &mut rng),
             2 => find_convex_subcircuit_max_gates(21, num_wires, &circuit, &mut rng),
-            _ => simple_find_convex_subcircuit( num_wires, &circuit, &mut rng),
+            _ => simple_find_convex_subcircuit(num_wires, &circuit, &mut rng),
         };
         let elapsed = t0.elapsed().as_nanos() as u64;
         CONVEX_FIND_TIME.fetch_add(elapsed, Ordering::Relaxed);
@@ -658,16 +694,14 @@ pub fn compress_big_ancillas(
         subcircuit_gates.sort();
 
         let t1 = Instant::now();
-        let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
+        let cc = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires);
         CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let (start, end) = match cc {
+            Some(se) => se,
+            None => continue,
+        };
 
         let mut subcircuit = CircuitSeq { gates };
-
-        let expected_slice: Vec<_> = subcircuit_gates.iter().map(|&i| circuit.gates[i]).collect();
-        let actual_slice = &circuit.gates[start..=end];
-        if actual_slice != &expected_slice[..] {
-            continue;
-        }
 
         let mut used_wires = subcircuit.used_wires();
         let n_wires = used_wires.len();
@@ -678,7 +712,7 @@ pub fn compress_big_ancillas(
             while count < new_wires {
                 let random = rng.random_range(0..num_wires);
                 if used_wires.contains(&(random as u16)) {
-                    continue
+                    continue;
                 }
                 used_wires.push(random as u16);
                 count += 1;
@@ -708,7 +742,9 @@ pub fn compress_big_ancillas(
             for i in (end + 1)..circuit.gates.len() {
                 circuit.gates[i - (old_len - repl_len)] = circuit.gates[i];
             }
-            circuit.gates.truncate(circuit.gates.len() - (old_len - repl_len));
+            circuit
+                .gates
+                .truncate(circuit.gates.len() - (old_len - repl_len));
         } else {
             panic!("Replacement grew, which is not allowed");
         }
@@ -747,7 +783,7 @@ pub fn expand_big_ancillas<'a>(
         let (mut subcircuit_gates, _) = match mode {
             0 => find_convex_subcircuit_max_wires(30, num_wires, &circuit, &mut rng),
             2 => find_convex_subcircuit_max_gates(21, num_wires, &circuit, &mut rng),
-            _ => simple_find_convex_subcircuit( num_wires, &circuit, &mut rng),
+            _ => simple_find_convex_subcircuit(num_wires, &circuit, &mut rng),
         };
         let elapsed = t0.elapsed().as_nanos() as u64;
         CONVEX_FIND_TIME.fetch_add(elapsed, Ordering::Relaxed);
@@ -770,16 +806,14 @@ pub fn expand_big_ancillas<'a>(
         subcircuit_gates.sort();
 
         let t1 = Instant::now();
-        let (start, end) = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires).unwrap();
+        let cc = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires);
         CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let (start, end) = match cc {
+            Some(se) => se,
+            None => continue,
+        };
 
         let subcircuit = CircuitSeq { gates };
-
-        let expected_slice: Vec<_> = subcircuit_gates.iter().map(|&i| circuit.gates[i]).collect();
-        let actual_slice = &circuit.gates[start..=end];
-        if actual_slice != &expected_slice[..] {
-            continue;
-        }
 
         // --- 2-gate path: use pair functions directly on circuit wire values ---
         if subcircuit.gates.len() == 2 {
@@ -788,7 +822,11 @@ pub fn expand_big_ancillas<'a>(
                 ExpandPairMode::Curated { curated_shard_dbs } => {
                     use crate::replace::pairs::expand_curated_lmdb;
                     expand_curated_lmdb(
-                        &[circuit.gates[start], circuit.gates[end]], num_wires, env, curated_shard_dbs, shard_dbs,
+                        &[circuit.gates[start], circuit.gates[end]],
+                        num_wires,
+                        env,
+                        curated_shard_dbs,
+                        shard_dbs,
                     )
                 }
                 ExpandPairMode::Db => None, // handled by expand_lmdb below
@@ -807,7 +845,14 @@ pub fn expand_big_ancillas<'a>(
         // --- 3-5 gate path (and 2-gate Db mode): use shard DB via expand_lmdb ---
         // Pass num_wires (full circuit wire count) so extra wires are assigned correctly.
         let t4 = Instant::now();
-        let subcircuit_temp = expand_lmdb(&subcircuit, 10, num_wires, env, shard_dbs, &ExpandPairMode::Db);
+        let subcircuit_temp = expand_lmdb(
+            &subcircuit,
+            10,
+            num_wires,
+            env,
+            shard_dbs,
+            &ExpandPairMode::Db,
+        );
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t6 = Instant::now();
@@ -823,10 +868,9 @@ pub fn expand_big_ancillas<'a>(
     circuit
 }
 
-
 // For timing and benchmarking purposes
 pub fn print_compress_timers() {
-    use crate::replace::transpositions::{SAMF_COMPRESSIONS_MADE, SAMF_COMPRESSIONS_FAILED};
+    use crate::replace::transpositions::{SAMF_COMPRESSIONS_FAILED, SAMF_COMPRESSIONS_MADE};
 
     let canon = CANON_TIME.load(Ordering::Relaxed);
     let rewire = REWIRE_TIME.load(Ordering::Relaxed);
@@ -853,26 +897,71 @@ pub fn print_compress_timers() {
     let threshold_ns = 15.0 * ns; // 15 minutes in nanoseconds
 
     println!("--- Compression Timing Totals (minutes) ---");
-    if canon as f64 >= threshold_ns { println!("Canonicalization time: {:.2} min", canon as f64 / ns); }
-    if rewire as f64 >= threshold_ns { println!("Rewire subcircuit time: {:.2} min", rewire as f64 / ns); }
+    if canon as f64 >= threshold_ns {
+        println!("Canonicalization time: {:.2} min", canon as f64 / ns);
+    }
+    if rewire as f64 >= threshold_ns {
+        println!("Rewire subcircuit time: {:.2} min", rewire as f64 / ns);
+    }
     if convex_find as f64 >= threshold_ns {
-        println!("Convex subcircuit find time: {:.2} min", convex_find as f64 / ns);
-        if convex_max_wires as f64 >= threshold_ns { println!("  max_wires: {:.2} min", convex_max_wires as f64 / ns); }
-        if convex_max_gates as f64 >= threshold_ns { println!("  max_gates: {:.2} min", convex_max_gates as f64 / ns); }
-        if convex_simple as f64 >= threshold_ns   { println!("  simple:    {:.2} min", convex_simple as f64 / ns); }
+        println!(
+            "Convex subcircuit find time: {:.2} min",
+            convex_find as f64 / ns
+        );
+        if convex_max_wires as f64 >= threshold_ns {
+            println!("  max_wires: {:.2} min", convex_max_wires as f64 / ns);
+        }
+        if convex_max_gates as f64 >= threshold_ns {
+            println!("  max_gates: {:.2} min", convex_max_gates as f64 / ns);
+        }
+        if convex_simple as f64 >= threshold_ns {
+            println!("  simple:    {:.2} min", convex_simple as f64 / ns);
+        }
     }
-    if contiguous as f64 >= threshold_ns { println!("Contiguous convex subcircuit time: {:.2} min", contiguous as f64 / ns); }
-    if replace as f64 >= threshold_ns    { println!("Replacement time: {:.2} min", replace as f64 / ns); }
-    if dedup as f64 >= threshold_ns      { println!("Deduplication time: {:.2} min", dedup as f64 / ns); }
+    if contiguous as f64 >= threshold_ns {
+        println!(
+            "Contiguous convex subcircuit time: {:.2} min",
+            contiguous as f64 / ns
+        );
+    }
+    if replace as f64 >= threshold_ns {
+        println!("Replacement time: {:.2} min", replace as f64 / ns);
+    }
+    if dedup as f64 >= threshold_ns {
+        println!("Deduplication time: {:.2} min", dedup as f64 / ns);
+    }
     if canonicalize as f64 >= threshold_ns {
-        println!("Subcircuit canonicalize time: {:.2} min", canonicalize as f64 / ns);
-        if canon_max_wires as f64 >= threshold_ns { println!("  max_wires: {:.2} min", canon_max_wires as f64 / ns); }
-        if canon_max_gates as f64 >= threshold_ns { println!("  max_gates: {:.2} min", canon_max_gates as f64 / ns); }
-        if canon_simple as f64 >= threshold_ns    { println!("  simple:    {:.2} min", canon_simple as f64 / ns); }
+        println!(
+            "Subcircuit canonicalize time: {:.2} min",
+            canonicalize as f64 / ns
+        );
+        if canon_max_wires as f64 >= threshold_ns {
+            println!("  max_wires: {:.2} min", canon_max_wires as f64 / ns);
+        }
+        if canon_max_gates as f64 >= threshold_ns {
+            println!("  max_gates: {:.2} min", canon_max_gates as f64 / ns);
+        }
+        if canon_simple as f64 >= threshold_ns {
+            println!("  simple:    {:.2} min", canon_simple as f64 / ns);
+        }
     }
-    if txn as f64 >= threshold_ns        { println!("LMDB transaction begin time: {:.2} min", txn as f64 / ns); }
-    if lmdb_lookup as f64 >= threshold_ns { println!("LMDB lookup time: {:.2} min", lmdb_lookup as f64 / ns); }
-    if from_blob as f64 >= threshold_ns  { println!("CircuitSeq from_blob time: {:.2} min", from_blob as f64 / ns); }
-    if trial as f64 >= threshold_ns      { println!("Trial loop time: {:.2} min", trial as f64 / ns); }
-    println!("SAMF compressions made: {}  failed: {}", samf_made, samf_failed);
+    if txn as f64 >= threshold_ns {
+        println!("LMDB transaction begin time: {:.2} min", txn as f64 / ns);
+    }
+    if lmdb_lookup as f64 >= threshold_ns {
+        println!("LMDB lookup time: {:.2} min", lmdb_lookup as f64 / ns);
+    }
+    if from_blob as f64 >= threshold_ns {
+        println!(
+            "CircuitSeq from_blob time: {:.2} min",
+            from_blob as f64 / ns
+        );
+    }
+    if trial as f64 >= threshold_ns {
+        println!("Trial loop time: {:.2} min", trial as f64 / ns);
+    }
+    println!(
+        "SAMF compressions made: {}  failed: {}",
+        samf_made, samf_failed
+    );
 }

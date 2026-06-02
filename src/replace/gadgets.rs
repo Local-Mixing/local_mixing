@@ -1,18 +1,28 @@
-use rand::{Rng, prelude::SliceRandom};
-use std::collections::VecDeque;
 use crate::circuit::circuit::CircuitSeq;
 use crate::random::random_data::shoot_random_gate;
+use rand::{Rng, prelude::SliceRandom};
+use std::collections::VecDeque;
 
 /// 6-gate homomorphic gadget for secret-shared g57.
 /// Local wire map: 0=share_a, 3=share_c, 4=pad_c, 5=share_b, 6=pad_b.
 const GADGET: [[u16; 3]; 6] = [
-    [4,5,6],[0,4,6],[0,5,4],[4,5,6],[0,6,3],[0,3,5],
+    [4, 5, 6],
+    [0, 4, 6],
+    [0, 5, 4],
+    [4, 5, 6],
+    [0, 6, 3],
+    [0, 3, 5],
 ];
 
 /// RG1: swap virtual values between two pairs.
 /// Wire map: 0=share_i, 1=pad_i, 2=pad_j, 3=share_j.
 const RG1: [[u16; 3]; 6] = [
-    [1,2,3],[0,3,2],[3,1,0],[2,0,1],[0,3,2],[1,2,3],
+    [1, 2, 3],
+    [0, 3, 2],
+    [3, 1, 0],
+    [2, 0, 1],
+    [0, 3, 2],
+    [1, 2, 3],
 ];
 
 /// RG2: re-pair two pairs (break the pairings) while keeping virtual values intact.
@@ -25,7 +35,12 @@ const RG1: [[u16; 3]; 6] = [
 /// so w0'+w2' = w2+w3 = s_j  and  w1'+w3' = w0+w1 = s_i, i.e. virtual_i moves to
 /// wires (pad_i, share_j) and virtual_j moves to wires (share_i, pad_j).
 const RG2: [[u16; 3]; 6] = [
-    [0,3,2],[1,0,2],[2,0,3],[2,3,0],[1,3,2],[3,0,2],
+    [0, 3, 2],
+    [1, 0, 2],
+    [2, 0, 3],
+    [2, 3, 0],
+    [1, 3, 2],
+    [3, 0, 2],
 ];
 
 /// 11-gate W_i sequence for the r57 gate (a ^= pos | !neg) used in this codebase.
@@ -34,8 +49,17 @@ const RG2: [[u16; 3]; 6] = [
 /// All pins distinct; reversed sequence gives W_i^{-1} (each r57 gate is self-inverse).
 /// Found by meet-in-the-middle search over r57 gates.
 const W_I_GATES: [[u16; 3]; 11] = [
-    [0,3,2],[3,2,1],[1,3,2],[2,0,1],[2,1,0],[0,1,2],
-    [0,2,1],[1,0,3],[3,0,1],[3,1,0],[1,3,0],
+    [0, 3, 2],
+    [3, 2, 1],
+    [1, 3, 2],
+    [2, 0, 1],
+    [2, 1, 0],
+    [0, 1, 2],
+    [0, 2, 1],
+    [1, 0, 3],
+    [3, 0, 1],
+    [3, 1, 0],
+    [1, 3, 0],
 ];
 
 /// Secret-sharing state: pairs[v] = (share_wire, pad_wire) for virtual value v.
@@ -68,7 +92,10 @@ fn reloc(
         Slot::Aux(v) => aloc[v] = to,
         Slot::Pair(u) => {
             let (sw, pw) = pairs[u];
-            pairs[u] = (if sw == frm { to } else { sw }, if pw == frm { to } else { pw });
+            pairs[u] = (
+                if sw == frm { to } else { sw },
+                if pw == frm { to } else { pw },
+            );
         }
         Slot::Output(_) => {}
     }
@@ -119,11 +146,15 @@ fn rand_z_gates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<[u16; 3]> {
         pos += 1;
         let ctrl1 = loop {
             let w = rng.random_range(0..total) as u16;
-            if w != active { break w; }
+            if w != active {
+                break w;
+            }
         };
         let ctrl2 = loop {
             let w = rng.random_range(0..total) as u16;
-            if w != active && w != ctrl1 { break w; }
+            if w != active && w != ctrl1 {
+                break w;
+            }
         };
         gates.push([active, ctrl1, ctrl2]);
     }
@@ -229,7 +260,13 @@ pub fn gadgetize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng
     let mut dloc: Vec<usize> = (0..n).collect();
     let mut aloc: Vec<usize> = (n..2 * n).collect();
     let mut on: Vec<Slot> = (0..total)
-        .map(|w| if w < n { Slot::Data(w) } else { Slot::Aux(w - n) })
+        .map(|w| {
+            if w < n {
+                Slot::Data(w)
+            } else {
+                Slot::Aux(w - n)
+            }
+        })
         .collect();
     let mut pairs = vec![(0usize, 0usize); n];
 
@@ -237,8 +274,18 @@ pub fn gadgetize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng
         let d = dloc[v];
         let a = aloc[v];
         // Targets s (share), t (pad): any two distinct wires other than d, a.
-        let s = loop { let w = rng.random_range(0..total); if w != d && w != a { break w; } };
-        let t = loop { let w = rng.random_range(0..total); if w != d && w != a && w != s { break w; } };
+        let s = loop {
+            let w = rng.random_range(0..total);
+            if w != d && w != a {
+                break w;
+            }
+        };
+        let t = loop {
+            let w = rng.random_range(0..total);
+            if w != d && w != a && w != s {
+                break w;
+            }
+        };
         emit_w_i(d, a, s, t, &mut out);
         let moved_s = on[s];
         let moved_t = on[t];
@@ -275,11 +322,15 @@ pub fn gadgetize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng
                     let p = state.pairs[i].1;
                     let r1 = loop {
                         let w = rng.random_range(0..total);
-                        if w != s && w != p { break w; }
+                        if w != s && w != p {
+                            break w;
+                        }
                     };
                     let r2 = loop {
                         let w = rng.random_range(0..total);
-                        if w != s && w != p && w != r1 { break w; }
+                        if w != s && w != p && w != r1 {
+                            break w;
+                        }
                     };
                     emit_rg3(&state, i, r1, r2, &mut out);
                 }
@@ -292,7 +343,9 @@ pub fn gadgetize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng
     // (share ^ pad) onto wire v, relocating any displaced value so nothing is lost.
     // Processing v in increasing order guarantees pair v's wires are never an already
     // decoded wire (< v), so finished outputs are never clobbered.
-    for w in 0..total { on[w] = Slot::Output(usize::MAX); }
+    for w in 0..total {
+        on[w] = Slot::Output(usize::MAX);
+    }
     for v in 0..n {
         on[state.pairs[v].0] = Slot::Pair(v);
         on[state.pairs[v].1] = Slot::Pair(v);
@@ -329,4 +382,3 @@ pub fn gadgetize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng
 
     CircuitSeq { gates: out }
 }
-

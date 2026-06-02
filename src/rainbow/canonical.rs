@@ -2,31 +2,29 @@
 // A lot of this code is legacy and unused
 // See /local_mixing/src/random/random_data.rs
 
-use crate::circuit::{Gate, Permutation, CircuitSeq};
-use smallvec::SmallVec;
+use crate::circuit::{CircuitSeq, Gate, Permutation};
 use itertools::Itertools;
 use lru::LruCache;
 use once_cell::sync::Lazy;
+use smallvec::SmallVec;
 use std::{
     collections::{HashMap, HashSet},
     num::NonZeroUsize,
     sync::Mutex,
     sync::atomic::AtomicI64,
-    sync::atomic::Ordering
+    sync::atomic::Ordering,
 };
 
 // Wire relabeling canonicalization
 #[derive(Clone, Debug)]
-pub struct Canonicalization
-{
+pub struct Canonicalization {
     pub perm: Permutation,
     pub shuffle: Permutation,
 }
 
 // Structs to assist computing canonicalizations
 #[derive(Clone, Debug)]
-pub struct CandSet
-{
+pub struct CandSet {
     pub candidate: Vec<Vec<bool>>,
 }
 
@@ -45,16 +43,15 @@ pub struct PermStore {
 // no need to store unpopular perms
 const CACHE_SIZE: usize = 32768;
 
-//Use Lazy to ensure that BIT_SHUF is only initialized once. 
+//Use Lazy to ensure that BIT_SHUF is only initialized once.
 //Use Mutex to allow us to initialize BIT_SHUF dynamically with chosen n
 //Use Lazy and Mutex for CACHE to ensure threads aren't updating cache at the same time
 //Use least recently updated cache for efficiency as we don't need unpopular perms
 //Cache will hold permutations and their associated canonicalizations, so if we see a permutation again, we do not need to recompute the canon perm
 
 static BIT_SHUF: Lazy<Mutex<Vec<Vec<usize>>>> = Lazy::new(|| Mutex::new(Vec::new()));
-static CACHE: Lazy<Mutex<LruCache<String, Canonicalization>>> = Lazy::new(|| {
-    Mutex::new(LruCache::new(NonZeroUsize::new(CACHE_SIZE).unwrap()))
-});
+static CACHE: Lazy<Mutex<LruCache<String, Canonicalization>>> =
+    Lazy::new(|| Mutex::new(LruCache::new(NonZeroUsize::new(CACHE_SIZE).unwrap())));
 
 // Initialize base states
 pub fn init(n: usize) {
@@ -177,14 +174,14 @@ impl Permutation {
     pub fn canonical(&self) -> Canonicalization {
         self.canonical_with_retry(false)
     }
-    
+
     pub fn brute_canonical(&self) -> Canonicalization {
         let bit_shuf_global = BIT_SHUF.lock().unwrap();
         // Panic if BIT_SHUF hasn't been initialized
         if bit_shuf_global.is_empty() {
             panic!("Call init() first!");
         }
-        
+
         // num wires
         let n = self.data.len();
 
@@ -219,7 +216,7 @@ impl Permutation {
                 perm_shuf[index_shuf[i]] = val;
             }
 
-            // lexicographical sort in weight-order 
+            // lexicographical sort in weight-order
             // Only consider b/2 since the "light" and "heavy" are just complements of each other
             // See index_set
             for weight in 0..=num_b / 2 {
@@ -246,7 +243,9 @@ impl Permutation {
         }
 
         Canonicalization {
-            perm: Permutation { data: min_perm.into_vec() },
+            perm: Permutation {
+                data: min_perm.into_vec(),
+            },
             shuffle: best_shuffle,
         }
     }
@@ -264,7 +263,7 @@ impl Permutation {
         // Pre-allocate viable_sets buffer to reuse
         let mut viable_sets: Vec<CandSet> = Vec::with_capacity(4);
 
-        for weight in 0..=num_bits/2 {
+        for weight in 0..=num_bits / 2 {
             let index_words = index_set(weight, num_bits); // Vec<usize>
 
             'word_loop: for &w in &index_words {
@@ -333,7 +332,7 @@ impl Permutation {
                         return Canonicalization {
                             perm: Permutation { data: Vec::new() },
                             shuffle: Permutation { data: Vec::new() },
-                        }
+                        };
                     }
                 }
 
@@ -380,7 +379,7 @@ impl CandSet {
     pub fn new(n: usize) -> CandSet {
         //build n x n candidate set, initialize with true
         let c = vec![vec![true; n]; n];
-        CandSet{ candidate: c }
+        CandSet { candidate: c }
     }
 
     /// Compute the possible preimages of `w`, given this candidate set
@@ -420,7 +419,7 @@ impl CandSet {
         p
     }
 
-    pub fn enforce(&mut self, x:usize, y:usize) {
+    pub fn enforce(&mut self, x: usize, y: usize) {
         let n = self.candidate.len();
 
         for (k, row) in self.candidate.iter_mut().enumerate() {
@@ -450,10 +449,10 @@ impl CandSet {
 
     // Is it possible that x maps to y, given the candset?
     // Similar to enforce.
-    pub fn consistent(&self, x:usize, y:usize) -> bool {
+    pub fn consistent(&self, x: usize, y: usize) -> bool {
         let n = self.candidate.len();
         // xz, xo := bit_locations(x, n)
-	    // yz, yo := bit_locations(y, n)
+        // yz, yo := bit_locations(y, n)
 
         for (k, row) in self.candidate.iter().enumerate() {
             // for each index where x has a zero...
@@ -461,30 +460,30 @@ impl CandSet {
                 // does y also have a zero somewhere?
                 let mut mat = false;
                 for b in 0..n {
-                    if y&(1<<b) == 0 && row[b] {
+                    if y & (1 << b) == 0 && row[b] {
                         mat = true;
                         break;
                     }
                 }
 
                 if !mat {
-                    return false
+                    return false;
                 }
             }
 
             //where x has a one
-            if x&(1<<k) != 0 {
+            if x & (1 << k) != 0 {
                 //does y?
                 let mut mat = false;
                 for b in 0..n {
-                    if y&(1<<b) != 0 && row[b] {
+                    if y & (1 << b) != 0 && row[b] {
                         mat = true;
                         break;
                     }
                 }
 
                 if !mat {
-                    return false
+                    return false;
                 }
             }
         }
@@ -504,7 +503,7 @@ impl CandSet {
 
     // Find the minimum consistent mapping for x
     // returns the minimum value and a new candidate set
-    pub fn min_consistent(&self, x:usize) -> (isize, CandSet) {
+    pub fn min_consistent(&self, x: usize) -> (isize, CandSet) {
         let n = self.candidate.len();
         let mut c2 = self.clone();
 
@@ -514,7 +513,12 @@ impl CandSet {
             let i_from = c2.bits_pre(i);
 
             if i_from.is_empty() {
-                return (-1, CandSet{ candidate: Vec::new() }) //no valid mapping
+                return (
+                    -1,
+                    CandSet {
+                        candidate: Vec::new(),
+                    },
+                ); //no valid mapping
             }
 
             //try to make this bit zero. else, one
@@ -540,7 +544,12 @@ impl CandSet {
 
                 // min_one should be valid
                 if min_one > n as isize {
-                    return (-1, CandSet { candidate: Vec::new() });
+                    return (
+                        -1,
+                        CandSet {
+                            candidate: Vec::new(),
+                        },
+                    );
                 }
 
                 min_one
@@ -552,7 +561,7 @@ impl CandSet {
         }
 
         let mut c3 = self.clone();
-        c3.enforce(x,out);
+        c3.enforce(x, out);
         (out as isize, c3)
     }
 
@@ -560,29 +569,29 @@ impl CandSet {
         let mut seen: HashSet<usize> = HashSet::new();
         for row in &self.candidate {
             let mut count_nonneg = 0;
-            for (i,&val) in row.iter().enumerate() {
+            for (i, &val) in row.iter().enumerate() {
                 if val {
                     count_nonneg += 1;
                     //we've already seen this column, so fail
                     if !seen.insert(i) {
-                        return false
+                        return false;
                     }
                 }
             }
 
             //must have exactly one "true" per row
             if count_nonneg != 1 {
-                return false
+                return false;
             }
         }
         true
-    } 
+    }
 
     pub fn unconstrained(&self) -> bool {
         let all_true: Vec<bool> = vec![true; self.candidate.len()];
         for r in &self.candidate {
             if r != &all_true {
-                return false
+                return false;
             }
         }
         true
@@ -592,25 +601,25 @@ impl CandSet {
     pub fn output(&self) -> Option<Vec<usize>> {
         if !self.complete() {
             //can't output incomplete perm
-            return None
+            return None;
         }
 
         let mut output = vec![0; self.candidate.len()];
-        for (i,row) in self.candidate.iter().enumerate() {
-            for (j,&x) in row.iter().enumerate() {
+        for (i, row) in self.candidate.iter().enumerate() {
+            for (j, &x) in row.iter().enumerate() {
                 if x {
                     output[i] = j;
                     break;
                 }
             }
-        } 
+        }
         Some(output)
     }
 
     pub fn intersect(&mut self, c2: &CandSet) {
-        for (i,row) in self.candidate.iter_mut().enumerate() {
+        for (i, row) in self.candidate.iter_mut().enumerate() {
             let s = &c2.candidate[i];
-            for (j,val) in row.iter_mut().enumerate() {
+            for (j, val) in row.iter_mut().enumerate() {
                 *val &= s[j];
             }
         }
@@ -618,12 +627,12 @@ impl CandSet {
 
     pub fn to_string(&self) -> String {
         let mut s = String::new();
-        for (i,row) in self.candidate.iter().enumerate() {
-            s.push_str(&format!("{}", i)); 
+        for (i, row) in self.candidate.iter().enumerate() {
+            s.push_str(&format!("{}", i));
             for &x in row {
                 if x {
                     s += "#";
-                } else { 
+                } else {
                     s += ".";
                 }
             }
@@ -636,18 +645,15 @@ impl CandSet {
         for (dest_row, src_row) in self.candidate.iter_mut().zip(&other.candidate) {
             dest_row.copy_from_slice(src_row);
         }
-    } 
+    }
 }
 
 impl PermStore {
-
-
     pub fn replace(&mut self, repr: &Vec<u8>) {
         self.count += 1;
         self.circuits.clear();
-        self.circuits.insert(repr.to_vec(),true);
+        self.circuits.insert(repr.to_vec(), true);
     }
-
 }
 
 // Choose the smallest lexigraphical ordering

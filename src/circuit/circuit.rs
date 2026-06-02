@@ -1,13 +1,12 @@
 // Basic implementation for circuit, gate, and permutations
 use primitive_types::U256 as u256;
 use primitive_types::U512 as u512;
-use rand::{seq::SliceRandom, RngCore,};
+use rand::{RngCore, seq::SliceRandom};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, HashMap};
-use std::time::Instant;
-use std::sync::atomic::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicU64;
-
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use std::collections::BTreeMap;
 
@@ -15,15 +14,15 @@ use std::collections::BTreeMap;
 // (flips when pos_ctrl=1 OR neg_ctrl=0)
 // We are only concerned with gate g57
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Gate{
-    pub pins: [usize;3], //one active wire (0) and two control wires (1,2)
+pub struct Gate {
+    pub pins: [usize; 3], //one active wire (0) and two control wires (1,2)
 }
 
 // Circuits stored as a sequence of gates [u16;3]
 // Gate type is legacy
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, Hash, PartialEq)]
 pub struct CircuitSeq {
-    pub gates: Vec<[u16;3]>,
+    pub gates: Vec<[u16; 3]>,
 }
 
 // Polynomial representation of circuit
@@ -39,26 +38,20 @@ pub struct Permutation {
 
 // Functions on Gate struct and [u8;3]
 impl Gate {
-
     // Gates collide iff either active pin shares a wire with any other pin
-    pub fn collides_index(gate: &[u16;3], other: &[u16;3]) -> bool {
-        gate[0] == other[1] 
-            || gate[0] == other[2]
-            || gate[1] == other[0] 
-            || gate[2] == other[0]
+    pub fn collides_index(gate: &[u16; 3], other: &[u16; 3]) -> bool {
+        gate[0] == other[1] || gate[0] == other[2] || gate[1] == other[0] || gate[2] == other[0]
     }
 
     //b is "larger"
-    pub fn ordered_index(gate: &[u16;3], other: &[u16;3]) -> bool {
+    pub fn ordered_index(gate: &[u16; 3], other: &[u16; 3]) -> bool {
         if gate[0] > other[0] {
-            return false
-        }
-        else if gate[0] == other[0]{
+            return false;
+        } else if gate[0] == other[0] {
             if gate[1] > other[1] {
-                return false
-            }
-            else if gate[1] == other[1] {
-                return gate[2] < other[2]
+                return false;
+            } else if gate[1] == other[1] {
+                return gate[2] < other[2];
             }
         }
         true
@@ -66,23 +59,22 @@ impl Gate {
 
     // Evaluate a bit string after a single gate under gate r57
     #[inline(always)]
-    pub fn evaluate_index(state: usize, gate: [u16;3]) -> usize {
+    pub fn evaluate_index(state: usize, gate: [u16; 3]) -> usize {
         let c1 = (state >> gate[1]) & 1;
         let c2 = (state >> gate[2]) & 1;
         state ^ (c1 | ((!c2) & 1)) << gate[0]
     }
 
-
     // Evaluate up to 256 bits
     #[inline(always)]
-    pub fn evaluate_index_256(state: u256, gate: [u16;3]) -> u256 {
+    pub fn evaluate_index_256(state: u256, gate: [u16; 3]) -> u256 {
         let one = u256::one();
         let c1 = (state >> gate[1]) & one;
         let c2 = (state >> gate[2]) & one;
         state ^ ((c1 | (one ^ c2)) << gate[0])
     }
 
-    pub fn evaluate_index_512(state: u512, gate: [u16;3]) -> u512 {
+    pub fn evaluate_index_512(state: u512, gate: [u16; 3]) -> u512 {
         let one = u512::one();
         let c1 = (state >> gate[1]) & one;
         let c2 = (state >> gate[2]) & one;
@@ -91,7 +83,7 @@ impl Gate {
 
     // Evaluate a list of gates
     #[inline(always)]
-    pub fn evaluate_index_list(state: usize, gates: &Vec<[u16;3]>) -> usize {
+    pub fn evaluate_index_list(state: usize, gates: &Vec<[u16; 3]>) -> usize {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index(current_wires, *g);
@@ -99,9 +91,8 @@ impl Gate {
         current_wires
     }
 
-
     #[inline(always)]
-    pub fn evaluate_index_list_256(state: u256, gates: &Vec<[u16;3]>) -> u256 {
+    pub fn evaluate_index_list_256(state: u256, gates: &Vec<[u16; 3]>) -> u256 {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_256(current_wires, *g);
@@ -110,7 +101,7 @@ impl Gate {
     }
 
     #[inline(always)]
-    pub fn evaluate_index_list_512(state: u512, gates: &Vec<[u16;3]>) -> u512 {
+    pub fn evaluate_index_list_512(state: u512, gates: &Vec<[u16; 3]>) -> u512 {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_512(current_wires, *g);
@@ -121,9 +112,7 @@ impl Gate {
 
 impl Permutation {
     pub fn new(data: Vec<usize>) -> Permutation {
-        Permutation {
-            data,
-        }
+        Permutation { data }
     }
     pub fn is_perm(&self) -> bool {
         let mut temp_perm = self.clone();
@@ -131,15 +120,13 @@ impl Permutation {
         temp_perm == Permutation::id_perm(self.data.len())
     }
 
-    pub fn id_perm(n:usize) -> Permutation {
+    pub fn id_perm(n: usize) -> Permutation {
         let temp_data = (0..n).collect();
-        Permutation { 
-            data: temp_data, 
-        }
+        Permutation { data: temp_data }
     }
 
     // n is the length of the permutation. For a random permutation on n bits, do 1 << n
-    pub fn rand_perm(n:usize) -> Permutation {
+    pub fn rand_perm(n: usize) -> Permutation {
         let mut p = Permutation::id_perm(n);
         let mut rng = rand::rng();
         p.data.shuffle(&mut rng);
@@ -148,16 +135,17 @@ impl Permutation {
 
     pub fn invert(&self) -> Permutation {
         let mut inv = vec![0; self.data.len()];
-        self.data.iter().enumerate().for_each(|(i, &val)| inv[val] = i);
-        Permutation { 
-            data: inv, 
-        }
+        self.data
+            .iter()
+            .enumerate()
+            .for_each(|(i, &val)| inv[val] = i);
+        Permutation { data: inv }
     }
-
 
     // string representation is just the elements of the permutation separated by a ,
     pub fn repr(&self) -> String {
-        self.data.iter()
+        self.data
+            .iter()
             .map(|&x| x.to_string())
             .collect::<Vec<_>>()
             .join(",")
@@ -179,8 +167,7 @@ impl Permutation {
         ((n - 1) as usize).ilog2() as usize + 1
     }
 
-
-    // On permutation of len 1 << n with n bits, take a bit shuffle on n bits and apply 
+    // On permutation of len 1 << n with n bits, take a bit shuffle on n bits and apply
     pub fn bit_shuffle(&self, shuf: &Vec<usize>) -> Permutation {
         let n = self.data.len();
         let mut q_raw = vec![0; n];
@@ -203,14 +190,10 @@ impl Permutation {
 }
 
 impl CircuitSeq {
-
     // Evaluate the entire circuit with a starting input
     pub fn evaluate(&self, input: usize) -> usize {
         Gate::evaluate_index_list(input, &self.gates)
     }
-
-
-
 
     // Store as sequence of u8 for dbs
     pub fn repr_blob(&self) -> Vec<u8> {
@@ -222,7 +205,6 @@ impl CircuitSeq {
         }
         blob
     }
-
 
     /// Reconstruct CircuitSeq from a BLOB
     pub fn from_blob(blob: &[u8]) -> Self {
@@ -241,11 +223,7 @@ impl CircuitSeq {
         }
 
         if perm.data.len() != n {
-            panic!(
-                "wrong size perm! got {}, have {} wires",
-                perm.data.len(),
-                n
-            );
+            panic!("wrong size perm! got {}, have {} wires", perm.data.len(), n);
         }
 
         if !perm.is_perm() {
@@ -260,7 +238,6 @@ impl CircuitSeq {
             ];
         }
     }
-
 
     // Representing circuit as a string
     pub fn repr(&self) -> String {
@@ -327,9 +304,9 @@ impl CircuitSeq {
     pub fn from_string(s: &str) -> Self {
         fn char_to_wire(c: char) -> u8 {
             match c {
-                '0'..='9' => c as u8 - b'0',          // 0-9
-                'a'..='z' => c as u8 - b'a' + 10,     // 10-35
-                'A'..='Z' => c as u8 - b'A' + 36,     // 36-61
+                '0'..='9' => c as u8 - b'0',      // 0-9
+                'a'..='z' => c as u8 - b'a' + 10, // 10-35
+                'A'..='Z' => c as u8 - b'A' + 36, // 36-61
                 '!' => 62,
                 '@' => 63,
                 '#' => 64,
@@ -395,9 +372,10 @@ impl CircuitSeq {
         let mut result = String::new();
 
         // Local character map (0-9, a-z, A-Z)
-        let wire_map_chars: Vec<char> = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()-_=+[]{}<>?"
-            .chars()
-            .collect();
+        let wire_map_chars: Vec<char> =
+            "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()-_=+[]{}<>?"
+                .chars()
+                .collect();
 
         // --- Pretty circuit diagram ---
         for wire in 0..num_wires {
@@ -423,12 +401,7 @@ impl CircuitSeq {
             .iter()
             .map(|g| {
                 g.iter()
-                    .map(|&x| {
-                        wire_map_chars
-                            .get(x as usize)
-                            .unwrap_or(&'?')
-                            .to_string()
-                    })
+                    .map(|&x| wire_map_chars.get(x as usize).unwrap_or(&'?').to_string())
                     .collect::<String>()
                     + ";"
             })
@@ -460,12 +433,10 @@ impl CircuitSeq {
         wires
     }
 
-
     // "Bottom" function for gates
     pub fn max_wire(&self) -> usize {
         self.gates.iter().flatten().copied().max().unwrap_or(0) as usize
     }
-
 
     // Undo rewiring. Note: Recall that the number of wires in CircuitSeq is not stored
     pub fn unrewire_subcircuit(subcircuit: &CircuitSeq, used_wires: &[u16]) -> CircuitSeq {
@@ -480,17 +451,17 @@ impl CircuitSeq {
         let new_gates: Vec<[u16; 3]> = subcircuit
             .gates
             .iter()
-            .map(|&[t, c1, c2]| [
-                *wire_map.get(&t).unwrap(),
-                *wire_map.get(&c1).unwrap(),
-                *wire_map.get(&c2).unwrap(),
-            ])
+            .map(|&[t, c1, c2]| {
+                [
+                    *wire_map.get(&t).unwrap(),
+                    *wire_map.get(&c1).unwrap(),
+                    *wire_map.get(&c2).unwrap(),
+                ]
+            })
             .collect();
 
         CircuitSeq { gates: new_gates }
     }
-
-
 
     pub fn evaluate_evolution_256(&self, input: u256) -> Vec<u256> {
         let mut state = input;
@@ -532,7 +503,7 @@ impl CircuitSeq {
         &self,
         other_circuit: &Self,
         num_wires: usize,
-        num_inputs: usize
+        num_inputs: usize,
     ) -> Result<(), String> {
         use rayon::prelude::*;
 
@@ -547,7 +518,8 @@ impl CircuitSeq {
                 rand::rng().fill_bytes(&mut bytes);
                 let random_input = u512::from_little_endian(&bytes) & mask;
                 let self_output = Gate::evaluate_index_list_512(random_input, &self.gates);
-                let other_output = Gate::evaluate_index_list_512(random_input, &other_circuit.gates);
+                let other_output =
+                    Gate::evaluate_index_list_512(random_input, &other_circuit.gates);
                 if (self_output & mask) != (other_output & mask) {
                     Err("Circuits are not equal".to_string())
                 } else {
@@ -578,16 +550,10 @@ impl CircuitSeq {
         })
     }
 
-
-
-
-
     pub fn to_polynomial(&self, n: usize, start: usize, end: usize) -> Vec<Polynomial> {
         let gates = &self.gates[start..end];
         // Wire i starts as degree 1 monomial
-        let mut polys: Vec<Polynomial> = (0..n)
-        .map(|i| HashSet::from([1u64 << i]))
-        .collect();
+        let mut polys: Vec<Polynomial> = (0..n).map(|i| HashSet::from([1u64 << i])).collect();
 
         for &[a, b, c] in gates {
             // a' = a + bc + b + 1 = a + b(c+1) = a + b*NOT(c) + 1
@@ -599,7 +565,7 @@ impl CircuitSeq {
             }
             polys[a as usize] = new_a;
         }
-    
+
         // XOR each wire with its initial value x_i so unchanged wires become 0
         // for i in 0..n {
         //     let xi = HashSet::from([1u64 << i]);
@@ -609,28 +575,37 @@ impl CircuitSeq {
         polys
     }
 
-
-
     // Returns (canonical_polys, canonical_circuit, reversed)
     // where reversed=true means the reversed circuit produced the canonical form.
-    pub fn canonicalize_polys(&self, _n: usize, allow_rule_l: bool) -> Option<(Vec<Polynomial>, CircuitSeq, bool, Permutation, Vec<u16>)> {
+    pub fn canonicalize_polys(
+        &self,
+        _n: usize,
+        allow_rule_l: bool,
+    ) -> Option<(Vec<Polynomial>, CircuitSeq, bool, Permutation, Vec<u16>)> {
         fn poly_vec_key(polys: &Vec<Polynomial>) -> Vec<Vec<u64>> {
-            polys.iter().map(|p| {
-                let mut v: Vec<u64> = p.iter().copied().collect();
-                v.sort();
-                v
-            }).collect()
+            polys
+                .iter()
+                .map(|p| {
+                    let mut v: Vec<u64> = p.iter().copied().collect();
+                    v.sort();
+                    v
+                })
+                .collect()
         }
         // Remap to minimal wires: e.g. [3,7,11] -> [0,1,2].
         // `used` is returned so callers can unrewire canonical circuits back to original wires.
         let used = self.used_wires();
-        let wire_map: HashMap<u16, u16> = used.iter().enumerate()
+        let wire_map: HashMap<u16, u16> = used
+            .iter()
+            .enumerate()
             .map(|(i, &w)| (w, i as u16))
             .collect();
         let remapped = CircuitSeq {
-            gates: self.gates.iter().map(|&[t, c1, c2]| [
-                wire_map[&t], wire_map[&c1], wire_map[&c2],
-            ]).collect(),
+            gates: self
+                .gates
+                .iter()
+                .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+                .collect(),
         };
         let mut c1 = remapped.clone();
         c1.canonicalize();
@@ -664,24 +639,32 @@ impl CircuitSeq {
     /// Compute canonical polynomials for one direction only (forward or reversed).
     /// Returns (canonical_polys, final_order, used_wires).
     /// Used by compress_lmdb to try forward first, then reverse on miss.
-    pub fn canonicalize_polys_single(&self, reversed: bool) -> (Vec<Polynomial>, Permutation, Vec<u16>) {
+    pub fn canonicalize_polys_single(
+        &self,
+        reversed: bool,
+    ) -> (Vec<Polynomial>, Permutation, Vec<u16>) {
         let used = self.used_wires();
-        let wire_map: HashMap<u16, u16> = used.iter().enumerate()
+        let wire_map: HashMap<u16, u16> = used
+            .iter()
+            .enumerate()
             .map(|(i, &w)| (w, i as u16))
             .collect();
         let mut c = CircuitSeq {
-            gates: self.gates.iter().map(|&[t, c1, c2]| [
-                wire_map[&t], wire_map[&c1], wire_map[&c2],
-            ]).collect(),
+            gates: self
+                .gates
+                .iter()
+                .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+                .collect(),
         };
-        if reversed { c.gates.reverse(); }
+        if reversed {
+            c.gates.reverse();
+        }
         c.canonicalize();
         let n = c.max_wire() as usize + 1;
         let polys = c.to_polynomial(n, 0, c.gates.len());
         let canon = canonicalize_polys_4(polys, true).unwrap();
         (canon.0, canon.1, used)
     }
-
 }
 
 fn poly_xor(mut poly_1: Polynomial, poly_2: Polynomial) -> Polynomial {
@@ -705,7 +688,7 @@ fn poly_and(poly_1: &Polynomial, poly_2: &Polynomial) -> Polynomial {
     }
     result
 }
- 
+
 fn poly_not(p: Polynomial) -> Polynomial {
     // NOT f = 1 + f; constant 1 is the empty monomial
     let one = HashSet::from([0u64]);
@@ -713,11 +696,6 @@ fn poly_not(p: Polynomial) -> Polynomial {
 }
 
 // Display polynomials
- 
- 
- 
- 
-
 
 pub fn polys_repr_blob(polys: &Vec<Polynomial>) -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -732,16 +710,19 @@ pub fn polys_repr_blob(polys: &Vec<Polynomial>) -> Vec<u8> {
     bytes
 }
 
-
 // Possible gates on n wires
 pub fn base_gates(n: usize) -> Vec<[u16; 3]> {
     let n = n as u16;
-    let mut gates: Vec<[u16;3]> = Vec::new();
+    let mut gates: Vec<[u16; 3]> = Vec::new();
     for a in 0..n {
         for b in 0..n {
-            if b == a { continue; }
+            if b == a {
+                continue;
+            }
             for c in 0..n {
-                if c == a || c == b { continue; }
+                if c == a || c == b {
+                    continue;
+                }
                 gates.push([a, b, c]);
             }
         }
@@ -766,7 +747,11 @@ fn degree_counts(poly: &Polynomial, max_possible_degree: usize) -> Vec<usize> {
 /// Used in tie-breaking.
 /// For a given polynomial, return a degree-bucketed count (high to low) of
 /// how many monomials of each degree contain variable `wire_idx`.
-fn wire_counts_in_poly(poly: &Polynomial, max_possible_degree: usize, wire_idx: usize) -> Vec<usize> {
+fn wire_counts_in_poly(
+    poly: &Polynomial,
+    max_possible_degree: usize,
+    wire_idx: usize,
+) -> Vec<usize> {
     let bit = 1u64 << wire_idx;
     let mut counts = vec![0usize; max_possible_degree + 1];
     for m in poly {
@@ -829,7 +814,6 @@ fn split_by_scores(mut scored: Vec<(usize, Vec<usize>)>) -> Vec<Vec<usize>> {
     result
 }
 
-
 /// Pack a monomial's sort key into a single u64 for fast comparison.
 /// Format: [4 bits degree | 4 bits rank_var1 | 4 bits rank_var2 | ...]
 /// Degree is stored inverted (15 - degree) so higher degree -> higher u64.
@@ -861,7 +845,7 @@ static TIME_RULE_2_1: AtomicU64 = AtomicU64::new(0);
 static TIME_RULE_2_2: AtomicU64 = AtomicU64::new(0);
 static TIME_RULE_2_4: AtomicU64 = AtomicU64::new(0);
 static TIME_RULE_2_5: AtomicU64 = AtomicU64::new(0);
-static TIME_RULE_L:   AtomicU64 = AtomicU64::new(0);
+static TIME_RULE_L: AtomicU64 = AtomicU64::new(0);
 
 /// Holds the current partial ordering of polynomial/variable indices as a list of groups.
 /// Each group is a Vec<usize> of indices that are currently tied with each other.
@@ -935,8 +919,7 @@ impl RankingState {
                         let score = scoring_group.iter().fold(
                             vec![0usize; max_degree + 1],
                             |mut acc, &var| {
-                                let counts =
-                                    wire_counts_in_poly(&polynomials[p], max_degree, var);
+                                let counts = wire_counts_in_poly(&polynomials[p], max_degree, var);
                                 for (a, c) in acc.iter_mut().zip(counts.iter()) {
                                     *a += c;
                                 }
@@ -981,8 +964,7 @@ impl RankingState {
                         let score = scoring_group.iter().fold(
                             vec![0usize; max_degree + 1],
                             |mut acc, &p| {
-                                let counts =
-                                    wire_counts_in_poly(&polynomials[p], max_degree, w);
+                                let counts = wire_counts_in_poly(&polynomials[p], max_degree, w);
                                 for (a, c) in acc.iter_mut().zip(counts.iter()) {
                                     *a += c;
                                 }
@@ -1201,7 +1183,9 @@ fn is_same_orbit(
     while let Some(x) = frontier.pop() {
         for aut in auts1.iter().chain(auts2.iter()) {
             let img = aut[x];
-            if img == b { return true; }
+            if img == b {
+                return true;
+            }
             if cset.contains(&img) && visited.insert(img) {
                 frontier.push(img);
             }
@@ -1246,7 +1230,9 @@ fn canonicalize_inner(
             let fired = state.try_rule_2_1(polynomials, max_degree);
             TIME_RULE_2_1.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             if fired {
-                if let Some(ref mut t) = trace { t.push("2.1".to_string()); }
+                if let Some(ref mut t) = trace {
+                    t.push("2.1".to_string());
+                }
                 continue;
             }
         }
@@ -1257,7 +1243,9 @@ fn canonicalize_inner(
             let fired = state.try_rule_2_2(polynomials, max_degree);
             TIME_RULE_2_2.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             if fired {
-                if let Some(ref mut t) = trace { t.push("2.2".to_string()); }
+                if let Some(ref mut t) = trace {
+                    t.push("2.2".to_string());
+                }
                 continue;
             }
         }
@@ -1279,7 +1267,9 @@ fn canonicalize_inner(
             let fired = state.try_rule_2_4(polynomials);
             TIME_RULE_2_4.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             if fired {
-                if let Some(ref mut t) = trace { t.push("2.4".to_string()); }
+                if let Some(ref mut t) = trace {
+                    t.push("2.4".to_string());
+                }
                 continue;
             }
         }
@@ -1290,7 +1280,9 @@ fn canonicalize_inner(
             let fired = state.try_rule_2_5(polynomials);
             TIME_RULE_2_5.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             if fired {
-                if let Some(ref mut t) = trace { t.push("2.5".to_string()); }
+                if let Some(ref mut t) = trace {
+                    t.push("2.5".to_string());
+                }
                 continue;
             }
         }
@@ -1303,18 +1295,18 @@ fn canonicalize_inner(
                 let candidates = state.groups[gi].clone();
 
                 let mut best_canon: Option<Vec<Vec<Monomial>>> = None;
-                let mut best_order: Option<Vec<usize>>         = None;
-                let mut best_trace: Vec<String>                = Vec::new();
-                let mut best_w:     Option<usize>              = None;
-                let mut tried:      Vec<usize>                 = Vec::new();
-                let mut local_auts: Vec<Vec<usize>>            = Vec::new();
+                let mut best_order: Option<Vec<usize>> = None;
+                let mut best_trace: Vec<String> = Vec::new();
+                let mut best_w: Option<usize> = None;
+                let mut tried: Vec<usize> = Vec::new();
+                let mut local_auts: Vec<Vec<usize>> = Vec::new();
 
                 for &w in &candidates {
                     // Pruning: skip w if it is in the orbit of any already-tried
                     // candidate under known_auts + local_auts
-                    let pruned = tried.iter().any(|&t| {
-                        is_same_orbit(t, w, &candidates, known_auts, &local_auts)
-                    });
+                    let pruned = tried
+                        .iter()
+                        .any(|&t| is_same_orbit(t, w, &candidates, known_auts, &local_auts));
                     if pruned {
                         if let Some(ref mut tr) = trace {
                             tr.push(format!("L(pruned {} via automorphism)", w));
@@ -1323,15 +1315,17 @@ fn canonicalize_inner(
                     }
 
                     // Individualize w
-                    let rest: Vec<usize> = candidates.iter().copied()
-                        .filter(|&x| x != w).collect();
+                    let rest: Vec<usize> = candidates.iter().copied().filter(|&x| x != w).collect();
                     let mut trial_groups = state.groups.clone();
                     let mut replacement = vec![vec![w]];
-                    if !rest.is_empty() { replacement.push(rest.clone()); }
+                    if !rest.is_empty() {
+                        replacement.push(rest.clone());
+                    }
                     trial_groups.splice(gi..=gi, replacement);
 
                     // Pass inherited + local auts into the child
-                    let mut child_auts: Vec<Vec<usize>> = known_auts.iter()
+                    let mut child_auts: Vec<Vec<usize>> = known_auts
+                        .iter()
                         .chain(local_auts.iter())
                         .cloned()
                         .collect();
@@ -1352,7 +1346,7 @@ fn canonicalize_inner(
                             best_canon = Some(trial_canon);
                             best_order = Some(trial_order);
                             best_trace = trial_trace;
-                            best_w     = Some(w);
+                            best_w = Some(w);
                         }
                         Some(ref bc) => {
                             if trial_canon == *bc {
@@ -1370,7 +1364,7 @@ fn canonicalize_inner(
                                 best_canon = Some(trial_canon);
                                 best_order = Some(trial_order);
                                 best_trace = trial_trace;
-                                best_w     = Some(w);
+                                best_w = Some(w);
                             }
                         }
                     }
@@ -1387,12 +1381,12 @@ fn canonicalize_inner(
                     tr.extend(best_trace);
                 }
 
-                let rest: Vec<usize> = candidates.iter().copied()
-                    .filter(|&x| x != best).collect();
+                let rest: Vec<usize> = candidates.iter().copied().filter(|&x| x != best).collect();
                 let mut replacement = vec![vec![best]];
-                if !rest.is_empty() { replacement.push(rest); }
+                if !rest.is_empty() {
+                    replacement.push(rest);
+                }
                 state.groups.splice(gi..=gi, replacement);
-
             } else {
                 // Non-backtracking: lowest index wins, unchanged
                 let gi = state.groups.iter().position(|g| g.len() > 1).unwrap();
@@ -1403,7 +1397,9 @@ fn canonicalize_inner(
                     t.push(format!("L(lowest {})", winner));
                 }
                 let mut replacement = vec![vec![winner]];
-                if !group.is_empty() { replacement.push(group); }
+                if !group.is_empty() {
+                    replacement.push(group);
+                }
                 state.groups.splice(gi..=gi, replacement);
             }
             TIME_RULE_L.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1510,8 +1506,8 @@ pub fn trim_canonicalized(polynomials: Vec<Polynomial>) -> Vec<Polynomial> {
         let bit = 1u64 << i;
 
         // Check if P_i is trivial: exactly one monomial which is just x_i
-        let is_trivial = polynomials[i].len() == 1
-            && polynomials[i].iter().next().copied().unwrap() == bit;
+        let is_trivial =
+            polynomials[i].len() == 1 && polynomials[i].iter().next().copied().unwrap() == bit;
 
         if !is_trivial {
             // Non-trivial polynomial — stop trimming here
@@ -1535,8 +1531,6 @@ pub fn trim_canonicalized(polynomials: Vec<Polynomial>) -> Vec<Polynomial> {
 
     polynomials[..keep_up_to].to_vec()
 }
-
-
 
 // pub fn canonicalize_polys_3(
 //     polynomials: Vec<Polynomial>,
@@ -1749,19 +1743,30 @@ pub fn trim_canonicalized(polynomials: Vec<Polynomial>) -> Vec<Polynomial> {
 //     (canonical, Permutation { data: final_order })
 // }
 
-
 // ── Helpers for canonicalize_polys_4 ─────────────────────────────────────────
 
 // Sort key for a monomial under current partial ordering.
 // Priority: higher degree > lower sorted-rank-vec (ascending = better) > higher coeff.
-fn monomial_lkey_4(m: Monomial, coeff: usize, vr: &[usize], n: usize) -> (usize, Vec<usize>, usize) {
-    let mut ranks: Vec<usize> = (0..n).filter(|&v| m & (1u64 << v) != 0).map(|v| vr[v]).collect();
+fn monomial_lkey_4(
+    m: Monomial,
+    coeff: usize,
+    vr: &[usize],
+    n: usize,
+) -> (usize, Vec<usize>, usize) {
+    let mut ranks: Vec<usize> = (0..n)
+        .filter(|&v| m & (1u64 << v) != 0)
+        .map(|v| vr[v])
+        .collect();
     ranks.sort_unstable();
     (ranks.len(), ranks, coeff)
 }
 
 // Partition class-poly monomials into levels (highest priority first).
-fn get_levels_4(cp: &BTreeMap<Monomial, usize>, vr: &[usize], n: usize) -> Vec<Vec<(Monomial, usize)>> {
+fn get_levels_4(
+    cp: &BTreeMap<Monomial, usize>,
+    vr: &[usize],
+    n: usize,
+) -> Vec<Vec<(Monomial, usize)>> {
     let mut entries: Vec<(Monomial, usize)> = cp.iter().map(|(&m, &c)| (m, c)).collect();
     entries.sort_by(|&(m1, c1), &(m2, c2)| {
         let k1 = monomial_lkey_4(m1, c1, vr, n);
@@ -1786,7 +1791,9 @@ fn wire_freq_4(level: &[(Monomial, usize)], n: usize) -> Vec<usize> {
     let mut freq = vec![0usize; n];
     for &(m, _) in level {
         for v in 0..n {
-            if m & (1u64 << v) != 0 { freq[v] += 1; }
+            if m & (1u64 << v) != 0 {
+                freq[v] += 1;
+            }
         }
     }
     freq
@@ -1798,9 +1805,13 @@ fn split_by_freq_4(vr: &mut Vec<usize>, n: usize, freq: &[usize]) -> bool {
     let max_rank = *vr.iter().max().unwrap_or(&0);
     for cur_rank in 0..=max_rank {
         let tied: Vec<usize> = (0..n).filter(|&v| vr[v] == cur_rank).collect();
-        if tied.len() <= 1 { continue; }
+        if tied.len() <= 1 {
+            continue;
+        }
         let first_freq = freq[tied[0]];
-        if tied.iter().all(|&v| freq[v] == first_freq) { continue; }
+        if tied.iter().all(|&v| freq[v] == first_freq) {
+            continue;
+        }
 
         let mut sorted = tied.clone();
         sorted.sort_by(|&a, &b| freq[b].cmp(&freq[a]));
@@ -1808,11 +1819,15 @@ fn split_by_freq_4(vr: &mut Vec<usize>, n: usize, freq: &[usize]) -> bool {
         let mut sub_rank = 0usize;
         let mut sub_ranks = vec![0usize; sorted.len()];
         for i in 1..sorted.len() {
-            if freq[sorted[i]] != freq[sorted[i - 1]] { sub_rank += 1; }
+            if freq[sorted[i]] != freq[sorted[i - 1]] {
+                sub_rank += 1;
+            }
             sub_ranks[i] = sub_rank;
         }
         for v in 0..n {
-            if vr[v] > cur_rank { vr[v] += sub_rank; }
+            if vr[v] > cur_rank {
+                vr[v] += sub_rank;
+            }
         }
         for (i, &v) in sorted.iter().enumerate() {
             vr[v] = cur_rank + sub_ranks[i];
@@ -1825,11 +1840,17 @@ fn split_by_freq_4(vr: &mut Vec<usize>, n: usize, freq: &[usize]) -> bool {
 // Remapped polynomial key for tiebreak #1: replace each variable with its var_rank,
 // sort ranks within each monomial, then sort monomials (highest priority first).
 fn poly_key_4(poly: &Polynomial, vr: &[usize], n: usize) -> Vec<Vec<usize>> {
-    let mut terms: Vec<Vec<usize>> = poly.iter().map(|&m| {
-        let mut ranks: Vec<usize> = (0..n).filter(|&v| m & (1u64 << v) != 0).map(|v| vr[v]).collect();
-        ranks.sort_unstable();
-        ranks
-    }).collect();
+    let mut terms: Vec<Vec<usize>> = poly
+        .iter()
+        .map(|&m| {
+            let mut ranks: Vec<usize> = (0..n)
+                .filter(|&v| m & (1u64 << v) != 0)
+                .map(|v| vr[v])
+                .collect();
+            ranks.sort_unstable();
+            ranks
+        })
+        .collect();
     terms.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
     terms
 }
@@ -1849,7 +1870,9 @@ fn canon4_run(
     let n = polynomials.len();
 
     'master: loop {
-        if !has_ties_4(&vr) { break; }
+        if !has_ties_4(&vr) {
+            break;
+        }
 
         // Phase 1: scan P_{C_i} monomial levels; split by wire frequency.
         // Any split of the first splittable group → restart.
@@ -1862,47 +1885,69 @@ fn canon4_run(
             }
         }
 
-        if !has_ties_4(&vr) { break; }
+        if !has_ties_4(&vr) {
+            break;
+        }
 
         // Tiebreak #1: for each tied group, compare remapped polynomial keys.
         // First group where keys differ → split and restart.
         let max_rank = *vr.iter().max().unwrap_or(&0);
         for cur_rank in 0..=max_rank {
             let tied: Vec<usize> = (0..n).filter(|&v| vr[v] == cur_rank).collect();
-            if tied.len() <= 1 { continue; }
+            if tied.len() <= 1 {
+                continue;
+            }
 
             let mut sorted = tied.clone();
-            sorted.sort_by(|&a, &b| poly_key_4(&polynomials[a], &vr, n).cmp(&poly_key_4(&polynomials[b], &vr, n)));
+            sorted.sort_by(|&a, &b| {
+                poly_key_4(&polynomials[a], &vr, n).cmp(&poly_key_4(&polynomials[b], &vr, n))
+            });
 
             let mut sub_rank = 0usize;
             let mut sub_ranks = vec![0usize; sorted.len()];
             for i in 1..sorted.len() {
-                if poly_key_4(&polynomials[sorted[i-1]], &vr, n) != poly_key_4(&polynomials[sorted[i]], &vr, n) {
+                if poly_key_4(&polynomials[sorted[i - 1]], &vr, n)
+                    != poly_key_4(&polynomials[sorted[i]], &vr, n)
+                {
                     sub_rank += 1;
                 }
                 sub_ranks[i] = sub_rank;
             }
             if sub_rank > 0 {
-                for v in 0..n { if vr[v] > cur_rank { vr[v] += sub_rank; } }
-                for (i, &v) in sorted.iter().enumerate() { vr[v] = cur_rank + sub_ranks[i]; }
+                for v in 0..n {
+                    if vr[v] > cur_rank {
+                        vr[v] += sub_rank;
+                    }
+                }
+                for (i, &v) in sorted.iter().enumerate() {
+                    vr[v] = cur_rank + sub_ranks[i];
+                }
                 continue 'master;
             }
         }
 
-        if !has_ties_4(&vr) { break; }
+        if !has_ties_4(&vr) {
+            break;
+        }
 
         // Tiebreak #2: dynamic class polys P_{D_i} from current rank groups.
         // Apply same monomial-level scanning as Phase 1.
         let max_rank_val = *vr.iter().max().unwrap_or(&0);
-        let d_class_polys: Vec<BTreeMap<Monomial, usize>> = (0..=max_rank_val).filter_map(|rk| {
-            let group: Vec<usize> = (0..n).filter(|&v| vr[v] == rk).collect();
-            if group.is_empty() { return None; }
-            let mut sum: BTreeMap<Monomial, usize> = BTreeMap::new();
-            for &w in &group {
-                for &m in &polynomials[w] { *sum.entry(m).or_insert(0) += 1; }
-            }
-            Some(sum)
-        }).collect();
+        let d_class_polys: Vec<BTreeMap<Monomial, usize>> = (0..=max_rank_val)
+            .filter_map(|rk| {
+                let group: Vec<usize> = (0..n).filter(|&v| vr[v] == rk).collect();
+                if group.is_empty() {
+                    return None;
+                }
+                let mut sum: BTreeMap<Monomial, usize> = BTreeMap::new();
+                for &w in &group {
+                    for &m in &polynomials[w] {
+                        *sum.entry(m).or_insert(0) += 1;
+                    }
+                }
+                Some(sum)
+            })
+            .collect();
 
         for dcp in &d_class_polys {
             let levels = get_levels_4(dcp, &vr, n);
@@ -1930,22 +1975,42 @@ fn canon4_run(
 
             for &w in &candidates {
                 let mut trial_vr = vr.clone();
-                for v in 0..n { if trial_vr[v] > tr { trial_vr[v] += 1; } }
-                for &other in &candidates { if other != w { trial_vr[other] = tr + 1; } }
+                for v in 0..n {
+                    if trial_vr[v] > tr {
+                        trial_vr[v] += 1;
+                    }
+                }
+                for &other in &candidates {
+                    if other != w {
+                        trial_vr[other] = tr + 1;
+                    }
+                }
 
                 let trial_order = canon4_run(polynomials, class_polys, trial_vr, true)?;
 
                 let mut wire_to_pos = vec![0usize; n];
-                for (pos, &wire) in trial_order.iter().enumerate() { wire_to_pos[wire] = pos; }
-                let trial_canonical: Vec<Vec<u64>> = trial_order.iter().map(|&wire| {
-                    let mut ms: Vec<u64> = polynomials[wire].iter().map(|&m| {
-                        let mut r = 0u64;
-                        for v in 0..n { if m & (1u64 << v) != 0 { r |= 1u64 << wire_to_pos[v]; } }
-                        r
-                    }).collect();
-                    ms.sort_unstable();
-                    ms
-                }).collect();
+                for (pos, &wire) in trial_order.iter().enumerate() {
+                    wire_to_pos[wire] = pos;
+                }
+                let trial_canonical: Vec<Vec<u64>> = trial_order
+                    .iter()
+                    .map(|&wire| {
+                        let mut ms: Vec<u64> = polynomials[wire]
+                            .iter()
+                            .map(|&m| {
+                                let mut r = 0u64;
+                                for v in 0..n {
+                                    if m & (1u64 << v) != 0 {
+                                        r |= 1u64 << wire_to_pos[v];
+                                    }
+                                }
+                                r
+                            })
+                            .collect();
+                        ms.sort_unstable();
+                        ms
+                    })
+                    .collect();
 
                 if best_canonical.is_none() || trial_canonical < *best_canonical.as_ref().unwrap() {
                     best_canonical = Some(trial_canonical);
@@ -1994,15 +2059,18 @@ pub fn canonicalize_polys_4(
     }
 
     // Build P_{C_i}: sum of polynomials in each class group (natural-number coefficients).
-    let class_polys: Vec<BTreeMap<Monomial, usize>> = class_groups.iter().map(|group| {
-        let mut sum: BTreeMap<Monomial, usize> = BTreeMap::new();
-        for &wire in group {
-            for &m in &polynomials[wire] {
-                *sum.entry(m).or_insert(0) += 1;
+    let class_polys: Vec<BTreeMap<Monomial, usize>> = class_groups
+        .iter()
+        .map(|group| {
+            let mut sum: BTreeMap<Monomial, usize> = BTreeMap::new();
+            for &wire in group {
+                for &m in &polynomials[wire] {
+                    *sum.entry(m).or_insert(0) += 1;
+                }
             }
-        }
-        sum
-    }).collect();
+            sum
+        })
+        .collect();
 
     // All wires start tied; canon4_run refines iteratively.
     let final_order = canon4_run(&polynomials, &class_polys, vec![0usize; n], allow_rule_l)?;
@@ -2014,13 +2082,20 @@ pub fn canonicalize_polys_4(
     let remap_monomial = |m: Monomial| -> Monomial {
         let mut result = 0u64;
         for wire in 0..n {
-            if m & (1u64 << wire) != 0 { result |= 1u64 << wire_to_pos[wire]; }
+            if m & (1u64 << wire) != 0 {
+                result |= 1u64 << wire_to_pos[wire];
+            }
         }
         result
     };
     let canonical: Vec<Polynomial> = final_order
         .iter()
-        .map(|&wire| polynomials[wire].iter().map(|&m| remap_monomial(m)).collect())
+        .map(|&wire| {
+            polynomials[wire]
+                .iter()
+                .map(|&m| remap_monomial(m))
+                .collect()
+        })
         .collect();
     let canonical = trim_canonicalized(canonical);
     Ok((canonical, Permutation { data: final_order }))
@@ -2346,5 +2421,3 @@ pub fn canonicalize_polys_4(
 //     let canonical = trim_canonicalized(canonical);
 //     (canonical, Permutation { data: final_order })
 // }
-
-
