@@ -5,20 +5,42 @@ import matplotlib.pyplot as plt
 import os
 from pathlib import Path
 
+def _downsample(grid, max_dim=4000):
+    """Block-mean a 2D grid down so neither dimension exceeds max_dim.
+
+    A multi-hundred-thousand-pixel imshow is both pointless (it gets resampled to
+    a few thousand pixels in the PNG) and a memory bomb (matplotlib pushes the full
+    array through norm+colormap). Binning first keeps plotting cheap and bounded.
+    """
+    h, w = grid.shape
+    fy = max(1, h // max_dim)
+    fx = max(1, w // max_dim)
+    if fy == 1 and fx == 1:
+        return grid
+    h2 = (h // fy) * fy
+    w2 = (w // fx) * fx
+    blocks = grid[:h2, :w2].reshape(h2 // fy, fy, w2 // fx, fx)
+    return np.nanmean(blocks, axis=(1, 3))
+
 def plot_heatmap_raw(results, save_path, xlabel, ylabel, vmin=0.0, vmax=1.0):
-    points = np.array(results, dtype=float)
+    points = np.asarray(results, dtype=float)  # no copy when already float64
     x, y, values = points[:, 0], points[:, 1], points[:, 2]
 
     x_unique = np.unique(x)
     y_unique = np.unique(y)
+    nx, ny = len(x_unique), len(y_unique)
 
-    x_indices = {val: idx for idx, val in enumerate(x_unique)}
-    y_indices = {val: idx for idx, val in enumerate(y_unique)}
+    # Scatter values into the (y, x) grid without a Python loop.
+    if values.size == nx * ny:
+        # Backend emits a complete row-major grid (x outer, y inner) -> reshape + transpose.
+        heatmap = np.ascontiguousarray(values).reshape(nx, ny).T
+    else:
+        xi = np.searchsorted(x_unique, x)
+        yi = np.searchsorted(y_unique, y)
+        heatmap = np.full((ny, nx), np.nan)
+        heatmap[yi, xi] = values
 
-    heatmap = np.full((len(y_unique), len(x_unique)), np.nan)
-    for xi, yi, v in zip(x, y, values):
-        heatmap[y_indices[yi], x_indices[xi]] = v
-
+    heatmap = _downsample(heatmap)
     plt.imshow(
         heatmap,
         interpolation="nearest",
@@ -49,7 +71,7 @@ def plot_heatmap_raw(results, save_path, xlabel, ylabel, vmin=0.0, vmax=1.0):
 
 def plot_heatmap_std(results, save_path, xlabel="X-axis", ylabel="Y-axis", vmin=-3, vmax=3):
     plt.clf()
-    points = np.array(results)
+    points = np.asarray(results, dtype=float)
     x, y, values = points[:, 0], points[:, 1], points[:, 2]
 
     # Compute z-scores
@@ -61,13 +83,18 @@ def plot_heatmap_std(results, save_path, xlabel="X-axis", ylabel="Y-axis", vmin=
 
     x_unique = np.unique(x)
     y_unique = np.unique(y)
-    x_indices = {val: idx for idx, val in enumerate(x_unique)}
-    y_indices = {val: idx for idx, val in enumerate(y_unique)}
+    nx, ny = len(x_unique), len(y_unique)
 
-    heatmap = np.full((len(y_unique), len(x_unique)), np.nan)
-    for xi, yi, z in zip(x, y, z_values):
-        heatmap[y_indices[yi], x_indices[xi]] = z
+    # Scatter z-scores into the (y, x) grid without a Python loop.
+    if z_values.size == nx * ny:
+        heatmap = np.ascontiguousarray(z_values).reshape(nx, ny).T
+    else:
+        xi = np.searchsorted(x_unique, x)
+        yi = np.searchsorted(y_unique, y)
+        heatmap = np.full((ny, nx), np.nan)
+        heatmap[yi, xi] = z_values
 
+    heatmap = _downsample(heatmap)
     plt.imshow(
         heatmap,
         interpolation='nearest',
@@ -122,6 +149,7 @@ if __name__ == "__main__":
     parser.add_argument("--fix", type=int, default=0, help="Number of fixed bits in each random input")
     parser.add_argument("--hw", action="store_true", help="Use hamming weight difference mode")
     parser.add_argument("--incremental", action="store_true", help="First input random, then x0+1, x0+2, ... instead of random each iteration")
+    parser.add_argument("--x0", type=int, default=None, help="Incremental mode: starting input x0 (default: random)")
     parser.add_argument("--std", action="store_true", help="Use standard deviation for heatmaps")
     parser.add_argument("--enhance", type=float, nargs="?", const=0.05, default=None,
                         help="Tighten color scale around 0.5 by ENHANCE (e.g. --enhance 0.1 → [0.4, 0.6]); default window is 0.05")
@@ -175,7 +203,7 @@ if __name__ == "__main__":
     elif args.corner:
         mode = "incremental " if args.incremental else ""
         print(f"Generating {mode}corner heatmap (first 5000 gates of both circuits)...")
-        results = heatmap_rust.heatmap_corner(args.n, args.i, flag, args.c1, args.c2, args.fix, args.hw, args.incremental)
+        results = heatmap_rust.heatmap_corner(args.n, args.i, flag, args.c1, args.c2, args.fix, args.hw, args.incremental, args.x0)
         output = args.path
         if args.std:
             plot_heatmap_std(results, output, xlabel=args.x, ylabel=args.y)
@@ -196,7 +224,7 @@ if __name__ == "__main__":
     else:
         print("Generating full heatmap...")
         if args.incremental:
-            results = heatmap_rust.heatmap_incremental(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix, args.hw)
+            results = heatmap_rust.heatmap_incremental(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix, args.hw, args.x0)
         else:
             results = heatmap_rust.heatmap(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix, args.hw)
         output = args.path

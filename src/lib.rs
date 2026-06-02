@@ -1,18 +1,19 @@
 pub mod circuit;
-pub mod replace;
 pub mod rainbow;
 pub mod random;
-use pyo3::prelude::*;
+pub mod replace;
+use crate::circuit::CircuitSeq;
 use numpy::PyArray2;
+use numpy::ndarray::Array2;
+use primitive_types::U256 as u256;
+use pyo3::prelude::*;
+use rand::Rng;
+use rand::seq::IteratorRandom;
+use rayon::prelude::*;
 use std::fs;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
-use crate::circuit::CircuitSeq;
 use std::time::Instant;
-use rand::Rng;
-use numpy::ndarray::Array2;
-use primitive_types::U256 as u256;
-use rand::seq::IteratorRandom;
 
 fn read_n_gates(path: &str, n: usize) -> String {
     let file = File::open(path).unwrap_or_else(|_| panic!("Failed to open {}", path));
@@ -21,10 +22,14 @@ fn read_n_gates(path: &str, n: usize) -> String {
     let mut buf = [0u8; 1];
     let mut count = 0;
     while count < n {
-        if reader.read(&mut buf).unwrap_or(0) == 0 { break; }
+        if reader.read(&mut buf).unwrap_or(0) == 0 {
+            break;
+        }
         let c = buf[0] as char;
         result.push(c);
-        if c == ';' { count += 1; }
+        if c == ';' {
+            count += 1;
+        }
     }
     result
 }
@@ -37,15 +42,91 @@ fn popcount_u256(x: u256) -> u32 {
     count
 }
 
+/// Parallel heatmap grid: for x in [x1,x2] and y in [y1,y2], computes the average (over
+/// `inputs`) of the overlap between circuit_one's state after gate i1 and circuit_two's
+/// state after gate i2. Returns a flat, row-major [x, y, value] buffer (3 f64 per cell,
+/// one row per x) ready for `Array2::from_shape_vec((n_cells, 3), _)`.
+fn compute_grid_parallel(
+    circuit_one: &CircuitSeq,
+    circuit_two: &CircuitSeq,
+    inputs: &[u256],
+    x1: usize,
+    x2: usize,
+    y1: usize,
+    y2: usize,
+    num_wires: usize,
+    mask: u256,
+    flag: bool,
+    hw: bool,
+) -> Vec<f64> {
+    let num_inputs = inputs.len();
+    // Per-input state evolutions, computed across cores...
+    let evo_one: Vec<Vec<u256>> = inputs
+        .par_iter()
+        .map(|&ib| circuit_one.evaluate_evolution_256(ib))
+        .collect();
+    let evo_two: Vec<Vec<u256>> = inputs
+        .par_iter()
+        .map(|&ib| circuit_two.evaluate_evolution_256(ib))
+        .collect();
+    // ...then transposed to [position][input] so each cell scans contiguous memory.
+    let one_t: Vec<Vec<u256>> = (x1..=x2)
+        .into_par_iter()
+        .map(|i1| (0..num_inputs).map(|k| evo_one[k][i1]).collect())
+        .collect();
+    let two_t: Vec<Vec<u256>> = (y1..=y2)
+        .into_par_iter()
+        .map(|i2| (0..num_inputs).map(|k| evo_two[k][i2]).collect())
+        .collect();
+    drop(evo_one);
+    drop(evo_two);
+
+    let row_w = y2 - y1 + 1;
+    let n_rows = x2 - x1 + 1;
+    let nw = num_wires as f64;
+    let inv = 1.0 / num_inputs as f64;
+    let mut data = vec![0f64; n_rows * row_w * 3];
+    // One output row (fixed i1) per task; rows are disjoint, so there is no contention.
+    data.par_chunks_mut(row_w * 3)
+        .enumerate()
+        .for_each(|(r, row)| {
+            let i1 = x1 + r;
+            let e1 = &one_t[r];
+            for c in 0..row_w {
+                let i2 = y1 + c;
+                let e2 = &two_t[c];
+                let mut acc = 0f64;
+                for k in 0..num_inputs {
+                    let a = e1[k];
+                    let b = e2[k];
+                    let hamming_dist = if hw {
+                        (popcount_u256(a) as f64 - popcount_u256(b) as f64).abs()
+                    } else {
+                        popcount_u256((a ^ b) & mask) as f64
+                    };
+                    acc += if !flag || hw {
+                        hamming_dist / nw
+                    } else {
+                        ((2.0 * hamming_dist / nw) - 1.0).abs()
+                    };
+                }
+                row[c * 3] = i1 as f64;
+                row[c * 3 + 1] = i2 as f64;
+                row[c * 3 + 2] = acc * inv;
+            }
+        });
+    data
+}
+
 #[pyfunction]
 fn heatmap(
-    py: Python<'_>, 
-    num_wires: usize, 
-    num_inputs: usize, 
-    flag: bool, 
-    c1: &str, 
-    c2: &str, 
-    canon: bool, 
+    py: Python<'_>,
+    num_wires: usize,
+    num_inputs: usize,
+    flag: bool,
+    c1: &str,
+    c2: &str,
+    canon: bool,
     fix: usize,
     hw: bool,
 ) -> Py<PyArray2<f64>> {
@@ -57,10 +138,8 @@ fn heatmap(
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
     // Load circuits
-    let circuit_one_str = fs::read_to_string(c1)
-        .expect("Failed to read butterfly_recent.txt");
-    let circuit_two_str = fs::read_to_string(c2)
-        .expect("Failed to read butterfly_recent.txt");
+    let circuit_one_str = fs::read_to_string(c1).expect("Failed to read butterfly_recent.txt");
+    let circuit_two_str = fs::read_to_string(c2).expect("Failed to read butterfly_recent.txt");
     let mut circuit_one = CircuitSeq::from_string(&circuit_one_str);
     let mut circuit_two = CircuitSeq::from_string(&circuit_two_str);
     if canon {
@@ -71,65 +150,42 @@ fn heatmap(
     let circuit_two_len = circuit_two.gates.len();
 
     let num_points = (circuit_one_len + 1) * (circuit_two_len + 1);
-    let mut average = vec![0f64; num_points * 3]; // flat 2D array: [x, y, value] per point
     let mut rng = rand::rng();
     let start_time = Instant::now();
     let mut fixed_mask = u256::zero();
     let positions = (0..num_wires).choose_multiple(&mut rng, fix);
-    let x0: u256 = u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128) & mask;
+    let x0: u256 =
+        u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128) & mask;
     for p in positions {
         fixed_mask |= u256::from(1) << p;
     }
-    for i in 0..num_inputs {
-        if i % 10 == 0 {
-            println!("{}/{}", i, num_inputs);
-            io::stdout().flush().unwrap();
-        }
-        let r: u256 =
-        u256::from(rng.random::<u128>())
-            | (u256::from(rng.random::<u128>()) << 128);
+    // Random inputs (fixed bits held at x0), generated sequentially to keep RNG use deterministic.
+    let inputs: Vec<u256> = (0..num_inputs)
+        .map(|_| {
+            let r: u256 =
+                u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128);
+            ((x0 & fixed_mask) | (r & !fixed_mask)) & mask
+        })
+        .collect();
 
-        let input_bits = ((x0 & fixed_mask) | (r & !fixed_mask)) & mask;
-
-        let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
-        let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
-
-        for i1 in 0..=circuit_one_len {
-            for i2 in 0..=circuit_two_len {
-                let hamming_dist = if hw {
-                    (popcount_u256(evolution_one[i1]) as f64 - popcount_u256(evolution_two[i2]) as f64).abs()
-                } else {
-                    let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
-                    popcount_u256(diff) as f64
-                };
-                let overlap = if !flag || hw {
-                    hamming_dist / num_wires as f64
-                } else {
-                    let tmp = (2.0 * hamming_dist / num_wires as f64) - 1.0;
-                    tmp.abs()
-                };
-
-                let index = i1 * (circuit_two_len + 1) + i2;
-                average[index * 3] = i1 as f64;
-                average[index * 3 + 1] = i2 as f64;
-                average[index * 3 + 2] += overlap / num_inputs as f64;
-            }
-        }
-    }
+    let data = compute_grid_parallel(
+        &circuit_one,
+        &circuit_two,
+        &inputs,
+        0,
+        circuit_one_len,
+        0,
+        circuit_two_len,
+        num_wires,
+        mask,
+        flag,
+        hw,
+    );
 
     println!("Time elapsed: {:?}", Instant::now() - start_time);
 
-    let mut arr2 = Array2::<f64>::zeros((num_points, 3));
-    for i in 0..num_points {
-        arr2[[i, 0]] = average[i * 3];
-        arr2[[i, 1]] = average[i * 3 + 1];
-        arr2[[i, 2]] = average[i * 3 + 2];
-    }
-
-    let pyarray = PyArray2::from_owned_array(py, arr2);
-
-    pyarray.into()
+    let arr2 = Array2::from_shape_vec((num_points, 3), data).expect("grid shape mismatch");
+    PyArray2::from_owned_array(py, arr2).into()
 }
 
 #[pyfunction]
@@ -143,13 +199,18 @@ fn heatmap_incremental(
     canon: bool,
     _fix: usize,
     hw: bool,
+    x0_arg: Option<u128>,
 ) -> Py<PyArray2<f64>> {
     let mask = if num_wires < 256 {
         (u256::one() << num_wires) - u256::one()
     } else {
         u256::MAX
     };
-    println!("Running incremental heatmap on {} inputs (random base + increments)", num_inputs);
+    println!(
+        "Running incremental heatmap on {} inputs ({} base + increments)",
+        num_inputs,
+        if x0_arg.is_some() { "chosen" } else { "random" }
+    );
     io::stdout().flush().unwrap();
     let circuit_one_str = fs::read_to_string(c1).expect("Failed to read c1");
     let circuit_two_str = fs::read_to_string(c2).expect("Failed to read c2");
@@ -163,64 +224,47 @@ fn heatmap_incremental(
     let circuit_two_len = circuit_two.gates.len();
 
     let num_points = (circuit_one_len + 1) * (circuit_two_len + 1);
-    let mut average = vec![0f64; num_points * 3];
     let mut rng = rand::rng();
     let start_time = Instant::now();
-    // One random base input; subsequent inputs are x0+1, x0+2, ... (mod 2^num_wires).
-    let x0: u256 = (u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128)) & mask;
-    for i in 0..num_inputs {
-        if i % 10 == 0 {
-            println!("{}/{}", i, num_inputs);
-            io::stdout().flush().unwrap();
+    // Base input x0: caller-provided if given, else random. Subsequent inputs are x0+1, x0+2, ... (mod 2^num_wires).
+    let x0: u256 = match x0_arg {
+        Some(v) => u256::from(v) & mask,
+        None => {
+            (u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128)) & mask
         }
-        let input_bits = x0.overflowing_add(u256::from(i as u128)).0 & mask;
+    };
+    let inputs: Vec<u256> = (0..num_inputs)
+        .map(|i| x0.overflowing_add(u256::from(i as u128)).0 & mask)
+        .collect();
 
-        let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
-        let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
-
-        for i1 in 0..=circuit_one_len {
-            for i2 in 0..=circuit_two_len {
-                let hamming_dist = if hw {
-                    (popcount_u256(evolution_one[i1]) as f64 - popcount_u256(evolution_two[i2]) as f64).abs()
-                } else {
-                    let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
-                    popcount_u256(diff) as f64
-                };
-                let overlap = if !flag || hw {
-                    hamming_dist / num_wires as f64
-                } else {
-                    let tmp = (2.0 * hamming_dist / num_wires as f64) - 1.0;
-                    tmp.abs()
-                };
-                let index = i1 * (circuit_two_len + 1) + i2;
-                average[index * 3] = i1 as f64;
-                average[index * 3 + 1] = i2 as f64;
-                average[index * 3 + 2] += overlap / num_inputs as f64;
-            }
-        }
-    }
+    let data = compute_grid_parallel(
+        &circuit_one,
+        &circuit_two,
+        &inputs,
+        0,
+        circuit_one_len,
+        0,
+        circuit_two_len,
+        num_wires,
+        mask,
+        flag,
+        hw,
+    );
 
     println!("Time elapsed: {:?}", Instant::now() - start_time);
 
-    let mut arr2 = Array2::<f64>::zeros((num_points, 3));
-    for i in 0..num_points {
-        arr2[[i, 0]] = average[i * 3];
-        arr2[[i, 1]] = average[i * 3 + 1];
-        arr2[[i, 2]] = average[i * 3 + 2];
-    }
-    let pyarray = PyArray2::from_owned_array(py, arr2);
-    pyarray.into()
+    let arr2 = Array2::from_shape_vec((num_points, 3), data).expect("grid shape mismatch");
+    PyArray2::from_owned_array(py, arr2).into()
 }
 
 #[pyfunction]
 fn heatmap_small(
     py: Python<'_>,
-    num_wires: usize, 
-    flag: bool, 
-    c1: &str, 
-    c2: &str, 
-    canon: bool
+    num_wires: usize,
+    flag: bool,
+    c1: &str,
+    c2: &str,
+    canon: bool,
 ) -> Py<PyArray2<f64>> {
     let mask = if num_wires < 256 {
         (u256::one() << num_wires) - u256::one()
@@ -230,10 +274,8 @@ fn heatmap_small(
     println!("Running heatmap on weights 0, 1, and 2");
     io::stdout().flush().unwrap();
     // Load circuits
-    let circuit_one_str = fs::read_to_string(c1)
-        .expect("Failed to read butterfly_recent.txt");
-    let circuit_two_str = fs::read_to_string(c2)
-        .expect("Failed to read butterfly_recent.txt");
+    let circuit_one_str = fs::read_to_string(c1).expect("Failed to read butterfly_recent.txt");
+    let circuit_two_str = fs::read_to_string(c2).expect("Failed to read butterfly_recent.txt");
     let mut circuit_one = CircuitSeq::from_string(&circuit_one_str);
     let mut circuit_two = CircuitSeq::from_string(&circuit_two_str);
     if canon {
@@ -276,7 +318,7 @@ fn heatmap_small(
         for i1 in 0..=circuit_one_len {
             for i2 in 0..=circuit_two_len {
                 let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
-                let hamming_dist =  popcount_u256(diff) as f64;
+                let hamming_dist = popcount_u256(diff) as f64;
                 let overlap = if !flag {
                     hamming_dist / num_wires as f64
                 } else {
@@ -308,18 +350,18 @@ fn heatmap_small(
 
 #[pyfunction]
 fn heatmap_slice(
-    py: Python<'_>, 
-    num_wires: usize, 
-    num_inputs: usize, 
-    flag: bool, 
-    x1: usize, 
-    x2: usize, 
-    y1: usize, 
-    y2: usize, 
+    py: Python<'_>,
+    num_wires: usize,
+    num_inputs: usize,
+    flag: bool,
+    x1: usize,
+    x2: usize,
+    y1: usize,
+    y2: usize,
     c1_path: &str,
-    c2_path: &str, 
+    c2_path: &str,
     fix: usize,
-    hw: bool
+    hw: bool,
 ) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
@@ -337,64 +379,40 @@ fn heatmap_slice(
     circuit_one.canonicalize();
     circuit_two.canonicalize();
     let num_points = (x2 - x1 + 1) * (y2 - y1 + 1);
-    let mut average = vec![0f64; num_points * 3]; // flat 2D array: [x, y, value] per point
     let mut rng = rand::rng();
     let start_time = Instant::now();
     let mut fixed_mask = u256::zero();
     let positions = (0..num_wires).choose_multiple(&mut rng, fix);
-    let x0: u256 = u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128) & mask;
+    let x0: u256 =
+        u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128) & mask;
     for p in positions {
         fixed_mask |= u256::from(1) << p;
     }
-    for i in 0..num_inputs {
-        if i % 10 == 0 {
-            println!("{}/{}", i, num_inputs);
-            io::stdout().flush().unwrap();
-        }
-        let r: u256 =
-        u256::from(rng.random::<u128>())
-            | (u256::from(rng.random::<u128>()) << 128);
+    let inputs: Vec<u256> = (0..num_inputs)
+        .map(|_| {
+            let r: u256 =
+                u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128);
+            ((x0 & fixed_mask) | (r & !fixed_mask)) & mask
+        })
+        .collect();
 
-        let input_bits = ((x0 & fixed_mask) | (r & !fixed_mask)) & mask;
-
-        let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
-        let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
-
-        for i1 in x1..=x2 {
-            for i2 in y1..=y2 {
-                let hamming_dist = if hw {
-                    (popcount_u256(evolution_one[i1]) as f64 - popcount_u256(evolution_one[i2]) as f64).abs()
-                } else {
-                    let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
-                    popcount_u256(diff) as f64
-                };
-                let overlap = if !flag || hw {
-                    hamming_dist / num_wires as f64
-                } else {
-                    let tmp = (2.0 * hamming_dist / num_wires as f64) - 1.0;
-                    tmp.abs()
-                };
-
-                let rel_i1 = i1 - x1;
-                let rel_i2 = i2 - y1;
-                let index = rel_i1 * (y2 - y1 + 1) + rel_i2;
-                average[index * 3] = i1 as f64;
-                average[index * 3 + 1] = i2 as f64;
-                average[index * 3 + 2] += overlap / num_inputs as f64;
-            }
-        }
-    }
+    let data = compute_grid_parallel(
+        &circuit_one,
+        &circuit_two,
+        &inputs,
+        x1,
+        x2,
+        y1,
+        y2,
+        num_wires,
+        mask,
+        flag,
+        hw,
+    );
 
     println!("Time elapsed: {:?}", Instant::now() - start_time);
 
-    let mut arr2 = Array2::<f64>::zeros((num_points, 3));
-    for i in 0..num_points {
-        arr2[[i, 0]] = average[i * 3];
-        arr2[[i, 1]] = average[i * 3 + 1];
-        arr2[[i, 2]] = average[i * 3 + 2];
-    }
-
+    let arr2 = Array2::from_shape_vec((num_points, 3), data).expect("grid shape mismatch");
     let pyarray = PyArray2::from_owned_array(py, arr2);
 
     pyarray.into()
@@ -402,17 +420,17 @@ fn heatmap_slice(
 
 #[pyfunction]
 fn heatmap_mini_slice(
-    py: Python<'_>, 
-    num_wires: usize, 
-    num_inputs: usize, 
-    flag: bool, 
-    x1: usize, 
-    x2: usize, 
-    y1: usize, 
-    y2: usize, 
+    py: Python<'_>,
+    num_wires: usize,
+    num_inputs: usize,
+    flag: bool,
+    x1: usize,
+    x2: usize,
+    y1: usize,
+    y2: usize,
     c1_path: &str,
-    c2_path: &str, 
-    fix: usize
+    c2_path: &str,
+    fix: usize,
 ) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
@@ -436,8 +454,8 @@ fn heatmap_mini_slice(
     let start_time = Instant::now();
     let mut fixed_mask = u256::zero();
     let positions = (0..num_wires).choose_multiple(&mut rng, fix);
-    let x0: u256 = u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128) & mask;
+    let x0: u256 =
+        u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128) & mask;
     for p in positions {
         fixed_mask |= u256::from(1) << p;
     }
@@ -446,9 +464,7 @@ fn heatmap_mini_slice(
             println!("{}/{}", i, num_inputs);
             io::stdout().flush().unwrap();
         }
-        let r: u256 =
-        u256::from(rng.random::<u128>())
-            | (u256::from(rng.random::<u128>()) << 128);
+        let r: u256 = u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128);
 
         let input_bits = ((x0 & fixed_mask) | (r & !fixed_mask)) & mask;
 
@@ -505,6 +521,7 @@ fn heatmap_corner(
     fix: usize,
     hw: bool,
     incremental: bool,
+    x0_arg: Option<u128>,
 ) -> Py<PyArray2<f64>> {
     const CORNER: usize = 5000;
     let mask = if num_wires < 256 {
@@ -513,7 +530,11 @@ fn heatmap_corner(
         u256::MAX
     };
     if incremental {
-        println!("Running corner heatmap on {} inputs (incremental: random base + increments)", num_inputs);
+        println!(
+            "Running corner heatmap on {} inputs (incremental: {} base + increments)",
+            num_inputs,
+            if x0_arg.is_some() { "chosen" } else { "random" }
+        );
     } else {
         println!("Running corner heatmap on {} inputs", num_inputs);
     }
@@ -530,7 +551,6 @@ fn heatmap_corner(
     let circuit_two_len = circuit_two.gates.len();
 
     let num_points = (circuit_one_len + 1) * (circuit_two_len + 1);
-    let mut average = vec![0f64; num_points * 3];
     let mut rng = rand::rng();
     let start_time = Instant::now();
 
@@ -540,57 +560,44 @@ fn heatmap_corner(
     for p in positions {
         fixed_mask |= u256::from(1) << p;
     }
-    let x0: u256 = (u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128)) & mask;
-
-    for i in 0..num_inputs {
-        if i % 10 == 0 {
-            println!("{}/{}", i, num_inputs);
-            io::stdout().flush().unwrap();
+    // Incremental base x0: caller-provided if given, else random (also holds the fixed bits for random mode).
+    let x0: u256 = match x0_arg {
+        Some(v) => u256::from(v) & mask,
+        None => {
+            (u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128)) & mask
         }
-        let input_bits = if incremental {
-            x0.overflowing_add(u256::from(i as u128)).0 & mask
-        } else {
-            let r: u256 = u256::from(rng.random::<u128>())
-                | (u256::from(rng.random::<u128>()) << 128);
-            ((x0 & fixed_mask) | (r & !fixed_mask)) & mask
-        };
+    };
 
-        let evolution_one = circuit_one.evaluate_evolution_256(input_bits);
-        let evolution_two = circuit_two.evaluate_evolution_256(input_bits);
-
-        for i1 in 0..=circuit_one_len {
-            for i2 in 0..=circuit_two_len {
-                let hamming_dist = if hw {
-                    (popcount_u256(evolution_one[i1]) as f64 - popcount_u256(evolution_two[i2]) as f64).abs()
-                } else {
-                    let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
-                    popcount_u256(diff) as f64
-                };
-                let overlap = if !flag || hw {
-                    hamming_dist / num_wires as f64
-                } else {
-                    let tmp = (2.0 * hamming_dist / num_wires as f64) - 1.0;
-                    tmp.abs()
-                };
-                let index = i1 * (circuit_two_len + 1) + i2;
-                average[index * 3] = i1 as f64;
-                average[index * 3 + 1] = i2 as f64;
-                average[index * 3 + 2] += overlap / num_inputs as f64;
+    let inputs: Vec<u256> = (0..num_inputs)
+        .map(|i| {
+            if incremental {
+                x0.overflowing_add(u256::from(i as u128)).0 & mask
+            } else {
+                let r: u256 =
+                    u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128);
+                ((x0 & fixed_mask) | (r & !fixed_mask)) & mask
             }
-        }
-    }
+        })
+        .collect();
+
+    let data = compute_grid_parallel(
+        &circuit_one,
+        &circuit_two,
+        &inputs,
+        0,
+        circuit_one_len,
+        0,
+        circuit_two_len,
+        num_wires,
+        mask,
+        flag,
+        hw,
+    );
 
     println!("Time elapsed: {:?}", Instant::now() - start_time);
 
-    let mut arr2 = Array2::<f64>::zeros((num_points, 3));
-    for i in 0..num_points {
-        arr2[[i, 0]] = average[i * 3];
-        arr2[[i, 1]] = average[i * 3 + 1];
-        arr2[[i, 2]] = average[i * 3 + 2];
-    }
-    let pyarray = PyArray2::from_owned_array(py, arr2);
-    pyarray.into()
+    let arr2 = Array2::from_shape_vec((num_points, 3), data).expect("grid shape mismatch");
+    PyArray2::from_owned_array(py, arr2).into()
 }
 
 #[pymodule]
