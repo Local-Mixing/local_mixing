@@ -175,12 +175,14 @@ fn main() {
 
     let b = n.div_ceil(2);
 
-    let pf = key_to_gates(n, args.key)
+    let mut pf = key_to_gates(n, args.key)
         .concat(&big_tof(n, n, 0..b))
         .concat(&big_tof(n, n + 1, b..n + 1))
         .concat(&big_tof(n, n, 0..b))
         .concat(&big_tof(n, n + 1, b..n + 1))
         .concat(&key_to_gates(n, args.key));
+    
+    pf.canonicalize();
 
     println!("{}", pf.repr());
 
@@ -194,7 +196,7 @@ fn main() {
     println!("{} => {}", args.key, pf.evaluate_256(args.key.into()));
 
     for _ in 0..10 {
-        let r = if n < 128 {
+        let r = if n < 64 {
             fastrand::usize(0..(1usize << n))
         } else {
             fastrand::usize(..)

@@ -1048,7 +1048,7 @@ fn monomial_to_str(m: u64, n: usize) -> String {
 
 pub fn poly_to_str(poly: &Polynomial, n: usize) -> String {
     if poly.is_empty() {
-        return "1".to_string();
+        return "I".to_string();
     }
     let mut terms: Vec<u64> = poly.iter().copied().collect();
     // Sort by degree, then by value
@@ -1058,6 +1058,33 @@ pub fn poly_to_str(poly: &Polynomial, n: usize) -> String {
         .map(|&m| monomial_to_str(m, n))
         .collect::<Vec<_>>()
         .join(" + ")
+}
+
+fn mono_compressed_str(m: u64, n: usize) -> String {
+    if m == 0 {
+        return "I".into();
+    }
+
+    (0..n)
+        .filter(|&i| (m >> i) & 1 == 1)
+        .map(|i| format!("{}", i))
+        .collect::<Vec<_>>()
+        .join("•")
+}
+
+pub fn poly_to_compressed_str(poly: &Polynomial, n: usize) -> String {
+    if poly.is_empty() {
+        return "i".into();
+    }
+
+    let mut terms: Vec<u64> = poly.iter().copied().collect();
+    // Sort by degree, then by value
+    terms.sort_by_key(|&m| (monomial_degree(m), m));
+    terms
+        .iter()
+        .map(|&m| mono_compressed_str(m, n))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn poly_degree(poly: &Polynomial) -> u32 {
