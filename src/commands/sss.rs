@@ -20,6 +20,7 @@ pub fn run(sub: &clap::ArgMatches) {
     let do_gadgetize = sub.get_flag("gadgetize");
     let full_shuffle = sub.get_flag("full-shuffle");
     let gates_ahead: usize = *sub.get_one("gates_ahead").unwrap();
+    let type_attempts: usize = *sub.get_one("type_attempts").unwrap();
     let egg = sub.get_flag("egg");
     let shuffled = sub.get_flag("shuffled");
     let single_end = sub.get_flag("single-end");
@@ -61,6 +62,7 @@ pub fn run(sub: &clap::ArgMatches) {
         do_gadgetize,
         full_shuffle,
         gates_ahead,
+        type_attempts,
         egg,
         rg_freq,
         shuffled,

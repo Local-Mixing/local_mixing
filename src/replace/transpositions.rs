@@ -1160,16 +1160,16 @@ impl Transpositions {
     // still restores the ancilla wires to 0.
     pub fn gen_gates_swap(n: usize, swap: (u16, u16, u16)) -> Vec<[u16; 3]> {
         let (a, b, negation_type) = swap;
-        let (pool_3w, pool_4w, reverse): (&[&[[u16; 3]]], &[&[[u16; 3]]], bool) = match negation_type
-        {
-            0 => (SWAP_3W, SWAP_4W, false),
-            1 => (SWAP_N1_3W, SWAP_N1_4W, false),
-            2 => (SWAP_N2_3W, SWAP_N2_4W, false),
-            3 => (SWAP_N12_3W, SWAP_N12_4W, false),
-            4 => (SWAP_N1_3W, SWAP_N1_4W, true),
-            5 => (SWAP_N2_3W, SWAP_N2_4W, true),
-            _ => panic!("Invalid negation type"),
-        };
+        let (pool_3w, pool_4w, reverse): (&[&[[u16; 3]]], &[&[[u16; 3]]], bool) =
+            match negation_type {
+                0 => (SWAP_3W, SWAP_4W, false),
+                1 => (SWAP_N1_3W, SWAP_N1_4W, false),
+                2 => (SWAP_N2_3W, SWAP_N2_4W, false),
+                3 => (SWAP_N12_3W, SWAP_N12_4W, false),
+                4 => (SWAP_N1_3W, SWAP_N1_4W, true),
+                5 => (SWAP_N2_3W, SWAP_N2_4W, true),
+                _ => panic!("Invalid negation type"),
+            };
         let mut rng = rand::rng();
         let use_4w = n >= 4 && !pool_4w.is_empty();
         let total = pool_3w.len() + if use_4w { pool_4w.len() } else { 0 };
@@ -1431,7 +1431,15 @@ pub fn insert_wire_shuffles_knuth(
         }
         gates.push(gate);
     }
-    apply_unsamf(&mut gates, &t_list, &negation_mask, n, env, curated_shard_dbs, shard_dbs);
+    apply_unsamf(
+        &mut gates,
+        &t_list,
+        &negation_mask,
+        n,
+        env,
+        curated_shard_dbs,
+        shard_dbs,
+    );
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
@@ -1491,7 +1499,15 @@ pub fn insert_wire_shuffles_simple(
         }
         gates.push(gate);
     }
-    apply_unsamf(&mut gates, &t_list, &negation_mask, n, env, curated_shard_dbs, shard_dbs);
+    apply_unsamf(
+        &mut gates,
+        &t_list,
+        &negation_mask,
+        n,
+        env,
+        curated_shard_dbs,
+        shard_dbs,
+    );
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
@@ -1543,7 +1559,15 @@ pub fn insert_wire_shuffles_x(
         }
         gates.push(gate);
     }
-    apply_unsamf(&mut gates, &t_list, &negation_mask, n, env, curated_shard_dbs, shard_dbs);
+    apply_unsamf(
+        &mut gates,
+        &t_list,
+        &negation_mask,
+        n,
+        env,
+        curated_shard_dbs,
+        shard_dbs,
+    );
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
@@ -1600,7 +1624,15 @@ pub fn insert_wire_m_samfs_every_x(
     println!("Inserting {} samfs between each gate", m);
     println!("Starting len: {} gates", circuit.gates.len());
     let (mut gates, t_list, negation_mask) = insert_m_samfs_core(&circuit.gates, n, m, x);
-    apply_unsamf(&mut gates, &t_list, &negation_mask, n, env, curated_shard_dbs, shard_dbs);
+    apply_unsamf(
+        &mut gates,
+        &t_list,
+        &negation_mask,
+        n,
+        env,
+        curated_shard_dbs,
+        shard_dbs,
+    );
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
@@ -1612,6 +1644,11 @@ fn gates_collide(g1: [u16; 3], g2: [u16; 3]) -> bool {
 // For each collision (adjacent gates that can't commute), try inserting the first 3 gates of a
 // randomly chosen SAMF (swap-and-maybe-flip circuit) after the collision window and look up an
 // equal-or-shorter replacement in the curated DB.
+//
+// `type_attempts` controls how many DISTINCT SAMF gate (negation) types are tried per collision
+// before giving up: each attempt samples a not-yet-tried type (without replacement) and one
+// random hardcoded SAMF of that type. The first type that yields a compressing window wins;
+// `type_attempts == 1` is the original single-try behaviour.
 //
 // When gates_ahead > 2, first tries a wider window of gates_ahead gates + samf[0..3]. Falls back
 // to the 2-gate collision pair + samf[0..3] if the wider lookup misses.
@@ -1625,6 +1662,7 @@ fn shuffled_shooting_game_core(
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
     gates_ahead: usize,
+    type_attempts: usize,
 ) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
     use crate::replace::pairs::compress_curated_lmdb;
 
@@ -1668,7 +1706,7 @@ fn shuffled_shooting_game_core(
                 break 'try_replace false;
             }
 
-            // Generate SAMF.
+            // Pick the swap wires once; we vary the gate (negation) type across attempts.
             let swap_lo: u16 = rng.random_range(0..n as u16);
             let swap_hi: u16 = loop {
                 let w: u16 = rng.random_range(0..n as u16);
@@ -1681,15 +1719,11 @@ fn shuffled_shooting_game_core(
             } else {
                 (swap_hi, swap_lo)
             };
-            let neg_type: u16 = random_neg_type(&mut rng);
-            let samf_swap = (swap_lo, swap_hi, neg_type);
-            let samf = Transpositions::gen_gates_swap(n, samf_swap);
-            if samf.len() < 3 {
-                break 'try_replace false;
-            }
 
             // Build all available context gates (up to gates_ahead) with clean flags.
             // Positions 0 and 1 (collision pair controls) are already verified clean.
+            // The context is independent of the SAMF, so it is built once and reused
+            // across every gate-type attempt.
             let ga = gates_ahead.min(input.len() - i);
             let mut ctx: Vec<([u16; 3], bool)> = Vec::with_capacity(ga);
             ctx.push(([a, b, c], true));
@@ -1705,52 +1739,76 @@ fn shuffled_shooting_game_core(
                 ctx.push(([gw0, gw1, gw2], clean));
             }
 
-            // Try all contiguous sub-windows of [context(0..ga), samf(0..3)] with:
-            //   - length ≥ 4
-            //   - at least 1 SAMF gate  (end > ga)
-            //   - all context gates in the window have clean controls
-            // Order: longest first, within same length more-SAMF-first (start descending).
-            let mut found: Option<(usize, usize, Vec<[u16; 3]>)> = None; // (start, samf_used, repl)
-            'outer: for len in (4..=ga + 3).rev() {
-                for start in (0..ga).rev() {
-                    let end = start + len;
-                    if end > ga + 3 {
-                        continue;
-                    } // beyond full window
-                    if end <= ga {
-                        continue;
-                    } // no SAMF gate
-                    // All context gates in [start..end.min(ga)] must be clean.
-                    if !(start..end.min(ga)).all(|k| ctx[k].1) {
-                        continue;
-                    }
-                    // Build sub-window: context[start..ga] ++ samf[0..end-ga]
-                    let samf_count = end - ga;
-                    let mut window: Vec<[u16; 3]> = (start..ga).map(|k| ctx[k].0).collect();
-                    window.extend_from_slice(&samf[..samf_count]);
-                    if let Some(repl) =
-                        compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs)
-                    {
-                        // Reject if the SAMF gates appear verbatim in the replacement —
-                        // that means the compressor only touched the context and left the
-                        // SAMF unhidden.
-                        let samf_slice = &samf[..samf_count];
-                        let samf_hidden = repl.len() < samf_count
-                            || !repl.windows(samf_count).any(|w| w == samf_slice);
-                        if samf_hidden {
-                            found = Some((start, samf_count, repl));
-                            break 'outer;
+            // Try up to `type_attempts` DISTINCT gate (negation) types, sampled without
+            // replacement from the available set. For each type, draw one random hardcoded
+            // SAMF of that type and search for a compressing window; stop at the first type
+            // that yields one. type_attempts == 1 reproduces the old single-try behaviour.
+            let candidate_types: Vec<u16> = if REVERSED_SAMF {
+                (0u16..=5).collect()
+            } else {
+                (0u16..=3).collect()
+            };
+            // (neg_type, samf, start, samf_used, repl)
+            let mut winner: Option<(u16, Vec<[u16; 3]>, usize, usize, Vec<[u16; 3]>)> = None;
+            for &neg_type in candidate_types.choose_multiple(&mut rng, type_attempts.max(1)) {
+                let samf = Transpositions::gen_gates_swap(n, (swap_lo, swap_hi, neg_type));
+                if samf.len() < 3 {
+                    continue;
+                }
+
+                // Try all contiguous sub-windows of [context(0..ga), samf(0..3)] with:
+                //   - length ≥ 4
+                //   - at least 1 SAMF gate  (end > ga)
+                //   - all context gates in the window have clean controls
+                // Order: longest first, within same length more-SAMF-first (start descending).
+                let mut found: Option<(usize, usize, Vec<[u16; 3]>)> = None; // (start, samf_used, repl)
+                'outer: for len in (4..=ga + 3).rev() {
+                    for start in (0..ga).rev() {
+                        let end = start + len;
+                        if end > ga + 3 {
+                            continue;
+                        } // beyond full window
+                        if end <= ga {
+                            continue;
+                        } // no SAMF gate
+                        // All context gates in [start..end.min(ga)] must be clean.
+                        if !(start..end.min(ga)).all(|k| ctx[k].1) {
+                            continue;
+                        }
+                        // Build sub-window: context[start..ga] ++ samf[0..end-ga]
+                        let samf_count = end - ga;
+                        let mut window: Vec<[u16; 3]> = (start..ga).map(|k| ctx[k].0).collect();
+                        window.extend_from_slice(&samf[..samf_count]);
+                        if let Some(repl) =
+                            compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs)
+                        {
+                            // Reject if the SAMF gates appear verbatim in the replacement —
+                            // that means the compressor only touched the context and left the
+                            // SAMF unhidden.
+                            let samf_slice = &samf[..samf_count];
+                            let samf_hidden = repl.len() < samf_count
+                                || !repl.windows(samf_count).any(|w| w == samf_slice);
+                            if samf_hidden {
+                                found = Some((start, samf_count, repl));
+                                break 'outer;
+                            }
                         }
                     }
                 }
+
+                if let Some((start, samf_used, repl)) = found {
+                    winner = Some((neg_type, samf, start, samf_used, repl));
+                    break;
+                }
             }
 
-            match found {
+            match winner {
                 None => {
                     SAMF_COMPRESSIONS_FAILED.fetch_add(1, Ordering::Relaxed);
                     false
                 }
-                Some((start, samf_used, repl)) => {
+                Some((neg_type, samf, start, samf_used, repl)) => {
+                    let samf_swap = (swap_lo, swap_hi, neg_type);
                     // Emit context gates before the window start. Only the collision pair
                     // (ctx[0], ctx[1]) was verified clean; ctx[2..start] may carry pending
                     // control negations (the window-cleanliness check only covers gates
@@ -1813,6 +1871,7 @@ pub fn shuffled_shooting_game(
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
     gates_ahead: usize,
+    type_attempts: usize,
 ) -> usize {
     let (mut output, t_list, negation_mask, compressions) = shuffled_shooting_game_core(
         &circuit.gates,
@@ -1821,8 +1880,17 @@ pub fn shuffled_shooting_game(
         curated_shard_dbs,
         shard_dbs,
         gates_ahead,
+        type_attempts,
     );
-    apply_unsamf(&mut output, &t_list, &negation_mask, n, env, curated_shard_dbs, shard_dbs);
+    apply_unsamf(
+        &mut output,
+        &t_list,
+        &negation_mask,
+        n,
+        env,
+        curated_shard_dbs,
+        shard_dbs,
+    );
     circuit.gates = output;
     compressions
 }
@@ -1840,12 +1908,20 @@ pub fn shuffled_shoot_then_samf_core(
     m: usize,
     x: usize,
     gates_ahead: usize,
+    type_attempts: usize,
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
 ) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
-    let (out_a, t_a, neg_a, compressions) =
-        shuffled_shooting_game_core(input, n, env, curated_shard_dbs, shard_dbs, gates_ahead);
+    let (out_a, t_a, neg_a, compressions) = shuffled_shooting_game_core(
+        input,
+        n,
+        env,
+        curated_shard_dbs,
+        shard_dbs,
+        gates_ahead,
+        type_attempts,
+    );
     let (out_b, t_b, neg_b) = insert_m_samfs_core(&out_a, n, m, x);
     // Combined permutation: shooting game first (t_a), then insertion (t_b).
     let t_round = t_a.concat(&t_b);
@@ -1870,6 +1946,7 @@ pub fn shuffled_shoot_then_samf(
     m: usize,
     x: usize,
     gates_ahead: usize,
+    type_attempts: usize,
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
@@ -1880,11 +1957,20 @@ pub fn shuffled_shoot_then_samf(
         m,
         x,
         gates_ahead,
+        type_attempts,
         env,
         curated_shard_dbs,
         shard_dbs,
     );
-    apply_unsamf(&mut out, &t_round, &neg_round, n, env, curated_shard_dbs, shard_dbs);
+    apply_unsamf(
+        &mut out,
+        &t_round,
+        &neg_round,
+        n,
+        env,
+        curated_shard_dbs,
+        shard_dbs,
+    );
     circuit.gates = out;
     compressions
 }
@@ -1908,7 +1994,10 @@ mod reversed_samf_tests {
             }
         }
         // Guard against the feature silently regressing to disabled.
-        assert_eq!(seen_reversed, REVERSED_SAMF, "REVERSED_SAMF wiring mismatch");
+        assert_eq!(
+            seen_reversed, REVERSED_SAMF,
+            "REVERSED_SAMF wiring mismatch"
+        );
         if !REVERSED_SAMF {
             assert!(max <= 3);
         }
@@ -1916,9 +2005,18 @@ mod reversed_samf_tests {
 
     // Logical 2-bit op of a swap gadget on wires (a, b), all other wires held at 0.
     // Asserts every non-(a,b) wire is restored to 0 (ancilla clean).
-    fn logical_op(gates: &[[u16; 3]], n: usize, a: u16, b: u16, xa: usize, xb: usize) -> (usize, usize) {
+    fn logical_op(
+        gates: &[[u16; 3]],
+        n: usize,
+        a: u16,
+        b: u16,
+        xa: usize,
+        xb: usize,
+    ) -> (usize, usize) {
         let input = (xa << a) | (xb << b);
-        let c = CircuitSeq { gates: gates.to_vec() };
+        let c = CircuitSeq {
+            gates: gates.to_vec(),
+        };
         let out = c.evaluate(input);
         for w in 0..n {
             if w as u16 != a && w as u16 != b {
@@ -1961,7 +2059,12 @@ mod reversed_samf_tests {
                                 logical_op(&gates, n, a, b, xa, xb),
                                 expected(neg, xa, xb),
                                 "neg={} n={} (a,b)=({},{}) input=({},{})",
-                                neg, n, a, b, xa, xb
+                                neg,
+                                n,
+                                a,
+                                b,
+                                xa,
+                                xb
                             );
                         }
                     }
@@ -1984,7 +2087,8 @@ mod reversed_samf_tests {
                             logical_op(&gates, 4, 1, 3, xa, xb),
                             expected(fwd_type, xa, xb),
                             "reverse(gen({})) should equal forward {}",
-                            rev_type, fwd_type
+                            rev_type,
+                            fwd_type
                         );
                     }
                 }

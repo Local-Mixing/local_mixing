@@ -74,6 +74,14 @@ fn main() {
                         .help("Number of gates to include in each replacement window (2 = pair, >2 uses curated shard lookup)"),
                 )
                 .arg(
+                    Arg::new("type_attempts")
+                        .long("type_attempts")
+                        .required(false)
+                        .default_value("1")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Distinct SAMF gate types to try per collision before giving up (each tries one random hardcoded SAMF of a not-yet-tried type)"),
+                )
+                .arg(
                     Arg::new("rg_frequency")
                         .long("rg-frequency")
                         .required(false)

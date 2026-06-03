@@ -54,7 +54,10 @@ fn db_backed_shuffles_preserve_equivalence() {
     // Scale is env-configurable for heavier stress runs (defaults keep the test quick).
     // Default n=10 (higher DB hit-rate) and enough rounds that the compression path
     // reliably fires; both overridable for heavier stress runs.
-    let n: usize = std::env::var("LM_SAMF_N").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+    let n: usize = std::env::var("LM_SAMF_N")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
     let rounds: usize = std::env::var("LM_SAMF_ROUNDS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -94,7 +97,7 @@ fn db_backed_shuffles_preserve_equivalence() {
                     &shard_dbs,
                 ),
                 4 => {
-                    shuffled_shooting_game(&mut c, n, env, curated_shard_dbs, shard_dbs, 4);
+                    shuffled_shooting_game(&mut c, n, env, curated_shard_dbs, shard_dbs, 4, 3);
                 }
                 _ => {
                     shuffled_shoot_then_samf(
@@ -103,6 +106,7 @@ fn db_backed_shuffles_preserve_equivalence() {
                         4,
                         3,
                         4,
+                        3,
                         &env,
                         &curated_shard_dbs,
                         &shard_dbs,
@@ -161,6 +165,7 @@ fn single_end_multiround_preserves_equivalence() {
                 m,
                 x,
                 gates_ahead,
+                3,
                 &env,
                 &curated_shard_dbs,
                 &shard_dbs,

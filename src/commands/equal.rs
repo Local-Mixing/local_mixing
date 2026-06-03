@@ -6,7 +6,9 @@ use local_mixing::circuit::CircuitSeq;
 pub fn run(sub: &clap::ArgMatches) {
     let c1_path = sub.get_one::<String>("circuit_a").unwrap();
     let c2_path = sub.get_one::<String>("circuit_b").unwrap();
-    let i: usize = *sub.get_one::<usize>("iterations").expect("Missing --iterations");
+    let i: usize = *sub
+        .get_one::<usize>("iterations")
+        .expect("Missing --iterations");
     let n: usize = *sub.get_one::<usize>("wires").expect("Missing --wires");
 
     let contents1 = fs::read_to_string(c1_path)
@@ -17,7 +19,10 @@ pub fn run(sub: &clap::ArgMatches) {
     let c1 = CircuitSeq::from_string(&contents1);
     let c2 = CircuitSeq::from_string(&contents2);
 
-    println!("Checking for equivalence between {} and {}", c1_path, c2_path);
+    println!(
+        "Checking for equivalence between {} and {}",
+        c1_path, c2_path
+    );
     println!("{}: {} gates", c1_path, c1.gates.len());
     println!("{}: {} gates", c2_path, c2.gates.len());
 
