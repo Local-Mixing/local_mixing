@@ -1626,7 +1626,7 @@ pub fn targeted_find_convex_subcircuit_deep<R: RngCore>(
 pub fn contiguous_convex(
     circuit: &mut CircuitSeq,
     ordered_convex_gates: &mut Vec<usize>,
-    num_wires: usize
+    num_wires: usize,
 ) -> Option<(usize, usize)> {
     // This should never run
     if ordered_convex_gates.len() < 2 {
@@ -1637,81 +1637,68 @@ pub fn contiguous_convex(
         panic!("not convex");
     }
 
-    // Keep track of convex positions
-    let mut is_convex = vec![false; circuit.gates.len()];
+    // Track which positions hold a selected (member) gate. Kept in sync with the
+    // circuit as gates move via the same remove/insert operations.
+    let mut member = vec![false; circuit.gates.len()];
     for &idx in ordered_convex_gates.iter() {
-        is_convex[idx] = true;
+        member[idx] = true;
     }
 
-    // Bubble boundaries
+    // Block boundaries: min and max member positions.
     let mut start = *ordered_convex_gates.first().unwrap();
     let mut end = *ordered_convex_gates.last().unwrap();
 
-    let mut non_convex: Vec<usize> = (start..=end)
-        .filter(|&i| !is_convex[i])
-        .collect();
+    // Drain interior non-members to a fixpoint.
+    loop {
+        let mut moved = false;
+        let mut p = start + 1;
+        while p < end {
+            if member[p] {
+                p += 1;
+                continue;
+            }
 
-    // Left pass
-    while !non_convex.is_empty() {
-        let leftmost = non_convex[0];
-        if leftmost <= start {
-            break;
+            // Can it commute left past everything in [start, p)?
+            let can_left =
+                (start..p).all(|i| !Gate::collides_index(&circuit.gates[i], &circuit.gates[p]));
+            if can_left {
+                let gate = circuit.gates.remove(p);
+                circuit.gates.insert(start, gate);
+                member.remove(p);
+                member.insert(start, false);
+                start += 1;
+                moved = true;
+                break;
+            }
+
+            // Otherwise can it commute right past everything in (p, end]?
+            let can_right = ((p + 1)..=end)
+                .all(|i| !Gate::collides_index(&circuit.gates[i], &circuit.gates[p]));
+            if can_right {
+                let gate = circuit.gates.remove(p);
+                circuit.gates.insert(end, gate);
+                member.remove(p);
+                member.insert(end, false);
+                end -= 1;
+                moved = true;
+                break;
+            }
+
+            p += 1;
         }
 
-        let can_shift = (start..leftmost)
-            .all(|i| !Gate::collides_index(&circuit.gates[i], &circuit.gates[leftmost]));
-
-        if can_shift {
-            let gate = circuit.gates.remove(leftmost);
-            circuit.gates.insert(start, gate);
-
-            for idx in ordered_convex_gates.iter_mut() {
-                if *idx >= start && *idx < leftmost {
-                    *idx += 1;
-                }
-            }
-            for i in 0..non_convex.len() {
-                if non_convex[i] >= start && non_convex[i] < leftmost {
-                    panic!("This shouldn't be possible");
-                }
-            }
-            start += 1;
-            non_convex.remove(0);
-        } else {
-            break;
-        }
-    }
-
-    // Right pass
-    while !non_convex.is_empty() {
-        let rightmost = *non_convex.last().unwrap();
-        if rightmost >= end {
-            break;
-        }
-
-        let can_shift = ((rightmost + 1)..=end)
-            .all(|i| !Gate::collides_index(&circuit.gates[i], &circuit.gates[rightmost]));
-
-        if can_shift {
-            let gate = circuit.gates.remove(rightmost);
-            circuit.gates.insert(end, gate);
-
-            for idx in ordered_convex_gates.iter_mut() {
-                if *idx > rightmost && *idx <= end {
-                    *idx -= 1;
-                }
-            }
-            for i in 0..non_convex.len() {
-                if non_convex[i] > rightmost && non_convex[i] <= end {
-                    panic!("Right should be possible either");
-                }
-            }
-            end -= 1;
-            non_convex.pop();
-        } else {
+        if !moved {
             break;
         }
     }
+
+    // If any interior non-member survived, we could not contiguize.
+    if (start..=end).any(|i| !member[i]) {
+        return None;
+    }
+
+    // Members now occupy exactly the contiguous block [start, end].
+    *ordered_convex_gates = (start..=end).collect();
 
     Some((start, end))
 }

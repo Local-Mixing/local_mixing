@@ -869,6 +869,7 @@ pub fn insert_wire_shuffles_knuth(
         [2, 3, 0, 1],
     ];
 
+    let mut leftover_nots: Vec<u16> = Vec::new();
     for (i, val) in negation_mask.into_iter().enumerate() {
         if val == 1 {
             if let Some(swaps) = wire_transpositions.get(&(i as u16)) {
@@ -878,7 +879,10 @@ pub fn insert_wire_shuffles_knuth(
                     panic!("Invalid pos or curr_neg_type");
                 }
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize] as u16;
-                
+            } else {
+                // Wire is a fixed point of the permutation, so it has no transposition
+                // to fold the residual negation into; undo it with an explicit NOT.
+                leftover_nots.push(i as u16);
             }
         }
     }
@@ -886,6 +890,9 @@ pub fn insert_wire_shuffles_knuth(
     let mut c = t.to_circuit(n, env, dbs).gates;
     c.reverse();
     gates.extend_from_slice(&c);
+    for wire in leftover_nots {
+        gates.extend_from_slice(&Transpositions::gen_gates_not(n, wire, env, dbs));
+    }
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
@@ -958,6 +965,7 @@ pub fn insert_wire_shuffles_simple(
         [2, 3, 0, 1],
     ];
 
+    let mut leftover_nots: Vec<u16> = Vec::new();
     for (i, val) in negation_mask.into_iter().enumerate() {
         if val == 1 {
             if let Some(swaps) = wire_transpositions.get(&(i as u16)) {
@@ -967,7 +975,10 @@ pub fn insert_wire_shuffles_simple(
                     panic!("Invalid pos or curr_neg_type");
                 }
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize] as u16;
-                
+            } else {
+                // Wire is a fixed point of the permutation, so it has no transposition
+                // to fold the residual negation into; undo it with an explicit NOT.
+                leftover_nots.push(i as u16);
             }
         }
     }
@@ -975,6 +986,9 @@ pub fn insert_wire_shuffles_simple(
     let mut c = t.to_circuit(n, env, dbs).gates;
     c.reverse();
     gates.extend_from_slice(&c);
+    for wire in leftover_nots {
+        gates.extend_from_slice(&Transpositions::gen_gates_not(n, wire, env, dbs));
+    }
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
@@ -1039,6 +1053,7 @@ pub fn insert_wire_shuffles_x(
         [2, 3, 0, 1],
     ];
 
+    let mut leftover_nots: Vec<u16> = Vec::new();
     for (i, val) in negation_mask.into_iter().enumerate() {
         if val == 1 {
             if let Some(swaps) = wire_transpositions.get(&(i as u16)) {
@@ -1048,7 +1063,10 @@ pub fn insert_wire_shuffles_x(
                     panic!("Invalid pos or curr_neg_type");
                 }
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize] as u16;
-                
+            } else {
+                // Wire is a fixed point of the permutation, so it has no transposition
+                // to fold the residual negation into; undo it with an explicit NOT.
+                leftover_nots.push(i as u16);
             }
         }
     }
@@ -1056,6 +1074,9 @@ pub fn insert_wire_shuffles_x(
     let mut c = t.to_circuit(n, env, dbs).gates;
     c.reverse();
     gates.extend_from_slice(&c);
+    for wire in leftover_nots {
+        gates.extend_from_slice(&Transpositions::gen_gates_not(n, wire, env, dbs));
+    }
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
@@ -1112,6 +1133,7 @@ pub fn insert_wire_m_samfs_every_x(
         [2, 3, 0, 1],
     ];
 
+    let mut leftover_nots: Vec<u16> = Vec::new();
     for (i, val) in negation_mask.into_iter().enumerate() {
         if val == 1 {
             if let Some(swaps) = wire_transpositions.get(&(i as u16)) {
@@ -1121,7 +1143,10 @@ pub fn insert_wire_m_samfs_every_x(
                     panic!("Invalid pos or curr_neg_type");
                 }
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr_neg_type as usize] as u16;
-                
+            } else {
+                // Wire is a fixed point of the permutation, so it has no transposition
+                // to fold the residual negation into; undo it with an explicit NOT.
+                leftover_nots.push(i as u16);
             }
         }
     }
@@ -1129,6 +1154,9 @@ pub fn insert_wire_m_samfs_every_x(
     let mut c = t.to_circuit(n, env, dbs).gates;
     c.reverse();
     gates.extend_from_slice(&c);
+    for wire in leftover_nots {
+        gates.extend_from_slice(&Transpositions::gen_gates_not(n, wire, env, dbs));
+    }
     circuit.gates = gates;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
@@ -1374,17 +1402,24 @@ pub fn shuffled_shooting_game(
         wire_positions.insert(*wb, (idx, 1));
     }
     const TRANSITION: [[u8; 4]; 2] = [[1, 0, 3, 2], [2, 3, 0, 1]];
+    let mut leftover_nots: Vec<u16> = Vec::new();
     for (wire, &val) in negation_mask.iter().enumerate() {
         if val == 1 {
             if let Some(&(swap_idx, pos)) = wire_positions.get(&(wire as u16)) {
                 let curr = t.transpositions[swap_idx].2;
                 t.transpositions[swap_idx].2 = TRANSITION[pos][curr as usize] as u16;
+            } else {
+                // permutation fixed point — undo the residual negation explicitly
+                leftover_nots.push(wire as u16);
             }
         }
     }
     let mut undo = t.to_circuit(n, env, dbs).gates;
     undo.reverse();
     output.extend_from_slice(&undo);
+    for w in leftover_nots {
+        output.extend_from_slice(&Transpositions::gen_gates_not(n, w, env, dbs));
+    }
 
     circuit.gates = output;
     compressions
