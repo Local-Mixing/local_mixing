@@ -644,6 +644,113 @@ fn heatmap_corner(
     PyArray2::from_owned_array(py, arr2).into()
 }
 
+/// Any 5000-gate corner of the full (canonicalized) heatmap. Reads the FULL circuits and
+/// canonicalizes both, then windows: `x_high` selects the last 5000 positions of c1 (else the
+/// first 5000), `y_high` the last 5000 of c2 (else the first 5000). So bottom-left = (false,false),
+/// top-right = (true,true), bottom-right = (true,false), top-left = (false,true). Because both
+/// circuits are read/canonicalized in full, every corner is consistent with the full heatmap.
+/// Supports random or incremental (x0) sampling, fixed bits, and first/second-half masking.
+#[pyfunction]
+fn heatmap_corner_at(
+    py: Python<'_>,
+    num_wires: usize,
+    num_inputs: usize,
+    flag: bool,
+    c1_path: &str,
+    c2_path: &str,
+    fix: usize,
+    hw: bool,
+    incremental: bool,
+    x0_arg: Option<u128>,
+    first_half: bool,
+    second_half: bool,
+    x_high: bool,
+    y_high: bool,
+) -> Py<PyArray2<f64>> {
+    const CORNER: usize = 5000;
+    let mask = if num_wires < 256 {
+        (u256::one() << num_wires) - u256::one()
+    } else {
+        u256::MAX
+    };
+    println!(
+        "Running corner-at heatmap on {} inputs (x_high={}, y_high={}, {} base{})",
+        num_inputs,
+        x_high,
+        y_high,
+        if x0_arg.is_some() { "chosen" } else { "random" },
+        if incremental { ", incremental" } else { "" }
+    );
+    io::stdout().flush().unwrap();
+
+    let circuit_one_str = fs::read_to_string(c1_path).expect("Failed to read c1");
+    let circuit_two_str = fs::read_to_string(c2_path).expect("Failed to read c2");
+    let mut circuit_one = CircuitSeq::from_string(&circuit_one_str);
+    let mut circuit_two = CircuitSeq::from_string(&circuit_two_str);
+    circuit_one.canonicalize();
+    circuit_two.canonicalize();
+    let circuit_one_len = circuit_one.gates.len();
+    let circuit_two_len = circuit_two.gates.len();
+
+    let (x1, x2) = if x_high {
+        (circuit_one_len.saturating_sub(CORNER), circuit_one_len)
+    } else {
+        (0, CORNER.min(circuit_one_len))
+    };
+    let (y1, y2) = if y_high {
+        (circuit_two_len.saturating_sub(CORNER), circuit_two_len)
+    } else {
+        (0, CORNER.min(circuit_two_len))
+    };
+
+    let mut rng = rand::rng();
+    let start_time = Instant::now();
+    let mut fixed_mask = u256::zero();
+    let positions = (0..num_wires).choose_multiple(&mut rng, fix);
+    for p in positions {
+        fixed_mask |= u256::from(1) << p;
+    }
+    let x0: u256 = match x0_arg {
+        Some(v) => u256::from(v) & mask,
+        None => {
+            (u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128)) & mask
+        }
+    };
+    let inputs: Vec<u256> = (0..num_inputs)
+        .map(|i| {
+            if incremental {
+                x0.overflowing_add(u256::from(i as u128)).0 & mask
+            } else {
+                let r: u256 =
+                    u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128);
+                ((x0 & fixed_mask) | (r & !fixed_mask)) & mask
+            }
+        })
+        .collect();
+
+    let data = compute_grid_parallel(
+        &circuit_one,
+        &circuit_two,
+        &inputs,
+        x1,
+        x2,
+        y1,
+        y2,
+        num_wires,
+        mask,
+        flag,
+        hw,
+        first_half,
+        second_half,
+    );
+
+    println!("Time elapsed: {:?}", Instant::now() - start_time);
+
+    let num_points = (x2 - x1 + 1) * (y2 - y1 + 1);
+    let arr2 = Array2::from_shape_vec((num_points, 3), data).expect("grid shape mismatch");
+    PyArray2::from_owned_array(py, arr2).into()
+}
+
 #[pymodule]
 fn local_mixing(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // wrap the function, passing the module `m`
@@ -653,5 +760,6 @@ fn local_mixing(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(heatmap_slice, module)?)?;
     module.add_function(wrap_pyfunction!(heatmap_mini_slice, module)?)?;
     module.add_function(wrap_pyfunction!(heatmap_corner, module)?)?;
+    module.add_function(wrap_pyfunction!(heatmap_corner_at, module)?)?;
     Ok(())
 }

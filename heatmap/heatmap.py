@@ -142,7 +142,9 @@ if __name__ == "__main__":
     parser.add_argument("--c2", type=str, required=False, help="Path to second circuit file")
     parser.add_argument("--chunk", type=int, default=10_000, help="Size of each chunk (default 10000)")
     parser.add_argument("--path", type=str, default="./heatmap.png", help="Path to the heatmap generation")
-    parser.add_argument("--corner", action="store_true", help="Only compute the bottom corner (first 5000 gates of both circuits); supports --incremental")
+    parser.add_argument("--corner", action="store_true", help="Only compute a 5000-gate corner; supports --incremental")
+    parser.add_argument("--corner_pos", choices=["bl", "br", "tl", "tr"], default=None,
+                        help="Which corner for --corner: bl/br/tl/tr (reads full circuits, windows that corner). Omit for the legacy first-5000 corner.")
     parser.add_argument("--canonless", action="store_true", help="Don't canonicalize before heatmap")
     parser.add_argument("--small", action="store_true", help="Only check small inputs")
     parser.add_argument("--mini", action="store_true", help="Check with mini chunks inputs")
@@ -206,9 +208,15 @@ if __name__ == "__main__":
                 print(f"Saved {output_path}")
 
     elif args.corner:
-        mode = "incremental " if args.incremental else ""
-        print(f"Generating {mode}corner heatmap (first 5000 gates of both circuits)...")
-        results = heatmap_rust.heatmap_corner(args.n, args.i, flag, args.c1, args.c2, args.fix, args.hw, args.incremental, args.x0, args.first_half, args.second_half)
+        if args.corner_pos:
+            x_high = args.corner_pos in ("br", "tr")  # right = end of c1
+            y_high = args.corner_pos in ("tl", "tr")  # top   = end of c2
+            print(f"Generating {args.corner_pos} corner heatmap (full read, windowed)...")
+            results = heatmap_rust.heatmap_corner_at(args.n, args.i, flag, args.c1, args.c2, args.fix, args.hw, args.incremental, args.x0, args.first_half, args.second_half, x_high, y_high)
+        else:
+            mode = "incremental " if args.incremental else ""
+            print(f"Generating {mode}corner heatmap (first 5000 gates of both circuits)...")
+            results = heatmap_rust.heatmap_corner(args.n, args.i, flag, args.c1, args.c2, args.fix, args.hw, args.incremental, args.x0, args.first_half, args.second_half)
         output = args.path
         if args.std:
             plot_heatmap_std(results, output, xlabel=args.x, ylabel=args.y)
