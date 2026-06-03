@@ -42,6 +42,30 @@ fn popcount_u256(x: u256) -> u32 {
     count
 }
 
+/// Restrict the Hamming-distance computation to a half of the wires.
+/// `first_half` -> low `num_wires/2` bits; `second_half` -> high bits; neither -> all bits.
+/// Returns the effective bit-mask and the bit count to normalize by.
+fn half_mask_and_width(
+    num_wires: usize,
+    mask: u256,
+    first_half: bool,
+    second_half: bool,
+) -> (u256, usize) {
+    let half = num_wires / 2;
+    let lower = if half < 256 {
+        (u256::one() << half) - u256::one()
+    } else {
+        u256::MAX
+    };
+    if first_half {
+        (mask & lower, half)
+    } else if second_half {
+        (mask & !lower, num_wires - half)
+    } else {
+        (mask, num_wires)
+    }
+}
+
 /// Parallel heatmap grid: for x in [x1,x2] and y in [y1,y2], computes the average (over
 /// `inputs`) of the overlap between circuit_one's state after gate i1 and circuit_two's
 /// state after gate i2. Returns a flat, row-major [x, y, value] buffer (3 f64 per cell,
@@ -58,8 +82,12 @@ fn compute_grid_parallel(
     mask: u256,
     flag: bool,
     hw: bool,
+    first_half: bool,
+    second_half: bool,
 ) -> Vec<f64> {
     let num_inputs = inputs.len();
+    // Restrict to a half of the wires (and renormalize) if requested.
+    let (mask, num_wires) = half_mask_and_width(num_wires, mask, first_half, second_half);
     // Per-input state evolutions, computed across cores...
     let evo_one: Vec<Vec<u256>> = inputs
         .par_iter()
@@ -100,7 +128,7 @@ fn compute_grid_parallel(
                     let a = e1[k];
                     let b = e2[k];
                     let hamming_dist = if hw {
-                        (popcount_u256(a) as f64 - popcount_u256(b) as f64).abs()
+                        (popcount_u256(a & mask) as f64 - popcount_u256(b & mask) as f64).abs()
                     } else {
                         popcount_u256((a ^ b) & mask) as f64
                     };
@@ -129,6 +157,8 @@ fn heatmap(
     canon: bool,
     fix: usize,
     hw: bool,
+    first_half: bool,
+    second_half: bool,
 ) -> Py<PyArray2<f64>> {
     let mask = if num_wires < 256 {
         (u256::one() << num_wires) - u256::one()
@@ -180,6 +210,8 @@ fn heatmap(
         mask,
         flag,
         hw,
+        first_half,
+        second_half,
     );
 
     println!("Time elapsed: {:?}", Instant::now() - start_time);
@@ -200,6 +232,8 @@ fn heatmap_incremental(
     _fix: usize,
     hw: bool,
     x0_arg: Option<u128>,
+    first_half: bool,
+    second_half: bool,
 ) -> Py<PyArray2<f64>> {
     let mask = if num_wires < 256 {
         (u256::one() << num_wires) - u256::one()
@@ -249,6 +283,8 @@ fn heatmap_incremental(
         mask,
         flag,
         hw,
+        first_half,
+        second_half,
     );
 
     println!("Time elapsed: {:?}", Instant::now() - start_time);
@@ -362,6 +398,8 @@ fn heatmap_slice(
     c2_path: &str,
     fix: usize,
     hw: bool,
+    first_half: bool,
+    second_half: bool,
 ) -> Py<PyArray2<f64>> {
     println!("Running heatmap on {} inputs", num_inputs);
     io::stdout().flush().unwrap();
@@ -408,6 +446,8 @@ fn heatmap_slice(
         mask,
         flag,
         hw,
+        first_half,
+        second_half,
     );
 
     println!("Time elapsed: {:?}", Instant::now() - start_time);
@@ -522,6 +562,8 @@ fn heatmap_corner(
     hw: bool,
     incremental: bool,
     x0_arg: Option<u128>,
+    first_half: bool,
+    second_half: bool,
 ) -> Py<PyArray2<f64>> {
     const CORNER: usize = 5000;
     let mask = if num_wires < 256 {
@@ -592,6 +634,8 @@ fn heatmap_corner(
         mask,
         flag,
         hw,
+        first_half,
+        second_half,
     );
 
     println!("Time elapsed: {:?}", Instant::now() - start_time);

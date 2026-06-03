@@ -150,10 +150,15 @@ if __name__ == "__main__":
     parser.add_argument("--hw", action="store_true", help="Use hamming weight difference mode")
     parser.add_argument("--incremental", action="store_true", help="First input random, then x0+1, x0+2, ... instead of random each iteration")
     parser.add_argument("--x0", type=int, default=None, help="Incremental mode: starting input x0 (default: random)")
+    parser.add_argument("--first_half", action="store_true", help="Hamming distance over only the low num_wires/2 bits")
+    parser.add_argument("--second_half", action="store_true", help="Hamming distance over only the high num_wires/2 bits")
     parser.add_argument("--std", action="store_true", help="Use standard deviation for heatmaps")
     parser.add_argument("--enhance", type=float, nargs="?", const=0.05, default=None,
                         help="Tighten color scale around 0.5 by ENHANCE (e.g. --enhance 0.1 → [0.4, 0.6]); default window is 0.05")
     args = parser.parse_args()
+
+    if args.first_half and args.second_half:
+        raise ValueError("--first_half and --second_half are mutually exclusive")
 
     if args.enhance is not None:
         vmin, vmax = 0.5 - args.enhance, 0.5 + args.enhance
@@ -181,7 +186,7 @@ if __name__ == "__main__":
                 print(f"Computing slice x[{x_start}:{x_end}], y[{y_start}:{y_end}]...")
                 if args.pieces:
                     results = heatmap_rust.heatmap_slice(
-                        args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2, args.fix, args.hw
+                        args.n, args.i, flag, x_start, x_end, y_start, y_end, args.c1, args.c2, args.fix, args.hw, args.first_half, args.second_half
                     )
                 else:
                     results = heatmap_rust.heatmap_mini_slice(
@@ -203,7 +208,7 @@ if __name__ == "__main__":
     elif args.corner:
         mode = "incremental " if args.incremental else ""
         print(f"Generating {mode}corner heatmap (first 5000 gates of both circuits)...")
-        results = heatmap_rust.heatmap_corner(args.n, args.i, flag, args.c1, args.c2, args.fix, args.hw, args.incremental, args.x0)
+        results = heatmap_rust.heatmap_corner(args.n, args.i, flag, args.c1, args.c2, args.fix, args.hw, args.incremental, args.x0, args.first_half, args.second_half)
         output = args.path
         if args.std:
             plot_heatmap_std(results, output, xlabel=args.x, ylabel=args.y)
@@ -224,9 +229,9 @@ if __name__ == "__main__":
     else:
         print("Generating full heatmap...")
         if args.incremental:
-            results = heatmap_rust.heatmap_incremental(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix, args.hw, args.x0)
+            results = heatmap_rust.heatmap_incremental(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix, args.hw, args.x0, args.first_half, args.second_half)
         else:
-            results = heatmap_rust.heatmap(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix, args.hw)
+            results = heatmap_rust.heatmap(args.n, args.i, flag, args.c1, args.c2, not args.canonless, args.fix, args.hw, args.first_half, args.second_half)
         output = args.path
         if args.std:
             plot_heatmap_std(results, output, xlabel=args.x, ylabel=args.y)
