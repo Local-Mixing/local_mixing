@@ -94,6 +94,13 @@ fn main() {
                         .help("Use shuffled shooting game (SAMF-assisted curated DB compression) instead of simple shooting game")
                         .required(false)
                         .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("single-end")
+                        .long("single-end")
+                        .help("Shuffled path only: accumulate SAMFs/NOTs across ALL rounds (functionality is broken between rounds) and undo them in a single pass after the last round, before its compression")
+                        .required(false)
+                        .action(clap::ArgAction::SetTrue),
                 ),
         )
         .subcommand(
@@ -209,6 +216,42 @@ fn main() {
                         .help("Path to the new circuit file"),
                 ),
         )
+        .subcommand(
+            Command::new("equal")
+                .about("Check if two circuits are functionally equivalent")
+                .arg(
+                    Arg::new("wires")
+                        .short('n')
+                        .long("wires")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of wires"),
+                )
+                .arg(
+                    Arg::new("iterations")
+                        .short('i')
+                        .long("iterations")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of test iterations"),
+                )
+                .arg(
+                    Arg::new("circuit_a")
+                        .short('a')
+                        .long("circuit-a")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to first circuit file"),
+                )
+                .arg(
+                    Arg::new("circuit_b")
+                        .short('b')
+                        .long("circuit-b")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to second circuit file"),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -217,6 +260,7 @@ fn main() {
         Some(("genran", sub)) => commands::genran::run(sub),
         Some(("shuffle", sub)) => commands::shuffle::run(sub),
         Some(("shoot", sub)) => commands::shoot::run(sub),
+        Some(("equal", sub)) => commands::equal::run(sub),
         _ => unreachable!("subcommand_required guarantees a match"),
     }
 }

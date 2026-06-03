@@ -24,7 +24,7 @@ pub fn run(sub: &clap::ArgMatches) {
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(lmdb_path))
         .expect("Failed to open lmdb");
-    let (_shard_dbs, _curated_shard_dbs) = open_all_dbs(&env);
+    let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
 
     let contents = fs::read_to_string(from_path)
         .unwrap_or_else(|_| panic!("Failed to read circuit file at {}", from_path));
@@ -33,12 +33,12 @@ pub fn run(sub: &clap::ArgMatches) {
     println!("Creating shuffled circuit");
     if i == 0 {
         if knuth {
-            insert_wire_shuffles_knuth(&mut c, n);
+            insert_wire_shuffles_knuth(&mut c, n, &env, &curated_shard_dbs, &shard_dbs);
         } else {
-            insert_wire_shuffles_simple(&mut c, n);
+            insert_wire_shuffles_simple(&mut c, n, &env, &curated_shard_dbs, &shard_dbs);
         }
     } else {
-        insert_wire_shuffles_x(&mut c, n, i);
+        insert_wire_shuffles_x(&mut c, n, i, &env, &curated_shard_dbs, &shard_dbs);
     }
 
     let mut file = fs::File::create(dest_path).expect("Failed to create new file");

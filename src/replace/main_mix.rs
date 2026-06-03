@@ -68,6 +68,7 @@ pub fn main_shuffle_shoot_shuffle(
     egg: bool,
     rg_freq: usize,
     shuffled: bool,
+    single_end: bool,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -113,9 +114,17 @@ pub fn main_shuffle_shoot_shuffle(
     let n = if leave { 2 * n } else { n };
     if full_shuffle {
         // SAMF insertion is equivalence-preserving by construction, so no retry guard.
-        insert_wire_m_samfs_every_x(&mut circuit, n, n, 1);
+        insert_wire_m_samfs_every_x(&mut circuit, n, n, 1, env, curated_shard_dbs, shard_dbs);
         println!("After full shuffle: {} gates", circuit.gates.len());
     }
+    // --single-end accumulator (shuffled path only): SAMF state carried across ALL rounds,
+    // undone in one pass after the last round. `total_t` is the composed wire permutation
+    // (round order), `total_neg` the pending negation in the current wire space.
+    let mut total_t = crate::replace::transpositions::Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut total_neg = vec![0u8; n];
+
     // Per-round SAMF (shuffled shooting game) compression stats, snapshotted each round.
     let mut per_round_samf: Vec<(usize, usize)> = Vec::new();
     let mut prev_samf_made = crate::replace::transpositions::SAMF_COMPRESSIONS_MADE
@@ -128,15 +137,45 @@ pub fn main_shuffle_shoot_shuffle(
                 curated_shard_dbs: &curated_shard_dbs,
             };
             circuit = expand_once(&circuit, n, env, shard_dbs, &pair_mode);
-        } else if shuffled {
-            use crate::replace::transpositions::shuffled_shooting_game;
-            shuffled_shooting_game(
-                &mut circuit,
+        } else if shuffled && single_end {
+            // Accumulate this round's SAMFs WITHOUT undoing — functionality is intentionally
+            // broken between rounds; we undo everything once after the last round (below).
+            use crate::replace::transpositions::shuffled_shoot_then_samf_core;
+            let (out, t_round, neg_round, _c) = shuffled_shoot_then_samf_core(
+                &circuit.gates,
                 n,
+                m,
+                x,
+                gates_ahead,
                 env,
                 curated_shard_dbs,
                 shard_dbs,
+            );
+            circuit.gates = out;
+            // Fold this round into the running accumulator: transport the existing pending
+            // negation through this round's permutation, then add this round's negation;
+            // compose the permutations (existing first, then this round).
+            let mut new_total_neg = neg_round;
+            for w in 0..n {
+                if total_neg[w] == 1 {
+                    let cw = t_round.evaluate(w as u16) as usize;
+                    new_total_neg[cw] ^= 1;
+                }
+            }
+            total_neg = new_total_neg;
+            total_t = total_t.concat(&t_round);
+        } else if shuffled {
+            // Shooting game + per-gate SAMF insertion with a SINGLE merged unsamf.
+            use crate::replace::transpositions::shuffled_shoot_then_samf;
+            shuffled_shoot_then_samf(
+                &mut circuit,
+                n,
+                m,
+                x,
                 gates_ahead,
+                env,
+                curated_shard_dbs,
+                shard_dbs,
             );
         } else {
             circuit = simple_shooting_game(
@@ -155,8 +194,26 @@ pub fn main_shuffle_shoot_shuffle(
             );
         }
         println!("After shooting game: {} gates", circuit.gates.len());
-        insert_wire_m_samfs_every_x(&mut circuit, n, m, x);
+        // The shuffled path already inserted SAMFs (merged into its single unsamf above).
+        if !shuffled {
+            insert_wire_m_samfs_every_x(&mut circuit, n, m, x, env, curated_shard_dbs, shard_dbs);
+        }
         println!("After inserting samfs: {} gates", circuit.gates.len());
+        // --single-end: after the FINAL round's shuffle, before its compression, undo ALL
+        // accumulated SAMFs/NOTs in one pass — restoring equivalence to the original input.
+        if shuffled && single_end && i == rounds - 1 {
+            use crate::replace::transpositions::apply_unsamf;
+            apply_unsamf(
+                &mut circuit.gates,
+                &total_t,
+                &total_neg,
+                n,
+                env,
+                curated_shard_dbs,
+                shard_dbs,
+            );
+            println!("After single-end unsamf: {} gates", circuit.gates.len());
+        }
         circuit = compress_loop(
             &circuit,
             n,

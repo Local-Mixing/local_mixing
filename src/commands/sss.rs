@@ -22,6 +22,7 @@ pub fn run(sub: &clap::ArgMatches) {
     let gates_ahead: usize = *sub.get_one("gates_ahead").unwrap();
     let egg = sub.get_flag("egg");
     let shuffled = sub.get_flag("shuffled");
+    let single_end = sub.get_flag("single-end");
     let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
     let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
     let data = fs::read_to_string(s).expect("Failed to read source circuit");
@@ -63,6 +64,7 @@ pub fn run(sub: &clap::ArgMatches) {
         egg,
         rg_freq,
         shuffled,
+        single_end,
     );
     print_compress_timers();
     write_compression_histogram("compression_histogram.csv");
