@@ -125,6 +125,18 @@ impl Graph {
                 println!("{:2} -", i);
             }
         }
+
+        // Print sets of wires with matching hashes
+        let mut groups: HashMap<Hash, Vec<usize>> = HashMap::new();
+        for (i, n) in self.variables.iter().enumerate() {
+            if let Some(h) = n.hash {
+                groups.entry(h).or_default().push(i);
+            }
+        }
+
+        for (_hash, wires) in groups.into_iter().filter(|(_, wires)| wires.len() > 1) {
+            println!("identical: {:?}", wires);
+        }
     }
 
     pub fn push_hashes(&mut self) {
@@ -212,6 +224,28 @@ impl Graph {
             }
         }
     }
+
+    pub fn extract_perm(&self) -> Permutation {
+        // Sort the node hashes, and output the permutation that would have to be applied to self.variables for them to be in that order
+        // Build vector of (old_index, hash_bytes)
+        let mut pairs: Vec<(usize, [u8; 32])> = self
+            .variables
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (i, n.hash.unwrap_or([0u8; 32])))
+            .collect();
+
+        // Sort by hash bytes lexicographically
+        pairs.sort_by(|a, b| a.1.cmp(&b.1));
+
+        // Build permutation p where p[old_index] = new_index
+        let mut perm: Vec<usize> = vec![0; self.variables.len()];
+        for (new_idx, (old_idx, _)) in pairs.iter().enumerate() {
+            perm[*old_idx] = new_idx;
+        }
+
+        Permutation::new(perm)
+    }
 }
 
 fn main() {
@@ -223,6 +257,9 @@ fn main() {
         .unwrap_or(2 * ((n as f64) * (n as f64).ln()) as usize);
 
     let mut ckt = random_circuit(n, m);
+
+    let alpha: Permutation;
+    let beta: Permutation;
 
     {
         let mut g = Graph::new(n as u64);
@@ -240,6 +277,7 @@ fn main() {
             g.pull_hashes();
         }
         g.print_wire_hashes();
+        alpha = g.extract_perm();
     }
 
     let p =Permutation::rand_perm(n);
@@ -255,12 +293,15 @@ fn main() {
             g.add_poly(i as u64, p.clone());
         }
 
+        // I think this needs to run as many times as there are wires, in the worst case
         for _ in 0..16 {
             g.push_hashes();
             g.pull_hashes();
         }
         g.print_wire_hashes();
+        beta = g.extract_perm();
     }
 
-    println!("Rewired: {:?}", p);
+    println!("Rewired Perm:   {:?}", p.data);
+    println!("Inferred Comp.: {:?}", beta.invert().compose(&alpha).data);
 }
