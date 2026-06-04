@@ -6,8 +6,11 @@ use rand::seq::IndexedRandom;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+pub static SAMF_INSERTIONS_MADE: AtomicUsize = AtomicUsize::new(0);
 pub static SAMF_COMPRESSIONS_MADE: AtomicUsize = AtomicUsize::new(0);
 pub static SAMF_COMPRESSIONS_FAILED: AtomicUsize = AtomicUsize::new(0);
+// Curated expansions performed at collisions in the shuffled shooting game.
+pub static CURATED_REPLACEMENTS_MADE: AtomicUsize = AtomicUsize::new(0);
 // Compressions made while integrating undo SAMFs/NOTs at the end of a shuffle.
 pub static END_SAMF_COMPRESSIONS_MADE: AtomicUsize = AtomicUsize::new(0);
 
@@ -351,6 +354,58 @@ static SWAP_N1_3W: &[&[[u16; 3]]] = &[
         [2, 0, 1],
         [1, 2, 0],
     ],
+    // Negate-then-swap (reverse of N2) implementations of the N1 permutation — structurally
+    // distinct from the swap-then-negate forms above, added for gate-sequence diversity.
+    &[
+        [1, 0, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+        [0, 1, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+        [0, 2, 1],
+    ],
+    &[
+        [1, 0, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 1, 0],
+        [1, 2, 0],
+        [0, 2, 1],
+    ],
+    &[
+        [0, 2, 1],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [0, 1, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 1, 0],
+    ],
+    &[
+        [1, 2, 0],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+        [0, 1, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+        [0, 2, 1],
+    ],
+    &[
+        [1, 2, 0],
+        [0, 2, 1],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [0, 2, 1],
+        [2, 0, 1],
+    ],
 ];
 static SWAP_N1_4W: &[&[[u16; 3]]] = &[
     &[
@@ -459,6 +514,37 @@ static SWAP_N2_3W: &[&[[u16; 3]]] = &[
         [2, 0, 1],
         [1, 0, 2],
     ],
+    // Negate-then-swap (reverse of N1) implementations of the N2 permutation.
+    &[
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 2, 0],
+        [1, 0, 2],
+        [1, 0, 2],
+    ],
+    &[
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 0, 1],
+    ],
+    &[
+        [1, 2, 0],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 0, 1],
+        [1, 2, 0],
+        [2, 1, 0],
+        [1, 2, 0],
+        [2, 1, 0],
+    ],
 ];
 static SWAP_N2_4W: &[&[[u16; 3]]] = &[
     &[
@@ -476,6 +562,17 @@ static SWAP_N2_4W: &[&[[u16; 3]]] = &[
         [1, 0, 2],
         [2, 0, 1],
         [1, 3, 2],
+    ],
+    // Negate-then-swap (reverse of N1) implementation of the N2 permutation (4-wire).
+    &[
+        [2, 3, 1],
+        [2, 0, 3],
+        [1, 3, 2],
+        [2, 3, 1],
+        [1, 2, 3],
+        [2, 1, 3],
+        [1, 2, 3],
+        [1, 0, 3],
     ],
 ];
 static SWAP_N12_3W: &[&[[u16; 3]]] = &[
@@ -958,34 +1055,26 @@ static NOT_4W: &[&[[u16; 3]]] = &[
 ];
 // CNOT 3-wire at min-2 depths (4,5) is empty — those depths only exist for 4-wire.
 
-// When true, the random shufflers may also emit reversed single-negation SAMFs
-// (neg_type 4 = rev-N1, 5 = rev-N2). Set to false to reproduce the pre-reversal
-// behaviour (neg_type 0..=3 only). See `neg_flips` / `gen_gates_swap`.
-const REVERSED_SAMF: bool = true;
-
 // Map a SAMF negation type to which of the two swapped wires (lo, hi) ends up
 // negated, in the *current* (post-swap) wire space — i.e. the residual that
 // `negation_mask` must record. This is the single source of truth for negation
 // propagation; every mask update routes through it.
 //
-//   0 plain swap                -> (false, false)
-//   1 N1   (swap-then-negate lo)-> (true,  false)
-//   2 N2   (swap-then-negate hi)-> (false, true)
-//   3 N12  (negate both)        -> (true,  true)
-//   4 rev-N1 = reverse(N1)      -> (false, true)   // same permutation as N2
-//   5 rev-N2 = reverse(N2)      -> (true,  false)  // same permutation as N1
+//   0 plain swap                 -> (false, false)
+//   1 N1   (negate lo)           -> (true,  false)
+//   2 N2   (negate hi)           -> (false, true)
+//   3 N12  (negate both)         -> (true,  true)
 //
-// Reversing a gadget reverses the whole gate list (the inverse permutation), so a
-// reversed N1 has the same net swap+negation as a forward N2, and vice-versa.
-// Only the emitted gate *sequence* differs (negate-then-swap vs swap-then-negate).
+// Each type's pool contains both swap-then-negate and negate-then-swap gate
+// sequences (the latter are reversals of the opposite type, which compute the same
+// permutation — see SWAP_N1/SWAP_N2). Only the net permutation matters here, so all
+// implementations of a type share the same mask effect.
 fn neg_flips(neg_type: u16) -> (bool, bool) {
     match neg_type {
         0 => (false, false),
         1 => (true, false),
         2 => (false, true),
         3 => (true, true),
-        4 => (false, true),
-        5 => (true, false),
         _ => panic!("Invalid negation type: {}", neg_type),
     }
 }
@@ -1003,14 +1092,9 @@ fn apply_neg_to_mask(mask: &mut [u8], lo: usize, hi: usize, neg_type: u16) {
     }
 }
 
-// Draw a random SAMF negation type. Includes the reversed variants (4, 5) when
-// `REVERSED_SAMF` is enabled.
+// Draw a random SAMF negation type (0..=3).
 fn random_neg_type<R: Rng + ?Sized>(rng: &mut R) -> u16 {
-    if REVERSED_SAMF {
-        rng.random_range(0u16..=5)
-    } else {
-        rng.random_range(0u16..=3)
-    }
+    rng.random_range(0u16..=3)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1152,29 +1236,20 @@ impl Transpositions {
 
     // Swaps wire 1 and wire 2 in the template; relabels to swap.0 and swap.1.
     // Randomly selects from hardcoded 3-wire or 4-wire circuits at min depths.
-    //
-    // neg_type 4 (rev-N1) / 5 (rev-N2) draw from the N1 / N2 pools and reverse the
-    // resulting gadget — yielding a negate-then-swap gate sequence whose net effect
-    // equals forward N2 / N1 respectively (see `neg_flips`). Reversal commutes with
-    // the per-gate unrewiring, so reversing the final unrewired vec is correct and
-    // still restores the ancilla wires to 0.
     pub fn gen_gates_swap(n: usize, swap: (u16, u16, u16)) -> Vec<[u16; 3]> {
         let (a, b, negation_type) = swap;
-        let (pool_3w, pool_4w, reverse): (&[&[[u16; 3]]], &[&[[u16; 3]]], bool) =
-            match negation_type {
-                0 => (SWAP_3W, SWAP_4W, false),
-                1 => (SWAP_N1_3W, SWAP_N1_4W, false),
-                2 => (SWAP_N2_3W, SWAP_N2_4W, false),
-                3 => (SWAP_N12_3W, SWAP_N12_4W, false),
-                4 => (SWAP_N1_3W, SWAP_N1_4W, true),
-                5 => (SWAP_N2_3W, SWAP_N2_4W, true),
-                _ => panic!("Invalid negation type"),
-            };
+        let (pool_3w, pool_4w): (&[&[[u16; 3]]], &[&[[u16; 3]]]) = match negation_type {
+            0 => (SWAP_3W, SWAP_4W),
+            1 => (SWAP_N1_3W, SWAP_N1_4W),
+            2 => (SWAP_N2_3W, SWAP_N2_4W),
+            3 => (SWAP_N12_3W, SWAP_N12_4W),
+            _ => panic!("Invalid negation type"),
+        };
         let mut rng = rand::rng();
         let use_4w = n >= 4 && !pool_4w.is_empty();
         let total = pool_3w.len() + if use_4w { pool_4w.len() } else { 0 };
         let idx = rng.random_range(0..total);
-        let mut gates = if idx < pool_3w.len() {
+        if idx < pool_3w.len() {
             let circuit = pool_3w[idx];
             let mut c;
             loop {
@@ -1207,11 +1282,7 @@ impl Transpositions {
                 gates: circuit.to_vec(),
             };
             CircuitSeq::unrewire_subcircuit(&out, &[c1, a, b, c2]).gates
-        };
-        if reverse {
-            gates.reverse();
         }
-        gates
     }
 
     // Wire 1 gets flipped in the template; relabels wire 1 to `wire`.
@@ -1380,14 +1451,10 @@ pub fn apply_unsamf(
         }
     }
     // Emit transpositions in reverse with each gadget reversed — reproduces the permutation
-    // of the old `to_circuit().reverse()` — then the leftover NOTs.
-    //
-    // The inverse is reconstructed purely from (permutation, negation_mask): `from_perm`
-    // yields neg 0 and the `TRANSITION` fold above only ever produces neg 0..=3, so this
-    // never emits reversed (4/5) gadgets and needs no knowledge of them. Reversed SAMFs
-    // inserted on the forward pass are already accounted for via `negation_mask`.
+    // of the old `to_circuit().reverse()` — then the leftover NOTs. The inverse is
+    // reconstructed purely from (permutation, negation_mask): `from_perm` yields neg 0 and
+    // the `TRANSITION` fold above only ever produces neg 0..=3.
     for &swap in t.transpositions.iter().rev() {
-        debug_assert!(swap.2 <= 3, "apply_unsamf expects forward neg types only");
         let mut samf = Transpositions::gen_gates_swap(n, swap);
         samf.reverse();
         integrate_samf_compressed(output, &samf, n, env, curated_shard_dbs, shard_dbs);
@@ -1417,6 +1484,7 @@ pub fn insert_wire_shuffles_knuth(
         let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
         gates.extend_from_slice(&t.to_circuit(n).gates);
         t_list.transpositions.extend_from_slice(&t.transpositions);
+        SAMF_INSERTIONS_MADE.fetch_add(t.transpositions.len(), Ordering::Relaxed);
         let a = t_list.evaluate(gate[0]);
         let b = t_list.evaluate(gate[1]);
         let c = t_list.evaluate(gate[2]);
@@ -1485,6 +1553,7 @@ pub fn insert_wire_shuffles_simple(
         last = points[i];
         gates.extend_from_slice(&t.to_circuit(n).gates);
         t_list.transpositions.extend_from_slice(&t.transpositions);
+        SAMF_INSERTIONS_MADE.fetch_add(t.transpositions.len(), Ordering::Relaxed);
         let a = t_list.evaluate(gate[0]);
         let b = t_list.evaluate(gate[1]);
         let c = t_list.evaluate(gate[2]);
@@ -1544,6 +1613,7 @@ pub fn insert_wire_shuffles_x(
             let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
             gates.extend_from_slice(&t.to_circuit(n).gates);
             t_list.transpositions.extend_from_slice(&t.transpositions);
+            SAMF_INSERTIONS_MADE.fetch_add(t.transpositions.len(), Ordering::Relaxed);
         }
         let a = t_list.evaluate(gate[0]);
         let b = t_list.evaluate(gate[1]);
@@ -1593,6 +1663,7 @@ fn insert_m_samfs_core(
             let t = Transpositions::gen_random_simple(n, m, &mut negation_mask);
             gates.extend_from_slice(&t.to_circuit(n).gates);
             t_list.transpositions.extend_from_slice(&t.transpositions);
+            SAMF_INSERTIONS_MADE.fetch_add(t.transpositions.len(), Ordering::Relaxed);
         }
         let a = t_list.evaluate(gate[0]);
         let b = t_list.evaluate(gate[1]);
@@ -1664,7 +1735,7 @@ fn shuffled_shooting_game_core(
     gates_ahead: usize,
     type_attempts: usize,
 ) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
-    use crate::replace::pairs::compress_curated_lmdb;
+    use crate::replace::pairs::{compress_curated_lmdb, expand_curated_lmdb};
 
     let mut rng = rand::rng();
     let mut output: Vec<[u16; 3]> = Vec::new();
@@ -1673,6 +1744,7 @@ fn shuffled_shooting_game_core(
     };
     let mut negation_mask = vec![0u8; n];
     let mut compressions: usize = 0;
+    let _ = gates_ahead; // expansion targets the colliding pair; lookahead unused
 
     let mut i = 0;
 
@@ -1682,7 +1754,9 @@ fn shuffled_shooting_game_core(
         let b = t_list.evaluate(gate[1]);
         let c = t_list.evaluate(gate[2]);
 
-        // Attempt SAMF-assisted replacement when this gate and the next collide.
+        // On a collision, first make a curated EXPANSION of the colliding pair, then try to
+        // hide a single SAMF in the last 3 gates of that expansion. The expansion is computed
+        // once; if no SAMF can be hidden we keep it verbatim (no recompute).
         let replaced = 'try_replace: {
             if i + 1 >= input.len() {
                 break 'try_replace false;
@@ -1706,7 +1780,29 @@ fn shuffled_shooting_game_core(
                 break 'try_replace false;
             }
 
-            // Pick the swap wires once; we vary the gate (negation) type across attempts.
+            // 1) Curated expansion of the colliding pair: an equivalent, longer circuit.
+            let expansion = match expand_curated_lmdb(
+                &[[a, b, c], [na, nb, nc]],
+                n,
+                env,
+                curated_shard_dbs,
+                shard_dbs,
+            ) {
+                Some(e) if e.len() >= 3 => e,
+                _ => break 'try_replace false, // no curated expansion -> normal path
+            };
+            CURATED_REPLACEMENTS_MADE.fetch_add(1, Ordering::Relaxed);
+
+            // 2) Try to hide ONE SAMF in the last 3 gates of the expansion. Pick the swap wires
+            //    once and vary the negation type across attempts; the expansion is reused as-is
+            //    (never recomputed) whether or not a SAMF can be hidden.
+            let tail_start = expansion.len() - 3;
+            let tail: [[u16; 3]; 3] = [
+                expansion[tail_start],
+                expansion[tail_start + 1],
+                expansion[tail_start + 2],
+            ];
+
             let swap_lo: u16 = rng.random_range(0..n as u16);
             let swap_hi: u16 = loop {
                 let w: u16 = rng.random_range(0..n as u16);
@@ -1720,131 +1816,63 @@ fn shuffled_shooting_game_core(
                 (swap_hi, swap_lo)
             };
 
-            // Build all available context gates (up to gates_ahead) with clean flags.
-            // Positions 0 and 1 (collision pair controls) are already verified clean.
-            // The context is independent of the SAMF, so it is built once and reused
-            // across every gate-type attempt.
-            let ga = gates_ahead.min(input.len() - i);
-            let mut ctx: Vec<([u16; 3], bool)> = Vec::with_capacity(ga);
-            ctx.push(([a, b, c], true));
-            if ga >= 2 {
-                ctx.push(([na, nb, nc], true));
-            }
-            for k in 2..ga {
-                let g = input[i + k];
-                let gw0 = t_list.evaluate(g[0]);
-                let gw1 = t_list.evaluate(g[1]);
-                let gw2 = t_list.evaluate(g[2]);
-                let clean = negation_mask[gw1 as usize] == 0 && negation_mask[gw2 as usize] == 0;
-                ctx.push(([gw0, gw1, gw2], clean));
-            }
-
-            // Try up to `type_attempts` DISTINCT gate (negation) types, sampled without
-            // replacement from the available set. For each type, draw one random hardcoded
-            // SAMF of that type and search for a compressing window; stop at the first type
-            // that yields one. type_attempts == 1 reproduces the old single-try behaviour.
-            let candidate_types: Vec<u16> = if REVERSED_SAMF {
-                (0u16..=5).collect()
-            } else {
-                (0u16..=3).collect()
-            };
-            // (neg_type, samf, start, samf_used, repl)
-            let mut winner: Option<(u16, Vec<[u16; 3]>, usize, usize, Vec<[u16; 3]>)> = None;
-            for &neg_type in candidate_types.choose_multiple(&mut rng, type_attempts.max(1)) {
+            let candidate_types: Vec<u16> = (0u16..=3).collect();
+            // (neg_type, samf, samf_used, repl): the tail + samf[0..samf_used] becomes `repl`,
+            // and samf[samf_used..] is emitted after it.
+            let mut tuck: Option<(u16, Vec<[u16; 3]>, usize, Vec<[u16; 3]>)> = None;
+            'types: for &neg_type in candidate_types.choose_multiple(&mut rng, type_attempts.max(1))
+            {
                 let samf = Transpositions::gen_gates_swap(n, (swap_lo, swap_hi, neg_type));
                 if samf.len() < 3 {
                     continue;
                 }
-
-                // Try all contiguous sub-windows of [context(0..ga), samf(0..3)] with:
-                //   - length ≥ 4
-                //   - at least 1 SAMF gate  (end > ga)
-                //   - all context gates in the window have clean controls
-                // Order: longest first, within same length more-SAMF-first (start descending).
-                let mut found: Option<(usize, usize, Vec<[u16; 3]>)> = None; // (start, samf_used, repl)
-                'outer: for len in (4..=ga + 3).rev() {
-                    for start in (0..ga).rev() {
-                        let end = start + len;
-                        if end > ga + 3 {
-                            continue;
-                        } // beyond full window
-                        if end <= ga {
-                            continue;
-                        } // no SAMF gate
-                        // All context gates in [start..end.min(ga)] must be clean.
-                        if !(start..end.min(ga)).all(|k| ctx[k].1) {
-                            continue;
-                        }
-                        // Build sub-window: context[start..ga] ++ samf[0..end-ga]
-                        let samf_count = end - ga;
-                        let mut window: Vec<[u16; 3]> = (start..ga).map(|k| ctx[k].0).collect();
-                        window.extend_from_slice(&samf[..samf_count]);
-                        if let Some(repl) =
-                            compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs)
-                        {
-                            // Reject if the SAMF gates appear verbatim in the replacement —
-                            // that means the compressor only touched the context and left the
-                            // SAMF unhidden.
-                            let samf_slice = &samf[..samf_count];
-                            let samf_hidden = repl.len() < samf_count
-                                || !repl.windows(samf_count).any(|w| w == samf_slice);
-                            if samf_hidden {
-                                found = Some((start, samf_count, repl));
-                                break 'outer;
-                            }
+                // Windows: tail(3) ++ samf[0..samf_count], most-SAMF-first.
+                for samf_count in (1..=samf.len()).rev() {
+                    let mut window: Vec<[u16; 3]> = tail.to_vec();
+                    window.extend_from_slice(&samf[..samf_count]);
+                    if let Some(repl) =
+                        compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs)
+                    {
+                        // Reject if the SAMF gates survive verbatim (not actually hidden).
+                        let samf_slice = &samf[..samf_count];
+                        let samf_hidden = repl.len() < samf_count
+                            || !repl.windows(samf_count).any(|w| w == samf_slice);
+                        if samf_hidden {
+                            tuck = Some((neg_type, samf, samf_count, repl));
+                            break 'types;
                         }
                     }
-                }
-
-                if let Some((start, samf_used, repl)) = found {
-                    winner = Some((neg_type, samf, start, samf_used, repl));
-                    break;
                 }
             }
 
-            match winner {
-                None => {
-                    SAMF_COMPRESSIONS_FAILED.fetch_add(1, Ordering::Relaxed);
-                    false
-                }
-                Some((neg_type, samf, start, samf_used, repl)) => {
-                    let samf_swap = (swap_lo, swap_hi, neg_type);
-                    // Emit context gates before the window start. Only the collision pair
-                    // (ctx[0], ctx[1]) was verified clean; ctx[2..start] may carry pending
-                    // control negations (the window-cleanliness check only covers gates
-                    // inside [start..end]). Flush those negations first, exactly like the
-                    // normal path below, or the gate would read un-negated control values.
-                    for k in 0..start {
-                        let [_, gc1, gc2] = ctx[k].0;
-                        if negation_mask[gc1 as usize] == 1 {
-                            output.extend_from_slice(&Transpositions::gen_gates_not(n, gc1));
-                            negation_mask[gc1 as usize] = 0;
-                        }
-                        if negation_mask[gc2 as usize] == 1 {
-                            output.extend_from_slice(&Transpositions::gen_gates_not(n, gc2));
-                            negation_mask[gc2 as usize] = 0;
-                        }
-                        output.push(ctx[k].0);
-                    }
+            match tuck {
+                Some((neg_type, samf, samf_used, repl)) => {
+                    // Front of the expansion is unchanged; its last 3 gates + the hidden SAMF
+                    // become `repl ++ samf[samf_used..]`.
+                    output.extend_from_slice(&expansion[..tail_start]);
                     output.extend_from_slice(&repl);
                     output.extend_from_slice(&samf[samf_used..]);
-                    compressions += 1;
-                    SAMF_COMPRESSIONS_MADE.fetch_add(1, Ordering::Relaxed);
-
-                    t_list.transpositions.push(samf_swap);
+                    t_list.transpositions.push((swap_lo, swap_hi, neg_type));
                     apply_neg_to_mask(
                         &mut negation_mask,
                         swap_lo as usize,
                         swap_hi as usize,
                         neg_type,
                     );
-
-                    i += ga; // advance past all context gates
-                    true
+                    compressions += 1;
+                    SAMF_COMPRESSIONS_MADE.fetch_add(1, Ordering::Relaxed);
+                    SAMF_INSERTIONS_MADE.fetch_add(1, Ordering::Relaxed);
+                }
+                None => {
+                    // Keep the curated expansion verbatim; no SAMF hidden this time.
+                    output.extend_from_slice(&expansion);
+                    SAMF_COMPRESSIONS_FAILED.fetch_add(1, Ordering::Relaxed);
                 }
             }
-        };
 
+            i += 2; // consumed the colliding pair
+            true
+        };
         if !replaced {
             // Normal path: flush any pending negations on control wires, then emit the gate.
             if negation_mask[b as usize] == 1 {
@@ -1977,30 +2005,89 @@ pub fn shuffled_shoot_then_samf(
 
 #[cfg(test)]
 mod reversed_samf_tests {
-    use super::{REVERSED_SAMF, Transpositions, neg_flips, random_neg_type};
+    use super::{
+        SWAP_N1_3W, SWAP_N1_4W, SWAP_N2_3W, SWAP_N2_4W, Transpositions, neg_flips, random_neg_type,
+    };
     use crate::circuit::circuit::CircuitSeq;
 
-    #[test]
-    fn random_neg_type_emits_reversed_when_enabled() {
-        let mut rng = rand::rng();
-        let mut seen_reversed = false;
-        let mut max = 0u16;
-        for _ in 0..5000 {
-            let t = random_neg_type(&mut rng);
-            assert!(t <= 5, "neg type out of range: {}", t);
-            max = max.max(t);
-            if t >= 4 {
-                seen_reversed = true;
+    // Structural canonical form of a gadget UP TO (a) wire relabeling and (b) reordering of
+    // commuting gates. We densify the used wires, then over every permutation of those wires
+    // run CircuitSeq::canonicalize() (which canonicalizes commuting-gate order) and keep the
+    // lexicographically-smallest gate sequence. Two gadgets share a key iff they are the same
+    // circuit up to relabeling wires and swapping adjacent commuting gates.
+    fn structural_key(gates: &[[u16; 3]]) -> Vec<[u16; 3]> {
+        use itertools::Itertools;
+        let c = CircuitSeq {
+            gates: gates.to_vec(),
+        };
+        let used = c.used_wires(); // sorted, unique
+        let k = used.len();
+        let dense: std::collections::HashMap<u16, u16> = used
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| (w, i as u16))
+            .collect();
+        let base: Vec<[u16; 3]> = gates
+            .iter()
+            .map(|g| [dense[&g[0]], dense[&g[1]], dense[&g[2]]])
+            .collect();
+        let mut best: Option<Vec<[u16; 3]>> = None;
+        for perm in (0..k as u16).permutations(k) {
+            let relabeled: Vec<[u16; 3]> = base
+                .iter()
+                .map(|g| {
+                    [
+                        perm[g[0] as usize],
+                        perm[g[1] as usize],
+                        perm[g[2] as usize],
+                    ]
+                })
+                .collect();
+            let mut cc = CircuitSeq { gates: relabeled };
+            cc.canonicalize();
+            if best.as_ref().is_none_or(|b| &cc.gates < b) {
+                best = Some(cc.gates);
             }
         }
-        // Guard against the feature silently regressing to disabled.
-        assert_eq!(
-            seen_reversed, REVERSED_SAMF,
-            "REVERSED_SAMF wiring mismatch"
-        );
-        if !REVERSED_SAMF {
-            assert!(max <= 3);
+        best.unwrap()
+    }
+
+    // The N1/N2 pools now also contain the (unique) negate-then-swap reversals of the opposite
+    // type. Since reverse(N2) computes the N1 permutation (and vice-versa), every reversed
+    // circuit of the opposite pool must already appear in the destination pool's structural
+    // forms (up to wire relabeling + commuting-gate order) — i.e. the pools are closed under
+    // reversal-of-the-opposite-type. This guards that the hardcoded reversals are complete.
+    #[test]
+    fn pools_closed_under_reversal() {
+        use std::collections::HashSet;
+        for (dst_pool, src_pool) in [
+            (SWAP_N1_3W, SWAP_N2_3W),
+            (SWAP_N1_4W, SWAP_N2_4W),
+            (SWAP_N2_3W, SWAP_N1_3W),
+            (SWAP_N2_4W, SWAP_N1_4W),
+        ] {
+            let dst: HashSet<Vec<[u16; 3]>> = dst_pool.iter().map(|c| structural_key(c)).collect();
+            for c in src_pool.iter() {
+                let mut g = c.to_vec();
+                g.reverse();
+                assert!(
+                    dst.contains(&structural_key(&g)),
+                    "a reversal of the opposite pool is missing from the destination pool"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn random_neg_type_in_range() {
+        let mut rng = rand::rng();
+        let mut seen = [false; 4];
+        for _ in 0..5000 {
+            let t = random_neg_type(&mut rng);
+            assert!(t <= 3, "neg type out of range: {}", t);
+            seen[t as usize] = true;
+        }
+        assert!(seen.iter().all(|&s| s), "not all of 0..=3 were drawn");
     }
 
     // Logical 2-bit op of a swap gadget on wires (a, b), all other wires held at 0.
@@ -2039,17 +2126,15 @@ mod reversed_samf_tests {
         assert_eq!(neg_flips(1), (true, false));
         assert_eq!(neg_flips(2), (false, true));
         assert_eq!(neg_flips(3), (true, true));
-        // Reversed variants share the opposite forward type's net effect.
-        assert_eq!(neg_flips(4), neg_flips(2), "rev-N1 must match N2");
-        assert_eq!(neg_flips(5), neg_flips(1), "rev-N2 must match N1");
     }
 
     #[test]
     fn gen_gates_swap_logical_op_all_types() {
-        // n=3 exercises only 3-wire pools; n=4 also exercises 4-wire pools. Many
-        // iterations cover the random pool + ancilla choices.
+        // n=3 exercises only 3-wire pools; n=4 also exercises 4-wire pools. Many iterations
+        // cover the random pool + ancilla choices, so every pool entry (including the
+        // hardcoded negate-then-swap reversals) is checked to compute its type's permutation.
         for &(n, a, b) in &[(3usize, 1u16, 2u16), (4, 1, 3), (4, 0, 2)] {
-            for neg in 0u16..=5 {
+            for neg in 0u16..=3 {
                 for _ in 0..300 {
                     let gates = Transpositions::gen_gates_swap(n, (a, b, neg));
                     assert!(!gates.is_empty());
@@ -2067,29 +2152,6 @@ mod reversed_samf_tests {
                                 xb
                             );
                         }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn reversed_gadget_is_inverse_of_forward() {
-        // gen(4) = reverse(forward N1), so reversing it again recovers a forward-N1
-        // net op; symmetrically gen(5) reversed recovers forward N2.
-        for &(rev_type, fwd_type) in &[(4u16, 1u16), (5u16, 2u16)] {
-            for _ in 0..300 {
-                let mut gates = Transpositions::gen_gates_swap(4, (1, 3, rev_type));
-                gates.reverse();
-                for xa in 0..2 {
-                    for xb in 0..2 {
-                        assert_eq!(
-                            logical_op(&gates, 4, 1, 3, xa, xb),
-                            expected(fwd_type, xa, xb),
-                            "reverse(gen({})) should equal forward {}",
-                            rev_type,
-                            fwd_type
-                        );
                     }
                 }
             }

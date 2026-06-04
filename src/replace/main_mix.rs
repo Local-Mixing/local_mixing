@@ -63,6 +63,7 @@ pub fn main_shuffle_shoot_shuffle(
     intermediate: &str,
     leave: bool,
     do_gadgetize: bool,
+    gadget_path: Option<&str>,
     full_shuffle: bool,
     gates_ahead: usize,
     type_attempts: usize,
@@ -95,14 +96,26 @@ pub fn main_shuffle_shoot_shuffle(
             circuit.gates.len(),
             2 * n
         );
-        // Save the gadgetized circuit to ./gadgetized/{final path component of source}
-        let file_name = std::path::Path::new(source)
-            .file_name()
-            .expect("Source path has no final component")
-            .to_str()
-            .expect("Source file name is not valid UTF-8");
-        std::fs::create_dir_all("./gadgetized").expect("Failed to create ./gadgetized");
-        let gadget_path = format!("./gadgetized/{}", file_name);
+        // Save the gadgetized circuit to --gadget_path, or ./gadgetized/{final path
+        // component of source} when none was supplied.
+        let gadget_path = match gadget_path {
+            Some(p) => p.to_string(),
+            None => {
+                let file_name = std::path::Path::new(source)
+                    .file_name()
+                    .expect("Source path has no final component")
+                    .to_str()
+                    .expect("Source file name is not valid UTF-8");
+                std::fs::create_dir_all("./gadgetized").expect("Failed to create ./gadgetized");
+                format!("./gadgetized/{}", file_name)
+            }
+        };
+        if let Some(parent) = std::path::Path::new(&gadget_path).parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .expect("Failed to create gadget output directory");
+            }
+        }
         File::create(&gadget_path)
             .and_then(|mut f| f.write_all(circuit.repr().as_bytes()))
             .expect("Failed to write gadgetized circuit");
@@ -126,12 +139,17 @@ pub fn main_shuffle_shoot_shuffle(
     };
     let mut total_neg = vec![0u8; n];
 
-    // Per-round SAMF (shuffled shooting game) compression stats, snapshotted each round.
-    let mut per_round_samf: Vec<(usize, usize)> = Vec::new();
-    let mut prev_samf_made = crate::replace::transpositions::SAMF_COMPRESSIONS_MADE
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let mut prev_samf_failed = crate::replace::transpositions::SAMF_COMPRESSIONS_FAILED
-        .load(std::sync::atomic::Ordering::Relaxed);
+    // Per-round SAMF stats (deltas): inserted / hidden / hide-failed / curated expansions.
+    use crate::replace::transpositions::{
+        CURATED_REPLACEMENTS_MADE, SAMF_COMPRESSIONS_FAILED, SAMF_COMPRESSIONS_MADE,
+        SAMF_INSERTIONS_MADE,
+    };
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut per_round_samf: Vec<(usize, usize, usize, usize)> = Vec::new();
+    let mut prev_ins = SAMF_INSERTIONS_MADE.load(Relaxed);
+    let mut prev_made = SAMF_COMPRESSIONS_MADE.load(Relaxed);
+    let mut prev_failed = SAMF_COMPRESSIONS_FAILED.load(Relaxed);
+    let mut prev_cur = CURATED_REPLACEMENTS_MADE.load(Relaxed);
     for i in 0..rounds {
         if egg {
             let pair_mode = ExpandPairMode::Curated {
@@ -228,15 +246,31 @@ pub fn main_shuffle_shoot_shuffle(
             "temp_compression.txt",
         );
         println!("After compression: {} gates", circuit.gates.len());
-        // Record this round's SAMF compression stats (delta from previous round).
+        // Record + print this round's SAMF stats (deltas from the previous round).
         {
-            let cm = crate::replace::transpositions::SAMF_COMPRESSIONS_MADE
-                .load(std::sync::atomic::Ordering::Relaxed);
-            let cf = crate::replace::transpositions::SAMF_COMPRESSIONS_FAILED
-                .load(std::sync::atomic::Ordering::Relaxed);
-            per_round_samf.push((cm - prev_samf_made, cf - prev_samf_failed));
-            prev_samf_made = cm;
-            prev_samf_failed = cf;
+            let ins = SAMF_INSERTIONS_MADE.load(Relaxed);
+            let made = SAMF_COMPRESSIONS_MADE.load(Relaxed);
+            let failed = SAMF_COMPRESSIONS_FAILED.load(Relaxed);
+            let cur = CURATED_REPLACEMENTS_MADE.load(Relaxed);
+            let d_ins = ins - prev_ins;
+            let d_made = made - prev_made;
+            let d_failed = failed - prev_failed;
+            let d_cur = cur - prev_cur;
+            println!(
+                "  Round {}/{} SAMFs inserted: {} (hidden {}, plain {}) | curated expansions: {} | hide-fails: {}",
+                i + 1,
+                rounds,
+                d_ins,
+                d_made,
+                d_ins.saturating_sub(d_made),
+                d_cur,
+                d_failed
+            );
+            per_round_samf.push((d_ins, d_made, d_failed, d_cur));
+            prev_ins = ins;
+            prev_made = made;
+            prev_failed = failed;
+            prev_cur = cur;
         }
         if circuit.gates.len() == 0 {
             break;
@@ -299,14 +333,31 @@ pub fn main_shuffle_shoot_shuffle(
 
     println!("Final circuit written to {}", save);
 
-    if shuffled {
-        println!("--- SAMF compressions per round (shuffled shooting game) ---");
-        let (mut tot_made, mut tot_failed) = (0usize, 0usize);
-        for (r, (made, failed)) in per_round_samf.iter().enumerate() {
-            println!("Round {}: made {}  failed {}", r + 1, made, failed);
-            tot_made += made;
-            tot_failed += failed;
+    {
+        println!("--- SAMF stats per round ---");
+        let (mut t_ins, mut t_made, mut t_failed, mut t_cur) = (0usize, 0usize, 0usize, 0usize);
+        for (r, (ins, made, failed, cur)) in per_round_samf.iter().enumerate() {
+            println!(
+                "Round {}: inserted {} (hidden {}, plain {}) | curated expansions {} | hide-fails {}",
+                r + 1,
+                ins,
+                made,
+                ins.saturating_sub(*made),
+                cur,
+                failed
+            );
+            t_ins += ins;
+            t_made += made;
+            t_failed += failed;
+            t_cur += cur;
         }
-        println!("Total (this run): made {}  failed {}", tot_made, tot_failed);
+        println!(
+            "Total (this run): SAMFs inserted {} (hidden {}, plain {}) | curated expansions {} | hide-fails {}",
+            t_ins,
+            t_made,
+            t_ins.saturating_sub(t_made),
+            t_cur,
+            t_failed
+        );
     }
 }

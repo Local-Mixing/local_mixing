@@ -51,6 +51,13 @@ fn main() {
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
+                    Arg::new("gadget_path")
+                        .long("gadget_path")
+                        .required(false)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to write the gadgetized circuit (default: ./gadgetized/{source filename})"),
+                )
+                .arg(
                     Arg::new("intermediate")
                         .short('i')
                         .long("intermediate")
