@@ -1,5 +1,5 @@
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::Write,
 };
 
@@ -74,13 +74,6 @@ pub fn main_shuffle_shoot_shuffle(
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
-    let progress_path = format!("{}_progress.txt", save_base);
-    OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&progress_path)
-        .expect("Failed to create progress file");
     println!("Starting len: {}", c.gates.len());
     let mut circuit = c.clone();
     // Repeat `rounds` times
@@ -304,15 +297,13 @@ pub fn main_shuffle_shoot_shuffle(
             panic!("The functionality has changed");
         }
         {
-            println!("Updating progress {}", progress_path);
-            let mut f = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&progress_path)
-                .expect("Failed to open progress file");
-
-            writeln!(f, "=== Round {} ===\n{}\n", i + 1, circuit.repr())
-                .expect("Failed to write progress");
+            // Write this round's circuit to its own file: same path as -d but with
+            // `round{n}` inserted before the .txt extension.
+            let round_path = format!("{}round{}.txt", save_base, i + 1);
+            println!("Writing round {} to {}", i + 1, round_path);
+            File::create(&round_path)
+                .and_then(|mut f| f.write_all(circuit.repr().as_bytes()))
+                .expect("Failed to write round circuit");
         }
     }
 
