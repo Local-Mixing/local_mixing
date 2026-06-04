@@ -1,5 +1,6 @@
 use cryptography::hash::sha2;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use clap::Parser;
 use local_mixing::{
@@ -58,6 +59,8 @@ pub struct Graph {
 
 impl Graph {
     pub fn add_poly(&mut self, out_idx: u64, p: Polynomial) {
+        let start = Instant::now();
+
         // Construct each monomial.
         for m in p {
             let t = self.monomials.entry(m).or_insert(Node {
@@ -84,6 +87,7 @@ impl Graph {
                 .or_default()
                 .insert(m);
         }
+        eprintln!("add_poly: out_idx={} time={:.6}s", out_idx, start.elapsed().as_secs_f64());
     }
 
     pub fn new(wires: u64) -> Self {
@@ -110,6 +114,8 @@ impl Graph {
     }
 
     pub fn print_wire_hashes(&self) {
+        let start = Instant::now();
+
         println!("--");
         for (i, n) in self.variables.iter().enumerate() {
             if let Some(h) = n.hash {
@@ -134,12 +140,21 @@ impl Graph {
             }
         }
 
+        let mut unique = true;
+
         for (_hash, wires) in groups.into_iter().filter(|(_, wires)| wires.len() > 1) {
             println!("identical: {:?}", wires);
+            unique = false;
         }
+        if unique {
+            println!("[ all unique ]");
+        }
+        eprintln!("print_wire_hashes: time={:.6}s", start.elapsed().as_secs_f64());
     }
 
     pub fn push_hashes(&mut self) {
+        let start = Instant::now();
+
         // Compute monomial hashes from their constituent variable hashes.
         // For canonical order, sort variable ids numerically.
         for (m, vars) in self.mono_to_vars.iter() {
@@ -180,9 +195,12 @@ impl Graph {
                 node.hash = Some(res);
             }
         }
+        eprintln!("push_hashes: time={:.6}s", start.elapsed().as_secs_f64());
     }
 
     pub fn pull_hashes(&mut self) {
+        let start = Instant::now();
+
         // Compute monomial hashes from their constituent variable hashes.
         // For canonical order, sort variable ids numerically.
         for (m, vars) in self.mono_to_poly.iter() {
@@ -223,9 +241,12 @@ impl Graph {
                 node.hash = Some(res);
             }
         }
+        eprintln!("pull_hashes: time={:.6}s", start.elapsed().as_secs_f64());
     }
 
     pub fn extract_perm(&self) -> Permutation {
+        let start = Instant::now();
+
         // Sort the node hashes, and output the permutation that would have to be applied to self.variables for them to be in that order
         // Build vector of (old_index, hash_bytes)
         let mut pairs: Vec<(usize, [u8; 32])> = self
@@ -243,8 +264,9 @@ impl Graph {
         for (new_idx, (old_idx, _)) in pairs.iter().enumerate() {
             perm[*old_idx] = new_idx;
         }
-
-        Permutation::new(perm)
+        let p = Permutation::new(perm);
+        eprintln!("extract_perm: n={} time={:.6}s", self.variables.len(), start.elapsed().as_secs_f64());
+        p
     }
 }
 
@@ -264,15 +286,17 @@ fn main() {
     {
         let mut g = Graph::new(n as u64);
 
+        let start = Instant::now();
         let poly = ckt.to_polynomial(n, 0, m);
+        eprintln!("to_poly: time={:.6}s", start.elapsed().as_secs_f64());
 
         for (i, p) in poly.iter().enumerate() {
-            println!("y{} = {}", i, poly_to_compressed_str(&p, n));
+            // println!("y{} = {}", i, poly_to_compressed_str(&p, n));
 
             g.add_poly(i as u64, p.clone());
         }
 
-        for _ in 0..16 {
+        for _ in 0..n {
             g.push_hashes();
             g.pull_hashes();
         }
@@ -289,12 +313,12 @@ fn main() {
         let poly = ckt.to_polynomial(n, 0, m);
 
         for (i, p) in poly.iter().enumerate() {
-            println!("y{} = {}", i, poly_to_compressed_str(&p, n));
+            // println!("y{} = {}", i, poly_to_compressed_str(&p, n));
             g.add_poly(i as u64, p.clone());
         }
 
         // I think this needs to run as many times as there are wires, in the worst case
-        for _ in 0..16 {
+        for _ in 0..n {
             g.push_hashes();
             g.pull_hashes();
         }
@@ -303,5 +327,9 @@ fn main() {
     }
 
     println!("Rewired Perm:   {:?}", p.data);
-    println!("Inferred Comp.: {:?}", beta.invert().compose(&alpha).data);
+
+    let r = beta.invert().compose(&alpha);
+    println!("Inferred Comp.: {:?}", r.data);
+
+    assert_eq!(p, r);
 }
