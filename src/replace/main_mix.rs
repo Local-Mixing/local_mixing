@@ -208,10 +208,7 @@ pub fn main_shuffle_shoot_shuffle(
             );
         }
         println!("After shooting game: {} gates", circuit.gates.len());
-        // The shuffled path already inserted SAMFs (merged into its single unsamf above).
-        if !shuffled {
-            insert_wire_m_samfs_every_x(&mut circuit, n, m, x, env, curated_shard_dbs, shard_dbs);
-        }
+        insert_wire_m_samfs_every_x(&mut circuit, n, m, x, env, curated_shard_dbs, shard_dbs);
         println!("After inserting samfs: {} gates", circuit.gates.len());
         // --single-end: after the FINAL round's shuffle, before its compression, undo ALL
         // accumulated SAMFs/NOTs in one pass — restoring equivalence to the original input.
