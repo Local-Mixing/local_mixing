@@ -97,7 +97,7 @@ fn db_backed_shuffles_preserve_equivalence() {
                     &shard_dbs,
                 ),
                 4 => {
-                    shuffled_shooting_game(&mut c, n, env, curated_shard_dbs, shard_dbs, 4, 3);
+                    shuffled_shooting_game(&mut c, n, env, curated_shard_dbs, shard_dbs, 4, 3, 1);
                 }
                 _ => {
                     shuffled_shoot_then_samf(

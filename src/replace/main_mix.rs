@@ -1,7 +1,4 @@
-use std::{
-    fs::File,
-    io::Write,
-};
+use std::{fs::File, io::Write};
 
 use crate::{
     circuit::circuit::CircuitSeq,
@@ -67,6 +64,7 @@ pub fn main_shuffle_shoot_shuffle(
     full_shuffle: bool,
     gates_ahead: usize,
     type_attempts: usize,
+    shooting_times: usize,
     egg: bool,
     rg_freq: usize,
     shuffled: bool,
@@ -105,8 +103,7 @@ pub fn main_shuffle_shoot_shuffle(
         };
         if let Some(parent) = std::path::Path::new(&gadget_path).parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .expect("Failed to create gadget output directory");
+                std::fs::create_dir_all(parent).expect("Failed to create gadget output directory");
             }
         }
         File::create(&gadget_path)
@@ -160,6 +157,7 @@ pub fn main_shuffle_shoot_shuffle(
                 x,
                 gates_ahead,
                 type_attempts,
+                shooting_times,
                 env,
                 curated_shard_dbs,
                 shard_dbs,
@@ -187,6 +185,7 @@ pub fn main_shuffle_shoot_shuffle(
                 x,
                 gates_ahead,
                 type_attempts,
+                shooting_times,
                 env,
                 curated_shard_dbs,
                 shard_dbs,

@@ -1891,6 +1891,50 @@ fn shuffled_shooting_game_core(
     (output, t_list, negation_mask, compressions)
 }
 
+fn shuffled_shooting_game_repeated_core(
+    input: &[[u16; 3]],
+    n: usize,
+    env: &Environment,
+    curated_shard_dbs: &[Database],
+    shard_dbs: &[Database],
+    gates_ahead: usize,
+    type_attempts: usize,
+    shooting_times: usize,
+) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
+    let passes = shooting_times.max(1);
+    let mut input_gates = input.to_vec();
+    let mut total_t = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut total_neg = vec![0u8; n];
+    let mut total_compressions = 0usize;
+
+    for _ in 0..passes {
+        let (out, t_pass, neg_pass, compressions) = shuffled_shooting_game_core(
+            &input_gates,
+            n,
+            env,
+            curated_shard_dbs,
+            shard_dbs,
+            gates_ahead,
+            type_attempts,
+        );
+        let mut new_total_neg = neg_pass;
+        for w in 0..n {
+            if total_neg[w] == 1 {
+                let cw = t_pass.evaluate(w as u16) as usize;
+                new_total_neg[cw] ^= 1;
+            }
+        }
+        total_neg = new_total_neg;
+        total_t = total_t.concat(&t_pass);
+        total_compressions += compressions;
+        input_gates = out;
+    }
+
+    (input_gates, total_t, total_neg, total_compressions)
+}
+
 // Standalone shuffled shooting game: run the core, then undo its accumulated SAMFs.
 pub fn shuffled_shooting_game(
     circuit: &mut CircuitSeq,
@@ -1900,8 +1944,9 @@ pub fn shuffled_shooting_game(
     shard_dbs: &[Database],
     gates_ahead: usize,
     type_attempts: usize,
+    shooting_times: usize,
 ) -> usize {
-    let (mut output, t_list, negation_mask, compressions) = shuffled_shooting_game_core(
+    let (mut output, t_list, negation_mask, compressions) = shuffled_shooting_game_repeated_core(
         &circuit.gates,
         n,
         env,
@@ -1909,6 +1954,7 @@ pub fn shuffled_shooting_game(
         shard_dbs,
         gates_ahead,
         type_attempts,
+        shooting_times,
     );
     apply_unsamf(
         &mut output,
@@ -1937,11 +1983,12 @@ pub fn shuffled_shoot_then_samf_core(
     x: usize,
     gates_ahead: usize,
     type_attempts: usize,
+    shooting_times: usize,
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
 ) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
-    let (out_a, t_a, neg_a, compressions) = shuffled_shooting_game_core(
+    let (out_a, t_a, neg_a, compressions) = shuffled_shooting_game_repeated_core(
         input,
         n,
         env,
@@ -1949,6 +1996,7 @@ pub fn shuffled_shoot_then_samf_core(
         shard_dbs,
         gates_ahead,
         type_attempts,
+        shooting_times,
     );
     let (out_b, t_b, neg_b) = insert_m_samfs_core(&out_a, n, m, x);
     // Combined permutation: shooting game first (t_a), then insertion (t_b).
@@ -1975,6 +2023,7 @@ pub fn shuffled_shoot_then_samf(
     x: usize,
     gates_ahead: usize,
     type_attempts: usize,
+    shooting_times: usize,
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
@@ -1986,6 +2035,7 @@ pub fn shuffled_shoot_then_samf(
         x,
         gates_ahead,
         type_attempts,
+        shooting_times,
         env,
         curated_shard_dbs,
         shard_dbs,

@@ -111,7 +111,7 @@ fn shuffled_shooting_game_preserves_equivalence() {
     let env = empty_env();
     for n in WIRE_COUNTS {
         assert_shuffle_preserves(n, 40, |c, n| {
-            shuffled_shooting_game(c, n, &env, &[], &[], 4, 3);
+            shuffled_shooting_game(c, n, &env, &[], &[], 4, 3, 1);
         });
     }
 }
@@ -122,7 +122,7 @@ fn shuffled_shoot_then_samf_preserves_equivalence() {
     let env = empty_env();
     for n in WIRE_COUNTS {
         assert_shuffle_preserves(n, 40, |c, n| {
-            shuffled_shoot_then_samf(c, n, 4, 3, 4, 3, &env, &[], &[]);
+            shuffled_shoot_then_samf(c, n, 4, 3, 4, 3, 1, &env, &[], &[]);
         });
     }
 }

@@ -89,6 +89,14 @@ fn main() {
                         .help("Distinct SAMF gate types to try per collision before giving up (each tries one random hardcoded SAMF of a not-yet-tried type)"),
                 )
                 .arg(
+                    Arg::new("shooting_times")
+                        .long("shooting_times")
+                        .required(false)
+                        .default_value("1")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Shuffled path only: number of shuffled shooting passes to run before SAMF insertion"),
+                )
+                .arg(
                     Arg::new("rg_frequency")
                         .long("rg-frequency")
                         .required(false)
