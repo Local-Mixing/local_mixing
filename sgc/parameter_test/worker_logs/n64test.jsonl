@@ -1,0 +1,34 @@
+{"event": "start", "job": {"id": "sss_sr1_ta1_r1_m1_x10", "m": 1, "number": 1, "rounds": 1, "sr": 1, "ta": 1, "x": 10}, "time": "2026-06-05T23:06:04.249575+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr1_ta1_r1_m1_x10", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-05T23:17:40.068120+00:00"}
+{"event": "start", "job": {"id": "sss_sr1_ta1_r1_m3_x20", "m": 3, "number": 6, "rounds": 1, "sr": 1, "ta": 1, "x": 20}, "time": "2026-06-05T23:17:40.081979+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr1_ta1_r1_m3_x20", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-05T23:37:14.806218+00:00"}
+{"event": "start", "job": {"id": "sss_sr1_ta2_r1_m3_x10", "m": 3, "number": 11, "rounds": 1, "sr": 1, "ta": 2, "x": 10}, "time": "2026-06-05T23:37:14.875970+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr1_ta2_r1_m3_x10", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T00:32:57.710933+00:00"}
+{"event": "start", "job": {"id": "sss_sr1_ta3_r1_m2_x20", "m": 2, "number": 16, "rounds": 1, "sr": 1, "ta": 3, "x": 20}, "time": "2026-06-06T00:32:57.723175+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr1_ta3_r1_m2_x20", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T00:49:52.043657+00:00"}
+{"event": "start", "job": {"id": "sss_sr1_ta4_r1_m2_x10", "m": 2, "number": 21, "rounds": 1, "sr": 1, "ta": 4, "x": 10}, "time": "2026-06-06T00:49:52.094323+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr1_ta4_r1_m2_x10", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T01:19:32.632508+00:00"}
+{"event": "start", "job": {"id": "sss_sr2_ta1_r1_m1_x20", "m": 1, "number": 26, "rounds": 1, "sr": 2, "ta": 1, "x": 20}, "time": "2026-06-06T01:19:32.714666+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr2_ta1_r1_m1_x20", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T01:45:41.996814+00:00"}
+{"event": "start", "job": {"id": "sss_sr2_ta2_r1_m1_x10", "m": 1, "number": 31, "rounds": 1, "sr": 2, "ta": 2, "x": 10}, "time": "2026-06-06T01:45:42.052057+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr1_ta1_r1_m1_x10", "time": "2026-06-06T03:38:13.522815+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr1_ta1_r1_m3_x20", "time": "2026-06-06T03:38:13.522959+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr1_ta2_r1_m3_x10", "time": "2026-06-06T03:38:13.523013+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr1_ta3_r1_m2_x20", "time": "2026-06-06T03:38:13.523061+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr1_ta4_r1_m2_x10", "time": "2026-06-06T03:38:13.523107+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr2_ta1_r1_m1_x20", "time": "2026-06-06T03:38:13.523153+00:00"}
+{"event": "start", "job": {"id": "sss_sr2_ta2_r1_m1_x10", "m": 1, "number": 31, "rounds": 1, "sr": 2, "ta": 2, "x": 10}, "time": "2026-06-06T03:38:13.523198+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr2_ta2_r1_m1_x10", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T04:50:40.396059+00:00"}
+{"event": "start", "job": {"id": "sss_sr2_ta2_r1_m3_x20", "m": 3, "number": 36, "rounds": 1, "sr": 2, "ta": 2, "x": 20}, "time": "2026-06-06T04:50:40.396892+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr2_ta2_r1_m3_x20", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T05:34:01.556609+00:00"}
+{"event": "start", "job": {"id": "sss_sr2_ta3_r1_m3_x10", "m": 3, "number": 41, "rounds": 1, "sr": 2, "ta": 3, "x": 10}, "time": "2026-06-06T05:34:01.557134+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr2_ta3_r1_m3_x10", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T07:11:50.327978+00:00"}
+{"event": "start", "job": {"id": "sss_sr2_ta4_r1_m2_x20", "m": 2, "number": 46, "rounds": 1, "sr": 2, "ta": 4, "x": 20}, "time": "2026-06-06T07:11:50.360635+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr2_ta4_r1_m2_x20", "stderr_tail": "map_rust.heatmap(128, 100, False, c1, c2, True, 0, False, False, False)\\npoints = np.asarray(results, dtype=float)\\nvalues = points[:, 2]\\nplotter.plot_heatmap_raw(results, png, '\"'\"'Gadgetized source'\"'\"', '\"'\"'Final circuit'\"'\"', vmin=0.5 - 0.01, vmax=0.5 + 0.01)\\npayload = {\\n    '\"'\"'heatmap_status'\"'\"': '\"'\"'computed'\"'\"',\\n    '\"'\"'heatmap_skipped'\"'\"': False,\\n    '\"'\"'heatmap_enhance'\"'\"': 0.01,\\n    '\"'\"'c2_gate_count'\"'\"': c2_gate_count,\\n    '\"'\"'mixing_mean'\"'\"': float(np.nanmean(values)),\\n    '\"'\"'mixing_std'\"'\"': float(np.nanstd(values)),\\n    '\"'\"'mixing_min'\"'\"': float(np.nanmin(values)),\\n    '\"'\"'mixing_max'\"'\"': float(np.nanmax(values)),\\n    '\"'\"'heatmap_inputs'\"'\"': 100,\\n    '\"'\"'heatmap_wires'\"'\"': 128,\\n    '\"'\"'heatmap_png'\"'\"': png,\\n}\\nwith open(metric, '\"'\"'w'\"'\"', encoding='\"'\"'utf-8'\"'\"') as f:\\n    json.dump(payload, f, indent=2, sort_keys=True)\\nprint(json.dumps(payload, sort_keys=True))\")' >> ./sgc/parameter_test/sss_sr2_ta4_r1_m2_x20_heatmap.log 2>&1\n", "stdout_tail": "", "time": "2026-06-06T08:19:19.163459+00:00"}
+{"event": "start", "job": {"id": "sss_sr3_ta1_r1_m2_x10", "m": 2, "number": 51, "rounds": 1, "sr": 3, "ta": 1, "x": 10}, "time": "2026-06-06T08:19:19.264428+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr3_ta1_r1_m2_x10", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T12:45:12.877541+00:00"}
+{"event": "start", "job": {"id": "sss_sr3_ta2_r1_m1_x20", "m": 1, "number": 56, "rounds": 1, "sr": 3, "ta": 2, "x": 20}, "time": "2026-06-06T12:45:12.888555+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr3_ta2_r1_m1_x20", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T13:52:37.571854+00:00"}
+{"event": "start", "job": {"id": "sss_sr3_ta3_r1_m1_x10", "m": 1, "number": 61, "rounds": 1, "sr": 3, "ta": 3, "x": 10}, "time": "2026-06-06T13:52:37.653669+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr3_ta3_r1_m1_x10", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T16:17:51.322032+00:00"}
+{"event": "start", "job": {"id": "sss_sr3_ta3_r1_m3_x20", "m": 3, "number": 66, "rounds": 1, "sr": 3, "ta": 3, "x": 20}, "time": "2026-06-06T16:17:51.341886+00:00"}

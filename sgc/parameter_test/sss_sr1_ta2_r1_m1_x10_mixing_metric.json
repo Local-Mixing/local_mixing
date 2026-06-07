@@ -1,0 +1,12 @@
+{
+  "c2_gate_count": 129243,
+  "heatmap_inputs": 100,
+  "heatmap_png": "./sgc/parameter_test/sss_sr1_ta2_r1_m1_x10_mixing_heatmap.png",
+  "heatmap_skipped": false,
+  "heatmap_status": "computed",
+  "heatmap_wires": 128,
+  "mixing_max": 0.525546875,
+  "mixing_mean": 0.4998324311359826,
+  "mixing_min": 0.0,
+  "mixing_std": 0.005907165761739525
+}

@@ -1,0 +1,4 @@
+Running heatmap on 100 inputs
+Time elapsed: 53.700093806s
+Generating full heatmap...
+Heatmap saved to ./sgc/parameter_test/original/sss_sr2_ta3_r1_m1_x20_original_c1_heatmap.png

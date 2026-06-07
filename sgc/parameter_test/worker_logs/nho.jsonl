@@ -1,0 +1,33 @@
+{"event": "start", "job": {"id": "sss_sr1_ta1_r1_m2_x10", "m": 2, "number": 3, "rounds": 1, "sr": 1, "ta": 1, "x": 10}, "time": "2026-06-05T23:06:04.247609+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr1_ta1_r1_m2_x10", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-05T23:24:55.850292+00:00"}
+{"event": "start", "job": {"id": "sss_sr1_ta2_r1_m1_x20", "m": 1, "number": 8, "rounds": 1, "sr": 1, "ta": 2, "x": 20}, "time": "2026-06-05T23:24:55.880354+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr1_ta2_r1_m1_x20", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-05T23:31:31.155225+00:00"}
+{"event": "start", "job": {"id": "sss_sr1_ta3_r1_m1_x10", "m": 1, "number": 13, "rounds": 1, "sr": 1, "ta": 3, "x": 10}, "time": "2026-06-05T23:31:31.166191+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr1_ta3_r1_m1_x10", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-05T23:40:19.773691+00:00"}
+{"event": "start", "job": {"id": "sss_sr1_ta3_r1_m3_x20", "m": 3, "number": 18, "rounds": 1, "sr": 1, "ta": 3, "x": 20}, "time": "2026-06-05T23:40:19.831269+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr1_ta3_r1_m3_x20", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-05T23:55:02.312491+00:00"}
+{"event": "start", "job": {"id": "sss_sr1_ta4_r1_m3_x10", "m": 3, "number": 23, "rounds": 1, "sr": 1, "ta": 4, "x": 10}, "time": "2026-06-05T23:55:02.328407+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr1_ta4_r1_m3_x10", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T00:36:41.412330+00:00"}
+{"event": "start", "job": {"id": "sss_sr2_ta1_r1_m2_x20", "m": 2, "number": 28, "rounds": 1, "sr": 2, "ta": 1, "x": 20}, "time": "2026-06-06T00:36:41.495082+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr2_ta1_r1_m2_x20", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T01:30:35.579263+00:00"}
+{"event": "start", "job": {"id": "sss_sr2_ta2_r1_m2_x10", "m": 2, "number": 33, "rounds": 1, "sr": 2, "ta": 2, "x": 10}, "time": "2026-06-06T01:30:35.639821+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr2_ta2_r1_m2_x10", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T02:19:44.824520+00:00"}
+{"event": "start", "job": {"id": "sss_sr2_ta3_r1_m1_x20", "m": 1, "number": 38, "rounds": 1, "sr": 2, "ta": 3, "x": 20}, "time": "2026-06-06T02:19:45.011182+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr1_ta1_r1_m2_x10", "time": "2026-06-06T03:38:13.519446+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr1_ta2_r1_m1_x20", "time": "2026-06-06T03:38:13.519692+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr1_ta3_r1_m1_x10", "time": "2026-06-06T03:38:13.519784+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr1_ta3_r1_m3_x20", "time": "2026-06-06T03:38:13.523698+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr1_ta4_r1_m3_x10", "time": "2026-06-06T03:38:13.523871+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr2_ta1_r1_m2_x20", "time": "2026-06-06T03:38:13.523950+00:00"}
+{"event": "resume_skip_success", "job_id": "sss_sr2_ta2_r1_m2_x10", "time": "2026-06-06T03:38:13.524021+00:00"}
+{"event": "start", "job": {"id": "sss_sr2_ta3_r1_m1_x20", "m": 1, "number": 38, "rounds": 1, "sr": 2, "ta": 3, "x": 20}, "time": "2026-06-06T03:38:13.524082+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr2_ta3_r1_m1_x20", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T04:02:15.140935+00:00"}
+{"event": "start", "job": {"id": "sss_sr2_ta4_r1_m1_x10", "m": 1, "number": 43, "rounds": 1, "sr": 2, "ta": 4, "x": 10}, "time": "2026-06-06T04:02:15.300227+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr2_ta4_r1_m1_x10", "stderr_tail": "map_rust.heatmap(128, 100, False, c1, c2, True, 0, False, False, False)\\npoints = np.asarray(results, dtype=float)\\nvalues = points[:, 2]\\nplotter.plot_heatmap_raw(results, png, '\"'\"'Gadgetized source'\"'\"', '\"'\"'Final circuit'\"'\"', vmin=0.5 - 0.01, vmax=0.5 + 0.01)\\npayload = {\\n    '\"'\"'heatmap_status'\"'\"': '\"'\"'computed'\"'\"',\\n    '\"'\"'heatmap_skipped'\"'\"': False,\\n    '\"'\"'heatmap_enhance'\"'\"': 0.01,\\n    '\"'\"'c2_gate_count'\"'\"': c2_gate_count,\\n    '\"'\"'mixing_mean'\"'\"': float(np.nanmean(values)),\\n    '\"'\"'mixing_std'\"'\"': float(np.nanstd(values)),\\n    '\"'\"'mixing_min'\"'\"': float(np.nanmin(values)),\\n    '\"'\"'mixing_max'\"'\"': float(np.nanmax(values)),\\n    '\"'\"'heatmap_inputs'\"'\"': 100,\\n    '\"'\"'heatmap_wires'\"'\"': 128,\\n    '\"'\"'heatmap_png'\"'\"': png,\\n}\\nwith open(metric, '\"'\"'w'\"'\"', encoding='\"'\"'utf-8'\"'\"') as f:\\n    json.dump(payload, f, indent=2, sort_keys=True)\\nprint(json.dumps(payload, sort_keys=True))\")' >> ./sgc/parameter_test/sss_sr2_ta4_r1_m1_x10_heatmap.log 2>&1\n", "stdout_tail": "", "time": "2026-06-06T04:54:39.214608+00:00"}
+{"event": "start", "job": {"id": "sss_sr2_ta4_r1_m3_x20", "m": 3, "number": 48, "rounds": 1, "sr": 2, "ta": 4, "x": 20}, "time": "2026-06-06T04:54:39.215440+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr2_ta4_r1_m3_x20", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T05:32:54.885793+00:00"}
+{"event": "start", "job": {"id": "sss_sr3_ta1_r1_m3_x10", "m": 3, "number": 53, "rounds": 1, "sr": 3, "ta": 1, "x": 10}, "time": "2026-06-06T05:32:54.886359+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr3_ta1_r1_m3_x10", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T12:33:11.223872+00:00"}
+{"event": "start", "job": {"id": "sss_sr3_ta2_r1_m2_x20", "m": 2, "number": 58, "rounds": 1, "sr": 3, "ta": 2, "x": 20}, "time": "2026-06-06T12:33:11.248163+00:00"}
+{"event": "finish", "exit_code": 0, "job_id": "sss_sr3_ta2_r1_m2_x20", "stderr_tail": "", "stdout_tail": "", "time": "2026-06-06T14:37:27.278951+00:00"}
+{"event": "start", "job": {"id": "sss_sr3_ta3_r1_m2_x10", "m": 2, "number": 63, "rounds": 1, "sr": 3, "ta": 3, "x": 10}, "time": "2026-06-06T14:37:27.288713+00:00"}

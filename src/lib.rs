@@ -751,10 +751,102 @@ fn heatmap_corner_at(
     PyArray2::from_owned_array(py, arr2).into()
 }
 
+/// Memory-light subsampled mixing heatmap.
+/// Picks `n1`/`n2` evenly spaced positions along c1/c2 (including 0 and len),
+/// streams each circuit per input snapshotting only those positions, and
+/// returns (pos1, pos2, avg_hamming_fraction) for every sampled cell.
+#[pyfunction]
+fn heatmap_subsampled(
+    py: Python<'_>,
+    num_wires: usize,
+    num_inputs: usize,
+    c1: &str,
+    c2: &str,
+    n1: usize,
+    n2: usize,
+) -> Py<PyArray2<f64>> {
+    let mask = if num_wires < 256 {
+        (u256::one() << num_wires) - u256::one()
+    } else {
+        u256::MAX
+    };
+    let s1 = fs::read_to_string(c1).expect("Failed to read c1");
+    let s2 = fs::read_to_string(c2).expect("Failed to read c2");
+    let circuit_one = CircuitSeq::from_string(&s1);
+    let circuit_two = CircuitSeq::from_string(&s2);
+    let len1 = circuit_one.gates.len();
+    let len2 = circuit_two.gates.len();
+
+    let sample_positions = |len: usize, n: usize| -> Vec<usize> {
+        if n <= 1 {
+            return vec![0, len];
+        }
+        let mut v: Vec<usize> = (0..n).map(|k| (k * len) / (n - 1)).collect();
+        v.dedup();
+        v
+    };
+    let p1 = sample_positions(len1, n1);
+    let p2 = sample_positions(len2, n2);
+    let m1 = p1.len();
+    let m2 = p2.len();
+
+    let mut rng = rand::rng();
+    let inputs: Vec<u256> = (0..num_inputs)
+        .map(|_| {
+            let r: u256 =
+                u256::from(rng.random::<u128>()) | (u256::from(rng.random::<u128>()) << 128);
+            r & mask
+        })
+        .collect();
+
+    let snap = |gates: &Vec<[u16; 3]>, pos: &[usize], ib: u256| -> Vec<u256> {
+        let mut out = Vec::with_capacity(pos.len());
+        let mut state = ib;
+        let mut gi = 0usize;
+        for &target in pos {
+            while gi < target {
+                state = crate::circuit::Gate::evaluate_index_256(state, gates[gi]);
+                gi += 1;
+            }
+            out.push(state);
+        }
+        out
+    };
+
+    let start_time = Instant::now();
+    // Per-input snapshots (small: num_inputs * (m1+m2) u256), computed in parallel.
+    let snaps: Vec<(Vec<u256>, Vec<u256>)> = inputs
+        .par_iter()
+        .map(|&ib| (snap(&circuit_one.gates, &p1, ib), snap(&circuit_two.gates, &p2, ib)))
+        .collect();
+    println!("Subsampled snapshots in {:?}", Instant::now() - start_time);
+
+    let nw = num_wires as f64;
+    let inv = 1.0 / num_inputs as f64;
+    let mut data = vec![0f64; m1 * m2 * 3];
+    data.par_chunks_mut(m2 * 3).enumerate().for_each(|(a, row)| {
+        for b in 0..m2 {
+            let mut acc = 0f64;
+            for s in &snaps {
+                let x = s.0[a];
+                let y = s.1[b];
+                acc += popcount_u256((x ^ y) & mask) as f64 / nw;
+            }
+            row[b * 3] = p1[a] as f64;
+            row[b * 3 + 1] = p2[b] as f64;
+            row[b * 3 + 2] = acc * inv;
+        }
+    });
+
+    let arr2 = Array2::from_shape_vec((m1 * m2, 3), data).expect("grid shape mismatch");
+    PyArray2::from_owned_array(py, arr2).into()
+}
+
 #[pymodule]
 fn local_mixing(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // wrap the function, passing the module `m`
     module.add_function(wrap_pyfunction!(heatmap, module)?)?;
+    module.add_function(wrap_pyfunction!(heatmap_subsampled, module)?)?;
     module.add_function(wrap_pyfunction!(heatmap_incremental, module)?)?;
     module.add_function(wrap_pyfunction!(heatmap_small, module)?)?;
     module.add_function(wrap_pyfunction!(heatmap_slice, module)?)?;

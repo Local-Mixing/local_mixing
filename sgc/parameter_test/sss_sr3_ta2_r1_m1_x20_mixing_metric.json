@@ -1,0 +1,11 @@
+{
+  "c2_gate_count": 1272752,
+  "heatmap_c2_gate_cap": 650000,
+  "heatmap_enhance": 0.01,
+  "heatmap_inputs": 100,
+  "heatmap_png": "",
+  "heatmap_skip_reason": "c2 gate count exceeds cap",
+  "heatmap_skipped": true,
+  "heatmap_status": "too large to compute",
+  "heatmap_wires": 128
+}
