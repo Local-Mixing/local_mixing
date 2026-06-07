@@ -1,4 +1,0 @@
-Running incremental heatmap on 100 inputs (chosen base + increments)
-Time elapsed: 53.400579201s
-Generating full heatmap...
-Heatmap saved to ./sgc/parameter_test/original/sss_sr2_ta3_r1_m1_x20_original_c1_enhance_0.01_incremental.png

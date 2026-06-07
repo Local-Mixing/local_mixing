@@ -1,9 +1,0 @@
-   Compiling pyo3-build-config v0.27.1
-   Compiling pyo3-ffi v0.27.1
-   Compiling pyo3-macros-backend v0.27.1
-   Compiling pyo3 v0.27.1
-   Compiling numpy v0.27.0
-   Compiling pyo3-macros v0.27.1
-   Compiling local_mixing v0.1.0 (/home/cc/local_mixing)
-    Finished `release` profile [optimized] target(s) in 10.40s
-     Running `target/release/local_mixing_bin genran -n 128 -m 1000 -d ./sgc/parameter_test/random/random_n128_m1000.txt`
