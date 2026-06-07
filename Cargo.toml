@@ -9,8 +9,22 @@ name = "local_mixing"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "local_mixing_bin"        
+name = "local_mixing_bin"
 path = "src/main.rs"
+
+# Standalone "challenge" binaries (pulled from eb/dev). Not in src/bin so they stay
+# out of the main source tree; explicit paths make them runnable via `cargo run --bin <name>`.
+[[bin]]
+name = "block_cipher"
+path = "challenges/block_cipher.rs"
+
+[[bin]]
+name = "point_function"
+path = "challenges/point_function.rs"
+
+[[bin]]
+name = "poly_canon"
+path = "challenges/poly_canon.rs"
 
 [profile.release]
 overflow-checks = true
@@ -35,3 +49,6 @@ lmdb-sys = "0.8.0"
 signal-hook = "0.3.18"
 primitive-types = "0.14.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# Needed by the challenge binaries (block_cipher, poly_canon).
+rng-entropy = "0.5.0"
+cryptography = { package = "cryptography-rs", version = "0.5.0" }

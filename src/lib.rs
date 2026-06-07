@@ -2,6 +2,7 @@ pub mod circuit;
 pub mod rainbow;
 pub mod random;
 pub mod replace;
+pub use replace::main_mix::open_shard_dbs;
 use crate::circuit::CircuitSeq;
 use numpy::PyArray2;
 use numpy::ndarray::Array2;

@@ -114,6 +114,15 @@ impl Permutation {
     pub fn new(data: Vec<usize>) -> Permutation {
         Permutation { data }
     }
+
+    // Compose two permutations: (self ∘ other)[i] = self[other[i]].
+    pub fn compose(&self, other: &Permutation) -> Permutation {
+        if self.data.len() != other.data.len() {
+            panic!("Permutation length mismatch in compose");
+        }
+        let data = (0..self.data.len()).map(|i| self.data[other.data[i]]).collect();
+        Permutation { data }
+    }
     pub fn is_perm(&self) -> bool {
         let mut temp_perm = self.clone();
         temp_perm.data.sort_unstable();
@@ -193,6 +202,11 @@ impl CircuitSeq {
     // Evaluate the entire circuit with a starting input
     pub fn evaluate(&self, input: usize) -> usize {
         Gate::evaluate_index_list(input, &self.gates)
+    }
+
+    // Evaluate the circuit on a 256-bit input state (one bit per wire).
+    pub fn evaluate_256(&self, input: u256) -> u256 {
+        Gate::evaluate_index_list_256(input, &self.gates)
     }
 
     // Store as sequence of u8 for dbs
@@ -2421,3 +2435,32 @@ pub fn canonicalize_polys_4(
 //     let canonical = trim_canonicalized(canonical);
 //     (canonical, Permutation { data: final_order })
 // }
+
+// ---- Poly display helpers (restored from eb/dev for the challenge binaries) ----
+pub fn monomial_degree(m: u64) -> u32 {
+    m.count_ones()
+}
+
+fn mono_compressed_str(m: u64, n: usize) -> String {
+    if m == 0 {
+        return "I".into();
+    }
+    (0..n)
+        .filter(|&i| (m >> i) & 1 == 1)
+        .map(|i| format!("{}", i))
+        .collect::<Vec<_>>()
+        .join("•")
+}
+
+pub fn poly_to_compressed_str(poly: &Polynomial, n: usize) -> String {
+    if poly.is_empty() {
+        return "i".into();
+    }
+    let mut terms: Vec<u64> = poly.iter().copied().collect();
+    terms.sort_by_key(|&m| (monomial_degree(m), m));
+    terms
+        .iter()
+        .map(|&m| mono_compressed_str(m, n))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
