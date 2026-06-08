@@ -26,6 +26,14 @@ path = "challenges/point_function.rs"
 name = "poly_canon"
 path = "challenges/poly_canon.rs"
 
+[[bin]]
+name = "bench_canon4"
+path = "src/bench/bench_canon4.rs"
+
+[[bin]]
+name = "bench_polycanon"
+path = "src/bench/bench_polycanon.rs"
+
 [profile.release]
 overflow-checks = true
 

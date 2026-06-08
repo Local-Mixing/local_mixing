@@ -58,14 +58,6 @@ fn main() {
                         .help("Path to write the gadgetized circuit (default: ./gadgetized/{source filename})"),
                 )
                 .arg(
-                    Arg::new("intermediate")
-                        .short('i')
-                        .long("intermediate")
-                        .required(true)
-                        .value_parser(clap::value_parser!(String))
-                        .help("Path to the intermediate circuit file"),
-                )
-                .arg(
                     Arg::new("full-shuffle")
                         .long("full-shuffle")
                         .help("Insert n SAMFs between every gate once before the main loop")
@@ -73,12 +65,20 @@ fn main() {
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
-                    Arg::new("gates_ahead")
-                        .long("gates_ahead")
+                    Arg::new("gates_ahead_expand")
+                        .long("gates_ahead_expand")
                         .required(false)
                         .default_value("2")
                         .value_parser(clap::value_parser!(usize))
-                        .help("Number of gates to include in each replacement window (2 = pair, >2 uses curated shard lookup)"),
+                        .help("Gates in each curated expansion window, anchored at the colliding pair (2 = pair; >2 shrinks by 1 on a curated-DB miss down to the pair)"),
+                )
+                .arg(
+                    Arg::new("gates_ahead_samf")
+                        .long("gates_ahead_samf")
+                        .required(false)
+                        .default_value("3")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Context gates ending at the expansion tail (reaching into preceding output when the expansion is shorter) prepended to the 3 SAMF gates when hiding a SAMF"),
                 )
                 .arg(
                     Arg::new("type_attempts")
@@ -94,7 +94,7 @@ fn main() {
                         .required(false)
                         .default_value("1")
                         .value_parser(clap::value_parser!(usize))
-                        .help("Shuffled path only: number of shuffled shooting passes to run before SAMF insertion"),
+                        .help("Number of shuffled shooting passes to run before SAMF insertion"),
                 )
                 .arg(
                     Arg::new("rg_frequency")
@@ -107,21 +107,14 @@ fn main() {
                 .arg(
                     Arg::new("egg")
                         .long("egg")
-                        .help("Use expansion game (expand_loop 2x) instead of simple shooting game")
-                        .required(false)
-                        .action(clap::ArgAction::SetTrue),
-                )
-                .arg(
-                    Arg::new("shuffled")
-                        .long("shuffled")
-                        .help("Use shuffled shooting game (SAMF-assisted curated DB compression) instead of simple shooting game")
+                        .help("Use expansion game (expand_loop 2x) instead of the shuffled shooting game")
                         .required(false)
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
                     Arg::new("single-end")
                         .long("single-end")
-                        .help("Shuffled path only: accumulate SAMFs/NOTs across ALL rounds (functionality is broken between rounds) and undo them in a single pass after the last round, before its compression")
+                        .help("Accumulate SAMFs/NOTs across ALL rounds (functionality is broken between rounds) and undo them in a single pass after the last round, before its compression")
                         .required(false)
                         .action(clap::ArgAction::SetTrue),
                 ),

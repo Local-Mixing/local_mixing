@@ -1,8 +1,8 @@
+pub mod bench_support;
 pub mod circuit;
 pub mod rainbow;
 pub mod random;
 pub mod replace;
-pub use replace::main_mix::open_shard_dbs;
 use crate::circuit::CircuitSeq;
 use numpy::PyArray2;
 use numpy::ndarray::Array2;
@@ -11,6 +11,7 @@ use pyo3::prelude::*;
 use rand::Rng;
 use rand::seq::IteratorRandom;
 use rayon::prelude::*;
+pub use replace::main_mix::open_shard_dbs;
 use std::fs;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
@@ -818,26 +819,33 @@ fn heatmap_subsampled(
     // Per-input snapshots (small: num_inputs * (m1+m2) u256), computed in parallel.
     let snaps: Vec<(Vec<u256>, Vec<u256>)> = inputs
         .par_iter()
-        .map(|&ib| (snap(&circuit_one.gates, &p1, ib), snap(&circuit_two.gates, &p2, ib)))
+        .map(|&ib| {
+            (
+                snap(&circuit_one.gates, &p1, ib),
+                snap(&circuit_two.gates, &p2, ib),
+            )
+        })
         .collect();
     println!("Subsampled snapshots in {:?}", Instant::now() - start_time);
 
     let nw = num_wires as f64;
     let inv = 1.0 / num_inputs as f64;
     let mut data = vec![0f64; m1 * m2 * 3];
-    data.par_chunks_mut(m2 * 3).enumerate().for_each(|(a, row)| {
-        for b in 0..m2 {
-            let mut acc = 0f64;
-            for s in &snaps {
-                let x = s.0[a];
-                let y = s.1[b];
-                acc += popcount_u256((x ^ y) & mask) as f64 / nw;
+    data.par_chunks_mut(m2 * 3)
+        .enumerate()
+        .for_each(|(a, row)| {
+            for b in 0..m2 {
+                let mut acc = 0f64;
+                for s in &snaps {
+                    let x = s.0[a];
+                    let y = s.1[b];
+                    acc += popcount_u256((x ^ y) & mask) as f64 / nw;
+                }
+                row[b * 3] = p1[a] as f64;
+                row[b * 3 + 1] = p2[b] as f64;
+                row[b * 3 + 2] = acc * inv;
             }
-            row[b * 3] = p1[a] as f64;
-            row[b * 3 + 1] = p2[b] as f64;
-            row[b * 3 + 2] = acc * inv;
-        }
-    });
+        });
 
     let arr2 = Array2::from_shape_vec((m1 * m2, 3), data).expect("grid shape mismatch");
     PyArray2::from_owned_array(py, arr2).into()

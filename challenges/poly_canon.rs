@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use clap::Parser;
 use local_mixing::{
-    circuit::circuit::{Monomial, Polynomial, poly_to_compressed_str, Permutation},
+    circuit::circuit::{Monomial, Permutation, Polynomial, poly_to_compressed_str},
     random::random_data::random_circuit,
 };
 
@@ -87,7 +87,11 @@ impl Graph {
                 .or_default()
                 .insert(m);
         }
-        eprintln!("add_poly: out_idx={} time={:.6}s", out_idx, start.elapsed().as_secs_f64());
+        eprintln!(
+            "add_poly: out_idx={} time={:.6}s",
+            out_idx,
+            start.elapsed().as_secs_f64()
+        );
     }
 
     pub fn new(wires: u64) -> Self {
@@ -149,7 +153,10 @@ impl Graph {
         if unique {
             println!("[ all unique ]");
         }
-        eprintln!("print_wire_hashes: time={:.6}s", start.elapsed().as_secs_f64());
+        eprintln!(
+            "print_wire_hashes: time={:.6}s",
+            start.elapsed().as_secs_f64()
+        );
     }
 
     pub fn push_hashes(&mut self) {
@@ -265,7 +272,11 @@ impl Graph {
             perm[*old_idx] = new_idx;
         }
         let p = Permutation::new(perm);
-        eprintln!("extract_perm: n={} time={:.6}s", self.variables.len(), start.elapsed().as_secs_f64());
+        eprintln!(
+            "extract_perm: n={} time={:.6}s",
+            self.variables.len(),
+            start.elapsed().as_secs_f64()
+        );
         p
     }
 }
@@ -304,7 +315,7 @@ fn main() {
         alpha = g.extract_perm();
     }
 
-    let p =Permutation::rand_perm(n);
+    let p = Permutation::rand_perm(n);
     ckt.rewire(&p, n);
 
     {

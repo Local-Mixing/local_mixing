@@ -430,14 +430,10 @@ fn reloc_feistal(
     }
 }
 
-fn random_derangement(n: usize, rng: &mut impl Rng) -> Vec<usize> {
+fn random_permutation(n: usize, rng: &mut impl Rng) -> Vec<usize> {
     let mut q: Vec<usize> = (0..n).collect();
-    loop {
-        q.shuffle(rng);
-        if q.iter().enumerate().all(|(i, &qi)| i != qi) {
-            return q;
-        }
-    }
+    q.shuffle(rng);
+    q
 }
 
 fn random_circuit_with_rng(n: usize, m: usize, rng: &mut impl Rng) -> CircuitSeq {
@@ -575,9 +571,23 @@ fn emit_feistal_n(state: &FeistalState, out: &mut Vec<[u16; 3]>) {
     }
     for x in 0..n {
         let host = host_of_y[x];
-        debug_assert_ne!(host, x);
-        let yc = state.sharing.pairs[host].0;
+        let (yc, other_y_carrier) = state.sharing.pairs[host];
         let hf = state.free[host];
+        if host == x {
+            // For (a,b,c), y=a+b and x=a+b+c. Map to (a,a+c,a+b),
+            // so the pair becomes y+x=c while the triple remains x.
+            for (dst, src) in [
+                (other_y_carrier, yc),
+                (hf, yc),
+                (other_y_carrier, hf),
+                (hf, other_y_carrier),
+                (other_y_carrier, hf),
+            ] {
+                let (h1, h2) = pick_two_helpers(3 * n, &[dst, src]);
+                emit_transvection(dst, src, h1, h2, out);
+            }
+            continue;
+        }
         for source in [
             state.sharing.pairs[x].0,
             state.sharing.pairs[x].1,
@@ -659,9 +669,9 @@ pub fn feistalize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rn
         "input wire outside 0..n"
     );
     let total = 3 * n;
-    let bookend = (3 * n * (n as f64).ln() as usize).max(64);
+    let bookend = (((3 * n) as f64 * (n as f64).ln()).ceil() as usize).max(64);
     let mut out = rand_feistal_z_gates(n, bookend, rng);
-    let q = random_derangement(n, rng);
+    let q = random_permutation(n, rng);
     let mut xloc: Vec<usize> = (0..n).collect();
     let mut yloc: Vec<usize> = (n..2 * n).collect();
     let mut zloc: Vec<usize> = (2 * n..total).collect();
@@ -1067,6 +1077,47 @@ mod feistal_32_wire_tests {
                     );
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod feistal_fixed_point_n_tests {
+    use super::*;
+    use crate::circuit::circuit::Gate;
+
+    fn decode(state: &FeistalState, physical: usize) -> (usize, usize) {
+        let mut x = 0usize;
+        let mut y = 0usize;
+        for i in 0..state.sharing.n {
+            let (p0, p1) = state.sharing.pairs[i];
+            let pair = ((physical >> p0) & 1) ^ ((physical >> p1) & 1);
+            x |= (pair ^ ((physical >> state.free[i]) & 1)) << i;
+            y |= pair << state.q[i];
+        }
+        (x, y)
+    }
+
+    #[test]
+    fn n_tilde_supports_q_fixed_points_without_moving_carriers() {
+        let state = FeistalState {
+            sharing: GadgetState {
+                n: 3,
+                pairs: vec![(0, 1), (3, 4), (6, 7)],
+            },
+            free: vec![2, 5, 8],
+            q: vec![0, 1, 2],
+        };
+        let original_pairs = state.sharing.pairs.clone();
+        let original_free = state.free.clone();
+        let mut gates = Vec::new();
+        emit_feistal_n(&state, &mut gates);
+        assert_eq!(state.sharing.pairs, original_pairs);
+        assert_eq!(state.free, original_free);
+        for input in 0..512usize {
+            let (x, y) = decode(&state, input);
+            let output = Gate::evaluate_index_list(input, &gates);
+            assert_eq!(decode(&state, output), (x, y ^ x));
         }
     }
 }

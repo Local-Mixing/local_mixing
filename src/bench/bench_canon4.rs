@@ -1,4 +1,4 @@
-use local_mixing::bench_support::{N_GRID, SEEDS, default_m, gen_polys};
+use local_mixing::bench_support::{SEEDS, default_m, gen_polys, selected_n_grid};
 use local_mixing::circuit::circuit::{Permutation, canonicalize_polys_4};
 use local_mixing::random::random_data::random_circuit;
 use std::hint::black_box;
@@ -49,7 +49,7 @@ fn benchmark(polys: Vec<local_mixing::circuit::Polynomial>, allow_rule_l: bool) 
 fn main() {
     println!("algo,n,m,seed,variant,nanos,valid");
 
-    for &n in N_GRID {
+    for n in selected_n_grid() {
         let m = default_m(n);
         for &seed in SEEDS {
             for &(variant, allow_rule_l) in &[("rule_l_on", true), ("rule_l_off", false)] {

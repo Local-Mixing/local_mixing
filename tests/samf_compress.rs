@@ -97,7 +97,17 @@ fn db_backed_shuffles_preserve_equivalence() {
                     &shard_dbs,
                 ),
                 4 => {
-                    shuffled_shooting_game(&mut c, n, env, curated_shard_dbs, shard_dbs, 4, 3, 1);
+                    shuffled_shooting_game(
+                        &mut c,
+                        n,
+                        env,
+                        curated_shard_dbs,
+                        shard_dbs,
+                        4,
+                        5,
+                        3,
+                        1,
+                    );
                 }
                 _ => {
                     shuffled_shoot_then_samf(
@@ -106,6 +116,7 @@ fn db_backed_shuffles_preserve_equivalence() {
                         4,
                         3,
                         4,
+                        5,
                         3,
                         1,
                         &env,
@@ -148,7 +159,8 @@ fn single_end_multiround_preserves_equivalence() {
     // Small params/rounds: this test omits the per-round compression the real pipeline does,
     // so the circuit would otherwise grow exponentially across rounds.
     let n = 10;
-    let (m, x, gates_ahead, rounds) = (2usize, 8usize, 3usize, 3usize);
+    let (m, x, gates_ahead_expand, gates_ahead_samf, rounds) =
+        (2usize, 8usize, 4usize, 5usize, 3usize);
 
     for trial in 0..4 {
         let original = random_circuit(n, 30);
@@ -165,7 +177,8 @@ fn single_end_multiround_preserves_equivalence() {
                 n,
                 m,
                 x,
-                gates_ahead,
+                gates_ahead_expand,
+                gates_ahead_samf,
                 3,
                 1,
                 &env,

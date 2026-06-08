@@ -1,5 +1,5 @@
 use cryptography::hash::sha2;
-use local_mixing::bench_support::{N_GRID, SEEDS, default_m, gen_polys};
+use local_mixing::bench_support::{SEEDS, default_m, gen_polys, selected_n_grid};
 use local_mixing::circuit::circuit::{Monomial, Permutation, Polynomial};
 use local_mixing::random::random_data::random_circuit;
 use std::collections::{HashMap, HashSet};
@@ -225,7 +225,7 @@ fn median_nanos(samples: &mut [u128]) -> u128 {
 fn main() {
     println!("algo,n,m,seed,variant,nanos,valid");
 
-    for &n in N_GRID {
+    for n in selected_n_grid() {
         let m = default_m(n);
 
         for &seed in SEEDS {

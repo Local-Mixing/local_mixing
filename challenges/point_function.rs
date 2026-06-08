@@ -181,7 +181,7 @@ fn main() {
         .concat(&big_tof(n, n, 0..b))
         .concat(&big_tof(n, n + 1, b..n + 1))
         .concat(&key_to_gates(n, args.key));
-    
+
     pf.canonicalize();
 
     println!("{}", pf.repr());

@@ -1,7 +1,7 @@
 use clap::{Parser, ValueEnum};
+use cryptography::{Aes128, BlockCipher};
 use entropy::{diehard, dieharder};
 use entropy::{nist, rng::Rng};
-use cryptography::{Aes128, BlockCipher};
 use fastrand::shuffle;
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::random::random_data::random_circuit;
@@ -20,7 +20,6 @@ enum CircuitGenerationMode {
     Random,
     Aes,
 }
-
 
 struct AesPrg {
     cipher: Aes128,
@@ -54,7 +53,6 @@ impl AesPrg {
     }
 }
 
-
 impl Rng for AesPrg {
     fn next_u32(&mut self) -> u32 {
         if self.word_index >= 4 {
@@ -79,7 +77,7 @@ struct CircuitPrg {
 
 impl CircuitPrg {
     fn new(circuit: CircuitSeq, operation_mode: OperationMode) -> Self {
-        let n = &circuit.max_wire()+1;
+        let n = &circuit.max_wire() + 1;
         let mut p = Self {
             circuit,
             // Random IV
@@ -103,7 +101,6 @@ impl CircuitPrg {
     }
 }
 
-
 impl Rng for CircuitPrg {
     fn next_u32(&mut self) -> u32 {
         if self.word_index >= self.max_word_idx {
@@ -116,7 +113,6 @@ impl Rng for CircuitPrg {
         word
     }
 }
-
 
 enum BlockPrg {
     Circuit(CircuitPrg),
@@ -281,7 +277,8 @@ fn main() {
 
     if args.file {
         println!(
-            "{}: {}", gates,
+            "{}: {}",
+            gates,
             failed_counts
                 .into_iter()
                 .map(|count| count.to_string())

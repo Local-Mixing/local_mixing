@@ -120,7 +120,9 @@ impl Permutation {
         if self.data.len() != other.data.len() {
             panic!("Permutation length mismatch in compose");
         }
-        let data = (0..self.data.len()).map(|i| self.data[other.data[i]]).collect();
+        let data = (0..self.data.len())
+            .map(|i| self.data[other.data[i]])
+            .collect();
         Permutation { data }
     }
     pub fn is_perm(&self) -> bool {

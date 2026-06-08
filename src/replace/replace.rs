@@ -29,6 +29,69 @@ use std::{
 // Global histogram: (before_gates, after_gates) -> count, accumulated across all rounds
 pub static COMPRESSION_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
 
+// Global histograms for EXPANSIONS made in the shuffle-shoot-shuffle game, accumulated
+// across all rounds. One is keyed by gate counts, the other by distinct-wire counts.
+pub static EXPANSION_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
+pub static EXPANSION_WIRE_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
+
+// Record one expansion: `before`/`after` gate counts and `before_wires`/`after_wires`
+// distinct-wire counts.
+pub fn record_expansion(before: usize, after: usize, before_wires: usize, after_wires: usize) {
+    *EXPANSION_HISTOGRAM
+        .entry((before as u8, after as u8))
+        .or_insert(0) += 1;
+    *EXPANSION_WIRE_HISTOGRAM
+        .entry((before_wires as u8, after_wires as u8))
+        .or_insert(0) += 1;
+}
+
+// Write a (before, after) -> count histogram to `csv_path` and a human-readable log to
+// `log_path`. `unit` labels the rows in the log (e.g. "gates" or "wires").
+fn write_before_after_histogram(
+    hist: &DashMap<(u8, u8), u64>,
+    csv_path: &str,
+    log_path: &str,
+    unit: &str,
+) {
+    let mut entries: Vec<((u8, u8), u64)> = hist.iter().map(|e| (*e.key(), *e.value())).collect();
+    entries.sort_by_key(|&((before, after), _)| (before, after));
+    let mut f = File::create(csv_path).expect("Failed to create histogram CSV");
+    writeln!(f, "before,after,count").expect("write");
+    for ((before, after), count) in &entries {
+        writeln!(f, "{},{},{}", before, after, count).expect("write");
+    }
+    println!("Histogram written to {}", csv_path);
+
+    let mut log = File::create(log_path).expect("Failed to create histogram log");
+    let before_vals: Vec<u8> = {
+        let mut v: Vec<u8> = entries.iter().map(|&((b, _), _)| b).collect();
+        v.dedup();
+        v
+    };
+    for before in before_vals {
+        let group: Vec<_> = entries.iter().filter(|&((b, _), _)| *b == before).collect();
+        let total: u64 = group.iter().map(|(_, c)| c).sum();
+        writeln!(log, "{} {} before (total: {}):", before, unit, total).expect("write");
+        for ((_, after), count) in &group {
+            writeln!(log, "  -> {} {}: {}", after, unit, count).expect("write");
+        }
+    }
+    println!("Log written to {}", log_path);
+}
+
+pub fn write_expansion_histogram(path: &str) {
+    write_before_after_histogram(&EXPANSION_HISTOGRAM, path, "expansion_log.txt", "gates");
+}
+
+pub fn write_expansion_wire_histogram(path: &str) {
+    write_before_after_histogram(
+        &EXPANSION_WIRE_HISTOGRAM,
+        path,
+        "expansion_wire_log.txt",
+        "wires",
+    );
+}
+
 pub fn write_compression_histogram(path: &str) {
     let mut entries: Vec<((u8, u8), u64)> = COMPRESSION_HISTOGRAM
         .iter()

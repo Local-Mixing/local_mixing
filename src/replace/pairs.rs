@@ -125,10 +125,14 @@ pub fn expand_curated_lmdb(
         return None;
     }
 
-    let max_gates = candidates.iter().map(|c| c.gates.len()).max().unwrap();
+    // Favor expansions that are both LONG (many gates) and WIDE (many distinct wires),
+    // not solely the largest gate count. Score each candidate by gates + wires and keep
+    // the top-scoring set, breaking ties at random.
+    let score = |c: &CircuitSeq| c.gates.len() + c.used_wires().len();
+    let max_score = candidates.iter().map(|c| score(c)).max().unwrap();
     let mut best: Vec<CircuitSeq> = candidates
         .into_iter()
-        .filter(|c| c.gates.len() == max_gates)
+        .filter(|c| score(c) == max_score)
         .collect();
     let idx = rng.random_range(0..best.len());
     let mut repl = best.swap_remove(idx);

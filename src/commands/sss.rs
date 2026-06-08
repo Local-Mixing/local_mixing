@@ -6,7 +6,10 @@ use lmdb::Environment;
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::replace::main_mix::{main_shuffle_shoot_shuffle, open_all_dbs};
 use local_mixing::replace::mixing::install_kill_handler;
-use local_mixing::replace::replace::{print_compress_timers, write_compression_histogram};
+use local_mixing::replace::replace::{
+    print_compress_timers, write_compression_histogram, write_expansion_histogram,
+    write_expansion_wire_histogram,
+};
 
 /// Shuffle-shoot-shuffle: the main obfuscation+compression game.
 pub fn run(sub: &clap::ArgMatches) {
@@ -20,14 +23,13 @@ pub fn run(sub: &clap::ArgMatches) {
     let do_gadgetize = sub.get_flag("gadgetize");
     let gadget_path = sub.get_one::<String>("gadget_path").map(|s| s.as_str());
     let full_shuffle = sub.get_flag("full-shuffle");
-    let gates_ahead: usize = *sub.get_one("gates_ahead").unwrap();
+    let gates_ahead_expand: usize = *sub.get_one("gates_ahead_expand").unwrap();
+    let gates_ahead_samf: usize = *sub.get_one("gates_ahead_samf").unwrap();
     let type_attempts: usize = *sub.get_one("type_attempts").unwrap();
     let shooting_times: usize = *sub.get_one("shooting_times").unwrap();
     let egg = sub.get_flag("egg");
-    let shuffled = sub.get_flag("shuffled");
     let single_end = sub.get_flag("single-end");
     let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
-    let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
     let data = fs::read_to_string(s).expect("Failed to read source circuit");
 
     let lmdb_path = "./db";
@@ -59,27 +61,43 @@ pub fn run(sub: &clap::ArgMatches) {
         &env,
         &shard_dbs,
         &curated_shard_dbs,
-        i,
         leave,
         do_gadgetize,
         gadget_path,
         full_shuffle,
-        gates_ahead,
+        gates_ahead_expand,
+        gates_ahead_samf,
         type_attempts,
         shooting_times,
         egg,
         rg_freq,
-        shuffled,
         single_end,
     );
     print_compress_timers();
     write_compression_histogram("compression_histogram.csv");
+    write_expansion_histogram("expansion_histogram.csv");
+    write_expansion_wire_histogram("expansion_wire_histogram.csv");
+
+    println!("\n=== Plot commands (copy/paste one at a time) ===");
     println!(
         "python3 ./heatmap/compression_hist.py --csv compression_histogram.csv --out compression_histogram.png"
     );
     println!(
         "python3 ./heatmap/compression_heatmap.py --csv compression_histogram.csv --out compression_heatmap.png"
     );
+    println!(
+        "python3 ./heatmap/compression_hist.py --csv expansion_histogram.csv --out expansion_histogram.png"
+    );
+    println!(
+        "python3 ./heatmap/compression_heatmap.py --csv expansion_histogram.csv --out expansion_heatmap.png"
+    );
+    println!(
+        "python3 ./heatmap/compression_hist.py --csv expansion_wire_histogram.csv --out expansion_wire_histogram.png"
+    );
+    println!(
+        "python3 ./heatmap/compression_heatmap.py --csv expansion_wire_histogram.csv --out expansion_wire_heatmap.png"
+    );
+    println!("=== end plot commands ===\n");
 
     let x_label = {
         let stem = Path::new(s).file_stem().unwrap().to_str().unwrap();

@@ -1712,17 +1712,23 @@ fn gates_collide(g1: [u16; 3], g2: [u16; 3]) -> bool {
     g1[0] == g2[1] || g1[0] == g2[2] || g2[0] == g1[1] || g2[0] == g1[2]
 }
 
-// For each collision (adjacent gates that can't commute), try inserting the first 3 gates of a
-// randomly chosen SAMF (swap-and-maybe-flip circuit) after the collision window and look up an
-// equal-or-shorter replacement in the curated DB.
+// For each collision (adjacent gates that can't commute), make a curated EXPANSION of a window of
+// up to `gates_ahead_expand` gates anchored at the colliding pair, then try to hide a single SAMF
+// in the expansion's tail and look up an equal-or-shorter replacement in the curated DB.
+//
+// The expansion window is anchored at the colliding pair and shrinks by one gate on each
+// curated-DB miss (gates_ahead_expand .. 2, down to the 2-gate pair); a window is eligible only
+// if every control wire in it is clean (no pending negation correction).
+//
+// The SAMF-hiding window is the last `gates_ahead_samf` gates ending at the expansion's tail —
+// reaching back into the already-emitted output when the expansion is shorter than
+// `gates_ahead_samf` — followed by the first 3 gates of the SAMF. On a successful hide the
+// remaining SAMF gates are emitted after the replacement.
 //
 // `type_attempts` controls how many DISTINCT SAMF gate (negation) types are tried per collision
 // before giving up: each attempt samples a not-yet-tried type (without replacement) and one
-// random hardcoded SAMF of that type. The first type that yields a compressing window wins;
+// random hardcoded SAMF of that type. The first type that yields a hiding window wins;
 // `type_attempts == 1` is the original single-try behaviour.
-//
-// When gates_ahead > 2, first tries a wider window of gates_ahead gates + samf[0..3]. Falls back
-// to the 2-gate collision pair + samf[0..3] if the wider lookup misses.
 //
 // If a replacement is found, output it followed by the remaining SAMF gates. Future gates are
 // relabeled by the SAMF's wire permutation, and the accumulated permutation is undone at the end.
@@ -1732,7 +1738,8 @@ fn shuffled_shooting_game_core(
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
-    gates_ahead: usize,
+    gates_ahead_expand: usize,
+    gates_ahead_samf: usize,
     type_attempts: usize,
 ) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
     use crate::replace::pairs::{compress_curated_lmdb, expand_curated_lmdb};
@@ -1744,7 +1751,6 @@ fn shuffled_shooting_game_core(
     };
     let mut negation_mask = vec![0u8; n];
     let mut compressions: usize = 0;
-    let _ = gates_ahead; // expansion targets the colliding pair; lookahead unused
 
     let mut i = 0;
 
@@ -1754,9 +1760,9 @@ fn shuffled_shooting_game_core(
         let b = t_list.evaluate(gate[1]);
         let c = t_list.evaluate(gate[2]);
 
-        // On a collision, first make a curated EXPANSION of the colliding pair, then try to
-        // hide a single SAMF in the last 3 gates of that expansion. The expansion is computed
-        // once; if no SAMF can be hidden we keep it verbatim (no recompute).
+        // On a collision, expand a window of up to `gates_ahead_expand` gates anchored at the
+        // colliding pair, then try to hide a single SAMF in the expansion's tail. The expansion is
+        // computed once; if no SAMF can be hidden we keep it verbatim (no recompute).
         let replaced = 'try_replace: {
             if i + 1 >= input.len() {
                 break 'try_replace false;
@@ -1771,38 +1777,79 @@ fn shuffled_shooting_game_core(
                 break 'try_replace false;
             }
 
-            // Collision pair controls must be clean (no pending negation corrections).
-            if negation_mask[b as usize] != 0
-                || negation_mask[c as usize] != 0
-                || negation_mask[nb as usize] != 0
-                || negation_mask[nc as usize] != 0
-            {
-                break 'try_replace false;
+            // 1) Curated expansion of the largest clean window anchored at the colliding pair: an
+            //    equivalent, longer circuit. The window shrinks from its far end
+            //    (gates_ahead_expand .. 2) until a curated expansion is found; a window is eligible
+            //    only if every control wire in it is clean (no pending negation correction), so the
+            //    expansion stays equivalence-safe. `consumed` input gates map to `expansion`.
+            let max_window = gates_ahead_expand.max(2).min(input.len() - i);
+            let mut expanded: Option<(usize, Vec<[u16; 3]>)> = None;
+            for k in (2..=max_window).rev() {
+                let mut window: Vec<[u16; 3]> = Vec::with_capacity(k);
+                let mut clean = true;
+                for g in &input[i..i + k] {
+                    let rg = [
+                        t_list.evaluate(g[0]),
+                        t_list.evaluate(g[1]),
+                        t_list.evaluate(g[2]),
+                    ];
+                    // Controls (positions 1 and 2) must carry no pending negation.
+                    if negation_mask[rg[1] as usize] != 0 || negation_mask[rg[2] as usize] != 0 {
+                        clean = false;
+                        break;
+                    }
+                    window.push(rg);
+                }
+                if !clean {
+                    continue;
+                }
+                if let Some(e) = expand_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs)
+                {
+                    if e.len() >= 3 {
+                        expanded = Some((k, e));
+                        break;
+                    }
+                }
             }
-
-            // 1) Curated expansion of the colliding pair: an equivalent, longer circuit.
-            let expansion = match expand_curated_lmdb(
-                &[[a, b, c], [na, nb, nc]],
-                n,
-                env,
-                curated_shard_dbs,
-                shard_dbs,
-            ) {
-                Some(e) if e.len() >= 3 => e,
-                _ => break 'try_replace false, // no curated expansion -> normal path
+            let (consumed, expansion) = match expanded {
+                Some(x) => x,
+                None => break 'try_replace false, // no curated expansion -> normal path
             };
             CURATED_REPLACEMENTS_MADE.fetch_add(1, Ordering::Relaxed);
+            // Distinct-wire counts of the consumed input window (evaluated) vs the expansion.
+            let distinct_wires = |gates: &[[u16; 3]]| {
+                let mut seen = std::collections::HashSet::new();
+                for g in gates {
+                    seen.insert(g[0]);
+                    seen.insert(g[1]);
+                    seen.insert(g[2]);
+                }
+                seen.len()
+            };
+            let before_wires = {
+                let evaluated: Vec<[u16; 3]> = input[i..i + consumed]
+                    .iter()
+                    .map(|g| {
+                        [
+                            t_list.evaluate(g[0]),
+                            t_list.evaluate(g[1]),
+                            t_list.evaluate(g[2]),
+                        ]
+                    })
+                    .collect();
+                distinct_wires(&evaluated)
+            };
+            crate::replace::replace::record_expansion(
+                consumed,
+                expansion.len(),
+                before_wires,
+                distinct_wires(&expansion),
+            );
 
-            // 2) Try to hide ONE SAMF in the last 3 gates of the expansion. Pick the swap wires
-            //    once and vary the negation type across attempts; the expansion is reused as-is
-            //    (never recomputed) whether or not a SAMF can be hidden.
-            let tail_start = expansion.len() - 3;
-            let tail: [[u16; 3]; 3] = [
-                expansion[tail_start],
-                expansion[tail_start + 1],
-                expansion[tail_start + 2],
-            ];
-
+            // 2) Try to hide ONE SAMF ending at the expansion's tail. The context for the hide is
+            //    the last `gates_ahead_samf` gates of (output ++ expansion) — reaching back into
+            //    the already-emitted output when the expansion is shorter — followed by samf[0..3].
+            //    Pick the swap wires once and vary the negation type across attempts.
             let swap_lo: u16 = rng.random_range(0..n as u16);
             let swap_hi: u16 = loop {
                 let w: u16 = rng.random_range(0..n as u16);
@@ -1816,42 +1863,53 @@ fn shuffled_shooting_game_core(
                 (swap_hi, swap_lo)
             };
 
+            // Split the gates_ahead_samf-gate context between the expansion tail and the gates
+            // immediately before it in `output`. When the expansion is shorter than the context,
+            // the whole expansion is used (exp_tail_start == 0) and the remainder comes from
+            // output; otherwise the context is wholly inside the expansion (from_output == 0).
+            let ctx = gates_ahead_samf.max(1);
+            let exp_take = expansion.len().min(ctx);
+            let exp_tail_start = expansion.len() - exp_take;
+            let from_output = (ctx - exp_take).min(output.len());
+            let out_keep = output.len() - from_output;
+
             let candidate_types: Vec<u16> = (0u16..=3).collect();
-            // (neg_type, samf, samf_used, repl): the tail + samf[0..samf_used] becomes `repl`,
-            // and samf[samf_used..] is emitted after it.
-            let mut tuck: Option<(u16, Vec<[u16; 3]>, usize, Vec<[u16; 3]>)> = None;
+            // (neg_type, samf, repl): the context window ++ samf[0..3] becomes `repl`, and
+            // samf[3..] is emitted after it.
+            let mut tuck: Option<(u16, Vec<[u16; 3]>, Vec<[u16; 3]>)> = None;
             'types: for &neg_type in candidate_types.choose_multiple(&mut rng, type_attempts.max(1))
             {
                 let samf = Transpositions::gen_gates_swap(n, (swap_lo, swap_hi, neg_type));
                 if samf.len() < 3 {
                     continue;
                 }
-                // Windows: tail(3) ++ samf[0..samf_count], most-SAMF-first.
-                for samf_count in (1..=samf.len()).rev() {
-                    let mut window: Vec<[u16; 3]> = tail.to_vec();
-                    window.extend_from_slice(&samf[..samf_count]);
-                    if let Some(repl) =
-                        compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs)
-                    {
-                        // Reject if the SAMF gates survive verbatim (not actually hidden).
-                        let samf_slice = &samf[..samf_count];
-                        let samf_hidden = repl.len() < samf_count
-                            || !repl.windows(samf_count).any(|w| w == samf_slice);
-                        if samf_hidden {
-                            tuck = Some((neg_type, samf, samf_count, repl));
-                            break 'types;
-                        }
+                // Window: [output tail] ++ [expansion tail] ++ samf[0..3]. Always contains SAMF
+                // gates, so every lookup is a genuine hide attempt.
+                let mut window: Vec<[u16; 3]> = Vec::with_capacity(ctx + 3);
+                window.extend_from_slice(&output[out_keep..]);
+                window.extend_from_slice(&expansion[exp_tail_start..]);
+                window.extend_from_slice(&samf[..3]);
+                if let Some(repl) =
+                    compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs)
+                {
+                    // Accept only if the SAMF gates are genuinely absorbed (not surviving verbatim).
+                    let samf_slice = &samf[..3];
+                    let samf_hidden = repl.len() < 3 || !repl.windows(3).any(|w| w == samf_slice);
+                    if samf_hidden {
+                        tuck = Some((neg_type, samf, repl));
+                        break 'types;
                     }
                 }
             }
 
             match tuck {
-                Some((neg_type, samf, samf_used, repl)) => {
-                    // Front of the expansion is unchanged; its last 3 gates + the hidden SAMF
-                    // become `repl ++ samf[samf_used..]`.
-                    output.extend_from_slice(&expansion[..tail_start]);
+                Some((neg_type, samf, repl)) => {
+                    // The context window (output tail + expansion tail + samf[0..3]) becomes
+                    // `repl`; everything before it is unchanged and samf[3..] follows.
+                    output.truncate(out_keep);
+                    output.extend_from_slice(&expansion[..exp_tail_start]);
                     output.extend_from_slice(&repl);
-                    output.extend_from_slice(&samf[samf_used..]);
+                    output.extend_from_slice(&samf[3..]);
                     t_list.transpositions.push((swap_lo, swap_hi, neg_type));
                     apply_neg_to_mask(
                         &mut negation_mask,
@@ -1870,7 +1928,7 @@ fn shuffled_shooting_game_core(
                 }
             }
 
-            i += 2; // consumed the colliding pair
+            i += consumed; // consumed the expansion's input window
             true
         };
         if !replaced {
@@ -1897,7 +1955,8 @@ fn shuffled_shooting_game_repeated_core(
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
-    gates_ahead: usize,
+    gates_ahead_expand: usize,
+    gates_ahead_samf: usize,
     type_attempts: usize,
     shooting_times: usize,
 ) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
@@ -1916,7 +1975,8 @@ fn shuffled_shooting_game_repeated_core(
             env,
             curated_shard_dbs,
             shard_dbs,
-            gates_ahead,
+            gates_ahead_expand,
+            gates_ahead_samf,
             type_attempts,
         );
         let mut new_total_neg = neg_pass;
@@ -1942,7 +2002,8 @@ pub fn shuffled_shooting_game(
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
-    gates_ahead: usize,
+    gates_ahead_expand: usize,
+    gates_ahead_samf: usize,
     type_attempts: usize,
     shooting_times: usize,
 ) -> usize {
@@ -1952,7 +2013,8 @@ pub fn shuffled_shooting_game(
         env,
         curated_shard_dbs,
         shard_dbs,
-        gates_ahead,
+        gates_ahead_expand,
+        gates_ahead_samf,
         type_attempts,
         shooting_times,
     );
@@ -1981,7 +2043,8 @@ pub fn shuffled_shoot_then_samf_core(
     n: usize,
     m: usize,
     x: usize,
-    gates_ahead: usize,
+    gates_ahead_expand: usize,
+    gates_ahead_samf: usize,
     type_attempts: usize,
     shooting_times: usize,
     env: &Environment,
@@ -1994,7 +2057,8 @@ pub fn shuffled_shoot_then_samf_core(
         env,
         curated_shard_dbs,
         shard_dbs,
-        gates_ahead,
+        gates_ahead_expand,
+        gates_ahead_samf,
         type_attempts,
         shooting_times,
     );
@@ -2021,7 +2085,8 @@ pub fn shuffled_shoot_then_samf(
     n: usize,
     m: usize,
     x: usize,
-    gates_ahead: usize,
+    gates_ahead_expand: usize,
+    gates_ahead_samf: usize,
     type_attempts: usize,
     shooting_times: usize,
     env: &Environment,
@@ -2033,7 +2098,8 @@ pub fn shuffled_shoot_then_samf(
         n,
         m,
         x,
-        gates_ahead,
+        gates_ahead_expand,
+        gates_ahead_samf,
         type_attempts,
         shooting_times,
         env,
