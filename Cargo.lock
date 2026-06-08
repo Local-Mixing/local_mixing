@@ -1188,6 +1188,7 @@ dependencies = [
  "rng-entropy",
  "rocksdb",
  "rusqlite",
+ "rustc-hash",
  "serde",
  "signal-hook",
  "smallvec",
