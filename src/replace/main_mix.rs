@@ -1,9 +1,12 @@
 use std::{fs::File, io::Write};
 
+use primitive_types::U512 as u512;
+use rand::RngCore;
+
 use crate::{
-    circuit::circuit::CircuitSeq,
+    circuit::circuit::{CircuitSeq, Gate},
     replace::{
-        gadgets::gadgetize,
+        gadgets::{feistalize, gadgetize},
         pairs::interleave,
         replace::{ExpandPairMode, compress_loop, expand_once},
         transpositions::insert_wire_m_samfs_every_x,
@@ -45,6 +48,46 @@ pub fn open_all_dbs(env: &lmdb::Environment) -> (Vec<lmdb::Database>, Vec<lmdb::
     (shard_dbs, curated_shard_dbs)
 }
 
+fn feistal_middle_matches_original(
+    original: &CircuitSeq,
+    transformed: &CircuitSeq,
+    original_n: usize,
+    total_wires: usize,
+    num_inputs: usize,
+) -> Result<(), String> {
+    assert!(
+        total_wires <= 512,
+        "feistalized equality check supports up to 512 wires"
+    );
+    let mask = if original_n < 512 {
+        (u512::one() << original_n) - u512::one()
+    } else {
+        u512::MAX
+    };
+    for _ in 0..num_inputs {
+        let mut bytes = [0u8; 64];
+        rand::rng().fill_bytes(&mut bytes);
+        let random = u512::from_little_endian(&bytes);
+        let x = random & mask;
+        let y = (random >> original_n) & mask;
+        let z = (random >> (2 * original_n)) & mask;
+        let extra = if total_wires > 3 * original_n {
+            let extra_mask = (u512::one() << (total_wires - 3 * original_n)) - u512::one();
+            (random >> (3 * original_n)) & extra_mask
+        } else {
+            u512::zero()
+        };
+        let input = x | (y << original_n) | (z << (2 * original_n)) | (extra << (3 * original_n));
+        let original_output = Gate::evaluate_index_list_512(x, &original.gates) & mask;
+        let transformed_output = Gate::evaluate_index_list_512(input, &transformed.gates);
+        let middle = (transformed_output >> original_n) & mask;
+        if middle != (y ^ original_output) {
+            return Err("Feistalized circuit middle block is not y ^ C(x)".to_string());
+        }
+    }
+    Ok(())
+}
+
 pub fn main_shuffle_shoot_shuffle(
     c: &CircuitSeq,
     rounds: usize,
@@ -58,6 +101,7 @@ pub fn main_shuffle_shoot_shuffle(
     curated_shard_dbs: &[lmdb::Database],
     leave: bool,
     do_gadgetize: bool,
+    do_feistalize: bool,
     gadget_path: Option<&str>,
     full_shuffle: bool,
     gates_ahead_expand: usize,
@@ -75,17 +119,24 @@ pub fn main_shuffle_shoot_shuffle(
     // Repeat `rounds` times
     let mut post_len = 0;
     let mut count = 0;
-    if do_gadgetize {
+    if do_gadgetize || do_feistalize {
         let mut rng = rand::rng();
         let before = circuit.gates.len();
-        circuit = gadgetize(&circuit, n, rg_freq, &mut rng);
+        let (label, transformed_n) = if do_feistalize {
+            circuit = feistalize(&circuit, n, rg_freq, &mut rng);
+            ("Feistalized", 3 * n)
+        } else {
+            circuit = gadgetize(&circuit, n, rg_freq, &mut rng);
+            ("Gadgetized", 2 * n)
+        };
         println!(
-            "Gadgetized: {} gates → {} gates, {} wires",
+            "{}: {} gates → {} gates, {} wires",
+            label,
             before,
             circuit.gates.len(),
-            2 * n
+            transformed_n
         );
-        // Save the gadgetized circuit to --gadget_path, or ./gadgetized/{final path
+        // Save the transformed circuit to --gadget_path, or ./gadgetized/{final path
         // component of source} when none was supplied.
         let gadget_path = match gadget_path {
             Some(p) => p.to_string(),
@@ -106,10 +157,16 @@ pub fn main_shuffle_shoot_shuffle(
         }
         File::create(&gadget_path)
             .and_then(|mut f| f.write_all(circuit.repr().as_bytes()))
-            .expect("Failed to write gadgetized circuit");
-        println!("Gadgetized circuit written to {}", gadget_path);
+            .expect("Failed to write transformed circuit");
+        println!("{} circuit written to {}", label, gadget_path);
     }
-    let n = if do_gadgetize { 2 * n } else { n };
+    let n = if do_feistalize {
+        3 * n
+    } else if do_gadgetize {
+        2 * n
+    } else {
+        n
+    };
     if leave {
         circuit = interleave(&circuit, n, env);
     }
@@ -272,9 +329,20 @@ pub fn main_shuffle_shoot_shuffle(
                 j += 1;
             }
         }
-        let n = if leave { n / 2 } else { n };
-        let n = if do_gadgetize { n / 2 } else { n };
-        if c.probably_equal(&circuit, n, 100_000).is_err() {
+        let original_n = if leave { n / 2 } else { n };
+        let original_n = if do_feistalize {
+            original_n / 3
+        } else if do_gadgetize {
+            original_n / 2
+        } else {
+            original_n
+        };
+        let functionality_ok = if do_feistalize {
+            feistal_middle_matches_original(&c, &circuit, original_n, n, 100_000)
+        } else {
+            c.probably_equal(&circuit, original_n, 100_000)
+        };
+        if functionality_ok.is_err() {
             panic!("The functionality has changed");
         }
         {
@@ -289,13 +357,24 @@ pub fn main_shuffle_shoot_shuffle(
     }
 
     println!("Final len: {}", circuit.gates.len());
-    // Compare against the original circuit on its own wires only: gadgetize/interleave
-    // expand the wire count, but functionality is preserved only on the original n wires.
-    let n = if leave { n / 2 } else { n };
-    let n = if do_gadgetize { n / 2 } else { n };
-    circuit
-        .probably_equal(&c, n, 150_000)
-        .expect("The circuits differ somewhere!");
+    // Compare against the original circuit. Gadgetize/interleave preserve the low original_n
+    // outputs; feistalize preserves C(x) in the middle original_n-wire block as y ^ C(x).
+    let original_n = if leave { n / 2 } else { n };
+    let original_n = if do_feistalize {
+        original_n / 3
+    } else if do_gadgetize {
+        original_n / 2
+    } else {
+        original_n
+    };
+    if do_feistalize {
+        feistal_middle_matches_original(&c, &circuit, original_n, n, 150_000)
+            .expect("The circuits differ somewhere!");
+    } else {
+        circuit
+            .probably_equal(&c, original_n, 150_000)
+            .expect("The circuits differ somewhere!");
+    }
 
     // Write to file
     let circuit_str = circuit.repr();

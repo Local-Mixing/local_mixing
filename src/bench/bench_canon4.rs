@@ -1,4 +1,4 @@
-use local_mixing::bench_support::{SEEDS, default_m, gen_polys, selected_n_grid};
+use local_mixing::bench_support::{SEEDS, default_m, gen_polys, selected_n_grid, trimmed_polys};
 use local_mixing::circuit::circuit::{Permutation, canonicalize_polys_4};
 use local_mixing::random::random_data::random_circuit;
 use std::hint::black_box;
@@ -15,7 +15,7 @@ fn is_valid(seed: u64, n: usize, m: usize, allow_rule_l: bool) -> bool {
     let mut rng = fastrand::Rng::with_seed(seed ^ 0x9e37_79b9_7f4a_7c15);
     rng.shuffle(&mut wire_order);
     rewired.rewire(&Permutation::new(wire_order), n);
-    let rewired = rewired.to_polynomial(n, 0, m);
+    let rewired = trimmed_polys(&rewired);
 
     match (
         canonicalize_polys_4(original, allow_rule_l),

@@ -1,11 +1,34 @@
-use crate::circuit::circuit::Polynomial;
+use crate::circuit::circuit::{CircuitSeq, Polynomial};
 use crate::random::random_data::random_circuit;
+use std::collections::HashMap;
 
 /// Generate reproducible polynomials for a given circuit configuration.
 pub fn gen_polys(seed: u64, n: usize, m: usize) -> Vec<Polynomial> {
     fastrand::seed(seed);
     let ckt = random_circuit(n, m);
-    ckt.to_polynomial(n, 0, m)
+    trimmed_polys(&ckt)
+}
+
+/// Trim a circuit to its touched wires, remap them densely, then emit polynomials.
+///
+/// This mirrors `CircuitSeq::canonicalize_polys`: unused wires are removed before
+/// polynomial canonicalization, so both benchmarked algorithms work on the same
+/// minimal input rather than on trailing identity wires.
+pub fn trimmed_polys(ckt: &CircuitSeq) -> Vec<Polynomial> {
+    let used = ckt.used_wires();
+    let wire_map: HashMap<u16, u16> = used
+        .iter()
+        .enumerate()
+        .map(|(i, &w)| (w, i as u16))
+        .collect();
+    let remapped = CircuitSeq {
+        gates: ckt
+            .gates
+            .iter()
+            .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+            .collect(),
+    };
+    remapped.to_polynomial(used.len(), 0, remapped.gates.len())
 }
 
 /// Default gate count used elsewhere in the repository: 2 * n * ln(n).

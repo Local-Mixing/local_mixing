@@ -21,6 +21,7 @@ pub fn run(sub: &clap::ArgMatches) {
     let x: usize = *sub.get_one("x").unwrap();
     let leave = sub.get_flag("interleave");
     let do_gadgetize = sub.get_flag("gadgetize");
+    let do_feistalize = sub.get_flag("feistalize");
     let gadget_path = sub.get_one::<String>("gadget_path").map(|s| s.as_str());
     let full_shuffle = sub.get_flag("full-shuffle");
     let gates_ahead_expand: usize = *sub.get_one("gates_ahead_expand").unwrap();
@@ -63,6 +64,7 @@ pub fn run(sub: &clap::ArgMatches) {
         &curated_shard_dbs,
         leave,
         do_gadgetize,
+        do_feistalize,
         gadget_path,
         full_shuffle,
         gates_ahead_expand,

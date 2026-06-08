@@ -46,8 +46,16 @@ fn main() {
                 .arg(
                     Arg::new("gadgetize")
                         .long("gadgetize")
-                        .help("Gadgetize the circuit at the start (input becomes 3n wires)")
+                        .help("Gadgetize the circuit at the start (input becomes 2n wires)")
                         .required(false)
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("feistalize")
+                        .long("feistalize")
+                        .help("Feistalize the circuit at the start (input becomes 3n wires)")
+                        .required(false)
+                        .conflicts_with("gadgetize")
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
@@ -55,7 +63,7 @@ fn main() {
                         .long("gadget_path")
                         .required(false)
                         .value_parser(clap::value_parser!(String))
-                        .help("Path to write the gadgetized circuit (default: ./gadgetized/{source filename})"),
+                        .help("Path to write the gadgetized/feistalized circuit (default: ./gadgetized/{source filename})"),
                 )
                 .arg(
                     Arg::new("full-shuffle")
