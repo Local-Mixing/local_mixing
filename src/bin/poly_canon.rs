@@ -307,10 +307,12 @@ fn main() {
     let p =Permutation::rand_perm(n);
     ckt.rewire(&p, n);
 
+    let full_start: Instant;
     {
         let mut g = Graph::new(n as u64);
 
         let poly = ckt.to_polynomial(n, 0, m);
+        full_start = Instant::now();
 
         for (i, p) in poly.iter().enumerate() {
             // println!("y{} = {}", i, poly_to_compressed_str(&p, n));
@@ -325,6 +327,7 @@ fn main() {
         g.print_wire_hashes();
         beta = g.extract_perm();
     }
+    eprintln!("full_canon: time={:.6}s", full_start.elapsed().as_secs_f64());
 
     println!("Rewired Perm:   {:?}", p.data);
 
