@@ -1,5 +1,5 @@
-use rustc_hash::FxHashMap;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::HashMap;
 use std::time::Instant;
 use xxhash_rust::xxh3::Xxh3Default;
 
@@ -47,13 +47,13 @@ pub struct Graph {
     // vars_to_mono: HashMap<NodeId, HashSet<Monomial>>,
 
     // Given a monomial, what are its constituent variables?
-    mono_to_vars: FxHashMap<Monomial, HashSet<NodeId>>,
+    mono_to_vars: FxHashMap<Monomial, FxHashSet<NodeId>>,
 
     // // Given a monomial, which polynomial outputs is it a member of?
     // mono_to_poly: FxHashMap<Monomial, HashSet<NodeId>>,
 
     // Give a polynomial, what are its constituent monomials?
-    poly_to_mono: FxHashMap<NodeId, HashSet<Monomial>>,
+    poly_to_mono: FxHashMap<NodeId, FxHashSet<Monomial>>,
 
     wires: u64,
 }
@@ -64,12 +64,6 @@ impl Graph {
 
         // Construct each monomial.
         for m in p {
-            let t = self.monomials.entry(m).or_insert(Node {
-                id: ((1 as u128) << 64) | (m as u128),
-                hash: None,
-                node_type: NodeType::Monomial,
-            });
-
             // Insert variables relationships
             for i in 0..(self.wires as u128) {
                 if (m >> i) & 1 == 1 {
@@ -189,7 +183,10 @@ impl Graph {
 
         for (idx, m) in self.poly_to_mono.iter() {
             let mut hashes: Vec<Hash> = Vec::with_capacity(m.len());
-            hashes.extend(m.iter().map(|n| self.monomials[n].hash.unwrap_or_default()));
+            hashes.extend(m.iter().map(|n| {
+                // If a monomial node is missing, treat it as an empty node (default hash 0)
+                self.monomials.get(n).and_then(|node| node.hash).unwrap_or_default()
+            }));
             hashes.sort_unstable();
 
             let mut hasher = Xxh3Default::new();
