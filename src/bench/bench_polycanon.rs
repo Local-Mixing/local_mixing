@@ -1,7 +1,7 @@
-use cryptography::hash::sha2;
 use local_mixing::bench_support::{SEEDS, default_m, gen_polys, selected_n_grid, trimmed_polys};
 use local_mixing::circuit::circuit::{Monomial, Permutation, Polynomial, trim_canonicalized};
 use local_mixing::random::random_data::random_circuit;
+use xxhash_rust::xxh3::Xxh3Default;
 use std::collections::{HashMap, HashSet};
 use std::hint::black_box;
 use std::time::Instant;
@@ -9,7 +9,7 @@ use std::time::Instant;
 const K: usize = 5;
 const VARIANT: &str = "wl";
 
-type Hash = [u8; 32];
+type Hash = u128;
 type NodeId = u128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -91,16 +91,16 @@ impl Graph {
                 .iter()
                 .map(|v| self.variables[*v as usize].hash.unwrap_or_default())
                 .collect();
-            hashes.sort();
+            hashes.sort_unstable();
 
-            let mut hasher = sha2::Sha256::new();
+            let mut hasher = Xxh3Default::new();
             hasher.update(b"M>");
             for h in hashes {
-                hasher.update(&h);
+                hasher.update(&h.to_le_bytes());
             }
 
             if let Some(node) = self.monomials.get_mut(m) {
-                node.hash = Some(hasher.finalize().into());
+                node.hash = Some(hasher.digest128().into());
             }
         }
 
@@ -109,54 +109,16 @@ impl Graph {
                 .iter()
                 .map(|m| self.monomials[m].hash.unwrap_or_default())
                 .collect();
-            hashes.sort();
+            hashes.sort_unstable();
 
-            let mut hasher = sha2::Sha256::new();
+            let mut hasher = Xxh3Default::new();
             hasher.update(b"P>");
             for h in hashes {
-                hasher.update(&h);
+                hasher.update(&h.to_le_bytes());
             }
 
             if let Some(node) = self.variables.get_mut(*idx as usize) {
-                node.hash = Some(hasher.finalize().into());
-            }
-        }
-    }
-
-    fn pull_hashes(&mut self) {
-        for (m, polys) in self.mono_to_poly.iter() {
-            let mut hashes: Vec<Hash> = polys
-                .iter()
-                .map(|v| self.variables[*v as usize].hash.unwrap_or_default())
-                .collect();
-            hashes.sort();
-
-            let mut hasher = sha2::Sha256::new();
-            hasher.update(b"P<");
-            for h in hashes {
-                hasher.update(&h);
-            }
-
-            if let Some(node) = self.monomials.get_mut(m) {
-                node.hash = Some(hasher.finalize().into());
-            }
-        }
-
-        for (idx, monomials) in self.vars_to_mono.iter() {
-            let mut hashes: Vec<Hash> = monomials
-                .iter()
-                .map(|m| self.monomials[m].hash.unwrap_or_default())
-                .collect();
-            hashes.sort();
-
-            let mut hasher = sha2::Sha256::new();
-            hasher.update(b"M<");
-            for h in hashes {
-                hasher.update(&h);
-            }
-
-            if let Some(node) = self.variables.get_mut(*idx as usize) {
-                node.hash = Some(hasher.finalize().into());
+                node.hash = Some(hasher.digest128().into());
             }
         }
     }
@@ -188,7 +150,6 @@ fn canonicalize_graph(polys: &[Polynomial], n: usize) -> Permutation {
 
     for _ in 0..n {
         graph.push_hashes();
-        graph.pull_hashes();
     }
 
     graph.extract_perm()
