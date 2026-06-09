@@ -5,7 +5,10 @@ use xxhash_rust::xxh3::Xxh3Default;
 
 use clap::Parser;
 use local_mixing::{
-    circuit::circuit::{Monomial, Permutation, Polynomial},
+    circuit::{
+        CircuitSeq,
+        circuit::{Monomial, Permutation, Polynomial, poly_to_compressed_str, poly_to_str},
+    },
     random::random_data::random_circuit,
 };
 
@@ -44,13 +47,13 @@ pub struct Graph {
     // T -> O edges are addition
 
     // // Give a variable node, what monomials is it a member of?
-    // vars_to_mono: HashMap<NodeId, HashSet<Monomial>>,
+    vars_to_mono: FxHashMap<NodeId, FxHashSet<Monomial>>,
 
     // Given a monomial, what are its constituent variables?
     mono_to_vars: FxHashMap<Monomial, FxHashSet<NodeId>>,
 
     // // Given a monomial, which polynomial outputs is it a member of?
-    // mono_to_poly: FxHashMap<Monomial, HashSet<NodeId>>,
+    mono_to_poly: FxHashMap<Monomial, FxHashSet<NodeId>>,
 
     // Give a polynomial, what are its constituent monomials?
     poly_to_mono: FxHashMap<NodeId, FxHashSet<Monomial>>,
@@ -64,19 +67,27 @@ impl Graph {
 
         // Construct each monomial.
         for m in p {
+            self.monomials.insert(
+                m,
+                Node {
+                    id: m as NodeId,
+                    hash: None,
+                    node_type: NodeType::Monomial,
+                },
+            );
             // Insert variables relationships
             for i in 0..(self.wires as u128) {
                 if (m >> i) & 1 == 1 {
                     // x_i is in this monomial.
-                    // self.vars_to_mono.entry(i).or_default().insert(m);
+                    self.vars_to_mono.entry(i).or_default().insert(m);
                     self.mono_to_vars.entry(m).or_default().insert(i);
                 }
             }
 
-            // self.mono_to_poly
-            //     .entry(m)
-            //     .or_default()
-            //     .insert(out_idx as u128);
+            self.mono_to_poly
+                .entry(m)
+                .or_default()
+                .insert(out_idx as u128);
             self.poly_to_mono
                 .entry(out_idx as u128)
                 .or_default()
@@ -104,9 +115,10 @@ impl Graph {
         Self {
             variables,
             monomials: FxHashMap::default(),
-            // vars_to_mono: HashMap::new(),
+
+            vars_to_mono: FxHashMap::default(),
             mono_to_vars: FxHashMap::default(),
-            // mono_to_poly: FxHashMap::default(),
+            mono_to_poly: FxHashMap::default(),
             poly_to_mono: FxHashMap::default(),
             wires,
         }
@@ -171,6 +183,8 @@ impl Graph {
             let mut hasher = Xxh3Default::new();
             // Domain separation
             hasher.update(b"M>");
+            // Add the old hash
+            hasher.update(&self.monomials[m].hash.unwrap_or_default().to_le_bytes());
             for h in hashes {
                 hasher.update(&h.to_le_bytes());
             }
@@ -185,12 +199,21 @@ impl Graph {
             let mut hashes: Vec<Hash> = Vec::with_capacity(m.len());
             hashes.extend(m.iter().map(|n| {
                 // If a monomial node is missing, treat it as an empty node (default hash 0)
-                self.monomials.get(n).and_then(|node| node.hash).unwrap_or_default()
+                self.monomials
+                    .get(n)
+                    .and_then(|node| node.hash)
+                    .unwrap_or_default()
             }));
             hashes.sort_unstable();
 
             let mut hasher = Xxh3Default::new();
             hasher.update(b"P>");
+            hasher.update(
+                &self.variables[*idx as usize]
+                    .hash
+                    .unwrap_or_default()
+                    .to_le_bytes(),
+            );
             for h in hashes {
                 hasher.update(&h.to_le_bytes());
             }
@@ -201,6 +224,64 @@ impl Graph {
             }
         }
         eprintln!("push_hashes: time={:.6}s", start.elapsed().as_secs_f64());
+    }
+
+    pub fn pull_hashes(&mut self) {
+        let start = Instant::now();
+
+        for (m, vars) in self.mono_to_poly.iter() {
+            let mut hashes: Vec<Hash> = Vec::with_capacity(vars.len());
+            hashes.extend(
+                vars.iter()
+                    .map(|v| self.variables[*v as usize].hash.unwrap_or_default()),
+            );
+            hashes.sort_unstable();
+
+            let mut hasher = Xxh3Default::new();
+            // Domain separation
+            hasher.update(b"M<");
+            hasher.update(&self.monomials[m].hash.unwrap_or_default().to_le_bytes());
+            // println!("m={} hlen={}", m, hashes.len());
+            for h in hashes {
+                hasher.update(&h.to_le_bytes());
+            }
+
+            let res: Hash = hasher.digest128().into();
+            if let Some(node) = self.monomials.get_mut(m) {
+                node.hash = Some(res);
+            }
+        }
+
+        for (idx, m) in self.vars_to_mono.iter() {
+            let mut hashes: Vec<Hash> = Vec::with_capacity(m.len());
+            hashes.extend(m.iter().map(|n| {
+                // If a monomial node is missing, treat it as an empty node (default hash 0)
+                self.monomials
+                    .get(n)
+                    .and_then(|node| node.hash)
+                    .unwrap_or_default()
+            }));
+            hashes.sort_unstable();
+
+            let mut hasher = Xxh3Default::new();
+            hasher.update(b"P<");
+            hasher.update(
+                &self.variables[*idx as usize]
+                    .hash
+                    .unwrap_or_default()
+                    .to_le_bytes(),
+            );
+            for h in hashes {
+                hasher.update(&h.to_le_bytes());
+            }
+
+            let res = hasher.digest128().into();
+            if let Some(node) = self.variables.get_mut(*idx as usize) {
+                node.hash = Some(res);
+            }
+        }
+
+        eprintln!("pull_hashes: time={:.6}s", start.elapsed().as_secs_f64());
     }
 
     pub fn extract_perm(&self) -> Permutation {
@@ -242,6 +323,9 @@ fn main() {
         .unwrap_or(2 * ((n as f64) * (n as f64).ln()) as usize);
 
     for _ in 0..10 {
+        // let mut ckt = CircuitSeq {
+        //     gates: vec![[0, 1, 2], [3, 4, 5], [6, 7, 8]],
+        // };
         let mut ckt = random_circuit(n, m);
 
         let alpha: Permutation;
@@ -255,14 +339,21 @@ fn main() {
             eprintln!("to_poly: time={:.6}s", start.elapsed().as_secs_f64());
 
             for (i, p) in poly.iter().enumerate() {
-                // println!("y{} = {}", i, poly_to_compressed_str(&p, n));
-
+                println!("y{} = {}", i, poly_to_compressed_str(&p, n));
                 g.add_poly(i as u64, p.clone());
             }
 
+            println!("# monomials: {}", g.monomials.len());
+
+            // println!("{:#?}", g);
+
             for _ in 0..n {
                 g.push_hashes();
-                // g.pull_hashes();
+                println!("[ PUSH ]");
+                g.print_wire_hashes();
+                g.pull_hashes();
+                println!("[ PULL ]");
+                g.print_wire_hashes();
             }
             g.print_wire_hashes();
             alpha = g.extract_perm();
@@ -286,8 +377,9 @@ fn main() {
             // I think this needs to run as many times as there are wires, in the worst case
             for _ in 0..n {
                 g.push_hashes();
-                // g.pull_hashes();
+                g.pull_hashes();
             }
+
             g.print_wire_hashes();
             beta = g.extract_perm();
         }
