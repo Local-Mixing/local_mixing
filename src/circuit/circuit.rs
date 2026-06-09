@@ -21,7 +21,6 @@ use num_traits::One;
 use num_traits::Zero;
 use std::collections::BTreeMap;
 
-
 // pins are [active, control1, control2] for Toffoli gates
 // We are only concerned with gate r57
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]

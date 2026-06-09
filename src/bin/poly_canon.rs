@@ -124,7 +124,7 @@ impl Graph {
         }
     }
 
-    pub fn print_wire_hashes(&self) {
+    pub fn print_wire_hashes(&self) -> bool {
         let start = Instant::now();
 
         println!("--");
@@ -165,6 +165,7 @@ impl Graph {
             "print_wire_hashes: time={:.6}s",
             start.elapsed().as_secs_f64()
         );
+        unique
     }
 
     pub fn push_hashes(&mut self) {
@@ -339,7 +340,7 @@ fn main() {
             eprintln!("to_poly: time={:.6}s", start.elapsed().as_secs_f64());
 
             for (i, p) in poly.iter().enumerate() {
-                println!("y{} = {}", i, poly_to_compressed_str(&p, n));
+                // println!("y{} = {}", i, poly_to_compressed_str(&p, n));
                 g.add_poly(i as u64, p.clone());
             }
 
@@ -349,11 +350,11 @@ fn main() {
 
             for _ in 0..n {
                 g.push_hashes();
-                println!("[ PUSH ]");
-                g.print_wire_hashes();
+                // println!("[ PUSH ]");
+                // g.print_wire_hashes();
                 g.pull_hashes();
-                println!("[ PULL ]");
-                g.print_wire_hashes();
+                // println!("[ PULL ]");
+                // g.print_wire_hashes();
             }
             g.print_wire_hashes();
             alpha = g.extract_perm();
@@ -361,6 +362,8 @@ fn main() {
 
         let p = Permutation::rand_perm(n);
         ckt.rewire(&p, n);
+
+        let mut unique: bool;
 
         let full_start: Instant;
         {
@@ -380,7 +383,7 @@ fn main() {
                 g.pull_hashes();
             }
 
-            g.print_wire_hashes();
+            unique = g.print_wire_hashes();
             beta = g.extract_perm();
         }
         eprintln!(
@@ -393,6 +396,8 @@ fn main() {
         let r = beta.invert().compose(&alpha);
         println!("Inferred Comp.: {:?}", r.data);
 
-        // assert_eq!(p, r);
+        if unique {
+            assert_eq!(p, r);
+        }
     }
 }
