@@ -1,7 +1,7 @@
 use std::{fs::File, io::Write};
 
 use primitive_types::U512 as u512;
-use rand::RngCore;
+use rand::{Rng, RngCore};
 
 use crate::{
     circuit::circuit::{CircuitSeq, Gate},
@@ -195,6 +195,14 @@ pub fn main_shuffle_shoot_shuffle(
     let mut prev_made = SAMF_COMPRESSIONS_MADE.load(Relaxed);
     let mut prev_failed = SAMF_COMPRESSIONS_FAILED.load(Relaxed);
     let mut prev_cur = CURATED_REPLACEMENTS_MADE.load(Relaxed);
+    // A single-end shuffle cannot be reversed back after each round because its SAMF state is
+    // intentionally left live. Choose one direction for the complete accumulated shuffle and
+    // reverse it back only after the final unsamf.
+    let single_end_reversed = single_end && rand::rng().random_bool(0.5);
+    if single_end_reversed {
+        println!("Collision-game direction: reversed (complete single-end shuffle)");
+        circuit.gates.reverse();
+    }
     for i in 0..rounds {
         if egg {
             let pair_mode = ExpandPairMode::Curated {
@@ -232,8 +240,18 @@ pub fn main_shuffle_shoot_shuffle(
             total_neg = new_total_neg;
             total_t = total_t.concat(&t_round);
         } else {
-            // Shooting game + per-gate SAMF insertion with a SINGLE merged unsamf.
+            // Choose the shooting direction outside the collision game. Reversal surrounds the
+            // complete shooting + plain-SAMF + unsamf operation so no pending SAMF state is
+            // reversed as though it were an ordinary gate sequence.
             use crate::replace::transpositions::shuffled_shoot_then_samf;
+            let reversed = rand::rng().random_bool(0.5);
+            println!(
+                "Collision-game direction: {}",
+                if reversed { "reversed" } else { "forward" }
+            );
+            if reversed {
+                circuit.gates.reverse();
+            }
             shuffled_shoot_then_samf(
                 &mut circuit,
                 n,
@@ -247,6 +265,9 @@ pub fn main_shuffle_shoot_shuffle(
                 curated_shard_dbs,
                 shard_dbs,
             );
+            if reversed {
+                circuit.gates.reverse();
+            }
         }
         println!("After shooting game: {} gates", circuit.gates.len());
         insert_wire_m_samfs_every_x(&mut circuit, n, m, x, env, curated_shard_dbs, shard_dbs);
@@ -265,6 +286,10 @@ pub fn main_shuffle_shoot_shuffle(
                 shard_dbs,
             );
             println!("After single-end unsamf: {} gates", circuit.gates.len());
+            if single_end_reversed {
+                circuit.gates.reverse();
+                println!("Restored forward circuit direction");
+            }
         }
         circuit = compress_loop(
             &circuit,

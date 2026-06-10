@@ -23,7 +23,9 @@ pub struct Node {
 pub struct Graph {
     variables: Vec<Node>,
     monomials: FxHashMap<Monomial, Node>,
+    vars_to_mono: FxHashMap<NodeId, FxHashSet<Monomial>>,
     mono_to_vars: FxHashMap<Monomial, FxHashSet<NodeId>>,
+    mono_to_poly: FxHashMap<Monomial, FxHashSet<NodeId>>,
     poly_to_mono: FxHashMap<NodeId, FxHashSet<Monomial>>,
     wires: u64,
 }
@@ -31,12 +33,26 @@ pub struct Graph {
 impl Graph {
     pub fn add_poly(&mut self, out_idx: u64, p: &Polynomial) {
         for &m in p {
+            self.monomials.insert(
+                m,
+                Node {
+                    id: m as NodeId,
+                    hash: None,
+                    node_type: NodeType::Monomial,
+                },
+            );
+
             for i in 0..(self.wires as u128) {
                 if (m >> i) & 1 == 1 {
+                    self.vars_to_mono.entry(i).or_default().insert(m);
                     self.mono_to_vars.entry(m).or_default().insert(i);
                 }
             }
 
+            self.mono_to_poly
+                .entry(m)
+                .or_default()
+                .insert(out_idx as NodeId);
             self.poly_to_mono
                 .entry(out_idx as u128)
                 .or_default()
@@ -58,7 +74,9 @@ impl Graph {
         Self {
             variables,
             monomials: FxHashMap::default(),
+            vars_to_mono: FxHashMap::default(),
             mono_to_vars: FxHashMap::default(),
+            mono_to_poly: FxHashMap::default(),
             poly_to_mono: FxHashMap::default(),
             wires,
         }
@@ -74,6 +92,7 @@ impl Graph {
 
             let mut hasher = Xxh3Default::new();
             hasher.update(b"M>");
+            hasher.update(&self.monomials[m].hash.unwrap_or_default().to_le_bytes());
             for hash in hashes {
                 hasher.update(&hash.to_le_bytes());
             }
@@ -98,6 +117,64 @@ impl Graph {
 
             let mut hasher = Xxh3Default::new();
             hasher.update(b"P>");
+            hasher.update(
+                &self.variables[*idx as usize]
+                    .hash
+                    .unwrap_or_default()
+                    .to_le_bytes(),
+            );
+            for hash in hashes {
+                hasher.update(&hash.to_le_bytes());
+            }
+
+            let result = hasher.digest128();
+            if let Some(node) = self.variables.get_mut(*idx as usize) {
+                node.hash = Some(result);
+            }
+        }
+    }
+
+    pub fn pull_hashes(&mut self) {
+        for (m, outputs) in &self.mono_to_poly {
+            let mut hashes: Vec<Hash> = outputs
+                .iter()
+                .map(|output| self.variables[*output as usize].hash.unwrap_or_default())
+                .collect();
+            hashes.sort_unstable();
+
+            let mut hasher = Xxh3Default::new();
+            hasher.update(b"M<");
+            hasher.update(&self.monomials[m].hash.unwrap_or_default().to_le_bytes());
+            for hash in hashes {
+                hasher.update(&hash.to_le_bytes());
+            }
+
+            let result = hasher.digest128();
+            if let Some(node) = self.monomials.get_mut(m) {
+                node.hash = Some(result);
+            }
+        }
+
+        for (idx, monomials) in &self.vars_to_mono {
+            let mut hashes: Vec<Hash> = monomials
+                .iter()
+                .map(|monomial| {
+                    self.monomials
+                        .get(monomial)
+                        .and_then(|node| node.hash)
+                        .unwrap_or_default()
+                })
+                .collect();
+            hashes.sort_unstable();
+
+            let mut hasher = Xxh3Default::new();
+            hasher.update(b"P<");
+            hasher.update(
+                &self.variables[*idx as usize]
+                    .hash
+                    .unwrap_or_default()
+                    .to_le_bytes(),
+            );
             for hash in hashes {
                 hasher.update(&hash.to_le_bytes());
             }
@@ -136,6 +213,7 @@ pub fn canonicalize_graph(polys: &[Polynomial], n: usize) -> Permutation {
 
     for _ in 0..n {
         graph.push_hashes();
+        graph.pull_hashes();
     }
 
     graph.extract_perm()
