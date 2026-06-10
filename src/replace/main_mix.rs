@@ -270,8 +270,13 @@ pub fn main_shuffle_shoot_shuffle(
             }
         }
         println!("After shooting game: {} gates", circuit.gates.len());
-        insert_wire_m_samfs_every_x(&mut circuit, n, m, x, env, curated_shard_dbs, shard_dbs);
-        println!("After inserting samfs: {} gates", circuit.gates.len());
+        // The normal shooting path already inserts plain SAMFs as part of
+        // shuffled_shoot_then_samf[_core]. Egg mode does not use that path, so it performs its
+        // one plain-SAMF insertion here.
+        if egg {
+            insert_wire_m_samfs_every_x(&mut circuit, n, m, x, env, curated_shard_dbs, shard_dbs);
+            println!("After inserting samfs: {} gates", circuit.gates.len());
+        }
         // --single-end: after the FINAL round's shuffle, before its compression, undo ALL
         // accumulated SAMFs/NOTs in one pass — restoring equivalence to the original input.
         if single_end && i == rounds - 1 {
