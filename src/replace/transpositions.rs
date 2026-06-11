@@ -1755,10 +1755,18 @@ fn emit_relabelled_gate(
 fn shoot_gate_to_first_collision(
     remaining: &mut VecDeque<[u16; 3]>,
     t_list: &Transpositions,
+    negation_mask: &[u8],
 ) -> Option<([u16; 3], Vec<[u16; 3]>, bool)> {
     let shot = remaining.pop_front()?;
+    let relabelled = relabel_gate(shot, t_list);
+    let [_, b, c] = relabelled;
+    if negation_mask[b as usize] != 0 || negation_mask[c as usize] != 0 {
+        // The control-correction NOT belongs immediately before this gate. It may collide with
+        // gates that the shot itself commutes with, so a dirty-control shot must stay in place.
+        return Some((shot, Vec::new(), false));
+    }
     let (passed, collided) =
-        shoot_materialized_gate_to_first_collision(relabel_gate(shot, t_list), remaining, t_list);
+        shoot_materialized_gate_to_first_collision(relabelled, remaining, t_list);
     Some((shot, passed, collided))
 }
 
@@ -1836,7 +1844,7 @@ fn shuffled_shooting_game_core(
                 (shot, true, passed, collided)
             } else {
                 let (shot, passed, collided) =
-                    shoot_gate_to_first_collision(&mut remaining, &t_list).unwrap();
+                    shoot_gate_to_first_collision(&mut remaining, &t_list, &negation_mask).unwrap();
                 (shot, false, passed, collided)
             };
 
@@ -1964,7 +1972,13 @@ fn shuffled_shooting_game_core(
             // (neg_type, samf, repl): the context window ++ samf[0..3] becomes `repl`, and
             // samf[3..] is emitted after it.
             let mut tuck: Option<(u16, Vec<[u16; 3]>, Vec<[u16; 3]>)> = None;
-            'types: for &neg_type in candidate_types.choose_multiple(&mut rng, type_attempts.max(1))
+            // SAMF hiding is only equivalence-safe when the shot came from the logical input
+            // stream. For a materialized shot (the tail of a prior curated expansion), the hide
+            // bookkeeping corrupts the accumulated SAMF state, so keep the (already verified)
+            // expansion and fall through to the no-hide path, which re-materializes the tail.
+            'types: for &neg_type in candidate_types
+                .choose_multiple(&mut rng, type_attempts.max(1))
+                .filter(|_| !shot_is_materialized)
             {
                 let samf = Transpositions::gen_gates_swap(n, (swap_lo, swap_hi, neg_type));
                 if samf.len() < 3 {
@@ -1992,23 +2006,15 @@ fn shuffled_shooting_game_core(
             match tuck {
                 Some((neg_type, samf, repl)) => {
                     // The context window (output tail + expansion tail + samf[0..3]) becomes
-                    // `repl`; everything before it is unchanged and samf[3..] follows. Keep the
-                    // final SAMF gate out of the output so it becomes the next shot.
+                    // `repl`; everything before it is unchanged and samf[3..] follows. Emit the
+                    // complete replacement and suffix before recording the SAMF state: future
+                    // gates may only be relabeled by the swap after every physical SAMF gate has
+                    // executed.
                     output.truncate(out_keep);
                     output.extend_from_slice(&expansion[..exp_tail_start]);
                     let samf_suffix = &samf[3..];
-                    if let Some((&last, prefix)) = samf_suffix.split_last() {
-                        output.extend_from_slice(&repl);
-                        output.extend_from_slice(prefix);
-                        materialized_shot = Some(last);
-                    } else if let Some((&last, prefix)) = repl.split_last() {
-                        // The full SAMF prefix was absorbed. Continue from the final gate of the
-                        // resulting hidden replacement, since no literal SAMF suffix remains.
-                        output.extend_from_slice(prefix);
-                        materialized_shot = Some(last);
-                    } else {
-                        // An empty replacement leaves no newly inserted gate to shoot.
-                    }
+                    output.extend_from_slice(&repl);
+                    output.extend_from_slice(samf_suffix);
                     t_list.transpositions.push((swap_lo, swap_hi, neg_type));
                     apply_neg_to_mask(
                         &mut negation_mask,
@@ -2240,7 +2246,7 @@ mod reversed_samf_tests {
         };
 
         let (actual_shot, passed, collided) =
-            shoot_gate_to_first_collision(&mut remaining, &t).unwrap();
+            shoot_gate_to_first_collision(&mut remaining, &t, &[0; 17]).unwrap();
 
         assert_eq!(actual_shot, shot);
         assert_eq!(passed, vec![pass_a, pass_b]);
@@ -2259,7 +2265,7 @@ mod reversed_samf_tests {
         };
 
         let (actual_shot, passed, collided) =
-            shoot_gate_to_first_collision(&mut remaining, &t).unwrap();
+            shoot_gate_to_first_collision(&mut remaining, &t, &[0; 17]).unwrap();
 
         assert_eq!(actual_shot, collider);
         assert_eq!(passed, vec![suffix_a, suffix_b]);
@@ -2283,6 +2289,26 @@ mod reversed_samf_tests {
         assert_eq!(passed, vec![commuting]);
         assert!(collided);
         assert_eq!(remaining, VecDeque::from([collider_after_relabel]));
+    }
+
+    #[test]
+    fn dirty_control_shot_stays_before_commuting_suffix() {
+        let shot = [0, 1, 2];
+        let commuting = [3, 4, 5];
+        let mut remaining = VecDeque::from([shot, commuting]);
+        let t = Transpositions {
+            transpositions: Vec::new(),
+        };
+        let mut negation_mask = [0; 6];
+        negation_mask[1] = 1;
+
+        let (actual_shot, passed, collided) =
+            shoot_gate_to_first_collision(&mut remaining, &t, &negation_mask).unwrap();
+
+        assert_eq!(actual_shot, shot);
+        assert!(passed.is_empty());
+        assert!(!collided);
+        assert_eq!(remaining, VecDeque::from([commuting]));
     }
 
     // Structural canonical form of a gadget UP TO (a) wire relabeling and (b) reordering of
