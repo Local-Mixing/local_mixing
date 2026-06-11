@@ -2136,13 +2136,13 @@ pub fn shuffled_shooting_game(
     compressions
 }
 
-// Core of shuffled_shoot_then_samf: run the shooting game then per-gate SAMF insertion,
-// returning the rebuilt gates plus this pass's combined (t_list, negation_mask) and the
-// compression count, WITHOUT undoing. `--single-end` uses this to accumulate SAMF state
-// across rounds and undo only once at the very end. Insertion reprocesses the shooting
-// game's output from a CLEAN negation state (its gates are self-contained; neg_a is a
-// final-state adjustment, not a pre-condition), and neg_a is transported through the
-// insertion permutation t_b into the returned negation_mask.
+// Core of shuffled_shoot_then_samf: each shooting pass runs one collision game followed by
+// one per-gate SAMF insertion, then all accumulated SAMF state is returned WITHOUT undoing.
+// `--single-end` uses this to accumulate SAMF state across outer rounds and undo only once
+// at the very end. Each insertion reprocesses that pass's shooting output from a CLEAN
+// negation state (its gates are self-contained; the shooting negation is a final-state
+// adjustment, not a pre-condition), and the pass negation is transported through the
+// insertion permutation before being folded into the total.
 pub fn shuffled_shoot_then_samf_core(
     input: &[[u16; 3]],
     n: usize,
@@ -2156,35 +2156,59 @@ pub fn shuffled_shoot_then_samf_core(
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
 ) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
-    let (out_a, t_a, neg_a, compressions) = shuffled_shooting_game_repeated_core(
-        input,
-        n,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
-        gates_ahead_expand,
-        gates_ahead_samf,
-        type_attempts,
-        shooting_times,
-    );
-    let (out_b, t_b, neg_b) = insert_m_samfs_core(&out_a, n, m, x);
-    // Combined permutation: shooting game first (t_a), then insertion (t_b).
-    let t_round = t_a.concat(&t_b);
-    // Combined final negation: insertion's own (neg_b) plus the shooting game's (neg_a)
-    // transported through the insertion permutation t_b.
-    let mut neg_round = neg_b;
-    for w in 0..n {
-        if neg_a[w] == 1 {
-            let cw = t_b.evaluate(w as u16) as usize;
-            neg_round[cw] ^= 1;
+    let passes = shooting_times.max(1);
+    let mut input_gates = input.to_vec();
+    let mut total_t = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut total_neg = vec![0u8; n];
+    let mut total_compressions = 0usize;
+
+    for _ in 0..passes {
+        let (out_a, t_a, neg_a, compressions) = shuffled_shooting_game_core(
+            &input_gates,
+            n,
+            env,
+            curated_shard_dbs,
+            shard_dbs,
+            gates_ahead_expand,
+            gates_ahead_samf,
+            type_attempts,
+        );
+        let (out_b, t_b, neg_b) = insert_m_samfs_core(&out_a, n, m, x);
+
+        // Combined permutation for this shooting round: collision game first, then insertion.
+        let t_pass = t_a.concat(&t_b);
+        // Combined final negation for this shooting round: insertion's own negation plus the
+        // collision game's negation transported through the insertion permutation.
+        let mut neg_pass = neg_b;
+        for w in 0..n {
+            if neg_a[w] == 1 {
+                let cw = t_b.evaluate(w as u16) as usize;
+                neg_pass[cw] ^= 1;
+            }
         }
+
+        // Fold this shooting round into the total pending SAMF/NOT state.
+        let mut new_total_neg = neg_pass;
+        for w in 0..n {
+            if total_neg[w] == 1 {
+                let cw = t_pass.evaluate(w as u16) as usize;
+                new_total_neg[cw] ^= 1;
+            }
+        }
+        total_neg = new_total_neg;
+        total_t = total_t.concat(&t_pass);
+        total_compressions += compressions;
+        input_gates = out_b;
     }
-    (out_b, t_round, neg_round, compressions)
+
+    (input_gates, total_t, total_neg, total_compressions)
 }
 
-// Run the shuffled shooting game then per-gate SAMF insertion as ONE shuffle with a SINGLE
-// unsamf at the very end. Equivalent to the two functions run back-to-back, but with one
-// undo instead of two. Returns the shooting game's compression count.
+// Run each shooting round as one collision game followed by one per-gate SAMF insertion,
+// then perform a SINGLE unsamf at the very end. Returns the shooting game's compression
+// count across all shooting rounds.
 pub fn shuffled_shoot_then_samf(
     circuit: &mut CircuitSeq,
     n: usize,

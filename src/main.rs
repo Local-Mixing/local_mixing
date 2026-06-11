@@ -102,7 +102,7 @@ fn main() {
                         .required(false)
                         .default_value("1")
                         .value_parser(clap::value_parser!(usize))
-                        .help("Number of shuffled shooting passes to run before SAMF insertion"),
+                        .help("Number of shooting rounds; each round runs one collision game then one plain SAMF insertion before the final unsamf"),
                 )
                 .arg(
                     Arg::new("rg_frequency")
