@@ -254,8 +254,8 @@ pub fn compress_loop(
             ((before + 1499) / 1500).min(max_chunks)
         };
 
-        let current_mode = [0, 1, 2][mode];
-        mode = (mode + 1) % 3;
+        let current_mode = [1, 2][mode];
+        mode = (mode + 1) % 2;
 
         let trace = compression_trace_enabled();
         let trace_threshold_ms = compression_trace_threshold_ms();
@@ -626,6 +626,20 @@ pub fn compress_lmdb(
             2 => CANONICALIZE_TIME_MAX_GATES.fetch_add(canon_elapsed, Ordering::Relaxed),
             _ => CANONICALIZE_TIME_SIMPLE.fetch_add(canon_elapsed, Ordering::Relaxed),
         };
+        if compression_trace_enabled()
+            && (canon_elapsed as u128 / 1_000_000) >= compression_trace_threshold_ms()
+        {
+            eprintln!(
+                "[compress-trace] slow inner-canon mode={} direction=forward parent_gates={} inner_start={} inner_end={} inner_gates={} inner_wires={} elapsed_ms={}",
+                mode,
+                compressed.gates.len(),
+                start,
+                end,
+                sub.gates.len(),
+                sub.used_wires().len(),
+                canon_elapsed as u128 / 1_000_000
+            );
+        }
 
         if fwd_polys.is_empty() {
             continue;
@@ -661,6 +675,20 @@ pub fn compress_lmdb(
                 2 => CANONICALIZE_TIME_MAX_GATES.fetch_add(canon2_elapsed, Ordering::Relaxed),
                 _ => CANONICALIZE_TIME_SIMPLE.fetch_add(canon2_elapsed, Ordering::Relaxed),
             };
+            if compression_trace_enabled()
+                && (canon2_elapsed as u128 / 1_000_000) >= compression_trace_threshold_ms()
+            {
+                eprintln!(
+                    "[compress-trace] slow inner-canon mode={} direction=reverse parent_gates={} inner_start={} inner_end={} inner_gates={} inner_wires={} elapsed_ms={}",
+                    mode,
+                    compressed.gates.len(),
+                    start,
+                    end,
+                    sub.gates.len(),
+                    sub.used_wires().len(),
+                    canon2_elapsed as u128 / 1_000_000
+                );
+            }
 
             if rev_polys.is_empty() {
                 continue;
@@ -854,10 +882,11 @@ pub fn compress_big_ancillas(
             && compress_elapsed.as_millis() >= compression_trace_threshold_ms()
         {
             eprintln!(
-                "[compress-trace] slow compress_lmdb mode={} sub_gates={} sub_wires={} out_gates={} elapsed_ms={}",
+                "[compress-trace] slow compress_lmdb mode={} outer_gates={} outer_wires={} outer_span={} out_gates={} elapsed_ms={}",
                 mode,
                 sub_gates,
                 sub_num_wires,
+                end - start + 1,
                 subcircuit_temp.gates.len(),
                 compress_elapsed.as_millis()
             );
