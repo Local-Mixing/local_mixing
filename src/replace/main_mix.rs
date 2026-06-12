@@ -6,10 +6,7 @@ use rand::{Rng, RngCore};
 use crate::{
     circuit::circuit::{CircuitSeq, Gate},
     replace::{
-        gadgets::{feistalize, gadgetize},
-        pairs::interleave,
-        replace::{ExpandPairMode, compress_loop, expand_once},
-        transpositions::insert_wire_m_samfs_every_x,
+        gadgets::{feistalize, gadgetize}, mixing::SHOULD_DUMP, pairs::interleave, replace::{ExpandPairMode, compress_loop, expand_once}, transpositions::insert_wire_m_samfs_every_x
     },
 };
 
@@ -306,6 +303,11 @@ pub fn main_shuffle_shoot_shuffle(
             rounds,
             "temp_compression.txt",
         );
+
+        if SHOULD_DUMP.load(Relaxed) {
+            return
+        }
+        
         println!("After compression: {} gates", circuit.gates.len());
         // Record + print this round's SAMF stats (deltas from the previous round).
         {

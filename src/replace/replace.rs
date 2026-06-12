@@ -1,6 +1,6 @@
 // Replacement code used in the mixing methods
 
-use crate::replace::mixing::split_into_random_chunk_ranges;
+use crate::replace::mixing::{SHOULD_DUMP, split_into_random_chunk_ranges};
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation},
     random::random_data::{
@@ -14,6 +14,7 @@ use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use std::fs::File;
 use std::io::Write;
+use std::sync::atomic::Ordering::Relaxed;
 
 extern crate lmdb_sys;
 
@@ -290,6 +291,10 @@ pub fn compress_loop(
             let mut f = File::create(output_path).expect("create");
             writeln!(f, "{}", acc.repr()).expect("write");
             eprintln!("Wrote {}", output_path);
+        }
+
+        if SHOULD_DUMP.load(Relaxed) {
+            break
         }
     }
     acc
