@@ -1,4 +1,4 @@
-use local_mixing::circuit::circuit::{CircuitSeq, Permutation, Polynomial};
+use local_mixing::circuit::circuit::{CircuitSeq, Permutation, Polynomial, canonicalize_polys_4};
 use local_mixing::circuit::poly_canon_graph::{canonical_form, canonicalize_graph};
 use local_mixing::random::random_data::random_circuit;
 use std::collections::HashMap;
@@ -58,6 +58,8 @@ fn reproduce_polycanon_failure_case_21() {
     let shuffled_perm = canonicalize_graph(&shuffled_polys, dense_n);
     let original_form = canonical_form(&original_polys, &original_perm);
     let shuffled_form = canonical_form(&shuffled_polys, &shuffled_perm);
+    let (canon4_original_form, _) = canonicalize_polys_4(original_polys.clone(), true).unwrap();
+    let (canon4_shuffled_form, _) = canonicalize_polys_4(shuffled_polys.clone(), true).unwrap();
 
     let mut original_canonical = original_dense.clone();
     let mut shuffled_canonical = shuffled_dense.clone();
@@ -76,11 +78,24 @@ fn reproduce_polycanon_failure_case_21() {
     println!("polycanon shuffled permutation: {:?}", shuffled_perm.data);
     println!("polycanon original form: {:?}", sorted_form(&original_form));
     println!("polycanon shuffled form: {:?}", sorted_form(&shuffled_form));
+    println!(
+        "canon4 original form: {:?}",
+        sorted_form(&canon4_original_form)
+    );
+    println!(
+        "canon4 shuffled form: {:?}",
+        sorted_form(&canon4_shuffled_form)
+    );
     println!("polycanon original circuit: {:?}", original_canonical.gates);
     println!("polycanon shuffled circuit: {:?}", shuffled_canonical.gates);
     println!("forms equal: {}", original_form == shuffled_form);
+    println!(
+        "canon4 forms equal: {}",
+        canon4_original_form == canon4_shuffled_form
+    );
     println!("functionally equal: {functionally_equal}");
 
+    assert_eq!(canon4_original_form, canon4_shuffled_form);
     assert_ne!(original_form, shuffled_form);
     assert!(!functionally_equal);
 }

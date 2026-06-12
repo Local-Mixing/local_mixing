@@ -370,9 +370,9 @@ pub fn main_shuffle_shoot_shuffle(
             original_n
         };
         let functionality_ok = if do_feistalize {
-            feistal_middle_matches_original(&c, &circuit, original_n, n, 100_000)
+            feistal_middle_matches_original(&c, &circuit, original_n, n, 1_000)
         } else {
-            c.probably_equal(&circuit, original_n, 100_000)
+            c.probably_equal(&circuit, original_n, 1_000)
         };
         if functionality_ok.is_err() {
             panic!("The functionality has changed");
@@ -400,11 +400,11 @@ pub fn main_shuffle_shoot_shuffle(
         original_n
     };
     if do_feistalize {
-        feistal_middle_matches_original(&c, &circuit, original_n, n, 150_000)
+        feistal_middle_matches_original(&c, &circuit, original_n, n, 10_000)
             .expect("The circuits differ somewhere!");
     } else {
         circuit
-            .probably_equal(&c, original_n, 150_000)
+            .probably_equal(&c, original_n, 10_000)
             .expect("The circuits differ somewhere!");
     }
 

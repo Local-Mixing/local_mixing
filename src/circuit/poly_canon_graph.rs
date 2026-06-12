@@ -1,7 +1,9 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use xxhash_rust::xxh3::Xxh3Default;
 
-use crate::circuit::circuit::{Monomial, Permutation, Polynomial, trim_canonicalized};
+use crate::circuit::circuit::{
+    Monomial, Permutation, Polynomial, polynomial_from_terms, trim_canonicalized,
+};
 
 type Hash = u128;
 type NodeId = u128;
@@ -224,18 +226,15 @@ pub fn canonical_form(polys: &[Polynomial], perm: &Permutation) -> Vec<Polynomia
     let mut canonical = vec![Polynomial::new(); n];
     for (old_wire, poly) in polys.iter().enumerate() {
         let new_wire = perm.data[old_wire];
-        canonical[new_wire] = poly
-            .iter()
-            .map(|&monomial| {
-                let mut remapped = 0u64;
-                for wire in 0..n {
-                    if monomial & (1u64 << wire) != 0 {
-                        remapped |= 1u64 << perm.data[wire];
-                    }
+        canonical[new_wire] = polynomial_from_terms(poly.iter().map(|&monomial| {
+            let mut remapped = 0u64;
+            for wire in 0..n {
+                if monomial & (1u64 << wire) != 0 {
+                    remapped |= 1u64 << perm.data[wire];
                 }
-                remapped
-            })
-            .collect();
+            }
+            remapped
+        }));
     }
     trim_canonicalized(canonical)
 }
