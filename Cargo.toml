@@ -57,6 +57,7 @@ lmdb-sys = "0.8.0"
 signal-hook = "0.3.18"
 primitive-types = "0.14.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+rustc-hash = "2"
 # Needed by the challenge binaries (block_cipher, poly_canon).
 rng-entropy = "0.5.0"
 cryptography = { package = "cryptography-rs", version = "0.5.0" }

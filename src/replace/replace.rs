@@ -1027,4 +1027,25 @@ pub fn print_compress_timers() {
         "SAMF compressions made: {}  failed: {}",
         samf_made, samf_failed
     );
+
+    if std::env::var("BENCH_CANON").is_ok() {
+        use crate::circuit::circuit::{CANON_BENCH_CALLS, CANON4_CORE_TIME, POLYCANON_CORE_TIME};
+
+        let c4 = CANON4_CORE_TIME.load(Ordering::Relaxed) as f64;
+        let pc = POLYCANON_CORE_TIME.load(Ordering::Relaxed) as f64;
+        let calls = CANON_BENCH_CALLS.load(Ordering::Relaxed).max(1) as f64;
+        println!("--- Canonicalization benchmark (BENCH_CANON) ---");
+        println!("matched calls:    {}", calls as u64);
+        println!(
+            "canon4 total:     {:.3} s   ({:.1} us/call)",
+            c4 / 1e9,
+            c4 / 1e3 / calls
+        );
+        println!(
+            "polycanon total:  {:.3} s   ({:.1} us/call)",
+            pc / 1e9,
+            pc / 1e3 / calls
+        );
+        println!("ratio poly/canon4:{:.2}x", pc / c4.max(1.0));
+    }
 }

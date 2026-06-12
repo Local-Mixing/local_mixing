@@ -3,7 +3,7 @@ use crate::circuit::{Permutation, circuit::CircuitSeq};
 use lmdb::{Database, Environment};
 use rand::Rng;
 use rand::seq::IndexedRandom;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub static SAMF_INSERTIONS_MADE: AtomicUsize = AtomicUsize::new(0);
@@ -1712,13 +1712,90 @@ fn gates_collide(g1: [u16; 3], g2: [u16; 3]) -> bool {
     g1[0] == g2[1] || g1[0] == g2[2] || g2[0] == g1[1] || g2[0] == g1[2]
 }
 
-// For each collision (adjacent gates that can't commute), make a curated EXPANSION of a window of
-// up to `gates_ahead_expand` gates anchored at the colliding pair, then try to hide a single SAMF
-// in the expansion's tail and look up an equal-or-shorter replacement in the curated DB.
+fn relabel_gate(gate: [u16; 3], t_list: &Transpositions) -> [u16; 3] {
+    [
+        t_list.evaluate(gate[0]),
+        t_list.evaluate(gate[1]),
+        t_list.evaluate(gate[2]),
+    ]
+}
+
+fn flush_relabelled_gate_controls(
+    gate: [u16; 3],
+    output: &mut Vec<[u16; 3]>,
+    t_list: &Transpositions,
+    negation_mask: &mut [u8],
+    n: usize,
+) {
+    let [_, b, c] = relabel_gate(gate, t_list);
+    if negation_mask[b as usize] == 1 {
+        output.extend_from_slice(&Transpositions::gen_gates_not(n, b));
+        negation_mask[b as usize] = 0;
+    }
+    if negation_mask[c as usize] == 1 {
+        output.extend_from_slice(&Transpositions::gen_gates_not(n, c));
+        negation_mask[c as usize] = 0;
+    }
+}
+
+fn emit_relabelled_gate(
+    gate: [u16; 3],
+    output: &mut Vec<[u16; 3]>,
+    t_list: &Transpositions,
+    negation_mask: &mut [u8],
+    n: usize,
+) {
+    flush_relabelled_gate_controls(gate, output, t_list, negation_mask, n);
+    output.push(relabel_gate(gate, t_list));
+}
+
+// Remove the first remaining gate and shoot it right across every gate it commutes with.
+// The passed gates are removed and returned in their original order. If a collider is found,
+// it remains at the front of `remaining`; otherwise the shot gate reached the end.
+fn shoot_gate_to_first_collision(
+    remaining: &mut VecDeque<[u16; 3]>,
+    t_list: &Transpositions,
+    negation_mask: &[u8],
+) -> Option<([u16; 3], Vec<[u16; 3]>, bool)> {
+    let shot = remaining.pop_front()?;
+    let relabelled = relabel_gate(shot, t_list);
+    let [_, b, c] = relabelled;
+    if negation_mask[b as usize] != 0 || negation_mask[c as usize] != 0 {
+        // The control-correction NOT belongs immediately before this gate. It may collide with
+        // gates that the shot itself commutes with, so a dirty-control shot must stay in place.
+        return Some((shot, Vec::new(), false));
+    }
+    let (passed, collided) =
+        shoot_materialized_gate_to_first_collision(relabelled, remaining, t_list);
+    Some((shot, passed, collided))
+}
+
+// Shoot a gate that is already in the current physical wire space. Gates in `remaining` still
+// belong to the original logical wire space and are relabeled only for the collision test.
+fn shoot_materialized_gate_to_first_collision(
+    shot: [u16; 3],
+    remaining: &mut VecDeque<[u16; 3]>,
+    t_list: &Transpositions,
+) -> (Vec<[u16; 3]>, bool) {
+    let mut passed = Vec::new();
+
+    while let Some(&next) = remaining.front() {
+        if gates_collide(shot, relabel_gate(next, t_list)) {
+            return (passed, true);
+        }
+        passed.push(remaining.pop_front().unwrap());
+    }
+
+    (passed, false)
+}
+
+// Shoot the first remaining gate right until its first collision. At that collision, make a
+// curated EXPANSION of a window of up to `gates_ahead_expand` gates anchored at the shot gate
+// and collider, then try to hide a single SAMF in the expansion's tail.
 //
-// The expansion window is anchored at the colliding pair and shrinks by one gate on each
-// curated-DB miss (gates_ahead_expand .. 2, down to the 2-gate pair); a window is eligible only
-// if every control wire in it is clean (no pending negation correction).
+// Gates passed by the shot gate are emitted before the collision window. The expansion window
+// shrinks by one gate on each curated-DB miss (gates_ahead_expand .. 2, down to the shot/collider
+// pair); a window is eligible only if every control wire in it is clean.
 //
 // The SAMF-hiding window is the last `gates_ahead_samf` gates ending at the expansion's tail —
 // reaching back into the already-emitted output when the expansion is shorter than
@@ -1730,8 +1807,10 @@ fn gates_collide(g1: [u16; 3], g2: [u16; 3]) -> bool {
 // random hardcoded SAMF of that type. The first type that yields a hiding window wins;
 // `type_attempts == 1` is the original single-try behaviour.
 //
-// If a replacement is found, output it followed by the remaining SAMF gates. Future gates are
-// relabeled by the SAMF's wire permutation, and the accumulated permutation is undone at the end.
+// If a replacement is found, its final gate becomes the next shot. When a SAMF is successfully
+// hidden, the final gate of the inserted SAMF becomes the next shot instead. Future untouched
+// gates are relabeled by the SAMF's wire permutation, and the accumulated permutation is undone
+// at the end.
 fn shuffled_shooting_game_core(
     input: &[[u16; 3]],
     n: usize,
@@ -1752,47 +1831,62 @@ fn shuffled_shooting_game_core(
     let mut negation_mask = vec![0u8; n];
     let mut compressions: usize = 0;
 
-    let mut i = 0;
+    let mut remaining: VecDeque<[u16; 3]> = input.iter().copied().collect();
+    // Replacement gates are already expressed in the current physical wire space. Keep the
+    // replacement tail separate from `remaining`, whose gates still require SAMF relabeling.
+    let mut materialized_shot: Option<[u16; 3]> = None;
 
-    while i < input.len() {
-        let gate = input[i];
-        let a = t_list.evaluate(gate[0]);
-        let b = t_list.evaluate(gate[1]);
-        let c = t_list.evaluate(gate[2]);
+    while materialized_shot.is_some() || !remaining.is_empty() {
+        let (shot, shot_is_materialized, passed, has_collision) =
+            if let Some(shot) = materialized_shot.take() {
+                let (passed, collided) =
+                    shoot_materialized_gate_to_first_collision(shot, &mut remaining, &t_list);
+                (shot, true, passed, collided)
+            } else {
+                let (shot, passed, collided) =
+                    shoot_gate_to_first_collision(&mut remaining, &t_list, &negation_mask).unwrap();
+                (shot, false, passed, collided)
+            };
 
-        // On a collision, expand a window of up to `gates_ahead_expand` gates anchored at the
-        // colliding pair, then try to hide a single SAMF in the expansion's tail. The expansion is
-        // computed once; if no SAMF can be hidden we keep it verbatim (no recompute).
+        // A control correction logically precedes an untouched input gate. Emit it before moving
+        // the shot past commuting gates so the correction is not reordered across a dependent
+        // gate. A materialized replacement tail has already been emitted in the current wire
+        // space and must not be corrected or relabeled again.
+        if !shot_is_materialized {
+            flush_relabelled_gate_controls(shot, &mut output, &t_list, &mut negation_mask, n);
+        }
+        for gate in passed {
+            emit_relabelled_gate(gate, &mut output, &t_list, &mut negation_mask, n);
+        }
+
+        // At the first collision, expand a window anchored at [shot, collider]. The expansion is
+        // computed once; if no SAMF can be hidden we keep it verbatim.
         let replaced = 'try_replace: {
-            if i + 1 >= input.len() {
-                break 'try_replace false;
-            }
-
-            let next = input[i + 1];
-            let na = t_list.evaluate(next[0]);
-            let nb = t_list.evaluate(next[1]);
-            let nc = t_list.evaluate(next[2]);
-
-            if !gates_collide([a, b, c], [na, nb, nc]) {
+            if !has_collision {
                 break 'try_replace false;
             }
 
             // 1) Curated expansion of the largest clean window anchored at the colliding pair: an
-            //    equivalent, longer circuit. The window shrinks from its far end
+            //    equivalent, longer circuit. The first gate is the shot gate; the collider and
+            //    any additional context remain at the front of `remaining`. The window shrinks
+            //    from its far end
             //    (gates_ahead_expand .. 2) until a curated expansion is found; a window is eligible
             //    only if every control wire in it is clean (no pending negation correction), so the
-            //    expansion stays equivalence-safe. `consumed` input gates map to `expansion`.
-            let max_window = gates_ahead_expand.max(2).min(input.len() - i);
+            //    expansion stays equivalence-safe. `consumed` includes the shot gate.
+            let max_window = gates_ahead_expand.max(2).min(remaining.len() + 1);
             let mut expanded: Option<(usize, Vec<[u16; 3]>)> = None;
             for k in (2..=max_window).rev() {
                 let mut window: Vec<[u16; 3]> = Vec::with_capacity(k);
                 let mut clean = true;
-                for g in &input[i..i + k] {
-                    let rg = [
-                        t_list.evaluate(g[0]),
-                        t_list.evaluate(g[1]),
-                        t_list.evaluate(g[2]),
-                    ];
+                for (index, g) in std::iter::once(&shot)
+                    .chain(remaining.iter().take(k - 1))
+                    .enumerate()
+                {
+                    let rg = if index == 0 && shot_is_materialized {
+                        *g
+                    } else {
+                        relabel_gate(*g, &t_list)
+                    };
                     // Controls (positions 1 and 2) must carry no pending negation.
                     if negation_mask[rg[1] as usize] != 0 || negation_mask[rg[2] as usize] != 0 {
                         clean = false;
@@ -1827,14 +1921,15 @@ fn shuffled_shooting_game_core(
                 seen.len()
             };
             let before_wires = {
-                let evaluated: Vec<[u16; 3]> = input[i..i + consumed]
-                    .iter()
-                    .map(|g| {
-                        [
-                            t_list.evaluate(g[0]),
-                            t_list.evaluate(g[1]),
-                            t_list.evaluate(g[2]),
-                        ]
+                let evaluated: Vec<[u16; 3]> = std::iter::once(&shot)
+                    .chain(remaining.iter().take(consumed - 1))
+                    .enumerate()
+                    .map(|(index, &g)| {
+                        if index == 0 && shot_is_materialized {
+                            g
+                        } else {
+                            relabel_gate(g, &t_list)
+                        }
                     })
                     .collect();
                 distinct_wires(&evaluated)
@@ -1877,7 +1972,13 @@ fn shuffled_shooting_game_core(
             // (neg_type, samf, repl): the context window ++ samf[0..3] becomes `repl`, and
             // samf[3..] is emitted after it.
             let mut tuck: Option<(u16, Vec<[u16; 3]>, Vec<[u16; 3]>)> = None;
-            'types: for &neg_type in candidate_types.choose_multiple(&mut rng, type_attempts.max(1))
+            // SAMF hiding is only equivalence-safe when the shot came from the logical input
+            // stream. For a materialized shot (the tail of a prior curated expansion), the hide
+            // bookkeeping corrupts the accumulated SAMF state, so keep the (already verified)
+            // expansion and fall through to the no-hide path, which re-materializes the tail.
+            'types: for &neg_type in candidate_types
+                .choose_multiple(&mut rng, type_attempts.max(1))
+                .filter(|_| !shot_is_materialized)
             {
                 let samf = Transpositions::gen_gates_swap(n, (swap_lo, swap_hi, neg_type));
                 if samf.len() < 3 {
@@ -1905,11 +2006,15 @@ fn shuffled_shooting_game_core(
             match tuck {
                 Some((neg_type, samf, repl)) => {
                     // The context window (output tail + expansion tail + samf[0..3]) becomes
-                    // `repl`; everything before it is unchanged and samf[3..] follows.
+                    // `repl`; everything before it is unchanged and samf[3..] follows. Emit the
+                    // complete replacement and suffix before recording the SAMF state: future
+                    // gates may only be relabeled by the swap after every physical SAMF gate has
+                    // executed.
                     output.truncate(out_keep);
                     output.extend_from_slice(&expansion[..exp_tail_start]);
+                    let samf_suffix = &samf[3..];
                     output.extend_from_slice(&repl);
-                    output.extend_from_slice(&samf[3..]);
+                    output.extend_from_slice(samf_suffix);
                     t_list.transpositions.push((swap_lo, swap_hi, neg_type));
                     apply_neg_to_mask(
                         &mut negation_mask,
@@ -1922,27 +2027,27 @@ fn shuffled_shooting_game_core(
                     SAMF_INSERTIONS_MADE.fetch_add(1, Ordering::Relaxed);
                 }
                 None => {
-                    // Keep the curated expansion verbatim; no SAMF hidden this time.
-                    output.extend_from_slice(&expansion);
+                    // Keep the curated expansion, but leave its final gate as the next shot.
+                    let (last, prefix) = expansion.split_last().unwrap();
+                    output.extend_from_slice(prefix);
+                    materialized_shot = Some(*last);
                     SAMF_COMPRESSIONS_FAILED.fetch_add(1, Ordering::Relaxed);
                 }
             }
 
-            i += consumed; // consumed the expansion's input window
+            for _ in 1..consumed {
+                remaining.pop_front();
+            }
             true
         };
         if !replaced {
-            // Normal path: flush any pending negations on control wires, then emit the gate.
-            if negation_mask[b as usize] == 1 {
-                output.extend_from_slice(&Transpositions::gen_gates_not(n, b));
-                negation_mask[b as usize] = 0;
+            // No collision or no expansion: the shot gate stays immediately before its first
+            // collider (or at the end if it passed every remaining gate).
+            if shot_is_materialized {
+                output.push(shot);
+            } else {
+                emit_relabelled_gate(shot, &mut output, &t_list, &mut negation_mask, n);
             }
-            if negation_mask[c as usize] == 1 {
-                output.extend_from_slice(&Transpositions::gen_gates_not(n, c));
-                negation_mask[c as usize] = 0;
-            }
-            output.push([a, b, c]);
-            i += 1;
         }
     }
 
@@ -2031,13 +2136,13 @@ pub fn shuffled_shooting_game(
     compressions
 }
 
-// Core of shuffled_shoot_then_samf: run the shooting game then per-gate SAMF insertion,
-// returning the rebuilt gates plus this pass's combined (t_list, negation_mask) and the
-// compression count, WITHOUT undoing. `--single-end` uses this to accumulate SAMF state
-// across rounds and undo only once at the very end. Insertion reprocesses the shooting
-// game's output from a CLEAN negation state (its gates are self-contained; neg_a is a
-// final-state adjustment, not a pre-condition), and neg_a is transported through the
-// insertion permutation t_b into the returned negation_mask.
+// Core of shuffled_shoot_then_samf: each shooting pass runs one collision game followed by
+// one per-gate SAMF insertion, then all accumulated SAMF state is returned WITHOUT undoing.
+// `--single-end` uses this to accumulate SAMF state across outer rounds and undo only once
+// at the very end. Each insertion reprocesses that pass's shooting output from a CLEAN
+// negation state (its gates are self-contained; the shooting negation is a final-state
+// adjustment, not a pre-condition), and the pass negation is transported through the
+// insertion permutation before being folded into the total.
 pub fn shuffled_shoot_then_samf_core(
     input: &[[u16; 3]],
     n: usize,
@@ -2051,35 +2156,59 @@ pub fn shuffled_shoot_then_samf_core(
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
 ) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
-    let (out_a, t_a, neg_a, compressions) = shuffled_shooting_game_repeated_core(
-        input,
-        n,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
-        gates_ahead_expand,
-        gates_ahead_samf,
-        type_attempts,
-        shooting_times,
-    );
-    let (out_b, t_b, neg_b) = insert_m_samfs_core(&out_a, n, m, x);
-    // Combined permutation: shooting game first (t_a), then insertion (t_b).
-    let t_round = t_a.concat(&t_b);
-    // Combined final negation: insertion's own (neg_b) plus the shooting game's (neg_a)
-    // transported through the insertion permutation t_b.
-    let mut neg_round = neg_b;
-    for w in 0..n {
-        if neg_a[w] == 1 {
-            let cw = t_b.evaluate(w as u16) as usize;
-            neg_round[cw] ^= 1;
+    let passes = shooting_times.max(1);
+    let mut input_gates = input.to_vec();
+    let mut total_t = Transpositions {
+        transpositions: Vec::new(),
+    };
+    let mut total_neg = vec![0u8; n];
+    let mut total_compressions = 0usize;
+
+    for _ in 0..passes {
+        let (out_a, t_a, neg_a, compressions) = shuffled_shooting_game_core(
+            &input_gates,
+            n,
+            env,
+            curated_shard_dbs,
+            shard_dbs,
+            gates_ahead_expand,
+            gates_ahead_samf,
+            type_attempts,
+        );
+        let (out_b, t_b, neg_b) = insert_m_samfs_core(&out_a, n, m, x);
+
+        // Combined permutation for this shooting round: collision game first, then insertion.
+        let t_pass = t_a.concat(&t_b);
+        // Combined final negation for this shooting round: insertion's own negation plus the
+        // collision game's negation transported through the insertion permutation.
+        let mut neg_pass = neg_b;
+        for w in 0..n {
+            if neg_a[w] == 1 {
+                let cw = t_b.evaluate(w as u16) as usize;
+                neg_pass[cw] ^= 1;
+            }
         }
+
+        // Fold this shooting round into the total pending SAMF/NOT state.
+        let mut new_total_neg = neg_pass;
+        for w in 0..n {
+            if total_neg[w] == 1 {
+                let cw = t_pass.evaluate(w as u16) as usize;
+                new_total_neg[cw] ^= 1;
+            }
+        }
+        total_neg = new_total_neg;
+        total_t = total_t.concat(&t_pass);
+        total_compressions += compressions;
+        input_gates = out_b;
     }
-    (out_b, t_round, neg_round, compressions)
+
+    (input_gates, total_t, total_neg, total_compressions)
 }
 
-// Run the shuffled shooting game then per-gate SAMF insertion as ONE shuffle with a SINGLE
-// unsamf at the very end. Equivalent to the two functions run back-to-back, but with one
-// undo instead of two. Returns the shooting game's compression count.
+// Run each shooting round as one collision game followed by one per-gate SAMF insertion,
+// then perform a SINGLE unsamf at the very end. Returns the shooting game's compression
+// count across all shooting rounds.
 pub fn shuffled_shoot_then_samf(
     circuit: &mut CircuitSeq,
     n: usize,
@@ -2123,8 +2252,88 @@ pub fn shuffled_shoot_then_samf(
 mod reversed_samf_tests {
     use super::{
         SWAP_N1_3W, SWAP_N1_4W, SWAP_N2_3W, SWAP_N2_4W, Transpositions, neg_flips, random_neg_type,
+        shoot_gate_to_first_collision, shoot_materialized_gate_to_first_collision,
     };
     use crate::circuit::circuit::CircuitSeq;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn shot_gate_moves_to_its_first_collision() {
+        let shot = [0, 1, 2];
+        let pass_a = [3, 4, 5];
+        let pass_b = [6, 7, 8];
+        let collider = [9, 0, 10];
+        let suffix = [11, 12, 13];
+        let mut remaining = VecDeque::from([shot, pass_a, pass_b, collider, suffix]);
+        let t = Transpositions {
+            transpositions: Vec::new(),
+        };
+
+        let (actual_shot, passed, collided) =
+            shoot_gate_to_first_collision(&mut remaining, &t, &[0; 17]).unwrap();
+
+        assert_eq!(actual_shot, shot);
+        assert_eq!(passed, vec![pass_a, pass_b]);
+        assert!(collided);
+        assert_eq!(remaining, VecDeque::from([collider, suffix]));
+    }
+
+    #[test]
+    fn next_shot_continues_from_suffix_after_collision() {
+        let collider = [9, 0, 10];
+        let suffix_a = [11, 12, 13];
+        let suffix_b = [14, 15, 16];
+        let mut remaining = VecDeque::from([collider, suffix_a, suffix_b]);
+        let t = Transpositions {
+            transpositions: Vec::new(),
+        };
+
+        let (actual_shot, passed, collided) =
+            shoot_gate_to_first_collision(&mut remaining, &t, &[0; 17]).unwrap();
+
+        assert_eq!(actual_shot, collider);
+        assert_eq!(passed, vec![suffix_a, suffix_b]);
+        assert!(!collided);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn materialized_replacement_tail_is_not_relabelled_again() {
+        let shot = [0, 1, 2];
+        let commuting = [3, 4, 5];
+        let collider_after_relabel = [6, 7, 8];
+        let mut remaining = VecDeque::from([commuting, collider_after_relabel]);
+        let t = Transpositions {
+            transpositions: vec![(0, 7, 0)],
+        };
+
+        let (passed, collided) =
+            shoot_materialized_gate_to_first_collision(shot, &mut remaining, &t);
+
+        assert_eq!(passed, vec![commuting]);
+        assert!(collided);
+        assert_eq!(remaining, VecDeque::from([collider_after_relabel]));
+    }
+
+    #[test]
+    fn dirty_control_shot_stays_before_commuting_suffix() {
+        let shot = [0, 1, 2];
+        let commuting = [3, 4, 5];
+        let mut remaining = VecDeque::from([shot, commuting]);
+        let t = Transpositions {
+            transpositions: Vec::new(),
+        };
+        let mut negation_mask = [0; 6];
+        negation_mask[1] = 1;
+
+        let (actual_shot, passed, collided) =
+            shoot_gate_to_first_collision(&mut remaining, &t, &negation_mask).unwrap();
+
+        assert_eq!(actual_shot, shot);
+        assert!(passed.is_empty());
+        assert!(!collided);
+        assert_eq!(remaining, VecDeque::from([commuting]));
+    }
 
     // Structural canonical form of a gadget UP TO (a) wire relabeling and (b) reordering of
     // commuting gates. We densify the used wires, then over every permutation of those wires

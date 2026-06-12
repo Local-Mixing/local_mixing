@@ -10,6 +10,17 @@ use std::time::Instant;
 
 use std::collections::BTreeMap;
 
+pub static CANON4_CORE_TIME: AtomicU64 = AtomicU64::new(0);
+pub static POLYCANON_CORE_TIME: AtomicU64 = AtomicU64::new(0);
+pub static CANON_BENCH_CALLS: AtomicU64 = AtomicU64::new(0);
+
+fn bench_canon_enabled() -> bool {
+    use std::sync::OnceLock;
+
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BENCH_CANON").is_ok())
+}
+
 // Gate [a, pos_ctrl, neg_ctrl]: flip a UNLESS neg_ctrl=1 AND NOT pos_ctrl
 // (flips when pos_ctrl=1 OR neg_ctrl=0)
 // We are only concerned with gate g57
@@ -678,7 +689,19 @@ impl CircuitSeq {
         c.canonicalize();
         let n = c.max_wire() as usize + 1;
         let polys = c.to_polynomial(n, 0, c.gates.len());
-        let canon = canonicalize_polys_4(polys, true).unwrap();
+
+        let t4 = Instant::now();
+        let canon = canonicalize_polys_4(polys.clone(), true).unwrap();
+        CANON4_CORE_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        if bench_canon_enabled() {
+            let tp = Instant::now();
+            let perm = crate::circuit::poly_canon_graph::canonicalize_graph(&polys, n);
+            let _form = crate::circuit::poly_canon_graph::canonical_form(&polys, &perm);
+            POLYCANON_CORE_TIME.fetch_add(tp.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            CANON_BENCH_CALLS.fetch_add(1, Ordering::Relaxed);
+        }
+
         (canon.0, canon.1, used)
     }
 }
