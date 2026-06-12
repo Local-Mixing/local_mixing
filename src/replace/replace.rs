@@ -19,6 +19,7 @@ extern crate lmdb_sys;
 
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     cmp::{max, min},
@@ -209,6 +210,21 @@ pub static FROM_BLOB_TIME: AtomicU64 = AtomicU64::new(0);
 pub static SPLICE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static TRIAL_TIME: AtomicU64 = AtomicU64::new(0);
 
+fn compression_trace_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("COMPRESSION_TRACE").is_ok())
+}
+
+fn compression_trace_threshold_ms() -> u128 {
+    static THRESHOLD: OnceLock<u128> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("COMPRESSION_TRACE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1_000)
+    })
+}
+
 pub fn compress_loop(
     circuit: &CircuitSeq,
     n: usize,
@@ -241,20 +257,65 @@ pub fn compress_loop(
         let current_mode = [0, 1, 2][mode];
         mode = (mode + 1) % 3;
 
+        let trace = compression_trace_enabled();
+        let trace_threshold_ms = compression_trace_threshold_ms();
         let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
-        let compressed_chunks: Vec<Vec<[u16; 3]>> = ranges
+        let compressed_chunks: Vec<(usize, usize, usize, Vec<[u16; 3]>, u128)> = ranges
+            .into_iter()
+            .enumerate()
+            .collect::<Vec<_>>()
             .into_par_iter()
-            .map(|(start, end)| {
+            .map(|(chunk_idx, (start, end))| {
                 let sub = CircuitSeq {
                     gates: acc.gates[start..end].to_vec(),
                 };
-                compress_big_ancillas(&sub, 100, n, env, shard_dbs, current_mode).gates
+                let chunk_start = Instant::now();
+                let gates = compress_big_ancillas(&sub, 100, n, env, shard_dbs, current_mode).gates;
+                let elapsed_ms = chunk_start.elapsed().as_millis();
+                if trace && elapsed_ms >= trace_threshold_ms {
+                    eprintln!(
+                        "[compress-trace] slow chunk mode={} idx={}/{} in_gates={} out_gates={} elapsed_ms={}",
+                        current_mode,
+                        chunk_idx + 1,
+                        k,
+                        end - start,
+                        gates.len(),
+                        elapsed_ms
+                    );
+                }
+                (chunk_idx, end - start, gates.len(), gates, elapsed_ms)
             })
             .collect();
 
-        let total_len: usize = compressed_chunks.iter().map(|chunk| chunk.len()).sum();
+        let mut compressed_chunks = compressed_chunks;
+        compressed_chunks.sort_by_key(|(chunk_idx, _, _, _, _)| *chunk_idx);
+
+        if trace {
+            let total_chunk_ms: u128 = compressed_chunks.iter().map(|(_, _, _, _, ms)| *ms).sum();
+            if let Some((slow_idx, slow_in, slow_out, _, slow_ms)) = compressed_chunks
+                .iter()
+                .max_by_key(|(_, _, _, _, elapsed_ms)| *elapsed_ms)
+            {
+                eprintln!(
+                    "[compress-trace] iteration mode={} chunks={} before={} slowest_idx={} slowest_in={} slowest_out={} slowest_ms={} sum_chunk_ms={}",
+                    current_mode,
+                    k,
+                    before,
+                    slow_idx + 1,
+                    slow_in,
+                    slow_out,
+                    slow_ms,
+                    total_chunk_ms
+                );
+            }
+        }
+
+        let total_len: usize = compressed_chunks
+            .iter()
+            .map(|(_, _, out_len, _, _)| *out_len)
+            .sum();
         let mut new_gates = Vec::with_capacity(total_len);
-        for chunk in compressed_chunks {
+        for (_, _, _, chunk, _) in compressed_chunks {
             new_gates.extend(chunk);
         }
 
@@ -785,8 +846,22 @@ pub fn compress_big_ancillas(
         let sub_num_wires = used_wires.len();
 
         let t4 = Instant::now();
+        let sub_gates = subcircuit.gates.len();
         let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs, mode);
-        COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let compress_elapsed = t4.elapsed();
+        COMPRESS_TIME.fetch_add(compress_elapsed.as_nanos() as u64, Ordering::Relaxed);
+        if compression_trace_enabled()
+            && compress_elapsed.as_millis() >= compression_trace_threshold_ms()
+        {
+            eprintln!(
+                "[compress-trace] slow compress_lmdb mode={} sub_gates={} sub_wires={} out_gates={} elapsed_ms={}",
+                mode,
+                sub_gates,
+                sub_num_wires,
+                subcircuit_temp.gates.len(),
+                compress_elapsed.as_millis()
+            );
+        }
 
         subcircuit = subcircuit_temp;
 
@@ -933,6 +1008,9 @@ pub fn expand_big_ancillas<'a>(
 
 // For timing and benchmarking purposes
 pub fn print_compress_timers() {
+    use crate::circuit::circuit::{
+        CANON4_RULE_L_BRANCHES, CANON4_RULE_L_CALLS, CANON4_RULE_L_TIME,
+    };
     use crate::replace::transpositions::{SAMF_COMPRESSIONS_FAILED, SAMF_COMPRESSIONS_MADE};
 
     let canon = CANON_TIME.load(Ordering::Relaxed);
@@ -952,6 +1030,9 @@ pub fn print_compress_timers() {
     let lmdb_lookup = LMDB_LOOKUP_TIME.load(Ordering::Relaxed);
     let from_blob = FROM_BLOB_TIME.load(Ordering::Relaxed);
     let trial = TRIAL_TIME.load(Ordering::Relaxed);
+    let rule_l_time = CANON4_RULE_L_TIME.load(Ordering::Relaxed);
+    let rule_l_calls = CANON4_RULE_L_CALLS.load(Ordering::Relaxed);
+    let rule_l_branches = CANON4_RULE_L_BRANCHES.load(Ordering::Relaxed);
 
     let samf_made = SAMF_COMPRESSIONS_MADE.load(Ordering::Relaxed);
     let samf_failed = SAMF_COMPRESSIONS_FAILED.load(Ordering::Relaxed);
@@ -1022,6 +1103,23 @@ pub fn print_compress_timers() {
     }
     if trial as f64 >= threshold_ns {
         println!("Trial loop time: {:.2} min", trial as f64 / ns);
+    }
+    if rule_l_time as f64 >= threshold_ns || std::env::var("COMPRESSION_TRACE").is_ok() {
+        let seconds = rule_l_time as f64 / 1e9;
+        let avg_ms = if rule_l_calls == 0 {
+            0.0
+        } else {
+            rule_l_time as f64 / 1e6 / rule_l_calls as f64
+        };
+        let avg_branches = if rule_l_calls == 0 {
+            0.0
+        } else {
+            rule_l_branches as f64 / rule_l_calls as f64
+        };
+        println!(
+            "Rule L time: {:.2} s  calls: {}  avg_ms: {:.2}  avg_branches: {:.2}",
+            seconds, rule_l_calls, avg_ms, avg_branches
+        );
     }
     println!(
         "SAMF compressions made: {}  failed: {}",

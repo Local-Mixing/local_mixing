@@ -1,6 +1,8 @@
 use cryptography::hash::sha2;
 use local_mixing::bench_support::{SEEDS, default_m, gen_polys, selected_n_grid, trimmed_polys};
-use local_mixing::circuit::circuit::{Monomial, Permutation, Polynomial, trim_canonicalized};
+use local_mixing::circuit::circuit::{
+    Monomial, Permutation, Polynomial, polynomial_from_terms, trim_canonicalized,
+};
 use local_mixing::random::random_data::random_circuit;
 use std::collections::{HashMap, HashSet};
 use std::hint::black_box;
@@ -199,18 +201,15 @@ fn canonical_form(polys: &[Polynomial], perm: &Permutation) -> Vec<Polynomial> {
     let mut canonical = vec![Polynomial::new(); n];
     for (old_wire, poly) in polys.iter().enumerate() {
         let new_wire = perm.data[old_wire];
-        canonical[new_wire] = poly
-            .iter()
-            .map(|&m| {
-                let mut remapped = 0u64;
-                for wire in 0..n {
-                    if m & (1u64 << wire) != 0 {
-                        remapped |= 1u64 << perm.data[wire];
-                    }
+        canonical[new_wire] = polynomial_from_terms(poly.iter().map(|&m| {
+            let mut remapped = 0u64;
+            for wire in 0..n {
+                if m & (1u64 << wire) != 0 {
+                    remapped |= 1u64 << perm.data[wire];
                 }
-                remapped
-            })
-            .collect();
+            }
+            remapped
+        }));
     }
     trim_canonicalized(canonical)
 }
