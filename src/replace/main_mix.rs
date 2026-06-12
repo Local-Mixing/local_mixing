@@ -187,14 +187,33 @@ pub fn main_shuffle_shoot_shuffle(
     // Per-round SAMF stats (deltas): inserted / hidden / hide-failed / curated expansions.
     use crate::replace::transpositions::{
         CURATED_REPLACEMENTS_MADE, SAMF_COMPRESSIONS_FAILED, SAMF_COMPRESSIONS_MADE,
-        SAMF_INSERTIONS_MADE,
+        SAMF_HIDE_ATTEMPTS, SAMF_HIDE_ELIGIBLE_EXPANSIONS, SAMF_HIDE_LOOKUP_MISSES,
+        SAMF_HIDE_REJECTED_EXPOSED, SAMF_HIDE_SKIPPED_MATERIALIZED, SAMF_INSERTIONS_MADE,
     };
     use std::sync::atomic::Ordering::Relaxed;
-    let mut per_round_samf: Vec<(usize, usize, usize, usize)> = Vec::new();
+    #[derive(Clone, Copy)]
+    struct RoundSamfStats {
+        inserted: usize,
+        hidden: usize,
+        failed: usize,
+        curated: usize,
+        eligible: usize,
+        skipped_materialized: usize,
+        attempts: usize,
+        lookup_misses: usize,
+        rejected_exposed: usize,
+    }
+
+    let mut per_round_samf: Vec<RoundSamfStats> = Vec::new();
     let mut prev_ins = SAMF_INSERTIONS_MADE.load(Relaxed);
     let mut prev_made = SAMF_COMPRESSIONS_MADE.load(Relaxed);
     let mut prev_failed = SAMF_COMPRESSIONS_FAILED.load(Relaxed);
     let mut prev_cur = CURATED_REPLACEMENTS_MADE.load(Relaxed);
+    let mut prev_eligible = SAMF_HIDE_ELIGIBLE_EXPANSIONS.load(Relaxed);
+    let mut prev_skipped = SAMF_HIDE_SKIPPED_MATERIALIZED.load(Relaxed);
+    let mut prev_attempts = SAMF_HIDE_ATTEMPTS.load(Relaxed);
+    let mut prev_misses = SAMF_HIDE_LOOKUP_MISSES.load(Relaxed);
+    let mut prev_rejected = SAMF_HIDE_REJECTED_EXPOSED.load(Relaxed);
     // A single-end shuffle cannot be reversed back after each round because its SAMF state is
     // intentionally left live. Choose one direction for the complete accumulated shuffle and
     // reverse it back only after the final unsamf.
@@ -313,10 +332,20 @@ pub fn main_shuffle_shoot_shuffle(
             let made = SAMF_COMPRESSIONS_MADE.load(Relaxed);
             let failed = SAMF_COMPRESSIONS_FAILED.load(Relaxed);
             let cur = CURATED_REPLACEMENTS_MADE.load(Relaxed);
+            let eligible = SAMF_HIDE_ELIGIBLE_EXPANSIONS.load(Relaxed);
+            let skipped = SAMF_HIDE_SKIPPED_MATERIALIZED.load(Relaxed);
+            let attempts = SAMF_HIDE_ATTEMPTS.load(Relaxed);
+            let misses = SAMF_HIDE_LOOKUP_MISSES.load(Relaxed);
+            let rejected = SAMF_HIDE_REJECTED_EXPOSED.load(Relaxed);
             let d_ins = ins - prev_ins;
             let d_made = made - prev_made;
             let d_failed = failed - prev_failed;
             let d_cur = cur - prev_cur;
+            let d_eligible = eligible - prev_eligible;
+            let d_skipped = skipped - prev_skipped;
+            let d_attempts = attempts - prev_attempts;
+            let d_misses = misses - prev_misses;
+            let d_rejected = rejected - prev_rejected;
             println!(
                 "  Round {}/{} SAMFs inserted: {} (hidden {}, plain {}) | curated expansions: {} | hide-fails: {}",
                 i + 1,
@@ -327,11 +356,30 @@ pub fn main_shuffle_shoot_shuffle(
                 d_cur,
                 d_failed
             );
-            per_round_samf.push((d_ins, d_made, d_failed, d_cur));
+            println!(
+                "    hide diagnostics: eligible {} | skipped-materialized {} | attempts {} | lookup-misses {} | rejected-exposed {}",
+                d_eligible, d_skipped, d_attempts, d_misses, d_rejected
+            );
+            per_round_samf.push(RoundSamfStats {
+                inserted: d_ins,
+                hidden: d_made,
+                failed: d_failed,
+                curated: d_cur,
+                eligible: d_eligible,
+                skipped_materialized: d_skipped,
+                attempts: d_attempts,
+                lookup_misses: d_misses,
+                rejected_exposed: d_rejected,
+            });
             prev_ins = ins;
             prev_made = made;
             prev_failed = failed;
             prev_cur = cur;
+            prev_eligible = eligible;
+            prev_skipped = skipped;
+            prev_attempts = attempts;
+            prev_misses = misses;
+            prev_rejected = rejected;
         }
         if circuit.gates.len() == 0 {
             break;
@@ -416,21 +464,46 @@ pub fn main_shuffle_shoot_shuffle(
 
     {
         println!("--- SAMF stats per round ---");
-        let (mut t_ins, mut t_made, mut t_failed, mut t_cur) = (0usize, 0usize, 0usize, 0usize);
-        for (r, (ins, made, failed, cur)) in per_round_samf.iter().enumerate() {
+        let (
+            mut t_ins,
+            mut t_made,
+            mut t_failed,
+            mut t_cur,
+            mut t_eligible,
+            mut t_skipped,
+            mut t_attempts,
+            mut t_misses,
+            mut t_rejected,
+        ) = (
+            0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
+        );
+        for (r, stats) in per_round_samf.iter().enumerate() {
             println!(
                 "Round {}: inserted {} (hidden {}, plain {}) | curated expansions {} | hide-fails {}",
                 r + 1,
-                ins,
-                made,
-                ins.saturating_sub(*made),
-                cur,
-                failed
+                stats.inserted,
+                stats.hidden,
+                stats.inserted.saturating_sub(stats.hidden),
+                stats.curated,
+                stats.failed
             );
-            t_ins += ins;
-            t_made += made;
-            t_failed += failed;
-            t_cur += cur;
+            println!(
+                "  hide diagnostics: eligible {} | skipped-materialized {} | attempts {} | lookup-misses {} | rejected-exposed {}",
+                stats.eligible,
+                stats.skipped_materialized,
+                stats.attempts,
+                stats.lookup_misses,
+                stats.rejected_exposed
+            );
+            t_ins += stats.inserted;
+            t_made += stats.hidden;
+            t_failed += stats.failed;
+            t_cur += stats.curated;
+            t_eligible += stats.eligible;
+            t_skipped += stats.skipped_materialized;
+            t_attempts += stats.attempts;
+            t_misses += stats.lookup_misses;
+            t_rejected += stats.rejected_exposed;
         }
         println!(
             "Total (this run): SAMFs inserted {} (hidden {}, plain {}) | curated expansions {} | hide-fails {}",
@@ -439,6 +512,10 @@ pub fn main_shuffle_shoot_shuffle(
             t_ins.saturating_sub(t_made),
             t_cur,
             t_failed
+        );
+        println!(
+            "Total hide diagnostics: eligible {} | skipped-materialized {} | attempts {} | lookup-misses {} | rejected-exposed {}",
+            t_eligible, t_skipped, t_attempts, t_misses, t_rejected
         );
     }
 }
