@@ -29,6 +29,16 @@ pub fn sat_score_slack() -> usize {
     })
 }
 
+pub fn sat_expand_min_delta() -> f64 {
+    static MIN_DELTA: OnceLock<f64> = OnceLock::new();
+    *MIN_DELTA.get_or_init(|| {
+        std::env::var("SAT_EXPAND_MIN_DELTA")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0)
+    })
+}
+
 pub fn sat_score_seed() -> u64 {
     static SEED: OnceLock<u64> = OnceLock::new();
     *SEED.get_or_init(|| {

@@ -7,8 +7,8 @@ use crate::{
     circuit::circuit::CircuitSeq,
     random::random_data::random_circuit,
     replace::sat_score::{
-        compression_selection_score, expansion_selection_score, sat_score_seed, sat_score_slack,
-        sat_scoring_enabled, score_subcircuit,
+        compression_selection_score, expansion_selection_score, sat_expand_min_delta,
+        sat_score_seed, sat_score_slack, sat_scoring_enabled, score_subcircuit,
     },
 };
 
@@ -134,6 +134,10 @@ pub fn expand_curated_lmdb(
 
     let mut best: Vec<CircuitSeq> = if sat_scoring_enabled() {
         let seed = sat_score_seed();
+        let base_n = sub.max_wire() + 1;
+        let base_score =
+            expansion_selection_score(&score_subcircuit(&sub.gates, base_n, seed ^ 0xBAD5_EED));
+        let required_score = base_score + sat_expand_min_delta();
         let scored: Vec<(f64, CircuitSeq)> = candidates
             .into_iter()
             .enumerate()
@@ -142,7 +146,11 @@ pub fn expand_curated_lmdb(
                 let sat_score = score_subcircuit(&candidate.gates, score_n, seed ^ idx as u64);
                 (expansion_selection_score(&sat_score), candidate)
             })
+            .filter(|(score, _)| *score > required_score)
             .collect();
+        if scored.is_empty() {
+            return None;
+        }
         let max_score = scored
             .iter()
             .map(|(score, _)| *score)

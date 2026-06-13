@@ -1844,7 +1844,13 @@ fn shuffled_shooting_game_core(
     let mut negation_mask = vec![0u8; n];
     let mut compressions: usize = 0;
 
-    let mut remaining: VecDeque<[u16; 3]> = input.iter().copied().collect();
+    let start = if input.is_empty() {
+        0
+    } else {
+        rng.random_range(0..input.len())
+    };
+    output.extend_from_slice(&input[..start]);
+    let mut remaining: VecDeque<[u16; 3]> = input[start..].iter().copied().collect();
     // Replacement gates are already expressed in the current physical wire space. Keep the
     // replacement tail separate from `remaining`, whose gates still require SAMF relabeling.
     let mut materialized_shot: Option<[u16; 3]> = None;
