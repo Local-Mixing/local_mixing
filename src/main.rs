@@ -276,6 +276,42 @@ fn main() {
                         .help("Path to second circuit file"),
                 ),
         )
+        .subcommand(
+            Command::new("evaluate")
+                .about("Evaluate a circuit on an input and print the output")
+                .arg(
+                    Arg::new("source")
+                        .short('s')
+                        .long("source")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to the circuit file"),
+                )
+                .arg(
+                    Arg::new("n")
+                        .short('n')
+                        .long("n")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of wires"),
+                )
+                .arg(
+                    Arg::new("input")
+                        .short('x')
+                        .long("input")
+                        .required(false)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Input value (decimal or 0x-prefixed hex)"),
+                )
+                .arg(
+                    Arg::new("random")
+                        .short('r')
+                        .long("random")
+                        .required(false)
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Use a random input (prints the chosen input)"),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -285,6 +321,7 @@ fn main() {
         Some(("shuffle", sub)) => commands::shuffle::run(sub),
         Some(("shoot", sub)) => commands::shoot::run(sub),
         Some(("equal", sub)) => commands::equal::run(sub),
+        Some(("evaluate", sub)) => commands::evaluate::run(sub),
         _ => unreachable!("subcommand_required guarantees a match"),
     }
 }
