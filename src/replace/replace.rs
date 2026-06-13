@@ -1,6 +1,10 @@
 // Replacement code used in the mixing methods
 
 use crate::replace::mixing::split_into_random_chunk_ranges;
+use crate::replace::sat_score::{
+    compression_selection_score, sat_score_seed, sat_score_slack, sat_scoring_enabled,
+    score_subcircuit,
+};
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation},
     random::random_data::{
@@ -736,15 +740,41 @@ pub fn compress_lmdb(
         }
 
         let min_gates = candidates.iter().map(|c| c.gates.len()).min().unwrap();
-        *COMPRESSION_HISTOGRAM
-            .entry((sub.gates.len() as u8, min_gates as u8))
-            .or_insert(0) += 1;
-        let mut best: Vec<CircuitSeq> = candidates
-            .into_iter()
-            .filter(|c| c.gates.len() == min_gates)
-            .collect();
+        let mut best: Vec<CircuitSeq> = if sat_scoring_enabled() {
+            let max_len = min_gates
+                .saturating_add(sat_score_slack())
+                .min(sub.gates.len() - 1);
+            let seed = sat_score_seed();
+            let scored: Vec<(f64, CircuitSeq)> = candidates
+                .into_iter()
+                .filter(|c| c.gates.len() <= max_len)
+                .enumerate()
+                .map(|(idx, candidate)| {
+                    let score_n = candidate.max_wire() + 1;
+                    let sat_score = score_subcircuit(&candidate.gates, score_n, seed ^ idx as u64);
+                    (compression_selection_score(&sat_score), candidate)
+                })
+                .collect();
+            let max_score = scored
+                .iter()
+                .map(|(score, _)| *score)
+                .fold(f64::NEG_INFINITY, f64::max);
+            scored
+                .into_iter()
+                .filter(|(score, _)| (*score - max_score).abs() <= 1e-9)
+                .map(|(_, candidate)| candidate)
+                .collect()
+        } else {
+            candidates
+                .into_iter()
+                .filter(|c| c.gates.len() == min_gates)
+                .collect()
+        };
         let idx = rng.random_range(0..best.len());
         let mut repl = best.swap_remove(idx);
+        *COMPRESSION_HISTOGRAM
+            .entry((sub.gates.len() as u8, repl.gates.len() as u8))
+            .or_insert(0) += 1;
 
         if is_reversed {
             repl.gates.reverse();

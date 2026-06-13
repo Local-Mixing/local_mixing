@@ -25,7 +25,9 @@ pub fn run(sub: &clap::ArgMatches) {
             rand::rng().fill_bytes(&mut bytes);
             u512::from_little_endian(&bytes) & mask
         } else {
-            let raw = sub.get_one::<String>("input").expect("-x required when not using -r");
+            let raw = sub
+                .get_one::<String>("input")
+                .expect("-x required when not using -r");
             parse_u512(raw)
         };
 
@@ -50,7 +52,9 @@ pub fn run(sub: &clap::ArgMatches) {
             rand::rng().fill_bytes(&mut bytes);
             u256::from_little_endian(&bytes) & mask
         } else {
-            let raw = sub.get_one::<String>("input").expect("-x required when not using -r");
+            let raw = sub
+                .get_one::<String>("input")
+                .expect("-x required when not using -r");
             parse_u256(raw)
         };
 
@@ -82,7 +86,13 @@ fn parse_u512(s: &str) -> u512 {
 
 fn format_bits_256(val: u256, n: usize) -> String {
     let bits: String = (0..n)
-        .map(|i| if (val >> i) & u256::one() == u256::one() { '1' } else { '0' })
+        .map(|i| {
+            if (val >> i) & u256::one() == u256::one() {
+                '1'
+            } else {
+                '0'
+            }
+        })
         .collect();
     let hex_bytes = val.to_little_endian();
     let needed = (n + 7) / 8;
@@ -96,7 +106,13 @@ fn format_bits_256(val: u256, n: usize) -> String {
 
 fn format_bits_512(val: u512, n: usize) -> String {
     let bits: String = (0..n)
-        .map(|i| if (val >> i) & u512::one() == u512::one() { '1' } else { '0' })
+        .map(|i| {
+            if (val >> i) & u512::one() == u512::one() {
+                '1'
+            } else {
+                '0'
+            }
+        })
         .collect();
     let hex_bytes = val.to_little_endian();
     let needed = (n + 7) / 8;

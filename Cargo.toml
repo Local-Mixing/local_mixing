@@ -27,6 +27,10 @@ name = "poly_canon"
 path = "challenges/poly_canon.rs"
 
 [[bin]]
+name = "newton_feistal"
+path = "challenges/newton_feistal.rs"
+
+[[bin]]
 name = "bench_canon4"
 path = "src/bench/bench_canon4.rs"
 

@@ -4,4 +4,5 @@ pub mod main_mix;
 pub mod mixing;
 pub mod pairs;
 pub mod replace;
+pub mod sat_score;
 pub mod transpositions;
