@@ -1968,19 +1968,8 @@ fn shuffled_shooting_game_core(
             // 2) Try to hide ONE SAMF ending at the expansion's tail. The context for the hide is
             //    the last `gates_ahead_samf` gates of (output ++ expansion) — reaching back into
             //    the already-emitted output when the expansion is shorter — followed by samf[0..3].
-            //    Pick the swap wires once and vary the negation type across attempts.
-            let swap_lo: u16 = rng.random_range(0..n as u16);
-            let swap_hi: u16 = loop {
-                let w: u16 = rng.random_range(0..n as u16);
-                if w != swap_lo {
-                    break w;
-                }
-            };
-            let (swap_lo, swap_hi) = if swap_lo < swap_hi {
-                (swap_lo, swap_hi)
-            } else {
-                (swap_hi, swap_lo)
-            };
+            //    Cone-aware mode samples multiple swap pairs and keeps the strongest hidden
+            //    context; default mode keeps the historical first-success behavior.
 
             // Split the gates_ahead_samf-gate context between the expansion tail and the gates
             // immediately before it in `output`. When the expansion is shorter than the context,
@@ -1993,40 +1982,82 @@ fn shuffled_shooting_game_core(
             let out_keep = output.len() - from_output;
 
             let candidate_types: Vec<u16> = (0u16..=3).collect();
-            // (neg_type, samf, repl): the context window ++ samf[0..3] becomes `repl`, and
+            // (score, swap_lo, swap_hi, neg_type, samf, repl): the context window ++ samf[0..3] becomes `repl`, and
             // all but the final gate of samf[3..] is emitted after it.
-            let mut tuck: Option<(u16, Vec<[u16; 3]>, Vec<[u16; 3]>)> = None;
-            'types: for &neg_type in candidate_types.choose_multiple(&mut rng, type_attempts.max(1))
-            {
-                let samf = Transpositions::gen_gates_swap(n, (swap_lo, swap_hi, neg_type));
-                if samf.len() < 3 {
-                    continue;
-                }
-                SAMF_HIDE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-                // Window: [output tail] ++ [expansion tail] ++ samf[0..3]. Always contains SAMF
-                // gates, so every lookup is a genuine hide attempt.
-                let mut window: Vec<[u16; 3]> = Vec::with_capacity(ctx + 3);
-                window.extend_from_slice(&output[out_keep..]);
-                window.extend_from_slice(&expansion[exp_tail_start..]);
-                window.extend_from_slice(&samf[..3]);
-                if let Some(repl) =
-                    compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs)
-                {
-                    // Accept only if the SAMF gates are genuinely absorbed (not surviving verbatim).
-                    let samf_slice = &samf[..3];
-                    let samf_hidden = repl.len() < 3 || !repl.windows(3).any(|w| w == samf_slice);
-                    if samf_hidden {
-                        tuck = Some((neg_type, samf, repl));
-                        break 'types;
+            let mut tuck: Option<(f64, u16, u16, u16, Vec<[u16; 3]>, Vec<[u16; 3]>)> = None;
+            let cone_aware = crate::replace::sat_score::sat_cone_aware_enabled();
+            let pair_attempts = if cone_aware {
+                crate::replace::sat_score::sat_hidden_samf_candidates()
+            } else {
+                1
+            };
+            'pairs: for pair_idx in 0..pair_attempts {
+                let swap_lo: u16 = rng.random_range(0..n as u16);
+                let swap_hi: u16 = loop {
+                    let w: u16 = rng.random_range(0..n as u16);
+                    if w != swap_lo {
+                        break w;
                     }
-                    SAMF_HIDE_REJECTED_EXPOSED.fetch_add(1, Ordering::Relaxed);
+                };
+                let (swap_lo, swap_hi) = if swap_lo < swap_hi {
+                    (swap_lo, swap_hi)
                 } else {
-                    SAMF_HIDE_LOOKUP_MISSES.fetch_add(1, Ordering::Relaxed);
+                    (swap_hi, swap_lo)
+                };
+
+                for &neg_type in candidate_types.choose_multiple(&mut rng, type_attempts.max(1)) {
+                    let samf = Transpositions::gen_gates_swap(n, (swap_lo, swap_hi, neg_type));
+                    if samf.len() < 3 {
+                        continue;
+                    }
+                    SAMF_HIDE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+                    // Window: [output tail] ++ [expansion tail] ++ samf[0..3]. Always contains SAMF
+                    // gates, so every lookup is a genuine hide attempt.
+                    let mut window: Vec<[u16; 3]> = Vec::with_capacity(ctx + 3);
+                    window.extend_from_slice(&output[out_keep..]);
+                    window.extend_from_slice(&expansion[exp_tail_start..]);
+                    window.extend_from_slice(&samf[..3]);
+                    if let Some(repl) =
+                        compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs)
+                    {
+                        // Accept only if the SAMF gates are genuinely absorbed (not surviving verbatim).
+                        let samf_slice = &samf[..3];
+                        let samf_hidden =
+                            repl.len() < 3 || !repl.windows(3).any(|w| w == samf_slice);
+                        if samf_hidden {
+                            let score = if cone_aware {
+                                let sat_score = crate::replace::sat_score::score_subcircuit(
+                                    &repl,
+                                    n,
+                                    crate::replace::sat_score::sat_score_seed()
+                                        ^ ((pair_idx as u64) << 8)
+                                        ^ neg_type as u64,
+                                );
+                                crate::replace::sat_score::compression_selection_score(&sat_score)
+                            } else {
+                                0.0
+                            };
+                            let replace_best = tuck
+                                .as_ref()
+                                .map(|(best_score, ..)| score > *best_score)
+                                .unwrap_or(true);
+                            if replace_best {
+                                tuck = Some((score, swap_lo, swap_hi, neg_type, samf, repl));
+                            }
+                            if !cone_aware {
+                                break 'pairs;
+                            }
+                        } else {
+                            SAMF_HIDE_REJECTED_EXPOSED.fetch_add(1, Ordering::Relaxed);
+                        }
+                    } else {
+                        SAMF_HIDE_LOOKUP_MISSES.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
 
             match tuck {
-                Some((neg_type, samf, repl)) => {
+                Some((_score, swap_lo, swap_hi, neg_type, samf, repl)) => {
                     // The context window (output tail + expansion tail + samf[0..3]) becomes
                     // `repl`; everything before it is unchanged. Emit the SAMF suffix up to its
                     // final gate, then keep that final gate as the next materialized shot so the

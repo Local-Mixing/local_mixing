@@ -2,7 +2,9 @@
 
 use crate::replace::mixing::split_into_random_chunk_ranges;
 use crate::replace::sat_score::{
-    compression_selection_score, expansion_selection_score, sat_expand_min_delta, sat_score_seed,
+    compression_selection_score, expansion_selection_score, sat_bcp_enabled,
+    sat_bcp_min_resistance, sat_compress_preserve_delta, sat_compress_protect_enabled,
+    sat_cone_aware_enabled, sat_cone_min_fraction, sat_expand_min_delta, sat_score_seed,
     sat_score_slack, sat_scoring_enabled, score_subcircuit,
 };
 use crate::{
@@ -544,10 +546,18 @@ pub fn expand_lmdb<'a>(
             let scored: Vec<(f64, CircuitSeq)> = candidates
                 .into_iter()
                 .enumerate()
-                .map(|(idx, candidate)| {
+                .filter_map(|(idx, candidate)| {
                     let score_n = candidate.max_wire() + 1;
                     let sat_score = score_subcircuit(&candidate.gates, score_n, seed ^ idx as u64);
-                    (expansion_selection_score(&sat_score), candidate)
+                    if sat_cone_aware_enabled()
+                        && sat_score.output_cone_fraction < sat_cone_min_fraction()
+                    {
+                        return None;
+                    }
+                    if sat_bcp_enabled() && sat_score.bcp_resistance < sat_bcp_min_resistance() {
+                        return None;
+                    }
+                    Some((expansion_selection_score(&sat_score), candidate))
                 })
                 .filter(|(score, _)| *score > required_score)
                 .collect();
@@ -778,16 +788,38 @@ pub fn compress_lmdb(
                 .saturating_add(sat_score_slack())
                 .min(sub.gates.len() - 1);
             let seed = sat_score_seed();
+            let base_score = compression_selection_score(&score_subcircuit(
+                &sub.gates,
+                sub.max_wire() + 1,
+                seed ^ 0xc0de_5678,
+            ));
             let scored: Vec<(f64, CircuitSeq)> = candidates
                 .into_iter()
                 .filter(|c| c.gates.len() <= max_len)
                 .enumerate()
-                .map(|(idx, candidate)| {
+                .filter_map(|(idx, candidate)| {
                     let score_n = candidate.max_wire() + 1;
                     let sat_score = score_subcircuit(&candidate.gates, score_n, seed ^ idx as u64);
-                    (compression_selection_score(&sat_score), candidate)
+                    if sat_cone_aware_enabled()
+                        && sat_score.output_cone_fraction < sat_cone_min_fraction()
+                    {
+                        return None;
+                    }
+                    if sat_bcp_enabled() && sat_score.bcp_resistance < sat_bcp_min_resistance() {
+                        return None;
+                    }
+                    let candidate_score = compression_selection_score(&sat_score);
+                    if sat_compress_protect_enabled()
+                        && candidate_score + sat_compress_preserve_delta() < base_score
+                    {
+                        return None;
+                    }
+                    Some((candidate_score, candidate))
                 })
                 .collect();
+            if scored.is_empty() {
+                continue;
+            }
             let max_score = scored
                 .iter()
                 .map(|(score, _)| *score)

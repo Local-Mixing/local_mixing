@@ -87,6 +87,173 @@ fn feistal_middle_matches_original(
     Ok(())
 }
 
+fn env_truthy(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => {
+            let value = value.trim();
+            !value.is_empty()
+                && !matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "0" | "false" | "off" | "no"
+                )
+        }
+        Err(_) => false,
+    }
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+}
+
+fn sat_cone_log_enabled() -> bool {
+    env_truthy("SAT_CONE_LOG") || env_truthy("SAT_HARDEN")
+}
+
+fn sat_cone_range(total_wires: usize, feistal_original_n: Option<usize>) -> Option<(usize, usize)> {
+    if !sat_cone_log_enabled() {
+        return None;
+    }
+
+    let default_start = feistal_original_n.unwrap_or(0);
+    let default_bits = feistal_original_n.unwrap_or(total_wires);
+    let start = env_usize("SAT_CONE_START").unwrap_or(default_start);
+    let bits = env_usize("SAT_CONE_BITS").unwrap_or(default_bits);
+    if bits == 0 || start.saturating_add(bits) > total_wires {
+        eprintln!(
+            "[sat-cone] disabled invalid range start={} bits={} total_wires={}",
+            start, bits, total_wires
+        );
+        return None;
+    }
+    Some((start, bits))
+}
+
+fn print_sat_cone(label: &str, gates: &[[u16; 3]], cone_range: Option<(usize, usize)>) {
+    let Some((output_start, output_bits)) = cone_range else {
+        return;
+    };
+    if let Some(stats) =
+        crate::replace::sat_score::output_cone_stats(gates, output_start, output_bits)
+    {
+        println!(
+            "[sat-cone] label={} output_start={} output_bits={} cone_gates={} cone_gate_fraction={:.6} cone_wires={} cone_input_wires={} cone_max_live_wires={}",
+            label,
+            stats.output_start,
+            stats.output_bits,
+            stats.cone_gates,
+            stats.cone_gate_fraction,
+            stats.cone_wires,
+            stats.cone_input_wires,
+            stats.cone_max_live_wires
+        );
+    }
+}
+
+fn sat_global_mix_enabled() -> bool {
+    env_truthy("SAT_GLOBAL_MIX") || env_truthy("SAT_HARDEN")
+}
+
+fn sat_global_mix_every() -> usize {
+    env_usize("SAT_GLOBAL_MIX_EVERY").unwrap_or(1).max(1)
+}
+
+fn sat_global_mix_m(total_wires: usize) -> usize {
+    env_usize("SAT_GLOBAL_MIX_M").unwrap_or(total_wires)
+}
+
+fn sat_hard_cores_enabled() -> bool {
+    env_truthy("SAT_HARD_CORES")
+}
+
+fn sat_hard_core_count(total_wires: usize) -> usize {
+    env_usize("SAT_HARD_CORE_COUNT").unwrap_or((total_wires / 8).max(1))
+}
+
+fn insert_sat_hard_identity_cores(
+    circuit: &mut CircuitSeq,
+    total_wires: usize,
+    count: usize,
+    cone_range: Option<(usize, usize)>,
+    rng: &mut impl Rng,
+) {
+    if total_wires < 6 || count == 0 {
+        return;
+    }
+
+    let mut insertions: Vec<(usize, [[u16; 3]; 4])> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let gate_a = random_core_gate(total_wires, &[], cone_range, rng);
+        let forbidden = [gate_a[0], gate_a[1], gate_a[2]];
+        let gate_b = random_core_gate(total_wires, &forbidden, cone_range, rng);
+        let pos = rng.random_range(0..=circuit.gates.len());
+        // Disjoint self-inverse gates commute, so A B A B is an identity without adjacent
+        // duplicate gates for the simple cleanup pass to erase immediately.
+        insertions.push((pos, [gate_a, gate_b, gate_a, gate_b]));
+    }
+
+    insertions.sort_by(|a, b| b.0.cmp(&a.0));
+    for (pos, core) in insertions {
+        circuit.gates.splice(pos..pos, core);
+    }
+    println!(
+        "[sat-hard-core] inserted {} commuting identity cores ({} gates)",
+        count,
+        count * 4
+    );
+}
+
+fn random_core_gate(
+    total_wires: usize,
+    forbidden: &[u16],
+    cone_range: Option<(usize, usize)>,
+    rng: &mut impl Rng,
+) -> [u16; 3] {
+    let active = random_core_wire(total_wires, forbidden, cone_range, true, rng);
+    let control_a = random_core_wire(
+        total_wires,
+        &[forbidden, &[active]].concat(),
+        None,
+        false,
+        rng,
+    );
+    let control_b = random_core_wire(
+        total_wires,
+        &[forbidden, &[active, control_a]].concat(),
+        None,
+        false,
+        rng,
+    );
+    [active, control_a, control_b]
+}
+
+fn random_core_wire(
+    total_wires: usize,
+    forbidden: &[u16],
+    cone_range: Option<(usize, usize)>,
+    prefer_cone: bool,
+    rng: &mut impl Rng,
+) -> u16 {
+    for _ in 0..128 {
+        let wire = if prefer_cone && rng.random_bool(0.75) {
+            if let Some((start, bits)) = cone_range {
+                rng.random_range(start..start + bits) as u16
+            } else {
+                rng.random_range(0..total_wires) as u16
+            }
+        } else {
+            rng.random_range(0..total_wires) as u16
+        };
+        if !forbidden.contains(&wire) {
+            return wire;
+        }
+    }
+    (0..total_wires as u16)
+        .find(|wire| !forbidden.contains(wire))
+        .unwrap_or(0)
+}
+
 pub fn main_shuffle_shoot_shuffle(
     c: &CircuitSeq,
     rounds: usize,
@@ -170,10 +337,14 @@ pub fn main_shuffle_shoot_shuffle(
         circuit = interleave(&circuit, n, env);
     }
     let n = if leave { 2 * n } else { n };
+    let feistal_original_n = do_feistalize.then_some(if leave { n / 6 } else { n / 3 });
+    let sat_cone_range = sat_cone_range(n, feistal_original_n);
+    print_sat_cone("initial", &circuit.gates, sat_cone_range);
     if full_shuffle {
         // SAMF insertion is equivalence-preserving by construction, so no retry guard.
         insert_wire_m_samfs_every_x(&mut circuit, n, n, 1, env, curated_shard_dbs, shard_dbs);
         println!("After full shuffle: {} gates", circuit.gates.len());
+        print_sat_cone("after-full-shuffle", &circuit.gates, sat_cone_range);
     }
     // --single-end accumulator: SAMF state carried across ALL rounds,
     // undone in one pass after the last round. `total_t` is the composed wire permutation
@@ -221,7 +392,43 @@ pub fn main_shuffle_shoot_shuffle(
         println!("Collision-game direction: reversed (complete single-end shuffle)");
         circuit.gates.reverse();
     }
+    let mut hardening_rng = rand::rng();
     for i in 0..rounds {
+        if sat_global_mix_enabled() && i % sat_global_mix_every() == 0 {
+            let mix_m = sat_global_mix_m(n);
+            if mix_m > 0 {
+                let mix_x = circuit.gates.len().saturating_add(1).max(1);
+                insert_wire_m_samfs_every_x(
+                    &mut circuit,
+                    n,
+                    mix_m,
+                    mix_x,
+                    env,
+                    curated_shard_dbs,
+                    shard_dbs,
+                );
+                println!(
+                    "[sat-global-mix] round={} swaps={} gates={}",
+                    i + 1,
+                    mix_m,
+                    circuit.gates.len()
+                );
+                let cone_label = format!("round{}-after-global-mix", i + 1);
+                print_sat_cone(&cone_label, &circuit.gates, sat_cone_range);
+            }
+        }
+        if sat_hard_cores_enabled() {
+            let count = sat_hard_core_count(n);
+            insert_sat_hard_identity_cores(
+                &mut circuit,
+                n,
+                count,
+                sat_cone_range,
+                &mut hardening_rng,
+            );
+            let cone_label = format!("round{}-after-hard-cores", i + 1);
+            print_sat_cone(&cone_label, &circuit.gates, sat_cone_range);
+        }
         if egg {
             let pair_mode = ExpandPairMode::Curated {
                 curated_shard_dbs: &curated_shard_dbs,
@@ -288,6 +495,8 @@ pub fn main_shuffle_shoot_shuffle(
             }
         }
         println!("After shooting game: {} gates", circuit.gates.len());
+        let cone_label = format!("round{}-after-shooting", i + 1);
+        print_sat_cone(&cone_label, &circuit.gates, sat_cone_range);
         // The normal shooting path already inserts plain SAMFs as part of
         // shuffled_shoot_then_samf[_core]. Egg mode does not use that path, so it performs its
         // one plain-SAMF insertion here.
@@ -325,6 +534,8 @@ pub fn main_shuffle_shoot_shuffle(
             "temp_compression.txt",
         );
         println!("After compression: {} gates", circuit.gates.len());
+        let cone_label = format!("round{}-after-compression", i + 1);
+        print_sat_cone(&cone_label, &circuit.gates, sat_cone_range);
         // Record + print this round's SAMF stats (deltas from the previous round).
         {
             let ins = SAMF_INSERTIONS_MADE.load(Relaxed);
@@ -434,6 +645,7 @@ pub fn main_shuffle_shoot_shuffle(
     }
 
     println!("Final len: {}", circuit.gates.len());
+    print_sat_cone("final", &circuit.gates, sat_cone_range);
     // Compare against the original circuit. Gadgetize/interleave preserve the low original_n
     // outputs; feistalize preserves C(x) in the middle original_n-wire block as y ^ C(x).
     let original_n = if leave { n / 2 } else { n };
