@@ -9,8 +9,13 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
+use uint::construct_uint;
 
 use std::collections::BTreeMap;
+
+construct_uint! {
+    pub struct U1024(16);
+}
 
 pub static CANON4_CORE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static POLYCANON_CORE_TIME: AtomicU64 = AtomicU64::new(0);
@@ -110,6 +115,13 @@ impl Gate {
         state ^ ((c1 | (one ^ c2)) << gate[0])
     }
 
+    pub fn evaluate_index_1024(state: U1024, gate: [u16; 3]) -> U1024 {
+        let one = U1024::one();
+        let c1 = (state >> gate[1]) & one;
+        let c2 = (state >> gate[2]) & one;
+        state ^ ((c1 | (one ^ c2)) << gate[0])
+    }
+
     // Evaluate a list of gates
     #[inline(always)]
     pub fn evaluate_index_list(state: usize, gates: &Vec<[u16; 3]>) -> usize {
@@ -134,6 +146,15 @@ impl Gate {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_512(current_wires, *g);
+        }
+        current_wires
+    }
+
+    #[inline(always)]
+    pub fn evaluate_index_list_1024(state: U1024, gates: &Vec<[u16; 3]>) -> U1024 {
+        let mut current_wires = state;
+        for g in gates {
+            current_wires = Self::evaluate_index_1024(current_wires, *g);
         }
         current_wires
     }
@@ -238,6 +259,11 @@ impl CircuitSeq {
     // Evaluate the circuit on a 256-bit input state (one bit per wire).
     pub fn evaluate_256(&self, input: u256) -> u256 {
         Gate::evaluate_index_list_256(input, &self.gates)
+    }
+
+    // Evaluate the circuit on a 1024-bit input state (one bit per wire).
+    pub fn evaluate_1024(&self, input: U1024) -> U1024 {
+        Gate::evaluate_index_list_1024(input, &self.gates)
     }
 
     // Store as sequence of u8 for dbs
@@ -520,6 +546,18 @@ impl CircuitSeq {
         evolution
     }
 
+    pub fn evaluate_evolution_1024(&self, input: U1024) -> Vec<U1024> {
+        let mut state = input;
+        let mut evolution = vec![state];
+
+        for gate in &self.gates {
+            state = Gate::evaluate_index_1024(state, *gate);
+            evolution.push(state);
+        }
+
+        evolution
+    }
+
     // Probablistic check on circuit equality
     // pub fn probably_equal(&self, other_circuit: &Self, num_wires: usize, num_inputs: usize) -> Result<(), String> {
     //     let mut rng = rand::rng();
@@ -553,18 +591,21 @@ impl CircuitSeq {
         use rayon::prelude::*;
 
         if num_wires > 256 {
-            let mask = if num_wires < 512 {
-                (u512::one() << num_wires) - u512::one()
+            if num_wires > 1024 {
+                return Err("probabilistic equality supports up to 1024 wires".to_string());
+            }
+            let mask = if num_wires < 1024 {
+                (U1024::one() << num_wires) - U1024::one()
             } else {
-                u512::MAX
+                U1024::MAX
             };
             return (0..num_inputs).into_par_iter().try_for_each(|_| {
-                let mut bytes = [0u8; 64];
+                let mut bytes = [0u8; 128];
                 rand::rng().fill_bytes(&mut bytes);
-                let random_input = u512::from_little_endian(&bytes) & mask;
-                let self_output = Gate::evaluate_index_list_512(random_input, &self.gates);
+                let random_input = U1024::from_little_endian(&bytes) & mask;
+                let self_output = Gate::evaluate_index_list_1024(random_input, &self.gates);
                 let other_output =
-                    Gate::evaluate_index_list_512(random_input, &other_circuit.gates);
+                    Gate::evaluate_index_list_1024(random_input, &other_circuit.gates);
                 if (self_output & mask) != (other_output & mask) {
                     Err("Circuits are not equal".to_string())
                 } else {
@@ -2706,6 +2747,20 @@ mod tests {
         assert_eq!(polys[0], vec![0, 1, 2, 6]);
         assert_eq!(polys[1], vec![2]);
         assert_eq!(polys[2], vec![4]);
+    }
+
+    #[test]
+    fn evaluate_1024_handles_wires_above_512() {
+        let circuit = CircuitSeq {
+            gates: vec![[900, 901, 902]],
+        };
+        let one = U1024::one();
+
+        let flipped = circuit.evaluate_1024(U1024::zero());
+        assert_eq!((flipped >> 900) & one, one);
+
+        let blocked = circuit.evaluate_1024(one << 902);
+        assert_eq!((blocked >> 900) & one, U1024::zero());
     }
 
     fn old_toggle(poly: &mut BTreeSet<Monomial>, m: Monomial) {

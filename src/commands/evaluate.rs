@@ -1,9 +1,9 @@
 use std::fs;
 
-use primitive_types::{U256 as u256, U512 as u512};
+use primitive_types::U256 as u256;
 use rand::RngCore;
 
-use local_mixing::circuit::CircuitSeq;
+use local_mixing::circuit::{CircuitSeq, U1024};
 
 pub fn run(sub: &clap::ArgMatches) {
     let s: &str = sub.get_one::<String>("source").unwrap().as_str();
@@ -11,35 +11,31 @@ pub fn run(sub: &clap::ArgMatches) {
     let data = fs::read_to_string(s).expect("Failed to read circuit file");
     let circuit = CircuitSeq::from_string(&data);
 
-    let use_512 = n > 256;
+    let use_1024 = n > 256;
 
-    if use_512 {
-        let mask = if n < 512 {
-            (u512::one() << n) - u512::one()
+    if use_1024 {
+        assert!(n <= 1024, "evaluate supports up to 1024 wires");
+        let mask = if n < 1024 {
+            (U1024::one() << n) - U1024::one()
         } else {
-            u512::MAX
+            U1024::MAX
         };
 
-        let input: u512 = if sub.get_flag("random") {
-            let mut bytes = [0u8; 64];
+        let input: U1024 = if sub.get_flag("random") {
+            let mut bytes = [0u8; 128];
             rand::rng().fill_bytes(&mut bytes);
-            u512::from_little_endian(&bytes) & mask
+            U1024::from_little_endian(&bytes) & mask
         } else {
             let raw = sub
                 .get_one::<String>("input")
                 .expect("-x required when not using -r");
-            parse_u512(raw)
+            parse_u1024(raw)
         };
 
         println!("n: {}", n);
-        println!("Input:  {}", format_bits_512(input, n));
-        let output = circuit.gates.iter().fold(input, |state, &gate| {
-            let one = u512::one();
-            let c1 = (state >> gate[1]) & one;
-            let c2 = (state >> gate[2]) & one;
-            state ^ ((c1 | (one ^ c2)) << gate[0])
-        });
-        println!("Output: {}", format_bits_512(output & mask, n));
+        println!("Input:  {}", format_bits_1024(input, n));
+        let output = circuit.evaluate_1024(input) & mask;
+        println!("Output: {}", format_bits_1024(output, n));
     } else {
         let mask = if n < 256 {
             (u256::one() << n) - u256::one()
@@ -74,13 +70,12 @@ fn parse_u256(s: &str) -> u256 {
     }
 }
 
-fn parse_u512(s: &str) -> u512 {
+fn parse_u1024(s: &str) -> U1024 {
     let s = s.trim();
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        u512::from_str_radix(hex, 16).expect("Invalid hex value")
+        U1024::from_str_radix(hex, 16).expect("Invalid hex value")
     } else {
-        // primitive_types::U512 has no from_dec_str; parse via big-endian hex workaround
-        panic!("For n>256 please supply a hex value (0x...)");
+        U1024::from_dec_str(s).expect("Invalid decimal value")
     }
 }
 
@@ -104,10 +99,10 @@ fn format_bits_256(val: u256, n: usize) -> String {
     format!("{} (0x{})", bits, hex)
 }
 
-fn format_bits_512(val: u512, n: usize) -> String {
+fn format_bits_1024(val: U1024, n: usize) -> String {
     let bits: String = (0..n)
         .map(|i| {
-            if (val >> i) & u512::one() == u512::one() {
+            if (val >> i) & U1024::one() == U1024::one() {
                 '1'
             } else {
                 '0'

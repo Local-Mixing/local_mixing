@@ -1,10 +1,9 @@
 use std::{fs::File, io::Write};
 
-use primitive_types::U512 as u512;
 use rand::{Rng, RngCore};
 
 use crate::{
-    circuit::circuit::{CircuitSeq, Gate},
+    circuit::circuit::{CircuitSeq, Gate, U1024},
     replace::{
         gadgets::{feistalize, gadgetize},
         pairs::interleave,
@@ -56,30 +55,30 @@ fn feistal_middle_matches_original(
     num_inputs: usize,
 ) -> Result<(), String> {
     assert!(
-        total_wires <= 512,
-        "feistalized equality check supports up to 512 wires"
+        total_wires <= 1024,
+        "feistalized equality check supports up to 1024 wires"
     );
-    let mask = if original_n < 512 {
-        (u512::one() << original_n) - u512::one()
+    let mask = if original_n < 1024 {
+        (U1024::one() << original_n) - U1024::one()
     } else {
-        u512::MAX
+        U1024::MAX
     };
     for _ in 0..num_inputs {
-        let mut bytes = [0u8; 64];
+        let mut bytes = [0u8; 128];
         rand::rng().fill_bytes(&mut bytes);
-        let random = u512::from_little_endian(&bytes);
+        let random = U1024::from_little_endian(&bytes);
         let x = random & mask;
         let y = (random >> original_n) & mask;
         let z = (random >> (2 * original_n)) & mask;
         let extra = if total_wires > 3 * original_n {
-            let extra_mask = (u512::one() << (total_wires - 3 * original_n)) - u512::one();
+            let extra_mask = (U1024::one() << (total_wires - 3 * original_n)) - U1024::one();
             (random >> (3 * original_n)) & extra_mask
         } else {
-            u512::zero()
+            U1024::zero()
         };
         let input = x | (y << original_n) | (z << (2 * original_n)) | (extra << (3 * original_n));
-        let original_output = Gate::evaluate_index_list_512(x, &original.gates) & mask;
-        let transformed_output = Gate::evaluate_index_list_512(input, &transformed.gates);
+        let original_output = Gate::evaluate_index_list_1024(x, &original.gates) & mask;
+        let transformed_output = Gate::evaluate_index_list_1024(input, &transformed.gates);
         let middle = (transformed_output >> original_n) & mask;
         if middle != (y ^ original_output) {
             return Err("Feistalized circuit middle block is not y ^ C(x)".to_string());

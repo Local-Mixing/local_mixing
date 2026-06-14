@@ -46,24 +46,26 @@ impl PathConnectedWires {
 
 // Computes a completely random circuit on n wires and m gates
 pub fn random_circuit(n: usize, m: usize) -> CircuitSeq {
+    assert!(n >= 3, "random circuits need at least 3 wires");
+    assert!(
+        n <= u16::MAX as usize + 1,
+        "random circuit wire count exceeds u16 wire indices"
+    );
     let mut circuit = Vec::with_capacity(m);
 
     for _ in 0..m {
         loop {
             // mask for used pins
-            let mut set = [false; 255];
-            for i in n..255 {
-                set[i as usize] = true; // disable pins >= n
-            }
+            let mut set = vec![false; n];
 
             // pick 3 distinct pins
             let mut gate = [0u16; 3];
             for j in 0..3 {
                 loop {
-                    let v = fastrand::u16(..255);
-                    if !set[v as usize] {
-                        set[v as usize] = true;
-                        gate[j] = v;
+                    let v = fastrand::usize(..n);
+                    if !set[v] {
+                        set[v] = true;
+                        gate[j] = v as u16;
                         break;
                     }
                 }

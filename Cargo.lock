@@ -471,6 +471,7 @@ dependencies = [
  "serde",
  "signal-hook",
  "smallvec",
+ "uint",
  "xxhash-rust",
 ]
 
