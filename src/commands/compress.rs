@@ -37,7 +37,7 @@ pub fn run(sub: &clap::ArgMatches) {
 
     println!("Starting compression");
     let (shard_dbs, _curated_shard_dbs) = open_all_dbs(&env);
-    acc = compress_loop(&acc, n, &env, &shard_dbs, 12, 1, 1, d);
+    acc = compress_loop(&acc, n, &env, &shard_dbs, 12, 50, 0, 0, 1, 1, d);
     print_compress_timers();
 
     let mut file = fs::File::create(d).expect("Failed to create new file");

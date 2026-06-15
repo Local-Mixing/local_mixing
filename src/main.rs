@@ -113,9 +113,45 @@ fn main() {
                         .help("Number of SG gadgets between each RG gadget (2 = two SGs then one RG)"),
                 )
                 .arg(
+                    Arg::new("feistal_masked_sg")
+                        .long("feistal-masked-sg")
+                        .help("Feistalize with randomized masked SG updates")
+                        .required(false)
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("feistal_rg_refresh")
+                        .long("feistal-rg-refresh")
+                        .help("Feistalize with nonlinear null-refresh RG steps")
+                        .required(false)
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("feistal_slice_scramble_rounds")
+                        .long("feistal-slice-scramble-rounds")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Valid-slice scrambler rounds before feistalization sharing"),
+                )
+                .arg(
                     Arg::new("egg")
                         .long("egg")
                         .help("Use expansion game (expand_loop 2x) instead of the shuffled shooting game")
+                        .required(false)
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("two_sided_mixing")
+                        .long("two-sided-mixing")
+                        .help("Run each local-mixing round once forward and once reversed")
+                        .required(false)
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("two_sided_candidates")
+                        .long("two-sided-candidates")
+                        .help("Run forward and reversed local-mixing candidates independently, then keep the smaller candidate")
                         .required(false)
                         .action(clap::ArgAction::SetTrue),
                 )
@@ -125,6 +161,46 @@ fn main() {
                         .help("Accumulate SAMFs/NOTs across ALL rounds (functionality is broken between rounds) and undo them in a single pass after the last round, before its compression")
                         .required(false)
                         .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("compression_stable_max")
+                        .long("compression-stable-max")
+                        .required(false)
+                        .default_value("6")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Compression early-stop window length"),
+                )
+                .arg(
+                    Arg::new("compression_min_reduction")
+                        .long("compression-min-reduction")
+                        .required(false)
+                        .default_value("50")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Stop compression when the stable window reduces by less than this many gates"),
+                )
+                .arg(
+                    Arg::new("compression_max_iters")
+                        .long("compression-max-iters")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Maximum compression passes per round; 0 means no explicit cap"),
+                )
+                .arg(
+                    Arg::new("compression_max_seconds")
+                        .long("compression-max-seconds")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(u64))
+                        .help("Maximum seconds spent in compression per round; 0 means no explicit cap"),
+                )
+                .arg(
+                    Arg::new("check_samples")
+                        .long("check-samples")
+                        .required(false)
+                        .default_value("100000")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Random samples for per-round/final functionality checks"),
                 ),
         )
         .subcommand(

@@ -6,6 +6,7 @@ use rand::{Rng, RngCore};
 use crate::{
     circuit::circuit::{CircuitSeq, Gate},
     replace::{
+        gadgets::{FeistalOptions, feistalize_with_options},
         gadgets::{feistalize, gadgetize},
         pairs::interleave,
         replace::{ExpandPairMode, compress_loop, expand_once},
@@ -110,7 +111,15 @@ pub fn main_shuffle_shoot_shuffle(
     shooting_times: usize,
     egg: bool,
     rg_freq: usize,
+    feistal_options: FeistalOptions,
+    two_sided_mixing: bool,
+    two_sided_candidates: bool,
     single_end: bool,
+    compression_stable_max: usize,
+    compression_min_reduction: usize,
+    compression_max_iters: usize,
+    compression_max_seconds: u64,
+    check_samples: usize,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -123,7 +132,14 @@ pub fn main_shuffle_shoot_shuffle(
         let mut rng = rand::rng();
         let before = circuit.gates.len();
         let (label, transformed_n) = if do_feistalize {
-            circuit = feistalize(&circuit, n, rg_freq, &mut rng);
+            circuit = if feistal_options.masked_sg
+                || feistal_options.rg_null_refresh
+                || feistal_options.slice_scramble_rounds != 0
+            {
+                feistalize_with_options(&circuit, n, rg_freq, feistal_options, &mut rng)
+            } else {
+                feistalize(&circuit, n, rg_freq, &mut rng)
+            };
             ("Feistalized", 3 * n)
         } else {
             circuit = gadgetize(&circuit, n, rg_freq, &mut rng);
@@ -203,6 +219,7 @@ pub fn main_shuffle_shoot_shuffle(
         println!("Collision-game direction: reversed (complete single-end shuffle)");
         circuit.gates.reverse();
     }
+    let run_start = std::time::Instant::now();
     for i in 0..rounds {
         if egg {
             let pair_mode = ExpandPairMode::Curated {
@@ -244,29 +261,110 @@ pub fn main_shuffle_shoot_shuffle(
             // complete shooting + plain-SAMF + unsamf operation so no pending SAMF state is
             // reversed as though it were an ordinary gate sequence.
             use crate::replace::transpositions::shuffled_shoot_then_samf;
-            let reversed = rand::rng().random_bool(0.5);
-            println!(
-                "Collision-game direction: {}",
-                if reversed { "reversed" } else { "forward" }
-            );
-            if reversed {
+            if two_sided_candidates {
+                println!("Collision-game direction: forward + reversed candidates");
+                let mut forward = circuit.clone();
+                shuffled_shoot_then_samf(
+                    &mut forward,
+                    n,
+                    m,
+                    x,
+                    gates_ahead_expand,
+                    gates_ahead_samf,
+                    type_attempts,
+                    shooting_times,
+                    env,
+                    curated_shard_dbs,
+                    shard_dbs,
+                );
+
+                let mut reversed = circuit.clone();
+                reversed.gates.reverse();
+                shuffled_shoot_then_samf(
+                    &mut reversed,
+                    n,
+                    m,
+                    x,
+                    gates_ahead_expand,
+                    gates_ahead_samf,
+                    type_attempts,
+                    shooting_times,
+                    env,
+                    curated_shard_dbs,
+                    shard_dbs,
+                );
+                reversed.gates.reverse();
+
+                let forward_len = forward.gates.len();
+                let reversed_len = reversed.gates.len();
+                if reversed_len < forward_len {
+                    println!(
+                        "Two-sided candidates: forward={} reversed={} selected=reversed",
+                        forward_len, reversed_len
+                    );
+                    circuit = reversed;
+                } else {
+                    println!(
+                        "Two-sided candidates: forward={} reversed={} selected=forward",
+                        forward_len, reversed_len
+                    );
+                    circuit = forward;
+                }
+            } else if two_sided_mixing {
+                println!("Collision-game direction: forward + reversed");
+                shuffled_shoot_then_samf(
+                    &mut circuit,
+                    n,
+                    m,
+                    x,
+                    gates_ahead_expand,
+                    gates_ahead_samf,
+                    type_attempts,
+                    shooting_times,
+                    env,
+                    curated_shard_dbs,
+                    shard_dbs,
+                );
                 circuit.gates.reverse();
-            }
-            shuffled_shoot_then_samf(
-                &mut circuit,
-                n,
-                m,
-                x,
-                gates_ahead_expand,
-                gates_ahead_samf,
-                type_attempts,
-                shooting_times,
-                env,
-                curated_shard_dbs,
-                shard_dbs,
-            );
-            if reversed {
+                shuffled_shoot_then_samf(
+                    &mut circuit,
+                    n,
+                    m,
+                    x,
+                    gates_ahead_expand,
+                    gates_ahead_samf,
+                    type_attempts,
+                    shooting_times,
+                    env,
+                    curated_shard_dbs,
+                    shard_dbs,
+                );
                 circuit.gates.reverse();
+            } else {
+                let reversed = rand::rng().random_bool(0.5);
+                println!(
+                    "Collision-game direction: {}",
+                    if reversed { "reversed" } else { "forward" }
+                );
+                if reversed {
+                    circuit.gates.reverse();
+                }
+                shuffled_shoot_then_samf(
+                    &mut circuit,
+                    n,
+                    m,
+                    x,
+                    gates_ahead_expand,
+                    gates_ahead_samf,
+                    type_attempts,
+                    shooting_times,
+                    env,
+                    curated_shard_dbs,
+                    shard_dbs,
+                );
+                if reversed {
+                    circuit.gates.reverse();
+                }
             }
         }
         println!("After shooting game: {} gates", circuit.gates.len());
@@ -296,12 +394,20 @@ pub fn main_shuffle_shoot_shuffle(
                 println!("Restored forward circuit direction");
             }
         }
+        println!(
+            "Before compression: elapsed_seconds={:.3} gates={}",
+            run_start.elapsed().as_secs_f64(),
+            circuit.gates.len()
+        );
         circuit = compress_loop(
             &circuit,
             n,
             env,
             shard_dbs,
-            6,
+            compression_stable_max,
+            compression_min_reduction,
+            compression_max_iters,
+            compression_max_seconds,
             i + 1,
             rounds,
             "temp_compression.txt",
@@ -368,9 +474,9 @@ pub fn main_shuffle_shoot_shuffle(
             original_n
         };
         let functionality_ok = if do_feistalize {
-            feistal_middle_matches_original(&c, &circuit, original_n, n, 100_000)
+            feistal_middle_matches_original(&c, &circuit, original_n, n, check_samples)
         } else {
-            c.probably_equal(&circuit, original_n, 100_000)
+            c.probably_equal(&circuit, original_n, check_samples)
         };
         if functionality_ok.is_err() {
             panic!("The functionality has changed");
@@ -398,11 +504,11 @@ pub fn main_shuffle_shoot_shuffle(
         original_n
     };
     if do_feistalize {
-        feistal_middle_matches_original(&c, &circuit, original_n, n, 150_000)
+        feistal_middle_matches_original(&c, &circuit, original_n, n, check_samples)
             .expect("The circuits differ somewhere!");
     } else {
         circuit
-            .probably_equal(&c, original_n, 150_000)
+            .probably_equal(&c, original_n, check_samples)
             .expect("The circuits differ somewhere!");
     }
 

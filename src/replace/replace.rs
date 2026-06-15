@@ -215,6 +215,9 @@ pub fn compress_loop(
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
     stable_max: usize,
+    min_reduction: usize,
+    max_iters: usize,
+    max_seconds: u64,
     curr_round: usize,
     last_round: usize,
     output_path: &str,
@@ -223,12 +226,36 @@ pub fn compress_loop(
     let mut rng = rand::rng();
     let mut mode = 0usize;
     // Ring buffer of the last stable_max+1 gate counts. Stop when total reduction
-    // over the last stable_max iterations is less than 100 gates.
+    // over the last stable_max iterations is smaller than the configured threshold.
     let mut recent: std::collections::VecDeque<usize> =
         std::collections::VecDeque::with_capacity(stable_max + 1);
     recent.push_back(acc.gates.len());
+    let mut iters = 0usize;
+    let compression_start = Instant::now();
 
     loop {
+        if max_iters > 0 && iters >= max_iters {
+            println!(
+                "  {}/{}: Compression iteration cap {} reached ({} gates)",
+                curr_round,
+                last_round,
+                max_iters,
+                acc.gates.len()
+            );
+            break;
+        }
+        if max_seconds > 0 && compression_start.elapsed().as_secs() >= max_seconds {
+            println!(
+                "  {}/{}: Compression time cap {}s reached after {} iterations ({} gates)",
+                curr_round,
+                last_round,
+                max_seconds,
+                iters,
+                acc.gates.len()
+            );
+            break;
+        }
+        iters += 1;
         let before = acc.gates.len();
 
         let max_chunks = 4 * rayon::current_num_threads().max(1);
@@ -267,9 +294,9 @@ pub fn compress_loop(
         }
 
         // Stop if the total reduction over the last stable_max iterations is < 100.
-        if recent.len() == stable_max + 1 {
+        if stable_max > 0 && recent.len() == stable_max + 1 {
             let window_reduction = recent.front().unwrap().saturating_sub(after);
-            if window_reduction < 50 {
+            if window_reduction < min_reduction {
                 println!(
                     "  {}/{}: Early stop — only {} gates reduced over last {} iterations ({} gates)",
                     curr_round, last_round, window_reduction, stable_max, after
@@ -282,6 +309,18 @@ pub fn compress_loop(
             println!("  {}/{}: Stable ({} gates)", curr_round, last_round, after);
         } else {
             println!("  {}/{}: Reduced: {} gates", curr_round, last_round, after);
+        }
+
+        if max_seconds > 0 && compression_start.elapsed().as_secs() >= max_seconds {
+            println!(
+                "  {}/{}: Compression time cap {}s reached after {} iterations ({} gates)",
+                curr_round,
+                last_round,
+                max_seconds,
+                iters,
+                after
+            );
+            break;
         }
 
         // Check if user created write_now

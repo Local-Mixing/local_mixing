@@ -3,6 +3,13 @@ use crate::random::random_data::shoot_random_gate;
 use rand::{Rng, prelude::SliceRandom};
 use std::collections::VecDeque;
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FeistalOptions {
+    pub masked_sg: bool,
+    pub rg_null_refresh: bool,
+    pub slice_scramble_rounds: usize,
+}
+
 /// 6-gate homomorphic gadget for secret-shared g57.
 /// Local wire map: 0=share_a, 3=share_c, 4=pad_c, 5=share_b, 6=pad_b.
 const GADGET: [[u16; 3]; 6] = [
@@ -488,7 +495,13 @@ fn rand_feistal_z_gates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<[u16; 3]>
 
 // 1-out-of-3 shared g57. All nine gates update the third x carrier;
 // updating either paired carrier would also change the overlapping y value.
-fn emit_sg3(state: &FeistalState, gate: [u16; 3], out: &mut Vec<[u16; 3]>) {
+fn emit_sg3(
+    state: &FeistalState,
+    gate: [u16; 3],
+    masked_sg: bool,
+    rng: &mut impl Rng,
+    out: &mut Vec<[u16; 3]>,
+) {
     let a = gate[0] as usize;
     let b = gate[1] as usize;
     let c = gate[2] as usize;
@@ -505,8 +518,37 @@ fn emit_sg3(state: &FeistalState, gate: [u16; 3], out: &mut Vec<[u16; 3]>) {
     for &bw in &bs {
         for &cw in &cs {
             out.push([state.free[a] as u16, bw as u16, cw as u16]);
+            if masked_sg && rng.random_bool(0.5) {
+                out.push([state.sharing.pairs[a].0 as u16, bw as u16, cw as u16]);
+                out.push([state.sharing.pairs[a].1 as u16, bw as u16, cw as u16]);
+            }
         }
     }
+}
+
+fn emit_feistal_null_refresh(
+    state: &FeistalState,
+    sq: &mut VecDeque<usize>,
+    rng: &mut impl Rng,
+    out: &mut Vec<[u16; 3]>,
+) {
+    let n = state.sharing.n;
+    let i = next_single(sq, n, rng);
+    let (p0, p1) = state.sharing.pairs[i];
+    let c1 = loop {
+        let w = rng.random_range(0..3 * n);
+        if w != p0 && w != p1 {
+            break w;
+        }
+    };
+    let c2 = loop {
+        let w = rng.random_range(0..3 * n);
+        if w != p0 && w != p1 && w != c1 {
+            break w;
+        }
+    };
+    out.push([p0 as u16, c1 as u16, c2 as u16]);
+    out.push([p1 as u16, c1 as u16, c2 as u16]);
 }
 
 fn emit_feistal_rg(
@@ -550,15 +592,84 @@ fn emit_sg3_rg_block(
     c: &CircuitSeq,
     state: &mut FeistalState,
     rg_freq: usize,
+    options: FeistalOptions,
     rng: &mut impl Rng,
     out: &mut Vec<[u16; 3]>,
 ) {
     let mut pq = VecDeque::new();
     let mut sq = VecDeque::new();
     for (idx, &gate) in c.gates.iter().enumerate() {
-        emit_sg3(state, gate, out);
+        emit_sg3(state, gate, options.masked_sg, rng, out);
         if (idx + 1) % rg_freq == 0 {
             emit_feistal_rg(state, &mut pq, &mut sq, rng, out);
+            if options.rg_null_refresh {
+                emit_feistal_null_refresh(state, &mut sq, rng, out);
+            }
+        }
+    }
+}
+
+fn random_wire_except(total: usize, excluded: &[usize], rng: &mut impl Rng) -> usize {
+    loop {
+        let w = rng.random_range(0..total);
+        if !excluded.contains(&w) {
+            return w;
+        }
+    }
+}
+
+fn emit_and_update(
+    target: usize,
+    aux_factor: usize,
+    other_factor: usize,
+    total: usize,
+    out: &mut Vec<[u16; 3]>,
+) {
+    debug_assert_ne!(target, aux_factor);
+    debug_assert_ne!(target, other_factor);
+    debug_assert_ne!(aux_factor, other_factor);
+    out.push([target as u16, aux_factor as u16, other_factor as u16]);
+    out.extend(crate::replace::transpositions::Transpositions::gen_gates_not(total, target as u16));
+    let (h1, h2) = pick_two_helpers(total, &[target, aux_factor, other_factor]);
+    emit_transvection(target, other_factor, h1, h2, out);
+}
+
+fn emit_valid_slice_scrambler(
+    n: usize,
+    rounds: usize,
+    rng: &mut impl Rng,
+    out: &mut Vec<[u16; 3]>,
+) {
+    if rounds == 0 {
+        return;
+    }
+    let total = 3 * n;
+    let mut order: Vec<usize> = (0..n).collect();
+    for _ in 0..rounds {
+        order.shuffle(rng);
+        for &i in &order {
+            let target = i;
+            let aux = if rng.random_bool(0.5) {
+                n + rng.random_range(0..n)
+            } else {
+                2 * n + rng.random_range(0..n)
+            };
+            let other = random_wire_except(total, &[target, aux], rng);
+            emit_and_update(target, aux, other, total, out);
+        }
+        order.shuffle(rng);
+        for &i in &order {
+            let target = n + i;
+            let aux = 2 * n + rng.random_range(0..n);
+            let other = random_wire_except(total, &[target, aux], rng);
+            emit_and_update(target, aux, other, total, out);
+        }
+        order.shuffle(rng);
+        for &i in &order {
+            let target = 2 * n + i;
+            let aux = n + rng.random_range(0..n);
+            let other = random_wire_except(total, &[target, aux], rng);
+            emit_and_update(target, aux, other, total, out);
         }
     }
 }
@@ -661,6 +772,16 @@ fn emit_feistal_decode(state: &FeistalState, out: &mut Vec<[u16; 3]>) {
 /// outputs y ^ C(x), the first block outputs D(C(x)) for a random same-size D,
 /// and the final block is auxiliary output.
 pub fn feistalize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng) -> CircuitSeq {
+    feistalize_with_options(main, n, rg_freq, FeistalOptions::default(), rng)
+}
+
+pub fn feistalize_with_options(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    options: FeistalOptions,
+    rng: &mut impl Rng,
+) -> CircuitSeq {
     assert!(n >= 3, "feistalize requires n >= 3");
     assert!(3 * n <= u16::MAX as usize, "too many wires");
     assert!(rg_freq > 0, "rg_freq must be nonzero");
@@ -670,7 +791,9 @@ pub fn feistalize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rn
     );
     let total = 3 * n;
     let bookend = (((3 * n) as f64 * (n as f64).ln()).ceil() as usize).max(64);
-    let mut out = rand_feistal_z_gates(n, bookend, rng);
+    let mut out: Vec<[u16; 3]> = Vec::new();
+    emit_valid_slice_scrambler(n, options.slice_scramble_rounds, rng, &mut out);
+    out.extend(rand_feistal_z_gates(n, bookend, rng));
     let q = random_permutation(n, rng);
     let mut xloc: Vec<usize> = (0..n).collect();
     let mut yloc: Vec<usize> = (n..2 * n).collect();
@@ -730,10 +853,10 @@ pub fn feistalize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rn
     let mut c = main.clone();
     let rounds = c.gates.len();
     shoot_random_gate(&mut c, rounds);
-    emit_sg3_rg_block(&c, &mut state, rg_freq, rng, &mut out);
+    emit_sg3_rg_block(&c, &mut state, rg_freq, options, rng, &mut out);
     emit_feistal_n(&state, &mut out);
     let d = random_circuit_with_rng(n, main.gates.len(), rng);
-    emit_sg3_rg_block(&d, &mut state, rg_freq, rng, &mut out);
+    emit_sg3_rg_block(&d, &mut state, rg_freq, options, rng, &mut out);
     emit_feistal_decode(&state, &mut out);
     out.extend(rand_feistal_z_gates(n, bookend, rng));
     CircuitSeq { gates: out }

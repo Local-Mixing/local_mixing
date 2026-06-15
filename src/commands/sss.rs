@@ -4,6 +4,7 @@ use std::path::Path;
 use lmdb::Environment;
 
 use local_mixing::circuit::CircuitSeq;
+use local_mixing::replace::gadgets::FeistalOptions;
 use local_mixing::replace::main_mix::{main_shuffle_shoot_shuffle, open_all_dbs};
 use local_mixing::replace::mixing::install_kill_handler;
 use local_mixing::replace::replace::{
@@ -31,6 +32,18 @@ pub fn run(sub: &clap::ArgMatches) {
     let egg = sub.get_flag("egg");
     let single_end = sub.get_flag("single-end");
     let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
+    let feistal_options = FeistalOptions {
+        masked_sg: sub.get_flag("feistal_masked_sg"),
+        rg_null_refresh: sub.get_flag("feistal_rg_refresh"),
+        slice_scramble_rounds: *sub.get_one("feistal_slice_scramble_rounds").unwrap(),
+    };
+    let two_sided_mixing = sub.get_flag("two_sided_mixing");
+    let two_sided_candidates = sub.get_flag("two_sided_candidates");
+    let compression_stable_max: usize = *sub.get_one("compression_stable_max").unwrap();
+    let compression_min_reduction: usize = *sub.get_one("compression_min_reduction").unwrap();
+    let compression_max_iters: usize = *sub.get_one("compression_max_iters").unwrap();
+    let compression_max_seconds: u64 = *sub.get_one("compression_max_seconds").unwrap();
+    let check_samples: usize = *sub.get_one("check_samples").unwrap();
     let data = fs::read_to_string(s).expect("Failed to read source circuit");
 
     let lmdb_path = "./db";
@@ -73,7 +86,15 @@ pub fn run(sub: &clap::ArgMatches) {
         shooting_times,
         egg,
         rg_freq,
+        feistal_options,
+        two_sided_mixing,
+        two_sided_candidates,
         single_end,
+        compression_stable_max,
+        compression_min_reduction,
+        compression_max_iters,
+        compression_max_seconds,
+        check_samples,
     );
     print_compress_timers();
     write_compression_histogram("compression_histogram.csv");
