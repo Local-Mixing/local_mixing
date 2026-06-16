@@ -59,6 +59,33 @@ fn main() {
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
+                    Arg::new("slice_zero")
+                        .long("slice-zero")
+                        .alias("slice_zero")
+                        .help("Before feistalization, insert M that preserves the (y,z)=0 slice and randomizes x off it")
+                        .required(false)
+                        .requires("feistalize")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("slice_zero_random")
+                        .long("slice-zero-random")
+                        .alias("slice_zero_random")
+                        .help("Before feistalization, insert M that preserves a public random (y,z) slice and randomizes x off it")
+                        .required(false)
+                        .requires("feistalize")
+                        .conflicts_with("slice_zero")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("slice_zero_random_gates")
+                        .long("slice-zero-random-gates")
+                        .alias("slice_zero_random_gates")
+                        .required(false)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of random M gates for --slice-zero-random (default: 32n)"),
+                )
+                .arg(
                     Arg::new("gadget_path")
                         .long("gadget_path")
                         .required(false)
@@ -68,8 +95,17 @@ fn main() {
                 .arg(
                     Arg::new("full-shuffle")
                         .long("full-shuffle")
-                        .help("Insert n SAMFs between every gate once before the main loop")
+                        .help("Insert n SAMFs between every gate after each round's shooting insertion and before compression")
                         .required(false)
+                        .conflicts_with("full-shuffle-early")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("full-shuffle-early")
+                        .long("full-shuffle-early")
+                        .help("Insert n SAMFs between every gate once after gadgetization/feistalization and before the main loop")
+                        .required(false)
+                        .conflicts_with("full-shuffle")
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
@@ -116,6 +152,13 @@ fn main() {
                     Arg::new("egg")
                         .long("egg")
                         .help("Use expansion game (expand_loop 2x) instead of the shuffled shooting game")
+                        .required(false)
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("equality_check")
+                        .long("equality_check")
+                        .help("Run probabilistic equality/functionality checks after each round and at the end")
                         .required(false)
                         .action(clap::ArgAction::SetTrue),
                 )

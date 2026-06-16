@@ -62,10 +62,31 @@ const W_I_GATES: [[u16; 3]; 11] = [
     [1, 3, 0],
 ];
 
+/// Fixed 4-wire NOT gadget from the SAMF templates. Local wire 1 is flipped;
+/// local wires 0, 2, and 3 are borrowed and restored.
+const NOT_4W_GATES: [[u16; 3]; 7] = [
+    [0, 2, 3],
+    [1, 0, 2],
+    [1, 0, 3],
+    [0, 2, 3],
+    [1, 2, 0],
+    [1, 2, 3],
+    [1, 3, 0],
+];
+
+pub const SLICE_ZERO_RANDOM_GATES_PER_WIRE: usize = 32;
+
 /// Secret-sharing state: pairs[v] = (share_wire, pad_wire) for virtual value v.
 pub struct GadgetState {
     pub n: usize,
     pub pairs: Vec<(usize, usize)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SliceZeroRandomCircuit {
+    pub circuit: CircuitSeq,
+    pub public_y: Vec<u64>,
+    pub public_z: Vec<u64>,
 }
 
 /// What a physical wire currently holds, used by the bookends to track live
@@ -107,6 +128,11 @@ fn pick_two_helpers(total: usize, exclude: &[usize]) -> (usize, usize) {
     (it.next().unwrap(), it.next().unwrap())
 }
 
+fn pick_three_helpers(total: usize, exclude: &[usize]) -> (usize, usize, usize) {
+    let mut it = (0..total).filter(|w| !exclude.contains(w));
+    (it.next().unwrap(), it.next().unwrap(), it.next().unwrap())
+}
+
 /// Emit r57 gates computing `wire a ^= wire s`, leaving s, h1, h2 unchanged.
 /// (Single transvection; needs two read-only helper wires under the r57 gate.)
 fn emit_transvection(a: usize, s: usize, h1: usize, h2: usize, out: &mut Vec<[u16; 3]>) {
@@ -115,6 +141,14 @@ fn emit_transvection(a: usize, s: usize, h1: usize, h2: usize, out: &mut Vec<[u1
     out.push([a, s, h1]);
     out.push([s, h1, h2]);
     out.push([a, h1, s]);
+}
+
+fn emit_not(wire: usize, total: usize, out: &mut Vec<[u16; 3]>) {
+    let (h0, h1, h2) = pick_three_helpers(total, &[wire]);
+    let map = [h0 as u16, wire as u16, h1 as u16, h2 as u16];
+    for &[a, b, c] in &NOT_4W_GATES {
+        out.push([map[a as usize], map[b as usize], map[c as usize]]);
+    }
 }
 
 fn emit_w_i(w0: usize, w1: usize, w2: usize, w3: usize, out: &mut Vec<[u16; 3]>) {
@@ -457,6 +491,152 @@ fn random_circuit_with_rng(n: usize, m: usize, rng: &mut impl Rng) -> CircuitSeq
     CircuitSeq { gates }
 }
 
+fn random_invertible_matrix_rows(n: usize, rng: &mut impl Rng) -> Vec<Vec<u64>> {
+    let words = n.div_ceil(64);
+    let mut rows = vec![vec![0u64; words]; n];
+    for i in 0..n {
+        rows[i][i / 64] |= 1u64 << (i % 64);
+    }
+
+    let rounds = (2 * n).max(64);
+    for _ in 0..rounds {
+        let a = rng.random_range(0..n);
+        let b = loop {
+            let b = rng.random_range(0..n);
+            if b != a {
+                break b;
+            }
+        };
+        if rng.random_range(0..4usize) == 0 {
+            rows.swap(a, b);
+        } else if a < b {
+            let (left, right) = rows.split_at_mut(b);
+            for (dst, &src) in left[a].iter_mut().zip(&right[0]) {
+                *dst ^= src;
+            }
+        } else {
+            let (left, right) = rows.split_at_mut(a);
+            for (dst, &src) in right[0].iter_mut().zip(&left[b]) {
+                *dst ^= src;
+            }
+        }
+    }
+
+    rows
+}
+
+fn matrix_bit(rows: &[Vec<u64>], row: usize, col: usize) -> bool {
+    rows[row][col / 64] & (1u64 << (col % 64)) != 0
+}
+
+pub fn packed_bit(words: &[u64], bit: usize) -> bool {
+    words[bit / 64] & (1u64 << (bit % 64)) != 0
+}
+
+fn set_packed_bit(words: &mut [u64], bit: usize) {
+    words[bit / 64] |= 1u64 << (bit % 64);
+}
+
+fn random_public_slice(n: usize, rng: &mut impl Rng) -> (Vec<u64>, Vec<u64>) {
+    let words = n.div_ceil(64);
+    loop {
+        let mut public_y = vec![0u64; words];
+        let mut public_z = vec![0u64; words];
+        let mut ones = 0usize;
+
+        for bit in 0..n {
+            if rng.random::<bool>() {
+                set_packed_bit(&mut public_y, bit);
+                ones += 1;
+            }
+            if rng.random::<bool>() {
+                set_packed_bit(&mut public_z, bit);
+                ones += 1;
+            }
+        }
+
+        if ones > 0 && ones < 2 * n {
+            return (public_y, public_z);
+        }
+    }
+}
+
+/// Build M on raw feistal wires:
+///   M(x,y,z) = (x ^ A*(y OR z), y, z)
+/// where A is a random invertible binary matrix. Thus the zero slice
+/// (y,z)=(0,0) is fixed exactly, while every nonzero slice changes x.
+pub fn slice_zero_preblock(n: usize, rng: &mut impl Rng) -> CircuitSeq {
+    assert!(n >= 3, "slice_zero_preblock requires n >= 3");
+    assert!(3 * n <= u16::MAX as usize, "too many wires");
+
+    let total = 3 * n;
+    let matrix = random_invertible_matrix_rows(n, rng);
+    let mut out = Vec::new();
+
+    for col in 0..n {
+        let y = n + col;
+        let z = 2 * n + col;
+        emit_not(z, total, &mut out);
+        for row in 0..n {
+            if matrix_bit(&matrix, row, col) {
+                out.push([row as u16, y as u16, z as u16]);
+            }
+        }
+        emit_not(z, total, &mut out);
+    }
+
+    CircuitSeq { gates: out }
+}
+
+/// Build M on raw feistal wires for a random public slice (Y,Z):
+///   M(x,Y,Z) = (x,Y,Z)
+/// and random r57 gates disturb x away from that public slice. Each gate uses
+/// a public-0 bit as its positive control and a public-1 bit as its negative
+/// control, so the gate condition is false exactly on the public slice.
+pub fn slice_zero_random_preblock(
+    n: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> SliceZeroRandomCircuit {
+    assert!(n >= 3, "slice_zero_random_preblock requires n >= 3");
+    assert!(3 * n <= u16::MAX as usize, "too many wires");
+
+    let (public_y, public_z) = random_public_slice(n, rng);
+    let mut zero_controls = Vec::new();
+    let mut one_controls = Vec::new();
+
+    for bit in 0..n {
+        if packed_bit(&public_y, bit) {
+            one_controls.push(n + bit);
+        } else {
+            zero_controls.push(n + bit);
+        }
+
+        if packed_bit(&public_z, bit) {
+            one_controls.push(2 * n + bit);
+        } else {
+            zero_controls.push(2 * n + bit);
+        }
+    }
+
+    debug_assert!(!zero_controls.is_empty());
+    debug_assert!(!one_controls.is_empty());
+
+    let mut gates = Vec::with_capacity(gate_count);
+    for _ in 0..gate_count {
+        let active = rng.random_range(0..n) as u16;
+        let pos = zero_controls[rng.random_range(0..zero_controls.len())] as u16;
+        let neg = one_controls[rng.random_range(0..one_controls.len())] as u16;
+        gates.push([active, pos, neg]);
+    }
+
+    SliceZeroRandomCircuit {
+        circuit: CircuitSeq { gates },
+        public_y,
+        public_z,
+    }
+}
+
 fn rand_feistal_z_gates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<[u16; 3]> {
     let total = 3 * n;
     let mut gates = Vec::with_capacity(m);
@@ -739,6 +919,32 @@ pub fn feistalize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rn
     CircuitSeq { gates: out }
 }
 
+pub fn feistalize_with_slice_zero(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    rng: &mut impl Rng,
+) -> CircuitSeq {
+    let mut gates = slice_zero_preblock(n, rng).gates;
+    gates.extend(feistalize(main, n, rg_freq, rng).gates);
+    CircuitSeq { gates }
+}
+
+pub fn feistalize_with_slice_zero_random(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> SliceZeroRandomCircuit {
+    let mut preblock = slice_zero_random_preblock(n, gate_count, rng);
+    preblock
+        .circuit
+        .gates
+        .extend(feistalize(main, n, rg_freq, rng).gates);
+    preblock
+}
+
 #[cfg(test)]
 mod feistal_tests {
     use super::*;
@@ -795,6 +1001,7 @@ mod feistal_property_tests {
     use super::*;
     use crate::circuit::circuit::Gate;
     use rand::{Rng, SeedableRng, rngs::StdRng};
+    use std::collections::HashSet;
 
     fn canonical_state() -> FeistalState {
         FeistalState {
@@ -844,6 +1051,16 @@ mod feistal_property_tests {
             gates.push([active, pos, neg]);
         }
         CircuitSeq { gates }
+    }
+
+    fn packed_words_to_usize(words: &[u64], n: usize) -> usize {
+        let mut out = 0usize;
+        for bit in 0..n {
+            if packed_bit(words, bit) {
+                out |= 1usize << bit;
+            }
+        }
+        out
     }
 
     #[test]
@@ -964,6 +1181,118 @@ mod feistal_property_tests {
             }
         }
     }
+
+    #[test]
+    fn slice_zero_preblock_fixes_exactly_the_zero_slice() {
+        let n = 3;
+        let mask = (1usize << n) - 1;
+        for seed in 0x5a10u64..0x5a18 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let block = slice_zero_preblock(n, &mut rng);
+            assert!(block.gates.iter().flatten().all(|&w| (w as usize) < 3 * n));
+
+            let mut outputs = HashSet::new();
+            for input in 0..(1usize << (3 * n)) {
+                let x = input & mask;
+                let y = (input >> n) & mask;
+                let z = (input >> (2 * n)) & mask;
+                let output = block.evaluate(input);
+                outputs.insert(output);
+
+                assert_eq!((output >> n) & mask, y);
+                assert_eq!((output >> (2 * n)) & mask, z);
+                if y == 0 && z == 0 {
+                    assert_eq!(output & mask, x);
+                } else {
+                    assert_ne!(output & mask, x, "seed={seed:#x} input={input:#x}");
+                }
+            }
+            assert_eq!(outputs.len(), 1usize << (3 * n));
+        }
+    }
+
+    #[test]
+    fn slice_zero_feistalize_matches_original_only_on_zero_slice() {
+        let n = 3;
+        let mask = (1usize << n) - 1;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+
+        for seed in 0x5f00u64..0x5f08 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let transformed = feistalize_with_slice_zero(&main, n, 2, &mut rng);
+            for input in 0..(1usize << (3 * n)) {
+                let x = input & mask;
+                let y = (input >> n) & mask;
+                let z = (input >> (2 * n)) & mask;
+                let middle = (transformed.evaluate(input) >> n) & mask;
+                let old_middle = y ^ main.evaluate(x);
+                if y == 0 && z == 0 {
+                    assert_eq!(middle, main.evaluate(x));
+                } else {
+                    assert_ne!(
+                        middle, old_middle,
+                        "seed={seed:#x} input={input:#x} x={x:#x} y={y:#x} z={z:#x}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn slice_zero_random_preblock_fixes_public_slice() {
+        let n = 4;
+        let mask = (1usize << n) - 1;
+        for seed in 0x6100u64..0x6108 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let block = slice_zero_random_preblock(n, 256, &mut rng);
+            let public_y = packed_words_to_usize(&block.public_y, n);
+            let public_z = packed_words_to_usize(&block.public_z, n);
+
+            assert!(
+                block
+                    .circuit
+                    .gates
+                    .iter()
+                    .flatten()
+                    .all(|&w| (w as usize) < 3 * n)
+            );
+            for x in 0..=mask {
+                let input = x | (public_y << n) | (public_z << (2 * n));
+                let output = block.circuit.evaluate(input);
+                assert_eq!(output & mask, x, "seed={seed:#x} x={x:#x}");
+                assert_eq!((output >> n) & mask, public_y);
+                assert_eq!((output >> (2 * n)) & mask, public_z);
+            }
+        }
+    }
+
+    #[test]
+    fn slice_zero_random_feistalize_matches_original_on_public_slice() {
+        let n = 3;
+        let mask = (1usize << n) - 1;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+
+        for seed in 0x6200u64..0x6208 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let transformed = feistalize_with_slice_zero_random(&main, n, 2, 128, &mut rng);
+            let public_y = packed_words_to_usize(&transformed.public_y, n);
+            let public_z = packed_words_to_usize(&transformed.public_z, n);
+
+            for x in 0..=mask {
+                let input = x | (public_y << n) | (public_z << (2 * n));
+                let middle = (transformed.circuit.evaluate(input) >> n) & mask;
+                assert_eq!(
+                    middle,
+                    public_y ^ main.evaluate(x),
+                    "seed={seed:#x} x={x:#x}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1035,6 +1364,28 @@ mod feistal_32_wire_tests {
         );
     }
 
+    fn middle_block(transformed: &CircuitSeq, x: u32, y: u32, z: u32) -> u32 {
+        let input = U256::from(x) | (U256::from(y) << 32) | (U256::from(z) << 64);
+        let output = Gate::evaluate_index_list_256(input, &transformed.gates);
+        ((output >> 32) & U256::from(u32::MAX)).low_u32()
+    }
+
+    fn packed_words_to_u32(words: &[u64]) -> u32 {
+        let mut out = 0u32;
+        for bit in 0..32 {
+            if packed_bit(words, bit) {
+                out |= 1u32 << bit;
+            }
+        }
+        out
+    }
+
+    fn eval_x_block(circuit: &CircuitSeq, x: u32, y: u32, z: u32) -> u32 {
+        let input = U256::from(x) | (U256::from(y) << 32) | (U256::from(z) << 64);
+        let output = Gate::evaluate_index_list_256(input, &circuit.gates);
+        (output & U256::from(u32::MAX)).low_u32()
+    }
+
     #[test]
     fn thirty_two_wire_middle_block_is_y_plus_cx_for_many_inputs() {
         let patterns = [
@@ -1077,6 +1428,237 @@ mod feistal_32_wire_tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn slice_zero_thirty_two_wire_zero_slice_matches_and_off_slice_changes() {
+        let patterns = [
+            0u32,
+            1,
+            u32::MAX,
+            0xaaaa_aaaa,
+            0x5555_5555,
+            0x8000_0000,
+            0x0123_4567,
+            0x89ab_cdef,
+        ];
+
+        for circuit_seed in [0x4200u64, 0x4201] {
+            let original = circuit_32(circuit_seed, 80);
+            let mut layout_rng = StdRng::seed_from_u64(circuit_seed ^ 0x510c_e0);
+            let transformed = feistalize_with_slice_zero(&original, 32, 3, &mut layout_rng);
+
+            for &x in &patterns {
+                let cx = Gate::evaluate_index_list_256(U256::from(x), &original.gates).low_u32();
+                assert_eq!(middle_block(&transformed, x, 0, 0), cx);
+                for &(y, z) in &[(1u32, 0u32), (0, 1), (0xa5a5_5a5a, 0), (0, 0x5a5a_a5a5)] {
+                    assert_ne!(middle_block(&transformed, x, y, z), y ^ cx);
+                }
+            }
+
+            let mut input_rng = StdRng::seed_from_u64(circuit_seed ^ 0x7123);
+            for _ in 0..128 {
+                let x = input_rng.random::<u32>();
+                let y = input_rng.random::<u32>();
+                let z = input_rng.random::<u32>() | 1;
+                let cx = Gate::evaluate_index_list_256(U256::from(x), &original.gates).low_u32();
+                assert_ne!(middle_block(&transformed, x, y, z), y ^ cx);
+            }
+        }
+    }
+
+    #[test]
+    fn slice_zero_random_thirty_two_wire_public_slice_fixed_and_off_slice_moves_x() {
+        for seed in [0x6300u64, 0x6301, 0x6302, 0x6303] {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let block =
+                slice_zero_random_preblock(32, SLICE_ZERO_RANDOM_GATES_PER_WIRE * 32, &mut rng);
+            let public_y = packed_words_to_u32(&block.public_y);
+            let public_z = packed_words_to_u32(&block.public_z);
+
+            for &x in &[0u32, 1, u32::MAX, 0xaaaa_aaaa, 0x0123_4567] {
+                assert_eq!(eval_x_block(&block.circuit, x, public_y, public_z), x);
+            }
+
+            for bit in 0..32 {
+                let y_delta = eval_x_block(&block.circuit, 0, public_y ^ (1u32 << bit), public_z);
+                let z_delta = eval_x_block(&block.circuit, 0, public_y, public_z ^ (1u32 << bit));
+                assert!(
+                    y_delta.count_ones() >= 4,
+                    "seed={seed:#x} y bit={bit} delta={y_delta:#010x}"
+                );
+                assert!(
+                    z_delta.count_ones() >= 4,
+                    "seed={seed:#x} z bit={bit} delta={z_delta:#010x}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod slice_zero_random_large_wire_tests {
+    use super::*;
+    use crate::circuit::circuit::{Gate, U1024};
+    use primitive_types::U512;
+    use rand::{SeedableRng, rngs::StdRng};
+
+    fn packed_words_to_u512(words: &[u64], n: usize) -> U512 {
+        let mut out = U512::zero();
+        for bit in 0..n {
+            if packed_bit(words, bit) {
+                out |= U512::one() << bit;
+            }
+        }
+        out
+    }
+
+    fn packed_words_to_u1024(words: &[u64], n: usize) -> U1024 {
+        let mut out = U1024::zero();
+        for bit in 0..n {
+            if packed_bit(words, bit) {
+                out = out | (U1024::one() << bit);
+            }
+        }
+        out
+    }
+
+    fn pattern_u512(n: usize, mode: usize) -> U512 {
+        let mut out = U512::zero();
+        for bit in 0..n {
+            let set = match mode {
+                0 => false,
+                1 => true,
+                2 => bit % 2 == 0,
+                _ => bit % 3 == 1,
+            };
+            if set {
+                out |= U512::one() << bit;
+            }
+        }
+        out
+    }
+
+    fn pattern_u1024(n: usize, mode: usize) -> U1024 {
+        let mut out = U1024::zero();
+        for bit in 0..n {
+            let set = match mode {
+                0 => false,
+                1 => true,
+                2 => bit % 2 == 0,
+                _ => bit % 3 == 1,
+            };
+            if set {
+                out = out | (U1024::one() << bit);
+            }
+        }
+        out
+    }
+
+    fn low_weight_u512(value: U512, n: usize) -> u32 {
+        let mut weight = 0;
+        for bit in 0..n {
+            if ((value >> bit) & U512::one()) == U512::one() {
+                weight += 1;
+            }
+        }
+        weight
+    }
+
+    fn low_weight_u1024(value: U1024, n: usize) -> u32 {
+        let mut weight = 0;
+        for bit in 0..n {
+            if ((value >> bit) & U1024::one()) == U1024::one() {
+                weight += 1;
+            }
+        }
+        weight
+    }
+
+    #[test]
+    fn slice_zero_random_n128_default_32n_fixes_public_slice_and_moves_x() {
+        let n = 128;
+        let mut rng = StdRng::seed_from_u64(0x1280_32);
+        let block = slice_zero_random_preblock(n, SLICE_ZERO_RANDOM_GATES_PER_WIRE * n, &mut rng);
+        assert_eq!(block.circuit.gates.len(), 32 * n);
+
+        let public_y = packed_words_to_u512(&block.public_y, n);
+        let public_z = packed_words_to_u512(&block.public_z, n);
+        let mask = (U512::one() << n) - U512::one();
+
+        for mode in 0..4 {
+            let x = pattern_u512(n, mode);
+            let input = x | (public_y << n) | (public_z << (2 * n));
+            let output = Gate::evaluate_index_list_512(input, &block.circuit.gates);
+            assert_eq!(output & mask, x);
+            assert_eq!((output >> n) & mask, public_y);
+            assert_eq!((output >> (2 * n)) & mask, public_z);
+        }
+
+        for bit in 0..n {
+            let y_input = (public_y ^ (U512::one() << bit)) << n;
+            let z_input = (public_z ^ (U512::one() << bit)) << (2 * n);
+            let y_delta = Gate::evaluate_index_list_512(
+                y_input | (public_z << (2 * n)),
+                &block.circuit.gates,
+            ) & mask;
+            let z_delta =
+                Gate::evaluate_index_list_512((public_y << n) | z_input, &block.circuit.gates)
+                    & mask;
+            assert!(
+                low_weight_u512(y_delta, n) >= 4,
+                "n=128 y bit={bit} delta_weight={}",
+                low_weight_u512(y_delta, n)
+            );
+            assert!(
+                low_weight_u512(z_delta, n) >= 4,
+                "n=128 z bit={bit} delta_weight={}",
+                low_weight_u512(z_delta, n)
+            );
+        }
+    }
+
+    #[test]
+    fn slice_zero_random_n256_default_32n_fixes_public_slice_and_moves_x() {
+        let n = 256;
+        let mut rng = StdRng::seed_from_u64(0x2560_32);
+        let block = slice_zero_random_preblock(n, SLICE_ZERO_RANDOM_GATES_PER_WIRE * n, &mut rng);
+        assert_eq!(block.circuit.gates.len(), 32 * n);
+
+        let public_y = packed_words_to_u1024(&block.public_y, n);
+        let public_z = packed_words_to_u1024(&block.public_z, n);
+        let mask = (U1024::one() << n) - U1024::one();
+
+        for mode in 0..4 {
+            let x = pattern_u1024(n, mode);
+            let input = x | (public_y << n) | (public_z << (2 * n));
+            let output = Gate::evaluate_index_list_1024(input, &block.circuit.gates);
+            assert_eq!(output & mask, x);
+            assert_eq!((output >> n) & mask, public_y);
+            assert_eq!((output >> (2 * n)) & mask, public_z);
+        }
+
+        for bit in 0..n {
+            let y_input = (public_y ^ (U1024::one() << bit)) << n;
+            let z_input = (public_z ^ (U1024::one() << bit)) << (2 * n);
+            let y_delta = Gate::evaluate_index_list_1024(
+                y_input | (public_z << (2 * n)),
+                &block.circuit.gates,
+            ) & mask;
+            let z_delta =
+                Gate::evaluate_index_list_1024((public_y << n) | z_input, &block.circuit.gates)
+                    & mask;
+            assert!(
+                low_weight_u1024(y_delta, n) >= 4,
+                "n=256 y bit={bit} delta_weight={}",
+                low_weight_u1024(y_delta, n)
+            );
+            assert!(
+                low_weight_u1024(z_delta, n) >= 4,
+                "n=256 z bit={bit} delta_weight={}",
+                low_weight_u1024(z_delta, n)
+            );
         }
     }
 }

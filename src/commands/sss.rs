@@ -4,6 +4,7 @@ use std::path::Path;
 use lmdb::Environment;
 
 use local_mixing::circuit::CircuitSeq;
+use local_mixing::replace::gadgets::SLICE_ZERO_RANDOM_GATES_PER_WIRE;
 use local_mixing::replace::main_mix::{main_shuffle_shoot_shuffle, open_all_dbs};
 use local_mixing::replace::mixing::install_kill_handler;
 use local_mixing::replace::replace::{
@@ -22,13 +23,21 @@ pub fn run(sub: &clap::ArgMatches) {
     let leave = sub.get_flag("interleave");
     let do_gadgetize = sub.get_flag("gadgetize");
     let do_feistalize = sub.get_flag("feistalize");
+    let slice_zero = sub.get_flag("slice_zero");
+    let slice_zero_random = sub.get_flag("slice_zero_random");
+    let slice_zero_random_gates: usize = sub
+        .get_one("slice_zero_random_gates")
+        .copied()
+        .unwrap_or(SLICE_ZERO_RANDOM_GATES_PER_WIRE * n);
     let gadget_path = sub.get_one::<String>("gadget_path").map(|s| s.as_str());
     let full_shuffle = sub.get_flag("full-shuffle");
+    let full_shuffle_early = sub.get_flag("full-shuffle-early");
     let gates_ahead_expand: usize = *sub.get_one("gates_ahead_expand").unwrap();
     let gates_ahead_samf: usize = *sub.get_one("gates_ahead_samf").unwrap();
     let type_attempts: usize = *sub.get_one("type_attempts").unwrap();
     let shooting_times: usize = *sub.get_one("shooting_times").unwrap();
     let egg = sub.get_flag("egg");
+    let equality_check = sub.get_flag("equality_check");
     let single_end = sub.get_flag("single-end");
     let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
     let data = fs::read_to_string(s).expect("Failed to read source circuit");
@@ -65,13 +74,18 @@ pub fn run(sub: &clap::ArgMatches) {
         leave,
         do_gadgetize,
         do_feistalize,
+        slice_zero,
+        slice_zero_random,
+        slice_zero_random_gates,
         gadget_path,
         full_shuffle,
+        full_shuffle_early,
         gates_ahead_expand,
         gates_ahead_samf,
         type_attempts,
         shooting_times,
         egg,
+        equality_check,
         rg_freq,
         single_end,
     );

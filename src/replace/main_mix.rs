@@ -5,7 +5,10 @@ use rand::{Rng, RngCore};
 use crate::{
     circuit::circuit::{CircuitSeq, Gate, U1024},
     replace::{
-        gadgets::{feistalize, gadgetize},
+        gadgets::{
+            feistalize, feistalize_with_slice_zero, feistalize_with_slice_zero_random, gadgetize,
+            packed_bit,
+        },
         pairs::interleave,
         replace::{ExpandPairMode, compress_loop, expand_once},
         transpositions::insert_wire_m_samfs_every_x,
@@ -53,6 +56,7 @@ fn feistal_middle_matches_original(
     original_n: usize,
     total_wires: usize,
     num_inputs: usize,
+    fixed_slice: Option<(U1024, U1024)>,
 ) -> Result<(), String> {
     assert!(
         total_wires <= 1024,
@@ -68,8 +72,14 @@ fn feistal_middle_matches_original(
         rand::rng().fill_bytes(&mut bytes);
         let random = U1024::from_little_endian(&bytes);
         let x = random & mask;
-        let y = (random >> original_n) & mask;
-        let z = (random >> (2 * original_n)) & mask;
+        let (y, z) = if let Some((fixed_y, fixed_z)) = fixed_slice {
+            (fixed_y, fixed_z)
+        } else {
+            (
+                (random >> original_n) & mask,
+                (random >> (2 * original_n)) & mask,
+            )
+        };
         let extra = if total_wires > 3 * original_n {
             let extra_mask = (U1024::one() << (total_wires - 3 * original_n)) - U1024::one();
             (random >> (3 * original_n)) & extra_mask
@@ -81,10 +91,79 @@ fn feistal_middle_matches_original(
         let transformed_output = Gate::evaluate_index_list_1024(input, &transformed.gates);
         let middle = (transformed_output >> original_n) & mask;
         if middle != (y ^ original_output) {
-            return Err("Feistalized circuit middle block is not y ^ C(x)".to_string());
+            let scope = if fixed_slice.is_some() {
+                " on the fixed (y,z) slice"
+            } else {
+                ""
+            };
+            return Err(format!(
+                "Feistalized circuit middle block is not y ^ C(x){scope}"
+            ));
         }
     }
     Ok(())
+}
+
+fn packed_words_to_u1024(words: &[u64], n: usize) -> U1024 {
+    let mut out = U1024::zero();
+    for bit in 0..n.min(1024) {
+        if packed_bit(words, bit) {
+            out = out | (U1024::one() << bit);
+        }
+    }
+    out
+}
+
+fn packed_words_to_hex(words: &[u64], n: usize) -> String {
+    let nibbles = n.div_ceil(4).max(1);
+    let mut out = String::with_capacity(2 + nibbles);
+    out.push_str("0x");
+    for nibble in (0..nibbles).rev() {
+        let mut value = 0u8;
+        for offset in 0..4 {
+            let bit = nibble * 4 + offset;
+            if bit < n && packed_bit(words, bit) {
+                value |= 1 << offset;
+            }
+        }
+        out.push(char::from_digit(value as u32, 16).unwrap());
+    }
+    out
+}
+
+fn write_slice_zero_random_metadata(
+    path: &str,
+    original_n: usize,
+    gate_count: usize,
+    public_y: &[u64],
+    public_z: &[u64],
+) {
+    let y_hex = packed_words_to_hex(public_y, original_n);
+    let z_hex = packed_words_to_hex(public_z, original_n);
+    let meta_path = format!("{path}.slice_zero_random");
+    let contents = format!(
+        "mode=slice_zero_random\n\
+         n={original_n}\n\
+         gates={gate_count}\n\
+         y_hex={y_hex}\n\
+         z_hex={z_hex}\n\
+         bit_order=bit i is wire n+i for y and wire 2n+i for z\n"
+    );
+    File::create(&meta_path)
+        .and_then(|mut f| f.write_all(contents.as_bytes()))
+        .expect("Failed to write slice_zero_random metadata");
+    println!(
+        "slice_zero_random public slice: y={} z={} (metadata: {})",
+        y_hex, z_hex, meta_path
+    );
+}
+
+fn print_slice_zero_random_public_slice(original_n: usize, public_y: &[u64], public_z: &[u64]) {
+    println!(
+        "slice_zero_random public slice: Y={} Z={}",
+        packed_words_to_hex(public_y, original_n),
+        packed_words_to_hex(public_z, original_n)
+    );
 }
 
 fn env_truthy(name: &str) -> bool {
@@ -268,13 +347,18 @@ pub fn main_shuffle_shoot_shuffle(
     leave: bool,
     do_gadgetize: bool,
     do_feistalize: bool,
+    slice_zero: bool,
+    slice_zero_random: bool,
+    slice_zero_random_gates: usize,
     gadget_path: Option<&str>,
     full_shuffle: bool,
+    full_shuffle_early: bool,
     gates_ahead_expand: usize,
     gates_ahead_samf: usize,
     type_attempts: usize,
     shooting_times: usize,
     egg: bool,
+    equality_check: bool,
     rg_freq: usize,
     single_end: bool,
 ) {
@@ -285,12 +369,34 @@ pub fn main_shuffle_shoot_shuffle(
     // Repeat `rounds` times
     let mut post_len = 0;
     let mut count = 0;
+    let mut fixed_feistal_slice = slice_zero.then_some((U1024::zero(), U1024::zero()));
+    let mut slice_zero_random_public: Option<(Vec<u64>, Vec<u64>)> = None;
     if do_gadgetize || do_feistalize {
         let mut rng = rand::rng();
         let before = circuit.gates.len();
         let (label, transformed_n) = if do_feistalize {
-            circuit = feistalize(&circuit, n, rg_freq, &mut rng);
-            ("Feistalized", 3 * n)
+            if slice_zero_random {
+                let transformed = feistalize_with_slice_zero_random(
+                    &circuit,
+                    n,
+                    rg_freq,
+                    slice_zero_random_gates,
+                    &mut rng,
+                );
+                fixed_feistal_slice = Some((
+                    packed_words_to_u1024(&transformed.public_y, n),
+                    packed_words_to_u1024(&transformed.public_z, n),
+                ));
+                slice_zero_random_public = Some((transformed.public_y, transformed.public_z));
+                circuit = transformed.circuit;
+                ("Slice-zero-random feistalized", 3 * n)
+            } else if slice_zero {
+                circuit = feistalize_with_slice_zero(&circuit, n, rg_freq, &mut rng);
+                ("Slice-zero feistalized", 3 * n)
+            } else {
+                circuit = feistalize(&circuit, n, rg_freq, &mut rng);
+                ("Feistalized", 3 * n)
+            }
         } else {
             circuit = gadgetize(&circuit, n, rg_freq, &mut rng);
             ("Gadgetized", 2 * n)
@@ -325,6 +431,15 @@ pub fn main_shuffle_shoot_shuffle(
             .and_then(|mut f| f.write_all(circuit.repr().as_bytes()))
             .expect("Failed to write transformed circuit");
         println!("{} circuit written to {}", label, gadget_path);
+        if let Some((public_y, public_z)) = &slice_zero_random_public {
+            write_slice_zero_random_metadata(
+                &gadget_path,
+                n,
+                slice_zero_random_gates,
+                public_y,
+                public_z,
+            );
+        }
     }
     let n = if do_feistalize {
         3 * n
@@ -340,11 +455,11 @@ pub fn main_shuffle_shoot_shuffle(
     let feistal_original_n = do_feistalize.then_some(if leave { n / 6 } else { n / 3 });
     let sat_cone_range = sat_cone_range(n, feistal_original_n);
     print_sat_cone("initial", &circuit.gates, sat_cone_range);
-    if full_shuffle {
+    if full_shuffle_early {
         // SAMF insertion is equivalence-preserving by construction, so no retry guard.
         insert_wire_m_samfs_every_x(&mut circuit, n, n, 1, env, curated_shard_dbs, shard_dbs);
-        println!("After full shuffle: {} gates", circuit.gates.len());
-        print_sat_cone("after-full-shuffle", &circuit.gates, sat_cone_range);
+        println!("After early full shuffle: {} gates", circuit.gates.len());
+        print_sat_cone("after-full-shuffle-early", &circuit.gates, sat_cone_range);
     }
     // --single-end accumulator: SAMF state carried across ALL rounds,
     // undone in one pass after the last round. `total_t` is the composed wire permutation
@@ -504,6 +619,13 @@ pub fn main_shuffle_shoot_shuffle(
             insert_wire_m_samfs_every_x(&mut circuit, n, m, x, env, curated_shard_dbs, shard_dbs);
             println!("After inserting samfs: {} gates", circuit.gates.len());
         }
+        if full_shuffle {
+            // SAMF insertion is equivalence-preserving by construction, so no retry guard.
+            insert_wire_m_samfs_every_x(&mut circuit, n, n, 1, env, curated_shard_dbs, shard_dbs);
+            println!("After full shuffle: {} gates", circuit.gates.len());
+            let cone_label = format!("round{}-after-full-shuffle", i + 1);
+            print_sat_cone(&cone_label, &circuit.gates, sat_cone_range);
+        }
         // --single-end: after the FINAL round's shuffle, before its compression, undo ALL
         // accumulated SAMFs/NOTs in one pass — restoring equivalence to the original input.
         if single_end && i == rounds - 1 {
@@ -617,21 +739,30 @@ pub fn main_shuffle_shoot_shuffle(
                 j += 1;
             }
         }
-        let original_n = if leave { n / 2 } else { n };
-        let original_n = if do_feistalize {
-            original_n / 3
-        } else if do_gadgetize {
-            original_n / 2
-        } else {
-            original_n
-        };
-        let functionality_ok = if do_feistalize {
-            feistal_middle_matches_original(&c, &circuit, original_n, n, 1_000)
-        } else {
-            c.probably_equal(&circuit, original_n, 1_000)
-        };
-        if functionality_ok.is_err() {
-            panic!("The functionality has changed");
+        if equality_check {
+            let original_n = if leave { n / 2 } else { n };
+            let original_n = if do_feistalize {
+                original_n / 3
+            } else if do_gadgetize {
+                original_n / 2
+            } else {
+                original_n
+            };
+            let functionality_ok = if do_feistalize {
+                feistal_middle_matches_original(
+                    &c,
+                    &circuit,
+                    original_n,
+                    n,
+                    1_000,
+                    fixed_feistal_slice,
+                )
+            } else {
+                c.probably_equal(&circuit, original_n, 1_000)
+            };
+            if functionality_ok.is_err() {
+                panic!("The functionality has changed");
+            }
         }
         {
             // Write this round's circuit to its own file: same path as -d but with
@@ -656,13 +787,22 @@ pub fn main_shuffle_shoot_shuffle(
     } else {
         original_n
     };
-    if do_feistalize {
-        feistal_middle_matches_original(&c, &circuit, original_n, n, 10_000)
+    if equality_check {
+        if do_feistalize {
+            feistal_middle_matches_original(
+                &c,
+                &circuit,
+                original_n,
+                n,
+                10_000,
+                fixed_feistal_slice,
+            )
             .expect("The circuits differ somewhere!");
-    } else {
-        circuit
-            .probably_equal(&c, original_n, 10_000)
-            .expect("The circuits differ somewhere!");
+        } else {
+            circuit
+                .probably_equal(&c, original_n, 10_000)
+                .expect("The circuits differ somewhere!");
+        }
     }
 
     // Write to file
@@ -670,6 +810,15 @@ pub fn main_shuffle_shoot_shuffle(
     File::create(save)
         .and_then(|mut f| f.write_all(circuit_str.as_bytes()))
         .expect("Failed to write recent_circuit.txt");
+    if let Some((public_y, public_z)) = &slice_zero_random_public {
+        write_slice_zero_random_metadata(
+            save,
+            original_n,
+            slice_zero_random_gates,
+            public_y,
+            public_z,
+        );
+    }
 
     println!("Final circuit written to {}", save);
 
@@ -728,5 +877,8 @@ pub fn main_shuffle_shoot_shuffle(
             "Total hide diagnostics: eligible {} | skipped-materialized {} | attempts {} | lookup-misses {} | rejected-exposed {}",
             t_eligible, t_skipped, t_attempts, t_misses, t_rejected
         );
+    }
+    if let Some((public_y, public_z)) = &slice_zero_random_public {
+        print_slice_zero_random_public_slice(original_n, public_y, public_z);
     }
 }
