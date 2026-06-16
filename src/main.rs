@@ -78,12 +78,32 @@ fn main() {
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
+                    Arg::new("slice_zero_hardcoded")
+                        .long("slice-zero-hardcoded")
+                        .alias("slice_zero_hardcoded")
+                        .help("Before feistalization, insert hardcoded M that preserves the (y,z)=0 slice")
+                        .required(false)
+                        .requires("feistalize")
+                        .conflicts_with("slice_zero")
+                        .conflicts_with("slice_zero_random")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
                     Arg::new("slice_zero_random_gates")
                         .long("slice-zero-random-gates")
                         .alias("slice_zero_random_gates")
                         .required(false)
                         .value_parser(clap::value_parser!(usize))
                         .help("Number of random M gates for --slice-zero-random (default: 32n)"),
+                )
+                .arg(
+                    Arg::new("slice_zero_hardcoded_rounds")
+                        .long("slice-zero-hardcoded-rounds")
+                        .alias("slice_zero_hardcoded_rounds")
+                        .required(false)
+                        .default_value("1")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of hardcoded M rounds for --slice-zero-hardcoded"),
                 )
                 .arg(
                     Arg::new("gadget_path")

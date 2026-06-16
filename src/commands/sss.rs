@@ -4,7 +4,9 @@ use std::path::Path;
 use lmdb::Environment;
 
 use local_mixing::circuit::CircuitSeq;
-use local_mixing::replace::gadgets::SLICE_ZERO_RANDOM_GATES_PER_WIRE;
+use local_mixing::replace::gadgets::{
+    SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS, SLICE_ZERO_RANDOM_GATES_PER_WIRE,
+};
 use local_mixing::replace::main_mix::{main_shuffle_shoot_shuffle, open_all_dbs};
 use local_mixing::replace::mixing::install_kill_handler;
 use local_mixing::replace::replace::{
@@ -25,10 +27,15 @@ pub fn run(sub: &clap::ArgMatches) {
     let do_feistalize = sub.get_flag("feistalize");
     let slice_zero = sub.get_flag("slice_zero");
     let slice_zero_random = sub.get_flag("slice_zero_random");
+    let slice_zero_hardcoded = sub.get_flag("slice_zero_hardcoded");
     let slice_zero_random_gates: usize = sub
         .get_one("slice_zero_random_gates")
         .copied()
         .unwrap_or(SLICE_ZERO_RANDOM_GATES_PER_WIRE * n);
+    let slice_zero_hardcoded_rounds: usize = sub
+        .get_one("slice_zero_hardcoded_rounds")
+        .copied()
+        .unwrap_or(SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS);
     let gadget_path = sub.get_one::<String>("gadget_path").map(|s| s.as_str());
     let full_shuffle = sub.get_flag("full-shuffle");
     let full_shuffle_early = sub.get_flag("full-shuffle-early");
@@ -77,6 +84,8 @@ pub fn run(sub: &clap::ArgMatches) {
         slice_zero,
         slice_zero_random,
         slice_zero_random_gates,
+        slice_zero_hardcoded,
+        slice_zero_hardcoded_rounds,
         gadget_path,
         full_shuffle,
         full_shuffle_early,

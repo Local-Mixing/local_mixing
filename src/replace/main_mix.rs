@@ -6,8 +6,8 @@ use crate::{
     circuit::circuit::{CircuitSeq, Gate, U1024},
     replace::{
         gadgets::{
-            feistalize, feistalize_with_slice_zero, feistalize_with_slice_zero_random, gadgetize,
-            packed_bit,
+            feistalize, feistalize_with_slice_zero, feistalize_with_slice_zero_hardcoded,
+            feistalize_with_slice_zero_random, gadgetize, packed_bit,
         },
         pairs::interleave,
         replace::{ExpandPairMode, compress_loop, expand_once},
@@ -350,6 +350,8 @@ pub fn main_shuffle_shoot_shuffle(
     slice_zero: bool,
     slice_zero_random: bool,
     slice_zero_random_gates: usize,
+    slice_zero_hardcoded: bool,
+    slice_zero_hardcoded_rounds: usize,
     gadget_path: Option<&str>,
     full_shuffle: bool,
     full_shuffle_early: bool,
@@ -369,7 +371,8 @@ pub fn main_shuffle_shoot_shuffle(
     // Repeat `rounds` times
     let mut post_len = 0;
     let mut count = 0;
-    let mut fixed_feistal_slice = slice_zero.then_some((U1024::zero(), U1024::zero()));
+    let mut fixed_feistal_slice =
+        (slice_zero || slice_zero_hardcoded).then_some((U1024::zero(), U1024::zero()));
     let mut slice_zero_random_public: Option<(Vec<u64>, Vec<u64>)> = None;
     if do_gadgetize || do_feistalize {
         let mut rng = rand::rng();
@@ -390,6 +393,15 @@ pub fn main_shuffle_shoot_shuffle(
                 slice_zero_random_public = Some((transformed.public_y, transformed.public_z));
                 circuit = transformed.circuit;
                 ("Slice-zero-random feistalized", 3 * n)
+            } else if slice_zero_hardcoded {
+                circuit = feistalize_with_slice_zero_hardcoded(
+                    &circuit,
+                    n,
+                    rg_freq,
+                    slice_zero_hardcoded_rounds,
+                    &mut rng,
+                );
+                ("Slice-zero-hardcoded feistalized", 3 * n)
             } else if slice_zero {
                 circuit = feistalize_with_slice_zero(&circuit, n, rg_freq, &mut rng);
                 ("Slice-zero feistalized", 3 * n)

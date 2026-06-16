@@ -75,6 +75,7 @@ const NOT_4W_GATES: [[u16; 3]; 7] = [
 ];
 
 pub const SLICE_ZERO_RANDOM_GATES_PER_WIRE: usize = 32;
+pub const SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS: usize = 1;
 
 /// Secret-sharing state: pairs[v] = (share_wire, pad_wire) for virtual value v.
 pub struct GadgetState {
@@ -588,6 +589,76 @@ pub fn slice_zero_preblock(n: usize, rng: &mut impl Rng) -> CircuitSeq {
     CircuitSeq { gates: out }
 }
 
+fn random_wire_except(total: usize, excluded: &[usize], rng: &mut impl Rng) -> usize {
+    loop {
+        let w = rng.random_range(0..total);
+        if !excluded.contains(&w) {
+            return w;
+        }
+    }
+}
+
+fn emit_and_update(
+    target: usize,
+    aux_factor: usize,
+    other_factor: usize,
+    total: usize,
+    out: &mut Vec<[u16; 3]>,
+) {
+    debug_assert_ne!(target, aux_factor);
+    debug_assert_ne!(target, other_factor);
+    debug_assert_ne!(aux_factor, other_factor);
+
+    out.push([target as u16, aux_factor as u16, other_factor as u16]);
+    emit_not(target, total, out);
+    let (h1, h2) = pick_two_helpers(total, &[target, aux_factor, other_factor]);
+    emit_transvection(target, other_factor, h1, h2, out);
+}
+
+/// Build M on raw feistal wires with the zero slice hardcoded:
+///   M(x,0,0) = (x,0,0).
+/// Off the zero slice, each update applies target ^= aux * other.
+pub fn slice_zero_hardcoded_preblock(n: usize, rounds: usize, rng: &mut impl Rng) -> CircuitSeq {
+    assert!(n >= 3, "slice_zero_hardcoded_preblock requires n >= 3");
+    assert!(3 * n <= u16::MAX as usize, "too many wires");
+
+    let total = 3 * n;
+    let mut out = Vec::new();
+    let mut order: Vec<usize> = (0..n).collect();
+
+    for _ in 0..rounds {
+        order.shuffle(rng);
+        for &i in &order {
+            let target = i;
+            let aux = if rng.random_bool(0.5) {
+                n + rng.random_range(0..n)
+            } else {
+                2 * n + rng.random_range(0..n)
+            };
+            let other = random_wire_except(total, &[target, aux], rng);
+            emit_and_update(target, aux, other, total, &mut out);
+        }
+
+        order.shuffle(rng);
+        for &i in &order {
+            let target = n + i;
+            let aux = 2 * n + rng.random_range(0..n);
+            let other = random_wire_except(total, &[target, aux], rng);
+            emit_and_update(target, aux, other, total, &mut out);
+        }
+
+        order.shuffle(rng);
+        for &i in &order {
+            let target = 2 * n + i;
+            let aux = n + rng.random_range(0..n);
+            let other = random_wire_except(total, &[target, aux], rng);
+            emit_and_update(target, aux, other, total, &mut out);
+        }
+    }
+
+    CircuitSeq { gates: out }
+}
+
 /// Build M on raw feistal wires for a random public slice (Y,Z):
 ///   M(x,Y,Z) = (x,Y,Z)
 /// and random r57 gates disturb x away from that public slice. Each gate uses
@@ -930,6 +1001,18 @@ pub fn feistalize_with_slice_zero(
     CircuitSeq { gates }
 }
 
+pub fn feistalize_with_slice_zero_hardcoded(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    rounds: usize,
+    rng: &mut impl Rng,
+) -> CircuitSeq {
+    let mut gates = slice_zero_hardcoded_preblock(n, rounds, rng).gates;
+    gates.extend(feistalize(main, n, rg_freq, rng).gates);
+    CircuitSeq { gates }
+}
+
 pub fn feistalize_with_slice_zero_random(
     main: &CircuitSeq,
     n: usize,
@@ -1212,6 +1295,35 @@ mod feistal_property_tests {
     }
 
     #[test]
+    fn slice_zero_hardcoded_preblock_fixes_zero_slice() {
+        let n = 4;
+        let mask = (1usize << n) - 1;
+        for seed in 0x5b10u64..0x5b18 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let block = slice_zero_hardcoded_preblock(n, 2, &mut rng);
+            assert!(block.gates.iter().flatten().all(|&w| (w as usize) < 3 * n));
+            assert!(!block.gates.is_empty());
+
+            for x in 0..=mask {
+                let output = block.evaluate(x);
+                assert_eq!(output & mask, x, "seed={seed:#x} x={x:#x}");
+                assert_eq!((output >> n) & mask, 0);
+                assert_eq!((output >> (2 * n)) & mask, 0);
+            }
+
+            let mut moved = false;
+            for y in 1..=mask {
+                let output = block.evaluate(y << n);
+                moved |= output != (y << n);
+            }
+            assert!(
+                moved,
+                "hardcoded M should change at least one off-slice input"
+            );
+        }
+    }
+
+    #[test]
     fn slice_zero_feistalize_matches_original_only_on_zero_slice() {
         let n = 3;
         let mask = (1usize << n) - 1;
@@ -1236,6 +1348,24 @@ mod feistal_property_tests {
                         "seed={seed:#x} input={input:#x} x={x:#x} y={y:#x} z={z:#x}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn slice_zero_hardcoded_feistalize_matches_original_on_zero_slice() {
+        let n = 3;
+        let mask = (1usize << n) - 1;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+
+        for seed in 0x5c00u64..0x5c08 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let transformed = feistalize_with_slice_zero_hardcoded(&main, n, 2, 1, &mut rng);
+            for x in 0..=mask {
+                let middle = (transformed.evaluate(x) >> n) & mask;
+                assert_eq!(middle, main.evaluate(x), "seed={seed:#x} x={x:#x}");
             }
         }
     }
