@@ -4,8 +4,8 @@ use crate::replace::mixing::split_into_random_chunk_ranges;
 use crate::replace::sat_score::{
     compression_selection_score, expansion_selection_score, sat_bcp_enabled,
     sat_bcp_min_resistance, sat_compress_preserve_delta, sat_compress_protect_enabled,
-    sat_cone_aware_enabled, sat_cone_min_fraction, sat_expand_min_delta, sat_score_seed,
-    sat_score_slack, sat_scoring_enabled, score_subcircuit,
+    sat_cone_aware_enabled, sat_cone_min_fraction, sat_expand_loop_candidates,
+    sat_expand_min_delta, sat_score_seed, sat_score_slack, sat_scoring_enabled, score_subcircuit,
 };
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation},
@@ -396,9 +396,150 @@ pub fn expand_once<'a>(
     CircuitSeq { gates: new_gates }
 }
 
+pub fn expand_to_gate_factor<'a>(
+    circuit: &CircuitSeq,
+    n: usize,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    pair_mode: &ExpandPairMode<'a>,
+    factor: usize,
+) -> CircuitSeq {
+    let (expanded, passes, stalled) =
+        expand_to_gate_factor_once(circuit, n, env, shard_dbs, pair_mode, factor);
+    print_expand_loop_summary(
+        circuit.gates.len(),
+        expanded.gates.len(),
+        factor,
+        passes,
+        stalled,
+    );
+    expanded
+}
+
+fn expand_to_gate_factor_once<'a>(
+    circuit: &CircuitSeq,
+    n: usize,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    pair_mode: &ExpandPairMode<'a>,
+    factor: usize,
+) -> (CircuitSeq, usize, bool) {
+    let start_len = circuit.gates.len();
+    let target_len = start_len.saturating_mul(factor.max(1));
+    let mut expanded = circuit.clone();
+    let mut passes = 0usize;
+    let mut stalled = false;
+
+    while expanded.gates.len() < target_len {
+        let before = expanded.gates.len();
+        expanded = expand_once(&expanded, n, env, shard_dbs, pair_mode);
+        passes += 1;
+        if expanded.gates.len() <= before {
+            stalled = true;
+            break;
+        }
+    }
+
+    (expanded, passes, stalled)
+}
+
+fn expand_to_gate_factor_scored<'a>(
+    circuit: &CircuitSeq,
+    n: usize,
+    env: &lmdb::Environment,
+    shard_dbs: &[lmdb::Database],
+    pair_mode: &ExpandPairMode<'a>,
+    factor: usize,
+) -> CircuitSeq {
+    let seed = sat_score_seed();
+    let base_score = expansion_selection_score(&score_subcircuit(
+        &circuit.gates,
+        n,
+        seed ^ 0xA11C_E570_5EED,
+    ));
+    let required_score = base_score + sat_expand_min_delta();
+    let attempts = sat_expand_loop_candidates();
+    let mut best: Option<(f64, CircuitSeq, usize, bool)> = None;
+
+    for attempt in 0..attempts {
+        let (candidate, passes, stalled) =
+            expand_to_gate_factor_once(circuit, n, env, shard_dbs, pair_mode, factor);
+        if candidate.gates.len() <= circuit.gates.len() {
+            continue;
+        }
+        let sat_score = score_subcircuit(
+            &candidate.gates,
+            n,
+            seed ^ 0xE870_10AD ^ ((attempt as u64) << 16),
+        );
+        if sat_cone_aware_enabled() && sat_score.output_cone_fraction < sat_cone_min_fraction() {
+            continue;
+        }
+        if sat_bcp_enabled() && sat_score.bcp_resistance < sat_bcp_min_resistance() {
+            continue;
+        }
+
+        let score = expansion_selection_score(&sat_score);
+        if score <= required_score {
+            continue;
+        }
+        let replace_best = best
+            .as_ref()
+            .map(|(best_score, ..)| score > *best_score)
+            .unwrap_or(true);
+        if replace_best {
+            best = Some((score, candidate, passes, stalled));
+        }
+    }
+
+    match best {
+        Some((score, expanded, passes, stalled)) => {
+            print_expand_loop_summary(
+                circuit.gates.len(),
+                expanded.gates.len(),
+                factor,
+                passes,
+                stalled,
+            );
+            println!(
+                "  Expand loop score: {:.3} (base {:.3}, required {:.3}, attempts {})",
+                score, base_score, required_score, attempts
+            );
+            expanded
+        }
+        None => {
+            println!(
+                "  Expand loop skipped: no candidate exceeded score {:.3} after {} attempts",
+                required_score, attempts
+            );
+            circuit.clone()
+        }
+    }
+}
+
+fn print_expand_loop_summary(
+    start_len: usize,
+    expanded_len: usize,
+    factor: usize,
+    passes: usize,
+    stalled: bool,
+) {
+    let target_len = start_len.saturating_mul(factor.max(1));
+    if stalled {
+        println!(
+            "  Expand loop stalled: {} -> {} gates (target {}, passes {})",
+            start_len, expanded_len, target_len, passes
+        );
+    }
+    println!(
+        "  Expand loop: {} -> {} gates (target {}, passes {})",
+        start_len, expanded_len, target_len, passes
+    );
+}
+
 // Expand with ancilla wires or gates
 /// Selects which method to use when a 2-gate subcircuit is sampled in the expand functions.
-/// For subcircuits of 3–5 gates the shard DB is always used regardless of this setting.
+/// Larger subcircuits still use the shard DB expansion path.
 pub enum ExpandPairMode<'a> {
     /// Use the curated shard DBs to find a longer equivalent pair.
     Curated {
@@ -1104,17 +1245,11 @@ pub fn expand_big_ancillas<'a>(
             REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
 
-        // --- 3-5 gate path (and 2-gate Db mode): use shard DB via expand_lmdb ---
+        // --- 3-5 gate path (and 2-gate Db/miss path): use expand_lmdb. Keep pair_mode so
+        // any 2-gate subproblem sampled inside expand_lmdb can still use curated pairs.
         // Pass num_wires (full circuit wire count) so extra wires are assigned correctly.
         let t4 = Instant::now();
-        let subcircuit_temp = expand_lmdb(
-            &subcircuit,
-            10,
-            num_wires,
-            env,
-            shard_dbs,
-            &ExpandPairMode::Db,
-        );
+        let subcircuit_temp = expand_lmdb(&subcircuit, 10, num_wires, env, shard_dbs, pair_mode);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t6 = Instant::now();

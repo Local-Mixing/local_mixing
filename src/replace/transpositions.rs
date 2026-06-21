@@ -1,5 +1,8 @@
 // For adding wire shuffles and bit flips
-use crate::circuit::{Permutation, circuit::CircuitSeq};
+use crate::{
+    circuit::{Permutation, circuit::CircuitSeq},
+    replace::replace::{ExpandPairMode, expand_to_gate_factor},
+};
 use lmdb::{Database, Environment};
 use rand::Rng;
 use rand::seq::IndexedRandom;
@@ -2191,8 +2194,9 @@ pub fn shuffled_shooting_game(
     compressions
 }
 
-// Core of shuffled_shoot_then_samf: each shooting pass runs one collision game followed by
-// one per-gate SAMF insertion, then all accumulated SAMF state is returned WITHOUT undoing.
+// Core of shuffled_shoot_then_samf: each shooting pass optionally runs a curated 3x expansion loop,
+// then `collision_rounds` collision games followed by one per-gate SAMF insertion. All accumulated
+// SAMF state is returned WITHOUT undoing.
 // `--single-end` uses this to accumulate SAMF state across outer rounds and undo only once
 // at the very end. Each insertion reprocesses that pass's shooting output from a CLEAN
 // negation state (its gates are self-contained; the shooting negation is a final-state
@@ -2207,11 +2211,14 @@ pub fn shuffled_shoot_then_samf_core(
     gates_ahead_samf: usize,
     type_attempts: usize,
     shooting_times: usize,
+    collision_rounds: usize,
+    expand_before_shooting: bool,
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
 ) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
     let passes = shooting_times.max(1);
+    let collision_passes = collision_rounds.max(1);
     let mut input_gates = input.to_vec();
     let mut total_t = Transpositions {
         transpositions: Vec::new(),
@@ -2220,7 +2227,13 @@ pub fn shuffled_shoot_then_samf_core(
     let mut total_compressions = 0usize;
 
     for _ in 0..passes {
-        let (out_a, t_a, neg_a, compressions) = shuffled_shooting_game_core(
+        if expand_before_shooting {
+            let pair_mode = ExpandPairMode::Curated { curated_shard_dbs };
+            let current = CircuitSeq { gates: input_gates };
+            input_gates = expand_to_gate_factor(&current, n, env, shard_dbs, &pair_mode, 3).gates;
+        }
+
+        let (out_a, t_a, neg_a, compressions) = shuffled_shooting_game_repeated_core(
             &input_gates,
             n,
             env,
@@ -2229,13 +2242,14 @@ pub fn shuffled_shoot_then_samf_core(
             gates_ahead_expand,
             gates_ahead_samf,
             type_attempts,
+            collision_passes,
         );
         let (out_b, t_b, neg_b) = insert_m_samfs_core(&out_a, n, m, x);
 
-        // Combined permutation for this shooting round: collision game first, then insertion.
+        // Combined permutation for this shooting pass: collision games first, then insertion.
         let t_pass = t_a.concat(&t_b);
-        // Combined final negation for this shooting round: insertion's own negation plus the
-        // collision game's negation transported through the insertion permutation.
+        // Combined final negation for this shooting pass: insertion's own negation plus the
+        // collision games' negation transported through the insertion permutation.
         let mut neg_pass = neg_b;
         for w in 0..n {
             if neg_a[w] == 1 {
@@ -2244,7 +2258,7 @@ pub fn shuffled_shoot_then_samf_core(
             }
         }
 
-        // Fold this shooting round into the total pending SAMF/NOT state.
+        // Fold this shooting pass into the total pending SAMF/NOT state.
         let mut new_total_neg = neg_pass;
         for w in 0..n {
             if total_neg[w] == 1 {
@@ -2261,9 +2275,9 @@ pub fn shuffled_shoot_then_samf_core(
     (input_gates, total_t, total_neg, total_compressions)
 }
 
-// Run each shooting round as one collision game followed by one per-gate SAMF insertion,
-// then perform a SINGLE unsamf at the very end. Returns the shooting game's compression
-// count across all shooting rounds.
+// Run each shooting pass with an optional curated 3x expansion loop, then `collision_rounds`
+// collision games followed by one per-gate SAMF insertion. Perform a SINGLE unsamf at the very
+// end. Returns the shooting game's compression count across all shooting passes.
 pub fn shuffled_shoot_then_samf(
     circuit: &mut CircuitSeq,
     n: usize,
@@ -2273,6 +2287,8 @@ pub fn shuffled_shoot_then_samf(
     gates_ahead_samf: usize,
     type_attempts: usize,
     shooting_times: usize,
+    collision_rounds: usize,
+    expand_before_shooting: bool,
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
@@ -2286,6 +2302,8 @@ pub fn shuffled_shoot_then_samf(
         gates_ahead_samf,
         type_attempts,
         shooting_times,
+        collision_rounds,
+        expand_before_shooting,
         env,
         curated_shard_dbs,
         shard_dbs,

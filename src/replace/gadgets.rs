@@ -74,7 +74,7 @@ const NOT_4W_GATES: [[u16; 3]; 7] = [
     [1, 3, 0],
 ];
 
-pub const SLICE_ZERO_RANDOM_GATES_PER_WIRE: usize = 32;
+pub const SLICE_ZERO_RANDOM_GATES_PER_WIRE: usize = 20;
 pub const SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS: usize = 1;
 
 /// Secret-sharing state: pairs[v] = (share_wire, pad_wire) for virtual value v.
@@ -1707,11 +1707,11 @@ mod slice_zero_random_large_wire_tests {
     }
 
     #[test]
-    fn slice_zero_random_n128_default_32n_fixes_public_slice_and_moves_x() {
+    fn slice_zero_random_n128_default_20n_fixes_public_slice_and_moves_x() {
         let n = 128;
         let mut rng = StdRng::seed_from_u64(0x1280_32);
         let block = slice_zero_random_preblock(n, SLICE_ZERO_RANDOM_GATES_PER_WIRE * n, &mut rng);
-        assert_eq!(block.circuit.gates.len(), 32 * n);
+        assert_eq!(block.circuit.gates.len(), 20 * n);
 
         let public_y = packed_words_to_u512(&block.public_y, n);
         let public_z = packed_words_to_u512(&block.public_z, n);
@@ -1750,11 +1750,11 @@ mod slice_zero_random_large_wire_tests {
     }
 
     #[test]
-    fn slice_zero_random_n256_default_32n_fixes_public_slice_and_moves_x() {
+    fn slice_zero_random_n256_default_20n_fixes_public_slice_and_moves_x() {
         let n = 256;
         let mut rng = StdRng::seed_from_u64(0x2560_32);
         let block = slice_zero_random_preblock(n, SLICE_ZERO_RANDOM_GATES_PER_WIRE * n, &mut rng);
-        assert_eq!(block.circuit.gates.len(), 32 * n);
+        assert_eq!(block.circuit.gates.len(), 20 * n);
 
         let public_y = packed_words_to_u1024(&block.public_y, n);
         let public_z = packed_words_to_u1024(&block.public_z, n);

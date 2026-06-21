@@ -10,7 +10,7 @@ use crate::{
             feistalize_with_slice_zero_random, gadgetize, packed_bit,
         },
         pairs::interleave,
-        replace::{ExpandPairMode, compress_loop, expand_once},
+        replace::compress_loop,
         transpositions::insert_wire_m_samfs_every_x,
     },
 };
@@ -359,6 +359,7 @@ pub fn main_shuffle_shoot_shuffle(
     gates_ahead_samf: usize,
     type_attempts: usize,
     shooting_times: usize,
+    collision_rounds: usize,
     egg: bool,
     equality_check: bool,
     rg_freq: usize,
@@ -556,12 +557,7 @@ pub fn main_shuffle_shoot_shuffle(
             let cone_label = format!("round{}-after-hard-cores", i + 1);
             print_sat_cone(&cone_label, &circuit.gates, sat_cone_range);
         }
-        if egg {
-            let pair_mode = ExpandPairMode::Curated {
-                curated_shard_dbs: &curated_shard_dbs,
-            };
-            circuit = expand_once(&circuit, n, env, shard_dbs, &pair_mode);
-        } else if single_end {
+        if single_end {
             // Accumulate this round's SAMFs WITHOUT undoing — functionality is intentionally
             // broken between rounds; we undo everything once after the last round (below).
             use crate::replace::transpositions::shuffled_shoot_then_samf_core;
@@ -574,6 +570,8 @@ pub fn main_shuffle_shoot_shuffle(
                 gates_ahead_samf,
                 type_attempts,
                 shooting_times,
+                collision_rounds,
+                egg,
                 env,
                 curated_shard_dbs,
                 shard_dbs,
@@ -613,6 +611,8 @@ pub fn main_shuffle_shoot_shuffle(
                 gates_ahead_samf,
                 type_attempts,
                 shooting_times,
+                collision_rounds,
+                egg,
                 env,
                 curated_shard_dbs,
                 shard_dbs,
@@ -624,13 +624,6 @@ pub fn main_shuffle_shoot_shuffle(
         println!("After shooting game: {} gates", circuit.gates.len());
         let cone_label = format!("round{}-after-shooting", i + 1);
         print_sat_cone(&cone_label, &circuit.gates, sat_cone_range);
-        // The normal shooting path already inserts plain SAMFs as part of
-        // shuffled_shoot_then_samf[_core]. Egg mode does not use that path, so it performs its
-        // one plain-SAMF insertion here.
-        if egg {
-            insert_wire_m_samfs_every_x(&mut circuit, n, m, x, env, curated_shard_dbs, shard_dbs);
-            println!("After inserting samfs: {} gates", circuit.gates.len());
-        }
         if full_shuffle {
             // SAMF insertion is equivalence-preserving by construction, so no retry guard.
             insert_wire_m_samfs_every_x(&mut circuit, n, n, 1, env, curated_shard_dbs, shard_dbs);

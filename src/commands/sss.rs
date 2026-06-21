@@ -29,8 +29,9 @@ pub fn run(sub: &clap::ArgMatches) {
     let slice_zero_random = sub.get_flag("slice_zero_random");
     let slice_zero_hardcoded = sub.get_flag("slice_zero_hardcoded");
     let slice_zero_random_gates: usize = sub
-        .get_one("slice_zero_random_gates")
+        .get_one::<usize>("M_length")
         .copied()
+        .or_else(|| sub.get_one::<usize>("slice_zero_random_gates").copied())
         .unwrap_or(SLICE_ZERO_RANDOM_GATES_PER_WIRE * n);
     let slice_zero_hardcoded_rounds: usize = sub
         .get_one("slice_zero_hardcoded_rounds")
@@ -43,6 +44,7 @@ pub fn run(sub: &clap::ArgMatches) {
     let gates_ahead_samf: usize = *sub.get_one("gates_ahead_samf").unwrap();
     let type_attempts: usize = *sub.get_one("type_attempts").unwrap();
     let shooting_times: usize = *sub.get_one("shooting_times").unwrap();
+    let collision_rounds: usize = *sub.get_one("collision_rounds").unwrap();
     let egg = sub.get_flag("egg");
     let equality_check = sub.get_flag("equality_check");
     let single_end = sub.get_flag("single-end");
@@ -93,6 +95,7 @@ pub fn run(sub: &clap::ArgMatches) {
         gates_ahead_samf,
         type_attempts,
         shooting_times,
+        collision_rounds,
         egg,
         equality_check,
         rg_freq,

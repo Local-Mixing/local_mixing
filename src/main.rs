@@ -93,8 +93,19 @@ fn main() {
                         .long("slice-zero-random-gates")
                         .alias("slice_zero_random_gates")
                         .required(false)
+                        .requires("slice_zero_random")
+                        .conflicts_with("M_length")
                         .value_parser(clap::value_parser!(usize))
-                        .help("Number of random M gates for --slice-zero-random (default: 32n)"),
+                        .help("Deprecated alias for --M_length"),
+                )
+                .arg(
+                    Arg::new("M_length")
+                        .long("M_length")
+                        .required(false)
+                        .requires("slice_zero_random")
+                        .conflicts_with("slice_zero_random_gates")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of random M gates for --slice-zero-random (default: 20n)"),
                 )
                 .arg(
                     Arg::new("slice_zero_hardcoded_rounds")
@@ -158,7 +169,15 @@ fn main() {
                         .required(false)
                         .default_value("1")
                         .value_parser(clap::value_parser!(usize))
-                        .help("Number of shooting rounds; each round runs one collision game then one plain SAMF insertion before the final unsamf"),
+                        .help("Number of shooting passes; each pass runs collision_rounds collision games then one plain SAMF insertion before the final unsamf"),
+                )
+                .arg(
+                    Arg::new("collision_rounds")
+                        .long("collision_rounds")
+                        .required(false)
+                        .default_value("1")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of shuffled collision-game rounds to run before each plain SAMF insertion"),
                 )
                 .arg(
                     Arg::new("rg_frequency")
@@ -171,7 +190,7 @@ fn main() {
                 .arg(
                     Arg::new("egg")
                         .long("egg")
-                        .help("Use expansion game (expand_loop 2x) instead of the shuffled shooting game")
+                        .help("Before each shooting pass, run a curated expansion loop to 3x size")
                         .required(false)
                         .action(clap::ArgAction::SetTrue),
                 )

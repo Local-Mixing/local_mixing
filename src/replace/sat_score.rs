@@ -186,6 +186,25 @@ pub fn sat_hidden_samf_candidates() -> usize {
     })
 }
 
+pub fn sat_expand_loop_candidates() -> usize {
+    static CANDIDATES: OnceLock<usize> = OnceLock::new();
+    *CANDIDATES.get_or_init(|| {
+        std::env::var("SAT_EXPAND_LOOP_CANDIDATES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| {
+                if sat_cone_aware_enabled() {
+                    sat_hidden_samf_candidates()
+                } else if sat_scoring_enabled() {
+                    4
+                } else {
+                    1
+                }
+            })
+            .max(1)
+    })
+}
+
 pub fn sat_bcp_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| env_truthy("SAT_BCP") || env_truthy("SAT_HARDEN"))
