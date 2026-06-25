@@ -1,9 +1,7 @@
 use std::{collections::HashMap, path::Path, sync::Mutex};
 
-use dashmap::DashMap;
 use lmdb::{Cursor, Environment, Transaction};
 use local_mixing::circuit::circuit::poly_to_str;
-use local_mixing::replace::pairs::GatePair;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -19,7 +17,6 @@ use local_mixing::{
     },
     open_shard_dbs,
 };
-use rand::seq::SliceRandom;
 use rayon::prelude::*;
 
 const LMDB_PATH: &str = "./db";
@@ -152,8 +149,7 @@ fn friends(
     shard_dbs: &Vec<lmdb::Database>,
     shape_counter: &Mutex<HashMap<(CktShape, CktShape), usize>>,
 ) {
-    let mut shard_indices: Vec<usize> = (0..shard_dbs.len()).collect();
-    let mut rng = rand::thread_rng();
+    let shard_indices: Vec<usize> = (0..shard_dbs.len()).collect();
 
     shard_indices.par_iter().for_each(|shard_idx| {
         println!("Shard {}", shard_idx);
@@ -205,7 +201,7 @@ fn friends(
     });
 }
 
-fn print_ids(env: &Environment, shard_dbs: &Vec<lmdb::Database>) {
+fn print_ids(env: &Environment, _shard_dbs: &Vec<lmdb::Database>) {
     use std::collections::BTreeMap;
 
     let txn = env
@@ -232,10 +228,6 @@ fn print_ids(env: &Environment, shard_dbs: &Vec<lmdb::Database>) {
             }
             *histogram.entry(circuit.gates.len()).or_insert(0) += 1;
         }
-    }
-
-    for (len, count) in histogram {
-        // println!("{}: {}", len, count);
     }
 }
 
@@ -436,7 +428,6 @@ fn check(env: &Environment, shard_dbs: &Vec<lmdb::Database>, circuit: &CircuitSe
     println!("{}", circuit.to_string(n));
 
     let len = circuit.gates.len();
-    let half_len = len / 2;
 
     let rtxn = env.begin_ro_txn().expect("ro txn");
 

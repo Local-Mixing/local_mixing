@@ -12,20 +12,6 @@ crate-type = ["cdylib", "rlib"]
 name = "local_mixing_bin"
 path = "src/main.rs"
 
-# Standalone "challenge" binaries (pulled from eb/dev). Not in src/bin so they stay
-# out of the main source tree; explicit paths make them runnable via `cargo run --bin <name>`.
-[[bin]]
-name = "block_cipher"
-path = "challenges/block_cipher.rs"
-
-[[bin]]
-name = "point_function"
-path = "challenges/point_function.rs"
-
-[[bin]]
-name = "poly_canon"
-path = "challenges/poly_canon.rs"
-
 [[bin]]
 name = "bench_canon4"
 path = "src/bench/bench_canon4.rs"

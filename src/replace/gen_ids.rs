@@ -1,6 +1,5 @@
 use crate::circuit::circuit::CircuitSeq;
-use crate::replace::pairs::GatePair;
-use lmdb::{Cursor, Transaction, WriteFlags};
+use lmdb::{Cursor, Transaction};
 
 #[cfg(test)]
 mod tests {
@@ -365,15 +364,8 @@ pub fn open_id_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
 pub fn generate_identity_db(
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
-    id_dbs: &[lmdb::Database],
+    _id_dbs: &[lmdb::Database],
 ) {
-    let mut total = 0u64;
-    // Per-DB counters for sequential keys; open_id_dbs clears DBs so we start at 0.
-    let mut counters = vec![0u64; 34];
-    // Deduplicate within this run using a per-type seen set.
-    let mut seen: Vec<std::collections::HashSet<Vec<u8>>> =
-        (0..34).map(|_| std::collections::HashSet::new()).collect();
-
     for shard_idx in 0..256usize {
         let txn = env.begin_ro_txn().expect("ro txn");
         let db = shard_dbs[shard_idx];
@@ -394,7 +386,7 @@ pub fn generate_identity_db(
             continue;
         }
 
-        let mut wtxn = env.begin_rw_txn().expect("rw txn");
+        let wtxn = env.begin_rw_txn().expect("rw txn");
 
         for value in &multi {
             let circuits = decode_circuits(value);
@@ -429,12 +421,12 @@ pub fn generate_identity_db(
                         rotated.extend_from_slice(&identity.gates[rot..]);
                         rotated.extend_from_slice(&identity.gates[..rot]);
 
-                        let g1 = rotated[0];
-                        let g2 = rotated[1];
+                        // let g1 = rotated[0];
+                        // let g2 = rotated[1];
                         // let ctype = GatePair::to_int(&gate_pair_taxonomy(&g1, &g2));
 
-                        let rotated_circuit = CircuitSeq { gates: rotated };
-                        let blob = rotated_circuit.repr_blob();
+                        // let rotated_circuit = CircuitSeq { gates: rotated };
+                        // let blob = rotated_circuit.repr_blob();
 
                         // if seen[ctype].insert(blob.clone()) {
                         //     let idx = counters[ctype];
@@ -456,6 +448,4 @@ pub fn generate_identity_db(
         wtxn.commit().expect("commit");
         println!("Shard {:3}/256 done", shard_idx + 1);
     }
-
-    println!("Total identity entries written: {}", total);
 }
