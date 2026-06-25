@@ -1,3 +1,6 @@
+use std::fs::File;
+use std::io::Write;
+
 use clap::{Parser, ValueEnum};
 use cryptography::{Aes128, BlockCipher};
 use entropy::{diehard, dieharder};
@@ -6,6 +9,7 @@ use fastrand::shuffle;
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::random::random_data::random_circuit;
 use primitive_types::U256 as u256;
+use rand::RngCore;
 use rayon::prelude::*;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -212,6 +216,98 @@ struct Args {
 
     #[arg(short, long, default_value_t = false)]
     file: bool,
+
+    #[arg(short, long, default_value_t = false)]
+    brute: bool,
+}
+
+const Y: usize = 0xfedcba9876543210;
+
+fn next_u256() -> u256 {
+    let mut b = [0u8; 32];
+    rand::rng().fill_bytes(&mut b);
+    u256::from_little_endian(&b)
+}
+
+fn random_ckt_brute(args: &Args) {
+    use indicatif::ProgressBar;
+
+    let n = args.wires;
+
+    let c = match args.circuit_gen {
+        CircuitGenerationMode::Random => random_circuit(n, args.gates),
+        CircuitGenerationMode::Balanced => balanced_ckt_uniform(n, args.gates),
+        CircuitGenerationMode::Aes => panic!("AES not supported."),
+    };
+
+    let num_trials: usize = 1 << args.reps;
+
+    let progress = ProgressBar::new(num_trials as u64);
+    progress.set_style(
+        indicatif::ProgressStyle::default_bar()
+            .template("{spinner:.green} [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    let y256 = u256::from(Y);
+    let yy: u256 = if n > 128 { y256 << 64 | y256 } else { y256 };
+
+    let r = (0..num_trials)
+        .par_bridge()
+        .map(|_| {
+            let v = next_u256();
+            let vv = if n > 128 { v } else { u256::from(v.low_u128()) };
+            progress.inc(1);
+            let z = c.evaluate_256((vv << (n / 2)) | yy);
+            if n > 128 { z } else { u256::from(z.low_u128()) }
+        })
+        .min()
+        .unwrap();
+
+    let mut cc = c.clone();
+    cc.gates.reverse();
+    let pre = cc.evaluate_256(r);
+
+    let disp = if n > 128 {
+        format!(
+            "Min n={},m={} t={} {:?}: {:064x} => {:064x} ({} zeros)",
+            args.wires,
+            args.gates,
+            num_trials,
+            args.circuit_gen,
+            pre,
+            r,
+            r.leading_zeros()
+        )
+    } else {
+        format!(
+            "Min n={},m={} t={} {:?}: {:032x} => {:032x} ({} zeros)",
+            args.wires,
+            args.gates,
+            num_trials,
+            args.circuit_gen,
+            pre,
+            r,
+            r.leading_zeros() - 128
+        )
+    };
+
+    let mut file = File::create(format!(
+        "ckt-out/n{}m{}-{:?}.txt",
+        args.wires, args.gates, args.circuit_gen
+    ))
+    .expect("could not open file!");
+
+    (|| -> std::io::Result<()> {
+        write!(file, "# {}\n\n\n", disp)?;
+        write!(file, "{}", c.repr())?;
+        write!(file, "\n")?;
+        Ok(())
+    })()
+    .expect("failed to write!");
+
+    println!("{}", disp);
 }
 
 fn main() {
@@ -223,6 +319,11 @@ fn main() {
     let reps = args.reps;
     let operation_mode = args.operation_mode;
     let gen_mode = args.circuit_gen;
+
+    if args.brute {
+        random_ckt_brute(&args);
+        return;
+    }
 
     if !args.file {
         println!("Random reversible circuit: {wires} wires, {gates} gates");
