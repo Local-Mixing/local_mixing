@@ -1,0 +1,27 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "local_mixing"
+version = "0.1.0"
+description = "Local mixing for obfuscated reversible circuits — Rust core with a NumPy heatmap extension"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+# Runtime deps used by the heatmap/ analysis scripts (which import the `local_mixing` extension).
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "pandas",
+]
+
+[tool.maturin]
+# Builds the cdylib from src/lib.rs. The #[pymodule] is named `local_mixing`
+# (matches [lib].name in Cargo.toml), so Python does `import local_mixing`.
+# The crate also produces an rlib + the `local_mixing_bin` CLI; maturin only
+# packages the Python extension module.
+module-name = "local_mixing"
