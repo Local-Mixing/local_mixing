@@ -284,6 +284,26 @@ impl CircuitSeq {
         }
     }
 
+    /// Remap to minimal wires: e.g. [3,7,11] -> [0,1,2].
+    /// Returns (remapped_circuit, used_wires) where `used` allows unrewiring back to original wires.
+    pub fn rewire_min(&self) -> (CircuitSeq, Vec<u16>) {
+        let used = self.used_wires();
+        let wire_map: HashMap<u16, u16> = used
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| (w, i as u16))
+            .collect();
+        let remapped = CircuitSeq {
+            gates: self
+                .gates
+                .iter()
+                .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+                .collect(),
+        };
+        (remapped, used)
+    }
+
+
     // Representing circuit as a string
     pub fn repr(&self) -> String {
         fn wire_to_char(w: u8) -> char {
@@ -2664,6 +2684,31 @@ fn mono_compressed_str(m: u64, n: usize) -> String {
         .map(|i| format!("{}", i))
         .collect::<Vec<_>>()
         .join("•")
+}
+
+fn monomial_to_str(m: u64, n: usize) -> String {
+    if m == 0 {
+        return "1".to_string();
+    }
+    (0..n)
+        .filter(|&i| (m >> i) & 1 == 1)
+        .map(|i| format!("x{}", i))
+        .collect::<Vec<_>>()
+        .join("*")
+}
+
+pub fn poly_to_str(poly: &Polynomial, n: usize) -> String {
+    if poly.is_empty() {
+        return "I".to_string();
+    }
+    let mut terms: Vec<u64> = poly.iter().copied().collect();
+    // Sort by degree, then by value
+    terms.sort_by_key(|&m| (monomial_degree(m), m));
+    terms
+        .iter()
+        .map(|&m| monomial_to_str(m, n))
+        .collect::<Vec<_>>()
+        .join(" + ")
 }
 
 pub fn poly_to_compressed_str(poly: &Polynomial, n: usize) -> String {

@@ -1,5 +1,2 @@
 [toolchain]
-# Pin the toolchain so every machine (incl. the remote server) builds with the
-# same compiler. edition 2024 requires rustc >= 1.85.
-channel = "1.93.1"
 components = ["rustfmt", "clippy"]

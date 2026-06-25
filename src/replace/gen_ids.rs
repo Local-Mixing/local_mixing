@@ -1,5 +1,5 @@
 use crate::circuit::circuit::CircuitSeq;
-use crate::replace::pairs::{GatePair, gate_pair_taxonomy};
+use crate::replace::pairs::GatePair;
 use lmdb::{Cursor, Transaction, WriteFlags};
 
 #[cfg(test)]
@@ -269,7 +269,7 @@ mod tests {
 
             let repl_n_b = comp.max_wire() + 1;
             let mut used_ext = used.clone();
-            let mut next_wire = num_wires as u8;
+            let mut next_wire = num_wires as u16;
             while used_ext.len() < repl_n_b {
                 used_ext.push(next_wire);
                 next_wire += 1;
@@ -328,7 +328,7 @@ fn decode_circuits(value: &[u8]) -> Vec<CircuitSeq> {
     circuits
 }
 
-fn remove_adjacent_equal(gates: &mut Vec<[u8; 3]>) {
+fn remove_adjacent_equal(gates: &mut Vec<[u16; 3]>) {
     let mut i = 0;
     while i + 1 < gates.len() {
         if gates[i] == gates[i + 1] {
@@ -431,23 +431,23 @@ pub fn generate_identity_db(
 
                         let g1 = rotated[0];
                         let g2 = rotated[1];
-                        let ctype = GatePair::to_int(&gate_pair_taxonomy(&g1, &g2));
+                        // let ctype = GatePair::to_int(&gate_pair_taxonomy(&g1, &g2));
 
                         let rotated_circuit = CircuitSeq { gates: rotated };
                         let blob = rotated_circuit.repr_blob();
 
-                        if seen[ctype].insert(blob.clone()) {
-                            let idx = counters[ctype];
-                            counters[ctype] += 1;
-                            wtxn.put(
-                                id_dbs[ctype],
-                                &idx.to_be_bytes(),
-                                &blob,
-                                WriteFlags::empty(),
-                            )
-                            .expect("put identity");
-                            total += 1;
-                        }
+                        // if seen[ctype].insert(blob.clone()) {
+                        //     let idx = counters[ctype];
+                        //     counters[ctype] += 1;
+                        //     wtxn.put(
+                        //         id_dbs[ctype],
+                        //         &idx.to_be_bytes(),
+                        //         &blob,
+                        //         WriteFlags::empty(),
+                        //     )
+                        //     .expect("put identity");
+                        //     total += 1;
+                        // }
                     }
                 }
             }

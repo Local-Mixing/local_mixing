@@ -2,8 +2,8 @@ use std::{collections::HashMap, path::Path, sync::Mutex};
 
 use dashmap::DashMap;
 use lmdb::{Cursor, Environment, Transaction};
+use local_mixing::circuit::circuit::poly_to_str;
 use local_mixing::replace::pairs::GatePair;
-use local_mixing::replace::pairs::gate_pair_taxonomy;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -14,8 +14,8 @@ use xxhash_rust::xxh3::xxh3_128;
 use clap::{Arg, Command};
 use local_mixing::{
     circuit::{
-        CircuitSeq, circuit::canonicalize_polys, circuit::poly_degree, circuit::poly_to_str,
-        circuit::polys_repr_blob,
+        CircuitSeq,
+        circuit::{canonicalize_polys, polys_repr_blob},
     },
     open_shard_dbs,
 };
@@ -310,10 +310,10 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
                         continue;
                     }
 
-                    let a_rev: Vec<[u8; 3]> = a.gates.iter().rev().cloned().collect();
-                    let b_rev: Vec<[u8; 3]> = b.gates.iter().rev().cloned().collect();
+                    let a_rev: Vec<[u16; 3]> = a.gates.iter().rev().cloned().collect();
+                    let b_rev: Vec<[u16; 3]> = b.gates.iter().rev().cloned().collect();
 
-                    let candidates: [Vec<[u8; 3]>; 2] = [
+                    let candidates: [Vec<[u16; 3]>; 2] = [
                         // a || rev(b)
                         a.gates
                             .iter()
@@ -336,7 +336,6 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
                             let len_before = identity.gates.len();
 
                             identity.canonicalize();
-                            identity.remove_adjacent_id();
 
                             if identity.gates.is_empty() {
                                 break;
@@ -353,7 +352,6 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
                         }
 
                         identity.canonicalize();
-                        assert!(!identity.adjacent_id());
 
                         let (identity, _) = identity.rewire_min();
 
@@ -384,25 +382,6 @@ pub fn generate_identities_parallel(env: &Environment, shard_dbs: &Vec<lmdb::Dat
                         }
 
                         // println!("Minimal: {}", identity.repr());
-
-                        let ctype = GatePair::to_int(&gate_pair_taxonomy(
-                            &identity.gates[0],
-                            &identity.gates[1],
-                        ));
-                        let blob = identity.repr_blob();
-                        let mut guard = seen[ctype].lock().unwrap();
-                        if guard.insert(blob) {
-                            counter.fetch_add(1, Ordering::Relaxed);
-                        }
-                        let ctype = GatePair::to_int(&gate_pair_taxonomy(
-                            &identity.gates[0],
-                            &identity.gates[1],
-                        ));
-                        let blob = identity.repr_blob();
-                        let mut guard = seen[ctype].lock().unwrap();
-                        if guard.insert(blob) {
-                            counter.fetch_add(1, Ordering::Relaxed);
-                        }
                     }
                 }
             }
