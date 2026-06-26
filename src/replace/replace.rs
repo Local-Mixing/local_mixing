@@ -1,6 +1,12 @@
 // Replacement code used in the mixing methods
 
 use crate::replace::mixing::split_into_random_chunk_ranges;
+use crate::replace::sat_score::{
+    compression_selection_score, expansion_selection_score, sat_bcp_enabled,
+    sat_bcp_min_resistance, sat_compress_preserve_delta, sat_compress_protect_enabled,
+    sat_cone_aware_enabled, sat_cone_min_fraction, sat_expand_min_delta, sat_score_seed,
+    sat_score_slack, sat_scoring_enabled, score_subcircuit,
+};
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation},
     random::random_data::{
@@ -13,13 +19,15 @@ use rand::Rng;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 
 extern crate lmdb_sys;
 
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::{
     cmp::{max, min},
     time::Instant,
@@ -28,6 +36,445 @@ use std::{
 
 // Global histogram: (before_gates, after_gates) -> count, accumulated across all rounds
 pub static COMPRESSION_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
+
+// Global histograms for EXPANSIONS made in the shuffle-shoot-shuffle game, accumulated
+// across all rounds. One is keyed by gate counts, the other by distinct-wire counts.
+pub static EXPANSION_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
+pub static EXPANSION_WIRE_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
+
+// Record one expansion: `before`/`after` gate counts and `before_wires`/`after_wires`
+// distinct-wire counts.
+pub fn record_expansion(before: usize, after: usize, before_wires: usize, after_wires: usize) {
+    *EXPANSION_HISTOGRAM
+        .entry((before as u8, after as u8))
+        .or_insert(0) += 1;
+    *EXPANSION_WIRE_HISTOGRAM
+        .entry((before_wires as u8, after_wires as u8))
+        .or_insert(0) += 1;
+}
+
+// ---- Per-replacement recording (--record / --rc), option A: momentary positions ----
+// When enabled, every expansion/compression replacement appends one line to a log file.
+// Positions ("out=start-end") are the gate indices in the working buffer AT THE MOMENT of
+// the replacement, NOT stable indices into the final circuit (the pipeline re-splices and
+// re-numbers continuously). Each record is tagged with round and a context counter (the
+// shooting pass for expansions, the compression iteration for compressions).
+pub static RECORD_ENABLED: AtomicBool = AtomicBool::new(false);
+pub static REC_ROUND: AtomicUsize = AtomicUsize::new(0); // current round (1-based)
+pub static REC_PASS: AtomicUsize = AtomicUsize::new(0); // current shooting pass (expand ctx)
+pub static REC_ITER: AtomicUsize = AtomicUsize::new(0); // current compression iteration (compress ctx)
+static REC_SEQ: AtomicUsize = AtomicUsize::new(0);
+static REC_SINK: Lazy<Mutex<Option<BufWriter<File>>>> = Lazy::new(|| Mutex::new(None));
+
+#[inline]
+pub fn record_enabled() -> bool {
+    RECORD_ENABLED.load(Ordering::Relaxed)
+}
+
+// Open the record log and enable recording. Call once at the start of a run.
+pub fn record_init(path: &str) {
+    let f = File::create(path).expect("Failed to create replacement record file");
+    let mut w = BufWriter::new(f);
+    writeln!(
+        w,
+        "# per-replacement log. out=start-end are gate indices in the working buffer at the moment\n\
+         # of the replacement (momentary, not final-circuit indices). ctx = shooting pass (expand)\n\
+         # or compression iteration (compress).\n\
+         # seq stage round ctx out_start-out_end out_gates in_gates wires"
+    )
+    .ok();
+    *REC_SINK.lock().unwrap() = Some(w);
+    RECORD_ENABLED.store(true, Ordering::Relaxed);
+}
+
+// Record one replacement. `ctx` is the pass (expand) or iteration (compress) number.
+pub fn record_replacement(
+    stage: &str,
+    ctx: usize,
+    out_start: usize,
+    out_end: usize,
+    in_gates: usize,
+    wires: &[u16],
+) {
+    if !record_enabled() {
+        return;
+    }
+    let seq = REC_SEQ.fetch_add(1, Ordering::Relaxed);
+    let round = REC_ROUND.load(Ordering::Relaxed);
+    let mut ws: Vec<u16> = wires.to_vec();
+    ws.sort_unstable();
+    ws.dedup();
+    let wires_str = ws
+        .iter()
+        .map(|w| w.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let last = out_end.saturating_sub(1);
+    if let Some(w) = REC_SINK.lock().unwrap().as_mut() {
+        writeln!(
+            w,
+            "seq={} stage={} round={} ctx={} out={}-{} out_gates={} in_gates={} wires=[{}]",
+            seq,
+            stage,
+            round,
+            ctx,
+            out_start,
+            last,
+            out_end - out_start,
+            in_gates,
+            wires_str
+        )
+        .ok();
+    }
+}
+
+// Flush and close the record log at the end of a run.
+pub fn record_finish() {
+    if let Some(w) = REC_SINK.lock().unwrap().as_mut() {
+        w.flush().ok();
+    }
+}
+
+// ---- Survivor tracking (--track-survivors) ----
+// Each gate present right before local mixing starts is tagged with its index (0..N).
+// Gates created during mixing carry the sentinel TAG_NEW. The tag vector is maintained in
+// lockstep with the gate vector through the shuffle + compression. At the end, the original
+// tags still present are the gates that were NEVER part of a replacement (survivors).
+pub const TAG_NEW: u32 = u32::MAX;
+pub static TRACK_SURVIVORS: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+pub fn track_survivors() -> bool {
+    TRACK_SURVIVORS.load(Ordering::Relaxed)
+}
+
+// ---- Generation mode (ssg) ----
+// In gen mode the per-gate tag vector holds the gate's GENERATION instead of an origin id:
+// feistelized gates are generation 0; the gates a replacement adds get
+// floor(median(generations of the removed window)) + 1. (track_survivors() is also true in
+// gen mode so the tag vector is maintained; the difference is what new gates are tagged with
+// and how the result is reported.)
+pub static GEN_MODE: AtomicBool = AtomicBool::new(false);
+pub static MAX_FANOUT: AtomicUsize = AtomicUsize::new(50);
+pub static MIN_MEDIAN_LEEWAY: AtomicUsize = AtomicUsize::new(10);
+// Adaptive plain-SAMF reduction: if a round's shooting game HIDES at least this many SAMFs,
+// the explicit plain-SAMF insertion pass is skipped (m set to 0) for subsequent rounds, since
+// enough scrambling SAMFs are already woven in. 0 = disabled (always use the fixed m).
+pub static SAMF_TARGET: AtomicUsize = AtomicUsize::new(0);
+
+// ---- Stage B: min-generation-anchored bidirectional bounded shooting passes (gen mode) ----
+// MIN_GEN: keep launching shooting passes until every gate's generation is >= this.
+// PASS_LENGTH: max successful replacements per pass (0 = run to the end of the circuit).
+// MAX_PASSES: safety cap on the number of passes per round (prevents non-termination when some
+// gates can never be raised, e.g. gates that never collide).
+pub static MIN_GEN: AtomicUsize = AtomicUsize::new(1);
+pub static PASS_LENGTH: AtomicUsize = AtomicUsize::new(0);
+pub static MAX_PASSES: AtomicUsize = AtomicUsize::new(100_000);
+// Stop once at least this fraction (in permille, parts per 1000) of gates have generation
+// >= MIN_GEN, rather than requiring *every* gate (which converges very slowly because some
+// gates rarely collide). Default 990 = 99%.
+pub static MIN_GEN_PERMILLE: AtomicUsize = AtomicUsize::new(990);
+
+// ---- Stage D: size-threshold compression cadence (gen mode) ----
+// GROW_THRESHOLD_PERMILLE: when > 0, the ssg driver abandons the fixed `-r` round count and
+// instead alternates shoot/compress "stages": each stage shoots until the working circuit is
+// (1000 + GROW_THRESHOLD_PERMILLE)/1000 times the size it had at the end of the previous
+// compression, then compresses all the way back down. The whole cadence stops when the
+// min-gen condition (MIN_GEN / MIN_GEN_PERMILLE) is satisfied. 0 = Stage D off (use `-r`).
+pub static GROW_THRESHOLD_PERMILLE: AtomicUsize = AtomicUsize::new(0);
+// SHOOT_SIZE_CAP: the gen-mode shooting loop pauses (returns to the driver) once the working
+// circuit reaches this many gates, so the driver can compress before resuming. Set per stage by
+// the Stage D driver; 0 = no cap (shoot until the min-gen target is met, the normal behavior).
+pub static SHOOT_SIZE_CAP: AtomicUsize = AtomicUsize::new(0);
+// COMPRESS_FRACTION_PERMILLE: in Stage D, each stage compresses only until the circuit is this
+// fraction (in permille) of its post-shooting size, instead of all the way down. e.g. 550 with a
+// 2x grow threshold => each round nets +10% growth. 0 = compress fully each stage.
+pub static COMPRESS_FRACTION_PERMILLE: AtomicUsize = AtomicUsize::new(0);
+
+#[inline]
+pub fn gen_mode() -> bool {
+    GEN_MODE.load(Ordering::Relaxed)
+}
+
+// Floor of the median of a list of generations (round the even-length midpoint down).
+pub fn median_floor(v: &[u32]) -> u32 {
+    if v.is_empty() {
+        return 0;
+    }
+    let mut s = v.to_vec();
+    s.sort_unstable();
+    let n = s.len();
+    if n % 2 == 1 {
+        s[n / 2]
+    } else {
+        ((s[n / 2 - 1] as u64 + s[n / 2] as u64) / 2) as u32
+    }
+}
+
+// Tag assigned to the gates a replacement ADDS, given the removed window's tags.
+// gen mode -> floor(median(window)) + 1 ; survivor mode -> TAG_NEW.
+#[inline]
+pub fn new_gate_tag(window_tags: &[u32]) -> u32 {
+    if gen_mode() {
+        median_floor(window_tags).saturating_add(1)
+    } else {
+        TAG_NEW
+    }
+}
+
+// ---- Stage E: fanout/leeway-driven replacement selection (gen mode) ----
+// Target fanout distribution: fractions of gates with fanout 0,1,2,3,>3.
+pub const FANOUT_TARGET: [f64; 5] = [0.25, 0.40, 0.20, 0.10, 0.05];
+
+// Fanout of each gate = number of later gates that read its target wire (as a control)
+// before that wire is next written.
+pub fn gate_fanouts(gates: &[[u16; 3]]) -> Vec<usize> {
+    let n = gates.len();
+    let mut out = vec![0usize; n];
+    for i in 0..n {
+        let w = gates[i][0];
+        for g in &gates[i + 1..] {
+            if g[0] == w {
+                break; // target rewritten -> later reads belong to the new writer
+            }
+            if g[1] == w || g[2] == w {
+                out[i] += 1;
+            }
+        }
+    }
+    out
+}
+
+#[inline]
+fn fanout_bucket(f: usize) -> usize {
+    f.min(4)
+}
+
+// L1 distance of a gate list's fanout-bucket distribution to FANOUT_TARGET (lower = better).
+pub fn fanout_target_l1(gates: &[[u16; 3]]) -> f64 {
+    if gates.is_empty() {
+        return f64::INFINITY;
+    }
+    let mut b = [0usize; 5];
+    for f in gate_fanouts(gates) {
+        b[fanout_bucket(f)] += 1;
+    }
+    let n = gates.len() as f64;
+    (0..5)
+        .map(|k| (b[k] as f64 / n - FANOUT_TARGET[k]).abs())
+        .sum()
+}
+
+pub fn max_fanout_exceeded(gates: &[[u16; 3]]) -> bool {
+    let cap = MAX_FANOUT.load(Ordering::Relaxed);
+    gate_fanouts(gates).into_iter().any(|f| f > cap)
+}
+
+// Leeway of each gate = how far it can commute left + right within the list before colliding.
+pub fn gate_leeways(gates: &[[u16; 3]]) -> Vec<usize> {
+    use crate::circuit::circuit::Gate;
+    let n = gates.len();
+    let mut out = vec![0usize; n];
+    for i in 0..n {
+        let mut l = 0usize;
+        let mut j = i;
+        while j > 0 && !Gate::collides_index(&gates[j - 1], &gates[i]) {
+            l += 1;
+            j -= 1;
+        }
+        let mut r = 0usize;
+        let mut k = i;
+        while k + 1 < n && !Gate::collides_index(&gates[k + 1], &gates[i]) {
+            r += 1;
+            k += 1;
+        }
+        out[i] = l + r;
+    }
+    out
+}
+
+// Number of gates whose leeway is below MIN_MEDIAN_LEEWAY (lower = better when raising leeway).
+pub fn low_leeway_count(gates: &[[u16; 3]]) -> usize {
+    let thr = MIN_MEDIAN_LEEWAY.load(Ordering::Relaxed);
+    gate_leeways(gates).into_iter().filter(|&lw| lw < thr).count()
+}
+
+// Global-context features of a candidate `window` placed between `left` and `right` context.
+// Fanout of a gate = readers of its target wire until that wire is next written (bounded scan
+// into the window tail then `right`). Leeway = how far it commutes left+right (into the window
+// then `left`/`right`) before colliding. wires_spanned = distinct wires in the window.
+pub fn cand_features(
+    window: &[[u16; 3]],
+    left: &[[u16; 3]],
+    right: &[[u16; 3]],
+) -> crate::replace::ranking::CandFeatures {
+    use crate::circuit::circuit::Gate;
+    use crate::replace::ranking::CandFeatures;
+    let thr = MIN_MEDIAN_LEEWAY.load(Ordering::Relaxed);
+    let n = window.len();
+    let mut wires = std::collections::HashSet::new();
+    for g in window {
+        wires.insert(g[0]);
+        wires.insert(g[1]);
+        wires.insert(g[2]);
+    }
+    let mut buckets = [0usize; 5];
+    let (mut zero_fanout, mut low_leeway, mut maxf) = (0usize, 0usize, 0usize);
+    for i in 0..n {
+        let w = window[i][0];
+        // fanout: readers of w after i (window tail, then right) until w is rewritten
+        let mut f = 0usize;
+        let mut rewritten = false;
+        for g in &window[i + 1..] {
+            if g[0] == w {
+                rewritten = true;
+                break;
+            }
+            if g[1] == w || g[2] == w {
+                f += 1;
+            }
+        }
+        if !rewritten {
+            for g in right {
+                if g[0] == w {
+                    break;
+                }
+                if g[1] == w || g[2] == w {
+                    f += 1;
+                }
+            }
+        }
+        // leeway: commute left then right until collision
+        let cur = &window[i];
+        let mut lee = 0usize;
+        let mut blocked = false;
+        for g in window[..i].iter().rev() {
+            if Gate::collides_index(g, cur) {
+                blocked = true;
+                break;
+            }
+            lee += 1;
+        }
+        if !blocked {
+            for g in left.iter().rev() {
+                if Gate::collides_index(g, cur) {
+                    break;
+                }
+                lee += 1;
+            }
+        }
+        blocked = false;
+        for g in &window[i + 1..] {
+            if Gate::collides_index(g, cur) {
+                blocked = true;
+                break;
+            }
+            lee += 1;
+        }
+        if !blocked {
+            for g in right {
+                if Gate::collides_index(g, cur) {
+                    break;
+                }
+                lee += 1;
+            }
+        }
+        buckets[f.min(4)] += 1;
+        if f == 0 {
+            zero_fanout += 1;
+        }
+        if lee < thr {
+            low_leeway += 1;
+        }
+        if f > maxf {
+            maxf = f;
+        }
+    }
+    CandFeatures {
+        size: n,
+        wires_spanned: wires.len(),
+        low_leeway_count: low_leeway,
+        zero_fanout_count: zero_fanout,
+        fanout_buckets: buckets,
+        max_fanout: maxf,
+    }
+}
+
+// Pick the best candidates by (fanout L1 to target, then low-leeway count), after applying the
+// MAX_FANOUT hard cap. Returns the tied-best set (caller breaks ties randomly).
+pub fn gen_select_best(candidates: Vec<CircuitSeq>) -> Vec<CircuitSeq> {
+    if candidates.is_empty() {
+        return candidates;
+    }
+    // Hard cap on fanout; if every candidate violates, fall back to all (best effort).
+    let kept: Vec<CircuitSeq> = candidates
+        .iter()
+        .filter(|c| !max_fanout_exceeded(&c.gates))
+        .cloned()
+        .collect();
+    let pool = if kept.is_empty() { candidates } else { kept };
+    let scored: Vec<(f64, usize, CircuitSeq)> = pool
+        .into_iter()
+        .map(|c| (fanout_target_l1(&c.gates), low_leeway_count(&c.gates), c))
+        .collect();
+    let best = scored
+        .iter()
+        .map(|(l1, ll, _)| (*l1, *ll))
+        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)))
+        .unwrap();
+    scored
+        .into_iter()
+        .filter(|(l1, ll, _)| (*l1 - best.0).abs() < 1e-9 && *ll == best.1)
+        .map(|(_, _, c)| c)
+        .collect()
+}
+
+// Write a (before, after) -> count histogram to `csv_path` and a human-readable log to
+// `log_path`. `unit` labels the rows in the log (e.g. "gates" or "wires").
+fn write_before_after_histogram(
+    hist: &DashMap<(u8, u8), u64>,
+    csv_path: &str,
+    log_path: &str,
+    unit: &str,
+) {
+    let mut entries: Vec<((u8, u8), u64)> = hist.iter().map(|e| (*e.key(), *e.value())).collect();
+    entries.sort_by_key(|&((before, after), _)| (before, after));
+    let mut f = File::create(csv_path).expect("Failed to create histogram CSV");
+    writeln!(f, "before,after,count").expect("write");
+    for ((before, after), count) in &entries {
+        writeln!(f, "{},{},{}", before, after, count).expect("write");
+    }
+    println!("Histogram written to {}", csv_path);
+
+    let mut log = File::create(log_path).expect("Failed to create histogram log");
+    let before_vals: Vec<u8> = {
+        let mut v: Vec<u8> = entries.iter().map(|&((b, _), _)| b).collect();
+        v.dedup();
+        v
+    };
+    for before in before_vals {
+        let group: Vec<_> = entries.iter().filter(|&((b, _), _)| *b == before).collect();
+        let total: u64 = group.iter().map(|(_, c)| c).sum();
+        writeln!(log, "{} {} before (total: {}):", before, unit, total).expect("write");
+        for ((_, after), count) in &group {
+            writeln!(log, "  -> {} {}: {}", after, unit, count).expect("write");
+        }
+    }
+    println!("Log written to {}", log_path);
+}
+
+pub fn write_expansion_histogram(path: &str) {
+    write_before_after_histogram(&EXPANSION_HISTOGRAM, path, "expansion_log.txt", "gates");
+}
+
+pub fn write_expansion_wire_histogram(path: &str) {
+    write_before_after_histogram(
+        &EXPANSION_WIRE_HISTOGRAM,
+        path,
+        "expansion_wire_log.txt",
+        "wires",
+    );
+}
 
 pub fn write_compression_histogram(path: &str) {
     let mut entries: Vec<((u8, u8), u64)> = COMPRESSION_HISTOGRAM
@@ -146,6 +593,21 @@ pub static FROM_BLOB_TIME: AtomicU64 = AtomicU64::new(0);
 pub static SPLICE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static TRIAL_TIME: AtomicU64 = AtomicU64::new(0);
 
+fn compression_trace_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("COMPRESSION_TRACE").is_ok())
+}
+
+fn compression_trace_threshold_ms() -> u128 {
+    static THRESHOLD: OnceLock<u128> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("COMPRESSION_TRACE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1_000)
+    })
+}
+
 pub fn compress_loop(
     circuit: &CircuitSeq,
     n: usize,
@@ -155,8 +617,21 @@ pub fn compress_loop(
     curr_round: usize,
     last_round: usize,
     output_path: &str,
+    light_compression: bool,
+    // When `Some(t)`, stop early as soon as the circuit is reduced to <= `t` gates (used by the
+    // standalone `compress` command to stop at a fraction of the initial size). Independent of the
+    // no-progress (`stable_max`) and `light_compression` stops; whichever triggers first wins.
+    early_stop_target: Option<usize>,
+    tags: &mut Vec<u32>,
 ) -> CircuitSeq {
+    let track = !tags.is_empty();
     let mut acc = circuit.clone();
+    // Origin tags maintained in lockstep with `acc.gates` (for --track-survivors).
+    let mut acc_tags: Vec<u32> = tags.clone();
+    // --light-compression: stop once the circuit is reduced to at most half the
+    // max (post-shooting) size, i.e. the size on entry to this compress_loop call.
+    let max_size = circuit.gates.len();
+    let light_target = max_size / 2;
     let mut rng = rand::rng();
     let mut mode = 0usize;
     // Ring buffer of the last stable_max+1 gate counts. Stop when total reduction
@@ -165,8 +640,11 @@ pub fn compress_loop(
         std::collections::VecDeque::with_capacity(stable_max + 1);
     recent.push_back(acc.gates.len());
 
+    let mut rec_iter = 0usize;
     loop {
         let before = acc.gates.len();
+        rec_iter += 1;
+        REC_ITER.store(rec_iter, Ordering::Relaxed);
 
         let max_chunks = 4 * rayon::current_num_threads().max(1);
         let k = if before <= 1500 {
@@ -175,27 +653,92 @@ pub fn compress_loop(
             ((before + 1499) / 1500).min(max_chunks)
         };
 
-        let current_mode = [0, 1, 2][mode];
-        mode = (mode + 1) % 3;
+        let current_mode = [1, 2][mode];
+        mode = (mode + 1) % 2;
 
+        let trace = compression_trace_enabled();
+        let trace_threshold_ms = compression_trace_threshold_ms();
         let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
-        let compressed_chunks: Vec<Vec<[u16; 3]>> = ranges
+        let acc_tags_ref = &acc_tags;
+        let compressed_chunks: Vec<(usize, usize, usize, Vec<[u16; 3]>, Vec<u32>, u128)> = ranges
+            .into_iter()
+            .enumerate()
+            .collect::<Vec<_>>()
             .into_par_iter()
-            .map(|(start, end)| {
+            .map(|(chunk_idx, (start, end))| {
                 let sub = CircuitSeq {
                     gates: acc.gates[start..end].to_vec(),
                 };
-                compress_big_ancillas(&sub, 100, n, env, shard_dbs, current_mode).gates
+                // Per-chunk tags; base_offset=start makes recorded positions circuit-relative.
+                let mut chunk_tags: Vec<u32> = if track {
+                    acc_tags_ref[start..end].to_vec()
+                } else {
+                    Vec::new()
+                };
+                let chunk_start = Instant::now();
+                let gates =
+                    compress_big_ancillas(&sub, 100, n, env, shard_dbs, current_mode, start, &mut chunk_tags)
+                        .gates;
+                let elapsed_ms = chunk_start.elapsed().as_millis();
+                if trace && elapsed_ms >= trace_threshold_ms {
+                    eprintln!(
+                        "[compress-trace] slow chunk mode={} idx={}/{} in_gates={} out_gates={} elapsed_ms={}",
+                        current_mode,
+                        chunk_idx + 1,
+                        k,
+                        end - start,
+                        gates.len(),
+                        elapsed_ms
+                    );
+                }
+                (chunk_idx, end - start, gates.len(), gates, chunk_tags, elapsed_ms)
             })
             .collect();
 
-        let total_len: usize = compressed_chunks.iter().map(|chunk| chunk.len()).sum();
+        let mut compressed_chunks = compressed_chunks;
+        compressed_chunks.sort_by_key(|(chunk_idx, _, _, _, _, _)| *chunk_idx);
+
+        if trace {
+            let total_chunk_ms: u128 = compressed_chunks.iter().map(|(_, _, _, _, _, ms)| *ms).sum();
+            if let Some((slow_idx, slow_in, slow_out, _, _, slow_ms)) = compressed_chunks
+                .iter()
+                .max_by_key(|(_, _, _, _, _, elapsed_ms)| *elapsed_ms)
+            {
+                eprintln!(
+                    "[compress-trace] iteration mode={} chunks={} before={} slowest_idx={} slowest_in={} slowest_out={} slowest_ms={} sum_chunk_ms={}",
+                    current_mode,
+                    k,
+                    before,
+                    slow_idx + 1,
+                    slow_in,
+                    slow_out,
+                    slow_ms,
+                    total_chunk_ms
+                );
+            }
+        }
+
+        let total_len: usize = compressed_chunks
+            .iter()
+            .map(|(_, _, out_len, _, _, _)| *out_len)
+            .sum();
         let mut new_gates = Vec::with_capacity(total_len);
-        for chunk in compressed_chunks {
+        let mut new_tags: Vec<u32> = if track {
+            Vec::with_capacity(total_len)
+        } else {
+            Vec::new()
+        };
+        for (_, _, _, chunk, chunk_tags, _) in compressed_chunks {
             new_gates.extend(chunk);
+            if track {
+                new_tags.extend(chunk_tags);
+            }
         }
 
         acc.gates = new_gates;
+        if track {
+            acc_tags = new_tags;
+        }
         let after = acc.gates.len();
 
         recent.push_back(after);
@@ -221,6 +764,26 @@ pub fn compress_loop(
             println!("  {}/{}: Reduced: {} gates", curr_round, last_round, after);
         }
 
+        // --light-compression: stop as soon as we are at or below half the max size.
+        if light_compression && after <= light_target {
+            println!(
+                "  {}/{}: Light compression target reached ({} <= {} = max/2 of {}), stopping",
+                curr_round, last_round, after, light_target, max_size
+            );
+            break;
+        }
+
+        // Explicit early-stop target (e.g. a fraction of the initial size): stop once reached.
+        if let Some(target) = early_stop_target {
+            if after <= target {
+                println!(
+                    "  {}/{}: Early-stop target reached ({} <= {} gates), stopping",
+                    curr_round, last_round, after, target
+                );
+                break;
+            }
+        }
+
         // Check if user created write_now
         if std::path::Path::new("write_now").exists() {
             std::fs::remove_file("write_now").ok();
@@ -228,6 +791,9 @@ pub fn compress_loop(
             writeln!(f, "{}", acc.repr()).expect("write");
             eprintln!("Wrote {}", output_path);
         }
+    }
+    if track {
+        *tags = acc_tags;
     }
     acc
 }
@@ -404,11 +970,52 @@ pub fn expand_lmdb<'a>(
             continue;
         }
 
-        let max_gates = candidates.iter().map(|c| c.gates.len()).max().unwrap();
-        let mut best: Vec<CircuitSeq> = candidates
-            .into_iter()
-            .filter(|c| c.gates.len() == max_gates)
-            .collect();
+        let mut best: Vec<CircuitSeq> = if sat_scoring_enabled() {
+            let seed = sat_score_seed();
+            let base_n = sub.max_wire() + 1;
+            let base_score = expansion_selection_score(&score_subcircuit(
+                &sub.gates,
+                base_n,
+                seed ^ 0xE4A5_10AD,
+            ));
+            let required_score = base_score + sat_expand_min_delta();
+            let scored: Vec<(f64, CircuitSeq)> = candidates
+                .into_iter()
+                .enumerate()
+                .filter_map(|(idx, candidate)| {
+                    let score_n = candidate.max_wire() + 1;
+                    let sat_score = score_subcircuit(&candidate.gates, score_n, seed ^ idx as u64);
+                    if sat_cone_aware_enabled()
+                        && sat_score.output_cone_fraction < sat_cone_min_fraction()
+                    {
+                        return None;
+                    }
+                    if sat_bcp_enabled() && sat_score.bcp_resistance < sat_bcp_min_resistance() {
+                        return None;
+                    }
+                    Some((expansion_selection_score(&sat_score), candidate))
+                })
+                .filter(|(score, _)| *score > required_score)
+                .collect();
+            if scored.is_empty() {
+                continue;
+            }
+            let max_score = scored
+                .iter()
+                .map(|(score, _)| *score)
+                .fold(f64::NEG_INFINITY, f64::max);
+            scored
+                .into_iter()
+                .filter(|(score, _)| (*score - max_score).abs() <= 1e-9)
+                .map(|(_, candidate)| candidate)
+                .collect()
+        } else {
+            let max_gates = candidates.iter().map(|c| c.gates.len()).max().unwrap();
+            candidates
+                .into_iter()
+                .filter(|c| c.gates.len() == max_gates)
+                .collect()
+        };
         let idx = rng.random_range(0..best.len());
         let mut repl = best.swap_remove(idx);
 
@@ -455,6 +1062,46 @@ pub fn expand_lmdb<'a>(
     expanded
 }
 
+// Map a raw DB candidate (canonical wire space, forward orientation) back into the actual
+// circuit wire space: undo reversal, apply the canonicalization order, then assign concrete
+// wires (filling any extra ancillas with random unused wires). Returns the circuit-space repl.
+fn rewire_candidate(
+    mut repl: CircuitSeq,
+    is_reversed: bool,
+    final_order: &Permutation,
+    used: &[u16],
+    n: usize,
+    rng: &mut impl rand::Rng,
+) -> CircuitSeq {
+    if is_reversed {
+        repl.gates.reverse();
+    }
+    let repl_n = repl.max_wire() + 1;
+    let mut order_data = final_order.data.clone();
+    while order_data.len() < repl_n {
+        let i = order_data.len();
+        order_data.push(i);
+    }
+    repl.rewire(
+        &Permutation { data: order_data },
+        std::cmp::max(repl_n, final_order.data.len()),
+    );
+    let repl_n_b = repl.max_wire() + 1;
+    let mut used_ext = used.to_vec();
+    if used_ext.len() < repl_n_b {
+        let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
+        rand::seq::SliceRandom::shuffle(available.as_mut_slice(), rng);
+        let mut avail = available.into_iter();
+        while used_ext.len() < repl_n_b {
+            match avail.next() {
+                Some(w) => used_ext.push(w),
+                None => break,
+            }
+        }
+    }
+    CircuitSeq::unrewire_subcircuit(&repl, &used_ext)
+}
+
 pub fn compress_lmdb(
     c: &CircuitSeq,
     trials: usize,
@@ -462,16 +1109,24 @@ pub fn compress_lmdb(
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
     mode: usize,
+    base_offset: usize,
+    tags: &mut Vec<u32>,
 ) -> CircuitSeq {
     use crate::circuit::circuit::polys_repr_blob;
     use xxhash_rust::xxh3::xxh3_128;
 
+    // `tags` (non-empty when --track-survivors): per-gate origin id, kept in lockstep with
+    // `compressed.gates`. `base_offset` makes the recorded replacement position circuit-relative.
+    let track = !tags.is_empty();
     let mut compressed = c.clone();
 
     let mut i = 0;
     while i < compressed.gates.len().saturating_sub(1) {
         if compressed.gates[i] == compressed.gates[i + 1] {
             compressed.gates.drain(i..=i + 1);
+            if track {
+                tags.drain(i..=i + 1);
+            }
             i = i.saturating_sub(2);
         } else {
             i += 1;
@@ -502,6 +1157,20 @@ pub fn compress_lmdb(
             2 => CANONICALIZE_TIME_MAX_GATES.fetch_add(canon_elapsed, Ordering::Relaxed),
             _ => CANONICALIZE_TIME_SIMPLE.fetch_add(canon_elapsed, Ordering::Relaxed),
         };
+        if compression_trace_enabled()
+            && (canon_elapsed as u128 / 1_000_000) >= compression_trace_threshold_ms()
+        {
+            eprintln!(
+                "[compress-trace] slow inner-canon mode={} direction=forward parent_gates={} inner_start={} inner_end={} inner_gates={} inner_wires={} elapsed_ms={}",
+                mode,
+                compressed.gates.len(),
+                start,
+                end,
+                sub.gates.len(),
+                sub.used_wires().len(),
+                canon_elapsed as u128 / 1_000_000
+            );
+        }
 
         if fwd_polys.is_empty() {
             continue;
@@ -537,6 +1206,20 @@ pub fn compress_lmdb(
                 2 => CANONICALIZE_TIME_MAX_GATES.fetch_add(canon2_elapsed, Ordering::Relaxed),
                 _ => CANONICALIZE_TIME_SIMPLE.fetch_add(canon2_elapsed, Ordering::Relaxed),
             };
+            if compression_trace_enabled()
+                && (canon2_elapsed as u128 / 1_000_000) >= compression_trace_threshold_ms()
+            {
+                eprintln!(
+                    "[compress-trace] slow inner-canon mode={} direction=reverse parent_gates={} inner_start={} inner_end={} inner_gates={} inner_wires={} elapsed_ms={}",
+                    mode,
+                    compressed.gates.len(),
+                    start,
+                    end,
+                    sub.gates.len(),
+                    sub.used_wires().len(),
+                    canon2_elapsed as u128 / 1_000_000
+                );
+            }
 
             if rev_polys.is_empty() {
                 continue;
@@ -584,53 +1267,112 @@ pub fn compress_lmdb(
         }
 
         let min_gates = candidates.iter().map(|c| c.gates.len()).min().unwrap();
-        *COMPRESSION_HISTOGRAM
-            .entry((sub.gates.len() as u8, min_gates as u8))
-            .or_insert(0) += 1;
-        let mut best: Vec<CircuitSeq> = candidates
-            .into_iter()
-            .filter(|c| c.gates.len() == min_gates)
-            .collect();
-        let idx = rng.random_range(0..best.len());
-        let mut repl = best.swap_remove(idx);
-
-        if is_reversed {
-            repl.gates.reverse();
-        }
-
+        let sub_len = sub.gates.len();
         let t_rewire = Instant::now();
-        let repl_n = repl.max_wire() + 1;
-        let mut order_data = final_order.data.clone();
-        while order_data.len() < repl_n {
-            let i = order_data.len();
-            order_data.push(i);
-        }
-        repl.rewire(
-            &Permutation { data: order_data },
-            std::cmp::max(repl_n, final_order.data.len()),
-        );
-
-        let repl_n_b = repl.max_wire() + 1;
-        let mut used_ext = used.clone();
-        if used_ext.len() < repl_n_b {
-            let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
-            rand::seq::SliceRandom::shuffle(available.as_mut_slice(), &mut rng);
-            let mut avail = available.into_iter();
-            while used_ext.len() < repl_n_b {
-                match avail.next() {
-                    Some(w) => used_ext.push(w),
-                    None => break,
-                }
+        let repl: CircuitSeq = if gen_mode() {
+            // gen mode (#9): among the smallest (most-compressing) equivalents, rewire each into
+            // circuit-space, then let the incoming ranker pick by GLOBAL fanout/leeway features
+            // (fanout-histogram-to-target, low-leeway reduction, MAX_FANOUT cap).
+            let min_set: Vec<CircuitSeq> = candidates
+                .into_iter()
+                .filter(|c| c.gates.len() == min_gates)
+                .map(|cand| rewire_candidate(cand, is_reversed, &final_order, &used, n, &mut rng))
+                .collect();
+            let left = &compressed.gates[..start];
+            let right = &compressed.gates[end..];
+            let feats: Vec<crate::replace::ranking::CandFeatures> = min_set
+                .iter()
+                .map(|cc| cand_features(&cc.gates, left, right))
+                .collect();
+            let order = crate::replace::ranking::incoming().order(&feats);
+            let pick = order.first().copied().unwrap_or(0);
+            min_set.into_iter().nth(pick).unwrap()
+        } else {
+            let mut best: Vec<CircuitSeq> = if sat_scoring_enabled() {
+            let max_len = min_gates
+                .saturating_add(sat_score_slack())
+                .min(sub.gates.len() - 1);
+            let seed = sat_score_seed();
+            let base_score = compression_selection_score(&score_subcircuit(
+                &sub.gates,
+                sub.max_wire() + 1,
+                seed ^ 0xc0de_5678,
+            ));
+            let scored: Vec<(f64, CircuitSeq)> = candidates
+                .into_iter()
+                .filter(|c| c.gates.len() <= max_len)
+                .enumerate()
+                .filter_map(|(idx, candidate)| {
+                    let score_n = candidate.max_wire() + 1;
+                    let sat_score = score_subcircuit(&candidate.gates, score_n, seed ^ idx as u64);
+                    if sat_cone_aware_enabled()
+                        && sat_score.output_cone_fraction < sat_cone_min_fraction()
+                    {
+                        return None;
+                    }
+                    if sat_bcp_enabled() && sat_score.bcp_resistance < sat_bcp_min_resistance() {
+                        return None;
+                    }
+                    let candidate_score = compression_selection_score(&sat_score);
+                    if sat_compress_protect_enabled()
+                        && candidate_score + sat_compress_preserve_delta() < base_score
+                    {
+                        return None;
+                    }
+                    Some((candidate_score, candidate))
+                })
+                .collect();
+            if scored.is_empty() {
+                continue;
             }
-        }
-        let repl = CircuitSeq::unrewire_subcircuit(&repl, &used_ext);
+            let max_score = scored
+                .iter()
+                .map(|(score, _)| *score)
+                .fold(f64::NEG_INFINITY, f64::max);
+            scored
+                .into_iter()
+                .filter(|(score, _)| (*score - max_score).abs() <= 1e-9)
+                .map(|(_, candidate)| candidate)
+                .collect()
+            } else {
+                candidates
+                    .into_iter()
+                    .filter(|c| c.gates.len() == min_gates)
+                    .collect()
+            };
+            let idx = rng.random_range(0..best.len());
+            let raw = best.swap_remove(idx);
+            rewire_candidate(raw, is_reversed, &final_order, &used, n, &mut rng)
+        };
+        *COMPRESSION_HISTOGRAM
+            .entry((sub_len as u8, repl.gates.len() as u8))
+            .or_insert(0) += 1;
         REWIRE_TIME.fetch_add(t_rewire.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
+        if record_enabled() {
+            let ws: Vec<u16> = repl.gates.iter().flatten().copied().collect();
+            record_replacement(
+                "compress",
+                REC_ITER.load(Ordering::Relaxed),
+                base_offset + start,
+                base_offset + start + repl.gates.len(),
+                end - start,
+                &ws,
+            );
+        }
+
         let t_splice = Instant::now();
-        if repl.gates.len() == end - start {
+        let repl_len = repl.gates.len();
+        if repl_len == end - start {
             compressed.gates[start..end].copy_from_slice(&repl.gates);
         } else {
             compressed.gates.splice(start..end, repl.gates);
+        }
+        if track {
+            // The replaced window [start, end) becomes `repl_len` freshly-created gates,
+            // tagged TAG_NEW (survivor mode) or floor(median(window))+1 (gen mode).
+            let nt = new_gate_tag(&tags[start..end]);
+            tags.splice(start..end, std::iter::repeat(nt).take(repl_len));
         }
         SPLICE_TIME.fetch_add(t_splice.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
@@ -641,6 +1383,9 @@ pub fn compress_lmdb(
     while j < compressed.gates.len().saturating_sub(1) {
         if compressed.gates[j] == compressed.gates[j + 1] {
             compressed.gates.drain(j..=j + 1);
+            if track {
+                tags.drain(j..=j + 1);
+            }
             j = j.saturating_sub(2);
         } else {
             j += 1;
@@ -657,7 +1402,12 @@ pub fn compress_big_ancillas(
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
     mode: usize,
+    base_offset: usize,
+    tags: &mut Vec<u32>,
 ) -> CircuitSeq {
+    // `tags` (non-empty when --track-survivors): per-gate origin id, kept in lockstep with
+    // `circuit.gates`. `base_offset` is this chunk's offset in the full circuit.
+    let track = !tags.is_empty();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
@@ -665,6 +1415,9 @@ pub fn compress_big_ancillas(
     while i < circuit.gates.len().saturating_sub(1) {
         if circuit.gates[i] == circuit.gates[i + 1] {
             circuit.gates.drain(i..=i + 1);
+            if track {
+                tags.drain(i..=i + 1);
+            }
             i = i.saturating_sub(2);
         } else {
             i += 1;
@@ -694,7 +1447,7 @@ pub fn compress_big_ancillas(
         subcircuit_gates.sort();
 
         let t1 = Instant::now();
-        let cc = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires);
+        let cc = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires, tags);
         CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let (start, end) = match cc {
             Some(se) => se,
@@ -722,8 +1475,38 @@ pub fn compress_big_ancillas(
         let sub_num_wires = used_wires.len();
 
         let t4 = Instant::now();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs, mode);
-        COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let sub_gates = subcircuit.gates.len();
+        // Tags of the contiguous block [start, end]; compress_lmdb mutates them in lockstep.
+        let mut block_tags: Vec<u32> = if track {
+            tags[start..=end].to_vec()
+        } else {
+            Vec::new()
+        };
+        let subcircuit_temp = compress_lmdb(
+            &subcircuit,
+            10,
+            sub_num_wires,
+            env,
+            shard_dbs,
+            mode,
+            base_offset + start,
+            &mut block_tags,
+        );
+        let compress_elapsed = t4.elapsed();
+        COMPRESS_TIME.fetch_add(compress_elapsed.as_nanos() as u64, Ordering::Relaxed);
+        if compression_trace_enabled()
+            && compress_elapsed.as_millis() >= compression_trace_threshold_ms()
+        {
+            eprintln!(
+                "[compress-trace] slow compress_lmdb mode={} outer_gates={} outer_wires={} outer_span={} out_gates={} elapsed_ms={}",
+                mode,
+                sub_gates,
+                sub_num_wires,
+                end - start + 1,
+                subcircuit_temp.gates.len(),
+                compress_elapsed.as_millis()
+            );
+        }
 
         subcircuit = subcircuit_temp;
 
@@ -735,6 +1518,9 @@ pub fn compress_big_ancillas(
             for i in 0..repl_len {
                 circuit.gates[start + i] = subcircuit.gates[i];
             }
+            if track {
+                tags[start..start + repl_len].copy_from_slice(&block_tags);
+            }
         } else if repl_len < old_len {
             for i in 0..repl_len {
                 circuit.gates[start + i] = subcircuit.gates[i];
@@ -745,6 +1531,15 @@ pub fn compress_big_ancillas(
             circuit
                 .gates
                 .truncate(circuit.gates.len() - (old_len - repl_len));
+            if track {
+                for i in 0..repl_len {
+                    tags[start + i] = block_tags[i];
+                }
+                for i in (end + 1)..tags.len() {
+                    tags[i - (old_len - repl_len)] = tags[i];
+                }
+                tags.truncate(tags.len() - (old_len - repl_len));
+            }
         } else {
             panic!("Replacement grew, which is not allowed");
         }
@@ -756,6 +1551,9 @@ pub fn compress_big_ancillas(
     while i < circuit.gates.len().saturating_sub(1) {
         if circuit.gates[i] == circuit.gates[i + 1] {
             circuit.gates.drain(i..=i + 1);
+            if track {
+                tags.drain(i..=i + 1);
+            }
             i = i.saturating_sub(2);
         } else {
             i += 1;
@@ -806,7 +1604,7 @@ pub fn expand_big_ancillas<'a>(
         subcircuit_gates.sort();
 
         let t1 = Instant::now();
-        let cc = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires);
+        let cc = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires, &mut Vec::new());
         CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let (start, end) = match cc {
             Some(se) => se,
@@ -870,6 +1668,9 @@ pub fn expand_big_ancillas<'a>(
 
 // For timing and benchmarking purposes
 pub fn print_compress_timers() {
+    use crate::circuit::circuit::{
+        CANON4_RULE_L_BRANCHES, CANON4_RULE_L_CALLS, CANON4_RULE_L_TIME,
+    };
     use crate::replace::transpositions::{SAMF_COMPRESSIONS_FAILED, SAMF_COMPRESSIONS_MADE};
 
     let canon = CANON_TIME.load(Ordering::Relaxed);
@@ -889,6 +1690,9 @@ pub fn print_compress_timers() {
     let lmdb_lookup = LMDB_LOOKUP_TIME.load(Ordering::Relaxed);
     let from_blob = FROM_BLOB_TIME.load(Ordering::Relaxed);
     let trial = TRIAL_TIME.load(Ordering::Relaxed);
+    let rule_l_time = CANON4_RULE_L_TIME.load(Ordering::Relaxed);
+    let rule_l_calls = CANON4_RULE_L_CALLS.load(Ordering::Relaxed);
+    let rule_l_branches = CANON4_RULE_L_BRANCHES.load(Ordering::Relaxed);
 
     let samf_made = SAMF_COMPRESSIONS_MADE.load(Ordering::Relaxed);
     let samf_failed = SAMF_COMPRESSIONS_FAILED.load(Ordering::Relaxed);
@@ -960,8 +1764,46 @@ pub fn print_compress_timers() {
     if trial as f64 >= threshold_ns {
         println!("Trial loop time: {:.2} min", trial as f64 / ns);
     }
+    if rule_l_time as f64 >= threshold_ns || std::env::var("COMPRESSION_TRACE").is_ok() {
+        let seconds = rule_l_time as f64 / 1e9;
+        let avg_ms = if rule_l_calls == 0 {
+            0.0
+        } else {
+            rule_l_time as f64 / 1e6 / rule_l_calls as f64
+        };
+        let avg_branches = if rule_l_calls == 0 {
+            0.0
+        } else {
+            rule_l_branches as f64 / rule_l_calls as f64
+        };
+        println!(
+            "Rule L time: {:.2} s  calls: {}  avg_ms: {:.2}  avg_branches: {:.2}",
+            seconds, rule_l_calls, avg_ms, avg_branches
+        );
+    }
     println!(
         "SAMF compressions made: {}  failed: {}",
         samf_made, samf_failed
     );
+
+    if std::env::var("BENCH_CANON").is_ok() {
+        use crate::circuit::circuit::{CANON_BENCH_CALLS, CANON4_CORE_TIME, POLYCANON_CORE_TIME};
+
+        let c4 = CANON4_CORE_TIME.load(Ordering::Relaxed) as f64;
+        let pc = POLYCANON_CORE_TIME.load(Ordering::Relaxed) as f64;
+        let calls = CANON_BENCH_CALLS.load(Ordering::Relaxed).max(1) as f64;
+        println!("--- Canonicalization benchmark (BENCH_CANON) ---");
+        println!("matched calls:    {}", calls as u64);
+        println!(
+            "canon4 total:     {:.3} s   ({:.1} us/call)",
+            c4 / 1e9,
+            c4 / 1e3 / calls
+        );
+        println!(
+            "polycanon total:  {:.3} s   ({:.1} us/call)",
+            pc / 1e9,
+            pc / 1e3 / calls
+        );
+        println!("ratio poly/canon4:{:.2}x", pc / c4.max(1.0));
+    }
 }

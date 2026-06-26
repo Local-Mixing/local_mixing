@@ -46,24 +46,26 @@ impl PathConnectedWires {
 
 // Computes a completely random circuit on n wires and m gates
 pub fn random_circuit(n: usize, m: usize) -> CircuitSeq {
+    assert!(n >= 3, "random circuits need at least 3 wires");
+    assert!(
+        n <= u16::MAX as usize + 1,
+        "random circuit wire count exceeds u16 wire indices"
+    );
     let mut circuit = Vec::with_capacity(m);
 
     for _ in 0..m {
         loop {
             // mask for used pins
-            let mut set = [false; 255];
-            for i in n..255 {
-                set[i as usize] = true; // disable pins >= n
-            }
+            let mut set = vec![false; n];
 
             // pick 3 distinct pins
             let mut gate = [0u16; 3];
             for j in 0..3 {
                 loop {
-                    let v = fastrand::u16(..255);
-                    if !set[v as usize] {
-                        set[v as usize] = true;
-                        gate[j] = v;
+                    let v = fastrand::usize(..n);
+                    if !set[v] {
+                        set[v] = true;
+                        gate[j] = v as u16;
                         break;
                     }
                 }
@@ -750,7 +752,11 @@ pub fn contiguous_convex(
     circuit: &mut CircuitSeq,
     ordered_convex_gates: &mut Vec<usize>,
     num_wires: usize,
+    tags: &mut Vec<u32>,
 ) -> Option<(usize, usize)> {
+    // `tags` (when non-empty) is a per-gate origin id maintained in lockstep with
+    // `circuit.gates` for --track-survivors; mirror every remove/insert below.
+    let track = !tags.is_empty();
     // This should never run
     if ordered_convex_gates.len() < 2 {
         return None;
@@ -789,6 +795,10 @@ pub fn contiguous_convex(
                 circuit.gates.insert(start, gate);
                 member.remove(p);
                 member.insert(start, false);
+                if track {
+                    let t = tags.remove(p);
+                    tags.insert(start, t);
+                }
                 start += 1;
                 moved = true;
                 break;
@@ -802,6 +812,10 @@ pub fn contiguous_convex(
                 circuit.gates.insert(end, gate);
                 member.remove(p);
                 member.insert(end, false);
+                if track {
+                    let t = tags.remove(p);
+                    tags.insert(end, t);
+                }
                 end -= 1;
                 moved = true;
                 break;

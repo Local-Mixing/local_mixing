@@ -1,12 +1,18 @@
 use std::fs;
 use std::path::Path;
 
-use lmdb::Environment;
+use lmdb::{Environment, EnvironmentFlags};
 
 use local_mixing::circuit::CircuitSeq;
+use local_mixing::replace::gadgets::{
+    SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS, SLICE_ZERO_RANDOM_GATES_PER_WIRE,
+};
 use local_mixing::replace::main_mix::{main_shuffle_shoot_shuffle, open_all_dbs};
 use local_mixing::replace::mixing::install_kill_handler;
-use local_mixing::replace::replace::{print_compress_timers, write_compression_histogram};
+use local_mixing::replace::replace::{
+    print_compress_timers, record_finish, record_init, write_compression_histogram,
+    write_expansion_histogram, write_expansion_wire_histogram,
+};
 
 /// Shuffle-shoot-shuffle: the main obfuscation+compression game.
 pub fn run(sub: &clap::ArgMatches) {
@@ -18,18 +24,41 @@ pub fn run(sub: &clap::ArgMatches) {
     let x: usize = *sub.get_one("x").unwrap();
     let leave = sub.get_flag("interleave");
     let do_gadgetize = sub.get_flag("gadgetize");
+    let do_feistalize = sub.get_flag("feistalize");
+    let slice_zero = sub.get_flag("slice_zero");
+    let slice_zero_random = sub.get_flag("slice_zero_random");
+    let slice_zero_hardcoded = sub.get_flag("slice_zero_hardcoded");
+    let slice_zero_random_gates: usize = sub
+        .get_one("slice_zero_random_gates")
+        .copied()
+        .unwrap_or(SLICE_ZERO_RANDOM_GATES_PER_WIRE * n);
+    let slice_zero_hardcoded_rounds: usize = sub
+        .get_one("slice_zero_hardcoded_rounds")
+        .copied()
+        .unwrap_or(SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS);
+    let gadget_path = sub.get_one::<String>("gadget_path").map(|s| s.as_str());
     let full_shuffle = sub.get_flag("full-shuffle");
-    let gates_ahead: usize = *sub.get_one("gates_ahead").unwrap();
+    let full_shuffle_early = sub.get_flag("full-shuffle-early");
+    let gates_ahead_expand: usize = *sub.get_one("gates_ahead_expand").unwrap();
+    let gates_ahead_samf: usize = *sub.get_one("gates_ahead_samf").unwrap();
+    let type_attempts: usize = *sub.get_one("type_attempts").unwrap();
+    let shooting_times: usize = *sub.get_one("shooting_times").unwrap();
     let egg = sub.get_flag("egg");
-    let shuffled = sub.get_flag("shuffled");
+    let equality_check = sub.get_flag("equality_check");
+    let single_end = sub.get_flag("single-end");
+    let light_compression = sub.get_flag("light_compression");
+    let record_replacements = sub.get_flag("record_replacements");
+    let track_survivors = sub.get_flag("track_survivors");
     let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
-    let i: &str = sub.get_one::<String>("intermediate").unwrap().as_str();
     let data = fs::read_to_string(s).expect("Failed to read source circuit");
 
     let lmdb_path = "./db";
     let _ = std::fs::create_dir_all(lmdb_path);
 
+    // The mixing path only READS the curated replacement DB, so open it read-only and without a
+    // lock. This lets the run share a DB owned by another user (no write access to the lock file).
     let env = Environment::new()
+        .set_flags(EnvironmentFlags::READ_ONLY | EnvironmentFlags::NO_LOCK)
         .set_max_readers(10000)
         .set_max_dbs(556)
         .set_map_size(800 * 1024 * 1024 * 1024)
@@ -44,6 +73,13 @@ pub fn run(sub: &clap::ArgMatches) {
     }
 
     let c = CircuitSeq::from_string(&data);
+    if record_replacements {
+        record_init(&format!("{}.replacements", d));
+    }
+    if track_survivors {
+        local_mixing::replace::replace::TRACK_SURVIVORS
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     main_shuffle_shoot_shuffle(
         &c,
         rounds,
@@ -55,23 +91,56 @@ pub fn run(sub: &clap::ArgMatches) {
         &env,
         &shard_dbs,
         &curated_shard_dbs,
-        i,
         leave,
         do_gadgetize,
+        do_feistalize,
+        slice_zero,
+        slice_zero_random,
+        slice_zero_random_gates,
+        slice_zero_hardcoded,
+        slice_zero_hardcoded_rounds,
+        gadget_path,
         full_shuffle,
-        gates_ahead,
+        full_shuffle_early,
+        gates_ahead_expand,
+        gates_ahead_samf,
+        type_attempts,
+        shooting_times,
         egg,
+        equality_check,
         rg_freq,
-        shuffled,
+        single_end,
+        light_compression,
     );
+    if record_replacements {
+        record_finish();
+        println!("Replacement record written to {}.replacements", d);
+    }
     print_compress_timers();
     write_compression_histogram("compression_histogram.csv");
+    write_expansion_histogram("expansion_histogram.csv");
+    write_expansion_wire_histogram("expansion_wire_histogram.csv");
+
+    println!("\n=== Plot commands (copy/paste one at a time) ===");
     println!(
         "python3 ./heatmap/compression_hist.py --csv compression_histogram.csv --out compression_histogram.png"
     );
     println!(
         "python3 ./heatmap/compression_heatmap.py --csv compression_histogram.csv --out compression_heatmap.png"
     );
+    println!(
+        "python3 ./heatmap/compression_hist.py --csv expansion_histogram.csv --out expansion_histogram.png"
+    );
+    println!(
+        "python3 ./heatmap/compression_heatmap.py --csv expansion_histogram.csv --out expansion_heatmap.png"
+    );
+    println!(
+        "python3 ./heatmap/compression_hist.py --csv expansion_wire_histogram.csv --out expansion_wire_histogram.png"
+    );
+    println!(
+        "python3 ./heatmap/compression_heatmap.py --csv expansion_wire_histogram.csv --out expansion_wire_heatmap.png"
+    );
+    println!("=== end plot commands ===\n");
 
     let x_label = {
         let stem = Path::new(s).file_stem().unwrap().to_str().unwrap();

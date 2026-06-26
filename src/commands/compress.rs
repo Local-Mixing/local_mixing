@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use lmdb::Environment;
+use lmdb::{Environment, EnvironmentFlags};
 
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::replace::main_mix::open_all_dbs;
@@ -14,14 +14,33 @@ pub fn run(sub: &clap::ArgMatches) {
     let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
     let d: &String = sub.get_one("d").expect("Missing -d <destination>");
     let _seq = sub.get_flag("seq");
+    // Optional early-stop: stop compressing once the circuit reaches this fraction of its initial
+    // size (in addition to the usual no-progress stop). Absent => compress to convergence.
+    let target_fraction: Option<f64> = sub.get_one::<f64>("target_fraction").copied();
 
     let contents =
         fs::read_to_string(s).unwrap_or_else(|_| panic!("Failed to read circuit file at {}", s));
     let mut acc = CircuitSeq::from_string(&contents);
 
+    let initial_len = acc.gates.len();
+    let early_stop_target: Option<usize> = target_fraction.map(|f| {
+        let f = f.clamp(0.0, 1.0);
+        let t = (initial_len as f64 * f).floor() as usize;
+        println!(
+            "Compression early-stop target: {:.1}% of {} = {} gates",
+            f * 100.0,
+            initial_len,
+            t
+        );
+        t
+    });
+
     let lmdb_path = "./db";
     let _ = std::fs::create_dir_all(lmdb_path);
+    // Compression only READS the curated replacement DB; open it read-only and lock-free so a
+    // DB owned by another user (no write access to the lock file) can be shared.
     let env = Environment::new()
+        .set_flags(EnvironmentFlags::READ_ONLY | EnvironmentFlags::NO_LOCK)
         .set_max_dbs(556)
         .set_max_readers(10000)
         .set_map_size(800 * 1024 * 1024 * 1024)
@@ -37,7 +56,19 @@ pub fn run(sub: &clap::ArgMatches) {
 
     println!("Starting compression");
     let (shard_dbs, _curated_shard_dbs) = open_all_dbs(&env);
-    acc = compress_loop(&acc, n, &env, &shard_dbs, 12, 1, 1, d);
+    acc = compress_loop(
+        &acc,
+        n,
+        &env,
+        &shard_dbs,
+        12,
+        1,
+        1,
+        d,
+        false,
+        early_stop_target,
+        &mut Vec::new(),
+    );
     print_compress_timers();
 
     let mut file = fs::File::create(d).expect("Failed to create new file");
