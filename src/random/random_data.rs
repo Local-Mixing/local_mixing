@@ -8,12 +8,66 @@ use crate::{
 use rand::{Rng, RngCore, prelude::IndexedRandom};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 // use duckdb::{Connection, AccessMode, Config};
-use std::collections::HashSet;
 
 // Used to keep track of "Indirect" collisions when searching for convex subcircuits
 pub struct PathConnectedWires {
     wires: Vec<bool>,
     count: usize,
+}
+
+#[derive(Clone)]
+struct DenseWireSet {
+    wires: Vec<bool>,
+    count: usize,
+}
+
+impl DenseWireSet {
+    fn new(num_wires: usize) -> Self {
+        Self {
+            wires: vec![false; num_wires],
+            count: 0,
+        }
+    }
+
+    fn contains(&self, wire: &u16) -> bool {
+        self.wires.get(*wire as usize).copied().unwrap_or(false)
+    }
+
+    fn insert(&mut self, wire: u16) {
+        let idx = wire as usize;
+        if idx >= self.wires.len() {
+            self.wires.resize(idx + 1, false);
+        }
+        if !self.wires[idx] {
+            self.wires[idx] = true;
+            self.count += 1;
+        }
+    }
+
+    fn extend_gate(&mut self, gate: [u16; 3]) {
+        self.insert(gate[0]);
+        self.insert(gate[1]);
+        self.insert(gate[2]);
+    }
+
+    fn len_after_extending_gate(&self, gate: [u16; 3]) -> usize {
+        let [a, b, c] = gate;
+        let mut extra = 0;
+        if !self.contains(&a) {
+            extra += 1;
+        }
+        if b != a && !self.contains(&b) {
+            extra += 1;
+        }
+        if c != a && c != b && !self.contains(&c) {
+            extra += 1;
+        }
+        self.count + extra
+    }
+
+    fn len(&self) -> usize {
+        self.count
+    }
 }
 
 impl PathConnectedWires {
@@ -55,16 +109,12 @@ pub fn random_circuit(n: usize, m: usize) -> CircuitSeq {
 
     for _ in 0..m {
         loop {
-            // mask for used pins
-            let mut set = vec![false; n];
-
             // pick 3 distinct pins
             let mut gate = [0u16; 3];
             for j in 0..3 {
                 loop {
                     let v = fastrand::usize(..n);
-                    if !set[v] {
-                        set[v] = true;
+                    if !gate[..j].iter().any(|&pin| pin == v as u16) {
                         gate[j] = v as u16;
                         break;
                     }
@@ -91,24 +141,23 @@ pub fn is_convex(num_wires: usize, circuit: &CircuitSeq, convex_gate_ids: &[usiz
         return false;
     }
 
-    let mut is_convex = true;
-
     // track gates outside the convex set that interfere with its paths
     let mut colliding_set = vec![];
     let mut path_colliding_targets = vec![false; num_wires];
     let mut path_colliding_controls = vec![false; num_wires];
+    let mut selected_pos = 0;
 
     // iterate through gates between first and last of convex set
-    'outer: for i in convex_gate_ids[0]..=*convex_gate_ids.last().unwrap() {
-        if convex_gate_ids.contains(&i) {
+    for i in convex_gate_ids[0]..=*convex_gate_ids.last().unwrap() {
+        if selected_pos < convex_gate_ids.len() && i == convex_gate_ids[selected_pos] {
+            selected_pos += 1;
             // gate is inside convex set
             let selected_gate = circuit.gates[i];
 
             // check no collision with colliding_set
             for c_gate in colliding_set.iter() {
                 if Gate::collides_index(&selected_gate, &c_gate) {
-                    is_convex = false;
-                    break 'outer;
+                    return false;
                 }
             }
 
@@ -125,7 +174,7 @@ pub fn is_convex(num_wires: usize, circuit: &CircuitSeq, convex_gate_ids: &[usiz
                 || path_colliding_targets[c1 as usize]
                 || path_colliding_controls[t as usize]
             {
-                colliding_set.push(g.clone());
+                colliding_set.push(g);
                 path_colliding_targets[t as usize] = true;
                 path_colliding_controls[c0 as usize] = true;
                 path_colliding_controls[c1 as usize] = true;
@@ -133,7 +182,7 @@ pub fn is_convex(num_wires: usize, circuit: &CircuitSeq, convex_gate_ids: &[usiz
         }
     }
 
-    is_convex
+    true
 }
 
 // More complex method to find a convex subcircuit of up to max_wires. Starts with a random gate and then expands left and right, adding gates that collide with the current set until we can’t add more without exceeding max_wires. Then checks if the resulting set is convex; if not, retries.
@@ -149,7 +198,6 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
     circuit: &CircuitSeq,
     rng: &mut R,
 ) -> (Vec<usize>, usize) {
-    let circuit = circuit.clone();
     let num_gates = circuit.gates.len();
     let mut search_attempts = 0;
     let max_attempts = 3;
@@ -165,11 +213,11 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
         selected_gate_idx[0] = rng.random_range(0..num_gates);
         let mut selected_gate_ctr = 1;
 
-        let mut curr_wires = HashSet::new();
-        curr_wires.extend(circuit.gates[selected_gate_idx[0]].iter().copied());
+        let mut curr_wires = DenseWireSet::new(num_wires);
+        curr_wires.extend_gate(circuit.gates[selected_gate_idx[0]]);
 
         while selected_gate_ctr < len {
-            let mut candidates: Vec<(usize, usize)> = vec![]; // (gate_idx, num_new_wires)
+            let mut candidates: Vec<(usize, usize)> = Vec::with_capacity(window * 2);
 
             // Left-most gate, go right
             let mut path_connected_target_wires = PathConnectedWires::new(num_wires);
@@ -300,8 +348,6 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
                 None => break,
             };
 
-            let mut new_wires = curr_wires.clone();
-            new_wires.extend(circuit.gates[next_candidate].iter().copied());
             let mut insert_pos = selected_gate_ctr;
             while insert_pos > 0 && selected_gate_idx[insert_pos - 1] > next_candidate {
                 selected_gate_idx[insert_pos] = selected_gate_idx[insert_pos - 1];
@@ -309,7 +355,7 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
             }
             selected_gate_idx[insert_pos] = next_candidate;
             selected_gate_ctr += 1;
-            curr_wires = new_wires;
+            curr_wires.extend_gate(circuit.gates[next_candidate]);
             if curr_wires.len() >= max_wires {
                 break;
             }
@@ -318,7 +364,7 @@ pub fn find_convex_subcircuit_max_wires<R: RngCore>(
         if selected_gate_ctr < 3 {
             continue;
         }
-        if !is_convex(num_wires, &circuit, &selected_gate_idx[..selected_gate_ctr]) {
+        if !is_convex(num_wires, circuit, &selected_gate_idx[..selected_gate_ctr]) {
             continue;
         }
         return (
@@ -337,7 +383,6 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
     circuit: &CircuitSeq,
     rng: &mut R,
 ) -> (Vec<usize>, usize) {
-    let circuit = circuit.clone();
     let num_gates = circuit.gates.len();
     let mut search_attempts = 0;
     let max_attempts = 3;
@@ -353,11 +398,11 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
         selected_gate_idx[0] = rng.random_range(0..num_gates);
         let mut selected_gate_ctr = 1;
 
-        let mut curr_wires = HashSet::new();
-        curr_wires.extend(circuit.gates[selected_gate_idx[0]].iter().copied());
+        let mut curr_wires = DenseWireSet::new(num_wires);
+        curr_wires.extend_gate(circuit.gates[selected_gate_idx[0]]);
 
         while selected_gate_ctr < len {
-            let mut candidates: Vec<(usize, usize)> = vec![];
+            let mut candidates: Vec<(usize, usize)> = Vec::with_capacity(window * 2);
 
             // Left-most gate, go right
             let mut path_connected_target_wires = PathConnectedWires::new(num_wires);
@@ -488,8 +533,6 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
                 None => break,
             };
 
-            let mut new_wires = curr_wires.clone();
-            new_wires.extend(circuit.gates[next_candidate].iter().copied());
             let mut insert_pos = selected_gate_ctr;
             while insert_pos > 0 && selected_gate_idx[insert_pos - 1] > next_candidate {
                 selected_gate_idx[insert_pos] = selected_gate_idx[insert_pos - 1];
@@ -497,7 +540,7 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
             }
             selected_gate_idx[insert_pos] = next_candidate;
             selected_gate_ctr += 1;
-            curr_wires = new_wires;
+            curr_wires.extend_gate(circuit.gates[next_candidate]);
             if curr_wires.len() >= max_wires {
                 break;
             }
@@ -506,7 +549,7 @@ pub fn find_convex_subcircuit_max_gates<R: RngCore>(
         if selected_gate_ctr < 3 {
             continue;
         }
-        if !is_convex(num_wires, &circuit, &selected_gate_idx[..selected_gate_ctr]) {
+        if !is_convex(num_wires, circuit, &selected_gate_idx[..selected_gate_ctr]) {
             continue;
         }
         return (
@@ -522,7 +565,6 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
     circuit: &CircuitSeq,
     rng: &mut R,
 ) -> (Vec<usize>, usize) {
-    let circuit = circuit.clone();
     let num_gates = circuit.gates.len();
     let mut search_attempts = 0;
     let max_attempts = 3;
@@ -543,14 +585,14 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
         let mut selected_gate_ctr = 1;
 
         // Initialize wire set
-        let mut curr_wires = HashSet::new();
-        curr_wires.extend(circuit.gates[selected_gate_idx[0]].iter().copied());
+        let mut curr_wires = DenseWireSet::new(num_wires);
+        curr_wires.extend_gate(circuit.gates[selected_gate_idx[0]]);
 
         while selected_gate_ctr < len {
             if selected_gate_ctr >= 30 {
                 break;
             }
-            let mut candidates: Vec<usize> = vec![];
+            let mut candidates: Vec<usize> = Vec::with_capacity(2);
 
             // Left-most gate, go right
             let mut path_connected_target_wires = PathConnectedWires::new(num_wires);
@@ -600,11 +642,6 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                             path_connected_target_wires.add_wire(t as usize);
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
-
-                            let _num_new_wires = curr_gate
-                                .iter()
-                                .filter(|&w| !curr_wires.contains(w))
-                                .count();
 
                             if !indirect_path_connected && !repeat_wires {
                                 candidates.push(curr_idx);
@@ -666,11 +703,6 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                             path_connected_control_wires.add_wire(c1 as usize);
                             path_connected_control_wires.add_wire(c2 as usize);
 
-                            let _num_new_wires = curr_gate
-                                .iter()
-                                .filter(|&w| !curr_wires.contains(w))
-                                .count();
-
                             if !indirect_path_connected && !repeat_wires {
                                 candidates.push(curr_idx);
                                 break;
@@ -701,9 +733,7 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
                 None => break,
             };
 
-            let mut new_wires = curr_wires.clone();
-            new_wires.extend(circuit.gates[next_candidate].iter().copied());
-            if new_wires.len() > 21 {
+            if curr_wires.len_after_extending_gate(circuit.gates[next_candidate]) > 21 {
                 break;
             }
 
@@ -717,14 +747,14 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
             selected_gate_ctr += 1;
 
             // Commit wire update
-            curr_wires = new_wires;
+            curr_wires.extend_gate(circuit.gates[next_candidate]);
         }
 
         if selected_gate_ctr < 3 {
             continue;
         }
 
-        if !is_convex(num_wires, &circuit, &selected_gate_idx[..selected_gate_ctr]) {
+        if !is_convex(num_wires, circuit, &selected_gate_idx[..selected_gate_ctr]) {
             continue;
         }
 
@@ -787,10 +817,8 @@ pub fn contiguous_convex(
             let can_left =
                 (start..p).all(|i| !Gate::collides_index(&circuit.gates[i], &circuit.gates[p]));
             if can_left {
-                let gate = circuit.gates.remove(p);
-                circuit.gates.insert(start, gate);
-                member.remove(p);
-                member.insert(start, false);
+                circuit.gates[start..=p].rotate_right(1);
+                member[start..=p].rotate_right(1);
                 start += 1;
                 moved = true;
                 break;
@@ -800,10 +828,8 @@ pub fn contiguous_convex(
             let can_right = ((p + 1)..=end)
                 .all(|i| !Gate::collides_index(&circuit.gates[i], &circuit.gates[p]));
             if can_right {
-                let gate = circuit.gates.remove(p);
-                circuit.gates.insert(end, gate);
-                member.remove(p);
-                member.insert(end, false);
+                circuit.gates[p..=end].rotate_left(1);
+                member[p..=end].rotate_left(1);
                 end -= 1;
                 moved = true;
                 break;

@@ -45,7 +45,8 @@ pub fn run(sub: &clap::ArgMatches) {
     let type_attempts: usize = *sub.get_one("type_attempts").unwrap();
     let shooting_times: usize = *sub.get_one("shooting_times").unwrap();
     let collision_rounds: usize = *sub.get_one("collision_rounds").unwrap();
-    let egg = sub.get_flag("egg");
+    let stable_compressions: usize = *sub.get_one("stable_compressions").unwrap();
+    let expansion_game = sub.get_flag("expansion_game");
     let equality_check = sub.get_flag("equality_check");
     let single_end = sub.get_flag("single-end");
     let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
@@ -96,7 +97,8 @@ pub fn run(sub: &clap::ArgMatches) {
         type_attempts,
         shooting_times,
         collision_rounds,
-        egg,
+        stable_compressions,
+        expansion_game,
         equality_check,
         rg_freq,
         single_end,

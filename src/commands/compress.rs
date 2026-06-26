@@ -14,6 +14,9 @@ pub fn run(sub: &clap::ArgMatches) {
     let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
     let d: &String = sub.get_one("d").expect("Missing -d <destination>");
     let _seq = sub.get_flag("seq");
+    let stable_compressions: usize = *sub
+        .get_one("stable_compressions")
+        .expect("Missing --stable_compressions");
 
     let contents =
         fs::read_to_string(s).unwrap_or_else(|_| panic!("Failed to read circuit file at {}", s));
@@ -37,7 +40,7 @@ pub fn run(sub: &clap::ArgMatches) {
 
     println!("Starting compression");
     let (shard_dbs, _curated_shard_dbs) = open_all_dbs(&env);
-    acc = compress_loop(&acc, n, &env, &shard_dbs, 12, 1, 1, d);
+    acc = compress_loop(&acc, n, &env, &shard_dbs, stable_compressions, 1, 1, d);
     print_compress_timers();
 
     let mut file = fs::File::create(d).expect("Failed to create new file");

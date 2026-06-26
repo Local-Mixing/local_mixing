@@ -360,7 +360,8 @@ pub fn main_shuffle_shoot_shuffle(
     type_attempts: usize,
     shooting_times: usize,
     collision_rounds: usize,
-    egg: bool,
+    stable_compressions: usize,
+    expansion_game: bool,
     equality_check: bool,
     rg_freq: usize,
     single_end: bool,
@@ -571,7 +572,7 @@ pub fn main_shuffle_shoot_shuffle(
                 type_attempts,
                 shooting_times,
                 collision_rounds,
-                egg,
+                expansion_game,
                 env,
                 curated_shard_dbs,
                 shard_dbs,
@@ -612,7 +613,7 @@ pub fn main_shuffle_shoot_shuffle(
                 type_attempts,
                 shooting_times,
                 collision_rounds,
-                egg,
+                expansion_game,
                 env,
                 curated_shard_dbs,
                 shard_dbs,
@@ -621,8 +622,8 @@ pub fn main_shuffle_shoot_shuffle(
                 circuit.gates.reverse();
             }
         }
-        println!("After shooting game: {} gates", circuit.gates.len());
-        let cone_label = format!("round{}-after-shooting", i + 1);
+        println!("After collision game: {} gates", circuit.gates.len());
+        let cone_label = format!("round{}-after-collision-game", i + 1);
         print_sat_cone(&cone_label, &circuit.gates, sat_cone_range);
         if full_shuffle {
             // SAMF insertion is equivalence-preserving by construction, so no retry guard.
@@ -655,7 +656,7 @@ pub fn main_shuffle_shoot_shuffle(
             n,
             env,
             shard_dbs,
-            6,
+            stable_compressions,
             i + 1,
             rounds,
             "temp_compression.txt",

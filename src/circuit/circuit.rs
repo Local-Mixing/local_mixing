@@ -2,9 +2,9 @@
 use primitive_types::U256 as u256;
 use primitive_types::U512 as u512;
 use rand::{RngCore, seq::SliceRandom};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering as CmpOrdering;
-use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -99,6 +99,14 @@ impl Gate {
         state ^ (c1 | ((!c2) & 1)) << gate[0]
     }
 
+    // Evaluate up to 128 bits
+    #[inline(always)]
+    pub fn evaluate_index_128(state: u128, gate: [u16; 3]) -> u128 {
+        let c1 = (state >> gate[1]) & 1;
+        let c2 = (state >> gate[2]) & 1;
+        state ^ ((c1 | (1 ^ c2)) << gate[0])
+    }
+
     // Evaluate up to 256 bits
     #[inline(always)]
     pub fn evaluate_index_256(state: u256, gate: [u16; 3]) -> u256 {
@@ -108,6 +116,7 @@ impl Gate {
         state ^ ((c1 | (one ^ c2)) << gate[0])
     }
 
+    #[inline(always)]
     pub fn evaluate_index_512(state: u512, gate: [u16; 3]) -> u512 {
         let one = u512::one();
         let c1 = (state >> gate[1]) & one;
@@ -115,6 +124,7 @@ impl Gate {
         state ^ ((c1 | (one ^ c2)) << gate[0])
     }
 
+    #[inline(always)]
     pub fn evaluate_index_1024(state: U1024, gate: [u16; 3]) -> U1024 {
         let one = U1024::one();
         let c1 = (state >> gate[1]) & one;
@@ -124,7 +134,7 @@ impl Gate {
 
     // Evaluate a list of gates
     #[inline(always)]
-    pub fn evaluate_index_list(state: usize, gates: &Vec<[u16; 3]>) -> usize {
+    pub fn evaluate_index_list(state: usize, gates: &[[u16; 3]]) -> usize {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index(current_wires, *g);
@@ -133,7 +143,16 @@ impl Gate {
     }
 
     #[inline(always)]
-    pub fn evaluate_index_list_256(state: u256, gates: &Vec<[u16; 3]>) -> u256 {
+    pub fn evaluate_index_list_128(state: u128, gates: &[[u16; 3]]) -> u128 {
+        let mut current_wires = state;
+        for g in gates {
+            current_wires = Self::evaluate_index_128(current_wires, *g);
+        }
+        current_wires
+    }
+
+    #[inline(always)]
+    pub fn evaluate_index_list_256(state: u256, gates: &[[u16; 3]]) -> u256 {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_256(current_wires, *g);
@@ -142,7 +161,7 @@ impl Gate {
     }
 
     #[inline(always)]
-    pub fn evaluate_index_list_512(state: u512, gates: &Vec<[u16; 3]>) -> u512 {
+    pub fn evaluate_index_list_512(state: u512, gates: &[[u16; 3]]) -> u512 {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_512(current_wires, *g);
@@ -151,7 +170,7 @@ impl Gate {
     }
 
     #[inline(always)]
-    pub fn evaluate_index_list_1024(state: U1024, gates: &Vec<[u16; 3]>) -> U1024 {
+    pub fn evaluate_index_list_1024(state: U1024, gates: &[[u16; 3]]) -> U1024 {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_1024(current_wires, *g);
@@ -254,6 +273,11 @@ impl CircuitSeq {
     // Evaluate the entire circuit with a starting input
     pub fn evaluate(&self, input: usize) -> usize {
         Gate::evaluate_index_list(input, &self.gates)
+    }
+
+    // Evaluate the circuit on a 128-bit input state (one bit per wire).
+    pub fn evaluate_128(&self, input: u128) -> u128 {
+        Gate::evaluate_index_list_128(input, &self.gates)
     }
 
     // Evaluate the circuit on a 256-bit input state (one bit per wire).
@@ -493,15 +517,19 @@ impl CircuitSeq {
 
     // Returns the wires touched by a circuit
     pub fn used_wires(&self) -> Vec<u16> {
-        let mut used: HashSet<u16> = HashSet::new();
-        for gates in &self.gates {
-            used.insert(gates[0]);
-            used.insert(gates[1]);
-            used.insert(gates[2]);
+        let Some(max_wire) = self.gates.iter().flatten().copied().max() else {
+            return Vec::new();
+        };
+        let mut used = vec![false; max_wire as usize + 1];
+        for &[target, control_a, control_b] in &self.gates {
+            used[target as usize] = true;
+            used[control_a as usize] = true;
+            used[control_b as usize] = true;
         }
-        let mut wires: Vec<u16> = used.into_iter().collect();
-        wires.sort();
-        wires
+        used.into_iter()
+            .enumerate()
+            .filter_map(|(wire, is_used)| is_used.then_some(wire as u16))
+            .collect()
     }
 
     // "Bottom" function for gates
@@ -511,22 +539,15 @@ impl CircuitSeq {
 
     // Undo rewiring. Note: Recall that the number of wires in CircuitSeq is not stored
     pub fn unrewire_subcircuit(subcircuit: &CircuitSeq, used_wires: &[u16]) -> CircuitSeq {
-        // Build a mapping from new wire -> original wire
-        let wire_map: HashMap<u16, u16> = used_wires
-            .iter()
-            .enumerate()
-            .map(|(new_idx, &orig_wire)| (new_idx as u16, orig_wire))
-            .collect();
-
         // Replace wires in each gate with original wires
         let new_gates: Vec<[u16; 3]> = subcircuit
             .gates
             .iter()
             .map(|&[t, c1, c2]| {
                 [
-                    *wire_map.get(&t).unwrap(),
-                    *wire_map.get(&c1).unwrap(),
-                    *wire_map.get(&c2).unwrap(),
+                    used_wires[t as usize],
+                    used_wires[c1 as usize],
+                    used_wires[c2 as usize],
                 ]
             })
             .collect();
@@ -536,7 +557,8 @@ impl CircuitSeq {
 
     pub fn evaluate_evolution_256(&self, input: u256) -> Vec<u256> {
         let mut state = input;
-        let mut evolution = vec![state];
+        let mut evolution = Vec::with_capacity(self.gates.len() + 1);
+        evolution.push(state);
 
         for gate in &self.gates {
             state = Gate::evaluate_index_256(state, *gate);
@@ -546,9 +568,23 @@ impl CircuitSeq {
         evolution
     }
 
+    pub fn evaluate_evolution_128(&self, input: u128) -> Vec<u128> {
+        let mut state = input;
+        let mut evolution = Vec::with_capacity(self.gates.len() + 1);
+        evolution.push(state);
+
+        for gate in &self.gates {
+            state = Gate::evaluate_index_128(state, *gate);
+            evolution.push(state);
+        }
+
+        evolution
+    }
+
     pub fn evaluate_evolution_1024(&self, input: U1024) -> Vec<U1024> {
         let mut state = input;
-        let mut evolution = vec![state];
+        let mut evolution = Vec::with_capacity(self.gates.len() + 1);
+        evolution.push(state);
 
         for gate in &self.gates {
             state = Gate::evaluate_index_1024(state, *gate);
@@ -589,6 +625,29 @@ impl CircuitSeq {
         num_inputs: usize,
     ) -> Result<(), String> {
         use rayon::prelude::*;
+
+        if num_wires <= 128 {
+            let mask = if num_wires < 128 {
+                (1u128 << num_wires) - 1
+            } else {
+                u128::MAX
+            };
+            return (0..num_inputs).into_par_iter().try_for_each(|_| {
+                let mut bytes = [0u8; 16];
+                rand::rng().fill_bytes(&mut bytes);
+                let random_input = u128::from_le_bytes(bytes) & mask;
+
+                let self_output = Gate::evaluate_index_list_128(random_input, &self.gates);
+                let other_output =
+                    Gate::evaluate_index_list_128(random_input, &other_circuit.gates);
+
+                if (self_output & mask) != (other_output & mask) {
+                    Err("Circuits are not equal".to_string())
+                } else {
+                    Ok(())
+                }
+            });
+        }
 
         if num_wires > 256 {
             if num_wires > 1024 {
@@ -1340,7 +1399,7 @@ fn is_same_orbit(
     auts2: &[Vec<usize>],
 ) -> bool {
     let cset: HashSet<usize> = candidates.iter().copied().collect();
-    let mut visited: HashSet<usize> = HashSet::new();
+    let mut visited: HashSet<usize> = HashSet::default();
     let mut frontier = vec![a];
     visited.insert(a);
     while let Some(x) = frontier.pop() {
@@ -2761,6 +2820,23 @@ mod tests {
 
         let blocked = circuit.evaluate_1024(one << 902);
         assert_eq!((blocked >> 900) & one, U1024::zero());
+    }
+
+    #[test]
+    fn evaluate_128_matches_256_for_supported_wires() {
+        let mut rng = fastrand::Rng::with_seed(0x6576_616c_3132_38);
+        for _ in 0..500 {
+            let n = rng.usize(3..=128);
+            let m = rng.usize(0..=(3 * n));
+            fastrand::seed(rng.u64(..));
+            let circuit = random_circuit(n, m);
+            let input = rng.u128(..);
+            let mask = if n < 128 { (1u128 << n) - 1 } else { u128::MAX };
+
+            let output_128 = circuit.evaluate_128(input) & mask;
+            let output_256 = circuit.evaluate_256(u256::from(input)) & u256::from(mask);
+            assert_eq!(u256::from(output_128), output_256, "n={n} m={m}");
+        }
     }
 
     fn old_toggle(poly: &mut BTreeSet<Monomial>, m: Monomial) {

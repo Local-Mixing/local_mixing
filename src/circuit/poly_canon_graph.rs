@@ -2,7 +2,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use xxhash_rust::xxh3::Xxh3Default;
 
 use crate::circuit::circuit::{
-    Monomial, Permutation, Polynomial, polynomial_from_terms, trim_canonicalized,
+    Monomial, Permutation, Polynomial, canonicalize_polys_4, polynomial_from_terms,
+    trim_canonicalized,
 };
 
 type Hash = u128;
@@ -204,6 +205,22 @@ impl Graph {
 
         Permutation::new(perm)
     }
+
+    fn has_ambiguous_variable_hashes(&self) -> bool {
+        let mut seen = FxHashSet::default();
+        self.variables
+            .iter()
+            .map(|node| node.hash.unwrap_or_default())
+            .any(|hash| !seen.insert(hash))
+    }
+}
+
+fn order_to_relabel(order: &Permutation, n: usize) -> Permutation {
+    let mut relabel = vec![0; n];
+    for (new_wire, &old_wire) in order.data.iter().enumerate() {
+        relabel[old_wire] = new_wire;
+    }
+    Permutation::new(relabel)
 }
 
 pub fn canonicalize_graph(polys: &[Polynomial], n: usize) -> Permutation {
@@ -218,7 +235,13 @@ pub fn canonicalize_graph(polys: &[Polynomial], n: usize) -> Permutation {
         graph.pull_hashes();
     }
 
-    graph.extract_perm()
+    if graph.has_ambiguous_variable_hashes() {
+        canonicalize_polys_4(polys.to_vec(), true)
+            .map(|(_, order)| order_to_relabel(&order, n))
+            .unwrap_or_else(|_| graph.extract_perm())
+    } else {
+        graph.extract_perm()
+    }
 }
 
 pub fn canonical_form(polys: &[Polynomial], perm: &Permutation) -> Vec<Polynomial> {

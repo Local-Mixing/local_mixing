@@ -16,6 +16,7 @@ use crate::{
 };
 use lmdb::Transaction;
 use rand::Rng;
+use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use std::fs::File;
@@ -40,6 +41,34 @@ pub static COMPRESSION_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashM
 // across all rounds. One is keyed by gate counts, the other by distinct-wire counts.
 pub static EXPANSION_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
 pub static EXPANSION_WIRE_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
+
+fn cancel_adjacent_duplicate_gates(gates: &mut Vec<[u16; 3]>) {
+    let mut write = 0usize;
+    for read in 0..gates.len() {
+        let gate = gates[read];
+        if write > 0 && gates[write - 1] == gate {
+            write -= 1;
+        } else {
+            gates[write] = gate;
+            write += 1;
+        }
+    }
+    gates.truncate(write);
+}
+
+fn shuffled_unused_wires(n: usize, used_wires: &[u16], rng: &mut impl Rng) -> Vec<u16> {
+    let mut used_mask = vec![false; n];
+    for &wire in used_wires {
+        if let Some(slot) = used_mask.get_mut(wire as usize) {
+            *slot = true;
+        }
+    }
+    let mut available: Vec<u16> = (0..n as u16)
+        .filter(|&wire| !used_mask[wire as usize])
+        .collect();
+    rand::seq::SliceRandom::shuffle(available.as_mut_slice(), rng);
+    available
+}
 
 // Record one expansion: `before`/`after` gate counts and `before_wires`/`after_wires`
 // distinct-wire counts.
@@ -236,7 +265,7 @@ pub fn compress_loop(
     n: usize,
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
-    stable_max: usize,
+    stable_compressions: usize,
     curr_round: usize,
     last_round: usize,
     output_path: &str,
@@ -244,6 +273,12 @@ pub fn compress_loop(
     let mut acc = circuit.clone();
     let mut rng = rand::rng();
     let mut mode = 0usize;
+    let stable_compressions = stable_compressions.max(1);
+    let stable_max = if last_round > 0 && curr_round == last_round {
+        stable_compressions.saturating_mul(2)
+    } else {
+        stable_compressions
+    };
     // Ring buffer of the last stable_max+1 gate counts. Stop when total reduction
     // over the last stable_max iterations is less than 100 gates.
     let mut recent: std::collections::VecDeque<usize> =
@@ -267,10 +302,8 @@ pub fn compress_loop(
         let trace_threshold_ms = compression_trace_threshold_ms();
         let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
         let compressed_chunks: Vec<(usize, usize, usize, Vec<[u16; 3]>, u128)> = ranges
-            .into_iter()
-            .enumerate()
-            .collect::<Vec<_>>()
             .into_par_iter()
+            .enumerate()
             .map(|(chunk_idx, (start, end))| {
                 let sub = CircuitSeq {
                     gates: acc.gates[start..end].to_vec(),
@@ -443,14 +476,17 @@ fn expand_to_gate_factor_once<'a>(
     (expanded, passes, stalled)
 }
 
-fn expand_to_gate_factor_scored<'a>(
+pub fn expand_once_scored<'a>(
     circuit: &CircuitSeq,
     n: usize,
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
     pair_mode: &ExpandPairMode<'a>,
-    factor: usize,
 ) -> CircuitSeq {
+    if !sat_scoring_enabled() {
+        return expand_once(circuit, n, env, shard_dbs, pair_mode);
+    }
+
     let seed = sat_score_seed();
     let base_score = expansion_selection_score(&score_subcircuit(
         &circuit.gates,
@@ -462,8 +498,9 @@ fn expand_to_gate_factor_scored<'a>(
     let mut best: Option<(f64, CircuitSeq, usize, bool)> = None;
 
     for attempt in 0..attempts {
-        let (candidate, passes, stalled) =
-            expand_to_gate_factor_once(circuit, n, env, shard_dbs, pair_mode, factor);
+        let candidate = expand_once(circuit, n, env, shard_dbs, pair_mode);
+        let passes = 1usize;
+        let stalled = candidate.gates.len() <= circuit.gates.len();
         if candidate.gates.len() <= circuit.gates.len() {
             continue;
         }
@@ -494,22 +531,22 @@ fn expand_to_gate_factor_scored<'a>(
 
     match best {
         Some((score, expanded, passes, stalled)) => {
-            print_expand_loop_summary(
+            println!(
+                "  Scored expand pass: {} -> {} gates (passes {}, stalled {})",
                 circuit.gates.len(),
                 expanded.gates.len(),
-                factor,
                 passes,
-                stalled,
+                stalled
             );
             println!(
-                "  Expand loop score: {:.3} (base {:.3}, required {:.3}, attempts {})",
+                "  Scored expand pass score: {:.3} (base {:.3}, required {:.3}, attempts {})",
                 score, base_score, required_score, attempts
             );
             expanded
         }
         None => {
             println!(
-                "  Expand loop skipped: no candidate exceeded score {:.3} after {} attempts",
+                "  Scored expand pass skipped: no candidate exceeded score {:.3} after {} attempts",
                 required_score, attempts
             );
             circuit.clone()
@@ -605,9 +642,7 @@ pub fn expand_lmdb<'a>(
             continue;
         }
 
-        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
-            .to_le_bytes()
-            .to_vec();
+        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
         let fwd_shard = fwd_key[0] as usize;
 
         let t_txn = Instant::now();
@@ -618,9 +653,7 @@ pub fn expand_lmdb<'a>(
         TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t_lookup = Instant::now();
-        let fwd_result = txn
-            .get(shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec());
+        let fwd_result = txn.get(shard_dbs[fwd_shard], &fwd_key);
         LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let (value, final_order, is_reversed) = if let Ok(v) = fwd_result {
@@ -634,15 +667,11 @@ pub fn expand_lmdb<'a>(
                 continue;
             }
 
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
-                .to_le_bytes()
-                .to_vec();
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
             let rev_shard = rev_key[0] as usize;
 
             let t_lookup2 = Instant::now();
-            let rev_result = txn
-                .get(shard_dbs[rev_shard], &rev_key)
-                .map(|v: &[u8]| v.to_vec());
+            let rev_result = txn.get(shard_dbs[rev_shard], &rev_key);
             LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             match rev_result {
@@ -744,8 +773,7 @@ pub fn expand_lmdb<'a>(
         let repl_n_b = repl.max_wire() + 1;
         let mut used_ext = used.clone();
         if used_ext.len() < repl_n_b {
-            let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
-            rand::seq::SliceRandom::shuffle(available.as_mut_slice(), &mut rng);
+            let available = shuffled_unused_wires(n, &used_ext, &mut rng);
             let mut avail = available.into_iter();
             while used_ext.len() < repl_n_b {
                 match avail.next() {
@@ -780,15 +808,7 @@ pub fn compress_lmdb(
 
     let mut compressed = c.clone();
 
-    let mut i = 0;
-    while i < compressed.gates.len().saturating_sub(1) {
-        if compressed.gates[i] == compressed.gates[i + 1] {
-            compressed.gates.drain(i..=i + 1);
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
+    cancel_adjacent_duplicate_gates(&mut compressed.gates);
 
     if compressed.gates.is_empty() {
         return CircuitSeq { gates: Vec::new() };
@@ -833,9 +853,7 @@ pub fn compress_lmdb(
             continue;
         }
 
-        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
-            .to_le_bytes()
-            .to_vec();
+        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
         let fwd_shard = fwd_key[0] as usize;
 
         let t_txn = Instant::now();
@@ -846,9 +864,7 @@ pub fn compress_lmdb(
         TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t_lookup = Instant::now();
-        let fwd_result = txn
-            .get(shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec());
+        let fwd_result = txn.get(shard_dbs[fwd_shard], &fwd_key);
         LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let (value, final_order, is_reversed) = if let Ok(v) = fwd_result {
@@ -882,15 +898,11 @@ pub fn compress_lmdb(
                 continue;
             }
 
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
-                .to_le_bytes()
-                .to_vec();
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
             let rev_shard = rev_key[0] as usize;
 
             let t_lookup2 = Instant::now();
-            let rev_result = txn
-                .get(shard_dbs[rev_shard], &rev_key)
-                .map(|v: &[u8]| v.to_vec());
+            let rev_result = txn.get(shard_dbs[rev_shard], &rev_key);
             LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             match rev_result {
@@ -1001,8 +1013,7 @@ pub fn compress_lmdb(
         let repl_n_b = repl.max_wire() + 1;
         let mut used_ext = used.clone();
         if used_ext.len() < repl_n_b {
-            let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
-            rand::seq::SliceRandom::shuffle(available.as_mut_slice(), &mut rng);
+            let available = shuffled_unused_wires(n, &used_ext, &mut rng);
             let mut avail = available.into_iter();
             while used_ext.len() < repl_n_b {
                 match avail.next() {
@@ -1025,15 +1036,7 @@ pub fn compress_lmdb(
         TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    let mut j = 0;
-    while j < compressed.gates.len().saturating_sub(1) {
-        if compressed.gates[j] == compressed.gates[j + 1] {
-            compressed.gates.drain(j..=j + 1);
-            j = j.saturating_sub(2);
-        } else {
-            j += 1;
-        }
-    }
+    cancel_adjacent_duplicate_gates(&mut compressed.gates);
 
     compressed
 }
@@ -1049,15 +1052,7 @@ pub fn compress_big_ancillas(
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
-    let mut i = 0;
-    while i < circuit.gates.len().saturating_sub(1) {
-        if circuit.gates[i] == circuit.gates[i + 1] {
-            circuit.gates.drain(i..=i + 1);
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
+    cancel_adjacent_duplicate_gates(&mut circuit.gates);
 
     for _ in 0..trials {
         let t0 = Instant::now();
@@ -1092,6 +1087,12 @@ pub fn compress_big_ancillas(
         let mut subcircuit = CircuitSeq { gates };
 
         let mut used_wires = subcircuit.used_wires();
+        let mut used_wire_mask = vec![false; num_wires];
+        for &wire in &used_wires {
+            if let Some(slot) = used_wire_mask.get_mut(wire as usize) {
+                *slot = true;
+            }
+        }
         let n_wires = used_wires.len();
         let max = num_wires;
         let new_wires = rng.random_range(n_wires..=max);
@@ -1099,9 +1100,10 @@ pub fn compress_big_ancillas(
             let mut count = n_wires;
             while count < new_wires {
                 let random = rng.random_range(0..num_wires);
-                if used_wires.contains(&(random as u16)) {
+                if used_wire_mask[random] {
                     continue;
                 }
+                used_wire_mask[random] = true;
                 used_wires.push(random as u16);
                 count += 1;
             }
@@ -1155,15 +1157,7 @@ pub fn compress_big_ancillas(
     }
 
     let t7 = Instant::now();
-    let mut i = 0;
-    while i < circuit.gates.len().saturating_sub(1) {
-        if circuit.gates[i] == circuit.gates[i + 1] {
-            circuit.gates.drain(i..=i + 1);
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
+    cancel_adjacent_duplicate_gates(&mut circuit.gates);
     DEDUP_TIME.fetch_add(t7.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     circuit

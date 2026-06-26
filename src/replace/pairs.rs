@@ -14,6 +14,20 @@ use crate::{
     },
 };
 
+fn shuffled_unused_wires(n: usize, used_wires: &[u16], rng: &mut impl Rng) -> Vec<u16> {
+    let mut used_mask = vec![false; n];
+    for &wire in used_wires {
+        if let Some(slot) = used_mask.get_mut(wire as usize) {
+            *slot = true;
+        }
+    }
+    let mut available: Vec<u16> = (0..n as u16)
+        .filter(|&wire| !used_mask[wire as usize])
+        .collect();
+    available.shuffle(rng);
+    available
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Gate taxonomy and Replacement Pair
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -57,7 +71,6 @@ pub fn expand_curated_lmdb(
 ) -> Option<Vec<[u16; 3]>> {
     use crate::circuit::circuit::{Permutation, polys_repr_blob};
     use lmdb::Transaction;
-    use rand::prelude::SliceRandom;
     use xxhash_rust::xxh3::xxh3_128;
 
     let mut rng = rand::rng();
@@ -70,18 +83,14 @@ pub fn expand_curated_lmdb(
         return None;
     }
 
-    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
-        .to_le_bytes()
-        .to_vec();
+    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
     let fwd_shard = fwd_key[0] as usize;
 
     let txn = env.begin_ro_txn().ok()?;
 
     // Try curated DBs first (forward direction only — no reversal needed for curated).
     let curated_hit = if !curated_shard_dbs.is_empty() {
-        txn.get(curated_shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec())
-            .ok()
+        txn.get(curated_shard_dbs[fwd_shard], &fwd_key).ok()
     } else {
         None
     };
@@ -90,24 +99,16 @@ pub fn expand_curated_lmdb(
         (v, fwd_order, false)
     } else if !shard_dbs.is_empty() {
         // Fallback: try regular shard DBs (both forward and reverse, same as expand_lmdb).
-        if let Ok(v) = txn
-            .get(shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec())
-        {
+        if let Ok(v) = txn.get(shard_dbs[fwd_shard], &fwd_key) {
             (v, fwd_order, false)
         } else {
             let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
             if rev_polys.is_empty() {
                 return None;
             }
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
-                .to_le_bytes()
-                .to_vec();
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
             let rev_shard = rev_key[0] as usize;
-            match txn
-                .get(shard_dbs[rev_shard], &rev_key)
-                .map(|v: &[u8]| v.to_vec())
-            {
+            match txn.get(shard_dbs[rev_shard], &rev_key) {
                 Ok(v) => (v, rev_order, true),
                 Err(_) => return None,
             }
@@ -202,8 +203,7 @@ pub fn expand_curated_lmdb(
     let repl_n_b = repl.max_wire() + 1;
     let mut used_ext = used.clone();
     if used_ext.len() < repl_n_b {
-        let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
-        available.shuffle(&mut rng);
+        let available = shuffled_unused_wires(n, &used_ext, &mut rng);
         let mut avail = available.into_iter();
         while used_ext.len() < repl_n_b {
             avail.next().map(|w| used_ext.push(w))?;
@@ -235,17 +235,13 @@ pub fn compress_curated_lmdb(
         return None;
     }
 
-    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
-        .to_le_bytes()
-        .to_vec();
+    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
     let fwd_shard = fwd_key[0] as usize;
 
     let txn = env.begin_ro_txn().ok()?;
 
     let curated_hit = if !curated_shard_dbs.is_empty() {
-        txn.get(curated_shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec())
-            .ok()
+        txn.get(curated_shard_dbs[fwd_shard], &fwd_key).ok()
     } else {
         None
     };
@@ -253,24 +249,16 @@ pub fn compress_curated_lmdb(
     let (value, final_order, is_reversed) = if let Some(v) = curated_hit {
         (v, fwd_order, false)
     } else if !shard_dbs.is_empty() {
-        if let Ok(v) = txn
-            .get(shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec())
-        {
+        if let Ok(v) = txn.get(shard_dbs[fwd_shard], &fwd_key) {
             (v, fwd_order, false)
         } else {
             let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
             if rev_polys.is_empty() {
                 return None;
             }
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
-                .to_le_bytes()
-                .to_vec();
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
             let rev_shard = rev_key[0] as usize;
-            match txn
-                .get(shard_dbs[rev_shard], &rev_key)
-                .map(|v: &[u8]| v.to_vec())
-            {
+            match txn.get(shard_dbs[rev_shard], &rev_key) {
                 Ok(v) => (v, rev_order, true),
                 Err(_) => return None,
             }
@@ -377,8 +365,7 @@ pub fn compress_curated_lmdb(
     let repl_n_b = repl.max_wire() + 1;
     let mut used_ext = used.clone();
     if used_ext.len() < repl_n_b {
-        let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
-        available.shuffle(&mut rng);
+        let available = shuffled_unused_wires(n, &used_ext, &mut rng);
         let mut avail = available.into_iter();
         while used_ext.len() < repl_n_b {
             avail.next().map(|w| used_ext.push(w))?;
@@ -416,17 +403,13 @@ pub fn find_any_replacement_lmdb(
         return None;
     }
 
-    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
-        .to_le_bytes()
-        .to_vec();
+    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
     let fwd_shard = fwd_key[0] as usize;
 
     let txn = env.begin_ro_txn().ok()?;
 
     let curated_hit = if !curated_shard_dbs.is_empty() {
-        txn.get(curated_shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec())
-            .ok()
+        txn.get(curated_shard_dbs[fwd_shard], &fwd_key).ok()
     } else {
         None
     };
@@ -434,24 +417,16 @@ pub fn find_any_replacement_lmdb(
     let (value, final_order, is_reversed) = if let Some(v) = curated_hit {
         (v, fwd_order, false)
     } else if !shard_dbs.is_empty() {
-        if let Ok(v) = txn
-            .get(shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec())
-        {
+        if let Ok(v) = txn.get(shard_dbs[fwd_shard], &fwd_key) {
             (v, fwd_order, false)
         } else {
             let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
             if rev_polys.is_empty() {
                 return None;
             }
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
-                .to_le_bytes()
-                .to_vec();
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
             let rev_shard = rev_key[0] as usize;
-            match txn
-                .get(shard_dbs[rev_shard], &rev_key)
-                .map(|v: &[u8]| v.to_vec())
-            {
+            match txn.get(shard_dbs[rev_shard], &rev_key) {
                 Ok(v) => (v, rev_order, true),
                 Err(_) => return None,
             }
@@ -503,8 +478,7 @@ pub fn find_any_replacement_lmdb(
     let repl_n_b = repl.max_wire() + 1;
     let mut used_ext = used.clone();
     if used_ext.len() < repl_n_b {
-        let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
-        available.shuffle(&mut rng);
+        let available = shuffled_unused_wires(n, &used_ext, &mut rng);
         let mut avail = available.into_iter();
         while used_ext.len() < repl_n_b {
             avail.next().map(|w| used_ext.push(w))?;

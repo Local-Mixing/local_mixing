@@ -1,18 +1,19 @@
 // For adding wire shuffles and bit flips
 use crate::{
     circuit::{Permutation, circuit::CircuitSeq},
-    replace::replace::{ExpandPairMode, expand_to_gate_factor},
+    replace::replace::{ExpandPairMode, expand_once_scored},
 };
 use lmdb::{Database, Environment};
 use rand::Rng;
 use rand::seq::IndexedRandom;
-use std::collections::{HashMap, VecDeque};
+use rustc_hash::FxHashMap as HashMap;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub static SAMF_INSERTIONS_MADE: AtomicUsize = AtomicUsize::new(0);
 pub static SAMF_COMPRESSIONS_MADE: AtomicUsize = AtomicUsize::new(0);
 pub static SAMF_COMPRESSIONS_FAILED: AtomicUsize = AtomicUsize::new(0);
-// Curated expansions performed at collisions in the shuffled shooting game.
+// Curated expansions performed at collisions in the collision game.
 pub static CURATED_REPLACEMENTS_MADE: AtomicUsize = AtomicUsize::new(0);
 // Diagnostic counters for why a curated expansion did not hide a SAMF.
 pub static SAMF_HIDE_ELIGIBLE_EXPANSIONS: AtomicUsize = AtomicUsize::new(0);
@@ -1437,7 +1438,7 @@ pub fn apply_unsamf(
 ) {
     let p = t_list.to_perm(n);
     let mut t = Transpositions::from_perm(&p);
-    let mut wire_positions: HashMap<u16, (usize, usize)> = HashMap::new();
+    let mut wire_positions: HashMap<u16, (usize, usize)> = HashMap::default();
     for (idx, (wa, wb, _)) in t.transpositions.iter().enumerate() {
         wire_positions.insert(*wa, (idx, 0));
         wire_positions.insert(*wb, (idx, 1));
@@ -1827,7 +1828,7 @@ fn shoot_materialized_gate_to_first_collision(
 // hidden, the final gate of the inserted SAMF becomes the next shot instead. Future untouched
 // gates are relabeled by the SAMF's wire permutation, and the accumulated permutation is undone
 // at the end.
-fn shuffled_shooting_game_core(
+fn collision_game_core(
     input: &[[u16; 3]],
     n: usize,
     env: &Environment,
@@ -2112,7 +2113,7 @@ fn shuffled_shooting_game_core(
     (output, t_list, negation_mask, compressions)
 }
 
-fn shuffled_shooting_game_repeated_core(
+fn collision_game_repeated_core(
     input: &[[u16; 3]],
     n: usize,
     env: &Environment,
@@ -2132,7 +2133,7 @@ fn shuffled_shooting_game_repeated_core(
     let mut total_compressions = 0usize;
 
     for _ in 0..passes {
-        let (out, t_pass, neg_pass, compressions) = shuffled_shooting_game_core(
+        let (out, t_pass, neg_pass, compressions) = collision_game_core(
             &input_gates,
             n,
             env,
@@ -2158,8 +2159,8 @@ fn shuffled_shooting_game_repeated_core(
     (input_gates, total_t, total_neg, total_compressions)
 }
 
-// Standalone shuffled shooting game: run the core, then undo its accumulated SAMFs.
-pub fn shuffled_shooting_game(
+// Standalone collision game: run the core, then undo its accumulated SAMFs.
+pub fn collision_game(
     circuit: &mut CircuitSeq,
     n: usize,
     env: &Environment,
@@ -2170,7 +2171,7 @@ pub fn shuffled_shooting_game(
     type_attempts: usize,
     shooting_times: usize,
 ) -> usize {
-    let (mut output, t_list, negation_mask, compressions) = shuffled_shooting_game_repeated_core(
+    let (mut output, t_list, negation_mask, compressions) = collision_game_repeated_core(
         &circuit.gates,
         n,
         env,
@@ -2194,8 +2195,8 @@ pub fn shuffled_shooting_game(
     compressions
 }
 
-// Core of shuffled_shoot_then_samf: each shooting pass optionally runs a curated 3x expansion loop,
-// then `collision_rounds` collision games followed by one per-gate SAMF insertion. All accumulated
+// Core of shuffled_shoot_then_samf: each collision-game pass optionally runs one curated expansion
+// loop pass, then `collision_rounds` collision games followed by one per-gate SAMF insertion. All accumulated
 // SAMF state is returned WITHOUT undoing.
 // `--single-end` uses this to accumulate SAMF state across outer rounds and undo only once
 // at the very end. Each insertion reprocesses that pass's shooting output from a CLEAN
@@ -2212,7 +2213,7 @@ pub fn shuffled_shoot_then_samf_core(
     type_attempts: usize,
     shooting_times: usize,
     collision_rounds: usize,
-    expand_before_shooting: bool,
+    expansion_game: bool,
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
@@ -2227,13 +2228,19 @@ pub fn shuffled_shoot_then_samf_core(
     let mut total_compressions = 0usize;
 
     for _ in 0..passes {
-        if expand_before_shooting {
+        if expansion_game {
             let pair_mode = ExpandPairMode::Curated { curated_shard_dbs };
             let current = CircuitSeq { gates: input_gates };
-            input_gates = expand_to_gate_factor(&current, n, env, shard_dbs, &pair_mode, 3).gates;
+            let before = current.gates.len();
+            input_gates = expand_once_scored(&current, n, env, shard_dbs, &pair_mode).gates;
+            println!(
+                "  Expansion game: {} -> {} gates (scored one expand loop pass)",
+                before,
+                input_gates.len()
+            );
         }
 
-        let (out_a, t_a, neg_a, compressions) = shuffled_shooting_game_repeated_core(
+        let (out_a, t_a, neg_a, compressions) = collision_game_repeated_core(
             &input_gates,
             n,
             env,
@@ -2246,9 +2253,9 @@ pub fn shuffled_shoot_then_samf_core(
         );
         let (out_b, t_b, neg_b) = insert_m_samfs_core(&out_a, n, m, x);
 
-        // Combined permutation for this shooting pass: collision games first, then insertion.
+        // Combined permutation for this collision-game pass: collision games first, then insertion.
         let t_pass = t_a.concat(&t_b);
-        // Combined final negation for this shooting pass: insertion's own negation plus the
+        // Combined final negation for this collision-game pass: insertion's own negation plus the
         // collision games' negation transported through the insertion permutation.
         let mut neg_pass = neg_b;
         for w in 0..n {
@@ -2258,7 +2265,7 @@ pub fn shuffled_shoot_then_samf_core(
             }
         }
 
-        // Fold this shooting pass into the total pending SAMF/NOT state.
+        // Fold this collision-game pass into the total pending SAMF/NOT state.
         let mut new_total_neg = neg_pass;
         for w in 0..n {
             if total_neg[w] == 1 {
@@ -2275,9 +2282,9 @@ pub fn shuffled_shoot_then_samf_core(
     (input_gates, total_t, total_neg, total_compressions)
 }
 
-// Run each shooting pass with an optional curated 3x expansion loop, then `collision_rounds`
+// Run each collision-game pass with an optional single curated expansion loop pass, then `collision_rounds`
 // collision games followed by one per-gate SAMF insertion. Perform a SINGLE unsamf at the very
-// end. Returns the shooting game's compression count across all shooting passes.
+// end. Returns the collision game's compression count across all passes.
 pub fn shuffled_shoot_then_samf(
     circuit: &mut CircuitSeq,
     n: usize,
@@ -2288,7 +2295,7 @@ pub fn shuffled_shoot_then_samf(
     type_attempts: usize,
     shooting_times: usize,
     collision_rounds: usize,
-    expand_before_shooting: bool,
+    expansion_game: bool,
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
@@ -2303,7 +2310,7 @@ pub fn shuffled_shoot_then_samf(
         type_attempts,
         shooting_times,
         collision_rounds,
-        expand_before_shooting,
+        expansion_game,
         env,
         curated_shard_dbs,
         shard_dbs,

@@ -11,9 +11,30 @@ pub fn run(sub: &clap::ArgMatches) {
     let data = fs::read_to_string(s).expect("Failed to read circuit file");
     let circuit = CircuitSeq::from_string(&data);
 
+    let use_128 = n <= 128;
     let use_1024 = n > 256;
 
-    if use_1024 {
+    if use_128 {
+        let mask = if n < 128 { (1u128 << n) - 1 } else { u128::MAX };
+
+        let input: u128 = if sub.get_flag("random") {
+            let mut bytes = [0u8; 16];
+            rand::rng().fill_bytes(&mut bytes);
+            u128::from_le_bytes(bytes) & mask
+        } else {
+            let raw = sub
+                .get_one::<String>("input")
+                .expect("-x required when not using -r");
+            let parsed = parse_u256(raw);
+            let bytes = parsed.to_little_endian();
+            u128::from_le_bytes(bytes[..16].try_into().unwrap()) & mask
+        };
+
+        println!("n: {}", n);
+        println!("Input:  {}", format_bits_128(input, n));
+        let output = circuit.evaluate_128(input) & mask;
+        println!("Output: {}", format_bits_128(output, n));
+    } else if use_1024 {
         assert!(n <= 1024, "evaluate supports up to 1024 wires");
         let mask = if n < 1024 {
             (U1024::one() << n) - U1024::one()
@@ -59,6 +80,20 @@ pub fn run(sub: &clap::ArgMatches) {
         let output = circuit.evaluate_256(input) & mask;
         println!("Output: {}", format_bits_256(output, n));
     }
+}
+
+fn format_bits_128(val: u128, n: usize) -> String {
+    let bits: String = (0..n)
+        .map(|i| if (val >> i) & 1 == 1 { '1' } else { '0' })
+        .collect();
+    let hex_bytes = val.to_le_bytes();
+    let needed = (n + 7) / 8;
+    let hex: String = hex_bytes[..needed]
+        .iter()
+        .rev()
+        .map(|b| format!("{:02x}", b))
+        .collect();
+    format!("{} (0x{})", bits, hex)
 }
 
 fn parse_u256(s: &str) -> u256 {

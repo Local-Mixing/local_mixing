@@ -169,7 +169,7 @@ fn main() {
                         .required(false)
                         .default_value("1")
                         .value_parser(clap::value_parser!(usize))
-                        .help("Number of shooting passes; each pass runs collision_rounds collision games then one plain SAMF insertion before the final unsamf"),
+                        .help("Number of collision-game passes; each pass runs collision_rounds collision games then one plain SAMF insertion before the final unsamf"),
                 )
                 .arg(
                     Arg::new("collision_rounds")
@@ -180,6 +180,14 @@ fn main() {
                         .help("Number of shuffled collision-game rounds to run before each plain SAMF insertion"),
                 )
                 .arg(
+                    Arg::new("stable_compressions")
+                        .long("stable_compressions")
+                        .required(false)
+                        .default_value("6")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Base stable-compression window before stopping; the final round uses 2x this value"),
+                )
+                .arg(
                     Arg::new("rg_frequency")
                         .long("rg-frequency")
                         .required(false)
@@ -188,9 +196,10 @@ fn main() {
                         .help("Number of SG gadgets between each RG gadget (2 = two SGs then one RG)"),
                 )
                 .arg(
-                    Arg::new("egg")
-                        .long("egg")
-                        .help("Before each shooting pass, run a curated expansion loop to 3x size")
+                    Arg::new("expansion_game")
+                        .long("expansion_game")
+                        .alias("egg")
+                        .help("Before each collision-game pass, run one curated expansion loop pass")
                         .required(false)
                         .action(clap::ArgAction::SetTrue),
                 )
@@ -242,6 +251,14 @@ fn main() {
                         .help("Enable seq mode")
                         .required(false)
                         .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("stable_compressions")
+                        .long("stable_compressions")
+                        .required(false)
+                        .default_value("6")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Base stable-compression window before stopping; this final compression uses 2x this value"),
                 ),
         )
         .subcommand(

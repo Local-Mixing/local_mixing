@@ -6,14 +6,9 @@ use crate::circuit::{CircuitSeq, Gate, Permutation};
 use itertools::Itertools;
 use lru::LruCache;
 use once_cell::sync::Lazy;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use smallvec::SmallVec;
-use std::{
-    collections::{HashMap, HashSet},
-    num::NonZeroUsize,
-    sync::Mutex,
-    sync::atomic::AtomicI64,
-    sync::atomic::Ordering,
-};
+use std::{num::NonZeroUsize, sync::Mutex, sync::atomic::AtomicI64, sync::atomic::Ordering};
 
 // Wire relabeling canonicalization
 #[derive(Clone, Debug)]
@@ -566,7 +561,7 @@ impl CandSet {
     }
 
     pub fn complete(&self) -> bool {
-        let mut seen: HashSet<usize> = HashSet::new();
+        let mut seen: HashSet<usize> = HashSet::default();
         for row in &self.candidate {
             let mut count_nonneg = 0;
             for (i, &val) in row.iter().enumerate() {
