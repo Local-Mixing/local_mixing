@@ -36,10 +36,3 @@ mixing_tests
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
-# experiment artifacts and secrets (keep out of git)
-work/
-*.cnf
-*.dump
-id_ed25519
-id_ed25519.pub
-docs/*.pdf

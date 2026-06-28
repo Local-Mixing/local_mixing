@@ -39,6 +39,16 @@ Binary: `target/release/local_mixing_bin ssg ...`
   `--min-median-leeway`), and the `>64`-wire canonicalization guard (fixes an occasional
   equivalence break).
 
+**Shooting-game outgoing selection (gen mode):**
+
+- **Bigger windows, largest-first.** Outgoing replacement windows are sized 2..5 (size 5 =
+  `[shot, collider]` + 3 more gates reachable by commutation), tried **largest-first**, shrinking
+  5→4→3→2 on each curated-DB miss (the rank script breaks ties within a size).
+- **Forced pseudo-collision.** If the shot finds no real collision, the first gate it commuted past
+  is used as a *forced* collider so `[shot, that-gate]` can still be replaced from the DB — letting
+  otherwise-unshootable gates raise their generation. Equivalence-safe (the shot commutes with those
+  gates either way). Counted as "Forced pseudo-collisions" in the end-of-run diagnostics.
+
 **Newest additions (this version, vs. the earlier `ssg`):**
 
 - **Stage D — size-threshold compression cadence** (`--grow-threshold`, `--compress-fraction`):
@@ -86,7 +96,7 @@ Binary: `target/release/local_mixing_bin ssg ...`
 | `--shooting_times <n>` | `1` | # shooting rounds; each = one collision game + one plain-SAMF insertion, then final unsamf. |
 | `--type_attempts <n>` | `1` | Distinct SAMF gate types tried per collision before giving up. |
 | `--rg-frequency <n>` | `2` | SG gadgets between each RG gadget (2 = two SGs then one RG). |
-| `--gates_ahead_expand <n>` | `2` | Gates per curated **expansion** window, anchored at the colliding pair (>2 shrinks by 1 on a curated-DB miss, down to the pair). |
+| `--gates_ahead_expand <n>` | `2` | Gates per curated **expansion** window (legacy/non-gen path), anchored at the colliding pair (>2 shrinks by 1 on a curated-DB miss, down to the pair). In **gen mode** the outgoing windows are sized 2..5 largest-first (see §0), so this flag is not the controlling lever there. |
 | `--gates_ahead_samf <n>` | `3` | Context gates prepended to the 3 SAMF gates when hiding a SAMF. |
 | `--full-shuffle` | off | Insert n SAMFs between every gate after each round's shooting insertion, before compression. |
 | `--full-shuffle-early` | off | Insert n SAMFs between every gate once, after gadgetization/feistalization, before the main loop. |
@@ -132,7 +142,8 @@ Each stage's compressed circuit is saved to `<destination-stem>stage<k>.txt`.
 | Flag | Default | Effect |
 |------|---------|--------|
 | `--grow-threshold <f64>` | `0` | Percent growth per stage that triggers compression. `0` = off (use fixed `--rounds`). E.g. `100` = shoot until the circuit doubles relative to the previous compressed size. |
-| `--compress-fraction <f64>` | `0` | Stage D only: compress each stage down to this fraction of the **post-shooting** size, instead of fully. E.g. with `--grow-threshold 100`, `0.55` nets ≈ +10% size per round; `0.60` ≈ +20%. `0` = compress fully each stage. |
+| `--compress-fraction <f64>` | `0` | Stage D only: compress each stage down to this fraction of the **post-shooting** size (grow mode) or of **`--target-size`** (target-size mode), instead of fully. E.g. with `--grow-threshold 100`, `0.55` nets ≈ +10% size per round. `0` = compress fully each stage. |
+| `--target-size <usize>` | `0` | **Absolute final/held size** (overrides `--grow-threshold`). Each stage shoots until the circuit reaches **`TARGET-SIZE`** (the cap), then compresses back to `--compress-fraction · TARGET-SIZE`; at the incompressibility ceiling the circuit **pins at `TARGET-SIZE`**. `0` = off. Use this to set the final size of a run (and cap otherwise-ballooning feistalized mixes). With `--compress-fraction 0` it compresses fully each stage (max amplitude). |
 
 Notes:
 - **Stop rule** = the min-gen condition, evaluated on the *compressed* circuit as the **fraction**
@@ -143,6 +154,11 @@ Notes:
 - Large feistalized circuits are nearly incompressible, so `--compress-fraction` may be unreachable;
   each stage's compression then ends on the no-progress (`STABLE_MAX`) stop instead. Lowering
   `STABLE_MAX` (e.g. to `3`) and/or raising `--compress-fraction` (e.g. to `0.60`) speeds this up.
+- `--target-size` is the **final/held size directly** (the shoot cap), and the circuit pins at it at
+  the incompressibility ceiling; `--compress-fraction` is the *amplitude* (compress to
+  `f · TARGET-SIZE` each stage, lower `f` = bigger amplitude). E.g. for a final size of 1,000,000
+  with amplitude `f=0.15`, pass `--target-size 1000000 --compress-fraction 0.15`. (See §6 for how
+  these shape the generation distribution.)
 
 Example (no feistalize, ~10%/round growth, stop at min-gen 10 over 99% of gates):
 ```
@@ -171,6 +187,7 @@ local_mixing_bin compress -n <wires> -s in.txt -d out.txt --target-fraction 0.5
 |-----|--------|
 | `STAGEC_CHECK` | (set = on) Enables Stage-C equivalence instrumentation: per-pass, per-flush, and end-of-Stage-C invariant checks that materialize the current ledger state and compare (sampled, U1024) against the input. On a break it logs which pass/flush first corrupted the global function and `exit(8/9)`. **Off by default** (non-perturbing only when on; used to localize the occasional equivalence-failure bug). |
 | `ABSORB_NOTS` | (set = on) Enables NOT-absorption (#10 / Stage F) — absorb pending NOTs into the curated lookup instead of emitting NOT gadgets. Off by default (was gated off due to a latent correctness bug). |
+| `VERIFY_DB_HITS` | (set = on) Re-check every curated-DB replacement for functional equivalence to the window it replaces (`probably_equal`), aborting at the exact splice site (`exit(7)`) with the offending circuits + distinct-wire count on mismatch. Off by default (no per-hit cost). Used to deterministically localize the rare feistalize-at-scale equivalence break. |
 | `COMPRESSION_TRACE` | (set = on) Emit a per-replacement compression trace. |
 | `COMPRESSION_TRACE_MS <ms>` | Throttle the compression trace to at most one line per `<ms>` milliseconds. |
 | `SURVIVOR_LOG_EVERY <n>` | Log survivor stats every `n` events. |
@@ -211,6 +228,13 @@ local_mixing_bin compress -n <wires> -s in.txt -d out.txt --target-fraction 0.5
   canonicalization was skipped because they touched >64 distinct wires (the `Monomial = u64`
   overflow guard added to fix the occasional equivalence break). A nonzero value is normal and
   safe; it means those windows were left unchanged rather than risking a wrong DB match.
+- `Forced pseudo-collisions (no real collision): <N>` — count of shooting steps that fell back to a
+  forced collider (gen mode; see §0). Nonzero is normal and beneficial — it means stuck/uncollidable
+  gates were still replaced and had their generation raised.
+- Stage D per-stage progress lines: `[stage-D] stage k progress: P% of N gates at gen>=G (target
+  F%), floor_gen <fractional-floor> (abs_min <true-min>)` — `floor_gen` is the no-progress guard's
+  signal (lowest generation above the written-off bottom `1−F` fraction); `abs_min` is the true
+  minimum (a few stuck gates can hold it low without stalling the cadence).
 - `Final len: <N>` — final gate count.
 
 ---
@@ -225,5 +249,49 @@ local_mixing_bin compress -n <wires> -s in.txt -d out.txt --target-fraction 0.5
   `<gadget_path>.slice_zero_random`. Record `y`/`z` alongside the mixed circuit (e.g. as a
   `# y=0x…` / `# z=0x…` header) so the preserved slice is reproducible.
 - **Equality.** Pass `--equality_check` to verify functional equivalence after each stage/round and
-  at the end (plain circuits via direct sampling; feistalized via the preserved middle block). A
-  mismatch panics with `The functionality has changed`.
+  at the end (plain circuits via direct sampling; feistalized via the preserved middle block).
+  **Graceful recovery:** on a per-stage failure the run no longer panics — it logs the break, copies
+  the **last verified-equal stage** (already on disk) to `--destination`, and stops. So a rare
+  equivalence break (see "known issue" below) at e.g. stage 20 still delivers the verified stage-19
+  result instead of losing the whole run. (If stage 1 itself fails, nothing is written.)
+- **Known issue — rare feistalize-at-scale equivalence break.** Large `--feistalize` runs (384
+  wires, hundreds of thousands of gates) have very rarely tripped the equality check ("functionality
+  changed"). It is feistalize-specific and stochastic — it did not reproduce in repro runs to 1.5M
+  gates, and `VERIFY_DB_HITS=1` ran clean to 742k gates (so it is *not* a wrong curated-DB hit;
+  suspicion points at the Stage-C ledger / `>64`-wire-guard interaction). Plain (non-feistalize)
+  runs have never shown it. The graceful recovery above + `VERIFY_DB_HITS` are the mitigation/probe.
+
+---
+
+## 6. Tuning the generation distribution (empirical)
+
+Goal studied: **maximize #gates with generation > 90, minimize #gates with generation < 40** at the
+incompressibility ceiling. A controlled sweep (fixed source, fixed final size via `--target-size`,
+varying amplitude `x = --compress-fraction` and `--pass-length`) found:
+
+- **`--compress-fraction 0.15` is the optimum** (U-shaped): it minimizes #gen<40, while lower
+  (0.10/0.08) and higher (0.30–0.60) both leave more low-generation gates. At a fixed 100k size,
+  #gen<40 went 43k → 4.6k as `x` dropped 0.60 → 0.15, then back up below 0.15.
+- **`--pass-length 100` is the sweet spot** — both 50 and 200 left more low-gen gates.
+- **#gen>90 is driven by final SIZE, not by the cadence params** (it is ~flat in `x` at fixed size).
+  So: to get *more* high-generation gates, **raise the cap / final size**; to *clean the low-gen
+  tail*, use `x ≈ 0.15`, `pass-length 100`.
+- **More wires help the high end** — at a given gate count, 256-wire circuits reach far more gen>90
+  than 128-wire (e.g. ~56k vs ~32k at 1M gates), since more wires let generations climb higher.
+
+**Recommended setting:** `--compress-fraction 0.15 --pass-length 100`, with the cap chosen for the
+size you want, and a high `--min-gen` (e.g. 200–400) so the run mixes all the way to the ceiling.
+
+Reference results (plain, recommended params, run to the no-progress ceiling):
+
+| source | final size | #gen>90 | #gen<40 | floor |
+|--------|-----------:|--------:|--------:|------:|
+| n=128, 900g | 199,696 | 19,576 | 2,175 (1.1%) | 45 |
+| n=128, 900g | 998,712 | 31,846 | 508 (0.05%) | 54 |
+| n=256, 1600g | 998,600 | 56,310 | 515 (0.05%) | 53 |
+| n=256, 1600g | 1,997,932 | 68,070 | 493 (0.02%) | 55 |
+| n=256, 2200g | 1,998,057 | 67,765 | 923 (0.05%) | 55 |
+
+(For contrast, a *random* 256-wire/2M circuit is essentially incompressible: `compress` removed only
+6 of 2,000,000 gates before the no-progress stop — the curated-DB reductions almost never occur in a
+uniformly random gate sequence.)

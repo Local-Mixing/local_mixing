@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 
 use local_mixing::replace::replace::{
     COMPRESS_FRACTION_PERMILLE, GEN_MODE, GROW_THRESHOLD_PERMILLE, MAX_FANOUT, MAX_PASSES, MIN_GEN,
-    MIN_GEN_PERMILLE, MIN_MEDIAN_LEEWAY, PASS_LENGTH, SAMF_TARGET, TRACK_SURVIVORS,
+    MIN_GEN_PERMILLE, MIN_MEDIAN_LEEWAY, PASS_LENGTH, SAMF_TARGET, TARGET_SIZE, TRACK_SURVIVORS,
 };
 
 /// ssg: generation-mixing variant of `sss`.
@@ -39,6 +39,22 @@ pub fn run(sub: &clap::ArgMatches) {
     let compress_fraction: f64 = *sub.get_one("compress_fraction").unwrap();
     let compress_fraction_permille = (compress_fraction.clamp(0.0, 1.0) * 1000.0).round() as usize;
     COMPRESS_FRACTION_PERMILLE.store(compress_fraction_permille, Ordering::Relaxed);
+    // Stage D absolute final/held size (overrides --grow-threshold): shoot to target_size, compress
+    // back to compress_fraction * target_size each stage; pins at target_size at the ceiling.
+    let target_size: usize = *sub.get_one("target_size").unwrap();
+    TARGET_SIZE.store(target_size, Ordering::Relaxed);
+    if target_size > 0 {
+        let compress_desc = if compress_fraction_permille > 0 {
+            format!("compress to {:.1}% = {} each stage", compress_fraction * 100.0,
+                (target_size as u128 * compress_fraction_permille as u128 / 1000) as usize)
+        } else {
+            "compress fully each stage".to_string()
+        };
+        println!(
+            "[ssg] stage D: target-size cadence ON | hold final size ≈ {} ({}; --grow-threshold ignored)",
+            target_size, compress_desc
+        );
+    }
     if grow_permille > 0 {
         let compress_desc = if compress_fraction_permille > 0 {
             format!("compress to {:.1}% of post-shoot size", compress_fraction_permille as f64 / 10.0)

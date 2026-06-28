@@ -1974,7 +1974,7 @@ fn shuffled_shooting_game_core(
     let mut materialized_shot_tag: u32 = TAG_NEW;
 
     while materialized_shot.is_some() || !remaining.is_empty() {
-        let (shot, shot_is_materialized, passed, has_collision, shot_tag, passed_tags) =
+        let (shot, shot_is_materialized, mut passed, mut has_collision, shot_tag, mut passed_tags) =
             if let Some(shot) = materialized_shot.take() {
                 let (passed, collided) = shoot_materialized_gate_to_first_collision(
                     shot,
@@ -2021,6 +2021,28 @@ fn shuffled_shooting_game_core(
                     crate::replace::replace::new_gate_tag(std::slice::from_ref(&shot_tag)),
                 );
             }
+        }
+        // Change 2: forced pseudo-collision (gen mode). If the shot found no real collision but
+        // commuted past at least one gate (those gates are necessarily clean — the walk stops at a
+        // dirty control), do NOT give up. Push the commuted gates back and treat the FIRST one as a
+        // forced collider so the window logic tries to replace [shot, first-gate] (and reachable
+        // extensions) from the DB. The shot genuinely commutes with all of them, so: on a DB hit
+        // the replacement sits at the original front (passed[1..] follow, unmoved); on a miss the
+        // shot is emitted ahead of them via the no-replacement path. Both are equivalence-safe.
+        let forced_collision =
+            !has_collision && crate::replace::replace::gen_mode() && !passed.is_empty();
+        if forced_collision {
+            for g in passed.drain(..).rev() {
+                remaining.push_front(g);
+            }
+            if track {
+                for t in passed_tags.drain(..).rev() {
+                    remaining_tags.push_front(t);
+                }
+            }
+            has_collision = true;
+            crate::replace::replace::FORCED_COLLISIONS
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         for (i, gate) in passed.into_iter().enumerate() {
             emit_relabelled_gate(gate, &mut output, &t_list, &mut negation_mask, n);
@@ -2106,6 +2128,19 @@ fn shuffled_shooting_game_core(
                                 {
                                     candidates
                                         .push((vec![0, j, k], vec![shot_rg, rg[0], rg[j], rg[k]]));
+                                    // size 5 (lookahead 3): a 4th post-collider gate that also
+                                    // reaches the front by commutation (past everything except j, k).
+                                    for l in (k + 1)..rg.len() {
+                                        if (1..l)
+                                            .filter(|&m| m != j && m != k)
+                                            .all(|m| !Gate::collides_index(&rg[l], &rg[m]))
+                                        {
+                                            candidates.push((
+                                                vec![0, j, k, l],
+                                                vec![shot_rg, rg[0], rg[j], rg[k], rg[l]],
+                                            ));
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2147,7 +2182,11 @@ fn shuffled_shooting_game_core(
                             crate::replace::replace::cand_features(win, left, &right)
                         })
                         .collect();
-                    crate::replace::ranking::outgoing().order(&feats)
+                    // Try the LARGEST window first (lookahead 3 -> size 5), shrinking to 2 on each
+                    // curated-DB miss; the rank script breaks ties within a size (stable sort).
+                    let mut ord = crate::replace::ranking::outgoing().order(&feats);
+                    ord.sort_by(|&a, &b| candidates[b].1.len().cmp(&candidates[a].1.len()));
+                    ord
                 } else {
                     (0..candidates.len()).rev().collect()
                 };
@@ -2227,6 +2266,31 @@ fn shuffled_shooting_game_core(
                     None => break 'try_replace false, // no curated expansion -> normal path
                 }
             };
+            // VERIFY_DB_HITS (debug, env-gated, off by default): deterministically catch a
+            // non-equivalent curated replacement the instant it is spliced. Only meaningful when no
+            // NOT was absorbed (#10 off): then the expansion E must be functionally equal to the
+            // window it replaces. Aborts at the exact site with the offending circuits.
+            if picked_negated.is_empty() && crate::replace::replace::verify_db_hits() {
+                let win_c = crate::circuit::circuit::CircuitSeq { gates: window.clone() };
+                let exp_c = crate::circuit::circuit::CircuitSeq { gates: expansion.clone() };
+                if win_c.probably_equal(&exp_c, n, 256).is_err() {
+                    let mut used: std::collections::HashSet<u16> = std::collections::HashSet::new();
+                    for g in &window {
+                        used.insert(g[0]);
+                        used.insert(g[1]);
+                        used.insert(g[2]);
+                    }
+                    eprintln!(
+                        "[VERIFY_DB_HITS] NON-EQUIVALENT curated replacement spliced! window={} gates, expansion={} gates, distinct_wires={}",
+                        window.len(),
+                        expansion.len(),
+                        used.len()
+                    );
+                    eprintln!("  window:    {:?}", window);
+                    eprintln!("  expansion: {:?}", expansion);
+                    std::process::exit(7);
+                }
+            }
             // Window size including the shot gate (legacy `consumed` semantics).
             let consumed = window.len();
             // #10/Stage F: the expansion fully absorbed the pending NOTs on `picked_negated`. The
@@ -2838,7 +2902,10 @@ pub fn shuffled_shoot_then_samf_core(
                 let len = sc.len();
                 let lo = len * (50 - centralize_pct / 2) / 100;
                 let hi = (len * (50 + centralize_pct / 2) / 100).max(lo + 1).min(len);
-                let target_gen = sc.min_gen().saturating_add(1);
+                // Fractional floor + 1: skip the stuck bottom (1-frac) so the central band targets
+                // the lowest *raisable* generation, not a permanently-stuck absolute minimum.
+                let skip = ((1000 - min_gen_permille) * sc.len()) / 1000;
+                let target_gen = sc.frac_min_gen(skip).saturating_add(1);
                 sc.random_index_with_gen_in_range(target_gen, lo, hi, &mut rng)
             } else {
                 None
@@ -2852,7 +2919,11 @@ pub fn shuffled_shoot_then_samf_core(
                 centralized_passes += 1;
                 pass_idx += 2;
             } else {
-                let anchor = match sc.random_min_gen_index(&mut rng) {
+                // Anchor at the fractional floor: skip the bottom (1-frac) of gates (the stuck,
+                // rarely-colliding ones) so the anchor keeps raising the rest instead of looping on
+                // a permanently-stuck absolute minimum. skip=0 (frac=1.0) -> absolute minimum.
+                let skip = ((1000 - min_gen_permille) * sc.len()) / 1000;
+                let anchor = match sc.random_frac_min_gen_index(skip, &mut rng) {
                     Some(a) => a,
                     None => break,
                 };

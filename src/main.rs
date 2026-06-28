@@ -293,7 +293,15 @@ fn main() {
                     .required(false)
                     .default_value("0")
                     .value_parser(clap::value_parser!(f64))
-                    .help("Stage D only: compress each stage down to this FRACTION of the post-shooting size (e.g. 0.55), instead of compressing fully. With a 2x grow threshold, 0.55 nets +10% growth per round. 0 = compress fully each stage."),
+                    .help("Stage D only: compress each stage down to this FRACTION of the post-shooting size (e.g. 0.55), instead of compressing fully. With a 2x grow threshold, 0.55 nets +10% growth per round. 0 = compress fully each stage. Also the 'x' in --target-size."),
+            )
+            .arg(
+                Arg::new("target_size")
+                    .long("target-size")
+                    .required(false)
+                    .default_value("0")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Stage D absolute final/held size: each stage shoots until the circuit reaches TARGET-SIZE, then compresses back to (--compress-fraction * TARGET-SIZE); at the incompressibility ceiling the circuit pins at TARGET-SIZE. Overrides --grow-threshold. 0 = off."),
             )
             .arg(
                 Arg::new("outgoing_rank_script")

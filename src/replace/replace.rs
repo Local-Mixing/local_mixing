@@ -190,10 +190,37 @@ pub static SHOOT_SIZE_CAP: AtomicUsize = AtomicUsize::new(0);
 // fraction (in permille) of its post-shooting size, instead of all the way down. e.g. 550 with a
 // 2x grow threshold => each round nets +10% growth. 0 = compress fully each stage.
 pub static COMPRESS_FRACTION_PERMILLE: AtomicUsize = AtomicUsize::new(0);
+// FORCED_COLLISIONS: count of shooting steps that fell back to a forced pseudo-collision (the shot
+// found no real collision, so the first commuted-past gate was used as a forced collider). Gen mode.
+pub static FORCED_COLLISIONS: AtomicUsize = AtomicUsize::new(0);
+// TARGET_SIZE: an absolute steady-state size for Stage D. When > 0, each stage shoots until the
+// circuit reaches TARGET_SIZE / x (x = COMPRESS_FRACTION_PERMILLE/1000), then compresses back to
+// TARGET_SIZE, holding the compressed size fixed at TARGET_SIZE while generations climb to MIN_GEN.
+// Overrides GROW_THRESHOLD_PERMILLE's relative cadence. 0 = off (use the grow-threshold cadence).
+pub static TARGET_SIZE: AtomicUsize = AtomicUsize::new(0);
 
 #[inline]
 pub fn gen_mode() -> bool {
     GEN_MODE.load(Ordering::Relaxed)
+}
+
+// VERIFY_DB_HITS (env): when set, every curated-DB replacement is re-checked for functional
+// equivalence to the window it replaces, aborting at the exact site on mismatch. Off by default
+// (no per-hit cost); used to deterministically localize the feistalize-at-scale equivalence break.
+// The env var is read once and cached (0 = unknown, 1 = off, 2 = on).
+pub fn verify_db_hits() -> bool {
+    static V: AtomicUsize = AtomicUsize::new(0);
+    match V.load(Ordering::Relaxed) {
+        2 => true,
+        1 => false,
+        _ => {
+            let on = std::env::var("VERIFY_DB_HITS")
+                .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            V.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+    }
 }
 
 // Floor of the median of a list of generations (round the even-length midpoint down).

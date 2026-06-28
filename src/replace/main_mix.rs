@@ -550,24 +550,46 @@ pub fn main_shuffle_shoot_shuffle(
     // working circuit reaches (1 + grow) * (size at the end of the previous compression), then
     // compresses all the way down and saves the result. The min-gen condition is the stop rule.
     let grow_permille = crate::replace::replace::GROW_THRESHOLD_PERMILLE.load(Relaxed);
-    let stage_d = grow_permille > 0;
     // Stage D per-stage compression target: stop compressing once the circuit is this fraction
     // (permille) of its post-shooting size. 0 = compress fully each stage.
     let compress_fraction_permille = crate::replace::replace::COMPRESS_FRACTION_PERMILLE.load(Relaxed);
+    // TARGET_SIZE: absolute steady-state size = the held/final size. When > 0, each stage shoots
+    // until the circuit reaches target_size (the cap), then compresses back down to
+    // compress_fraction * target_size, instead of the relative grow-threshold cadence. At the
+    // incompressibility ceiling the circuit pins at target_size. Stage D is on if either mechanism
+    // is requested.
+    let target_size = crate::replace::replace::TARGET_SIZE.load(Relaxed);
+    let stage_d = grow_permille > 0 || target_size > 0;
     // Safety bound on the number of stages (a runaway guard if the min-gen target is unreachable).
     const STAGE_D_MAX_STAGES: usize = 100_000;
     // Last post-compression size; the per-stage shoot grows from here. Seed with the current size
     // (after gadgetization / early shuffles).
     let mut last_compressed = circuit.gates.len();
-    // No-progress guard: track the best (lowest) per-mille of gates still below min-gen; stop the
-    // cadence if it fails to improve for several stages.
+    // No-progress guard: progress is the minimum generation (the floor) reaching a new high — a
+    // monotonic signal — OR the per-mille of gates still below min-gen reaching a new best. Stop
+    // only if NEITHER improves for several stages.
+    let mut best_min_gen: u32 = 0;
     let mut best_below_permille = usize::MAX;
     let mut stall = 0usize;
+    // Last stage whose per-stage equality check PASSED (path + number). On a later equality failure
+    // we deliver this verified-equal stage instead of panicking and losing the whole run.
+    let mut last_good_path: Option<String> = None;
+    let mut last_good_stage = 0usize;
     if stage_d {
-        println!(
-            "[stage-D] size-threshold cadence ON | grow {:.1}% per stage | stopping on min-gen (-r ignored)",
-            grow_permille as f64 / 10.0
-        );
+        if target_size > 0 {
+            println!(
+                "[stage-D] target-size cadence ON | hold final size ≈ {} (shoot to {}, compress to {:.0}% = {}) | stopping on min-gen (-r ignored)",
+                target_size,
+                target_size,
+                compress_fraction_permille as f64 / 10.0,
+                (target_size as u128 * compress_fraction_permille as u128 / 1000) as usize
+            );
+        } else {
+            println!(
+                "[stage-D] size-threshold cadence ON | grow {:.1}% per stage | stopping on min-gen (-r ignored)",
+                grow_permille as f64 / 10.0
+            );
+        }
     }
     let mut i = 0usize;
     loop {
@@ -579,8 +601,13 @@ pub fn main_shuffle_shoot_shuffle(
             break;
         }
         if stage_d {
-            // Shoot until the circuit is `grow` larger than the last compressed size.
-            let cap = ((last_compressed as u128 * (1000 + grow_permille as u128)) / 1000) as usize;
+            // Target-size mode: shoot until target_size (the cap = held/final size). Otherwise the
+            // relative grow-threshold cadence: shoot until `grow` larger than the last compressed size.
+            let cap = if target_size > 0 {
+                target_size
+            } else {
+                ((last_compressed as u128 * (1000 + grow_permille as u128)) / 1000) as usize
+            };
             let cap = cap.max(last_compressed + 1);
             crate::replace::replace::SHOOT_SIZE_CAP
                 .store(cap, std::sync::atomic::Ordering::Relaxed);
@@ -737,9 +764,22 @@ pub fn main_shuffle_shoot_shuffle(
                 println!("Restored forward circuit direction");
             }
         }
-        // Stage D: compress each stage only down to `compress_fraction` of the POST-shooting size
-        // (computed here, before compression), instead of all the way down. 0 => full compression.
-        let stage_d_compress_target = if stage_d && compress_fraction_permille > 0 {
+        // Stage D compression target. Target-size mode compresses to compress_fraction * target_size
+        // (so the circuit oscillates between that and the target_size cap, pinning at target_size at
+        // the ceiling); otherwise to `compress_fraction` of the POST-shooting size (0 => full).
+        let stage_d_compress_target = if stage_d && target_size > 0 && compress_fraction_permille > 0 {
+            let t = ((target_size as u128 * compress_fraction_permille as u128) / 1000) as usize;
+            println!(
+                "[stage-D] compress target: {:.1}% of target-size {} = {} gates",
+                compress_fraction_permille as f64 / 10.0,
+                target_size,
+                t
+            );
+            Some(t)
+        } else if stage_d && target_size > 0 {
+            // target-size with no compress-fraction: compress fully each stage (max amplitude).
+            None
+        } else if stage_d && compress_fraction_permille > 0 {
             let post_shoot = circuit.gates.len();
             let t = ((post_shoot as u128 * compress_fraction_permille as u128) / 1000) as usize;
             println!(
@@ -921,41 +961,82 @@ pub fn main_shuffle_shoot_shuffle(
                 c.probably_equal(&circuit, original_n, 1_000)
             };
             if functionality_ok.is_err() {
-                panic!("The functionality has changed");
+                // Graceful stop instead of panic: this stage's circuit is NOT equivalent, but the
+                // previous stage WAS verified-equal and is on disk. Deliver it to --destination and
+                // stop, so a rare break does not throw away the whole (often multi-hour) run.
+                eprintln!(
+                    "[equality] FAILURE at stage {}: functionality changed. Stopping cadence.",
+                    i + 1
+                );
+                match &last_good_path {
+                    Some(p) => {
+                        std::fs::copy(p, save).expect("Failed to copy last verified-equal stage");
+                        println!(
+                            "[equality] delivered last verified-equal stage {} -> {} (stage {} broke; its circuit discarded)",
+                            last_good_stage, save, i + 1
+                        );
+                    }
+                    None => {
+                        eprintln!(
+                            "[equality] no earlier verified-equal stage exists (stage 1 broke); nothing written to {}.",
+                            save
+                        );
+                    }
+                }
+                print_sat_cone("final-after-equality-break", &circuit.gates, sat_cone_range);
+                return;
             }
         }
         {
             // Save this stage's circuit to its own file: same path as -d but with `round{n}`
             // (rounds mode) or `stage{n}` (Stage D) inserted before the .txt extension. This is
-            // the per-compression-stage checkpoint.
+            // the per-compression-stage checkpoint. In --equality_check mode this is reached only
+            // after the stage passed equality, so it is the latest verified-equal circuit.
             let label = if stage_d { "stage" } else { "round" };
             let round_path = format!("{}{}{}.txt", save_base, label, i + 1);
             println!("Writing {} {} to {}", label, i + 1, round_path);
             File::create(&round_path)
                 .and_then(|mut f| f.write_all(circuit.repr().as_bytes()))
                 .expect("Failed to write stage circuit");
+            if equality_check {
+                last_good_path = Some(round_path);
+                last_good_stage = i + 1;
+            }
         }
         i += 1;
         if stage_d {
             // The size the next stage grows from.
             last_compressed = circuit.gates.len();
-            // Evaluate the min-gen condition on the COMPRESSED circuit (the saved artifact), using
-            // the FRACTION of gates below min-gen — robust to the circuit growing each stage.
-            let min_gen = crate::replace::replace::MIN_GEN.load(Relaxed) as u32;
+            // Evaluate the min-gen condition on the COMPRESSED circuit (the saved artifact).
+            let min_gen_target = crate::replace::replace::MIN_GEN.load(Relaxed) as u32;
             let permille = crate::replace::replace::MIN_GEN_PERMILLE.load(Relaxed);
             let len = survivor_tags.len();
-            let below = survivor_tags.iter().filter(|&&g| g < min_gen).count();
-            // Per-mille of gates still below min-gen (0 = all gates reached it).
+            let below = survivor_tags.iter().filter(|&&g| g < min_gen_target).count();
+            // Per-mille of gates still below the target generation (0 = all gates reached it).
             let below_permille = if len > 0 { below * 1000 / len } else { 1000 };
+            // The "fractional floor": the lowest generation once the bottom (1-frac) of gates (the
+            // permanently-stuck ones) are written off — i.e. the skip-th order statistic, with
+            // skip = (1-frac)*total. This is the signal the anchor actually drives, so it keeps
+            // rising even when a few stuck gates pin the absolute minimum. (skip=0 -> absolute min.)
+            let skip = ((1000 - permille) * len) / 1000;
+            let cur_floor_gen = if len == 0 {
+                0u32
+            } else {
+                let mut sorted = survivor_tags.clone();
+                let k = skip.min(len - 1);
+                *sorted.select_nth_unstable(k).1
+            };
+            let abs_min_gen = survivor_tags.iter().copied().min().unwrap_or(0);
             let met = len > 0 && below * 1000 <= len * (1000 - permille);
             println!(
-                "[stage-D] stage {} progress: {:.1}% of {} gates at gen>={} (target {:.1}%), min_gen {}",
+                "[stage-D] stage {} progress: {:.1}% of {} gates at gen>={} (target {:.1}%), floor_gen {} (abs_min {})",
                 i,
                 100.0 - below_permille as f64 / 10.0,
                 len,
-                min_gen,
+                min_gen_target,
                 permille as f64 / 10.0,
-                survivor_tags.iter().copied().min().unwrap_or(0)
+                cur_floor_gen,
+                abs_min_gen
             );
             if met {
                 println!(
@@ -965,18 +1046,29 @@ pub fn main_shuffle_shoot_shuffle(
                 );
                 break;
             }
-            // No-progress guard on the FRACTION below min-gen: track the best (lowest) seen; if no
-            // new best for STAGE_D_STALL_LIMIT stages, the target is likely unreachable — stop.
+            // No-progress guard KEYED TO min_gen: progress = the floor generation reached a new high
+            // (the monotonic signal) OR the below-target fraction reached a new best. Stop only if
+            // NEITHER improves for STAGE_D_STALL_LIMIT stages. (The "% at gen>=target" alone is too
+            // noisy — it can dip then recover while the floor is still rising.)
             const STAGE_D_STALL_LIMIT: usize = 8;
+            let mut progressed = false;
+            if cur_floor_gen > best_min_gen {
+                best_min_gen = cur_floor_gen;
+                progressed = true;
+            }
             if below_permille < best_below_permille {
                 best_below_permille = below_permille;
+                progressed = true;
+            }
+            if progressed {
                 stall = 0;
             } else {
                 stall += 1;
                 if stall >= STAGE_D_STALL_LIMIT {
                     println!(
-                        "[stage-D] no fractional progress toward min-gen for {} stages (best {:.1}% still below; circuit {} gates); stopping",
+                        "[stage-D] no progress for {} stages (min_gen stuck at {}, best {:.1}% still below target; circuit {} gates); stopping",
                         stall,
+                        best_min_gen,
                         best_below_permille as f64 / 10.0,
                         circuit.gates.len()
                     );
@@ -1062,6 +1154,10 @@ pub fn main_shuffle_shoot_shuffle(
     println!(
         "Oversized-canon (>64-wire) lookups skipped: {}",
         crate::circuit::circuit::OVERSIZED_CANON_SKIPS.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    println!(
+        "Forced pseudo-collisions (no real collision): {}",
+        crate::replace::replace::FORCED_COLLISIONS.load(std::sync::atomic::Ordering::Relaxed)
     );
     println!("Final len: {}", circuit.gates.len());
     print_sat_cone("final", &circuit.gates, sat_cone_range);

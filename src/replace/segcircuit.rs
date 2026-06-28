@@ -236,6 +236,66 @@ impl SegCircuit {
         chosen
     }
 
+    /// "Fractional floor" generation: the smallest generation `g` such that the number of gates
+    /// with generation `< g` is `<= skip`. With `skip = floor((1-frac)*total)` this is the lowest
+    /// generation once the bottom `(1-frac)` of gates (e.g. permanently-stuck, never-colliding ones)
+    /// are written off. `skip = 0` reduces to the absolute minimum. O(N) + O(#distinct gens).
+    pub fn frac_min_gen(&self, skip: usize) -> u32 {
+        if self.total == 0 {
+            return 0;
+        }
+        let mut hist: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+        for c in &self.chunks {
+            for &t in &c.tags {
+                *hist.entry(t).or_insert(0) += 1;
+            }
+        }
+        let mut acc = 0usize;
+        let mut last = 0u32;
+        for (g, count) in hist {
+            last = g;
+            acc += count;
+            if acc > skip {
+                return g;
+            }
+        }
+        last
+    }
+
+    /// Uniformly random gate whose generation tag == `g` (global index), or None if there is none.
+    pub fn random_index_at_gen(&self, g: u32, rng: &mut impl Rng) -> Option<usize> {
+        let mut chosen: Option<usize> = None;
+        let mut seen = 0usize;
+        let mut base = 0usize;
+        for c in &self.chunks {
+            if c.min_gen <= g {
+                for (off, &t) in c.tags.iter().enumerate() {
+                    if t == g {
+                        seen += 1;
+                        if rng.random_range(0..seen) == 0 {
+                            chosen = Some(base + off);
+                        }
+                    }
+                }
+            }
+            base += c.len();
+        }
+        chosen
+    }
+
+    /// Anchor at the fractional floor: pick a random gate at generation `frac_min_gen(skip)`. With
+    /// `skip = 0` this is exactly `random_min_gen_index`; with `skip > 0` it skips the stuck bottom.
+    pub fn random_frac_min_gen_index(&self, skip: usize, rng: &mut impl Rng) -> Option<usize> {
+        if self.total == 0 {
+            return None;
+        }
+        if skip == 0 {
+            return self.random_min_gen_index(rng);
+        }
+        let g = self.frac_min_gen(skip);
+        self.random_index_at_gen(g, rng)
+    }
+
     /// Read a contiguous range [start, start+len) as flat gate + tag vectors.
     pub fn read_range(&self, start: usize, len: usize) -> (Vec<[u16; 3]>, Vec<u32>) {
         let mut g = Vec::with_capacity(len);
