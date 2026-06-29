@@ -5,11 +5,8 @@ use std::{fs::File, io::Write, ops::Range, path::Path};
 use clap::Parser;
 use itertools::chain;
 use lmdb::Environment;
-use local_mixing::{
-    circuit::CircuitSeq,
-    open_shard_dbs,
-    replace::replace::compress_loop,
-};
+use local_mixing::{circuit::{CircuitSeq, Permutation}, open_shard_dbs, replace::replace::compress_loop};
+use primitive_types::U256;
 
 const LMDB_PATH: &str = "./db";
 
@@ -22,13 +19,18 @@ struct Args {
     #[arg(short, long, default_value_t = 42)]
     key: usize,
 
-    #[arg(short, long, default_value_t = false, help="whether to compute an identity")]
+    #[arg(
+        short,
+        long,
+        default_value_t = false,
+        help = "whether to compute an identity"
+    )]
     identity: bool,
 
-    #[arg(short, long, default_value_t = false, help="whether to compress")]
+    #[arg(short, long, default_value_t = false, help = "whether to compress")]
     compress: bool,
 
-    #[arg(short, long, help="file to save final circuit to")]
+    #[arg(short, long, help = "file to save final circuit to")]
     output: Option<String>,
 }
 
@@ -105,9 +107,44 @@ fn id_to_g57(wires: u16, a: u16) -> Vec<[u16; 3]> {
     ]
 }
 
-fn big_tof(n: u16, active: u16, controls: Range<u16>) -> CircuitSeq {
+fn big_tof(wires: u16, lambda: u16, active: u16, controls: Range<u16>) -> CircuitSeq {
+    println!(
+        "{}-wire Tof; active {}, controls = {:?}",
+        wires, active, controls
+    );
+
+    assert_eq!(lambda as usize, controls.len());
+
+    let b = wires.div_ceil(2);
+    if lambda > b.into() {
+        let h = lambda.div_ceil(2);
+        let top = wires - h;
+        println!(
+            "In the branch. len={}, b={}, top={}",
+            controls.len(),
+            b,
+            top
+        );
+
+        let n_active = 1 - active;
+
+        // First group: first h controls
+        let controls_1 = top..wires;
+        // Second group: remaining top controls
+        let controls_2 = 1..top;
+
+        println!(" .. c1 = {}, c2 = {}", controls_1.len(), controls_2.len());
+
+        return big_tof(wires, h, n_active, controls_1.clone())
+            .concat(&big_tof(wires, h + 1, active, controls_2.clone()))
+            .concat(&big_tof(wires, h, n_active, controls_1))
+            .concat(&big_tof(wires, h + 1, active, controls_2));
+    }
+
+    assert!(!controls.contains(&active));
+
     // Build the staircase
-    let mut empty: Vec<u16> = (0..n + 2).collect();
+    let mut empty: Vec<u16> = (0..wires).collect();
 
     // Delete index `active`, and all indices in `controls` from the vector
     empty.retain(|x| *x != active && !controls.contains(x));
@@ -117,12 +154,16 @@ fn big_tof(n: u16, active: u16, controls: Range<u16>) -> CircuitSeq {
 
     let ctrl: Vec<u16> = controls.collect();
 
+    println!("{} {:?}", active, empty);
+
     let stair: Vec<[u16; 3]> = (1..(ctrl.len() - 2))
         .map(|i| [empty[i - 1], ctrl[i], empty[i]])
         .collect();
 
     let mut rev_stair = stair.clone();
     rev_stair.reverse();
+
+    println!("{:?}; {:?}", ctrl, empty);
 
     let last_tof = empty[ctrl.len() - 3];
 
@@ -131,27 +172,27 @@ fn big_tof(n: u16, active: u16, controls: Range<u16>) -> CircuitSeq {
 
     CircuitSeq {
         gates: chain![
-            tof_to_g57(n, &base_gate),
-            stair.iter().flat_map(|g| { tof_to_g57(n, g) }),
-            tof_to_g57(n, &top_gate),
-            rev_stair.iter().flat_map(|g| { tof_to_g57(n, g) }),
-            tof_to_g57(n, &base_gate),
-            stair.iter().flat_map(|g| { tof_to_g57(n, g) }),
-            tof_to_g57(n, &top_gate),
-            rev_stair.iter().flat_map(|g| { tof_to_g57(n, g) }),
+            tof_to_g57(wires, &base_gate),
+            stair.iter().flat_map(|g| { tof_to_g57(wires, g) }),
+            tof_to_g57(wires, &top_gate),
+            rev_stair.iter().flat_map(|g| { tof_to_g57(wires, g) }),
+            tof_to_g57(wires, &base_gate),
+            stair.iter().flat_map(|g| { tof_to_g57(wires, g) }),
+            tof_to_g57(wires, &top_gate),
+            rev_stair.iter().flat_map(|g| { tof_to_g57(wires, g) }),
         ]
         .collect(),
     }
 }
 
-fn key_to_gates(wires: u16, key: usize) -> CircuitSeq {
+fn key_to_gates(wires: u16, keybits: u16, key: usize) -> CircuitSeq {
     let mut c = CircuitSeq { gates: vec![] };
 
-    for i in 0..wires {
+    for i in 0..keybits {
         let gates = if (key >> i) & 1 == 0 {
-            id_to_g57(wires, i)
+            id_to_g57(wires, i + 2)
         } else {
-            not_to_g57(wires, i)
+            not_to_g57(wires, i + 2)
         };
 
         c.gates.extend(gates);
@@ -163,6 +204,7 @@ fn key_to_gates(wires: u16, key: usize) -> CircuitSeq {
 fn main() {
     let args = Args::parse();
 
+    // key bits.
     let n = args.wires;
 
     println!("{:?}", args);
@@ -170,18 +212,19 @@ fn main() {
     let key_bits = (usize::BITS as u32 - args.key.leading_zeros()) as u16;
     assert!(key_bits <= n);
 
-    let b = n.div_ceil(2);
+    let bt1 = big_tof(n + 2, n, 0, 2..n + 2);
+    let mut bt2 = big_tof(n + 2, n, 0, 2..n + 2);
+    let mut idp = Permutation::id_perm((n+2).into());
+    idp.data[1] = 0;
+    idp.data[0] = 1;
+    bt2.rewire(&idp, (n+2).into());
 
-    let pf_gen = |k| -> CircuitSeq {
-        key_to_gates(n, k)
-            .concat(&big_tof(n, n, 0..b))
-            .concat(&big_tof(n, n + 1, b..n + 1))
-            .concat(&big_tof(n, n, 0..b))
-            .concat(&big_tof(n, n + 1, b..n + 1))
-            .concat(&key_to_gates(n, k))
-    };
-
-    let mut pf = pf_gen(args.key).concat(&pf_gen(args.key + if args.identity { 0 } else { 1 }));
+    let mut pf = key_to_gates(n + 2, n, args.key)
+        .concat(&bt1)
+        .concat(&bt2)
+        .concat(&key_to_gates(n + 2, n, args.key));
+    // .concat(&big_tof(n + 2, n, 0, 2..n + 2))
+    // // .concat(&big_tof(n + 2, n, 1, 2..n + 2))
 
     pf.canonicalize();
 
@@ -212,7 +255,8 @@ fn main() {
 
         if args.output.is_some() {
             let mut f = File::create(args.output.unwrap()).expect("failed to open");
-            f.write_all(comp.repr().as_bytes()).expect("failed to write");
+            f.write_all(comp.repr().as_bytes())
+                .expect("failed to write");
             let _ = f.write(b"\n");
         }
     } else {
@@ -225,12 +269,14 @@ fn main() {
 
     println!("0 => {}", pf.evaluate_256(0.into()));
 
-    let mut r = None;
-    while r != Some(args.key) {
-        let s = r.unwrap_or(args.key);
-        r = Some(pf.evaluate(s.into()));
+    let mut r: Option<U256> = None;
+    let k256 = U256::from(4 * args.key);
+    while r != Some(k256) {
+        let s = r.unwrap_or(k256);
+        r = Some(pf.evaluate_256(s.into()));
         println!("{} => {}", s, r.unwrap());
     }
+    println!("-");
 
     for _ in 0..10 {
         let r = if n < 64 {
