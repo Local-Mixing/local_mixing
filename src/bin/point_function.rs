@@ -1,6 +1,6 @@
 // Build a point function (or an identity that looks like one!)
 
-use std::{ops::Range, path::Path};
+use std::{fs::File, io::Write, ops::Range, path::Path};
 
 use clap::Parser;
 use itertools::chain;
@@ -8,7 +8,7 @@ use lmdb::Environment;
 use local_mixing::{
     circuit::CircuitSeq,
     open_shard_dbs,
-    replace::replace::{compress_lmdb, compress_loop},
+    replace::replace::compress_loop,
 };
 
 const LMDB_PATH: &str = "./db";
@@ -22,8 +22,14 @@ struct Args {
     #[arg(short, long, default_value_t = 42)]
     key: usize,
 
-    #[arg(short, long, default_value_t = false)]
+    #[arg(short, long, default_value_t = false, help="whether to compute an identity")]
     identity: bool,
+
+    #[arg(short, long, default_value_t = false, help="whether to compress")]
+    compress: bool,
+
+    #[arg(short, long, help="file to save final circuit to")]
+    output: Option<String>,
 }
 
 fn tof_to_g57(wires: u16, g: &[u16; 3]) -> Vec<[u16; 3]> {
@@ -157,15 +163,6 @@ fn key_to_gates(wires: u16, key: usize) -> CircuitSeq {
 fn main() {
     let args = Args::parse();
 
-    // let env = Environment::new()
-    //     .set_max_readers(10000)
-    //     .set_max_dbs(256 + 40)
-    //     .set_map_size(800 * 1024 * 1024 * 1024)
-    //     .open(Path::new(LMDB_PATH))
-    //     .expect("Failed to open database.");
-
-    // let shard_dbs = open_shard_dbs(&env);
-
     let n = args.wires;
 
     println!("{:?}", args);
@@ -175,12 +172,16 @@ fn main() {
 
     let b = n.div_ceil(2);
 
-    let mut pf = key_to_gates(n, args.key)
-        .concat(&big_tof(n, n, 0..b))
-        .concat(&big_tof(n, n + 1, b..n + 1))
-        .concat(&big_tof(n, n, 0..b))
-        .concat(&big_tof(n, n + 1, b..n + 1))
-        .concat(&key_to_gates(n, args.key));
+    let pf_gen = |k| -> CircuitSeq {
+        key_to_gates(n, k)
+            .concat(&big_tof(n, n, 0..b))
+            .concat(&big_tof(n, n + 1, b..n + 1))
+            .concat(&big_tof(n, n, 0..b))
+            .concat(&big_tof(n, n + 1, b..n + 1))
+            .concat(&key_to_gates(n, k))
+    };
+
+    let mut pf = pf_gen(args.key).concat(&pf_gen(args.key + if args.identity { 0 } else { 1 }));
 
     pf.canonicalize();
 
@@ -188,12 +189,48 @@ fn main() {
 
     println!("len = {}", pf.gates.len());
 
-    // let comp = compress_loop(&pf, pf.max_wire() + 1, &env, &shard_dbs, 6, 0, 0, ".");
+    if args.compress {
+        let env = Environment::new()
+            .set_max_readers(10000)
+            .set_max_dbs(256 + 40)
+            .set_map_size(800 * 1024 * 1024 * 1024)
+            .open(Path::new(LMDB_PATH))
+            .expect("Failed to open database.");
 
-    // println!("{}", comp.repr());
+        let shard_dbs = open_shard_dbs(&env);
+        let comp = compress_loop(&pf, pf.max_wire() + 1, &env, &shard_dbs, 6, 0, 0, ".");
+
+        println!("{}", comp.repr());
+        let pl = pf.gates.len();
+        let cl = comp.gates.len();
+        println!(
+            "Size: {} => {} ({}%)",
+            pl,
+            cl,
+            ((cl as f64) / (pl as f64) * 100.0).round()
+        );
+
+        if args.output.is_some() {
+            let mut f = File::create(args.output.unwrap()).expect("failed to open");
+            f.write_all(comp.repr().as_bytes()).expect("failed to write");
+            let _ = f.write(b"\n");
+        }
+    } else {
+        if args.output.is_some() {
+            let mut f = File::create(args.output.unwrap()).expect("failed to open");
+            f.write_all(pf.repr().as_bytes()).expect("failed to write");
+            let _ = f.write(b"\n");
+        }
+    }
 
     println!("0 => {}", pf.evaluate_256(0.into()));
-    println!("{} => {}", args.key, pf.evaluate_256(args.key.into()));
+
+    let mut r = None;
+    while r != Some(args.key) {
+        let s = r.unwrap_or(args.key);
+        r = Some(pf.evaluate(s.into()));
+        println!("{} => {}", s, r.unwrap());
+    }
 
     for _ in 0..10 {
         let r = if n < 64 {

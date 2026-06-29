@@ -4,18 +4,13 @@ pub mod rainbow;
 pub mod random;
 pub mod replace;
 use crate::circuit::CircuitSeq;
-use numpy::PyArray2;
-use numpy::ndarray::Array2;
 use primitive_types::U256 as u256;
-use rand::Rng;
-use rand::seq::IteratorRandom;
 use rayon::prelude::*;
 pub use replace::main_mix::open_shard_dbs;
-use std::fs;
 use std::fs::File;
-use std::io::{self, BufReader, Read, Write};
-use std::time::Instant;
+use std::io::{BufReader, Read};
 
+#[allow(unused)]
 fn read_n_gates(path: &str, n: usize) -> String {
     let file = File::open(path).unwrap_or_else(|_| panic!("Failed to open {}", path));
     let mut reader = BufReader::new(file);
@@ -46,6 +41,7 @@ fn popcount_u256(x: u256) -> u32 {
 /// Restrict the Hamming-distance computation to a half of the wires.
 /// `first_half` -> low `num_wires/2` bits; `second_half` -> high bits; neither -> all bits.
 /// Returns the effective bit-mask and the bit count to normalize by.
+#[allow(unused)]
 fn half_mask_and_width(
     num_wires: usize,
     mask: u256,
@@ -71,6 +67,7 @@ fn half_mask_and_width(
 /// `inputs`) of the overlap between circuit_one's state after gate i1 and circuit_two's
 /// state after gate i2. Returns a flat, row-major [x, y, value] buffer (3 f64 per cell,
 /// one row per x) ready for `Array2::from_shape_vec((n_cells, 3), _)`.
+#[allow(unused)]
 fn compute_grid_parallel(
     circuit_one: &CircuitSeq,
     circuit_two: &CircuitSeq,
