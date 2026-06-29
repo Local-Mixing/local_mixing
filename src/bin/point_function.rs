@@ -26,16 +26,16 @@ struct Args {
     identity: bool,
 }
 
-fn tof_to_g57(wires: u8, g: &[u8; 3]) -> Vec<[u8; 3]> {
+fn tof_to_g57(wires: u16, g: &[u16; 3]) -> Vec<[u16; 3]> {
     // Let r be a random wire from the range 0..wires, NOT including any of the values in g.
-    let mut r = fastrand::u8(0..wires);
+    let mut r = fastrand::u16(0..wires);
     while g.contains(&r) {
-        r = fastrand::u8(0..wires);
+        r = fastrand::u16(0..wires);
     }
 
-    let active = g[0] as u8;
-    let ctrl1 = g[1] as u8;
-    let ctrl2 = g[2] as u8;
+    let active = g[0] as u16;
+    let ctrl1 = g[1] as u16;
+    let ctrl2 = g[2] as u16;
 
     vec![
         [active, ctrl1, r],
@@ -73,14 +73,14 @@ fn not_to_g57(wires: u8, a: u8) -> Vec<[u8; 3]> {
 
 // 6 gate nontrivial on 4 wires
 // TODO: choose different ones each time
-fn id_to_g57(wires: u8, a: u8) -> Vec<[u8; 3]> {
+fn id_to_g57(wires: u16, a: u16) -> Vec<[u16; 3]> {
     // one of the wires will be the active one
     // Choose three random values from the range 0..wires
     let mut chosen = [a; 3];
 
     for i in 0..3 {
         loop {
-            let w = fastrand::u8(0..wires);
+            let w = fastrand::u16(0..wires);
             if !chosen[..=i].contains(&w) {
                 chosen[i] = w;
                 break;

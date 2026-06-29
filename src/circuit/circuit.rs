@@ -615,16 +615,21 @@ impl CircuitSeq {
         })
     }
 
-    pub fn to_polynomial(&self, n: usize, start: usize, end: usize) -> Vec<Polynomial> {
-        let gates = &self.gates[start..end];
+    pub fn poly_num_terms(&self, n: usize) -> Vec<usize> {
+        self.to_poly_helper(n, &self.gates).0
+    }
+
+    fn to_poly_helper(&self, n: usize, gates: &[[u16; 3]]) -> (Vec<usize>, Vec<Polynomial>) {
         // Wire i starts as degree 1 monomial
         let mut polys: Vec<Polynomial> = (0..n).map(|i| vec![1u64 << i]).collect();
+        let mut n_terms = Vec::<usize>::with_capacity(gates.len());
 
         for &[a, b, c] in gates {
-            // a' = a + bc + b + 1 = a + b(c+1) = a + b*NOT(c) + 1
+            // a' = a + bc + b + 1 = a + b(c+1) + 1 = a + b*NOT(c) + 1
             let term = poly_and_not(&polys[b as usize], &polys[c as usize]);
             poly_xor_assign(&mut polys[a as usize], term);
             toggle_monomial(&mut polys[a as usize], 0u64);
+            n_terms.push(polys.iter().map(|p| p.len()).sum());
         }
 
         // XOR each wire with its initial value x_i so unchanged wires become 0
@@ -633,7 +638,11 @@ impl CircuitSeq {
         //     polys[i] = poly_xor(polys[i].clone(), xi);
         // }
 
-        polys
+        (n_terms, polys)
+    }
+
+    pub fn to_polynomial(&self, n: usize, start: usize, end: usize) -> Vec<Polynomial> {
+        self.to_poly_helper(n, &self.gates[start..end]).1
     }
 
     // Returns (canonical_polys, canonical_circuit, reversed)
