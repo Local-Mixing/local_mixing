@@ -692,7 +692,6 @@ dependencies = [
  "numpy",
  "once_cell",
  "primitive-types",
- "pyo3",
  "rand 0.9.4",
  "rayon",
  "rng-entropy",

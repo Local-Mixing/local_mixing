@@ -3,7 +3,7 @@ use local_mixing::random::random_data::random_circuit;
 fn main() {
     let n: usize = 16;
 
-    let m: usize = 64;
+    let m: usize = 96;
 
     let mut ckt = random_circuit(n, m);
 

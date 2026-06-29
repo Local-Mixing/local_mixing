@@ -157,14 +157,14 @@ fn key_to_gates(wires: u16, key: usize) -> CircuitSeq {
 fn main() {
     let args = Args::parse();
 
-    let env = Environment::new()
-        .set_max_readers(10000)
-        .set_max_dbs(256 + 40)
-        .set_map_size(800 * 1024 * 1024 * 1024)
-        .open(Path::new(LMDB_PATH))
-        .expect("Failed to open database.");
+    // let env = Environment::new()
+    //     .set_max_readers(10000)
+    //     .set_max_dbs(256 + 40)
+    //     .set_map_size(800 * 1024 * 1024 * 1024)
+    //     .open(Path::new(LMDB_PATH))
+    //     .expect("Failed to open database.");
 
-    let shard_dbs = open_shard_dbs(&env);
+    // let shard_dbs = open_shard_dbs(&env);
 
     let n = args.wires;
 
@@ -188,9 +188,9 @@ fn main() {
 
     println!("len = {}", pf.gates.len());
 
-    let comp = compress_loop(&pf, pf.max_wire() + 1, &env, &shard_dbs, 6, 0, 0, ".");
+    // let comp = compress_loop(&pf, pf.max_wire() + 1, &env, &shard_dbs, 6, 0, 0, ".");
 
-    println!("{}", comp.repr());
+    // println!("{}", comp.repr());
 
     println!("0 => {}", pf.evaluate_256(0.into()));
     println!("{} => {}", args.key, pf.evaluate_256(args.key.into()));
