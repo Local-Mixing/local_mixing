@@ -5,7 +5,11 @@ use std::{fs::File, io::Write, ops::Range, path::Path};
 use clap::Parser;
 use itertools::chain;
 use lmdb::Environment;
-use local_mixing::{circuit::{CircuitSeq, Permutation}, open_shard_dbs, replace::replace::compress_loop};
+use local_mixing::{
+    circuit::{CircuitSeq, Permutation},
+    open_shard_dbs,
+    replace::replace::compress_loop,
+};
 use primitive_types::U256;
 
 const LMDB_PATH: &str = "./db";
@@ -16,8 +20,13 @@ struct Args {
     #[arg(short = 'n', default_value_t = 128)]
     wires: u16,
 
-    #[arg(short, long, default_value_t = 42)]
-    key: usize,
+    #[arg(
+        short,
+        long,
+        default_value = "42",
+        help = "secret point, decimal (supports >64-bit values)"
+    )]
+    key: String,
 
     #[arg(
         short,
@@ -185,11 +194,11 @@ fn big_tof(wires: u16, lambda: u16, active: u16, controls: Range<u16>) -> Circui
     }
 }
 
-fn key_to_gates(wires: u16, keybits: u16, key: usize) -> CircuitSeq {
+fn key_to_gates(wires: u16, keybits: u16, key: U256) -> CircuitSeq {
     let mut c = CircuitSeq { gates: vec![] };
 
     for i in 0..keybits {
-        let gates = if (key >> i) & 1 == 0 {
+        let gates = if !key.bit(i as usize) {
             id_to_g57(wires, i + 2)
         } else {
             not_to_g57(wires, i + 2)
@@ -209,20 +218,21 @@ fn main() {
 
     println!("{:?}", args);
 
-    let key_bits = (usize::BITS as u32 - args.key.leading_zeros()) as u16;
+    let key = U256::from_dec_str(&args.key).expect("--key must be a decimal integer");
+    let key_bits = key.bits() as u16;
     assert!(key_bits <= n);
 
     let bt1 = big_tof(n + 2, n, 0, 2..n + 2);
     let mut bt2 = big_tof(n + 2, n, 0, 2..n + 2);
-    let mut idp = Permutation::id_perm((n+2).into());
+    let mut idp = Permutation::id_perm((n + 2).into());
     idp.data[1] = 0;
     idp.data[0] = 1;
-    bt2.rewire(&idp, (n+2).into());
+    bt2.rewire(&idp, (n + 2).into());
 
-    let mut pf = key_to_gates(n + 2, n, args.key)
+    let mut pf = key_to_gates(n + 2, n, key)
         .concat(&bt1)
         .concat(&bt2)
-        .concat(&key_to_gates(n + 2, n, args.key));
+        .concat(&key_to_gates(n + 2, n, key));
     // .concat(&big_tof(n + 2, n, 0, 2..n + 2))
     // // .concat(&big_tof(n + 2, n, 1, 2..n + 2))
 
@@ -270,7 +280,7 @@ fn main() {
     println!("0 => {}", pf.evaluate_256(0.into()));
 
     let mut r: Option<U256> = None;
-    let k256 = U256::from(4 * args.key);
+    let k256 = key << 2;
     while r != Some(k256) {
         let s = r.unwrap_or(k256);
         r = Some(pf.evaluate_256(s.into()));
