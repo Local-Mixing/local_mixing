@@ -20,14 +20,14 @@ use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 
 extern crate lmdb_sys;
 
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::{
     cmp::{max, min},
     time::Instant,
@@ -42,18 +42,29 @@ pub static COMPRESSION_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashM
 pub static EXPANSION_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
 pub static EXPANSION_WIRE_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
 
-fn cancel_adjacent_duplicate_gates(gates: &mut Vec<[u16; 3]>) {
-    let mut write = 0usize;
-    for read in 0..gates.len() {
-        let gate = gates[read];
-        if write > 0 && gates[write - 1] == gate {
-            write -= 1;
-        } else {
-            gates[write] = gate;
-            write += 1;
-        }
-    }
-    gates.truncate(write);
+pub static RECORD_ENABLED: AtomicBool = AtomicBool::new(false);
+pub static REC_ROUND: AtomicUsize = AtomicUsize::new(0);
+pub static REC_PASS: AtomicUsize = AtomicUsize::new(0);
+pub static REC_ITER: AtomicUsize = AtomicUsize::new(0);
+static REC_SEQ: AtomicUsize = AtomicUsize::new(0);
+static REC_SINK: Lazy<Mutex<Option<BufWriter<File>>>> = Lazy::new(|| Mutex::new(None));
+
+pub const TAG_NEW: u32 = u32::MAX;
+pub static TRACK_SURVIVORS: AtomicBool = AtomicBool::new(false);
+pub static GEN_MODE: AtomicBool = AtomicBool::new(false);
+pub static OUTGOING_GEN_MODE: AtomicBool = AtomicBool::new(false);
+pub static FORCED_COLLISIONS: AtomicUsize = AtomicUsize::new(0);
+pub static MAX_FANOUT: AtomicUsize = AtomicUsize::new(50);
+pub static MIN_MEDIAN_LEEWAY: AtomicUsize = AtomicUsize::new(10);
+pub static SAMF_TARGET: AtomicUsize = AtomicUsize::new(0);
+pub static INCOMING_RANK_MODE: AtomicUsize = AtomicUsize::new(IncomingRankMode::Sat as usize);
+
+#[repr(usize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IncomingRankMode {
+    Sat = 0,
+    Fanout = 1,
+    Hybrid = 2,
 }
 
 fn shuffled_unused_wires(n: usize, used_wires: &[u16], rng: &mut impl Rng) -> Vec<u16> {
@@ -79,6 +90,269 @@ pub fn record_expansion(before: usize, after: usize, before_wires: usize, after_
     *EXPANSION_WIRE_HISTOGRAM
         .entry((before_wires as u8, after_wires as u8))
         .or_insert(0) += 1;
+}
+
+#[inline]
+pub fn record_enabled() -> bool {
+    RECORD_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn record_init(path: &str) {
+    let f = File::create(path).expect("Failed to create replacement record file");
+    let mut w = BufWriter::new(f);
+    writeln!(
+        w,
+        "# per-replacement log. out=start-end are momentary working-buffer gate indices\n\
+         # seq stage round ctx out_start-out_end out_gates in_gates wires"
+    )
+    .ok();
+    *REC_SINK.lock().unwrap() = Some(w);
+    RECORD_ENABLED.store(true, Ordering::Relaxed);
+}
+
+pub fn record_replacement(
+    stage: &str,
+    ctx: usize,
+    out_start: usize,
+    out_end: usize,
+    in_gates: usize,
+    wires: &[u16],
+) {
+    if !record_enabled() {
+        return;
+    }
+    let seq = REC_SEQ.fetch_add(1, Ordering::Relaxed);
+    let round = REC_ROUND.load(Ordering::Relaxed);
+    let mut ws = wires.to_vec();
+    ws.sort_unstable();
+    ws.dedup();
+    let wires_str = ws
+        .iter()
+        .map(|w| w.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let last = out_end.saturating_sub(1);
+    if let Some(w) = REC_SINK.lock().unwrap().as_mut() {
+        writeln!(
+            w,
+            "seq={} stage={} round={} ctx={} out={}-{} out_gates={} in_gates={} wires=[{}]",
+            seq,
+            stage,
+            round,
+            ctx,
+            out_start,
+            last,
+            out_end.saturating_sub(out_start),
+            in_gates,
+            wires_str
+        )
+        .ok();
+    }
+}
+
+pub fn record_finish() {
+    if let Some(w) = REC_SINK.lock().unwrap().as_mut() {
+        w.flush().ok();
+    }
+}
+
+#[inline]
+pub fn track_survivors() -> bool {
+    TRACK_SURVIVORS.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub fn gen_mode() -> bool {
+    GEN_MODE.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub fn outgoing_gen_mode() -> bool {
+    OUTGOING_GEN_MODE.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub fn incoming_rank_mode() -> IncomingRankMode {
+    match INCOMING_RANK_MODE.load(Ordering::Relaxed) {
+        1 => IncomingRankMode::Fanout,
+        2 => IncomingRankMode::Hybrid,
+        _ => IncomingRankMode::Sat,
+    }
+}
+
+pub fn median_floor(values: &[u32]) -> u32 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let n = sorted.len();
+    if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        ((sorted[n / 2 - 1] as u64 + sorted[n / 2] as u64) / 2) as u32
+    }
+}
+
+#[inline]
+pub fn new_gate_tag(window_tags: &[u32]) -> u32 {
+    if gen_mode() {
+        median_floor(window_tags).saturating_add(1)
+    } else {
+        TAG_NEW
+    }
+}
+
+pub const FANOUT_TARGET: [f64; 5] = [0.25, 0.40, 0.20, 0.10, 0.05];
+
+fn fanout_bucket(f: usize) -> usize {
+    f.min(4)
+}
+
+pub fn gate_fanouts(gates: &[[u16; 3]]) -> Vec<usize> {
+    let n = gates.len();
+    let mut out = vec![0usize; n];
+    for i in 0..n {
+        let w = gates[i][0];
+        for g in &gates[i + 1..] {
+            if g[0] == w {
+                break;
+            }
+            if g[1] == w || g[2] == w {
+                out[i] += 1;
+            }
+        }
+    }
+    out
+}
+
+pub fn gate_leeways(gates: &[[u16; 3]]) -> Vec<usize> {
+    use crate::circuit::circuit::Gate;
+    let n = gates.len();
+    let mut out = vec![0usize; n];
+    for i in 0..n {
+        let mut l = 0usize;
+        let mut j = i;
+        while j > 0 && !Gate::collides_index(&gates[j - 1], &gates[i]) {
+            l += 1;
+            j -= 1;
+        }
+        let mut r = 0usize;
+        let mut k = i;
+        while k + 1 < n && !Gate::collides_index(&gates[k + 1], &gates[i]) {
+            r += 1;
+            k += 1;
+        }
+        out[i] = l + r;
+    }
+    out
+}
+
+pub fn cand_features(
+    window: &[[u16; 3]],
+    left: &[[u16; 3]],
+    right: &[[u16; 3]],
+) -> crate::replace::ranking::CandFeatures {
+    use crate::circuit::circuit::Gate;
+    use crate::replace::ranking::CandFeatures;
+
+    let threshold = MIN_MEDIAN_LEEWAY.load(Ordering::Relaxed);
+    let mut wires = std::collections::HashSet::new();
+    for g in window {
+        wires.insert(g[0]);
+        wires.insert(g[1]);
+        wires.insert(g[2]);
+    }
+
+    let mut buckets = [0usize; 5];
+    let mut zero_fanout = 0usize;
+    let mut low_leeway = 0usize;
+    let mut max_fanout = 0usize;
+    for i in 0..window.len() {
+        let target = window[i][0];
+        let mut fanout = 0usize;
+        let mut rewritten = false;
+        for g in &window[i + 1..] {
+            if g[0] == target {
+                rewritten = true;
+                break;
+            }
+            if g[1] == target || g[2] == target {
+                fanout += 1;
+            }
+        }
+        if !rewritten {
+            for g in right {
+                if g[0] == target {
+                    break;
+                }
+                if g[1] == target || g[2] == target {
+                    fanout += 1;
+                }
+            }
+        }
+
+        let cur = &window[i];
+        let mut leeway = 0usize;
+        let mut blocked = false;
+        for g in window[..i].iter().rev() {
+            if Gate::collides_index(g, cur) {
+                blocked = true;
+                break;
+            }
+            leeway += 1;
+        }
+        if !blocked {
+            for g in left.iter().rev() {
+                if Gate::collides_index(g, cur) {
+                    break;
+                }
+                leeway += 1;
+            }
+        }
+        blocked = false;
+        for g in &window[i + 1..] {
+            if Gate::collides_index(g, cur) {
+                blocked = true;
+                break;
+            }
+            leeway += 1;
+        }
+        if !blocked {
+            for g in right {
+                if Gate::collides_index(g, cur) {
+                    break;
+                }
+                leeway += 1;
+            }
+        }
+
+        buckets[fanout_bucket(fanout)] += 1;
+        zero_fanout += usize::from(fanout == 0);
+        low_leeway += usize::from(leeway < threshold);
+        max_fanout = max_fanout.max(fanout);
+    }
+
+    CandFeatures {
+        size: window.len(),
+        wires_spanned: wires.len(),
+        low_leeway_count: low_leeway,
+        zero_fanout_count: zero_fanout,
+        fanout_buckets: buckets,
+        max_fanout,
+    }
+}
+
+fn fanout_pick_index(candidates: &[CircuitSeq], left: &[[u16; 3]], right: &[[u16; 3]]) -> usize {
+    let features: Vec<_> = candidates
+        .iter()
+        .map(|candidate| cand_features(&candidate.gates, left, right))
+        .collect();
+    crate::replace::ranking::incoming()
+        .order(&features)
+        .first()
+        .copied()
+        .unwrap_or(0)
 }
 
 // Write a (before, after) -> count histogram to `csv_path` and a human-readable log to
@@ -269,8 +543,11 @@ pub fn compress_loop(
     curr_round: usize,
     last_round: usize,
     output_path: &str,
+    tags: &mut Vec<u32>,
 ) -> CircuitSeq {
+    let track = !tags.is_empty();
     let mut acc = circuit.clone();
+    let mut acc_tags = tags.clone();
     let mut rng = rand::rng();
     let mut mode = 0usize;
     let stable_compressions = stable_compressions.max(1);
@@ -287,6 +564,7 @@ pub fn compress_loop(
 
     loop {
         let before = acc.gates.len();
+        REC_ITER.fetch_add(1, Ordering::Relaxed);
 
         let max_chunks = 4 * rayon::current_num_threads().max(1);
         let k = if before <= 1500 {
@@ -301,15 +579,31 @@ pub fn compress_loop(
         let trace = compression_trace_enabled();
         let trace_threshold_ms = compression_trace_threshold_ms();
         let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
-        let compressed_chunks: Vec<(usize, usize, usize, Vec<[u16; 3]>, u128)> = ranges
+        let acc_tags_ref = &acc_tags;
+        let compressed_chunks: Vec<(usize, usize, usize, Vec<[u16; 3]>, Vec<u32>, u128)> = ranges
             .into_par_iter()
             .enumerate()
             .map(|(chunk_idx, (start, end))| {
                 let sub = CircuitSeq {
                     gates: acc.gates[start..end].to_vec(),
                 };
+                let mut chunk_tags = if track {
+                    acc_tags_ref[start..end].to_vec()
+                } else {
+                    Vec::new()
+                };
                 let chunk_start = Instant::now();
-                let gates = compress_big_ancillas(&sub, 100, n, env, shard_dbs, current_mode).gates;
+                let gates = compress_big_ancillas(
+                    &sub,
+                    100,
+                    n,
+                    env,
+                    shard_dbs,
+                    current_mode,
+                    start,
+                    &mut chunk_tags,
+                )
+                .gates;
                 let elapsed_ms = chunk_start.elapsed().as_millis();
                 if trace && elapsed_ms >= trace_threshold_ms {
                     eprintln!(
@@ -322,18 +616,21 @@ pub fn compress_loop(
                         elapsed_ms
                     );
                 }
-                (chunk_idx, end - start, gates.len(), gates, elapsed_ms)
+                (chunk_idx, end - start, gates.len(), gates, chunk_tags, elapsed_ms)
             })
             .collect();
 
         let mut compressed_chunks = compressed_chunks;
-        compressed_chunks.sort_by_key(|(chunk_idx, _, _, _, _)| *chunk_idx);
+        compressed_chunks.sort_by_key(|(chunk_idx, _, _, _, _, _)| *chunk_idx);
 
         if trace {
-            let total_chunk_ms: u128 = compressed_chunks.iter().map(|(_, _, _, _, ms)| *ms).sum();
-            if let Some((slow_idx, slow_in, slow_out, _, slow_ms)) = compressed_chunks
+            let total_chunk_ms: u128 = compressed_chunks
                 .iter()
-                .max_by_key(|(_, _, _, _, elapsed_ms)| *elapsed_ms)
+                .map(|(_, _, _, _, _, ms)| *ms)
+                .sum();
+            if let Some((slow_idx, slow_in, slow_out, _, _, slow_ms)) = compressed_chunks
+                .iter()
+                .max_by_key(|(_, _, _, _, _, elapsed_ms)| *elapsed_ms)
             {
                 eprintln!(
                     "[compress-trace] iteration mode={} chunks={} before={} slowest_idx={} slowest_in={} slowest_out={} slowest_ms={} sum_chunk_ms={}",
@@ -351,14 +648,25 @@ pub fn compress_loop(
 
         let total_len: usize = compressed_chunks
             .iter()
-            .map(|(_, _, out_len, _, _)| *out_len)
+            .map(|(_, _, out_len, _, _, _)| *out_len)
             .sum();
         let mut new_gates = Vec::with_capacity(total_len);
-        for (_, _, _, chunk, _) in compressed_chunks {
+        let mut new_tags = if track {
+            Vec::with_capacity(total_len)
+        } else {
+            Vec::new()
+        };
+        for (_, _, _, chunk, chunk_tags, _) in compressed_chunks {
             new_gates.extend(chunk);
+            if track {
+                new_tags.extend(chunk_tags);
+            }
         }
 
         acc.gates = new_gates;
+        if track {
+            acc_tags = new_tags;
+        }
         let after = acc.gates.len();
 
         recent.push_back(after);
@@ -391,6 +699,9 @@ pub fn compress_loop(
             writeln!(f, "{}", acc.repr()).expect("write");
             eprintln!("Wrote {}", output_path);
         }
+    }
+    if track {
+        *tags = acc_tags;
     }
     acc
 }
@@ -750,7 +1061,14 @@ pub fn expand_lmdb<'a>(
                 .filter(|c| c.gates.len() == max_gates)
                 .collect()
         };
-        let idx = rng.random_range(0..best.len());
+        let idx = if matches!(
+            incoming_rank_mode(),
+            IncomingRankMode::Fanout | IncomingRankMode::Hybrid
+        ) {
+            fanout_pick_index(&best, &[], &[])
+        } else {
+            rng.random_range(0..best.len())
+        };
         let mut repl = best.swap_remove(idx);
 
         if is_reversed {
@@ -802,13 +1120,27 @@ pub fn compress_lmdb(
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
     mode: usize,
+    base_offset: usize,
+    tags: &mut Vec<u32>,
 ) -> CircuitSeq {
     use crate::circuit::circuit::polys_repr_blob;
     use xxhash_rust::xxh3::xxh3_128;
 
+    let track = !tags.is_empty();
     let mut compressed = c.clone();
 
-    cancel_adjacent_duplicate_gates(&mut compressed.gates);
+    let mut j = 0;
+    while j < compressed.gates.len().saturating_sub(1) {
+        if compressed.gates[j] == compressed.gates[j + 1] {
+            compressed.gates.drain(j..=j + 1);
+            if track {
+                tags.drain(j..=j + 1);
+            }
+            j = j.saturating_sub(2);
+        } else {
+            j += 1;
+        }
+    }
 
     if compressed.gates.is_empty() {
         return CircuitSeq { gates: Vec::new() };
@@ -936,7 +1268,10 @@ pub fn compress_lmdb(
         }
 
         let min_gates = candidates.iter().map(|c| c.gates.len()).min().unwrap();
-        let mut best: Vec<CircuitSeq> = if sat_scoring_enabled() {
+        let incoming_mode = incoming_rank_mode();
+        let mut best: Vec<CircuitSeq> = if sat_scoring_enabled()
+            && incoming_mode != IncomingRankMode::Fanout
+        {
             let max_len = min_gates
                 .saturating_add(sat_score_slack())
                 .min(sub.gates.len() - 1);
@@ -988,11 +1323,30 @@ pub fn compress_lmdb(
                 .filter(|c| c.gates.len() == min_gates)
                 .collect()
         };
-        let idx = rng.random_range(0..best.len());
-        let mut repl = best.swap_remove(idx);
+        let pick = if matches!(
+            incoming_mode,
+            IncomingRankMode::Fanout | IncomingRankMode::Hybrid
+        ) {
+            fanout_pick_index(&best, &compressed.gates[..start], &compressed.gates[end..])
+        } else {
+            rng.random_range(0..best.len())
+        };
+        let mut repl = best.swap_remove(pick);
         *COMPRESSION_HISTOGRAM
             .entry((sub.gates.len() as u8, repl.gates.len() as u8))
             .or_insert(0) += 1;
+
+        if record_enabled() {
+            let ws: Vec<u16> = repl.gates.iter().flatten().copied().collect();
+            record_replacement(
+                "compress",
+                REC_ITER.load(Ordering::Relaxed),
+                base_offset + start,
+                base_offset + start + repl.gates.len(),
+                end - start,
+                &ws,
+            );
+        }
 
         if is_reversed {
             repl.gates.reverse();
@@ -1026,17 +1380,33 @@ pub fn compress_lmdb(
         REWIRE_TIME.fetch_add(t_rewire.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t_splice = Instant::now();
-        if repl.gates.len() == end - start {
+        let repl_len = repl.gates.len();
+        if repl_len == end - start {
             compressed.gates[start..end].copy_from_slice(&repl.gates);
         } else {
             compressed.gates.splice(start..end, repl.gates);
+        }
+        if track {
+            let nt = new_gate_tag(&tags[start..end]);
+            tags.splice(start..end, std::iter::repeat(nt).take(repl_len));
         }
         SPLICE_TIME.fetch_add(t_splice.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    cancel_adjacent_duplicate_gates(&mut compressed.gates);
+    let mut j = 0;
+    while j < compressed.gates.len().saturating_sub(1) {
+        if compressed.gates[j] == compressed.gates[j + 1] {
+            compressed.gates.drain(j..=j + 1);
+            if track {
+                tags.drain(j..=j + 1);
+            }
+            j = j.saturating_sub(2);
+        } else {
+            j += 1;
+        }
+    }
 
     compressed
 }
@@ -1048,11 +1418,25 @@ pub fn compress_big_ancillas(
     env: &lmdb::Environment,
     shard_dbs: &[lmdb::Database],
     mode: usize,
+    base_offset: usize,
+    tags: &mut Vec<u32>,
 ) -> CircuitSeq {
+    let track = !tags.is_empty();
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
-    cancel_adjacent_duplicate_gates(&mut circuit.gates);
+    let mut j = 0;
+    while j < circuit.gates.len().saturating_sub(1) {
+        if circuit.gates[j] == circuit.gates[j + 1] {
+            circuit.gates.drain(j..=j + 1);
+            if track {
+                tags.drain(j..=j + 1);
+            }
+            j = j.saturating_sub(2);
+        } else {
+            j += 1;
+        }
+    }
 
     for _ in 0..trials {
         let t0 = Instant::now();
@@ -1077,7 +1461,7 @@ pub fn compress_big_ancillas(
         subcircuit_gates.sort();
 
         let t1 = Instant::now();
-        let cc = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires);
+        let cc = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires, tags);
         CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let (start, end) = match cc {
             Some(se) => se,
@@ -1113,7 +1497,21 @@ pub fn compress_big_ancillas(
 
         let t4 = Instant::now();
         let sub_gates = subcircuit.gates.len();
-        let subcircuit_temp = compress_lmdb(&subcircuit, 10, sub_num_wires, env, shard_dbs, mode);
+        let mut block_tags = if track {
+            tags[start..=end].to_vec()
+        } else {
+            Vec::new()
+        };
+        let subcircuit_temp = compress_lmdb(
+            &subcircuit,
+            10,
+            sub_num_wires,
+            env,
+            shard_dbs,
+            mode,
+            base_offset + start,
+            &mut block_tags,
+        );
         let compress_elapsed = t4.elapsed();
         COMPRESS_TIME.fetch_add(compress_elapsed.as_nanos() as u64, Ordering::Relaxed);
         if compression_trace_enabled()
@@ -1140,6 +1538,9 @@ pub fn compress_big_ancillas(
             for i in 0..repl_len {
                 circuit.gates[start + i] = subcircuit.gates[i];
             }
+            if track {
+                tags[start..start + repl_len].copy_from_slice(&block_tags);
+            }
         } else if repl_len < old_len {
             for i in 0..repl_len {
                 circuit.gates[start + i] = subcircuit.gates[i];
@@ -1150,6 +1551,15 @@ pub fn compress_big_ancillas(
             circuit
                 .gates
                 .truncate(circuit.gates.len() - (old_len - repl_len));
+            if track {
+                for i in 0..repl_len {
+                    tags[start + i] = block_tags[i];
+                }
+                for i in (end + 1)..tags.len() {
+                    tags[i - (old_len - repl_len)] = tags[i];
+                }
+                tags.truncate(tags.len() - (old_len - repl_len));
+            }
         } else {
             panic!("Replacement grew, which is not allowed");
         }
@@ -1157,7 +1567,18 @@ pub fn compress_big_ancillas(
     }
 
     let t7 = Instant::now();
-    cancel_adjacent_duplicate_gates(&mut circuit.gates);
+    let mut j = 0;
+    while j < circuit.gates.len().saturating_sub(1) {
+        if circuit.gates[j] == circuit.gates[j + 1] {
+            circuit.gates.drain(j..=j + 1);
+            if track {
+                tags.drain(j..=j + 1);
+            }
+            j = j.saturating_sub(2);
+        } else {
+            j += 1;
+        }
+    }
     DEDUP_TIME.fetch_add(t7.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     circuit
@@ -1203,7 +1624,12 @@ pub fn expand_big_ancillas<'a>(
         subcircuit_gates.sort();
 
         let t1 = Instant::now();
-        let cc = contiguous_convex(&mut circuit, &mut subcircuit_gates, num_wires);
+        let cc = contiguous_convex(
+            &mut circuit,
+            &mut subcircuit_gates,
+            num_wires,
+            &mut Vec::new(),
+        );
         CONTIGUOUS_TIME.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let (start, end) = match cc {
             Some(se) => se,

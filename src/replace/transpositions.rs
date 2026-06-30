@@ -15,6 +15,8 @@ pub static SAMF_COMPRESSIONS_MADE: AtomicUsize = AtomicUsize::new(0);
 pub static SAMF_COMPRESSIONS_FAILED: AtomicUsize = AtomicUsize::new(0);
 // Curated expansions performed at collisions in the collision game.
 pub static CURATED_REPLACEMENTS_MADE: AtomicUsize = AtomicUsize::new(0);
+// Stage F / #10: curated expansions where pending NOTs were absorbed into the lookup.
+pub static UNCLEAN_EXPANSIONS: AtomicUsize = AtomicUsize::new(0);
 // Diagnostic counters for why a curated expansion did not hide a SAMF.
 pub static SAMF_HIDE_ELIGIBLE_EXPANSIONS: AtomicUsize = AtomicUsize::new(0);
 pub static SAMF_HIDE_SKIPPED_MATERIALIZED: AtomicUsize = AtomicUsize::new(0);
@@ -1392,16 +1394,25 @@ fn integrate_samf_compressed(
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
+    mut tags: Option<&mut Vec<u32>>,
 ) {
     use crate::replace::pairs::{compress_curated_lmdb, find_any_replacement_lmdb};
     // No DBs to consult -> append verbatim (matches the old behaviour and avoids
     // opening a read txn on a possibly-empty env).
     if curated_shard_dbs.is_empty() && shard_dbs.is_empty() {
         gates.extend_from_slice(samf);
+        if let Some(tags) = tags.as_deref_mut() {
+            let nt = crate::replace::replace::new_gate_tag(tags);
+            tags.extend(std::iter::repeat(nt).take(samf.len()));
+        }
         return;
     }
     let take = gates.len().min(3);
     let ctx_start = gates.len() - take;
+    let event_tag = tags
+        .as_ref()
+        .map(|tags| crate::replace::replace::new_gate_tag(&tags[ctx_start..]))
+        .unwrap_or(crate::replace::replace::TAG_NEW);
     let mut window: Vec<[u16; 3]> = gates[ctx_start..].to_vec();
     window.extend_from_slice(samf);
     // Tiered replacement, best-quality first; all tiers are equivalence-preserving:
@@ -1415,9 +1426,16 @@ fn integrate_samf_compressed(
     if let Some(repl) = repl {
         gates.truncate(ctx_start);
         gates.extend_from_slice(&repl);
+        if let Some(tags) = tags.as_deref_mut() {
+            tags.truncate(ctx_start);
+            tags.extend(std::iter::repeat(event_tag).take(repl.len()));
+        }
         END_SAMF_COMPRESSIONS_MADE.fetch_add(1, Ordering::Relaxed);
     } else {
         gates.extend_from_slice(samf);
+        if let Some(tags) = tags.as_deref_mut() {
+            tags.extend(std::iter::repeat(event_tag).take(samf.len()));
+        }
     }
 }
 
@@ -1435,6 +1453,50 @@ pub fn apply_unsamf(
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
+) {
+    apply_unsamf_inner(
+        output,
+        t_list,
+        negation_mask,
+        n,
+        env,
+        curated_shard_dbs,
+        shard_dbs,
+        None,
+    );
+}
+
+pub fn apply_unsamf_tagged(
+    output: &mut Vec<[u16; 3]>,
+    t_list: &Transpositions,
+    negation_mask: &[u8],
+    n: usize,
+    env: &Environment,
+    curated_shard_dbs: &[Database],
+    shard_dbs: &[Database],
+    tags: &mut Vec<u32>,
+) {
+    apply_unsamf_inner(
+        output,
+        t_list,
+        negation_mask,
+        n,
+        env,
+        curated_shard_dbs,
+        shard_dbs,
+        Some(tags),
+    );
+}
+
+fn apply_unsamf_inner(
+    output: &mut Vec<[u16; 3]>,
+    t_list: &Transpositions,
+    negation_mask: &[u8],
+    n: usize,
+    env: &Environment,
+    curated_shard_dbs: &[Database],
+    shard_dbs: &[Database],
+    mut tags: Option<&mut Vec<u32>>,
 ) {
     let p = t_list.to_perm(n);
     let mut t = Transpositions::from_perm(&p);
@@ -1467,11 +1529,27 @@ pub fn apply_unsamf(
     for &swap in t.transpositions.iter().rev() {
         let mut samf = Transpositions::gen_gates_swap(n, swap);
         samf.reverse();
-        integrate_samf_compressed(output, &samf, n, env, curated_shard_dbs, shard_dbs);
+        integrate_samf_compressed(
+            output,
+            &samf,
+            n,
+            env,
+            curated_shard_dbs,
+            shard_dbs,
+            tags.as_deref_mut(),
+        );
     }
     for w in leftover_nots {
         let not_gates = Transpositions::gen_gates_not(n, w);
-        integrate_samf_compressed(output, &not_gates, n, env, curated_shard_dbs, shard_dbs);
+        integrate_samf_compressed(
+            output,
+            &not_gates,
+            n,
+            env,
+            curated_shard_dbs,
+            shard_dbs,
+            tags.as_deref_mut(),
+        );
     }
 }
 
@@ -1662,16 +1740,32 @@ fn insert_m_samfs_core(
     n: usize,
     m: usize,
     x: usize,
-) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>) {
+    input_tags: &[u32],
+) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, Vec<u32>) {
+    let track = !input_tags.is_empty();
     let mut t_list = Transpositions {
         transpositions: Vec::new(),
     };
     let mut gates: Vec<[u16; 3]> = Vec::new();
+    let mut tags: Vec<u32> = Vec::new();
     let mut negation_mask = vec![0u8; n];
     for (i, gate) in input.iter().enumerate() {
+        let gate_tag = input_tags
+            .get(i)
+            .copied()
+            .unwrap_or(crate::replace::replace::TAG_NEW);
         if i % x == 0 {
             let t = Transpositions::gen_random_simple(n, m, &mut negation_mask);
-            gates.extend_from_slice(&t.to_circuit(n).gates);
+            let samf_gates = t.to_circuit(n).gates;
+            gates.extend_from_slice(&samf_gates);
+            if track {
+                tags.extend(
+                    std::iter::repeat(crate::replace::replace::new_gate_tag(std::slice::from_ref(
+                        &gate_tag,
+                    )))
+                    .take(samf_gates.len()),
+                );
+            }
             t_list.transpositions.extend_from_slice(&t.transpositions);
             SAMF_INSERTIONS_MADE.fetch_add(t.transpositions.len(), Ordering::Relaxed);
         }
@@ -1680,16 +1774,37 @@ fn insert_m_samfs_core(
         let c = t_list.evaluate(gate[2]);
         let g = [a, b, c];
         if negation_mask[b as usize] == 1 {
-            gates.extend_from_slice(&Transpositions::gen_gates_not(n, b));
+            let not_gates = Transpositions::gen_gates_not(n, b);
+            gates.extend_from_slice(&not_gates);
+            if track {
+                tags.extend(
+                    std::iter::repeat(crate::replace::replace::new_gate_tag(std::slice::from_ref(
+                        &gate_tag,
+                    )))
+                    .take(not_gates.len()),
+                );
+            }
             negation_mask[b as usize] = 0;
         }
         if negation_mask[c as usize] == 1 {
-            gates.extend_from_slice(&Transpositions::gen_gates_not(n, c));
+            let not_gates = Transpositions::gen_gates_not(n, c);
+            gates.extend_from_slice(&not_gates);
+            if track {
+                tags.extend(
+                    std::iter::repeat(crate::replace::replace::new_gate_tag(std::slice::from_ref(
+                        &gate_tag,
+                    )))
+                    .take(not_gates.len()),
+                );
+            }
             negation_mask[c as usize] = 0;
         }
         gates.push(g);
+        if track {
+            tags.push(gate_tag);
+        }
     }
-    (gates, t_list, negation_mask)
+    (gates, t_list, negation_mask, tags)
 }
 
 // Insert m samf between each gate
@@ -1704,7 +1819,8 @@ pub fn insert_wire_m_samfs_every_x(
 ) {
     println!("Inserting {} samfs between each gate", m);
     println!("Starting len: {} gates", circuit.gates.len());
-    let (mut gates, t_list, negation_mask) = insert_m_samfs_core(&circuit.gates, n, m, x);
+    let (mut gates, t_list, negation_mask, mut tags) =
+        insert_m_samfs_core(&circuit.gates, n, m, x, &[]);
     apply_unsamf(
         &mut gates,
         &t_list,
@@ -1714,7 +1830,37 @@ pub fn insert_wire_m_samfs_every_x(
         curated_shard_dbs,
         shard_dbs,
     );
+    let _ = &mut tags;
     circuit.gates = gates;
+    println!("Complete. Ending len: {} gates", circuit.gates.len());
+}
+
+pub fn insert_wire_m_samfs_every_x_tagged(
+    circuit: &mut CircuitSeq,
+    n: usize,
+    m: usize,
+    x: usize,
+    env: &Environment,
+    curated_shard_dbs: &[Database],
+    shard_dbs: &[Database],
+    tags: &mut Vec<u32>,
+) {
+    println!("Inserting {} samfs between each gate", m);
+    println!("Starting len: {} gates", circuit.gates.len());
+    let (mut gates, t_list, negation_mask, mut out_tags) =
+        insert_m_samfs_core(&circuit.gates, n, m, x, tags);
+    apply_unsamf_tagged(
+        &mut gates,
+        &t_list,
+        &negation_mask,
+        n,
+        env,
+        curated_shard_dbs,
+        shard_dbs,
+        &mut out_tags,
+    );
+    circuit.gates = gates;
+    *tags = out_tags;
     println!("Complete. Ending len: {} gates", circuit.gates.len());
 }
 
@@ -1805,6 +1951,18 @@ fn shoot_materialized_gate_to_first_collision(
     (passed, false)
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct CollisionPassOptions {
+    anchor: Option<usize>,
+    replacement_budget: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StageBPassResult {
+    pub hidden_samfs: usize,
+    pub replacements: usize,
+}
+
 // Shoot the first remaining gate right until its first collision. At that collision, make a
 // curated EXPANSION of a window of up to `gates_ahead_expand` gates anchored at the shot gate
 // and collider, then try to hide a single SAMF in the expansion's tail.
@@ -1837,11 +1995,23 @@ fn collision_game_core(
     gates_ahead_expand: usize,
     gates_ahead_samf: usize,
     type_attempts: usize,
-) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
-    use crate::replace::pairs::{compress_curated_lmdb, expand_curated_lmdb};
+    input_tags: &[u32],
+    options: CollisionPassOptions,
+) -> (
+    Vec<[u16; 3]>,
+    Transpositions,
+    Vec<u8>,
+    usize,
+    Vec<u32>,
+    usize,
+) {
+    use crate::replace::pairs::{compress_curated_lmdb, expand_curated_lmdb_neg};
+    use crate::replace::replace::TAG_NEW;
 
+    let track = !input_tags.is_empty();
     let mut rng = rand::rng();
     let mut output: Vec<[u16; 3]> = Vec::new();
+    let mut output_tags: Vec<u32> = Vec::new();
     let mut t_list = Transpositions {
         transpositions: Vec::new(),
     };
@@ -1850,17 +2020,60 @@ fn collision_game_core(
 
     let start = if input.is_empty() {
         0
+    } else if let Some(anchor) = options.anchor {
+        anchor.min(input.len() - 1)
     } else {
         rng.random_range(0..input.len())
     };
     output.extend_from_slice(&input[..start]);
+    if track {
+        output_tags.extend_from_slice(&input_tags[..start]);
+    }
     let mut remaining: VecDeque<[u16; 3]> = input[start..].iter().copied().collect();
+    let mut remaining_tags: VecDeque<u32> = if track {
+        input_tags[start..].iter().copied().collect()
+    } else {
+        VecDeque::new()
+    };
     // Replacement gates are already expressed in the current physical wire space. Keep the
     // replacement tail separate from `remaining`, whose gates still require SAMF relabeling.
     let mut materialized_shot: Option<[u16; 3]> = None;
+    let mut materialized_shot_tag: u32 = TAG_NEW;
+    let mut replacements: usize = 0;
+
+    let flush_rest = |output: &mut Vec<[u16; 3]>,
+                      output_tags: &mut Vec<u32>,
+                      remaining: &mut VecDeque<[u16; 3]>,
+                      remaining_tags: &mut VecDeque<u32>,
+                      materialized_shot: &mut Option<[u16; 3]>,
+                      materialized_shot_tag: u32,
+                      t_list: &Transpositions,
+                      negation_mask: &mut [u8]| {
+        if let Some(shot) = materialized_shot.take() {
+            output.push(shot);
+            if track {
+                output_tags.push(materialized_shot_tag);
+            }
+        }
+        while let Some(gate) = remaining.pop_front() {
+            let tag = if track {
+                remaining_tags.pop_front().unwrap()
+            } else {
+                TAG_NEW
+            };
+            emit_relabelled_gate(gate, output, t_list, negation_mask, n);
+            if track {
+                output_tags.resize(
+                    output.len() - 1,
+                    crate::replace::replace::new_gate_tag(std::slice::from_ref(&tag)),
+                );
+                output_tags.push(tag);
+            }
+        }
+    };
 
     while materialized_shot.is_some() || !remaining.is_empty() {
-        let (shot, shot_is_materialized, passed, has_collision) =
+        let (shot, shot_is_materialized, mut passed, mut has_collision, shot_tag, mut passed_tags) =
             if let Some(shot) = materialized_shot.take() {
                 let (passed, collided) = shoot_materialized_gate_to_first_collision(
                     shot,
@@ -1868,11 +2081,34 @@ fn collision_game_core(
                     &t_list,
                     &negation_mask,
                 );
-                (shot, true, passed, collided)
+                let passed_tags = if track {
+                    (0..passed.len())
+                        .map(|_| remaining_tags.pop_front().unwrap())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (
+                    shot,
+                    true,
+                    passed,
+                    collided,
+                    materialized_shot_tag,
+                    passed_tags,
+                )
             } else {
                 let (shot, passed, collided) =
                     shoot_gate_to_first_collision(&mut remaining, &t_list, &negation_mask).unwrap();
-                (shot, false, passed, collided)
+                let (shot_tag, passed_tags) = if track {
+                    let shot_tag = remaining_tags.pop_front().unwrap();
+                    let passed_tags = (0..passed.len())
+                        .map(|_| remaining_tags.pop_front().unwrap())
+                        .collect();
+                    (shot_tag, passed_tags)
+                } else {
+                    (TAG_NEW, Vec::new())
+                };
+                (shot, false, passed, collided, shot_tag, passed_tags)
             };
 
         // A control correction logically precedes an untouched input gate. Emit it before moving
@@ -1881,9 +2117,36 @@ fn collision_game_core(
         // space and must not be corrected or relabeled again.
         if !shot_is_materialized {
             flush_relabelled_gate_controls(shot, &mut output, &t_list, &mut negation_mask, n);
+            if track {
+                output_tags.resize(
+                    output.len(),
+                    crate::replace::replace::new_gate_tag(std::slice::from_ref(&shot_tag)),
+                );
+            }
         }
-        for gate in passed {
+        let forced_collision =
+            !has_collision && crate::replace::replace::outgoing_gen_mode() && !passed.is_empty();
+        if forced_collision {
+            for gate in passed.drain(..).rev() {
+                remaining.push_front(gate);
+            }
+            if track {
+                for tag in passed_tags.drain(..).rev() {
+                    remaining_tags.push_front(tag);
+                }
+            }
+            has_collision = true;
+            crate::replace::replace::FORCED_COLLISIONS.fetch_add(1, Ordering::Relaxed);
+        }
+        for (i, gate) in passed.into_iter().enumerate() {
             emit_relabelled_gate(gate, &mut output, &t_list, &mut negation_mask, n);
+            if track {
+                output_tags.resize(
+                    output.len() - 1,
+                    crate::replace::replace::new_gate_tag(std::slice::from_ref(&passed_tags[i])),
+                );
+                output_tags.push(passed_tags[i]);
+            }
         }
 
         // At the first collision, expand a window anchored at [shot, collider]. The expansion is
@@ -1893,52 +2156,169 @@ fn collision_game_core(
                 break 'try_replace false;
             }
 
-            // 1) Curated expansion of the largest clean window anchored at the colliding pair: an
-            //    equivalent, longer circuit. The first gate is the shot gate; the collider and
-            //    any additional context remain at the front of `remaining`. The window shrinks
-            //    from its far end
-            //    (gates_ahead_expand .. 2) until a curated expansion is found; a window is eligible
-            //    only if every control wire in it is clean (no pending negation correction), so the
-            //    expansion stays equivalence-safe. `consumed` includes the shot gate.
-            let max_window = gates_ahead_expand.max(2).min(remaining.len() + 1);
-            let mut expanded: Option<(usize, Vec<[u16; 3]>)> = None;
-            for k in (2..=max_window).rev() {
-                let mut window: Vec<[u16; 3]> = Vec::with_capacity(k);
-                let mut clean = true;
-                for (index, g) in std::iter::once(&shot)
-                    .chain(remaining.iter().take(k - 1))
-                    .enumerate()
-                {
-                    let rg = if index == 0 && shot_is_materialized {
-                        *g
-                    } else {
-                        relabel_gate(*g, &t_list)
-                    };
-                    // Controls (positions 1 and 2) must carry no pending negation.
-                    if negation_mask[rg[1] as usize] != 0 || negation_mask[rg[2] as usize] != 0 {
-                        clean = false;
+            // 1) Curated expansion of a window anchored at the colliding pair. Legacy mode uses
+            // contiguous windows. Gen outgoing mode uses the SSG #11 behavior: build candidate
+            // windows up to size 5 by adding later gates that can commute left to the collider,
+            // then try largest windows first with the outgoing ranker breaking ties within a size.
+            const OUTGOING_LOOKAHEAD: usize = 8;
+            const MAX_EXPAND_ATTEMPTS: usize = 16;
+            const FEATURE_CTX: usize = 64;
+
+            let shot_rg = if shot_is_materialized {
+                shot
+            } else {
+                relabel_gate(shot, &t_list)
+            };
+            let clean_controls = |g: &[u16; 3]| {
+                negation_mask[g[1] as usize] == 0 && negation_mask[g[2] as usize] == 0
+            };
+            let look = if crate::replace::replace::outgoing_gen_mode() {
+                OUTGOING_LOOKAHEAD
+            } else {
+                gates_ahead_expand.max(2)
+            }
+            .min(remaining.len());
+            let rg: Vec<[u16; 3]> = remaining
+                .iter()
+                .take(look)
+                .map(|&g| relabel_gate(g, &t_list))
+                .collect();
+
+            let mut candidates: Vec<(Vec<usize>, Vec<[u16; 3]>)> = Vec::new();
+            if crate::replace::replace::outgoing_gen_mode() {
+                use crate::circuit::circuit::Gate;
+                if !rg.is_empty() {
+                    candidates.push((vec![0], vec![shot_rg, rg[0]]));
+                    let reach1: Vec<usize> = (1..rg.len())
+                        .filter(|&j| (1..j).all(|m| !Gate::collides_index(&rg[j], &rg[m])))
+                        .collect();
+                    for &j in &reach1 {
+                        candidates.push((vec![0, j], vec![shot_rg, rg[0], rg[j]]));
+                    }
+                    for &j in &reach1 {
+                        for k in (j + 1)..rg.len() {
+                            if (1..k)
+                                .filter(|&m| m != j)
+                                .all(|m| !Gate::collides_index(&rg[k], &rg[m]))
+                            {
+                                candidates
+                                    .push((vec![0, j, k], vec![shot_rg, rg[0], rg[j], rg[k]]));
+                                for l in (k + 1)..rg.len() {
+                                    if (1..l)
+                                        .filter(|&m| m != j && m != k)
+                                        .all(|m| !Gate::collides_index(&rg[l], &rg[m]))
+                                    {
+                                        candidates.push((
+                                            vec![0, j, k, l],
+                                            vec![shot_rg, rg[0], rg[j], rg[k], rg[l]],
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                let max_window = gates_ahead_expand.max(2).min(remaining.len() + 1);
+                for k in 2..=max_window {
+                    if !clean_controls(&shot_rg) {
                         break;
                     }
-                    window.push(rg);
+                    if (0..k - 1).any(|m| m >= rg.len() || !clean_controls(&rg[m])) {
+                        continue;
+                    }
+                    let mut window = Vec::with_capacity(k);
+                    window.push(shot_rg);
+                    window.extend(rg[..k - 1].iter().copied());
+                    candidates.push(((0..k - 1).collect(), window));
                 }
-                if !clean {
+            }
+            if candidates.is_empty() {
+                break 'try_replace false;
+            }
+
+            let order: Vec<usize> = if crate::replace::replace::outgoing_gen_mode() {
+                let left = &output[output.len().saturating_sub(FEATURE_CTX)..];
+                let feats: Vec<crate::replace::ranking::CandFeatures> = candidates
+                    .iter()
+                    .map(|(idxs, win)| {
+                        let skip: std::collections::HashSet<usize> = idxs.iter().copied().collect();
+                        let right: Vec<[u16; 3]> = (0..rg.len())
+                            .filter(|m| !skip.contains(m))
+                            .take(FEATURE_CTX)
+                            .map(|m| rg[m])
+                            .collect();
+                        crate::replace::replace::cand_features(win, left, &right)
+                    })
+                    .collect();
+                let mut ord = crate::replace::ranking::outgoing().order(&feats);
+                ord.sort_by(|&a, &b| candidates[b].1.len().cmp(&candidates[a].1.len()));
+                ord
+            } else {
+                (0..candidates.len()).rev().collect()
+            };
+
+            let negated_wires = |win: &[[u16; 3]]| -> Vec<u16> {
+                let mut wires = Vec::new();
+                for gate in win {
+                    for &wire in &[gate[0], gate[1], gate[2]] {
+                        if negation_mask[wire as usize] == 1 && !wires.contains(&wire) {
+                            wires.push(wire);
+                        }
+                    }
+                }
+                wires
+            };
+            let shot_negated = crate::replace::replace::outgoing_gen_mode()
+                && (negation_mask[shot_rg[0] as usize] == 1
+                    || negation_mask[shot_rg[1] as usize] == 1
+                    || negation_mask[shot_rg[2] as usize] == 1);
+            let absorb_nots = crate::replace::replace::outgoing_gen_mode()
+                && std::env::var("ABSORB_NOTS").is_ok();
+
+            let mut expanded: Option<(Vec<usize>, Vec<[u16; 3]>, Vec<[u16; 3]>, Vec<u16>)> = None;
+            for &candidate_idx in order.iter().take(MAX_EXPAND_ATTEMPTS) {
+                let (idxs, window) = &candidates[candidate_idx];
+                if !absorb_nots {
+                    let dirty_control = window.iter().any(|gate| {
+                        negation_mask[gate[1] as usize] == 1 || negation_mask[gate[2] as usize] == 1
+                    });
+                    if dirty_control {
+                        continue;
+                    }
+                }
+                let neg = if absorb_nots {
+                    negated_wires(window)
+                } else {
+                    Vec::new()
+                };
+                if shot_negated && !neg.is_empty() {
                     continue;
                 }
-                if let Some(e) = expand_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs)
+                if let Some(expansion) =
+                    expand_curated_lmdb_neg(window, n, env, curated_shard_dbs, shard_dbs, &neg)
                 {
-                    if e.len() >= 3 {
-                        expanded = Some((k, e));
+                    if expansion.len() >= 3 {
+                        expanded = Some((idxs.clone(), window.clone(), expansion, neg));
                         break;
                     }
                 }
             }
-            let (consumed, expansion) = match expanded {
+
+            let (consumed_indices, window, expansion, picked_negated) = match expanded {
                 Some(x) => x,
-                None => break 'try_replace false, // no curated expansion -> normal path
+                None => break 'try_replace false,
             };
+            let consumed = window.len();
+            if !picked_negated.is_empty() {
+                UNCLEAN_EXPANSIONS.fetch_add(1, Ordering::Relaxed);
+            }
+            for &wire in &picked_negated {
+                negation_mask[wire as usize] = 0;
+            }
             CURATED_REPLACEMENTS_MADE.fetch_add(1, Ordering::Relaxed);
             SAMF_HIDE_ELIGIBLE_EXPANSIONS.fetch_add(1, Ordering::Relaxed);
-            // Distinct-wire counts of the consumed input window (evaluated) vs the expansion.
+            // Distinct-wire counts of the chosen outgoing window vs the expansion.
             let distinct_wires = |gates: &[[u16; 3]]| {
                 let mut seen = std::collections::HashSet::new();
                 for g in gates {
@@ -1948,26 +2328,21 @@ fn collision_game_core(
                 }
                 seen.len()
             };
-            let before_wires = {
-                let evaluated: Vec<[u16; 3]> = std::iter::once(&shot)
-                    .chain(remaining.iter().take(consumed - 1))
-                    .enumerate()
-                    .map(|(index, &g)| {
-                        if index == 0 && shot_is_materialized {
-                            g
-                        } else {
-                            relabel_gate(g, &t_list)
-                        }
-                    })
-                    .collect();
-                distinct_wires(&evaluated)
-            };
+            let before_wires = distinct_wires(&window);
             crate::replace::replace::record_expansion(
                 consumed,
                 expansion.len(),
                 before_wires,
                 distinct_wires(&expansion),
             );
+            let event_tag = if track {
+                let mut win_tags = Vec::with_capacity(consumed);
+                win_tags.push(shot_tag);
+                win_tags.extend(consumed_indices.iter().map(|&idx| remaining_tags[idx]));
+                crate::replace::replace::new_gate_tag(&win_tags)
+            } else {
+                TAG_NEW
+            };
 
             // 2) Try to hide ONE SAMF ending at the expansion's tail. The context for the hide is
             //    the last `gates_ahead_samf` gates of (output ++ expansion) — reaching back into
@@ -2060,6 +2435,7 @@ fn collision_game_core(
                 }
             }
 
+            let rec_start = output.len().saturating_sub(from_output);
             match tuck {
                 Some((_score, swap_lo, swap_hi, neg_type, samf, repl)) => {
                     // The context window (output tail + expansion tail + samf[0..3]) becomes
@@ -2073,6 +2449,7 @@ fn collision_game_core(
                     if let Some((last, prefix)) = samf_suffix.split_last() {
                         output.extend_from_slice(prefix);
                         materialized_shot = Some(*last);
+                        materialized_shot_tag = event_tag;
                     }
                     t_list.transpositions.push((swap_lo, swap_hi, neg_type));
                     apply_neg_to_mask(
@@ -2090,12 +2467,33 @@ fn collision_game_core(
                     let (last, prefix) = expansion.split_last().unwrap();
                     output.extend_from_slice(prefix);
                     materialized_shot = Some(*last);
+                    materialized_shot_tag = event_tag;
                     SAMF_COMPRESSIONS_FAILED.fetch_add(1, Ordering::Relaxed);
                 }
             }
 
-            for _ in 1..consumed {
-                remaining.pop_front();
+            if track {
+                output_tags.truncate(rec_start);
+                output_tags.resize(output.len(), event_tag);
+                for &idx in consumed_indices.iter().rev() {
+                    remaining_tags.remove(idx);
+                }
+            }
+            if crate::replace::replace::record_enabled() {
+                let rec_end = output.len();
+                let rs = rec_start.min(rec_end);
+                let ws: Vec<u16> = output[rs..rec_end].iter().flatten().copied().collect();
+                crate::replace::replace::record_replacement(
+                    "expand",
+                    crate::replace::replace::REC_PASS.load(Ordering::Relaxed),
+                    rs,
+                    rec_end,
+                    consumed,
+                    &ws,
+                );
+            }
+            for &idx in consumed_indices.iter().rev() {
+                remaining.remove(idx);
             }
             true
         };
@@ -2104,13 +2502,46 @@ fn collision_game_core(
             // collider (or at the end if it passed every remaining gate).
             if shot_is_materialized {
                 output.push(shot);
+                if track {
+                    output_tags.push(shot_tag);
+                }
             } else {
                 emit_relabelled_gate(shot, &mut output, &t_list, &mut negation_mask, n);
+                if track {
+                    output_tags.resize(
+                        output.len() - 1,
+                        crate::replace::replace::new_gate_tag(std::slice::from_ref(&shot_tag)),
+                    );
+                    output_tags.push(shot_tag);
+                }
+            }
+        } else {
+            replacements += 1;
+            if options.replacement_budget > 0 && replacements >= options.replacement_budget {
+                flush_rest(
+                    &mut output,
+                    &mut output_tags,
+                    &mut remaining,
+                    &mut remaining_tags,
+                    &mut materialized_shot,
+                    materialized_shot_tag,
+                    &t_list,
+                    &mut negation_mask,
+                );
+                break;
             }
         }
     }
 
-    (output, t_list, negation_mask, compressions)
+    debug_assert!(!track || output.len() == output_tags.len());
+    (
+        output,
+        t_list,
+        negation_mask,
+        compressions,
+        output_tags,
+        replacements,
+    )
 }
 
 fn collision_game_repeated_core(
@@ -2123,17 +2554,33 @@ fn collision_game_repeated_core(
     gates_ahead_samf: usize,
     type_attempts: usize,
     shooting_times: usize,
-) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
+    input_tags: &[u32],
+    options: CollisionPassOptions,
+) -> (
+    Vec<[u16; 3]>,
+    Transpositions,
+    Vec<u8>,
+    usize,
+    Vec<u32>,
+    usize,
+) {
     let passes = shooting_times.max(1);
     let mut input_gates = input.to_vec();
+    let mut tags = input_tags.to_vec();
     let mut total_t = Transpositions {
         transpositions: Vec::new(),
     };
     let mut total_neg = vec![0u8; n];
     let mut total_compressions = 0usize;
+    let mut total_replacements = 0usize;
+    let mut remaining_budget = options.replacement_budget;
 
-    for _ in 0..passes {
-        let (out, t_pass, neg_pass, compressions) = collision_game_core(
+    for pass_idx in 0..passes {
+        let pass_options = CollisionPassOptions {
+            anchor: if pass_idx == 0 { options.anchor } else { None },
+            replacement_budget: remaining_budget,
+        };
+        let (out, t_pass, neg_pass, compressions, out_tags, replacements) = collision_game_core(
             &input_gates,
             n,
             env,
@@ -2142,6 +2589,8 @@ fn collision_game_repeated_core(
             gates_ahead_expand,
             gates_ahead_samf,
             type_attempts,
+            &tags,
+            pass_options,
         );
         let mut new_total_neg = neg_pass;
         for w in 0..n {
@@ -2153,10 +2602,25 @@ fn collision_game_repeated_core(
         total_neg = new_total_neg;
         total_t = total_t.concat(&t_pass);
         total_compressions += compressions;
+        total_replacements += replacements;
         input_gates = out;
+        tags = out_tags;
+        if options.replacement_budget > 0 {
+            remaining_budget = remaining_budget.saturating_sub(replacements);
+            if remaining_budget == 0 {
+                break;
+            }
+        }
     }
 
-    (input_gates, total_t, total_neg, total_compressions)
+    (
+        input_gates,
+        total_t,
+        total_neg,
+        total_compressions,
+        tags,
+        total_replacements,
+    )
 }
 
 // Standalone collision game: run the core, then undo its accumulated SAMFs.
@@ -2171,7 +2635,7 @@ pub fn collision_game(
     type_attempts: usize,
     shooting_times: usize,
 ) -> usize {
-    let (mut output, t_list, negation_mask, compressions) = collision_game_repeated_core(
+    let (mut output, t_list, negation_mask, compressions, _, _) = collision_game_repeated_core(
         &circuit.gates,
         n,
         env,
@@ -2181,6 +2645,8 @@ pub fn collision_game(
         gates_ahead_samf,
         type_attempts,
         shooting_times,
+        &[],
+        CollisionPassOptions::default(),
     );
     apply_unsamf(
         &mut output,
@@ -2217,22 +2683,42 @@ pub fn shuffled_shoot_then_samf_core(
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
-) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize) {
+    input_tags: &[u32],
+) -> (
+    Vec<[u16; 3]>,
+    Transpositions,
+    Vec<u8>,
+    usize,
+    Vec<u32>,
+    usize,
+) {
     let passes = shooting_times.max(1);
     let collision_passes = collision_rounds.max(1);
     let mut input_gates = input.to_vec();
+    let mut tags = input_tags.to_vec();
     let mut total_t = Transpositions {
         transpositions: Vec::new(),
     };
     let mut total_neg = vec![0u8; n];
     let mut total_compressions = 0usize;
+    let mut total_replacements = 0usize;
 
     for _ in 0..passes {
         if expansion_game {
             let pair_mode = ExpandPairMode::Curated { curated_shard_dbs };
             let current = CircuitSeq { gates: input_gates };
             let before = current.gates.len();
+            let event_tag = if tags.is_empty() {
+                crate::replace::replace::TAG_NEW
+            } else {
+                crate::replace::replace::new_gate_tag(&tags)
+            };
             input_gates = expand_once_scored(&current, n, env, shard_dbs, &pair_mode).gates;
+            if !tags.is_empty() {
+                tags = std::iter::repeat(event_tag)
+                    .take(input_gates.len())
+                    .collect();
+            }
             println!(
                 "  Expansion game: {} -> {} gates (scored one expand loop pass)",
                 before,
@@ -2240,7 +2726,7 @@ pub fn shuffled_shoot_then_samf_core(
             );
         }
 
-        let (out_a, t_a, neg_a, compressions) = collision_game_repeated_core(
+        let (out_a, t_a, neg_a, compressions, tags_a, replacements) = collision_game_repeated_core(
             &input_gates,
             n,
             env,
@@ -2250,8 +2736,10 @@ pub fn shuffled_shoot_then_samf_core(
             gates_ahead_samf,
             type_attempts,
             collision_passes,
+            &tags,
+            CollisionPassOptions::default(),
         );
-        let (out_b, t_b, neg_b) = insert_m_samfs_core(&out_a, n, m, x);
+        let (out_b, t_b, neg_b, tags_b) = insert_m_samfs_core(&out_a, n, m, x, &tags_a);
 
         // Combined permutation for this collision-game pass: collision games first, then insertion.
         let t_pass = t_a.concat(&t_b);
@@ -2276,10 +2764,121 @@ pub fn shuffled_shoot_then_samf_core(
         total_neg = new_total_neg;
         total_t = total_t.concat(&t_pass);
         total_compressions += compressions;
+        total_replacements += replacements;
         input_gates = out_b;
+        tags = tags_b;
     }
 
-    (input_gates, total_t, total_neg, total_compressions)
+    (
+        input_gates,
+        total_t,
+        total_neg,
+        total_compressions,
+        tags,
+        total_replacements,
+    )
+}
+
+// Run exactly one low-generation shooting pass and immediately resolve its SAMF state. This is
+// the Stage-B-safe variant: no ledger is carried into the next low-gen pass.
+pub fn shuffled_shoot_then_samf_stage_b_pass(
+    circuit: &mut CircuitSeq,
+    n: usize,
+    m: usize,
+    x: usize,
+    gates_ahead_expand: usize,
+    gates_ahead_samf: usize,
+    type_attempts: usize,
+    collision_rounds: usize,
+    expansion_game: bool,
+    env: &Environment,
+    curated_shard_dbs: &[Database],
+    shard_dbs: &[Database],
+    tags: &mut Vec<u32>,
+    anchor: usize,
+    replacement_budget: usize,
+) -> StageBPassResult {
+    let track = !tags.is_empty();
+    let mut input_gates = circuit.gates.clone();
+    let mut input_tags = tags.clone();
+
+    if expansion_game {
+        let pair_mode = ExpandPairMode::Curated { curated_shard_dbs };
+        let current = CircuitSeq { gates: input_gates };
+        let before = current.gates.len();
+        let event_tag = if input_tags.is_empty() {
+            crate::replace::replace::TAG_NEW
+        } else {
+            crate::replace::replace::new_gate_tag(&input_tags)
+        };
+        input_gates = expand_once_scored(&current, n, env, shard_dbs, &pair_mode).gates;
+        if !input_tags.is_empty() {
+            input_tags = std::iter::repeat(event_tag)
+                .take(input_gates.len())
+                .collect();
+        }
+        println!(
+            "  Expansion game: {} -> {} gates (scored one expand loop pass)",
+            before,
+            input_gates.len()
+        );
+    }
+
+    let (out_a, t_a, neg_a, hidden_samfs, tags_a, replacements) = collision_game_repeated_core(
+        &input_gates,
+        n,
+        env,
+        curated_shard_dbs,
+        shard_dbs,
+        gates_ahead_expand,
+        gates_ahead_samf,
+        type_attempts,
+        collision_rounds.max(1),
+        &input_tags,
+        CollisionPassOptions {
+            anchor: Some(anchor),
+            replacement_budget,
+        },
+    );
+    let (mut out_b, t_b, neg_b, mut tags_b) = insert_m_samfs_core(&out_a, n, m, x, &tags_a);
+
+    let t_pass = t_a.concat(&t_b);
+    let mut neg_pass = neg_b;
+    for w in 0..n {
+        if neg_a[w] == 1 {
+            let cw = t_b.evaluate(w as u16) as usize;
+            neg_pass[cw] ^= 1;
+        }
+    }
+
+    if track {
+        apply_unsamf_tagged(
+            &mut out_b,
+            &t_pass,
+            &neg_pass,
+            n,
+            env,
+            curated_shard_dbs,
+            shard_dbs,
+            &mut tags_b,
+        );
+        *tags = tags_b;
+    } else {
+        apply_unsamf(
+            &mut out_b,
+            &t_pass,
+            &neg_pass,
+            n,
+            env,
+            curated_shard_dbs,
+            shard_dbs,
+        );
+    }
+    circuit.gates = out_b;
+    StageBPassResult {
+        hidden_samfs,
+        replacements,
+    }
 }
 
 // Run each collision-game pass with an optional single curated expansion loop pass, then `collision_rounds`
@@ -2299,31 +2898,49 @@ pub fn shuffled_shoot_then_samf(
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
+    tags: &mut Vec<u32>,
 ) -> usize {
-    let (mut out, t_round, neg_round, compressions) = shuffled_shoot_then_samf_core(
-        &circuit.gates,
-        n,
-        m,
-        x,
-        gates_ahead_expand,
-        gates_ahead_samf,
-        type_attempts,
-        shooting_times,
-        collision_rounds,
-        expansion_game,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
-    );
-    apply_unsamf(
-        &mut out,
-        &t_round,
-        &neg_round,
-        n,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
-    );
+    let track = !tags.is_empty();
+    let (mut out, t_round, neg_round, compressions, mut out_tags, _) =
+        shuffled_shoot_then_samf_core(
+            &circuit.gates,
+            n,
+            m,
+            x,
+            gates_ahead_expand,
+            gates_ahead_samf,
+            type_attempts,
+            shooting_times,
+            collision_rounds,
+            expansion_game,
+            env,
+            curated_shard_dbs,
+            shard_dbs,
+            tags,
+        );
+    if track {
+        apply_unsamf_tagged(
+            &mut out,
+            &t_round,
+            &neg_round,
+            n,
+            env,
+            curated_shard_dbs,
+            shard_dbs,
+            &mut out_tags,
+        );
+        *tags = out_tags;
+    } else {
+        apply_unsamf(
+            &mut out,
+            &t_round,
+            &neg_round,
+            n,
+            env,
+            curated_shard_dbs,
+            shard_dbs,
+        );
+    }
     circuit.gates = out;
     compressions
 }

@@ -11,7 +11,10 @@ use crate::{
         },
         pairs::interleave,
         replace::compress_loop,
-        transpositions::insert_wire_m_samfs_every_x,
+        transpositions::{
+            insert_wire_m_samfs_every_x, insert_wire_m_samfs_every_x_tagged,
+            shuffled_shoot_then_samf_stage_b_pass,
+        },
     },
 };
 
@@ -129,6 +132,69 @@ fn packed_words_to_hex(words: &[u64], n: usize) -> String {
         out.push(char::from_digit(value as u32, 16).unwrap());
     }
     out
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GenerationProgress {
+    total: usize,
+    reached: usize,
+    fraction: f64,
+    min: u32,
+    median: u32,
+    max: u32,
+}
+
+fn generation_progress(tags: &[u32], min_gen: usize) -> GenerationProgress {
+    if tags.is_empty() {
+        return GenerationProgress {
+            total: 0,
+            reached: 0,
+            fraction: 1.0,
+            min: 0,
+            median: 0,
+            max: 0,
+        };
+    }
+    let threshold = min_gen.min(u32::MAX as usize) as u32;
+    let reached = tags.iter().filter(|&&tag| tag >= threshold).count();
+    let mut sorted = tags.to_vec();
+    sorted.sort_unstable();
+    GenerationProgress {
+        total: tags.len(),
+        reached,
+        fraction: reached as f64 / tags.len() as f64,
+        min: sorted[0],
+        median: sorted[sorted.len() / 2],
+        max: *sorted.last().unwrap(),
+    }
+}
+
+fn generation_goal_met(tags: &[u32], min_gen: usize, min_gen_fraction: f64) -> bool {
+    let target = min_gen_fraction.clamp(0.0, 1.0);
+    generation_progress(tags, min_gen).fraction >= target
+}
+
+fn choose_low_generation_anchor(tags: &[u32], min_gen: usize, rng: &mut impl Rng) -> Option<usize> {
+    let threshold = min_gen.min(u32::MAX as usize) as u32;
+    let mut best_tag = u32::MAX;
+    let mut seen = 0usize;
+    let mut chosen = None;
+    for (idx, &tag) in tags.iter().enumerate() {
+        if tag >= threshold {
+            continue;
+        }
+        if tag < best_tag {
+            best_tag = tag;
+            seen = 1;
+            chosen = Some(idx);
+        } else if tag == best_tag {
+            seen += 1;
+            if rng.random_range(0..seen) == 0 {
+                chosen = Some(idx);
+            }
+        }
+    }
+    chosen
 }
 
 fn write_slice_zero_random_metadata(
@@ -365,6 +431,10 @@ pub fn main_shuffle_shoot_shuffle(
     equality_check: bool,
     rg_freq: usize,
     single_end: bool,
+    min_gen: usize,
+    min_gen_fraction: f64,
+    pass_length: usize,
+    max_passes: usize,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -482,12 +552,29 @@ pub fn main_shuffle_shoot_shuffle(
         transpositions: Vec::new(),
     };
     let mut total_neg = vec![0u8; n];
+    let track = crate::replace::replace::track_survivors();
+    let mut survivor_tags: Vec<u32> = if track {
+        vec![0u32; circuit.gates.len()]
+    } else {
+        Vec::new()
+    };
+    let samf_target =
+        crate::replace::replace::SAMF_TARGET.load(std::sync::atomic::Ordering::Relaxed);
+    let mut m_eff = m;
+    let stage_b_enabled = min_gen > 0;
+    let stage_b_target_fraction = min_gen_fraction.clamp(0.0, 1.0);
+    if stage_b_enabled && single_end {
+        println!(
+            "[stage-B] --single-end ignored while --min-gen is active; each low-gen pass resolves SAMF state immediately"
+        );
+    }
 
     // Per-round SAMF stats (deltas): inserted / hidden / hide-failed / curated expansions.
     use crate::replace::transpositions::{
         CURATED_REPLACEMENTS_MADE, SAMF_COMPRESSIONS_FAILED, SAMF_COMPRESSIONS_MADE,
         SAMF_HIDE_ATTEMPTS, SAMF_HIDE_ELIGIBLE_EXPANSIONS, SAMF_HIDE_LOOKUP_MISSES,
         SAMF_HIDE_REJECTED_EXPOSED, SAMF_HIDE_SKIPPED_MATERIALIZED, SAMF_INSERTIONS_MADE,
+        UNCLEAN_EXPANSIONS,
     };
     use std::sync::atomic::Ordering::Relaxed;
     #[derive(Clone, Copy)]
@@ -501,6 +588,7 @@ pub fn main_shuffle_shoot_shuffle(
         attempts: usize,
         lookup_misses: usize,
         rejected_exposed: usize,
+        unclean: usize,
     }
 
     let mut per_round_samf: Vec<RoundSamfStats> = Vec::new();
@@ -513,29 +601,47 @@ pub fn main_shuffle_shoot_shuffle(
     let mut prev_attempts = SAMF_HIDE_ATTEMPTS.load(Relaxed);
     let mut prev_misses = SAMF_HIDE_LOOKUP_MISSES.load(Relaxed);
     let mut prev_rejected = SAMF_HIDE_REJECTED_EXPOSED.load(Relaxed);
+    let mut prev_unclean = UNCLEAN_EXPANSIONS.load(Relaxed);
     // A single-end shuffle cannot be reversed back after each round because its SAMF state is
     // intentionally left live. Choose one direction for the complete accumulated shuffle and
     // reverse it back only after the final unsamf.
-    let single_end_reversed = single_end && rand::rng().random_bool(0.5);
+    let single_end_reversed = single_end && !stage_b_enabled && rand::rng().random_bool(0.5);
     if single_end_reversed {
         println!("Collision-game direction: reversed (complete single-end shuffle)");
         circuit.gates.reverse();
+        if track {
+            survivor_tags.reverse();
+        }
     }
     let mut hardening_rng = rand::rng();
     for i in 0..rounds {
+        crate::replace::replace::REC_ROUND.store(i + 1, Relaxed);
         if sat_global_mix_enabled() && i % sat_global_mix_every() == 0 {
             let mix_m = sat_global_mix_m(n);
             if mix_m > 0 {
                 let mix_x = circuit.gates.len().saturating_add(1).max(1);
-                insert_wire_m_samfs_every_x(
-                    &mut circuit,
-                    n,
-                    mix_m,
-                    mix_x,
-                    env,
-                    curated_shard_dbs,
-                    shard_dbs,
-                );
+                if track {
+                    insert_wire_m_samfs_every_x_tagged(
+                        &mut circuit,
+                        n,
+                        mix_m,
+                        mix_x,
+                        env,
+                        curated_shard_dbs,
+                        shard_dbs,
+                        &mut survivor_tags,
+                    );
+                } else {
+                    insert_wire_m_samfs_every_x(
+                        &mut circuit,
+                        n,
+                        mix_m,
+                        mix_x,
+                        env,
+                        curated_shard_dbs,
+                        shard_dbs,
+                    );
+                }
                 println!(
                     "[sat-global-mix] round={} swaps={} gates={}",
                     i + 1,
@@ -558,14 +664,14 @@ pub fn main_shuffle_shoot_shuffle(
             let cone_label = format!("round{}-after-hard-cores", i + 1);
             print_sat_cone(&cone_label, &circuit.gates, sat_cone_range);
         }
-        if single_end {
+        if single_end && !stage_b_enabled {
             // Accumulate this round's SAMFs WITHOUT undoing — functionality is intentionally
             // broken between rounds; we undo everything once after the last round (below).
             use crate::replace::transpositions::shuffled_shoot_then_samf_core;
-            let (out, t_round, neg_round, _c) = shuffled_shoot_then_samf_core(
+            let (out, t_round, neg_round, _c, out_tags, _) = shuffled_shoot_then_samf_core(
                 &circuit.gates,
                 n,
-                m,
+                m_eff,
                 x,
                 gates_ahead_expand,
                 gates_ahead_samf,
@@ -576,8 +682,12 @@ pub fn main_shuffle_shoot_shuffle(
                 env,
                 curated_shard_dbs,
                 shard_dbs,
+                &survivor_tags,
             );
             circuit.gates = out;
+            if track {
+                survivor_tags = out_tags;
+            }
             // Fold this round into the running accumulator: transport the existing pending
             // negation through this round's permutation, then add this round's negation;
             // compose the permutations (existing first, then this round).
@@ -590,6 +700,120 @@ pub fn main_shuffle_shoot_shuffle(
             }
             total_neg = new_total_neg;
             total_t = total_t.concat(&t_round);
+        } else if stage_b_enabled {
+            let stage_start = std::time::Instant::now();
+            let mut stage_rng = rand::rng();
+            let mut passes = 0usize;
+            let mut total_replacements = 0usize;
+            let mut total_hidden_samfs = 0usize;
+            let no_replacement_limit = std::env::var("STAGEB_NO_REPLACEMENT_LIMIT")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(128)
+                .max(1);
+            let mut no_replacement_passes = 0usize;
+            let start_progress = generation_progress(&survivor_tags, min_gen);
+            println!(
+                "[stage-B] round {} start: {}/{} ({:.2}%) at gen>={} | min={} median={} max={}",
+                i + 1,
+                start_progress.reached,
+                start_progress.total,
+                100.0 * start_progress.fraction,
+                min_gen,
+                start_progress.min,
+                start_progress.median,
+                start_progress.max
+            );
+
+            while !generation_goal_met(&survivor_tags, min_gen, stage_b_target_fraction)
+                && passes < max_passes.max(1)
+            {
+                let reversed = stage_rng.random_bool(0.5);
+                if reversed {
+                    circuit.gates.reverse();
+                    survivor_tags.reverse();
+                }
+                let Some(anchor) =
+                    choose_low_generation_anchor(&survivor_tags, min_gen, &mut stage_rng)
+                else {
+                    if reversed {
+                        circuit.gates.reverse();
+                        survivor_tags.reverse();
+                    }
+                    break;
+                };
+                crate::replace::replace::REC_PASS.store(passes + 1, Relaxed);
+                let pass_result = shuffled_shoot_then_samf_stage_b_pass(
+                    &mut circuit,
+                    n,
+                    m_eff,
+                    x,
+                    gates_ahead_expand,
+                    gates_ahead_samf,
+                    type_attempts,
+                    collision_rounds,
+                    expansion_game,
+                    env,
+                    curated_shard_dbs,
+                    shard_dbs,
+                    &mut survivor_tags,
+                    anchor,
+                    pass_length,
+                );
+                if reversed {
+                    circuit.gates.reverse();
+                    survivor_tags.reverse();
+                }
+                passes += 1;
+                total_replacements += pass_result.replacements;
+                total_hidden_samfs += pass_result.hidden_samfs;
+                if pass_result.replacements == 0 {
+                    no_replacement_passes += 1;
+                } else {
+                    no_replacement_passes = 0;
+                }
+
+                if passes <= 3 || passes % 25 == 0 {
+                    let progress = generation_progress(&survivor_tags, min_gen);
+                    println!(
+                        "[stage-B] round {} pass {}: repl={} hidden_samfs={} gates={} progress={}/{} ({:.2}%) min={} median={} max={}",
+                        i + 1,
+                        passes,
+                        pass_result.replacements,
+                        pass_result.hidden_samfs,
+                        circuit.gates.len(),
+                        progress.reached,
+                        progress.total,
+                        100.0 * progress.fraction,
+                        progress.min,
+                        progress.median,
+                        progress.max
+                    );
+                }
+
+                if no_replacement_passes >= no_replacement_limit {
+                    println!(
+                        "[stage-B] round {} stopping after {} consecutive passes with no replacements",
+                        i + 1,
+                        no_replacement_passes
+                    );
+                    break;
+                }
+            }
+
+            let end_progress = generation_progress(&survivor_tags, min_gen);
+            println!(
+                "[stage-B] round {} done: passes={} replacements={} hidden_samfs={} elapsed_ms={} progress={}/{} ({:.2}%) target={:.2}%",
+                i + 1,
+                passes,
+                total_replacements,
+                total_hidden_samfs,
+                stage_start.elapsed().as_millis(),
+                end_progress.reached,
+                end_progress.total,
+                100.0 * end_progress.fraction,
+                100.0 * stage_b_target_fraction
+            );
         } else {
             // Choose the shooting direction outside the collision game. Reversal surrounds the
             // complete shooting + plain-SAMF + unsamf operation so no pending SAMF state is
@@ -602,11 +826,14 @@ pub fn main_shuffle_shoot_shuffle(
             );
             if reversed {
                 circuit.gates.reverse();
+                if track {
+                    survivor_tags.reverse();
+                }
             }
             shuffled_shoot_then_samf(
                 &mut circuit,
                 n,
-                m,
+                m_eff,
                 x,
                 gates_ahead_expand,
                 gates_ahead_samf,
@@ -617,9 +844,13 @@ pub fn main_shuffle_shoot_shuffle(
                 env,
                 curated_shard_dbs,
                 shard_dbs,
+                &mut survivor_tags,
             );
             if reversed {
                 circuit.gates.reverse();
+                if track {
+                    survivor_tags.reverse();
+                }
             }
         }
         println!("After collision game: {} gates", circuit.gates.len());
@@ -627,27 +858,65 @@ pub fn main_shuffle_shoot_shuffle(
         print_sat_cone(&cone_label, &circuit.gates, sat_cone_range);
         if full_shuffle {
             // SAMF insertion is equivalence-preserving by construction, so no retry guard.
-            insert_wire_m_samfs_every_x(&mut circuit, n, n, 1, env, curated_shard_dbs, shard_dbs);
+            if track {
+                insert_wire_m_samfs_every_x_tagged(
+                    &mut circuit,
+                    n,
+                    n,
+                    1,
+                    env,
+                    curated_shard_dbs,
+                    shard_dbs,
+                    &mut survivor_tags,
+                );
+            } else {
+                insert_wire_m_samfs_every_x(
+                    &mut circuit,
+                    n,
+                    n,
+                    1,
+                    env,
+                    curated_shard_dbs,
+                    shard_dbs,
+                );
+            }
             println!("After full shuffle: {} gates", circuit.gates.len());
             let cone_label = format!("round{}-after-full-shuffle", i + 1);
             print_sat_cone(&cone_label, &circuit.gates, sat_cone_range);
         }
         // --single-end: after the FINAL round's shuffle, before its compression, undo ALL
         // accumulated SAMFs/NOTs in one pass — restoring equivalence to the original input.
-        if single_end && i == rounds - 1 {
-            use crate::replace::transpositions::apply_unsamf;
-            apply_unsamf(
-                &mut circuit.gates,
-                &total_t,
-                &total_neg,
-                n,
-                env,
-                curated_shard_dbs,
-                shard_dbs,
-            );
+        if single_end && !stage_b_enabled && i == rounds - 1 {
+            if track {
+                use crate::replace::transpositions::apply_unsamf_tagged;
+                apply_unsamf_tagged(
+                    &mut circuit.gates,
+                    &total_t,
+                    &total_neg,
+                    n,
+                    env,
+                    curated_shard_dbs,
+                    shard_dbs,
+                    &mut survivor_tags,
+                );
+            } else {
+                use crate::replace::transpositions::apply_unsamf;
+                apply_unsamf(
+                    &mut circuit.gates,
+                    &total_t,
+                    &total_neg,
+                    n,
+                    env,
+                    curated_shard_dbs,
+                    shard_dbs,
+                );
+            }
             println!("After single-end unsamf: {} gates", circuit.gates.len());
             if single_end_reversed {
                 circuit.gates.reverse();
+                if track {
+                    survivor_tags.reverse();
+                }
                 println!("Restored forward circuit direction");
             }
         }
@@ -660,6 +929,7 @@ pub fn main_shuffle_shoot_shuffle(
             i + 1,
             rounds,
             "temp_compression.txt",
+            &mut survivor_tags,
         );
         println!("After compression: {} gates", circuit.gates.len());
         let cone_label = format!("round{}-after-compression", i + 1);
@@ -675,6 +945,7 @@ pub fn main_shuffle_shoot_shuffle(
             let attempts = SAMF_HIDE_ATTEMPTS.load(Relaxed);
             let misses = SAMF_HIDE_LOOKUP_MISSES.load(Relaxed);
             let rejected = SAMF_HIDE_REJECTED_EXPOSED.load(Relaxed);
+            let unclean = UNCLEAN_EXPANSIONS.load(Relaxed);
             let d_ins = ins - prev_ins;
             let d_made = made - prev_made;
             let d_failed = failed - prev_failed;
@@ -684,6 +955,7 @@ pub fn main_shuffle_shoot_shuffle(
             let d_attempts = attempts - prev_attempts;
             let d_misses = misses - prev_misses;
             let d_rejected = rejected - prev_rejected;
+            let d_unclean = unclean - prev_unclean;
             println!(
                 "  Round {}/{} SAMFs inserted: {} (hidden {}, plain {}) | curated expansions: {} | hide-fails: {}",
                 i + 1,
@@ -695,9 +967,16 @@ pub fn main_shuffle_shoot_shuffle(
                 d_failed
             );
             println!(
-                "    hide diagnostics: eligible {} | skipped-materialized {} | attempts {} | lookup-misses {} | rejected-exposed {}",
-                d_eligible, d_skipped, d_attempts, d_misses, d_rejected
+                "    hide diagnostics: eligible {} | skipped-materialized {} | attempts {} | lookup-misses {} | rejected-exposed {} | unclean-absorbed {}",
+                d_eligible, d_skipped, d_attempts, d_misses, d_rejected, d_unclean
             );
+            if samf_target > 0 && m_eff > 0 && d_made >= samf_target {
+                println!(
+                    "    [samf-target] round hid {} >= target {}; disabling plain-SAMF insertion (m {} -> 0)",
+                    d_made, samf_target, m_eff
+                );
+                m_eff = 0;
+            }
             per_round_samf.push(RoundSamfStats {
                 inserted: d_ins,
                 hidden: d_made,
@@ -708,6 +987,7 @@ pub fn main_shuffle_shoot_shuffle(
                 attempts: d_attempts,
                 lookup_misses: d_misses,
                 rejected_exposed: d_rejected,
+                unclean: d_unclean,
             });
             prev_ins = ins;
             prev_made = made;
@@ -718,6 +998,7 @@ pub fn main_shuffle_shoot_shuffle(
             prev_attempts = attempts;
             prev_misses = misses;
             prev_rejected = rejected;
+            prev_unclean = unclean;
         }
         if circuit.gates.len() == 0 {
             break;
@@ -738,6 +1019,9 @@ pub fn main_shuffle_shoot_shuffle(
             if circuit.gates[j] == circuit.gates[j + 1] {
                 // remove elements at i and i+1
                 circuit.gates.drain(j..=j + 1);
+                if track {
+                    survivor_tags.drain(j..=j + 1);
+                }
 
                 // step back up to 2 indices, but not below 0
                 j = j.saturating_sub(2);
@@ -827,6 +1111,43 @@ pub fn main_shuffle_shoot_shuffle(
     }
 
     println!("Final circuit written to {}", save);
+    if track && crate::replace::replace::gen_mode() {
+        let mut hist = std::collections::BTreeMap::<u32, usize>::new();
+        for &tag in &survivor_tags {
+            *hist.entry(tag).or_insert(0) += 1;
+        }
+        let total = survivor_tags.len().max(1);
+        let min_gen = survivor_tags.iter().copied().min().unwrap_or(0);
+        let max_gen = survivor_tags.iter().copied().max().unwrap_or(0);
+        let mut sorted = survivor_tags.clone();
+        sorted.sort_unstable();
+        let median_gen = sorted.get(sorted.len() / 2).copied().unwrap_or(0);
+        let path = format!("{}.generations", save);
+        match File::create(&path) {
+            Ok(mut f) => {
+                let _ = writeln!(
+                    f,
+                    "# generation histogram of final circuit. n_gates={} min_gen={} median_gen={} max_gen={}\n\
+                     # generation count fraction",
+                    total, min_gen, median_gen, max_gen
+                );
+                for (generation, count) in hist {
+                    let _ = writeln!(
+                        f,
+                        "{} {} {:.4}",
+                        generation,
+                        count,
+                        count as f64 / total as f64
+                    );
+                }
+                println!(
+                    "Generations: n_gates={} min={} median={} max={} -> {}",
+                    total, min_gen, median_gen, max_gen, path
+                );
+            }
+            Err(e) => eprintln!("Failed to write generations file {}: {}", path, e),
+        }
+    }
 
     {
         println!("--- SAMF stats per round ---");
@@ -840,8 +1161,9 @@ pub fn main_shuffle_shoot_shuffle(
             mut t_attempts,
             mut t_misses,
             mut t_rejected,
+            mut t_unclean,
         ) = (
-            0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
+            0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize,
         );
         for (r, stats) in per_round_samf.iter().enumerate() {
             println!(
@@ -854,12 +1176,13 @@ pub fn main_shuffle_shoot_shuffle(
                 stats.failed
             );
             println!(
-                "  hide diagnostics: eligible {} | skipped-materialized {} | attempts {} | lookup-misses {} | rejected-exposed {}",
+                "  hide diagnostics: eligible {} | skipped-materialized {} | attempts {} | lookup-misses {} | rejected-exposed {} | unclean-absorbed {}",
                 stats.eligible,
                 stats.skipped_materialized,
                 stats.attempts,
                 stats.lookup_misses,
-                stats.rejected_exposed
+                stats.rejected_exposed,
+                stats.unclean
             );
             t_ins += stats.inserted;
             t_made += stats.hidden;
@@ -870,6 +1193,7 @@ pub fn main_shuffle_shoot_shuffle(
             t_attempts += stats.attempts;
             t_misses += stats.lookup_misses;
             t_rejected += stats.rejected_exposed;
+            t_unclean += stats.unclean;
         }
         println!(
             "Total (this run): SAMFs inserted {} (hidden {}, plain {}) | curated expansions {} | hide-fails {}",
@@ -880,8 +1204,8 @@ pub fn main_shuffle_shoot_shuffle(
             t_failed
         );
         println!(
-            "Total hide diagnostics: eligible {} | skipped-materialized {} | attempts {} | lookup-misses {} | rejected-exposed {}",
-            t_eligible, t_skipped, t_attempts, t_misses, t_rejected
+            "Total hide diagnostics: eligible {} | skipped-materialized {} | attempts {} | lookup-misses {} | rejected-exposed {} | unclean-absorbed {}",
+            t_eligible, t_skipped, t_attempts, t_misses, t_rejected, t_unclean
         );
     }
     if let Some((public_y, public_z)) = &slice_zero_random_public {

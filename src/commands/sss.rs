@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use lmdb::Environment;
+use lmdb::{Environment, EnvironmentFlags};
 
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::replace::gadgets::{
@@ -10,9 +10,12 @@ use local_mixing::replace::gadgets::{
 use local_mixing::replace::main_mix::{main_shuffle_shoot_shuffle, open_all_dbs};
 use local_mixing::replace::mixing::install_kill_handler;
 use local_mixing::replace::replace::{
-    print_compress_timers, write_compression_histogram, write_expansion_histogram,
+    GEN_MODE, INCOMING_RANK_MODE, IncomingRankMode, MAX_FANOUT, MIN_MEDIAN_LEEWAY,
+    OUTGOING_GEN_MODE, SAMF_TARGET, TRACK_SURVIVORS, print_compress_timers, record_finish,
+    record_init, write_compression_histogram, write_expansion_histogram,
     write_expansion_wire_histogram,
 };
+use std::sync::atomic::Ordering;
 
 /// Shuffle-shoot-shuffle: the main obfuscation+compression game.
 pub fn run(sub: &clap::ArgMatches) {
@@ -49,6 +52,17 @@ pub fn run(sub: &clap::ArgMatches) {
     let expansion_game = sub.get_flag("expansion_game");
     let equality_check = sub.get_flag("equality_check");
     let single_end = sub.get_flag("single-end");
+    let record_replacements = sub.get_flag("record_replacements");
+    let generation_tags = sub.get_flag("generation_tags");
+    let outgoing_mode = sub.get_one::<String>("outgoing_mode").unwrap().as_str();
+    let incoming_rank = sub.get_one::<String>("incoming_rank").unwrap().as_str();
+    let max_fanout: usize = *sub.get_one("max_fanout").unwrap();
+    let min_median_leeway: usize = *sub.get_one("min_median_leeway").unwrap();
+    let samf_target: usize = *sub.get_one("samf_target").unwrap();
+    let min_gen: usize = *sub.get_one("min_gen").unwrap();
+    let min_gen_fraction: f64 = *sub.get_one("min_gen_fraction").unwrap();
+    let pass_length: usize = *sub.get_one("pass_length").unwrap();
+    let max_passes: usize = *sub.get_one("max_passes").unwrap();
     let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
     let data = fs::read_to_string(s).expect("Failed to read source circuit");
 
@@ -56,6 +70,7 @@ pub fn run(sub: &clap::ArgMatches) {
     let _ = std::fs::create_dir_all(lmdb_path);
 
     let env = Environment::new()
+        .set_flags(EnvironmentFlags::READ_ONLY | EnvironmentFlags::NO_LOCK)
         .set_max_readers(10000)
         .set_max_dbs(556)
         .set_map_size(800 * 1024 * 1024 * 1024)
@@ -70,6 +85,46 @@ pub fn run(sub: &clap::ArgMatches) {
     }
 
     let c = CircuitSeq::from_string(&data);
+    if record_replacements {
+        record_init(&format!("{}.replacements", d));
+    }
+    let gen_tags_enabled = generation_tags
+        || min_gen > 0
+        || outgoing_mode == "gen"
+        || incoming_rank == "fanout"
+        || incoming_rank == "hybrid";
+    GEN_MODE.store(gen_tags_enabled, Ordering::Relaxed);
+    TRACK_SURVIVORS.store(gen_tags_enabled, Ordering::Relaxed);
+    OUTGOING_GEN_MODE.store(outgoing_mode == "gen", Ordering::Relaxed);
+    MAX_FANOUT.store(max_fanout, Ordering::Relaxed);
+    MIN_MEDIAN_LEEWAY.store(min_median_leeway, Ordering::Relaxed);
+    SAMF_TARGET.store(samf_target, Ordering::Relaxed);
+    INCOMING_RANK_MODE.store(
+        match incoming_rank {
+            "fanout" => IncomingRankMode::Fanout as usize,
+            "hybrid" => IncomingRankMode::Hybrid as usize,
+            _ => IncomingRankMode::Sat as usize,
+        },
+        Ordering::Relaxed,
+    );
+    if gen_tags_enabled {
+        println!(
+            "[sss] generation tags ON | outgoing_mode={} | incoming_rank={} | max_fanout={} | min_median_leeway={}",
+            outgoing_mode, incoming_rank, max_fanout, min_median_leeway
+        );
+    }
+    if samf_target > 0 {
+        println!(
+            "[sss] samf-target ON: disable plain m after >= {} hidden SAMFs in a round",
+            samf_target
+        );
+    }
+    if min_gen > 0 {
+        println!(
+            "[sss] Stage B ON: min_gen={} min_gen_fraction={:.4} pass_length={} max_passes={}",
+            min_gen, min_gen_fraction, pass_length, max_passes
+        );
+    }
     main_shuffle_shoot_shuffle(
         &c,
         rounds,
@@ -102,7 +157,15 @@ pub fn run(sub: &clap::ArgMatches) {
         equality_check,
         rg_freq,
         single_end,
+        min_gen,
+        min_gen_fraction,
+        pass_length,
+        max_passes,
     );
+    if record_replacements {
+        record_finish();
+        println!("Replacement record written to {}.replacements", d);
+    }
     print_compress_timers();
     write_compression_histogram("compression_histogram.csv");
     write_expansion_histogram("expansion_histogram.csv");

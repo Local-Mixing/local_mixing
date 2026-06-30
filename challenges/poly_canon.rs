@@ -360,7 +360,7 @@ fn main() {
         let p = Permutation::rand_perm(n);
         ckt.rewire(&p, n);
 
-        let mut unique: bool;
+        let unique: bool;
 
         let full_start: Instant;
         {

@@ -74,7 +74,7 @@ const NOT_4W_GATES: [[u16; 3]; 7] = [
     [1, 3, 0],
 ];
 
-pub const SLICE_ZERO_RANDOM_GATES_PER_WIRE: usize = 20;
+pub const SLICE_ZERO_RANDOM_GATES_PER_WIRE: usize = 32;
 pub const SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS: usize = 1;
 
 /// Secret-sharing state: pairs[v] = (share_wire, pad_wire) for virtual value v.

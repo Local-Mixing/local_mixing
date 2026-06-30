@@ -105,7 +105,7 @@ fn main() {
                         .requires("slice_zero_random")
                         .conflicts_with("slice_zero_random_gates")
                         .value_parser(clap::value_parser!(usize))
-                        .help("Number of random M gates for --slice-zero-random (default: 20n)"),
+                        .help("Number of random M gates for --slice-zero-random (default: 32n)"),
                 )
                 .arg(
                     Arg::new("slice_zero_hardcoded_rounds")
@@ -216,6 +216,94 @@ fn main() {
                         .help("Accumulate SAMFs/NOTs across ALL rounds (functionality is broken between rounds) and undo them in a single pass after the last round, before its compression")
                         .required(false)
                         .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("record_replacements")
+                        .long("record")
+                        .alias("record_replacements")
+                        .help("Record expansion/compression replacements to <destination>.replacements")
+                        .required(false)
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("generation_tags")
+                        .long("generation-tags")
+                        .alias("gen-tags")
+                        .help("Maintain generation tags and write <destination>.generations")
+                        .required(false)
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("outgoing_mode")
+                        .long("outgoing-mode")
+                        .required(false)
+                        .default_value("legacy")
+                        .value_parser(["legacy", "gen"])
+                        .help("Outgoing shooting-window mode: legacy or gen"),
+                )
+                .arg(
+                    Arg::new("incoming_rank")
+                        .long("incoming-rank")
+                        .required(false)
+                        .default_value("sat")
+                        .value_parser(["sat", "fanout", "hybrid"])
+                        .help("Incoming replacement ranker: sat, fanout, or hybrid"),
+                )
+                .arg(
+                    Arg::new("max_fanout")
+                        .long("max-fanout")
+                        .required(false)
+                        .default_value("50")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Fanout cap used by fanout/hybrid incoming ranking"),
+                )
+                .arg(
+                    Arg::new("min_median_leeway")
+                        .long("min-median-leeway")
+                        .required(false)
+                        .default_value("10")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Low-leeway threshold used by fanout/hybrid ranking"),
+                )
+                .arg(
+                    Arg::new("samf_target")
+                        .long("samf-target")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("If a round hides at least this many SAMFs, set m=0 for later rounds; 0 disables"),
+                )
+                .arg(
+                    Arg::new("min_gen")
+                        .long("min-gen")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Stage B: keep low-generation shooting passes until this generation; 0 disables"),
+                )
+                .arg(
+                    Arg::new("min_gen_fraction")
+                        .long("min-gen-fraction")
+                        .required(false)
+                        .default_value("0.99")
+                        .value_parser(clap::value_parser!(f64))
+                        .help("Stage B: stop once this fraction of gates reach --min-gen"),
+                )
+                .arg(
+                    Arg::new("pass_length")
+                        .long("pass-length")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Stage B: max successful outgoing replacements per low-gen pass; 0 is unbounded"),
+                )
+                .arg(
+                    Arg::new("max_passes")
+                        .long("max-passes")
+                        .required(false)
+                        .default_value("100000")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Stage B: safety cap on low-generation shooting passes per round"),
                 ),
         )
         .subcommand(

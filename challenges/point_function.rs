@@ -4,12 +4,8 @@ use std::{ops::Range, path::Path};
 
 use clap::Parser;
 use itertools::chain;
-use lmdb::Environment;
-use local_mixing::{
-    circuit::CircuitSeq,
-    open_shard_dbs,
-    replace::replace::{compress_lmdb, compress_loop},
-};
+use lmdb::{Environment, EnvironmentFlags};
+use local_mixing::{circuit::CircuitSeq, open_shard_dbs, replace::replace::compress_loop};
 
 const LMDB_PATH: &str = "./db";
 
@@ -157,9 +153,11 @@ fn key_to_gates(wires: u16, key: usize) -> CircuitSeq {
 fn main() {
     let args = Args::parse();
 
+    let _ = std::fs::create_dir_all(LMDB_PATH);
     let env = Environment::new()
+        .set_flags(EnvironmentFlags::READ_ONLY | EnvironmentFlags::NO_LOCK)
         .set_max_readers(10000)
-        .set_max_dbs(256 + 40)
+        .set_max_dbs(556)
         .set_map_size(800 * 1024 * 1024 * 1024)
         .open(Path::new(LMDB_PATH))
         .expect("Failed to open database.");
@@ -188,7 +186,17 @@ fn main() {
 
     println!("len = {}", pf.gates.len());
 
-    let comp = compress_loop(&pf, pf.max_wire() + 1, &env, &shard_dbs, 6, 0, 0, ".");
+    let comp = compress_loop(
+        &pf,
+        pf.max_wire() + 1,
+        &env,
+        &shard_dbs,
+        6,
+        0,
+        0,
+        ".",
+        &mut Vec::new(),
+    );
 
     println!("{}", comp.repr());
 

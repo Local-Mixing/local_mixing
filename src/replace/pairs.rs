@@ -69,6 +69,17 @@ pub fn expand_curated_lmdb(
     curated_shard_dbs: &[lmdb::Database],
     shard_dbs: &[lmdb::Database],
 ) -> Option<Vec<[u16; 3]>> {
+    expand_curated_lmdb_neg(gates, n, env, curated_shard_dbs, shard_dbs, &[])
+}
+
+pub fn expand_curated_lmdb_neg(
+    gates: &[[u16; 3]],
+    n: usize,
+    env: &lmdb::Environment,
+    curated_shard_dbs: &[lmdb::Database],
+    shard_dbs: &[lmdb::Database],
+    negated_inputs: &[u16],
+) -> Option<Vec<[u16; 3]>> {
     use crate::circuit::circuit::{Permutation, polys_repr_blob};
     use lmdb::Transaction;
     use xxhash_rust::xxh3::xxh3_128;
@@ -78,7 +89,11 @@ pub fn expand_curated_lmdb(
         gates: gates.to_vec(),
     };
 
-    let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
+    let (fwd_polys, fwd_order, used) = if negated_inputs.is_empty() {
+        sub.canonicalize_polys_single(false)
+    } else {
+        sub.canonicalize_polys_single_neg(negated_inputs)
+    };
     if fwd_polys.is_empty() {
         return None;
     }
@@ -97,7 +112,7 @@ pub fn expand_curated_lmdb(
 
     let (value, final_order, is_reversed) = if let Some(v) = curated_hit {
         (v, fwd_order, false)
-    } else if !shard_dbs.is_empty() {
+    } else if negated_inputs.is_empty() && !shard_dbs.is_empty() {
         // Fallback: try regular shard DBs (both forward and reverse, same as expand_lmdb).
         if let Ok(v) = txn.get(shard_dbs[fwd_shard], &fwd_key) {
             (v, fwd_order, false)
@@ -182,7 +197,23 @@ pub fn expand_curated_lmdb(
             .filter(|c| score(c) == max_score)
             .collect()
     };
-    let idx = rng.random_range(0..best.len());
+    let idx = if matches!(
+        crate::replace::replace::incoming_rank_mode(),
+        crate::replace::replace::IncomingRankMode::Fanout
+            | crate::replace::replace::IncomingRankMode::Hybrid
+    ) {
+        let features: Vec<_> = best
+            .iter()
+            .map(|candidate| crate::replace::replace::cand_features(&candidate.gates, &[], &[]))
+            .collect();
+        crate::replace::ranking::incoming()
+            .order(&features)
+            .first()
+            .copied()
+            .unwrap_or(0)
+    } else {
+        rng.random_range(0..best.len())
+    };
     let mut repl = best.swap_remove(idx);
 
     if is_reversed {
@@ -344,7 +375,23 @@ pub fn compress_curated_lmdb(
         return None;
     }
 
-    let idx = rng.random_range(0..best.len());
+    let idx = if matches!(
+        crate::replace::replace::incoming_rank_mode(),
+        crate::replace::replace::IncomingRankMode::Fanout
+            | crate::replace::replace::IncomingRankMode::Hybrid
+    ) {
+        let features: Vec<_> = best
+            .iter()
+            .map(|candidate| crate::replace::replace::cand_features(&candidate.gates, &[], &[]))
+            .collect();
+        crate::replace::ranking::incoming()
+            .order(&features)
+            .first()
+            .copied()
+            .unwrap_or(0)
+    } else {
+        rng.random_range(0..best.len())
+    };
     let mut repl = best.swap_remove(idx);
 
     if is_reversed {

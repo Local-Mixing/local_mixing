@@ -836,6 +836,50 @@ impl CircuitSeq {
 
         (canon.0, canon.1, used)
     }
+
+    /// Like `canonicalize_polys_single`, but absorbs pending NOTs on input wires by substituting
+    /// x_w -> x_w + 1 in the polynomial form before canonicalization. This supports Stage-F-style
+    /// curated lookups where the replacement consumes the pending NOT instead of materializing a
+    /// standalone NOT gadget.
+    pub fn canonicalize_polys_single_neg(
+        &self,
+        negated_inputs: &[u16],
+    ) -> (Vec<Polynomial>, Permutation, Vec<u16>) {
+        let used = self.used_wires();
+        if used.len() > 64 {
+            return (Vec::new(), Permutation { data: Vec::new() }, used);
+        }
+        let wire_map: HashMap<u16, u16> = used
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| (w, i as u16))
+            .collect();
+        let mut c = CircuitSeq {
+            gates: self
+                .gates
+                .iter()
+                .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+                .collect(),
+        };
+        c.canonicalize();
+        let n = c.max_wire() as usize + 1;
+        let mut polys = c.to_polynomial(n, 0, c.gates.len());
+        for &w in negated_inputs {
+            let Some(&mapped) = wire_map.get(&w) else {
+                continue;
+            };
+            let mapped = mapped as usize;
+            if mapped >= 64 {
+                return (Vec::new(), Permutation { data: Vec::new() }, used);
+            }
+            for p in polys.iter_mut() {
+                substitute_input_negation(p, mapped);
+            }
+        }
+
+        let canon = canonicalize_polys_4(polys, true).unwrap();
+        (canon.0, canon.1, used)
+    }
 }
 
 pub fn polynomial_from_terms<I>(terms: I) -> Polynomial
@@ -866,6 +910,18 @@ pub fn normalize_polynomial(poly: &mut Polynomial) {
         }
     }
     poly.truncate(write);
+}
+
+pub fn substitute_input_negation(poly: &mut Polynomial, w: usize) {
+    let bit = 1u64 << w;
+    let rests: Vec<Monomial> = poly
+        .iter()
+        .filter(|&&m| m & bit != 0)
+        .map(|&m| m & !bit)
+        .collect();
+    for rest in rests {
+        toggle_monomial(poly, rest);
+    }
 }
 
 fn toggle_monomial(poly: &mut Polynomial, m: Monomial) {

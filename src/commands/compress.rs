@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use lmdb::Environment;
+use lmdb::{Environment, EnvironmentFlags};
 
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::replace::main_mix::open_all_dbs;
@@ -25,6 +25,7 @@ pub fn run(sub: &clap::ArgMatches) {
     let lmdb_path = "./db";
     let _ = std::fs::create_dir_all(lmdb_path);
     let env = Environment::new()
+        .set_flags(EnvironmentFlags::READ_ONLY | EnvironmentFlags::NO_LOCK)
         .set_max_dbs(556)
         .set_max_readers(10000)
         .set_map_size(800 * 1024 * 1024 * 1024)
@@ -40,7 +41,17 @@ pub fn run(sub: &clap::ArgMatches) {
 
     println!("Starting compression");
     let (shard_dbs, _curated_shard_dbs) = open_all_dbs(&env);
-    acc = compress_loop(&acc, n, &env, &shard_dbs, stable_compressions, 1, 1, d);
+    acc = compress_loop(
+        &acc,
+        n,
+        &env,
+        &shard_dbs,
+        stable_compressions,
+        1,
+        1,
+        d,
+        &mut Vec::new(),
+    );
     print_compress_timers();
 
     let mut file = fs::File::create(d).expect("Failed to create new file");

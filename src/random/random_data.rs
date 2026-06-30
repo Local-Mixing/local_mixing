@@ -782,7 +782,9 @@ pub fn contiguous_convex(
     circuit: &mut CircuitSeq,
     ordered_convex_gates: &mut Vec<usize>,
     num_wires: usize,
+    tags: &mut Vec<u32>,
 ) -> Option<(usize, usize)> {
+    let track = !tags.is_empty();
     // This should never run
     if ordered_convex_gates.len() < 2 {
         return None;
@@ -817,8 +819,14 @@ pub fn contiguous_convex(
             let can_left =
                 (start..p).all(|i| !Gate::collides_index(&circuit.gates[i], &circuit.gates[p]));
             if can_left {
-                circuit.gates[start..=p].rotate_right(1);
-                member[start..=p].rotate_right(1);
+                let gate = circuit.gates.remove(p);
+                circuit.gates.insert(start, gate);
+                member.remove(p);
+                member.insert(start, false);
+                if track {
+                    let tag = tags.remove(p);
+                    tags.insert(start, tag);
+                }
                 start += 1;
                 moved = true;
                 break;
@@ -828,8 +836,14 @@ pub fn contiguous_convex(
             let can_right = ((p + 1)..=end)
                 .all(|i| !Gate::collides_index(&circuit.gates[i], &circuit.gates[p]));
             if can_right {
-                circuit.gates[p..=end].rotate_left(1);
-                member[p..=end].rotate_left(1);
+                let gate = circuit.gates.remove(p);
+                circuit.gates.insert(end, gate);
+                member.remove(p);
+                member.insert(end, false);
+                if track {
+                    let tag = tags.remove(p);
+                    tags.insert(end, tag);
+                }
                 end -= 1;
                 moved = true;
                 break;
