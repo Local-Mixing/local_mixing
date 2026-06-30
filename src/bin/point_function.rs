@@ -231,11 +231,11 @@ fn main() {
         idp.data[0] = 1;
         bt2.rewire(&idp, (n + 2).into());
     }
-    
-    let mut pf = key_to_gates(n + 2, n, args.key)
+
+    let mut pf = key_to_gates(n + 2, n, key)
         .concat(&bt1)
         .concat(&bt2)
-        .concat(&key_to_gates(n + 2, n, args.key));
+        .concat(&key_to_gates(n + 2, n, key));
 
     pf.canonicalize();
 
