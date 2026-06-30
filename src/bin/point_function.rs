@@ -5,7 +5,11 @@ use std::{fs::File, io::Write, ops::Range, path::Path};
 use clap::Parser;
 use itertools::chain;
 use lmdb::Environment;
-use local_mixing::{circuit::{CircuitSeq, Permutation}, open_shard_dbs, replace::replace::compress_loop};
+use local_mixing::{
+    circuit::{CircuitSeq, Permutation},
+    open_shard_dbs,
+    replace::replace::compress_loop,
+};
 use primitive_types::U256;
 
 const LMDB_PATH: &str = "./db";
@@ -214,17 +218,18 @@ fn main() {
 
     let bt1 = big_tof(n + 2, n, 0, 2..n + 2);
     let mut bt2 = big_tof(n + 2, n, 0, 2..n + 2);
-    let mut idp = Permutation::id_perm((n+2).into());
-    idp.data[1] = 0;
-    idp.data[0] = 1;
-    bt2.rewire(&idp, (n+2).into());
 
+    if !args.identity {
+        let mut idp = Permutation::id_perm((n + 2).into());
+        idp.data[1] = 0;
+        idp.data[0] = 1;
+        bt2.rewire(&idp, (n + 2).into());
+    }
+    
     let mut pf = key_to_gates(n + 2, n, args.key)
         .concat(&bt1)
         .concat(&bt2)
         .concat(&key_to_gates(n + 2, n, args.key));
-    // .concat(&big_tof(n + 2, n, 0, 2..n + 2))
-    // // .concat(&big_tof(n + 2, n, 1, 2..n + 2))
 
     pf.canonicalize();
 
