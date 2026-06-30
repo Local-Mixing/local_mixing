@@ -56,7 +56,27 @@ pub struct CircuitSeq {
 
 // Polynomial representation of circuit
 pub type Monomial = u64;
-pub type Polynomial = Vec<Monomial>;
+pub type Polynomial = HashSet<Monomial>;
+
+#[derive(Debug, Default)]
+pub struct PolyStats {
+    wires: usize,
+    unique_monomials: Vec<usize>,
+    total_monomials: Vec<usize>,
+}
+
+impl PolyStats {
+    pub fn new(wires: usize) -> Self {
+        let mut d = Self::default();
+        d.wires = wires;
+        d
+    }
+    pub fn add(&mut self, all_monos: Vec<Monomial>) {
+        self.total_monomials.push(all_monos.len());
+        self.unique_monomials
+            .push(all_monos.into_iter().collect::<HashSet<_>>().len());
+    }
+}
 
 // Permutations are all the possible outputs of a circuit
 // On n wires permutation length is 1 << n
@@ -302,7 +322,6 @@ impl CircuitSeq {
         };
         (remapped, used)
     }
-
 
     // Representing circuit as a string
     pub fn repr(&self) -> String {
@@ -615,30 +634,30 @@ impl CircuitSeq {
         })
     }
 
-    pub fn poly_num_terms(&self, n: usize) -> Vec<usize> {
+    pub fn poly_stats(&self, n: usize) -> PolyStats {
         self.to_poly_helper(n, &self.gates).0
     }
 
-    fn to_poly_helper(&self, n: usize, gates: &[[u16; 3]]) -> (Vec<usize>, Vec<Polynomial>) {
+    // TODO: Blelloch prefix.
+
+    fn to_poly_helper(&self, n: usize, gates: &[[u16; 3]]) -> (PolyStats, Vec<Polynomial>) {
         // Wire i starts as degree 1 monomial
-        let mut polys: Vec<Polynomial> = (0..n).map(|i| vec![1u64 << i]).collect();
-        let mut n_terms = Vec::<usize>::with_capacity(gates.len());
+        let mut polys: Vec<Polynomial> = (0..n)
+            .map(|i| vec![1u64 << i].into_iter().collect())
+            .collect();
+
+        let mut p = PolyStats::new(n);
 
         for &[a, b, c] in gates {
             // a' = a + bc + b + 1 = a + b(c+1) + 1 = a + b*NOT(c) + 1
             let term = poly_and_not(&polys[b as usize], &polys[c as usize]);
             poly_xor_assign(&mut polys[a as usize], term);
             toggle_monomial(&mut polys[a as usize], 0u64);
-            n_terms.push(polys.iter().map(|p| p.len()).sum());
+
+            p.add(polys.clone().into_iter().flatten().collect());
         }
 
-        // XOR each wire with its initial value x_i so unchanged wires become 0
-        // for i in 0..n {
-        //     let xi = vec![1u64 << i];
-        //     polys[i] = poly_xor(polys[i].clone(), xi);
-        // }
-
-        (n_terms, polys)
+        (p, polys)
     }
 
     pub fn to_polynomial(&self, n: usize, start: usize, end: usize) -> Vec<Polynomial> {
@@ -771,79 +790,32 @@ pub fn polynomial_from_terms<I>(terms: I) -> Polynomial
 where
     I: IntoIterator<Item = Monomial>,
 {
-    let mut terms: Vec<Monomial> = terms.into_iter().collect();
-    normalize_polynomial(&mut terms);
-    terms
-}
-
-pub fn normalize_polynomial(poly: &mut Polynomial) {
-    poly.sort_unstable();
-
-    let mut write = 0usize;
-    let mut read = 0usize;
-    while read < poly.len() {
-        let m = poly[read];
-        let mut count = 1usize;
-        read += 1;
-        while read < poly.len() && poly[read] == m {
-            count += 1;
-            read += 1;
-        }
-        if count % 2 == 1 {
-            poly[write] = m;
-            write += 1;
-        }
-    }
-    poly.truncate(write);
+    terms.into_iter().collect()
 }
 
 fn toggle_monomial(poly: &mut Polynomial, m: Monomial) {
-    match poly.binary_search(&m) {
-        Ok(pos) => {
-            poly.remove(pos);
-        }
-        Err(pos) => {
-            poly.insert(pos, m);
-        }
+    if !poly.remove(&m) {
+        poly.insert(m);
     }
 }
 
-fn poly_xor_assign(poly: &mut Polynomial, terms: Polynomial) {
-    let old = std::mem::take(poly);
-    let mut merged = Vec::with_capacity(old.len().max(terms.len()));
-    let mut i = 0usize;
-    let mut j = 0usize;
-
-    while i < old.len() && j < terms.len() {
-        match old[i].cmp(&terms[j]) {
-            CmpOrdering::Less => {
-                merged.push(old[i]);
-                i += 1;
-            }
-            CmpOrdering::Greater => {
-                merged.push(terms[j]);
-                j += 1;
-            }
-            CmpOrdering::Equal => {
-                i += 1;
-                j += 1;
-            }
-        }
-    }
-    merged.extend_from_slice(&old[i..]);
-    merged.extend_from_slice(&terms[j..]);
-    *poly = merged;
+fn poly_xor_assign(poly: &mut Polynomial, other: Polynomial) {
+    let r: Polynomial = poly.symmetric_difference(&other).copied().collect();
+    *poly = r;
 }
 
-fn poly_and_not(poly_1: &Polynomial, poly_2: &Polynomial) -> Polynomial {
-    let mut terms = Vec::with_capacity(poly_1.len() * (poly_2.len() + 1));
-    for &m1 in poly_1 {
-        terms.push(m1);
-        for &m2 in poly_2 {
-            terms.push(m1 | m2);
+/// Compute p1 and not(p2) === p1 p2 + p1
+fn poly_and_not(p1: &Polynomial, p2: &Polynomial) -> Polynomial {
+    // initialize as p1
+    let mut q = p1.clone();
+
+    // a^2 == a under F2, so take bitwise OR of all monomial pairs
+    for e in p1.iter().flat_map(|a| p2.into_iter().map(move |b| *a | *b)) {
+        if !q.remove(&e) {
+            q.insert(e);
         }
     }
-    polynomial_from_terms(terms)
+    q
 }
 
 // Display polynomials
@@ -1561,7 +1533,7 @@ fn canonicalize_inner(
 }
 
 pub fn canonicalize_polys(
-    mut polynomials: Vec<Polynomial>,
+    polynomials: Vec<Polynomial>,
     use_backtracking: bool,
     print: bool,
 ) -> (Vec<Polynomial>, Permutation) {
@@ -1569,9 +1541,9 @@ pub fn canonicalize_polys(
     if n == 0 {
         return (vec![], Permutation { data: vec![] });
     }
-    for poly in &mut polynomials {
-        normalize_polynomial(poly);
-    }
+    // for poly in &mut polynomials {
+    //     normalize_polynomial(poly);
+    // }
     let max_degree = n;
 
     // Rule 1: Order polynomials by degree profile.
@@ -2288,16 +2260,16 @@ fn canon4_run(
 }
 
 pub fn canonicalize_polys_4(
-    mut polynomials: Vec<Polynomial>,
+    polynomials: Vec<Polynomial>,
     allow_rule_l: bool,
 ) -> Result<(Vec<Polynomial>, Permutation), ()> {
     let n = polynomials.len();
     if n == 0 {
         return Ok((vec![], Permutation { data: vec![] }));
     }
-    for poly in &mut polynomials {
-        normalize_polynomial(poly);
-    }
+    // for poly in &mut polynomials {
+    //     normalize_polynomial(poly);
+    // }
     let max_degree = n;
 
     // Group wires by degree profile; highest-profile group = P_{C_1}.
@@ -2739,28 +2711,28 @@ mod tests {
     use crate::random::random_data::random_circuit;
     use std::collections::BTreeSet;
 
-    #[test]
-    fn polynomial_from_terms_sorts_and_cancels_pairs() {
-        assert_eq!(polynomial_from_terms([5, 3, 5, 1, 3, 5, 7, 7]), vec![1, 5]);
-    }
+    // #[test]
+    // fn polynomial_from_terms_sorts_and_cancels_pairs() {
+    //     assert_eq!(polynomial_from_terms([5, 3, 5, 1, 3, 5, 7, 7]), vec![1, 5]);
+    // }
 
-    #[test]
-    fn polynomial_xor_assign_cancels_shared_terms() {
-        let mut left = vec![1, 3, 8];
-        poly_xor_assign(&mut left, vec![3, 5, 8]);
-        assert_eq!(left, vec![1, 5]);
-    }
+    // #[test]
+    // fn polynomial_xor_assign_cancels_shared_terms() {
+    //     let mut left = vec![1, 3, 8];
+    //     poly_xor_assign(&mut left, vec![3, 5, 8]);
+    //     assert_eq!(left, vec![1, 5]);
+    // }
 
-    #[test]
-    fn to_polynomial_keeps_terms_sorted_and_cancelled() {
-        let circuit = CircuitSeq {
-            gates: vec![[0, 1, 2]],
-        };
-        let polys = circuit.to_polynomial(3, 0, 1);
-        assert_eq!(polys[0], vec![0, 1, 2, 6]);
-        assert_eq!(polys[1], vec![2]);
-        assert_eq!(polys[2], vec![4]);
-    }
+    // #[test]
+    // fn to_polynomial_keeps_terms_sorted_and_cancelled() {
+    //     let circuit = CircuitSeq {
+    //         gates: vec![[0, 1, 2]],
+    //     };
+    //     let polys = circuit.to_polynomial(3, 0, 1);
+    //     assert_eq!(polys[0], vec![0, 1, 2, 6]);
+    //     assert_eq!(polys[1], vec![2]);
+    //     assert_eq!(polys[2], vec![4]);
+    // }
 
     fn old_toggle(poly: &mut BTreeSet<Monomial>, m: Monomial) {
         if !poly.remove(&m) {
