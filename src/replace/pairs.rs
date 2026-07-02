@@ -1,4 +1,4 @@
-use rand::{Rng, prelude::SliceRandom};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 extern crate lmdb_sys;
@@ -6,6 +6,7 @@ extern crate lmdb_sys;
 use crate::{
     circuit::circuit::CircuitSeq,
     random::random_data::random_circuit,
+    replace::replace::{note_wire_use, shuffled_unused_wires},
     replace::sat_score::{
         compression_selection_score, expansion_selection_score, sat_bcp_enabled,
         sat_bcp_min_resistance, sat_compress_preserve_delta, sat_compress_protect_enabled,
@@ -13,20 +14,6 @@ use crate::{
         sat_score_slack, sat_scoring_enabled, score_subcircuit,
     },
 };
-
-fn shuffled_unused_wires(n: usize, used_wires: &[u16], rng: &mut impl Rng) -> Vec<u16> {
-    let mut used_mask = vec![false; n];
-    for &wire in used_wires {
-        if let Some(slot) = used_mask.get_mut(wire as usize) {
-            *slot = true;
-        }
-    }
-    let mut available: Vec<u16> = (0..n as u16)
-        .filter(|&wire| !used_mask[wire as usize])
-        .collect();
-    available.shuffle(rng);
-    available
-}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Gate taxonomy and Replacement Pair
@@ -241,7 +228,9 @@ pub fn expand_curated_lmdb_neg(
         }
     }
 
-    Some(CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates)
+    let out = CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates;
+    note_wire_use(&out);
+    Some(out)
 }
 
 // Like expand_curated_lmdb but returns the minimum-gate replacement with <= gates.len() gates.
@@ -419,7 +408,9 @@ pub fn compress_curated_lmdb(
         }
     }
 
-    Some(CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates)
+    let out = CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates;
+    note_wire_use(&out);
+    Some(out)
 }
 
 /// Like compress_curated_lmdb, but returns ANY equivalent replacement for `gates` from the
@@ -532,7 +523,9 @@ pub fn find_any_replacement_lmdb(
         }
     }
 
-    Some(CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates)
+    let out = CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates;
+    note_wire_use(&out);
+    Some(out)
 }
 
 // returns the replacement gates and the id length (0 when using curated path)

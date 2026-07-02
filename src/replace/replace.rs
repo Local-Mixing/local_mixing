@@ -26,7 +26,7 @@ extern crate lmdb_sys;
 
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::{
     cmp::{max, min},
@@ -67,7 +67,49 @@ pub enum IncomingRankMode {
     Hybrid = 2,
 }
 
-fn shuffled_unused_wires(n: usize, used_wires: &[u16], rng: &mut impl Rng) -> Vec<u16> {
+// Running per-wire touch counts of picked replacements, used to steer ancilla assignment
+// toward globally cold wires (ANCILLA_BALANCE=1). Uneven wire usage is what caps leeway
+// below matched-random levels and lets hot wires accumulate outlier fanout, so ancillas —
+// the one wire choice the transform is free to make — should preferentially reuse the
+// least-touched wires. Sized for the full u16 wire space; relative order is all that matters.
+pub static WIRE_LOAD: Lazy<Vec<AtomicU32>> =
+    Lazy::new(|| (0..=u16::MAX as usize).map(|_| AtomicU32::new(0)).collect());
+
+pub fn ancilla_balance_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("ANCILLA_BALANCE")
+            .map(|value| {
+                let value = value.trim();
+                !value.is_empty()
+                    && !matches!(
+                        value.to_ascii_lowercase().as_str(),
+                        "0" | "false" | "off" | "no"
+                    )
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Record the wires touched by a picked replacement into the global load table.
+pub fn note_wire_use(gates: &[[u16; 3]]) {
+    if !ancilla_balance_enabled() {
+        return;
+    }
+    for gate in gates {
+        for &wire in gate {
+            WIRE_LOAD[wire as usize].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+// Coldest-first ordering; a stable sort after shuffling keeps the shuffled order as the
+// random tiebreak among equally loaded wires.
+fn order_coldest_first(available: &mut [u16], load: impl Fn(u16) -> u32) {
+    available.sort_by_key(|&wire| load(wire));
+}
+
+pub fn shuffled_unused_wires(n: usize, used_wires: &[u16], rng: &mut impl Rng) -> Vec<u16> {
     let mut used_mask = vec![false; n];
     for &wire in used_wires {
         if let Some(slot) = used_mask.get_mut(wire as usize) {
@@ -78,7 +120,54 @@ fn shuffled_unused_wires(n: usize, used_wires: &[u16], rng: &mut impl Rng) -> Ve
         .filter(|&wire| !used_mask[wire as usize])
         .collect();
     rand::seq::SliceRandom::shuffle(available.as_mut_slice(), rng);
+    if ancilla_balance_enabled() {
+        order_coldest_first(&mut available, |wire| {
+            WIRE_LOAD[wire as usize].load(Ordering::Relaxed)
+        });
+    }
     available
+}
+
+// Map a stored candidate from canonical wire space into circuit wire space: undo the
+// canonical direction, apply the canonicalization order, then relabel onto the window's
+// used wires (drawing random unused wires for any extra ancillas). Candidates must be in
+// circuit space BEFORE context-aware ranking — their canonical wire labels are meaningless
+// next to the surrounding circuit gates.
+fn candidate_to_circuit_space(
+    mut repl: CircuitSeq,
+    is_reversed: bool,
+    final_order: &Permutation,
+    used: &[u16],
+    n: usize,
+    rng: &mut impl Rng,
+) -> CircuitSeq {
+    if is_reversed {
+        repl.gates.reverse();
+    }
+    let repl_n = repl.max_wire() + 1;
+    let mut order_data = final_order.data.clone();
+    while order_data.len() < repl_n {
+        let i = order_data.len();
+        order_data.push(i);
+    }
+    repl.rewire(
+        &Permutation { data: order_data },
+        std::cmp::max(repl_n, final_order.data.len()),
+    );
+
+    let repl_n_b = repl.max_wire() + 1;
+    let mut used_ext = used.to_vec();
+    if used_ext.len() < repl_n_b {
+        let available = shuffled_unused_wires(n, &used_ext, rng);
+        let mut avail = available.into_iter();
+        while used_ext.len() < repl_n_b {
+            match avail.next() {
+                Some(w) => used_ext.push(w),
+                None => break,
+            }
+        }
+    }
+    CircuitSeq::unrewire_subcircuit(&repl, &used_ext)
 }
 
 // Record one expansion: `before`/`after` gate counts and `before_wires`/`after_wires`
@@ -268,6 +357,13 @@ pub fn cand_features(
     let mut zero_fanout = 0usize;
     let mut low_leeway = 0usize;
     let mut max_fanout = 0usize;
+    let mut leeways: Vec<usize> = Vec::with_capacity(window.len());
+    let mut touch_counts: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+    for gate in window {
+        for &wire in gate {
+            *touch_counts.entry(wire).or_insert(0) += 1;
+        }
+    }
     for i in 0..window.len() {
         let target = window[i][0];
         let mut fanout = 0usize;
@@ -331,7 +427,12 @@ pub fn cand_features(
         zero_fanout += usize::from(fanout == 0);
         low_leeway += usize::from(leeway < threshold);
         max_fanout = max_fanout.max(fanout);
+        leeways.push(leeway);
     }
+
+    leeways.sort_unstable();
+    let median_leeway = leeways.get(leeways.len() / 2).copied().unwrap_or(0);
+    let max_wire_touch = touch_counts.values().copied().max().unwrap_or(0);
 
     CandFeatures {
         size: window.len(),
@@ -340,6 +441,8 @@ pub fn cand_features(
         zero_fanout_count: zero_fanout,
         fanout_buckets: buckets,
         max_fanout,
+        median_leeway,
+        max_wire_touch,
     }
 }
 
@@ -1015,7 +1118,7 @@ pub fn expand_lmdb<'a>(
             continue;
         }
 
-        let mut best: Vec<CircuitSeq> = if sat_scoring_enabled() {
+        let best: Vec<CircuitSeq> = if sat_scoring_enabled() {
             let seed = sat_score_seed();
             let base_n = sub.max_wire() + 1;
             let base_score = expansion_selection_score(&score_subcircuit(
@@ -1061,47 +1164,27 @@ pub fn expand_lmdb<'a>(
                 .filter(|c| c.gates.len() == max_gates)
                 .collect()
         };
+        let t_rewire = Instant::now();
+        let mut mapped: Vec<CircuitSeq> = best
+            .into_iter()
+            .map(|candidate| {
+                candidate_to_circuit_space(candidate, is_reversed, &final_order, &used, n, &mut rng)
+            })
+            .collect();
+        REWIRE_TIME.fetch_add(t_rewire.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        // Rank in circuit wire space against the real surrounding gates, so leeway/fanout
+        // features are measured on the wires the replacement will actually sit between.
         let idx = if matches!(
             incoming_rank_mode(),
             IncomingRankMode::Fanout | IncomingRankMode::Hybrid
         ) {
-            fanout_pick_index(&best, &[], &[])
+            fanout_pick_index(&mapped, &expanded.gates[..start], &expanded.gates[end..])
         } else {
-            rng.random_range(0..best.len())
+            rng.random_range(0..mapped.len())
         };
-        let mut repl = best.swap_remove(idx);
-
-        if is_reversed {
-            repl.gates.reverse();
-        }
-
-        let t_rewire = Instant::now();
-        let repl_n = repl.max_wire() + 1;
-        let mut order_data = final_order.data.clone();
-        while order_data.len() < repl_n {
-            let i = order_data.len();
-            order_data.push(i);
-        }
-
-        repl.rewire(
-            &Permutation { data: order_data },
-            std::cmp::max(repl_n, final_order.data.len()),
-        );
-
-        let repl_n_b = repl.max_wire() + 1;
-        let mut used_ext = used.clone();
-        if used_ext.len() < repl_n_b {
-            let available = shuffled_unused_wires(n, &used_ext, &mut rng);
-            let mut avail = available.into_iter();
-            while used_ext.len() < repl_n_b {
-                match avail.next() {
-                    Some(w) => used_ext.push(w),
-                    None => break,
-                }
-            }
-        }
-        let repl = CircuitSeq::unrewire_subcircuit(&repl, &used_ext);
-        REWIRE_TIME.fetch_add(t_rewire.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let repl = mapped.swap_remove(idx);
+        note_wire_use(&repl.gates);
 
         let t_splice = Instant::now();
         expanded.gates.splice(start..end, repl.gates);
@@ -1269,7 +1352,7 @@ pub fn compress_lmdb(
 
         let min_gates = candidates.iter().map(|c| c.gates.len()).min().unwrap();
         let incoming_mode = incoming_rank_mode();
-        let mut best: Vec<CircuitSeq> = if sat_scoring_enabled()
+        let best: Vec<CircuitSeq> = if sat_scoring_enabled()
             && incoming_mode != IncomingRankMode::Fanout
         {
             let max_len = min_gates
@@ -1323,15 +1406,27 @@ pub fn compress_lmdb(
                 .filter(|c| c.gates.len() == min_gates)
                 .collect()
         };
+        let t_rewire = Instant::now();
+        let mut mapped: Vec<CircuitSeq> = best
+            .into_iter()
+            .map(|candidate| {
+                candidate_to_circuit_space(candidate, is_reversed, &final_order, &used, n, &mut rng)
+            })
+            .collect();
+        REWIRE_TIME.fetch_add(t_rewire.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        // Rank in circuit wire space: previously canonical-space candidate labels were
+        // compared against circuit-space context, making cross-boundary features garbage.
         let pick = if matches!(
             incoming_mode,
             IncomingRankMode::Fanout | IncomingRankMode::Hybrid
         ) {
-            fanout_pick_index(&best, &compressed.gates[..start], &compressed.gates[end..])
+            fanout_pick_index(&mapped, &compressed.gates[..start], &compressed.gates[end..])
         } else {
-            rng.random_range(0..best.len())
+            rng.random_range(0..mapped.len())
         };
-        let mut repl = best.swap_remove(pick);
+        let repl = mapped.swap_remove(pick);
+        note_wire_use(&repl.gates);
         *COMPRESSION_HISTOGRAM
             .entry((sub.gates.len() as u8, repl.gates.len() as u8))
             .or_insert(0) += 1;
@@ -1347,37 +1442,6 @@ pub fn compress_lmdb(
                 &ws,
             );
         }
-
-        if is_reversed {
-            repl.gates.reverse();
-        }
-
-        let t_rewire = Instant::now();
-        let repl_n = repl.max_wire() + 1;
-        let mut order_data = final_order.data.clone();
-        while order_data.len() < repl_n {
-            let i = order_data.len();
-            order_data.push(i);
-        }
-        repl.rewire(
-            &Permutation { data: order_data },
-            std::cmp::max(repl_n, final_order.data.len()),
-        );
-
-        let repl_n_b = repl.max_wire() + 1;
-        let mut used_ext = used.clone();
-        if used_ext.len() < repl_n_b {
-            let available = shuffled_unused_wires(n, &used_ext, &mut rng);
-            let mut avail = available.into_iter();
-            while used_ext.len() < repl_n_b {
-                match avail.next() {
-                    Some(w) => used_ext.push(w),
-                    None => break,
-                }
-            }
-        }
-        let repl = CircuitSeq::unrewire_subcircuit(&repl, &used_ext);
-        REWIRE_TIME.fetch_add(t_rewire.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t_splice = Instant::now();
         let repl_len = repl.gates.len();
@@ -1824,5 +1888,91 @@ pub fn print_compress_timers() {
             pc / 1e3 / calls
         );
         println!("ratio poly/canon4:{:.2}x", pc / c4.max(1.0));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cand_features, candidate_to_circuit_space, order_coldest_first};
+    use crate::circuit::circuit::{CircuitSeq, Permutation};
+
+    #[test]
+    fn coldest_first_orders_by_load_with_stable_tiebreak() {
+        // Pre-shuffled input; loads: wire 4 hot, wires 1/9 cold, wires 2/7 middling.
+        let mut wires = vec![4u16, 9, 2, 1, 7];
+        let loads = |w: u16| match w {
+            4 => 100u32,
+            2 | 7 => 5,
+            _ => 0,
+        };
+        order_coldest_first(&mut wires, loads);
+
+        assert_eq!(
+            wires,
+            vec![9, 1, 2, 7, 4],
+            "cold wires first, hot last, equal loads keep prior (shuffled) order"
+        );
+    }
+
+    fn candidate() -> CircuitSeq {
+        CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        }
+    }
+
+    #[test]
+    fn mapping_keeps_gate_count_and_stays_within_wire_budget() {
+        let order = Permutation {
+            data: vec![0, 1, 2],
+        };
+        let used = vec![7u16, 3, 5];
+        let mut rng = rand::rng();
+        let mapped =
+            candidate_to_circuit_space(candidate(), false, &order, &used, 10, &mut rng);
+
+        assert_eq!(mapped.gates.len(), 3, "mapping must not add or drop gates");
+        for gate in &mapped.gates {
+            for &wire in gate {
+                assert!(wire < 10, "mapped wires must stay within the circuit budget");
+            }
+        }
+    }
+
+    #[test]
+    fn mapping_commutes_with_reversal() {
+        // Reversing before relabeling must equal relabeling then reversing: the reversed
+        // lookup path only changes gate ORDER, never the wire mapping.
+        let order = Permutation {
+            data: vec![0, 1, 2],
+        };
+        let used = vec![7u16, 3, 5];
+        let mut rng = rand::rng();
+        let forward =
+            candidate_to_circuit_space(candidate(), false, &order, &used, 10, &mut rng);
+        let mut reversed =
+            candidate_to_circuit_space(candidate(), true, &order, &used, 10, &mut rng);
+        reversed.gates.reverse();
+
+        assert_eq!(forward.gates, reversed.gates);
+    }
+
+    #[test]
+    fn mapping_preserves_internal_collision_structure() {
+        // Wire relabeling must not change the relabeling-invariant window features the
+        // ranker uses (median leeway, hot-wire touch, window size).
+        let order = Permutation {
+            data: vec![0, 1, 2],
+        };
+        let used = vec![7u16, 3, 5];
+        let mut rng = rand::rng();
+        let mapped =
+            candidate_to_circuit_space(candidate(), false, &order, &used, 10, &mut rng);
+
+        let before = cand_features(&candidate().gates, &[], &[]);
+        let after = cand_features(&mapped.gates, &[], &[]);
+        assert_eq!(before.size, after.size);
+        assert_eq!(before.median_leeway, after.median_leeway);
+        assert_eq!(before.max_wire_touch, after.max_wire_touch);
+        assert_eq!(before.wires_spanned, after.wires_spanned);
     }
 }

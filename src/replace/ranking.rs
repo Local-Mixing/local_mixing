@@ -9,6 +9,12 @@ pub struct CandFeatures {
     pub zero_fanout_count: usize,
     pub fanout_buckets: [usize; 5],
     pub max_fanout: usize,
+    /// Median commutation leeway of the window's gates (wire-relabeling invariant, so it is
+    /// meaningful even for candidates still in canonical wire space).
+    pub median_leeway: usize,
+    /// Maximum number of window gates touching any single wire — a hot-wire / uneven
+    /// touch-distribution proxy (also relabeling invariant).
+    pub max_wire_touch: usize,
 }
 
 impl CandFeatures {
@@ -64,6 +70,27 @@ impl Ranker for ParetoOutgoing {
 pub struct FanoutTargetIncoming {
     pub target: [f64; 5],
     pub max_fanout: usize,
+    /// Target median window leeway; candidates below it are penalized proportionally so
+    /// selection stops preferring maximally pinned (wire-dense) replacements.
+    pub min_median_leeway: usize,
+}
+
+impl FanoutTargetIncoming {
+    // Distribution-matching penalty, lower is better: distance of the fanout-bucket
+    // distribution from the random-like target, plus a shortfall term for median leeway
+    // below target, plus a hot-wire term for windows that concentrate touches on one wire.
+    fn penalty(&self, c: &CandFeatures) -> f64 {
+        let fanout = c.fanout_l1(self.target);
+        let target_median = self.min_median_leeway.max(1) as f64;
+        let leeway_shortfall =
+            (target_median - c.median_leeway as f64).max(0.0) / target_median;
+        let hot_wire = if c.size > 0 {
+            c.max_wire_touch as f64 / c.size as f64
+        } else {
+            0.0
+        };
+        fanout + leeway_shortfall + 0.5 * hot_wire
+    }
 }
 
 impl Ranker for FanoutTargetIncoming {
@@ -76,9 +103,8 @@ impl Ranker for FanoutTargetIncoming {
             let vb = candidates[b].max_fanout > self.max_fanout;
             va.cmp(&vb)
                 .then(
-                    candidates[a]
-                        .fanout_l1(self.target)
-                        .partial_cmp(&candidates[b].fanout_l1(self.target))
+                    self.penalty(&candidates[a])
+                        .partial_cmp(&self.penalty(&candidates[b]))
                         .unwrap_or(std::cmp::Ordering::Equal),
                 )
                 .then(
@@ -105,7 +131,80 @@ pub fn incoming() -> &'static dyn Ranker {
                 target: crate::replace::replace::FANOUT_TARGET,
                 max_fanout: crate::replace::replace::MAX_FANOUT
                     .load(std::sync::atomic::Ordering::Relaxed),
+                min_median_leeway: crate::replace::replace::MIN_MEDIAN_LEEWAY
+                    .load(std::sync::atomic::Ordering::Relaxed),
             })
         })
         .as_ref()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CandFeatures, FanoutTargetIncoming, Ranker};
+
+    fn ranker() -> FanoutTargetIncoming {
+        FanoutTargetIncoming {
+            target: crate::replace::replace::FANOUT_TARGET,
+            max_fanout: 50,
+            min_median_leeway: 10,
+        }
+    }
+
+    #[test]
+    fn incoming_ranker_prefers_higher_median_leeway() {
+        let pinned = CandFeatures {
+            size: 5,
+            median_leeway: 0,
+            ..Default::default()
+        };
+        let loose = CandFeatures {
+            size: 5,
+            median_leeway: 20,
+            ..Default::default()
+        };
+        let order = ranker().order(&[pinned, loose]);
+
+        assert_eq!(order[0], 1, "candidate meeting the leeway target ranks first");
+    }
+
+    #[test]
+    fn incoming_ranker_penalizes_hot_wires() {
+        let even = CandFeatures {
+            size: 6,
+            median_leeway: 20,
+            max_wire_touch: 2,
+            ..Default::default()
+        };
+        let hot = CandFeatures {
+            size: 6,
+            median_leeway: 20,
+            max_wire_touch: 6,
+            ..Default::default()
+        };
+        let order = ranker().order(&[hot, even]);
+
+        assert_eq!(order[0], 1, "evenly touched candidate ranks first");
+    }
+
+    #[test]
+    fn incoming_ranker_hard_rejects_fanout_outliers_first() {
+        let outlier = CandFeatures {
+            size: 5,
+            median_leeway: 20,
+            max_fanout: 100,
+            ..Default::default()
+        };
+        let ok = CandFeatures {
+            size: 5,
+            median_leeway: 0,
+            max_fanout: 10,
+            ..Default::default()
+        };
+        let order = ranker().order(&[outlier, ok]);
+
+        assert_eq!(
+            order[0], 1,
+            "max-fanout violation outranks any soft penalty difference"
+        );
+    }
 }

@@ -20,6 +20,7 @@ pub struct SatHardnessScore {
     pub output_cone_gates: usize,
     pub output_cone_fraction: f64,
     pub bcp_resistance: f64,
+    pub slice_prop_resistance: f64,
     pub sat_probe_score: f64,
     pub repeated_template_penalty: f64,
     pub unit_prop_resistance: f64,
@@ -220,6 +221,25 @@ pub fn sat_bcp_min_resistance() -> f64 {
     })
 }
 
+pub fn sat_slice_prop_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| env_truthy("SAT_SLICE_PROP"))
+}
+
+// Optional exact fixed-wire window (same convention as SAT_CONE_START/SAT_CONE_BITS).
+// When unset, each trial fixes a random SAT_SLICE_FIXED_FRACTION subset of wires instead.
+fn sat_slice_fixed_range() -> Option<(usize, usize)> {
+    static RANGE: OnceLock<Option<(usize, usize)>> = OnceLock::new();
+    *RANGE.get_or_init(|| {
+        let start = std::env::var("SAT_SLICE_FIXED_START")
+            .ok()?
+            .parse()
+            .ok()?;
+        let bits = std::env::var("SAT_SLICE_FIXED_BITS").ok()?.parse().ok()?;
+        Some((start, bits))
+    })
+}
+
 pub fn sat_compress_protect_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| env_truthy("SAT_COMPRESS_PROTECT") || env_truthy("SAT_HARDEN"))
@@ -304,6 +324,7 @@ pub fn score_subcircuit(gates: &[[u16; 3]], n: usize, seed: u64) -> SatHardnessS
             output_cone_gates: 0,
             output_cone_fraction: 0.0,
             bcp_resistance: 0.0,
+            slice_prop_resistance: 0.0,
             sat_probe_score: 0.0,
             repeated_template_penalty: 0.0,
             unit_prop_resistance: 0.0,
@@ -384,6 +405,11 @@ pub fn score_subcircuit(gates: &[[u16; 3]], n: usize, seed: u64) -> SatHardnessS
     } else {
         0.0
     };
+    let slice_prop_resistance = if sat_slice_prop_enabled() {
+        slice_prop_resistance(gates, wire_count, &output_wires, seed)
+    } else {
+        0.0
+    };
     let sat_probe_score = if sat_probe_enabled() {
         sat_probe_score(gates, wire_count, &output_wires, seed)
     } else {
@@ -401,6 +427,7 @@ pub fn score_subcircuit(gates: &[[u16; 3]], n: usize, seed: u64) -> SatHardnessS
         + 1.5 * output_cone_fraction
         + 0.25 * ((output_cone_gates as f64).ln_1p() / 8.0)
         + 2.5 * bcp_resistance
+        + 2.5 * slice_prop_resistance
         + 3.0 * sat_probe_score
         + 0.5 * wire_norm
         + 0.25 * gate_norm
@@ -415,6 +442,7 @@ pub fn score_subcircuit(gates: &[[u16; 3]], n: usize, seed: u64) -> SatHardnessS
         output_cone_gates,
         output_cone_fraction,
         bcp_resistance,
+        slice_prop_resistance,
         sat_probe_score,
         repeated_template_penalty,
         unit_prop_resistance,
@@ -430,6 +458,7 @@ pub fn expansion_selection_score(score: &SatHardnessScore) -> f64 {
         + 2.0 * score.output_cone_fraction
         + 0.05 * score.output_cone_gates as f64
         + 4.0 * score.bcp_resistance
+        + 4.0 * score.slice_prop_resistance
         + 6.0 * score.sat_probe_score
         + 0.3 * score.wires as f64
         + 0.1 * score.gates as f64
@@ -444,6 +473,7 @@ pub fn compression_selection_score(score: &SatHardnessScore) -> f64 {
         + 2.0 * score.output_cone_fraction
         + 0.05 * score.output_cone_gates as f64
         + 4.0 * score.bcp_resistance
+        + 4.0 * score.slice_prop_resistance
         + 6.0 * score.sat_probe_score
         - 2.0 * score.repeated_template_penalty
 }
@@ -668,6 +698,103 @@ fn bcp_resistance(gates: &[[u16; 3]], wire_count: usize, output_wires: &[usize],
             if rng.random_bool(assign_prob) {
                 assumptions.push(if rng.random() { var } else { -var });
             }
+        }
+        for &wire in output_wires.choose_multiple(&mut rng, output_bits) {
+            if wire < cnf.output_vars.len() {
+                let var = cnf.output_vars[wire];
+                assumptions.push(if rng.random() { var } else { -var });
+            }
+        }
+
+        match unit_propagate(&cnf.clauses, cnf.var_count, &assumptions) {
+            Some(assignments) => {
+                let unassigned = cnf
+                    .gate_vars
+                    .iter()
+                    .filter(|&&var| assignments[var as usize].is_none())
+                    .count();
+                total_unassigned += unassigned as f64 / cnf.gate_vars.len() as f64;
+            }
+            None => conflicts += 1,
+        }
+    }
+
+    let conflict_penalty = 1.0 - conflicts as f64 / trials as f64;
+    (total_unassigned / trials as f64 * conflict_penalty).clamp(0.0, 1.0)
+}
+
+// Boundary-conditioned BCP resistance. Unlike `bcp_resistance` (random sparse assumptions
+// over all inputs), this models the fixed-slice benchmark: a structured set of whole wires
+// is fixed to constants (the y,z slice in the fixed-y/z experiments), output bits are
+// constrained, and we measure how much of the circuit unit propagation alone can determine.
+// Fixed values are re-randomized per trial so the score reflects robustness across targets,
+// not one lucky assignment. 1.0 = BCP determines nothing; 0.0 = fully propagated or refuted.
+fn slice_prop_resistance(
+    gates: &[[u16; 3]],
+    wire_count: usize,
+    output_wires: &[usize],
+    seed: u64,
+) -> f64 {
+    let trials = env_usize("SAT_SLICE_PROP_TRIALS", 8).max(1);
+    let fixed_fraction = env_f64("SAT_SLICE_FIXED_FRACTION", 2.0 / 3.0).clamp(0.0, 1.0);
+    let output_bits = env_usize("SAT_SLICE_OUTPUT_BITS", output_wires.len())
+        .max(1)
+        .min(output_wires.len().max(1));
+    slice_prop_resistance_with(
+        gates,
+        wire_count,
+        output_wires,
+        seed,
+        trials,
+        fixed_fraction,
+        sat_slice_fixed_range(),
+        output_bits,
+    )
+}
+
+fn slice_prop_resistance_with(
+    gates: &[[u16; 3]],
+    wire_count: usize,
+    output_wires: &[usize],
+    seed: u64,
+    trials: usize,
+    fixed_fraction: f64,
+    fixed_range: Option<(usize, usize)>,
+    output_bits: usize,
+) -> f64 {
+    if gates.is_empty() || wire_count == 0 || output_wires.is_empty() {
+        return 0.0;
+    }
+
+    let cnf = local_cnf(gates, wire_count);
+    if cnf.gate_vars.is_empty() {
+        return 0.0;
+    }
+
+    let trials = trials.max(1);
+    let output_bits = output_bits.min(output_wires.len());
+    let all_wires: Vec<usize> = (0..wire_count).collect();
+    let mut rng = StdRng::seed_from_u64(seed ^ 0x511c_e0f5_a7b0_0d5e);
+    let mut total_unassigned = 0.0;
+    let mut conflicts = 0usize;
+
+    for _ in 0..trials {
+        let fixed_wires: Vec<usize> = match fixed_range {
+            Some((start, bits)) => {
+                let start = start.min(wire_count);
+                let end = start.saturating_add(bits).min(wire_count);
+                (start..end).collect()
+            }
+            None => {
+                let k = ((wire_count as f64 * fixed_fraction).round() as usize).min(wire_count);
+                all_wires.choose_multiple(&mut rng, k).copied().collect()
+            }
+        };
+
+        let mut assumptions = Vec::with_capacity(fixed_wires.len() + output_bits);
+        for &wire in &fixed_wires {
+            let var = cnf.input_vars[wire];
+            assumptions.push(if rng.random() { var } else { -var });
         }
         for &wire in output_wires.choose_multiple(&mut rng, output_bits) {
             if wire < cnf.output_vars.len() {
@@ -952,5 +1079,52 @@ mod tests {
         let result = super::unit_propagate(&clauses, 1, &[]);
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn slice_prop_resistance_is_deterministic() {
+        let gates = [[0, 1, 2], [3, 0, 4], [5, 3, 6], [7, 5, 0], [2, 7, 1]];
+        let outputs = [0usize, 2, 3, 5, 7];
+        let a =
+            super::slice_prop_resistance_with(&gates, 8, &outputs, 42, 8, 2.0 / 3.0, None, 3);
+        let b =
+            super::slice_prop_resistance_with(&gates, 8, &outputs, 42, 8, 2.0 / 3.0, None, 3);
+
+        assert_eq!(a, b);
+        assert!((0.0..=1.0).contains(&a));
+    }
+
+    #[test]
+    fn slice_prop_resistance_handles_degenerate_inputs() {
+        // Empty circuit and empty output set both score zero without panicking.
+        assert_eq!(
+            super::slice_prop_resistance_with(&[], 8, &[1], 1, 4, 0.5, None, 1),
+            0.0
+        );
+        let gates = [[0, 1, 2]];
+        assert_eq!(
+            super::slice_prop_resistance_with(&gates, 3, &[], 1, 4, 0.5, None, 1),
+            0.0
+        );
+
+        // A fixed window extending past the wire count is clamped, not a panic.
+        let clamped =
+            super::slice_prop_resistance_with(&gates, 3, &[0], 1, 4, 1.0, Some((2, 100)), 1);
+        assert!((0.0..=1.0).contains(&clamped));
+
+        // Zero trials is promoted to one trial rather than dividing by zero.
+        let no_trials = super::slice_prop_resistance_with(&gates, 3, &[0], 1, 0, 0.5, None, 1);
+        assert!((0.0..=1.0).contains(&no_trials));
+    }
+
+    #[test]
+    fn slice_prop_resistance_fully_fixed_boundary_is_easy() {
+        // Fixing every wire lets unit propagation determine every gate variable,
+        // so resistance must be exactly zero regardless of the sampled values.
+        let gates = [[0, 1, 2], [1, 2, 0], [2, 0, 1]];
+        let score =
+            super::slice_prop_resistance_with(&gates, 3, &[0, 1, 2], 7, 6, 1.0, Some((0, 3)), 1);
+
+        assert_eq!(score, 0.0);
     }
 }

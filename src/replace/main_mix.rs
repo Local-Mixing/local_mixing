@@ -1029,6 +1029,43 @@ pub fn main_shuffle_shoot_shuffle(
                 j += 1;
             }
         }
+        // Optional dispersal pass (DISPERSE=1): reorder into a random linear extension of
+        // the dependency DAG so replacement windows stop sitting as dense contiguous blocks.
+        // Function-preserving; runs before the equality check so checked runs verify it.
+        if crate::replace::disperse::disperse_enabled() && !circuit.gates.is_empty() {
+            use crate::replace::disperse::{disperse_random_topo, fanout_stats, leeway_stats};
+            let stride = (circuit.gates.len() / 100_000).max(1);
+            let before = leeway_stats(&circuit.gates, stride);
+            let seed = crate::replace::disperse::disperse_seed() ^ ((i as u64 + 1) << 32);
+            let chunk = crate::replace::disperse::disperse_chunk_size();
+            if track {
+                disperse_random_topo(&mut circuit.gates, Some(&mut survivor_tags), chunk, seed);
+            } else {
+                disperse_random_topo(&mut circuit.gates, None, chunk, seed);
+            }
+            let after = leeway_stats(&circuit.gates, stride);
+            let (fanout, fanout_zero) = fanout_stats(&circuit.gates, stride);
+            // Usage entropy near 1.0 means the remaining leeway/fanout gap is schedule-side;
+            // low entropy means it is structural (uneven wire usage) and reordering alone
+            // cannot close it.
+            let (active_entropy, control_entropy) =
+                crate::replace::disperse::wire_usage_entropy(&circuit.gates, n);
+            println!(
+                "[disperse] round {} leeway median {}->{} avg {:.1}->{:.1} p99 {}->{} | fanout p99 {} max {} zero {:.1}% | usage entropy active {:.3} control {:.3}",
+                i + 1,
+                before.median,
+                after.median,
+                before.avg,
+                after.avg,
+                before.p99,
+                after.p99,
+                fanout.p99,
+                fanout.max,
+                100.0 * fanout_zero,
+                active_entropy,
+                control_entropy
+            );
+        }
         if equality_check {
             let original_n = if leave { n / 2 } else { n };
             let original_n = if do_feistalize {
