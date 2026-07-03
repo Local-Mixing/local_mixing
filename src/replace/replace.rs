@@ -223,6 +223,31 @@ pub fn verify_db_hits() -> bool {
     }
 }
 
+// COMPRESS_STALL_FRAC (env): aggressive early-stop for compression. When set to a fraction
+// f in (0, 1], compress_loop stops as soon as the total reduction over the last
+// COMPRESS_STALL_WINDOW sweeps (default 2) falls below f * current_size (floored at the
+// legacy 50 gates). Unset = legacy rule: < 50 gates reduced over the last `stable_max` sweeps.
+pub fn compress_stall_frac() -> Option<f64> {
+    static V: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("COMPRESS_STALL_FRAC")
+            .ok()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .filter(|f| *f > 0.0 && *f <= 1.0)
+    })
+}
+
+pub fn compress_stall_window() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("COMPRESS_STALL_WINDOW")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .filter(|w| *w >= 1)
+            .unwrap_or(2)
+    })
+}
+
 // Floor of the median of a list of generations (round the even-length midpoint down).
 pub fn median_floor(v: &[u32]) -> u32 {
     if v.is_empty() {
@@ -666,6 +691,13 @@ pub fn compress_loop(
     let mut recent: std::collections::VecDeque<usize> =
         std::collections::VecDeque::with_capacity(stable_max + 1);
     recent.push_back(acc.gates.len());
+    if let Some(f) = compress_stall_frac() {
+        println!(
+            "  [compress] stall rule: stop when < {:.1}% of current size reduced over last {} sweeps",
+            f * 100.0,
+            compress_stall_window().min(stable_max)
+        );
+    }
 
     let mut rec_iter = 0usize;
     loop {
@@ -773,13 +805,23 @@ pub fn compress_loop(
             recent.pop_front();
         }
 
-        // Stop if the total reduction over the last stable_max iterations is < 100.
-        if recent.len() == stable_max + 1 {
-            let window_reduction = recent.front().unwrap().saturating_sub(after);
-            if window_reduction < 50 {
+        // Stall stop. Legacy: < 50 gates reduced over the last stable_max sweeps.
+        // COMPRESS_STALL_FRAC set: < frac * current_size reduced over the last
+        // COMPRESS_STALL_WINDOW sweeps (see compress_stall_frac) — fires much earlier.
+        let (stall_window, stall_threshold) = match compress_stall_frac() {
+            Some(f) => (
+                compress_stall_window().min(stable_max),
+                ((after as f64 * f) as usize).max(50),
+            ),
+            None => (stable_max, 50),
+        };
+        if recent.len() > stall_window {
+            let base = recent[recent.len() - 1 - stall_window];
+            let window_reduction = base.saturating_sub(after);
+            if window_reduction < stall_threshold {
                 println!(
-                    "  {}/{}: Early stop — only {} gates reduced over last {} iterations ({} gates)",
-                    curr_round, last_round, window_reduction, stable_max, after
+                    "  {}/{}: Early stop — only {} gates reduced over last {} iterations, threshold {} ({} gates)",
+                    curr_round, last_round, window_reduction, stall_window, stall_threshold, after
                 );
                 break;
             }
