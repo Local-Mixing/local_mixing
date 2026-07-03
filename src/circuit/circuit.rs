@@ -594,8 +594,23 @@ impl CircuitSeq {
     ) -> Result<(), String> {
         use rayon::prelude::*;
 
-        if num_wires > 256 {
-            if num_wires > 1024 {
+        // Evaluation width must cover every wire either circuit TOUCHES, not just the
+        // num_wires input/compare contract: checking a 512-wire gadgetized circuit on a
+        // 256-bit contract with u256 arithmetic silently zeroes all shifts >= 256
+        // (primitive-types overflow semantics), corrupting every aux-wire access and
+        // reporting spurious non-equivalence. Inputs/outputs stay masked to num_wires.
+        let eval_wires = self
+            .gates
+            .iter()
+            .chain(other_circuit.gates.iter())
+            .flat_map(|g| g.iter())
+            .map(|&w| w as usize + 1)
+            .max()
+            .unwrap_or(0)
+            .max(num_wires);
+
+        if eval_wires > 256 {
+            if eval_wires > 1024 {
                 return Err("probabilistic equality supports up to 1024 wires".to_string());
             }
             let mask = if num_wires < 1024 {
