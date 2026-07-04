@@ -248,6 +248,23 @@ pub fn compress_stall_window() -> usize {
     })
 }
 
+// COMPRESS_CHUNK_BUDGET_MS (env): per-chunk wall-clock budget for compression sweeps.
+// A sweep only finishes when its slowest chunk does; chunk costs are heavily skewed
+// (a few chunks full of slow compress_lmdb windows can serialize a sweep down to one
+// core for most of its wall time). When set, compress_big_ancillas stops starting new
+// trials once the chunk has run this many ms — the chunk returns its partial progress
+// and the re-randomized chunking of the next sweep picks up the region again.
+// Unset = legacy (all trials always run).
+pub fn compress_chunk_budget_ms() -> Option<u64> {
+    static V: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("COMPRESS_CHUNK_BUDGET_MS")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|ms| *ms > 0)
+    })
+}
+
 // Floor of the median of a list of generations (round the even-length midpoint down).
 pub fn median_floor(v: &[u32]) -> u32 {
     if v.is_empty() {
@@ -697,6 +714,9 @@ pub fn compress_loop(
             f * 100.0,
             compress_stall_window().min(stable_max)
         );
+    }
+    if let Some(ms) = compress_chunk_budget_ms() {
+        println!("  [compress] chunk budget: {} ms per chunk per sweep", ms);
     }
 
     let mut rec_iter = 0usize;
@@ -1493,7 +1513,16 @@ pub fn compress_big_ancillas(
         }
     }
 
+    let chunk_budget = compress_chunk_budget_ms();
+    let chunk_started = Instant::now();
     for _ in 0..trials {
+        // Straggler guard: stop starting trials once this chunk exceeds its wall-clock
+        // budget, so one hard chunk cannot serialize the whole parallel sweep.
+        if let Some(ms) = chunk_budget {
+            if chunk_started.elapsed().as_millis() as u64 >= ms {
+                break;
+            }
+        }
         let t0 = Instant::now();
         let (mut subcircuit_gates, _) = match mode {
             0 => find_convex_subcircuit_max_wires(30, num_wires, &circuit, &mut rng),
