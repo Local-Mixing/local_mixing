@@ -10,7 +10,7 @@ use crate::{
             feistalize_with_slice_zero_random, gadgetize, packed_bit,
         },
         pairs::interleave,
-        replace::{ExpandPairMode, compress_loop, expand_once},
+        replace::{ExpandPairMode, Tag, compress_loop, expand_once},
         transpositions::insert_wire_m_samfs_every_x,
     },
 };
@@ -531,13 +531,14 @@ pub fn main_shuffle_shoot_shuffle(
         Vec::new()
     };
     let n_orig = orig_gates.len();
-    // Tag vector: gen mode -> all generation 0; survivor mode -> origin index 0..n_orig.
-    let mut survivor_tags: Vec<u32> = if !track {
+    // Tag vector: gen mode -> generation-0 singleton litters; survivor mode -> origin index
+    // 0..n_orig.
+    let mut survivor_tags: Vec<Tag> = if !track {
         Vec::new()
     } else if crate::replace::replace::gen_mode() {
-        vec![0u32; n_orig]
+        (0..n_orig).map(|_| Tag::new_litter(0, 1)).collect()
     } else {
-        (0..n_orig as u32).collect()
+        (0..n_orig).map(Tag::survivor).collect()
     };
     // Adaptive plain-SAMF reduction (ssg --samf-target): the plain-SAMF count actually used each
     // round. Starts at the requested `m`; once a round hides >= SAMF_TARGET SAMFs in the shooting
@@ -812,6 +813,10 @@ pub fn main_shuffle_shoot_shuffle(
             // the way to the end. Stage D uses an explicit per-stage target instead (below).
             light_compression && !stage_d && (i + 1 < rounds),
             stage_d_compress_target,
+            // Delivery ("final") compression — litter ban lifted, SLOW_COMPRESS off. The last
+            // fixed round qualifies; Stage D stages never do (its exit is the min-gen condition,
+            // and a full-strength delivery compress can be run separately if wanted).
+            !stage_d && (i + 1 >= rounds),
             &mut survivor_tags,
         );
         println!("After compression: {} gates", circuit.gates.len());
@@ -867,6 +872,9 @@ pub fn main_shuffle_shoot_shuffle(
                 "    hide diagnostics: eligible {} | skipped-materialized {} | attempts {} | lookup-misses {} | rejected-exposed {}",
                 d_eligible, d_skipped, d_attempts, d_misses, d_rejected
             );
+            if crate::replace::replace::litter_rules() && crate::replace::replace::gen_mode() {
+                crate::replace::replace::litter_report("    [litter] cumulative:");
+            }
             // Adaptive plain-SAMF reduction: once a round hides enough SAMFs on its own, stop the
             // explicit plain-SAMF insertion for the remaining rounds.
             if samf_target > 0 && m_eff > 0 && d_made >= samf_target {
@@ -928,9 +936,13 @@ pub fn main_shuffle_shoot_shuffle(
         }
         if track {
             // Per-round survivor count (after this round's shooting + compression).
+            let gen_m = crate::replace::replace::gen_mode();
             let alive = survivor_tags
                 .iter()
-                .filter(|&&t| (t as usize) < n_orig)
+                .filter(|&&t| {
+                    let v = if gen_m { t.generation() as u64 } else { t.0 };
+                    (v as usize) < n_orig
+                })
                 .count();
             println!(
                 "[survivors] round {} alive {} circuit_gates {}",
@@ -1011,7 +1023,10 @@ pub fn main_shuffle_shoot_shuffle(
             let min_gen_target = crate::replace::replace::MIN_GEN.load(Relaxed) as u32;
             let permille = crate::replace::replace::MIN_GEN_PERMILLE.load(Relaxed);
             let len = survivor_tags.len();
-            let below = survivor_tags.iter().filter(|&&g| g < min_gen_target).count();
+            let below = survivor_tags
+                .iter()
+                .filter(|&&g| g.generation() < min_gen_target)
+                .count();
             // Per-mille of gates still below the target generation (0 = all gates reached it).
             let below_permille = if len > 0 { below * 1000 / len } else { 1000 };
             // The "fractional floor": the lowest generation once the bottom (1-frac) of gates (the
@@ -1022,11 +1037,16 @@ pub fn main_shuffle_shoot_shuffle(
             let cur_floor_gen = if len == 0 {
                 0u32
             } else {
-                let mut sorted = survivor_tags.clone();
+                let mut sorted: Vec<u32> =
+                    survivor_tags.iter().map(|t| t.generation()).collect();
                 let k = skip.min(len - 1);
                 *sorted.select_nth_unstable(k).1
             };
-            let abs_min_gen = survivor_tags.iter().copied().min().unwrap_or(0);
+            let abs_min_gen = survivor_tags
+                .iter()
+                .map(|t| t.generation())
+                .min()
+                .unwrap_or(0);
             let met = len > 0 && below * 1000 <= len * (1000 - permille);
             println!(
                 "[stage-D] stage {} progress: {:.1}% of {} gates at gen>={} (target {:.1}%), floor_gen {} (abs_min {})",
@@ -1084,12 +1104,12 @@ pub fn main_shuffle_shoot_shuffle(
         // Generation histogram of the final circuit: how many gates at each generation.
         let mut hist: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
         for &g in &survivor_tags {
-            *hist.entry(g).or_insert(0) += 1;
+            *hist.entry(g.generation()).or_insert(0) += 1;
         }
         let total = survivor_tags.len().max(1);
-        let max_gen = survivor_tags.iter().copied().max().unwrap_or(0);
-        let min_gen = survivor_tags.iter().copied().min().unwrap_or(0);
-        let mut sorted = survivor_tags.clone();
+        let max_gen = survivor_tags.iter().map(|t| t.generation()).max().unwrap_or(0);
+        let min_gen = survivor_tags.iter().map(|t| t.generation()).min().unwrap_or(0);
+        let mut sorted: Vec<u32> = survivor_tags.iter().map(|t| t.generation()).collect();
         sorted.sort_unstable();
         let median_gen = if sorted.is_empty() { 0 } else { sorted[sorted.len() / 2] };
         let path = format!("{}.generations", save);
@@ -1116,8 +1136,8 @@ pub fn main_shuffle_shoot_shuffle(
         // present in the final tag vector, i.e. never part of any replacement window.
         let mut present = vec![false; n_orig];
         for &t in &survivor_tags {
-            if (t as usize) < n_orig {
-                present[t as usize] = true;
+            if (t.0 as usize) < n_orig {
+                present[t.0 as usize] = true;
             }
         }
         let n_survived = present.iter().filter(|&&p| p).count();

@@ -10,6 +10,7 @@
 //! Each chunk will later also carry a *pending inbound SAMF* (the lazy global-propagation tail);
 //! that field is added in the next step. This step is just the storage + edits + gen lookup.
 
+use crate::replace::replace::Tag;
 use rand::Rng;
 
 const TARGET_CHUNK: usize = 1024; // soft target size; chunks split above 2x, merge below 1/2x.
@@ -126,13 +127,13 @@ impl SamfTail {
 
 struct Chunk {
     gates: Vec<[u16; 3]>,
-    tags: Vec<u32>,
-    min_gen: u32, // cached minimum of `tags` (u32::MAX when empty)
+    tags: Vec<Tag>,
+    min_gen: u32, // cached minimum generation of `tags` (u32::MAX when empty)
 }
 
 impl Chunk {
-    fn new(gates: Vec<[u16; 3]>, tags: Vec<u32>) -> Self {
-        let min_gen = tags.iter().copied().min().unwrap_or(u32::MAX);
+    fn new(gates: Vec<[u16; 3]>, tags: Vec<Tag>) -> Self {
+        let min_gen = tags.iter().map(|t| t.generation()).min().unwrap_or(u32::MAX);
         Chunk {
             gates,
             tags,
@@ -140,7 +141,7 @@ impl Chunk {
         }
     }
     fn recompute_min(&mut self) {
-        self.min_gen = self.tags.iter().copied().min().unwrap_or(u32::MAX);
+        self.min_gen = self.tags.iter().map(|t| t.generation()).min().unwrap_or(u32::MAX);
     }
     fn len(&self) -> usize {
         self.gates.len()
@@ -154,7 +155,7 @@ pub struct SegCircuit {
 
 impl SegCircuit {
     /// Build from a flat circuit + parallel tags (tags must match length).
-    pub fn from_flat(gates: &[[u16; 3]], tags: &[u32]) -> Self {
+    pub fn from_flat(gates: &[[u16; 3]], tags: &[Tag]) -> Self {
         assert_eq!(gates.len(), tags.len(), "gates/tags length mismatch");
         let mut chunks = Vec::new();
         let mut i = 0;
@@ -170,7 +171,7 @@ impl SegCircuit {
     }
 
     /// Flatten back to a single gate list + tag list.
-    pub fn to_flat(&self) -> (Vec<[u16; 3]>, Vec<u32>) {
+    pub fn to_flat(&self) -> (Vec<[u16; 3]>, Vec<Tag>) {
         let mut gates = Vec::with_capacity(self.total);
         let mut tags = Vec::with_capacity(self.total);
         for c in &self.chunks {
@@ -223,7 +224,7 @@ impl SegCircuit {
         for c in &self.chunks {
             if c.min_gen == m {
                 for (off, &t) in c.tags.iter().enumerate() {
-                    if t == m {
+                    if t.generation() == m {
                         seen += 1;
                         if rng.random_range(0..seen) == 0 {
                             chosen = Some(base + off);
@@ -247,7 +248,7 @@ impl SegCircuit {
         let mut hist: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
         for c in &self.chunks {
             for &t in &c.tags {
-                *hist.entry(t).or_insert(0) += 1;
+                *hist.entry(t.generation()).or_insert(0) += 1;
             }
         }
         let mut acc = 0usize;
@@ -270,7 +271,7 @@ impl SegCircuit {
         for c in &self.chunks {
             if c.min_gen <= g {
                 for (off, &t) in c.tags.iter().enumerate() {
-                    if t == g {
+                    if t.generation() == g {
                         seen += 1;
                         if rng.random_range(0..seen) == 0 {
                             chosen = Some(base + off);
@@ -297,7 +298,7 @@ impl SegCircuit {
     }
 
     /// Read a contiguous range [start, start+len) as flat gate + tag vectors.
-    pub fn read_range(&self, start: usize, len: usize) -> (Vec<[u16; 3]>, Vec<u32>) {
+    pub fn read_range(&self, start: usize, len: usize) -> (Vec<[u16; 3]>, Vec<Tag>) {
         let mut g = Vec::with_capacity(len);
         let mut t = Vec::with_capacity(len);
         if len == 0 {
@@ -323,7 +324,7 @@ impl SegCircuit {
         let mut c = 0;
         for ch in &self.chunks {
             if ch.min_gen < target {
-                c += ch.tags.iter().filter(|&&t| t < target).count();
+                c += ch.tags.iter().filter(|&&t| t.generation() < target).count();
             }
         }
         c
@@ -335,7 +336,7 @@ impl SegCircuit {
             .iter()
             .map(|ch| {
                 if ch.min_gen == 0 {
-                    ch.tags.iter().filter(|&&t| t == 0).count()
+                    ch.tags.iter().filter(|&&t| t.generation() == 0).count()
                 } else {
                     0
                 }
@@ -362,7 +363,7 @@ impl SegCircuit {
             if cend > lo && base < hi && c.min_gen <= generation {
                 for (off, &t) in c.tags.iter().enumerate() {
                     let idx = base + off;
-                    if idx >= lo && idx < hi && t == generation {
+                    if idx >= lo && idx < hi && t.generation() == generation {
                         seen += 1;
                         if rng.random_range(0..seen) == 0 {
                             chosen = Some(idx);
@@ -376,7 +377,7 @@ impl SegCircuit {
     }
 
     /// Read the gate + tag at a global index.
-    pub fn get(&self, index: usize) -> ([u16; 3], u32) {
+    pub fn get(&self, index: usize) -> ([u16; 3], Tag) {
         let (ci, off) = self.locate(index);
         (self.chunks[ci].gates[off], self.chunks[ci].tags[off])
     }
@@ -389,7 +390,7 @@ impl SegCircuit {
         index: usize,
         remove_len: usize,
         new_gates: &[[u16; 3]],
-        new_tags: &[u32],
+        new_tags: &[Tag],
     ) {
         assert_eq!(new_gates.len(), new_tags.len(), "gates/tags length mismatch");
         assert!(index + remove_len <= self.total, "splice out of range");
@@ -421,7 +422,7 @@ impl SegCircuit {
         } else {
             // Merge the touched chunks [start_ci, end_ci] into one, edit, then re-split.
             let mut mg: Vec<[u16; 3]> = Vec::new();
-            let mut mt: Vec<u32> = Vec::new();
+            let mut mt: Vec<Tag> = Vec::new();
             for ci in start_ci..=end_ci {
                 mg.extend_from_slice(&self.chunks[ci].gates);
                 mt.extend_from_slice(&self.chunks[ci].tags);
@@ -591,9 +592,9 @@ mod tests {
     use super::*;
     use rand::{SeedableRng, rngs::StdRng};
 
-    fn flat(n: usize) -> (Vec<[u16; 3]>, Vec<u32>) {
+    fn flat(n: usize) -> (Vec<[u16; 3]>, Vec<Tag>) {
         let gates: Vec<[u16; 3]> = (0..n).map(|i| [i as u16, (i + 1) as u16, (i + 2) as u16]).collect();
-        let tags: Vec<u32> = (0..n as u32).collect();
+        let tags: Vec<Tag> = (0..n).map(Tag::survivor).collect();
         (gates, tags)
     }
 
@@ -616,7 +617,7 @@ mod tests {
         // a local replacement well inside one chunk
         let idx = 1500;
         let new_g = vec![[9, 9, 9], [8, 8, 8], [7, 7, 7]];
-        let new_t = vec![100u32, 101, 102];
+        let new_t = vec![Tag(100), Tag(101), Tag(102)];
         sc.splice(idx, 2, &new_g, &new_t);
         g.splice(idx..idx + 2, new_g.iter().copied());
         t.splice(idx..idx + 2, new_t.iter().copied());
@@ -634,7 +635,7 @@ mod tests {
         let idx = 1000;
         let rem = 100; // crosses into the next chunk
         let new_g = vec![[1, 2, 3]];
-        let new_t = vec![42u32];
+        let new_t = vec![Tag(42)];
         sc.splice(idx, rem, &new_g, &new_t);
         g.splice(idx..idx + rem, new_g.iter().copied());
         t.splice(idx..idx + rem, new_t.iter().copied());
@@ -648,7 +649,7 @@ mod tests {
         let (mut g, mut t) = flat(100);
         let mut sc = SegCircuit::from_flat(&g, &t);
         let new_g: Vec<[u16; 3]> = (0..5000).map(|i| [i as u16, 0, 1]).collect();
-        let new_t: Vec<u32> = vec![7u32; 5000];
+        let new_t: Vec<Tag> = vec![Tag(7); 5000];
         sc.splice(50, 10, &new_g, &new_t);
         g.splice(50..60, new_g.iter().copied());
         t.splice(50..60, new_t.iter().copied());
@@ -661,8 +662,8 @@ mod tests {
     fn min_gen_and_anchor() {
         // tags with a unique minimum
         let g: Vec<[u16; 3]> = (0..3000).map(|i| [i as u16, 0, 1]).collect();
-        let mut t: Vec<u32> = vec![5u32; 3000];
-        t[1234] = 2; // unique min
+        let mut t: Vec<Tag> = vec![Tag(5); 3000];
+        t[1234] = Tag(2); // unique min
         let sc = SegCircuit::from_flat(&g, &t);
         assert_eq!(sc.min_gen(), 2);
         let mut rng = StdRng::seed_from_u64(1);
@@ -861,10 +862,10 @@ mod tests {
     #[test]
     fn anchor_uniform_over_ties() {
         let g: Vec<[u16; 3]> = (0..1000).map(|i| [i as u16, 0, 1]).collect();
-        let mut t: Vec<u32> = vec![9u32; 1000];
-        t[10] = 1;
-        t[500] = 1;
-        t[900] = 1;
+        let mut t: Vec<Tag> = vec![Tag(9); 1000];
+        t[10] = Tag(1);
+        t[500] = Tag(1);
+        t[900] = Tag(1);
         let sc = SegCircuit::from_flat(&g, &t);
         let mut rng = StdRng::seed_from_u64(7);
         let mut counts = std::collections::HashMap::new();

@@ -137,10 +137,45 @@ pub fn record_finish() {
 
 // ---- Survivor tracking (--track-survivors) ----
 // Each gate present right before local mixing starts is tagged with its index (0..N).
-// Gates created during mixing carry the sentinel TAG_NEW. The tag vector is maintained in
+// Gates created during mixing carry the sentinel Tag::NEW. The tag vector is maintained in
 // lockstep with the gate vector through the shuffle + compression. At the end, the original
 // tags still present are the gates that were NEVER part of a replacement (survivors).
-pub const TAG_NEW: u32 = u32::MAX;
+//
+// Packed per-gate tag. Survivor mode stores the raw origin index (Tag::NEW for new gates),
+// so raw equality/comparisons keep working. Gen-mode layout: bits 0..14 = generation
+// (saturating at 16383), bits 14..24 = litter_size (saturating at 1023), bits 24..64 =
+// litter_id — one fresh id per replacement event, shared by every gate the event creates.
+// Gen-mode code must read generations via .generation(), never compare packed values.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
+pub struct Tag(pub u64);
+
+static NEXT_LITTER_ID: AtomicU64 = AtomicU64::new(0);
+
+impl Tag {
+    pub const NEW: Tag = Tag(u64::MAX);
+
+    pub fn new_litter(generation: u32, size: usize) -> Tag {
+        let id = NEXT_LITTER_ID.fetch_add(1, Ordering::Relaxed);
+        Tag((generation as u64).min(16383) | ((size as u64).min(1023) << 14) | (id << 24))
+    }
+
+    pub fn survivor(idx: usize) -> Tag {
+        Tag(idx as u64)
+    }
+
+    pub fn generation(self) -> u32 {
+        (self.0 & 0x3FFF) as u32
+    }
+
+    pub fn litter_size(self) -> usize {
+        ((self.0 >> 14) & 0x3FF) as usize
+    }
+
+    pub fn litter_id(self) -> u64 {
+        self.0 >> 24
+    }
+}
+
 pub static TRACK_SURVIVORS: AtomicBool = AtomicBool::new(false);
 
 #[inline]
@@ -265,12 +300,140 @@ pub fn compress_chunk_budget_ms() -> Option<u64> {
     })
 }
 
-// Floor of the median of a list of generations (round the even-length midpoint down).
-pub fn median_floor(v: &[u32]) -> u32 {
+// LITTER_RULES (env): litter-aware outgoing-window selection. A "litter" is the set of gates
+// one replacement event created (they share a Tag litter_id/litter_size). When set, windows
+// that consist of exactly one entire litter are banned — removing a full litter is the undo
+// of its insertion — and among sampled windows the one spanning the most distinct litters is
+// preferred. Shooting-game exception: a full-litter window is allowed if the step lands a
+// hidden SAMF (the SAMF is new entropy, so the move still advances the mixing).
+// Final compression (COMPRESS_FINAL_PHASE) is exempt. Gen mode only. Unset = legacy.
+pub fn litter_rules() -> bool {
+    static V: AtomicUsize = AtomicUsize::new(0);
+    match V.load(Ordering::Relaxed) {
+        2 => true,
+        1 => false,
+        _ => {
+            let on = std::env::var("LITTER_RULES")
+                .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            V.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+    }
+}
+
+// SLOW_COMPRESS (env): compress as slowly as possible while never expanding. Equal-size
+// ("lateral") DB replacements are accepted, and among the allowed candidates the LARGEST is
+// spliced instead of the smallest — the circuit only shrinks when a window's sole equivalents
+// are shorter. The compression phase then doubles as a mixing phase; its stop rules become:
+// the explicit size target, the min-gen condition (checked every sweep), or a collapse of the
+// successful-move rate (SLOW_COMPRESS_MOVE_STALL, default 8 moves over the last 2 sweeps).
+// Gen mode only; final compression is exempt. Unset = legacy.
+pub fn slow_compress() -> bool {
+    static V: AtomicUsize = AtomicUsize::new(0);
+    match V.load(Ordering::Relaxed) {
+        2 => true,
+        1 => false,
+        _ => {
+            let on = std::env::var("SLOW_COMPRESS")
+                .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            V.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+    }
+}
+
+pub fn slow_compress_move_stall() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("SLOW_COMPRESS_MOVE_STALL")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(8)
+    })
+}
+
+// LITTER_WINDOW_SAMPLES (env): windows sampled per compression trial under LITTER_RULES; the
+// non-banned window spanning the most distinct litters is the one attempted. Default 4.
+pub fn litter_window_samples() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("LITTER_WINDOW_SAMPLES")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .filter(|k| *k >= 1)
+            .unwrap_or(4)
+    })
+}
+
+// Set by compress_loop for the duration of a call: the delivery ("final") compression, where
+// full-litter removal is allowed and SLOW_COMPRESS does not apply.
+pub static COMPRESS_FINAL_PHASE: AtomicBool = AtomicBool::new(false);
+#[inline]
+pub fn compress_final_phase() -> bool {
+    COMPRESS_FINAL_PHASE.load(Ordering::Relaxed)
+}
+
+// ---- Litter instrumentation (cumulative; reported per sweep as deltas and per phase) ----
+pub static LITTER_WIN_CONSIDERED: AtomicUsize = AtomicUsize::new(0); // compression windows sampled
+pub static LITTER_BAN_FULL: AtomicUsize = AtomicUsize::new(0); // full-litter windows rejected (compression)
+pub static LITTER_TIER1: AtomicUsize = AtomicUsize::new(0); // chosen windows spanning >= 2 litters
+pub static LITTER_TIER2: AtomicUsize = AtomicUsize::new(0); // chosen windows: single litter, partial
+pub static LITTER_DISTINCT_SUM: AtomicUsize = AtomicUsize::new(0); // sum of distinct litters over tier-1 picks
+pub static LITTER_SAMF_LICENSED: AtomicUsize = AtomicUsize::new(0); // shooting: full litter allowed via hidden SAMF
+pub static LITTER_ABORT_NO_SAMF: AtomicUsize = AtomicUsize::new(0); // shooting: full litter aborted (no SAMF landed)
+pub static LITTER_LATERAL: AtomicUsize = AtomicUsize::new(0); // equal-size compression moves committed
+pub static LITTER_SHRINK: AtomicUsize = AtomicUsize::new(0); // strictly-smaller compression moves committed
+pub static LITTER_IDENTITY_SKIP: AtomicUsize = AtomicUsize::new(0); // equal-size candidate identical to window
+pub static SWEEP_MOVES: AtomicUsize = AtomicUsize::new(0); // successful replacements in the current sweep
+
+pub fn litter_counters() -> [usize; 10] {
+    [
+        LITTER_WIN_CONSIDERED.load(Ordering::Relaxed),
+        LITTER_BAN_FULL.load(Ordering::Relaxed),
+        LITTER_TIER1.load(Ordering::Relaxed),
+        LITTER_TIER2.load(Ordering::Relaxed),
+        LITTER_DISTINCT_SUM.load(Ordering::Relaxed),
+        LITTER_SAMF_LICENSED.load(Ordering::Relaxed),
+        LITTER_ABORT_NO_SAMF.load(Ordering::Relaxed),
+        LITTER_LATERAL.load(Ordering::Relaxed),
+        LITTER_SHRINK.load(Ordering::Relaxed),
+        LITTER_IDENTITY_SKIP.load(Ordering::Relaxed),
+    ]
+}
+
+pub fn litter_report(prefix: &str) {
+    let c = litter_counters();
+    let avg_distinct = if c[2] > 0 { c[4] as f64 / c[2] as f64 } else { 0.0 };
+    println!(
+        "{} windows={} banned_full={} tier1={} (avg distinct {:.2}) tier2={} samf_licensed={} aborts={} lateral={} shrink={} identity_skips={}",
+        prefix, c[0], c[1], c[2], avg_distinct, c[3], c[5], c[6], c[7], c[8], c[9]
+    );
+}
+
+// Litter profile of a candidate outgoing window: (#distinct litters, is-exactly-one-full-litter).
+// Only meaningful in gen mode with tag tracking on.
+pub fn window_litter_stats(tags: &[Tag]) -> (usize, bool) {
+    if tags.is_empty() {
+        return (0, false);
+    }
+    let first = tags[0];
+    if tags.iter().all(|t| *t == first) {
+        return (1, tags.len() == first.litter_size());
+    }
+    let mut ids: Vec<u64> = tags.iter().map(|t| t.litter_id()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    (ids.len(), false)
+}
+
+// Floor of the median of the window's generations (round the even-length midpoint down).
+pub fn median_floor_gen(v: &[Tag]) -> u32 {
     if v.is_empty() {
         return 0;
     }
-    let mut s = v.to_vec();
+    let mut s: Vec<u32> = v.iter().map(|t| t.generation()).collect();
     s.sort_unstable();
     let n = s.len();
     if n % 2 == 1 {
@@ -280,14 +443,14 @@ pub fn median_floor(v: &[u32]) -> u32 {
     }
 }
 
-// Tag assigned to the gates a replacement ADDS, given the removed window's tags.
-// gen mode -> floor(median(window)) + 1 ; survivor mode -> TAG_NEW.
+// Tag assigned to the `new_count` gates a replacement ADDS, given the removed window's tags.
+// gen mode -> a fresh litter at floor(median(window)) + 1 ; survivor mode -> Tag::NEW.
 #[inline]
-pub fn new_gate_tag(window_tags: &[u32]) -> u32 {
+pub fn new_gate_tag(window_tags: &[Tag], new_count: usize) -> Tag {
     if gen_mode() {
-        median_floor(window_tags).saturating_add(1)
+        Tag::new_litter(median_floor_gen(window_tags).saturating_add(1), new_count)
     } else {
-        TAG_NEW
+        Tag::NEW
     }
 }
 
@@ -691,12 +854,15 @@ pub fn compress_loop(
     // standalone `compress` command to stop at a fraction of the initial size). Independent of the
     // no-progress (`stable_max`) and `light_compression` stops; whichever triggers first wins.
     early_stop_target: Option<usize>,
-    tags: &mut Vec<u32>,
+    // Delivery compression: full-litter removal allowed, SLOW_COMPRESS off, legacy stop rules.
+    final_phase: bool,
+    tags: &mut Vec<Tag>,
 ) -> CircuitSeq {
+    COMPRESS_FINAL_PHASE.store(final_phase, Ordering::Relaxed);
     let track = !tags.is_empty();
     let mut acc = circuit.clone();
     // Origin tags maintained in lockstep with `acc.gates` (for --track-survivors).
-    let mut acc_tags: Vec<u32> = tags.clone();
+    let mut acc_tags: Vec<Tag> = tags.clone();
     // --light-compression: stop once the circuit is reduced to at most half the
     // max (post-shooting) size, i.e. the size on entry to this compress_loop call.
     let max_size = circuit.gates.len();
@@ -708,12 +874,32 @@ pub fn compress_loop(
     let mut recent: std::collections::VecDeque<usize> =
         std::collections::VecDeque::with_capacity(stable_max + 1);
     recent.push_back(acc.gates.len());
-    if let Some(f) = compress_stall_frac() {
+    let slow_active = gen_mode() && slow_compress() && !final_phase && track;
+    let litter_active = gen_mode() && litter_rules() && !final_phase && track;
+    // Successful-move counts of recent sweeps (slow-mode stall is on moves, not gates shaved).
+    let mut recent_moves: std::collections::VecDeque<usize> =
+        std::collections::VecDeque::with_capacity(3);
+    let mut prev_litter = litter_counters();
+    if slow_active {
         println!(
-            "  [compress] stall rule: stop when < {:.1}% of current size reduced over last {} sweeps",
-            f * 100.0,
-            compress_stall_window().min(stable_max)
+            "  [compress] slow mode: lateral moves on, largest-allowed pick, move-stall < {} over 2 sweeps",
+            slow_compress_move_stall()
         );
+    }
+    if litter_active {
+        println!(
+            "  [litter] rules active: full-litter windows banned, {} samples per trial",
+            litter_window_samples()
+        );
+    }
+    if !slow_active {
+        if let Some(f) = compress_stall_frac() {
+            println!(
+                "  [compress] stall rule: stop when < {:.1}% of current size reduced over last {} sweeps",
+                f * 100.0,
+                compress_stall_window().min(stable_max)
+            );
+        }
     }
     if let Some(ms) = compress_chunk_budget_ms() {
         println!("  [compress] chunk budget: {} ms per chunk per sweep", ms);
@@ -724,6 +910,7 @@ pub fn compress_loop(
         let before = acc.gates.len();
         rec_iter += 1;
         REC_ITER.store(rec_iter, Ordering::Relaxed);
+        SWEEP_MOVES.store(0, Ordering::Relaxed);
 
         let max_chunks = 4 * rayon::current_num_threads().max(1);
         let k = if before <= 1500 {
@@ -739,7 +926,7 @@ pub fn compress_loop(
         let trace_threshold_ms = compression_trace_threshold_ms();
         let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
         let acc_tags_ref = &acc_tags;
-        let compressed_chunks: Vec<(usize, usize, usize, Vec<[u16; 3]>, Vec<u32>, u128)> = ranges
+        let compressed_chunks: Vec<(usize, usize, usize, Vec<[u16; 3]>, Vec<Tag>, u128)> = ranges
             .into_iter()
             .enumerate()
             .collect::<Vec<_>>()
@@ -749,7 +936,7 @@ pub fn compress_loop(
                     gates: acc.gates[start..end].to_vec(),
                 };
                 // Per-chunk tags; base_offset=start makes recorded positions circuit-relative.
-                let mut chunk_tags: Vec<u32> = if track {
+                let mut chunk_tags: Vec<Tag> = if track {
                     acc_tags_ref[start..end].to_vec()
                 } else {
                     Vec::new()
@@ -802,7 +989,7 @@ pub fn compress_loop(
             .map(|(_, _, out_len, _, _, _)| *out_len)
             .sum();
         let mut new_gates = Vec::with_capacity(total_len);
-        let mut new_tags: Vec<u32> = if track {
+        let mut new_tags: Vec<Tag> = if track {
             Vec::with_capacity(total_len)
         } else {
             Vec::new()
@@ -824,26 +1011,75 @@ pub fn compress_loop(
         if recent.len() > stable_max + 1 {
             recent.pop_front();
         }
+        let sweep_moves = SWEEP_MOVES.load(Ordering::Relaxed);
 
-        // Stall stop. Legacy: < 50 gates reduced over the last stable_max sweeps.
-        // COMPRESS_STALL_FRAC set: < frac * current_size reduced over the last
-        // COMPRESS_STALL_WINDOW sweeps (see compress_stall_frac) — fires much earlier.
-        let (stall_window, stall_threshold) = match compress_stall_frac() {
-            Some(f) => (
-                compress_stall_window().min(stable_max),
-                ((after as f64 * f) as usize).max(50),
-            ),
-            None => (stable_max, 50),
-        };
-        if recent.len() > stall_window {
-            let base = recent[recent.len() - 1 - stall_window];
-            let window_reduction = base.saturating_sub(after);
-            if window_reduction < stall_threshold {
+        if litter_active || slow_active {
+            let cur = litter_counters();
+            let d: Vec<usize> = cur.iter().zip(prev_litter.iter()).map(|(a, b)| a - b).collect();
+            println!(
+                "  [litter] sweep {}: moves={} (lateral {} / shrink {}) banned_full={} tier1={} tier2={} identity_skips={}",
+                rec_iter, sweep_moves, d[7], d[8], d[1], d[2], d[3], d[9]
+            );
+            prev_litter = cur;
+        }
+
+        if slow_active {
+            // Slow-mode stops, in priority order: (1) min-gen condition met — the phase mixed
+            // the circuit to completion, exit straight toward delivery; (2) the explicit size
+            // target (below, shared with legacy); (3) move-rate collapse — nothing left to do.
+            // The legacy gates-shaved stall is meaningless here (lateral moves shave nothing).
+            let mg = MIN_GEN.load(Ordering::Relaxed);
+            let need_permille = MIN_GEN_PERMILLE.load(Ordering::Relaxed);
+            let total = acc_tags.len().max(1);
+            let met = acc_tags
+                .iter()
+                .filter(|t| (t.generation() as usize) >= mg)
+                .count();
+            if met * 1000 >= need_permille * total {
                 println!(
-                    "  {}/{}: Early stop — only {} gates reduced over last {} iterations, threshold {} ({} gates)",
-                    curr_round, last_round, window_reduction, stall_window, stall_threshold, after
+                    "  {}/{}: [compress] slow-mode stop: min-gen met ({}/{} gates at gen >= {}), {} gates",
+                    curr_round, last_round, met, total, mg, after
                 );
                 break;
+            }
+            recent_moves.push_back(sweep_moves);
+            if recent_moves.len() > 2 {
+                recent_moves.pop_front();
+            }
+            if recent_moves.len() == 2
+                && recent_moves.iter().sum::<usize>() < slow_compress_move_stall()
+            {
+                println!(
+                    "  {}/{}: [compress] slow-mode stop: move-stall ({} moves over last 2 sweeps, threshold {}), {} gates",
+                    curr_round,
+                    last_round,
+                    recent_moves.iter().sum::<usize>(),
+                    slow_compress_move_stall(),
+                    after
+                );
+                break;
+            }
+        } else {
+            // Stall stop. Legacy: < 50 gates reduced over the last stable_max sweeps.
+            // COMPRESS_STALL_FRAC set: < frac * current_size reduced over the last
+            // COMPRESS_STALL_WINDOW sweeps (see compress_stall_frac) — fires much earlier.
+            let (stall_window, stall_threshold) = match compress_stall_frac() {
+                Some(f) => (
+                    compress_stall_window().min(stable_max),
+                    ((after as f64 * f) as usize).max(50),
+                ),
+                None => (stable_max, 50),
+            };
+            if recent.len() > stall_window {
+                let base = recent[recent.len() - 1 - stall_window];
+                let window_reduction = base.saturating_sub(after);
+                if window_reduction < stall_threshold {
+                    println!(
+                        "  {}/{}: Early stop — only {} gates reduced over last {} iterations, threshold {} ({} gates)",
+                        curr_round, last_round, window_reduction, stall_window, stall_threshold, after
+                    );
+                    break;
+                }
             }
         }
 
@@ -880,6 +1116,9 @@ pub fn compress_loop(
             writeln!(f, "{}", acc.repr()).expect("write");
             eprintln!("Wrote {}", output_path);
         }
+    }
+    if litter_active || slow_active {
+        litter_report("  [litter] phase totals:");
     }
     if track {
         *tags = acc_tags;
@@ -1199,7 +1438,7 @@ pub fn compress_lmdb(
     shard_dbs: &[lmdb::Database],
     mode: usize,
     base_offset: usize,
-    tags: &mut Vec<u32>,
+    tags: &mut Vec<Tag>,
 ) -> CircuitSeq {
     use crate::circuit::circuit::polys_repr_blob;
     use xxhash_rust::xxh3::xxh3_128;
@@ -1228,10 +1467,49 @@ pub fn compress_lmdb(
 
     let mut rng = rand::rng();
 
+    // Litter rules (gen mode, non-final): sample several windows per trial, ban any that is
+    // exactly one whole litter (its removal would be the undo of its insertion), and attempt
+    // the window spanning the most distinct litters.
+    let litter_active = track && gen_mode() && litter_rules() && !compress_final_phase();
+    // Slow compression (gen mode, non-final): accept equal-size candidates and splice the
+    // largest allowed one, so the circuit shrinks only when a window has no same-size peer.
+    let slow_active = gen_mode() && slow_compress() && !compress_final_phase();
+
     for _ in 0..trials {
         let t_trial = Instant::now();
 
-        let (sub, start, end) = random_subcircuit(&compressed);
+        let (sub, start, end) = if litter_active {
+            let mut best: Option<(usize, (CircuitSeq, usize, usize))> = None;
+            for _ in 0..litter_window_samples() {
+                let (s, st, en) = random_subcircuit(&compressed);
+                if s.gates.is_empty() {
+                    continue;
+                }
+                LITTER_WIN_CONSIDERED.fetch_add(1, Ordering::Relaxed);
+                let (distinct, full) = window_litter_stats(&tags[st..en]);
+                if full {
+                    LITTER_BAN_FULL.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                if best.as_ref().map_or(true, |(d, _)| distinct > *d) {
+                    best = Some((distinct, (s, st, en)));
+                }
+            }
+            match best {
+                Some((distinct, w)) => {
+                    if distinct >= 2 {
+                        LITTER_TIER1.fetch_add(1, Ordering::Relaxed);
+                        LITTER_DISTINCT_SUM.fetch_add(distinct, Ordering::Relaxed);
+                    } else {
+                        LITTER_TIER2.fetch_add(1, Ordering::Relaxed);
+                    }
+                    w
+                }
+                None => continue, // every sampled window was banned or empty
+            }
+        } else {
+            random_subcircuit(&compressed)
+        };
 
         if sub.gates.is_empty() {
             continue;
@@ -1345,7 +1623,10 @@ pub fn compress_lmdb(
             }
             let candidate = CircuitSeq::from_blob(&value[pos..pos + len]);
             pos += len;
-            if candidate.gates.len() < sub.gates.len() {
+            // Slow mode also admits equal-size ("lateral") candidates; never larger.
+            if candidate.gates.len() < sub.gates.len()
+                || (slow_active && candidate.gates.len() == sub.gates.len())
+            {
                 candidates.push(candidate);
             }
         }
@@ -1357,14 +1638,22 @@ pub fn compress_lmdb(
 
         let min_gates = candidates.iter().map(|c| c.gates.len()).min().unwrap();
         let sub_len = sub.gates.len();
+        // Slow mode inverts the size preference: splice the LARGEST allowed candidate (lateral
+        // when one exists), so compression proceeds only where the DB forces it.
+        let pick_gates = if slow_active {
+            candidates.iter().map(|c| c.gates.len()).max().unwrap()
+        } else {
+            min_gates
+        };
         let t_rewire = Instant::now();
         let repl: CircuitSeq = if gen_mode() {
-            // gen mode (#9): among the smallest (most-compressing) equivalents, rewire each into
-            // circuit-space, then let the incoming ranker pick by GLOBAL fanout/leeway features
-            // (fanout-histogram-to-target, low-leeway reduction, MAX_FANOUT cap).
+            // gen mode (#9): among the smallest (most-compressing) equivalents — or the largest
+            // allowed under SLOW_COMPRESS — rewire each into circuit-space, then let the incoming
+            // ranker pick by GLOBAL fanout/leeway features (fanout-histogram-to-target,
+            // low-leeway reduction, MAX_FANOUT cap).
             let min_set: Vec<CircuitSeq> = candidates
                 .into_iter()
-                .filter(|c| c.gates.len() == min_gates)
+                .filter(|c| c.gates.len() == pick_gates)
                 .map(|cand| rewire_candidate(cand, is_reversed, &final_order, &used, n, &mut rng))
                 .collect();
             let left = &compressed.gates[..start];
@@ -1452,15 +1741,24 @@ pub fn compress_lmdb(
 
         let t_splice = Instant::now();
         let repl_len = repl.gates.len();
+        // An equal-size candidate (slow mode) can rewire to the very window it came from —
+        // splicing it back would be a no-op that still re-stamps litters. Skip those.
+        if repl_len == end - start && repl.gates[..] == compressed.gates[start..end] {
+            LITTER_IDENTITY_SKIP.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+        SWEEP_MOVES.fetch_add(1, Ordering::Relaxed);
         if repl_len == end - start {
+            LITTER_LATERAL.fetch_add(1, Ordering::Relaxed);
             compressed.gates[start..end].copy_from_slice(&repl.gates);
         } else {
+            LITTER_SHRINK.fetch_add(1, Ordering::Relaxed);
             compressed.gates.splice(start..end, repl.gates);
         }
         if track {
             // The replaced window [start, end) becomes `repl_len` freshly-created gates,
-            // tagged TAG_NEW (survivor mode) or floor(median(window))+1 (gen mode).
-            let nt = new_gate_tag(&tags[start..end]);
+            // tagged Tag::NEW (survivor mode) or floor(median(window))+1 (gen mode).
+            let nt = new_gate_tag(&tags[start..end], repl_len);
             tags.splice(start..end, std::iter::repeat(nt).take(repl_len));
         }
         SPLICE_TIME.fetch_add(t_splice.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1492,7 +1790,7 @@ pub fn compress_big_ancillas(
     shard_dbs: &[lmdb::Database],
     mode: usize,
     base_offset: usize,
-    tags: &mut Vec<u32>,
+    tags: &mut Vec<Tag>,
 ) -> CircuitSeq {
     // `tags` (non-empty when --track-survivors): per-gate origin id, kept in lockstep with
     // `circuit.gates`. `base_offset` is this chunk's offset in the full circuit.
@@ -1575,7 +1873,7 @@ pub fn compress_big_ancillas(
         let t4 = Instant::now();
         let sub_gates = subcircuit.gates.len();
         // Tags of the contiguous block [start, end]; compress_lmdb mutates them in lockstep.
-        let mut block_tags: Vec<u32> = if track {
+        let mut block_tags: Vec<Tag> = if track {
             tags[start..=end].to_vec()
         } else {
             Vec::new()

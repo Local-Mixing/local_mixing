@@ -1,5 +1,6 @@
 // For adding wire shuffles and bit flips
 use crate::circuit::{Permutation, circuit::CircuitSeq};
+use crate::replace::replace::Tag;
 use lmdb::{Database, Environment};
 use rand::Rng;
 use rand::seq::IndexedRandom;
@@ -1391,7 +1392,7 @@ fn integrate_samf_compressed(
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
-    tags: &mut Vec<u32>,
+    tags: &mut Vec<crate::replace::replace::Tag>,
 ) {
     use crate::replace::pairs::{compress_curated_lmdb, find_any_replacement_lmdb};
     let track = !tags.is_empty();
@@ -1402,7 +1403,10 @@ fn integrate_samf_compressed(
         if track {
             // appended unsamf gates are new: generation = local-context median + 1 (never gen 0)
             let k = tags.len().min(3);
-            let nt = crate::replace::replace::new_gate_tag(&tags[tags.len() - k..]);
+            let nt = crate::replace::replace::new_gate_tag(
+                &tags[tags.len() - k..],
+                gates.len() - tags.len(),
+            );
             tags.resize(gates.len(), nt);
         }
         return;
@@ -1429,7 +1433,7 @@ fn integrate_samf_compressed(
     if track {
         // the window [ctx_start..] is replaced (curated) or has the unsamf appended after it;
         // new gates get generation = floor(median(replaced window)) + 1.
-        let nt = crate::replace::replace::new_gate_tag(&tags[ctx_start..]);
+        let nt = crate::replace::replace::new_gate_tag(&tags[ctx_start..], gates.len() - ctx_start);
         tags.truncate(ctx_start);
         tags.resize(gates.len(), nt);
     }
@@ -1508,7 +1512,7 @@ pub fn apply_unsamf(
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
-    tags: &mut Vec<u32>,
+    tags: &mut Vec<crate::replace::replace::Tag>,
 ) {
     let p = t_list.to_perm(n);
     let mut t = Transpositions::from_perm(&p);
@@ -1739,14 +1743,19 @@ fn insert_m_samfs_core(
     n: usize,
     m: usize,
     x: usize,
-    input_tags: &[u32],
-) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, Vec<u32>) {
+    input_tags: &[crate::replace::replace::Tag],
+) -> (
+    Vec<[u16; 3]>,
+    Transpositions,
+    Vec<u8>,
+    Vec<crate::replace::replace::Tag>,
+) {
     let track = !input_tags.is_empty();
     let mut t_list = Transpositions {
         transpositions: Vec::new(),
     };
     let mut gates: Vec<[u16; 3]> = Vec::new();
-    let mut out_tags: Vec<u32> = Vec::new();
+    let mut out_tags: Vec<crate::replace::replace::Tag> = Vec::new();
     let mut negation_mask = vec![0u8; n];
     for (i, gate) in input.iter().enumerate() {
         if i % x == 0 {
@@ -1772,9 +1781,13 @@ fn insert_m_samfs_core(
             // Everything added this iteration before `g` (SAMF gadget + NOT corrections) is new:
             // generation = gate i's generation + 1 (one mixing layer deeper, never gen 0).
             // `g` is the relabeled original input gate i (keeps its tag/generation).
+            let new_count = gates.len() - 1 - out_tags.len();
             out_tags.resize(
                 gates.len() - 1,
-                crate::replace::replace::new_gate_tag(std::slice::from_ref(&input_tags[i])),
+                crate::replace::replace::new_gate_tag(
+                    std::slice::from_ref(&input_tags[i]),
+                    new_count,
+                ),
             );
             out_tags.push(input_tags[i]);
         }
@@ -1928,7 +1941,7 @@ fn shuffled_shooting_game_core(
     gates_ahead_expand: usize,
     gates_ahead_samf: usize,
     type_attempts: usize,
-    input_tags: &[u32],
+    input_tags: &[Tag],
     // Stage B bounded-pass controls (defaults preserve the full-sweep behavior):
     //   start_at: where to begin (None = random index, as before);
     //   max_replacements: stop after this many successful replacements (0 = unlimited);
@@ -1936,9 +1949,8 @@ fn shuffled_shooting_game_core(
     start_at: Option<usize>,
     max_replacements: usize,
     stop_on_unreplaceable: bool,
-) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize, Vec<u32>) {
+) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize, Vec<Tag>) {
     use crate::replace::pairs::{compress_curated_lmdb, expand_curated_lmdb_neg};
-    use crate::replace::replace::TAG_NEW;
 
     // Survivor tracking: `input_tags` (non-empty when enabled) carries one origin id per input
     // gate. We mirror every push/pop of `output`/`remaining` on `output_tags`/`remaining_tags`.
@@ -1946,7 +1958,7 @@ fn shuffled_shooting_game_core(
 
     let mut rng = rand::rng();
     let mut output: Vec<[u16; 3]> = Vec::new();
-    let mut output_tags: Vec<u32> = Vec::new();
+    let mut output_tags: Vec<Tag> = Vec::new();
     let mut t_list = Transpositions {
         transpositions: Vec::new(),
     };
@@ -1961,7 +1973,7 @@ fn shuffled_shooting_game_core(
     let mut rep_count = 0usize;
     output.extend_from_slice(&input[..start]);
     let mut remaining: VecDeque<[u16; 3]> = input[start..].iter().copied().collect();
-    let mut remaining_tags: VecDeque<u32> = if track {
+    let mut remaining_tags: VecDeque<Tag> = if track {
         output_tags.extend_from_slice(&input_tags[..start]);
         input_tags[start..].iter().copied().collect()
     } else {
@@ -1971,7 +1983,7 @@ fn shuffled_shooting_game_core(
     // replacement tail separate from `remaining`, whose gates still require SAMF relabeling.
     let mut materialized_shot: Option<[u16; 3]> = None;
     // Generation/tag of the carried materialized shot (gen mode); irrelevant in survivor mode.
-    let mut materialized_shot_tag: u32 = TAG_NEW;
+    let mut materialized_shot_tag: Tag = Tag::NEW;
 
     while materialized_shot.is_some() || !remaining.is_empty() {
         let (shot, shot_is_materialized, mut passed, mut has_collision, shot_tag, mut passed_tags) =
@@ -1982,9 +1994,9 @@ fn shuffled_shooting_game_core(
                     &t_list,
                     &negation_mask,
                 );
-                // Materialized shot is a gate born during mixing (TAG_NEW). `passed` came off
+                // Materialized shot is a gate born during mixing (Tag::NEW). `passed` came off
                 // the front of `remaining`, so pop their tags in order.
-                let passed_tags: Vec<u32> = if track {
+                let passed_tags: Vec<Tag> = if track {
                     (0..passed.len())
                         .map(|_| remaining_tags.pop_front().unwrap())
                         .collect()
@@ -1998,12 +2010,12 @@ fn shuffled_shooting_game_core(
                 // The shot was popped first, then the `passed` gates.
                 let (shot_tag, passed_tags) = if track {
                     let st = remaining_tags.pop_front().unwrap();
-                    let pt: Vec<u32> = (0..passed.len())
+                    let pt: Vec<Tag> = (0..passed.len())
                         .map(|_| remaining_tags.pop_front().unwrap())
                         .collect();
                     (st, pt)
                 } else {
-                    (TAG_NEW, Vec::new())
+                    (Tag::NEW, Vec::new())
                 };
                 (shot, false, passed, collided, shot_tag, passed_tags)
             };
@@ -2016,9 +2028,13 @@ fn shuffled_shooting_game_core(
             flush_relabelled_gate_controls(shot, &mut output, &t_list, &mut negation_mask, n);
             if track {
                 // emitted NOT-corrections are new gates: generation = shot's generation + 1
+                let new_count = output.len() - output_tags.len();
                 output_tags.resize(
                     output.len(),
-                    crate::replace::replace::new_gate_tag(std::slice::from_ref(&shot_tag)),
+                    crate::replace::replace::new_gate_tag(
+                        std::slice::from_ref(&shot_tag),
+                        new_count,
+                    ),
                 );
             }
         }
@@ -2049,9 +2065,13 @@ fn shuffled_shooting_game_core(
             if track {
                 // emit_relabelled_gate appends [NOT-corrections..., the gate]; the gate is last.
                 // The NOT-corrections are new gates: generation = this gate's generation + 1.
+                let new_count = output.len() - 1 - output_tags.len();
                 output_tags.resize(
                     output.len() - 1,
-                    crate::replace::replace::new_gate_tag(std::slice::from_ref(&passed_tags[i])),
+                    crate::replace::replace::new_gate_tag(
+                        std::slice::from_ref(&passed_tags[i]),
+                        new_count,
+                    ),
                 );
                 output_tags.push(passed_tags[i]);
             }
@@ -2077,11 +2097,12 @@ fn shuffled_shooting_game_core(
             const OUTGOING_LOOKAHEAD: usize = 8; // how far past the collider to look for #11 extras
             const MAX_EXPAND_ATTEMPTS: usize = 16; // cap curated lookups per collision (#11)
             const FEATURE_CTX: usize = 64; // bounded context for global fanout/leeway features
-            let (consumed_indices, window, expansion, picked_negated): (
+            let (consumed_indices, window, expansion, picked_negated, picked_full_litter): (
                 Vec<usize>,
                 Vec<[u16; 3]>,
                 Vec<[u16; 3]>,
                 Vec<u16>,
+                bool,
             ) = {
                 use crate::circuit::circuit::Gate;
                 let shot_rg = if shot_is_materialized {
@@ -2191,6 +2212,32 @@ fn shuffled_shooting_game_core(
                     (0..candidates.len()).rev().collect()
                 };
 
+                // Litter rules: prefer windows spanning more litters (stable, so size/ranker
+                // order is kept within equal diversity); full-litter windows go last — they are
+                // only accepted if the step lands a hidden SAMF (checked at the tuck below).
+                let litter_active = track
+                    && crate::replace::replace::gen_mode()
+                    && crate::replace::replace::litter_rules();
+                let mut litter_stats: Vec<(usize, bool)> = Vec::new();
+                let order: Vec<usize> = if litter_active {
+                    litter_stats = candidates
+                        .iter()
+                        .map(|(idxs, _)| {
+                            let mut wt: Vec<Tag> = Vec::with_capacity(idxs.len() + 1);
+                            wt.push(shot_tag);
+                            wt.extend(idxs.iter().map(|&m| remaining_tags[m]));
+                            crate::replace::replace::window_litter_stats(&wt)
+                        })
+                        .collect();
+                    let mut ord = order;
+                    ord.sort_by_key(|&i| {
+                        std::cmp::Reverse(if litter_stats[i].1 { 0 } else { litter_stats[i].0 })
+                    });
+                    ord
+                } else {
+                    order
+                };
+
                 // #10/Stage F: dedup ALL wires of a window that carry a pending NOT — targets as
                 // well as controls. The flush mechanism only NOTs controls (a target's negation
                 // commutes through its own XOR write), but the curated EXPANSION is a different
@@ -2234,7 +2281,8 @@ fn shuffled_shooting_game_core(
                 // preserves a deferred TARGET negation, which commutes through the window's XOR).
                 // Set env ABSORB_NOTS=1 to re-enable #10 (for debugging only).
                 let absorb_nots = gen_m && std::env::var("ABSORB_NOTS").is_ok();
-                let mut picked: Option<(Vec<usize>, Vec<[u16; 3]>, Vec<[u16; 3]>, Vec<u16>)> = None;
+                let mut picked: Option<(Vec<usize>, Vec<[u16; 3]>, Vec<[u16; 3]>, Vec<u16>, bool)> =
+                    None;
                 for &ci in order.iter().take(MAX_EXPAND_ATTEMPTS) {
                     let (idxs, win) = &candidates[ci];
                     if !absorb_nots {
@@ -2256,7 +2304,20 @@ fn shuffled_shooting_game_core(
                         expand_curated_lmdb_neg(win, n, env, curated_shard_dbs, shard_dbs, &neg)
                     {
                         if e.len() >= 3 {
-                            picked = Some((idxs.clone(), win.clone(), e, neg));
+                            let full = litter_active && litter_stats[ci].1;
+                            if litter_active && !full {
+                                let distinct = litter_stats[ci].0;
+                                if distinct >= 2 {
+                                    crate::replace::replace::LITTER_TIER1
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    crate::replace::replace::LITTER_DISTINCT_SUM
+                                        .fetch_add(distinct, Ordering::Relaxed);
+                                } else {
+                                    crate::replace::replace::LITTER_TIER2
+                                        .fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                            picked = Some((idxs.clone(), win.clone(), e, neg, full));
                             break;
                         }
                     }
@@ -2308,37 +2369,17 @@ fn shuffled_shooting_game_core(
             for &w in &picked_negated {
                 negation_mask[w as usize] = 0;
             }
-            // Generation/tag for the gates this collision adds: median of the consumed window
-            // (shot gate + the consumed remaining gates by index) + 1.
-            let event_tag = if track {
-                let mut win: Vec<u32> = Vec::with_capacity(consumed);
+            // Generation for the gates this collision adds: median of the consumed window
+            // (shot gate + the consumed remaining gates by index) + 1. The event tag itself is
+            // minted after the emit below, once the litter size is known.
+            let event_gen: u32 = if track && crate::replace::replace::gen_mode() {
+                let mut win: Vec<Tag> = Vec::with_capacity(consumed);
                 win.push(shot_tag);
                 win.extend(consumed_indices.iter().map(|&idx| remaining_tags[idx]));
-                crate::replace::replace::new_gate_tag(&win)
+                crate::replace::replace::median_floor_gen(&win).saturating_add(1)
             } else {
-                TAG_NEW
+                0
             };
-            CURATED_REPLACEMENTS_MADE.fetch_add(1, Ordering::Relaxed);
-            SAMF_HIDE_ELIGIBLE_EXPANSIONS.fetch_add(1, Ordering::Relaxed);
-            // Distinct-wire counts of the consumed input window vs the expansion. `window` is the
-            // chosen outgoing subcircuit, already relabeled into the current wire space.
-            let distinct_wires = |gates: &[[u16; 3]]| {
-                let mut seen = std::collections::HashSet::new();
-                for g in gates {
-                    seen.insert(g[0]);
-                    seen.insert(g[1]);
-                    seen.insert(g[2]);
-                }
-                seen.len()
-            };
-            let before_wires = distinct_wires(&window);
-            crate::replace::replace::record_expansion(
-                consumed,
-                expansion.len(),
-                before_wires,
-                distinct_wires(&expansion),
-            );
-
             // 2) Try to hide ONE SAMF ending at the expansion's tail. The context for the hide is
             //    the last `gates_ahead_samf` gates of (output ++ expansion) — reaching back into
             //    the already-emitted output when the expansion is shorter — followed by samf[0..3].
@@ -2430,6 +2471,39 @@ fn shuffled_shooting_game_core(
                 }
             }
 
+            // Litter license: a full-litter window is only allowed when the step lands a hidden
+            // SAMF (the SAMF is new entropy; a plain expansion of a whole litter is just a
+            // re-roll). No SAMF -> abort the whole replacement; the shot continues as an
+            // ordinary non-replacement. When #10 (ABSORB_NOTS, debug-only) already consumed the
+            // window's pending negations above, aborting would corrupt the mask, so commit.
+            if picked_full_litter && tuck.is_none() && picked_negated.is_empty() {
+                crate::replace::replace::LITTER_ABORT_NO_SAMF.fetch_add(1, Ordering::Relaxed);
+                break 'try_replace false;
+            }
+            if picked_full_litter && tuck.is_some() {
+                crate::replace::replace::LITTER_SAMF_LICENSED.fetch_add(1, Ordering::Relaxed);
+            }
+            CURATED_REPLACEMENTS_MADE.fetch_add(1, Ordering::Relaxed);
+            SAMF_HIDE_ELIGIBLE_EXPANSIONS.fetch_add(1, Ordering::Relaxed);
+            // Distinct-wire counts of the consumed input window vs the expansion. `window` is the
+            // chosen outgoing subcircuit, already relabeled into the current wire space.
+            let distinct_wires = |gates: &[[u16; 3]]| {
+                let mut seen = std::collections::HashSet::new();
+                for g in gates {
+                    seen.insert(g[0]);
+                    seen.insert(g[1]);
+                    seen.insert(g[2]);
+                }
+                seen.len()
+            };
+            let before_wires = distinct_wires(&window);
+            crate::replace::replace::record_expansion(
+                consumed,
+                expansion.len(),
+                before_wires,
+                distinct_wires(&expansion),
+            );
+
             let rec_pre_len = output.len();
             let mut rec_start = rec_pre_len;
             match tuck {
@@ -2446,7 +2520,6 @@ fn shuffled_shooting_game_core(
                     if let Some((last, prefix)) = samf_suffix.split_last() {
                         output.extend_from_slice(prefix);
                         materialized_shot = Some(*last);
-                        materialized_shot_tag = event_tag;
                     }
                     t_list.transpositions.push((swap_lo, swap_hi, neg_type));
                     apply_neg_to_mask(
@@ -2464,14 +2537,23 @@ fn shuffled_shooting_game_core(
                     let (last, prefix) = expansion.split_last().unwrap();
                     output.extend_from_slice(prefix);
                     materialized_shot = Some(*last);
-                    materialized_shot_tag = event_tag;
                     SAMF_COMPRESSIONS_FAILED.fetch_add(1, Ordering::Relaxed);
                 }
             }
 
+            // Mint the event tag now that the litter size is known: the gates emitted into
+            // output[rec_start..] plus the carried materialized final gate.
+            let event_tag = if track && crate::replace::replace::gen_mode() {
+                Tag::new_litter(event_gen, (output.len() - rec_start) + 1)
+            } else {
+                Tag::NEW
+            };
+            if materialized_shot.is_some() {
+                materialized_shot_tag = event_tag;
+            }
             if track {
                 // The shot gate and the consumed remaining gates are replaced; everything emitted
-                // into output[rec_start..] is freshly created. New gates get `event_tag` (TAG_NEW
+                // into output[rec_start..] is freshly created. New gates get `event_tag` (Tag::NEW
                 // in survivor mode, floor(median(window))+1 in gen mode). The consumed window tags
                 // are dropped (by index, descending so earlier indices stay valid).
                 output_tags.truncate(rec_start);
@@ -2516,9 +2598,13 @@ fn shuffled_shooting_game_core(
                 emit_relabelled_gate(shot, &mut output, &t_list, &mut negation_mask, n);
                 if track {
                     // NOT-corrections preceding the shot are new gates: generation = shot's + 1.
+                    let new_count = output.len() - 1 - output_tags.len();
                     output_tags.resize(
                         output.len() - 1,
-                        crate::replace::replace::new_gate_tag(std::slice::from_ref(&shot_tag)),
+                        crate::replace::replace::new_gate_tag(
+                            std::slice::from_ref(&shot_tag),
+                            new_count,
+                        ),
                     );
                     output_tags.push(shot_tag);
                 }
@@ -2549,9 +2635,10 @@ fn shuffled_shooting_game_core(
         emit_relabelled_gate(g, &mut output, &t_list, &mut negation_mask, n);
         if track {
             let gt = remaining_tags.pop_front().unwrap();
+            let new_count = output.len() - 1 - output_tags.len();
             output_tags.resize(
                 output.len() - 1,
-                crate::replace::replace::new_gate_tag(std::slice::from_ref(&gt)),
+                crate::replace::replace::new_gate_tag(std::slice::from_ref(&gt), new_count),
             );
             output_tags.push(gt);
         }
@@ -2668,12 +2755,12 @@ pub fn shuffled_shoot_then_samf_core(
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
-    input_tags: &[u32],
-) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize, Vec<u32>) {
+    input_tags: &[Tag],
+) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize, Vec<Tag>) {
     let track = !input_tags.is_empty();
     let passes = shooting_times.max(1);
     let mut input_gates = input.to_vec();
-    let mut tags: Vec<u32> = input_tags.to_vec();
+    let mut tags: Vec<Tag> = input_tags.to_vec();
     let mut total_t = Transpositions {
         transpositions: Vec::new(),
     };
@@ -2998,7 +3085,7 @@ pub fn shuffled_shoot_then_samf_core(
             input_gates = out_b;
             tags = tags_b;
         }
-        let mg = tags.iter().copied().min().unwrap_or(0);
+        let mg = tags.iter().map(|t| t.generation()).min().unwrap_or(0);
         println!(
             "[gen] stage-B done: {} passes, min_gen {}, gates {}",
             pass_idx,
@@ -3075,8 +3162,8 @@ pub fn shuffled_shoot_then_samf_core(
                 .max(1);
             if (pass + 1) % every == 0 || pass + 1 == passes {
                 if crate::replace::replace::gen_mode() {
-                    let min_gen = tags.iter().copied().min().unwrap_or(0);
-                    let gen0 = tags.iter().filter(|&&t| t == 0).count();
+                    let min_gen = tags.iter().map(|t| t.generation()).min().unwrap_or(0);
+                    let gen0 = tags.iter().filter(|&&t| t.generation() == 0).count();
                     println!(
                         "[gen] pass {} min_gen {} gen0 {} circuit_gates {}",
                         pass + 1,
@@ -3087,7 +3174,7 @@ pub fn shuffled_shoot_then_samf_core(
                 } else {
                     let alive = tags
                         .iter()
-                        .filter(|&&t| t != crate::replace::replace::TAG_NEW)
+                        .filter(|&&t| t != crate::replace::replace::Tag::NEW)
                         .count();
                     println!(
                         "[survivors] pass {} alive {} circuit_gates {}",
@@ -3117,10 +3204,10 @@ pub fn shuffled_shoot_then_samf_core(
 // the earlier frame mismatch.)
 fn apply_ledger(
     gates: &[[u16; 3]],
-    tags: &[u32],
+    tags: &[Tag],
     entries: &[(usize, crate::replace::segcircuit::SamfTail)],
     n: usize,
-) -> (Vec<[u16; 3]>, Vec<u32>, crate::replace::segcircuit::SamfTail) {
+) -> (Vec<[u16; 3]>, Vec<Tag>, crate::replace::segcircuit::SamfTail) {
     use crate::replace::segcircuit::SamfTail;
     let track = !tags.is_empty();
     let mut t_list = Transpositions {
@@ -3128,7 +3215,7 @@ fn apply_ledger(
     };
     let mut mask = vec![0u8; n];
     let mut out: Vec<[u16; 3]> = Vec::with_capacity(gates.len());
-    let mut out_t: Vec<u32> = Vec::with_capacity(if track { gates.len() } else { 0 });
+    let mut out_t: Vec<Tag> = Vec::with_capacity(if track { gates.len() } else { 0 });
     let mut ei = 0usize;
     // Fold one ledger tail into the running (t_list, mask). Each pass recorded its tail in the
     // frame that IGNORES the entries to its left (uniform relabel); at the flush those left entries
@@ -3157,8 +3244,9 @@ fn apply_ledger(
         emit_relabelled_gate(g, &mut out, &t_list, &mut mask, n);
         if track {
             let added = out.len() - before; // [NOT-corrections..., the gate]
-            for _ in 0..added.saturating_sub(1) {
-                out_t.push(crate::replace::replace::new_gate_tag(&[tags[i]]));
+            if added > 1 {
+                let nt = crate::replace::replace::new_gate_tag(&[tags[i]], added - 1);
+                out_t.resize(out_t.len() + added - 1, nt);
             }
             out_t.push(tags[i]);
         }
@@ -3183,7 +3271,7 @@ pub fn shuffled_shoot_then_samf(
     env: &Environment,
     curated_shard_dbs: &[Database],
     shard_dbs: &[Database],
-    tags: &mut Vec<u32>,
+    tags: &mut Vec<Tag>,
 ) -> usize {
     let track = !tags.is_empty();
     let (mut out, t_round, neg_round, compressions, mut out_tags) = shuffled_shoot_then_samf_core(

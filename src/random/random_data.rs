@@ -752,7 +752,7 @@ pub fn contiguous_convex(
     circuit: &mut CircuitSeq,
     ordered_convex_gates: &mut Vec<usize>,
     num_wires: usize,
-    tags: &mut Vec<u32>,
+    tags: &mut Vec<crate::replace::replace::Tag>,
 ) -> Option<(usize, usize)> {
     // `tags` (when non-empty) is a per-gate origin id maintained in lockstep with
     // `circuit.gates` for --track-survivors; mirror every remove/insert below.

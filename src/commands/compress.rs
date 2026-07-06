@@ -67,6 +67,8 @@ pub fn run(sub: &clap::ArgMatches) {
         d,
         false,
         early_stop_target,
+        // The standalone compress command is always a delivery-strength ("final") compression.
+        true,
         &mut Vec::new(),
     );
     print_compress_timers();
