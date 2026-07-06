@@ -27,6 +27,12 @@ pub static CANON4_RULE_L_BRANCHES: AtomicU64 = AtomicU64::new(0);
 /// (Monomial = u64 cannot represent variable x_i for i>=64; the lookup is skipped to avoid an
 /// overflow-aliased canonical key that could spuriously match a non-equivalent DB entry).
 pub static OVERSIZED_CANON_SKIPS: AtomicU64 = AtomicU64::new(0);
+
+// All bits below n (the dense wire space of a canonicalization window, n <= 64).
+#[inline]
+fn wire_mask(n: usize) -> u64 {
+    if n >= 64 { u64::MAX } else { (1u64 << n) - 1 }
+}
 // Windows skipped by the CANON_MONOMIAL_CAP bail-out (treated as clean DB misses).
 pub static CANON_CAP_SKIPS: AtomicU64 = AtomicU64::new(0);
 
@@ -2084,12 +2090,14 @@ type LevelEntry4 = (Monomial, usize, MonomialLevelKey4);
 fn monomial_rank_key_4(m: Monomial, vr: &[usize], n: usize) -> MonomialRankKey4 {
     let mut encoded_ranks = [0u8; MONOMIAL_RANK_KEY_LEN_4];
     let mut degree = 0usize;
-    for v in 0..n {
-        if m & (1u64 << v) != 0 {
-            debug_assert!(vr[v] < u8::MAX as usize);
-            encoded_ranks[degree] = (vr[v] + 1) as u8;
-            degree += 1;
-        }
+    // Set-bit iteration (increasing v, same visit order as the 0..n scan; bits >= n masked off).
+    let mut mm = m & wire_mask(n);
+    while mm != 0 {
+        let v = mm.trailing_zeros() as usize;
+        mm &= mm - 1;
+        debug_assert!(vr[v] < u8::MAX as usize);
+        encoded_ranks[degree] = (vr[v] + 1) as u8;
+        degree += 1;
     }
     encoded_ranks[..degree].sort_unstable();
     MonomialRankKey4 {
@@ -2132,10 +2140,10 @@ fn wire_freq_4(level: &[LevelEntry4], n: usize, freq: &mut Vec<usize>) {
     freq.resize(n, 0);
     freq.fill(0);
     for &(m, _, _) in level {
-        for v in 0..n {
-            if m & (1u64 << v) != 0 {
-                freq[v] += 1;
-            }
+        let mut mm = m & wire_mask(n);
+        while mm != 0 {
+            freq[mm.trailing_zeros() as usize] += 1;
+            mm &= mm - 1;
         }
     }
 }
@@ -2217,10 +2225,10 @@ fn push_flat_canonical_form_4(
         monomials.clear();
         monomials.extend(polynomials[wire].iter().map(|&m| {
             let mut r = 0u64;
-            for v in 0..n {
-                if m & (1u64 << v) != 0 {
-                    r |= 1u64 << wire_to_pos[v];
-                }
+            let mut mm = m & wire_mask(n);
+            while mm != 0 {
+                r |= 1u64 << wire_to_pos[mm.trailing_zeros() as usize];
+                mm &= mm - 1;
             }
             r
         }));
@@ -2502,10 +2510,10 @@ pub fn canonicalize_polys_4(
     }
     let remap_monomial = |m: Monomial| -> Monomial {
         let mut result = 0u64;
-        for wire in 0..n {
-            if m & (1u64 << wire) != 0 {
-                result |= 1u64 << wire_to_pos[wire];
-            }
+        let mut mm = m & wire_mask(n);
+        while mm != 0 {
+            result |= 1u64 << wire_to_pos[mm.trailing_zeros() as usize];
+            mm &= mm - 1;
         }
         result
     };
@@ -3031,5 +3039,105 @@ mod tests {
         assert!(small.used_wires().len() <= 64);
         let (sp, _, _) = small.canonicalize_polys_single(false);
         assert!(!sp.is_empty(), "a small window must still produce a canonical key");
+    }
+}
+
+#[cfg(test)]
+mod canon_golden_tests {
+    use super::*;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    fn canon_hash(seed: u64, n_wires: u16, gates: usize) -> u128 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut c = CircuitSeq { gates: Vec::new() };
+        while c.gates.len() < gates {
+            let a = rng.random_range(0..n_wires);
+            let b = rng.random_range(0..n_wires);
+            let d = rng.random_range(0..n_wires);
+            if a != b && a != d && b != d {
+                c.gates.push([a, b, d]);
+            }
+        }
+        let (polys, _, _) = c.canonicalize_polys_single(seed % 2 == 0);
+        xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&polys))
+    }
+
+    // Golden canonical-form hashes captured from the pre-set-bit-iteration implementation
+    // (commit cac81218). The canonical form defines every curated-DB key, so any change to
+    // these values means the DB has been silently invalidated. Do not regenerate casually.
+    #[test]
+    fn canonical_form_golden() {
+        const GOLDEN: &[(&str, &str)] = &[
+        ("G0", "5a86273ea35de2831bb1ac7c41e9386a"),
+        ("H0", "9a235611c0883cbcd2633aec4547aa64"),
+        ("G1", "be090eb97ff913970eccb2a795638851"),
+        ("H1", "9dd0dfcfd5f2c6ba94675c9970315afa"),
+        ("G2", "99ba9f13c26dac268d26d386d1b906a5"),
+        ("H2", "952a605fd881ca9395b1cd60aeaac3b2"),
+        ("G3", "a0f04475fc544a993bd901f872aedf8b"),
+        ("H3", "cd9ef577bc9adbcab894600d85b117c1"),
+        ("G4", "8b47ff7a84852ffd4272a967b9033d5e"),
+        ("H4", "3169f9889ac5f52f61c29902828acc0b"),
+        ("G5", "75454e58d561b81278def6118e39e86b"),
+        ("H5", "24fed0d5485aab23b108dcb426af3a3f"),
+        ("G6", "70b0ebb96050a934ad9283bb3dafab6c"),
+        ("H6", "4b62f3e76063f143d69526182d055cc5"),
+        ("G7", "3262a23598f46576f1da166a0982a86a"),
+        ("H7", "12e987ef419e938a86cc2205e15e15f9"),
+        ("G8", "f94ea450ea48945ff496d56b263dbf36"),
+        ("H8", "7c97590f054570c298a89b0b0a340395"),
+        ("G9", "4e66c4f12d7b71f83f372216c8d37405"),
+        ("H9", "e5844cc19cc3fe0ead60c368d63ca168"),
+        ("G10", "da87c4997bccde5e45c43ebd1c8cd906"),
+        ("H10", "449801d33d878526fd1677eed2a3658f"),
+        ("G11", "a86c1819489ffde1f3d736fe62105ae6"),
+        ("H11", "d2865c2667aadea1cf0e45db6f407406"),
+        ("G12", "925b7156e922f54aedc4ee10900fd20c"),
+        ("H12", "38e53066524a89b05810c9223ec23d24"),
+        ("G13", "6294ff92e84c4ebd17fd05a75df435ba"),
+        ("H13", "dd779c0119e0a4029d0f58f2b3c5b58e"),
+        ("G14", "a464c3223fe39d27259cba0b3d6851b8"),
+        ("H14", "19bc0b8c1e7cfb4b9a436879e1b896d2"),
+        ("G15", "d625dbd41e375870ebfe9a0185632ec5"),
+        ("H15", "8dd197d824a451ffbb3e87e27a7688c1"),
+        ("G16", "7b8a51fbeb61cf35e040eb8fc5430066"),
+        ("H16", "0301e069e83aa6f4b73db82c5c7d837a"),
+        ("G17", "794faac0730225066a65bddd0b742e52"),
+        ("H17", "87bcbd550510b948eaa1ab6095441af9"),
+        ("G18", "f4b7008227f02125d99fd7c43e845a1e"),
+        ("H18", "b1ee36bc3fc45bdb943494319a6d8705"),
+        ("G19", "e9cd8de38a6cfad2a63101b3629d1bae"),
+        ("H19", "bc93ac6f4e322fa6ce717c73cbe9e745"),
+        ("G20", "5373d5c9179c45dbc4a4664f05f5e624"),
+        ("H20", "e46c9ad8e84dff37352480633f66a52b"),
+        ("G21", "127c9ac15090d586b02ef26642380d66"),
+        ("H21", "e3c8201bfddaa06c36d81a37de080758"),
+        ("G22", "0f3e6c0d1adc4c329ee1bf3381b69e6d"),
+        ("H22", "4cc1ff0d7c3dafa122d608b0616e4d5e"),
+        ("G23", "9d7aa850478bf9df4b4170c6a3a36fa9"),
+        ("H23", "429430a8369c6ca72e8587435d0848bf"),
+        ("G24", "539b2065949ec2fb61f7bf3c7d0342bc"),
+        ("H24", "f22f920ff36e79a8138b693170bfe647"),
+        ("G25", "1c97e1b5581d716c714a19e19a590b60"),
+        ("H25", "c4c2da4706e97f055cc061fc2c129918"),
+        ("G26", "8d75145ab91d5eae5a945c6e2113f3fe"),
+        ("H26", "9a9d3cc8288d7b8bd036ecddba9b5c44"),
+        ("G27", "02f74ec21c587c61173e63ba6e4e2e71"),
+        ("H27", "fec09553e5424463e662f68114183402"),
+        ("G28", "1e9a41e837ab7aa59afd2309dde7ade8"),
+        ("H28", "4f9531a4d7369be5da1fb88e24e7c8b9"),
+        ("G29", "153bbb6f933cf655d21ce5322bc17ffa"),
+        ("H29", "07c5b2fc1832273a112ec695f4e52bca")
+        ];
+        for (tag, want) in GOLDEN {
+            let (series, seed_s) = tag.split_at(1);
+            let seed: u64 = seed_s.parse().unwrap();
+            let got = match series {
+                "G" => canon_hash(seed, 10, 8),
+                _ => canon_hash(seed.wrapping_mul(0x9e37), 14, 12),
+            };
+            assert_eq!(format!("{:032x}", got), *want, "canonical form changed for {}", tag);
+        }
     }
 }
