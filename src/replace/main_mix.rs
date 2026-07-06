@@ -532,9 +532,26 @@ pub fn main_shuffle_shoot_shuffle(
     };
     let n_orig = orig_gates.len();
     // Tag vector: gen mode -> generation-0 singleton litters; survivor mode -> origin index
-    // 0..n_orig.
+    // 0..n_orig. When the source has a `.tags` sidecar (written alongside every checkpoint /
+    // final circuit) and no wire transform was applied, resume from its generations/litters
+    // instead — a restarted run keeps its mixing history. Any gate-count mismatch (transform,
+    // early shuffle, hand-edited file) falls back to fresh tags.
+    let sidecar: Option<Vec<Tag>> = if track && !do_gadgetize && !do_feistalize {
+        crate::replace::replace::read_tags_sidecar(source)
+    } else {
+        None
+    };
     let mut survivor_tags: Vec<Tag> = if !track {
         Vec::new()
+    } else if let Some(loaded) = sidecar.filter(|t| t.len() == n_orig) {
+        crate::replace::replace::bump_litter_ids_past(&loaded);
+        println!(
+            "[tags] resumed {} gate tags from {}.tags (litter ids continue above prior max)",
+            loaded.len(),
+            source
+        );
+        crate::replace::replace::gen_report("[tags] resumed state:", &loaded);
+        loaded
     } else if crate::replace::replace::gen_mode() {
         (0..n_orig).map(|_| Tag::new_litter(0, 1)).collect()
     } else {
@@ -1010,6 +1027,9 @@ pub fn main_shuffle_shoot_shuffle(
             File::create(&round_path)
                 .and_then(|mut f| f.write_all(circuit.repr().as_bytes()))
                 .expect("Failed to write stage circuit");
+            if track {
+                crate::replace::replace::write_tags_sidecar(&round_path, &survivor_tags);
+            }
             if equality_check {
                 last_good_path = Some(round_path);
                 last_good_stage = i + 1;
@@ -1224,6 +1244,9 @@ pub fn main_shuffle_shoot_shuffle(
         );
     }
 
+    if track {
+        crate::replace::replace::write_tags_sidecar(save, &survivor_tags);
+    }
     println!("Final circuit written to {}", save);
 
     {

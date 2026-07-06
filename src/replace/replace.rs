@@ -412,6 +412,90 @@ pub fn litter_report(prefix: &str) {
     );
 }
 
+// ---- Tag persistence: `<circuit>.tags` sidecars so a resumed run keeps generations/litters ----
+// Format: "ssgtags1 <count>\n" then the packed Tag u64s in hex, whitespace-separated.
+pub fn write_tags_sidecar(circuit_path: &str, tags: &[Tag]) {
+    if tags.is_empty() {
+        return;
+    }
+    let path = format!("{}.tags", circuit_path);
+    let mut out = String::with_capacity(tags.len() * 14 + 32);
+    out.push_str(&format!("ssgtags1 {}\n", tags.len()));
+    for (i, t) in tags.iter().enumerate() {
+        out.push_str(&format!("{:x}", t.0));
+        out.push(if (i + 1) % 64 == 0 { '\n' } else { ' ' });
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if let Err(e) = std::fs::write(&path, out) {
+        eprintln!("[tags] failed to write {}: {}", path, e);
+    }
+}
+
+pub fn read_tags_sidecar(circuit_path: &str) -> Option<Vec<Tag>> {
+    let path = format!("{}.tags", circuit_path);
+    let data = std::fs::read_to_string(&path).ok()?;
+    let mut it = data.split_ascii_whitespace();
+    if it.next()? != "ssgtags1" {
+        eprintln!("[tags] {}: unrecognized format, ignoring", path);
+        return None;
+    }
+    let count: usize = it.next()?.parse().ok()?;
+    let tags: Option<Vec<Tag>> = it.map(|s| u64::from_str_radix(s, 16).ok().map(Tag)).collect();
+    let tags = tags?;
+    if tags.len() != count {
+        eprintln!("[tags] {}: expected {} tags, found {} — ignoring", path, count, tags.len());
+        return None;
+    }
+    Some(tags)
+}
+
+// After loading a sidecar in gen mode, continue minting litter ids above everything loaded.
+pub fn bump_litter_ids_past(tags: &[Tag]) {
+    let max_id = tags
+        .iter()
+        .filter(|t| **t != Tag::NEW)
+        .map(|t| t.litter_id())
+        .max()
+        .unwrap_or(0);
+    let next = max_id.saturating_add(1);
+    if next > NEXT_LITTER_ID.load(Ordering::Relaxed) {
+        NEXT_LITTER_ID.store(next, Ordering::Relaxed);
+    }
+}
+
+// One-line generation + litter distribution report (gen mode).
+pub fn gen_report(prefix: &str, tags: &[Tag]) {
+    if tags.is_empty() {
+        return;
+    }
+    let mut gens: Vec<u32> = tags.iter().map(|t| t.generation()).collect();
+    gens.sort_unstable();
+    let len = gens.len();
+    let permille = MIN_GEN_PERMILLE.load(Ordering::Relaxed).min(1000);
+    let floor_q = gens[(len * (1000 - permille)) / 1000];
+    let median = gens[len / 2];
+    let max = gens[len - 1];
+    let mg = MIN_GEN.load(Ordering::Relaxed);
+    let at_target = len - gens.partition_point(|g| (*g as usize) < mg);
+    let mut ids: Vec<u64> = tags.iter().map(|t| t.litter_id()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    println!(
+        "{} floor{}={} median={} max={} | >=gen{}: {:.1}% | litters={} (avg size {:.1})",
+        prefix,
+        permille / 10,
+        floor_q,
+        median,
+        max,
+        mg,
+        100.0 * at_target as f64 / len as f64,
+        ids.len(),
+        len as f64 / ids.len().max(1) as f64
+    );
+}
+
 // Litter profile of a candidate outgoing window: (#distinct litters, is-exactly-one-full-litter).
 // Only meaningful in gen mode with tag tracking on.
 pub fn window_litter_stats(tags: &[Tag]) -> (usize, bool) {
@@ -1022,6 +1106,9 @@ pub fn compress_loop(
             );
             prev_litter = cur;
         }
+        if track && gen_mode() {
+            gen_report(&format!("  [gen] sweep {}:", rec_iter), &acc_tags);
+        }
 
         if slow_active {
             // Slow-mode stops, in priority order: (1) min-gen condition met — the phase mixed
@@ -1114,6 +1201,9 @@ pub fn compress_loop(
             std::fs::remove_file("write_now").ok();
             let mut f = File::create(output_path).expect("create");
             writeln!(f, "{}", acc.repr()).expect("write");
+            if track {
+                write_tags_sidecar(output_path, &acc_tags);
+            }
             eprintln!("Wrote {}", output_path);
         }
     }
