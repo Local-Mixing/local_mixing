@@ -27,6 +27,22 @@ pub static CANON4_RULE_L_BRANCHES: AtomicU64 = AtomicU64::new(0);
 /// (Monomial = u64 cannot represent variable x_i for i>=64; the lookup is skipped to avoid an
 /// overflow-aliased canonical key that could spuriously match a non-equivalent DB entry).
 pub static OVERSIZED_CANON_SKIPS: AtomicU64 = AtomicU64::new(0);
+// Windows skipped by the CANON_MONOMIAL_CAP bail-out (treated as clean DB misses).
+pub static CANON_CAP_SKIPS: AtomicU64 = AtomicU64::new(0);
+
+// CANON_MONOMIAL_CAP (env): deterministic bound on per-wire monomial counts while building a
+// window's polynomials. Windows that exceed it are treated as clean DB misses (empty polys) —
+// they could never be usefully canonicalized in reasonable time anyway. Unset = legacy
+// (unbounded; a pathological window can pin a compression trial to one core for hours).
+pub fn canon_monomial_cap() -> Option<usize> {
+    static V: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("CANON_MONOMIAL_CAP")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .filter(|c| *c > 0)
+    })
+}
 
 fn bench_canon_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
@@ -676,6 +692,39 @@ impl CircuitSeq {
         polys
     }
 
+    // Like to_polynomial, but bails out (None) if any wire's polynomial exceeds `cap` monomials,
+    // or if an upcoming AND would multiply monomial sets whose product exceeds 16*cap. Bounds the
+    // pathological windows whose monomial counts explode and pin a compression trial for hours —
+    // the chunk budget can only stop new trials, not interrupt a running one. Deterministic (a
+    // pure function of the window), so identical runs make identical skip decisions.
+    pub fn to_polynomial_capped(
+        &self,
+        n: usize,
+        start: usize,
+        end: usize,
+        cap: usize,
+    ) -> Option<Vec<Polynomial>> {
+        let gates = &self.gates[start..end];
+        let mut polys: Vec<Polynomial> = (0..n).map(|i| vec![1u64 << i]).collect();
+
+        for &[a, b, c] in gates {
+            if polys[b as usize]
+                .len()
+                .saturating_mul(polys[c as usize].len())
+                > cap.saturating_mul(16)
+            {
+                return None;
+            }
+            let term = poly_and_not(&polys[b as usize], &polys[c as usize]);
+            poly_xor_assign(&mut polys[a as usize], term);
+            toggle_monomial(&mut polys[a as usize], 0u64);
+            if polys[a as usize].len() > cap {
+                return None;
+            }
+        }
+        Some(polys)
+    }
+
     // Returns (canonical_polys, canonical_circuit, reversed)
     // where reversed=true means the reversed circuit produced the canonical form.
     pub fn canonicalize_polys(
@@ -770,7 +819,16 @@ impl CircuitSeq {
         }
         c.canonicalize();
         let n = c.max_wire() as usize + 1;
-        let polys = c.to_polynomial(n, 0, c.gates.len());
+        let polys = match canon_monomial_cap() {
+            Some(cap) => match c.to_polynomial_capped(n, 0, c.gates.len(), cap) {
+                Some(p) => p,
+                None => {
+                    CANON_CAP_SKIPS.fetch_add(1, Ordering::Relaxed);
+                    return (Vec::new(), Permutation { data: Vec::new() }, used);
+                }
+            },
+            None => c.to_polynomial(n, 0, c.gates.len()),
+        };
 
         let bench_polys = if bench_canon_enabled() {
             Some(polys.clone())
@@ -834,7 +892,16 @@ impl CircuitSeq {
         };
         c.canonicalize();
         let n = c.max_wire() as usize + 1;
-        let mut polys = c.to_polynomial(n, 0, c.gates.len());
+        let mut polys = match canon_monomial_cap() {
+            Some(cap) => match c.to_polynomial_capped(n, 0, c.gates.len(), cap) {
+                Some(p) => p,
+                None => {
+                    CANON_CAP_SKIPS.fetch_add(1, Ordering::Relaxed);
+                    return (Vec::new(), Permutation { data: Vec::new() }, used);
+                }
+            },
+            None => c.to_polynomial(n, 0, c.gates.len()),
+        };
         for &w in negated_inputs {
             if let Some(&mw) = wire_map.get(&w) {
                 for p in polys.iter_mut() {
