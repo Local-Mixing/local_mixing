@@ -412,6 +412,95 @@ pub fn litter_report(prefix: &str) {
     );
 }
 
+// FLOAT_SWEEP (env): after every compression sweep (and once on phase entry), float every gate
+// to a uniform random position within its "commutable box" — the maximal interval it can slide
+// through past non-colliding neighbors. Decorrelates window boundaries from litter boundaries
+// (litters are born contiguous and otherwise stay clumped, which the litter counters show as
+// full-litter bans concentrating in the local window-finder mode). Tag vector moves in
+// lockstep. Unset = legacy (no floating).
+pub fn float_sweep_enabled() -> bool {
+    static V: AtomicUsize = AtomicUsize::new(0);
+    match V.load(Ordering::Relaxed) {
+        2 => true,
+        1 => false,
+        _ => {
+            let on = std::env::var("FLOAT_SWEEP")
+                .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            V.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+    }
+}
+
+pub static FLOAT_MOVED: AtomicUsize = AtomicUsize::new(0);
+pub static FLOAT_DISPLACEMENT: AtomicUsize = AtomicUsize::new(0);
+
+// One comprehensive float pass: left-to-right with rightward floats, then right-to-left with
+// leftward floats, so every position is processed exactly once per direction and each gate can
+// reach anywhere in its box. Function-preserving: a gate only ever slides past gates it does
+// not collide with. Returns (gates moved, total displacement).
+pub fn float_all_gates(
+    gates: &mut Vec<[u16; 3]>,
+    tags: &mut Vec<Tag>,
+    rng: &mut impl rand::Rng,
+) -> (usize, usize) {
+    use crate::circuit::circuit::Gate;
+    let track = !tags.is_empty();
+    let n = gates.len();
+    let mut moved = 0usize;
+    let mut disp = 0usize;
+    // Rightward pass.
+    let mut i = 0usize;
+    while i + 1 < n {
+        let g = gates[i];
+        let mut bound = i;
+        while bound + 1 < n && !Gate::collides_index(&gates[bound + 1], &g) {
+            bound += 1;
+        }
+        if bound > i {
+            let t = rng.random_range(i..=bound);
+            if t != i {
+                let gate = gates.remove(i);
+                gates.insert(t, gate);
+                if track {
+                    let tag = tags.remove(i);
+                    tags.insert(t, tag);
+                }
+                moved += 1;
+                disp += t - i;
+            }
+        }
+        i += 1;
+    }
+    // Leftward pass.
+    let mut i = n.saturating_sub(1);
+    while i > 0 {
+        let g = gates[i];
+        let mut bound = i;
+        while bound > 0 && !Gate::collides_index(&gates[bound - 1], &g) {
+            bound -= 1;
+        }
+        if bound < i {
+            let t = rng.random_range(bound..=i);
+            if t != i {
+                let gate = gates.remove(i);
+                gates.insert(t, gate);
+                if track {
+                    let tag = tags.remove(i);
+                    tags.insert(t, tag);
+                }
+                moved += 1;
+                disp += i - t;
+            }
+        }
+        i -= 1;
+    }
+    FLOAT_MOVED.fetch_add(moved, Ordering::Relaxed);
+    FLOAT_DISPLACEMENT.fetch_add(disp, Ordering::Relaxed);
+    (moved, disp)
+}
+
 // ---- Tag persistence: `<circuit>.tags` sidecars so a resumed run keeps generations/litters ----
 // Format: "ssgtags1 <count>\n" then the packed Tag u64s in hex, whitespace-separated.
 pub fn write_tags_sidecar(circuit_path: &str, tags: &[Tag]) {
@@ -510,6 +599,169 @@ pub fn window_litter_stats(tags: &[Tag]) -> (usize, bool) {
     ids.sort_unstable();
     ids.dedup();
     (ids.len(), false)
+}
+
+// DEGREE_FILTER (env): d = the max ANF degree any curated-DB function can have. Measured
+// distribution: main-DB classes top out at degree 7 (= the k+1 bound for 6-gate circuits;
+// a k-gate circuit has ANF degree <= k+1, tight), so a compression window whose function has
+// certified degree > d is an unmatchable miss and canonicalization can be skipped entirely.
+// Default d = 8 (one point of margin over the observed 7). Unset = off.
+pub fn degree_filter() -> Option<usize> {
+    static V: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("DEGREE_FILTER")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .filter(|d| *d >= 1)
+    })
+}
+
+pub fn degree_filter_probes() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("DEGREE_FILTER_PROBES")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .filter(|k| *k >= 1)
+            .unwrap_or(6)
+    })
+}
+
+pub static DEGREE_FILTER_SKIPS: AtomicUsize = AtomicUsize::new(0);
+
+// Bit-sliced witness for "degree > d": pick d+1 active input wires, fix the rest to random
+// constants, and XOR the given output wire's value over the 2^(d+1) active-subcube. By the
+// Mobius relation that XOR-sum equals the ANF coefficient of the full active monomial in the
+// restricted function; a 1 certifies degree >= d+1 for the whole function (restriction never
+// raises degree). One-sided: a low-degree function NEVER produces a witness. `gates` are in
+// dense wire space (0..nw). Returns true iff some output wire's subcube parity is 1.
+// Evaluate the (d+1)-th order derivative of the window along `dirs` (m = d+1 random direction
+// vectors over the nw wires) at random base point `base`, i.e. XOR the outputs over the affine
+// subcube { base ⊕ Σ εᵢ·dirsᵢ : ε ∈ {0,1}^m }. That XOR-sum equals D_{dirs} f (the iterated
+// discrete derivative), which is identically 0 for EVERY choice when deg f ≤ d and nonzero for
+// some choice when deg f ≥ d+1 — and, unlike an axis-aligned subcube, random directions catch a
+// degree-D monomial regardless of which wires carry it. One-sided: a low-degree function never
+// produces a witness. `gates` in dense wire space (0..nw). Returns true iff some output wire's
+// derivative is 1. `dirs[i][w]` = does direction i include wire w; `base[w]` = base bit for w.
+fn derivative_witness(
+    gates: &[[u16; 3]],
+    nw: usize,
+    dirs: &[Vec<bool>],
+    base: &[bool],
+) -> bool {
+    let m = dirs.len();
+    let total = 1usize << m; // affine-subcube points
+    let words = total.div_ceil(64);
+    // Axis columns: col[i] has bit p set iff (p>>i)&1 == 1 (the value of εᵢ at point p).
+    let mut col = vec![vec![0u64; words]; m];
+    for (i, ci) in col.iter_mut().enumerate() {
+        for p in 0..total {
+            if (p >> i) & 1 == 1 {
+                ci[p / 64] |= 1u64 << (p % 64);
+            }
+        }
+    }
+    // Wire w value across points = base[w] (constant) XOR of the columns of directions hitting w.
+    let mut state = vec![vec![0u64; words]; nw];
+    for w in 0..nw {
+        if base[w] {
+            for x in state[w].iter_mut() {
+                *x = u64::MAX;
+            }
+        }
+        for (i, di) in dirs.iter().enumerate() {
+            if di[w] {
+                for wi in 0..words {
+                    state[w][wi] ^= col[i][wi];
+                }
+            }
+        }
+    }
+    // g57 update, matching to_polynomial exactly: a' = a XOR NOT(b AND NOT c) (= a XOR 1 XOR b XOR bc).
+    for &[a, b, c] in gates {
+        let (a, b, c) = (a as usize, b as usize, c as usize);
+        for wi in 0..words {
+            let v = !(state[b][wi] & !state[c][wi]);
+            state[a][wi] ^= v;
+        }
+    }
+    let mask_last = if total % 64 == 0 {
+        u64::MAX
+    } else {
+        (1u64 << (total % 64)) - 1
+    };
+    for w in 0..nw {
+        let mut par = 0u32;
+        for wi in 0..words {
+            let word = if wi + 1 == words {
+                state[w][wi] & mask_last
+            } else {
+                state[w][wi]
+            };
+            par ^= word.count_ones() & 1;
+        }
+        if par & 1 == 1 {
+            return true;
+        }
+    }
+    false
+}
+
+// Certify that the window's function IN ONE DIRECTION has degree > d (reversed = the inverse
+// permutation, since g57 gates are involutions so the inverse is the reversed gate list). One-
+// sided: returns true only on a witness (never a false positive), so a `true` means the DB
+// lookup for that direction is a guaranteed miss and its canonicalization can be skipped.
+pub fn degree_exceeds_dir(
+    sub: &CircuitSeq,
+    reversed: bool,
+    d: usize,
+    k: usize,
+    rng: &mut impl rand::Rng,
+) -> bool {
+    let used = sub.used_wires();
+    let nw = used.len();
+    if nw <= d || d + 1 > 12 {
+        return false; // degree <= #inputs <= d, or subcube too large to probe cheaply
+    }
+    let wire_map: std::collections::HashMap<u16, u16> =
+        used.iter().enumerate().map(|(i, &w)| (w, i as u16)).collect();
+    let mut dense: Vec<[u16; 3]> = sub
+        .gates
+        .iter()
+        .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+        .collect();
+    if reversed {
+        dense.reverse();
+    }
+    for _ in 0..k {
+        // d+1 random nonzero direction vectors over the nw wires, plus a random base point.
+        let dirs: Vec<Vec<bool>> = (0..d + 1)
+            .map(|_| {
+                let mut v: Vec<bool> = (0..nw).map(|_| rng.random_bool(0.5)).collect();
+                if v.iter().all(|&b| !b) {
+                    v[rng.random_range(0..nw)] = true; // avoid the zero direction
+                }
+                v
+            })
+            .collect();
+        let base: Vec<bool> = (0..nw).map(|_| rng.random_bool(0.5)).collect();
+        if derivative_witness(&dense, nw, &dirs, &base) {
+            return true;
+        }
+    }
+    false
+}
+
+// Should the whole compression trial be discarded? Only when BOTH directions certify degree > d
+// (a window whose function has deg > d but whose INVERSE has deg <= d is still compressible via
+// the reverse DB lookup, so it must NOT be discarded). Kept for tests; the live code guards each
+// canonicalization direction separately via degree_exceeds_dir so the forward explosion is
+// avoided even when only the forward direction is high.
+pub fn degree_filter_discards(sub: &CircuitSeq, d: usize, k: usize, rng: &mut impl rand::Rng) -> bool {
+    if !degree_exceeds_dir(sub, false, d, k, rng) {
+        return false; // forward lookup might hit
+    }
+    degree_exceeds_dir(sub, true, d, k, rng)
 }
 
 // Floor of the median of the window's generations (round the even-length midpoint down).
@@ -996,6 +1248,19 @@ pub fn compress_loop(
         REC_ITER.store(rec_iter, Ordering::Relaxed);
         SWEEP_MOVES.store(0, Ordering::Relaxed);
 
+        // FLOAT_SWEEP: rerandomize every gate's position within its commutable box before the
+        // sweep (so this runs on phase entry and again after each completed sweep).
+        if float_sweep_enabled() && !final_phase {
+            let (fm, fd) = float_all_gates(&mut acc.gates, &mut acc_tags, &mut rng);
+            println!(
+                "  [float] sweep {}: moved {} of {} gates, avg displacement {:.1}",
+                rec_iter,
+                fm,
+                acc.gates.len(),
+                if fm > 0 { fd as f64 / fm as f64 } else { 0.0 }
+            );
+        }
+
         let max_chunks = 4 * rayon::current_num_threads().max(1);
         let k = if before <= 1500 {
             1
@@ -1101,13 +1366,16 @@ pub fn compress_loop(
             let cur = litter_counters();
             let d: Vec<usize> = cur.iter().zip(prev_litter.iter()).map(|(a, b)| a - b).collect();
             println!(
-                "  [litter] sweep {}: moves={} (lateral {} / shrink {}) banned_full={} tier1={} tier2={} identity_skips={}",
-                rec_iter, sweep_moves, d[7], d[8], d[1], d[2], d[3], d[9]
+                "  [litter] sweep {} (mode {}): moves={} (lateral {} / shrink {}) banned_full={} tier1={} tier2={} identity_skips={}",
+                rec_iter, current_mode, sweep_moves, d[7], d[8], d[1], d[2], d[3], d[9]
             );
             prev_litter = cur;
         }
         if track && gen_mode() {
-            gen_report(&format!("  [gen] sweep {}:", rec_iter), &acc_tags);
+            gen_report(
+                &format!("  [gen] sweep {} (mode {}):", rec_iter, current_mode),
+                &acc_tags,
+            );
         }
 
         if slow_active {
@@ -1310,58 +1578,69 @@ pub fn expand_lmdb<'a>(
             }
         }
 
-        let t_canon = Instant::now();
-        let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
-        CANONICALIZE_TIME.fetch_add(t_canon.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        // Degree pre-filter (per direction): a window function of degree > d cannot equal any
+        // curated-DB function (DB circuits have degree <= gates+1 <= 8), so that direction's
+        // lookup is a guaranteed miss and its canonicalization — with its monomial-explosion
+        // risk — is skipped. The forward and reverse directions are the window's function and its
+        // inverse (g57 gates are involutions), which can differ in degree; only when BOTH are
+        // high is the whole trial a certain miss.
+        let deg_d = degree_filter();
+        let fwd_high = deg_d
+            .map(|d| degree_exceeds_dir(&sub, false, d, degree_filter_probes(), &mut rng))
+            .unwrap_or(false);
 
-        if fwd_polys.is_empty() {
-            continue;
-        }
-
-        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
-            .to_le_bytes()
-            .to_vec();
-        let fwd_shard = fwd_key[0] as usize;
-
-        let t_txn = Instant::now();
         let txn = match env.begin_ro_txn() {
             Ok(t) => t,
             Err(_) => continue,
         };
-        TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        let t_lookup = Instant::now();
-        let fwd_result = txn
-            .get(shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec());
-        LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let (value, final_order, is_reversed) = if let Ok(v) = fwd_result {
-            (v, fwd_order, false)
-        } else {
-            let t_canon2 = Instant::now();
-            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
-            CANONICALIZE_TIME.fetch_add(t_canon2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-            if rev_polys.is_empty() {
-                continue;
+        // (value, final_order, used, is_reversed)
+        let mut matched: Option<(Vec<u8>, Permutation, Vec<u16>, bool)> = None;
+        if !fwd_high {
+            let t_canon = Instant::now();
+            let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
+            CANONICALIZE_TIME.fetch_add(t_canon.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            if !fwd_polys.is_empty() {
+                let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes().to_vec();
+                let t_lookup = Instant::now();
+                let fwd_result = txn
+                    .get(shard_dbs[fwd_key[0] as usize], &fwd_key)
+                    .map(|v: &[u8]| v.to_vec());
+                LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                if let Ok(v) = fwd_result {
+                    matched = Some((v, fwd_order, used, false));
+                }
             }
-
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
-                .to_le_bytes()
-                .to_vec();
-            let rev_shard = rev_key[0] as usize;
-
-            let t_lookup2 = Instant::now();
-            let rev_result = txn
-                .get(shard_dbs[rev_shard], &rev_key)
-                .map(|v: &[u8]| v.to_vec());
-            LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-            match rev_result {
-                Ok(v) => (v, rev_order, true),
-                Err(_) => continue,
+        }
+        if matched.is_none() {
+            let rev_high = deg_d
+                .map(|d| degree_exceeds_dir(&sub, true, d, degree_filter_probes(), &mut rng))
+                .unwrap_or(false);
+            if rev_high {
+                if fwd_high {
+                    // both directions certified high -> definite miss, canonicalization skipped
+                    DEGREE_FILTER_SKIPS.fetch_add(1, Ordering::Relaxed);
+                }
+            } else {
+                let t_canon2 = Instant::now();
+                let (rev_polys, rev_order, used) = sub.canonicalize_polys_single(true);
+                CANONICALIZE_TIME.fetch_add(t_canon2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                if !rev_polys.is_empty() {
+                    let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes().to_vec();
+                    let t_lookup2 = Instant::now();
+                    let rev_result = txn
+                        .get(shard_dbs[rev_key[0] as usize], &rev_key)
+                        .map(|v: &[u8]| v.to_vec());
+                    LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    if let Ok(v) = rev_result {
+                        matched = Some((v, rev_order, used, true));
+                    }
+                }
             }
+        }
+        let (value, final_order, used, is_reversed) = match matched {
+            Some(x) => x,
+            None => continue,
         };
 
         let t_blob = Instant::now();
@@ -2291,5 +2570,215 @@ pub fn print_compress_timers() {
             pc / 1e3 / calls
         );
         println!("ratio poly/canon4:{:.2}x", pc / c4.max(1.0));
+    }
+}
+
+#[cfg(test)]
+mod float_tests {
+    use super::*;
+    use crate::circuit::circuit::{CircuitSeq, Gate};
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    // float_all_gates must preserve the circuit's function and keep each gate's tag attached
+    // to that gate through every slide.
+    #[test]
+    fn float_preserves_function_and_tag_pairing() {
+        for seed in 0..40u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let n = 12u16;
+            let mut gates: Vec<[u16; 3]> = Vec::new();
+            // Distinct tag per gate via a unique low bit pattern we can track: store index in Tag.0.
+            for k in 0..60u64 {
+                use rand::Rng;
+                let a = rng.random_range(0..n);
+                let b = rng.random_range(0..n);
+                let c = rng.random_range(0..n);
+                if a != b && a != c && b != c {
+                    gates.push([a, b, c]);
+                    let _ = k;
+                }
+            }
+            let mut tags: Vec<Tag> = (0..gates.len() as u64).map(Tag).collect();
+            let before = CircuitSeq { gates: gates.clone() };
+            // Map: which gate does each tag sit on (by gate content is ambiguous; track by
+            // pairing invariant — tag i must always sit on the gate originally at index i).
+            let orig: Vec<[u16; 3]> = gates.clone();
+            float_all_gates(&mut gates, &mut tags, &mut rng);
+            let after = CircuitSeq { gates: gates.clone() };
+            assert!(
+                before.probably_equal(&after, n as usize, 400).is_ok(),
+                "float changed function (seed {})",
+                seed
+            );
+            // Tag/gate pairing: the gate now carrying tag t must equal orig[t].
+            for (pos, t) in tags.iter().enumerate() {
+                assert_eq!(gates[pos], orig[t.0 as usize], "tag/gate desync (seed {})", seed);
+            }
+            // No collision was crossed: relative order of any two colliding gates is preserved.
+            for x in 0..orig.len() {
+                for y in (x + 1)..orig.len() {
+                    if Gate::collides_index(&orig[x], &orig[y]) {
+                        let px = tags.iter().position(|t| t.0 == x as u64).unwrap();
+                        let py = tags.iter().position(|t| t.0 == y as u64).unwrap();
+                        assert!(px < py, "colliding pair reordered (seed {})", seed);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod degree_filter_tests {
+    use super::*;
+    use crate::circuit::circuit::CircuitSeq;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    // True max ANF degree of the window (both directions), computed exactly via to_polynomial.
+    fn true_max_degree(sub: &CircuitSeq) -> usize {
+        let deg = |c: &CircuitSeq| -> usize {
+            let n = c.max_wire() as usize + 1;
+            c.to_polynomial(n, 0, c.gates.len())
+                .iter()
+                .flat_map(|p| p.iter().map(|m| m.count_ones() as usize))
+                .max()
+                .unwrap_or(0)
+        };
+        let rev = CircuitSeq { gates: sub.gates.iter().rev().copied().collect() };
+        deg(sub).max(deg(&rev))
+    }
+
+    #[test]
+    fn degree_filter_is_sound_and_effective() {
+        let mut rng = StdRng::seed_from_u64(12345);
+        let d = 5usize; // small threshold so tests exercise both sides quickly
+        let mut discarded_ok = 0;
+        let mut low_seen = 0;
+        let mut high_seen = 0;
+        let mut high_caught = 0;
+        for _ in 0..4000 {
+            let nw = rng.random_range(6..14u16);
+            let ng = rng.random_range(4..16usize);
+            let mut gates: Vec<[u16; 3]> = Vec::new();
+            while gates.len() < ng {
+                let a = rng.random_range(0..nw);
+                let b = rng.random_range(0..nw);
+                let c = rng.random_range(0..nw);
+                if a != b && a != c && b != c {
+                    gates.push([a, b, c]);
+                }
+            }
+            let sub = CircuitSeq { gates };
+            let truth = true_max_degree(&sub);
+            let discards = degree_filter_discards(&sub, d, 10, &mut rng);
+            // SOUNDNESS: never discard a window whose min-direction degree could match (<= d).
+            // degree_filter_discards requires BOTH directions > d, so if EITHER direction <= d it
+            // must not discard. Reconstruct per-direction to assert precisely.
+            let fwd_deg = {
+                let n = sub.max_wire() as usize + 1;
+                sub.to_polynomial(n, 0, sub.gates.len()).iter()
+                    .flat_map(|p| p.iter().map(|m| m.count_ones() as usize)).max().unwrap_or(0)
+            };
+            let rev_c = CircuitSeq { gates: sub.gates.iter().rev().copied().collect() };
+            let rev_deg = {
+                let n = rev_c.max_wire() as usize + 1;
+                rev_c.to_polynomial(n, 0, rev_c.gates.len()).iter()
+                    .flat_map(|p| p.iter().map(|m| m.count_ones() as usize)).max().unwrap_or(0)
+            };
+            if fwd_deg <= d || rev_deg <= d {
+                assert!(!discards, "SOUNDNESS VIOLATION: discarded a matchable window (fwd_deg={}, rev_deg={}, d={})", fwd_deg, rev_deg, d);
+                low_seen += 1;
+            } else {
+                high_seen += 1;
+                if discards { high_caught += 1; discarded_ok += 1; }
+            }
+            let _ = truth;
+        }
+        println!("low(unmatchable-guard held)={} high={} high_caught={} ({:.0}%)",
+                 low_seen, high_seen, high_caught, 100.0 * high_caught as f64 / high_seen.max(1) as f64);
+        assert!(discarded_ok > 0, "filter never fired — probes ineffective");
+        let _ = high_seen;
+    }
+
+    // A balanced product tree: pairs of disjoint fresh inputs multiplied up `levels` deep, so
+    // the top monomial degree is 2^levels — the shape mixing manufactures and the pathology the
+    // filter exists for. Gate [a,b,c] gives a' = a ^ 1 ^ b ^ bc, top term b*c; feeding disjoint
+    // subtrees into b and c squares the degree each level.
+    fn product_tree(levels: u32) -> (CircuitSeq, usize) {
+        let leaves = 1usize << levels;
+        let mut next = leaves as u16; // fresh target wires start above the input leaves
+        let mut gates: Vec<[u16; 3]> = Vec::new();
+        // level 1: pair leaves 2i,2i+1 into fresh targets
+        let mut layer: Vec<u16> = Vec::new();
+        let mut i = 0u16;
+        while (i as usize) < leaves {
+            let t = next; next += 1;
+            gates.push([t, i, i + 1]);
+            layer.push(t);
+            i += 2;
+        }
+        // higher levels: pair disjoint sub-results
+        while layer.len() > 1 {
+            let mut nl = Vec::new();
+            let mut j = 0;
+            while j + 1 < layer.len() {
+                let t = next; next += 1;
+                gates.push([t, layer[j], layer[j + 1]]);
+                nl.push(t);
+                j += 2;
+            }
+            layer = nl;
+        }
+        (CircuitSeq { gates }, 1usize << levels)
+    }
+
+    // Effectiveness on the windows that actually matter: constructed product trees whose degree
+    // (2^levels) is well above the threshold. These must be caught essentially always.
+    #[test]
+    fn degree_filter_catches_explosive_windows() {
+        let mut rng = StdRng::seed_from_u64(999);
+        let d = 5usize;
+        let deg = |c: &CircuitSeq| -> usize {
+            let n = c.max_wire() as usize + 1;
+            c.to_polynomial(n, 0, c.gates.len()).iter()
+                .flat_map(|p| p.iter().map(|m| m.count_ones() as usize)).max().unwrap_or(0)
+        };
+        // The windows that actually STALL canonicalization are the DENSE high-degree ones
+        // (monomial count is what canon4 cost scales with; sparse high-degree windows are cheap).
+        // Deeper product trees are both higher-degree and denser (level 4 ~ 33k monomials), so
+        // the per-probe hit rate climbs steeply — that is exactly the regime the filter targets.
+        // A product tree's inverse is low-degree (uncompute), so degree_filter_discards (both
+        // directions) must NOT fire: reverse-compressible windows are preserved.
+        let mono = |c: &CircuitSeq| -> usize {
+            let n = c.max_wire() as usize + 1;
+            c.to_polynomial(n, 0, c.gates.len()).iter().map(|p| p.len()).max().unwrap_or(0)
+        };
+        // Cap at level 4 (degree 16, ~33k monomials): level 5 would be degree 32, whose ground-
+        // truth to_polynomial here explodes to billions of monomials — the very pathology the
+        // filter sidesteps but the exact-degree oracle cannot. Level 4 already exercises the
+        // dense-high regime the filter targets.
+        for levels in [3u32, 4] {
+            let (sub, top_deg) = product_tree(levels);
+            assert!(deg(&sub) > d, "forward tree not high-degree");
+            let trials = 200;
+            let mut fwd_caught = 0;
+            let mut wrongly_discarded = 0;
+            for _ in 0..trials {
+                if degree_exceeds_dir(&sub, false, d, 8, &mut rng) { fwd_caught += 1; }
+                if degree_filter_discards(&sub, d, 8, &mut rng) { wrongly_discarded += 1; }
+            }
+            println!("tree deg {} ({} monomials): forward caught {}/{}, wrongly discarded {}",
+                     top_deg, mono(&sub), fwd_caught, trials, wrongly_discarded);
+            let rev = CircuitSeq { gates: sub.gates.iter().rev().copied().collect() };
+            if deg(&rev) <= d {
+                assert_eq!(wrongly_discarded, 0, "discarded a reverse-compressible window (deg {})", top_deg);
+            }
+            // The dense deep trees (the stall-causing regime) must be caught essentially always.
+            if levels >= 4 {
+                assert!(fwd_caught * 100 >= trials * 90, "dense deg-{} tree caught < 90%: {}/{}", top_deg, fwd_caught, trials);
+            }
+        }
     }
 }
