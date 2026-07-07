@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Commutation with firing attribution</title>
+<style>
+  :root{
+    --ink:#26252b; --body:#403f48; --muted:#787680; --faint:#a09ea8;
+    --line:#e5e3dc; --paper:#fbfaf7; --card:#ffffff; --wash:#f4f2ec;
+    --g:#7f77dd; --gd:#5a50c4; --h:#1d9e75; --hd:#127a5b; --red:#c43a39;
+    --serif:Charter,'Iowan Old Style','Palatino Linotype',Georgia,serif;
+    --sans:system-ui,-apple-system,'Segoe UI',sans-serif;
+    --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  }
+  html{background:var(--paper)}
+  body{margin:0;color:var(--body);font:17px/1.68 var(--serif)}
+  main{max-width:860px;margin:0 auto;padding:64px 28px 110px}
+  p,ul,ol,h1,h2,h3,.defbox,details,.note{max-width:690px}
+  h1{font-size:33px;line-height:1.2;font-weight:600;color:var(--ink);margin:10px 0 14px;text-wrap:balance}
+  h2{font-size:23px;font-weight:600;color:var(--ink);margin:60px 0 12px;text-wrap:balance}
+  h3{font-size:18px;font-weight:600;color:var(--ink);margin:40px 0 8px}
+  p{margin:0 0 16px}
+  ul,ol{margin:0 0 16px;padding-left:24px}
+  li{margin-bottom:6px}
+  a{color:var(--gd)}
+  a:focus-visible,summary:focus-visible{outline:2px solid var(--gd);outline-offset:2px}
+  .eyebrow{font:600 12px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 6px}
+  .lede{font-size:19px;color:var(--muted);margin-bottom:8px;text-wrap:balance}
+  .meta{font:13px var(--sans);color:var(--faint);margin-bottom:40px}
+  .toc{font:14px/2 var(--sans);color:var(--muted);border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:12px 2px;margin:0 0 44px}
+  .toc b{color:var(--ink);font-weight:600;margin-right:10px}
+  code{font:14.5px var(--mono);background:var(--wash);padding:1px 5px;border-radius:4px;color:var(--ink)}
+  .formula{font:14px/1.9 var(--mono);color:var(--ink);background:var(--wash);border-radius:6px;padding:14px 20px;margin:18px 0 20px;overflow-x:auto;white-space:pre}
+  .formula i{color:var(--muted);font-style:normal;font-size:12.5px;font-family:var(--sans)}
+  .defbox{border:1px solid var(--line);border-radius:6px;background:var(--card);padding:16px 22px 14px;margin:22px 0 24px}
+  .defbox .lbl{font:600 11px/1 var(--sans);letter-spacing:.13em;text-transform:uppercase;color:var(--gd);display:block;margin-bottom:10px}
+  .defbox p{margin-bottom:8px}
+  details{margin:14px 0 20px;border:1px solid var(--line);border-radius:6px;background:var(--card)}
+  summary{font:600 13px var(--sans);letter-spacing:.05em;color:var(--muted);cursor:pointer;padding:10px 16px}
+  details[open] summary{border-bottom:1px solid var(--line)}
+  details .body{padding:12px 18px 4px;font-size:15.5px}
+  figure.fig{background:var(--card);border:1px solid var(--line);border-radius:6px;margin:26px 0 30px;padding:18px 14px 0}
+  figure.fig svg{display:block;width:100%;height:auto}
+  figcaption{font:13px/1.55 var(--sans);color:var(--muted);border-top:1px solid var(--line);margin:14px -14px 0;padding:11px 18px 13px}
+  figcaption .fno{font-weight:600;color:var(--ink);margin-right:8px}
+  svg text{font-family:var(--sans)}
+  svg .ts{font-size:12px;fill:#787680}
+  svg .teq{font-size:16px;font-weight:500;fill:#26252b}
+  .tblwrap{overflow-x:auto;margin:20px 0 26px}
+  table{border-collapse:collapse;font:14.5px/1.5 var(--sans);min-width:520px}
+  th{font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:600;text-align:left;padding:8px 18px 8px 0;border-bottom:1px solid var(--ink)}
+  td{padding:8px 18px 8px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  td.num{font-variant-numeric:tabular-nums}
+  .note{border:1px solid var(--line);border-radius:6px;background:var(--wash);font-size:15px;padding:12px 18px;margin:20px 0;color:var(--muted)}
+  .gp{color:var(--gd);font-weight:600}
+  .hp{color:var(--hd);font-weight:600}
+  .footer{margin-top:70px;border-top:1px solid var(--line);padding-top:16px;font:13px/1.7 var(--sans);color:var(--faint)}
+</style>
+
+<main>
+<p class="eyebrow">Working note · local mixing</p>
+<h1>Commutation rules for controlled-XOR gates, with firing attribution</h1>
+<p class="lede">How a shot gate moves past a colliding gate while its action splits into exclusive residues — first for mixed-polarity Toffoli gates, then for g57 gates.</p>
+<p class="meta">July 2026 · prepared from a working session; all identities verified algebraically · rev. 2: shot/colliding terminology, relaxed R2 rule folded into §4</p>
+
+<nav class="toc">
+  <b>Contents</b>
+  1. The goal &nbsp;·&nbsp; 2. Notation &nbsp;·&nbsp; 3. What exclusivity forces &nbsp;·&nbsp; 4. Part I — conjunction gates (R0–R3) &nbsp;·&nbsp; 5. Part II — g57 gates &nbsp;·&nbsp; 6. Summary
+</nav>
+
+<h2>1 · The goal</h2>
+<p>We work with reversible circuits whose gates are single-target controlled XORs: a gate <code>(t; f)</code> performs <code>x_t ^= f(x)</code>, where the control function <code>f</code> reads wires other than <code>t</code>. Two families appear:</p>
+<ul>
+  <li><b>Conjunction gates</b> (mixed-polarity multi-controlled Toffolis, "MPMCT"): <code>f</code> is an AND of literals, each positive or negative. This includes X (empty conjunction) and CNOT (one literal).</li>
+  <li><b>g57 gates</b> <code>[t, x, y]</code>: <code>t ^= x ∨ ¬y</code> — the control is an OR of one positive and one negative literal.</li>
+</ul>
+<p>A gate <b>fires</b> on an input when its control function evaluates to 1. Borrowing the shooting-game vocabulary: the gate being pushed through the circuit is the <b>shot gate</b> <span class="gp">g</span>, and the neighbor it must pass is the <b>colliding gate</b> <span class="hp">h</span>. We want rewrite rules that move the shot gate rightward past the colliding gate:</p>
+
+<div class="defbox">
+  <span class="lbl">Rule form and conditions</span>
+  <p><code>g h &nbsp;=&nbsp; h g₁ g₂ ⋯ g_k</code></p>
+  <p>(a) &nbsp;whenever g does <em>not</em> fire, none of the residues g₁…g_k fire;</p>
+  <p>(b) &nbsp;whenever g fires, <em>exactly one</em> residue fires.</p>
+</div>
+
+<p>Condition (b) is the exclusivity rule: the residues account for the shot gate's firing by a case split, with exactly one case true at a time. This is what lets bookkeeping attached to firings (attribution, generation tags) survive the rewrite exactly. Everything in this note keeps exclusivity; relaxations are mentioned only in passing at the end.</p>
+
+<h2>2 · Notation</h2>
+<p>Circuits apply gates left to right. We write <code>g = (a; F)</code> for the shot gate and <code>h = (b; G)</code> for the colliding gate, and when F reads the wire b we factor <code>F = λ_b · S</code> where λ_b is F's literal on b and S the remaining conjunction; likewise <code>G = λ_a · R</code> when G reads a. Diagrams use the standard symbols:</p>
+
+<figure class="fig">
+<svg viewBox="0 0 680 76" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Legend of circuit symbols">
+<circle cx="70" cy="26" r="5" fill="#8a8880"/>
+<text class="ts" x="81" y="30">control — fires if wire = 1</text>
+<circle cx="255" cy="26" r="5" fill="#fff" stroke="#8a8880" stroke-width="2"/>
+<text class="ts" x="266" y="30">negated — fires if wire = 0</text>
+<g stroke="#8a8880" stroke-width="2" fill="none"><circle cx="440" cy="26" r="8"/><line x1="440" y1="18" x2="440" y2="34"/><line x1="432" y1="26" x2="448" y2="26"/></g>
+<text class="ts" x="454" y="30">target: t ^= f(controls)</text>
+<text class="ts" x="70" y="58">gate colors: <tspan fill="#5a50c4">purple = shot gate g and its residues</tspan>  ·  <tspan fill="#127a5b">teal = colliding gate h</tspan></text>
+</svg>
+<figcaption><span class="fno">Fig. 1</span>Symbols used throughout. A gate fires when its control function evaluates to 1; firing XORs 1 into its target wire.</figcaption>
+</figure>
+
+<h2>3 · What exclusivity forces</h2>
+<p>Before writing any rules, conditions (a) and (b) already pin down most of the answer:</p>
+<ol>
+  <li><b>Every residue targets the shot gate's target a.</b> On an input where g fires and residue gᵢ is the one that fires, the right side toggles gᵢ's target while the left side toggles a — they must be the same wire.</li>
+  <li><b>The residues' firing sets partition g's firing set</b>, translated to the state after h.</li>
+  <li><b>A rule exists if and only if the colliding gate does not read a.</b> If it does, pick an input where the shot gate fires and the rest of h's controls hold but its a-literal fails: the left side toggles both a and b, while on the right exactly one single-target gate fires — a contradiction.</li>
+</ol>
+<p>So the whole theory is organized by who writes into whose controls:</p>
+
+<div class="tblwrap"><table>
+<tr><th>case</th><th>colliding h writes a control of shot g&thinsp;?</th><th>shot g writes a control of colliding h&thinsp;?</th><th>outcome</th></tr>
+<tr><td><b>R0</b></td><td>no</td><td>no</td><td>swap freely</td></tr>
+<tr><td><b>R1</b></td><td>yes</td><td>no</td><td>shot gate splits — the ladder</td></tr>
+<tr><td><b>R2</b></td><td>no</td><td>yes</td><td>push the colliding gate left (mirror)</td></tr>
+<tr><td><b>R3</b></td><td>yes</td><td>yes</td><td>partial commutation only</td></tr>
+</table></div>
+
+<h2>4 · Part I — conjunction gates</h2>
+
+<h3>R0 — no collision: swap freely</h3>
+<p>If neither gate's target feeds the other's controls, the gates commute unchanged (k = 1). Sharing <em>read</em> wires is harmless — only writes into reads collide. This also covers two gates with the same target: toggles on one wire commute.</p>
+
+<figure class="fig">
+<svg viewBox="0 0 680 148" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="R0 free swap">
+<line x1="88" y1="20" x2="252" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="54" x2="252" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="88" x2="252" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="122" x2="252" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="20" x2="490" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="54" x2="490" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="88" x2="490" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="122" x2="490" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<text class="ts" x="78" y="24" text-anchor="end">a</text>
+<text class="ts" x="78" y="58" text-anchor="end">b</text>
+<text class="ts" x="78" y="92" text-anchor="end">c</text>
+<text class="ts" x="78" y="126" text-anchor="end">d</text>
+<line x1="140" y1="12" x2="140" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="140" cy="20" r="8"/><line x1="140" y1="12" x2="140" y2="28"/><line x1="132" y1="20" x2="148" y2="20"/></g>
+<circle cx="140" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="140" cy="88" r="5" fill="#7f77dd"/>
+<line x1="205" y1="88" x2="205" y2="130" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="205" cy="88" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="205" cy="122" r="8"/><line x1="205" y1="114" x2="205" y2="130"/><line x1="197" y1="122" x2="213" y2="122"/></g>
+<text class="teq" x="287" y="76" text-anchor="middle">=</text>
+<line x1="370" y1="88" x2="370" y2="130" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="370" cy="88" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="370" cy="122" r="8"/><line x1="370" y1="114" x2="370" y2="130"/><line x1="362" y1="122" x2="378" y2="122"/></g>
+<line x1="440" y1="12" x2="440" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="440" cy="20" r="8"/><line x1="440" y1="12" x2="440" y2="28"/><line x1="432" y1="20" x2="448" y2="20"/></g>
+<circle cx="440" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="440" cy="88" r="5" fill="#7f77dd"/>
+</svg>
+<figcaption><span class="fno">Fig. 2</span>R0. Here the shot gate g = T(b,c→a) and the colliding gate h = CNOT(c→d) share the read wire c, which is fine — they swap with no residue.</figcaption>
+</figure>
+
+<h3>R1 — the colliding gate writes a control of the shot gate: the ladder</h3>
+<p>Passing the colliding gate replaces the old value of b by <code>b ⊕ G</code>, so the shot gate's original firing condition becomes <code>(λ_b ⊕ G)·S</code>. Decomposing this region into disjoint conjunctions gives, for <code>G = ℓ₁ℓ₂⋯ℓ_r</code>:</p>
+
+<div class="formula">g h  =  h · (a; ¬λ_b·ℓ₁⋯ℓ_r·S)          <i>h fired, b got flipped</i>
+        · (a; λ_b·¬ℓ₁·S)               <i>ℓ₁ failed</i>
+        · (a; λ_b·ℓ₁·¬ℓ₂·S)            <i>ℓ₁ held, ℓ₂ failed</i>
+          ⋮
+        · (a; λ_b·ℓ₁⋯ℓ_{r−1}·¬ℓ_r·S)   <i>all held but ℓ_r</i></div>
+
+<p>That is <b>k = r + 1</b> residues, one per answer to "did the colliding gate fire, and if not, which of its controls failed <em>first</em>?" — exactly one answer is true on any input, which is exclusivity. All residues target a and none reads a, so they pairwise commute; their order is irrelevant. The simplest instances: h = X gives k = 1 (just flip the b-literal's polarity), h = CNOT gives k = 2:</p>
+
+<figure class="fig">
+<svg viewBox="0 0 680 162" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="R1 with a CNOT">
+<line x1="88" y1="20" x2="252" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="54" x2="252" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="88" x2="252" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="122" x2="252" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="20" x2="580" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="54" x2="580" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="88" x2="580" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="122" x2="580" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<text class="ts" x="78" y="24" text-anchor="end">a</text>
+<text class="ts" x="78" y="58" text-anchor="end">b</text>
+<text class="ts" x="78" y="92" text-anchor="end">c</text>
+<text class="ts" x="78" y="126" text-anchor="end">d</text>
+<line x1="140" y1="12" x2="140" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="140" cy="20" r="8"/><line x1="140" y1="12" x2="140" y2="28"/><line x1="132" y1="20" x2="148" y2="20"/></g>
+<circle cx="140" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="140" cy="88" r="5" fill="#7f77dd"/>
+<line x1="205" y1="46" x2="205" y2="122" stroke="#1d9e75" stroke-width="2"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="205" cy="54" r="8"/><line x1="205" y1="46" x2="205" y2="62"/><line x1="197" y1="54" x2="213" y2="54"/></g>
+<circle cx="205" cy="122" r="5" fill="#1d9e75"/>
+<text class="teq" x="287" y="76" text-anchor="middle">=</text>
+<line x1="360" y1="46" x2="360" y2="122" stroke="#1d9e75" stroke-width="2"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="360" cy="54" r="8"/><line x1="360" y1="46" x2="360" y2="62"/><line x1="352" y1="54" x2="368" y2="54"/></g>
+<circle cx="360" cy="122" r="5" fill="#1d9e75"/>
+<line x1="440" y1="12" x2="440" y2="122" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="440" cy="20" r="8"/><line x1="440" y1="12" x2="440" y2="28"/><line x1="432" y1="20" x2="448" y2="20"/></g>
+<circle cx="440" cy="54" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<circle cx="440" cy="88" r="5" fill="#7f77dd"/>
+<circle cx="440" cy="122" r="5" fill="#7f77dd"/>
+<line x1="530" y1="12" x2="530" y2="122" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="530" cy="20" r="8"/><line x1="530" y1="12" x2="530" y2="28"/><line x1="522" y1="20" x2="538" y2="20"/></g>
+<circle cx="530" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="530" cy="88" r="5" fill="#7f77dd"/>
+<circle cx="530" cy="122" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<text class="ts" x="440" y="150" text-anchor="middle">b got flipped</text>
+<text class="ts" x="530" y="150" text-anchor="middle">b didn't</text>
+</svg>
+<figcaption><span class="fno">Fig. 3</span>R1 with shot gate g = T(b,c→a), colliding gate h = CNOT(d→b). The two residues have complementary b/d patterns, so at most one can fire — and one does exactly when the shot gate fired on the left.</figcaption>
+</figure>
+
+<p>With more controls on h, the ladder structure appears — later rungs carry longer prefixes of h's controls, and each rung <em>drops</em> every control after its first failing one:</p>
+
+<figure class="fig">
+<svg viewBox="0 0 680 196" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="R1 ladder with two controls">
+<line x1="88" y1="20" x2="252" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="54" x2="252" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="88" x2="252" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="122" x2="252" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="156" x2="252" y2="156" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="20" x2="615" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="54" x2="615" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="88" x2="615" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="122" x2="615" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="156" x2="615" y2="156" stroke="#c9c7bd" stroke-width="1.5"/>
+<text class="ts" x="78" y="24" text-anchor="end">a</text>
+<text class="ts" x="78" y="58" text-anchor="end">b</text>
+<text class="ts" x="78" y="92" text-anchor="end">s</text>
+<text class="ts" x="78" y="126" text-anchor="end">u</text>
+<text class="ts" x="78" y="160" text-anchor="end">v</text>
+<line x1="140" y1="12" x2="140" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="140" cy="20" r="8"/><line x1="140" y1="12" x2="140" y2="28"/><line x1="132" y1="20" x2="148" y2="20"/></g>
+<circle cx="140" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="140" cy="88" r="5" fill="#7f77dd"/>
+<line x1="205" y1="46" x2="205" y2="156" stroke="#1d9e75" stroke-width="2"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="205" cy="54" r="8"/><line x1="205" y1="46" x2="205" y2="62"/><line x1="197" y1="54" x2="213" y2="54"/></g>
+<circle cx="205" cy="122" r="5" fill="#1d9e75"/>
+<circle cx="205" cy="156" r="5" fill="#1d9e75"/>
+<text class="teq" x="287" y="90" text-anchor="middle">=</text>
+<line x1="355" y1="46" x2="355" y2="156" stroke="#1d9e75" stroke-width="2"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="355" cy="54" r="8"/><line x1="355" y1="46" x2="355" y2="62"/><line x1="347" y1="54" x2="363" y2="54"/></g>
+<circle cx="355" cy="122" r="5" fill="#1d9e75"/>
+<circle cx="355" cy="156" r="5" fill="#1d9e75"/>
+<line x1="425" y1="12" x2="425" y2="156" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="425" cy="20" r="8"/><line x1="425" y1="12" x2="425" y2="28"/><line x1="417" y1="20" x2="433" y2="20"/></g>
+<circle cx="425" cy="54" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<circle cx="425" cy="88" r="5" fill="#7f77dd"/>
+<circle cx="425" cy="122" r="5" fill="#7f77dd"/>
+<circle cx="425" cy="156" r="5" fill="#7f77dd"/>
+<line x1="495" y1="12" x2="495" y2="122" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="495" cy="20" r="8"/><line x1="495" y1="12" x2="495" y2="28"/><line x1="487" y1="20" x2="503" y2="20"/></g>
+<circle cx="495" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="495" cy="88" r="5" fill="#7f77dd"/>
+<circle cx="495" cy="122" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<line x1="565" y1="12" x2="565" y2="156" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="565" cy="20" r="8"/><line x1="565" y1="12" x2="565" y2="28"/><line x1="557" y1="20" x2="573" y2="20"/></g>
+<circle cx="565" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="565" cy="88" r="5" fill="#7f77dd"/>
+<circle cx="565" cy="122" r="5" fill="#7f77dd"/>
+<circle cx="565" cy="156" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<text class="ts" x="425" y="184" text-anchor="middle">h fired</text>
+<text class="ts" x="495" y="184" text-anchor="middle">u = 0</text>
+<text class="ts" x="565" y="184" text-anchor="middle">u = 1, v = 0</text>
+</svg>
+<figcaption><span class="fno">Fig. 4</span>R1 with a 2-control colliding gate h = T(u,v→b), shot gate g = T(b,s→a): k = 3. Note the middle residue has no v-control — once u has failed, v is irrelevant.</figcaption>
+</figure>
+
+<figure class="fig">
+<svg viewBox="0 0 680 232" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="R1 ladder with three controls">
+<line x1="88" y1="20" x2="252" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="54" x2="252" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="88" x2="252" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="122" x2="252" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="156" x2="252" y2="156" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="190" x2="252" y2="190" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="20" x2="640" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="54" x2="640" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="88" x2="640" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="122" x2="640" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="156" x2="640" y2="156" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="190" x2="640" y2="190" stroke="#c9c7bd" stroke-width="1.5"/>
+<text class="ts" x="78" y="24" text-anchor="end">a</text>
+<text class="ts" x="78" y="58" text-anchor="end">b</text>
+<text class="ts" x="78" y="92" text-anchor="end">s</text>
+<text class="ts" x="78" y="126" text-anchor="end">u</text>
+<text class="ts" x="78" y="160" text-anchor="end">v</text>
+<text class="ts" x="78" y="194" text-anchor="end">w</text>
+<line x1="140" y1="12" x2="140" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="140" cy="20" r="8"/><line x1="140" y1="12" x2="140" y2="28"/><line x1="132" y1="20" x2="148" y2="20"/></g>
+<circle cx="140" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="140" cy="88" r="5" fill="#7f77dd"/>
+<line x1="205" y1="46" x2="205" y2="190" stroke="#1d9e75" stroke-width="2"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="205" cy="54" r="8"/><line x1="205" y1="46" x2="205" y2="62"/><line x1="197" y1="54" x2="213" y2="54"/></g>
+<circle cx="205" cy="122" r="5" fill="#1d9e75"/>
+<circle cx="205" cy="156" r="5" fill="#1d9e75"/>
+<circle cx="205" cy="190" r="5" fill="#1d9e75"/>
+<text class="teq" x="287" y="106" text-anchor="middle">=</text>
+<line x1="350" y1="46" x2="350" y2="190" stroke="#1d9e75" stroke-width="2"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="350" cy="54" r="8"/><line x1="350" y1="46" x2="350" y2="62"/><line x1="342" y1="54" x2="358" y2="54"/></g>
+<circle cx="350" cy="122" r="5" fill="#1d9e75"/>
+<circle cx="350" cy="156" r="5" fill="#1d9e75"/>
+<circle cx="350" cy="190" r="5" fill="#1d9e75"/>
+<line x1="415" y1="12" x2="415" y2="190" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="415" cy="20" r="8"/><line x1="415" y1="12" x2="415" y2="28"/><line x1="407" y1="20" x2="423" y2="20"/></g>
+<circle cx="415" cy="54" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<circle cx="415" cy="88" r="5" fill="#7f77dd"/>
+<circle cx="415" cy="122" r="5" fill="#7f77dd"/>
+<circle cx="415" cy="156" r="5" fill="#7f77dd"/>
+<circle cx="415" cy="190" r="5" fill="#7f77dd"/>
+<line x1="480" y1="12" x2="480" y2="122" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="480" cy="20" r="8"/><line x1="480" y1="12" x2="480" y2="28"/><line x1="472" y1="20" x2="488" y2="20"/></g>
+<circle cx="480" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="480" cy="88" r="5" fill="#7f77dd"/>
+<circle cx="480" cy="122" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<line x1="545" y1="12" x2="545" y2="156" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="545" cy="20" r="8"/><line x1="545" y1="12" x2="545" y2="28"/><line x1="537" y1="20" x2="553" y2="20"/></g>
+<circle cx="545" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="545" cy="88" r="5" fill="#7f77dd"/>
+<circle cx="545" cy="122" r="5" fill="#7f77dd"/>
+<circle cx="545" cy="156" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<line x1="610" y1="12" x2="610" y2="190" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="610" cy="20" r="8"/><line x1="610" y1="12" x2="610" y2="28"/><line x1="602" y1="20" x2="618" y2="20"/></g>
+<circle cx="610" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="610" cy="88" r="5" fill="#7f77dd"/>
+<circle cx="610" cy="122" r="5" fill="#7f77dd"/>
+<circle cx="610" cy="156" r="5" fill="#7f77dd"/>
+<circle cx="610" cy="190" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<text class="ts" x="415" y="218" text-anchor="middle">h fired</text>
+<text class="ts" x="480" y="218" text-anchor="middle">u = 0</text>
+<text class="ts" x="545" y="218" text-anchor="middle">v = 0</text>
+<text class="ts" x="610" y="218" text-anchor="middle">w = 0</text>
+</svg>
+<figcaption><span class="fno">Fig. 5</span>R1 with a 3-control colliding gate: k = 4. Each rung marks the first failing control of h — earlier ones held, later ones dropped. Rung j carries |S| + j + 1 controls.</figcaption>
+</figure>
+
+<p>Three practical remarks: the ordering of the colliding gate's controls in the ladder is a free choice (any permutation is valid, always r + 1 rungs); k = r + 1 is tight — the firing region is parity-twisted and no fewer disjoint conjunctions cover it; and the cost compounds multiplicatively across successive crossings, so wide-control colliding gates act as walls. If the shot gate's other controls S contradict one of the colliding gate's literals, the ladder collapses to a swap or a single polarity flip.</p>
+
+<h3>R2 — the shot gate writes a control of the colliding gate</h3>
+<p>By the lemma in §3, no rule of the form <code>g h = h g₁…g_k</code> exists here under strict exclusivity. What does exist is the mirror: push the <em>colliding gate</em> leftward past the shot gate, splitting h. With <code>G = λ_a·R</code> and <code>F = f₁⋯f_s</code>:</p>
+
+<div class="formula">g h  =  (b; ¬λ_a·F·R) · (b; λ_a·¬f₁·R) ⋯ (b; λ_a·f₁⋯f_{s−1}·¬f_s·R)  ·  g</div>
+
+<p>Same ladder construction with the roles swapped; conditions (a) and (b) now attribute to the <em>colliding gate's</em> firing as seen on the left side (i.e. after the shot gate). k = s + 1.</p>
+
+<figure class="fig">
+<svg viewBox="0 0 680 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="R2 mirror rule">
+<line x1="88" y1="20" x2="252" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="54" x2="252" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="88" x2="252" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="20" x2="550" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="54" x2="550" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="88" x2="550" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<text class="ts" x="78" y="24" text-anchor="end">a</text>
+<text class="ts" x="78" y="58" text-anchor="end">b</text>
+<text class="ts" x="78" y="92" text-anchor="end">c</text>
+<line x1="140" y1="12" x2="140" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="140" cy="20" r="8"/><line x1="140" y1="12" x2="140" y2="28"/><line x1="132" y1="20" x2="148" y2="20"/></g>
+<circle cx="140" cy="88" r="5" fill="#7f77dd"/>
+<line x1="205" y1="20" x2="205" y2="62" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="205" cy="20" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="205" cy="54" r="8"/><line x1="205" y1="46" x2="205" y2="62"/><line x1="197" y1="54" x2="213" y2="54"/></g>
+<text class="teq" x="287" y="60" text-anchor="middle">=</text>
+<line x1="360" y1="20" x2="360" y2="88" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="360" cy="20" r="5" fill="#fff" stroke="#1d9e75" stroke-width="2"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="360" cy="54" r="8"/><line x1="360" y1="46" x2="360" y2="62"/><line x1="352" y1="54" x2="368" y2="54"/></g>
+<circle cx="360" cy="88" r="5" fill="#1d9e75"/>
+<line x1="430" y1="20" x2="430" y2="88" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="430" cy="20" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="430" cy="54" r="8"/><line x1="430" y1="46" x2="430" y2="62"/><line x1="422" y1="54" x2="438" y2="54"/></g>
+<circle cx="430" cy="88" r="5" fill="#fff" stroke="#1d9e75" stroke-width="2"/>
+<line x1="500" y1="12" x2="500" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="500" cy="20" r="8"/><line x1="500" y1="12" x2="500" y2="28"/><line x1="492" y1="20" x2="508" y2="20"/></g>
+<circle cx="500" cy="88" r="5" fill="#7f77dd"/>
+<text class="ts" x="360" y="116" text-anchor="middle">g flips a</text>
+<text class="ts" x="430" y="116" text-anchor="middle">g doesn't</text>
+</svg>
+<figcaption><span class="fno">Fig. 6</span>R2 mirrored: shot g = CNOT(c→a), colliding h = CNOT(a→b). The colliding gate splits by whether the shot gate is about to flip a; the residues reproduce its left-side firing exactly.</figcaption>
+</figure>
+
+<p>There is, however, a cheaper route if one is willing to bend exclusivity slightly. Keep condition (a) — no residue may fire when the shot gate didn't — but allow <em>two</em> residues to fire together when it did. Then the shot gate can pass rightward after all, and with only two residues, whatever the sizes of F and G:</p>
+
+<div class="formula">g h  =  h · g · (b; F·R)         <i>the shot gate itself, plus one export gate</i></div>
+
+<p>The shot gate passes <em>unchanged</em>; the export gate forwards its disturbance to the colliding gate's target, carrying all of F plus all of G except its a-literal (the polarity of λ_a cancels out). Both residues are gated by F, so condition (a) survives untouched. When the shot gate fires, either g alone fires (the rest of h's controls failed) or g and the export fire together (they held) — never more than two, and it is always exactly these two residues, independent of how wide either gate is. This k = 2 is what the exclusive mirror pays s + 1 for. (For a g57 shot gate the export region F∧R is two cubes rather than one, so three residues — see Part II.)</p>
+
+<figure class="fig">
+<svg viewBox="0 0 680 162" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="R2 relaxed export rule">
+<line x1="88" y1="20" x2="252" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="54" x2="252" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="88" x2="252" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="122" x2="252" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="20" x2="580" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="54" x2="580" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="88" x2="580" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="122" x2="580" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<text class="ts" x="78" y="24" text-anchor="end">a</text>
+<text class="ts" x="78" y="58" text-anchor="end">b</text>
+<text class="ts" x="78" y="92" text-anchor="end">c</text>
+<text class="ts" x="78" y="126" text-anchor="end">d</text>
+<line x1="140" y1="12" x2="140" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="140" cy="20" r="8"/><line x1="140" y1="12" x2="140" y2="28"/><line x1="132" y1="20" x2="148" y2="20"/></g>
+<circle cx="140" cy="88" r="5" fill="#7f77dd"/>
+<line x1="205" y1="20" x2="205" y2="122" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="205" cy="20" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="205" cy="54" r="8"/><line x1="205" y1="46" x2="205" y2="62"/><line x1="197" y1="54" x2="213" y2="54"/></g>
+<circle cx="205" cy="122" r="5" fill="#1d9e75"/>
+<text class="teq" x="287" y="76" text-anchor="middle">=</text>
+<line x1="360" y1="20" x2="360" y2="122" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="360" cy="20" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="360" cy="54" r="8"/><line x1="360" y1="46" x2="360" y2="62"/><line x1="352" y1="54" x2="368" y2="54"/></g>
+<circle cx="360" cy="122" r="5" fill="#1d9e75"/>
+<line x1="440" y1="12" x2="440" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="440" cy="20" r="8"/><line x1="440" y1="12" x2="440" y2="28"/><line x1="432" y1="20" x2="448" y2="20"/></g>
+<circle cx="440" cy="88" r="5" fill="#7f77dd"/>
+<line x1="520" y1="46" x2="520" y2="122" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="520" cy="54" r="8"/><line x1="520" y1="46" x2="520" y2="62"/><line x1="512" y1="54" x2="528" y2="54"/></g>
+<circle cx="520" cy="88" r="5" fill="#7f77dd"/>
+<circle cx="520" cy="122" r="5" fill="#7f77dd"/>
+<text class="ts" x="440" y="150" text-anchor="middle">g itself</text>
+<text class="ts" x="520" y="150" text-anchor="middle">g fired and d = 1</text>
+</svg>
+<figcaption><span class="fno">Fig. 7</span>R2 relaxed: allowing two simultaneous firings, the shot gate passes unchanged plus one export onto b. Shown: g = CNOT(c→a), h = T(a,d→b); the export T(c,d→b) fires exactly when the shot gate fired and the rest of h's controls held.</figcaption>
+</figure>
+
+<h3>R3 — mutual collision</h3>
+<p>When each gate writes into the other's controls, <em>no full commutation exists in either direction</em>, in any residue-based form that respects condition (a) — even allowing both gates to split simultaneously, and even under the relaxed multi-fire regime that rescued R2, since the proof uses only condition (a).</p>
+
+<figure class="fig">
+<svg viewBox="0 0 680 76" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="R3 mutual collision, no rule">
+<line x1="88" y1="20" x2="252" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="54" x2="252" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<text class="ts" x="78" y="24" text-anchor="end">a</text>
+<text class="ts" x="78" y="58" text-anchor="end">b</text>
+<line x1="140" y1="12" x2="140" y2="54" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="140" cy="20" r="8"/><line x1="140" y1="12" x2="140" y2="28"/><line x1="132" y1="20" x2="148" y2="20"/></g>
+<circle cx="140" cy="54" r="5" fill="#7f77dd"/>
+<line x1="205" y1="20" x2="205" y2="62" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="205" cy="20" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="205" cy="54" r="8"/><line x1="205" y1="46" x2="205" y2="62"/><line x1="197" y1="54" x2="213" y2="54"/></g>
+<line x1="292" y1="29" x2="308" y2="45" stroke="#c43a39" stroke-width="3"/>
+<line x1="308" y1="29" x2="292" y2="45" stroke="#c43a39" stroke-width="3"/>
+<text class="ts" x="324" y="41">no full commutation — in either direction</text>
+</svg>
+<figcaption><span class="fno">Fig. 8</span>The hard core of R3: facing CNOTs. Each writes the other's control; nothing commutes fully.</figcaption>
+</figure>
+
+<details><summary>Proof sketch (facing CNOTs)</summary><div class="body">
+<p>g = CNOT(b→a) fires iff b = 1; h = CNOT(a→b) fires on the left side iff a⊕b = 1. Suppose all h-residues precede all g-residues. On inputs 00 and 11, h did not fire, so by condition (a) no h-residue may fire, and the state never changes — hence every h-residue's control must evaluate to 0 at <em>both</em> 00 and 11. On two wires, a residue targeting a can only read b and vice versa; every candidate control (b, ¬b, a, ¬a, empty) is satisfied at 00 or at 11. So the h-block is empty — and then input 10, where h fired but g didn't, never receives its b-toggle (g-residues are barred there by (a)). Scratch-wire and swapped-target constructions fail by the same argument, since the banned inputs are ones where nothing ever fires and all wires hold original values. A general mutual pair contains this core on the subcube where both side-conditions S and R hold.</p>
+</div></details>
+
+<p>But the collision is <em>semi-permeable</em>. Write <code>F = λ_b·S</code> and <code>G = λ_a·R</code>. The deadlock lives only on the region where both S and R hold; everything else can cross. The cleanest form keeps the colliding gate fully intact and splits only the shot gate:</p>
+
+<div class="formula">g h  =  (a; λ_b·S·R)  ·  h  ·  (a; λ_b·S·r₁⋯r_{j−1}·¬rⱼ)   <i>j = 1 … |R|</i>
+        <i>stays behind      unchanged   crossed to the right</i></div>
+
+<p>The stay-behind residue is exactly <b>the part of the shot gate that the colliding gate can observe</b> — g's firing restricted to {R live}, the only region where flipping a matters to h. Because it still executes before the colliding gate, h fires identically to the left side with no modification at all. The crossed residues cover {g fired, R dead}; on their region the colliding gate never fires, so they read b safely after it. The two parts partition {g fired}, so exclusivity is exact.</p>
+
+<figure class="fig">
+<svg viewBox="0 0 680 162" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="R3 partial commutation with h intact">
+<line x1="88" y1="20" x2="252" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="54" x2="252" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="88" x2="252" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="122" x2="252" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="20" x2="600" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="54" x2="600" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="88" x2="600" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="122" x2="600" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<text class="ts" x="78" y="24" text-anchor="end">a</text>
+<text class="ts" x="78" y="58" text-anchor="end">b</text>
+<text class="ts" x="78" y="92" text-anchor="end">s</text>
+<text class="ts" x="78" y="126" text-anchor="end">r</text>
+<line x1="140" y1="12" x2="140" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="140" cy="20" r="8"/><line x1="140" y1="12" x2="140" y2="28"/><line x1="132" y1="20" x2="148" y2="20"/></g>
+<circle cx="140" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="140" cy="88" r="5" fill="#7f77dd"/>
+<line x1="205" y1="20" x2="205" y2="122" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="205" cy="20" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="205" cy="54" r="8"/><line x1="205" y1="46" x2="205" y2="62"/><line x1="197" y1="54" x2="213" y2="54"/></g>
+<circle cx="205" cy="122" r="5" fill="#1d9e75"/>
+<text class="teq" x="287" y="76" text-anchor="middle">=</text>
+<line x1="375" y1="12" x2="375" y2="122" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="375" cy="20" r="8"/><line x1="375" y1="12" x2="375" y2="28"/><line x1="367" y1="20" x2="383" y2="20"/></g>
+<circle cx="375" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="375" cy="88" r="5" fill="#7f77dd"/>
+<circle cx="375" cy="122" r="5" fill="#7f77dd"/>
+<line x1="455" y1="20" x2="455" y2="122" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="455" cy="20" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="455" cy="54" r="8"/><line x1="455" y1="46" x2="455" y2="62"/><line x1="447" y1="54" x2="463" y2="54"/></g>
+<circle cx="455" cy="122" r="5" fill="#1d9e75"/>
+<line x1="535" y1="12" x2="535" y2="122" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="535" cy="20" r="8"/><line x1="535" y1="12" x2="535" y2="28"/><line x1="527" y1="20" x2="543" y2="20"/></g>
+<circle cx="535" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="535" cy="88" r="5" fill="#7f77dd"/>
+<circle cx="535" cy="122" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<text class="ts" x="375" y="150" text-anchor="middle">stays behind</text>
+<text class="ts" x="455" y="150" text-anchor="middle">h intact</text>
+<text class="ts" x="535" y="150" text-anchor="middle">crossed (r dead)</text>
+</svg>
+<figcaption><span class="fno">Fig. 9</span>R3 with the colliding gate intact: shot g = T(b,s→a), colliding h = T(a,r→b). The residue that stays carries S∧R; the crossed residue fires only where the colliding gate is inert.</figcaption>
+</figure>
+
+<p>Splitting the colliding gate as well yields the maximal crossing: its residues conditioned on ¬S escape all the way <em>left</em>, the shot gate's residues conditioned on ¬R escape all the way <em>right</em>, and an irreducible core — one fattened residue of each — remains in the original order:</p>
+
+<figure class="fig">
+<svg viewBox="0 0 680 182" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="R3 maximal both-split commutation">
+<rect x="410" y="10" width="140" height="152" rx="4" fill="#f2f0ea"/>
+<line x1="88" y1="30" x2="252" y2="30" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="64" x2="252" y2="64" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="98" x2="252" y2="98" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="132" x2="252" y2="132" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="30" x2="628" y2="30" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="64" x2="628" y2="64" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="98" x2="628" y2="98" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="132" x2="628" y2="132" stroke="#c9c7bd" stroke-width="1.5"/>
+<text class="ts" x="78" y="34" text-anchor="end">a</text>
+<text class="ts" x="78" y="68" text-anchor="end">b</text>
+<text class="ts" x="78" y="102" text-anchor="end">s</text>
+<text class="ts" x="78" y="136" text-anchor="end">r</text>
+<line x1="140" y1="22" x2="140" y2="98" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="140" cy="30" r="8"/><line x1="140" y1="22" x2="140" y2="38"/><line x1="132" y1="30" x2="148" y2="30"/></g>
+<circle cx="140" cy="64" r="5" fill="#7f77dd"/>
+<circle cx="140" cy="98" r="5" fill="#7f77dd"/>
+<line x1="205" y1="30" x2="205" y2="132" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="205" cy="30" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="205" cy="64" r="8"/><line x1="205" y1="56" x2="205" y2="72"/><line x1="197" y1="64" x2="213" y2="64"/></g>
+<circle cx="205" cy="132" r="5" fill="#1d9e75"/>
+<text class="teq" x="287" y="86" text-anchor="middle">=</text>
+<line x1="365" y1="30" x2="365" y2="132" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="365" cy="30" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="365" cy="64" r="8"/><line x1="365" y1="56" x2="365" y2="72"/><line x1="357" y1="64" x2="373" y2="64"/></g>
+<circle cx="365" cy="98" r="5" fill="#fff" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="365" cy="132" r="5" fill="#1d9e75"/>
+<line x1="440" y1="22" x2="440" y2="132" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="440" cy="30" r="8"/><line x1="440" y1="22" x2="440" y2="38"/><line x1="432" y1="30" x2="448" y2="30"/></g>
+<circle cx="440" cy="64" r="5" fill="#7f77dd"/>
+<circle cx="440" cy="98" r="5" fill="#7f77dd"/>
+<circle cx="440" cy="132" r="5" fill="#7f77dd"/>
+<line x1="515" y1="30" x2="515" y2="132" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="515" cy="30" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="515" cy="64" r="8"/><line x1="515" y1="56" x2="515" y2="72"/><line x1="507" y1="64" x2="523" y2="64"/></g>
+<circle cx="515" cy="98" r="5" fill="#1d9e75"/>
+<circle cx="515" cy="132" r="5" fill="#1d9e75"/>
+<line x1="590" y1="22" x2="590" y2="132" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="590" cy="30" r="8"/><line x1="590" y1="22" x2="590" y2="38"/><line x1="582" y1="30" x2="598" y2="30"/></g>
+<circle cx="590" cy="64" r="5" fill="#7f77dd"/>
+<circle cx="590" cy="98" r="5" fill="#7f77dd"/>
+<circle cx="590" cy="132" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<text class="ts" x="365" y="170" text-anchor="middle">escaped left</text>
+<text class="ts" x="477" y="170" text-anchor="middle">locked core</text>
+<text class="ts" x="590" y="170" text-anchor="middle">escaped right</text>
+</svg>
+<figcaption><span class="fno">Fig. 10</span>Maximal R3 crossing, both gates splitting: g h = [h-residues with ¬S] · (a; λ_b·S·R) · (b; λ_a·S·R) · [g-residues with ¬R]. The shaded core fires only when both s and r are live; there, g-before-h order is forced.</figcaption>
+</figure>
+
+<p>This is optimal: on the S = R = 1 subcube the proof above shows no residue of either family can cross, so the locked core is unavoidable. Total cost |S| + |R| + 2 gates. If S and R contain contradictory literals, both core controls are identically false and the pair commutes outright.</p>
+
+<h2>5 · Part II — adding g57 gates</h2>
+<p>The g57 gate <code>[t, x, y]</code> performs <code>t ^= x ∨ ¬y</code>. In the normal form <code>(t; c ⊕ m)</code> — m a conjunction, c a complement bit — it is <code>c = 1, m = ¬x ∧ y</code>: a <em>complemented</em> conjunction, which fires on the complement of a cube. That complement is itself a disjoint union of cubes, and this single observation drives the whole generalization. The shot role and the colliding role want different treatments.</p>
+
+<h3>Shot gates: pre-split the g57 into exclusive residues</h3>
+<p>A g57's firing set <code>x ∨ ¬y</code> splits as the disjoint union {x = 1} ⊔ {x = 0, y = 0}, so the gate factors into two conjunction gates that already satisfy conditions (a) and (b) as its residues — the pre-split is itself a legal rewrite under the exclusivity regime:</p>
+
+<figure class="fig">
+<svg viewBox="0 0 680 130" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="g57 exclusive pre-split">
+<line x1="88" y1="20" x2="252" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="54" x2="252" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="88" x2="252" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="20" x2="560" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="54" x2="560" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="88" x2="560" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<text class="ts" x="78" y="24" text-anchor="end">a</text>
+<text class="ts" x="78" y="58" text-anchor="end">b</text>
+<text class="ts" x="78" y="92" text-anchor="end">c</text>
+<line x1="170" y1="12" x2="170" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="170" cy="20" r="8"/><line x1="170" y1="12" x2="170" y2="28"/><line x1="162" y1="20" x2="178" y2="20"/></g>
+<circle cx="170" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="170" cy="88" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<text class="ts" x="184" y="76">∨</text>
+<text class="teq" x="287" y="58" text-anchor="middle">=</text>
+<line x1="390" y1="12" x2="390" y2="54" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="390" cy="20" r="8"/><line x1="390" y1="12" x2="390" y2="28"/><line x1="382" y1="20" x2="398" y2="20"/></g>
+<circle cx="390" cy="54" r="5" fill="#7f77dd"/>
+<line x1="470" y1="12" x2="470" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="470" cy="20" r="8"/><line x1="470" y1="12" x2="470" y2="28"/><line x1="462" y1="20" x2="478" y2="20"/></g>
+<circle cx="470" cy="54" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<circle cx="470" cy="88" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<text class="ts" x="170" y="118" text-anchor="middle">fires iff b ∨ ¬c</text>
+<text class="ts" x="390" y="118" text-anchor="middle">b = 1</text>
+<text class="ts" x="470" y="118" text-anchor="middle">b = 0, c = 0</text>
+</svg>
+<figcaption><span class="fno">Fig. 11</span>The pre-split: g57 [a,b,c] = (a; b) · (a; ¬b∧¬c). Disjoint cases — exactly one residue fires whenever the g57 fires, none otherwise. The ∨ mark distinguishes a g57 column from a conjunction gate.</figcaption>
+</figure>
+
+<p>After pre-splitting, the shot side of the system contains only conjunction gates and the Part I rules apply verbatim. Often only one piece actually collides — if the colliding gate writes c, the <code>(a; b)</code> piece crosses by R0 for free.</p>
+<div class="note"><b>Warning.</b> The functional factorization g57 = X_a · T(¬b,c→a) must <em>not</em> be used under attribution: both factors fire precisely when the g57 does not fire, violating condition (a). The ladder pre-split above is the attribution-preserving factorization.</div>
+
+<h3>Colliding gates: keep the g57 intact — its complement bit is one polarity flip</h3>
+<p>All rules consume the colliding gate only through its firing function <code>G = c_h ⊕ m_h</code>, and the complement bit enters at exactly one point: <em>a colliding g57 fires — and flips its target — on the complement side of its monomial</em>. So wherever a residue carries a literal reading the colliding gate's target, flip that literal's polarity when c_h = 1. Concretely: in R1 the substitution becomes <code>λ_b ↦ λ_b ⊕ c_h ⊕ m_h</code> (same ladder, run over m_h, with the b-literal pre-flipped); in the R3 stay/cross split, the colliding gate's sensitivity wire set R = m_h ∖ {λ_a} is independent of c_h, so the split is unchanged — only the crossed residues' b-literals get the flip.</p>
+
+<h3>The concrete g57 × g57 rules</h3>
+<p>For pure-g57 circuits, with shot gate g = [a,p,q] and colliding gate h = [b,u,v], the counts follow from the pre-split plus the flips. The centerpiece is R3 (pins b = p, a = u shown; any pin combination gives the same shape):</p>
+
+<div class="formula">[a,b,q]·[b,a,v]  =  T(b,v→a) · T(¬b,¬q,v→a)  ·  [b,a,v]  ·  T(¬b,¬v→a) · T(b,¬q,¬v→a)
+                    <i>stay: F ∧ v                 h intact     crossed: F ∧ ¬v, b-literal flipped</i></div>
+
+<figure class="fig">
+<svg viewBox="0 0 680 162" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="R3 rule for two g57 gates">
+<line x1="88" y1="20" x2="252" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="54" x2="252" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="88" x2="252" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="88" y1="122" x2="252" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="20" x2="620" y2="20" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="54" x2="620" y2="54" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="88" x2="620" y2="88" stroke="#c9c7bd" stroke-width="1.5"/>
+<line x1="322" y1="122" x2="620" y2="122" stroke="#c9c7bd" stroke-width="1.5"/>
+<text class="ts" x="78" y="24" text-anchor="end">a</text>
+<text class="ts" x="78" y="58" text-anchor="end">b</text>
+<text class="ts" x="78" y="92" text-anchor="end">q</text>
+<text class="ts" x="78" y="126" text-anchor="end">v</text>
+<line x1="150" y1="12" x2="150" y2="88" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="150" cy="20" r="8"/><line x1="150" y1="12" x2="150" y2="28"/><line x1="142" y1="20" x2="158" y2="20"/></g>
+<circle cx="150" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="150" cy="88" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<text class="ts" x="160" y="78">∨</text>
+<line x1="215" y1="20" x2="215" y2="122" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="215" cy="20" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="215" cy="54" r="8"/><line x1="215" y1="46" x2="215" y2="62"/><line x1="207" y1="54" x2="223" y2="54"/></g>
+<circle cx="215" cy="122" r="5" fill="#fff" stroke="#1d9e75" stroke-width="2"/>
+<text class="ts" x="225" y="96">∨</text>
+<text class="teq" x="287" y="76" text-anchor="middle">=</text>
+<line x1="360" y1="12" x2="360" y2="122" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="360" cy="20" r="8"/><line x1="360" y1="12" x2="360" y2="28"/><line x1="352" y1="20" x2="368" y2="20"/></g>
+<circle cx="360" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="360" cy="122" r="5" fill="#7f77dd"/>
+<line x1="415" y1="12" x2="415" y2="122" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="415" cy="20" r="8"/><line x1="415" y1="12" x2="415" y2="28"/><line x1="407" y1="20" x2="423" y2="20"/></g>
+<circle cx="415" cy="54" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<circle cx="415" cy="88" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<circle cx="415" cy="122" r="5" fill="#7f77dd"/>
+<line x1="470" y1="20" x2="470" y2="122" stroke="#1d9e75" stroke-width="2"/>
+<circle cx="470" cy="20" r="5" fill="#1d9e75"/>
+<g stroke="#1d9e75" stroke-width="2" fill="none"><circle cx="470" cy="54" r="8"/><line x1="470" y1="46" x2="470" y2="62"/><line x1="462" y1="54" x2="478" y2="54"/></g>
+<circle cx="470" cy="122" r="5" fill="#fff" stroke="#1d9e75" stroke-width="2"/>
+<text class="ts" x="480" y="96">∨</text>
+<line x1="525" y1="12" x2="525" y2="122" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="525" cy="20" r="8"/><line x1="525" y1="12" x2="525" y2="28"/><line x1="517" y1="20" x2="533" y2="20"/></g>
+<circle cx="525" cy="54" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<circle cx="525" cy="122" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<line x1="580" y1="12" x2="580" y2="122" stroke="#7f77dd" stroke-width="2"/>
+<g stroke="#7f77dd" stroke-width="2" fill="none"><circle cx="580" cy="20" r="8"/><line x1="580" y1="12" x2="580" y2="28"/><line x1="572" y1="20" x2="588" y2="20"/></g>
+<circle cx="580" cy="54" r="5" fill="#7f77dd"/>
+<circle cx="580" cy="88" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<circle cx="580" cy="122" r="5" fill="#fff" stroke="#7f77dd" stroke-width="2"/>
+<text class="ts" x="387" y="150" text-anchor="middle">stay (v = 1)</text>
+<text class="ts" x="470" y="150" text-anchor="middle">h intact</text>
+<text class="ts" x="552" y="150" text-anchor="middle">crossed (v = 0)</text>
+</svg>
+<figcaption><span class="fno">Fig. 12</span>R3 for two g57s — five gates, exclusivity exact. The crossed residues read b with flipped polarity: at v = 0 the colliding g57 always fires and flips b. Verified over all v-branches on all inputs.</figcaption>
+</figure>
+
+<p>The four purple residues partition g's firing set {b ∨ ¬q}: two cubes with v (stay), two with ¬v (cross). The full g57 × g57 rule set:</p>
+
+<div class="tblwrap"><table>
+<tr><th>collision</th><th>rule</th><th>residues</th></tr>
+<tr><td>R0 — no collision</td><td>swap</td><td class="num">1</td></tr>
+<tr><td>R1 — collision on shot gate's q-pin</td><td>ladder; the (a; p) piece is untouched</td><td class="num">4</td></tr>
+<tr><td>R1 — collision on shot gate's p-pin</td><td>ladder; both pieces split</td><td class="num">6</td></tr>
+<tr><td>R2 — collision on colliding gate's v-pin</td><td>mirror (colliding gate splits, shot gate intact)</td><td class="num">4</td></tr>
+<tr><td>R2 — collision on colliding gate's u-pin</td><td>mirror</td><td class="num">6</td></tr>
+<tr><td>R3 — mutual, any pins</td><td>stay / cross, colliding gate intact</td><td class="num">4 + h</td></tr>
+</table></div>
+
+<p>Two structural facts about the pure-g57 world:</p>
+<ul>
+  <li><b>Pin asymmetry.</b> The control b ∨ ¬q depends on its first pin everywhere but on q only inside the ¬b cube, so collisions on the q-pin are systematically cheaper (4 vs 6). When circuit construction allows a choice, routing high-traffic wires through q-pins halves residue growth.</li>
+  <li><b>One-way erosion.</b> All residues are conjunction gates; g57s are consumed by commutation, never produced. A shot front through a g57 circuit becomes a mixed-polarity Toffoli front, while stationary gates stay g57. Any implementation needs an MPMCT representation to host the residues.</li>
+</ul>
+
+<h2>6 · Summary</h2>
+
+<div class="tblwrap"><table>
+<tr><th>case</th><th>condition</th><th>rule (strict exclusivity)</th><th>residues</th></tr>
+<tr><td><b>R0</b></td><td>no writes into reads</td><td>swap</td><td class="num">1</td></tr>
+<tr><td><b>R1</b></td><td>colliding gate writes a control of the shot gate</td><td>shot gate splits — first-failing-literal ladder</td><td class="num">r + 1</td></tr>
+<tr><td><b>R2</b></td><td>shot gate writes a control of the colliding gate</td><td>push the colliding gate left; it splits by whether the shot gate flips a</td><td class="num">s + 1 (of h)</td></tr>
+<tr><td><b>R2, two firings allowed</b></td><td>same, condition (b) relaxed</td><td>shot gate passes intact + one export gate on b</td><td class="num">2</td></tr>
+<tr><td><b>R3</b></td><td>mutual</td><td>partial: core λ∧S∧R stays, ¬R residues cross; colliding gate intact</td><td class="num">|R| + 1 (of g)</td></tr>
+<tr><td><b>R3 full</b></td><td>mutual</td><td>impossible in any residue form respecting (a)</td><td>—</td></tr>
+<tr><td><b>g57 shot gate</b></td><td>—</td><td>pre-split into (a; x) · (a; ¬x∧¬y), then rules above</td><td class="num">×2 worst case</td></tr>
+<tr><td><b>g57 colliding gate</b></td><td>—</td><td>keep intact; flip residue literals that read its target</td><td class="num">+0</td></tr>
+</table></div>
+
+<p>The mental model in one sentence: a shot gate commutes past a colliding gate by case-splitting on <em>everything the colliding gate could have done to the wires it reads</em>, one exclusive residue per case; the only thing that can never cross is the part of a mutual pair where each gate genuinely observes the other — and that locked core is small, rare-firing, and precisely characterized.</p>
+
+<div class="footer">
+Prepared July 2026 from a working discussion of commutation rules for the local-mixing gate system. All rule identities were checked algebraically; the g57 × g57 R3 identity was verified exhaustively over both branches of the sensitivity wire.
+</div>
+</main>

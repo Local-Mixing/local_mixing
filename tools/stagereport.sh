@@ -43,9 +43,11 @@ ssh -o ConnectTimeout=15 "$SERVER" "cat ~/tds/$RUN.log" | awk '
            "stage", "peak", "target.4", "compressed", "ratio", "floor_gen", "at-tgt%", "stop"
     for (k = 1; k <= last; k++) {
       if (comp[k] == "") continue
-      r = (peak[k] > 0) ? comp[k] / peak[k] : 0
-      printf "%-6d %10d %10d %10d %7.2f %9s %8s  %s\n",
-             k, peak[k], tgt[k], comp[k], r, fg[k], pc[k],
+      p = peak[k] + 0
+      c = comp[k] + 0
+      rstr = (p > 0) ? sprintf("%.2f", c / p) : "-"
+      printf "%-6d %10d %10d %10d %7s %9s %8s  %s\n",
+             k, p, tgt[k] + 0, c, rstr, fg[k], pc[k],
              (reason[k] != "" ? reason[k] : "?")
     }
   }'
