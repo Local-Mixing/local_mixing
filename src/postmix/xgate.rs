@@ -1,0 +1,115 @@
+// Post-mixing gate type: a single-target controlled XOR whose control is a
+// mixed-polarity conjunction, optionally complemented.
+//
+//   fires(x) = comp XOR AND_i lit_i(x),   lit = wire (pos=true) or NOT wire
+//   effect:  x[target] ^= fires(x)
+//
+// A g57 [a, x, y] (a ^= x OR NOT y) is comp=1 with monomial (NOT x AND y).
+// All residues produced by the splitting rules are pure conjunctions (comp=0),
+// so comp=1 marks an original, never-split g57.
+use smallvec::SmallVec;
+
+pub type Lits = SmallVec<[(u16, bool); 6]>;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct XGate {
+    pub target: u16,
+    pub comp: bool,
+    // Sorted by wire, at most one literal per wire, never contains `target`.
+    pub ctrls: Lits,
+}
+
+impl XGate {
+    // Conjunction gate (comp=0) from literals. Returns None when the literal set
+    // is contradictory (two polarities on one wire): the gate never fires and
+    // must be dropped by the caller. Duplicate literals merge.
+    pub fn conj(target: u16, lits: impl IntoIterator<Item = (u16, bool)>) -> Option<XGate> {
+        let mut v: Lits = SmallVec::new();
+        for (w, p) in lits {
+            assert_ne!(w, target, "control literal on the gate's own target");
+            v.push((w, p));
+        }
+        v.sort_unstable();
+        let mut out: Lits = SmallVec::new();
+        for (w, p) in v {
+            match out.last() {
+                Some(&(lw, lp)) if lw == w => {
+                    if lp != p {
+                        return None; // w AND NOT w: never fires
+                    }
+                }
+                _ => out.push((w, p)),
+            }
+        }
+        Some(XGate { target, comp: false, ctrls: out })
+    }
+
+    // Always-firing gate (X / NOT on `target`).
+    pub fn x_gate(target: u16) -> XGate {
+        XGate { target, comp: false, ctrls: SmallVec::new() }
+    }
+
+    pub fn from_g57(g: [u16; 3]) -> XGate {
+        let [a, x, y] = g;
+        if x == y {
+            // fires iff x OR NOT x == always
+            return XGate::x_gate(a);
+        }
+        let mut ctrls: Lits = SmallVec::new();
+        ctrls.push((x, false)); // monomial NOT x AND y
+        ctrls.push((y, true));
+        ctrls.sort_unstable();
+        XGate { target: a, comp: true, ctrls }
+    }
+
+    pub fn width(&self) -> usize {
+        self.ctrls.len()
+    }
+
+    pub fn reads(&self, w: u16) -> bool {
+        self.ctrls.iter().any(|&(cw, _)| cw == w)
+    }
+
+    pub fn lit_on(&self, w: u16) -> Option<bool> {
+        self.ctrls.iter().find(|&&(cw, _)| cw == w).map(|&(_, p)| p)
+    }
+
+    // Literal set minus the literal on wire `w`.
+    pub fn ctrls_without(&self, w: u16) -> Vec<(u16, bool)> {
+        self.ctrls.iter().copied().filter(|&(cw, _)| cw != w).collect()
+    }
+
+    // Two gates collide iff either one's target is read by the other. Equal
+    // targets alone do NOT collide (toggles on one wire commute).
+    pub fn collides(a: &XGate, b: &XGate) -> bool {
+        a.reads(b.target) || b.reads(a.target)
+    }
+
+    // 64-lane bit-sliced application: state[w] holds one bit per sample lane.
+    #[inline]
+    pub fn apply_lanes(&self, state: &mut [u64]) {
+        let mut acc = !0u64;
+        for &(w, p) in &self.ctrls {
+            let v = state[w as usize];
+            acc &= if p { v } else { !v };
+        }
+        if self.comp {
+            acc = !acc;
+        }
+        state[self.target as usize] ^= acc;
+    }
+
+    pub fn max_wire(&self) -> u16 {
+        self.ctrls.iter().map(|&(w, _)| w).chain([self.target]).max().unwrap()
+    }
+}
+
+pub fn eval_lanes<'a>(gates: impl IntoIterator<Item = &'a XGate>, state: &mut [u64]) {
+    for g in gates {
+        g.apply_lanes(state);
+    }
+}
+
+pub fn max_wire<'a>(gates: impl IntoIterator<Item = &'a XGate>) -> u16 {
+    gates.into_iter().map(|g| g.max_wire()).max().unwrap_or(0)
+}

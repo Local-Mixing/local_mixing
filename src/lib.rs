@@ -1,5 +1,6 @@
 pub mod bench_support;
 pub mod circuit;
+pub mod postmix;
 pub mod rainbow;
 pub mod random;
 pub mod replace;
