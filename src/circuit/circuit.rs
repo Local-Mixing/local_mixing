@@ -36,6 +36,34 @@ fn wire_mask(n: usize) -> u64 {
 // Windows skipped by the CANON_MONOMIAL_CAP bail-out (treated as clean DB misses).
 pub static CANON_CAP_SKIPS: AtomicU64 = AtomicU64::new(0);
 
+// Windows skipped by the CANON_RULE_L_BRANCH_CAP bail-out (Rule-L backtracking exceeded its
+// branch budget). Treated as clean DB misses, exactly like the monomial cap.
+pub static CANON_RULE_L_SKIPS: AtomicU64 = AtomicU64::new(0);
+
+// CANON_RULE_L_BRANCH_CAP (env): deterministic bound on the TOTAL number of Rule-L candidate
+// branches explored while canonicalizing one window (summed across the whole recursive
+// backtracking tree). Rule L is factorial worst-case: a window with many symmetric wires (e.g.
+// 13 gates over 38 near-identical low-degree wires) produces huge tied groups and explores
+// millions of branches, pinning a compression trial to one core for hours — the monomial cap
+// does NOT catch this because the polynomials themselves stay small. When the budget is
+// exceeded, canon4 bails (Err -> empty polys -> clean DB miss), one-sided like every other cap:
+// it only ever DECLINES a match, never produces a wrong canonical key. Unset = legacy (unbounded).
+pub fn canon_rule_l_branch_cap() -> Option<u64> {
+    static V: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("CANON_RULE_L_BRANCH_CAP")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|c| *c > 0)
+    })
+}
+
+thread_local! {
+    // Cumulative Rule-L branches explored in the current top-level canonicalize_polys_4 call.
+    // Reset at each canonicalize_polys_4 entry; read/incremented inside canon4_run's Rule L.
+    static RULE_L_BRANCHES_USED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 // CANON_MONOMIAL_CAP (env): deterministic bound on per-wire monomial counts while building a
 // window's polynomials. Windows that exceed it are treated as clean DB misses (empty polys) —
 // they could never be usefully canonicalized in reasonable time anyway. Unset = legacy
@@ -843,7 +871,14 @@ impl CircuitSeq {
         };
 
         let t4 = Instant::now();
-        let canon = canonicalize_polys_4(polys, true).unwrap();
+        // Rule-L cap may bail (Err); treat as a clean DB miss, exactly like the monomial cap above.
+        let canon = match canonicalize_polys_4(polys, true) {
+            Ok(c) => c,
+            Err(()) => {
+                CANON_RULE_L_SKIPS.fetch_add(1, Ordering::Relaxed);
+                return (Vec::new(), Permutation { data: Vec::new() }, used);
+            }
+        };
         let canon_elapsed = t4.elapsed();
         CANON4_CORE_TIME.fetch_add(canon_elapsed.as_nanos() as u64, Ordering::Relaxed);
         if compression_trace_enabled()
@@ -915,7 +950,13 @@ impl CircuitSeq {
                 }
             }
         }
-        let canon = canonicalize_polys_4(polys, true).unwrap();
+        let canon = match canonicalize_polys_4(polys, true) {
+            Ok(c) => c,
+            Err(()) => {
+                CANON_RULE_L_SKIPS.fetch_add(1, Ordering::Relaxed);
+                return (Vec::new(), Permutation { data: Vec::new() }, used);
+            }
+        };
         (canon.0, canon.1, used)
     }
 }
@@ -2391,6 +2432,19 @@ fn canon4_run(
                 return Err(());
             }
             let candidates: Vec<usize> = (0..n).filter(|&v| vr[v] == tr).collect();
+            // Rule-L branch cap: bail deterministically once the cumulative branch budget for this
+            // top-level canonicalization is exhausted. One-sided (Err -> clean DB miss); mirrors
+            // CANON_MONOMIAL_CAP. The budget is reset at each canonicalize_polys_4 entry.
+            if let Some(cap) = canon_rule_l_branch_cap() {
+                let used = RULE_L_BRANCHES_USED.with(|c| {
+                    let v = c.get().saturating_add(candidates.len() as u64);
+                    c.set(v);
+                    v
+                });
+                if used > cap {
+                    return Err(());
+                }
+            }
             let rule_l_start = Instant::now();
             CANON4_RULE_L_CALLS.fetch_add(1, Ordering::Relaxed);
             CANON4_RULE_L_BRANCHES.fetch_add(candidates.len() as u64, Ordering::Relaxed);
@@ -2461,6 +2515,12 @@ pub fn canonicalize_polys_4(
     let n = polynomials.len();
     if n == 0 {
         return Ok((vec![], Permutation { data: vec![] }));
+    }
+    // Reset the per-canonicalization Rule-L branch budget (see CANON_RULE_L_BRANCH_CAP). The
+    // budget spans the whole recursive canon4_run tree of this top-level call; forward and reverse
+    // directions each get a fresh budget (separate canonicalize_polys_4 calls).
+    if canon_rule_l_branch_cap().is_some() {
+        RULE_L_BRANCHES_USED.with(|c| c.set(0));
     }
     for poly in &mut polynomials {
         normalize_polynomial(poly);
