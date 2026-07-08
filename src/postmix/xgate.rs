@@ -79,10 +79,45 @@ impl XGate {
         self.ctrls.iter().copied().filter(|&(cw, _)| cw != w).collect()
     }
 
-    // Two gates collide iff either one's target is read by the other. Equal
-    // targets alone do NOT collide (toggles on one wire commute).
+    // Two gates collide iff either one's target is read by the other AND no
+    // shared control wire separates their firing supports. Equal targets alone
+    // do NOT collide (toggles on one wire commute).
+    //
+    // The separation exemption: pure conjunctions fire only inside their
+    // control subcube, so opposite polarities on a shared control wire w make
+    // the supports disjoint. Neither gate writes w (a target is never among
+    // its own controls), so on any input at most one can fire and the one
+    // that fires cannot unlock the other: they commute regardless of the
+    // read/write structure on all other wires. The more controls a
+    // conjunction has, the smaller its subcube and the easier it separates —
+    // width is INVERSELY related to blocking. Complemented gates (g57s) fire
+    // on the COMPLEMENT of a subcube, which touches both halves of every
+    // wire, so no single literal separates them: no exemption.
     pub fn collides(a: &XGate, b: &XGate) -> bool {
-        a.reads(b.target) || b.reads(a.target)
+        if !(a.reads(b.target) || b.reads(a.target)) {
+            return false;
+        }
+        if a.comp || b.comp {
+            return true;
+        }
+        // ctrls are sorted by wire: linear scan for an opposite shared literal.
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < a.ctrls.len() && j < b.ctrls.len() {
+            let (wa, pa) = a.ctrls[i];
+            let (wb, pb) = b.ctrls[j];
+            if wa == wb {
+                if pa != pb {
+                    return false;
+                }
+                i += 1;
+                j += 1;
+            } else if wa < wb {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+        true
     }
 
     // 64-lane bit-sliced application: state[w] holds one bit per sample lane.

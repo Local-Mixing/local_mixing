@@ -250,10 +250,11 @@ struct Meta {
 
 // A recorded crossing, eligible for exact reversal while every emitted node is
 // still alive and untouched (checked via arena stamps — any later split, merge
-// or reuse of a piece bumps its stamp and kills the entry). Geometry makes the
-// entry coherent forever: every non-pivot piece collides with the pivot (h in
-// R1/R3, the passed shot in R2), so no piece can ever float across it; pieces
-// stay on their birth side of the pivot, pairwise commuting, until destroyed.
+// or reuse of a piece bumps its stamp and kills the entry). Pieces pairwise
+// commute (same target, none reads it) and may drift to either side of the
+// pivot (rungs carry a flipped ladder literal, so under the separation
+// exemption most commute with the pivot too); the gather accretes from both
+// sides and the restore is exhaustively verified, so drift is harmless.
 struct UndoEntry {
     // The pre-crossing pair, in circuit order for the recorded direction.
     before: [XGate; 2],
@@ -1579,6 +1580,32 @@ mod mix_tests {
         assert!(comp_now < comp0 / 2, "erosion too slow: {comp0} -> {comp_now}");
         let n = mx.arena.len();
         assert!(n <= 300 + comp0 + 100, "grew past the erosion budget: {n}");
+    }
+
+    // Soundness of the collision predicate: ANY pair it calls non-colliding —
+    // no read of the other's target, or separated by an opposite shared
+    // control literal — must actually commute. (The converse is not claimed:
+    // collides() may stay conservatively true on commuting pairs.)
+    #[test]
+    fn collides_separation_exemption_sound() {
+        let mut rng = StdRng::seed_from_u64(23);
+        let mut exempted = 0usize;
+        for _ in 0..30_000 {
+            let a = rand_gate(&mut rng, 6, 3, true);
+            let b = rand_gate(&mut rng, 6, 3, true);
+            let reads = a.reads(b.target) || b.reads(a.target);
+            if !XGate::collides(&a, &b) {
+                assert!(
+                    rules::verify_rewrite(&[a.clone(), b.clone()], &[b.clone(), a.clone()]),
+                    "non-colliding pair does not commute: {a:?} / {b:?}"
+                );
+                if reads {
+                    exempted += 1; // separated despite a read of a target
+                    assert!(!a.comp && !b.comp, "comp gate got the exemption");
+                }
+            }
+        }
+        assert!(exempted > 20, "exemption never fired in the sample: {exempted}");
     }
 
     #[test]
