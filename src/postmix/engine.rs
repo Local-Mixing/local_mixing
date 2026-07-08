@@ -21,6 +21,9 @@ pub struct Params {
     // Width-damping offset D: a gate with c controls splits with probability
     // min(2^(-(c-D)), 1). D=2: c<=2 always, c=3 half, c=4 quarter, ...
     pub split_damp: usize,
+    // Window (in gates) to search either side of a g57 start for a reachable
+    // g57 collision partner; 0 disables g57 x g57 targeting.
+    pub g57_target_window: usize,
     pub size_bound: usize,
     pub candidates: usize,
     pub walk_cap: usize,
@@ -37,6 +40,7 @@ impl Default for Params {
         Params {
             k_max: 4,
             split_damp: 2,
+            g57_target_window: 64,
             size_bound: usize::MAX,
             candidates: 64,
             walk_cap: 4096,
@@ -66,6 +70,7 @@ pub struct Counters {
     pub split_declined: u64,
     pub scatters: u64,
     pub scatter_steps: u64,
+    pub g57_g57_setups: u64,
     pub g57_shot_blocked: u64,
     pub dropped_neverfire: u64,
     pub cores: u64,
@@ -336,6 +341,63 @@ impl Engine {
         steps
     }
 
+    // ---- g57 x g57 targeting ----
+
+    // Search in `dir` from a g57 shot `g_id` for another g57 that (a) collides
+    // with g and (b) can be brought adjacent to g by floating. Two colliding
+    // g57s can be made adjacent iff no gate strictly between them collides with
+    // BOTH (a shared "wall"): float g toward h past its non-colliders, then h
+    // toward g past its non-colliders, and they meet. Returns the target's id.
+    fn find_g57_collision(&self, g_id: u32, dir: Dir, window: usize) -> Option<u32> {
+        let g = self.arena.gate(g_id).clone();
+        let mut between: Vec<XGate> = Vec::new();
+        let mut cur = self.arena.neighbor(g_id, dir);
+        let mut steps = 0usize;
+        while cur != NIL && steps < window {
+            let x = self.arena.gate(cur).clone();
+            if x.comp && XGate::collides(&g, &x) {
+                let wall = between
+                    .iter()
+                    .any(|b| XGate::collides(&g, b) && XGate::collides(b, &x));
+                if !wall {
+                    return Some(cur);
+                }
+            }
+            between.push(x);
+            cur = self.arena.neighbor(cur, dir);
+            steps += 1;
+        }
+        None
+    }
+
+    // Bring g and its g57 target h adjacent: float g toward h (in dir), then h
+    // toward g (in -dir). Returns true iff they end adjacent (g's dir-neighbor
+    // is h). Floating is function-preserving, so a false return is harmless.
+    fn float_together(&mut self, g_id: u32, h_id: u32, dir: Dir) -> bool {
+        self.float_to_collision(g_id, dir);
+        self.float_to_collision(h_id, dir.opposite());
+        self.arena.neighbor(g_id, dir) == h_id
+    }
+
+    // For a g57 start, try to set up a g57 x g57 collision: search the given
+    // direction first, then the other, for a reachable g57 partner; on success
+    // float them adjacent and return the direction to shoot. None -> no g57
+    // partner reachable, caller shoots normally.
+    fn setup_g57_target(&mut self, g_id: u32, prefer: Dir) -> Option<Dir> {
+        let window = self.params.g57_target_window;
+        if window == 0 || !self.arena.gate(g_id).comp {
+            return None;
+        }
+        for dir in [prefer, prefer.opposite()] {
+            if let Some(h) = self.find_g57_collision(g_id, dir, window) {
+                if self.float_together(g_id, h, dir) {
+                    return Some(dir);
+                }
+            }
+        }
+        None
+    }
+
     // ---- splicing ----
 
     // Replace node `id` by `gates` at its position; returns the fresh ids.
@@ -392,13 +454,20 @@ impl Engine {
     // ---- the episode ----
 
     fn episode(&mut self) -> bool {
-        let Some((start, dir)) = self.select_start() else {
+        let Some((start, mut dir)) = self.select_start() else {
             return false;
         };
         // select_start only returns candidates with a positive float distance,
         // but sampling can still land all-wedged; distance 0 means no episode.
         if self.float_distance(start, dir, 1) == 0 {
             return false;
+        }
+        // g57 x g57 priority: if the start is a g57 with a reachable g57 partner,
+        // float the two g57s adjacent and shoot toward the partner instead of
+        // toward whatever the largest-box direction collides with.
+        if let Some(d) = self.setup_g57_target(start, dir) {
+            dir = d;
+            self.counters.g57_g57_setups += 1;
         }
         let mut acted = false;
         let mut wl: VecDeque<(u32, u32, Dir)> = VecDeque::new();
@@ -815,7 +884,7 @@ impl Engine {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fsplit] ep={} size={} pops={} floats={} steps={} r1={} r2={} r3={} presplit_shot={} presplit_coll={} declined={} scatter={}/{} blocked_k={} deadlock={} g57_blocked={} cores={} drops={} boundary={} stale={} width[{}]",
+            "[fsplit] ep={} size={} pops={} floats={} steps={} r1={} r2={} r3={} presplit_shot={} presplit_coll={} g57xg57={} declined={} scatter={}/{} blocked_k={} deadlock={} g57_blocked={} cores={} drops={} boundary={} stale={} width[{}]",
             c.episodes,
             self.arena.len(),
             c.pops,
@@ -826,6 +895,7 @@ impl Engine {
             c.splits_r3,
             c.presplit_shot,
             c.presplit_colliding,
+            c.g57_g57_setups,
             c.split_declined,
             c.scatters,
             c.scatter_steps,

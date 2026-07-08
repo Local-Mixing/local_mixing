@@ -38,6 +38,10 @@ struct Args {
     /// min(2^-(c-D), 1); at or below D it always splits
     #[arg(long, default_value_t = 2)]
     split_damp: usize,
+    /// Window (gates) to search each side of a g57 start for a g57 collision
+    /// partner to shoot toward; 0 disables g57xg57 targeting
+    #[arg(long, default_value_t = 64)]
+    g57_target_window: usize,
     /// Stop splitting when the circuit reaches this many gates (default 2x input)
     #[arg(long)]
     size_bound: Option<usize>,
@@ -111,6 +115,7 @@ fn main() {
     let params = Params {
         k_max: args.k_max,
         split_damp: args.split_damp,
+        g57_target_window: args.g57_target_window,
         size_bound,
         candidates: args.candidates,
         walk_cap: args.walk_cap,

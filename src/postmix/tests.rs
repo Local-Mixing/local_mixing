@@ -300,6 +300,47 @@ fn engine_saturates_gracefully() {
     assert!(eq_exhaustive(&gates, &e.arena.to_vec(), n as usize));
 }
 
+// g57 x g57 targeting: with the window on, some episodes set up g57-g57
+// collisions and the function is preserved; with the window at 0 it never does.
+#[test]
+fn engine_g57_g57_targeting() {
+    let n: u16 = 12;
+    let mut r = rng();
+    let gates = random_circuit(n, 80, &mut r);
+
+    let mut on = Engine::new(
+        gates.clone(),
+        Params {
+            k_max: 4,
+            g57_target_window: 64,
+            size_bound: 220,
+            verify_every: 8,
+            report_every: 1 << 30,
+            seed: 5,
+            ..Params::default()
+        },
+    );
+    on.run();
+    assert!(eq_exhaustive(&gates, &on.arena.to_vec(), n as usize), "targeting broke the function");
+    assert!(on.counters.g57_g57_setups > 0, "no g57xg57 collisions were set up");
+
+    let mut off = Engine::new(
+        gates.clone(),
+        Params {
+            k_max: 4,
+            g57_target_window: 0,
+            size_bound: 220,
+            verify_every: 8,
+            report_every: 1 << 30,
+            seed: 5,
+            ..Params::default()
+        },
+    );
+    off.run();
+    assert_eq!(off.counters.g57_g57_setups, 0, "window 0 must disable targeting");
+    assert!(eq_exhaustive(&gates, &off.arena.to_vec(), n as usize));
+}
+
 #[test]
 fn mpmct_roundtrip() {
     let mut r = rng();
