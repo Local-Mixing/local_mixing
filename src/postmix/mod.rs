@@ -8,6 +8,7 @@
 pub mod arena;
 pub mod engine;
 pub mod format;
+pub mod mix;
 pub mod rules;
 pub mod xgate;
 

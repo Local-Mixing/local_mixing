@@ -1,0 +1,1601 @@
+// The post-fsplit mixing chain (fmix): a randomized, size-thermostatted random
+// walk over equivalent circuits in the XGate set. The objective is NOT size —
+// it is to keep churning the circuit away from its original description while a
+// thermostat holds the gate count near a target.
+//
+// Expansion moves: one R-rule crossing (a Hurwitz-style conjugation step),
+// fresh-wire case split (R -> xR, !xR on a uniformly random uninvolved wire),
+// unsubsume (!l R -> R, lR), copy-pair insertion (an existing gate inserted
+// twice at a random position). Contraction move: a pairwise merge from the
+// closed-form catalogue (see merge_result). Every move is exhaustively verified
+// on its support; the chain never emits comp=1 gates, so the comp count is a
+// monotone "fossil" count of surviving original g57s.
+//
+// Provenance: every gate carries (origin, event) — the original-gate index its
+// material descends from, and the split event that created it. A merge whose
+// partners share an event is a sibling re-merge (the undo of one split);
+// recent events are tabu to keep freshly split pairs from instantly rejoining.
+use super::arena::{Arena, Dir, NIL};
+use super::rules::{self, BlockReason, Outcome, Role, RuleKind};
+use super::xgate::XGate;
+use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
+
+pub const ORIGIN_SYNTH: u32 = u32::MAX;
+
+// Closed-form pairwise merge catalogue: for same-target gates, f_g XOR f_h is a
+// (possibly complemented) monomial in exactly these cases. Results are always
+// comp=0 (or a cancellation): pairs whose fusion would be complemented — which
+// is precisely the rejoin of a g57's presplit pieces — return None. That guard
+// is what makes g57 erosion irreversible under this chain.
+pub enum Merge {
+    // f_g == f_h: both gates vanish.
+    Cancel,
+    // Same controls, opposite comp: (c XOR m) XOR (!c XOR m) = 1, a NOT gate.
+    XFuse(XGate),
+    // Same wires, one polarity flipped, equal comp: xR XOR !xR = R.
+    DropLit(XGate),
+    // Wire sets differ by one literal, shared literals equal, equal comp:
+    // R XOR lR = !lR.
+    Subsume(XGate),
+}
+
+impl Merge {
+    pub fn gates(&self) -> Vec<XGate> {
+        match self {
+            Merge::Cancel => vec![],
+            Merge::XFuse(g) | Merge::DropLit(g) | Merge::Subsume(g) => vec![g.clone()],
+        }
+    }
+}
+
+pub fn merge_result(g: &XGate, h: &XGate) -> Option<Merge> {
+    if g.target != h.target {
+        return None;
+    }
+    if g.ctrls == h.ctrls {
+        return Some(if g.comp == h.comp {
+            Merge::Cancel
+        } else {
+            Merge::XFuse(XGate::x_gate(g.target))
+        });
+    }
+    // Below here the monomials differ; a complemented result is banned, and
+    // comp1 != comp2 always complements the residual monomial.
+    if g.comp != h.comp {
+        return None;
+    }
+    let (gl, hl) = (g.ctrls.len(), h.ctrls.len());
+    if gl == hl {
+        // Same wire multiset with exactly one polarity flipped -> drop that wire.
+        if !g.ctrls.iter().zip(h.ctrls.iter()).all(|(a, b)| a.0 == b.0) {
+            return None;
+        }
+        let mut diff = None;
+        for i in 0..gl {
+            if g.ctrls[i].1 != h.ctrls[i].1 {
+                if diff.is_some() {
+                    return None;
+                }
+                diff = Some(i);
+            }
+        }
+        let d = diff?;
+        let lits = g.ctrls.iter().enumerate().filter(|&(i, _)| i != d).map(|(_, &l)| l);
+        return Some(Merge::DropLit(XGate::conj(g.target, lits).expect("drop-lit merge")));
+    }
+    if gl.abs_diff(hl) != 1 {
+        return None;
+    }
+    // Subset-plus-one-literal with ALL shared polarities equal. A flipped shared
+    // polarity would complement the result (the presplit-rejoin case): banned.
+    let (small, big) = if gl < hl { (g, h) } else { (h, g) };
+    let mut extra = None;
+    let mut si = small.ctrls.iter().peekable();
+    for &(w, p) in &big.ctrls {
+        match si.peek() {
+            Some(&&(sw, sp)) if sw == w => {
+                if sp != p {
+                    return None;
+                }
+                si.next();
+            }
+            _ => {
+                if extra.is_some() {
+                    return None;
+                }
+                extra = Some((w, p));
+            }
+        }
+    }
+    if si.peek().is_some() {
+        return None;
+    }
+    let (w, p) = extra?;
+    let lits = big.ctrls.iter().map(|&(cw, cp)| if cw == w { (cw, !cp) } else { (cw, cp) });
+    Some(Merge::Subsume(XGate::conj(big.target, lits).expect("subsume merge")))
+}
+
+// Merge-partner index key: target + control WIRE SET (polarities and comp
+// excluded — cancel/xfuse partners share it exactly, drop-lit partners differ
+// only in a polarity, and subsume partners are found by looking up the key
+// with one wire removed). Hash collisions are harmless: merge_result rechecks.
+fn merge_key(target: u16, wires: impl Iterator<Item = u16>) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    target.hash(&mut h);
+    for w in wires {
+        w.hash(&mut h);
+    }
+    h.finish()
+}
+
+fn key_of(g: &XGate) -> u64 {
+    merge_key(g.target, g.ctrls.iter().map(|&(w, _)| w))
+}
+
+pub struct MixParams {
+    pub k_max: usize,
+    // Width damping for expansion moves, same convention as fsplit.
+    pub split_damp: usize,
+    // Thermostat: p(contract) = sigmoid((size - target) / temp), clamped to
+    // [0.02, 0.98] so the chain never fully stops expanding or contracting.
+    pub target_size: usize,
+    pub temp: f64,
+    // Total move attempts.
+    pub moves: u64,
+    // Max distance (gates) a merge partner may sit from the initiator; the
+    // locating scan and the wall check both walk at most this far.
+    pub merge_reach: usize,
+    // Undo journal capacity (recorded crossings eligible for reversal) and the
+    // fraction of contraction moves that try a journal undo first. Crossings
+    // are the one expansion move the pairwise merge catalogue cannot invert
+    // (ladder rungs are pairwise unmergeable), so without the journal the size
+    // creeps up at the crossing rate no matter what the thermostat does.
+    pub journal_len: usize,
+    pub undo_frac: f64,
+    // Refractory period: a split event may not be undone (journal) or
+    // sibling-merged (catalogue) until this many moves have passed.
+    pub tabu_moves: u64,
+    // Relative weights of the expansion moves.
+    pub w_cross: f64,
+    pub w_fresh: f64,
+    pub w_unsub: f64,
+    pub w_insert: f64,
+    pub verify_every: u64,
+    pub report_every: u64,
+    pub local_verify: bool,
+    pub seed: u64,
+}
+
+impl Default for MixParams {
+    fn default() -> MixParams {
+        MixParams {
+            k_max: 12,
+            split_damp: 2,
+            target_size: 0, // 0 -> input size, resolved by Mixer::new
+            temp: 0.0,      // 0 -> max(target/100, 64), resolved by Mixer::new
+            moves: 1_000_000,
+            merge_reach: 4096,
+            journal_len: 1 << 18,
+            undo_frac: 0.5,
+            tabu_moves: 2_000,
+            w_cross: 0.70,
+            w_fresh: 0.15,
+            w_unsub: 0.10,
+            w_insert: 0.05,
+            verify_every: 10_000,
+            report_every: 50_000,
+            local_verify: true,
+            seed: 0,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct MixCounters {
+    pub moves: u64,
+    pub merges_cancel: u64,
+    pub merges_xfuse: u64,
+    pub merges_drop: u64,
+    pub merges_subsume: u64,
+    pub merges_sibling: u64,
+    pub merges_cross_origin: u64,
+    pub tabu_blocked: u64,
+    pub merge_no_partner: u64,
+    pub merge_wall_blocked: u64,
+    pub merge_too_far: u64,
+    pub merge_not_adjacent: u64,
+    pub undos: u64,
+    pub undo_dead: u64,
+    pub undo_tabu: u64,
+    pub undo_gather_miss: u64,
+    pub cross_r1: u64,
+    pub cross_r2: u64,
+    pub cross_r3: u64,
+    pub presplits: u64,
+    pub fresh_splits: u64,
+    pub unsubs: u64,
+    pub inserts: u64,
+    pub blocked_width: u64,
+    pub blocked_deadlock: u64,
+    pub declined: u64,
+    pub boundary: u64,
+    pub floats: u64,
+    pub float_steps: u64,
+    pub scatters: u64,
+    pub scatter_steps: u64,
+    pub dropped_neverfire: u64,
+    pub width_hist: [u64; 16],
+}
+
+impl MixCounters {
+    pub fn merges(&self) -> u64 {
+        self.merges_cancel + self.merges_xfuse + self.merges_drop + self.merges_subsume
+    }
+    pub fn expands(&self) -> u64 {
+        self.cross_r1 + self.cross_r2 + self.cross_r3 + self.presplits + self.fresh_splits
+            + self.unsubs
+            + self.inserts
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Meta {
+    origin: u32,
+    event: u64, // 0 = not a split product
+}
+
+// A recorded crossing, eligible for exact reversal while every emitted node is
+// still alive and untouched (checked via arena stamps — any later split, merge
+// or reuse of a piece bumps its stamp and kills the entry). Geometry makes the
+// entry coherent forever: every non-pivot piece collides with the pivot (h in
+// R1/R3, the passed shot in R2), so no piece can ever float across it; pieces
+// stay on their birth side of the pivot, pairwise commuting, until destroyed.
+struct UndoEntry {
+    // The pre-crossing pair, in circuit order for the recorded direction.
+    before: [XGate; 2],
+    dir: Dir,
+    pivot: u32,
+    after: Vec<(u32, u32)>, // (id, stamp) of every emitted node, incl. pivot
+    event: u64,
+    origins: [u32; 2], // origin of before[0], before[1]
+    misses: u8,        // failed gather attempts; entry dropped after a few
+}
+
+pub struct Mixer {
+    pub arena: Arena,
+    pub params: MixParams,
+    pub counters: MixCounters,
+    meta: Vec<Meta>,
+    // merge-key -> linked node ids with that (target, wire-set). Kept exact by
+    // the index_add/index_remove hooks in every splice; validated at verify
+    // points via indexed_count.
+    index: HashMap<u64, Vec<u32>>,
+    indexed_count: usize,
+    journal: VecDeque<UndoEntry>,
+    tabu: VecDeque<(u64, u64)>, // (event, move at creation)
+    next_event: u64,
+    original: Vec<XGate>,
+    num_wires: usize,
+    moves_done: u64,
+    rng: StdRng,
+    // Graceful stop / on-demand snapshot, both file-flag driven (checked at the
+    // report cadence): touch stop_flag -> finish cleanly; touch dump_flag ->
+    // verified snapshot to dump_out, continue.
+    stop_flag: Option<String>,
+    dump_flag: Option<String>,
+    dump_out: String,
+    stop_requested: bool,
+}
+
+pub enum MixStop {
+    MovesBudget,
+    StopFlag,
+}
+
+impl Mixer {
+    pub fn new(gates: Vec<XGate>, num_wires: usize, mut params: MixParams) -> Mixer {
+        let n = gates.len();
+        if params.target_size == 0 {
+            params.target_size = n;
+        }
+        if params.temp <= 0.0 {
+            params.temp = (params.target_size as f64 / 100.0).max(64.0);
+        }
+        let num_wires = num_wires.max(super::xgate::max_wire(&gates) as usize + 1);
+        let rng = StdRng::seed_from_u64(params.seed);
+        let meta = (0..n).map(|i| Meta { origin: i as u32, event: 0 }).collect();
+        let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
+        for (i, g) in gates.iter().enumerate() {
+            index.entry(key_of(g)).or_default().push(i as u32);
+        }
+        Mixer {
+            arena: Arena::from_gates(gates.clone()),
+            params,
+            counters: MixCounters::default(),
+            meta,
+            index,
+            indexed_count: n,
+            journal: VecDeque::new(),
+            tabu: VecDeque::new(),
+            next_event: 1,
+            original: gates,
+            num_wires,
+            moves_done: 0,
+            rng,
+            stop_flag: None,
+            dump_flag: None,
+            dump_out: String::new(),
+            stop_requested: false,
+        }
+    }
+
+    pub fn enable_flags(&mut self, stop: Option<String>, dump: Option<String>, dump_out: String) {
+        self.stop_flag = stop;
+        self.dump_flag = dump;
+        self.dump_out = dump_out;
+    }
+
+    fn set_meta(&mut self, id: u32, m: Meta) {
+        let i = id as usize;
+        if i >= self.meta.len() {
+            self.meta.resize(i + 1, Meta { origin: ORIGIN_SYNTH, event: 0 });
+        }
+        self.meta[i] = m;
+    }
+
+    fn meta_of(&self, id: u32) -> Meta {
+        self.meta.get(id as usize).copied().unwrap_or(Meta { origin: ORIGIN_SYNTH, event: 0 })
+    }
+
+    fn fresh_event(&mut self) -> u64 {
+        let e = self.next_event;
+        self.next_event += 1;
+        self.tabu.push_back((e, self.moves_done));
+        while let Some(&(_, mv)) = self.tabu.front() {
+            if mv + self.params.tabu_moves <= self.moves_done {
+                self.tabu.pop_front();
+            } else {
+                break;
+            }
+        }
+        e
+    }
+
+    fn is_tabu(&self, event: u64) -> bool {
+        event != 0
+            && self
+                .tabu
+                .iter()
+                .any(|&(ev, mv)| ev == event && mv + self.params.tabu_moves > self.moves_done)
+    }
+
+    // ---- merge-partner index maintenance ----
+
+    fn index_add(&mut self, id: u32) {
+        let k = key_of(self.arena.gate(id));
+        self.index.entry(k).or_default().push(id);
+        self.indexed_count += 1;
+    }
+
+    fn index_remove(&mut self, id: u32) {
+        let k = key_of(self.arena.gate(id));
+        let bucket = self.index.get_mut(&k).expect("index bucket missing");
+        let pos = bucket.iter().position(|&x| x == id).expect("id missing from index bucket");
+        bucket.swap_remove(pos);
+        if bucket.is_empty() {
+            self.index.remove(&k);
+        }
+        self.indexed_count -= 1;
+    }
+
+    // ---- the chain ----
+
+    pub fn run(&mut self) -> MixStop {
+        while self.moves_done < self.params.moves {
+            let excess = self.arena.len() as f64 - self.params.target_size as f64;
+            let p_contract = (1.0 / (1.0 + (-excess / self.params.temp).exp())).clamp(0.02, 0.98);
+            if self.rng.random_bool(p_contract) {
+                // Two contraction channels with complementary stock; when the
+                // first finds nothing, fall through to the other rather than
+                // wasting the move.
+                if self.rng.random_bool(self.params.undo_frac) {
+                    if !self.undo_move() {
+                        self.merge_move();
+                    }
+                } else if !self.merge_move() {
+                    self.undo_move();
+                }
+            } else {
+                self.expand_move();
+            }
+            self.moves_done += 1;
+            self.counters.moves = self.moves_done;
+            if self.moves_done % self.params.verify_every == 0 {
+                self.global_check();
+            }
+            if self.moves_done % self.params.report_every == 0 {
+                self.report();
+                self.check_flags();
+                if self.stop_requested {
+                    self.global_check();
+                    return MixStop::StopFlag;
+                }
+            }
+        }
+        self.global_check();
+        MixStop::MovesBudget
+    }
+
+    fn check_flags(&mut self) {
+        if let Some(f) = self.stop_flag.clone() {
+            if std::path::Path::new(&f).exists() {
+                let _ = std::fs::remove_file(&f);
+                println!("[fmix] stop flag seen at move {}: finishing cleanly", self.moves_done);
+                self.stop_requested = true;
+            }
+        }
+        if let Some(f) = self.dump_flag.clone() {
+            if std::path::Path::new(&f).exists() {
+                self.global_check();
+                let gates = self.arena.to_vec();
+                let tmp = format!("{}.tmp", self.dump_out);
+                match super::format::write_mpmct(&tmp, &gates, self.num_wires) {
+                    Ok(()) => {
+                        if let Err(e) = std::fs::rename(&tmp, &self.dump_out) {
+                            eprintln!("[fmix] dump rename failed: {e}");
+                        } else {
+                            println!(
+                                "[fmix] DUMP: wrote {} gates to {} at move {} (verified, continuing)",
+                                gates.len(),
+                                self.dump_out,
+                                self.moves_done
+                            );
+                        }
+                    }
+                    Err(e) => eprintln!("[fmix] dump write failed: {e}"),
+                }
+                let _ = std::fs::remove_file(&f);
+            }
+        }
+    }
+
+    // ---- expansion moves ----
+
+    fn expand_move(&mut self) {
+        let p = &self.params;
+        let total = p.w_cross + p.w_fresh + p.w_unsub + p.w_insert;
+        if total <= 0.0 {
+            return;
+        }
+        let mut r = self.rng.random_range(0.0..total);
+        if r < p.w_cross {
+            self.cross_move();
+            return;
+        }
+        r -= p.w_cross;
+        if r < p.w_fresh {
+            self.fresh_split_move();
+            return;
+        }
+        r -= p.w_fresh;
+        if r < p.w_unsub {
+            self.unsub_move();
+            return;
+        }
+        self.insert_move();
+    }
+
+    // One R-rule crossing: float a random gate to its collision point and cross
+    // it once. g57 shots pre-split (that IS the move); no cascade follow-up —
+    // the chain's later moves pick the pieces up with fresh randomness.
+    fn cross_move(&mut self) {
+        let id = self.arena.random_linked(&mut self.rng);
+        let dir = if self.rng.random_bool(0.5) { Dir::L } else { Dir::R };
+        self.float_to_collision(id, dir);
+        let h_id = self.arena.neighbor(id, dir);
+        if h_id == NIL {
+            self.counters.boundary += 1;
+            return;
+        }
+        let g = self.arena.gate(id).clone();
+        let h = self.arena.gate(h_id).clone();
+
+        if g.comp {
+            if !self.split_allowed(g.width()) {
+                self.counters.declined += 1;
+                return;
+            }
+            let pieces = rules::presplit(&g, &mut self.rng);
+            if self.params.local_verify {
+                assert!(
+                    rules::verify_rewrite(std::slice::from_ref(&g), &pieces),
+                    "presplit verification failed: {g:?} -> {pieces:?}"
+                );
+            }
+            let origin = self.meta_of(id).origin;
+            let ev = self.fresh_event();
+            for p in &pieces {
+                self.counters.width_hist[p.width().min(15)] += 1;
+            }
+            let ids = self.splice_replace_one(id, pieces);
+            for &pid in &ids {
+                self.set_meta(pid, Meta { origin, event: ev });
+            }
+            self.scatter(&ids);
+            self.counters.presplits += 1;
+            return;
+        }
+
+        match rules::cross(&g, &h, self.params.k_max, &mut self.rng) {
+            Outcome::R0Swap => unreachable!("R0 after floating to collision"),
+            Outcome::Blocked(BlockReason::WidthCap) => self.counters.blocked_width += 1,
+            Outcome::Blocked(BlockReason::Deadlock) => self.counters.blocked_deadlock += 1,
+            Outcome::PresplitColliding => {
+                // The colliding gate is a g57 that must split: pre-splitting it
+                // is this move's whole effect.
+                if !self.split_allowed(h.width()) {
+                    self.counters.declined += 1;
+                    return;
+                }
+                let hp = rules::presplit(&h, &mut self.rng);
+                if self.params.local_verify {
+                    assert!(
+                        rules::verify_rewrite(std::slice::from_ref(&h), &hp),
+                        "colliding presplit verification failed: {h:?} -> {hp:?}"
+                    );
+                }
+                let origin = self.meta_of(h_id).origin;
+                let ev = self.fresh_event();
+                for p in &hp {
+                    self.counters.width_hist[p.width().min(15)] += 1;
+                }
+                let ids = self.splice_replace_one(h_id, hp);
+                for &pid in &ids {
+                    self.set_meta(pid, Meta { origin, event: ev });
+                }
+                self.scatter(&ids);
+                self.counters.presplits += 1;
+            }
+            Outcome::Rewrite { seq, kind, dropped } => {
+                let split_width = match kind {
+                    RuleKind::R1 | RuleKind::R3 => g.width(),
+                    RuleKind::R2 => h.width(),
+                };
+                if !self.split_allowed(split_width) {
+                    self.counters.declined += 1;
+                    return;
+                }
+                if self.params.local_verify {
+                    let before: Vec<XGate> = match dir {
+                        Dir::R => vec![g.clone(), h.clone()],
+                        Dir::L => vec![h.clone(), g.clone()],
+                    };
+                    let after: Vec<XGate> = match dir {
+                        Dir::R => seq.iter().map(|(x, _)| x.clone()).collect(),
+                        Dir::L => seq.iter().rev().map(|(x, _)| x.clone()).collect(),
+                    };
+                    assert!(
+                        rules::verify_rewrite(&before, &after),
+                        "cross verification failed ({kind:?}, {dir:?}): {g:?} x {h:?}"
+                    );
+                }
+                self.counters.dropped_neverfire += dropped as u64;
+                match kind {
+                    RuleKind::R1 => self.counters.cross_r1 += 1,
+                    RuleKind::R2 => self.counters.cross_r2 += 1,
+                    RuleKind::R3 => self.counters.cross_r3 += 1,
+                }
+                for (gate, role) in &seq {
+                    if *role != Role::CollidingIntact {
+                        self.counters.width_hist[gate.width().min(15)] += 1;
+                    }
+                }
+                let g_origin = self.meta_of(id).origin;
+                let h_origin = self.meta_of(h_id).origin;
+                let ev = self.fresh_event();
+                let placed = self.splice_pair(id, h_id, dir, seq);
+                let mut fresh: Vec<u32> = Vec::new();
+                for &(pid, role) in &placed {
+                    match role {
+                        Role::ShotPiece | Role::Core => {
+                            self.set_meta(pid, Meta { origin: g_origin, event: ev });
+                            fresh.push(pid);
+                        }
+                        Role::CollidingPiece => {
+                            self.set_meta(pid, Meta { origin: h_origin, event: ev });
+                            fresh.push(pid);
+                        }
+                        Role::CollidingIntact => {} // node reused, meta intact
+                    }
+                }
+                self.scatter(&fresh);
+                // Record for exact reversal. Pivot: the node every other piece
+                // collides with — h when intact (R1/R3), else the passed shot
+                // (R2, the only ShotPiece there).
+                let pivot = placed
+                    .iter()
+                    .find(|(_, r)| *r == Role::CollidingIntact)
+                    .or_else(|| placed.iter().find(|(_, r)| *r == Role::ShotPiece))
+                    .map(|&(i, _)| i)
+                    .expect("rewrite emitted no pivot");
+                let (before, origins) = match dir {
+                    Dir::R => ([g.clone(), h.clone()], [g_origin, h_origin]),
+                    Dir::L => ([h.clone(), g.clone()], [h_origin, g_origin]),
+                };
+                let after: Vec<(u32, u32)> =
+                    placed.iter().map(|&(i, _)| (i, self.arena.stamp(i))).collect();
+                if self.journal.len() >= self.params.journal_len {
+                    self.journal.pop_front();
+                }
+                self.journal
+                    .push_back(UndoEntry { before, dir, pivot, after, event: ev, origins, misses: 0 });
+            }
+        }
+    }
+
+    // Case-split a conjunction on a uniformly random wire it does not touch:
+    // R -> xR, !xR. Injects dependence on a wire the gate never read — the
+    // entropy move fsplit structurally lacks (its splits only use collision-
+    // forced wires). The sibling pair trivially re-merges (DropLit), hence the
+    // event tabu.
+    fn fresh_split_move(&mut self) {
+        let id = self.arena.random_linked(&mut self.rng);
+        let g = self.arena.gate(id).clone();
+        if g.comp || g.width() + 1 > self.params.k_max {
+            self.counters.blocked_width += 1;
+            return;
+        }
+        if !self.split_allowed(g.width() + 1) {
+            self.counters.declined += 1;
+            return;
+        }
+        let mut x = None;
+        for _ in 0..16 {
+            let w = self.rng.random_range(0..self.num_wires) as u16;
+            if w != g.target && !g.reads(w) {
+                x = Some(w);
+                break;
+            }
+        }
+        let Some(x) = x else { return };
+        let mk = |pol: bool| {
+            XGate::conj(g.target, g.ctrls.iter().copied().chain([(x, pol)]))
+                .expect("fresh wire cannot contradict")
+        };
+        let pieces = vec![mk(true), mk(false)];
+        if self.params.local_verify {
+            assert!(
+                rules::verify_rewrite(std::slice::from_ref(&g), &pieces),
+                "fresh split verification failed: {g:?} on wire {x}"
+            );
+        }
+        let origin = self.meta_of(id).origin;
+        let ev = self.fresh_event();
+        for p in &pieces {
+            self.counters.width_hist[p.width().min(15)] += 1;
+        }
+        let ids = self.splice_replace_one(id, pieces);
+        for &pid in &ids {
+            self.set_meta(pid, Meta { origin, event: ev });
+        }
+        self.scatter(&ids);
+        self.counters.fresh_splits += 1;
+    }
+
+    // Inverse of the Subsume merge: !lR -> R, lR (random literal). Count +1,
+    // widths bounded by the original.
+    fn unsub_move(&mut self) {
+        let id = self.arena.random_linked(&mut self.rng);
+        let g = self.arena.gate(id).clone();
+        if g.comp || g.width() == 0 {
+            return;
+        }
+        if !self.split_allowed(g.width()) {
+            self.counters.declined += 1;
+            return;
+        }
+        let j = self.rng.random_range(0..g.ctrls.len());
+        let (w, p) = g.ctrls[j];
+        let without = XGate::conj(g.target, g.ctrls_without(w)).expect("subset is satisfiable");
+        let flipped = XGate::conj(
+            g.target,
+            g.ctrls.iter().map(|&(cw, cp)| if cw == w { (cw, !cp) } else { (cw, cp) }),
+        )
+        .expect("polarity flip is satisfiable");
+        let _ = p;
+        let pieces = if self.rng.random_bool(0.5) {
+            vec![without, flipped]
+        } else {
+            vec![flipped, without]
+        };
+        if self.params.local_verify {
+            assert!(
+                rules::verify_rewrite(std::slice::from_ref(&g), &pieces),
+                "unsubsume verification failed: {g:?}"
+            );
+        }
+        let origin = self.meta_of(id).origin;
+        let ev = self.fresh_event();
+        for x in &pieces {
+            self.counters.width_hist[x.width().min(15)] += 1;
+        }
+        let ids = self.splice_replace_one(id, pieces);
+        for &pid in &ids {
+            self.set_meta(pid, Meta { origin, event: ev });
+        }
+        self.scatter(&ids);
+        self.counters.unsubs += 1;
+    }
+
+    // Insert an identical pair of copies of a random existing (non-comp) gate at
+    // a random position. Self-calibrating to the circuit's own gate
+    // distribution; each copy can later merge with third parties (cross-parent
+    // recombination), which is where the entropy comes from.
+    fn insert_move(&mut self) {
+        let mut src = NIL;
+        for _ in 0..8 {
+            let c = self.arena.random_linked(&mut self.rng);
+            if !self.arena.gate(c).comp {
+                src = c;
+                break;
+            }
+        }
+        if src == NIL {
+            return;
+        }
+        let g = self.arena.gate(src).clone();
+        let origin = self.meta_of(src).origin;
+        if self.params.local_verify {
+            assert!(
+                rules::verify_rewrite(&[], &[g.clone(), g.clone()]),
+                "insert pair is not an identity: {g:?}"
+            );
+        }
+        let pos = self.arena.random_linked(&mut self.rng);
+        let a = self.arena.insert_after(pos, g.clone());
+        self.index_add(a);
+        let b = self.arena.insert_after(a, g);
+        self.index_add(b);
+        let ev = self.fresh_event();
+        self.set_meta(a, Meta { origin, event: ev });
+        self.set_meta(b, Meta { origin, event: ev });
+        self.counters.width_hist[self.arena.gate(a).width().min(15)] += 2;
+        self.scatter(&[a, b]);
+        self.counters.inserts += 1;
+    }
+
+    // ---- the contraction moves ----
+
+    // Reverse a recorded crossing: sample journal entries until a live one is
+    // found (dead ones — any piece touched since — are discarded), gather its
+    // pieces back around the pivot by floating, verify the block against the
+    // original pair exhaustively, and splice [g, h] back in.
+    fn undo_move(&mut self) -> bool {
+        for _ in 0..8 {
+            if self.journal.is_empty() {
+                return false;
+            }
+            let i = self.rng.random_range(0..self.journal.len());
+            let alive = self.journal[i]
+                .after
+                .iter()
+                .all(|&(id, st)| self.arena.is_linked(id) && self.arena.stamp(id) == st);
+            if !alive {
+                self.journal.swap_remove_back(i);
+                self.counters.undo_dead += 1;
+                continue;
+            }
+            if self.is_tabu(self.journal[i].event) {
+                self.counters.undo_tabu += 1;
+                continue;
+            }
+            let e = self.journal.swap_remove_back(i).expect("journal index valid");
+            if let Some(mut e) = self.try_undo(e) {
+                // Gather miss: pieces only floated (function-preserving), the
+                // entry is still valid — retry later, but only a few times
+                // (a blocked entry usually stays blocked).
+                e.misses += 1;
+                if e.misses < 3 {
+                    self.journal.push_back(e);
+                }
+                return false;
+            }
+            return true;
+        }
+        false
+    }
+
+    // Returns the entry back on a gather miss, None on success.
+    fn try_undo(&mut self, e: UndoEntry) -> Option<UndoEntry> {
+        let (mut edge_l, mut edge_r) = (e.pivot, e.pivot);
+        for &(id, _) in &e.after {
+            if id == e.pivot {
+                continue;
+            }
+            // Locate the piece relative to the current block, then float it
+            // onto the block's edge. Pieces pairwise commute (same target, no
+            // reads of it), so ungathered siblings never block the float.
+            let mut side = None;
+            let mut cur = self.arena.neighbor(edge_r, Dir::R);
+            let mut steps = 0usize;
+            while cur != NIL && steps < self.params.merge_reach {
+                if cur == id {
+                    side = Some(Dir::R);
+                    break;
+                }
+                cur = self.arena.neighbor(cur, Dir::R);
+                steps += 1;
+            }
+            if side.is_none() {
+                let mut cur = self.arena.neighbor(edge_l, Dir::L);
+                let mut steps = 0usize;
+                while cur != NIL && steps < self.params.merge_reach {
+                    if cur == id {
+                        side = Some(Dir::L);
+                        break;
+                    }
+                    cur = self.arena.neighbor(cur, Dir::L);
+                    steps += 1;
+                }
+            }
+            let Some(side) = side else {
+                self.counters.undo_gather_miss += 1;
+                return Some(e);
+            };
+            let (anchor, ok) = match side {
+                Dir::R => {
+                    self.float_until(id, Dir::L, edge_r);
+                    (id, self.arena.neighbor(edge_r, Dir::R) == id)
+                }
+                Dir::L => {
+                    self.float_until(id, Dir::R, edge_l);
+                    (id, self.arena.neighbor(edge_l, Dir::L) == id)
+                }
+            };
+            if !ok {
+                self.counters.undo_gather_miss += 1;
+                return Some(e);
+            }
+            match side {
+                Dir::R => edge_r = anchor,
+                Dir::L => edge_l = anchor,
+            }
+        }
+        // Contiguous block [edge_l ..= edge_r] now holds exactly the pieces.
+        let mut block: Vec<u32> = Vec::with_capacity(e.after.len());
+        let mut cur = edge_l;
+        loop {
+            block.push(cur);
+            if cur == edge_r {
+                break;
+            }
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        debug_assert_eq!(block.len(), e.after.len(), "gathered block is not contiguous");
+        if self.params.local_verify {
+            let actual: Vec<XGate> = block.iter().map(|&b| self.arena.gate(b).clone()).collect();
+            assert!(
+                rules::verify_rewrite(&actual, &e.before),
+                "undo verification failed: block {actual:?} != {:?}",
+                e.before
+            );
+        }
+        let cursor = self.arena.neighbor(edge_l, Dir::L);
+        for &bid in &block {
+            self.index_remove(bid);
+            self.arena.unlink(bid);
+            self.arena.free_node(bid);
+        }
+        let mut c = cursor;
+        let mut new_ids: Vec<u32> = Vec::with_capacity(2);
+        for (j, gate) in e.before.iter().enumerate() {
+            c = self.arena.insert_after(c, gate.clone());
+            self.index_add(c);
+            self.set_meta(c, Meta { origin: e.origins[j], event: 0 });
+            new_ids.push(c);
+        }
+        self.scatter(&new_ids);
+        self.counters.undos += 1;
+        None
+    }
+
+    // Partner ids for `g_id` from the index: same-key gates (cancel / xfuse /
+    // drop-lit) plus each one-wire-reduced key (subsume, larger side). The
+    // smaller subsume partner finds the pair when IT is sampled as the larger
+    // one — initiators are uniform, so coverage is symmetric.
+    fn merge_candidates(&self, g_id: u32) -> Vec<u32> {
+        let g = self.arena.gate(g_id);
+        let mut out: Vec<u32> = Vec::new();
+        let mut consider = |ids: &[u32], out: &mut Vec<u32>| {
+            for &c in ids {
+                if c != g_id && merge_result(g, self.arena.gate(c)).is_some() {
+                    out.push(c);
+                }
+            }
+        };
+        if let Some(ids) = self.index.get(&key_of(g)) {
+            consider(ids, &mut out);
+        }
+        for skip in 0..g.ctrls.len() {
+            let k = merge_key(
+                g.target,
+                g.ctrls.iter().enumerate().filter(|&(i, _)| i != skip).map(|(_, &(w, _))| w),
+            );
+            if let Some(ids) = self.index.get(&k) {
+                consider(ids, &mut out);
+            }
+        }
+        out
+    }
+
+    fn merge_move(&mut self) -> bool {
+        // Sample initiators until one has index partners; most gates are
+        // ladder-form with unique keys, so a direct random pick rarely works.
+        let mut found: Option<(u32, Vec<u32>)> = None;
+        for _ in 0..8 {
+            let g_id = self.arena.random_linked(&mut self.rng);
+            let cands = self.merge_candidates(g_id);
+            if !cands.is_empty() {
+                found = Some((g_id, cands));
+                break;
+            }
+        }
+        let Some((g_id, cands)) = found else {
+            self.counters.merge_no_partner += 1;
+            return false;
+        };
+        // Far partners are usually wall-blocked (over a long span some gate
+        // almost surely collides with both), so scan outward from the
+        // initiator and take the NEAREST reachable candidate, tracking the
+        // initiator's colliders incrementally for the wall check.
+        let cand_set: std::collections::HashSet<u32> = cands.into_iter().collect();
+        let g = self.arena.gate(g_id).clone();
+        let mut chosen: Option<(u32, Dir, usize)> = None;
+        for dir in [Dir::R, Dir::L] {
+            let mut g_colliders: Vec<u32> = Vec::new();
+            let mut cur = self.arena.neighbor(g_id, dir);
+            let mut steps = 0usize;
+            while cur != NIL && steps < self.params.merge_reach {
+                if chosen.is_some_and(|(_, _, d)| steps >= d) {
+                    break; // the other direction already found a nearer one
+                }
+                if cand_set.contains(&cur) {
+                    let hg = self.arena.gate(cur);
+                    let wall =
+                        g_colliders.iter().any(|&b| XGate::collides(self.arena.gate(b), hg));
+                    if wall {
+                        self.counters.merge_wall_blocked += 1;
+                    } else {
+                        chosen = Some((cur, dir, steps));
+                        break;
+                    }
+                }
+                if XGate::collides(&g, self.arena.gate(cur)) {
+                    g_colliders.push(cur);
+                }
+                cur = self.arena.neighbor(cur, dir);
+                steps += 1;
+            }
+        }
+        let Some((h_id, dir, _)) = chosen else {
+            self.counters.merge_too_far += 1;
+            return false;
+        };
+        let (mg, mh) = (self.meta_of(g_id), self.meta_of(h_id));
+        let sibling = mg.event != 0 && mg.event == mh.event;
+        if sibling && self.is_tabu(mg.event) {
+            self.counters.tabu_blocked += 1;
+            return false;
+        }
+        if !self.bring_adjacent(g_id, h_id, dir) {
+            self.counters.merge_not_adjacent += 1;
+            return false;
+        }
+        let g = self.arena.gate(g_id).clone();
+        let h = self.arena.gate(h_id).clone();
+        let merged = merge_result(&g, &h).expect("candidate was mergeable");
+        let out = merged.gates();
+        if self.params.local_verify {
+            assert!(
+                rules::verify_rewrite(&[g.clone(), h.clone()], &out),
+                "merge verification failed: {g:?} + {h:?}"
+            );
+        }
+        // Splice: replace the adjacent pair by the merged gate (or nothing).
+        // Same-target gates commute, so their order is irrelevant.
+        let left = if self.arena.neighbor(g_id, Dir::R) == h_id { g_id } else { h_id };
+        let cursor = self.arena.neighbor(left, Dir::L);
+        self.index_remove(g_id);
+        self.index_remove(h_id);
+        self.arena.unlink(g_id);
+        self.arena.unlink(h_id);
+        self.arena.free_node(g_id);
+        self.arena.free_node(h_id);
+        let mut new_ids: Vec<u32> = Vec::new();
+        let mut c = cursor;
+        for gate in out {
+            c = self.arena.insert_after(c, gate);
+            self.index_add(c);
+            new_ids.push(c);
+        }
+        let origin = if mg.origin == mh.origin {
+            mg.origin
+        } else {
+            self.counters.merges_cross_origin += 1;
+            mg.origin
+        };
+        for &nid in &new_ids {
+            self.set_meta(nid, Meta { origin, event: 0 });
+        }
+        self.scatter(&new_ids);
+        if sibling {
+            self.counters.merges_sibling += 1;
+        }
+        match merged {
+            Merge::Cancel => self.counters.merges_cancel += 1,
+            Merge::XFuse(_) => self.counters.merges_xfuse += 1,
+            Merge::DropLit(_) => self.counters.merges_drop += 1,
+            Merge::Subsume(_) => self.counters.merges_subsume += 1,
+        }
+        true
+    }
+
+    // ---- floating (same semantics as the fsplit engine) ----
+
+    fn float_distance(&self, id: u32, dir: Dir, cap: usize) -> usize {
+        let g = self.arena.gate(id);
+        let mut cur = self.arena.neighbor(id, dir);
+        let mut d = 0usize;
+        while cur != NIL && d < cap && !XGate::collides(g, self.arena.gate(cur)) {
+            d += 1;
+            cur = self.arena.neighbor(cur, dir);
+        }
+        d
+    }
+
+    fn float_to_collision(&mut self, id: u32, dir: Dir) -> usize {
+        self.float_until(id, dir, NIL)
+    }
+
+    // Slide `id` in `dir` past non-colliders, stopping early if the next node is
+    // `stop`. Needed for merges: merge partners never collide (same target), so
+    // an unbounded float would sail straight past the partner.
+    fn float_until(&mut self, id: u32, dir: Dir, stop: u32) -> usize {
+        let g = self.arena.gate(id).clone();
+        let mut last = NIL;
+        let mut cur = self.arena.neighbor(id, dir);
+        let mut steps = 0usize;
+        while cur != NIL && cur != stop && !XGate::collides(&g, self.arena.gate(cur)) {
+            last = cur;
+            steps += 1;
+            cur = self.arena.neighbor(cur, dir);
+        }
+        if steps > 0 {
+            self.arena.unlink(id);
+            match dir {
+                Dir::R => self.arena.link_after(id, last),
+                Dir::L => self.arena.link_before(id, last),
+            }
+            self.counters.floats += 1;
+            self.counters.float_steps += steps as u64;
+        }
+        steps
+    }
+
+    // Float g toward h (stopping at h), then h toward g (stopping at g).
+    // Adjacent afterwards iff nothing colliding with both sat between them AND
+    // the two one-directional floats suffice (interleaved blockers can still
+    // prevent a meet; that is a harmless miss).
+    fn bring_adjacent(&mut self, g_id: u32, h_id: u32, dir: Dir) -> bool {
+        self.float_until(g_id, dir, h_id);
+        if self.arena.neighbor(g_id, dir) == h_id {
+            return true;
+        }
+        self.float_until(h_id, dir.opposite(), g_id);
+        self.arena.neighbor(g_id, dir) == h_id
+    }
+
+    fn float_uniform(&mut self, id: u32) -> usize {
+        let dl = self.float_distance(id, Dir::L, usize::MAX);
+        let dr = self.float_distance(id, Dir::R, usize::MAX);
+        if dl + dr == 0 {
+            return 0;
+        }
+        let off = self.rng.random_range(0..=(dl + dr));
+        let (dir, k) = if off < dl { (Dir::L, dl - off) } else { (Dir::R, off - dl) };
+        if k == 0 {
+            return 0;
+        }
+        let mut anchor = id;
+        for _ in 0..k {
+            anchor = self.arena.neighbor(anchor, dir);
+        }
+        self.arena.unlink(id);
+        match dir {
+            Dir::L => self.arena.link_before(id, anchor),
+            Dir::R => self.arena.link_after(id, anchor),
+        }
+        k
+    }
+
+    fn scatter(&mut self, ids: &[u32]) {
+        for &id in ids {
+            if !self.arena.is_linked(id) {
+                continue;
+            }
+            let k = self.float_uniform(id);
+            if k > 0 {
+                self.counters.scatters += 1;
+                self.counters.scatter_steps += k as u64;
+            }
+        }
+    }
+
+    pub fn final_float(&mut self) -> (u64, u64) {
+        let ids = self.arena.ids_in_order();
+        let (mut moved, mut disp) = (0u64, 0u64);
+        for id in ids {
+            let k = self.float_uniform(id);
+            if k > 0 {
+                moved += 1;
+                disp += k as u64;
+            }
+        }
+        (moved, disp)
+    }
+
+    fn split_allowed(&mut self, c: usize) -> bool {
+        let d = self.params.split_damp;
+        if c <= d {
+            return true;
+        }
+        self.rng.random_bool(1.0 / (1u64 << (c - d).min(62)) as f64)
+    }
+
+    // ---- splicing (fsplit engine semantics) ----
+
+    fn splice_replace_one(&mut self, id: u32, gates: Vec<XGate>) -> Vec<u32> {
+        let mut cursor = self.arena.neighbor(id, Dir::L);
+        self.index_remove(id);
+        self.arena.unlink(id);
+        self.arena.free_node(id);
+        let mut ids = Vec::with_capacity(gates.len());
+        for g in gates {
+            cursor = self.arena.insert_after(cursor, g);
+            self.index_add(cursor);
+            ids.push(cursor);
+        }
+        ids
+    }
+
+    fn splice_pair(&mut self, g_id: u32, h_id: u32, dir: Dir, seq: Vec<(XGate, Role)>) -> Vec<(u32, Role)> {
+        let first = match dir {
+            Dir::R => g_id,
+            Dir::L => h_id,
+        };
+        let mut cursor = self.arena.neighbor(first, Dir::L);
+        self.index_remove(g_id);
+        self.arena.unlink(g_id);
+        self.arena.unlink(h_id);
+        let emitted: Vec<(XGate, Role)> = match dir {
+            Dir::R => seq,
+            Dir::L => seq.into_iter().rev().collect(),
+        };
+        let mut h_reused = false;
+        let mut out = Vec::with_capacity(emitted.len());
+        for (gate, role) in emitted {
+            let id = if role == Role::CollidingIntact {
+                debug_assert_eq!(&gate, self.arena.gate(h_id));
+                self.arena.link_after(h_id, cursor);
+                h_reused = true;
+                h_id
+            } else {
+                let nid = self.arena.insert_after(cursor, gate);
+                self.index_add(nid);
+                nid
+            };
+            cursor = id;
+            out.push((id, role));
+        }
+        self.arena.free_node(g_id);
+        if !h_reused {
+            self.index_remove(h_id);
+            self.arena.free_node(h_id);
+        }
+        out
+    }
+
+    // ---- verification, metrics, reporting ----
+
+    pub fn global_check(&mut self) {
+        assert_eq!(
+            self.indexed_count,
+            self.arena.len(),
+            "merge index drifted from arena (move {})",
+            self.moves_done
+        );
+        let batches = 4;
+        for _ in 0..batches {
+            let mut st_orig: Vec<u64> = (0..self.num_wires).map(|_| self.rng.random()).collect();
+            let mut st_cur = st_orig.clone();
+            super::xgate::eval_lanes(&self.original, &mut st_orig);
+            let mut cur = self.arena.head();
+            while cur != NIL {
+                self.arena.gate(cur).apply_lanes(&mut st_cur);
+                cur = self.arena.neighbor(cur, Dir::R);
+            }
+            assert_eq!(
+                st_orig, st_cur,
+                "FUNCTIONALITY BROKEN: circuit no longer equals the input (move {})",
+                self.moves_done
+            );
+        }
+    }
+
+    pub fn remaining_g57(&self) -> usize {
+        let mut cur = self.arena.head();
+        let mut n = 0usize;
+        while cur != NIL {
+            if self.arena.gate(cur).comp {
+                n += 1;
+            }
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        n
+    }
+
+    // Mean |current position fraction - original position fraction| over gates
+    // with a real origin: 0 at the start, drifts toward ~1/3 (the mean for
+    // independent uniforms) as positional memory of the original decays.
+    pub fn origin_displacement(&self) -> f64 {
+        let n = self.arena.len() as f64;
+        let m = self.original.len() as f64;
+        let (mut acc, mut cnt) = (0.0f64, 0u64);
+        let mut cur = self.arena.head();
+        let mut i = 0usize;
+        while cur != NIL {
+            let o = self.meta_of(cur).origin;
+            if o != ORIGIN_SYNTH {
+                acc += ((i as f64 / n) - (o as f64 / m)).abs();
+                cnt += 1;
+            }
+            i += 1;
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        if cnt == 0 { 0.0 } else { acc / cnt as f64 }
+    }
+
+    // Mean number of distinct origins in sampled 32-gate windows (max 32):
+    // low = original material still clumped, high = well interleaved.
+    pub fn window_origin_diversity(&mut self, samples: usize) -> f64 {
+        let ids = self.arena.ids_in_order();
+        if ids.len() < 32 {
+            return 0.0;
+        }
+        let mut acc = 0.0f64;
+        for _ in 0..samples {
+            let s = self.rng.random_range(0..=(ids.len() - 32));
+            let mut set: Vec<u32> = ids[s..s + 32].iter().map(|&id| self.meta_of(id).origin).collect();
+            set.sort_unstable();
+            set.dedup();
+            acc += set.len() as f64;
+        }
+        acc / samples as f64
+    }
+
+    pub fn report(&mut self) {
+        let disp = self.origin_displacement();
+        let owin = self.window_origin_diversity(64);
+        let c = &self.counters;
+        let hist: Vec<String> = (0..=self.params.k_max.min(15))
+            .map(|w| format!("{}:{}", w, c.width_hist[w]))
+            .collect();
+        println!(
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.3} owin={:.1} width[{}]",
+            c.moves,
+            self.arena.len(),
+            self.params.target_size,
+            self.remaining_g57(),
+            c.merges_cancel,
+            c.merges_xfuse,
+            c.merges_drop,
+            c.merges_subsume,
+            c.merges_sibling,
+            c.merges_cross_origin,
+            c.tabu_blocked,
+            c.merge_no_partner,
+            c.merge_wall_blocked,
+            c.merge_too_far,
+            c.merge_not_adjacent,
+            c.undos,
+            c.undo_dead,
+            c.undo_tabu,
+            c.undo_gather_miss,
+            self.journal.len(),
+            c.cross_r1,
+            c.cross_r2,
+            c.cross_r3,
+            c.presplits,
+            c.fresh_splits,
+            c.unsubs,
+            c.inserts,
+            c.declined,
+            c.blocked_width,
+            c.blocked_deadlock,
+            c.boundary,
+            c.floats,
+            c.float_steps,
+            c.scatters,
+            c.scatter_steps,
+            disp,
+            owin,
+            hist.join(" ")
+        );
+    }
+
+    pub fn origins_in_order(&self) -> Vec<u32> {
+        self.arena.ids_in_order().iter().map(|&id| self.meta_of(id).origin).collect()
+    }
+}
+
+#[cfg(test)]
+mod mix_tests {
+    use super::super::xgate::XGate;
+    use super::*;
+
+    fn rand_gate(rng: &mut StdRng, wires: u16, max_w: usize, allow_comp: bool) -> XGate {
+        loop {
+            let target = rng.random_range(0..wires);
+            let w = rng.random_range(0..=max_w);
+            let lits: Vec<(u16, bool)> = (0..w)
+                .map(|_| (rng.random_range(0..wires), rng.random_bool(0.5)))
+                .filter(|&(cw, _)| cw != target)
+                .collect();
+            if let Some(mut g) = XGate::conj(target, lits) {
+                if allow_comp && g.width() == 2 && rng.random_bool(0.3) {
+                    g.comp = true;
+                }
+                return g;
+            }
+        }
+    }
+
+    // Every merge the catalogue accepts is a verified identity with comp=0
+    // output; the presplit-pair rejoin (complemented result) is rejected.
+    #[test]
+    fn merge_catalogue_sound_and_comp_guarded() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut accepted = 0usize;
+        for _ in 0..20_000 {
+            let g = rand_gate(&mut rng, 6, 3, true);
+            let h = rand_gate(&mut rng, 6, 3, true);
+            if let Some(m) = merge_result(&g, &h) {
+                let out = m.gates();
+                assert!(out.iter().all(|x| !x.comp), "merge emitted comp: {g:?}+{h:?}");
+                assert!(
+                    rules::verify_rewrite(&[g.clone(), h.clone()], &out),
+                    "unsound merge: {g:?} + {h:?} -> {out:?}"
+                );
+                accepted += 1;
+            }
+        }
+        assert!(accepted > 50, "catalogue accepted too few pairs to be tested: {accepted}");
+
+        // The presplit pieces of a g57 (x and !x!y on the same target) XOR to
+        // the complemented parent: must be rejected.
+        let p0 = XGate::conj(0, [(1u16, true)]).unwrap();
+        let p1 = XGate::conj(0, [(1u16, false), (2u16, false)]).unwrap();
+        assert!(merge_result(&p0, &p1).is_none(), "presplit rejoin must be comp-guarded");
+
+        // Two g57s differing in one polarity fuse into a conjunction (fossil
+        // erosion), and a g57 plus its own monomial fuse into a NOT gate.
+        let g57a = XGate { target: 0, comp: true, ctrls: p1.ctrls.clone() };
+        let mut g57b = g57a.clone();
+        g57b.ctrls[0].1 = true;
+        match merge_result(&g57a, &g57b) {
+            Some(Merge::DropLit(m)) => assert!(!m.comp && m.width() == 1),
+            other => panic!("comp-comp polarity pair should DropLit, got {:?}", other.map(|m| m.gates())),
+        }
+        let mono = XGate { target: 0, comp: false, ctrls: g57a.ctrls.clone() };
+        match merge_result(&g57a, &mono) {
+            Some(Merge::XFuse(m)) => assert!(!m.comp && m.width() == 0),
+            other => panic!("g57 + own monomial should XFuse, got {:?}", other.map(|m| m.gates())),
+        }
+    }
+
+    // fresh-wire split and unsubsume each round-trip through the catalogue back
+    // to the exact original gate.
+    #[test]
+    fn split_merge_roundtrips() {
+        let mut rng = StdRng::seed_from_u64(11);
+        for _ in 0..2_000 {
+            let g = rand_gate(&mut rng, 8, 3, false);
+            // fresh split on a wire the gate does not touch
+            let x = (0..8u16).find(|&w| w != g.target && !g.reads(w)).unwrap();
+            let a = XGate::conj(g.target, g.ctrls.iter().copied().chain([(x, true)])).unwrap();
+            let b = XGate::conj(g.target, g.ctrls.iter().copied().chain([(x, false)])).unwrap();
+            match merge_result(&a, &b) {
+                Some(Merge::DropLit(m)) => assert_eq!(m, g),
+                _ => panic!("fresh-split pieces must DropLit back to the parent"),
+            }
+            // unsubsume round-trip
+            if g.width() > 0 {
+                let (w, p) = g.ctrls[rng.random_range(0..g.ctrls.len())];
+                let without = XGate::conj(g.target, g.ctrls_without(w)).unwrap();
+                let flipped = XGate::conj(
+                    g.target,
+                    g.ctrls.iter().map(|&(cw, cp)| if cw == w { (cw, !cp) } else { (cw, cp) }),
+                )
+                .unwrap();
+                let _ = p;
+                match merge_result(&without, &flipped) {
+                    Some(Merge::Subsume(m)) => assert_eq!(m, g),
+                    _ => panic!("unsubsume pieces must Subsume back to the parent"),
+                }
+            }
+        }
+    }
+
+    fn random_g57_circuit(seed: u64, wires: u16, gates: usize) -> Vec<XGate> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..gates)
+            .map(|_| loop {
+                let a = rng.random_range(0..wires);
+                let x = rng.random_range(0..wires);
+                let y = rng.random_range(0..wires);
+                if a != x && a != y && x != y {
+                    break XGate::from_g57([a, x, y]);
+                }
+            })
+            .collect()
+    }
+
+    // A conjunction-dominated circuit like real fmix input (fsplit output is
+    // ~90% eroded); a few g57 fossils sprinkled in.
+    fn random_mixed_circuit(seed: u64, wires: u16, gates: usize) -> Vec<XGate> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..gates)
+            .map(|i| {
+                if i % 10 == 0 {
+                    loop {
+                        let a = rng.random_range(0..wires);
+                        let x = rng.random_range(0..wires);
+                        let y = rng.random_range(0..wires);
+                        if a != x && a != y && x != y {
+                            break XGate::from_g57([a, x, y]);
+                        }
+                    }
+                } else {
+                    loop {
+                        let g = rand_gate(&mut rng, wires, 3, false);
+                        if g.width() >= 1 {
+                            break g;
+                        }
+                    }
+                }
+            })
+            .collect()
+    }
+
+    // The chain holds size near the target, preserves the function (run() and
+    // the end-of-run global check assert internally), does both kinds of moves,
+    // and never increases the fossil count.
+    #[test]
+    fn mixer_holds_size_and_function() {
+        let gates = random_mixed_circuit(3, 16, 300);
+        let comp0 = gates.iter().filter(|g| g.comp).count();
+        let params = MixParams {
+            k_max: 5,
+            moves: 20_000,
+            target_size: 300,
+            temp: 20.0,
+            verify_every: 2_000,
+            report_every: u64::MAX,
+            seed: 5,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        // The chain equilibrates at a content-dependent floor above the target
+        // (dead journal entries are permanently unmergeable by the pairwise
+        // catalogue); the contract is BOUNDED drift under heavy churn, not
+        // exact adherence. This run churns ~67 moves/gate.
+        let n = mx.arena.len();
+        assert!((200..=520).contains(&n), "size drifted from target: {n}");
+        assert!(mx.counters.merges() > 0, "no merges happened");
+        assert!(mx.counters.undos > 0, "no crossing undos happened");
+        assert!(mx.counters.expands() > 0, "no expansions happened");
+        assert!(mx.remaining_g57() <= comp0, "fossil count increased");
+        assert!(mx.origin_displacement() > 0.01, "no positional mixing at all");
+    }
+
+    // Thermostat up (catalogue-invertible moves only: fresh/unsub/insert, no
+    // crossings), then pure-drain mode down: with expansion weights zeroed the
+    // merge channel alone must dig most of the growth back out. Fresh-split
+    // trees are hierarchically recoverable (child pairs DropLit-merge back
+    // into parents, which can then merge with THEIR siblings), so this stock
+    // stays recyclable — unlike crossing ladders, which are permanent once
+    // their journal entries die (measured recoverable slack there: ~6%).
+    #[test]
+    fn mixer_thermostat_grows_then_drains() {
+        let gates = random_mixed_circuit(9, 16, 200);
+        let grow = MixParams {
+            k_max: 5,
+            moves: 30_000,
+            target_size: 500,
+            temp: 20.0,
+            w_cross: 0.0,
+            w_fresh: 0.5,
+            w_unsub: 0.3,
+            w_insert: 0.2,
+            verify_every: 5_000,
+            report_every: u64::MAX,
+            seed: 1,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, grow);
+        mx.run();
+        let grown = mx.arena.len();
+        assert!(grown >= 400, "did not grow toward target: {grown}");
+
+        mx.params.target_size = 250;
+        mx.params.w_fresh = 0.0;
+        mx.params.w_unsub = 0.0;
+        mx.params.w_insert = 0.0;
+        mx.params.moves += 30_000;
+        mx.run();
+        let drained = mx.arena.len();
+        assert!(
+            (drained as f64) < grown as f64 * 0.7,
+            "drain did not contract: {grown} -> {drained}"
+        );
+        assert!(mx.counters.merges() > 0, "no merges during drain");
+    }
+
+    // On an all-g57 input the chain erodes fossils; erosion inherently costs
+    // +1 gate per presplit and is irreversible by design, so size may grow up
+    // to initial + fossil count (plus thermostat slack) while comp declines.
+    #[test]
+    fn mixer_erodes_fossils() {
+        let gates = random_g57_circuit(3, 16, 300);
+        let comp0 = gates.iter().filter(|g| g.comp).count();
+        let params = MixParams {
+            k_max: 5,
+            moves: 20_000,
+            target_size: 300,
+            temp: 20.0,
+            verify_every: 2_000,
+            report_every: u64::MAX,
+            seed: 5,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        let comp_now = mx.remaining_g57();
+        assert!(comp_now < comp0 / 2, "erosion too slow: {comp0} -> {comp_now}");
+        let n = mx.arena.len();
+        assert!(n <= 300 + comp0 + 100, "grew past the erosion budget: {n}");
+    }
+
+    #[test]
+    fn tabu_age_semantics() {
+        let gates = random_g57_circuit(1, 8, 20);
+        let params = MixParams { tabu_moves: 100, ..MixParams::default() };
+        let mut mx = Mixer::new(gates, 8, params);
+        let e1 = mx.fresh_event();
+        mx.moves_done = 50;
+        let e2 = mx.fresh_event();
+        assert!(mx.is_tabu(e1) && mx.is_tabu(e2));
+        assert!(!mx.is_tabu(0), "event 0 (no provenance) is never tabu");
+        mx.moves_done = 120; // e1 aged out (created at move 0), e2 still fresh
+        assert!(!mx.is_tabu(e1), "aged-out event must not be tabu");
+        assert!(mx.is_tabu(e2));
+        mx.moves_done = 200;
+        let _ = mx.fresh_event(); // push triggers eviction of expired entries
+        assert!(mx.tabu.len() <= 2, "expired tabu entries must be evicted");
+    }
+}
