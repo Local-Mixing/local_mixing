@@ -123,6 +123,22 @@ fn main() {
     };
     let mut engine = Engine::new(gates, params);
 
+    // On-demand snapshot via an environment signal: set FSPLIT_DUMP_FLAG to a
+    // path; `touch` that path from outside and the run writes the current
+    // circuit to FSPLIT_DUMP_OUT (default "<output>.snapshot.txt", or
+    // "fsplit_snapshot.txt" if no --output) and continues. FSPLIT_DUMP_EVERY
+    // sets the check cadence in episodes (default 200).
+    if let Ok(flag) = std::env::var("FSPLIT_DUMP_FLAG") {
+        if !flag.is_empty() {
+            let out = std::env::var("FSPLIT_DUMP_OUT").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| {
+                args.output.as_deref().map(|o| format!("{o}.snapshot.txt")).unwrap_or_else(|| "fsplit_snapshot.txt".to_string())
+            });
+            let every: usize = std::env::var("FSPLIT_DUMP_EVERY").ok().and_then(|s| s.parse().ok()).unwrap_or(200);
+            println!("[fsplit] dump signal armed: touch {flag} -> snapshot to {out} (checked every {every} episodes)");
+            engine.enable_dump(flag, out, every);
+        }
+    }
+
     let t0 = std::time::Instant::now();
     let stop = engine.run();
     let split_secs = t0.elapsed().as_secs_f64();

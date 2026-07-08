@@ -93,6 +93,13 @@ pub struct Engine {
     pub counters: Counters,
     pub trace: Option<Vec<TraceStep>>,
     pub trace_cap: usize,
+    // On-demand snapshot: when `dump_flag_path` is Some and that file exists at a
+    // check point, the engine writes the current circuit to `dump_out_path` and
+    // continues. The flag file is removed after each dump so it re-arms per touch.
+    dump_flag_path: Option<String>,
+    dump_out_path: String,
+    dump_check_every: usize,
+    dumps_written: u64,
     original: Vec<XGate>,
     num_wires: usize,
     rng: StdRng,
@@ -114,10 +121,60 @@ impl Engine {
             counters: Counters::default(),
             trace: None,
             trace_cap: 0,
+            dump_flag_path: None,
+            dump_out_path: String::new(),
+            dump_check_every: 200,
+            dumps_written: 0,
             original: gates,
             num_wires,
             rng,
         }
+    }
+
+    // ---- on-demand snapshot ("environment signal" -> write circuit, continue) ----
+
+    // Watch `flag_path`; whenever it exists at a check point, dump the live
+    // circuit to `out_path` (verified) and continue. `check_every` episodes
+    // between checks (the check is a cheap stat). Trigger externally with
+    // `touch <flag_path>`; the file is removed after each dump.
+    pub fn enable_dump(&mut self, flag_path: String, out_path: String, check_every: usize) {
+        self.dump_flag_path = Some(flag_path);
+        self.dump_out_path = out_path;
+        self.dump_check_every = check_every.max(1);
+    }
+
+    // Checked before each splitting cycle (gated to dump_check_every). If the
+    // flag file is present: verify, write a snapshot (atomic tmp+rename), clear
+    // the flag, keep running.
+    fn maybe_dump(&mut self) {
+        let flag = match &self.dump_flag_path {
+            Some(f) => f.clone(),
+            None => return,
+        };
+        if !std::path::Path::new(&flag).exists() {
+            return;
+        }
+        self.global_check();
+        let gates = self.arena.to_vec();
+        let out = self.dump_out_path.clone();
+        let tmp = format!("{out}.tmp");
+        match super::format::write_mpmct(&tmp, &gates, self.num_wires) {
+            Ok(()) => {
+                if let Err(e) = std::fs::rename(&tmp, &out) {
+                    eprintln!("[fsplit] dump rename failed: {e}");
+                }
+            }
+            Err(e) => eprintln!("[fsplit] dump write failed: {e}"),
+        }
+        let _ = std::fs::remove_file(&flag);
+        self.dumps_written += 1;
+        println!(
+            "[fsplit] DUMP #{}: wrote {} gates to {} at episode {} (verified, continuing)",
+            self.dumps_written,
+            gates.len(),
+            out,
+            self.counters.episodes
+        );
     }
 
     // ---- tracing (visualization/debug; off unless `trace` is Some) ----
@@ -178,6 +235,10 @@ impl Engine {
                 self.global_check();
                 return StopReason::SizeBound;
             }
+            // Check the dump signal before starting the next splitting cycle.
+            if self.counters.episodes % self.dump_check_every as u64 == 0 {
+                self.maybe_dump();
+            }
             // Saturation is measured by STRUCTURAL progress (splits/presplits).
             // Floats alone must not reset the counter: a fully K-blocked circuit
             // can float forever without ever growing.
@@ -216,8 +277,15 @@ impl Engine {
         d
     }
 
+    // Pick an episode start. g57 (comp) gates are prioritized strictly above all
+    // other gates: if any sampled g57 can float, the best-floating g57 wins,
+    // regardless of how large a conjunction's box is. Float distance (largest
+    // one-directional box — favors big boxes and end-of-box gates) is the
+    // secondary key, applied within each class. Only when no sampled g57 can
+    // float do we fall back to the best conjunction.
     fn select_start(&mut self) -> Option<(u32, Dir)> {
-        let mut best: Option<(u32, Dir, usize)> = None;
+        let mut best_g57: Option<(u32, Dir, usize)> = None;
+        let mut best_other: Option<(u32, Dir, usize)> = None;
         for _ in 0..self.params.candidates {
             let id = self.arena.random_linked(&mut self.rng);
             let dl = self.float_distance(id, Dir::L, self.params.walk_cap);
@@ -231,11 +299,15 @@ impl Engine {
             } else {
                 (dr, Dir::R)
             };
-            if score > best.map_or(0, |(_, _, s)| s) {
-                best = Some((id, dir, score));
+            if score == 0 {
+                continue; // wedged: useless as a start
+            }
+            let slot = if self.arena.gate(id).comp { &mut best_g57 } else { &mut best_other };
+            if score > slot.map_or(0, |(_, _, s)| s) {
+                *slot = Some((id, dir, score));
             }
         }
-        best.map(|(id, dir, _)| (id, dir))
+        best_g57.or(best_other).map(|(id, dir, _)| (id, dir))
     }
 
     // ---- floating ----
