@@ -24,6 +24,21 @@ pub static SAMF_HIDE_REJECTED_EXPOSED: AtomicUsize = AtomicUsize::new(0);
 // Compressions made while integrating undo SAMFs/NOTs at the end of a shuffle.
 pub static END_SAMF_COMPRESSIONS_MADE: AtomicUsize = AtomicUsize::new(0);
 
+// SAMF_HIDE_PAIRS: number of random swap-pairs tried per curated expansion when hiding a SAMF
+// (default 1 = legacy). Each pair does up to `type_attempts` neg-type lookups; first success
+// wins (`break 'pairs`). Higher => more hidden-SAMF insertions per expansion. First-success, no
+// SAT dependency (independent of SAT_CONE_AWARE, which drives the pair count in cone-aware mode).
+pub fn samf_hide_pairs() -> usize {
+    static PAIRS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *PAIRS.get_or_init(|| {
+        std::env::var("SAMF_HIDE_PAIRS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1)
+            .max(1)
+    })
+}
+
 // Hardcoded circuits: min-2 depths per function, 3-wire and 4-wire.
 // Wire convention: wire 1↔2 swapped (swap), wire 1 flipped (not), wire 1 controls wire 2 (cnot).
 // Wire 0 (and wire 3 in 4-wire) are ancilla.
@@ -2404,7 +2419,7 @@ fn shuffled_shooting_game_core(
             let pair_attempts = if cone_aware {
                 crate::replace::sat_score::sat_hidden_samf_candidates()
             } else {
-                1
+                samf_hide_pairs()
             };
             'pairs: for pair_idx in 0..pair_attempts {
                 let swap_lo: u16 = rng.random_range(0..n as u16);
