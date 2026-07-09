@@ -78,6 +78,65 @@ pub fn origin_diffusion(origins: &[u32]) -> f64 {
     if wtot == 0 { 0.0 } else { wsum / wtot as f64 }
 }
 
+// Distribution of per-origin spread (std of piece positions, in gate units),
+// piece-weighted, over origins with >=2 surviving pieces. The uniformity
+// counterpart of origin_diffusion's mean: a heavy left tail means some
+// original material is still tightly clumped. Returns (fraction of real
+// pieces whose origin has only one surviving piece, spread at each requested
+// quantile, fraction of multi-piece pieces with spread < ref_gates).
+pub fn origin_spread_quantiles(
+    origins: &[u32],
+    qs: &[f64],
+    ref_gates: f64,
+) -> (f64, Vec<f64>, f64) {
+    let n = origins.len() as f64;
+    let mut acc: std::collections::HashMap<u32, (u64, f64, f64)> = std::collections::HashMap::new();
+    let mut real = 0u64;
+    for (i, &o) in origins.iter().enumerate() {
+        if o == ORIGIN_SYNTH {
+            continue;
+        }
+        real += 1;
+        let x = i as f64 / n;
+        let e = acc.entry(o).or_insert((0, 0.0, 0.0));
+        e.0 += 1;
+        e.1 += x;
+        e.2 += x * x;
+    }
+    let mut spreads: Vec<(f64, u64)> = Vec::new(); // (std in gates, pieces)
+    let (mut singles, mut multi) = (0u64, 0u64);
+    for (c, s, ss) in acc.into_values() {
+        if c < 2 {
+            singles += c;
+            continue;
+        }
+        multi += c;
+        let cf = c as f64;
+        let var = (ss / cf - (s / cf) * (s / cf)).max(0.0);
+        spreads.push((var.sqrt() * n, c));
+    }
+    if multi == 0 {
+        return (if real == 0 { 0.0 } else { singles as f64 / real as f64 }, vec![0.0; qs.len()], 0.0);
+    }
+    spreads.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+    let below = spreads.iter().filter(|&&(sp, _)| sp < ref_gates).map(|&(_, c)| c).sum::<u64>();
+    let mut quants = Vec::with_capacity(qs.len());
+    for &q in qs {
+        let target = (q * multi as f64) as u64;
+        let mut cum = 0u64;
+        let mut val = spreads.last().unwrap().0;
+        for &(sp, c) in &spreads {
+            cum += c;
+            if cum >= target {
+                val = sp;
+                break;
+            }
+        }
+        quants.push(val);
+    }
+    (singles as f64 / real as f64, quants, below as f64 / multi as f64)
+}
+
 // Pearson correlation of origin ids at adjacent positions (pairs with a
 // synthetic member skipped): 1 in the unmixed circuit, 0 once neighbors are
 // unrelated.
@@ -260,6 +319,27 @@ mod stats_tests {
         // Synthetic entries are ignored, not counted as an origin.
         let with_synth: Vec<u32> = [0, ORIGIN_SYNTH, 0, 1, ORIGIN_SYNTH, 1].to_vec();
         assert!(origin_diffusion(&with_synth) > 0.0);
+    }
+
+    #[test]
+    fn spread_quantiles_split_singles_from_multis() {
+        // Origin 0: pieces at 0 and 1 (spread = 2 gates in a 4-gate circuit:
+        // std of {0, .25} * 4 = .5). Origin 1: one piece. Origin 2: one piece.
+        let origins: Vec<u32> = vec![0, 0, 1, 2];
+        let (single_frac, quants, below) = origin_spread_quantiles(&origins, &[0.5], 1.0);
+        assert!((single_frac - 0.5).abs() < 1e-12);
+        assert!((quants[0] - 0.5).abs() < 1e-12);
+        assert!((below - 1.0).abs() < 1e-12);
+        // Tightly clumped vs dispersed origins separate in the quantiles.
+        let mut blocked: Vec<u32> = (0..500u32).flat_map(|o| [o, o]).collect();
+        let (_, q_lo, _) = origin_spread_quantiles(&blocked, &[0.9], 1.0);
+        assert!(q_lo[0] < 2.0, "adjacent pieces have sub-2-gate spread");
+        let mut rng = StdRng::seed_from_u64(3);
+        for i in (1..blocked.len()).rev() {
+            blocked.swap(i, rng.random_range(0..=i));
+        }
+        let (_, q_hi, _) = origin_spread_quantiles(&blocked, &[0.1], 1.0);
+        assert!(q_hi[0] > 20.0, "shuffled pieces spread widely even at p10");
     }
 
     #[test]

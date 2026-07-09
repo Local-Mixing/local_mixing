@@ -42,6 +42,10 @@ struct Args {
     /// Windows to sample per span size (and for origin diversity)
     #[arg(long, default_value_t = 2_000)]
     span_samples: usize,
+    /// Reference spread scale in gates for the uniformity fraction
+    /// (default: 4 * wires * log2(wires), the random-circuit PRP length scale)
+    #[arg(long)]
+    spread_ref: Option<f64>,
     #[arg(long, default_value_t = 0)]
     seed: u64,
 }
@@ -159,6 +163,13 @@ fn main() {
             stats::UNIFORM_STD,
             stats::adjacent_origin_autocorr(&origins),
             stats::window_origin_diversity(&origins, args.span_samples, &mut rng),
+        );
+        let sref = args.spread_ref.unwrap_or(4.0 * wires as f64 * (wires as f64).log2());
+        let qs = [0.05, 0.25, 0.50, 0.75, 0.95];
+        let (single_frac, quants, below) = stats::origin_spread_quantiles(&origins, &qs, sref);
+        println!(
+            "[fstats] spread_gates single_frac={:.3} p5={:.0} p25={:.0} p50={:.0} p75={:.0} p95={:.0} frac_lt_ref={:.3} ref={:.0}",
+            single_frac, quants[0], quants[1], quants[2], quants[3], quants[4], below, sref
         );
     }
 

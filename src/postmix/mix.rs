@@ -448,16 +448,27 @@ impl Mixer {
             if std::path::Path::new(&f).exists() {
                 self.global_check();
                 let gates = self.arena.to_vec();
-                let tmp = format!("{}.tmp", self.dump_out);
+                // Move-stamped filename so repeated touches build a trajectory
+                // instead of overwriting; origins sidecar so the positional
+                // metrics (diffusion/autocorr) are computable per snapshot.
+                let out = format!("{}.mv{}", self.dump_out, self.moves_done);
+                let tmp = format!("{out}.tmp");
                 match super::format::write_mpmct(&tmp, &gates, self.num_wires) {
                     Ok(()) => {
-                        if let Err(e) = std::fs::rename(&tmp, &self.dump_out) {
+                        if let Err(e) = std::fs::rename(&tmp, &out) {
                             eprintln!("[fmix] dump rename failed: {e}");
                         } else {
+                            let mut s = String::with_capacity(gates.len() * 8);
+                            for o in self.origins_in_order() {
+                                s.push_str(&format!("{o}\n"));
+                            }
+                            if let Err(e) = std::fs::write(format!("{out}.origins"), s) {
+                                eprintln!("[fmix] dump origins write failed: {e}");
+                            }
                             println!(
                                 "[fmix] DUMP: wrote {} gates to {} at move {} (verified, continuing)",
                                 gates.len(),
-                                self.dump_out,
+                                out,
                                 self.moves_done
                             );
                         }
@@ -1323,13 +1334,15 @@ impl Mixer {
         let owin = self.window_origin_diversity(64);
         let fan0 = self.fanout_zero_frac();
         let leew = self.mean_leeway(256, 4096);
-        let odiff = super::stats::origin_diffusion(&self.origins_in_order());
+        let origins = self.origins_in_order();
+        let odiff = super::stats::origin_diffusion(&origins);
+        let oadj = super::stats::adjacent_origin_autocorr(&origins);
         let c = &self.counters;
         let hist: Vec<String> = (0..=self.params.k_max.min(15))
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.3} owin={:.1} fan0={:.3} leew={:.0} odiff={:.3} width[{}]",
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -1370,6 +1383,7 @@ impl Mixer {
             fan0,
             leew,
             odiff,
+            oadj,
             hist.join(" ")
         );
     }
