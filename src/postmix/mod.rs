@@ -10,6 +10,7 @@ pub mod engine;
 pub mod format;
 pub mod mix;
 pub mod rules;
+pub mod stats;
 pub mod xgate;
 
 #[cfg(test)]

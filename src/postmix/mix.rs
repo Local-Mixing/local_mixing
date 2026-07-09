@@ -283,6 +283,9 @@ pub struct Mixer {
     num_wires: usize,
     moves_done: u64,
     rng: StdRng,
+    // Sampling RNG for report-line gauges only. Separate from `rng` so adding
+    // or re-cadencing metrics never perturbs the move trajectory of a seed.
+    metrics_rng: StdRng,
     // Graceful stop / on-demand snapshot, both file-flag driven (checked at the
     // report cadence): touch stop_flag -> finish cleanly; touch dump_flag ->
     // verified snapshot to dump_out, continue.
@@ -308,6 +311,7 @@ impl Mixer {
         }
         let num_wires = num_wires.max(super::xgate::max_wire(&gates) as usize + 1);
         let rng = StdRng::seed_from_u64(params.seed);
+        let metrics_rng = StdRng::seed_from_u64(params.seed ^ 0x5EED_517A75);
         let meta = (0..n).map(|i| Meta { origin: i as u32, event: 0 }).collect();
         let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
         for (i, g) in gates.iter().enumerate() {
@@ -327,6 +331,7 @@ impl Mixer {
             num_wires,
             moves_done: 0,
             rng,
+            metrics_rng,
             stop_flag: None,
             dump_flag: None,
             dump_out: String::new(),
@@ -1279,7 +1284,7 @@ impl Mixer {
         }
         let mut acc = 0.0f64;
         for _ in 0..samples {
-            let s = self.rng.random_range(0..=(ids.len() - 32));
+            let s = self.metrics_rng.random_range(0..=(ids.len() - 32));
             let mut set: Vec<u32> = ids[s..s + 32].iter().map(|&id| self.meta_of(id).origin).collect();
             set.sort_unstable();
             set.dedup();
@@ -1288,15 +1293,43 @@ impl Mixer {
         acc / samples as f64
     }
 
+    // Fraction of gates whose output is never read before its wire is next
+    // overwritten (see stats::fanouts).
+    pub fn fanout_zero_frac(&self) -> f64 {
+        let ids = self.arena.ids_in_order();
+        let fan = super::stats::fanouts(ids.iter().map(|&id| self.arena.gate(id)), self.num_wires);
+        if fan.is_empty() {
+            return 0.0;
+        }
+        fan.iter().filter(|&&f| f == 0).count() as f64 / fan.len() as f64
+    }
+
+    // Mean two-sided float-box size over sampled gates, capped per direction:
+    // the mobility / roadblock gauge.
+    pub fn mean_leeway(&mut self, samples: usize, cap: usize) -> f64 {
+        if self.arena.len() == 0 || samples == 0 {
+            return 0.0;
+        }
+        let mut acc = 0usize;
+        for _ in 0..samples {
+            let id = self.arena.random_linked(&mut self.metrics_rng);
+            acc += self.float_distance(id, Dir::L, cap) + self.float_distance(id, Dir::R, cap);
+        }
+        acc as f64 / samples as f64
+    }
+
     pub fn report(&mut self) {
         let disp = self.origin_displacement();
         let owin = self.window_origin_diversity(64);
+        let fan0 = self.fanout_zero_frac();
+        let leew = self.mean_leeway(256, 4096);
+        let odiff = super::stats::origin_diffusion(&self.origins_in_order());
         let c = &self.counters;
         let hist: Vec<String> = (0..=self.params.k_max.min(15))
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.3} owin={:.1} width[{}]",
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.3} owin={:.1} fan0={:.3} leew={:.0} odiff={:.3} width[{}]",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -1334,6 +1367,9 @@ impl Mixer {
             c.scatter_steps,
             disp,
             owin,
+            fan0,
+            leew,
+            odiff,
             hist.join(" ")
         );
     }
