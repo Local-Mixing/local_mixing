@@ -6,6 +6,7 @@
 //
 // Self-contained: does not touch the ssg/sss replacement paths or the DB.
 pub mod arena;
+pub mod compress;
 pub mod engine;
 pub mod format;
 pub mod mix;
