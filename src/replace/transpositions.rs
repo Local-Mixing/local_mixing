@@ -39,6 +39,41 @@ pub fn samf_hide_pairs() -> usize {
     })
 }
 
+// ---- Shooting-pass profiling (SHOOT_PROFILE=1) ------------------------------------------
+// Per-phase wall-time inside the gen-mode windowed shooting loop, to size where parallelism
+// would pay off: `core` = shuffled_shooting_game_core (the collision game + DB lookups per
+// window), `reconcile` = per-pass apply_unsamf, `merge` = SegCircuit splice + ledger index
+// shifts, `flush` = periodic full-circuit apply_ledger. Off (unset) = zero overhead.
+pub static SHOOT_CORE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static SHOOT_RECONCILE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static SHOOT_MERGE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static SHOOT_FLUSH_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static SHOOT_RIGHT_PASSES: AtomicUsize = AtomicUsize::new(0);
+pub static SHOOT_LEFT_PASSES: AtomicUsize = AtomicUsize::new(0);
+pub static SHOOT_WLEN_SUM: AtomicUsize = AtomicUsize::new(0);
+
+pub fn shoot_profile_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SHOOT_PROFILE").is_ok())
+}
+
+// SHOOT_PARALLEL=k (default 1 = legacy serial): batch up to k non-overlapping min-generation
+// RIGHT passes per scheduler step and shoot them concurrently against a read-only snapshot of the
+// SegCircuit, then apply their splices+ledger entries serially (right-to-left). Windows are spaced
+// >= WINDOW_CAP apart so they are disjoint; each pass is independently equivalence-preserving. The
+// batched anchor selection means the k passes do NOT see each other's effects (unlike the serial
+// adaptive schedule) -- a mixing-quality change to A/B, not a correctness one.
+pub fn shoot_parallel() -> usize {
+    static K: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *K.get_or_init(|| {
+        std::env::var("SHOOT_PARALLEL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1)
+            .max(1)
+    })
+}
+
 // Hardcoded circuits: min-2 depths per function, 3-wire and 4-wire.
 // Wire convention: wire 1↔2 swapped (swap), wire 1 flipped (not), wire 1 controls wire 2 (cnot).
 // Wire 0 (and wire 3 in 4-wire) are ancilla.
@@ -2820,6 +2855,9 @@ pub fn shuffled_shoot_then_samf_core(
             .and_then(|v| v.trim().parse::<usize>().ok())
             .unwrap_or(0)
             .min(100);
+        let profile = shoot_profile_enabled();
+        let parallel_k = shoot_parallel();
+        use rayon::prelude::*;
         if centralize_pct > 0 {
             println!("[gen] CENTRALIZE active: central {}% band, gen=min+1, bidirectional", centralize_pct);
         }
@@ -2873,15 +2911,18 @@ pub fn shuffled_shoot_then_samf_core(
             let bound = ledger.next_after(anchor).saturating_sub(anchor);
             let wlen = WINDOW_CAP.min(sc.len() - anchor).min(bound.max(1));
             let (wg, wt) = sc.read_range(anchor, wlen);
+            let t0 = if profile { Some(std::time::Instant::now()) } else { None };
             let (mut out, t_p, neg_p, comp, mut out_t) = shuffled_shooting_game_core(
                 &wg, n, env, curated_shard_dbs, shard_dbs, gates_ahead_expand, gates_ahead_samf,
                 type_attempts, &wt, Some(0), pass_length, true,
             );
+            let t1 = if profile { Some(std::time::Instant::now()) } else { None };
             apply_unsamf(
                 &mut out,
                 &Transpositions { transpositions: Vec::new() },
                 &neg_p, n, env, curated_shard_dbs, shard_dbs, &mut out_t,
             );
+            let t2 = if profile { Some(std::time::Instant::now()) } else { None };
             let far = SamfTail::from_transpositions(&t_p, &vec![0u8; n], n);
             // DEBUG (non-perturbing): per-pass invariant — out and wg differ only by the recorded
             // permutation `far` (far.neg==0 here). Uses DETERMINISTIC sample inputs and a functional
@@ -2902,6 +2943,14 @@ pub fn shuffled_shoot_then_samf_core(
             if !far.is_identity() {
                 ledger.insert(anchor + new_len, far);
             }
+            if profile {
+                let t3 = std::time::Instant::now();
+                SHOOT_CORE_NS.fetch_add(t1.unwrap().duration_since(t0.unwrap()).as_nanos() as u64, Relaxed);
+                SHOOT_RECONCILE_NS.fetch_add(t2.unwrap().duration_since(t1.unwrap()).as_nanos() as u64, Relaxed);
+                SHOOT_MERGE_NS.fetch_add(t3.duration_since(t2.unwrap()).as_nanos() as u64, Relaxed);
+                SHOOT_RIGHT_PASSES.fetch_add(1, Relaxed);
+                SHOOT_WLEN_SUM.fetch_add(wlen, Relaxed);
+            }
             comp
         };
 
@@ -2919,12 +2968,15 @@ pub fn shuffled_shoot_then_samf_core(
                 let wg_orig = if stagec_check { wg.clone() } else { Vec::new() };
                 wg.reverse();
                 wt.reverse();
+                let t0 = if profile { Some(std::time::Instant::now()) } else { None };
                 let (mut out, t_p, neg_p, comp, mut out_t) = shuffled_shooting_game_core(
                     &wg, n, env, curated_shard_dbs, shard_dbs, gates_ahead_expand, gates_ahead_samf,
                     type_attempts, &wt, Some(0), pass_length, true,
                 );
+                let t1 = if profile { Some(std::time::Instant::now()) } else { None };
                 // Local full unsamf (perm + negation) in the reversed frame -> self-contained.
                 apply_unsamf(&mut out, &t_p, &neg_p, n, env, curated_shard_dbs, shard_dbs, &mut out_t);
+                let t2 = if profile { Some(std::time::Instant::now()) } else { None };
                 out.reverse();
                 out_t.reverse();
                 // DEBUG (non-perturbing): the self-contained left pass output must equal the
@@ -2939,6 +2991,14 @@ pub fn shuffled_shoot_then_samf_core(
                 let new_len = out.len();
                 sc.splice(lo, wlen, &out, &out_t);
                 ledger.shift_from(lo + wlen, new_len as isize - wlen as isize);
+                if profile {
+                    let t3 = std::time::Instant::now();
+                    SHOOT_CORE_NS.fetch_add(t1.unwrap().duration_since(t0.unwrap()).as_nanos() as u64, Relaxed);
+                    SHOOT_RECONCILE_NS.fetch_add(t2.unwrap().duration_since(t1.unwrap()).as_nanos() as u64, Relaxed);
+                    SHOOT_MERGE_NS.fetch_add(t3.duration_since(t2.unwrap()).as_nanos() as u64, Relaxed);
+                    SHOOT_LEFT_PASSES.fetch_add(1, Relaxed);
+                    SHOOT_WLEN_SUM.fetch_add(wlen, Relaxed);
+                }
                 (comp, lo + new_len)
             };
 
@@ -2984,6 +3044,7 @@ pub fn shuffled_shoot_then_samf_core(
                 {
                     std::process::exit(9);
                 }
+                let tf = if profile { Some(std::time::Instant::now()) } else { None };
                 let (fg, ft) = sc.to_flat();
                 let all: Vec<(usize, SamfTail)> =
                     ledger.entries().iter().map(|(p, t)| (*p, t.clone())).collect();
@@ -2991,6 +3052,9 @@ pub fn shuffled_shoot_then_samf_core(
                 acc_net = acc_net.then(&net);
                 sc = SegCircuit::from_flat(&ng, &nt);
                 ledger = SamfLedger::new();
+                if let Some(tf) = tf {
+                    SHOOT_FLUSH_NS.fetch_add(tf.elapsed().as_nanos() as u64, Relaxed);
+                }
                 if stagec_check
                     && !global_check(&sc, &ledger, &acc_net, &format!("POST-flush pass {pass_idx}"))
                 {
@@ -3020,6 +3084,76 @@ pub fn shuffled_shoot_then_samf_core(
                 total_compressions += comp_l + comp_r;
                 centralized_passes += 1;
                 pass_idx += 2;
+            } else if parallel_k > 1 {
+                // SHOOT_PARALLEL: batch up to `parallel_k` min-generation RIGHT passes on
+                // non-overlapping windows (spaced >= WINDOW_CAP apart so they are disjoint), shoot
+                // them concurrently against the read-only pre-batch snapshot, then apply their
+                // splices + ledger entries serially (right-to-left, so lower anchors stay valid).
+                let skip = ((1000 - min_gen_permille) * sc.len()) / 1000;
+                let mut anchors: Vec<usize> = Vec::new();
+                let mut attempts = 0usize;
+                while anchors.len() < parallel_k && attempts < parallel_k * 8 {
+                    attempts += 1;
+                    match sc.random_frac_min_gen_index(skip, &mut rng) {
+                        Some(a) => {
+                            if anchors
+                                .iter()
+                                .all(|&p| (p as isize - a as isize).abs() >= WINDOW_CAP as isize)
+                            {
+                                anchors.push(a);
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                if anchors.is_empty() {
+                    break;
+                }
+                // Parallel compute: each window is a disjoint read-only slice of the pre-batch
+                // `sc`/`ledger`; shooting mutates only owned copies, so no shared state is written.
+                let sc_ref = &sc;
+                let ledger_ref = &ledger;
+                let mut results: Vec<(usize, usize, Vec<[u16; 3]>, Vec<Tag>, SamfTail, usize)> =
+                    anchors
+                        .par_iter()
+                        .map(|&anchor| {
+                            let bound = ledger_ref.next_after(anchor).saturating_sub(anchor);
+                            let wlen = WINDOW_CAP.min(sc_ref.len() - anchor).min(bound.max(1));
+                            let (wg, wt) = sc_ref.read_range(anchor, wlen);
+                            let (mut out, t_p, neg_p, comp, mut out_t) = shuffled_shooting_game_core(
+                                &wg, n, env, curated_shard_dbs, shard_dbs, gates_ahead_expand,
+                                gates_ahead_samf, type_attempts, &wt, Some(0), pass_length, true,
+                            );
+                            apply_unsamf(
+                                &mut out,
+                                &Transpositions { transpositions: Vec::new() },
+                                &neg_p, n, env, curated_shard_dbs, shard_dbs, &mut out_t,
+                            );
+                            let far = SamfTail::from_transpositions(&t_p, &vec![0u8; n], n);
+                            if stagec_check && !stagec_pass_ok(&out, &wg, &far.perm, n) {
+                                eprintln!(
+                                    "[PAR-RIGHT-PASS BREAK] anchor={anchor} wlen={wlen} out_len={}",
+                                    out.len()
+                                );
+                                std::process::exit(8);
+                            }
+                            (anchor, wlen, out, out_t, far, comp)
+                        })
+                        .collect();
+                // Serial merge, right-to-left: a splice only shifts indices >= its anchor, so
+                // processing in decreasing-anchor order keeps every not-yet-applied (lower) anchor
+                // valid, and shift_from moves already-applied ledger entries to their right.
+                results.sort_by(|a, b| b.0.cmp(&a.0));
+                for (anchor, wlen, out, out_t, far, comp) in results {
+                    let new_len = out.len();
+                    sc.splice(anchor, wlen, &out, &out_t);
+                    ledger.shift_from(anchor + wlen, new_len as isize - wlen as isize);
+                    if !far.is_identity() {
+                        ledger.insert(anchor + new_len, far);
+                    }
+                    total_compressions += comp;
+                    pass_idx += 1;
+                }
             } else {
                 // Anchor at the fractional floor: skip the bottom (1-frac) of gates (the stuck,
                 // rarely-colliding ones) so the anchor keeps raising the rest instead of looping on
@@ -3107,6 +3241,25 @@ pub fn shuffled_shoot_then_samf_core(
             mg,
             tags.len()
         );
+        if profile {
+            let core = SHOOT_CORE_NS.swap(0, Relaxed);
+            let rec = SHOOT_RECONCILE_NS.swap(0, Relaxed);
+            let mrg = SHOOT_MERGE_NS.swap(0, Relaxed);
+            let flu = SHOOT_FLUSH_NS.swap(0, Relaxed);
+            let rp = SHOOT_RIGHT_PASSES.swap(0, Relaxed);
+            let lp = SHOOT_LEFT_PASSES.swap(0, Relaxed);
+            let wl = SHOOT_WLEN_SUM.swap(0, Relaxed);
+            let tot = (core + rec + mrg + flu).max(1) as f64;
+            let pct = |x: u64| x as f64 * 100.0 / tot;
+            println!(
+                "[shoot-profile] core {:.1}s ({:.0}%) | reconcile {:.1}s ({:.0}%) | merge {:.1}s ({:.0}%) | flush {:.1}s ({:.0}%) || right {} left {} avg_wlen {}",
+                core as f64 / 1e9, pct(core),
+                rec as f64 / 1e9, pct(rec),
+                mrg as f64 / 1e9, pct(mrg),
+                flu as f64 / 1e9, pct(flu),
+                rp, lp, wl / (rp + lp).max(1)
+            );
+        }
         // Gen mode resolves all SAMF state internally; return identity so the caller's final
         // unsamf is a no-op.
         return (
