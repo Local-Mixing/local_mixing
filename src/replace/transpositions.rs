@@ -51,6 +51,10 @@ pub static SHOOT_FLUSH_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 pub static SHOOT_RIGHT_PASSES: AtomicUsize = AtomicUsize::new(0);
 pub static SHOOT_LEFT_PASSES: AtomicUsize = AtomicUsize::new(0);
 pub static SHOOT_WLEN_SUM: AtomicUsize = AtomicUsize::new(0);
+// SHOOT_PARALLEL diagnostics: batches launched and total anchors shot (avg anchors/batch = the
+// achieved parallel width).
+pub static PAR_BATCHES: AtomicUsize = AtomicUsize::new(0);
+pub static PAR_ANCHORS: AtomicUsize = AtomicUsize::new(0);
 
 pub fn shoot_profile_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -3112,6 +3116,8 @@ pub fn shuffled_shoot_then_samf_core(
                 if anchors.is_empty() {
                     break;
                 }
+                PAR_BATCHES.fetch_add(1, Relaxed);
+                PAR_ANCHORS.fetch_add(anchors.len(), Relaxed);
                 // Parallel compute: each window is a disjoint read-only slice of the pre-batch
                 // `sc`/`ledger`; shooting mutates only owned copies, so no shared state is written.
                 let sc_ref = &sc;
@@ -3244,6 +3250,17 @@ pub fn shuffled_shoot_then_samf_core(
             mg,
             tags.len()
         );
+        if parallel_k > 1 {
+            let b = PAR_BATCHES.swap(0, Relaxed);
+            let a = PAR_ANCHORS.swap(0, Relaxed);
+            println!(
+                "[shoot-parallel] k={} batches={} anchors={} avg_anchors_per_batch={:.1}",
+                parallel_k,
+                b,
+                a,
+                a as f64 / b.max(1) as f64
+            );
+        }
         if profile {
             let core = SHOOT_CORE_NS.swap(0, Relaxed);
             let rec = SHOOT_RECONCILE_NS.swap(0, Relaxed);
