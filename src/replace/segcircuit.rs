@@ -297,6 +297,33 @@ impl SegCircuit {
         self.random_index_at_gen(g, rng)
     }
 
+    /// The frac-min-gen level `g` together with ALL global indices whose generation == g, in a
+    /// single O(n) scan. Lets a caller pick several spaced anchors per batch (SHOOT_PARALLEL)
+    /// without paying an O(n) `random_frac_min_gen_index` per anchor.
+    pub fn frac_min_gen_indices(&self, skip: usize) -> (u32, Vec<usize>) {
+        if self.total == 0 {
+            return (0, Vec::new());
+        }
+        let g = if skip == 0 {
+            self.min_gen()
+        } else {
+            self.frac_min_gen(skip)
+        };
+        let mut idxs = Vec::new();
+        let mut base = 0usize;
+        for c in &self.chunks {
+            if c.min_gen <= g {
+                for (off, &t) in c.tags.iter().enumerate() {
+                    if t.generation() == g {
+                        idxs.push(base + off);
+                    }
+                }
+            }
+            base += c.len();
+        }
+        (g, idxs)
+    }
+
     /// Read a contiguous range [start, start+len) as flat gate + tag vectors.
     pub fn read_range(&self, start: usize, len: usize) -> (Vec<[u16; 3]>, Vec<Tag>) {
         let mut g = Vec::with_capacity(len);

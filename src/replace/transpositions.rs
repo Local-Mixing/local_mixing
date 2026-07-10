@@ -3090,20 +3090,23 @@ pub fn shuffled_shoot_then_samf_core(
                 // them concurrently against the read-only pre-batch snapshot, then apply their
                 // splices + ledger entries serially (right-to-left, so lower anchors stay valid).
                 let skip = ((1000 - min_gen_permille) * sc.len()) / 1000;
+                // ONE O(n) scan for all frac-min-gen candidate indices, then pick up to
+                // `parallel_k` that are >= WINDOW_CAP apart (each pick is O(1) into the vec, so the
+                // whole selection is O(n) per batch, not O(n) per anchor).
+                let (_g, cand) = sc.frac_min_gen_indices(skip);
+                if cand.is_empty() {
+                    break;
+                }
                 let mut anchors: Vec<usize> = Vec::new();
                 let mut attempts = 0usize;
                 while anchors.len() < parallel_k && attempts < parallel_k * 8 {
                     attempts += 1;
-                    match sc.random_frac_min_gen_index(skip, &mut rng) {
-                        Some(a) => {
-                            if anchors
-                                .iter()
-                                .all(|&p| (p as isize - a as isize).abs() >= WINDOW_CAP as isize)
-                            {
-                                anchors.push(a);
-                            }
-                        }
-                        None => break,
+                    let a = cand[rng.random_range(0..cand.len())];
+                    if anchors
+                        .iter()
+                        .all(|&p| (p as isize - a as isize).abs() >= WINDOW_CAP as isize)
+                    {
+                        anchors.push(a);
                     }
                 }
                 if anchors.is_empty() {
