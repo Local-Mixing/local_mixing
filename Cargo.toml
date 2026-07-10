@@ -36,7 +36,6 @@ clap = { version = "4.5.46", features = ["derive"] }
 smallvec = "1.15.1"
 ctrlc = "3.2"
 fastrand = "2.3.0"
-numpy = "0.27.0"
 lmdb = "0.8.0"
 libc = "0.2.178"
 lmdb-sys = "0.8.0"
@@ -45,7 +44,7 @@ primitive-types = "0.14.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 num_cpus = "1.17.0"
 num-bigint = "0.4.6"
-nauty-Traces-sys = "0.11.0"
+nauty-Traces-sys = { version = "0.11.0", features = ["native"] }
 num-traits = "0.2.19"
 rng-entropy = "0.5.0"
 cryptography = { package = "cryptography-rs", version = "0.5.0" }

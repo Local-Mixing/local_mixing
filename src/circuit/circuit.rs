@@ -664,6 +664,10 @@ impl CircuitSeq {
         self.to_poly_helper(n, &self.gates[start..end]).1
     }
 
+    // pub fn compose_polys(p1: &Polynomial, p2: &Polynomial) -> Polynomial {
+        // p1.symmetric_difference(p2).copied().collect()
+    // }
+
     // Returns (canonical_polys, canonical_circuit, reversed)
     // where reversed=true means the reversed circuit produced the canonical form.
     pub fn canonicalize_polys(

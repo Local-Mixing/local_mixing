@@ -23,7 +23,7 @@ for fn in sys.argv[1:]:
         p90s = []
 
         for line in f:
-            d = list(map(lambda x: math.log2(x),  line_to_data(line)))
+            d = list(map(lambda x: math.log2(x) - n,  line_to_data(line)))
             dd.append(d)
 
         max_len = max(len(d) for d in dd)
@@ -38,16 +38,16 @@ for fn in sys.argv[1:]:
         # print(n, p10s, p90s)
 
         r = plt.fill_between(np.arange(max_len) / n, p10s, p90s, alpha=0.7, label=f"{n} wires")
-        plt.hlines(n, 0, 10, color='gray', linestyle=':', zorder=-1, linewidth=1)
+        # plt.hlines(n, 0, 10, color='gray', linestyle=':', zorder=-1, linewidth=1)
 
 w = np.array(w)
 z = 2 * np.log(w)
 print(z)
-plt.scatter(z, w, color='black', s=10, label='$2 \\ln n$')
+# plt.scatter(z, w - n, color='black', s=10, label='$2 \\ln n$')
 
 plt.xlabel("Aspect ratio $m/n$")
 plt.ylabel("log # monomials")
-plt.xlim(0, 10)
+plt.xlim(0, 6)
 plt.legend(loc='lower right')
 plt.title(f"p{pctile}-p{100-pctile} log u.b. # monomials")
 plt.savefig("mono-plot-out.png", dpi=600)
