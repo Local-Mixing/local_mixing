@@ -1,9 +1,12 @@
 // Post-fsplit mixing chain driver. Takes an mpmct1 circuit (typically fsplit
 // output; g57 also accepted) and runs a randomized, size-thermostatted local
-// rewrite walk: R-rule crossings, fresh-wire case splits, unsubsume splits and
-// copy-pair insertions expand; catalogue merges (cancel / X-fuse / drop-literal
-// / subsume) contract. The thermostat holds the gate count near --target-size;
-// the objective is churn (distance from the original description), not size.
+// rewrite walk: R-rule crossings, fresh-wire case splits, unsubsume splits,
+// copy-pair insertions and conjugation twists (--w-twist-neg / --w-twist-swap:
+// bracket a window with a wire negation or a 3-CNOT wire swap and conjugate
+// its interior — state/progress mixing, the SAMF mechanism XGate-native)
+// expand; catalogue merges (cancel / X-fuse / drop-literal / subsume)
+// contract. The thermostat holds the gate count near --target-size; the
+// objective is churn (distance from the original description), not size.
 // Never emits comp=1 gates, so the g57 "fossil" count is monotone. Ends with a
 // final uniform float, a sampled global check against the input, and an mpmct1
 // write.
@@ -69,6 +72,18 @@ struct Args {
     w_unsub: f64,
     #[arg(long, default_value_t = 0.05)]
     w_insert: f64,
+    /// Conjugation-twist weights (0 = off, trajectory-identical to the
+    /// pre-twist chain). One twist conjugates a whole window (log-uniform
+    /// length up to the circuit size) by a wire negation (+2 gates) or a wire
+    /// swap (+6 gates), so keep these SMALL relative to the other weights:
+    /// ~1e-4 gives a few thousand twists per 10M expansion moves.
+    #[arg(long, default_value_t = 0.0)]
+    w_twist_neg: f64,
+    #[arg(long, default_value_t = 0.0)]
+    w_twist_swap: f64,
+    /// Minimum twist window length (max is the current circuit size)
+    #[arg(long, default_value_t = 64)]
+    twist_min_len: usize,
     /// Global sampled equality check every N moves
     #[arg(long, default_value_t = 10_000)]
     verify_every: u64,
@@ -117,6 +132,12 @@ fn main() {
         args.moves,
         args.seed
     );
+    if args.w_twist_neg > 0.0 || args.w_twist_swap > 0.0 {
+        println!(
+            "[fmix] twists ON: w_twist_neg={} w_twist_swap={} twist_min_len={}",
+            args.w_twist_neg, args.w_twist_swap, args.twist_min_len
+        );
+    }
 
     let params = MixParams {
         k_max: args.k_max,
@@ -132,6 +153,9 @@ fn main() {
         w_fresh: args.w_fresh,
         w_unsub: args.w_unsub,
         w_insert: args.w_insert,
+        w_twist_neg: args.w_twist_neg,
+        w_twist_swap: args.w_twist_swap,
+        twist_min_len: args.twist_min_len,
         verify_every: args.verify_every,
         report_every: args.report_every,
         local_verify: !args.no_local_verify,

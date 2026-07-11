@@ -6,10 +6,12 @@
 // Expansion moves: one R-rule crossing (a Hurwitz-style conjugation step),
 // fresh-wire case split (R -> xR, !xR on a uniformly random uninvolved wire),
 // unsubsume (!l R -> R, lR), copy-pair insertion (an existing gate inserted
-// twice at a random position). Contraction move: a pairwise merge from the
-// closed-form catalogue (see merge_result). Every move is exhaustively verified
-// on its support; the chain never emits comp=1 gates, so the comp count is a
-// monotone "fossil" count of surviving original g57s.
+// twice at a random position), and conjugation twists (the SAMF mechanism from
+// ssg, XGate-native: bracket a window with a wire negation or a 3-CNOT wire
+// swap and conjugate its interior — see twist_move). Contraction move: a
+// pairwise merge from the closed-form catalogue (see merge_result). Every move
+// is exhaustively verified on its support; the chain never emits comp=1 gates,
+// so the comp count is a monotone "fossil" count of surviving original g57s.
 //
 // Provenance: every gate carries (origin, event) — the original-gate index its
 // material descends from, and the split event that created it. A merge whose
@@ -17,7 +19,7 @@
 // recent events are tabu to keep freshly split pairs from instantly rejoining.
 use super::arena::{Arena, Dir, NIL};
 use super::rules::{self, BlockReason, Outcome, Role, RuleKind};
-use super::xgate::XGate;
+use super::xgate::{Lits, XGate};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -136,6 +138,45 @@ fn key_of(g: &XGate) -> u64 {
     merge_key(g.target, g.ctrls.iter().map(|&(w, _)| w))
 }
 
+// Conjugation of a single gate by NOT(w): N g N. A gate reading w sees the
+// wire flipped on both sides, which is exactly a polarity flip of its
+// w-literal; a gate TARGETING w is invariant (the two flips cancel through the
+// XOR: !(!a ^ f) = a ^ f). Width and comp are preserved. None = g is invariant.
+fn conj_by_not(g: &XGate, w: u16) -> Option<XGate> {
+    if !g.reads(w) {
+        return None;
+    }
+    let mut out = g.clone();
+    for l in out.ctrls.iter_mut() {
+        if l.0 == w {
+            l.1 = !l.1;
+        }
+    }
+    Some(out)
+}
+
+// Conjugation by SWAP(a, b): relabel the two wires wherever they occur, target
+// or control, polarities travelling with their wire. Distinct wires stay
+// distinct and the target stays outside its own controls, so the result is a
+// well-formed XGate of the same width and comp. None = g touches neither wire.
+fn conj_by_swap(g: &XGate, a: u16, b: u16) -> Option<XGate> {
+    if g.target != a && g.target != b && !g.reads(a) && !g.reads(b) {
+        return None;
+    }
+    let m = |w: u16| {
+        if w == a {
+            b
+        } else if w == b {
+            a
+        } else {
+            w
+        }
+    };
+    let mut ctrls: Lits = g.ctrls.iter().map(|&(w, p)| (m(w), p)).collect();
+    ctrls.sort_unstable();
+    Some(XGate { target: m(g.target), comp: g.comp, ctrls })
+}
+
 pub struct MixParams {
     pub k_max: usize,
     // Width damping for expansion moves, same convention as fsplit.
@@ -164,6 +205,16 @@ pub struct MixParams {
     pub w_fresh: f64,
     pub w_unsub: f64,
     pub w_insert: f64,
+    // Conjugation-twist weights (state/progress mixing; see twist_move). Off by
+    // default: with both at 0 the walk is move-for-move identical to the
+    // pre-twist chain at equal seed. Keep small when on — one twist rewrites
+    // O(window) gates, and window lengths run up to the whole circuit.
+    pub w_twist_neg: f64,
+    pub w_twist_swap: f64,
+    // Twist window lengths are log-uniform over [twist_min_len, circuit size]:
+    // the all-scales dial that decorrelates computational progress at every
+    // window scale, the structured analog of ssg's long-range shooting.
+    pub twist_min_len: usize,
     pub verify_every: u64,
     pub report_every: u64,
     pub local_verify: bool,
@@ -186,6 +237,9 @@ impl Default for MixParams {
             w_fresh: 0.15,
             w_unsub: 0.10,
             w_insert: 0.05,
+            w_twist_neg: 0.0,
+            w_twist_swap: 0.0,
+            twist_min_len: 64,
             verify_every: 10_000,
             report_every: 50_000,
             local_verify: true,
@@ -219,6 +273,11 @@ pub struct MixCounters {
     pub fresh_splits: u64,
     pub unsubs: u64,
     pub inserts: u64,
+    pub twist_negs: u64,
+    pub twist_swaps: u64,
+    pub twist_relabels: u64,
+    pub twist_span: u64,
+    pub twist_skips: u64,
     pub blocked_width: u64,
     pub blocked_deadlock: u64,
     pub declined: u64,
@@ -239,6 +298,8 @@ impl MixCounters {
         self.cross_r1 + self.cross_r2 + self.cross_r3 + self.presplits + self.fresh_splits
             + self.unsubs
             + self.inserts
+            + self.twist_negs
+            + self.twist_swaps
     }
 }
 
@@ -484,7 +545,8 @@ impl Mixer {
 
     fn expand_move(&mut self) {
         let p = &self.params;
-        let total = p.w_cross + p.w_fresh + p.w_unsub + p.w_insert;
+        let total =
+            p.w_cross + p.w_fresh + p.w_unsub + p.w_insert + p.w_twist_neg + p.w_twist_swap;
         if total <= 0.0 {
             return;
         }
@@ -501,6 +563,19 @@ impl Mixer {
         r -= p.w_fresh;
         if r < p.w_unsub {
             self.unsub_move();
+            return;
+        }
+        r -= p.w_unsub;
+        // The >0 guards keep floating-point dust in the subtractions from ever
+        // reaching a zero-weight move: with both twist weights at 0 the
+        // selection (and hence every seed's trajectory) is identical to the
+        // pre-twist chain.
+        if p.w_twist_neg > 0.0 && r - p.w_insert < p.w_twist_neg && r >= p.w_insert {
+            self.twist_move(false);
+            return;
+        }
+        if p.w_twist_swap > 0.0 && r >= p.w_insert + p.w_twist_neg {
+            self.twist_move(true);
             return;
         }
         self.insert_move();
@@ -783,6 +858,166 @@ impl Mixer {
         self.counters.width_hist[self.arena.gate(a).width().min(15)] += 2;
         self.scatter(&[a, b]);
         self.counters.inserts += 1;
+    }
+
+    // Conjugation twist — the SAMF mechanism from ssg, XGate-native. Pick a
+    // window W and an involution P (a wire negation, or a wire swap realized
+    // as 3 CNOTs) and rewrite
+    //
+    //     P . (P W P) . P     ==  W
+    //
+    // conjugating every interior gate in place and bracketing the window with
+    // one P-packet per side. Every interior STATE of the window becomes its
+    // image under P while the function and everything outside stay exactly
+    // unchanged: the edit is bounded (+2 or +6 gates, widths and comps
+    // preserved, K-cap respected) but the trajectory effect is global — it is
+    // the move that collapses the prefix-progress diagonal, which no
+    // support-local move can touch. Interior gates keep their node, position
+    // and provenance (no material moves — only the basis); the in-place
+    // rewrite bumps arena stamps, so undo-journal entries over relabeled
+    // pieces correctly die. Window lengths are log-uniform over
+    // [twist_min_len, circuit size] to decorrelate progress at all scales.
+    fn twist_move(&mut self, swap: bool) {
+        let n = self.arena.len();
+        if n < 2 {
+            return;
+        }
+        let lmin = (self.params.twist_min_len.max(2).min(n)) as f64;
+        let len =
+            (self.rng.random_range(lmin.ln()..=(n as f64).ln()).exp().round() as usize).clamp(2, n);
+        let start = self.arena.random_linked(&mut self.rng);
+
+        // Pass 1: locate the window end (truncated at the tail) and collect
+        // the wires it reads / touches, so P can be drawn from wires the
+        // window actually uses (a P acting on none of them is a no-op twist).
+        let mut read_seen = vec![false; self.num_wires];
+        let mut touch_seen = vec![false; self.num_wires];
+        let mut reads: Vec<u16> = Vec::new();
+        let mut touches: Vec<u16> = Vec::new();
+        let mut end = start;
+        let mut span = 0usize;
+        let mut cur = start;
+        while cur != NIL && span < len {
+            let g = self.arena.gate(cur);
+            if !touch_seen[g.target as usize] {
+                touch_seen[g.target as usize] = true;
+                touches.push(g.target);
+            }
+            for &(w, _) in &g.ctrls {
+                if !read_seen[w as usize] {
+                    read_seen[w as usize] = true;
+                    reads.push(w);
+                }
+                if !touch_seen[w as usize] {
+                    touch_seen[w as usize] = true;
+                    touches.push(w);
+                }
+            }
+            end = cur;
+            span += 1;
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+
+        // The involution P as a gate packet. P == P^-1, so the same packet
+        // brackets both sides. Negation needs a wire the window READS (gates
+        // targeting w are invariant); a swap needs one touched wire, the other
+        // may be any wire — routing the window's material through a fresh
+        // physical wire is a legitimate (and strong) relabeling.
+        let (pa, pb, packet): (u16, u16, Vec<XGate>) = if swap {
+            if touches.is_empty() {
+                self.counters.twist_skips += 1;
+                return;
+            }
+            let a = touches[self.rng.random_range(0..touches.len())];
+            let mut b = a;
+            for _ in 0..16 {
+                let c = self.rng.random_range(0..self.num_wires) as u16;
+                if c != a {
+                    b = c;
+                    break;
+                }
+            }
+            if b == a {
+                self.counters.twist_skips += 1;
+                return;
+            }
+            let cnot = |t: u16, c: u16| XGate::conj(t, [(c, true)]).expect("cnot literal");
+            (a, b, vec![cnot(b, a), cnot(a, b), cnot(b, a)])
+        } else {
+            if reads.is_empty() {
+                self.counters.twist_skips += 1;
+                return;
+            }
+            let w = reads[self.rng.random_range(0..reads.len())];
+            (w, w, vec![XGate::x_gate(w)])
+        };
+        if self.params.local_verify {
+            let double: Vec<XGate> = packet.iter().chain(packet.iter()).cloned().collect();
+            assert!(
+                rules::verify_rewrite(&double, &[]),
+                "twist packet is not an involution: {packet:?}"
+            );
+        }
+
+        // Pass 2: conjugate every interior gate P acts on, in place. Each
+        // per-gate identity P g P == g' is exhaustively verified; the segment
+        // identity then telescopes (P g1 P P g2 P ... = P W P), so together
+        // with the bracket packets the window computes exactly W again.
+        let mut relabeled = 0u64;
+        let mut cur = start;
+        loop {
+            let g = self.arena.gate(cur).clone();
+            let g2 = if swap { conj_by_swap(&g, pa, pb) } else { conj_by_not(&g, pa) };
+            if let Some(g2) = g2 {
+                if self.params.local_verify {
+                    let mut seq = packet.clone();
+                    seq.push(g.clone());
+                    seq.extend(packet.iter().cloned());
+                    assert!(
+                        rules::verify_rewrite(&seq, std::slice::from_ref(&g2)),
+                        "twist conjugation failed: {g:?} under {packet:?}"
+                    );
+                }
+                self.index_remove(cur);
+                self.arena.replace_gate(cur, g2);
+                self.index_add(cur);
+                relabeled += 1;
+            }
+            if cur == end {
+                break;
+            }
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+
+        // Bracket the window: P before start, P after end. Packet gates are
+        // fresh synthetic material (no origin) sharing one event, so the
+        // trivial bracket-cancel is tabu like any fresh sibling pair. They are
+        // NOT scattered — they must sit tight on the window edges; later churn
+        // is free to float or merge them (every such move is independently
+        // function-preserving).
+        let ev = self.fresh_event();
+        let mut anchor = self.arena.neighbor(start, Dir::L);
+        for g in &packet {
+            self.counters.width_hist[g.width().min(15)] += 1;
+            anchor = self.arena.insert_after(anchor, g.clone());
+            self.index_add(anchor);
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev });
+        }
+        let mut anchor = end;
+        for g in &packet {
+            self.counters.width_hist[g.width().min(15)] += 1;
+            anchor = self.arena.insert_after(anchor, g.clone());
+            self.index_add(anchor);
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev });
+        }
+
+        if swap {
+            self.counters.twist_swaps += 1;
+        } else {
+            self.counters.twist_negs += 1;
+        }
+        self.counters.twist_span += span as u64;
+        self.counters.twist_relabels += relabeled;
     }
 
     // ---- the contraction moves ----
@@ -1342,7 +1577,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twrel={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -1370,6 +1605,11 @@ impl Mixer {
             c.fresh_splits,
             c.unsubs,
             c.inserts,
+            c.twist_negs,
+            c.twist_swaps,
+            c.twist_relabels,
+            c.twist_span,
+            c.twist_skips,
             c.declined,
             c.blocked_width,
             c.blocked_deadlock,
@@ -1656,6 +1896,112 @@ mod mix_tests {
             }
         }
         assert!(exempted > 20, "exemption never fired in the sample: {exempted}");
+    }
+
+    // Per-gate conjugation identities behind the twist move: N g N == neg(g)
+    // and S g S == swap(g), exhaustively verified on random gates (comp gates
+    // included — fossils relabel like anything else and stay fossils).
+    #[test]
+    fn twist_conjugation_units() {
+        let mut rng = StdRng::seed_from_u64(31);
+        let cnot = |t: u16, c: u16| XGate::conj(t, [(c, true)]).unwrap();
+        for _ in 0..5_000 {
+            let g = rand_gate(&mut rng, 8, 4, true);
+            let w = rng.random_range(0..8u16);
+            match conj_by_not(&g, w) {
+                Some(g2) => {
+                    let nw = XGate::x_gate(w);
+                    assert!(
+                        rules::verify_rewrite(&[nw.clone(), g.clone(), nw], std::slice::from_ref(&g2)),
+                        "neg conjugation wrong: {g:?} on wire {w}"
+                    );
+                    assert_eq!(g2.width(), g.width());
+                    assert_eq!(g2.comp, g.comp);
+                }
+                None => assert!(!g.reads(w), "invariant gate must not read the negated wire"),
+            }
+            let a = rng.random_range(0..8u16);
+            let b = rng.random_range(0..8u16);
+            if a == b {
+                continue;
+            }
+            if let Some(g2) = conj_by_swap(&g, a, b) {
+                let packet = [cnot(b, a), cnot(a, b), cnot(b, a)];
+                let mut seq: Vec<XGate> = packet.to_vec();
+                seq.push(g.clone());
+                seq.extend(packet.to_vec());
+                assert!(
+                    rules::verify_rewrite(&seq, std::slice::from_ref(&g2)),
+                    "swap conjugation wrong: {g:?} on wires {a},{b}"
+                );
+                assert_eq!(g2.width(), g.width());
+                assert_eq!(g2.comp, g.comp);
+                // Involution: conjugating back restores the gate exactly.
+                assert_eq!(conj_by_swap(&g2, a, b).unwrap(), g);
+            } else {
+                assert!(g.target != a && g.target != b && !g.reads(a) && !g.reads(b));
+            }
+        }
+    }
+
+    // The chain with twist moves enabled at high weight keeps the function
+    // (run() global-checks internally), erodes rather than grows fossils, and
+    // actually relabels interior gates. Also exercises the journal-stamp
+    // interaction: undo entries over relabeled pieces must die, not fire.
+    // Target above input: twists add gates without catalogue-invertible bulk,
+    // so at target the thermostat pegs near-full contraction and would starve
+    // the expansion channel this test is exercising.
+    #[test]
+    fn mixer_twists_preserve_function() {
+        let gates = random_mixed_circuit(17, 16, 300);
+        let comp0 = gates.iter().filter(|g| g.comp).count();
+        let params = MixParams {
+            k_max: 5,
+            moves: 20_000,
+            target_size: 600,
+            temp: 20.0,
+            w_twist_neg: 0.10,
+            w_twist_swap: 0.10,
+            twist_min_len: 4,
+            verify_every: 1_000,
+            report_every: u64::MAX,
+            seed: 5,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        // Rate calibration: twist packets are hard for the catalogue to dig
+        // out (brackets are wall-blocked by their own window), so at these
+        // weights the thermostat pegs near-full contraction and expansions
+        // run at ~2% of moves — expect twist counts near 50, not hundreds.
+        assert!(mx.counters.twist_negs > 30, "negation twists barely ran: {}", mx.counters.twist_negs);
+        assert!(mx.counters.twist_swaps > 30, "swap twists barely ran: {}", mx.counters.twist_swaps);
+        assert!(mx.counters.twist_relabels > 0, "twists never relabeled a gate");
+        assert!(mx.remaining_g57() <= comp0, "fossil count increased");
+        assert!(mx.counters.merges() > 0, "no merges alongside twists");
+        mx.global_check();
+    }
+
+    // With twist weights at zero no twist path may ever be taken — not even a
+    // skipped attempt from floating-point dust in the weight subtractions —
+    // so per-move RNG consumption (and hence every seed's trajectory) matches
+    // the pre-twist chain exactly.
+    #[test]
+    fn twist_weights_zero_is_inert() {
+        let gates = random_mixed_circuit(3, 16, 300);
+        let params = MixParams {
+            k_max: 5,
+            moves: 10_000,
+            target_size: 300,
+            temp: 20.0,
+            verify_every: 5_000,
+            report_every: u64::MAX,
+            seed: 5,
+            ..MixParams::default()
+        };
+        let mut a = Mixer::new(gates, 16, params);
+        a.run();
+        assert_eq!(a.counters.twist_negs + a.counters.twist_swaps + a.counters.twist_skips, 0);
     }
 
     #[test]

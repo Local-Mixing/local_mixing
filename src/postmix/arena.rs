@@ -145,6 +145,15 @@ impl Arena {
         id
     }
 
+    // Rewrite a linked node's gate in place (position and links preserved).
+    // Bumps the stamp so anything holding (id, stamp) — undo-journal entries —
+    // sees the node as touched.
+    pub fn replace_gate(&mut self, id: u32, gate: XGate) {
+        debug_assert!(self.linked[id as usize]);
+        self.gates[id as usize] = gate;
+        self.stamp[id as usize] = self.stamp[id as usize].wrapping_add(1);
+    }
+
     // Free an unlinked node's slot for reuse.
     pub fn free_node(&mut self, id: u32) {
         debug_assert!(!self.linked[id as usize]);
