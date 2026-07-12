@@ -177,6 +177,75 @@ fn conj_by_swap(g: &XGate, a: u16, b: u16) -> Option<XGate> {
     Some(XGate { target: m(g.target), comp: g.comp, ctrls })
 }
 
+// Conjugation by the transvection T = CNOT(b -> a), i.e. x_a ^= x_b: T g T.
+// T is linear but NOT a Hamming isometry — this is the twist rung that breaks
+// distance-preserving self-gauges (avalanche profiles) that negations and
+// swaps provably cannot move. The substitution is x_a -> x_a ^ x_b in every
+// READ of a; b must not be the gate's target (a gate writing b and reading a
+// would have to read its own target — inexpressible), which the window-level
+// b-selection guarantees. Cases:
+//  - g does not read a: invariant. Gates TARGETING a are invariant too (the
+//    two T's toggle a by the same x_b and cancel through the XOR), and gates
+//    merely reading b see it unchanged (T writes only a).
+//  - g reads a and carries a b-literal of polarity q: on the gate's firing
+//    slice x_b == q, so x_a ^ x_b == x_a ^ q — flip the a-literal's polarity
+//    iff q. One gate, width and comp preserved (exact for comp gates too:
+//    the substitution happens inside the conjunction).
+//  - g reads a with no b-literal: case-split on b. lit_a(x_a ^ x_b) fires on
+//    the disjoint pair (b=0 AND lit_a) / (b=1 AND !lit_a), so g becomes two
+//    gates: count x2, width +1 — the structural cost of an affine frame,
+//    charged conceptually against w_fresh (it is a fresh-wire split in
+//    disguise). Inexpressible for comp gates (the split literal would land
+//    inside a complemented conjunction): Blocked, the caller skips the window.
+enum CnotConj {
+    Invariant,
+    Flip(XGate),
+    Split(XGate, XGate),
+    Blocked,
+}
+
+fn conj_by_cnot(g: &XGate, a: u16, b: u16) -> CnotConj {
+    debug_assert!(g.target != b, "cnot twist requires b unwritten in the window");
+    if !g.reads(a) {
+        return CnotConj::Invariant;
+    }
+    match g.ctrls.iter().find(|&&(w, _)| w == b).map(|&(_, q)| q) {
+        Some(false) => CnotConj::Invariant,
+        Some(true) => {
+            let mut out = g.clone();
+            for l in out.ctrls.iter_mut() {
+                if l.0 == a {
+                    l.1 = !l.1;
+                }
+            }
+            CnotConj::Flip(out)
+        }
+        None => {
+            if g.comp {
+                return CnotConj::Blocked;
+            }
+            let with = |bp: bool, flip: bool| {
+                XGate::conj(
+                    g.target,
+                    g.ctrls
+                        .iter()
+                        .map(|&(w, p)| if flip && w == a { (w, !p) } else { (w, p) })
+                        .chain([(b, bp)]),
+                )
+                .expect("b is fresh to the gate")
+            };
+            CnotConj::Split(with(false, false), with(true, true))
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum TwistKind {
+    Neg,
+    Swap,
+    Cnot,
+}
+
 pub struct MixParams {
     pub k_max: usize,
     // Width damping for expansion moves, same convention as fsplit.
@@ -211,6 +280,12 @@ pub struct MixParams {
     // O(window) gates, and window lengths run up to the whole circuit.
     pub w_twist_neg: f64,
     pub w_twist_swap: f64,
+    // Transvection twist: conjugate the window by x_a ^= x_b (one CNOT per
+    // side). Affine and non-isometric — the rung that breaks Hamming-distance-
+    // preserving self-gauges — at the cost of case-splitting interior
+    // a-readers (count x2, width +1, K-cap enforced). Windows are capped at
+    // the mid scale by the need for an unwritten b wire.
+    pub w_twist_cnot: f64,
     // Twist window lengths are log-uniform over [twist_min_len, circuit size]:
     // the all-scales dial that decorrelates computational progress at every
     // window scale, the structured analog of ssg's long-range shooting.
@@ -239,6 +314,7 @@ impl Default for MixParams {
             w_insert: 0.05,
             w_twist_neg: 0.0,
             w_twist_swap: 0.0,
+            w_twist_cnot: 0.0,
             twist_min_len: 64,
             verify_every: 10_000,
             report_every: 50_000,
@@ -275,7 +351,9 @@ pub struct MixCounters {
     pub inserts: u64,
     pub twist_negs: u64,
     pub twist_swaps: u64,
+    pub twist_cnots: u64,
     pub twist_relabels: u64,
+    pub twist_case_splits: u64,
     pub twist_span: u64,
     pub twist_skips: u64,
     pub blocked_width: u64,
@@ -300,6 +378,7 @@ impl MixCounters {
             + self.inserts
             + self.twist_negs
             + self.twist_swaps
+            + self.twist_cnots
     }
 }
 
@@ -545,8 +624,13 @@ impl Mixer {
 
     fn expand_move(&mut self) {
         let p = &self.params;
-        let total =
-            p.w_cross + p.w_fresh + p.w_unsub + p.w_insert + p.w_twist_neg + p.w_twist_swap;
+        let total = p.w_cross
+            + p.w_fresh
+            + p.w_unsub
+            + p.w_insert
+            + p.w_twist_neg
+            + p.w_twist_swap
+            + p.w_twist_cnot;
         if total <= 0.0 {
             return;
         }
@@ -567,15 +651,21 @@ impl Mixer {
         }
         r -= p.w_unsub;
         // The >0 guards keep floating-point dust in the subtractions from ever
-        // reaching a zero-weight move: with both twist weights at 0 the
+        // reaching a zero-weight move: with all twist weights at 0 the
         // selection (and hence every seed's trajectory) is identical to the
-        // pre-twist chain.
+        // pre-twist chain, and with only neg/swap set it is identical to the
+        // pre-cnot chain.
         if p.w_twist_neg > 0.0 && r - p.w_insert < p.w_twist_neg && r >= p.w_insert {
-            self.twist_move(false);
+            self.twist_move(TwistKind::Neg);
             return;
         }
-        if p.w_twist_swap > 0.0 && r >= p.w_insert + p.w_twist_neg {
-            self.twist_move(true);
+        let ns = p.w_insert + p.w_twist_neg;
+        if p.w_twist_swap > 0.0 && r - ns < p.w_twist_swap && r >= ns {
+            self.twist_move(TwistKind::Swap);
+            return;
+        }
+        if p.w_twist_cnot > 0.0 && r >= ns + p.w_twist_swap {
+            self.twist_move(TwistKind::Cnot);
             return;
         }
         self.insert_move();
@@ -861,8 +951,9 @@ impl Mixer {
     }
 
     // Conjugation twist — the SAMF mechanism from ssg, XGate-native. Pick a
-    // window W and an involution P (a wire negation, or a wire swap realized
-    // as 3 CNOTs) and rewrite
+    // window W and an involution P (a wire negation; a wire swap realized as
+    // 3 CNOTs; or a transvection x_a ^= x_b, a single CNOT — the affine,
+    // non-isometric rung) and rewrite
     //
     //     P . (P W P) . P     ==  W
     //
@@ -877,20 +968,34 @@ impl Mixer {
     // rewrite bumps arena stamps, so undo-journal entries over relabeled
     // pieces correctly die. Window lengths are log-uniform over
     // [twist_min_len, circuit size] to decorrelate progress at all scales.
-    fn twist_move(&mut self, swap: bool) {
+    fn twist_move(&mut self, kind: TwistKind) {
         let n = self.arena.len();
         if n < 2 {
             return;
         }
-        let lmin = (self.params.twist_min_len.max(2).min(n)) as f64;
-        let len =
-            (self.rng.random_range(lmin.ln()..=(n as f64).ln()).exp().round() as usize).clamp(2, n);
+        // Transvection windows are capped at the mid scale: b must be a wire
+        // the window never writes, and a window of L random-target gates
+        // leaves ~nw*exp(-L/nw) wires unwritten — beyond ~nw*ln(nw) gates the
+        // pool is empty and the move could only skip. Neg/swap own the global
+        // octaves; cnot frames compose across overlapping mid-scale windows.
+        let cap = match kind {
+            TwistKind::Cnot => {
+                let nw = self.num_wires as f64;
+                ((nw * nw.ln()).ceil() as usize).clamp(2, n)
+            }
+            _ => n,
+        };
+        let lmin = (self.params.twist_min_len.max(2).min(cap)) as f64;
+        let len = (self.rng.random_range(lmin.ln()..=(cap as f64).ln()).exp().round() as usize)
+            .clamp(2, cap);
         let start = self.arena.random_linked(&mut self.rng);
 
         // Pass 1: locate the window end (truncated at the tail) and collect
-        // the wires it reads / touches, so P can be drawn from wires the
-        // window actually uses (a P acting on none of them is a no-op twist).
+        // the wires it reads / writes / touches, so P can be drawn from wires
+        // the window actually uses (a P acting on none of them is a no-op
+        // twist) and, for cnot, b from wires it never writes.
         let mut read_seen = vec![false; self.num_wires];
+        let mut write_seen = vec![false; self.num_wires];
         let mut touch_seen = vec![false; self.num_wires];
         let mut reads: Vec<u16> = Vec::new();
         let mut touches: Vec<u16> = Vec::new();
@@ -899,6 +1004,7 @@ impl Mixer {
         let mut cur = start;
         while cur != NIL && span < len {
             let g = self.arena.gate(cur);
+            write_seen[g.target as usize] = true;
             if !touch_seen[g.target as usize] {
                 touch_seen[g.target as usize] = true;
                 touches.push(g.target);
@@ -922,34 +1028,55 @@ impl Mixer {
         // brackets both sides. Negation needs a wire the window READS (gates
         // targeting w are invariant); a swap needs one touched wire, the other
         // may be any wire — routing the window's material through a fresh
-        // physical wire is a legitimate (and strong) relabeling.
-        let (pa, pb, packet): (u16, u16, Vec<XGate>) = if swap {
-            if touches.is_empty() {
-                self.counters.twist_skips += 1;
-                return;
-            }
-            let a = touches[self.rng.random_range(0..touches.len())];
-            let mut b = a;
-            for _ in 0..16 {
-                let c = self.rng.random_range(0..self.num_wires) as u16;
-                if c != a {
-                    b = c;
-                    break;
+        // physical wire is a legitimate (and strong) relabeling; a cnot
+        // transvection needs a read wire a and a wire b the window never
+        // WRITES (see conj_by_cnot).
+        let cnot = |t: u16, c: u16| XGate::conj(t, [(c, true)]).expect("cnot literal");
+        let (pa, pb, packet): (u16, u16, Vec<XGate>) = match kind {
+            TwistKind::Swap => {
+                if touches.is_empty() {
+                    self.counters.twist_skips += 1;
+                    return;
                 }
+                let a = touches[self.rng.random_range(0..touches.len())];
+                let mut b = a;
+                for _ in 0..16 {
+                    let c = self.rng.random_range(0..self.num_wires) as u16;
+                    if c != a {
+                        b = c;
+                        break;
+                    }
+                }
+                if b == a {
+                    self.counters.twist_skips += 1;
+                    return;
+                }
+                (a, b, vec![cnot(b, a), cnot(a, b), cnot(b, a)])
             }
-            if b == a {
-                self.counters.twist_skips += 1;
-                return;
+            TwistKind::Neg => {
+                if reads.is_empty() {
+                    self.counters.twist_skips += 1;
+                    return;
+                }
+                let w = reads[self.rng.random_range(0..reads.len())];
+                (w, w, vec![XGate::x_gate(w)])
             }
-            let cnot = |t: u16, c: u16| XGate::conj(t, [(c, true)]).expect("cnot literal");
-            (a, b, vec![cnot(b, a), cnot(a, b), cnot(b, a)])
-        } else {
-            if reads.is_empty() {
-                self.counters.twist_skips += 1;
-                return;
+            TwistKind::Cnot => {
+                if reads.is_empty() {
+                    self.counters.twist_skips += 1;
+                    return;
+                }
+                let a = reads[self.rng.random_range(0..reads.len())];
+                let pool: Vec<u16> = (0..self.num_wires as u16)
+                    .filter(|&w| !write_seen[w as usize] && w != a)
+                    .collect();
+                if pool.is_empty() {
+                    self.counters.twist_skips += 1;
+                    return;
+                }
+                let b = pool[self.rng.random_range(0..pool.len())];
+                (a, b, vec![cnot(a, b)])
             }
-            let w = reads[self.rng.random_range(0..reads.len())];
-            (w, w, vec![XGate::x_gate(w)])
         };
         if self.params.local_verify {
             let double: Vec<XGate> = packet.iter().chain(packet.iter()).cloned().collect();
@@ -959,34 +1086,118 @@ impl Mixer {
             );
         }
 
-        // Pass 2: conjugate every interior gate P acts on, in place. Each
-        // per-gate identity P g P == g' is exhaustively verified; the segment
-        // identity then telescopes (P g1 P P g2 P ... = P W P), so together
-        // with the bracket packets the window computes exactly W again.
+        // Cnot feasibility: every interior a-reader must be rewritable — a
+        // comp gate without a b-literal cannot case-split (Blocked), and a
+        // split must respect the K-cap. Checked BEFORE any mutation so a
+        // twist either applies whole or not at all.
+        if kind == TwistKind::Cnot {
+            let mut cur = start;
+            loop {
+                match conj_by_cnot(self.arena.gate(cur), pa, pb) {
+                    CnotConj::Blocked => {
+                        self.counters.twist_skips += 1;
+                        return;
+                    }
+                    CnotConj::Split(g0, _) if g0.width() > self.params.k_max => {
+                        self.counters.twist_skips += 1;
+                        return;
+                    }
+                    _ => {}
+                }
+                if cur == end {
+                    break;
+                }
+                cur = self.arena.neighbor(cur, Dir::R);
+            }
+        }
+
+        // Pass 2: conjugate every interior gate P acts on. Each per-gate
+        // identity P g P == g' (or the split pair) is exhaustively verified;
+        // the segment identity then telescopes (P g1 P P g2 P ... = P W P), so
+        // together with the bracket packets the window computes exactly W
+        // again. Neg/swap rewrite strictly in place (nodes, positions and
+        // provenance survive); cnot case-splits replace one node by two at the
+        // same position — material still does not move, and the pieces inherit
+        // their parent's origin and share a fresh tabu event like any split.
+        enum Out {
+            Keep,
+            One(XGate),
+            Two(XGate, XGate),
+        }
         let mut relabeled = 0u64;
+        let mut case_splits = 0u64;
+        let (mut w_start, mut w_end) = (start, end);
+        let mut first = true;
         let mut cur = start;
         loop {
+            let is_last = cur == end;
+            let next = self.arena.neighbor(cur, Dir::R);
             let g = self.arena.gate(cur).clone();
-            let g2 = if swap { conj_by_swap(&g, pa, pb) } else { conj_by_not(&g, pa) };
-            if let Some(g2) = g2 {
-                if self.params.local_verify {
-                    let mut seq = packet.clone();
-                    seq.push(g.clone());
-                    seq.extend(packet.iter().cloned());
-                    assert!(
-                        rules::verify_rewrite(&seq, std::slice::from_ref(&g2)),
-                        "twist conjugation failed: {g:?} under {packet:?}"
-                    );
+            let out = match kind {
+                TwistKind::Neg => conj_by_not(&g, pa).map_or(Out::Keep, Out::One),
+                TwistKind::Swap => conj_by_swap(&g, pa, pb).map_or(Out::Keep, Out::One),
+                TwistKind::Cnot => match conj_by_cnot(&g, pa, pb) {
+                    CnotConj::Invariant => Out::Keep,
+                    CnotConj::Flip(x) => Out::One(x),
+                    CnotConj::Split(x, y) => Out::Two(x, y),
+                    CnotConj::Blocked => unreachable!("feasibility scan admits no Blocked gate"),
+                },
+            };
+            let (head, tail) = match out {
+                Out::Keep => (cur, cur),
+                Out::One(g2) => {
+                    if self.params.local_verify {
+                        let mut seq = packet.clone();
+                        seq.push(g.clone());
+                        seq.extend(packet.iter().cloned());
+                        assert!(
+                            rules::verify_rewrite(&seq, std::slice::from_ref(&g2)),
+                            "twist conjugation failed: {g:?} under {packet:?}"
+                        );
+                    }
+                    self.index_remove(cur);
+                    self.arena.replace_gate(cur, g2);
+                    self.index_add(cur);
+                    relabeled += 1;
+                    (cur, cur)
                 }
-                self.index_remove(cur);
-                self.arena.replace_gate(cur, g2);
-                self.index_add(cur);
-                relabeled += 1;
+                Out::Two(g0, g1) => {
+                    // The two halves fire on disjoint b-slices, so they
+                    // commute: emit in random order.
+                    let pieces =
+                        if self.rng.random_bool(0.5) { vec![g0, g1] } else { vec![g1, g0] };
+                    if self.params.local_verify {
+                        let mut seq = packet.clone();
+                        seq.push(g.clone());
+                        seq.extend(packet.iter().cloned());
+                        assert!(
+                            rules::verify_rewrite(&seq, &pieces),
+                            "twist case-split failed: {g:?} under {packet:?}"
+                        );
+                    }
+                    let origin = self.meta_of(cur).origin;
+                    let ev = self.fresh_event();
+                    for x in &pieces {
+                        self.counters.width_hist[x.width().min(15)] += 1;
+                    }
+                    let ids = self.splice_replace_one(cur, pieces);
+                    for &pid in &ids {
+                        self.set_meta(pid, Meta { origin, event: ev });
+                    }
+                    relabeled += 1;
+                    case_splits += 1;
+                    (ids[0], ids[1])
+                }
+            };
+            if first {
+                w_start = head;
+                first = false;
             }
-            if cur == end {
+            if is_last {
+                w_end = tail;
                 break;
             }
-            cur = self.arena.neighbor(cur, Dir::R);
+            cur = next;
         }
 
         // Bracket the window: P before start, P after end. Packet gates are
@@ -996,14 +1207,14 @@ impl Mixer {
         // is free to float or merge them (every such move is independently
         // function-preserving).
         let ev = self.fresh_event();
-        let mut anchor = self.arena.neighbor(start, Dir::L);
+        let mut anchor = self.arena.neighbor(w_start, Dir::L);
         for g in &packet {
             self.counters.width_hist[g.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, g.clone());
             self.index_add(anchor);
             self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev });
         }
-        let mut anchor = end;
+        let mut anchor = w_end;
         for g in &packet {
             self.counters.width_hist[g.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, g.clone());
@@ -1011,13 +1222,14 @@ impl Mixer {
             self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev });
         }
 
-        if swap {
-            self.counters.twist_swaps += 1;
-        } else {
-            self.counters.twist_negs += 1;
+        match kind {
+            TwistKind::Neg => self.counters.twist_negs += 1,
+            TwistKind::Swap => self.counters.twist_swaps += 1,
+            TwistKind::Cnot => self.counters.twist_cnots += 1,
         }
         self.counters.twist_span += span as u64;
         self.counters.twist_relabels += relabeled;
+        self.counters.twist_case_splits += case_splits;
     }
 
     // ---- the contraction moves ----
@@ -1577,7 +1789,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twrel={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -1607,7 +1819,9 @@ impl Mixer {
             c.inserts,
             c.twist_negs,
             c.twist_swaps,
+            c.twist_cnots,
             c.twist_relabels,
+            c.twist_case_splits,
             c.twist_span,
             c.twist_skips,
             c.declined,
@@ -1941,6 +2155,38 @@ mod mix_tests {
             } else {
                 assert!(g.target != a && g.target != b && !g.reads(a) && !g.reads(b));
             }
+            // Transvection T = cnot(b -> a); gates writing b are excluded by
+            // the move's b-selection, so they are out of scope here too.
+            if g.target != b {
+                let t = cnot(a, b);
+                let sandwich = |pieces: &[XGate]| {
+                    rules::verify_rewrite(&[t.clone(), g.clone(), t.clone()], pieces)
+                };
+                match conj_by_cnot(&g, a, b) {
+                    CnotConj::Invariant => {
+                        assert!(
+                            sandwich(std::slice::from_ref(&g)),
+                            "cnot-invariant gate is not invariant: {g:?} a={a} b={b}"
+                        );
+                    }
+                    CnotConj::Flip(g2) => {
+                        assert!(sandwich(std::slice::from_ref(&g2)), "cnot flip wrong: {g:?} a={a} b={b}");
+                        assert_eq!(g2.width(), g.width());
+                        assert_eq!(g2.comp, g.comp);
+                    }
+                    CnotConj::Split(x, y) => {
+                        assert!(!g.comp, "comp gates must be Blocked, not Split");
+                        assert!(sandwich(&[x.clone(), y.clone()]), "cnot split wrong: {g:?} a={a} b={b}");
+                        // Disjoint b-slices: the pair commutes.
+                        assert!(sandwich(&[y.clone(), x.clone()]), "cnot split pair does not commute");
+                        assert_eq!(x.width(), g.width() + 1);
+                        assert_eq!(y.width(), g.width() + 1);
+                    }
+                    CnotConj::Blocked => {
+                        assert!(g.comp && g.reads(a) && !g.reads(b), "spurious Blocked: {g:?}");
+                    }
+                }
+            }
         }
     }
 
@@ -1982,6 +2228,36 @@ mod mix_tests {
         mx.global_check();
     }
 
+    // The chain with ONLY the transvection twist enabled keeps the function,
+    // case-splits interior a-readers (the affine cost), never grows fossils,
+    // and interoperates with the journal/merge machinery. Windows holding a
+    // fossil that reads a (without a b-literal) must skip whole — on a mixed
+    // circuit both outcomes occur.
+    #[test]
+    fn mixer_cnot_twists_preserve_function() {
+        let gates = random_mixed_circuit(19, 16, 300);
+        let comp0 = gates.iter().filter(|g| g.comp).count();
+        let params = MixParams {
+            k_max: 6,
+            moves: 20_000,
+            target_size: 600,
+            temp: 20.0,
+            w_twist_cnot: 0.50,
+            twist_min_len: 4,
+            verify_every: 1_000,
+            report_every: u64::MAX,
+            seed: 7,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        assert!(mx.counters.twist_cnots > 20, "cnot twists barely ran: {}", mx.counters.twist_cnots);
+        assert!(mx.counters.twist_case_splits > 0, "no interior case-split ever happened");
+        assert!(mx.remaining_g57() <= comp0, "fossil count increased");
+        assert!(mx.counters.merges() > 0, "no merges alongside cnot twists");
+        mx.global_check();
+    }
+
     // With twist weights at zero no twist path may ever be taken — not even a
     // skipped attempt from floating-point dust in the weight subtractions —
     // so per-move RNG consumption (and hence every seed's trajectory) matches
@@ -2001,7 +2277,13 @@ mod mix_tests {
         };
         let mut a = Mixer::new(gates, 16, params);
         a.run();
-        assert_eq!(a.counters.twist_negs + a.counters.twist_swaps + a.counters.twist_skips, 0);
+        assert_eq!(
+            a.counters.twist_negs
+                + a.counters.twist_swaps
+                + a.counters.twist_cnots
+                + a.counters.twist_skips,
+            0
+        );
     }
 
     #[test]

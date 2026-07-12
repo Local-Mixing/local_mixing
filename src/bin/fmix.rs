@@ -81,6 +81,14 @@ struct Args {
     w_twist_neg: f64,
     #[arg(long, default_value_t = 0.0)]
     w_twist_swap: f64,
+    /// Transvection twist: conjugate a window by x_a ^= x_b (one CNOT per
+    /// side, +2 gates). Affine and NOT a Hamming isometry — the rung that
+    /// breaks avalanche-style distance gauges neg/swap twists provably
+    /// preserve. Interior gates reading a case-split on b (count x2, width +1,
+    /// K-cap enforced); b is drawn from wires the window never writes, which
+    /// caps these windows at the mid scale (~n*ln n gates).
+    #[arg(long, default_value_t = 0.0)]
+    w_twist_cnot: f64,
     /// Minimum twist window length (max is the current circuit size)
     #[arg(long, default_value_t = 64)]
     twist_min_len: usize,
@@ -132,10 +140,10 @@ fn main() {
         args.moves,
         args.seed
     );
-    if args.w_twist_neg > 0.0 || args.w_twist_swap > 0.0 {
+    if args.w_twist_neg > 0.0 || args.w_twist_swap > 0.0 || args.w_twist_cnot > 0.0 {
         println!(
-            "[fmix] twists ON: w_twist_neg={} w_twist_swap={} twist_min_len={}",
-            args.w_twist_neg, args.w_twist_swap, args.twist_min_len
+            "[fmix] twists ON: w_twist_neg={} w_twist_swap={} w_twist_cnot={} twist_min_len={}",
+            args.w_twist_neg, args.w_twist_swap, args.w_twist_cnot, args.twist_min_len
         );
     }
 
@@ -155,6 +163,7 @@ fn main() {
         w_insert: args.w_insert,
         w_twist_neg: args.w_twist_neg,
         w_twist_swap: args.w_twist_swap,
+        w_twist_cnot: args.w_twist_cnot,
         twist_min_len: args.twist_min_len,
         verify_every: args.verify_every,
         report_every: args.report_every,
