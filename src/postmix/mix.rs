@@ -250,6 +250,19 @@ pub struct MixParams {
     pub k_max: usize,
     // Width damping for expansion moves, same convention as fsplit.
     pub split_damp: usize,
+    // Base B of the width damper: a split of parent width c is allowed with
+    // probability B^-(c - split_damp) (historically hardcoded at 2).
+    pub split_base: f64,
+    // Directional walk. Every gate carries a left/right direction (fossils get
+    // a random one). A cross shoots the gate in its OWN direction; every
+    // fragment born in a collision inherits the shot gate's direction with
+    // probability dir_p, else the opposite — regardless of whether it is a
+    // piece of the shot or of the colliding gate. A fresh piece advances
+    // floor(dir_q * slack) gates in its own direction at birth (this replaces
+    // the uniform scatter), and a failed cross retreats the shot gate
+    // floor((1 - dir_q) * way) of the way it floated in.
+    pub dir_p: f64,
+    pub dir_q: f64,
     // Thermostat: p(contract) = sigmoid((size - target) / temp), clamped to
     // [0.02, 0.98] so the chain never fully stops expanding or contracting.
     pub target_size: usize,
@@ -301,15 +314,23 @@ impl Default for MixParams {
         MixParams {
             k_max: 12,
             split_damp: 2,
+            split_base: 2.0,
+            dir_p: 0.75,
+            dir_q: 0.85,
             target_size: 0, // 0 -> input size, resolved by Mixer::new
             temp: 0.0,      // 0 -> max(target/100, 64), resolved by Mixer::new
             moves: 1_000_000,
             merge_reach: 4096,
             journal_len: 1 << 18,
-            undo_frac: 0.5,
+            // SUSPENDED (2026-07-13 directional redesign): exact crossing
+            // reversal is off by default; contraction is merge-only. Set > 0
+            // to re-enable (the journal machinery is intact).
+            undo_frac: 0.0,
             tabu_moves: 2_000,
             w_cross: 0.70,
-            w_fresh: 0.15,
+            // SUSPENDED: fresh-wire case splits are covered by the twists'
+            // interior case-splitting; set > 0 to re-enable.
+            w_fresh: 0.0,
             w_unsub: 0.10,
             w_insert: 0.05,
             w_twist_neg: 0.0,
@@ -386,6 +407,9 @@ impl MixCounters {
 struct Meta {
     origin: u32,
     event: u64, // 0 = not a split product
+    // Persistent shooting direction: a cross floats this gate in `dir`.
+    // Fossils draw it uniformly at birth; fragments inherit per dir_p.
+    dir: Dir,
 }
 
 // A recorded crossing, eligible for exact reversal while every emitted node is
@@ -450,9 +474,15 @@ impl Mixer {
             params.temp = (params.target_size as f64 / 100.0).max(64.0);
         }
         let num_wires = num_wires.max(super::xgate::max_wire(&gates) as usize + 1);
-        let rng = StdRng::seed_from_u64(params.seed);
+        let mut rng = StdRng::seed_from_u64(params.seed);
         let metrics_rng = StdRng::seed_from_u64(params.seed ^ 0x5EED_517A75);
-        let meta = (0..n).map(|i| Meta { origin: i as u32, event: 0 }).collect();
+        let meta = (0..n)
+            .map(|i| Meta {
+                origin: i as u32,
+                event: 0,
+                dir: if rng.random_bool(0.5) { Dir::L } else { Dir::R },
+            })
+            .collect();
         let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
         for (i, g) in gates.iter().enumerate() {
             index.entry(key_of(g)).or_default().push(i as u32);
@@ -488,13 +518,16 @@ impl Mixer {
     fn set_meta(&mut self, id: u32, m: Meta) {
         let i = id as usize;
         if i >= self.meta.len() {
-            self.meta.resize(i + 1, Meta { origin: ORIGIN_SYNTH, event: 0 });
+            self.meta.resize(i + 1, Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R });
         }
         self.meta[i] = m;
     }
 
     fn meta_of(&self, id: u32) -> Meta {
-        self.meta.get(id as usize).copied().unwrap_or(Meta { origin: ORIGIN_SYNTH, event: 0 })
+        self.meta
+            .get(id as usize)
+            .copied()
+            .unwrap_or(Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R })
     }
 
     fn fresh_event(&mut self) -> u64 {
@@ -674,13 +707,21 @@ impl Mixer {
     // One R-rule crossing: float a random gate to its collision point and cross
     // it once. g57 shots pre-split (that IS the move); no cascade follow-up —
     // the chain's later moves pick the pieces up with fresh randomness.
+    // Directional: the gate shoots in its OWN stored direction; fragments
+    // inherit the shot direction per dir_p and advance per dir_q; a failed
+    // cross retreats the shot gate instead of leaving it parked.
     fn cross_move(&mut self) {
         let id = self.arena.random_linked(&mut self.rng);
-        let dir = if self.rng.random_bool(0.5) { Dir::L } else { Dir::R };
-        self.float_to_collision(id, dir);
+        self.cross_move_on(id);
+    }
+
+    fn cross_move_on(&mut self, id: u32) {
+        let dir = self.meta_of(id).dir;
+        let way = self.float_to_collision(id, dir);
         let h_id = self.arena.neighbor(id, dir);
         if h_id == NIL {
             self.counters.boundary += 1;
+            self.retreat(id, way, dir);
             return;
         }
         let g = self.arena.gate(id).clone();
@@ -689,6 +730,7 @@ impl Mixer {
         if g.comp {
             if !self.split_allowed(g.width()) {
                 self.counters.declined += 1;
+                self.retreat(id, way, dir);
                 return;
             }
             let pieces = rules::presplit(&g, &mut self.rng);
@@ -705,22 +747,30 @@ impl Mixer {
             }
             let ids = self.splice_replace_one(id, pieces);
             for &pid in &ids {
-                self.set_meta(pid, Meta { origin, event: ev });
+                let d = self.child_dir(dir);
+                self.set_meta(pid, Meta { origin, event: ev, dir: d });
             }
-            self.scatter(&ids);
+            self.advance_births(&ids);
             self.counters.presplits += 1;
             return;
         }
 
         match rules::cross(&g, &h, self.params.k_max, &mut self.rng) {
             Outcome::R0Swap => unreachable!("R0 after floating to collision"),
-            Outcome::Blocked(BlockReason::WidthCap) => self.counters.blocked_width += 1,
-            Outcome::Blocked(BlockReason::Deadlock) => self.counters.blocked_deadlock += 1,
+            Outcome::Blocked(BlockReason::WidthCap) => {
+                self.counters.blocked_width += 1;
+                self.retreat(id, way, dir);
+            }
+            Outcome::Blocked(BlockReason::Deadlock) => {
+                self.counters.blocked_deadlock += 1;
+                self.retreat(id, way, dir);
+            }
             Outcome::PresplitColliding => {
                 // The colliding gate is a g57 that must split: pre-splitting it
                 // is this move's whole effect.
                 if !self.split_allowed(h.width()) {
                     self.counters.declined += 1;
+                    self.retreat(id, way, dir);
                     return;
                 }
                 let hp = rules::presplit(&h, &mut self.rng);
@@ -737,9 +787,12 @@ impl Mixer {
                 }
                 let ids = self.splice_replace_one(h_id, hp);
                 for &pid in &ids {
-                    self.set_meta(pid, Meta { origin, event: ev });
+                    // Colliding-gate fragments still inherit from the SHOT
+                    // gate's direction (per spec: regardless of parent).
+                    let d = self.child_dir(dir);
+                    self.set_meta(pid, Meta { origin, event: ev, dir: d });
                 }
-                self.scatter(&ids);
+                self.advance_births(&ids);
                 self.counters.presplits += 1;
             }
             Outcome::Rewrite { seq, kind, dropped } => {
@@ -749,6 +802,7 @@ impl Mixer {
                 };
                 if !self.split_allowed(split_width) {
                     self.counters.declined += 1;
+                    self.retreat(id, way, dir);
                     return;
                 }
                 if self.params.local_verify {
@@ -784,37 +838,50 @@ impl Mixer {
                 for &(pid, role) in &placed {
                     match role {
                         Role::ShotPiece | Role::Core => {
-                            self.set_meta(pid, Meta { origin: g_origin, event: ev });
+                            let d = self.child_dir(dir);
+                            self.set_meta(pid, Meta { origin: g_origin, event: ev, dir: d });
                             fresh.push(pid);
                         }
                         Role::CollidingPiece => {
-                            self.set_meta(pid, Meta { origin: h_origin, event: ev });
+                            let d = self.child_dir(dir);
+                            self.set_meta(pid, Meta { origin: h_origin, event: ev, dir: d });
                             fresh.push(pid);
                         }
                         Role::CollidingIntact => {} // node reused, meta intact
                     }
                 }
-                self.scatter(&fresh);
-                // Record for exact reversal. Pivot: the node every other piece
-                // collides with — h when intact (R1/R3), else the passed shot
-                // (R2, the only ShotPiece there).
-                let pivot = placed
-                    .iter()
-                    .find(|(_, r)| *r == Role::CollidingIntact)
-                    .or_else(|| placed.iter().find(|(_, r)| *r == Role::ShotPiece))
-                    .map(|&(i, _)| i)
-                    .expect("rewrite emitted no pivot");
-                let (before, origins) = match dir {
-                    Dir::R => ([g.clone(), h.clone()], [g_origin, h_origin]),
-                    Dir::L => ([h.clone(), g.clone()], [h_origin, g_origin]),
-                };
-                let after: Vec<(u32, u32)> =
-                    placed.iter().map(|&(i, _)| (i, self.arena.stamp(i))).collect();
-                if self.journal.len() >= self.params.journal_len {
-                    self.journal.pop_front();
+                self.advance_births(&fresh);
+                // Record for exact reversal (only when the undo channel is
+                // live — with undo_frac == 0 the journal would be dead weight).
+                // Pivot: the node every other piece collides with — h when
+                // intact (R1/R3), else the passed shot (R2, the only ShotPiece
+                // there).
+                if self.params.undo_frac > 0.0 {
+                    let pivot = placed
+                        .iter()
+                        .find(|(_, r)| *r == Role::CollidingIntact)
+                        .or_else(|| placed.iter().find(|(_, r)| *r == Role::ShotPiece))
+                        .map(|&(i, _)| i)
+                        .expect("rewrite emitted no pivot");
+                    let (before, origins) = match dir {
+                        Dir::R => ([g.clone(), h.clone()], [g_origin, h_origin]),
+                        Dir::L => ([h.clone(), g.clone()], [h_origin, g_origin]),
+                    };
+                    let after: Vec<(u32, u32)> =
+                        placed.iter().map(|&(i, _)| (i, self.arena.stamp(i))).collect();
+                    if self.journal.len() >= self.params.journal_len {
+                        self.journal.pop_front();
+                    }
+                    self.journal.push_back(UndoEntry {
+                        before,
+                        dir,
+                        pivot,
+                        after,
+                        event: ev,
+                        origins,
+                        misses: 0,
+                    });
                 }
-                self.journal
-                    .push_back(UndoEntry { before, dir, pivot, after, event: ev, origins, misses: 0 });
             }
         }
     }
@@ -855,16 +922,17 @@ impl Mixer {
                 "fresh split verification failed: {g:?} on wire {x}"
             );
         }
-        let origin = self.meta_of(id).origin;
+        let m = self.meta_of(id);
         let ev = self.fresh_event();
         for p in &pieces {
             self.counters.width_hist[p.width().min(15)] += 1;
         }
         let ids = self.splice_replace_one(id, pieces);
         for &pid in &ids {
-            self.set_meta(pid, Meta { origin, event: ev });
+            let d = self.child_dir(m.dir);
+            self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: d });
         }
-        self.scatter(&ids);
+        self.advance_births(&ids);
         self.counters.fresh_splits += 1;
     }
 
@@ -900,37 +968,44 @@ impl Mixer {
                 "unsubsume verification failed: {g:?}"
             );
         }
-        let origin = self.meta_of(id).origin;
+        let m = self.meta_of(id);
         let ev = self.fresh_event();
         for x in &pieces {
             self.counters.width_hist[x.width().min(15)] += 1;
         }
         let ids = self.splice_replace_one(id, pieces);
         for &pid in &ids {
-            self.set_meta(pid, Meta { origin, event: ev });
+            let d = self.child_dir(m.dir);
+            self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: d });
         }
-        self.scatter(&ids);
+        self.advance_births(&ids);
         self.counters.unsubs += 1;
     }
 
-    // Insert an identical pair of copies of a random existing (non-comp) gate at
-    // a random position. Self-calibrating to the circuit's own gate
-    // distribution; each copy can later merge with third parties (cross-parent
-    // recombination), which is where the entropy comes from.
+    // Insert an adjacent identity pair of a FRESH random conjunction: width
+    // uniform in [2, k_max] (>= 2 keeps the move disjoint from the cnot
+    // twist's width-1 packets), random distinct wires, random polarities. The
+    // two copies get opposite directions and each is immediately shot once
+    // (one cross move per copy), so the pair separates directionally; each
+    // sub-step is independently function-preserving.
     fn insert_move(&mut self) {
-        let mut src = NIL;
-        for _ in 0..8 {
-            let c = self.arena.random_linked(&mut self.rng);
-            if !self.arena.gate(c).comp {
-                src = c;
-                break;
-            }
-        }
-        if src == NIL {
+        let kmax = self.params.k_max.min(self.num_wires.saturating_sub(1));
+        if kmax < 2 {
             return;
         }
-        let g = self.arena.gate(src).clone();
-        let origin = self.meta_of(src).origin;
+        let k = self.rng.random_range(2..=kmax);
+        let mut wires: Vec<u16> = Vec::with_capacity(k + 1);
+        while wires.len() < k + 1 {
+            let w = self.rng.random_range(0..self.num_wires) as u16;
+            if !wires.contains(&w) {
+                wires.push(w);
+            }
+        }
+        let lits: Vec<(u16, bool)> = wires[1..]
+            .iter()
+            .map(|&w| (w, self.rng.random_bool(0.5)))
+            .collect();
+        let g = XGate::conj(wires[0], lits).expect("distinct wires cannot contradict");
         if self.params.local_verify {
             assert!(
                 rules::verify_rewrite(&[], &[g.clone(), g.clone()]),
@@ -943,11 +1018,16 @@ impl Mixer {
         let b = self.arena.insert_after(a, g);
         self.index_add(b);
         let ev = self.fresh_event();
-        self.set_meta(a, Meta { origin, event: ev });
-        self.set_meta(b, Meta { origin, event: ev });
+        let da = self.rand_dir();
+        self.set_meta(a, Meta { origin: ORIGIN_SYNTH, event: ev, dir: da });
+        self.set_meta(b, Meta { origin: ORIGIN_SYNTH, event: ev, dir: da.opposite() });
         self.counters.width_hist[self.arena.gate(a).width().min(15)] += 2;
-        self.scatter(&[a, b]);
         self.counters.inserts += 1;
+        // Each copy is shot once as part of the insert.
+        self.cross_move_on(a);
+        if self.arena.is_linked(b) {
+            self.cross_move_on(b);
+        }
     }
 
     // Conjugation twist — the SAMF mechanism from ssg, XGate-native. Pick a
@@ -1188,14 +1268,16 @@ impl Mixer {
                             "twist case-split failed: {g:?} under {packet:?}"
                         );
                     }
-                    let origin = self.meta_of(cur).origin;
+                    let m = self.meta_of(cur);
                     let ev = self.fresh_event();
                     for x in &pieces {
                         self.counters.width_hist[x.width().min(15)] += 1;
                     }
                     let ids = self.splice_replace_one(cur, pieces);
                     for &pid in &ids {
-                        self.set_meta(pid, Meta { origin, event: ev });
+                        // Twist material does not move: pieces keep the
+                        // conjugated gate's direction exactly.
+                        self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: m.dir });
                     }
                     relabeled += 1;
                     case_splits += 1;
@@ -1225,14 +1307,16 @@ impl Mixer {
             self.counters.width_hist[g.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, g.clone());
             self.index_add(anchor);
-            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev });
+            let d = self.rand_dir();
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d });
         }
         let mut anchor = w_end;
         for g in &packet {
             self.counters.width_hist[g.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, g.clone());
             self.index_add(anchor);
-            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev });
+            let d = self.rand_dir();
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d });
         }
 
         match kind {
@@ -1372,10 +1456,10 @@ impl Mixer {
         for (j, gate) in e.before.iter().enumerate() {
             c = self.arena.insert_after(c, gate.clone());
             self.index_add(c);
-            self.set_meta(c, Meta { origin: e.origins[j], event: 0 });
+            let d = self.rand_dir();
+            self.set_meta(c, Meta { origin: e.origins[j], event: 0, dir: d });
             new_ids.push(c);
         }
-        self.scatter(&new_ids);
         self.counters.undos += 1;
         None
     }
@@ -1506,9 +1590,11 @@ impl Mixer {
             mg.origin
         };
         for &nid in &new_ids {
-            self.set_meta(nid, Meta { origin, event: 0 });
+            // Merged output stays in place (scatter is suspended) and keeps
+            // shooting the way the initiating parent was headed, per dir_p.
+            let d = self.child_dir(mg.dir);
+            self.set_meta(nid, Meta { origin, event: 0, dir: d });
         }
-        self.scatter(&new_ids);
         if sibling {
             self.counters.merges_sibling += 1;
         }
@@ -1599,17 +1685,68 @@ impl Mixer {
         k
     }
 
-    fn scatter(&mut self, ids: &[u32]) {
-        for &id in ids {
-            if !self.arena.is_linked(id) {
-                continue;
-            }
-            let k = self.float_uniform(id);
-            if k > 0 {
-                self.counters.scatters += 1;
-                self.counters.scatter_steps += k as u64;
-            }
+    fn rand_dir(&mut self) -> Dir {
+        if self.rng.random_bool(0.5) { Dir::L } else { Dir::R }
+    }
+
+    // Fragment direction law: inherit the shot gate's direction with
+    // probability dir_p, else the opposite.
+    fn child_dir(&mut self, shot: Dir) -> Dir {
+        if self.rng.random_bool(self.params.dir_p) { shot } else { shot.opposite() }
+    }
+
+    // Directional birth transport (replaces the uniform scatter): a fresh
+    // piece advances floor(dir_q * slack) gates in its own direction, where
+    // slack is how far it could float that way before its first collision.
+    fn advance_birth(&mut self, id: u32) {
+        if !self.arena.is_linked(id) {
+            return;
         }
+        let dir = self.meta_of(id).dir;
+        let slack = self.float_distance(id, dir, usize::MAX);
+        let k = (self.params.dir_q * slack as f64).floor() as usize;
+        if k == 0 {
+            return;
+        }
+        let mut anchor = id;
+        for _ in 0..k {
+            anchor = self.arena.neighbor(anchor, dir);
+        }
+        self.arena.unlink(id);
+        match dir {
+            Dir::L => self.arena.link_before(id, anchor),
+            Dir::R => self.arena.link_after(id, anchor),
+        }
+        self.counters.scatters += 1;
+        self.counters.scatter_steps += k as u64;
+    }
+
+    fn advance_births(&mut self, ids: &[u32]) {
+        for &id in ids {
+            self.advance_birth(id);
+        }
+    }
+
+    // Failed cross: the shot gate does not stay parked at the collision — it
+    // retreats floor((1 - dir_q) * way) of the way it floated in. The path is
+    // passable by construction (it just floated through those gates).
+    fn retreat(&mut self, id: u32, way: usize, dir: Dir) {
+        let k = ((1.0 - self.params.dir_q) * way as f64).floor() as usize;
+        if k == 0 {
+            return;
+        }
+        let back = dir.opposite();
+        let mut anchor = id;
+        for _ in 0..k {
+            anchor = self.arena.neighbor(anchor, back);
+        }
+        self.arena.unlink(id);
+        match back {
+            Dir::L => self.arena.link_before(id, anchor),
+            Dir::R => self.arena.link_after(id, anchor),
+        }
+        self.counters.floats += 1;
+        self.counters.float_steps += k as u64;
     }
 
     pub fn final_float(&mut self) -> (u64, u64) {
@@ -1630,7 +1767,12 @@ impl Mixer {
         if c <= d {
             return true;
         }
-        self.rng.random_bool(1.0 / (1u64 << (c - d).min(62)) as f64)
+        let b = self.params.split_base;
+        if b <= 1.0 {
+            return true;
+        }
+        let p = b.powi(-(((c - d) as i32).min(1000)));
+        self.rng.random_bool(p.min(1.0))
     }
 
     // ---- splicing (fsplit engine semantics) ----
@@ -2011,6 +2153,10 @@ mod mix_tests {
             moves: 20_000,
             target_size: 300,
             temp: 20.0,
+            // This test pins the CLASSIC size-control machinery (journal undo
+            // is what digs crossing ladders back out); undo is suspended in
+            // the directional-walk defaults, so re-enable it explicitly.
+            undo_frac: 0.5,
             verify_every: 2_000,
             report_every: u64::MAX,
             seed: 5,
@@ -2046,10 +2192,13 @@ mod mix_tests {
             moves: 30_000,
             target_size: 500,
             temp: 20.0,
+            // Catalogue-invertible stock only. Insert is excluded since the
+            // directional redesign: it embeds a cross per copy, and crossing
+            // ladders are not pairwise-recoverable.
             w_cross: 0.0,
-            w_fresh: 0.5,
+            w_fresh: 0.7,
             w_unsub: 0.3,
-            w_insert: 0.2,
+            w_insert: 0.0,
             verify_every: 5_000,
             report_every: u64::MAX,
             seed: 1,
@@ -2238,6 +2387,42 @@ mod mix_tests {
         assert!(mx.counters.twist_relabels > 0, "twists never relabeled a gate");
         assert!(mx.remaining_g57() <= comp0, "fossil count increased");
         assert!(mx.counters.merges() > 0, "no merges alongside twists");
+        mx.global_check();
+    }
+
+    // The directional walk at its new defaults (undo and fresh-split
+    // suspended, directional insert with embedded crosses, birth advance +
+    // failed-cross retreat replacing the uniform scatter): function is
+    // preserved through every sub-step (local_verify + periodic global
+    // checks), inserts really do shoot both copies, and size stays bounded
+    // (merge-only contraction equilibrates above target rather than running
+    // away — the bound here is a loose runaway canary, not a promise).
+    #[test]
+    fn directional_walk_preserves_function() {
+        let gates = random_mixed_circuit(31, 16, 300);
+        let params = MixParams {
+            k_max: 5,
+            moves: 20_000,
+            target_size: 400,
+            temp: 20.0,
+            w_insert: 0.25,
+            verify_every: 2_000,
+            report_every: u64::MAX,
+            seed: 7,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        assert!(mx.counters.inserts > 50, "inserts barely ran: {}", mx.counters.inserts);
+        assert!(
+            mx.counters.cross_r1 + mx.counters.cross_r2 + mx.counters.cross_r3 > 100,
+            "crossings barely ran"
+        );
+        assert!(mx.counters.scatters > 0, "no directional birth advances");
+        assert_eq!(mx.counters.undos, 0, "undo ran despite suspension");
+        assert!(mx.counters.fresh_splits == 0, "fresh splits ran despite suspension");
+        let n = mx.arena.len();
+        assert!(n < 4 * 400, "size ran away under merge-only contraction: {n}");
         mx.global_check();
     }
 

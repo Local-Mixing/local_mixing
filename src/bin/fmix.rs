@@ -50,6 +50,19 @@ struct Args {
     /// Width-damping offset D for expansion moves (fsplit convention)
     #[arg(long, default_value_t = 2)]
     split_damp: usize,
+    /// Width-damper base B: a split of parent width c proceeds with
+    /// probability B^-(c - split_damp)
+    #[arg(long, default_value_t = 2.0)]
+    split_base: f64,
+    /// Probability that a collision fragment inherits the shot gate's
+    /// direction (else it gets the opposite)
+    #[arg(long, default_value_t = 0.75)]
+    dir_p: f64,
+    /// Directional transport fraction: fresh pieces advance floor(q * slack)
+    /// in their own direction at birth; a failed cross retreats the shot gate
+    /// floor((1-q) * way)
+    #[arg(long, default_value_t = 0.85)]
+    dir_q: f64,
     /// Max distance (gates) a merge partner may sit from the initiator
     #[arg(long, default_value_t = 4096)]
     merge_reach: usize,
@@ -57,7 +70,9 @@ struct Args {
     #[arg(long, default_value_t = 262_144)]
     journal_len: usize,
     /// Fraction of contraction moves that try a journal undo first
-    #[arg(long, default_value_t = 0.5)]
+    /// (SUSPENDED by default since the directional redesign; set > 0 to
+    /// re-enable exact crossing reversal)
+    #[arg(long, default_value_t = 0.0)]
     undo_frac: f64,
     /// Refractory period in moves: a split event may not be undone or
     /// sibling-merged until this many moves have passed
@@ -66,7 +81,9 @@ struct Args {
     /// Expansion move weights
     #[arg(long, default_value_t = 0.70)]
     w_cross: f64,
-    #[arg(long, default_value_t = 0.15)]
+    /// SUSPENDED by default (covered by the twists' case-splitting); set > 0
+    /// to re-enable
+    #[arg(long, default_value_t = 0.0)]
     w_fresh: f64,
     #[arg(long, default_value_t = 0.10)]
     w_unsub: f64,
@@ -129,12 +146,15 @@ fn main() {
     let comp0 = gates.iter().filter(|g| g.comp).count();
     let target = args.target_size.unwrap_or(input_len);
     println!(
-        "[fmix] input: {} gates ({} g57 fossils), {} wires; k_max={} split_damp={} target={} temp={} moves={} seed={}",
+        "[fmix] input: {} gates ({} g57 fossils), {} wires; k_max={} split_damp={} split_base={} dir_p={} dir_q={} target={} temp={} moves={} seed={}",
         input_len,
         comp0,
         num_wires,
         args.k_max,
         args.split_damp,
+        args.split_base,
+        args.dir_p,
+        args.dir_q,
         target,
         args.temp.unwrap_or((target as f64 / 100.0).max(64.0)),
         args.moves,
@@ -150,6 +170,9 @@ fn main() {
     let params = MixParams {
         k_max: args.k_max,
         split_damp: args.split_damp,
+        split_base: args.split_base,
+        dir_p: args.dir_p,
+        dir_q: args.dir_q,
         target_size: target,
         temp: args.temp.unwrap_or(0.0),
         moves: args.moves,
