@@ -985,17 +985,19 @@ impl Mixer {
     }
 
     // Insert an adjacent identity pair of a FRESH random conjunction: width
-    // uniform in [2, k_max] (>= 2 keeps the move disjoint from the cnot
-    // twist's width-1 packets), random distinct wires, random polarities. The
-    // two copies get opposite directions and each is immediately shot once
-    // (one cross move per copy), so the pair separates directionally; each
-    // sub-step is independently function-preserving.
+    // uniform in [1, k_max], random distinct wires, random polarities. Width 1
+    // is admitted (welded material is ~transcript-neutral across width — the
+    // damper's survival exponential cancels the firing discount — so there is
+    // no reason to exclude the cheapest, most weldable class). The two copies
+    // get opposite directions and each is immediately shot once (one cross
+    // move per copy), so the pair separates directionally; each sub-step is
+    // independently function-preserving.
     fn insert_move(&mut self) {
         let kmax = self.params.k_max.min(self.num_wires.saturating_sub(1));
-        if kmax < 2 {
+        if kmax < 1 {
             return;
         }
-        let k = self.rng.random_range(2..=kmax);
+        let k = self.rng.random_range(1..=kmax);
         let mut wires: Vec<u16> = Vec::with_capacity(k + 1);
         while wires.len() < k + 1 {
             let w = self.rng.random_range(0..self.num_wires) as u16;
