@@ -34,12 +34,21 @@ struct BitReader<'a> {
 }
 impl<'a> BitReader<'a> {
     fn new(buf: &'a [u8]) -> Self {
-        BitReader { buf, pos: 0, acc: 0, nbits: 0 }
+        BitReader {
+            buf,
+            pos: 0,
+            acc: 0,
+            nbits: 0,
+        }
     }
     #[inline]
     fn get(&mut self, bits: u32) -> u64 {
         while self.nbits < bits {
-            let b = if self.pos < self.buf.len() { self.buf[self.pos] } else { 0 };
+            let b = if self.pos < self.buf.len() {
+                self.buf[self.pos]
+            } else {
+                0
+            };
             self.acc |= (b as u64) << self.nbits;
             self.pos += 1;
             self.nbits += 8;
@@ -260,7 +269,8 @@ impl Frozen {
             let file =
                 std::fs::File::open(&path).unwrap_or_else(|e| panic!("frozen: open {path}: {e}"));
             let mut head = vec![0u8; head_len];
-            file.read_exact_at(&mut head, 0).expect("frozen: shard header");
+            file.read_exact_at(&mut head, 0)
+                .expect("frozen: shard header");
             assert_eq!(&head[0..8], b"FRZTBL01", "frozen: bad magic in {path}");
             let mut offs = Vec::with_capacity(BUCKETS + 1);
             for i in 0..=BUCKETS {
@@ -268,7 +278,11 @@ impl Frozen {
                 b[0..5].copy_from_slice(&head[24 + i * 5..24 + i * 5 + 5]);
                 offs.push(u64::from_le_bytes(b));
             }
-            shards.push(FrozenShard { file, offs, data_base: head_len as u64 });
+            shards.push(FrozenShard {
+                file,
+                offs,
+                data_base: head_len as u64,
+            });
         }
         // Optional in-RAM miss filter (~25.5 GB). Opt-in per process.
         let filters = if std::env::var("FROZEN_FILTER").map(|v| v == "1") == Ok(true) {
@@ -287,14 +301,20 @@ impl Frozen {
                     Some(ff.filters)
                 }
                 Err(e) => {
-                    eprintln!("[frozen] FROZEN_FILTER=1 but no filters.bin ({e}); running unfiltered");
+                    eprintln!(
+                        "[frozen] FROZEN_FILTER=1 but no filters.bin ({e}); running unfiltered"
+                    );
                     None
                 }
             }
         } else {
             None
         };
-        Frozen { shards, tables, filters }
+        Frozen {
+            shards,
+            tables,
+            filters,
+        }
     }
 
     /// Exact point lookup; returns legacy value bytes, byte-identical to the
@@ -390,7 +410,10 @@ pub fn ensure_stub_lmdb(path: &str) {
     for s in 0..=255u16 {
         env.create_db(Some(&format!("{:02x}", s)), lmdb::DatabaseFlags::empty())
             .expect("frozen: stub shard db");
-        env.create_db(Some(&format!("curated_{:02x}", s)), lmdb::DatabaseFlags::empty())
-            .expect("frozen: stub curated db");
+        env.create_db(
+            Some(&format!("curated_{:02x}", s)),
+            lmdb::DatabaseFlags::empty(),
+        )
+        .expect("frozen: stub curated db");
     }
 }

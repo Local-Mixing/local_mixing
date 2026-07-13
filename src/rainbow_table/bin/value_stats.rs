@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let path = args.get(1).expect("usage: value_stats <rocks_path> [per_range]");
+    let path = args
+        .get(1)
+        .expect("usage: value_stats <rocks_path> [per_range]");
     let per_range: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(200_000);
 
     let db = DB::open_for_read_only(&Options::default(), path, false).expect("open rocks");
@@ -99,7 +101,11 @@ fn main() {
     let ci = circuits.load(Ordering::Relaxed);
     let ga = gates.load(Ordering::Relaxed);
     println!("entries_sampled={}", e);
-    println!("value_bytes_total={} avg_value_bytes={:.2}", vb, vb as f64 / e as f64);
+    println!(
+        "value_bytes_total={} avg_value_bytes={:.2}",
+        vb,
+        vb as f64 / e as f64
+    );
     println!(
         "circuits_total={} avg_circuits_per_value={:.4} avg_gates_per_circuit={:.3}",
         ci,

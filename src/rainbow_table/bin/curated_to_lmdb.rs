@@ -2,11 +2,7 @@ use lmdb::{DatabaseFlags, Environment, EnvironmentFlags, Transaction, WriteFlags
 use rocksdb::{DB, MergeOperands, Options};
 use std::path::Path;
 
-fn append_merge(
-    _key: &[u8],
-    existing: Option<&[u8]>,
-    operands: &MergeOperands,
-) -> Option<Vec<u8>> {
+fn append_merge(_key: &[u8], existing: Option<&[u8]>, operands: &MergeOperands) -> Option<Vec<u8>> {
     let mut result = existing.map_or_else(Vec::new, |v| v.to_vec());
     for op in operands {
         result.extend_from_slice(op);
@@ -16,7 +12,9 @@ fn append_merge(
 
 fn main() {
     let env = Environment::new()
-        .set_flags(EnvironmentFlags::WRITE_MAP | EnvironmentFlags::MAP_ASYNC | EnvironmentFlags::NO_SYNC)
+        .set_flags(
+            EnvironmentFlags::WRITE_MAP | EnvironmentFlags::MAP_ASYNC | EnvironmentFlags::NO_SYNC,
+        )
         .set_max_dbs(600)
         .set_max_readers(10000)
         .set_map_size(6 * 1024 * 1024 * 1024 * 1024)
@@ -88,5 +86,8 @@ fn main() {
         eprintln!("FINAL ENV SYNC FAILED: {:?}", e);
         std::process::exit(1);
     }
-    println!("Done. {}/{} entries written to ./db curated_{{}} shards.", count, total);
+    println!(
+        "Done. {}/{} entries written to ./db curated_{{}} shards.",
+        count, total
+    );
 }

@@ -1,5 +1,5 @@
 use lmdb::{Cursor, Environment, Transaction};
-use local_mixing::circuit::circuit::{polys_repr_blob, CircuitSeq};
+use local_mixing::circuit::circuit::{CircuitSeq, polys_repr_blob};
 use rayon::prelude::*;
 use rocksdb::{DB, MergeOperands, Options};
 use std::collections::{HashMap, HashSet};
@@ -12,11 +12,7 @@ const MAX_CIRCUITS_PER_ENTRY: usize = 20;
 // Cap on stored bytes per key in the final RocksDB value (~17 tails at 30 bytes).
 const MAX_VALUE_BYTES: usize = 512;
 
-fn append_merge(
-    _key: &[u8],
-    existing: Option<&[u8]>,
-    operands: &MergeOperands,
-) -> Option<Vec<u8>> {
+fn append_merge(_key: &[u8], existing: Option<&[u8]>, operands: &MergeOperands) -> Option<Vec<u8>> {
     let mut result = existing.map_or_else(Vec::new, |v| v.to_vec());
     for op in operands {
         if result.len() + op.len() <= MAX_VALUE_BYTES {
@@ -32,7 +28,9 @@ fn decode_circuits(value: &[u8]) -> Vec<CircuitSeq> {
     while pos < value.len() {
         let len = value[pos] as usize;
         pos += 1;
-        if pos + len > value.len() { break; }
+        if pos + len > value.len() {
+            break;
+        }
         circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
         pos += len;
     }
@@ -44,7 +42,9 @@ fn remove_adjacent_equal(gates: &mut Vec<[u16; 3]>) {
     while i + 1 < gates.len() {
         if gates[i] == gates[i + 1] {
             gates.drain(i..=i + 1);
-            if i > 0 { i -= 1; }
+            if i > 0 {
+                i -= 1;
+            }
         } else {
             i += 1;
         }
@@ -68,16 +68,14 @@ fn map_wire(
         db
     } else {
         let next = *next_extra;
-        *extra_map.entry(w).or_insert_with(|| { *next_extra += 1; next })
+        *extra_map.entry(w).or_insert_with(|| {
+            *next_extra += 1;
+            next
+        })
     }
 }
 
-fn process_shard(
-    shard_idx: usize,
-    src_db: lmdb::Database,
-    env: &Environment,
-    rdb: &DB,
-) {
+fn process_shard(shard_idx: usize, src_db: lmdb::Database, env: &Environment, rdb: &DB) {
     eprintln!("  shard {:02x}: scanning...", shard_idx);
     let entries: Vec<Vec<u8>> = {
         let txn = env.begin_ro_txn().expect("ro txn");
@@ -85,14 +83,22 @@ fn process_shard(
         let result: Vec<Vec<u8>> = cursor
             .iter()
             .filter_map(|(_, v)| {
-                if decode_circuits(v).len() >= 2 { Some(v.to_vec()) } else { None }
+                if decode_circuits(v).len() >= 2 {
+                    Some(v.to_vec())
+                } else {
+                    None
+                }
             })
             .collect();
         drop(cursor);
         drop(txn);
         result
     };
-    eprintln!("  shard {:02x}: {} qualifying entries, processing...", shard_idx, entries.len());
+    eprintln!(
+        "  shard {:02x}: {} qualifying entries, processing...",
+        shard_idx,
+        entries.len()
+    );
 
     // Per-shard local accumulation. Merging into RocksDB per-circuit makes short
     // prefixes into hot keys (few distinct functions, hammered by all 256 threads),
@@ -104,8 +110,13 @@ fn process_shard(
 
     for (entry_idx, value) in entries.iter().enumerate() {
         if entry_idx > 0 && entry_idx % 5000 == 0 {
-            eprintln!("  shard {:02x}: {}/{} entries, {} merged so far",
-                shard_idx, entry_idx, entries.len(), merged);
+            eprintln!(
+                "  shard {:02x}: {}/{} entries, {} merged so far",
+                shard_idx,
+                entry_idx,
+                entries.len(),
+                merged
+            );
         }
 
         let circuits = decode_circuits(value);
@@ -117,7 +128,9 @@ fn process_shard(
 
         for i in 0..circuits.len() {
             for j in 0..circuits.len() {
-                if i == j { continue; }
+                if i == j {
+                    continue;
+                }
                 let a = &circuits[i];
                 let b = &circuits[j];
 
@@ -141,7 +154,9 @@ fn process_shard(
                     remove_adjacent_equal(&mut identity.gates);
 
                     let n = identity.gates.len();
-                    if n < 3 { continue; }
+                    if n < 3 {
+                        continue;
+                    }
 
                     for direction in [false, true] {
                         let directed: Vec<[u16; 3]> = if direction {
@@ -160,12 +175,18 @@ fn process_shard(
                             for k in 1..n {
                                 // Only store when suffix >= prefix (expansion only).
                                 let suffix_len = n - k;
-                                if k > suffix_len { continue; }
+                                if k > suffix_len {
+                                    continue;
+                                }
 
-                                let prefix = CircuitSeq { gates: rotation[..k].to_vec() };
+                                let prefix = CircuitSeq {
+                                    gates: rotation[..k].to_vec(),
+                                };
                                 let (canon_polys, perm4, used) =
                                     prefix.canonicalize_polys_single(false);
-                                if canon_polys.is_empty() { continue; }
+                                if canon_polys.is_empty() {
+                                    continue;
+                                }
 
                                 let key = xxh3_128(&polys_repr_blob(&canon_polys))
                                     .to_le_bytes()
@@ -173,7 +194,9 @@ fn process_shard(
 
                                 let perm4_inv = perm4.invert();
                                 // All prefix wires are in used, so used_map covers them.
-                                let used_map: HashMap<u16, u16> = used.iter().enumerate()
+                                let used_map: HashMap<u16, u16> = used
+                                    .iter()
+                                    .enumerate()
                                     .map(|(i, &w)| (w, perm4_inv.data[i] as u16))
                                     .collect();
                                 let mut extra_map: HashMap<u16, u16> = HashMap::new();
@@ -181,14 +204,15 @@ fn process_shard(
 
                                 // Rewire prefix gates to DB wire space.
                                 // Prefix wires are always in used_map (no extras).
-                                let prefix_db_gates: Vec<[u16; 3]> = rotation[..k].iter()
-                                    .map(|&[t, c1, c2]| [
-                                        used_map[&t],
-                                        used_map[&c1],
-                                        used_map[&c2],
-                                    ])
+                                let prefix_db_gates: Vec<[u16; 3]> = rotation[..k]
+                                    .iter()
+                                    .map(|&[t, c1, c2]| {
+                                        [used_map[&t], used_map[&c1], used_map[&c2]]
+                                    })
                                     .collect();
-                                let mut prefix_db_seq = CircuitSeq { gates: prefix_db_gates };
+                                let mut prefix_db_seq = CircuitSeq {
+                                    gates: prefix_db_gates,
+                                };
                                 prefix_db_seq.canonicalize();
 
                                 // Rewire tail gates (reversed suffix) to DB wire space.
@@ -210,12 +234,16 @@ fn process_shard(
                                 // Both compute the prefix's function, so both canonicalize to `key`.
                                 for seq in [&prefix_db_seq, &tail_seq] {
                                     let blob = seq.repr_blob();
-                                    if blob.len() > 255 { continue; }
+                                    if blob.len() > 255 {
+                                        continue;
+                                    }
                                     let encoded = encode_circuit(&blob);
                                     // Accumulate locally: dedup per key, cap concatenated length.
                                     let h = xxh3_64(&encoded);
                                     let (seen_h, val) = buf.entry(key.clone()).or_default();
-                                    if val.len() + encoded.len() <= MAX_VALUE_BYTES && seen_h.insert(h) {
+                                    if val.len() + encoded.len() <= MAX_VALUE_BYTES
+                                        && seen_h.insert(h)
+                                    {
                                         val.extend_from_slice(&encoded);
                                         merged += 1;
                                     }
@@ -232,7 +260,10 @@ fn process_shard(
     for (key, (_seen, val)) in buf {
         rdb.merge(&key, &val).expect("rocksdb merge");
     }
-    eprintln!("  shard {:02x}: done, {} unique circuits merged", shard_idx, merged);
+    eprintln!(
+        "  shard {:02x}: done, {} unique circuits merged",
+        shard_idx, merged
+    );
 }
 
 fn main() {

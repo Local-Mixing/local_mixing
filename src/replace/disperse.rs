@@ -462,10 +462,7 @@ mod tests {
         disperse_random_topo(&mut gates, None, 1_000_000, 11);
         let after = leeway_stats(&gates, 1);
 
-        assert_eq!(
-            before.median, 0,
-            "pinned fixture should start fully pinned"
-        );
+        assert_eq!(before.median, 0, "pinned fixture should start fully pinned");
         assert!(
             after.median > before.median,
             "dispersal should raise median leeway (got {} -> {})",

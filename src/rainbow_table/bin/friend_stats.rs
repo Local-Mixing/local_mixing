@@ -11,7 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let path = args.get(1).expect("usage: friend_stats <rocks_path> [per_range]");
+    let path = args
+        .get(1)
+        .expect("usage: friend_stats <rocks_path> [per_range]");
     let per_range: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(400_000);
 
     let db = DB::open_for_read_only(&Options::default(), path, false).expect("open rocks");
@@ -96,7 +98,12 @@ fn main() {
 
     let e = entries.load(Ordering::Relaxed);
     let m = multi.load(Ordering::Relaxed);
-    println!("entries_sampled={} multi_circuit={} ({:.4}%)", e, m, 100.0 * m as f64 / e as f64);
+    println!(
+        "entries_sampled={} multi_circuit={} ({:.4}%)",
+        e,
+        m,
+        100.0 * m as f64 / e as f64
+    );
     println!(
         "same_gate_count: le6={} g7={} g8={} g9={} g10={} g11plus={}",
         same_le6.load(Ordering::Relaxed),

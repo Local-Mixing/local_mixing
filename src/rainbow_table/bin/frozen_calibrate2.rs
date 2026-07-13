@@ -76,7 +76,9 @@ fn cond_entropy_bits(m: &HashMap<u32, u64>) -> f64 {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let path = args.get(1).expect("usage: frozen_calibrate2 <rocks> [per_range]");
+    let path = args
+        .get(1)
+        .expect("usage: frozen_calibrate2 <rocks> [per_range]");
     let per_range: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(150_000);
 
     let db = DB::open_for_read_only(&Options::default(), path, false).expect("open rocks");
@@ -116,8 +118,7 @@ fn main() {
                 let gates: Vec<&[u8]> = blob.chunks(3).collect();
                 for (gi, gate) in gates.iter().enumerate() {
                     let gi_c = (gi as u32).min(11);
-                    let triple =
-                        (gate[0] as u32) << 10 | (gate[1] as u32) << 5 | gate[2] as u32;
+                    let triple = (gate[0] as u32) << 10 | (gate[1] as u32) << 5 | gate[2] as u32;
                     bump(&mut s.m5, w << 16 | triple);
                     bump(&mut s.m6, (w << 4 | gi_c) << 16 | triple);
                     for (role, &wb) in gate.iter().enumerate() {
@@ -151,14 +152,23 @@ fn main() {
     let s = global.lock().unwrap();
     let g = s.gates as f64;
     let e = s.entries as f64;
-    println!("entries={} circuits={} gates={} avg_gates={:.3}", s.entries, s.circuits, s.gates, g / s.circuits as f64);
+    println!(
+        "entries={} circuits={} gates={} avg_gates={:.3}",
+        s.entries,
+        s.circuits,
+        s.gates,
+        g / s.circuits as f64
+    );
     println!(
         "adjacent_gate_pairs lexicographically sorted: {:.2}%",
         100.0 * s.sorted_adj as f64 / (s.sorted_adj + s.unsorted_adj) as f64
     );
 
     let hdr_bits = cond_entropy_bits(&s.gc); // per circuit
-    println!("header (gates,w,chain) entropy: {:.3} bits/circuit", hdr_bits / s.circuits as f64);
+    println!(
+        "header (gates,w,chain) entropy: {:.3} bits/circuit",
+        hdr_bits / s.circuits as f64
+    );
 
     let models = [
         ("M1 wire|role            ", cond_entropy_bits(&s.m1)),
@@ -177,7 +187,10 @@ fn main() {
         );
     }
     // gate-as-symbol models
-    for (name, m) in [("M5 triple|w        ", &s.m5), ("M6 triple|w,gate_idx", &s.m6)] {
+    for (name, m) in [
+        ("M5 triple|w        ", &s.m5),
+        ("M6 triple|w,gate_idx", &s.m6),
+    ] {
         let bits = cond_entropy_bits(m);
         let value_bits_pe = (bits + hdr_bits) / e;
         let per_entry = 44.0 / 8.0 + 0.083 + value_bits_pe / 8.0;

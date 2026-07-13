@@ -45,17 +45,16 @@ use xxhash_rust::xxh3::xxh3_128;
 
 fn write_error(msg: &str) {
     eprintln!("{}", msg);
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open("error.txt") {
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("error.txt")
+    {
         let _ = writeln!(f, "{}", msg);
     }
 }
 
-
-fn append_merge(
-    _key: &[u8],
-    existing: Option<&[u8]>,
-    operands: &MergeOperands,
-) -> Option<Vec<u8>> {
+fn append_merge(_key: &[u8], existing: Option<&[u8]>, operands: &MergeOperands) -> Option<Vec<u8>> {
     let mut result: Vec<u8> = existing.unwrap_or(&[]).to_vec();
 
     for operand in operands {
@@ -213,7 +212,11 @@ fn merge_sorted_entries(entries: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Vec<u
     merged
 }
 
-fn flush_to_sst(db: &Arc<DB>, pending: &mut Vec<(Vec<u8>, Vec<u8>)>, sst_index: &mut usize) -> Result<(), Box<dyn std::error::Error>> {
+fn flush_to_sst(
+    db: &Arc<DB>,
+    pending: &mut Vec<(Vec<u8>, Vec<u8>)>,
+    sst_index: &mut usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     if pending.is_empty() {
         return Ok(());
     }
@@ -351,18 +354,20 @@ pub fn abstract_gates_for_circuit(circuit: &CircuitSeq, n: usize) -> Vec<[u16; 3
     const UNUSED: u16 = 512;
 
     let touched = touched_wires(circuit);
-    let untouched: Vec<u16> = (0..n as u16)
-        .filter(|w| !touched.contains(w))
-        .collect();
+    let untouched: Vec<u16> = (0..n as u16).filter(|w| !touched.contains(w)).collect();
 
     let mut result = Vec::new();
 
     // 0 UNUSED slots: all three wires are touched
     for &a in &touched {
         for &b in &touched {
-            if b == a { continue; }
+            if b == a {
+                continue;
+            }
             for &c in &touched {
-                if c == a || c == b { continue; }
+                if c == a || c == b {
+                    continue;
+                }
                 result.push([a, b, c]);
             }
         }
@@ -373,21 +378,27 @@ pub fn abstract_gates_for_circuit(circuit: &CircuitSeq, n: usize) -> Vec<[u16; 3
         // UNUSED in position a
         for &b in &touched {
             for &c in &touched {
-                if c == b { continue; }
+                if c == b {
+                    continue;
+                }
                 result.extend(expand_abstract_gate([UNUSED, b, c], &untouched));
             }
         }
         // UNUSED in position b
         for &a in &touched {
             for &c in &touched {
-                if c == a { continue; }
+                if c == a {
+                    continue;
+                }
                 result.extend(expand_abstract_gate([a, UNUSED, c], &untouched));
             }
         }
         // UNUSED in position c
         for &a in &touched {
             for &b in &touched {
-                if b == a { continue; }
+                if b == a {
+                    continue;
+                }
                 result.extend(expand_abstract_gate([a, b, UNUSED], &untouched));
             }
         }
@@ -417,7 +428,6 @@ pub fn abstract_gates_for_circuit(circuit: &CircuitSeq, n: usize) -> Vec<[u16; 3
     result
 }
 
-
 fn ordered2(n: usize) -> usize {
     if n >= 2 { n * (n - 1) } else { 0 }
 }
@@ -444,9 +454,7 @@ pub fn abstract_gates_for_circuit_filtered(
     max_n: usize,
 ) -> (Vec<[u16; 3]>, usize) {
     let touched = touched_wires(circuit);
-    let untouched: Vec<u16> = (0..n as u16)
-        .filter(|w| !touched.contains(w))
-        .collect();
+    let untouched: Vec<u16> = (0..n as u16).filter(|w| !touched.contains(w)).collect();
 
     let old_used = touched.len();
     let fresh = untouched.len();
@@ -462,9 +470,13 @@ pub fn abstract_gates_for_circuit_filtered(
     if allowed(0) {
         for &a in &touched {
             for &b in &touched {
-                if b == a { continue; }
+                if b == a {
+                    continue;
+                }
                 for &c in &touched {
-                    if c == a || c == b { continue; }
+                    if c == a || c == b {
+                        continue;
+                    }
                     result.push([a, b, c]);
                 }
             }
@@ -480,19 +492,25 @@ pub fn abstract_gates_for_circuit_filtered(
             let u0 = untouched[0];
             for &b in &touched {
                 for &c in &touched {
-                    if c == b { continue; }
+                    if c == b {
+                        continue;
+                    }
                     result.push([u0, b, c]);
                 }
             }
             for &a in &touched {
                 for &c in &touched {
-                    if c == a { continue; }
+                    if c == a {
+                        continue;
+                    }
                     result.push([a, u0, c]);
                 }
             }
             for &a in &touched {
                 for &b in &touched {
-                    if b == a { continue; }
+                    if b == a {
+                        continue;
+                    }
                     result.push([a, b, u0]);
                 }
             }
@@ -609,8 +627,16 @@ pub fn build_from_rocks(
                 let elapsed = start_time.elapsed().as_secs_f64();
                 // Estimate input rows processed: each row yields up to upper_bound_gates*2 outputs.
                 let rows_done = done / upper_bound_gates.max(1) / 2 + 1;
-                let rate_rows = if elapsed > 0.0 { rows_done as f64 / elapsed } else { 0.0 };
-                let pct = if total_rows > 0 { rows_done as f64 / total_rows as f64 * 100.0 } else { 0.0 };
+                let rate_rows = if elapsed > 0.0 {
+                    rows_done as f64 / elapsed
+                } else {
+                    0.0
+                };
+                let pct = if total_rows > 0 {
+                    rows_done as f64 / total_rows as f64 * 100.0
+                } else {
+                    0.0
+                };
                 let remaining = if rate_rows > 0.0 {
                     (total_rows.saturating_sub(rows_done as u64)) as f64 / rate_rows
                 } else {
@@ -652,8 +678,7 @@ pub fn build_from_rocks(
         let elapsed = start_time.elapsed().as_secs_f64();
         println!(
             "Insertion thread finished. Total inserted: {} | elapsed: {:.0}s",
-            attempted_inserts,
-            elapsed,
+            attempted_inserts, elapsed,
         );
     });
 
@@ -723,7 +748,9 @@ pub fn build_from_rocks(
                         c1.canonicalize();
                         if !c1.adjacent_id() {
                             match c1.canonicalize_polys(3 * m, !no_rule_l) {
-                                None => { local_no_rule_l_skipped += 1; }
+                                None => {
+                                    local_no_rule_l_skipped += 1;
+                                }
                                 Some(canon1) => {
                                     let c1_hash: u128 = xxh3_128(&polys_repr_blob(&canon1.0));
                                     let c1_value = encode_circuit(&canon1.1.repr_blob());
@@ -739,7 +766,9 @@ pub fn build_from_rocks(
                         c2.canonicalize();
                         if !c2.adjacent_id() {
                             match c2.canonicalize_polys(3 * m, !no_rule_l) {
-                                None => { local_no_rule_l_skipped += 1; }
+                                None => {
+                                    local_no_rule_l_skipped += 1;
+                                }
                                 Some(canon2) => {
                                     let c2_hash: u128 = xxh3_128(&polys_repr_blob(&canon2.0));
                                     let c2_value = encode_circuit(&canon2.1.repr_blob());
@@ -778,7 +807,10 @@ pub fn build_from_rocks(
     drop(tx);
     insert_handle.join().expect("Insertion thread panicked");
     if no_rule_l {
-        println!("Skipped (rule L required): {}", no_rule_l_skipped.load(Ordering::Relaxed));
+        println!(
+            "Skipped (rule L required): {}",
+            no_rule_l_skipped.load(Ordering::Relaxed)
+        );
     }
 
     if !stop_flag.load(Ordering::SeqCst) {
@@ -1042,7 +1074,6 @@ pub fn build_m1(new_db: &Arc<DB>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-
 /// Apply a wire mapping to a circuit — remap C2's internal wires
 /// to their positions in the combined circuit.
 pub fn apply_wire_mapping(circuit: &CircuitSeq, mapping: &[u16]) -> CircuitSeq {
@@ -1050,7 +1081,13 @@ pub fn apply_wire_mapping(circuit: &CircuitSeq, mapping: &[u16]) -> CircuitSeq {
         gates: circuit
             .gates
             .iter()
-            .map(|&[a, b, c]| [mapping[a as usize], mapping[b as usize], mapping[c as usize]])
+            .map(|&[a, b, c]| {
+                [
+                    mapping[a as usize],
+                    mapping[b as usize],
+                    mapping[c as usize],
+                ]
+            })
             .collect(),
     }
 }
@@ -1063,10 +1100,13 @@ const LARGE_MAPPING_THRESHOLD: usize = 200_000;
 // Max number of entries kept in the LRU cache.
 const MAPPING_CACHE_CAP: usize = 256;
 
-static MAPPING_CACHE: Lazy<std::sync::Mutex<lru::LruCache<(usize, usize), Arc<(Vec<u16>, usize)>>>> =
-    Lazy::new(|| std::sync::Mutex::new(lru::LruCache::new(
-        std::num::NonZeroUsize::new(MAPPING_CACHE_CAP).unwrap()
-    )));
+static MAPPING_CACHE: Lazy<
+    std::sync::Mutex<lru::LruCache<(usize, usize), Arc<(Vec<u16>, usize)>>>,
+> = Lazy::new(|| {
+    std::sync::Mutex::new(lru::LruCache::new(
+        std::num::NonZeroUsize::new(MAPPING_CACHE_CAP).unwrap(),
+    ))
+});
 
 /// Call `f` once per mapping for the (n1, n2) pair.
 /// Small pairs are cached in an LRU; large pairs are enumerated on-the-fly.
@@ -1138,13 +1178,7 @@ fn compute_mappings(n1: usize, n2: usize) -> (Vec<u16>, usize) {
     let mut c2_to_wire = vec![0u16; n2];
     let mut used = vec![false; n2];
 
-    enumerate_direct(
-        0, n1, n2,
-        &mut c2_to_wire,
-        &mut used,
-        &mut flat,
-        &mut idx,
-    );
+    enumerate_direct(0, n1, n2, &mut c2_to_wire, &mut used, &mut flat, &mut idx);
 
     debug_assert_eq!(idx, total);
     (flat, n2)
@@ -1358,10 +1392,14 @@ pub fn build_from_2rocks(
             let (_key, value) = item.expect("RocksDB iter error");
             let mut pos = 0;
             while pos < value.len() {
-                if pos + 1 > value.len() { break; }
+                if pos + 1 > value.len() {
+                    break;
+                }
                 let len = value[pos] as usize;
                 pos += 1;
-                if pos + len > value.len() { break; }
+                if pos + len > value.len() {
+                    break;
+                }
                 circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
                 pos += len;
             }
@@ -1375,39 +1413,51 @@ pub fn build_from_2rocks(
     println!("Precomputing c2_rev (0/{})...", total_c2);
     let c2_rev_done = std::sync::atomic::AtomicUsize::new(0);
     let db2_rev: Arc<Vec<CircuitSeq>> = Arc::new(
-        db2_circuits.par_iter().map(|c2| {
-            let mut r = CircuitSeq { gates: c2.gates.iter().rev().cloned().collect() };
-            r.canonicalize();
-            // Remap to minimal wires
-            let used = r.used_wires();
-            let wire_map: HashMap<u16, u16> = used.iter().enumerate()
-                .map(|(i, &w)| (w, i as u16))
-                .collect();
-            r = CircuitSeq {
-                gates: r.gates.iter().map(|&[t, c1, c2]| [
-                    wire_map[&t], wire_map[&c1], wire_map[&c2],
-                ]).collect(),
-            };
-            r.canonicalize();
-            let n2 = r.max_wire() as usize + 1;
-            let canon = canonicalize_polys_4(r.to_polynomial(n2, 0, r.gates.len()), true).unwrap();
-            r.rewire(&canon.1.invert(), n2);
-            r.canonicalize();
-            let done = c2_rev_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if done % 50 == 0 || done == total_c2 {
-                println!("Precomputing c2_rev ({}/{})...", done, total_c2);
-            }
-            r
-        }).collect()
+        db2_circuits
+            .par_iter()
+            .map(|c2| {
+                let mut r = CircuitSeq {
+                    gates: c2.gates.iter().rev().cloned().collect(),
+                };
+                r.canonicalize();
+                // Remap to minimal wires
+                let used = r.used_wires();
+                let wire_map: HashMap<u16, u16> = used
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &w)| (w, i as u16))
+                    .collect();
+                r = CircuitSeq {
+                    gates: r
+                        .gates
+                        .iter()
+                        .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+                        .collect(),
+                };
+                r.canonicalize();
+                let n2 = r.max_wire() as usize + 1;
+                let canon =
+                    canonicalize_polys_4(r.to_polynomial(n2, 0, r.gates.len()), true).unwrap();
+                r.rewire(&canon.1.invert(), n2);
+                r.canonicalize();
+                let done = c2_rev_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if done % 50 == 0 || done == total_c2 {
+                    println!("Precomputing c2_rev ({}/{})...", done, total_c2);
+                }
+                r
+            })
+            .collect(),
     );
 
     // Precompute touched wire counts for every c2 and c2_rev
     let db2_n2: Arc<Vec<usize>> = Arc::new(
-        db2_circuits.par_iter().map(|c| touched_wires(c).len()).collect()
+        db2_circuits
+            .par_iter()
+            .map(|c| touched_wires(c).len())
+            .collect(),
     );
-    let db2_rev_n2: Arc<Vec<usize>> = Arc::new(
-        db2_rev.par_iter().map(|c| touched_wires(c).len()).collect()
-    );
+    let db2_rev_n2: Arc<Vec<usize>> =
+        Arc::new(db2_rev.par_iter().map(|c| touched_wires(c).len()).collect());
 
     // Mapping enumeration is streamed per pair with min_n-based pruning
     // (see for_each_mapping_capped); no flat-mapping cache warmup needed.
@@ -1428,8 +1478,15 @@ pub fn build_from_2rocks(
     let total_pairs_est = total_rows as usize * nc2;
     println!("db1 estimated keys: {}", total_rows);
     println!("db2 circuits loaded: {}", nc2);
-    println!("Estimated total pairs: {} ({:.2}B)", total_pairs_est, total_pairs_est as f64 / 1e9);
-    println!("chunk_size={} batch_size={} channel_cap=1000 pending_threshold=1M", chunk_size, batch_size);
+    println!(
+        "Estimated total pairs: {} ({:.2}B)",
+        total_pairs_est,
+        total_pairs_est as f64 / 1e9
+    );
+    println!(
+        "chunk_size={} batch_size={} channel_cap=1000 pending_threshold=1M",
+        chunk_size, batch_size
+    );
 
     let total_gates_tried = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let total_results_generated = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1475,16 +1532,35 @@ pub fn build_from_2rocks(
             let skipped = skipped_count_insert.load(Ordering::Relaxed);
             let results_so_far = total_results_insert.load(Ordering::Relaxed);
             let elapsed = start_time.elapsed().as_secs_f64();
-            let pairs_rate = if elapsed > 0.0 { pairs_done as f64 / elapsed } else { 0.0 };
-            let pairs_remaining = if pairs_done < total_pairs_est { total_pairs_est - pairs_done } else { 0 };
-            let eta_secs = if pairs_rate > 0.0 { (pairs_remaining as f64 / pairs_rate) as u64 } else { 0 };
-            let dedup_ratio = if results_so_far > 0 { attempted_inserts as f64 / results_so_far as f64 } else { 0.0 };
+            let pairs_rate = if elapsed > 0.0 {
+                pairs_done as f64 / elapsed
+            } else {
+                0.0
+            };
+            let pairs_remaining = if pairs_done < total_pairs_est {
+                total_pairs_est - pairs_done
+            } else {
+                0
+            };
+            let eta_secs = if pairs_rate > 0.0 {
+                (pairs_remaining as f64 / pairs_rate) as u64
+            } else {
+                0
+            };
+            let dedup_ratio = if results_so_far > 0 {
+                attempted_inserts as f64 / results_so_far as f64
+            } else {
+                0.0
+            };
             println!(
                 "[writer] pairs={}/{} ({:.1}%) | pairs/s={:.0} | eta={:02}:{:02}:{:02} | inserts={} | results={} | dedup={:.1}x | pending={} | ssts={}",
-                pairs_done, total_pairs_est,
+                pairs_done,
+                total_pairs_est,
                 (pairs_done as f64 / total_pairs_est as f64) * 100.0,
                 pairs_rate,
-                eta_secs / 3600, (eta_secs % 3600) / 60, eta_secs % 60,
+                eta_secs / 3600,
+                (eta_secs % 3600) / 60,
+                eta_secs % 60,
                 attempted_inserts + skipped,
                 results_so_far,
                 dedup_ratio,
@@ -1501,7 +1577,8 @@ pub fn build_from_2rocks(
             }
         }
 
-        println!("[writer] producers done, flushing {} remaining entries across {} final SSTs...",
+        println!(
+            "[writer] producers done, flushing {} remaining entries across {} final SSTs...",
             pending.len() + attempted_inserts - attempted_inserts, // pending count
             (pending.len() + 999_999) / 1_000_000
         );
@@ -1511,12 +1588,19 @@ pub fn build_from_2rocks(
                 break;
             }
             sst_count += 1;
-            println!("[writer] final flush: {} remaining | sst #{}", pending.len(), sst_count);
+            println!(
+                "[writer] final flush: {} remaining | sst #{}",
+                pending.len(),
+                sst_count
+            );
         }
         let elapsed = start_time.elapsed().as_secs_f64();
         println!(
             "[writer] finished. total_inserts={} | total_ssts={} | elapsed={:.0}s ({:.1}h)",
-            attempted_inserts, sst_count, elapsed, elapsed / 3600.0,
+            attempted_inserts,
+            sst_count,
+            elapsed,
+            elapsed / 3600.0,
         );
     });
 
@@ -1526,20 +1610,38 @@ pub fn build_from_2rocks(
     let mut total_c1_processed = 0usize;
 
     for chunk in &iter.chunks(chunk_size) {
-        if stop_flag.load(Ordering::SeqCst) { break; }
+        if stop_flag.load(Ordering::SeqCst) {
+            break;
+        }
         chunk_idx += 1;
         let elapsed_outer = build_start.elapsed().as_secs_f64();
         let pairs_done = total_gates_tried.load(Ordering::Relaxed);
-        let outer_rate = if elapsed_outer > 0.0 { pairs_done as f64 / elapsed_outer } else { 0.0 };
-        let pairs_remaining = if pairs_done < total_pairs_est { total_pairs_est - pairs_done } else { 0 };
-        let eta_outer = if outer_rate > 0.0 { (pairs_remaining as f64 / outer_rate) as u64 } else { 0 };
+        let outer_rate = if elapsed_outer > 0.0 {
+            pairs_done as f64 / elapsed_outer
+        } else {
+            0.0
+        };
+        let pairs_remaining = if pairs_done < total_pairs_est {
+            total_pairs_est - pairs_done
+        } else {
+            0
+        };
+        let eta_outer = if outer_rate > 0.0 {
+            (pairs_remaining as f64 / outer_rate) as u64
+        } else {
+            0
+        };
         println!(
             "[chunk {}] c1_processed={} | pairs={}/{} ({:.1}%) | {:.0} pairs/s | eta {:02}:{:02}:{:02} | elapsed={:.1}h",
-            chunk_idx, total_c1_processed,
-            pairs_done, total_pairs_est,
+            chunk_idx,
+            total_c1_processed,
+            pairs_done,
+            total_pairs_est,
             (pairs_done as f64 / total_pairs_est as f64) * 100.0,
             outer_rate,
-            eta_outer / 3600, (eta_outer % 3600) / 60, eta_outer % 60,
+            eta_outer / 3600,
+            (eta_outer % 3600) / 60,
+            eta_outer % 60,
             elapsed_outer / 3600.0,
         );
 
@@ -1555,10 +1657,14 @@ pub fn build_from_2rocks(
         for (_key, value) in &entries {
             let mut pos = 0;
             while pos < value.len() {
-                if pos + 1 > value.len() { break; }
+                if pos + 1 > value.len() {
+                    break;
+                }
                 let len = value[pos] as usize;
                 pos += 1;
-                if pos + len > value.len() { break; }
+                if pos + len > value.len() {
+                    break;
+                }
                 c1_circuits.push(CircuitSeq::from_blob(&value[pos..pos + len]));
                 pos += len;
             }
@@ -1577,26 +1683,38 @@ pub fn build_from_2rocks(
             .map(|c1| {
                 let n1 = touched_wires(&c1).len();
                 let c1_rev = {
-                    let mut r = CircuitSeq { gates: c1.gates.iter().rev().cloned().collect() };
+                    let mut r = CircuitSeq {
+                        gates: c1.gates.iter().rev().cloned().collect(),
+                    };
                     r.canonicalize();
                     let used = r.used_wires();
-                    let wire_map: HashMap<u16, u16> = used.iter().enumerate()
+                    let wire_map: HashMap<u16, u16> = used
+                        .iter()
+                        .enumerate()
                         .map(|(i, &w)| (w, i as u16))
                         .collect();
                     r = CircuitSeq {
-                        gates: r.gates.iter().map(|&[t, c1, c2]| [
-                            wire_map[&t], wire_map[&c1], wire_map[&c2],
-                        ]).collect(),
+                        gates: r
+                            .gates
+                            .iter()
+                            .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+                            .collect(),
                     };
                     r.canonicalize();
                     let n1r = r.max_wire() as usize + 1;
-                    let canon = canonicalize_polys_4(r.to_polynomial(n1r, 0, r.gates.len()), true).unwrap();
+                    let canon =
+                        canonicalize_polys_4(r.to_polynomial(n1r, 0, r.gates.len()), true).unwrap();
                     r.rewire(&canon.1.invert(), n1r);
                     r.canonicalize();
                     r
                 };
                 let n1_rev = touched_wires(&c1_rev).len();
-                C1Data { c1, n1, c1_rev, n1_rev }
+                C1Data {
+                    c1,
+                    n1,
+                    c1_rev,
+                    n1_rev,
+                }
             })
             .collect();
         println!("c1_data precomputed: {} circuits", c1_data.len());
@@ -1605,11 +1723,11 @@ pub fn build_from_2rocks(
         // We avoid collecting into WorkItem structs and instead process directly
         // using a two-level par_iter: outer over c1, inner over (c2, mapping, case).
         // This gives maximum parallelism while keeping allocations minimal.
-        let db2_ref   = &*db2_circuits;
-        let db2_rev_ref  = &*db2_rev;
-        let db2_n2_ref   = &*db2_n2;
+        let db2_ref = &*db2_circuits;
+        let db2_rev_ref = &*db2_rev;
+        let db2_n2_ref = &*db2_n2;
         let db2_rev_n2_ref = &*db2_rev_n2;
-        let stop_flag_par  = Arc::clone(&stop_flag);
+        let stop_flag_par = Arc::clone(&stop_flag);
         let tx_par = tx.clone();
         let total_gates_tried_par = Arc::clone(&total_gates_tried);
         let total_results_par = Arc::clone(&total_results_generated);
@@ -1618,8 +1736,13 @@ pub fn build_from_2rocks(
         let total_c1 = c1_data.len();
         let c1_done = std::sync::atomic::AtomicUsize::new(0);
         let chunk_total = std::sync::atomic::AtomicUsize::new(0);
-        println!("[chunk {}] processing {} c1 circuits × {} c2 = {} pairs this chunk",
-            chunk_idx, total_c1, nc2, total_c1 * nc2);
+        println!(
+            "[chunk {}] processing {} c1 circuits × {} c2 = {} pairs this chunk",
+            chunk_idx,
+            total_c1,
+            nc2,
+            total_c1 * nc2
+        );
 
         c1_data.par_iter().for_each(|d| {
                 if stop_flag_par.load(Ordering::SeqCst) {
@@ -1769,12 +1892,16 @@ pub fn build_from_2rocks(
         let elapsed = build_start.elapsed().as_secs_f64();
         println!(
             "[chunk {}] done | c1_total_processed={} | chunk_results={} | total_results={} | elapsed={:.1}h",
-            chunk_idx, total_c1_processed, chunk_results,
+            chunk_idx,
+            total_c1_processed,
+            chunk_results,
             total_results_generated.load(Ordering::Relaxed),
             elapsed / 3600.0,
         );
 
-        if stop_flag.load(Ordering::SeqCst) { break; }
+        if stop_flag.load(Ordering::SeqCst) {
+            break;
+        }
     }
 
     drop(tx);
@@ -1792,8 +1919,8 @@ pub fn build_from_2rocks(
 }
 
 pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use std::collections::BinaryHeap;
     use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
 
     // Open all existing source DBs read-only
     let mut dbs: Vec<DB> = Vec::new();
@@ -1804,8 +1931,10 @@ pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Er
         read_opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(16));
         match DB::open_for_read_only(&read_opts, &path, false) {
             Ok(db) => {
-                let est = db.property_value("rocksdb.estimate-num-keys")
-                    .ok().flatten()
+                let est = db
+                    .property_value("rocksdb.estimate-num-keys")
+                    .ok()
+                    .flatten()
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(0);
                 println!("Opened {} (~{} keys)", path, est);
@@ -1918,7 +2047,11 @@ pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Er
             let rate = unique_written as f64 / elapsed;
             println!(
                 "[combine] sst={} | keys={} | {:.0} keys/s | elapsed={:.0}s ({:.1}h)",
-                sst_index, unique_written, rate, elapsed, elapsed / 3600.0
+                sst_index,
+                unique_written,
+                rate,
+                elapsed,
+                elapsed / 3600.0
             );
         }
     }
@@ -1948,16 +2081,17 @@ pub fn combine_rocks_dbs(output_path: &str) -> Result<(), Box<dyn std::error::Er
     let elapsed = start.elapsed().as_secs_f64();
     println!(
         "Done. {} unique keys written to {} in {:.0}s ({:.1}h) via {} SST files",
-        unique_written, output_path, elapsed, elapsed / 3600.0, sst_index
+        unique_written,
+        output_path,
+        elapsed,
+        elapsed / 3600.0,
+        sst_index
     );
     Ok(())
 }
 
-pub fn rocks_to_lmdb(
-    rocks_path: &str,
-    lmdb_path: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use lmdb::{Environment, EnvironmentFlags, DatabaseFlags, WriteFlags, Transaction};
+pub fn rocks_to_lmdb(rocks_path: &str, lmdb_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use lmdb::{DatabaseFlags, Environment, EnvironmentFlags, Transaction, WriteFlags};
 
     std::fs::create_dir_all(lmdb_path)?;
 
@@ -1967,9 +2101,7 @@ pub fn rocks_to_lmdb(
     // curated_XX shards added to the same environment later.
     let env = Environment::new()
         .set_flags(
-            EnvironmentFlags::WRITE_MAP
-                | EnvironmentFlags::MAP_ASYNC
-                | EnvironmentFlags::NO_SYNC,
+            EnvironmentFlags::WRITE_MAP | EnvironmentFlags::MAP_ASYNC | EnvironmentFlags::NO_SYNC,
         )
         .set_map_size(6 * 1024 * 1024 * 1024 * 1024)
         .set_max_dbs(600)
@@ -1990,8 +2122,8 @@ pub fn rocks_to_lmdb(
     let reader = std::thread::spawn(move || -> Result<(), String> {
         let mut ropts = Options::default();
         ropts.set_merge_operator_associative("append_merge", append_merge);
-        let rocks = DB::open_for_read_only(&ropts, &rocks_path_owned, false)
-            .map_err(|e| e.to_string())?;
+        let rocks =
+            DB::open_for_read_only(&ropts, &rocks_path_owned, false).map_err(|e| e.to_string())?;
         let mut read_opts = rocksdb::ReadOptions::default();
         read_opts.set_readahead_size(16 * 1024 * 1024);
         read_opts.set_verify_checksums(false);
@@ -2021,7 +2153,12 @@ pub fn rocks_to_lmdb(
     for batch in rx {
         for (key, value) in &batch {
             let shard = key[0] as usize;
-            txn.put(dbs[shard], &key.as_ref(), &value.as_ref(), WriteFlags::APPEND)?;
+            txn.put(
+                dbs[shard],
+                &key.as_ref(),
+                &value.as_ref(),
+                WriteFlags::APPEND,
+            )?;
         }
         count += batch.len() as u64;
         since_commit += batch.len() as u64;
@@ -2046,7 +2183,10 @@ pub fn rocks_to_lmdb(
     let el = start.elapsed().as_secs_f64();
     println!(
         "Done. {} entries written to {} in {:.0}s ({:.1}h)",
-        count, lmdb_path, el, el / 3600.0
+        count,
+        lmdb_path,
+        el,
+        el / 3600.0
     );
     Ok(())
 }

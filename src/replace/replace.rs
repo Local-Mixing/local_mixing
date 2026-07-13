@@ -63,7 +63,10 @@ pub fn print_attempt_stats() {
         let attempts = ATTEMPT_HISTOGRAM.get(&k).map_or(0, |v| *v);
         let hits = ATTEMPT_HIT_HISTOGRAM.get(&k).map_or(0, |v| *v);
         let shorter = ATTEMPT_SHORTER_HISTOGRAM.get(&k).map_or(0, |v| *v);
-        println!("attempt_stats_csv {},{},{},{},{}", k.0, k.1, attempts, hits, shorter);
+        println!(
+            "attempt_stats_csv {},{},{},{},{}",
+            k.0, k.1, attempts, hits, shorter
+        );
     }
 }
 
@@ -1020,7 +1023,12 @@ pub fn compress_loop(
                     if window_reduction < threshold {
                         println!(
                             "  {}/{}: Early stop — only {} gates reduced over last {} iterations ({} gates, threshold {})",
-                            curr_round, last_round, window_reduction, stall_window, after, threshold
+                            curr_round,
+                            last_round,
+                            window_reduction,
+                            stall_window,
+                            after,
+                            threshold
                         );
                         break;
                     }
@@ -1800,7 +1808,11 @@ pub fn compress_lmdb(
             incoming_mode,
             IncomingRankMode::Fanout | IncomingRankMode::Hybrid
         ) {
-            fanout_pick_index(&mapped, &compressed.gates[..start], &compressed.gates[end..])
+            fanout_pick_index(
+                &mapped,
+                &compressed.gates[..start],
+                &compressed.gates[end..],
+            )
         } else {
             rng.random_range(0..mapped.len())
         };
@@ -2245,8 +2257,7 @@ pub fn print_compress_timers() {
             100.0 * cache_hits as f64 / cache_queries as f64
         );
     }
-    let canon_queries =
-        crate::circuit::circuit::CANON_CACHE_QUERIES.load(Ordering::Relaxed);
+    let canon_queries = crate::circuit::circuit::CANON_CACHE_QUERIES.load(Ordering::Relaxed);
     if canon_queries > 0 {
         let canon_hits = crate::circuit::circuit::CANON_CACHE_HITS.load(Ordering::Relaxed);
         println!(
@@ -2355,13 +2366,15 @@ mod tests {
         };
         let used = vec![7u16, 3, 5];
         let mut rng = rand::rng();
-        let mapped =
-            candidate_to_circuit_space(candidate(), false, &order, &used, 10, &mut rng);
+        let mapped = candidate_to_circuit_space(candidate(), false, &order, &used, 10, &mut rng);
 
         assert_eq!(mapped.gates.len(), 3, "mapping must not add or drop gates");
         for gate in &mapped.gates {
             for &wire in gate {
-                assert!(wire < 10, "mapped wires must stay within the circuit budget");
+                assert!(
+                    wire < 10,
+                    "mapped wires must stay within the circuit budget"
+                );
             }
         }
     }
@@ -2375,8 +2388,7 @@ mod tests {
         };
         let used = vec![7u16, 3, 5];
         let mut rng = rand::rng();
-        let forward =
-            candidate_to_circuit_space(candidate(), false, &order, &used, 10, &mut rng);
+        let forward = candidate_to_circuit_space(candidate(), false, &order, &used, 10, &mut rng);
         let mut reversed =
             candidate_to_circuit_space(candidate(), true, &order, &used, 10, &mut rng);
         reversed.gates.reverse();
@@ -2393,8 +2405,7 @@ mod tests {
         };
         let used = vec![7u16, 3, 5];
         let mut rng = rand::rng();
-        let mapped =
-            candidate_to_circuit_space(candidate(), false, &order, &used, 10, &mut rng);
+        let mapped = candidate_to_circuit_space(candidate(), false, &order, &used, 10, &mut rng);
 
         let before = cand_features(&candidate().gates, &[], &[]);
         let after = cand_features(&mapped.gates, &[], &[]);

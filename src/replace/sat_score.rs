@@ -231,10 +231,7 @@ pub fn sat_slice_prop_enabled() -> bool {
 fn sat_slice_fixed_range() -> Option<(usize, usize)> {
     static RANGE: OnceLock<Option<(usize, usize)>> = OnceLock::new();
     *RANGE.get_or_init(|| {
-        let start = std::env::var("SAT_SLICE_FIXED_START")
-            .ok()?
-            .parse()
-            .ok()?;
+        let start = std::env::var("SAT_SLICE_FIXED_START").ok()?.parse().ok()?;
         let bits = std::env::var("SAT_SLICE_FIXED_BITS").ok()?.parse().ok()?;
         Some((start, bits))
     })
@@ -1103,10 +1100,8 @@ mod tests {
     fn slice_prop_resistance_is_deterministic() {
         let gates = [[0, 1, 2], [3, 0, 4], [5, 3, 6], [7, 5, 0], [2, 7, 1]];
         let outputs = [0usize, 2, 3, 5, 7];
-        let a =
-            super::slice_prop_resistance_with(&gates, 8, &outputs, 42, 8, 2.0 / 3.0, None, 3);
-        let b =
-            super::slice_prop_resistance_with(&gates, 8, &outputs, 42, 8, 2.0 / 3.0, None, 3);
+        let a = super::slice_prop_resistance_with(&gates, 8, &outputs, 42, 8, 2.0 / 3.0, None, 3);
+        let b = super::slice_prop_resistance_with(&gates, 8, &outputs, 42, 8, 2.0 / 3.0, None, 3);
 
         assert_eq!(a, b);
         assert!((0.0..=1.0).contains(&a));

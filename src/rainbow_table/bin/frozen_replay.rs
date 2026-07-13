@@ -27,12 +27,21 @@ struct BitReader<'a> {
 }
 impl<'a> BitReader<'a> {
     fn new(buf: &'a [u8]) -> Self {
-        BitReader { buf, pos: 0, acc: 0, nbits: 0 }
+        BitReader {
+            buf,
+            pos: 0,
+            acc: 0,
+            nbits: 0,
+        }
     }
     #[inline]
     fn get(&mut self, bits: u32) -> u64 {
         while self.nbits < bits {
-            let b = if self.pos < self.buf.len() { self.buf[self.pos] } else { 0 };
+            let b = if self.pos < self.buf.len() {
+                self.buf[self.pos]
+            } else {
+                0
+            };
             self.acc |= (b as u64) << self.nbits;
             self.pos += 1;
             self.nbits += 8;
@@ -198,7 +207,11 @@ fn decode_value(t: &Tables, r: &mut BitReader, out: &mut Vec<u8>) {
 fn split_key(k: &[u8]) -> (usize, u32, u64) {
     let hi = u64::from_be_bytes(k[0..8].try_into().unwrap());
     let lo = u64::from_be_bytes(k[8..16].try_into().unwrap());
-    ((hi >> 56) as usize, ((hi >> 36) & 0xF_FFFF) as u32, ((hi & 0xF_FFFF_FFFF) << 12) | (lo >> 52))
+    (
+        (hi >> 56) as usize,
+        ((hi >> 36) & 0xF_FFFF) as u32,
+        ((hi & 0xF_FFFF_FFFF) << 12) | (lo >> 52),
+    )
 }
 
 // ------------------------------------------------------------ reader
@@ -228,7 +241,11 @@ impl Frozen {
                     b[0..5].copy_from_slice(&head[24 + i * 5..24 + i * 5 + 5]);
                     offs.push(u64::from_le_bytes(b));
                 }
-                FrozenShard { file, offs, data_base: head_len as u64 }
+                FrozenShard {
+                    file,
+                    offs,
+                    data_base: head_len as u64,
+                }
             })
             .collect();
         Frozen { shards, tables }
@@ -298,7 +315,9 @@ fn pct(mut v: Vec<u64>) -> (u64, u64, u64, u64) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let fdir = args.get(1).expect("usage: frozen_replay <frozen> <lmdb> <rocks> [n]");
+    let fdir = args
+        .get(1)
+        .expect("usage: frozen_replay <frozen> <lmdb> <rocks> [n]");
     let ldir = &args[2];
     let rdir = &args[3];
     let n: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(20_000);
@@ -306,7 +325,10 @@ fn main() {
     println!("opening frozen...");
     let t0 = Instant::now();
     let frozen = Frozen::open(fdir);
-    println!("frozen open in {:.1}s (offset tables in RAM)", t0.elapsed().as_secs_f64());
+    println!(
+        "frozen open in {:.1}s (offset tables in RAM)",
+        t0.elapsed().as_secs_f64()
+    );
 
     let env = lmdb::Environment::new()
         .set_flags(lmdb::EnvironmentFlags::READ_ONLY)
@@ -364,7 +386,10 @@ fn main() {
             fp += 1;
         }
     }
-    println!("frozen correctness: {} wrong hits, {} false positives (of {} each)", wrong, fp, n);
+    println!(
+        "frozen correctness: {} wrong hits, {} false positives (of {} each)",
+        wrong, fp, n
+    );
 
     // ---- latency: lmdb same keys ----
     let txn = env.begin_ro_txn().unwrap();
@@ -429,5 +454,12 @@ fn main() {
         el,
         counter.load(Ordering::Relaxed) as f64 / el
     );
-    println!("REPLAY DONE {}", if wrong == 0 && fp == 0 && l_wrong == 0 { "PASS" } else { "FAIL" });
+    println!(
+        "REPLAY DONE {}",
+        if wrong == 0 && fp == 0 && l_wrong == 0 {
+            "PASS"
+        } else {
+            "FAIL"
+        }
+    );
 }

@@ -29,12 +29,21 @@ struct BitReader<'a> {
 }
 impl<'a> BitReader<'a> {
     fn new(buf: &'a [u8]) -> Self {
-        BitReader { buf, pos: 0, acc: 0, nbits: 0 }
+        BitReader {
+            buf,
+            pos: 0,
+            acc: 0,
+            nbits: 0,
+        }
     }
     #[inline]
     fn get(&mut self, bits: u32) -> u64 {
         while self.nbits < bits {
-            let b = if self.pos < self.buf.len() { self.buf[self.pos] } else { 0 };
+            let b = if self.pos < self.buf.len() {
+                self.buf[self.pos]
+            } else {
+                0
+            };
             self.acc |= (b as u64) << self.nbits;
             self.pos += 1;
             self.nbits += 8;
@@ -199,7 +208,11 @@ fn decode_value(t: &Tables, r: &mut BitReader, out: &mut Vec<u8>) {
 fn split_key(k: &[u8]) -> (usize, u32, u64) {
     let hi = u64::from_be_bytes(k[0..8].try_into().unwrap());
     let lo = u64::from_be_bytes(k[8..16].try_into().unwrap());
-    ((hi >> 56) as usize, ((hi >> 36) & 0xF_FFFF) as u32, ((hi & 0xF_FFFF_FFFF) << 12) | (lo >> 52))
+    (
+        (hi >> 56) as usize,
+        ((hi >> 36) & 0xF_FFFF) as u32,
+        ((hi & 0xF_FFFF_FFFF) << 12) | (lo >> 52),
+    )
 }
 #[inline]
 fn splitmix64(mut x: u64) -> u64 {
@@ -240,7 +253,11 @@ impl Frozen {
                     b[0..5].copy_from_slice(&head[24 + i * 5..24 + i * 5 + 5]);
                     offs.push(u64::from_le_bytes(b));
                 }
-                FrozenShard { file, offs, data_base: head_len as u64 }
+                FrozenShard {
+                    file,
+                    offs,
+                    data_base: head_len as u64,
+                }
             })
             .collect();
         Frozen { shards, tables }
@@ -313,7 +330,8 @@ fn scan_shard_keys(dir: &str, shard: usize) -> Vec<u64> {
             chunk_start = o0;
             chunk_end = (o0 + CHUNK.max(o1 - o0)).min(data_len);
             buf.resize((chunk_end - chunk_start) as usize, 0);
-            file.read_exact_at(&mut buf, head_len + chunk_start).unwrap();
+            file.read_exact_at(&mut buf, head_len + chunk_start)
+                .unwrap();
         }
         let slice = &buf[(o0 - chunk_start) as usize..(o1 - chunk_start) as usize];
         let mut r = BitReader::new(slice);
@@ -348,7 +366,10 @@ fn pct(mut v: Vec<u64>) -> (f64, f64, f64, f64) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let fdir = args.get(1).expect("usage: frozen_pilot <frozen> <probes.bin> [threads]").clone();
+    let fdir = args
+        .get(1)
+        .expect("usage: frozen_pilot <frozen> <probes.bin> [threads]")
+        .clone();
     let probes_path = args[2].clone();
     let nthreads: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(64);
 
@@ -373,11 +394,18 @@ fn main() {
         rng.fill_bytes(&mut k);
         misses.push(k);
     }
-    println!("probes loaded: {} hits, {} misses", hits.len(), misses.len());
+    println!(
+        "probes loaded: {} hits, {} misses",
+        hits.len(),
+        misses.len()
+    );
 
     let t0 = Instant::now();
     let frozen = Frozen::open(&fdir);
-    println!("[open] {:.1}s (offset tables -> RAM)", t0.elapsed().as_secs_f64());
+    println!(
+        "[open] {:.1}s (offset tables -> RAM)",
+        t0.elapsed().as_secs_f64()
+    );
 
     // cold latency (run this binary right after dropping caches)
     let mut wrong = 0u64;
@@ -401,9 +429,13 @@ fn main() {
         m_ns.push(t.elapsed().as_nanos() as u64);
     }
     let (p50, p90, p99, mean) = pct(h_ns);
-    println!("[hit  latency] p50={p50:.1}us p90={p90:.1}us p99={p99:.1}us mean={mean:.1}us wrong={wrong}");
+    println!(
+        "[hit  latency] p50={p50:.1}us p90={p90:.1}us p99={p99:.1}us mean={mean:.1}us wrong={wrong}"
+    );
     let (p50, p90, p99, mean) = pct(m_ns);
-    println!("[miss latency] p50={p50:.1}us p90={p90:.1}us p99={p99:.1}us mean={mean:.1}us false_pos={fp0}");
+    println!(
+        "[miss latency] p50={p50:.1}us p90={p90:.1}us p99={p99:.1}us mean={mean:.1}us false_pos={fp0}"
+    );
 
     // filter build (fleet-like timing), batches bound RAM
     println!("[filter] building 256 BinaryFuse8 (batches of 32)...");
@@ -463,7 +495,11 @@ fn main() {
     );
 
     // mixed throughput with filter (production shape: ~41% hit)
-    let probes: Vec<[u8; 16]> = hits.iter().map(|(k, _)| *k).chain(misses.iter().copied()).collect();
+    let probes: Vec<[u8; 16]> = hits
+        .iter()
+        .map(|(k, _)| *k)
+        .chain(misses.iter().copied())
+        .collect();
     let counter = AtomicU64::new(0);
     let tt = Instant::now();
     (0..nthreads).into_par_iter().for_each(|ti| {
@@ -487,5 +523,12 @@ fn main() {
         counter.load(Ordering::Relaxed) as f64 / el,
         nthreads
     );
-    println!("PILOT DONE {}", if wrong == 0 && ffn == 0 { "PASS" } else { "FAIL" });
+    println!(
+        "PILOT DONE {}",
+        if wrong == 0 && ffn == 0 {
+            "PASS"
+        } else {
+            "FAIL"
+        }
+    );
 }

@@ -12,8 +12,8 @@
 //   BENCH_WINDOWS_RELABEL  (default 10)    relabel-invariance check every Nth window
 
 use local_mixing::circuit::circuit::{
-    CANON4_CORE_TIME, CANON4_RULE_L_BRANCHES, CANON4_RULE_L_CALLS, CANON4_RULE_L_TIME,
-    CANON_CACHE_HITS, CANON_CACHE_QUERIES, CircuitSeq, Permutation, Polynomial,
+    CANON_CACHE_HITS, CANON_CACHE_QUERIES, CANON4_CORE_TIME, CANON4_RULE_L_BRANCHES,
+    CANON4_RULE_L_CALLS, CANON4_RULE_L_TIME, CircuitSeq, Permutation, Polynomial,
     polynomial_from_terms, polys_repr_blob, trim_canonicalized,
 };
 use local_mixing::random::random_data::random_circuit;
@@ -109,7 +109,9 @@ fn relabel_invariant(sub: &CircuitSeq, rng: &mut fastrand::Rng) -> bool {
 
 fn parallel_gates(k: usize) -> CircuitSeq {
     CircuitSeq {
-        gates: (0..k as u16).map(|i| [3 * i, 3 * i + 1, 3 * i + 2]).collect(),
+        gates: (0..k as u16)
+            .map(|i| [3 * i, 3 * i + 1, 3 * i + 2])
+            .collect(),
     }
 }
 

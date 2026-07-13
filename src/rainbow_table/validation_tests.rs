@@ -354,7 +354,10 @@ fn fresh_wire_dedup_kv_sets_match() {
     println!(
         "Validating {} jobs across buckets: {:?}",
         jobs.len(),
-        buckets.iter().map(|(u, b)| (*u, b.len())).collect::<Vec<_>>()
+        buckets
+            .iter()
+            .map(|(u, b)| (*u, b.len()))
+            .collect::<Vec<_>>()
     );
 
     let results: Vec<bool> = jobs
@@ -365,7 +368,10 @@ fn fresh_wire_dedup_kv_sets_match() {
     let passed = results.iter().filter(|&&p| p).count();
     let failed = results.len() - passed;
     println!("=== {} passed, {} failed ===", passed, failed);
-    assert_eq!(failed, 0, "fresh-wire dedup produced divergent (key,value) sets");
+    assert_eq!(
+        failed, 0,
+        "fresh-wire dedup produced divergent (key,value) sets"
+    );
 }
 
 // ======================================================= 2rocks cap validation

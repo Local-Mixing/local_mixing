@@ -11,14 +11,14 @@
 //                            to keys with that 2-byte prefix, for A/B validation.
 
 use rocksdb::{
-    BlockBasedOptions, DBCompressionType, Direction, IngestExternalFileOptions, IteratorMode,
-    MergeOperands, Options, ReadOptions, SstFileWriter, DB,
+    BlockBasedOptions, DB, DBCompressionType, Direction, IngestExternalFileOptions, IteratorMode,
+    MergeOperands, Options, ReadOptions, SstFileWriter,
 };
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 use std::env;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 
@@ -235,7 +235,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1_000_000);
-    let test_prefix = env::var("MERGE_TEST_PREFIX").ok().and_then(|s| parse_hex2(&s));
+    let test_prefix = env::var("MERGE_TEST_PREFIX")
+        .ok()
+        .and_then(|s| parse_hex2(&s));
 
     println!(
         "merge_rocks_parallel output={output_path} sources={source_paths:?} threads={threads} keys_per_sst={keys_per_sst} test_prefix={test_prefix:?}"
@@ -286,7 +288,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|p| {
                 let b0 = p as u8;
                 let lower = key16(&[b0]);
-                let upper = if b0 == 0xff { None } else { Some(key16(&[b0 + 1])) };
+                let upper = if b0 == 0xff {
+                    None
+                } else {
+                    Some(key16(&[b0 + 1]))
+                };
                 (lower, upper)
             })
             .collect()
@@ -295,28 +301,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let failed = AtomicUsize::new(0);
     pool.install(|| {
-        partitions
-            .into_par_iter()
-            .for_each(|(lower, upper)| {
-                match merge_range(&sources, &output, lower, upper, keys_per_sst, &sst_counter) {
-                    Ok(k) => {
-                        total_keys.fetch_add(k, Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        eprintln!("partition merge failed: {e}");
-                        failed.fetch_add(1, Ordering::Relaxed);
-                    }
+        partitions.into_par_iter().for_each(|(lower, upper)| {
+            match merge_range(&sources, &output, lower, upper, keys_per_sst, &sst_counter) {
+                Ok(k) => {
+                    total_keys.fetch_add(k, Ordering::Relaxed);
                 }
-                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-                let elapsed = start.elapsed().as_secs_f64();
-                let keys = total_keys.load(Ordering::Relaxed);
-                let rate = keys as f64 / elapsed.max(1e-9);
-                println!(
-                    "[merge_par] partitions {}/{} keys={} rate={:.0}/s elapsed={:.0}s ({:.2}h) ssts={}",
-                    d, nparts, keys, rate, elapsed, elapsed / 3600.0,
-                    sst_counter.load(Ordering::Relaxed)
-                );
-            });
+                Err(e) => {
+                    eprintln!("partition merge failed: {e}");
+                    failed.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+            let elapsed = start.elapsed().as_secs_f64();
+            let keys = total_keys.load(Ordering::Relaxed);
+            let rate = keys as f64 / elapsed.max(1e-9);
+            println!(
+                "[merge_par] partitions {}/{} keys={} rate={:.0}/s elapsed={:.0}s ({:.2}h) ssts={}",
+                d,
+                nparts,
+                keys,
+                rate,
+                elapsed,
+                elapsed / 3600.0,
+                sst_counter.load(Ordering::Relaxed)
+            );
+        });
     });
 
     let nfailed = failed.load(Ordering::Relaxed);

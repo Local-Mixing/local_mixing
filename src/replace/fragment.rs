@@ -44,7 +44,11 @@ impl CubeGate {
     pub fn new(target: u16, mut lits: Vec<(u16, bool)>) -> Self {
         lits.sort_by_key(|&(w, _)| w);
         for pair in lits.windows(2) {
-            assert_ne!(pair[0].0, pair[1].0, "cube constrains wire {} twice", pair[0].0);
+            assert_ne!(
+                pair[0].0, pair[1].0,
+                "cube constrains wire {} twice",
+                pair[0].0
+            );
         }
         assert!(
             !lits.iter().any(|&(w, _)| w == target),
@@ -216,10 +220,7 @@ pub fn expand_g57_circuit(gates: &[[u16; 3]]) -> Vec<CubeGate> {
 /// Total transposition mass Phi = sum over gates of `2^(n-k-1)`. Conserved by split/merge,
 /// raised only by cross corrections, lowered only by recombination.
 pub fn phi(frags: &[CubeGate], n: usize) -> f64 {
-    frags
-        .iter()
-        .map(|g| 2f64.powi(g.mass_exp(n) as i32))
-        .sum()
+    frags.iter().map(|g| 2f64.powi(g.mass_exp(n) as i32)).sum()
 }
 
 /// Apply a fragment list to a state.
@@ -233,7 +234,8 @@ pub fn apply_frags(frags: &[CubeGate], mut state: u64) -> u64 {
 /// Brute-force check that a fragment list computes the same permutation as a g57 circuit,
 /// over all 2^n inputs. Only for small n (verification).
 pub fn frags_match_g57(frags: &[CubeGate], gates: &[[u16; 3]], n: usize) -> bool {
-    (0..(1u64 << n)).all(|s| apply_frags(frags, s) as usize == Gate::evaluate_index_list(s as usize, gates))
+    (0..(1u64 << n))
+        .all(|s| apply_frags(frags, s) as usize == Gate::evaluate_index_list(s as usize, gates))
 }
 
 /// Brute-force check that two fragment lists compute the same permutation, over all 2^n inputs.
@@ -325,7 +327,10 @@ fn try_combine(g: &CubeGate, h: &CubeGate) -> Option<Combine> {
         }
     }
     let w = differ_wire?;
-    Some(Combine::Merged(CubeGate::new(g.target, without(&g.lits, w))))
+    Some(Combine::Merged(CubeGate::new(
+        g.target,
+        without(&g.lits, w),
+    )))
 }
 
 /// Local exact recombination: the "surface tension" that pulls fragment mass back down.
@@ -618,8 +623,9 @@ pub fn reassemble_g57(frags: Vec<CubeGate>, _n: usize) -> Result<Vec<[u16; 3]>, 
 
 /// Exact equality of two g57 circuits over all 2^n inputs (small n only).
 fn g57_circuits_equal(a: &[[u16; 3]], b: &[[u16; 3]], n: usize) -> bool {
-    (0..(1u64 << n))
-        .all(|s| Gate::evaluate_index_list(s as usize, a) == Gate::evaluate_index_list(s as usize, b))
+    (0..(1u64 << n)).all(|s| {
+        Gate::evaluate_index_list(s as usize, a) == Gate::evaluate_index_list(s as usize, b)
+    })
 }
 
 /// Report from `shoot_and_reassemble`.
@@ -1036,7 +1042,11 @@ mod tests {
         assert_eq!(repl.len(), 3, "expected a correction");
         let corr = &repl[2];
         assert_eq!(corr.target, 1);
-        assert_eq!(corr.arity(), 2, "correction arity should be |C_K|+|C_M|-1 = 2");
+        assert_eq!(
+            corr.arity(),
+            2,
+            "correction arity should be |C_K|+|C_M|-1 = 2"
+        );
     }
 
     #[test]
@@ -1193,14 +1203,22 @@ mod tests {
             ("structured", &structured, n_struct),
         ] {
             let (im, ia, ip) = leeway_triple(&circ.gates);
-            eprintln!("\n===== {label}  (n={wires}, {} g57 gates) =====", circ.gates.len());
+            eprintln!(
+                "\n===== {label}  (n={wires}, {} g57 gates) =====",
+                circ.gates.len()
+            );
             eprintln!(
                 "{:<22} {:>7} {:>8} {:>7} {:>8} {:>8}",
                 "variant", "lee.med", "lee.avg", "lee.p99", "gates", "notes"
             );
             eprintln!(
                 "{:<22} {:>7} {:>8.2} {:>7} {:>8} {:>8}",
-                "input", im, ia, ip, circ.gates.len(), ""
+                "input",
+                im,
+                ia,
+                ip,
+                circ.gates.len(),
+                ""
             );
 
             // g57-level dispersal baseline.
@@ -1275,12 +1293,24 @@ mod tests {
                     sa / seeds as f64,
                     sp / seeds as usize,
                     circ.gates.len(),
-                    format!("{}/{} distinct, {}/{} clean", sset.len(), seeds, clean, seeds)
+                    format!(
+                        "{}/{} distinct, {}/{} clean",
+                        sset.len(),
+                        seeds,
+                        clean,
+                        seeds
+                    )
                 );
             };
-            run("shoot commute (walk)", &|s| shoot_and_reassemble(circ, wires, 6000, s, false, 4));
-            run("collision_shoot", &|s| collision_shoot(circ, wires, 2000, s, false, 3));
-            run("collision_shoot+corr", &|s| collision_shoot(circ, wires, 2000, s, true, 3));
+            run("shoot commute (walk)", &|s| {
+                shoot_and_reassemble(circ, wires, 6000, s, false, 4)
+            });
+            run("collision_shoot", &|s| {
+                collision_shoot(circ, wires, 2000, s, false, 3)
+            });
+            run("collision_shoot+corr", &|s| {
+                collision_shoot(circ, wires, 2000, s, true, 3)
+            });
         }
     }
 

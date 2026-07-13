@@ -119,5 +119,8 @@ fn main() {
     }
 
     println!("digest: {:032x}", hasher.digest128());
-    println!("count: {count} total_elapsed_ms: {}", t0.elapsed().as_millis());
+    println!(
+        "count: {count} total_elapsed_ms: {}",
+        t0.elapsed().as_millis()
+    );
 }

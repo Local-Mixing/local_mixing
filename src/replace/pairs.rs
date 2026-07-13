@@ -90,8 +90,12 @@ fn curated_then_shard_lookup(
 
     // Curated DBs are probed forward-only, matching the original behaviour.
     if !curated_shard_dbs.is_empty() {
-        if let Some(v) = cached_db_get(txn, curated_shard_dbs[fwd_shard], LOOKUP_NS_CURATED, &fwd_key)
-        {
+        if let Some(v) = cached_db_get(
+            txn,
+            curated_shard_dbs[fwd_shard],
+            LOOKUP_NS_CURATED,
+            &fwd_key,
+        ) {
             return Some((v, fwd_order, false));
         }
     }
@@ -110,8 +114,13 @@ fn curated_then_shard_lookup(
                 return None;
             }
             let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
-            cached_db_get(txn, shard_dbs[rev_key[0] as usize], LOOKUP_NS_SHARD, &rev_key)
-                .map(|v| (v, rev_order, true))
+            cached_db_get(
+                txn,
+                shard_dbs[rev_key[0] as usize],
+                LOOKUP_NS_SHARD,
+                &rev_key,
+            )
+            .map(|v| (v, rev_order, true))
         }
         mode => {
             let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
@@ -126,17 +135,23 @@ fn curated_then_shard_lookup(
                     (fwd_polys, fwd_order, false, rev_polys, rev_order, true)
                 };
             let min_key = xxh3_128(&polys_repr_blob(&min_polys)).to_le_bytes();
-            if let Some(v) =
-                cached_db_get(txn, shard_dbs[min_key[0] as usize], LOOKUP_NS_SHARD, &min_key)
-            {
+            if let Some(v) = cached_db_get(
+                txn,
+                shard_dbs[min_key[0] as usize],
+                LOOKUP_NS_SHARD,
+                &min_key,
+            ) {
                 return Some((v, min_order, min_reversed));
             }
             if mode == MinDirLookup::Validate {
                 MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
                 let alt_key = xxh3_128(&polys_repr_blob(&alt_polys)).to_le_bytes();
-                if let Some(v) =
-                    cached_db_get(txn, shard_dbs[alt_key[0] as usize], LOOKUP_NS_SHARD, &alt_key)
-                {
+                if let Some(v) = cached_db_get(
+                    txn,
+                    shard_dbs[alt_key[0] as usize],
+                    LOOKUP_NS_SHARD,
+                    &alt_key,
+                ) {
                     MIN_DIR_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
                     eprintln!(
                         "[min-dir-violation] pairs: non-min canonical key present while min key absent (gates={})",

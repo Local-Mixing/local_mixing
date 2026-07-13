@@ -34,7 +34,11 @@ struct BitWriter {
 }
 impl BitWriter {
     fn new() -> Self {
-        BitWriter { buf: Vec::new(), acc: 0, nbits: 0 }
+        BitWriter {
+            buf: Vec::new(),
+            acc: 0,
+            nbits: 0,
+        }
     }
     #[inline]
     fn put(&mut self, val: u64, bits: u32) {
@@ -62,12 +66,21 @@ struct BitReader<'a> {
 }
 impl<'a> BitReader<'a> {
     fn new(buf: &'a [u8]) -> Self {
-        BitReader { buf, pos: 0, acc: 0, nbits: 0 }
+        BitReader {
+            buf,
+            pos: 0,
+            acc: 0,
+            nbits: 0,
+        }
     }
     #[inline]
     fn get(&mut self, bits: u32) -> u64 {
         while self.nbits < bits {
-            let b = if self.pos < self.buf.len() { self.buf[self.pos] } else { 0 };
+            let b = if self.pos < self.buf.len() {
+                self.buf[self.pos]
+            } else {
+                0
+            };
             self.acc |= (b as u64) << self.nbits;
             self.pos += 1;
             self.nbits += 8;
@@ -88,7 +101,7 @@ impl<'a> BitReader<'a> {
 struct HuffTable {
     enc: HashMap<u32, (u64, u32)>,
     syms: Vec<u32>,
-    first_code: Vec<u64>,  // per length 0..=MAXLEN
+    first_code: Vec<u64>, // per length 0..=MAXLEN
     first_idx: Vec<usize>,
     count: Vec<usize>,
     single: bool,
@@ -331,8 +344,7 @@ fn encode_value(t: &Tables, w_out: &mut BitWriter, v: &[u8]) {
                         }
                         continue;
                     }
-                    let triple =
-                        (gate[0] as u32) << 10 | (gate[1] as u32) << 5 | gate[2] as u32;
+                    let triple = (gate[0] as u32) << 10 | (gate[1] as u32) << 5 | gate[2] as u32;
                     if !tab.encode(w_out, triple) {
                         tab.emit_escape(w_out);
                         w_out.put(0, 1); // narrow
@@ -506,7 +518,10 @@ fn stage_tables(rocks: &str, out_dir: &str, per_range: usize) {
         m.insert(ESC, 1);
         gate_tables.push(build_huffman(m));
     }
-    let tables = Tables { header: build_huffman(&hdr), gates: gate_tables };
+    let tables = Tables {
+        header: build_huffman(&hdr),
+        gates: gate_tables,
+    };
     save_tables(&tables, &format!("{out_dir}/tables.bin"));
     println!(
         "tables built: header_syms={} gate_ctxs={} total_gate_syms={}",
@@ -590,10 +605,17 @@ fn stage_write(rocks: &str, out_dir: &str) {
         total.fetch_add(count, Ordering::Relaxed);
         let d = done.fetch_add(1, Ordering::Relaxed) + 1;
         if d % 16 == 0 || d == 256 {
-            println!("[write] shards {}/256 entries={}", d, total.load(Ordering::Relaxed));
+            println!(
+                "[write] shards {}/256 entries={}",
+                d,
+                total.load(Ordering::Relaxed)
+            );
         }
     });
-    println!("write done: total_entries={}", total.load(Ordering::Relaxed));
+    println!(
+        "write done: total_entries={}",
+        total.load(Ordering::Relaxed)
+    );
 }
 
 fn stage_validate(rocks: &str, out_dir: &str) {
@@ -648,7 +670,8 @@ fn stage_validate(rocks: &str, out_dir: &str) {
                 let o0 = read_off(bucket as usize);
                 let o1 = read_off(bucket as usize + 1);
                 bucket_buf = vec![0u8; (o1 - o0) as usize];
-                file.read_exact_at(&mut bucket_buf, head_len as u64 + o0).unwrap();
+                file.read_exact_at(&mut bucket_buf, head_len as u64 + o0)
+                    .unwrap();
                 // SAFETY: bucket_buf lives until reassigned; reader dropped first.
                 let slice: &'static [u8] =
                     unsafe { std::slice::from_raw_parts(bucket_buf.as_ptr(), bucket_buf.len()) };

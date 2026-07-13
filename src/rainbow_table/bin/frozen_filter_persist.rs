@@ -35,8 +35,12 @@ fn mix76(shard: usize, bucket: u32, tail: u64) -> u64 {
 #[inline]
 fn split_key(k: &[u8]) -> (usize, u32, u64) {
     let hi = u64::from_be_bytes(k[0..8].try_into().unwrap());
-    let lo = u64::from_be_bytes(k[8..15+1].try_into().unwrap());
-    ((hi >> 56) as usize, ((hi >> 36) & 0xF_FFFF) as u32, ((hi & 0xF_FFFF_FFFF) << 12) | (lo >> 52))
+    let lo = u64::from_be_bytes(k[8..15 + 1].try_into().unwrap());
+    (
+        (hi >> 56) as usize,
+        ((hi >> 36) & 0xF_FFFF) as u32,
+        ((hi & 0xF_FFFF_FFFF) << 12) | (lo >> 52),
+    )
 }
 
 struct BitReader<'a> {
@@ -47,12 +51,21 @@ struct BitReader<'a> {
 }
 impl<'a> BitReader<'a> {
     fn new(buf: &'a [u8]) -> Self {
-        BitReader { buf, pos: 0, acc: 0, nbits: 0 }
+        BitReader {
+            buf,
+            pos: 0,
+            acc: 0,
+            nbits: 0,
+        }
     }
     #[inline]
     fn get(&mut self, bits: u32) -> u64 {
         while self.nbits < bits {
-            let b = if self.pos < self.buf.len() { self.buf[self.pos] } else { 0 };
+            let b = if self.pos < self.buf.len() {
+                self.buf[self.pos]
+            } else {
+                0
+            };
             self.acc |= (b as u64) << self.nbits;
             self.pos += 1;
             self.nbits += 8;
@@ -95,7 +108,8 @@ fn scan_shard_keys(dir: &str, shard: usize) -> (Vec<u64>, u64) {
             chunk_start = o0;
             chunk_end = (o0 + CHUNK.max(o1 - o0)).min(data_len);
             buf.resize((chunk_end - chunk_start) as usize, 0);
-            file.read_exact_at(&mut buf, head_len + chunk_start).unwrap();
+            file.read_exact_at(&mut buf, head_len + chunk_start)
+                .unwrap();
         }
         let slice = &buf[(o0 - chunk_start) as usize..(o1 - chunk_start) as usize];
         let mut r = BitReader::new(slice);
@@ -139,7 +153,11 @@ fn main() {
                     filters[s] = Some(f);
                     total += c;
                 }
-                println!("batch {}/8 at {:.0}s", batch + 1, t0.elapsed().as_secs_f64());
+                println!(
+                    "batch {}/8 at {:.0}s",
+                    batch + 1,
+                    t0.elapsed().as_secs_f64()
+                );
             }
             let ff = FiltersFile {
                 table_entry_count: total,
@@ -147,9 +165,8 @@ fn main() {
             };
             let f = std::fs::File::create(format!("{dir}/filters.bin")).unwrap();
             let mut w = std::io::BufWriter::with_capacity(8 << 20, f);
-            let nbytes =
-                bincode2::encode_into_std_write(&ff, &mut w, bincode2::config::standard())
-                    .expect("serialize");
+            let nbytes = bincode2::encode_into_std_write(&ff, &mut w, bincode2::config::standard())
+                .expect("serialize");
             use std::io::Write;
             w.flush().unwrap();
             println!(

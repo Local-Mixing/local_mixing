@@ -82,8 +82,7 @@ impl FanoutTargetIncoming {
     fn penalty(&self, c: &CandFeatures) -> f64 {
         let fanout = c.fanout_l1(self.target);
         let target_median = self.min_median_leeway.max(1) as f64;
-        let leeway_shortfall =
-            (target_median - c.median_leeway as f64).max(0.0) / target_median;
+        let leeway_shortfall = (target_median - c.median_leeway as f64).max(0.0) / target_median;
         let hot_wire = if c.size > 0 {
             c.max_wire_touch as f64 / c.size as f64
         } else {
@@ -164,7 +163,10 @@ mod tests {
         };
         let order = ranker().order(&[pinned, loose]);
 
-        assert_eq!(order[0], 1, "candidate meeting the leeway target ranks first");
+        assert_eq!(
+            order[0], 1,
+            "candidate meeting the leeway target ranks first"
+        );
     }
 
     #[test]
