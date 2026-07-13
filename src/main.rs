@@ -499,6 +499,101 @@ fn main() {
                         .help("Use a random input (prints the chosen input)"),
                 ),
         )
+        // Rainbow-table (replacement DB) generation pipeline; see
+        // src/rainbow_table/mod.rs. Paths are relative to the working
+        // directory: reads ./rocks_db_m*, writes ./test_rocks_db_m*.
+        .subcommand(
+            Command::new("rocksdb_1")
+                .about("Create m sized rocks_db based on m-1")
+                .arg(
+                    Arg::new("m")
+                        .short('m')
+                        .long("m")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of gates"),
+                )
+                .arg(
+                    Arg::new("min_n")
+                        .long("min_n")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Minimum number of used wires; candidates with fewer are skipped"),
+                )
+                .arg(
+                    Arg::new("max_n")
+                        .long("max_n")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Maximum number of used wires; candidates with more are skipped (0 = no limit)"),
+                )
+                .arg(
+                    Arg::new("no_L")
+                        .long("no_L")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Skip circuits that require Rule L during canonicalization"),
+                ),
+        )
+        .subcommand(
+            Command::new("rocksdb_2")
+                .about("Create m sized rocks_db with m1+m2 method")
+                .arg(
+                    Arg::new("m1")
+                        .long("m1")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of gates"),
+                )
+                .arg(
+                    Arg::new("m2")
+                        .long("m2")
+                        .required(true)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of gates"),
+                )
+                .arg(
+                    Arg::new("min_n")
+                        .long("min_n")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Minimum number of used wires in c1; candidates with fewer are skipped"),
+                ),
+        )
+        .subcommand(
+            Command::new("combine_rocks")
+                .about("Combine all rocks_db_m* databases into a single output DB")
+                .arg(
+                    Arg::new("path")
+                        .short('p')
+                        .long("path")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Output path for the combined database"),
+                ),
+        )
+        .subcommand(
+            Command::new("rocks_to_lmdb")
+                .about("Convert a RocksDB into an LMDB store")
+                .arg(
+                    Arg::new("source")
+                        .short('s')
+                        .long("source")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Path to the source RocksDB"),
+                )
+                .arg(
+                    Arg::new("path")
+                        .short('p')
+                        .long("path")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Output path for the LMDB store"),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -509,6 +604,10 @@ fn main() {
         Some(("shoot", sub)) => commands::shoot::run(sub),
         Some(("equal", sub)) => commands::equal::run(sub),
         Some(("evaluate", sub)) => commands::evaluate::run(sub),
+        Some(("rocksdb_1", sub)) => commands::rainbow_table::run_rocksdb_1(sub),
+        Some(("rocksdb_2", sub)) => commands::rainbow_table::run_rocksdb_2(sub),
+        Some(("combine_rocks", sub)) => commands::rainbow_table::run_combine_rocks(sub),
+        Some(("rocks_to_lmdb", sub)) => commands::rainbow_table::run_rocks_to_lmdb(sub),
         _ => unreachable!("subcommand_required guarantees a match"),
     }
 }

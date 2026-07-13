@@ -1,6 +1,6 @@
 use rand::{Rng, SeedableRng, rngs::StdRng, seq::IndexedRandom};
+use rustc_hash::FxHashMap;
 use std::{
-    collections::HashMap,
     fs::File,
     io::Write,
     process::Command,
@@ -333,17 +333,21 @@ pub fn score_subcircuit(gates: &[[u16; 3]], n: usize, seed: u64) -> SatHardnessS
         };
     }
 
+    // Flat wire_count x limb_count dependency matrix plus one reused merge
+    // scratch buffer: avoids a Vec allocation per wire up front and one per
+    // gate in the merge loop.
     let limb_count = (wire_count + 63) / 64;
-    let mut deps = vec![vec![0u64; limb_count]; wire_count];
+    let mut deps = vec![0u64; wire_count * limb_count];
+    let mut merged = vec![0u64; limb_count];
     let mut depths = vec![0usize; wire_count];
     let mut active_counts = vec![0usize; wire_count];
     let mut control_counts = vec![0usize; wire_count];
     let mut touched = vec![false; wire_count];
     let mut active_touched = vec![false; wire_count];
-    let mut exact_templates: HashMap<[u16; 3], usize> = HashMap::new();
+    let mut exact_templates: FxHashMap<[u16; 3], usize> = FxHashMap::default();
 
     for wire in 0..wire_count {
-        set_bit(&mut deps[wire], wire);
+        set_bit(&mut deps[wire * limb_count..(wire + 1) * limb_count], wire);
     }
 
     let mut total_growth = 0usize;
@@ -362,20 +366,24 @@ pub fn score_subcircuit(gates: &[[u16; 3]], n: usize, seed: u64) -> SatHardnessS
         active_touched[active] = true;
         *exact_templates.entry(*gate).or_insert(0) += 1;
 
-        let before = bit_count(&deps[active]);
-        let mut merged = deps[active].clone();
-        or_into(&mut merged, &deps[control_a]);
-        or_into(&mut merged, &deps[control_b]);
+        let a_off = active * limb_count;
+        let ca_off = control_a * limb_count;
+        let cb_off = control_b * limb_count;
+
+        let before = bit_count(&deps[a_off..a_off + limb_count]);
+        merged.copy_from_slice(&deps[a_off..a_off + limb_count]);
+        or_into(&mut merged, &deps[ca_off..ca_off + limb_count]);
+        or_into(&mut merged, &deps[cb_off..cb_off + limb_count]);
         let after = bit_count(&merged);
         total_growth += after.saturating_sub(before);
 
         let control_nonlinear = control_a != control_b
-            && !deps[control_a].iter().all(|&x| x == 0)
-            && !deps[control_b].iter().all(|&x| x == 0);
+            && !deps[ca_off..ca_off + limb_count].iter().all(|&x| x == 0)
+            && !deps[cb_off..cb_off + limb_count].iter().all(|&x| x == 0);
         let control_depth =
             depths[control_a].max(depths[control_b]) + usize::from(control_nonlinear);
         depths[active] = depths[active].max(control_depth);
-        deps[active] = merged;
+        deps[a_off..a_off + limb_count].copy_from_slice(&merged);
     }
 
     let distinct_wires = touched.iter().filter(|&&x| x).count();
@@ -384,7 +392,7 @@ pub fn score_subcircuit(gates: &[[u16; 3]], n: usize, seed: u64) -> SatHardnessS
         .enumerate()
         .filter_map(|(wire, &is_active)| is_active.then_some(wire))
         .collect();
-    let dependency_density = dependency_density(&deps, &output_wires, wire_count);
+    let dependency_density = dependency_density(&deps, limb_count, &output_wires, wire_count);
     let nonlinear_depth = output_wires
         .iter()
         .map(|&wire| depths[wire])
@@ -528,13 +536,18 @@ fn bit_count(bits: &[u64]) -> usize {
     bits.iter().map(|bits| bits.count_ones() as usize).sum()
 }
 
-fn dependency_density(deps: &[Vec<u64>], output_wires: &[usize], wire_count: usize) -> f64 {
+fn dependency_density(
+    deps: &[u64],
+    limb_count: usize,
+    output_wires: &[usize],
+    wire_count: usize,
+) -> f64 {
     if output_wires.is_empty() || wire_count == 0 {
         return 0.0;
     }
     let total_deps: usize = output_wires
         .iter()
-        .map(|&wire| bit_count(&deps[wire]))
+        .map(|&wire| bit_count(&deps[wire * limb_count..(wire + 1) * limb_count]))
         .sum();
     (total_deps as f64 / (output_wires.len() * wire_count) as f64).min(1.0)
 }
@@ -558,7 +571,10 @@ fn normalized_entropy(counts: &[usize]) -> f64 {
     (entropy / (populated as f64).ln()).min(1.0)
 }
 
-fn repeated_template_penalty(exact_templates: &HashMap<[u16; 3], usize>, gate_count: usize) -> f64 {
+fn repeated_template_penalty(
+    exact_templates: &FxHashMap<[u16; 3], usize>,
+    gate_count: usize,
+) -> f64 {
     if gate_count == 0 {
         return 0.0;
     }
@@ -588,13 +604,15 @@ fn unit_prop_resistance(
     const TRIALS: usize = 16;
     let mut rng = StdRng::seed_from_u64(seed ^ gates.len() as u64 ^ ((wire_count as u64) << 32));
     let mut total_unknown_fraction = 0.0;
+    let mut values = vec![Ternary::Unknown; wire_count];
 
     for _ in 0..TRIALS {
-        let mut values = vec![Ternary::Unknown; wire_count];
         for value in &mut values {
-            if rng.random_bool(0.55) {
-                *value = Ternary::Known(rng.random());
-            }
+            *value = if rng.random_bool(0.55) {
+                Ternary::Known(rng.random())
+            } else {
+                Ternary::Unknown
+            };
         }
 
         for gate in gates {

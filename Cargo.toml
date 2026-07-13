@@ -38,6 +38,71 @@ path = "src/bench/bench_canon4.rs"
 name = "bench_polycanon"
 path = "src/bench/bench_polycanon.rs"
 
+[[bin]]
+name = "bench_canon_windows"
+path = "src/bench/bench_canon_windows.rs"
+
+[[bin]]
+name = "canon_digest"
+path = "src/bin/canon_digest.rs"
+
+[[bin]]
+name = "db_value_stats"
+path = "src/bin/db_value_stats.rs"
+
+[[bin]]
+name = "expand_sample"
+path = "src/bin/expand_sample.rs"
+
+# Rainbow-table (replacement DB) pipeline tools, ported from the dbgen server
+# tree; see src/rainbow_table/mod.rs. Pipeline validators live as #[ignore]d
+# tests in src/rainbow_table/validation_tests.rs, not bins.
+[[bin]]
+name = "build_curated"
+path = "src/rainbow_table/bin/build_curated.rs"
+
+[[bin]]
+name = "curated_to_lmdb"
+path = "src/rainbow_table/bin/curated_to_lmdb.rs"
+
+[[bin]]
+name = "merge_rocks_parallel"
+path = "src/rainbow_table/bin/merge_rocks_parallel.rs"
+
+# Frozen-table toolchain: builder/validator, replay + pilot benchmarks,
+# filter persistence, probe-pack generator, data-stats samplers.
+[[bin]]
+name = "frozen_table"
+path = "src/rainbow_table/bin/frozen_table.rs"
+
+[[bin]]
+name = "frozen_replay"
+path = "src/rainbow_table/bin/frozen_replay.rs"
+
+[[bin]]
+name = "frozen_pilot"
+path = "src/rainbow_table/bin/frozen_pilot.rs"
+
+[[bin]]
+name = "frozen_filter_persist"
+path = "src/rainbow_table/bin/frozen_filter_persist.rs"
+
+[[bin]]
+name = "make_probes"
+path = "src/rainbow_table/bin/make_probes.rs"
+
+[[bin]]
+name = "frozen_calibrate2"
+path = "src/rainbow_table/bin/frozen_calibrate2.rs"
+
+[[bin]]
+name = "rocks_value_stats"
+path = "src/rainbow_table/bin/value_stats.rs"
+
+[[bin]]
+name = "friend_stats"
+path = "src/rainbow_table/bin/friend_stats.rs"
+
 [profile.release]
 overflow-checks = false
 lto = "thin"
@@ -69,6 +134,13 @@ primitive-types = "0.14.0"
 uint = "0.10.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rustc-hash = "2"
+# Rainbow-table DB generation pipeline (src/rainbow_table).
+rocksdb = "0.24.0"
+crossbeam-channel = "0.5.15"
+num_cpus = "1.17.0"
+# Frozen-table read path (src/replace/frozen.rs).
+xorf = { version = "0.12", features = ["serde", "bincode"] }
+bincode2 = { package = "bincode", version = "2" }
 # Needed by the challenge binaries (block_cipher, poly_canon).
 rng-entropy = "0.5.0"
 cryptography = { package = "cryptography-rs", version = "0.5.0" }

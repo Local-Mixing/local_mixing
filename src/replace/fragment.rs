@@ -1306,7 +1306,7 @@ mod tests {
     }
 
     #[test]
-    fn fragment_polys_match_true_function_and_corrected_to_polynomial() {
+    fn fragment_polys_match_true_function_and_to_polynomial() {
         let n = 6;
         for _ in 0..20 {
             let c = random_circuit(n, 30);
@@ -1322,29 +1322,23 @@ mod tests {
                 );
             }
 
-            // (2) They equal what the *corrected* to_polynomial will produce. to_polynomial
-            // currently swaps the two control pins, so feeding it the control-swapped circuit
-            // yields the true polynomial — the same one fragment_polys builds. Equal polys =>
-            // identical DB key after canonicalization/hash.
-            let swapped = CircuitSeq {
-                gates: c.gates.iter().map(|&[a, b, cc]| [a, cc, b]).collect(),
-            };
-            let tp = swapped.to_polynomial(n, 0, swapped.gates.len());
+            // (2) They equal to_polynomial directly. Equal polys imply the same DB key after
+            // canonicalization/hash.
+            let tp = c.to_polynomial(n, 0, c.gates.len());
             for i in 0..n {
                 assert_eq!(
                     norm(&fp[i]),
                     norm(&tp[i]),
-                    "fragment_polys[{i}] != corrected to_polynomial[{i}]"
+                    "fragment_polys[{i}] != to_polynomial[{i}]"
                 );
             }
         }
     }
 
     #[test]
-    fn to_polynomial_convention_differs_from_evaluate_by_control_swap() {
-        // to_polynomial builds each gate's toggle as b*NOT(c)+1, but evaluate_index flips on
-        // b=1 OR c=0 — which is the SAME gate with the two control pins swapped. This test
-        // pins that down: to_polynomial equals evaluate only if we swap the two controls.
+    fn to_polynomial_convention_matches_evaluate_without_control_swap() {
+        // evaluate_index flips on b=1 OR c=0, whose GF(2) toggle polynomial is
+        // 1 + c*NOT(b). to_polynomial should use that same control convention.
         let n = 4;
         let (mut mism_true, mut mism_swap) = (0, 0);
         for _ in 0..8 {
@@ -1371,11 +1365,11 @@ mod tests {
         eprintln!(
             "to_polynomial: {mism_true} mismatches vs evaluate, {mism_swap} vs control-swapped evaluate"
         );
-        assert!(mism_true > 0, "expected to_polynomial to differ from evaluate");
         assert_eq!(
-            mism_swap, 0,
-            "to_polynomial should equal evaluate with the two control pins swapped"
+            mism_true, 0,
+            "to_polynomial should equal evaluate without swapping controls"
         );
+        assert!(mism_swap > 0, "expected control-swapped evaluate to differ");
     }
 
     #[test]

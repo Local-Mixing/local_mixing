@@ -1,6 +1,7 @@
 pub mod bench_support;
 pub mod circuit;
 pub mod rainbow;
+pub mod rainbow_table;
 pub mod random;
 pub mod replace;
 use crate::circuit::{CircuitSeq, Gate, U1024};

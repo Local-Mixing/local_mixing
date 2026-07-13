@@ -37,6 +37,36 @@ use std::{
 // Global histogram: (before_gates, after_gates) -> count, accumulated across all rounds
 pub static COMPRESSION_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
 
+// Attempt-level compression lookup stats, enabled with COMPRESS_ATTEMPT_STATS=1.
+// Keyed by (window_gates, window_used_wires): every canonicalized DB probe, the
+// probes whose key was present, and the hits offering a shorter candidate.
+// Used to decide which DB-build axis (more gates at high min_n vs denser
+// low-min_n coverage) actually starves compression.
+pub static ATTEMPT_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
+pub static ATTEMPT_HIT_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
+pub static ATTEMPT_SHORTER_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
+
+fn attempt_stats_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("COMPRESS_ATTEMPT_STATS").is_ok())
+}
+
+/// Dump the attempt-level lookup stats as CSV lines (g,w,attempts,hits,shorter).
+pub fn print_attempt_stats() {
+    if ATTEMPT_HISTOGRAM.is_empty() {
+        return;
+    }
+    let mut keys: Vec<(u8, u8)> = ATTEMPT_HISTOGRAM.iter().map(|e| *e.key()).collect();
+    keys.sort_unstable();
+    println!("attempt_stats_csv g,w,attempts,hits,shorter");
+    for k in keys {
+        let attempts = ATTEMPT_HISTOGRAM.get(&k).map_or(0, |v| *v);
+        let hits = ATTEMPT_HIT_HISTOGRAM.get(&k).map_or(0, |v| *v);
+        let shorter = ATTEMPT_SHORTER_HISTOGRAM.get(&k).map_or(0, |v| *v);
+        println!("attempt_stats_csv {},{},{},{},{}", k.0, k.1, attempts, hits, shorter);
+    }
+}
+
 // Global histograms for EXPANSIONS made in the shuffle-shoot-shuffle game, accumulated
 // across all rounds. One is keyed by gate counts, the other by distinct-wire counts.
 pub static EXPANSION_HISTOGRAM: Lazy<DashMap<(u8, u8), u64>> = Lazy::new(DashMap::new);
@@ -602,6 +632,150 @@ pub fn random_subcircuit_max(circuit: &CircuitSeq, max_len: usize) -> (CircuitSe
     (CircuitSeq { gates: subcircuit }, start, end)
 }
 
+// ---------------------------------------------------------------------------
+// Shard-DB lookup cache.
+//
+// The shard LMDB environment is opened READ_ONLY for the lifetime of the
+// process, so a lookup's result can never change: caching (key -> value bytes,
+// including "absent") is exact, not approximate. Windows drawn by the
+// expansion/compression games repeat heavily (SAMF templates recur all over
+// the circuit), and most canonical keys MISS the DB, so caching negative
+// results is as valuable as positive ones. On hosts whose RAM is smaller than
+// the DB, each avoided lookup is an avoided page fault.
+//
+// LOOKUP_CACHE_MB caps the approximate value-byte footprint (default 512 MiB;
+// 0 disables the cache). When the cap is exceeded the cache is cleared
+// wholesale — an epoch reset is cheaper and simpler than LRU bookkeeping and
+// the working set refills within seconds.
+// ---------------------------------------------------------------------------
+// Cache keys are namespaced: byte 0 distinguishes which logical database the
+// lookup targeted (shard vs curated); the same 16-byte canonical hash may
+// exist in both with different values.
+type LookupCacheMap = DashMap<[u8; 17], Option<std::sync::Arc<[u8]>>, rustc_hash::FxBuildHasher>;
+
+pub(crate) const LOOKUP_NS_SHARD: u8 = 0;
+pub(crate) const LOOKUP_NS_CURATED: u8 = 1;
+
+static LOOKUP_CACHE_BYTES: AtomicU64 = AtomicU64::new(0);
+pub static LOOKUP_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+pub static LOOKUP_CACHE_QUERIES: AtomicU64 = AtomicU64::new(0);
+
+fn lookup_cache_cap_bytes() -> u64 {
+    static CAP: OnceLock<u64> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("LOOKUP_CACHE_MB")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(512)
+            .saturating_mul(1024 * 1024)
+    })
+}
+
+fn lookup_cache() -> Option<&'static LookupCacheMap> {
+    static CACHE: OnceLock<Option<LookupCacheMap>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| (lookup_cache_cap_bytes() > 0).then(LookupCacheMap::default))
+        .as_ref()
+}
+
+/// Backend fetch for one namespaced key: the frozen table when configured
+/// for that namespace (FROZEN_DB_DIR / FROZEN_CURATED_DIR), else LMDB.
+/// Frozen values are byte-identical to their LMDB counterparts, so callers
+/// cannot tell the backends apart.
+fn raw_db_get(
+    txn: &lmdb::RoTransaction,
+    db: lmdb::Database,
+    namespace: u8,
+    key: &[u8; 16],
+) -> Option<std::sync::Arc<[u8]>> {
+    let store = if namespace == LOOKUP_NS_CURATED {
+        crate::replace::frozen::curated_store()
+    } else {
+        crate::replace::frozen::shard_store()
+    };
+    if let Some(fz) = store {
+        return fz.get(key).map(std::sync::Arc::from);
+    }
+    txn.get(db, key).ok().map(std::sync::Arc::from)
+}
+
+/// Point lookup with an exact process-wide cache in front. Returns the value
+/// bytes (shared, immutable) or None when the key is absent — byte-identical
+/// to the uncached lookup on a read-only environment.
+pub(crate) fn cached_db_get(
+    txn: &lmdb::RoTransaction,
+    db: lmdb::Database,
+    namespace: u8,
+    key: &[u8; 16],
+) -> Option<std::sync::Arc<[u8]>> {
+    let Some(cache) = lookup_cache() else {
+        return raw_db_get(txn, db, namespace, key);
+    };
+    let mut ns_key = [0u8; 17];
+    ns_key[0] = namespace;
+    ns_key[1..].copy_from_slice(key);
+    LOOKUP_CACHE_QUERIES.fetch_add(1, Ordering::Relaxed);
+    if let Some(entry) = cache.get(&ns_key) {
+        LOOKUP_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+        return entry.clone();
+    }
+    let result: Option<std::sync::Arc<[u8]>> = raw_db_get(txn, db, namespace, key);
+    let entry_bytes = 17 + 64 + result.as_ref().map_or(0, |v| v.len()) as u64;
+    if LOOKUP_CACHE_BYTES.fetch_add(entry_bytes, Ordering::Relaxed) + entry_bytes
+        > lookup_cache_cap_bytes()
+    {
+        cache.clear();
+        LOOKUP_CACHE_BYTES.store(entry_bytes, Ordering::Relaxed);
+    }
+    cache.insert(ns_key, result.clone());
+    result
+}
+
+fn cached_shard_get(
+    txn: &lmdb::RoTransaction,
+    db: lmdb::Database,
+    key: &[u8; 16],
+) -> Option<std::sync::Arc<[u8]>> {
+    cached_db_get(txn, db, LOOKUP_NS_SHARD, key)
+}
+
+// ---------------------------------------------------------------------------
+// Lookup direction strategy.
+//
+// The shard DBs are keyed by the *minimum* of a circuit's forward and reverse
+// canonical polynomial forms (build_from_rocks inserts min(canon_fwd,
+// canon_rev) only). Since canonical polys are determined by the function a
+// circuit computes, a window's non-min direction key can only exist in the DB
+// if it equals the min key. Probing just the min direction is therefore
+// exactly equivalent to the legacy forward-then-reverse probe — and it halves
+// the number of cold LMDB probes on misses, which dominate when the DB is
+// larger than RAM.
+//
+// MIN_DIR_LOOKUP=0        -> legacy: forward probe, reverse probe on miss.
+// MIN_DIR_LOOKUP=validate -> min-direction probe, but on a miss also probe the
+//                            other direction and count/log any hit (which
+//                            would disprove the min-key invariant).
+// unset / any other value -> min-direction probe only (default).
+// ---------------------------------------------------------------------------
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MinDirLookup {
+    Legacy,
+    Min,
+    Validate,
+}
+
+pub(crate) fn min_dir_lookup_mode() -> MinDirLookup {
+    static MODE: OnceLock<MinDirLookup> = OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("MIN_DIR_LOOKUP").as_deref() {
+        Ok("0") => MinDirLookup::Legacy,
+        Ok("validate") => MinDirLookup::Validate,
+        _ => MinDirLookup::Min,
+    })
+}
+
+pub static MIN_DIR_VALIDATE_PROBES: AtomicU64 = AtomicU64::new(0);
+pub static MIN_DIR_VIOLATIONS: AtomicU64 = AtomicU64::new(0);
+
 pub static CANON_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONVEX_FIND_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONVEX_MAX_WIRES_TIME: AtomicU64 = AtomicU64::new(0);
@@ -637,6 +811,46 @@ fn compression_trace_threshold_ms() -> u128 {
     })
 }
 
+/// Relative stall rule for `compress_loop` (ported from ssg-gen-mix-clean
+/// commit e4d7e33a). When COMPRESS_STALL_FRAC is set, the loop stops once the
+/// reduction over the last COMPRESS_STALL_WINDOW sweeps (default 2) falls
+/// below `frac * current_size`, floored at the legacy 50 gates. Unset: the
+/// legacy `< 50 gates over stable_max sweeps` rule, byte-identical behavior.
+fn compress_stall_frac() -> Option<f64> {
+    static V: OnceLock<Option<f64>> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("COMPRESS_STALL_FRAC")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    })
+}
+
+fn compress_stall_window() -> usize {
+    static V: OnceLock<usize> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("COMPRESS_STALL_WINDOW")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2)
+            .max(1)
+    })
+}
+
+/// Per-chunk wall-clock budget for `compress_big_ancillas` (ported from
+/// ssg-gen-mix-clean commit ddc5f584). Past the budget the 100-trial loop
+/// stops before the next trial, keeping completed trials; the next sweep
+/// re-randomizes chunk boundaries so hard regions are revisited from other
+/// angles. Bounds a chunk at budget + one trial; a single in-flight
+/// `compress_lmdb` call is not interrupted. Unset: unlimited (legacy).
+fn compress_chunk_budget_ms() -> Option<u128> {
+    static V: OnceLock<Option<u128>> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("COMPRESS_CHUNK_BUDGET_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    })
+}
+
 pub fn compress_loop(
     circuit: &CircuitSeq,
     n: usize,
@@ -659,10 +873,28 @@ pub fn compress_loop(
     } else {
         stable_compressions
     };
-    // Ring buffer of the last stable_max+1 gate counts. Stop when total reduction
-    // over the last stable_max iterations is less than 100 gates.
+    // Stall rule: with COMPRESS_STALL_FRAC set, watch a COMPRESS_STALL_WINDOW-
+    // sweep window against a relative threshold; otherwise the legacy
+    // stable_max-sweep window against the absolute 50-gate threshold.
+    let stall_frac = compress_stall_frac();
+    let stall_window = match stall_frac {
+        Some(frac) => {
+            println!(
+                "[compress] stall rule: stop when < {:.1}% of current size reduced over last {} sweeps",
+                frac * 100.0,
+                compress_stall_window()
+            );
+            compress_stall_window()
+        }
+        None => stable_max,
+    };
+    if let Some(budget) = compress_chunk_budget_ms() {
+        println!("[compress] chunk budget: {} ms per chunk per sweep", budget);
+    }
+    // Ring buffer of the last stall_window+1 gate counts. Stop when total reduction
+    // over the last stall_window iterations is under the threshold.
     let mut recent: std::collections::VecDeque<usize> =
-        std::collections::VecDeque::with_capacity(stable_max + 1);
+        std::collections::VecDeque::with_capacity(stall_window + 1);
     recent.push_back(acc.gates.len());
 
     loop {
@@ -773,19 +1005,35 @@ pub fn compress_loop(
         let after = acc.gates.len();
 
         recent.push_back(after);
-        if recent.len() > stable_max + 1 {
+        if recent.len() > stall_window + 1 {
             recent.pop_front();
         }
 
-        // Stop if the total reduction over the last stable_max iterations is < 100.
-        if recent.len() == stable_max + 1 {
+        // Stop if the total reduction over the window is under the threshold:
+        // relative (frac * current size, floored at 50) when the stall rule is
+        // active, the legacy absolute 50 otherwise.
+        if recent.len() == stall_window + 1 {
             let window_reduction = recent.front().unwrap().saturating_sub(after);
-            if window_reduction < 50 {
-                println!(
-                    "  {}/{}: Early stop — only {} gates reduced over last {} iterations ({} gates)",
-                    curr_round, last_round, window_reduction, stable_max, after
-                );
-                break;
+            match stall_frac {
+                Some(frac) => {
+                    let threshold = ((frac * after as f64) as usize).max(50);
+                    if window_reduction < threshold {
+                        println!(
+                            "  {}/{}: Early stop — only {} gates reduced over last {} iterations ({} gates, threshold {})",
+                            curr_round, last_round, window_reduction, stall_window, after, threshold
+                        );
+                        break;
+                    }
+                }
+                None => {
+                    if window_reduction < 50 {
+                        println!(
+                            "  {}/{}: Early stop — only {} gates reduced over last {} iterations ({} gates)",
+                            curr_round, last_round, window_reduction, stall_window, after
+                        );
+                        break;
+                    }
+                }
             }
         }
 
@@ -1056,8 +1304,7 @@ pub fn expand_lmdb<'a>(
             continue;
         }
 
-        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
-        let fwd_shard = fwd_key[0] as usize;
+        let lookup_mode = min_dir_lookup_mode();
 
         let t_txn = Instant::now();
         let txn = match env.begin_ro_txn() {
@@ -1066,13 +1313,42 @@ pub fn expand_lmdb<'a>(
         };
         TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        let t_lookup = Instant::now();
-        let fwd_result = txn.get(shard_dbs[fwd_shard], &fwd_key);
-        LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let (value, final_order, is_reversed) = if lookup_mode == MinDirLookup::Legacy {
+            let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
+            let fwd_shard = fwd_key[0] as usize;
 
-        let (value, final_order, is_reversed) = if let Ok(v) = fwd_result {
-            (v, fwd_order, false)
+            let t_lookup = Instant::now();
+            let fwd_result = cached_shard_get(&txn, shard_dbs[fwd_shard], &fwd_key);
+            LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            if let Some(v) = fwd_result {
+                (v, fwd_order, false)
+            } else {
+                let t_canon2 = Instant::now();
+                let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
+                CANONICALIZE_TIME
+                    .fetch_add(t_canon2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+                if rev_polys.is_empty() {
+                    continue;
+                }
+
+                let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
+                let rev_shard = rev_key[0] as usize;
+
+                let t_lookup2 = Instant::now();
+                let rev_result = cached_shard_get(&txn, shard_dbs[rev_shard], &rev_key);
+                LMDB_LOOKUP_TIME
+                    .fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+                match rev_result {
+                    Some(v) => (v, rev_order, true),
+                    None => continue,
+                }
+            }
         } else {
+            // Min-direction probe: canonicalize both directions (cheap), probe
+            // only the direction whose canonical form the DB can contain.
             let t_canon2 = Instant::now();
             let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
             CANONICALIZE_TIME.fetch_add(t_canon2.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1081,16 +1357,43 @@ pub fn expand_lmdb<'a>(
                 continue;
             }
 
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
-            let rev_shard = rev_key[0] as usize;
+            // Canonical polys have sorted monomials, so lexicographic Vec
+            // comparison matches the poly_vec_key ordering the DB build used.
+            let rev_is_min = rev_polys < fwd_polys;
+            let (min_polys, min_order, min_reversed, alt_polys, alt_order, alt_reversed) =
+                if rev_is_min {
+                    (rev_polys, rev_order, true, fwd_polys, fwd_order, false)
+                } else {
+                    (fwd_polys, fwd_order, false, rev_polys, rev_order, true)
+                };
 
-            let t_lookup2 = Instant::now();
-            let rev_result = txn.get(shard_dbs[rev_shard], &rev_key);
-            LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let min_key = xxh3_128(&polys_repr_blob(&min_polys)).to_le_bytes();
+            let t_lookup = Instant::now();
+            let min_result = cached_shard_get(&txn, shard_dbs[min_key[0] as usize], &min_key);
+            LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-            match rev_result {
-                Ok(v) => (v, rev_order, true),
-                Err(_) => continue,
+            if let Some(v) = min_result {
+                (v, min_order, min_reversed)
+            } else if lookup_mode == MinDirLookup::Validate {
+                MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
+                let alt_key = xxh3_128(&polys_repr_blob(&alt_polys)).to_le_bytes();
+                let t_lookup2 = Instant::now();
+                let alt_result = cached_shard_get(&txn, shard_dbs[alt_key[0] as usize], &alt_key);
+                LMDB_LOOKUP_TIME
+                    .fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                match alt_result {
+                    Some(v) => {
+                        MIN_DIR_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+                        eprintln!(
+                            "[min-dir-violation] expand: non-min canonical key present while min key absent (gates={})",
+                            sub.gates.len()
+                        );
+                        (v, alt_order, alt_reversed)
+                    }
+                    None => continue,
+                }
+            } else {
+                continue;
             }
         };
 
@@ -1268,8 +1571,13 @@ pub fn compress_lmdb(
             continue;
         }
 
-        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
-        let fwd_shard = fwd_key[0] as usize;
+        if attempt_stats_enabled() {
+            *ATTEMPT_HISTOGRAM
+                .entry((sub.gates.len() as u8, used.len() as u8))
+                .or_insert(0) += 1;
+        }
+
+        let lookup_mode = min_dir_lookup_mode();
 
         let t_txn = Instant::now();
         let txn = match env.begin_ro_txn() {
@@ -1278,13 +1586,11 @@ pub fn compress_lmdb(
         };
         TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        let t_lookup = Instant::now();
-        let fwd_result = txn.get(shard_dbs[fwd_shard], &fwd_key);
-        LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-        let (value, final_order, is_reversed) = if let Ok(v) = fwd_result {
-            (v, fwd_order, false)
-        } else {
+        // Reverse-direction canonicalization, shared by the legacy fallback
+        // path and the min-direction path; keeps the existing per-mode timers.
+        let canonicalize_rev = |sub: &CircuitSeq,
+                                compressed_len: usize|
+         -> (Vec<crate::circuit::circuit::Polynomial>, Permutation) {
             let t_canon2 = Instant::now();
             let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
             let canon2_elapsed = t_canon2.elapsed().as_nanos() as u64;
@@ -1300,7 +1606,7 @@ pub fn compress_lmdb(
                 eprintln!(
                     "[compress-trace] slow inner-canon mode={} direction=reverse parent_gates={} inner_start={} inner_end={} inner_gates={} inner_wires={} elapsed_ms={}",
                     mode,
-                    compressed.gates.len(),
+                    compressed_len,
                     start,
                     end,
                     sub.gates.len(),
@@ -1308,21 +1614,83 @@ pub fn compress_lmdb(
                     canon2_elapsed as u128 / 1_000_000
                 );
             }
+            (rev_polys, rev_order)
+        };
+
+        let (value, final_order, is_reversed) = if lookup_mode == MinDirLookup::Legacy {
+            let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
+            let fwd_shard = fwd_key[0] as usize;
+
+            let t_lookup = Instant::now();
+            let fwd_result = cached_shard_get(&txn, shard_dbs[fwd_shard], &fwd_key);
+            LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            if let Some(v) = fwd_result {
+                (v, fwd_order, false)
+            } else {
+                let (rev_polys, rev_order) = canonicalize_rev(&sub, compressed.gates.len());
+
+                if rev_polys.is_empty() {
+                    continue;
+                }
+
+                let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
+                let rev_shard = rev_key[0] as usize;
+
+                let t_lookup2 = Instant::now();
+                let rev_result = cached_shard_get(&txn, shard_dbs[rev_shard], &rev_key);
+                LMDB_LOOKUP_TIME
+                    .fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+                match rev_result {
+                    Some(v) => (v, rev_order, true),
+                    None => continue,
+                }
+            }
+        } else {
+            // Min-direction probe (see MinDirLookup above): probe only the
+            // direction whose canonical form a min-keyed DB can contain.
+            let (rev_polys, rev_order) = canonicalize_rev(&sub, compressed.gates.len());
 
             if rev_polys.is_empty() {
                 continue;
             }
 
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
-            let rev_shard = rev_key[0] as usize;
+            let rev_is_min = rev_polys < fwd_polys;
+            let (min_polys, min_order, min_reversed, alt_polys, alt_order, alt_reversed) =
+                if rev_is_min {
+                    (rev_polys, rev_order, true, fwd_polys, fwd_order, false)
+                } else {
+                    (fwd_polys, fwd_order, false, rev_polys, rev_order, true)
+                };
 
-            let t_lookup2 = Instant::now();
-            let rev_result = txn.get(shard_dbs[rev_shard], &rev_key);
-            LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let min_key = xxh3_128(&polys_repr_blob(&min_polys)).to_le_bytes();
+            let t_lookup = Instant::now();
+            let min_result = cached_shard_get(&txn, shard_dbs[min_key[0] as usize], &min_key);
+            LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-            match rev_result {
-                Ok(v) => (v, rev_order, true),
-                Err(_) => continue,
+            if let Some(v) = min_result {
+                (v, min_order, min_reversed)
+            } else if lookup_mode == MinDirLookup::Validate {
+                MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
+                let alt_key = xxh3_128(&polys_repr_blob(&alt_polys)).to_le_bytes();
+                let t_lookup2 = Instant::now();
+                let alt_result = cached_shard_get(&txn, shard_dbs[alt_key[0] as usize], &alt_key);
+                LMDB_LOOKUP_TIME
+                    .fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                match alt_result {
+                    Some(v) => {
+                        MIN_DIR_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+                        eprintln!(
+                            "[min-dir-violation] compress: non-min canonical key present while min key absent (gates={})",
+                            sub.gates.len()
+                        );
+                        (v, alt_order, alt_reversed)
+                    }
+                    None => continue,
+                }
+            } else {
+                continue;
             }
         };
 
@@ -1345,6 +1713,17 @@ pub fn compress_lmdb(
             }
         }
         FROM_BLOB_TIME.fetch_add(t_blob.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        if attempt_stats_enabled() {
+            *ATTEMPT_HIT_HISTOGRAM
+                .entry((sub.gates.len() as u8, used.len() as u8))
+                .or_insert(0) += 1;
+            if !candidates.is_empty() {
+                *ATTEMPT_SHORTER_HISTOGRAM
+                    .entry((sub.gates.len() as u8, used.len() as u8))
+                    .or_insert(0) += 1;
+            }
+        }
 
         if candidates.is_empty() {
             continue;
@@ -1502,7 +1881,19 @@ pub fn compress_big_ancillas(
         }
     }
 
+    // Wall-clock budget per chunk (COMPRESS_CHUNK_BUDGET_MS): checked between
+    // trials, so a chunk is bounded at budget + one trial. Completed trials are
+    // kept and the trailing dedup below still runs; the next sweep re-randomizes
+    // chunk boundaries so budget-hit regions get revisited from other angles.
+    let chunk_budget = compress_chunk_budget_ms();
+    let chunk_clock = Instant::now();
+
     for _ in 0..trials {
+        if let Some(budget_ms) = chunk_budget {
+            if chunk_clock.elapsed().as_millis() >= budget_ms {
+                break;
+            }
+        }
         let t0 = Instant::now();
         let (mut subcircuit_gates, _) = match mode {
             0 => find_convex_subcircuit_max_wires(30, num_wires, &circuit, &mut rng),
@@ -1781,7 +2172,13 @@ pub fn print_compress_timers() {
     let samf_failed = SAMF_COMPRESSIONS_FAILED.load(Ordering::Relaxed);
 
     let ns = 60_000_000_000.0f64;
-    let threshold_ns = 15.0 * ns; // 15 minutes in nanoseconds
+    // 15 minutes by default; COMPRESS_TIMERS_MIN_MINUTES overrides so short
+    // benchmark runs can print the full breakdown (e.g. =0 prints everything).
+    let threshold_minutes = std::env::var("COMPRESS_TIMERS_MIN_MINUTES")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(15.0);
+    let threshold_ns = threshold_minutes * ns;
 
     println!("--- Compression Timing Totals (minutes) ---");
     if canon as f64 >= threshold_ns {
@@ -1838,6 +2235,35 @@ pub fn print_compress_timers() {
     if lmdb_lookup as f64 >= threshold_ns {
         println!("LMDB lookup time: {:.2} min", lmdb_lookup as f64 / ns);
     }
+    let cache_queries = LOOKUP_CACHE_QUERIES.load(Ordering::Relaxed);
+    if cache_queries > 0 {
+        let cache_hits = LOOKUP_CACHE_HITS.load(Ordering::Relaxed);
+        println!(
+            "Lookup cache: {} queries, {} hits ({:.1}%)",
+            cache_queries,
+            cache_hits,
+            100.0 * cache_hits as f64 / cache_queries as f64
+        );
+    }
+    let canon_queries =
+        crate::circuit::circuit::CANON_CACHE_QUERIES.load(Ordering::Relaxed);
+    if canon_queries > 0 {
+        let canon_hits = crate::circuit::circuit::CANON_CACHE_HITS.load(Ordering::Relaxed);
+        println!(
+            "Canon cache: {} queries, {} hits ({:.1}%)",
+            canon_queries,
+            canon_hits,
+            100.0 * canon_hits as f64 / canon_queries as f64
+        );
+    }
+    let min_dir_probes = MIN_DIR_VALIDATE_PROBES.load(Ordering::Relaxed);
+    if min_dir_probes > 0 {
+        println!(
+            "Min-dir validation: {} alt probes, {} violations",
+            min_dir_probes,
+            MIN_DIR_VIOLATIONS.load(Ordering::Relaxed)
+        );
+    }
     if from_blob as f64 >= threshold_ns {
         println!(
             "CircuitSeq from_blob time: {:.2} min",
@@ -1868,6 +2294,8 @@ pub fn print_compress_timers() {
         "SAMF compressions made: {}  failed: {}",
         samf_made, samf_failed
     );
+
+    print_attempt_stats();
 
     if std::env::var("BENCH_CANON").is_ok() {
         use crate::circuit::circuit::{CANON_BENCH_CALLS, CANON4_CORE_TIME, POLYCANON_CORE_TIME};

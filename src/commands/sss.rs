@@ -69,8 +69,23 @@ pub fn run(sub: &clap::ArgMatches) {
     let lmdb_path = "./db";
     let _ = std::fs::create_dir_all(lmdb_path);
 
+    // Frozen-table mode (FROZEN_DB_DIR): lookups are served by the frozen
+    // store inside cached_db_get; ./db only needs to exist as a stub so the
+    // named-database opens below succeed.
+    if std::env::var("FROZEN_DB_DIR").is_ok() {
+        local_mixing::replace::frozen::ensure_stub_lmdb(lmdb_path);
+    }
+
+    // NO_READAHEAD: lookups are random 16-byte point queries into a DB far larger
+    // than RAM; OS readahead drags in useless pages and evicts hot B-tree interior
+    // pages. Set LMDB_READAHEAD=1 to restore kernel readahead (e.g. on hosts with
+    // RAM exceeding the DB size where warming the cache is preferable).
+    let mut env_flags = EnvironmentFlags::READ_ONLY | EnvironmentFlags::NO_LOCK;
+    if std::env::var("LMDB_READAHEAD").map(|v| v == "1") != Ok(true) {
+        env_flags |= EnvironmentFlags::NO_READAHEAD;
+    }
     let env = Environment::new()
-        .set_flags(EnvironmentFlags::READ_ONLY | EnvironmentFlags::NO_LOCK)
+        .set_flags(env_flags)
         .set_max_readers(10000)
         .set_max_dbs(556)
         .set_map_size(800 * 1024 * 1024 * 1024)

@@ -59,6 +59,97 @@ pub fn expand_curated_lmdb(
     expand_curated_lmdb_neg(gates, n, env, curated_shard_dbs, shard_dbs, &[])
 }
 
+/// Shared lookup: probe the curated DBs with the (possibly negation-adjusted)
+/// forward canonical key, then optionally fall back to the regular shard DBs.
+/// The shard fallback honours MIN_DIR_LOOKUP exactly like expand_lmdb /
+/// compress_lmdb (see replace.rs), and every probe goes through the exact
+/// process-wide lookup cache. Returns (value, final_order, is_reversed).
+fn curated_then_shard_lookup(
+    sub: &CircuitSeq,
+    txn: &lmdb::RoTransaction,
+    curated_shard_dbs: &[lmdb::Database],
+    shard_dbs: &[lmdb::Database],
+    fwd_polys: Vec<crate::circuit::circuit::Polynomial>,
+    fwd_order: crate::circuit::circuit::Permutation,
+    allow_shard_fallback: bool,
+) -> Option<(
+    std::sync::Arc<[u8]>,
+    crate::circuit::circuit::Permutation,
+    bool,
+)> {
+    use crate::circuit::circuit::polys_repr_blob;
+    use crate::replace::replace::{
+        LOOKUP_NS_CURATED, LOOKUP_NS_SHARD, MIN_DIR_VALIDATE_PROBES, MIN_DIR_VIOLATIONS,
+        MinDirLookup, cached_db_get, min_dir_lookup_mode,
+    };
+    use std::sync::atomic::Ordering;
+    use xxhash_rust::xxh3::xxh3_128;
+
+    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
+    let fwd_shard = fwd_key[0] as usize;
+
+    // Curated DBs are probed forward-only, matching the original behaviour.
+    if !curated_shard_dbs.is_empty() {
+        if let Some(v) = cached_db_get(txn, curated_shard_dbs[fwd_shard], LOOKUP_NS_CURATED, &fwd_key)
+        {
+            return Some((v, fwd_order, false));
+        }
+    }
+
+    if !allow_shard_fallback || shard_dbs.is_empty() {
+        return None;
+    }
+
+    match min_dir_lookup_mode() {
+        MinDirLookup::Legacy => {
+            if let Some(v) = cached_db_get(txn, shard_dbs[fwd_shard], LOOKUP_NS_SHARD, &fwd_key) {
+                return Some((v, fwd_order, false));
+            }
+            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
+            if rev_polys.is_empty() {
+                return None;
+            }
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
+            cached_db_get(txn, shard_dbs[rev_key[0] as usize], LOOKUP_NS_SHARD, &rev_key)
+                .map(|v| (v, rev_order, true))
+        }
+        mode => {
+            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
+            if rev_polys.is_empty() {
+                return None;
+            }
+            let rev_is_min = rev_polys < fwd_polys;
+            let (min_polys, min_order, min_reversed, alt_polys, alt_order, alt_reversed) =
+                if rev_is_min {
+                    (rev_polys, rev_order, true, fwd_polys, fwd_order, false)
+                } else {
+                    (fwd_polys, fwd_order, false, rev_polys, rev_order, true)
+                };
+            let min_key = xxh3_128(&polys_repr_blob(&min_polys)).to_le_bytes();
+            if let Some(v) =
+                cached_db_get(txn, shard_dbs[min_key[0] as usize], LOOKUP_NS_SHARD, &min_key)
+            {
+                return Some((v, min_order, min_reversed));
+            }
+            if mode == MinDirLookup::Validate {
+                MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
+                let alt_key = xxh3_128(&polys_repr_blob(&alt_polys)).to_le_bytes();
+                if let Some(v) =
+                    cached_db_get(txn, shard_dbs[alt_key[0] as usize], LOOKUP_NS_SHARD, &alt_key)
+                {
+                    MIN_DIR_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+                    eprintln!(
+                        "[min-dir-violation] pairs: non-min canonical key present while min key absent (gates={})",
+                        sub.gates.len()
+                    );
+                    return Some((v, alt_order, alt_reversed));
+                }
+            }
+            None
+        }
+    }
+}
+
 pub fn expand_curated_lmdb_neg(
     gates: &[[u16; 3]],
     n: usize,
@@ -67,9 +158,7 @@ pub fn expand_curated_lmdb_neg(
     shard_dbs: &[lmdb::Database],
     negated_inputs: &[u16],
 ) -> Option<Vec<[u16; 3]>> {
-    use crate::circuit::circuit::{Permutation, polys_repr_blob};
-    use lmdb::Transaction;
-    use xxhash_rust::xxh3::xxh3_128;
+    use crate::circuit::circuit::Permutation;
 
     let mut rng = rand::rng();
     let sub = CircuitSeq {
@@ -85,39 +174,20 @@ pub fn expand_curated_lmdb_neg(
         return None;
     }
 
-    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
-    let fwd_shard = fwd_key[0] as usize;
-
     let txn = env.begin_ro_txn().ok()?;
 
-    // Try curated DBs first (forward direction only — no reversal needed for curated).
-    let curated_hit = if !curated_shard_dbs.is_empty() {
-        txn.get(curated_shard_dbs[fwd_shard], &fwd_key).ok()
-    } else {
-        None
-    };
-
-    let (value, final_order, is_reversed) = if let Some(v) = curated_hit {
-        (v, fwd_order, false)
-    } else if negated_inputs.is_empty() && !shard_dbs.is_empty() {
-        // Fallback: try regular shard DBs (both forward and reverse, same as expand_lmdb).
-        if let Ok(v) = txn.get(shard_dbs[fwd_shard], &fwd_key) {
-            (v, fwd_order, false)
-        } else {
-            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
-            if rev_polys.is_empty() {
-                return None;
-            }
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
-            let rev_shard = rev_key[0] as usize;
-            match txn.get(shard_dbs[rev_shard], &rev_key) {
-                Ok(v) => (v, rev_order, true),
-                Err(_) => return None,
-            }
-        }
-    } else {
-        return None;
-    };
+    // Curated DBs first (forward-only), then regular shard DBs (cached,
+    // MIN_DIR_LOOKUP-aware). The shard fallback is only valid for the plain
+    // canonical form, so it is disabled when inputs are negated.
+    let (value, final_order, is_reversed) = curated_then_shard_lookup(
+        &sub,
+        &txn,
+        curated_shard_dbs,
+        shard_dbs,
+        fwd_polys,
+        fwd_order,
+        negated_inputs.is_empty(),
+    )?;
 
     let mut candidates: Vec<CircuitSeq> = Vec::new();
     let mut pos = 0;
@@ -241,9 +311,7 @@ pub fn compress_curated_lmdb(
     curated_shard_dbs: &[lmdb::Database],
     shard_dbs: &[lmdb::Database],
 ) -> Option<Vec<[u16; 3]>> {
-    use crate::circuit::circuit::{Permutation, polys_repr_blob};
-    use lmdb::Transaction;
-    use xxhash_rust::xxh3::xxh3_128;
+    use crate::circuit::circuit::Permutation;
 
     let mut rng = rand::rng();
     let sub = CircuitSeq {
@@ -255,37 +323,17 @@ pub fn compress_curated_lmdb(
         return None;
     }
 
-    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
-    let fwd_shard = fwd_key[0] as usize;
-
     let txn = env.begin_ro_txn().ok()?;
 
-    let curated_hit = if !curated_shard_dbs.is_empty() {
-        txn.get(curated_shard_dbs[fwd_shard], &fwd_key).ok()
-    } else {
-        None
-    };
-
-    let (value, final_order, is_reversed) = if let Some(v) = curated_hit {
-        (v, fwd_order, false)
-    } else if !shard_dbs.is_empty() {
-        if let Ok(v) = txn.get(shard_dbs[fwd_shard], &fwd_key) {
-            (v, fwd_order, false)
-        } else {
-            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
-            if rev_polys.is_empty() {
-                return None;
-            }
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
-            let rev_shard = rev_key[0] as usize;
-            match txn.get(shard_dbs[rev_shard], &rev_key) {
-                Ok(v) => (v, rev_order, true),
-                Err(_) => return None,
-            }
-        }
-    } else {
-        return None;
-    };
+    let (value, final_order, is_reversed) = curated_then_shard_lookup(
+        &sub,
+        &txn,
+        curated_shard_dbs,
+        shard_dbs,
+        fwd_polys,
+        fwd_order,
+        true,
+    )?;
 
     let mut candidates: Vec<CircuitSeq> = Vec::new();
     let mut pos = 0;
@@ -427,9 +475,7 @@ pub fn find_any_replacement_lmdb(
     curated_shard_dbs: &[lmdb::Database],
     shard_dbs: &[lmdb::Database],
 ) -> Option<Vec<[u16; 3]>> {
-    use crate::circuit::circuit::{Permutation, polys_repr_blob};
-    use lmdb::Transaction;
-    use xxhash_rust::xxh3::xxh3_128;
+    use crate::circuit::circuit::Permutation;
 
     let mut rng = rand::rng();
     let sub = CircuitSeq {
@@ -441,37 +487,17 @@ pub fn find_any_replacement_lmdb(
         return None;
     }
 
-    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
-    let fwd_shard = fwd_key[0] as usize;
-
     let txn = env.begin_ro_txn().ok()?;
 
-    let curated_hit = if !curated_shard_dbs.is_empty() {
-        txn.get(curated_shard_dbs[fwd_shard], &fwd_key).ok()
-    } else {
-        None
-    };
-
-    let (value, final_order, is_reversed) = if let Some(v) = curated_hit {
-        (v, fwd_order, false)
-    } else if !shard_dbs.is_empty() {
-        if let Ok(v) = txn.get(shard_dbs[fwd_shard], &fwd_key) {
-            (v, fwd_order, false)
-        } else {
-            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
-            if rev_polys.is_empty() {
-                return None;
-            }
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
-            let rev_shard = rev_key[0] as usize;
-            match txn.get(shard_dbs[rev_shard], &rev_key) {
-                Ok(v) => (v, rev_order, true),
-                Err(_) => return None,
-            }
-        }
-    } else {
-        return None;
-    };
+    let (value, final_order, is_reversed) = curated_then_shard_lookup(
+        &sub,
+        &txn,
+        curated_shard_dbs,
+        shard_dbs,
+        fwd_polys,
+        fwd_order,
+        true,
+    )?;
 
     // Accept ALL stored friends (any length), preferring the fewest gates.
     let mut candidates: Vec<CircuitSeq> = Vec::new();

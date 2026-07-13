@@ -1,5 +1,6 @@
 pub mod disperse;
 pub mod fragment;
+pub mod frozen;
 pub mod gadgets;
 pub mod identities;
 pub mod main_mix;
