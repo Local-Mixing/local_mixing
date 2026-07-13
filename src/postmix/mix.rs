@@ -322,10 +322,12 @@ impl Default for MixParams {
             moves: 1_000_000,
             merge_reach: 4096,
             journal_len: 1 << 18,
-            // SUSPENDED (2026-07-13 directional redesign): exact crossing
-            // reversal is off by default; contraction is merge-only. Set > 0
-            // to re-enable (the journal machinery is intact).
-            undo_frac: 0.0,
+            // Reinstated after the clock audit (2026-07-13): undo reverses
+            // only sterile crossings (stamp-liveness protects anything that
+            // fed later moves) and is the size valve for crossing ladders,
+            // which the pairwise catalogue cannot invert. Raw crossing
+            // counters overcount net work ~2x — read r1/r2/r3 minus undos.
+            undo_frac: 0.5,
             tabu_moves: 2_000,
             w_cross: 0.70,
             // SUSPENDED: fresh-wire case splits are covered by the twists'
@@ -2153,10 +2155,6 @@ mod mix_tests {
             moves: 20_000,
             target_size: 300,
             temp: 20.0,
-            // This test pins the CLASSIC size-control machinery (journal undo
-            // is what digs crossing ladders back out); undo is suspended in
-            // the directional-walk defaults, so re-enable it explicitly.
-            undo_frac: 0.5,
             verify_every: 2_000,
             report_every: u64::MAX,
             seed: 5,
@@ -2390,13 +2388,12 @@ mod mix_tests {
         mx.global_check();
     }
 
-    // The directional walk at its new defaults (undo and fresh-split
-    // suspended, directional insert with embedded crosses, birth advance +
-    // failed-cross retreat replacing the uniform scatter): function is
-    // preserved through every sub-step (local_verify + periodic global
-    // checks), inserts really do shoot both copies, and size stays bounded
-    // (merge-only contraction equilibrates above target rather than running
-    // away — the bound here is a loose runaway canary, not a promise).
+    // The directional walk at its defaults (fresh-split suspended, undo live,
+    // directional insert with embedded crosses, birth advance + failed-cross
+    // retreat replacing the uniform scatter): function is preserved through
+    // every sub-step (local_verify + periodic global checks), inserts really
+    // do shoot both copies, and size stays bounded (the bound is a loose
+    // runaway canary, not a promise).
     #[test]
     fn directional_walk_preserves_function() {
         let gates = random_mixed_circuit(31, 16, 300);
@@ -2419,7 +2416,6 @@ mod mix_tests {
             "crossings barely ran"
         );
         assert!(mx.counters.scatters > 0, "no directional birth advances");
-        assert_eq!(mx.counters.undos, 0, "undo ran despite suspension");
         assert!(mx.counters.fresh_splits == 0, "fresh splits ran despite suspension");
         let n = mx.arena.len();
         assert!(n < 4 * 400, "size ran away under merge-only contraction: {n}");

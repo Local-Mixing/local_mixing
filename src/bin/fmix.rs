@@ -70,9 +70,7 @@ struct Args {
     #[arg(long, default_value_t = 262_144)]
     journal_len: usize,
     /// Fraction of contraction moves that try a journal undo first
-    /// (SUSPENDED by default since the directional redesign; set > 0 to
-    /// re-enable exact crossing reversal)
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(long, default_value_t = 0.5)]
     undo_frac: f64,
     /// Refractory period in moves: a split event may not be undone or
     /// sibling-merged until this many moves have passed
