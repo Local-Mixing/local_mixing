@@ -988,7 +988,20 @@ impl Mixer {
         let lmin = (self.params.twist_min_len.max(2).min(cap)) as f64;
         let len = (self.rng.random_range(lmin.ln()..=(cap as f64).ln()).exp().round() as usize)
             .clamp(2, cap);
-        let start = self.arena.random_linked(&mut self.rng);
+        // Symmetric truncation: the window's virtual start is uniform over
+        // [-(len-1), n-1] and the window is clamped to the circuit, so
+        // left-overshooting draws pile their opening packets at the head
+        // exactly as right-overshoots pile closings at the tail. Uniform
+        // start with right-only truncation starves the head of straddling
+        // frames (measured 100x head/tail decorrelation asymmetry, fx1tw).
+        let (start, len) = {
+            let draw = self.rng.random_range(0..n + len - 1);
+            if draw < len - 1 {
+                (self.arena.head(), draw + 1) // left-truncated: [0, draw+1)
+            } else {
+                (self.arena.random_linked(&mut self.rng), len)
+            }
+        };
 
         // Pass 1: locate the window end (truncated at the tail) and collect
         // the wires it reads / writes / touches, so P can be drawn from wires
@@ -2225,6 +2238,39 @@ mod mix_tests {
         assert!(mx.counters.twist_relabels > 0, "twists never relabeled a gate");
         assert!(mx.remaining_g57() <= comp0, "fossil count increased");
         assert!(mx.counters.merges() > 0, "no merges alongside twists");
+        mx.global_check();
+    }
+
+    // Symmetric truncation: with twist_min_len at circuit scale every draw is
+    // near-full-length, so ~half the windows left-truncate (virtual start < 0)
+    // and their opening packets land at the head. Function preservation +
+    // global_check through thousands of such windows exercises the boundary
+    // insert path (brackets before the arena head) and the short-window skip
+    // paths (len as small as 1).
+    #[test]
+    fn twist_left_truncated_windows_preserve_function() {
+        let gates = random_mixed_circuit(23, 16, 300);
+        let params = MixParams {
+            k_max: 5,
+            moves: 20_000,
+            target_size: 600,
+            temp: 20.0,
+            w_twist_neg: 0.10,
+            w_twist_swap: 0.10,
+            twist_min_len: usize::MAX, // clamped to circuit size -> len == n
+            verify_every: 1_000,
+            report_every: u64::MAX,
+            seed: 11,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        assert!(
+            mx.counters.twist_negs + mx.counters.twist_swaps > 50,
+            "twists barely ran: {}+{}",
+            mx.counters.twist_negs,
+            mx.counters.twist_swaps
+        );
         mx.global_check();
     }
 
