@@ -159,7 +159,7 @@ fn canonicalize_graph(polys: &[Polynomial], n: usize) -> Permutation {
 
 fn canonical_form(polys: &[Polynomial], perm: &Permutation) -> Vec<Polynomial> {
     let n = polys.len();
-    let mut canonical = vec![Polynomial::new(); n];
+    let mut canonical = vec![Polynomial::default(); n];
     for (old_wire, poly) in polys.iter().enumerate() {
         let new_wire = perm.data[old_wire];
         canonical[new_wire] = polynomial_from_terms(poly.iter().map(|&m| {

@@ -1,10 +1,13 @@
+use num_traits::PrimInt;
 // Basic implementation for circuit, gate, and permutations
 use primitive_types::U256 as u256;
 use primitive_types::U512 as u512;
 use rand::{RngCore, seq::SliceRandom};
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::{HashMap, HashSet};
+use std::ops::BitAndAssign;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -56,7 +59,7 @@ pub struct CircuitSeq {
 
 // Polynomial representation of circuit
 pub type Monomial = u64;
-pub type Polynomial = HashSet<Monomial>;
+pub type Polynomial = FxHashSet<Monomial>;
 
 #[derive(Debug, Default)]
 pub struct PolyStats {
@@ -80,9 +83,24 @@ impl PolyStats {
 
 // Permutations are all the possible outputs of a circuit
 // On n wires permutation length is 1 << n
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub struct Permutation {
     pub data: Vec<usize>,
+}
+
+pub fn iter_ones<T>(mut x: T) -> impl Iterator<Item = T>
+where
+    T: PrimInt + BitAndAssign,
+{
+    std::iter::from_fn(move || {
+        if x.is_zero() {
+            None
+        } else {
+            let idx = x.trailing_zeros();
+            x &= x - T::one(); // clear the lowest set bit
+            T::from(idx)
+        }
+    })
 }
 
 // Functions on Gate struct and [u8;3]
@@ -227,24 +245,18 @@ impl Permutation {
         ((n - 1) as usize).ilog2() as usize + 1
     }
 
-    // On permutation of len 1 << n with n bits, take a bit shuffle on n bits and apply
-    pub fn bit_shuffle(&self, shuf: &Vec<usize>) -> Permutation {
+    fn permute_bits(x: usize, shuf: &[usize]) -> usize {
+        shuf.iter()
+            .enumerate()
+            .fold(0, |acc, (s, &d)| acc | (((x >> s) & 1) << d))
+    }
+
+    pub fn bit_shuffle(&self, shuf: &[usize]) -> Permutation {
         let n = self.data.len();
-        let mut q_raw = vec![0; n];
-        let mut idx = vec![0; n];
-
-        for (s, &d) in shuf.iter().enumerate() {
-            for i in 0..n {
-                q_raw[i] |= ((self.data[i] >> s) & 1) << d;
-                idx[i] |= ((i >> s) & 1) << d;
-            }
-        }
-
         let mut q = vec![0; n];
         for i in 0..n {
-            q[idx[i]] = q_raw[i];
+            q[Self::permute_bits(i, shuf)] = Self::permute_bits(self.data[i], shuf);
         }
-
         Permutation { data: q }
     }
 }
@@ -646,18 +658,16 @@ impl CircuitSeq {
             .map(|i| vec![1u64 << i].into_iter().collect())
             .collect();
 
-        let mut p = PolyStats::new(n);
-
         for &[a, b, c] in gates {
             // a' = a + bc + b + 1 = a + b(c+1) + 1 = a + b*NOT(c) + 1
             let term = poly_and_not(&polys[b as usize], &polys[c as usize]);
             poly_xor_assign(&mut polys[a as usize], term);
             toggle_monomial(&mut polys[a as usize], 0u64);
 
-            p.add(polys.clone().into_iter().flatten().collect());
+            // p.add(polys.clone().into_iter().flatten().collect());
         }
 
-        (p, polys)
+        (PolyStats::default(), polys)
     }
 
     pub fn to_polynomial(&self, n: usize, start: usize, end: usize) -> Vec<Polynomial> {
@@ -665,7 +675,7 @@ impl CircuitSeq {
     }
 
     // pub fn compose_polys(p1: &Polynomial, p2: &Polynomial) -> Polynomial {
-        // p1.symmetric_difference(p2).copied().collect()
+    // p1.symmetric_difference(p2).copied().collect()
     // }
 
     // Returns (canonical_polys, canonical_circuit, reversed)
@@ -788,6 +798,13 @@ impl CircuitSeq {
 
         (canon.0, canon.1, used)
     }
+
+    pub fn perm(&self, n: usize) -> Permutation {
+        let N = 1 << n;
+        Permutation {
+            data: (0..N).map(|i| self.evaluate(i)).collect(),
+        }
+    }
 }
 
 pub fn polynomial_from_terms<I>(terms: I) -> Polynomial
@@ -804,20 +821,17 @@ fn toggle_monomial(poly: &mut Polynomial, m: Monomial) {
 }
 
 fn poly_xor_assign(poly: &mut Polynomial, other: Polynomial) {
-    let r: Polynomial = poly.symmetric_difference(&other).copied().collect();
-    *poly = r;
+    for m in other {
+        toggle_monomial(poly, m)
+    }
 }
 
 /// Compute p1 and not(p2) === p1 p2 + p1
 fn poly_and_not(p1: &Polynomial, p2: &Polynomial) -> Polynomial {
-    // initialize as p1
     let mut q = p1.clone();
-
     // a^2 == a under F2, so take bitwise OR of all monomial pairs
-    for e in p1.iter().flat_map(|a| p2.into_iter().map(move |b| *a | *b)) {
-        if !q.remove(&e) {
-            q.insert(e);
-        }
+    for e in p1.iter().flat_map(|a| p2.into_iter().map(move |&b| a | b)) {
+        toggle_monomial(&mut q, e);
     }
     q
 }
@@ -825,7 +839,8 @@ fn poly_and_not(p1: &Polynomial, p2: &Polynomial) -> Polynomial {
 // Display polynomials
 
 pub fn polys_repr_blob(polys: &Vec<Polynomial>) -> Vec<u8> {
-    let mut bytes = Vec::new();
+    let cap: usize = polys.iter().map(|p| 1 + p.len()).sum();
+    let mut bytes = Vec::with_capacity(cap * 8);
     for poly in polys {
         let mut monomials: Vec<u64> = poly.iter().copied().collect();
         monomials.sort_unstable();

@@ -1,19 +1,32 @@
 use std::{
     collections::{HashMap, HashSet},
-    time::Instant,
+    hash::RandomState,
+    sync::{
+        Arc, Mutex,
+        atomic::{
+            AtomicI64, AtomicUsize,
+            Ordering::{self, Relaxed},
+        },
+    },
+    thread::sleep,
+    time::{Duration, Instant},
     u64,
 };
 
 use clap::Parser;
+use crossbeam::queue::SegQueue;
+use dashmap::DashMap;
 use local_mixing::{
-    circuit::{CircuitSeq, Permutation, Polynomial, circuit::poly_to_str},
-    random::random_data::random_circuit,
+    circuit::{
+        CircuitSeq, Gate, Permutation, Polynomial, base_gates, circuit::{iter_ones, poly_to_str, polys_repr_blob},
+    }, random::random_data::random_circuit,
 };
 use nauty_Traces_sys::{
     NAUTYVERSIONID, SETWORDSNEEDED, SparseGraph, WORDSIZE, nauty_check, optionblk, sparsenauty,
     statsblk,
 };
 use rand::{rng, seq::SliceRandom};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -23,18 +36,6 @@ struct Args {
 
     #[arg(short = 'm', default_value = None)]
     gates: Option<usize>,
-}
-
-fn iter_ones(mut x: u64) -> impl Iterator<Item = u64> {
-    std::iter::from_fn(move || {
-        if x == 0 {
-            None
-        } else {
-            let idx = x.trailing_zeros();
-            x &= x - 1; // clear the lowest set bit
-            Some(idx as u64)
-        }
-    })
 }
 
 fn mono_to_tag(x: u64, lsb: u32) -> u64 {
@@ -48,13 +49,18 @@ fn mono_to_tag(x: u64, lsb: u32) -> u64 {
 fn to_sparse_graph(polys: &Vec<Polynomial>) -> Vec<i32> {
     let n = polys.len();
     // How many monomials?
-    let mut all_monos = HashSet::<u64>::new();
     let mut n_edges = 0usize;
     for p in polys {
-        all_monos.extend(p);
-
         // Backward edges are length of poly
         n_edges += p.len();
+    }
+
+    let mut all_monos =
+        FxHashSet::<u64>::with_capacity_and_hasher(n_edges, FxBuildHasher::default());
+
+    for p in polys {
+        // Backward edges are length of poly
+        all_monos.extend(p);
     }
 
     // forward edges are total # of variables over all
@@ -64,12 +70,12 @@ fn to_sparse_graph(polys: &Vec<Polynomial>) -> Vec<i32> {
         .sum::<usize>();
 
     let count_monos = all_monos.len();
-    println!(
-        "# monos: {}, # edges: {}, deg: {:.2}",
-        count_monos,
-        n_edges,
-        (n_edges as f64) / ((count_monos + n) as f64)
-    );
+    // println!(
+    //     "# monos: {}, # edges: {}, deg: {:.2}",
+    //     count_monos,
+    //     n_edges,
+    //     (n_edges as f64) / ((count_monos + n) as f64)
+    // );
 
     let n_vertices = n + count_monos;
 
@@ -88,10 +94,13 @@ fn to_sparse_graph(polys: &Vec<Polynomial>) -> Vec<i32> {
     let lsb = n.ilog2() + 1;
 
     // Make sure enough space
-    assert!(n + (lsb as usize) < 32);
+    // assert!(n + (lsb as usize) < 32);
 
     // from -> to
-    let mut edges = HashMap::<u64, HashSet<u64>>::new();
+    let mut edges = FxHashMap::<u64, FxHashSet<u64>>::with_capacity_and_hasher(
+        n_edges,
+        FxBuildHasher::default(),
+    );
 
     for (i, p) in polys.iter().enumerate() {
         let i = i as u64;
@@ -112,8 +121,10 @@ fn to_sparse_graph(polys: &Vec<Polynomial>) -> Vec<i32> {
     //   i is joined.
 
     // map p <-> i
-    let mut idx_unmap = HashMap::<usize, u64>::new();
-    let mut idx_map = HashMap::<u64, usize>::new(); // wire-id or mtag -> vertex position
+    let mut idx_unmap =
+        FxHashMap::<usize, u64>::with_capacity_and_hasher(n_vertices, FxBuildHasher::default());
+    let mut idx_map =
+        FxHashMap::<u64, usize>::with_capacity_and_hasher(n_vertices, FxBuildHasher::default()); // wire-id or mtag -> vertex position
 
     // Pass 1: positions only, no edges yet
     for p in 0..n {
@@ -164,7 +175,7 @@ fn to_sparse_graph(polys: &Vec<Polynomial>) -> Vec<i32> {
     // println!("sg = {:?}", sg);
 
     let mut opt = optionblk::default_sparse();
-    opt.getcanon = 1; // REQUEST CANONICAL FORM
+    opt.getcanon = 0; // request canonical form if 1
     opt.digraph = 1;
     opt.defaultptn = 0;
     let mut stat = statsblk::default();
@@ -189,13 +200,15 @@ fn to_sparse_graph(polys: &Vec<Polynomial>) -> Vec<i32> {
         );
     }
 
-    // println!("{:?}", stat);
+    // println!("{:#?}", stat);
     // println!("{:?}", opt);
     // println!("im => {:?}", idx_map);
 
     // println!("lab = {:?}", lab);
     // println!("ptn = {:?}", ptn);
-    // println!("orbits = {:?}", orbits);
+    // if (stat.numorbits as usize) < n_vertices {
+    //     println!("orbits = {:?}", orbits);
+    // }
 
     // println!("cg = {:?}", cg);
 
@@ -211,30 +224,164 @@ fn to_sparse_graph(polys: &Vec<Polynomial>) -> Vec<i32> {
         canon_label[orig_vertex as usize] = pos as i32;
     }
 
-    for p in 0..n {
-        let orig_vertex = idx_map[&(p as u64)]; // == p for wires, but keep this for generality
-        println!("w{p} -> canonical label {}", canon_label[orig_vertex]);
-    }
+    // for p in 0..n {
+    //     let orig_vertex = idx_map[&(p as u64)]; // == p for wires, but keep this for generality
+    //     println!("w{p} -> canonical label {}", canon_label[orig_vertex]);
+    // }
 
     // println!("Canonical polynomial order: {:?}", canonical_polys);
 
     canon_label
 }
 
-fn poly_canon(mut c: &CircuitSeq, n: usize) -> Vec<i32> {
+fn poly_canon(mut c: &CircuitSeq, n: usize) -> Permutation {
     let m = c.gates.len();
+    let now = Instant::now();
     let polys = c.to_polynomial(n, 0, m);
-    for (i, p) in polys.iter().enumerate() {
-        // println!("... w{i} => {}", poly_to_str(&p, n));
+
+    if now.elapsed().as_millis() == 0 {
+        let elapsed = now.elapsed().as_micros();
+        // println!("... poly {} us", elapsed);
+    } else {
+        let elapsed = now.elapsed().as_millis();
+        // println!("... poly {} ms", elapsed);
     }
 
-    println!("Ckt: n={n} m={m}");
+    // println!("Ckt: n={n} m={m}");
 
     let now = Instant::now();
     let r = to_sparse_graph(&polys);
-    let elapsed = now.elapsed().as_micros();
-    println!("... {} us", elapsed);
-    r[..n].to_vec()
+    if now.elapsed().as_millis() == 0 {
+        let elapsed = now.elapsed().as_micros();
+        // println!("... canon {} us", elapsed);
+    } else {
+        let elapsed = now.elapsed().as_millis();
+        // println!("... canon {} ms", elapsed);
+    }
+    Permutation {
+        data: r[..n].iter().map(|&x| x as usize).collect(),
+    }
+}
+
+fn perm(c: &CircuitSeq, n: usize) -> Permutation {
+    let N = 1 << n;
+
+    Permutation { data: (0..N).map(|i| c.evaluate(i)).collect() }
+}
+
+fn iso_bfs(n: usize, max_m: usize) {
+    let Q = Arc::new(SegQueue::<CircuitSeq>::new());
+    let dist = Arc::new(DashMap::<Permutation, usize>::new());
+    let dist_counts = Arc::new(Mutex::new(HashMap::<usize, usize>::new()));
+
+    let circuits_stored = Arc::new(AtomicUsize::new(1));
+    let q_size = Arc::new(AtomicI64::new(1));
+
+    let num_threads = num_cpus::get();
+    let thr_counter = Arc::new(AtomicUsize::new(num_threads));
+
+    let base_ckt = CircuitSeq {
+        gates: vec![[0u16, 1, 2]],
+    };
+    Q.push(base_ckt.clone());
+
+    dist.insert(Permutation::id_perm(n), 0);
+    dist.insert(perm(&base_ckt, n), 1);
+
+    let gens = Arc::new(base_gates(n));
+
+    // Spawn worker threads
+    std::thread::scope(|s| {
+        for tid in 0..num_threads {
+            let Q = Q.clone();
+            let dist = dist.clone();
+            let dist_counts: Arc<Mutex<HashMap<usize, usize>>> = dist_counts.clone();
+            let gens = gens.clone();
+            let circuits_stored = circuits_stored.clone();
+            let thr_counter = thr_counter.clone();
+
+            let start = Instant::now();
+            let mut last_stored = 0usize;
+
+            s.spawn(move || {
+                if Q.is_empty() {
+                    sleep(Duration::from_millis(500));
+                }
+
+                let mut last_print = Instant::now();
+
+                while let Some(g) = Q.pop() {
+                    // Batch collect new circuits and their metadata
+                    let mut new_circuits: Vec<(CircuitSeq, Vec<u8>, usize)> = Vec::with_capacity(gens.len());
+
+                    for &s in gens.iter() {
+                        let mut h = g.clone();
+                        h.gates.push(s);
+
+                        let rw = poly_canon(&h, n);
+                        h.rewire(&rw, n);
+                        let m = h.gates.len();
+                        let p = polys_repr_blob(&h.to_polynomial(n, 0, m));
+
+                        if m <= max_m {
+                            new_circuits.push((h, p, m));
+                        }
+                    }
+
+                    // Batch insert into shared data structures
+                    let mut counts_update = HashMap::<usize, usize>::new();
+                    let mut to_queue = Vec::new();
+
+                    for (h, p, m) in new_circuits {
+                        if !dist.contains_key(&p) {
+                            dist.insert(p, m);
+                            *counts_update.entry(m).or_default() += 1;
+                            to_queue.push(h);
+                        }
+                    }
+
+                    // Batch update counts
+                    if !counts_update.is_empty() {
+                        let mut dc = dist_counts.lock().unwrap();
+                        for (m, count) in counts_update {
+                            *dc.entry(m).or_default() += count;
+                        }
+                    }
+
+                    // let dl = dist.len();
+                    let ql = Q.len();
+                    let ct = circuits_stored.fetch_add(to_queue.len(), Ordering::Relaxed);
+
+                    // Push all new circuits to queue
+                    for h in to_queue {
+                        Q.push(h);
+                    }
+                    //     println!("Insert {} (#{}, Q{})", h.repr(), 0, ql);
+
+                    let kper_sec = (ct as f64) / start.elapsed().as_secs_f64() / 1000.0;
+                    let eta = (ql as f64 / 1000.0) / kper_sec;
+
+                    if last_print.elapsed().as_secs_f32() > 2.0 {
+                        if last_stored != ct {
+                            println!("t{tid:3} st:{ct:6} Q:{ql:6}    {kper_sec:.1}k/s");
+                        } else {
+                            // let thr = thr_counter.load(Ordering::Relaxed);
+                            println!(
+                                "t{tid:3} st:{ct:6} Q:{ql:6}    {kper_sec:.1}k/s   eta {eta:.0} sec"
+                            );
+                        }
+                        last_print = Instant::now();
+                    }
+
+                    last_stored = ct;
+                }
+            });
+        }
+    });
+
+    println!("{}", dist.len());
+    let final_counts = dist_counts.lock().unwrap().clone();
+    println!("{:#?}", final_counts);
 }
 
 fn main() {
@@ -243,26 +390,66 @@ fn main() {
     let n = args.wires;
     let m = args.gates.unwrap_or(n * (n.ilog2() + 1) as usize);
 
-    let mut ckt = random_circuit(n as usize, m);
+    iso_bfs(n, m);
 
-    let r1 = poly_canon(&ckt, n);
+    // for m in 0..m {
+    //     for g in base_gates(n) {
+    //         let mut ckt =
+    //     }
+    // }
 
-    let mut p = Permutation::id_perm(n);
-    p.data.shuffle(&mut rng());
+    // for g in base_gates(n) {
+    //     let mut ckt = CircuitSeq { gates: vec![g] };
+    //     let r1 = poly_canon(&ckt, n);
+    //     // println!("{r1:?}");
+    //     let p1 = Permutation {
+    //         data: r1.into_iter().map(|x| x as usize).collect(),
+    //     };
+    //     ckt.rewire(&p1, n);
+    //     let poly2 = ckt.to_polynomial(n, 0, 1);
+    //     // println!("== {:#?}", ;
+    //     d.insert(polys_repr_blob(&poly2));
+    // }
 
-    ckt.rewire(&p, n);
+    // println!("{} / {}", d.len(), base_gates(n).len());
 
-    let r2 = poly_canon(&ckt, n);
-    
-    let p1 = Permutation { data: r1.into_iter().map(|x| x as usize).collect() };
-    let p2 = Permutation { data: r2.into_iter().map(|x| x as usize).collect() };
+    // return;
 
-    println!("{p1:?}");
-    println!("{p2:?}");
+    // let mut ckt = random_circuit(n as usize, m);
 
-    let com = p2.invert().compose(&p1);
-    println!("{com:?}");
-    println!("{p:?}");
+    // let r1 = poly_canon(&ckt, n);
 
-    assert_eq!(com, p);
+    // let p1 = Permutation {
+    //     data: r1.into_iter().map(|x| x as usize).collect(),
+    // };
+    // let mut ck2 = ckt.clone();
+    // ck2.rewire(&p1, n);
+
+    // let mut p = Permutation::id_perm(n);
+    // p.data.shuffle(&mut rng());
+
+    // ckt.rewire(&p, n);
+
+    // let r2 = poly_canon(&ckt, n);
+
+    // let p2 = Permutation {
+    //     data: r2.into_iter().map(|x| x as usize).collect(),
+    // };
+    // let mut ck3 = ckt.clone();
+    // ck3.rewire(&p2, n);
+
+    // println!("{p1:?}");
+    // println!("{p2:?}");
+
+    // let com = p2.invert().compose(&p1);
+    // // println!("{com:?}");
+    // // println!("{p:?}");
+
+    // assert_eq!(com, p);
+
+    // let q2 = ck2.to_polynomial(n, 0, m);
+    // let q3 = ck3.to_polynomial(n, 0, m);
+    // assert_eq!(q2, q3);
+
+    // println!("OK!");
 }
