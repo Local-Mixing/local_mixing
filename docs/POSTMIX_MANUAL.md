@@ -71,16 +71,46 @@ Run it directly on a g57 circuit (`--input-format g57`) with a target well
 above the input size: the growth phase (thermostat pinned at 98% expansion) is
 itself the strongest mixing — it both transports material and erodes fossils.
 
+**The directional walk.** Every gate carries a persistent **direction**
+(left/right), drawn uniformly for each input fossil at load. Transport is
+directional rather than diffusive: a crossing floats its gate along the gate's
+*own* direction; every fragment born in a collision inherits the shot gate's
+direction with probability `--dir-p` (else the opposite), and then advances
+`floor(dir_q · slack)` gates in its own direction at birth (`--dir-q`), where
+`slack` is its free run to the first collider. This directional birth-advance
+**replaces the old uniform scatter** — material moves ballistically along
+aligned directions instead of diffusing symmetrically. A crossing that is
+declined (width-damped, capped, or hitting the boundary) does not leave its
+gate parked at the collision; it **retreats** `floor((1−dir_q) · way)` of the
+distance it floated in.
+
 **Expansion moves** (chosen by relative weight; each produced piece with `c`
 controls is width-damped — allowed outright if `c ≤ split_damp`, else with
-probability `2^-(c−split_damp)`):
+probability `B^-(c−split_damp)` where `B = --split-base`):
 
 | Move | Weight flag | What it does |
 |---|---|---|
-| crossing | `--w-cross` (0.70) | float a random gate to its collision point and split it past the collider by one R-rule (R1/R2/R3, a Hurwitz-style conjugation step); a shot g57 pre-splits into its two conjunction pieces. Recorded in the undo journal. |
-| fresh split | `--w-fresh` (0.15) | case split `R → xR, !xR` on a **uniformly random uninvolved wire** — the entropy move that couples arbitrary wires into a gate's support. |
+| crossing | `--w-cross` (0.70) | float a gate along **its own direction** to its collision point and split it past the collider by one R-rule (R1/R2/R3, a Hurwitz-style conjugation step); a shot g57 pre-splits into its two conjunction pieces. Fragments inherit direction (`dir_p`) and birth-advance (`dir_q`); a failed shot retreats. Recorded in the undo journal. |
+| insert | `--w-insert` (0.05) | insert an adjacent identity pair of a **fresh random conjunction** — width uniform in `[1, K]`, random distinct wires, random polarities. The two copies get **opposite** directions and each is immediately **shot once** (so one insert embeds two crossings), separating the pair directionally. |
 | unsubsume | `--w-unsub` (0.10) | inverse of `Subsume`: `!lR → R, lR`. |
-| copy-pair insert | `--w-insert` (0.05) | insert an identical adjacent pair of an existing gate (an identity) at a random position. |
+| negation twist | `--w-twist-neg` (0) | conjugate a window by a wire negation `N` (`+2` gates): every interior gate reading that wire has its literal polarity flipped, brackets `N…N` restore the function. A state-frame rotation — see the twists below. |
+| swap twist | `--w-twist-swap` (0) | conjugate a window by a wire swap realized as 3 CNOTs/side (`+6` gates): routes the window's material through a fresh physical wire. |
+| transvection twist | `--w-twist-cnot` (0) | conjugate a window by `x_a ^= x_b` (one CNOT/side, `+2` gates): the affine, **non-isometric** rung — the one that breaks Hamming-distance self-gauges neg/swap preserve. Interior `a`-readers case-split on `b` (count ×2, width +1, K-capped); `b` must be unwritten in the window, which caps these windows at the mid scale. |
+| fresh split | `--w-fresh` (0) | case split `R → xR, !xR` on a uniformly random uninvolved wire. **Suspended by default** (its wire-coupling entropy is covered by the twists' interior case-splitting); set `> 0` to re-enable. |
+
+**Conjugation twists** (`--w-twist-*`, off by default). A twist picks a window
+`W` and an involution `P` and rewrites `P·(P W P)·P ≡ W`: it conjugates every
+interior gate in place and brackets the window with one `P`-packet per side.
+The function and everything outside `W` are unchanged, but every interior
+*state* becomes its image under `P` — so a twist is the one move that rotates
+the intermediate-state trajectory, collapsing the prefix-progress diagonal that
+no support-local move can touch. Window lengths are log-uniform over
+`[--twist-min-len, |circuit|]`, and the virtual window start is drawn
+symmetrically (a window may hang off either end and truncate against it) so
+head and tail accumulate twist coverage equally. Keep weights small (`~1e-3`):
+one twist rewrites `O(window)` gates. Neg/swap are Hamming isometries (invisible
+to avalanche/difference gauges); the transvection twist is the affine rung that
+is not.
 
 **Contraction moves.** With probability `--undo-frac` first try a **journal
 undo**: exactly reverse a recorded crossing while all its pieces are alive
@@ -88,10 +118,14 @@ undo**: exactly reverse a recorded crossing while all its pieces are alive
 catalogue cannot invert (R-ladder rungs are pairwise unmergeable), so without
 the journal size creeps up at the crossing rate regardless of the thermostat —
 and dead journal entries are permanently unmergeable material, so **size creep
-above target tracks irreversible mixing**. Otherwise a **catalogue merge**:
-pick a random gate, find the nearest reachable partner through the global
-(target, wire-set) hash index within `--merge-reach`, float the pair adjacent
-(incremental wall check), apply the catalogue.
+above target tracks irreversible mixing**. (Undo only ever reverses *sterile*
+crossings: the stamp check kills an entry the moment any piece feeds a later
+move, so nothing that mattered is taken back — but the raw `r1/r2/r3` crossing
+counters overcount net work by roughly 2×, since about half of all crossings
+are eventually reversed. Read net crossings as `r1+r2+r3 − undos`.) Otherwise a
+**catalogue merge**: pick a random gate, find the nearest reachable partner
+through the global (target, wire-set) hash index within `--merge-reach`, float
+the pair adjacent (incremental wall check), apply the catalogue.
 
 **Tabu.** A split event may not be undone or sibling-merged until
 `--tabu-moves` moves have passed — freshly split pairs cannot instantly
@@ -104,8 +138,9 @@ writes the origin of each output gate (one per line, final order;
 `4294967295` = synthetic material with no input ancestor).
 
 **Final step.** Every gate floats to a uniform random position in its
-two-sided collision box (skip with `--skip-final-float`), then the output is
-verified and written.
+two-sided collision box (skip with `--skip-final-float`) — the one place a
+uniform (non-directional) float still runs, to decorrelate final positions —
+then the output is verified and written.
 
 **Verification.** Three layers, all on by default: (1) every move is
 exhaustively verified on its support before commit (disable at your own risk
@@ -124,12 +159,18 @@ final write are each verified. A failure panics immediately.
 | `--temp` | max(target/100, 64) | thermostat softness in gates |
 | `--moves` | 1,000,000 | total move attempts |
 | `--k-max` | 12 | max controls per gate (**K**). Wider = bigger float boxes (separation exemption) but wider gates and larger files |
-| `--split-damp` | 2 | width damping **c** (fsplit convention): a produced piece with `c` controls passes w.p. `min(2^-(c−D),1)`. Dominates growth speed far more than K |
+| `--split-damp` | 2 | width damping offset **D** (fsplit convention): a produced piece with `c` controls passes w.p. `min(B^-(c−D),1)`. Dominates growth speed far more than K |
+| `--split-base` | 2.0 | damper base **B** (was hardcoded 2). Larger = steeper width penalty (narrower gates, slower growth); `B ≤ 1` disables damping |
+| `--dir-p` | 0.75 | probability a collision fragment inherits the shot gate's direction (else the opposite) |
+| `--dir-q` | 0.85 | directional-transport fraction: a fresh piece advances `floor(q·slack)` in its direction at birth; a failed shot retreats `floor((1−q)·way)` |
 | `--merge-reach` | 4096 | max distance (gates) to a merge partner; bounds the locating scan and wall check |
 | `--journal-len` | 262,144 | undo journal capacity |
-| `--undo-frac` | 0.5 | fraction of contraction moves that try a journal undo first |
+| `--undo-frac` | 0.5 | fraction of contraction moves that try a journal undo first (`0` skips journal recording entirely — pure catalogue contraction, leaks unmergeable crossing ladders) |
 | `--tabu-moves` | 2000 | refractory age (moves) before an event may be undone/sibling-merged |
-| `--w-cross/-fresh/-unsub/-insert` | .70/.15/.10/.05 | expansion move weights (set all to 0 for pure-drain mode: recovers recyclable slack, no new mixing) |
+| `--w-cross/-unsub/-insert` | .70/.10/.05 | expansion move weights |
+| `--w-fresh` | 0 | fresh-wire split weight — **suspended by default** (covered by the twists); set `>0` to re-enable |
+| `--w-twist-neg/-swap/-cnot` | 0/0/0 | conjugation/transvection twist weights (state-frame mixing). `0` = trajectory-identical to the pre-twist chain; keep small (`~1e-3`) when on |
+| `--twist-min-len` | 64 | minimum twist window length (max is the current circuit size); set near the local-churn/leeway scale (`~256` in production) |
 | `--verify-every` | 10,000 | sampled global equality check cadence (moves) |
 | `--report-every` | 50,000 | report line + stop/dump flag check cadence (moves) |
 | `--no-local-verify` | off | disable the per-move exhaustive local check |
@@ -154,6 +195,7 @@ Checked at every report point (so responsiveness = `--report-every`):
 ```
 [fmix] mv= size= target= comp= | merges c= x= d= s= sib= xorig= tabu= nopart= wall= far= noadj=
 | undo ok= dead= tabu= miss= live= | expand r1= r2= r3= pre= fresh= unsub= ins=
+  twn= tws= twc= twrel= twsplit= twspan= twskip=
 | declined= blockw= dl= bnd= | floats=N/steps scat=N/steps
 | disp= owin= fan0= leew= odiff= oadj= width[...]
 ```
@@ -167,10 +209,13 @@ Checked at every report point (so responsiveness = `--report-every`):
 | `tabu, nopart, wall, far, noadj` | merges blocked: partner too recent / no partner in index / wall between / beyond `merge-reach` / could not be floated adjacent |
 | `undo ok/dead/tabu/miss` | journal undos done / entries invalidated by dead pieces / too recent / gather failed. `dead` ≈ permanently unmergeable material |
 | `live` | current journal length |
-| `expand r1/r2/r3/pre` | crossings by rule; `pre` = g57 presplits (each costs +1 gate, erodes one fossil) |
-| `fresh/unsub/ins` | fresh-wire splits / unsubsumes / copy-pair inserts |
+| `expand r1/r2/r3/pre` | crossings by rule; `pre` = g57 presplits (each costs +1 gate, erodes one fossil). Net crossings = `r1+r2+r3 − undos` (see undo above) |
+| `fresh/unsub/ins` | fresh-wire splits (0 unless `--w-fresh>0`) / unsubsumes / inserts. Each insert also fires two crossings (counted under `r1/r2/r3`) |
+| `twn/tws/twc` | negation / swap / transvection twists performed |
+| `twrel/twsplit/twspan` | interior gates relabeled by twists / of those, transvection case-splits (each +1 gate) / total window gates covered — the twist state-transport gauge |
+| `twskip` | twists abandoned (no eligible wire, or transvection `b` pool empty) |
 | `declined, blockw, dl, bnd` | width-damping declines; width-cap blocks; rule deadlocks; circuit-boundary hits |
-| `floats, scat` | float and scatter events / total steps — mean steps per event is the mobility gauge; if it decays with width creep, lower K or raise damping |
+| `floats, scat` | float events (incl. crossing floats + failed-shot retreats) / directional birth-advances, each with total steps — mean steps per event is the mobility gauge; if it decays with width creep, lower K or raise damping |
 | `disp` | mean normalized displacement of material from its origin position: 0 = unmixed, 1/3 = independent |
 | `owin` | distinct origins per 32-gate window (→ 32 = locally saturated interleave) |
 | `fan0` | fraction of writes never read before their wire is overwritten |
@@ -185,7 +230,15 @@ the fixed-size steady state churns composition fast but barely moves material,
 while the *growth phase* is what transports (a 44× growth run reached
 odiff 0.20 / oadj 0.34 where fixed-size runs sat at 0.01 / 0.96). Fossil
 erosion needs no targeting: uniform selection fully eroded 67k g57s within
-~37M moves at 44× growth.
+~37M moves at 44× growth. The four axes are independent and need separate
+dosing: **compositional** (saturates in a few moves/gate), **positional/material**
+(set by the growth ratio; audited by the fcompress residual), **state/progress**
+(the twists — audited by the prefix-distance heatmap; a doubled-rate twist run
+drove the plate to `σ ≈ 1.15` bits, mean 128/256, i.e. isotropic coin-flip
+distance, and saturated by ~7M moves), and **CNF-inversion hardness** (a fourth
+axis, anti-correlated with state mixing). Temperature is not just a size knob —
+higher temp means looser size regulation, larger breathing, and measurably
+faster fossil erosion at equal moves.
 
 ---
 
@@ -276,11 +329,15 @@ Convergence-curve recipe: touch the dump flag periodically during a run, then
 ## 5. Recipes
 
 ```bash
-# Production mixing run, direct on a gadgetized g57 circuit (fsplit-replacement mode)
+# Production mixing run, direct on a gadgetized g57 circuit, twists ON.
+# Twists collapse the prefix-progress diagonal (the state axis); the growth
+# phase does the material transport and fossil erosion. Keep twist weights
+# small and set --twist-min-len near the leeway scale.
 FMIX_STOP_FLAG=~/tds/run.stop FMIX_DUMP_FLAG=~/tds/run.dump \
 FMIX_DUMP_OUT=~/tds/run.snapshot \
 fmix --input A_gadgetized.txt --input-format g57 \
-     --target-size 3000000 --moves 50000000 --k-max 20 --split-damp 2 --seed 1 \
+     --target-size 1000000 --moves 10000000 --k-max 20 --split-damp 2 --seed 1 \
+     --w-twist-neg 1e-3 --w-twist-swap 1e-3 --twist-min-len 256 \
      --output run.txt --origins-out run.origins.txt \
      --report-every 1000000 --verify-every 100000 > run.log 2>&1
 
@@ -293,6 +350,11 @@ fcompress --input run.txt --output run.fc.txt
 # Effective size only (dry run), exploiting gadgetized output don't-cares
 fcompress --input run.txt --live-wires upper-half
 ```
+
+For a faster run at the cost of the development-time per-move proof, add
+`--no-local-verify` (the sampled `--verify-every` global check still bounds the
+blast radius). Twists carry the largest verification cost — each relabel of a
+wide gate is checked with a truth table exponential in its support.
 
 ---
 
