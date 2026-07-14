@@ -74,6 +74,8 @@ fn main() {
     for &local in &[false, true] {
         let mode = if local { "local" } else { "global" };
         let mut counts: BTreeMap<(usize, usize), u64> = BTreeMap::new();
+        // Joint (wires, gates) histogram of sampled windows.
+        let mut joint: BTreeMap<(usize, usize), u64> = BTreeMap::new();
         let mut wires_sum = [0u64; 4];
         let mut gates_sum = [0u64; 4];
         let mut n_class = [0u64; 4];
@@ -82,10 +84,15 @@ fn main() {
             let (distinct, full) = window_litter_stats(&tags[st..en]);
             let cls = class_of(distinct, full);
             let w = sub.used_wires().len();
+            let g = sub.gates.len();
             *counts.entry((cls, w)).or_insert(0) += 1;
+            *joint.entry((w, g)).or_insert(0) += 1;
             wires_sum[cls] += w as u64;
-            gates_sum[cls] += sub.gates.len() as u64;
+            gates_sum[cls] += g as u64;
             n_class[cls] += 1;
+        }
+        for ((w, g), n) in &joint {
+            println!("JOINT,{},{},{},{}", mode, w, g, n);
         }
         for cls in 0..4 {
             if n_class[cls] > 0 {
@@ -105,6 +112,9 @@ fn main() {
     }
 
     // Pass 2: DB probes — hit rate by span and class (forward then reverse key, like the trial).
+    if db_probes == 0 {
+        return; // census-only mode
+    }
     let env = Environment::new()
         .set_flags(EnvironmentFlags::READ_ONLY | EnvironmentFlags::NO_LOCK)
         .set_max_readers(10000)
@@ -117,6 +127,9 @@ fn main() {
     for &local in &[false, true] {
         let mode = if local { "local" } else { "global" };
         let mut probes: BTreeMap<(usize, usize), (u64, u64)> = BTreeMap::new();
+        // Joint (wires, gates) probe/hit counts — for the success heatmap and the
+        // wires=3*gates diagonal hypothesis.
+        let mut probes_wg: BTreeMap<(usize, usize), (u64, u64)> = BTreeMap::new();
         let mut canon_bail = 0u64;
         let mut done = 0usize;
         while done < db_probes {
@@ -124,7 +137,14 @@ fn main() {
             let (distinct, full) = window_litter_stats(&tags[st..en]);
             let cls = class_of(distinct, full);
             let w = sub.used_wires().len();
+            let g = sub.gates.len();
             done += 1;
+            if done % 100 == 0 {
+                eprintln!("[probe] {} {}/{}", mode, done, db_probes);
+            }
+            // Reproducer trap: persist the window before canonicalizing, so a wedge
+            // (uncapped canonicalization blowup) leaves the culprit circuit on disk.
+            let _ = std::fs::write("./window_span_current.txt", sub.repr());
             let (fwd_polys, _, _) = sub.canonicalize_polys_single(false);
             if fwd_polys.is_empty() {
                 canon_bail += 1;
@@ -143,13 +163,19 @@ fn main() {
             drop(txn);
             let e = probes.entry((cls, w)).or_insert((0, 0));
             e.0 += 1;
+            let ewg = probes_wg.entry((w, g)).or_insert((0, 0));
+            ewg.0 += 1;
             if hit {
                 e.1 += 1;
+                ewg.1 += 1;
             }
         }
         println!("DBBAIL,{},{}", mode, canon_bail);
         for ((cls, w), (p, h)) in &probes {
             println!("DBSTAT,{},{},{},{},{}", mode, CLASSES[*cls], w, p, h);
+        }
+        for ((w, g), (p, h)) in &probes_wg {
+            println!("DBJOINT,{},{},{},{},{}", mode, w, g, p, h);
         }
     }
 }
