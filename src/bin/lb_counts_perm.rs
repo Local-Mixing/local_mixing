@@ -109,7 +109,7 @@ fn canonicalize_perm_sparse_graph(p: &Permutation) -> (Permutation, usize) {
 }
 
 #[derive(Hash, PartialEq, Eq, Clone)]
-struct SmallPerm(Vec<u8>);
+struct SmallPerm(Vec<u16>);
 
 impl Into<Permutation> for SmallPerm {
     fn into(self) -> Permutation {
@@ -119,8 +119,8 @@ impl Into<Permutation> for SmallPerm {
 
 impl From<Permutation> for SmallPerm {
     fn from(value: Permutation) -> Self {
-        assert!(value.data.len() <= 256);
-        Self(value.data.iter().map(|&x| x as u8).collect())
+        // assert!(value.data.len() <= 256);
+        Self(value.data.iter().map(|&x| x as u16).collect())
     }
 }
 
@@ -162,7 +162,8 @@ fn iso_bfs(n: usize, max_m: usize) {
             let mut last_stored = 0usize;
 
             s.spawn(move || {
-                if Q.is_empty() {
+                while Q.is_empty() {
+                    // Wait until queue becomes loaded...
                     sleep(Duration::from_millis(500));
                 }
 
@@ -232,7 +233,7 @@ fn iso_bfs(n: usize, max_m: usize) {
 
                     if last_print.elapsed().as_secs_f32() > 2.0 {
                         if last_stored != ct {
-                            println!("t{tid:3} st:{ct:6} Q:{ql:6}    {kper_sec:.1}k/s");
+                            println!("t{tid:3} st:{ct:6} Q:{ql:6}    {kper_sec:.1}k/s  m={m}");
                         } else {
                             // let thr = thr_counter.load(Ordering::Relaxed);
                             println!(
@@ -252,6 +253,7 @@ fn iso_bfs(n: usize, max_m: usize) {
     let total_ckt = (n * (n - 1) * (n - 2)).pow(max_m as u32);
     let compr_ratio = total_ckt / can_ckt;
 
+    println!("n={n} wires");
     println!("Final: {} canonical perms, {} total circuits, ({}x)", can_ckt, total_ckt, compr_ratio);
 
     println!("m      count     sphere");
