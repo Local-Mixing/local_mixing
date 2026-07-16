@@ -38,7 +38,7 @@ fn bench_canon_enabled() -> bool {
 //
 // CANON_CACHE_MB caps the approximate entry-byte footprint (default 256 MiB;
 // 0 disables). On overflow the cache is cleared wholesale, mirroring the
-// LMDB lookup cache's epoch-reset policy.
+// Frozen lookup cache's epoch-reset policy.
 // ---------------------------------------------------------------------------
 struct CanonCacheEntry {
     polys: Vec<Polynomial>,
@@ -850,7 +850,7 @@ impl CircuitSeq {
 
     /// Compute canonical polynomials for one direction only (forward or reversed).
     /// Returns (canonical_polys, final_order, used_wires).
-    /// Used by compress_lmdb to try forward first, then reverse on miss.
+    /// Used by frozen compression to try forward first, then reverse on miss.
     pub fn canonicalize_polys_single(
         &self,
         reversed: bool,
@@ -943,7 +943,7 @@ impl CircuitSeq {
             if CANON_CACHE_BYTES.fetch_add(entry_bytes, Ordering::Relaxed) + entry_bytes
                 > canon_cache_cap_bytes()
             {
-                // Wholesale epoch reset, same policy as the LMDB lookup cache.
+                // Wholesale epoch reset, same policy as the frozen lookup cache.
                 cache.clear();
                 CANON_CACHE_BYTES.store(entry_bytes, Ordering::Relaxed);
             }

@@ -5,6 +5,7 @@ use rand::{Rng, RngCore};
 use crate::{
     circuit::circuit::{CircuitSeq, Gate, U1024},
     replace::{
+        frozen::FrozenDb,
         gadgets::{
             feistalize, feistalize_with_slice_zero, feistalize_with_slice_zero_hardcoded,
             feistalize_with_slice_zero_random, gadgetize, packed_bit,
@@ -19,39 +20,6 @@ use crate::{
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// Open all dbs ahead of time in the LMDB
-// LMDB used for fast reads
-// nXmY store the canonicalized (up to gate ordering and wire relabeling) version of all the circuits
-// perms_tables_nX store a list of tables that share a permutation. Legacy use for building random identities
-// nXmYperms stores all circuits canonicalized only up to gate ordering
-// ids_nXgK stores identities on X wires with gate pair taxonomy K on the first two gates. See Taxonomies to_int to see
-// Last row of tables is used for swapping wires, CNOTS, NOTS
-pub fn open_curated_shard_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
-    (0u16..=255)
-        .map(|s| {
-            let name = format!("curated_{:02x}", s);
-            env.open_db(Some(name.as_str()))
-                .unwrap_or_else(|e| panic!("Failed to open curated shard db {:02x}: {:?}", s, e))
-        })
-        .collect()
-}
-
-pub fn open_shard_dbs(env: &lmdb::Environment) -> Vec<lmdb::Database> {
-    (0u16..=255)
-        .map(|s| {
-            let name = format!("{:02x}", s);
-            env.open_db(Some(name.as_str()))
-                .unwrap_or_else(|e| panic!("Failed to open shard db {:02x}: {:?}", s, e))
-        })
-        .collect()
-}
-
-pub fn open_all_dbs(env: &lmdb::Environment) -> (Vec<lmdb::Database>, Vec<lmdb::Database>) {
-    let shard_dbs = open_shard_dbs(env);
-    let curated_shard_dbs = open_curated_shard_dbs(env);
-    (shard_dbs, curated_shard_dbs)
-}
 
 fn feistal_middle_matches_original(
     original: &CircuitSeq,
@@ -407,9 +375,7 @@ pub fn main_shuffle_shoot_shuffle(
     x: usize,
     save: &str,
     source: &str,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-    curated_shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
     leave: bool,
     do_gadgetize: bool,
     do_feistalize: bool,
@@ -533,7 +499,7 @@ pub fn main_shuffle_shoot_shuffle(
         n
     };
     if leave {
-        circuit = interleave(&circuit, n, env);
+        circuit = interleave(&circuit, n, db);
     }
     let n = if leave { 2 * n } else { n };
     let feistal_original_n = do_feistalize.then_some(if leave { n / 6 } else { n / 3 });
@@ -541,7 +507,7 @@ pub fn main_shuffle_shoot_shuffle(
     print_sat_cone("initial", &circuit.gates, sat_cone_range);
     if full_shuffle_early {
         // SAMF insertion is equivalence-preserving by construction, so no retry guard.
-        insert_wire_m_samfs_every_x(&mut circuit, n, n, 1, env, curated_shard_dbs, shard_dbs);
+        insert_wire_m_samfs_every_x(&mut circuit, n, n, 1, db);
         println!("After early full shuffle: {} gates", circuit.gates.len());
         print_sat_cone("after-full-shuffle-early", &circuit.gates, sat_cone_range);
     }
@@ -626,21 +592,11 @@ pub fn main_shuffle_shoot_shuffle(
                         n,
                         mix_m,
                         mix_x,
-                        env,
-                        curated_shard_dbs,
-                        shard_dbs,
+                        db,
                         &mut survivor_tags,
                     );
                 } else {
-                    insert_wire_m_samfs_every_x(
-                        &mut circuit,
-                        n,
-                        mix_m,
-                        mix_x,
-                        env,
-                        curated_shard_dbs,
-                        shard_dbs,
-                    );
+                    insert_wire_m_samfs_every_x(&mut circuit, n, mix_m, mix_x, db);
                 }
                 println!(
                     "[sat-global-mix] round={} swaps={} gates={}",
@@ -679,9 +635,7 @@ pub fn main_shuffle_shoot_shuffle(
                 shooting_times,
                 collision_rounds,
                 expansion_game,
-                env,
-                curated_shard_dbs,
-                shard_dbs,
+                db,
                 &survivor_tags,
             );
             circuit.gates = out;
@@ -753,9 +707,7 @@ pub fn main_shuffle_shoot_shuffle(
                     type_attempts,
                     collision_rounds,
                     expansion_game,
-                    env,
-                    curated_shard_dbs,
-                    shard_dbs,
+                    db,
                     &mut survivor_tags,
                     anchor,
                     pass_length,
@@ -841,9 +793,7 @@ pub fn main_shuffle_shoot_shuffle(
                 shooting_times,
                 collision_rounds,
                 expansion_game,
-                env,
-                curated_shard_dbs,
-                shard_dbs,
+                db,
                 &mut survivor_tags,
             );
             if reversed {
@@ -859,26 +809,9 @@ pub fn main_shuffle_shoot_shuffle(
         if full_shuffle {
             // SAMF insertion is equivalence-preserving by construction, so no retry guard.
             if track {
-                insert_wire_m_samfs_every_x_tagged(
-                    &mut circuit,
-                    n,
-                    n,
-                    1,
-                    env,
-                    curated_shard_dbs,
-                    shard_dbs,
-                    &mut survivor_tags,
-                );
+                insert_wire_m_samfs_every_x_tagged(&mut circuit, n, n, 1, db, &mut survivor_tags);
             } else {
-                insert_wire_m_samfs_every_x(
-                    &mut circuit,
-                    n,
-                    n,
-                    1,
-                    env,
-                    curated_shard_dbs,
-                    shard_dbs,
-                );
+                insert_wire_m_samfs_every_x(&mut circuit, n, n, 1, db);
             }
             println!("After full shuffle: {} gates", circuit.gates.len());
             let cone_label = format!("round{}-after-full-shuffle", i + 1);
@@ -894,22 +827,12 @@ pub fn main_shuffle_shoot_shuffle(
                     &total_t,
                     &total_neg,
                     n,
-                    env,
-                    curated_shard_dbs,
-                    shard_dbs,
+                    db,
                     &mut survivor_tags,
                 );
             } else {
                 use crate::replace::transpositions::apply_unsamf;
-                apply_unsamf(
-                    &mut circuit.gates,
-                    &total_t,
-                    &total_neg,
-                    n,
-                    env,
-                    curated_shard_dbs,
-                    shard_dbs,
-                );
+                apply_unsamf(&mut circuit.gates, &total_t, &total_neg, n, db);
             }
             println!("After single-end unsamf: {} gates", circuit.gates.len());
             if single_end_reversed {
@@ -923,8 +846,7 @@ pub fn main_shuffle_shoot_shuffle(
         circuit = compress_loop(
             &circuit,
             n,
-            env,
-            shard_dbs,
+            db,
             stable_compressions,
             i + 1,
             rounds,

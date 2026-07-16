@@ -51,6 +51,13 @@ fn main() {
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
+                    Arg::new("cnot")
+                        .long("cnot")
+                        .help("Keep all post-ingress stages in heterogeneous mpmct1 form, using native CNOTs/fragments where safe (the source remains G57)")
+                        .required(false)
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
                     Arg::new("feistalize")
                         .long("feistalize")
                         .help("Feistalize the circuit at the start (input becomes 3n wires)")
@@ -504,6 +511,7 @@ fn main() {
         // directory: reads ./rocks_db_m*, writes ./test_rocks_db_m*.
         .subcommand(
             Command::new("rocksdb_1")
+                .hide(!cfg!(feature = "legacy-db-tools"))
                 .about("Create m sized rocks_db based on m-1")
                 .arg(
                     Arg::new("m")
@@ -538,6 +546,7 @@ fn main() {
         )
         .subcommand(
             Command::new("rocksdb_2")
+                .hide(!cfg!(feature = "legacy-db-tools"))
                 .about("Create m sized rocks_db with m1+m2 method")
                 .arg(
                     Arg::new("m1")
@@ -564,6 +573,7 @@ fn main() {
         )
         .subcommand(
             Command::new("combine_rocks")
+                .hide(!cfg!(feature = "legacy-db-tools"))
                 .about("Combine all rocks_db_m* databases into a single output DB")
                 .arg(
                     Arg::new("path")
@@ -576,6 +586,7 @@ fn main() {
         )
         .subcommand(
             Command::new("rocks_to_lmdb")
+                .hide(!cfg!(feature = "legacy-db-tools"))
                 .about("Convert a RocksDB into an LMDB store")
                 .arg(
                     Arg::new("source")

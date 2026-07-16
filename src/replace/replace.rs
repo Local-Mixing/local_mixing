@@ -1,5 +1,6 @@
 // Replacement code used in the mixing methods
 
+use crate::replace::frozen::FrozenDb;
 use crate::replace::mixing::split_into_random_chunk_ranges;
 use crate::replace::sat_score::{
     compression_selection_score, expansion_selection_score, sat_bcp_enabled,
@@ -14,15 +15,12 @@ use crate::{
         simple_find_convex_subcircuit,
     },
 };
-use lmdb::Transaction;
 use rand::Rng;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-
-extern crate lmdb_sys;
 
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
@@ -636,9 +634,9 @@ pub fn random_subcircuit_max(circuit: &CircuitSeq, max_len: usize) -> (CircuitSe
 }
 
 // ---------------------------------------------------------------------------
-// Shard-DB lookup cache.
+// Frozen-store lookup cache.
 //
-// The shard LMDB environment is opened READ_ONLY for the lifetime of the
+// The frozen database is immutable for the lifetime of the
 // process, so a lookup's result can never change: caching (key -> value bytes,
 // including "absent") is exact, not approximate. Windows drawn by the
 // expansion/compression games repeat heavily (SAMF templates recur all over
@@ -681,38 +679,26 @@ fn lookup_cache() -> Option<&'static LookupCacheMap> {
         .as_ref()
 }
 
-/// Backend fetch for one namespaced key: the frozen table when configured
-/// for that namespace (FROZEN_DB_DIR / FROZEN_CURATED_DIR), else LMDB.
-/// Frozen values are byte-identical to their LMDB counterparts, so callers
-/// cannot tell the backends apart.
-fn raw_db_get(
-    txn: &lmdb::RoTransaction,
-    db: lmdb::Database,
-    namespace: u8,
-    key: &[u8; 16],
-) -> Option<std::sync::Arc<[u8]>> {
-    let store = if namespace == LOOKUP_NS_CURATED {
-        crate::replace::frozen::curated_store()
+/// Fetch one namespaced key from the immutable frozen database.
+fn raw_db_get(db: &FrozenDb, namespace: u8, key: &[u8; 16]) -> Option<std::sync::Arc<[u8]>> {
+    let value = if namespace == LOOKUP_NS_CURATED {
+        db.get_curated(key)
     } else {
-        crate::replace::frozen::shard_store()
+        db.get_regular(key)
     };
-    if let Some(fz) = store {
-        return fz.get(key).map(std::sync::Arc::from);
-    }
-    txn.get(db, key).ok().map(std::sync::Arc::from)
+    value.map(std::sync::Arc::from)
 }
 
 /// Point lookup with an exact process-wide cache in front. Returns the value
 /// bytes (shared, immutable) or None when the key is absent — byte-identical
 /// to the uncached lookup on a read-only environment.
 pub(crate) fn cached_db_get(
-    txn: &lmdb::RoTransaction,
-    db: lmdb::Database,
+    db: &FrozenDb,
     namespace: u8,
     key: &[u8; 16],
 ) -> Option<std::sync::Arc<[u8]>> {
     let Some(cache) = lookup_cache() else {
-        return raw_db_get(txn, db, namespace, key);
+        return raw_db_get(db, namespace, key);
     };
     let mut ns_key = [0u8; 17];
     ns_key[0] = namespace;
@@ -722,7 +708,7 @@ pub(crate) fn cached_db_get(
         LOOKUP_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
         return entry.clone();
     }
-    let result: Option<std::sync::Arc<[u8]>> = raw_db_get(txn, db, namespace, key);
+    let result: Option<std::sync::Arc<[u8]>> = raw_db_get(db, namespace, key);
     let entry_bytes = 17 + 64 + result.as_ref().map_or(0, |v| v.len()) as u64;
     if LOOKUP_CACHE_BYTES.fetch_add(entry_bytes, Ordering::Relaxed) + entry_bytes
         > lookup_cache_cap_bytes()
@@ -734,12 +720,8 @@ pub(crate) fn cached_db_get(
     result
 }
 
-fn cached_shard_get(
-    txn: &lmdb::RoTransaction,
-    db: lmdb::Database,
-    key: &[u8; 16],
-) -> Option<std::sync::Arc<[u8]>> {
-    cached_db_get(txn, db, LOOKUP_NS_SHARD, key)
+fn cached_shard_get(db: &FrozenDb, key: &[u8; 16]) -> Option<std::sync::Arc<[u8]>> {
+    cached_db_get(db, LOOKUP_NS_SHARD, key)
 }
 
 // ---------------------------------------------------------------------------
@@ -751,7 +733,7 @@ fn cached_shard_get(
 // circuit computes, a window's non-min direction key can only exist in the DB
 // if it equals the min key. Probing just the min direction is therefore
 // exactly equivalent to the legacy forward-then-reverse probe — and it halves
-// the number of cold LMDB probes on misses, which dominate when the DB is
+// the number of cold frozen-store probes on misses, which dominate when the DB is
 // larger than RAM.
 //
 // MIN_DIR_LOOKUP=0        -> legacy: forward probe, reverse probe on miss.
@@ -793,8 +775,7 @@ pub static CANONICALIZE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CANONICALIZE_TIME_MAX_WIRES: AtomicU64 = AtomicU64::new(0);
 pub static CANONICALIZE_TIME_SIMPLE: AtomicU64 = AtomicU64::new(0);
 pub static CANONICALIZE_TIME_MAX_GATES: AtomicU64 = AtomicU64::new(0);
-pub static TXN_TIME: AtomicU64 = AtomicU64::new(0);
-pub static LMDB_LOOKUP_TIME: AtomicU64 = AtomicU64::new(0);
+pub static FROZEN_LOOKUP_TIME: AtomicU64 = AtomicU64::new(0);
 pub static FROM_BLOB_TIME: AtomicU64 = AtomicU64::new(0);
 pub static SPLICE_TIME: AtomicU64 = AtomicU64::new(0);
 pub static TRIAL_TIME: AtomicU64 = AtomicU64::new(0);
@@ -844,7 +825,7 @@ fn compress_stall_window() -> usize {
 /// stops before the next trial, keeping completed trials; the next sweep
 /// re-randomizes chunk boundaries so hard regions are revisited from other
 /// angles. Bounds a chunk at budget + one trial; a single in-flight
-/// `compress_lmdb` call is not interrupted. Unset: unlimited (legacy).
+/// `compress_frozen` call is not interrupted. Unset: unlimited (legacy).
 fn compress_chunk_budget_ms() -> Option<u128> {
     static V: OnceLock<Option<u128>> = OnceLock::new();
     *V.get_or_init(|| {
@@ -857,8 +838,7 @@ fn compress_chunk_budget_ms() -> Option<u128> {
 pub fn compress_loop(
     circuit: &CircuitSeq,
     n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
     stable_compressions: usize,
     curr_round: usize,
     last_round: usize,
@@ -935,8 +915,7 @@ pub fn compress_loop(
                     &sub,
                     100,
                     n,
-                    env,
-                    shard_dbs,
+                    db,
                     current_mode,
                     start,
                     &mut chunk_tags,
@@ -1066,12 +1045,11 @@ pub fn compress_loop(
 }
 
 /// Single pass of expansion: one round of chunked `expand_big_ancillas` with no loop.
-pub fn expand_once<'a>(
+pub fn expand_once(
     circuit: &CircuitSeq,
     n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-    pair_mode: &ExpandPairMode<'a>,
+    db: &FrozenDb,
+    pair_mode: &ExpandPairMode,
 ) -> CircuitSeq {
     let mut rng = rand::rng();
     let before = circuit.gates.len();
@@ -1088,7 +1066,7 @@ pub fn expand_once<'a>(
             let sub = CircuitSeq {
                 gates: circuit.gates[start..end].to_vec(),
             };
-            expand_big_ancillas(&sub, 100, n, env, shard_dbs, 0, pair_mode).gates
+            expand_big_ancillas(&sub, 100, n, db, 0, pair_mode).gates
         })
         .collect();
     let mut new_gates = Vec::with_capacity(expanded_chunks.iter().map(|c| c.len()).sum());
@@ -1099,16 +1077,14 @@ pub fn expand_once<'a>(
     CircuitSeq { gates: new_gates }
 }
 
-pub fn expand_to_gate_factor<'a>(
+pub fn expand_to_gate_factor(
     circuit: &CircuitSeq,
     n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-    pair_mode: &ExpandPairMode<'a>,
+    db: &FrozenDb,
+    pair_mode: &ExpandPairMode,
     factor: usize,
 ) -> CircuitSeq {
-    let (expanded, passes, stalled) =
-        expand_to_gate_factor_once(circuit, n, env, shard_dbs, pair_mode, factor);
+    let (expanded, passes, stalled) = expand_to_gate_factor_once(circuit, n, db, pair_mode, factor);
     print_expand_loop_summary(
         circuit.gates.len(),
         expanded.gates.len(),
@@ -1119,12 +1095,11 @@ pub fn expand_to_gate_factor<'a>(
     expanded
 }
 
-fn expand_to_gate_factor_once<'a>(
+fn expand_to_gate_factor_once(
     circuit: &CircuitSeq,
     n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-    pair_mode: &ExpandPairMode<'a>,
+    db: &FrozenDb,
+    pair_mode: &ExpandPairMode,
     factor: usize,
 ) -> (CircuitSeq, usize, bool) {
     let start_len = circuit.gates.len();
@@ -1135,7 +1110,7 @@ fn expand_to_gate_factor_once<'a>(
 
     while expanded.gates.len() < target_len {
         let before = expanded.gates.len();
-        expanded = expand_once(&expanded, n, env, shard_dbs, pair_mode);
+        expanded = expand_once(&expanded, n, db, pair_mode);
         passes += 1;
         if expanded.gates.len() <= before {
             stalled = true;
@@ -1146,15 +1121,14 @@ fn expand_to_gate_factor_once<'a>(
     (expanded, passes, stalled)
 }
 
-pub fn expand_once_scored<'a>(
+pub fn expand_once_scored(
     circuit: &CircuitSeq,
     n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-    pair_mode: &ExpandPairMode<'a>,
+    db: &FrozenDb,
+    pair_mode: &ExpandPairMode,
 ) -> CircuitSeq {
     if !sat_scoring_enabled() {
-        return expand_once(circuit, n, env, shard_dbs, pair_mode);
+        return expand_once(circuit, n, db, pair_mode);
     }
 
     let seed = sat_score_seed();
@@ -1168,7 +1142,7 @@ pub fn expand_once_scored<'a>(
     let mut best: Option<(f64, CircuitSeq, usize, bool)> = None;
 
     for attempt in 0..attempts {
-        let candidate = expand_once(circuit, n, env, shard_dbs, pair_mode);
+        let candidate = expand_once(circuit, n, db, pair_mode);
         let passes = 1usize;
         let stalled = candidate.gates.len() <= circuit.gates.len();
         if candidate.gates.len() <= circuit.gates.len() {
@@ -1246,23 +1220,20 @@ fn print_expand_loop_summary(
 
 // Expand with ancilla wires or gates
 /// Selects which method to use when a 2-gate subcircuit is sampled in the expand functions.
-/// Larger subcircuits still use the shard DB expansion path.
-pub enum ExpandPairMode<'a> {
-    /// Use the curated shard DBs to find a longer equivalent pair.
-    Curated {
-        curated_shard_dbs: &'a [lmdb::Database],
-    },
-    /// Force the shard DB lookup even for 2-gate subcircuits (same path as 3-5 gates).
-    Db,
+/// Larger subcircuits use the regular frozen-store expansion path.
+pub enum ExpandPairMode {
+    /// Use the curated frozen store to find a longer equivalent pair.
+    Curated,
+    /// Force the regular frozen-store lookup even for 2-gate subcircuits.
+    Regular,
 }
 
-pub fn expand_lmdb<'a>(
+pub fn expand_frozen(
     c: &CircuitSeq,
     trials: usize,
     n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-    pair_mode: &ExpandPairMode<'a>,
+    db: &FrozenDb,
+    pair_mode: &ExpandPairMode,
 ) -> CircuitSeq {
     use crate::circuit::circuit::polys_repr_blob;
     use xxhash_rust::xxh3::xxh3_128;
@@ -1285,14 +1256,12 @@ pub fn expand_lmdb<'a>(
             continue;
         }
 
-        // --- 2-gate path: bypass the shard DB and use pair functions ---
+        // --- 2-gate path: use the curated pair lookup when requested ---
         if sub.gates.len() == 2 {
             match pair_mode {
-                ExpandPairMode::Curated { curated_shard_dbs } => {
-                    use crate::replace::pairs::expand_curated_lmdb;
-                    if let Some(repl) =
-                        expand_curated_lmdb(&sub.gates, n, env, curated_shard_dbs, shard_dbs)
-                    {
+                ExpandPairMode::Curated => {
+                    use crate::replace::pairs::expand_curated_frozen;
+                    if let Some(repl) = expand_curated_frozen(&sub.gates, n, db) {
                         if repl.len() > 2 {
                             expanded.gates.splice(start..end, repl);
                         }
@@ -1300,7 +1269,7 @@ pub fn expand_lmdb<'a>(
                     TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     continue;
                 }
-                ExpandPairMode::Db => { /* fall through to shard DB path */ }
+                ExpandPairMode::Regular => { /* fall through to regular frozen store */ }
             }
         }
 
@@ -1314,20 +1283,11 @@ pub fn expand_lmdb<'a>(
 
         let lookup_mode = min_dir_lookup_mode();
 
-        let t_txn = Instant::now();
-        let txn = match env.begin_ro_txn() {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
         let (value, final_order, is_reversed) = if lookup_mode == MinDirLookup::Legacy {
             let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
-            let fwd_shard = fwd_key[0] as usize;
-
             let t_lookup = Instant::now();
-            let fwd_result = cached_shard_get(&txn, shard_dbs[fwd_shard], &fwd_key);
-            LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let fwd_result = cached_shard_get(db, &fwd_key);
+            FROZEN_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             if let Some(v) = fwd_result {
                 (v, fwd_order, false)
@@ -1342,11 +1302,9 @@ pub fn expand_lmdb<'a>(
                 }
 
                 let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
-                let rev_shard = rev_key[0] as usize;
-
                 let t_lookup2 = Instant::now();
-                let rev_result = cached_shard_get(&txn, shard_dbs[rev_shard], &rev_key);
-                LMDB_LOOKUP_TIME
+                let rev_result = cached_shard_get(db, &rev_key);
+                FROZEN_LOOKUP_TIME
                     .fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
                 match rev_result {
@@ -1377,8 +1335,8 @@ pub fn expand_lmdb<'a>(
 
             let min_key = xxh3_128(&polys_repr_blob(&min_polys)).to_le_bytes();
             let t_lookup = Instant::now();
-            let min_result = cached_shard_get(&txn, shard_dbs[min_key[0] as usize], &min_key);
-            LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let min_result = cached_shard_get(db, &min_key);
+            FROZEN_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             if let Some(v) = min_result {
                 (v, min_order, min_reversed)
@@ -1386,8 +1344,8 @@ pub fn expand_lmdb<'a>(
                 MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
                 let alt_key = xxh3_128(&polys_repr_blob(&alt_polys)).to_le_bytes();
                 let t_lookup2 = Instant::now();
-                let alt_result = cached_shard_get(&txn, shard_dbs[alt_key[0] as usize], &alt_key);
-                LMDB_LOOKUP_TIME
+                let alt_result = cached_shard_get(db, &alt_key);
+                FROZEN_LOOKUP_TIME
                     .fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 match alt_result {
                     Some(v) => {
@@ -1507,12 +1465,11 @@ pub fn expand_lmdb<'a>(
     expanded
 }
 
-pub fn compress_lmdb(
+pub fn compress_frozen(
     c: &CircuitSeq,
     trials: usize,
     n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
     mode: usize,
     base_offset: usize,
     tags: &mut Vec<u32>,
@@ -1587,13 +1544,6 @@ pub fn compress_lmdb(
 
         let lookup_mode = min_dir_lookup_mode();
 
-        let t_txn = Instant::now();
-        let txn = match env.begin_ro_txn() {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
         // Reverse-direction canonicalization, shared by the legacy fallback
         // path and the min-direction path; keeps the existing per-mode timers.
         let canonicalize_rev = |sub: &CircuitSeq,
@@ -1627,11 +1577,9 @@ pub fn compress_lmdb(
 
         let (value, final_order, is_reversed) = if lookup_mode == MinDirLookup::Legacy {
             let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
-            let fwd_shard = fwd_key[0] as usize;
-
             let t_lookup = Instant::now();
-            let fwd_result = cached_shard_get(&txn, shard_dbs[fwd_shard], &fwd_key);
-            LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let fwd_result = cached_shard_get(db, &fwd_key);
+            FROZEN_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             if let Some(v) = fwd_result {
                 (v, fwd_order, false)
@@ -1643,11 +1591,9 @@ pub fn compress_lmdb(
                 }
 
                 let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
-                let rev_shard = rev_key[0] as usize;
-
                 let t_lookup2 = Instant::now();
-                let rev_result = cached_shard_get(&txn, shard_dbs[rev_shard], &rev_key);
-                LMDB_LOOKUP_TIME
+                let rev_result = cached_shard_get(db, &rev_key);
+                FROZEN_LOOKUP_TIME
                     .fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
                 match rev_result {
@@ -1674,8 +1620,8 @@ pub fn compress_lmdb(
 
             let min_key = xxh3_128(&polys_repr_blob(&min_polys)).to_le_bytes();
             let t_lookup = Instant::now();
-            let min_result = cached_shard_get(&txn, shard_dbs[min_key[0] as usize], &min_key);
-            LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let min_result = cached_shard_get(db, &min_key);
+            FROZEN_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             if let Some(v) = min_result {
                 (v, min_order, min_reversed)
@@ -1683,8 +1629,8 @@ pub fn compress_lmdb(
                 MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
                 let alt_key = xxh3_128(&polys_repr_blob(&alt_polys)).to_le_bytes();
                 let t_lookup2 = Instant::now();
-                let alt_result = cached_shard_get(&txn, shard_dbs[alt_key[0] as usize], &alt_key);
-                LMDB_LOOKUP_TIME
+                let alt_result = cached_shard_get(db, &alt_key);
+                FROZEN_LOOKUP_TIME
                     .fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 match alt_result {
                     Some(v) => {
@@ -1870,8 +1816,7 @@ pub fn compress_big_ancillas(
     c: &CircuitSeq,
     trials: usize,
     num_wires: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
     mode: usize,
     base_offset: usize,
     tags: &mut Vec<u32>,
@@ -1969,12 +1914,11 @@ pub fn compress_big_ancillas(
         } else {
             Vec::new()
         };
-        let subcircuit_temp = compress_lmdb(
+        let subcircuit_temp = compress_frozen(
             &subcircuit,
             10,
             sub_num_wires,
-            env,
-            shard_dbs,
+            db,
             mode,
             base_offset + start,
             &mut block_tags,
@@ -1985,7 +1929,7 @@ pub fn compress_big_ancillas(
             && compress_elapsed.as_millis() >= compression_trace_threshold_ms()
         {
             eprintln!(
-                "[compress-trace] slow compress_lmdb mode={} outer_gates={} outer_wires={} outer_span={} out_gates={} elapsed_ms={}",
+                "[compress-trace] slow compress_frozen mode={} outer_gates={} outer_wires={} outer_span={} out_gates={} elapsed_ms={}",
                 mode,
                 sub_gates,
                 sub_num_wires,
@@ -2051,14 +1995,13 @@ pub fn compress_big_ancillas(
     circuit
 }
 
-pub fn expand_big_ancillas<'a>(
+pub fn expand_big_ancillas(
     c: &CircuitSeq,
     trials: usize,
     num_wires: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
     mode: usize,
-    pair_mode: &ExpandPairMode<'a>,
+    pair_mode: &ExpandPairMode,
 ) -> CircuitSeq {
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -2109,17 +2052,15 @@ pub fn expand_big_ancillas<'a>(
         if subcircuit.gates.len() == 2 {
             let t6 = Instant::now();
             let repl_opt: Option<Vec<[u16; 3]>> = match pair_mode {
-                ExpandPairMode::Curated { curated_shard_dbs } => {
-                    use crate::replace::pairs::expand_curated_lmdb;
-                    expand_curated_lmdb(
+                ExpandPairMode::Curated => {
+                    use crate::replace::pairs::expand_curated_frozen;
+                    expand_curated_frozen(
                         &[circuit.gates[start], circuit.gates[end]],
                         num_wires,
-                        env,
-                        curated_shard_dbs,
-                        shard_dbs,
+                        db,
                     )
                 }
-                ExpandPairMode::Db => None, // handled by expand_lmdb below
+                ExpandPairMode::Regular => None, // handled by expand_frozen below
             };
             if let Some(repl) = repl_opt {
                 if repl.len() > 2 {
@@ -2128,15 +2069,15 @@ pub fn expand_big_ancillas<'a>(
                 REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 continue;
             }
-            // Db mode falls through to expand_lmdb
+            // Regular mode falls through to expand_frozen.
             REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
 
-        // --- 3-5 gate path (and 2-gate Db/miss path): use expand_lmdb. Keep pair_mode so
-        // any 2-gate subproblem sampled inside expand_lmdb can still use curated pairs.
+        // --- 3-5 gate path (and 2-gate Db/miss path): use expand_frozen. Keep pair_mode so
+        // any 2-gate subproblem sampled inside expand_frozen can still use curated pairs.
         // Pass num_wires (full circuit wire count) so extra wires are assigned correctly.
         let t4 = Instant::now();
-        let subcircuit_temp = expand_lmdb(&subcircuit, 10, num_wires, env, shard_dbs, pair_mode);
+        let subcircuit_temp = expand_frozen(&subcircuit, 10, num_wires, db, pair_mode);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t6 = Instant::now();
@@ -2172,8 +2113,7 @@ pub fn print_compress_timers() {
     let canon_max_wires = CANONICALIZE_TIME_MAX_WIRES.load(Ordering::Relaxed);
     let canon_simple = CANONICALIZE_TIME_SIMPLE.load(Ordering::Relaxed);
     let canon_max_gates = CANONICALIZE_TIME_MAX_GATES.load(Ordering::Relaxed);
-    let txn = TXN_TIME.load(Ordering::Relaxed);
-    let lmdb_lookup = LMDB_LOOKUP_TIME.load(Ordering::Relaxed);
+    let frozen_lookup = FROZEN_LOOKUP_TIME.load(Ordering::Relaxed);
     let from_blob = FROM_BLOB_TIME.load(Ordering::Relaxed);
     let trial = TRIAL_TIME.load(Ordering::Relaxed);
     let rule_l_time = CANON4_RULE_L_TIME.load(Ordering::Relaxed);
@@ -2241,11 +2181,8 @@ pub fn print_compress_timers() {
             println!("  simple:    {:.2} min", canon_simple as f64 / ns);
         }
     }
-    if txn as f64 >= threshold_ns {
-        println!("LMDB transaction begin time: {:.2} min", txn as f64 / ns);
-    }
-    if lmdb_lookup as f64 >= threshold_ns {
-        println!("LMDB lookup time: {:.2} min", lmdb_lookup as f64 / ns);
+    if frozen_lookup as f64 >= threshold_ns {
+        println!("Frozen lookup time: {:.2} min", frozen_lookup as f64 / ns);
     }
     let cache_queries = LOOKUP_CACHE_QUERIES.load(Ordering::Relaxed);
     if cache_queries > 0 {

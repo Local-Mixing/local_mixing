@@ -1,17 +1,18 @@
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-extern crate lmdb_sys;
-
 use crate::{
     circuit::circuit::CircuitSeq,
     random::random_data::random_circuit,
-    replace::replace::{note_wire_use, shuffled_unused_wires},
     replace::sat_score::{
         compression_selection_score, expansion_selection_score, sat_bcp_enabled,
         sat_bcp_min_resistance, sat_compress_preserve_delta, sat_compress_protect_enabled,
         sat_cone_aware_enabled, sat_cone_min_fraction, sat_expand_min_delta, sat_score_seed,
         sat_score_slack, sat_scoring_enabled, score_subcircuit,
+    },
+    replace::{
+        frozen::FrozenDb,
+        replace::{note_wire_use, shuffled_unused_wires},
     },
 };
 
@@ -33,6 +34,14 @@ pub struct GatePair {
     pub c2: CollisionType,
 }
 
+/// Which frozen namespace(s) a pair lookup may consult.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LookupScope {
+    CuratedOnly,
+    RegularOnly,
+    CuratedThenRegular,
+}
+
 impl GatePair {
     pub fn new() -> Self {
         GatePair {
@@ -49,29 +58,21 @@ impl GatePair {
     }
 }
 
-pub fn expand_curated_lmdb(
-    gates: &[[u16; 3]],
-    n: usize,
-    env: &lmdb::Environment,
-    curated_shard_dbs: &[lmdb::Database],
-    shard_dbs: &[lmdb::Database],
-) -> Option<Vec<[u16; 3]>> {
-    expand_curated_lmdb_neg(gates, n, env, curated_shard_dbs, shard_dbs, &[])
+pub fn expand_curated_frozen(gates: &[[u16; 3]], n: usize, db: &FrozenDb) -> Option<Vec<[u16; 3]>> {
+    expand_curated_frozen_neg(gates, n, db, &[], LookupScope::CuratedThenRegular)
 }
 
-/// Shared lookup: probe the curated DBs with the (possibly negation-adjusted)
-/// forward canonical key, then optionally fall back to the regular shard DBs.
-/// The shard fallback honours MIN_DIR_LOOKUP exactly like expand_lmdb /
-/// compress_lmdb (see replace.rs), and every probe goes through the exact
+/// Shared lookup: probe the curated frozen store with the possibly adjusted
+/// forward key, then optionally fall back to the regular frozen store.
+/// The shard fallback honours MIN_DIR_LOOKUP exactly like expand_frozen /
+/// compress_frozen (see replace.rs), and every probe goes through the exact
 /// process-wide lookup cache. Returns (value, final_order, is_reversed).
 fn curated_then_shard_lookup(
     sub: &CircuitSeq,
-    txn: &lmdb::RoTransaction,
-    curated_shard_dbs: &[lmdb::Database],
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
     fwd_polys: Vec<crate::circuit::circuit::Polynomial>,
     fwd_order: crate::circuit::circuit::Permutation,
-    allow_shard_fallback: bool,
+    scope: LookupScope,
 ) -> Option<(
     std::sync::Arc<[u8]>,
     crate::circuit::circuit::Permutation,
@@ -86,27 +87,20 @@ fn curated_then_shard_lookup(
     use xxhash_rust::xxh3::xxh3_128;
 
     let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
-    let fwd_shard = fwd_key[0] as usize;
-
-    // Curated DBs are probed forward-only, matching the original behaviour.
-    if !curated_shard_dbs.is_empty() {
-        if let Some(v) = cached_db_get(
-            txn,
-            curated_shard_dbs[fwd_shard],
-            LOOKUP_NS_CURATED,
-            &fwd_key,
-        ) {
+    // The curated store is probed forward-only, matching the original behaviour.
+    if scope != LookupScope::RegularOnly && db.has_curated() {
+        if let Some(v) = cached_db_get(db, LOOKUP_NS_CURATED, &fwd_key) {
             return Some((v, fwd_order, false));
         }
     }
 
-    if !allow_shard_fallback || shard_dbs.is_empty() {
+    if scope == LookupScope::CuratedOnly {
         return None;
     }
 
     match min_dir_lookup_mode() {
         MinDirLookup::Legacy => {
-            if let Some(v) = cached_db_get(txn, shard_dbs[fwd_shard], LOOKUP_NS_SHARD, &fwd_key) {
+            if let Some(v) = cached_db_get(db, LOOKUP_NS_SHARD, &fwd_key) {
                 return Some((v, fwd_order, false));
             }
             let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
@@ -114,13 +108,7 @@ fn curated_then_shard_lookup(
                 return None;
             }
             let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
-            cached_db_get(
-                txn,
-                shard_dbs[rev_key[0] as usize],
-                LOOKUP_NS_SHARD,
-                &rev_key,
-            )
-            .map(|v| (v, rev_order, true))
+            cached_db_get(db, LOOKUP_NS_SHARD, &rev_key).map(|v| (v, rev_order, true))
         }
         mode => {
             let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
@@ -135,23 +123,13 @@ fn curated_then_shard_lookup(
                     (fwd_polys, fwd_order, false, rev_polys, rev_order, true)
                 };
             let min_key = xxh3_128(&polys_repr_blob(&min_polys)).to_le_bytes();
-            if let Some(v) = cached_db_get(
-                txn,
-                shard_dbs[min_key[0] as usize],
-                LOOKUP_NS_SHARD,
-                &min_key,
-            ) {
+            if let Some(v) = cached_db_get(db, LOOKUP_NS_SHARD, &min_key) {
                 return Some((v, min_order, min_reversed));
             }
             if mode == MinDirLookup::Validate {
                 MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
                 let alt_key = xxh3_128(&polys_repr_blob(&alt_polys)).to_le_bytes();
-                if let Some(v) = cached_db_get(
-                    txn,
-                    shard_dbs[alt_key[0] as usize],
-                    LOOKUP_NS_SHARD,
-                    &alt_key,
-                ) {
+                if let Some(v) = cached_db_get(db, LOOKUP_NS_SHARD, &alt_key) {
                     MIN_DIR_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
                     eprintln!(
                         "[min-dir-violation] pairs: non-min canonical key present while min key absent (gates={})",
@@ -165,13 +143,12 @@ fn curated_then_shard_lookup(
     }
 }
 
-pub fn expand_curated_lmdb_neg(
+pub fn expand_curated_frozen_neg(
     gates: &[[u16; 3]],
     n: usize,
-    env: &lmdb::Environment,
-    curated_shard_dbs: &[lmdb::Database],
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
     negated_inputs: &[u16],
+    scope: LookupScope,
 ) -> Option<Vec<[u16; 3]>> {
     use crate::circuit::circuit::Permutation;
 
@@ -189,19 +166,19 @@ pub fn expand_curated_lmdb_neg(
         return None;
     }
 
-    let txn = env.begin_ro_txn().ok()?;
-
-    // Curated DBs first (forward-only), then regular shard DBs (cached,
+    // Curated store first (forward-only), then the regular store (cached,
     // MIN_DIR_LOOKUP-aware). The shard fallback is only valid for the plain
     // canonical form, so it is disabled when inputs are negated.
     let (value, final_order, is_reversed) = curated_then_shard_lookup(
         &sub,
-        &txn,
-        curated_shard_dbs,
-        shard_dbs,
+        db,
         fwd_polys,
         fwd_order,
-        negated_inputs.is_empty(),
+        if negated_inputs.is_empty() {
+            scope
+        } else {
+            LookupScope::CuratedOnly
+        },
     )?;
 
     let mut candidates: Vec<CircuitSeq> = Vec::new();
@@ -318,13 +295,12 @@ pub fn expand_curated_lmdb_neg(
     Some(out)
 }
 
-// Like expand_curated_lmdb but returns the minimum-gate replacement with <= gates.len() gates.
-pub fn compress_curated_lmdb(
+// Like expand_curated_frozen but returns the minimum-gate replacement with <= gates.len() gates.
+pub fn compress_curated_frozen(
     gates: &[[u16; 3]],
     n: usize,
-    env: &lmdb::Environment,
-    curated_shard_dbs: &[lmdb::Database],
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
+    scope: LookupScope,
 ) -> Option<Vec<[u16; 3]>> {
     use crate::circuit::circuit::Permutation;
 
@@ -338,17 +314,8 @@ pub fn compress_curated_lmdb(
         return None;
     }
 
-    let txn = env.begin_ro_txn().ok()?;
-
-    let (value, final_order, is_reversed) = curated_then_shard_lookup(
-        &sub,
-        &txn,
-        curated_shard_dbs,
-        shard_dbs,
-        fwd_polys,
-        fwd_order,
-        true,
-    )?;
+    let (value, final_order, is_reversed) =
+        curated_then_shard_lookup(&sub, db, fwd_polys, fwd_order, scope)?;
 
     let mut candidates: Vec<CircuitSeq> = Vec::new();
     let mut pos = 0;
@@ -476,19 +443,18 @@ pub fn compress_curated_lmdb(
     Some(out)
 }
 
-/// Like compress_curated_lmdb, but returns ANY equivalent replacement for `gates` from the
-/// given DBs — NOT required to be a compression. Among the stored friends it prefers the
+/// Like compress_curated_frozen, but returns ANY equivalent replacement for `gates` from the
+/// selected frozen stores — NOT required to be a compression. Among the stored friends it prefers the
 /// fewest gates (so it still compresses when possible) but accepts equal-length or longer
 /// replacements, and does not reject lone equal-length options. Used as the relaxed fallback
 /// in the unsamfing stage so an undo SAMF can still be hidden even when no strictly-shorter
 /// curated replacement exists. Equivalence-preserving: all stored friends share the window's
 /// canonical polynomial form.
-pub fn find_any_replacement_lmdb(
+pub fn find_any_replacement_frozen(
     gates: &[[u16; 3]],
     n: usize,
-    env: &lmdb::Environment,
-    curated_shard_dbs: &[lmdb::Database],
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
+    scope: LookupScope,
 ) -> Option<Vec<[u16; 3]>> {
     use crate::circuit::circuit::Permutation;
 
@@ -502,17 +468,8 @@ pub fn find_any_replacement_lmdb(
         return None;
     }
 
-    let txn = env.begin_ro_txn().ok()?;
-
-    let (value, final_order, is_reversed) = curated_then_shard_lookup(
-        &sub,
-        &txn,
-        curated_shard_dbs,
-        shard_dbs,
-        fwd_polys,
-        fwd_order,
-        true,
-    )?;
+    let (value, final_order, is_reversed) =
+        curated_then_shard_lookup(&sub, db, fwd_polys, fwd_order, scope)?;
 
     // Accept ALL stored friends (any length), preferring the fewest gates.
     let mut candidates: Vec<CircuitSeq> = Vec::new();
@@ -574,20 +531,9 @@ pub fn replace_single_pair(
     left: &[u16; 3],
     right: &[u16; 3],
     num_wires: usize,
-    env: &lmdb::Environment,
-    curated_shard_dbs: &[lmdb::Database],
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
 ) -> (Vec<[u16; 3]>, usize) {
-    if curated_shard_dbs.is_empty() {
-        return (vec![], 0);
-    }
-    match expand_curated_lmdb(
-        &[*left, *right],
-        num_wires,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
-    ) {
+    match expand_curated_frozen(&[*left, *right], num_wires, db) {
         Some(repl) => (repl, 0),
         None => (vec![], 0),
     }
@@ -598,7 +544,7 @@ pub fn replace_single_pair(
 
 // Used in the interleave method
 // Create a circuit on n..2n wires and then interleave them
-pub fn interleave(circuit: &CircuitSeq, n: usize, env: &lmdb::Environment) -> CircuitSeq {
+pub fn interleave(circuit: &CircuitSeq, n: usize, db: &FrozenDb) -> CircuitSeq {
     let m = circuit.gates.len();
     let mut random = random_circuit(n, m);
     let mut rng = rand::rng();
@@ -614,8 +560,13 @@ pub fn interleave(circuit: &CircuitSeq, n: usize, env: &lmdb::Environment) -> Ci
         let choice = rng.random_range(0..2);
         if choice == 0 {
             let replaced_pair =
-                replace_single_pair(&circuit.gates[i], &random.gates[i], 2 * n, env, &[], &[]).0;
-            gates.extend_from_slice(&replaced_pair);
+                replace_single_pair(&circuit.gates[i], &random.gates[i], 2 * n, db).0;
+            if replaced_pair.is_empty() {
+                gates.push(circuit.gates[i]);
+                gates.push(random.gates[i]);
+            } else {
+                gates.extend_from_slice(&replaced_pair);
+            }
         } else {
             gates.push(circuit.gates[i]);
             gates.push(random.gates[i]);

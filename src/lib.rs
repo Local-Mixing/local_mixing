@@ -1,6 +1,8 @@
 pub mod bench_support;
 pub mod circuit;
+pub mod postmix;
 pub mod rainbow;
+#[cfg(feature = "legacy-db-tools")]
 pub mod rainbow_table;
 pub mod random;
 pub mod replace;
@@ -11,7 +13,7 @@ use pyo3::prelude::*;
 use rand::RngCore;
 use rand::seq::IteratorRandom;
 use rayon::prelude::*;
-pub use replace::main_mix::open_shard_dbs;
+pub use replace::frozen::FrozenDb;
 use std::fs;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
@@ -148,7 +150,7 @@ fn compute_grid_parallel(
     let num_inputs = inputs.len();
     // Restrict to a half of the wires (and renormalize) if requested.
     let (mask, num_wires) = half_mask_and_width(num_wires, mask, first_half, second_half);
-    // Per-input state evolutions, computed across cores...
+    // Per-input state evolutions, computed across cores.
     let evo_one: Vec<Vec<U1024>> = inputs
         .par_iter()
         .map(|&ib| circuit_one.evaluate_evolution_1024(ib))
@@ -157,75 +159,102 @@ fn compute_grid_parallel(
         .par_iter()
         .map(|&ib| circuit_two.evaluate_evolution_1024(ib))
         .collect();
-    // ...then transposed to [position][input] so each cell scans contiguous memory.
-    let one_t: Vec<Vec<U1024>> = (x1..=x2)
-        .into_par_iter()
-        .map(|i1| (0..num_inputs).map(|k| evo_one[k][i1]).collect())
-        .collect();
-    let two_t: Vec<Vec<U1024>> = (y1..=y2)
-        .into_par_iter()
-        .map(|i2| (0..num_inputs).map(|k| evo_two[k][i2]).collect())
-        .collect();
-    drop(evo_one);
-    drop(evo_two);
-    let one_hw = hw.then(|| {
-        one_t
-            .par_iter()
-            .map(|states| {
-                states
-                    .iter()
-                    .map(|&state| popcount_u1024(state & mask))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>()
-    });
-    let two_hw = hw.then(|| {
-        two_t
-            .par_iter()
-            .map(|states| {
-                states
-                    .iter()
-                    .map(|&state| popcount_u1024(state & mask))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>()
-    });
 
     let row_w = y2 - y1 + 1;
     let n_rows = x2 - x1 + 1;
     let nw = num_wires as f64;
     let inv = 1.0 / num_inputs as f64;
     let mut data = vec![0f64; n_rows * row_w * 3];
-    // One output row (fixed i1) per task; rows are disjoint, so there is no contention.
-    data.par_chunks_mut(row_w * 3)
-        .enumerate()
-        .for_each(|(r, row)| {
-            let i1 = x1 + r;
-            let e1 = &one_t[r];
-            for c in 0..row_w {
-                let i2 = y1 + c;
-                let e2 = &two_t[c];
-                let mut acc = 0f64;
-                for k in 0..num_inputs {
-                    let a = e1[k];
-                    let b = e2[k];
-                    let hamming_dist = if hw {
-                        one_hw.as_ref().unwrap()[r][k].abs_diff(two_hw.as_ref().unwrap()[c][k])
-                            as f64
-                    } else {
-                        popcount_u1024((a ^ b) & mask) as f64
-                    };
-                    acc += if !flag || hw {
-                        hamming_dist / nw
-                    } else {
-                        ((2.0 * hamming_dist / nw) - 1.0).abs()
-                    };
+
+    // The cell loops below accumulate integer sums and normalize once per cell;
+    // the three modes are split so each inner loop stays branch-free.
+    if hw {
+        // Hamming-weight mode only needs per-state popcounts; skip materializing
+        // the transposed state arrays and stream u32 weights instead.
+        let one_hw: Vec<Vec<u32>> = (x1..=x2)
+            .into_par_iter()
+            .map(|i1| {
+                (0..num_inputs)
+                    .map(|k| popcount_u1024(evo_one[k][i1] & mask))
+                    .collect()
+            })
+            .collect();
+        let two_hw: Vec<Vec<u32>> = (y1..=y2)
+            .into_par_iter()
+            .map(|i2| {
+                (0..num_inputs)
+                    .map(|k| popcount_u1024(evo_two[k][i2] & mask))
+                    .collect()
+            })
+            .collect();
+        drop(evo_one);
+        drop(evo_two);
+        // One output row (fixed i1) per task; rows are disjoint, so there is no contention.
+        data.par_chunks_mut(row_w * 3)
+            .enumerate()
+            .for_each(|(r, row)| {
+                let h1 = &one_hw[r];
+                for c in 0..row_w {
+                    let h2 = &two_hw[c];
+                    let sum: u64 = h1.iter().zip(h2).map(|(&a, &b)| a.abs_diff(b) as u64).sum();
+                    row[c * 3] = (x1 + r) as f64;
+                    row[c * 3 + 1] = (y1 + c) as f64;
+                    row[c * 3 + 2] = sum as f64 / nw * inv;
                 }
-                row[c * 3] = i1 as f64;
-                row[c * 3 + 1] = i2 as f64;
-                row[c * 3 + 2] = acc * inv;
-            }
-        });
+            });
+        return data;
+    }
+
+    // Transposed to [position][input] so each cell scans contiguous memory; masked
+    // here once so the cell loops stay pure XOR+popcount.
+    let one_t: Vec<Vec<U1024>> = (x1..=x2)
+        .into_par_iter()
+        .map(|i1| (0..num_inputs).map(|k| evo_one[k][i1] & mask).collect())
+        .collect();
+    let two_t: Vec<Vec<U1024>> = (y1..=y2)
+        .into_par_iter()
+        .map(|i2| (0..num_inputs).map(|k| evo_two[k][i2] & mask).collect())
+        .collect();
+    drop(evo_one);
+    drop(evo_two);
+
+    if flag {
+        // |2*hd/nw - 1| == |2*hd - nw|/nw, so the per-input work stays integral.
+        let nw_u = num_wires as u32;
+        data.par_chunks_mut(row_w * 3)
+            .enumerate()
+            .for_each(|(r, row)| {
+                let e1 = &one_t[r];
+                for c in 0..row_w {
+                    let e2 = &two_t[c];
+                    let sum: u64 = e1
+                        .iter()
+                        .zip(e2)
+                        .map(|(&a, &b)| (2 * popcount_u1024(a ^ b)).abs_diff(nw_u) as u64)
+                        .sum();
+                    row[c * 3] = (x1 + r) as f64;
+                    row[c * 3 + 1] = (y1 + c) as f64;
+                    row[c * 3 + 2] = sum as f64 / nw * inv;
+                }
+            });
+    } else {
+        data.par_chunks_mut(row_w * 3)
+            .enumerate()
+            .for_each(|(r, row)| {
+                let e1 = &one_t[r];
+                for c in 0..row_w {
+                    let e2 = &two_t[c];
+                    let sum: u64 = e1
+                        .iter()
+                        .zip(e2)
+                        .map(|(&a, &b)| popcount_u1024(a ^ b) as u64)
+                        .sum();
+                    row[c * 3] = (x1 + r) as f64;
+                    row[c * 3 + 1] = (y1 + c) as f64;
+                    row[c * 3 + 2] = sum as f64 / nw * inv;
+                }
+            });
+    }
     data
 }
 
@@ -254,73 +283,165 @@ fn compute_grid_parallel_128(
         .par_iter()
         .map(|&ib| circuit_two.evaluate_evolution_128(ib))
         .collect();
-    let one_t: Vec<Vec<u128>> = (x1..=x2)
-        .into_par_iter()
-        .map(|i1| (0..num_inputs).map(|k| evo_one[k][i1]).collect())
-        .collect();
-    let two_t: Vec<Vec<u128>> = (y1..=y2)
-        .into_par_iter()
-        .map(|i2| (0..num_inputs).map(|k| evo_two[k][i2]).collect())
-        .collect();
-    drop(evo_one);
-    drop(evo_two);
-    let one_hw = hw.then(|| {
-        one_t
-            .par_iter()
-            .map(|states| {
-                states
-                    .iter()
-                    .map(|&state| (state & mask).count_ones())
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>()
-    });
-    let two_hw = hw.then(|| {
-        two_t
-            .par_iter()
-            .map(|states| {
-                states
-                    .iter()
-                    .map(|&state| (state & mask).count_ones())
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>()
-    });
 
     let row_w = y2 - y1 + 1;
     let n_rows = x2 - x1 + 1;
     let nw = num_wires as f64;
     let inv = 1.0 / num_inputs as f64;
     let mut data = vec![0f64; n_rows * row_w * 3];
-    data.par_chunks_mut(row_w * 3)
-        .enumerate()
-        .for_each(|(r, row)| {
-            let i1 = x1 + r;
-            let e1 = &one_t[r];
-            for c in 0..row_w {
-                let i2 = y1 + c;
-                let e2 = &two_t[c];
-                let mut acc = 0f64;
-                for k in 0..num_inputs {
-                    let a = e1[k];
-                    let b = e2[k];
-                    let hamming_dist = if hw {
-                        one_hw.as_ref().unwrap()[r][k].abs_diff(two_hw.as_ref().unwrap()[c][k])
-                            as f64
-                    } else {
-                        ((a ^ b) & mask).count_ones() as f64
-                    };
-                    acc += if !flag || hw {
-                        hamming_dist / nw
-                    } else {
-                        ((2.0 * hamming_dist / nw) - 1.0).abs()
-                    };
+
+    if hw {
+        let one_hw: Vec<Vec<u32>> = (x1..=x2)
+            .into_par_iter()
+            .map(|i1| {
+                (0..num_inputs)
+                    .map(|k| (evo_one[k][i1] & mask).count_ones())
+                    .collect()
+            })
+            .collect();
+        let two_hw: Vec<Vec<u32>> = (y1..=y2)
+            .into_par_iter()
+            .map(|i2| {
+                (0..num_inputs)
+                    .map(|k| (evo_two[k][i2] & mask).count_ones())
+                    .collect()
+            })
+            .collect();
+        drop(evo_one);
+        drop(evo_two);
+        data.par_chunks_mut(row_w * 3)
+            .enumerate()
+            .for_each(|(r, row)| {
+                let h1 = &one_hw[r];
+                for c in 0..row_w {
+                    let h2 = &two_hw[c];
+                    let sum: u64 = h1.iter().zip(h2).map(|(&a, &b)| a.abs_diff(b) as u64).sum();
+                    row[c * 3] = (x1 + r) as f64;
+                    row[c * 3 + 1] = (y1 + c) as f64;
+                    row[c * 3 + 2] = sum as f64 / nw * inv;
                 }
-                row[c * 3] = i1 as f64;
-                row[c * 3 + 1] = i2 as f64;
-                row[c * 3 + 2] = acc * inv;
-            }
-        });
+            });
+        return data;
+    }
+
+    let one_t: Vec<Vec<u128>> = (x1..=x2)
+        .into_par_iter()
+        .map(|i1| (0..num_inputs).map(|k| evo_one[k][i1] & mask).collect())
+        .collect();
+    let two_t: Vec<Vec<u128>> = (y1..=y2)
+        .into_par_iter()
+        .map(|i2| (0..num_inputs).map(|k| evo_two[k][i2] & mask).collect())
+        .collect();
+    drop(evo_one);
+    drop(evo_two);
+
+    if flag {
+        let nw_u = num_wires as u32;
+        data.par_chunks_mut(row_w * 3)
+            .enumerate()
+            .for_each(|(r, row)| {
+                let e1 = &one_t[r];
+                for c in 0..row_w {
+                    let e2 = &two_t[c];
+                    let sum: u64 = e1
+                        .iter()
+                        .zip(e2)
+                        .map(|(&a, &b)| (2 * (a ^ b).count_ones()).abs_diff(nw_u) as u64)
+                        .sum();
+                    row[c * 3] = (x1 + r) as f64;
+                    row[c * 3 + 1] = (y1 + c) as f64;
+                    row[c * 3 + 2] = sum as f64 / nw * inv;
+                }
+            });
+    } else {
+        data.par_chunks_mut(row_w * 3)
+            .enumerate()
+            .for_each(|(r, row)| {
+                let e1 = &one_t[r];
+                for c in 0..row_w {
+                    let e2 = &two_t[c];
+                    let sum: u64 = e1
+                        .iter()
+                        .zip(e2)
+                        .map(|(&a, &b)| (a ^ b).count_ones() as u64)
+                        .sum();
+                    row[c * 3] = (x1 + r) as f64;
+                    row[c * 3 + 1] = (y1 + c) as f64;
+                    row[c * 3 + 2] = sum as f64 / nw * inv;
+                }
+            });
+    }
+    data
+}
+
+/// Run `compute_grid_parallel` over `inputs` in bounded-size chunks, averaging the
+/// per-chunk means weighted by chunk size. Numerically this matches a single pass over
+/// all inputs while keeping peak memory proportional to the chunk size.
+#[allow(clippy::too_many_arguments)]
+fn compute_grid_chunked(
+    circuit_one: &CircuitSeq,
+    circuit_two: &CircuitSeq,
+    inputs: &[U1024],
+    x1: usize,
+    x2: usize,
+    y1: usize,
+    y2: usize,
+    num_wires: usize,
+    mask: U1024,
+    flag: bool,
+    hw: bool,
+    first_half: bool,
+    second_half: bool,
+) -> Vec<f64> {
+    // U1024 states are 8x bigger, so keep chunks smaller off the 128-bit path.
+    let chunk_size = if num_wires <= 128 { 4096 } else { 512 };
+    let total = inputs.len();
+    if total <= chunk_size {
+        return compute_grid_parallel(
+            circuit_one,
+            circuit_two,
+            inputs,
+            x1,
+            x2,
+            y1,
+            y2,
+            num_wires,
+            mask,
+            flag,
+            hw,
+            first_half,
+            second_half,
+        );
+    }
+    let n_cells = (x2 - x1 + 1) * (y2 - y1 + 1);
+    let mut data = vec![0f64; n_cells * 3];
+    let mut done = 0usize;
+    for chunk in inputs.chunks(chunk_size) {
+        let part = compute_grid_parallel(
+            circuit_one,
+            circuit_two,
+            chunk,
+            x1,
+            x2,
+            y1,
+            y2,
+            num_wires,
+            mask,
+            flag,
+            hw,
+            first_half,
+            second_half,
+        );
+        let w = chunk.len() as f64 / total as f64;
+        for i in 0..n_cells {
+            data[i * 3] = part[i * 3];
+            data[i * 3 + 1] = part[i * 3 + 1];
+            data[i * 3 + 2] += part[i * 3 + 2] * w;
+        }
+        done += chunk.len();
+        println!("{}/{}", done, total);
+        io::stdout().flush().unwrap();
+    }
     data
 }
 
@@ -484,66 +605,14 @@ fn heatmap_small(
     let circuit_two_len = circuit_two.gates.len();
 
     let num_points = (circuit_one_len + 1) * (circuit_two_len + 1);
-    let mut average = vec![0f64; num_points * 3]; // flat 2D array: [x, y, value] per point
     let start_time = Instant::now();
 
-    if num_wires <= 128 {
-        let mask = u1024_low_u128(mask);
-        let mut inputs: Vec<u128> =
-            Vec::with_capacity(1 + num_wires + num_wires.saturating_mul(num_wires - 1) / 2);
+    // Inputs of Hamming weight 0, 1, and 2. compute_grid_parallel narrows to the
+    // u128 path internally when num_wires <= 128.
+    let mut inputs: Vec<U1024> =
+        Vec::with_capacity(1 + num_wires + num_wires * num_wires.saturating_sub(1) / 2);
 
-        inputs.push(0);
-
-        for i in 0..num_wires {
-            inputs.push(1u128 << i);
-        }
-
-        for i in 0..num_wires {
-            for j in (i + 1)..num_wires {
-                inputs.push((1u128 << i) | (1u128 << j));
-            }
-        }
-
-        let effective_inputs = inputs.len() as f64;
-
-        for (i, &input_bits) in inputs.iter().enumerate() {
-            if i % 10 == 0 {
-                println!("{}/{}", i, inputs.len());
-                io::stdout().flush().unwrap();
-            }
-
-            let evolution_one = circuit_one.evaluate_evolution_128(input_bits);
-            let evolution_two = circuit_two.evaluate_evolution_128(input_bits);
-
-            for i1 in 0..=circuit_one_len {
-                for i2 in 0..=circuit_two_len {
-                    let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
-                    let hamming_dist = diff.count_ones() as f64;
-                    let overlap = if !flag {
-                        hamming_dist / num_wires as f64
-                    } else {
-                        let tmp = (2.0 * hamming_dist / num_wires as f64) - 1.0;
-                        tmp.abs()
-                    };
-
-                    let index = i1 * (circuit_two_len + 1) + i2;
-                    average[index * 3] = i1 as f64;
-                    average[index * 3 + 1] = i2 as f64;
-                    average[index * 3 + 2] += overlap / effective_inputs;
-                }
-            }
-        }
-
-        println!("Time elapsed: {:?}", Instant::now() - start_time);
-
-        let arr2 = Array2::from_shape_vec((num_points, 3), average).expect("grid shape mismatch");
-        return PyArray2::from_owned_array(py, arr2).into();
-    }
-
-    // Generate inputs of Hamming weight 0, 1, and 2
-    let mut inputs: Vec<U1024> = Vec::new();
-
-    inputs.push(U1024::from(0u128));
+    inputs.push(U1024::zero());
 
     for i in 0..num_wires {
         inputs.push(U1024::one() << i);
@@ -555,39 +624,25 @@ fn heatmap_small(
         }
     }
 
-    let effective_inputs = inputs.len() as f64;
-
-    for (i, &input_bits) in inputs.iter().enumerate() {
-        if i % 10 == 0 {
-            println!("{}/{}", i, inputs.len());
-            io::stdout().flush().unwrap();
-        }
-
-        let evolution_one = circuit_one.evaluate_evolution_1024(input_bits);
-        let evolution_two = circuit_two.evaluate_evolution_1024(input_bits);
-
-        for i1 in 0..=circuit_one_len {
-            for i2 in 0..=circuit_two_len {
-                let diff = (evolution_one[i1] ^ evolution_two[i2]) & mask;
-                let hamming_dist = popcount_u1024(diff) as f64;
-                let overlap = if !flag {
-                    hamming_dist / num_wires as f64
-                } else {
-                    let tmp = (2.0 * hamming_dist / num_wires as f64) - 1.0;
-                    tmp.abs()
-                };
-
-                let index = i1 * (circuit_two_len + 1) + i2;
-                average[index * 3] = i1 as f64;
-                average[index * 3 + 1] = i2 as f64;
-                average[index * 3 + 2] += overlap / effective_inputs;
-            }
-        }
-    }
+    let data = compute_grid_chunked(
+        &circuit_one,
+        &circuit_two,
+        &inputs,
+        0,
+        circuit_one_len,
+        0,
+        circuit_two_len,
+        num_wires,
+        mask,
+        flag,
+        false,
+        false,
+        false,
+    );
 
     println!("Time elapsed: {:?}", Instant::now() - start_time);
 
-    let arr2 = Array2::from_shape_vec((num_points, 3), average).expect("grid shape mismatch");
+    let arr2 = Array2::from_shape_vec((num_points, 3), data).expect("grid shape mismatch");
     PyArray2::from_owned_array(py, arr2).into()
 }
 
@@ -686,7 +741,6 @@ fn heatmap_mini_slice(
     circuit_one.gates = circuit_one.gates[x1..=x2].to_vec();
     circuit_two.gates = circuit_two.gates[y1..=y2].to_vec();
     let num_points = (x2 - x1 + 1) * (y2 - y1 + 1);
-    let mut average = vec![0f64; num_points * 3]; // flat 2D array: [x, y, value] per point
     let mut rng = rand::rng();
     let start_time = Instant::now();
     let mut fixed_mask = U1024::zero();
@@ -695,81 +749,40 @@ fn heatmap_mini_slice(
     for p in positions {
         fixed_mask |= U1024::one() << p;
     }
-    if num_wires <= 128 {
-        for i in 0..num_inputs {
-            if i % 10 == 0 {
-                println!("{}/{}", i, num_inputs);
-                io::stdout().flush().unwrap();
-            }
+    // Random inputs (fixed bits held at x0), generated sequentially like `heatmap`.
+    let inputs: Vec<U1024> = (0..num_inputs)
+        .map(|_| {
             let r = random_u1024(&mut rng);
-            let input_bits = u1024_low_u128(((x0 & fixed_mask) | (r & !fixed_mask)) & mask);
+            ((x0 & fixed_mask) | (r & !fixed_mask)) & mask
+        })
+        .collect();
 
-            let evolution_one = circuit_one.evaluate_evolution_128(input_bits);
-            let evolution_two = circuit_two.evaluate_evolution_128(input_bits);
-
-            for i1 in x1..=x2 {
-                for i2 in y1..=y2 {
-                    let diff = evolution_one[i1 - x1] ^ evolution_two[i2 - y1];
-                    let hamming_dist = diff.count_ones() as f64;
-                    let overlap = if !flag {
-                        hamming_dist / num_wires as f64
-                    } else {
-                        let tmp = (2.0 * hamming_dist / num_wires as f64) - 1.0;
-                        tmp.abs()
-                    };
-
-                    let rel_i1 = i1 - x1;
-                    let rel_i2 = i2 - y1;
-                    let index = rel_i1 * (y2 - y1 + 1) + rel_i2;
-                    average[index * 3] = i1 as f64;
-                    average[index * 3 + 1] = i2 as f64;
-                    average[index * 3 + 2] += overlap / num_inputs as f64;
-                }
-            }
-        }
-
-        println!("Time elapsed: {:?}", Instant::now() - start_time);
-
-        let arr2 = Array2::from_shape_vec((num_points, 3), average).expect("grid shape mismatch");
-        return PyArray2::from_owned_array(py, arr2).into();
-    }
-
-    for i in 0..num_inputs {
-        if i % 10 == 0 {
-            println!("{}/{}", i, num_inputs);
-            io::stdout().flush().unwrap();
-        }
-        let r = random_u1024(&mut rng);
-
-        let input_bits = ((x0 & fixed_mask) | (r & !fixed_mask)) & mask;
-
-        let evolution_one = circuit_one.evaluate_evolution_1024(input_bits);
-        let evolution_two = circuit_two.evaluate_evolution_1024(input_bits);
-
-        for i1 in x1..=x2 {
-            for i2 in y1..=y2 {
-                let diff = evolution_one[i1 - x1] ^ evolution_two[i2 - y1];
-                let hamming_dist = popcount_u1024(diff) as f64;
-                let overlap = if !flag {
-                    hamming_dist / num_wires as f64
-                } else {
-                    let tmp = (2.0 * hamming_dist / num_wires as f64) - 1.0;
-                    tmp.abs()
-                };
-
-                let rel_i1 = i1 - x1;
-                let rel_i2 = i2 - y1;
-                let index = rel_i1 * (y2 - y1 + 1) + rel_i2;
-                average[index * 3] = i1 as f64;
-                average[index * 3 + 1] = i2 as f64;
-                average[index * 3 + 2] += overlap / num_inputs as f64;
-            }
-        }
+    // The windows are evaluated as standalone circuits (positions relative to the
+    // window start); as before, the final state of each window is not included.
+    let mut data = compute_grid_chunked(
+        &circuit_one,
+        &circuit_two,
+        &inputs,
+        0,
+        x2 - x1,
+        0,
+        y2 - y1,
+        num_wires,
+        mask,
+        flag,
+        false,
+        false,
+        false,
+    );
+    // Restore absolute gate positions in the label columns.
+    for cell in data.chunks_mut(3) {
+        cell[0] += x1 as f64;
+        cell[1] += y1 as f64;
     }
 
     println!("Time elapsed: {:?}", Instant::now() - start_time);
 
-    let arr2 = Array2::from_shape_vec((num_points, 3), average).expect("grid shape mismatch");
+    let arr2 = Array2::from_shape_vec((num_points, 3), data).expect("grid shape mismatch");
     PyArray2::from_owned_array(py, arr2).into()
 }
 
@@ -1104,6 +1117,205 @@ fn heatmap_subsampled(
 
     let arr2 = Array2::from_shape_vec((m1 * m2, 3), data).expect("grid shape mismatch");
     PyArray2::from_owned_array(py, arr2).into()
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use super::*;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    fn random_circuit(rng: &mut StdRng, num_wires: u16, len: usize) -> CircuitSeq {
+        let gates = (0..len)
+            .map(|_| {
+                let t = (rng.next_u32() as u16) % num_wires;
+                let mut c1 = (rng.next_u32() as u16) % num_wires;
+                let mut c2 = (rng.next_u32() as u16) % num_wires;
+                if c1 == t {
+                    c1 = (c1 + 1) % num_wires;
+                }
+                if c2 == t {
+                    c2 = (c2 + 1) % num_wires;
+                }
+                [t, c1, c2]
+            })
+            .collect();
+        CircuitSeq { gates }
+    }
+
+    fn random_inputs(rng: &mut StdRng, num_wires: usize, n: usize) -> Vec<U1024> {
+        let mask = mask_1024(num_wires);
+        (0..n).map(|_| random_u1024(rng) & mask).collect()
+    }
+
+    /// Straightforward serial version of the original per-cell math, used as ground truth.
+    #[allow(clippy::too_many_arguments)]
+    fn reference_grid(
+        circuit_one: &CircuitSeq,
+        circuit_two: &CircuitSeq,
+        inputs: &[U1024],
+        x1: usize,
+        x2: usize,
+        y1: usize,
+        y2: usize,
+        num_wires: usize,
+        mask: U1024,
+        flag: bool,
+        hw: bool,
+        first_half: bool,
+        second_half: bool,
+    ) -> Vec<f64> {
+        let (mask, num_wires) = half_mask_and_width(num_wires, mask, first_half, second_half);
+        let nw = num_wires as f64;
+        let row_w = y2 - y1 + 1;
+        let evo_one: Vec<Vec<U1024>> = inputs
+            .iter()
+            .map(|&ib| circuit_one.evaluate_evolution_1024(ib))
+            .collect();
+        let evo_two: Vec<Vec<U1024>> = inputs
+            .iter()
+            .map(|&ib| circuit_two.evaluate_evolution_1024(ib))
+            .collect();
+        let mut out = vec![0f64; (x2 - x1 + 1) * row_w * 3];
+        for r in 0..=(x2 - x1) {
+            for c in 0..row_w {
+                let mut acc = 0f64;
+                for k in 0..inputs.len() {
+                    let a = evo_one[k][x1 + r];
+                    let b = evo_two[k][y1 + c];
+                    let hd = if hw {
+                        popcount_u1024(a & mask).abs_diff(popcount_u1024(b & mask)) as f64
+                    } else {
+                        popcount_u1024((a ^ b) & mask) as f64
+                    };
+                    acc += if !flag || hw {
+                        hd / nw
+                    } else {
+                        ((2.0 * hd / nw) - 1.0).abs()
+                    };
+                }
+                let cell = (r * row_w + c) * 3;
+                out[cell] = (x1 + r) as f64;
+                out[cell + 1] = (y1 + c) as f64;
+                out[cell + 2] = acc / inputs.len() as f64;
+            }
+        }
+        out
+    }
+
+    fn assert_grids_match(got: &[f64], want: &[f64], ctx: &str) {
+        assert_eq!(got.len(), want.len(), "length mismatch ({})", ctx);
+        for (i, (x, y)) in got.iter().zip(want).enumerate() {
+            assert!(
+                (x - y).abs() < 1e-9,
+                "cell {} differs ({}): {} vs {}",
+                i,
+                ctx,
+                x,
+                y
+            );
+        }
+    }
+
+    fn check_all_modes(
+        c1: &CircuitSeq,
+        c2: &CircuitSeq,
+        inputs: &[U1024],
+        x1: usize,
+        x2: usize,
+        y1: usize,
+        y2: usize,
+        num_wires: usize,
+    ) {
+        let mask = mask_1024(num_wires);
+        for flag in [false, true] {
+            for hw in [false, true] {
+                for (fh, sh) in [(false, false), (true, false), (false, true)] {
+                    let got = compute_grid_parallel(
+                        c1, c2, inputs, x1, x2, y1, y2, num_wires, mask, flag, hw, fh, sh,
+                    );
+                    let want = reference_grid(
+                        c1, c2, inputs, x1, x2, y1, y2, num_wires, mask, flag, hw, fh, sh,
+                    );
+                    let ctx = format!("flag={flag} hw={hw} fh={fh} sh={sh}");
+                    assert_grids_match(&got, &want, &ctx);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grid_matches_reference_128() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let num_wires = 20;
+        let c1 = random_circuit(&mut rng, num_wires as u16, 33);
+        let c2 = random_circuit(&mut rng, num_wires as u16, 27);
+        let inputs = random_inputs(&mut rng, num_wires, 41);
+        check_all_modes(&c1, &c2, &inputs, 3, 30, 2, 25, num_wires);
+    }
+
+    #[test]
+    fn grid_matches_reference_1024() {
+        let mut rng = StdRng::seed_from_u64(11);
+        let num_wires = 200;
+        let c1 = random_circuit(&mut rng, num_wires as u16, 18);
+        let c2 = random_circuit(&mut rng, num_wires as u16, 22);
+        let inputs = random_inputs(&mut rng, num_wires, 13);
+        check_all_modes(&c1, &c2, &inputs, 0, 18, 4, 22, num_wires);
+    }
+
+    #[test]
+    fn chunked_matches_reference() {
+        // Enough inputs to force multiple chunks on both paths (4096 for <=128
+        // wires, 512 above), with tiny circuits so the test stays fast.
+        let mut rng = StdRng::seed_from_u64(23);
+        for (num_wires, n_inputs) in [(20usize, 5000usize), (200, 700)] {
+            let c1 = random_circuit(&mut rng, num_wires as u16, 9);
+            let c2 = random_circuit(&mut rng, num_wires as u16, 11);
+            let inputs = random_inputs(&mut rng, num_wires, n_inputs);
+            let mask = mask_1024(num_wires);
+            for flag in [false, true] {
+                let got = compute_grid_chunked(
+                    &c1, &c2, &inputs, 0, 9, 0, 11, num_wires, mask, flag, false, false, false,
+                );
+                let want = reference_grid(
+                    &c1, &c2, &inputs, 0, 9, 0, 11, num_wires, mask, flag, false, false, false,
+                );
+                let ctx = format!("chunked wires={num_wires} flag={flag}");
+                assert_grids_match(&got, &want, &ctx);
+            }
+        }
+    }
+
+    /// Manual timing probe:
+    /// `cargo test --release --lib bench_grid -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_grid() {
+        let mut rng = StdRng::seed_from_u64(42);
+        for (num_wires, len, n_inputs) in [(64usize, 2000usize, 512usize), (300, 600, 128)] {
+            let c1 = random_circuit(&mut rng, num_wires as u16, len);
+            let c2 = random_circuit(&mut rng, num_wires as u16, len);
+            let inputs = random_inputs(&mut rng, num_wires, n_inputs);
+            let mask = mask_1024(num_wires);
+            for flag in [false, true] {
+                let t = Instant::now();
+                let data = compute_grid_parallel(
+                    &c1, &c2, &inputs, 0, len, 0, len, num_wires, mask, flag, false, false, false,
+                );
+                let sum: f64 = data.iter().skip(2).step_by(3).sum();
+                println!(
+                    "wires={} len={} inputs={} flag={}: {:?} (checksum {:.6})",
+                    num_wires,
+                    len,
+                    n_inputs,
+                    flag,
+                    t.elapsed(),
+                    sum
+                );
+            }
+        }
+    }
 }
 
 #[pymodule]

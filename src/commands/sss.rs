@@ -1,13 +1,13 @@
 use std::fs;
 use std::path::Path;
 
-use lmdb::{Environment, EnvironmentFlags};
-
 use local_mixing::circuit::CircuitSeq;
+use local_mixing::replace::frozen::FrozenDb;
 use local_mixing::replace::gadgets::{
     SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS, SLICE_ZERO_RANDOM_GATES_PER_WIRE,
 };
-use local_mixing::replace::main_mix::{main_shuffle_shoot_shuffle, open_all_dbs};
+use local_mixing::replace::main_mix::main_shuffle_shoot_shuffle;
+use local_mixing::replace::main_mix_cnot::{CnotSssParams, main_shuffle_shoot_shuffle_cnot};
 use local_mixing::replace::mixing::install_kill_handler;
 use local_mixing::replace::replace::{
     GEN_MODE, INCOMING_RANK_MODE, IncomingRankMode, MAX_FANOUT, MIN_MEDIAN_LEEWAY,
@@ -28,6 +28,7 @@ pub fn run(sub: &clap::ArgMatches) {
     let leave = sub.get_flag("interleave");
     let do_gadgetize = sub.get_flag("gadgetize");
     let do_feistalize = sub.get_flag("feistalize");
+    let do_cnot = sub.get_flag("cnot");
     let slice_zero = sub.get_flag("slice_zero");
     let slice_zero_random = sub.get_flag("slice_zero_random");
     let slice_zero_hardcoded = sub.get_flag("slice_zero_hardcoded");
@@ -66,33 +67,6 @@ pub fn run(sub: &clap::ArgMatches) {
     let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
     let data = fs::read_to_string(s).expect("Failed to read source circuit");
 
-    let lmdb_path = "./db";
-    let _ = std::fs::create_dir_all(lmdb_path);
-
-    // Frozen-table mode (FROZEN_DB_DIR): lookups are served by the frozen
-    // store inside cached_db_get; ./db only needs to exist as a stub so the
-    // named-database opens below succeed.
-    if std::env::var("FROZEN_DB_DIR").is_ok() {
-        local_mixing::replace::frozen::ensure_stub_lmdb(lmdb_path);
-    }
-
-    // NO_READAHEAD: lookups are random 16-byte point queries into a DB far larger
-    // than RAM; OS readahead drags in useless pages and evicts hot B-tree interior
-    // pages. Set LMDB_READAHEAD=1 to restore kernel readahead (e.g. on hosts with
-    // RAM exceeding the DB size where warming the cache is preferable).
-    let mut env_flags = EnvironmentFlags::READ_ONLY | EnvironmentFlags::NO_LOCK;
-    if std::env::var("LMDB_READAHEAD").map(|v| v == "1") != Ok(true) {
-        env_flags |= EnvironmentFlags::NO_READAHEAD;
-    }
-    let env = Environment::new()
-        .set_flags(env_flags)
-        .set_max_readers(10000)
-        .set_max_dbs(556)
-        .set_map_size(800 * 1024 * 1024 * 1024)
-        .open(Path::new(lmdb_path))
-        .expect("Failed to open lmdb");
-
-    let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
     install_kill_handler();
     if data.trim().is_empty() {
         println!("Empty file");
@@ -100,6 +74,55 @@ pub fn run(sub: &clap::ArgMatches) {
     }
 
     let c = CircuitSeq::from_string(&data);
+    if do_cnot {
+        assert!(!leave, "--cnot does not yet support --interleave");
+        assert!(
+            !single_end,
+            "--single-end is a legacy G57-only mode; the --cnot mixer preserves functionality after every move"
+        );
+        assert!(
+            !record_replacements,
+            "--record is not available for the heterogeneous --cnot replacement engine"
+        );
+        assert!(
+            !generation_tags && min_gen == 0 && outgoing_mode == "legacy" && incoming_rank == "sat",
+            "generation-tag/Stage-B options are not available with --cnot"
+        );
+        assert!(
+            samf_target == 0,
+            "--samf-target belongs to the legacy G57 collision game and is not available with --cnot"
+        );
+        main_shuffle_shoot_shuffle_cnot(
+            &c,
+            &CnotSssParams {
+                rounds,
+                n,
+                m,
+                x,
+                save: d,
+                source: s,
+                do_gadgetize,
+                do_feistalize,
+                slice_zero,
+                slice_zero_random,
+                slice_zero_random_gates,
+                slice_zero_hardcoded,
+                slice_zero_hardcoded_rounds,
+                gadget_path,
+                full_shuffle,
+                full_shuffle_early,
+                shooting_times,
+                collision_rounds,
+                stable_compressions,
+                expansion_game,
+                equality_check,
+                rg_freq,
+            },
+        );
+        return;
+    }
+
+    let db = FrozenDb::from_env();
     if record_replacements {
         record_init(&format!("{}.replacements", d));
     }
@@ -148,9 +171,7 @@ pub fn run(sub: &clap::ArgMatches) {
         x,
         d,
         s,
-        &env,
-        &shard_dbs,
-        &curated_shard_dbs,
+        &db,
         leave,
         do_gadgetize,
         do_feistalize,

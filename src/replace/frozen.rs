@@ -1,8 +1,7 @@
-//! Frozen-table read path: a static, compressed point-lookup store that
-//! replaces the sharded LMDB for DB probes.
+//! Frozen-table read path: a static, compressed point-lookup store used
+//! directly by the replacement runtime.
 //!
-//! Activation is environment-driven so all existing call sites and
-//! signatures stay unchanged (`cached_db_get` consults this module first):
+//! Runtime configuration is environment-driven:
 //!   FROZEN_DB_DIR=<dir>       serve regular-shard lookups from <dir>
 //!   FROZEN_CURATED_DIR=<dir>  serve curated-shard lookups from <dir>
 //!   FROZEN_FILTER=1           also load <dir>/filters.bin (~25.5 GB RAM;
@@ -14,10 +13,9 @@
 //! bucket = Elias-Fano sorted 48-bit key tails + canonical-Huffman values
 //! (context = (circuit width, gate index), symbol = whole gate triple).
 //! `get` returns the exact legacy value bytes (length-prefixed 3-byte-gate
-//! blobs), so consumers parse results identically to LMDB.
+//! blobs), so consumers parse results without backend-specific decoding.
 
 use std::os::unix::fs::FileExt;
-use std::sync::OnceLock;
 use xorf::{BinaryFuse8, Filter};
 
 const BUCKETS: usize = 1 << 20;
@@ -245,7 +243,7 @@ struct FrozenShard {
     data_base: u64,
 }
 
-pub struct Frozen {
+struct Frozen {
     shards: Vec<FrozenShard>,
     tables: Tables,
     filters: Option<Vec<BinaryFuse8>>,
@@ -318,7 +316,7 @@ impl Frozen {
     }
 
     /// Exact point lookup; returns legacy value bytes, byte-identical to the
-    /// LMDB/rocks value for this key.
+    /// source replacement value for this key.
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
         debug_assert_eq!(key.len(), 16);
         let (shard, bucket, tail) = split_key(key);
@@ -366,54 +364,79 @@ impl Frozen {
     }
 }
 
-// --------------------------------------------------------------- statics
-fn store_from_env(var: &str, cell: &'static OnceLock<Option<Frozen>>) -> Option<&'static Frozen> {
-    cell.get_or_init(|| {
-        std::env::var(var).ok().map(|dir| {
-            let t0 = std::time::Instant::now();
-            let f = Frozen::open(&dir);
-            eprintln!(
-                "[frozen] {var}={dir} opened in {:.1}s (filter {})",
-                t0.elapsed().as_secs_f64(),
-                if f.filters.is_some() { "on" } else { "off" }
-            );
-            f
-        })
-    })
-    .as_ref()
+/// Native runtime handle for the immutable replacement stores.
+///
+/// The regular store is mandatory. The curated store is optional so commands
+/// that only compress against the regular table do not need to open it.
+pub struct FrozenDb {
+    regular: Frozen,
+    curated: Option<Frozen>,
 }
 
-/// Regular-shard store (FROZEN_DB_DIR), if configured.
-pub fn shard_store() -> Option<&'static Frozen> {
-    static CELL: OnceLock<Option<Frozen>> = OnceLock::new();
-    store_from_env("FROZEN_DB_DIR", &CELL)
+impl FrozenDb {
+    /// Open stores from explicit directories.
+    pub fn open(regular_dir: &str, curated_dir: Option<&str>) -> Self {
+        let regular = Self::open_store("regular", regular_dir);
+        let curated = curated_dir.map(|dir| Self::open_store("curated", dir));
+        Self { regular, curated }
+    }
+
+    /// Open stores from `FROZEN_DB_DIR` and optional `FROZEN_CURATED_DIR`.
+    /// The regular store is required because there is no legacy fallback.
+    pub fn from_env() -> Self {
+        let regular = std::env::var("FROZEN_DB_DIR")
+            .expect("FROZEN_DB_DIR is required; the runtime is frozen-store only");
+        let curated = std::env::var("FROZEN_CURATED_DIR").ok();
+        Self::open(&regular, curated.as_deref())
+    }
+
+    fn open_store(label: &str, dir: &str) -> Frozen {
+        let t0 = std::time::Instant::now();
+        let store = Frozen::open(dir);
+        eprintln!(
+            "[frozen] {label}={dir} opened in {:.1}s (filter {})",
+            t0.elapsed().as_secs_f64(),
+            if store.filters.is_some() { "on" } else { "off" }
+        );
+        store
+    }
+
+    #[inline]
+    pub fn get_regular(&self, key: &[u8; 16]) -> Option<Vec<u8>> {
+        self.regular.get(key)
+    }
+
+    #[inline]
+    pub fn get_curated(&self, key: &[u8; 16]) -> Option<Vec<u8>> {
+        self.curated.as_ref()?.get(key)
+    }
+
+    pub fn has_curated(&self) -> bool {
+        self.curated.is_some()
+    }
 }
 
-/// Curated-shard store (FROZEN_CURATED_DIR), if configured.
-pub fn curated_store() -> Option<&'static Frozen> {
-    static CELL: OnceLock<Option<Frozen>> = OnceLock::new();
-    store_from_env("FROZEN_CURATED_DIR", &CELL)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// When running frozen-only (no real LMDB on disk), the rest of the code
-/// still opens the `./db` environment and its 512 named databases. Create
-/// an empty stub so those opens succeed; puts never happen on the read path.
-pub fn ensure_stub_lmdb(path: &str) {
-    let _ = std::fs::create_dir_all(path);
-    // If a real (or previous stub) env already has the named DBs, create_db
-    // is an idempotent open.
-    let env = lmdb::Environment::new()
-        .set_max_dbs(600)
-        .set_map_size(1024 * 1024 * 1024)
-        .open(std::path::Path::new(path))
-        .expect("frozen: open stub lmdb env");
-    for s in 0..=255u16 {
-        env.create_db(Some(&format!("{:02x}", s)), lmdb::DatabaseFlags::empty())
-            .expect("frozen: stub shard db");
-        env.create_db(
-            Some(&format!("curated_{:02x}", s)),
-            lmdb::DatabaseFlags::empty(),
-        )
-        .expect("frozen: stub curated db");
+    #[test]
+    fn split_key_recovers_frozen_address_fields() {
+        let shard = 0xabu64;
+        let bucket = 0x54321u64;
+        let tail = 0x1234_5678_9abcu64;
+        let hi = (shard << 56) | (bucket << 36) | (tail >> 12);
+        let lo = (tail & 0xfff) << 52;
+        let mut key = [0u8; 16];
+        key[..8].copy_from_slice(&hi.to_be_bytes());
+        key[8..].copy_from_slice(&lo.to_be_bytes());
+
+        assert_eq!(split_key(&key), (shard as usize, bucket as u32, tail));
+    }
+
+    #[test]
+    fn runtime_handle_is_thread_shareable() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<FrozenDb>();
     }
 }
