@@ -38,6 +38,10 @@ path = "src/bench/bench_canon4.rs"
 name = "bench_polycanon"
 path = "src/bench/bench_polycanon.rs"
 
+[[bin]]
+name = "frozen_from_lmdb"
+path = "src/bin/frozen_from_lmdb.rs"
+
 [profile.release]
 overflow-checks = true
 
@@ -63,6 +67,10 @@ primitive-types = "0.14.0"
 uint = "0.10.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rustc-hash = "2"
+# Frozen-table read path (src/replace/frozen.rs): xorf provides the optional
+# in-RAM BinaryFuse8 miss filter, bincode2 decodes the persisted filters.bin.
+xorf = { version = "0.12", features = ["serde", "bincode"] }
+bincode2 = { package = "bincode", version = "2" }
 # Embedded scripting for swappable ranking functions (outgoing/incoming subcircuit selection).
 # `sync` makes Engine/AST Send+Sync so a script ranker can be shared across rayon threads.
 rhai = { version = "1.21", features = ["sync"] }

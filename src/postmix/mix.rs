@@ -18,8 +18,11 @@
 // partners share an event is a sibling re-merge (the undo of one split);
 // recent events are tabu to keep freshly split pairs from instantly rejoining.
 use super::arena::{Arena, Dir, NIL};
+use super::db_replace::{db_replace, DbMode, DegreeGuard};
 use super::rules::{self, BlockReason, Outcome, Role, RuleKind};
 use super::xgate::{Lits, XGate};
+use super::xpoly::XPolyBudget;
+use crate::replace::frozen::FrozenDb;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -27,6 +30,29 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 
 pub const ORIGIN_SYNTH: u32 = u32::MAX;
+
+/// How a DB move samples its outgoing window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DbSample {
+    /// Pick a gate g, take it plus its w-1 neighbors in g's own direction,
+    /// falling back to the other direction when the circuit end is reached.
+    Contiguous,
+    /// Grow a convex (mutually-gatherable) block: float g1 to its first
+    /// non-commuting neighbor, then repeatedly float the whole block — in g1's
+    /// direction w.p. p, else the opposite — to the next non-commuting gate and
+    /// absorb it, until w gates are collected.
+    Convex,
+}
+
+impl DbSample {
+    pub fn parse(s: &str) -> Option<DbSample> {
+        match s {
+            "contiguous" => Some(DbSample::Contiguous),
+            "convex" => Some(DbSample::Convex),
+            _ => None,
+        }
+    }
+}
 
 // Closed-form pairwise merge catalogue: for same-target gates, f_g XOR f_h is a
 // (possibly complemented) monomial in exactly these cases. Results are always
@@ -303,6 +329,51 @@ pub struct MixParams {
     // the all-scales dial that decorrelates computational progress at every
     // window scale, the structured analog of ssg's long-range shooting.
     pub twist_min_len: usize,
+    // Frozen-DB replacement moves. Both sample a contiguous window of
+    // [db_min_window, db_max_window] gates, key it by its exact function, and
+    // look it up in the store; they differ in how they pick a replacement.
+    //
+    // w_db (COMPRESSING channel): probability that a contraction attempt tries
+    // the DB channel first — accepting only a non-growing equivalent, chosen
+    // uniformly among the SHORTEST — falling through to undo/merge on a miss.
+    //
+    // p_db (SIZE-AGNOSTIC move): probability that a whole round is spent on a DB
+    // replacement instead of the normal contract/expand step; the replacement is
+    // a uniform random equivalent of ANY gate count (it may grow the circuit).
+    //
+    // Both off (0.0) by default: the store is then never opened and the
+    // trajectory is identical to the pre-DB chain.
+    pub w_db: f64,
+    pub p_db: f64,
+    pub db_min_window: usize,
+    pub db_max_window: usize,
+    // Window sampling geometry and its guards (see DbSample / db_attempt).
+    // db_ctrl_cap (L): while building a window, a gate with more than L controls
+    // is evaded (floated out of the way, else the build reverses, else aborts) so
+    // high-degree gates that always miss are kept out of the window. 0 = no cap.
+    // db_convex_p: for Convex, the probability each growth step floats the block
+    // in g1's original direction (else the opposite).
+    pub db_sample: DbSample,
+    pub db_ctrl_cap: usize,
+    pub db_convex_p: f64,
+    // Exhaustive per-splice equivalence check on DB replacements. Correctness
+    // rests on the key/decode invariants, so this is a safety net; disabling it
+    // speeds long runs (the periodic global_check still guards). Windows whose
+    // support exceeds 24 wires can only be spliced with verification OFF.
+    pub db_verify: bool,
+    // Measurement mode: sample windows and record the DB match count via
+    // --db-record but NEVER splice (the circuit stays stationary). With
+    // p_db = 1.0 and all other weights 0 this makes fmix a pure match-rate
+    // sampler over the input circuit.
+    pub db_dry_run: bool,
+    // Degree pre-filter for DB lookups: a window whose function degree exceeds
+    // db_max_degree (the max ANF degree any stored circuit has) cannot match, so
+    // it is skipped before the expensive canonicalization. 0 = off. This is the
+    // guard that keeps the DB move cheap on the high-width windows the walk
+    // produces (which almost always miss). db_degree_probes random subcubes are
+    // tested per direction.
+    pub db_max_degree: usize,
+    pub db_degree_probes: usize,
     pub verify_every: u64,
     pub report_every: u64,
     pub local_verify: bool,
@@ -339,6 +410,17 @@ impl Default for MixParams {
             w_twist_swap: 0.0,
             w_twist_cnot: 0.0,
             twist_min_len: 64,
+            w_db: 0.0,
+            p_db: 0.0,
+            db_min_window: 2,
+            db_max_window: 12,
+            db_sample: DbSample::Contiguous,
+            db_ctrl_cap: 0,
+            db_convex_p: 0.75,
+            db_verify: true,
+            db_dry_run: false,
+            db_max_degree: 0,
+            db_degree_probes: 6,
             verify_every: 10_000,
             report_every: 50_000,
             local_verify: true,
@@ -365,6 +447,16 @@ pub struct MixCounters {
     pub undo_dead: u64,
     pub undo_tabu: u64,
     pub undo_gather_miss: u64,
+    // DB replacement moves (compressing channel + size-agnostic move).
+    pub db_comp_hits: u64,     // compressing: window replaced by a non-growing friend
+    pub db_comp_misses: u64,   // compressing: sampled window, no non-growing friend
+    pub db_agn_hits: u64,      // size-agnostic: window replaced (any length)
+    pub db_agn_misses: u64,    // size-agnostic: sampled window, no equivalent found
+    pub db_gates_removed: u64, // gates removed by accepted DB replacements
+    pub db_gates_added: u64,   // gates added by accepted (growing) DB replacements
+    pub db_wide_skip: u64,     // support > 24 wires with db_verify on: not verifiable, skipped
+    pub db_attempts: u64,      // total DB lookups attempted (both modes)
+    pub db_degree_skips: u64,  // attempts skipped by the degree guard (no lookup)
     pub cross_r1: u64,
     pub cross_r2: u64,
     pub cross_r3: u64,
@@ -459,6 +551,15 @@ pub struct Mixer {
     dump_flag: Option<String>,
     dump_out: String,
     stop_requested: bool,
+    // Frozen replacement store for the DB moves. Opened from the environment
+    // only when a DB move is enabled; an empty (miss-everything) store otherwise
+    // so runs without them never require FROZEN_DB_DIR.
+    db: FrozenDb,
+    db_budget: XPolyBudget,
+    // Optional per-attempt recorder (--db-record): one block per DB attempt with
+    // the outgoing window, the number of equivalent DB circuits, and (on
+    // success) the replacing subcircuit.
+    db_record: Option<std::io::BufWriter<std::fs::File>>,
 }
 
 pub enum MixStop {
@@ -467,7 +568,25 @@ pub enum MixStop {
 }
 
 impl Mixer {
-    pub fn new(gates: Vec<XGate>, num_wires: usize, mut params: MixParams) -> Mixer {
+    pub fn new(gates: Vec<XGate>, num_wires: usize, params: MixParams) -> Mixer {
+        // Open the replacement store once, only when a DB move is enabled, so
+        // runs without them never require FROZEN_DB_DIR.
+        let db = if params.w_db > 0.0 || params.p_db > 0.0 {
+            FrozenDb::from_env()
+        } else {
+            FrozenDb::empty()
+        };
+        Mixer::new_with_db(gates, num_wires, params, db)
+    }
+
+    /// As [`Mixer::new`] but with an explicit store (tests point this at a
+    /// prebuilt frozen directory instead of `FROZEN_DB_DIR`).
+    pub fn new_with_db(
+        gates: Vec<XGate>,
+        num_wires: usize,
+        mut params: MixParams,
+        db: FrozenDb,
+    ) -> Mixer {
         let n = gates.len();
         if params.target_size == 0 {
             params.target_size = n;
@@ -508,6 +627,17 @@ impl Mixer {
             dump_flag: None,
             dump_out: String::new(),
             stop_requested: false,
+            db,
+            db_budget: XPolyBudget::default(),
+            db_record: None,
+        }
+    }
+
+    /// Enable per-DB-attempt recording to `path` (see [`MixCounters`] db_*).
+    pub fn enable_db_record(&mut self, path: &str) {
+        match std::fs::File::create(path) {
+            Ok(f) => self.db_record = Some(std::io::BufWriter::new(f)),
+            Err(e) => eprintln!("[fmix] could not open --db-record {path}: {e}"),
         }
     }
 
@@ -577,21 +707,42 @@ impl Mixer {
 
     pub fn run(&mut self) -> MixStop {
         while self.moves_done < self.params.moves {
-            let excess = self.arena.len() as f64 - self.params.target_size as f64;
-            let p_contract = (1.0 / (1.0 + (-excess / self.params.temp).exp())).clamp(0.02, 0.98);
-            if self.rng.random_bool(p_contract) {
-                // Two contraction channels with complementary stock; when the
-                // first finds nothing, fall through to the other rather than
-                // wasting the move.
-                if self.rng.random_bool(self.params.undo_frac) {
-                    if !self.undo_move() {
-                        self.merge_move();
+            // Top-level: with probability p_db the whole round is a size-agnostic
+            // DB replacement move (a uniform random equivalent of any gate count),
+            // regardless of the contract/expand decision. On a miss the round is
+            // spent (no fallthrough) — that IS the chosen move.
+            let took_agnostic = self.params.p_db > 0.0
+                && self.arena.len() >= self.params.db_min_window.max(2)
+                && self.rng.random_bool(self.params.p_db.clamp(0.0, 1.0))
+                && { self.db_attempt(DbMode::SizeAgnostic); true };
+            if !took_agnostic {
+                let excess = self.arena.len() as f64 - self.params.target_size as f64;
+                let p_contract =
+                    (1.0 / (1.0 + (-excess / self.params.temp).exp())).clamp(0.02, 0.98);
+                // Nothing to contract below two gates; every contraction channel
+                // samples a linked node, so guard the empty/singleton arena (which
+                // a DB move can reach on a near-identity region).
+                if self.arena.len() >= 2 && self.rng.random_bool(p_contract) {
+                    // Contraction channels with complementary stock; when one finds
+                    // nothing, fall through to the next rather than wasting the move.
+                    // The compressing DB replacement is tried first with probability
+                    // w_db (the only channel that can contract non-ladder material),
+                    // then undo/merge as before.
+                    let did_db = self.params.w_db > 0.0
+                        && self.rng.random_bool(self.params.w_db.clamp(0.0, 1.0))
+                        && self.db_attempt(DbMode::Compressing);
+                    if did_db {
+                        // done
+                    } else if self.rng.random_bool(self.params.undo_frac) {
+                        if !self.undo_move() {
+                            self.merge_move();
+                        }
+                    } else if !self.merge_move() {
+                        self.undo_move();
                     }
-                } else if !self.merge_move() {
-                    self.undo_move();
+                } else {
+                    self.expand_move();
                 }
-            } else {
-                self.expand_move();
             }
             self.moves_done += 1;
             self.counters.moves = self.moves_done;
@@ -1611,6 +1762,188 @@ impl Mixer {
         true
     }
 
+    // ---- DB replacement moves ----
+    //
+    // Sample a window of [db_min_window, db_max_window] gates (contiguous or
+    // convex, per db_sample; wide gates evaded per db_ctrl_cap), look it up in
+    // the frozen store by its exact function polynomial (which handles the
+    // conjunction-control "toffoli" gates the walk produces, not just g57s), and
+    // splice in an equivalent circuit chosen per `mode`:
+    //   Compressing  -> a non-growing equivalent, uniform among the shortest;
+    //   SizeAgnostic -> any equivalent, uniform over all (may grow the circuit).
+    // The sampled window is a contiguous run (convex sampling floats it together
+    // first), so replacing it by an equal-function block preserves the circuit.
+    // When `db_verify` is on the splice is checked exhaustively first (support
+    // <= 24 wires); with it off the splice rests on the key/decode invariants and
+    // the periodic global_check. Every attempt is recorded if --db-record is set.
+    // Returns true iff a replacement was spliced in.
+    fn db_attempt(&mut self, mode: DbMode) -> bool {
+        let n = self.arena.len();
+        let wmin = self.params.db_min_window.max(2);
+        let wmax = self.params.db_max_window.max(wmin);
+        if n < wmin {
+            return false;
+        }
+        let len = if wmin == wmax {
+            wmin
+        } else {
+            self.rng.random_range(wmin..=wmax.min(n))
+        };
+
+        // Sample the window (contiguous or convex); g1dir drives the incoming
+        // direction pivot below.
+        let Some((ids, g1dir)) = self.sample_window(len) else {
+            return false;
+        };
+        let window: Vec<XGate> = ids.iter().map(|&id| self.arena.gate(id).clone()).collect();
+
+        self.counters.db_attempts += 1;
+        let guard = DegreeGuard {
+            max_degree: self.params.db_max_degree,
+            probes: self.params.db_degree_probes,
+        };
+        let res = db_replace(
+            &window,
+            self.num_wires,
+            &self.db,
+            self.db_budget,
+            mode,
+            guard,
+            &mut self.rng,
+        );
+        let match_count = res.match_count;
+        if res.degree_skipped {
+            self.counters.db_degree_skips += 1;
+        }
+
+        // Measurement mode: record the window + match count, never mutate.
+        if self.params.db_dry_run {
+            self.record_db_attempt(&window, match_count, None);
+            if match_count > 0 {
+                match mode {
+                    DbMode::Compressing => self.counters.db_comp_hits += 1,
+                    DbMode::SizeAgnostic => self.counters.db_agn_hits += 1,
+                }
+            } else {
+                match mode {
+                    DbMode::Compressing => self.counters.db_comp_misses += 1,
+                    DbMode::SizeAgnostic => self.counters.db_agn_misses += 1,
+                }
+            }
+            return false;
+        }
+
+        let miss = |m: &mut Self| {
+            match mode {
+                DbMode::Compressing => m.counters.db_comp_misses += 1,
+                DbMode::SizeAgnostic => m.counters.db_agn_misses += 1,
+            }
+        };
+
+        let Some(replacement) = res.chosen else {
+            self.record_db_attempt(&window, match_count, None);
+            miss(self);
+            return false;
+        };
+
+        // Optional exhaustive equivalence check on the combined support.
+        // verify_rewrite caps support at 24 wires; with verification on, a wider
+        // window is not checkable so we decline it rather than splice unchecked.
+        if self.params.db_verify {
+            let mut support: Vec<u16> = window
+                .iter()
+                .chain(replacement.iter())
+                .flat_map(|g| std::iter::once(g.target).chain(g.ctrls.iter().map(|&(w, _)| w)))
+                .collect();
+            support.sort_unstable();
+            support.dedup();
+            if support.len() > 24 {
+                self.counters.db_wide_skip += 1;
+                self.record_db_attempt(&window, match_count, None);
+                miss(self);
+                return false;
+            }
+            assert!(
+                rules::verify_rewrite(&window, &replacement),
+                "DB replacement verification failed: {window:?} -> {replacement:?}"
+            );
+        }
+
+        self.record_db_attempt(&window, match_count, Some(&replacement));
+
+        // Size accounting (replacement may be shorter, equal, or longer).
+        let old = window.len();
+        let new = replacement.len();
+        if new <= old {
+            self.counters.db_gates_removed += (old - new) as u64;
+        } else {
+            self.counters.db_gates_added += (new - old) as u64;
+        }
+        match mode {
+            DbMode::Compressing => self.counters.db_comp_hits += 1,
+            DbMode::SizeAgnostic => self.counters.db_agn_hits += 1,
+        }
+
+        // Splice: insert the replacement after the node left of the window, then
+        // unlink/free every window node (bumping stamps, which invalidates any
+        // journal undo entry that referenced them).
+        let cursor = self.arena.neighbor(ids[0], Dir::L);
+        // Origin: keep the shared ancestor if the whole window agrees, else mark
+        // the rewritten material synthetic (a DB block spans mixed lineage).
+        let m0 = self.meta_of(ids[0]);
+        let same_origin = ids.iter().all(|&id| self.meta_of(id).origin == m0.origin);
+        let origin = if same_origin { m0.origin } else { ORIGIN_SYNTH };
+        for &id in &ids {
+            self.index_remove(id);
+            self.arena.unlink(id);
+            self.arena.free_node(id);
+        }
+        // Incoming-gate directions: split the replacement at a pivot so the block
+        // shoots outward from a point set by g1's original direction. g1 left ->
+        // pivot at floor(2m/3); g1 right -> floor(m/3). Gates up to the pivot
+        // (inclusive) head left, the rest head right.
+        let m = replacement.len();
+        let pivot = if g1dir == Dir::L { (2 * m) / 3 } else { m / 3 };
+        let mut c = cursor;
+        for (i, gate) in replacement.into_iter().enumerate() {
+            c = self.arena.insert_after(c, gate);
+            self.index_add(c);
+            let d = if i <= pivot { Dir::L } else { Dir::R };
+            self.set_meta(c, Meta { origin, event: 0, dir: d });
+        }
+        true
+    }
+
+    // Append one record to --db-record: the outgoing window, the number of
+    // equivalent DB circuits, and (on success) the replacing subcircuit. Gates
+    // are printed as `target:comp:ctrl(pol)...`, one circuit per line.
+    fn record_db_attempt(&mut self, window: &[XGate], matches: usize, repl: Option<&[XGate]>) {
+        use std::io::Write;
+        let Some(w) = self.db_record.as_mut() else { return };
+        fn fmt(gates: &[XGate]) -> String {
+            gates
+                .iter()
+                .map(|g| {
+                    let ctrls: Vec<String> =
+                        g.ctrls.iter().map(|&(wire, p)| format!("{wire}{}", if p { "+" } else { "-" })).collect();
+                    format!("{}:{}:{}", g.target, g.comp as u8, ctrls.join(","))
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+        let _ = writeln!(
+            w,
+            "attempt mv={} matches={} replaced={}",
+            self.moves_done,
+            matches,
+            repl.is_some() as u8
+        );
+        let _ = writeln!(w, "  out {}", fmt(window));
+        if let Some(r) = repl {
+            let _ = writeln!(w, "  in  {}", fmt(r));
+        }
+    }
+
     // ---- floating (same semantics as the fsplit engine) ----
 
     fn float_distance(&self, id: u32, dir: Dir, cap: usize) -> usize {
@@ -1751,6 +2084,205 @@ impl Mixer {
         }
         self.counters.floats += 1;
         self.counters.float_steps += k as u64;
+    }
+
+    // ---- DB window sampling ----
+    //
+    // Both samplers return a contiguous run of node ids (link order, leftmost
+    // first) plus g1's stored direction (for the incoming-gate pivot rule), or
+    // None when the attempt aborts (the L-cap could not be satisfied) or too few
+    // gates could be gathered. Any floating they do is function-preserving, so a
+    // subsequent miss leaves the circuit equivalent.
+
+    fn width_of(&self, id: u32) -> usize {
+        self.arena.gate(id).width()
+    }
+
+    // Does any gate of the contiguous span [lo..hi] collide with (not commute
+    // with) gate `x`?
+    fn span_collides(&self, lo: u32, hi: u32, x: u32) -> bool {
+        let xg = self.arena.gate(x);
+        let mut cur = lo;
+        loop {
+            if XGate::collides(self.arena.gate(cur), xg) {
+                return true;
+            }
+            if cur == hi {
+                return false;
+            }
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+    }
+
+    // Move a commuting neighbor `x` from just past the span's `dir` end to the
+    // far side of the span (one function-preserving hop of the whole block).
+    fn move_across(&mut self, x: u32, lo: u32, hi: u32, dir: Dir) {
+        self.arena.unlink(x);
+        match dir {
+            Dir::R => self.arena.link_before(x, lo), // block shifts right past x
+            Dir::L => self.arena.link_after(x, hi),
+        }
+        self.counters.floats += 1;
+        self.counters.float_steps += 1;
+    }
+
+    fn span_ids(&self, lo: u32, hi: u32) -> Vec<u32> {
+        let mut ids = Vec::new();
+        let mut cur = lo;
+        loop {
+            ids.push(cur);
+            if cur == hi {
+                break;
+            }
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        ids
+    }
+
+    fn sample_window(&mut self, w: usize) -> Option<(Vec<u32>, Dir)> {
+        match self.params.db_sample {
+            DbSample::Contiguous => self.collect_contiguous(w),
+            DbSample::Convex => self.collect_convex(w),
+        }
+    }
+
+    // Seed gate for a window: a random linked node whose width is within the
+    // control cap (retried a few times), or None if the cap keeps rejecting.
+    fn pick_seed(&mut self) -> Option<u32> {
+        let cap = self.params.db_ctrl_cap;
+        for _ in 0..8 {
+            let g = self.arena.random_linked(&mut self.rng);
+            if cap == 0 || self.width_of(g) <= cap {
+                return Some(g);
+            }
+        }
+        None
+    }
+
+    // Contiguous: g plus its w-1 neighbors in g's direction, spilling to the
+    // other direction at the circuit end. A candidate with > L controls is first
+    // floated out of the way; if it cannot float, the build reverses direction;
+    // if that side is also blocked, the attempt aborts.
+    fn collect_contiguous(&mut self, w: usize) -> Option<(Vec<u32>, Dir)> {
+        let cap = self.params.db_ctrl_cap;
+        let g1 = self.pick_seed()?;
+        let dir1 = self.meta_of(g1).dir;
+        let (mut lo, mut hi) = (g1, g1);
+        let mut count = 1usize;
+        let mut dir = dir1;
+        let mut switched = false;
+        while count < w {
+            let end = if dir == Dir::R { hi } else { lo };
+            let x = self.arena.neighbor(end, dir);
+            if x == NIL {
+                if !switched {
+                    dir = dir1.opposite();
+                    switched = true;
+                    continue;
+                }
+                break; // both ends reached the circuit boundary
+            }
+            if cap > 0 && self.width_of(x) > cap {
+                if self.float_to_collision(x, dir) > 0 {
+                    continue; // floated the wide gate out of the slot; retry
+                }
+                if !switched {
+                    dir = dir1.opposite();
+                    switched = true;
+                    continue;
+                }
+                return None; // wide gate unavoidable on both sides -> abort
+            }
+            if dir == Dir::R {
+                hi = x;
+            } else {
+                lo = x;
+            }
+            count += 1;
+        }
+        let ids = self.span_ids(lo, hi);
+        if ids.len() < self.params.db_min_window.max(2) {
+            return None;
+        }
+        Some((ids, dir1))
+    }
+
+    // Convex: float g1 to its first collider, then grow the block by floating it
+    // (in dir1 w.p. p, else the opposite) to the next collider and absorbing it.
+    // The L-cap evades a wide collider the same way (float it away; else reverse;
+    // else abort).
+    fn collect_convex(&mut self, w: usize) -> Option<(Vec<u32>, Dir)> {
+        let cap = self.params.db_ctrl_cap;
+        let p = self.params.db_convex_p;
+        let g1 = self.pick_seed()?;
+        let dir1 = self.meta_of(g1).dir;
+        self.float_to_collision(g1, dir1);
+        let (mut lo, mut hi) = (g1, g1);
+        let mut count = 1usize;
+
+        while count < w {
+            // The first collider is reached in g1's own direction (spec: float g1
+            // in dir1 to hit g2); later steps randomize direction by p.
+            let want = if count == 1 {
+                dir1
+            } else if self.rng.random_bool(p) {
+                dir1
+            } else {
+                dir1.opposite()
+            };
+            // Float the block toward `want` to the next collider; if that side is
+            // a boundary, try the opposite direction once.
+            let (mut g3, mut dir) = self.float_block_to_collider(lo, hi, want);
+            if g3 == NIL {
+                let (g3b, dirb) = self.float_block_to_collider(lo, hi, want.opposite());
+                if g3b == NIL {
+                    break; // block is convex-maximal (both ends commute to the wall)
+                }
+                g3 = g3b;
+                dir = dirb;
+            }
+            // L-cap: evade a wide collider.
+            if cap > 0 && self.width_of(g3) > cap {
+                if self.float_to_collision(g3, dir) > 0 {
+                    continue; // g3 floated away; re-float the block to the next collider
+                }
+                // Reverse: look for a collider on the other side instead.
+                let (g3r, dirr) = self.float_block_to_collider(lo, hi, dir.opposite());
+                if g3r == NIL || (cap > 0 && self.width_of(g3r) > cap) {
+                    return None; // wide gate unavoidable -> abort
+                }
+                g3 = g3r;
+                dir = dirr;
+            }
+            if dir == Dir::R {
+                hi = g3;
+            } else {
+                lo = g3;
+            }
+            count += 1;
+        }
+        let ids = self.span_ids(lo, hi);
+        if ids.len() < self.params.db_min_window.max(2) {
+            return None;
+        }
+        Some((ids, dir1))
+    }
+
+    // Float the contiguous span [lo..hi] toward `dir` past commuting neighbors,
+    // returning the first neighbor that collides with the block (and `dir`), or
+    // (NIL, dir) at the boundary. Commuting neighbors are hopped to the far side.
+    fn float_block_to_collider(&mut self, lo: u32, hi: u32, dir: Dir) -> (u32, Dir) {
+        loop {
+            let end = if dir == Dir::R { hi } else { lo };
+            let x = self.arena.neighbor(end, dir);
+            if x == NIL {
+                return (NIL, dir);
+            }
+            if self.span_collides(lo, hi, x) {
+                return (x, dir);
+            }
+            self.move_across(x, lo, hi, dir);
+        }
     }
 
     pub fn final_float(&mut self) -> (u64, u64) {
@@ -1936,6 +2468,11 @@ impl Mixer {
     }
 
     pub fn report(&mut self) {
+        // Flush the attempt recorder so a long run is inspectable mid-flight.
+        if let Some(w) = self.db_record.as_mut() {
+            use std::io::Write;
+            let _ = w.flush();
+        }
         let disp = self.origin_displacement();
         let owin = self.window_origin_diversity(64);
         let fan0 = self.fanout_zero_frac();
@@ -1948,7 +2485,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -1969,6 +2506,14 @@ impl Mixer {
             c.undo_tabu,
             c.undo_gather_miss,
             self.journal.len(),
+            c.db_comp_hits,
+            c.db_comp_misses,
+            c.db_agn_hits,
+            c.db_agn_misses,
+            c.db_gates_removed,
+            c.db_gates_added,
+            c.db_wide_skip,
+            c.db_degree_skips,
             c.cross_r1,
             c.cross_r2,
             c.cross_r3,
@@ -2422,6 +2967,88 @@ mod mix_tests {
         let n = mx.arena.len();
         assert!(n < 4 * 400, "size ran away under merge-only contraction: {n}");
         mx.global_check();
+    }
+
+    // Sampled windows are contiguous in link order and never break the circuit
+    // function (both samplers only float commuting gates), and the control cap
+    // keeps wide gates out of the collected window.
+    #[test]
+    fn window_samplers_are_contiguous_capped_and_function_preserving() {
+        fn same_fn(a: &[XGate], b: &[XGate], nw: usize, seed: u64) -> bool {
+            let mut rng = StdRng::seed_from_u64(seed);
+            for _ in 0..8 {
+                let init: Vec<u64> = (0..nw).map(|_| rng.random()).collect();
+                let (mut sa, mut sb) = (init.clone(), init);
+                super::super::xgate::eval_lanes(a.iter(), &mut sa);
+                super::super::xgate::eval_lanes(b.iter(), &mut sb);
+                if sa != sb {
+                    return false;
+                }
+            }
+            true
+        }
+        for sample in [DbSample::Contiguous, DbSample::Convex] {
+            let gates = random_mixed_circuit(19, 16, 400);
+            let reference = gates.clone();
+            let params = MixParams {
+                db_sample: sample,
+                db_ctrl_cap: 2, // no window gate may exceed width 2
+                db_min_window: 2,
+                db_max_window: 6,
+                db_convex_p: 0.75,
+                report_every: u64::MAX,
+                seed: 5,
+                ..MixParams::default()
+            };
+            let mut mx = Mixer::new(gates, 16, params);
+            let mut got = 0usize;
+            for w in 0..4000 {
+                let win = (w % 5) + 2; // window sizes 2..=6
+                if let Some((ids, _dir)) = mx.sample_window(win) {
+                    got += 1;
+                    // contiguous in link order
+                    for pair in ids.windows(2) {
+                        assert_eq!(
+                            mx.arena.neighbor(pair[0], Dir::R),
+                            pair[1],
+                            "{sample:?} window ids not contiguous"
+                        );
+                    }
+                    assert!(ids.len() >= 2 && ids.len() <= win);
+                    // control cap respected
+                    for &id in &ids {
+                        assert!(
+                            mx.arena.gate(id).width() <= 2,
+                            "{sample:?} window kept a gate wider than the cap"
+                        );
+                    }
+                }
+            }
+            assert!(got > 500, "{sample:?} sampler almost never produced a window: {got}");
+            // Sampling floats only commuting gates -> whole-circuit function intact.
+            assert!(
+                same_fn(&reference, &mx.arena.to_vec(), 16, 1),
+                "{sample:?} sampling changed the circuit function"
+            );
+        }
+    }
+
+    #[test]
+    fn contiguous_uses_gate_direction_and_spills_at_boundary() {
+        // A 4-gate circuit on disjoint wires (all commute); a window of 4 from any
+        // start must gather all four regardless of direction / boundary.
+        let gates = vec![
+            XGate::conj(0, [(1, true)]).unwrap(),
+            XGate::conj(2, [(3, true)]).unwrap(),
+            XGate::conj(4, [(5, true)]).unwrap(),
+            XGate::conj(6, [(7, true)]).unwrap(),
+        ];
+        let params = MixParams { db_min_window: 2, report_every: u64::MAX, seed: 2, ..MixParams::default() };
+        let mut mx = Mixer::new(gates, 8, params);
+        for _ in 0..50 {
+            let (ids, _d) = mx.collect_contiguous(4).expect("window");
+            assert_eq!(ids.len(), 4, "boundary spill did not reach the quota");
+        }
     }
 
     // Symmetric truncation: with twist_min_len at circuit scale every draw is

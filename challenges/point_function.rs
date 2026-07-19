@@ -1,17 +1,10 @@
 // Build a point function (or an identity that looks like one!)
 
-use std::{ops::Range, path::Path};
+use std::ops::Range;
 
 use clap::Parser;
 use itertools::chain;
-use lmdb::Environment;
-use local_mixing::{
-    circuit::CircuitSeq,
-    open_shard_dbs,
-    replace::replace::{compress_lmdb, compress_loop},
-};
-
-const LMDB_PATH: &str = "./db";
+use local_mixing::{circuit::CircuitSeq, replace::frozen::FrozenDb, replace::replace::compress_loop};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -157,14 +150,8 @@ fn key_to_gates(wires: u16, key: usize) -> CircuitSeq {
 fn main() {
     let args = Args::parse();
 
-    let env = Environment::new()
-        .set_max_readers(10000)
-        .set_max_dbs(256 + 40)
-        .set_map_size(800 * 1024 * 1024 * 1024)
-        .open(Path::new(LMDB_PATH))
-        .expect("Failed to open database.");
-
-    let shard_dbs = open_shard_dbs(&env);
+    // Regular frozen store from FROZEN_DB_DIR.
+    let db = FrozenDb::from_env();
 
     let n = args.wires;
 
@@ -188,7 +175,19 @@ fn main() {
 
     println!("len = {}", pf.gates.len());
 
-    let comp = compress_loop(&pf, pf.max_wire() + 1, &env, &shard_dbs, 6, 0, 0, ".");
+    let comp = compress_loop(
+        &pf,
+        pf.max_wire() + 1,
+        &db,
+        6,
+        0,
+        0,
+        ".",
+        false,
+        None,
+        true,
+        &mut Vec::new(),
+    );
 
     println!("{}", comp.repr());
 

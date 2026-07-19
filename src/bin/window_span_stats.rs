@@ -4,14 +4,13 @@
 // against litter composition. Optionally probe the main DB (forward + reverse keys,
 // same canonicalize/key path as compression) to see which spans/classes actually hit.
 // Usage: window_span_stats <circuit.txt> [span_samples] [db_probes]
-// Run from ~/local_mixing_sd so ./db resolves; needs <circuit>.tags alongside the circuit.
-use lmdb::{Environment, EnvironmentFlags, Transaction};
+// DB probes read the regular frozen store from FROZEN_DB_DIR; needs <circuit>.tags
+// alongside the circuit.
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::circuit::circuit::polys_repr_blob;
-use local_mixing::replace::main_mix::open_shard_dbs;
+use local_mixing::replace::frozen::FrozenDb;
 use local_mixing::replace::replace::{random_subcircuit, read_tags_sidecar, window_litter_stats, Tag};
 use std::collections::BTreeMap;
-use std::path::Path;
 use xxhash_rust::xxh3::xxh3_128;
 
 const CLASSES: [&str; 4] = ["full_litter", "single_partial", "two_litters", "three_plus"];
@@ -115,14 +114,7 @@ fn main() {
     if db_probes == 0 {
         return; // census-only mode
     }
-    let env = Environment::new()
-        .set_flags(EnvironmentFlags::READ_ONLY | EnvironmentFlags::NO_LOCK)
-        .set_max_readers(10000)
-        .set_max_dbs(556)
-        .set_map_size(800 * 1024 * 1024 * 1024)
-        .open(Path::new("./db"))
-        .expect("open ./db");
-    let shard_dbs = open_shard_dbs(&env);
+    let db = FrozenDb::from_env();
 
     for &local in &[false, true] {
         let mode = if local { "local" } else { "global" };
@@ -150,17 +142,15 @@ fn main() {
                 canon_bail += 1;
                 continue;
             }
-            let txn = env.begin_ro_txn().expect("ro txn");
-            let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes().to_vec();
-            let mut hit = txn.get(shard_dbs[fwd_key[0] as usize], &fwd_key).is_ok();
+            let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
+            let mut hit = db.get_regular(&fwd_key).is_some();
             if !hit {
                 let (rev_polys, _, _) = sub.canonicalize_polys_single(true);
                 if !rev_polys.is_empty() {
-                    let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes().to_vec();
-                    hit = txn.get(shard_dbs[rev_key[0] as usize], &rev_key).is_ok();
+                    let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
+                    hit = db.get_regular(&rev_key).is_some();
                 }
             }
-            drop(txn);
             let e = probes.entry((cls, w)).or_insert((0, 0));
             e.0 += 1;
             let ewg = probes_wg.entry((w, g)).or_insert((0, 0));

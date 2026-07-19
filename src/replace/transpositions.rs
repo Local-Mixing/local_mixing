@@ -1,7 +1,7 @@
 // For adding wire shuffles and bit flips
 use crate::circuit::{Permutation, circuit::CircuitSeq};
 use crate::replace::replace::Tag;
-use lmdb::{Database, Environment};
+use crate::replace::frozen::FrozenDb;
 use rand::Rng;
 use rand::seq::IndexedRandom;
 use std::collections::{HashMap, VecDeque};
@@ -1436,23 +1436,22 @@ impl Transpositions {
 // Append a SAMF/NOT gadget (`samf`) to `gates`, first trying to fuse it with the last
 // up-to-3 already-emitted gates through a single curated-DB lookup. On a hit, that window
 // (the trailing gates + the gadget) is replaced by the equal-or-shorter equivalent the DB
-// returns; on a miss the gadget is appended verbatim. `compress_curated_lmdb` only ever
+// returns; on a miss the gadget is appended verbatim. `compress_curated_db` only ever
 // returns a circuit equivalent to the window it was given (and returns None when the DBs
 // are empty), so this is equivalence-preserving.
 fn integrate_samf_compressed(
     gates: &mut Vec<[u16; 3]>,
     samf: &[[u16; 3]],
     n: usize,
-    env: &Environment,
-    curated_shard_dbs: &[Database],
-    shard_dbs: &[Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
     tags: &mut Vec<crate::replace::replace::Tag>,
 ) {
-    use crate::replace::pairs::{compress_curated_lmdb, find_any_replacement_lmdb};
+    use crate::replace::pairs::{compress_curated_db, find_any_replacement_db};
     let track = !tags.is_empty();
-    // No DBs to consult -> append verbatim (matches the old behaviour and avoids
-    // opening a read txn on a possibly-empty env).
-    if curated_shard_dbs.is_empty() && shard_dbs.is_empty() {
+    // No stores enabled -> append verbatim (matches the old empty-shard-slice behaviour).
+    if !use_curated && !use_regular {
         gates.extend_from_slice(samf);
         if track {
             // appended unsamf gates are new: generation = local-context median + 1 (never gen 0)
@@ -1474,9 +1473,9 @@ fn integrate_samf_compressed(
     //   2. any curated equivalent (even if not a compression) — still hides the SAMF,
     //   3. any sharded equivalent — fall back to the full sharded DB.
     // On a total miss, emit the undo SAMF gadget verbatim (correct, just unhidden).
-    let repl = compress_curated_lmdb(&window, n, env, curated_shard_dbs, &[])
-        .or_else(|| find_any_replacement_lmdb(&window, n, env, curated_shard_dbs, &[]))
-        .or_else(|| find_any_replacement_lmdb(&window, n, env, &[], shard_dbs));
+    let repl = compress_curated_db(&window, n, db, use_curated, false)
+        .or_else(|| find_any_replacement_db(&window, n, db, use_curated, false))
+        .or_else(|| find_any_replacement_db(&window, n, db, false, use_regular));
     if let Some(repl) = repl {
         gates.truncate(ctx_start);
         gates.extend_from_slice(&repl);
@@ -1563,9 +1562,9 @@ pub fn apply_unsamf(
     t_list: &Transpositions,
     negation_mask: &[u8],
     n: usize,
-    env: &Environment,
-    curated_shard_dbs: &[Database],
-    shard_dbs: &[Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
     tags: &mut Vec<crate::replace::replace::Tag>,
 ) {
     let p = t_list.to_perm(n);
@@ -1599,20 +1598,20 @@ pub fn apply_unsamf(
     for &swap in t.transpositions.iter().rev() {
         let mut samf = Transpositions::gen_gates_swap(n, swap);
         samf.reverse();
-        integrate_samf_compressed(output, &samf, n, env, curated_shard_dbs, shard_dbs, tags);
+        integrate_samf_compressed(output, &samf, n, db, use_curated, use_regular, tags);
     }
     for w in leftover_nots {
         let not_gates = Transpositions::gen_gates_not(n, w);
-        integrate_samf_compressed(output, &not_gates, n, env, curated_shard_dbs, shard_dbs, tags);
+        integrate_samf_compressed(output, &not_gates, n, db, use_curated, use_regular, tags);
     }
 }
 
 pub fn insert_wire_shuffles_knuth(
     circuit: &mut CircuitSeq,
     n: usize,
-    env: &Environment,
-    curated_shard_dbs: &[Database],
-    shard_dbs: &[Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
 ) {
     println!("Inserting wire shuffles (knuth)");
     println!("Starting len: {} gates", circuit.gates.len());
@@ -1646,9 +1645,9 @@ pub fn insert_wire_shuffles_knuth(
         &t_list,
         &negation_mask,
         n,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
+        db,
+        use_curated,
+        use_regular,
         &mut Vec::new(),
     );
     circuit.gates = gates;
@@ -1658,9 +1657,9 @@ pub fn insert_wire_shuffles_knuth(
 pub fn insert_wire_shuffles_simple(
     circuit: &mut CircuitSeq,
     n: usize,
-    env: &Environment,
-    curated_shard_dbs: &[Database],
-    shard_dbs: &[Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
 ) {
     println!("Inserting wire shuffles (simple)");
     println!("Starting len: {} gates", circuit.gates.len());
@@ -1716,9 +1715,9 @@ pub fn insert_wire_shuffles_simple(
         &t_list,
         &negation_mask,
         n,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
+        db,
+        use_curated,
+        use_regular,
         &mut Vec::new(),
     );
     circuit.gates = gates;
@@ -1730,9 +1729,9 @@ pub fn insert_wire_shuffles_x(
     circuit: &mut CircuitSeq,
     n: usize,
     x: usize,
-    env: &Environment,
-    curated_shard_dbs: &[Database],
-    shard_dbs: &[Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
 ) {
     println!("Inserting wire shuffles");
     println!("Starting len: {} gates", circuit.gates.len());
@@ -1778,9 +1777,9 @@ pub fn insert_wire_shuffles_x(
         &t_list,
         &negation_mask,
         n,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
+        db,
+        use_curated,
+        use_regular,
         &mut Vec::new(),
     );
     circuit.gates = gates;
@@ -1855,9 +1854,9 @@ pub fn insert_wire_m_samfs_every_x(
     n: usize,
     m: usize,
     x: usize,
-    env: &Environment,
-    curated_shard_dbs: &[Database],
-    shard_dbs: &[Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
 ) {
     println!("Inserting {} samfs between each gate", m);
     println!("Starting len: {} gates", circuit.gates.len());
@@ -1867,9 +1866,9 @@ pub fn insert_wire_m_samfs_every_x(
         &t_list,
         &negation_mask,
         n,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
+        db,
+        use_curated,
+        use_regular,
         &mut Vec::new(),
     );
     circuit.gates = gates;
@@ -1989,9 +1988,9 @@ fn shoot_materialized_gate_to_first_collision(
 fn shuffled_shooting_game_core(
     input: &[[u16; 3]],
     n: usize,
-    env: &Environment,
-    curated_shard_dbs: &[Database],
-    shard_dbs: &[Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
     gates_ahead_expand: usize,
     gates_ahead_samf: usize,
     type_attempts: usize,
@@ -2004,7 +2003,7 @@ fn shuffled_shooting_game_core(
     max_replacements: usize,
     stop_on_unreplaceable: bool,
 ) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize, Vec<Tag>) {
-    use crate::replace::pairs::{compress_curated_lmdb, expand_curated_lmdb_neg};
+    use crate::replace::pairs::{compress_curated_db, expand_curated_db_neg};
 
     // Survivor tracking: `input_tags` (non-empty when enabled) carries one origin id per input
     // gate. We mirror every push/pop of `output`/`remaining` on `output_tags`/`remaining_tags`.
@@ -2355,7 +2354,7 @@ fn shuffled_shooting_game_core(
                         continue;
                     }
                     if let Some(e) =
-                        expand_curated_lmdb_neg(win, n, env, curated_shard_dbs, shard_dbs, &neg)
+                        expand_curated_db_neg(win, n, db, use_curated, use_regular, &neg)
                     {
                         if e.len() >= 3 {
                             let full = litter_active && litter_stats[ci].1;
@@ -2487,7 +2486,7 @@ fn shuffled_shooting_game_core(
                     window.extend_from_slice(&expansion[exp_tail_start..]);
                     window.extend_from_slice(&samf[..3]);
                     if let Some(repl) =
-                        compress_curated_lmdb(&window, n, env, curated_shard_dbs, shard_dbs)
+                        compress_curated_db(&window, n, db, use_curated, use_regular)
                     {
                         // Accept only if the SAMF gates are genuinely absorbed (not surviving verbatim).
                         let samf_slice = &samf[..3];
@@ -2705,9 +2704,9 @@ fn shuffled_shooting_game_core(
 fn shuffled_shooting_game_repeated_core(
     input: &[[u16; 3]],
     n: usize,
-    env: &Environment,
-    curated_shard_dbs: &[Database],
-    shard_dbs: &[Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
     gates_ahead_expand: usize,
     gates_ahead_samf: usize,
     type_attempts: usize,
@@ -2726,9 +2725,9 @@ fn shuffled_shooting_game_repeated_core(
         let (out, t_pass, neg_pass, compressions, _tags) = shuffled_shooting_game_core(
             &input_gates,
             n,
-            env,
-            curated_shard_dbs,
-            shard_dbs,
+            db,
+            use_curated,
+            use_regular,
             gates_ahead_expand,
             gates_ahead_samf,
             type_attempts,
@@ -2757,9 +2756,9 @@ fn shuffled_shooting_game_repeated_core(
 pub fn shuffled_shooting_game(
     circuit: &mut CircuitSeq,
     n: usize,
-    env: &Environment,
-    curated_shard_dbs: &[Database],
-    shard_dbs: &[Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
     gates_ahead_expand: usize,
     gates_ahead_samf: usize,
     type_attempts: usize,
@@ -2768,9 +2767,9 @@ pub fn shuffled_shooting_game(
     let (mut output, t_list, negation_mask, compressions) = shuffled_shooting_game_repeated_core(
         &circuit.gates,
         n,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
+        db,
+        use_curated,
+        use_regular,
         gates_ahead_expand,
         gates_ahead_samf,
         type_attempts,
@@ -2781,9 +2780,9 @@ pub fn shuffled_shooting_game(
         &t_list,
         &negation_mask,
         n,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
+        db,
+        use_curated,
+        use_regular,
         &mut Vec::new(),
     );
     circuit.gates = output;
@@ -2806,9 +2805,9 @@ pub fn shuffled_shoot_then_samf_core(
     gates_ahead_samf: usize,
     type_attempts: usize,
     shooting_times: usize,
-    env: &Environment,
-    curated_shard_dbs: &[Database],
-    shard_dbs: &[Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
     input_tags: &[Tag],
 ) -> (Vec<[u16; 3]>, Transpositions, Vec<u8>, usize, Vec<Tag>) {
     let track = !input_tags.is_empty();
@@ -2890,7 +2889,7 @@ pub fn shuffled_shoot_then_samf_core(
             let net_t = Transpositions::from_perm(&net_perm);
             // Empty DBs -> apply_unsamf appends RAW gadgets (no DB compression): same function,
             // far faster, so this check is feasible even on million-gate circuits.
-            apply_unsamf(&mut mg, &net_t, &acc.neg, n, env, &[], &[], &mut Vec::new());
+            apply_unsamf(&mut mg, &net_t, &acc.neg, n, db, false, false, &mut Vec::new());
             let materialized = CircuitSeq { gates: mg };
             let inp = CircuitSeq { gates: input.to_vec() };
             if materialized.probably_equal(&inp, n, 512).is_err() {
@@ -2917,14 +2916,14 @@ pub fn shuffled_shoot_then_samf_core(
             let (wg, wt) = sc.read_range(anchor, wlen);
             let t0 = if profile { Some(std::time::Instant::now()) } else { None };
             let (mut out, t_p, neg_p, comp, mut out_t) = shuffled_shooting_game_core(
-                &wg, n, env, curated_shard_dbs, shard_dbs, gates_ahead_expand, gates_ahead_samf,
+                &wg, n, db, use_curated, use_regular, gates_ahead_expand, gates_ahead_samf,
                 type_attempts, &wt, Some(0), pass_length, true,
             );
             let t1 = if profile { Some(std::time::Instant::now()) } else { None };
             apply_unsamf(
                 &mut out,
                 &Transpositions { transpositions: Vec::new() },
-                &neg_p, n, env, curated_shard_dbs, shard_dbs, &mut out_t,
+                &neg_p, n, db, use_curated, use_regular, &mut out_t,
             );
             let t2 = if profile { Some(std::time::Instant::now()) } else { None };
             let far = SamfTail::from_transpositions(&t_p, &vec![0u8; n], n);
@@ -2974,12 +2973,12 @@ pub fn shuffled_shoot_then_samf_core(
                 wt.reverse();
                 let t0 = if profile { Some(std::time::Instant::now()) } else { None };
                 let (mut out, t_p, neg_p, comp, mut out_t) = shuffled_shooting_game_core(
-                    &wg, n, env, curated_shard_dbs, shard_dbs, gates_ahead_expand, gates_ahead_samf,
+                    &wg, n, db, use_curated, use_regular, gates_ahead_expand, gates_ahead_samf,
                     type_attempts, &wt, Some(0), pass_length, true,
                 );
                 let t1 = if profile { Some(std::time::Instant::now()) } else { None };
                 // Local full unsamf (perm + negation) in the reversed frame -> self-contained.
-                apply_unsamf(&mut out, &t_p, &neg_p, n, env, curated_shard_dbs, shard_dbs, &mut out_t);
+                apply_unsamf(&mut out, &t_p, &neg_p, n, db, use_curated, use_regular, &mut out_t);
                 let t2 = if profile { Some(std::time::Instant::now()) } else { None };
                 out.reverse();
                 out_t.reverse();
@@ -3130,13 +3129,13 @@ pub fn shuffled_shoot_then_samf_core(
                             let wlen = WINDOW_CAP.min(sc_ref.len() - anchor).min(bound.max(1));
                             let (wg, wt) = sc_ref.read_range(anchor, wlen);
                             let (mut out, t_p, neg_p, comp, mut out_t) = shuffled_shooting_game_core(
-                                &wg, n, env, curated_shard_dbs, shard_dbs, gates_ahead_expand,
+                                &wg, n, db, use_curated, use_regular, gates_ahead_expand,
                                 gates_ahead_samf, type_attempts, &wt, Some(0), pass_length, true,
                             );
                             apply_unsamf(
                                 &mut out,
                                 &Transpositions { transpositions: Vec::new() },
-                                &neg_p, n, env, curated_shard_dbs, shard_dbs, &mut out_t,
+                                &neg_p, n, db, use_curated, use_regular, &mut out_t,
                             );
                             let far = SamfTail::from_transpositions(&t_p, &vec![0u8; n], n);
                             if stagec_check && !stagec_pass_ok(&out, &wg, &far.perm, n) {
@@ -3208,9 +3207,9 @@ pub fn shuffled_shoot_then_samf_core(
             &net_t,
             &acc_net.neg,
             n,
-            env,
-            curated_shard_dbs,
-            shard_dbs,
+            db,
+            use_curated,
+            use_regular,
             &mut mt,
         );
         input_gates = mg;
@@ -3235,9 +3234,9 @@ pub fn shuffled_shoot_then_samf_core(
                 &t_b,
                 &neg_b,
                 n,
-                env,
-                curated_shard_dbs,
-                shard_dbs,
+                db,
+                use_curated,
+                use_regular,
                 &mut tags_b,
             );
             input_gates = out_b;
@@ -3298,9 +3297,9 @@ pub fn shuffled_shoot_then_samf_core(
         let (out_a, t_a, neg_a, compressions, tags_a) = shuffled_shooting_game_core(
             &input_gates,
             n,
-            env,
-            curated_shard_dbs,
-            shard_dbs,
+            db,
+            use_curated,
+            use_regular,
             gates_ahead_expand,
             gates_ahead_samf,
             type_attempts,
@@ -3456,9 +3455,9 @@ pub fn shuffled_shoot_then_samf(
     gates_ahead_samf: usize,
     type_attempts: usize,
     shooting_times: usize,
-    env: &Environment,
-    curated_shard_dbs: &[Database],
-    shard_dbs: &[Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
     tags: &mut Vec<Tag>,
 ) -> usize {
     let track = !tags.is_empty();
@@ -3471,9 +3470,9 @@ pub fn shuffled_shoot_then_samf(
         gates_ahead_samf,
         type_attempts,
         shooting_times,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
+        db,
+        use_curated,
+        use_regular,
         if track { tags } else { &[] },
     );
     apply_unsamf(
@@ -3481,9 +3480,9 @@ pub fn shuffled_shoot_then_samf(
         &t_round,
         &neg_round,
         n,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
+        db,
+        use_curated,
+        use_regular,
         &mut out_tags,
     );
     circuit.gates = out;
@@ -3753,22 +3752,16 @@ mod reversed_samf_tests {
 mod unsamf_scale_tests {
     use super::{apply_neg_to_mask, apply_unsamf, Transpositions};
     use crate::circuit::circuit::{Gate, U1024};
-    use lmdb::Environment;
+    use crate::replace::frozen::FrozenDb;
     use rand::{Rng, RngCore};
 
     // The full SAMF-insert -> unsamf cycle must be the identity, at LARGE n (n=384 = feistelized
     // n=128) where the production failures appear. Builds a random sequence of swap+negation
     // gadgets (physical) while tracking (t_list perm, mask neg); apply_unsamf appends the inverse;
-    // circ ++ unsamf must compute identity on every wire. Empty DBs -> integrate appends raw, so the
-    // real apply_unsamf perm/neg logic is exercised without an LMDB.
+    // circ ++ unsamf must compute identity on every wire. Disabled stores -> integrate appends
+    // raw, so the real apply_unsamf perm/neg logic is exercised without any DB.
     fn run_cycle(n: usize, num_samfs: usize, trials: usize) {
-        let dir = std::env::temp_dir().join(format!("unsamf_cycle_{}_{}", n, std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let env = Environment::new()
-            .set_max_dbs(4)
-            .set_map_size(64 * 1024 * 1024)
-            .open(&dir)
-            .expect("open temp env");
+        let db = FrozenDb::empty();
         let mut rng = rand::rng();
         let wmask = (U1024::one() << n) - U1024::one();
         for trial in 0..trials {
@@ -3789,7 +3782,7 @@ mod unsamf_scale_tests {
                 apply_neg_to_mask(&mut mask, lo as usize, hi as usize, neg_type);
             }
             let mut g = circ.clone();
-            apply_unsamf(&mut g, &t_list, &mask, n, &env, &[], &[], &mut Vec::new());
+            apply_unsamf(&mut g, &t_list, &mask, n, &db, false, false, &mut Vec::new());
             for _ in 0..100 {
                 let mut bytes = [0u8; 128];
                 rng.fill_bytes(&mut bytes);

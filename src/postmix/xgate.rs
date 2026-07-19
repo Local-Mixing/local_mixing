@@ -49,6 +49,11 @@ impl XGate {
         XGate { target, comp: false, ctrls: SmallVec::new() }
     }
 
+    /// Positive-control CNOT: `target ^= control`.
+    pub fn cnot(target: u16, control: u16) -> XGate {
+        XGate::conj(target, [(control, true)]).expect("a CNOT has one valid control")
+    }
+
     pub fn from_g57(g: [u16; 3]) -> XGate {
         let [a, x, y] = g;
         if x == y {
@@ -137,12 +142,61 @@ impl XGate {
     pub fn max_wire(&self) -> u16 {
         self.ctrls.iter().map(|&(w, _)| w).chain([self.target]).max().unwrap()
     }
+
+    // Single-word application: one bit per wire (up to 64 wires).
+    pub fn apply_u64(&self, state: u64) -> u64 {
+        let mut fires = true;
+        for &(wire, positive) in &self.ctrls {
+            let value = ((state >> wire) & 1) != 0;
+            fires &= value == positive;
+        }
+        fires ^= self.comp;
+        if fires {
+            state ^ (1u64 << self.target)
+        } else {
+            state
+        }
+    }
+
+    // 1024-bit application: one bit per wire (up to 1024 wires).
+    pub fn apply_u1024(&self, state: crate::circuit::circuit::U1024) -> crate::circuit::circuit::U1024 {
+        use crate::circuit::circuit::U1024;
+        let one = U1024::one();
+        let mut fires = true;
+        for &(wire, positive) in &self.ctrls {
+            let value = ((state >> wire as usize) & one) != U1024::zero();
+            fires &= value == positive;
+        }
+        fires ^= self.comp;
+        if fires {
+            state ^ (one << self.target as usize)
+        } else {
+            state
+        }
+    }
 }
 
 pub fn eval_lanes<'a>(gates: impl IntoIterator<Item = &'a XGate>, state: &mut [u64]) {
     for g in gates {
         g.apply_lanes(state);
     }
+}
+
+pub fn eval_u64<'a>(gates: impl IntoIterator<Item = &'a XGate>, mut state: u64) -> u64 {
+    for gate in gates {
+        state = gate.apply_u64(state);
+    }
+    state
+}
+
+pub fn eval_u1024<'a>(
+    gates: impl IntoIterator<Item = &'a XGate>,
+    mut state: crate::circuit::circuit::U1024,
+) -> crate::circuit::circuit::U1024 {
+    for gate in gates {
+        state = gate.apply_u1024(state);
+    }
+    state
 }
 
 pub fn max_wire<'a>(gates: impl IntoIterator<Item = &'a XGate>) -> u16 {

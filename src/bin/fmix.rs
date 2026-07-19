@@ -107,6 +107,62 @@ struct Args {
     /// Minimum twist window length (max is the current circuit size)
     #[arg(long, default_value_t = 64)]
     twist_min_len: usize,
+    /// Compressing DB move: probability that a CONTRACTION attempt first samples
+    /// a contiguous window and replaces it with a non-growing equivalent from the
+    /// store (uniform among the shortest), falling through to undo/merge on a
+    /// miss. 0 = off. Requires FROZEN_DB_DIR (and optionally FROZEN_CURATED_DIR)
+    /// when > 0 or --p-db > 0. Handles conjunction-control gates, not just g57s.
+    #[arg(long, default_value_t = 0.0)]
+    w_db: f64,
+    /// Size-agnostic DB move: probability that a whole round is spent replacing a
+    /// sampled window with a uniform random equivalent of ANY gate count (may
+    /// grow the circuit), instead of the normal contract/expand step. 0 = off.
+    #[arg(long, default_value_t = 0.0)]
+    p_db: f64,
+    /// Minimum DB-replacement window length (gates).
+    #[arg(long, default_value_t = 2)]
+    db_min_window: usize,
+    /// Maximum DB-replacement window length (gates).
+    #[arg(long, default_value_t = 12)]
+    db_max_window: usize,
+    /// Window sampling geometry: `contiguous` (a gate plus its neighbors in its
+    /// own direction) or `convex` (float a block together, absorbing colliders).
+    #[arg(long, default_value = "contiguous")]
+    db_sample: String,
+    /// Control cap L for window building: a candidate gate with more than L
+    /// controls is evaded (floated away, else the build reverses, else aborts),
+    /// keeping high-degree always-miss gates out of the window. 0 = no cap.
+    #[arg(long, default_value_t = 0)]
+    db_ctrl_cap: usize,
+    /// Convex sampling: probability each growth step floats the block in g1's
+    /// direction (else the opposite).
+    #[arg(long, default_value_t = 0.75)]
+    db_convex_p: f64,
+    /// Skip the exhaustive per-splice equivalence check on DB replacements
+    /// (faster long runs; the periodic global check still guards correctness).
+    /// With this set, DB windows wider than 24 wires can also be replaced.
+    #[arg(long, default_value_t = false)]
+    no_db_verify: bool,
+    /// Record every DB replacement attempt to this file: the outgoing window, the
+    /// number of equivalent DB circuits, and (on success) the replacing circuit.
+    #[arg(long)]
+    db_record: Option<String>,
+    /// Measurement mode: sample windows and record DB match counts (--db-record)
+    /// but never splice, so the circuit stays fixed. With --p-db 1.0 and all
+    /// other move weights 0 this makes fmix a pure match-rate sampler.
+    #[arg(long, default_value_t = false)]
+    db_dry_run: bool,
+    /// Degree cap for the DB lookup: a window whose function degree exceeds this
+    /// cannot match any stored circuit and is skipped before canonicalization
+    /// (the main speed guard on high-width windows). Set to the DB's max ANF
+    /// degree. 0 = off (every window canonicalizes). Leave off when MEASURING
+    /// match rate so high-degree misses are still recorded.
+    #[arg(long, default_value_t = 0)]
+    db_max_degree: usize,
+    /// Random subcubes probed per direction by the degree cap (higher = fewer
+    /// missed high-degree windows, at proportional cost).
+    #[arg(long, default_value_t = 6)]
+    db_degree_probes: usize,
     /// Global sampled equality check every N moves
     #[arg(long, default_value_t = 10_000)]
     verify_every: u64,
@@ -164,6 +220,12 @@ fn main() {
             args.w_twist_neg, args.w_twist_swap, args.w_twist_cnot, args.twist_min_len
         );
     }
+    if args.w_db > 0.0 || args.p_db > 0.0 {
+        println!(
+            "[fmix] DB replacement ON: w_db(compress)={} p_db(agnostic)={} window=[{},{}] verify={} (FROZEN_DB_DIR required)",
+            args.w_db, args.p_db, args.db_min_window, args.db_max_window, !args.no_db_verify
+        );
+    }
 
     let params = MixParams {
         k_max: args.k_max,
@@ -186,12 +248,28 @@ fn main() {
         w_twist_swap: args.w_twist_swap,
         w_twist_cnot: args.w_twist_cnot,
         twist_min_len: args.twist_min_len,
+        w_db: args.w_db,
+        p_db: args.p_db,
+        db_min_window: args.db_min_window,
+        db_max_window: args.db_max_window,
+        db_sample: local_mixing::postmix::mix::DbSample::parse(&args.db_sample)
+            .unwrap_or_else(|| panic!("unknown --db-sample {} (contiguous|convex)", args.db_sample)),
+        db_ctrl_cap: args.db_ctrl_cap,
+        db_convex_p: args.db_convex_p,
+        db_verify: !args.no_db_verify,
+        db_dry_run: args.db_dry_run,
+        db_max_degree: args.db_max_degree,
+        db_degree_probes: args.db_degree_probes,
         verify_every: args.verify_every,
         report_every: args.report_every,
         local_verify: !args.no_local_verify,
         seed: args.seed,
     };
     let mut mixer = Mixer::new(gates, num_wires, params);
+    if let Some(path) = &args.db_record {
+        mixer.enable_db_record(path);
+        println!("[fmix] recording DB attempts to {path}");
+    }
 
     let stop = std::env::var("FMIX_STOP_FLAG").ok().filter(|s| !s.is_empty());
     let dump = std::env::var("FMIX_DUMP_FLAG").ok().filter(|s| !s.is_empty());

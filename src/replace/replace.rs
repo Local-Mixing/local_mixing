@@ -14,14 +14,12 @@ use crate::{
         simple_find_convex_subcircuit,
     },
 };
-use lmdb::Transaction;
+use crate::replace::frozen::FrozenDb;
 use rand::Rng;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-
-extern crate lmdb_sys;
 
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
@@ -285,7 +283,7 @@ pub fn compress_stall_window() -> usize {
 
 // COMPRESS_CHUNK_BUDGET_MS (env): per-chunk wall-clock budget for compression sweeps.
 // A sweep only finishes when its slowest chunk does; chunk costs are heavily skewed
-// (a few chunks full of slow compress_lmdb windows can serialize a sweep down to one
+// (a few chunks full of slow compress_db windows can serialize a sweep down to one
 // core for most of its wall time). When set, compress_big_ancillas stops starting new
 // trials once the chunk has run this many ms — the chunk returns its partial progress
 // and the re-randomized chunking of the next sweep picks up the region again.
@@ -1179,8 +1177,7 @@ fn compression_trace_threshold_ms() -> u128 {
 pub fn compress_loop(
     circuit: &CircuitSeq,
     n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
     stable_max: usize,
     curr_round: usize,
     last_round: usize,
@@ -1292,7 +1289,7 @@ pub fn compress_loop(
                 };
                 let chunk_start = Instant::now();
                 let gates =
-                    compress_big_ancillas(&sub, 100, n, env, shard_dbs, current_mode, start, &mut chunk_tags)
+                    compress_big_ancillas(&sub, 100, n, db, current_mode, start, &mut chunk_tags)
                         .gates;
                 let elapsed_ms = chunk_start.elapsed().as_millis();
                 if trace && elapsed_ms >= trace_threshold_ms {
@@ -1485,12 +1482,11 @@ pub fn compress_loop(
 }
 
 /// Single pass of expansion: one round of chunked `expand_big_ancillas` with no loop.
-pub fn expand_once<'a>(
+pub fn expand_once(
     circuit: &CircuitSeq,
     n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-    pair_mode: &ExpandPairMode<'a>,
+    db: &FrozenDb,
+    pair_mode: &ExpandPairMode,
 ) -> CircuitSeq {
     let mut rng = rand::rng();
     let before = circuit.gates.len();
@@ -1507,7 +1503,7 @@ pub fn expand_once<'a>(
             let sub = CircuitSeq {
                 gates: circuit.gates[start..end].to_vec(),
             };
-            expand_big_ancillas(&sub, 100, n, env, shard_dbs, 0, pair_mode).gates
+            expand_big_ancillas(&sub, 100, n, db, 0, pair_mode).gates
         })
         .collect();
     let mut new_gates = Vec::with_capacity(expanded_chunks.iter().map(|c| c.len()).sum());
@@ -1520,23 +1516,20 @@ pub fn expand_once<'a>(
 
 // Expand with ancilla wires or gates
 /// Selects which method to use when a 2-gate subcircuit is sampled in the expand functions.
-/// For subcircuits of 3–5 gates the shard DB is always used regardless of this setting.
-pub enum ExpandPairMode<'a> {
-    /// Use the curated shard DBs to find a longer equivalent pair.
-    Curated {
-        curated_shard_dbs: &'a [lmdb::Database],
-    },
-    /// Force the shard DB lookup even for 2-gate subcircuits (same path as 3-5 gates).
+/// For subcircuits of 3–5 gates the regular store is always used regardless of this setting.
+pub enum ExpandPairMode {
+    /// Use the curated store to find a longer equivalent pair.
+    Curated,
+    /// Force the regular-store lookup even for 2-gate subcircuits (same path as 3-5 gates).
     Db,
 }
 
-pub fn expand_lmdb<'a>(
+pub fn expand_db(
     c: &CircuitSeq,
     trials: usize,
     n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
-    pair_mode: &ExpandPairMode<'a>,
+    db: &FrozenDb,
+    pair_mode: &ExpandPairMode,
 ) -> CircuitSeq {
     use crate::circuit::circuit::polys_repr_blob;
     use xxhash_rust::xxh3::xxh3_128;
@@ -1562,11 +1555,9 @@ pub fn expand_lmdb<'a>(
         // --- 2-gate path: bypass the shard DB and use pair functions ---
         if sub.gates.len() == 2 {
             match pair_mode {
-                ExpandPairMode::Curated { curated_shard_dbs } => {
-                    use crate::replace::pairs::expand_curated_lmdb;
-                    if let Some(repl) =
-                        expand_curated_lmdb(&sub.gates, n, env, curated_shard_dbs, shard_dbs)
-                    {
+                ExpandPairMode::Curated => {
+                    use crate::replace::pairs::expand_curated_db;
+                    if let Some(repl) = expand_curated_db(&sub.gates, n, db, true, true) {
                         if repl.len() > 2 {
                             expanded.gates.splice(start..end, repl);
                         }
@@ -1574,7 +1565,7 @@ pub fn expand_lmdb<'a>(
                     TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     continue;
                 }
-                ExpandPairMode::Db => { /* fall through to shard DB path */ }
+                ExpandPairMode::Db => { /* fall through to regular-store path */ }
             }
         }
 
@@ -1589,11 +1580,6 @@ pub fn expand_lmdb<'a>(
             .map(|d| degree_exceeds_dir(&sub, false, d, degree_filter_probes(), &mut rng))
             .unwrap_or(false);
 
-        let txn = match env.begin_ro_txn() {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-
         // (value, final_order, used, is_reversed)
         let mut matched: Option<(Vec<u8>, Permutation, Vec<u16>, bool)> = None;
         if !fwd_high {
@@ -1601,13 +1587,11 @@ pub fn expand_lmdb<'a>(
             let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
             CANONICALIZE_TIME.fetch_add(t_canon.elapsed().as_nanos() as u64, Ordering::Relaxed);
             if !fwd_polys.is_empty() {
-                let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes().to_vec();
+                let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
                 let t_lookup = Instant::now();
-                let fwd_result = txn
-                    .get(shard_dbs[fwd_key[0] as usize], &fwd_key)
-                    .map(|v: &[u8]| v.to_vec());
+                let fwd_result = db.get_regular(&fwd_key);
                 LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                if let Ok(v) = fwd_result {
+                if let Some(v) = fwd_result {
                     matched = Some((v, fwd_order, used, false));
                 }
             }
@@ -1626,13 +1610,11 @@ pub fn expand_lmdb<'a>(
                 let (rev_polys, rev_order, used) = sub.canonicalize_polys_single(true);
                 CANONICALIZE_TIME.fetch_add(t_canon2.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 if !rev_polys.is_empty() {
-                    let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes().to_vec();
+                    let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
                     let t_lookup2 = Instant::now();
-                    let rev_result = txn
-                        .get(shard_dbs[rev_key[0] as usize], &rev_key)
-                        .map(|v: &[u8]| v.to_vec());
+                    let rev_result = db.get_regular(&rev_key);
                     LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                    if let Ok(v) = rev_result {
+                    if let Some(v) = rev_result {
                         matched = Some((v, rev_order, used, true));
                     }
                 }
@@ -1799,12 +1781,11 @@ fn rewire_candidate(
     CircuitSeq::unrewire_subcircuit(&repl, &used_ext)
 }
 
-pub fn compress_lmdb(
+pub fn compress_db(
     c: &CircuitSeq,
     trials: usize,
     n: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
     mode: usize,
     base_offset: usize,
     tags: &mut Vec<Tag>,
@@ -1912,25 +1893,13 @@ pub fn compress_lmdb(
             continue;
         }
 
-        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
-            .to_le_bytes()
-            .to_vec();
-        let fwd_shard = fwd_key[0] as usize;
-
-        let t_txn = Instant::now();
-        let txn = match env.begin_ro_txn() {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        TXN_TIME.fetch_add(t_txn.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
 
         let t_lookup = Instant::now();
-        let fwd_result = txn
-            .get(shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec());
+        let fwd_result = db.get_regular(&fwd_key);
         LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-        let (value, final_order, is_reversed) = if let Ok(v) = fwd_result {
+        let (value, final_order, is_reversed) = if let Some(v) = fwd_result {
             (v, fwd_order, false)
         } else {
             let t_canon2 = Instant::now();
@@ -1961,20 +1930,15 @@ pub fn compress_lmdb(
                 continue;
             }
 
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
-                .to_le_bytes()
-                .to_vec();
-            let rev_shard = rev_key[0] as usize;
+            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
 
             let t_lookup2 = Instant::now();
-            let rev_result = txn
-                .get(shard_dbs[rev_shard], &rev_key)
-                .map(|v: &[u8]| v.to_vec());
+            let rev_result = db.get_regular(&rev_key);
             LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             match rev_result {
-                Ok(v) => (v, rev_order, true),
-                Err(_) => continue,
+                Some(v) => (v, rev_order, true),
+                None => continue,
             }
         };
 
@@ -2155,8 +2119,7 @@ pub fn compress_big_ancillas(
     c: &CircuitSeq,
     trials: usize,
     num_wires: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
     mode: usize,
     base_offset: usize,
     tags: &mut Vec<Tag>,
@@ -2241,18 +2204,17 @@ pub fn compress_big_ancillas(
 
         let t4 = Instant::now();
         let sub_gates = subcircuit.gates.len();
-        // Tags of the contiguous block [start, end]; compress_lmdb mutates them in lockstep.
+        // Tags of the contiguous block [start, end]; compress_db mutates them in lockstep.
         let mut block_tags: Vec<Tag> = if track {
             tags[start..=end].to_vec()
         } else {
             Vec::new()
         };
-        let subcircuit_temp = compress_lmdb(
+        let subcircuit_temp = compress_db(
             &subcircuit,
             10,
             sub_num_wires,
-            env,
-            shard_dbs,
+            db,
             mode,
             base_offset + start,
             &mut block_tags,
@@ -2263,7 +2225,7 @@ pub fn compress_big_ancillas(
             && compress_elapsed.as_millis() >= compression_trace_threshold_ms()
         {
             eprintln!(
-                "[compress-trace] slow compress_lmdb mode={} outer_gates={} outer_wires={} outer_span={} out_gates={} elapsed_ms={}",
+                "[compress-trace] slow compress_db mode={} outer_gates={} outer_wires={} outer_span={} out_gates={} elapsed_ms={}",
                 mode,
                 sub_gates,
                 sub_num_wires,
@@ -2329,14 +2291,13 @@ pub fn compress_big_ancillas(
     circuit
 }
 
-pub fn expand_big_ancillas<'a>(
+pub fn expand_big_ancillas(
     c: &CircuitSeq,
     trials: usize,
     num_wires: usize,
-    env: &lmdb::Environment,
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
     mode: usize,
-    pair_mode: &ExpandPairMode<'a>,
+    pair_mode: &ExpandPairMode,
 ) -> CircuitSeq {
     let mut circuit = c.clone();
     let mut rng = rand::rng();
@@ -2382,17 +2343,17 @@ pub fn expand_big_ancillas<'a>(
         if subcircuit.gates.len() == 2 {
             let t6 = Instant::now();
             let repl_opt: Option<Vec<[u16; 3]>> = match pair_mode {
-                ExpandPairMode::Curated { curated_shard_dbs } => {
-                    use crate::replace::pairs::expand_curated_lmdb;
-                    expand_curated_lmdb(
+                ExpandPairMode::Curated => {
+                    use crate::replace::pairs::expand_curated_db;
+                    expand_curated_db(
                         &[circuit.gates[start], circuit.gates[end]],
                         num_wires,
-                        env,
-                        curated_shard_dbs,
-                        shard_dbs,
+                        db,
+                        true,
+                        true,
                     )
                 }
-                ExpandPairMode::Db => None, // handled by expand_lmdb below
+                ExpandPairMode::Db => None, // handled by expand_db below
             };
             if let Some(repl) = repl_opt {
                 if repl.len() > 2 {
@@ -2401,21 +2362,14 @@ pub fn expand_big_ancillas<'a>(
                 REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 continue;
             }
-            // Db mode falls through to expand_lmdb
+            // Db mode falls through to expand_db
             REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
 
-        // --- 3-5 gate path (and 2-gate Db mode): use shard DB via expand_lmdb ---
+        // --- 3-5 gate path (and 2-gate Db mode): use the regular store via expand_db ---
         // Pass num_wires (full circuit wire count) so extra wires are assigned correctly.
         let t4 = Instant::now();
-        let subcircuit_temp = expand_lmdb(
-            &subcircuit,
-            10,
-            num_wires,
-            env,
-            shard_dbs,
-            &ExpandPairMode::Db,
-        );
+        let subcircuit_temp = expand_db(&subcircuit, 10, num_wires, db, &ExpandPairMode::Db);
         COMPRESS_TIME.fetch_add(t4.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let t6 = Instant::now();

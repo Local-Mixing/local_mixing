@@ -11,7 +11,6 @@ use pyo3::prelude::*;
 use rand::RngCore;
 use rand::seq::IteratorRandom;
 use rayon::prelude::*;
-pub use replace::main_mix::open_shard_dbs;
 use std::fs;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};

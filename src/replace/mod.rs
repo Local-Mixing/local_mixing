@@ -1,6 +1,8 @@
+pub mod frozen;
+pub mod frozen_build;
 pub mod gadgets;
-pub mod identities;
 pub mod main_mix;
+pub mod main_mix_cnot;
 pub mod mixing;
 pub mod pairs;
 pub mod ranking;

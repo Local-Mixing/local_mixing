@@ -1,13 +1,13 @@
 use std::fs;
 use std::path::Path;
 
-use lmdb::{Environment, EnvironmentFlags};
-
 use local_mixing::circuit::CircuitSeq;
+use local_mixing::replace::frozen::FrozenDb;
 use local_mixing::replace::gadgets::{
     SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS, SLICE_ZERO_RANDOM_GATES_PER_WIRE,
 };
-use local_mixing::replace::main_mix::{main_shuffle_shoot_shuffle, open_all_dbs};
+use local_mixing::replace::main_mix::main_shuffle_shoot_shuffle;
+use local_mixing::replace::main_mix_cnot::{CnotSssParams, main_shuffle_shoot_shuffle_cnot};
 use local_mixing::replace::mixing::install_kill_handler;
 use local_mixing::replace::replace::{
     print_compress_timers, record_finish, record_init, write_compression_histogram,
@@ -52,20 +52,49 @@ pub fn run(sub: &clap::ArgMatches) {
     let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
     let data = fs::read_to_string(s).expect("Failed to read source circuit");
 
-    let lmdb_path = "./db";
-    let _ = std::fs::create_dir_all(lmdb_path);
+    // Heterogeneous --cnot path: gadgetize with native CNOTs/fragments and mix
+    // with the fmix engine (no replacement DB). Handled before the FrozenDb open
+    // so --cnot does not require FROZEN_DB_DIR.
+    if sub.get_flag("cnot") {
+        install_kill_handler();
+        if data.trim().is_empty() {
+            println!("Empty file");
+            return;
+        }
+        let c = CircuitSeq::from_string(&data);
+        let collision_rounds: usize = *sub.get_one("collision_rounds").unwrap();
+        let stable_compressions: usize = *sub.get_one("stable_compressions").unwrap();
+        let params = CnotSssParams {
+            rounds,
+            n,
+            m,
+            x,
+            save: d,
+            source: s,
+            do_gadgetize,
+            do_feistalize,
+            slice_zero,
+            slice_zero_random,
+            slice_zero_random_gates,
+            slice_zero_hardcoded,
+            slice_zero_hardcoded_rounds,
+            gadget_path,
+            full_shuffle,
+            full_shuffle_early,
+            shooting_times,
+            collision_rounds,
+            stable_compressions,
+            expansion_game: egg,
+            equality_check,
+            rg_freq,
+        };
+        main_shuffle_shoot_shuffle_cnot(&c, &params);
+        return;
+    }
 
-    // The mixing path only READS the curated replacement DB, so open it read-only and without a
-    // lock. This lets the run share a DB owned by another user (no write access to the lock file).
-    let env = Environment::new()
-        .set_flags(EnvironmentFlags::READ_ONLY | EnvironmentFlags::NO_LOCK)
-        .set_max_readers(10000)
-        .set_max_dbs(556)
-        .set_map_size(800 * 1024 * 1024 * 1024)
-        .open(Path::new(lmdb_path))
-        .expect("Failed to open lmdb");
-
-    let (shard_dbs, curated_shard_dbs) = open_all_dbs(&env);
+    // Replacement lookups come from the immutable frozen stores: FROZEN_DB_DIR
+    // (regular, required) and FROZEN_CURATED_DIR (curated, optional).
+    let db = FrozenDb::from_env();
     install_kill_handler();
     if data.trim().is_empty() {
         println!("Empty file");
@@ -88,9 +117,7 @@ pub fn run(sub: &clap::ArgMatches) {
         x,
         d,
         s,
-        &env,
-        &shard_dbs,
-        &curated_shard_dbs,
+        &db,
         leave,
         do_gadgetize,
         do_feistalize,

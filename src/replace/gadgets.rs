@@ -1,4 +1,5 @@
 use crate::circuit::circuit::CircuitSeq;
+use crate::postmix::xgate::XGate;
 use crate::random::random_data::shoot_random_gate;
 use rand::{Rng, prelude::SliceRandom};
 use std::collections::VecDeque;
@@ -86,6 +87,21 @@ pub struct GadgetState {
 #[derive(Clone, Debug)]
 pub struct SliceZeroRandomCircuit {
     pub circuit: CircuitSeq,
+    pub public_y: Vec<u64>,
+    pub public_z: Vec<u64>,
+}
+
+
+/// Heterogeneous circuit emitted by the `sss --cnot` gadget path.
+#[derive(Clone, Debug)]
+pub struct CnotCircuit {
+    pub gates: Vec<XGate>,
+    pub num_wires: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct CnotSliceZeroRandomCircuit {
+    pub circuit: CnotCircuit,
     pub public_y: Vec<u64>,
     pub public_z: Vec<u64>,
 }
@@ -1975,3 +1991,1717 @@ mod feistal_fixed_point_n_tests {
         }
     }
 }
+
+// ---- Heterogeneous CNOT/fragment gadget path --------------------------------------------
+
+fn emit_transvection_cnot(target: usize, source: usize, out: &mut Vec<XGate>) {
+    out.push(XGate::cnot(target as u16, source as u16));
+}
+
+/// Masking-safe homomorphic CNOT for a two-share value. If
+/// `a = a0 XOR a1` and `b = b0 XOR b1`, update the shares component-wise.
+/// Each physical CNOT consumes one carrier from each logical value.
+pub fn homomorphic_cnot2(target: (u16, u16), control: (u16, u16)) -> Vec<XGate> {
+    assert!(
+        target.0 != target.1
+            && control.0 != control.1
+            && ![control.0, control.1].contains(&target.0)
+            && ![control.0, control.1].contains(&target.1),
+        "homomorphic CNOT values must use disjoint carriers"
+    );
+    vec![
+        XGate::cnot(target.0, control.0),
+        XGate::cnot(target.1, control.1),
+    ]
+}
+
+/// Masking-safe homomorphic CNOT for a three-share value. Only the free
+/// target carrier is updated; the paired carriers (and therefore the
+/// overlapping Feistel y value) remain untouched.
+pub fn homomorphic_cnot3(target: (u16, u16, u16), control: (u16, u16, u16)) -> Vec<XGate> {
+    assert!(
+        target.0 != target.1
+            && target.0 != target.2
+            && target.1 != target.2
+            && control.0 != control.1
+            && control.0 != control.2
+            && control.1 != control.2
+            && ![control.0, control.1, control.2].contains(&target.0)
+            && ![control.0, control.1, control.2].contains(&target.1)
+            && ![control.0, control.1, control.2].contains(&target.2),
+        "homomorphic CNOT values must use disjoint carriers"
+    );
+    vec![
+        XGate::cnot(target.2, control.0),
+        XGate::cnot(target.2, control.1),
+        XGate::cnot(target.2, control.2),
+    ]
+}
+
+/// Seven-CNOT realization of
+/// `(q0,q1,q2,q3) -> (q2,q3,q0 XOR q1,q1)`.
+fn emit_w_i_cnot(q0: usize, q1: usize, q2: usize, q3: usize, out: &mut Vec<XGate>) {
+    for (target, control) in [
+        (q0, q1),
+        (q0, q2),
+        (q1, q3),
+        (q2, q0),
+        (q0, q2),
+        (q3, q1),
+        (q1, q3),
+    ] {
+        emit_transvection_cnot(target, control, out);
+    }
+}
+
+fn emit_w_i_inv_cnot(q0: usize, q1: usize, q2: usize, q3: usize, out: &mut Vec<XGate>) {
+    let mut forward = Vec::with_capacity(7);
+    emit_w_i_cnot(q0, q1, q2, q3, &mut forward);
+    forward.reverse();
+    out.extend(forward);
+}
+
+/// Four-cube ESOP for a G57 over two-share controls. For `B=b0+b1` and
+/// `C=c0+c1`, these four disjoint/mixed-polarity fragments XOR to
+/// `B OR !C`. Only `target` is written, so its untouched mate remains a mask
+/// at every physical-gate prefix.
+fn emit_shared_g57_frag2(
+    target: usize,
+    b0: usize,
+    b1: usize,
+    c0: usize,
+    c1: usize,
+    out: &mut Vec<XGate>,
+) {
+    for controls in [
+        [(c1 as u16, false), (b0 as u16, true)],
+        [(c1 as u16, true), (b1 as u16, false)],
+        [(c0 as u16, true), (b1 as u16, true)],
+        [(c0 as u16, false), (b0 as u16, false)],
+    ] {
+        out.push(XGate::conj(target as u16, controls).expect("distinct SG carriers"));
+    }
+}
+
+fn emit_gadget_x(state: &GadgetState, gate: [u16; 3], out: &mut Vec<XGate>) {
+    let [a, b, c] = gate.map(|wire| wire as usize);
+    let (b0, b1) = state.pairs[b];
+    let (c0, c1) = state.pairs[c];
+    emit_shared_g57_frag2(state.pairs[a].0, b0, b1, c0, c1, out);
+}
+
+fn emit_rg1_x(state: &mut GadgetState, i: usize, j: usize, out: &mut Vec<XGate>) {
+    // Six-CNOT RG1. Unlike the legacy nonlinear network, no gate consumes both
+    // carriers of either logical value. Exhaustive bounded search (regressed
+    // below) finds no five-CNOT realization with this non-completeness property.
+    let map = [
+        state.pairs[i].0,
+        state.pairs[i].1,
+        state.pairs[j].1,
+        state.pairs[j].0,
+    ];
+    for (target, control) in [(0, 2), (1, 3), (2, 0), (0, 2), (3, 1), (0, 3)] {
+        emit_transvection_cnot(map[target], map[control], out);
+    }
+    state.pairs.swap(i, j);
+}
+
+fn emit_rg2_x(state: &mut GadgetState, i: usize, j: usize, out: &mut Vec<XGate>) {
+    // Local map: 0=i0, 1=i1, 2=j1, 3=j0. Swapping i0 and j0 with three CNOTs
+    // realizes the required re-pairing. The swapped carriers belong to
+    // different logical values, so this is unlike an unsafe swap of the two
+    // complementary carriers of one value: no gate sees a complete sharing.
+    let map = [
+        state.pairs[i].0,
+        state.pairs[i].1,
+        state.pairs[j].1,
+        state.pairs[j].0,
+    ];
+    for (target, control) in [(0, 3), (3, 0), (0, 3)] {
+        emit_transvection_cnot(map[target], map[control], out);
+    }
+    let new_i = (state.pairs[i].1, state.pairs[j].0);
+    let new_j = (state.pairs[i].0, state.pairs[j].1);
+    state.pairs[i] = new_i;
+    state.pairs[j] = new_j;
+}
+
+fn emit_rg3_x(state: &GadgetState, i: usize, random_carrier: usize, out: &mut Vec<XGate>) {
+    // Refresh both carriers with one carrier from a different shared value.
+    // This keeps the logical XOR unchanged and never brings both carriers of
+    // either value into one physical CNOT.
+    emit_transvection_cnot(state.pairs[i].0, random_carrier, out);
+    emit_transvection_cnot(state.pairs[i].1, random_carrier, out);
+}
+
+fn rand_z_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
+    rand_z_gates(n, m, rng)
+        .into_iter()
+        .map(XGate::from_g57)
+        .collect()
+}
+
+/// Two-share gadgetization with native CNOT linear bookends, a four-fragment
+/// masking-safe SG and gate-locally non-complete CNOT RG1/RG2/RG3 blocks.
+pub fn gadgetize_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "gadgetize_cnot requires n >= 3");
+    assert!(2 * n <= u16::MAX as usize, "too many wires");
+    assert!(rg_freq > 0, "rg_freq must be nonzero");
+
+    let mut main = main.clone();
+    let rounds = main.gates.len();
+    shoot_random_gate(&mut main, rounds);
+
+    let bookend_size = (2 * n * (n as f64).ln() as usize).max(64);
+    let total = 2 * n;
+    let mut out = rand_z_xgates(n, bookend_size, rng);
+    let mut dloc: Vec<usize> = (0..n).collect();
+    let mut aloc: Vec<usize> = (n..2 * n).collect();
+    let mut on: Vec<Slot> = (0..total)
+        .map(|wire| {
+            if wire < n {
+                Slot::Data(wire)
+            } else {
+                Slot::Aux(wire - n)
+            }
+        })
+        .collect();
+    let mut pairs = vec![(0usize, 0usize); n];
+
+    for value in 0..n {
+        let data = dloc[value];
+        let aux = aloc[value];
+        let share = loop {
+            let wire = rng.random_range(0..total);
+            if wire != data && wire != aux {
+                break wire;
+            }
+        };
+        let pad = loop {
+            let wire = rng.random_range(0..total);
+            if wire != data && wire != aux && wire != share {
+                break wire;
+            }
+        };
+        emit_w_i_cnot(data, aux, share, pad, &mut out);
+        let moved_share = on[share];
+        let moved_pad = on[pad];
+        on[share] = Slot::Pair(value);
+        on[pad] = Slot::Pair(value);
+        pairs[value] = (share, pad);
+        reloc(moved_share, share, data, &mut dloc, &mut aloc, &mut pairs);
+        reloc(moved_pad, pad, aux, &mut dloc, &mut aloc, &mut pairs);
+        on[data] = moved_share;
+        on[aux] = moved_pad;
+    }
+
+    let mut state = GadgetState { n, pairs };
+    let mut pair_queue = VecDeque::new();
+    let mut single_queue = VecDeque::new();
+    for (index, &gate) in main.gates.iter().enumerate() {
+        emit_gadget_x(&state, gate, &mut out);
+        if (index + 1) % rg_freq == 0 {
+            match rng.random_range(0..3u32) {
+                0 => {
+                    let (i, j) = next_pair(&mut pair_queue, n, rng);
+                    emit_rg1_x(&mut state, i, j, &mut out);
+                }
+                1 => {
+                    let (i, j) = next_pair(&mut pair_queue, n, rng);
+                    emit_rg2_x(&mut state, i, j, &mut out);
+                }
+                _ => {
+                    let i = next_single(&mut single_queue, n, rng);
+                    let (s, p) = state.pairs[i];
+                    let random_carrier = random_wire_except(total, &[s, p], rng);
+                    emit_rg3_x(&state, i, random_carrier, &mut out);
+                }
+            }
+        }
+    }
+
+    for wire in 0..total {
+        on[wire] = Slot::Output(usize::MAX);
+    }
+    for value in 0..n {
+        on[state.pairs[value].0] = Slot::Pair(value);
+        on[state.pairs[value].1] = Slot::Pair(value);
+    }
+    let mut finalized = vec![false; total];
+    for value in 0..n {
+        let (share, pad) = state.pairs[value];
+        if share == value {
+            emit_transvection_cnot(value, pad, &mut out);
+        } else if pad == value {
+            emit_transvection_cnot(value, share, &mut out);
+        } else {
+            let borrowed = (0..total)
+                .find(|&wire| !finalized[wire] && wire != value && wire != share && wire != pad)
+                .unwrap();
+            let moved_value = on[value];
+            let moved_borrowed = on[borrowed];
+            emit_w_i_inv_cnot(value, borrowed, share, pad, &mut out);
+            reloc(
+                moved_value,
+                value,
+                share,
+                &mut dloc,
+                &mut aloc,
+                &mut state.pairs,
+            );
+            reloc(
+                moved_borrowed,
+                borrowed,
+                pad,
+                &mut dloc,
+                &mut aloc,
+                &mut state.pairs,
+            );
+            on[share] = moved_value;
+            on[pad] = moved_borrowed;
+        }
+        finalized[value] = true;
+        on[value] = Slot::Output(value);
+    }
+    out.extend(rand_z_xgates(n, bookend_size, rng));
+    CnotCircuit {
+        gates: out,
+        num_wires: total,
+    }
+}
+
+fn slice_zero_preblock_cnot(n: usize, rng: &mut impl Rng) -> CnotCircuit {
+    let total = 3 * n;
+    let matrix = random_invertible_matrix_rows(n, rng);
+    let mut gates = Vec::new();
+    for col in 0..n {
+        let y = n + col;
+        let z = 2 * n + col;
+        gates.push(XGate::x_gate(z as u16));
+        for row in 0..n {
+            if matrix_bit(&matrix, row, col) {
+                gates.push(XGate::from_g57([row as u16, y as u16, z as u16]));
+            }
+        }
+        gates.push(XGate::x_gate(z as u16));
+    }
+    CnotCircuit {
+        gates,
+        num_wires: total,
+    }
+}
+
+fn slice_zero_hardcoded_preblock_cnot(n: usize, rounds: usize, rng: &mut impl Rng) -> CnotCircuit {
+    let total = 3 * n;
+    let mut gates = Vec::new();
+    let mut order: Vec<usize> = (0..n).collect();
+    let mut emit = |target: usize, aux: usize, other: usize| {
+        gates.push(
+            XGate::conj(target as u16, [(aux as u16, true), (other as u16, true)])
+                .expect("hardcoded slice fragment"),
+        );
+    };
+    for _ in 0..rounds {
+        order.shuffle(rng);
+        for &i in &order {
+            let aux = if rng.random_bool(0.5) {
+                n + rng.random_range(0..n)
+            } else {
+                2 * n + rng.random_range(0..n)
+            };
+            let other = random_wire_except(total, &[i, aux], rng);
+            emit(i, aux, other);
+        }
+        order.shuffle(rng);
+        for &i in &order {
+            let target = n + i;
+            let aux = 2 * n + rng.random_range(0..n);
+            let other = random_wire_except(total, &[target, aux], rng);
+            emit(target, aux, other);
+        }
+        order.shuffle(rng);
+        for &i in &order {
+            let target = 2 * n + i;
+            let aux = n + rng.random_range(0..n);
+            let other = random_wire_except(total, &[target, aux], rng);
+            emit(target, aux, other);
+        }
+    }
+    CnotCircuit {
+        gates,
+        num_wires: total,
+    }
+}
+
+fn random_fragment_on_x(n: usize, rng: &mut impl Rng) -> XGate {
+    let total = 3 * n;
+    let target = rng.random_range(0..n) as u16;
+    let width = match rng.random_range(0..10u32) {
+        0 => 0,
+        1..=5 => 1,
+        6..=8 => 2,
+        _ => 3,
+    };
+    let mut controls = Vec::with_capacity(width);
+    while controls.len() < width {
+        let wire = rng.random_range(0..total) as u16;
+        if wire != target && !controls.iter().any(|&(w, _)| w == wire) {
+            controls.push((wire, rng.random::<bool>()));
+        }
+    }
+    XGate::conj(target, controls).expect("random fragment controls are distinct")
+}
+
+/// Public-slice preblock `R^-1 B R`. `B` pairs all 2n public-slice bits and
+/// toggles one distinct x bit by the OR of the pair's two deviation bits. The
+/// OR is one complemented conjunction fragment per pair (one pair is written
+/// as two pure fragments when needed to hit an odd requested gate count).
+/// Thus B, and therefore its conjugate, is the identity exactly on one slice.
+pub fn slice_zero_random_preblock_cnot(
+    n: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotSliceZeroRandomCircuit {
+    assert!(n >= 3, "slice_zero_random_preblock_cnot requires n >= 3");
+    assert!(
+        gate_count >= n,
+        "a uniquely fixed public slice needs at least n fragment gates"
+    );
+    let total = 3 * n;
+    let (public_y, public_z) = random_public_slice(n, rng);
+    let extra = gate_count - n;
+    let split_one_or = extra % 2;
+    let flank_len = (extra - split_one_or) / 2;
+    let flank: Vec<XGate> = (0..flank_len)
+        .map(|_| random_fragment_on_x(n, rng))
+        .collect();
+    let mut gates = flank.clone();
+
+    let mut aux_wires: Vec<usize> = (n..total).collect();
+    aux_wires.shuffle(rng);
+    let mut targets: Vec<usize> = (0..n).collect();
+    targets.shuffle(rng);
+    let public_value = |wire: usize| {
+        if wire < 2 * n {
+            packed_bit(&public_y, wire - n)
+        } else {
+            packed_bit(&public_z, wire - 2 * n)
+        }
+    };
+    for (index, (target, pair)) in targets
+        .into_iter()
+        .zip(aux_wires.chunks_exact(2))
+        .enumerate()
+    {
+        let a = pair[0];
+        let b = pair[1];
+        // A deviation literal is true iff the public-slice bit is violated.
+        let da = (a as u16, !public_value(a));
+        let db = (b as u16, !public_value(b));
+        if index == 0 && split_one_or == 1 {
+            // da OR db = da XOR (!da AND db).
+            gates.push(XGate::conj(target as u16, [da]).unwrap());
+            gates.push(XGate::conj(target as u16, [(a as u16, public_value(a)), db]).unwrap());
+        } else {
+            // da OR db = 1 XOR (!da AND !db): fire unless both bits equal
+            // their public values.
+            let mut or_gate = XGate::conj(
+                target as u16,
+                [(a as u16, public_value(a)), (b as u16, public_value(b))],
+            )
+            .unwrap();
+            or_gate.comp = true;
+            gates.push(or_gate);
+        }
+    }
+    gates.extend(flank.into_iter().rev());
+    debug_assert_eq!(gates.len(), gate_count);
+    CnotSliceZeroRandomCircuit {
+        circuit: CnotCircuit {
+            gates,
+            num_wires: total,
+        },
+        public_y,
+        public_z,
+    }
+}
+
+fn rand_feistal_z_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
+    rand_feistal_z_gates(n, m, rng)
+        .into_iter()
+        .map(XGate::from_g57)
+        .collect()
+}
+
+fn emit_sg3_x(state: &FeistalState, gate: [u16; 3], out: &mut Vec<XGate>) {
+    // Retain the nine-G57 3-share SG. A smaller mixed candidate is first-order
+    // masked but temporarily reduces a control to two carriers, introducing
+    // same-prefix two-probe leakage that this target-only legacy SG avoids.
+    let mut legacy = Vec::with_capacity(9);
+    emit_sg3(state, gate, &mut legacy);
+    out.extend(legacy.into_iter().map(XGate::from_g57));
+}
+
+fn emit_feistal_rg_x(
+    state: &mut FeistalState,
+    pq: &mut VecDeque<(usize, usize)>,
+    sq: &mut VecDeque<usize>,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) {
+    let n = state.sharing.n;
+    match rng.random_range(0..3u32) {
+        0 => {
+            let (i, j) = next_pair(pq, n, rng);
+            emit_rg1_x(&mut state.sharing, i, j, out);
+        }
+        1 => {
+            let (i, j) = next_pair(pq, n, rng);
+            emit_rg2_x(&mut state.sharing, i, j, out);
+        }
+        _ => {
+            let i = next_single(sq, n, rng);
+            let (p0, p1) = state.sharing.pairs[i];
+            // Using the third carrier of this same logical value as the
+            // refresh carrier creates a same-prefix two-probe leak in RG3.
+            // Keep it disjoint from all three carriers.
+            let free = state.free[i];
+            let random_carrier = random_wire_except(3 * n, &[p0, p1, free], rng);
+            emit_rg3_x(&state.sharing, i, random_carrier, out);
+        }
+    }
+}
+
+fn emit_sg3_rg_block_x(
+    circuit: &CircuitSeq,
+    state: &mut FeistalState,
+    rg_freq: usize,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) {
+    let mut pq = VecDeque::new();
+    let mut sq = VecDeque::new();
+    for (index, &gate) in circuit.gates.iter().enumerate() {
+        emit_sg3_x(state, gate, out);
+        if (index + 1) % rg_freq == 0 {
+            emit_feistal_rg_x(state, &mut pq, &mut sq, rng, out);
+        }
+    }
+}
+
+/// Random logical computation used for Feistel D. Most gates are CNOTs; the
+/// remaining gates are small positive/mixed-polarity conjunction fragments.
+fn random_feistal_d_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
+    let mut gates = Vec::with_capacity(m);
+    for _ in 0..m {
+        let target = rng.random_range(0..n) as u16;
+        let width = match rng.random_range(0..20u32) {
+            0..=13 => 1,
+            14..=18 => 2,
+            _ => 3,
+        }
+        .min(n - 1);
+        let mut controls = Vec::with_capacity(width);
+        while controls.len() < width {
+            let wire = rng.random_range(0..n) as u16;
+            if wire != target && !controls.iter().any(|&(w, _)| w == wire) {
+                // Positive controls keep the shared expansion especially lean,
+                // while occasional negative literals retain fragment variety.
+                controls.push((wire, !rng.random_bool(0.25)));
+            }
+        }
+        gates.push(XGate::conj(target, controls).expect("valid random D fragment"));
+    }
+    gates
+}
+
+fn toggle_anf_term(terms: &mut Vec<Vec<(u16, bool)>>, term: Vec<(u16, bool)>) {
+    if let Some(index) = terms.iter().position(|present| *present == term) {
+        terms.swap_remove(index);
+    } else {
+        terms.push(term);
+    }
+}
+
+/// Homomorphically apply one logical fragment to the three-share Feistel
+/// representation. A positive logical literal expands as p0+p1+free and a
+/// negative one as 1+p0+p1+free. Every emitted physical gate still targets
+/// only the free carrier, so no prefix reconstructs the logical target.
+fn emit_shared_fragment3(state: &FeistalState, gate: &XGate, out: &mut Vec<XGate>) {
+    let logical_target = gate.target as usize;
+    debug_assert!(logical_target < state.sharing.n);
+
+    if !gate.comp && gate.ctrls.len() == 1 && gate.ctrls[0].1 {
+        let logical_control = gate.ctrls[0].0 as usize;
+        let (target_p0, target_p1) = state.sharing.pairs[logical_target];
+        let (control_p0, control_p1) = state.sharing.pairs[logical_control];
+        out.extend(homomorphic_cnot3(
+            (
+                target_p0 as u16,
+                target_p1 as u16,
+                state.free[logical_target] as u16,
+            ),
+            (
+                control_p0 as u16,
+                control_p1 as u16,
+                state.free[logical_control] as u16,
+            ),
+        ));
+        return;
+    }
+
+    let mut terms: Vec<Vec<(u16, bool)>> = vec![Vec::new()];
+    for &(logical_control, positive) in &gate.ctrls {
+        let logical_control = logical_control as usize;
+        debug_assert!(logical_control < state.sharing.n);
+        debug_assert_ne!(logical_control, logical_target);
+        let (p0, p1) = state.sharing.pairs[logical_control];
+        let carriers = [p0, p1, state.free[logical_control]];
+        let previous = std::mem::take(&mut terms);
+        for term in previous {
+            if !positive {
+                toggle_anf_term(&mut terms, term.clone());
+            }
+            for carrier in carriers {
+                let mut next = term.clone();
+                next.push((carrier as u16, true));
+                next.sort_unstable();
+                toggle_anf_term(&mut terms, next);
+            }
+        }
+    }
+    if gate.comp {
+        toggle_anf_term(&mut terms, Vec::new());
+    }
+    terms.sort_unstable();
+    for term in terms {
+        if let Some(fragment) = XGate::conj(state.free[logical_target] as u16, term) {
+            out.push(fragment);
+        }
+    }
+}
+
+fn emit_fragment3_rg_block_x(
+    circuit: &[XGate],
+    state: &mut FeistalState,
+    rg_freq: usize,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) {
+    let mut pq = VecDeque::new();
+    let mut sq = VecDeque::new();
+    for (index, gate) in circuit.iter().enumerate() {
+        emit_shared_fragment3(state, gate, out);
+        if (index + 1) % rg_freq == 0 {
+            emit_feistal_rg_x(state, &mut pq, &mut sq, rng, out);
+        }
+    }
+}
+
+fn emit_feistal_n_cnot(state: &FeistalState, out: &mut Vec<XGate>) {
+    let n = state.sharing.n;
+    let mut host_of_y = vec![0usize; n];
+    for (host, &y) in state.q.iter().enumerate() {
+        host_of_y[y] = host;
+    }
+    for x in 0..n {
+        let host = host_of_y[x];
+        let (yc, other_y_carrier) = state.sharing.pairs[host];
+        let hf = state.free[host];
+        if host == x {
+            for (dst, src) in [
+                (other_y_carrier, yc),
+                (hf, yc),
+                (other_y_carrier, hf),
+                (hf, other_y_carrier),
+                (other_y_carrier, hf),
+            ] {
+                emit_transvection_cnot(dst, src, out);
+            }
+            continue;
+        }
+        for source in [
+            state.sharing.pairs[x].0,
+            state.sharing.pairs[x].1,
+            state.free[x],
+        ] {
+            emit_transvection_cnot(yc, source, out);
+            emit_transvection_cnot(hf, source, out);
+        }
+    }
+}
+
+fn emit_feistal_decode_cnot(state: &FeistalState, out: &mut Vec<XGate>) {
+    let n = state.sharing.n;
+    let total = 3 * n;
+    let mut rows = vec![vec![0u64; total.div_ceil(64)]; total];
+    for i in 0..n {
+        let (p0, p1) = state.sharing.pairs[i];
+        for bit in [p0, p1, state.free[i]] {
+            rows[i][bit / 64] |= 1 << (bit % 64);
+        }
+        for bit in [p0, p1] {
+            rows[n + state.q[i]][bit / 64] |= 1 << (bit % 64);
+        }
+        rows[2 * n + i][p0 / 64] |= 1 << (p0 % 64);
+    }
+    let mut ops = Vec::new();
+    for col in 0..total {
+        let pivot = (col..total)
+            .find(|&row| feistal_bit(&rows[row], col))
+            .expect("invertible decode");
+        if pivot != col {
+            feistal_xor_row(&mut rows, col, pivot);
+            ops.push((col, pivot));
+            feistal_xor_row(&mut rows, pivot, col);
+            ops.push((pivot, col));
+            feistal_xor_row(&mut rows, col, pivot);
+            ops.push((col, pivot));
+        }
+        for row in 0..total {
+            if row != col && feistal_bit(&rows[row], col) {
+                feistal_xor_row(&mut rows, row, col);
+                ops.push((row, col));
+            }
+        }
+    }
+    for &(dst, src) in ops.iter().rev() {
+        emit_transvection_cnot(dst, src, out);
+    }
+}
+
+/// Feistelization with native CNOT linear layers, the stronger legacy
+/// nine-G57 three-share SG, non-complete CNOT RG1/RG2/RG3 blocks,
+/// and a fragment-based random D computation.
+pub fn feistalize_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "feistalize_cnot requires n >= 3");
+    assert!(3 * n <= u16::MAX as usize, "too many wires");
+    assert!(rg_freq > 0, "rg_freq must be nonzero");
+    assert!(
+        main.gates.iter().flatten().all(|&wire| (wire as usize) < n),
+        "input wire outside 0..n"
+    );
+
+    let total = 3 * n;
+    let bookend = (((3 * n) as f64 * (n as f64).ln()).ceil() as usize).max(64);
+    let mut out = rand_feistal_z_xgates(n, bookend, rng);
+    let q = random_permutation(n, rng);
+    let mut xloc: Vec<usize> = (0..n).collect();
+    let mut yloc: Vec<usize> = (n..2 * n).collect();
+    let mut zloc: Vec<usize> = (2 * n..total).collect();
+    let mut on: Vec<FeistalSlot> = (0..total)
+        .map(|wire| {
+            if wire < n {
+                FeistalSlot::RawX(wire)
+            } else if wire < 2 * n {
+                FeistalSlot::RawY(wire - n)
+            } else {
+                FeistalSlot::RawZ(wire - 2 * n)
+            }
+        })
+        .collect();
+    let mut pairs = vec![(usize::MAX, usize::MAX); n];
+    let mut free = vec![usize::MAX; n];
+    for i in 0..n {
+        let (x, y, z) = (xloc[i], yloc[q[i]], zloc[i]);
+        let share = random_wire_except(total, &[x, y, z], rng);
+        let free_wire = random_wire_except(total, &[x, y, z, share], rng);
+        let (moved_share, moved_free) = (on[share], on[free_wire]);
+        emit_w_i_cnot(x, z, share, free_wire, &mut out);
+        reloc_feistal(
+            moved_share,
+            share,
+            x,
+            &mut xloc,
+            &mut yloc,
+            &mut zloc,
+            &mut pairs,
+            &mut free,
+        );
+        reloc_feistal(
+            moved_free, free_wire, z, &mut xloc, &mut yloc, &mut zloc, &mut pairs, &mut free,
+        );
+        on[x] = moved_share;
+        on[z] = moved_free;
+        emit_transvection_cnot(y, share, &mut out);
+        emit_transvection_cnot(free_wire, y, &mut out);
+        pairs[i] = (share, y);
+        free[i] = free_wire;
+        on[share] = FeistalSlot::Pair0(i);
+        on[y] = FeistalSlot::Pair1(i);
+        on[free_wire] = FeistalSlot::Free(i);
+    }
+
+    let mut state = FeistalState {
+        sharing: GadgetState { n, pairs },
+        free,
+        q,
+    };
+    let mut source = main.clone();
+    let source_rounds = source.gates.len();
+    shoot_random_gate(&mut source, source_rounds);
+    emit_sg3_rg_block_x(&source, &mut state, rg_freq, rng, &mut out);
+    emit_feistal_n_cnot(&state, &mut out);
+    let d = random_feistal_d_xgates(n, main.gates.len(), rng);
+    emit_fragment3_rg_block_x(&d, &mut state, rg_freq, rng, &mut out);
+    emit_feistal_decode_cnot(&state, &mut out);
+    out.extend(rand_feistal_z_xgates(n, bookend, rng));
+
+    CnotCircuit {
+        gates: out,
+        num_wires: total,
+    }
+}
+
+pub fn feistalize_with_slice_zero_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut preblock = slice_zero_preblock_cnot(n, rng);
+    preblock
+        .gates
+        .extend(feistalize_cnot(main, n, rg_freq, rng).gates);
+    preblock
+}
+
+pub fn feistalize_with_slice_zero_hardcoded_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    rounds: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut preblock = slice_zero_hardcoded_preblock_cnot(n, rounds, rng);
+    preblock
+        .gates
+        .extend(feistalize_cnot(main, n, rg_freq, rng).gates);
+    preblock
+}
+
+pub fn feistalize_with_slice_zero_random_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotSliceZeroRandomCircuit {
+    let mut preblock = slice_zero_random_preblock_cnot(n, gate_count, rng);
+    preblock
+        .circuit
+        .gates
+        .extend(feistalize_cnot(main, n, rg_freq, rng).gates);
+    preblock
+}
+
+#[cfg(test)]
+mod cnot_gadget_tests {
+    use super::*;
+    use crate::postmix::xgate::eval_u64;
+    use rand::{SeedableRng, rngs::StdRng};
+
+    fn canonical_state() -> FeistalState {
+        FeistalState {
+            sharing: GadgetState {
+                n: 3,
+                pairs: vec![(0, 1), (3, 4), (6, 7)],
+            },
+            free: vec![2, 5, 8],
+            q: vec![0, 1, 2],
+        }
+    }
+
+    fn encode_two_share(logical: u64, masks: u64, pairs: &[(usize, usize)]) -> u64 {
+        let mut physical = 0u64;
+        for (index, &(p0_wire, p1_wire)) in pairs.iter().enumerate() {
+            let p0 = (masks >> index) & 1;
+            let p1 = ((logical >> index) & 1) ^ p0;
+            physical |= p0 << p0_wire;
+            physical |= p1 << p1_wire;
+        }
+        physical
+    }
+
+    fn decode_two_share(physical: u64, pairs: &[(usize, usize)]) -> u64 {
+        pairs
+            .iter()
+            .enumerate()
+            .fold(0, |logical, (index, &(p0, p1))| {
+                logical | ((((physical >> p0) ^ (physical >> p1)) & 1) << index)
+            })
+    }
+
+    fn decode_three_share(state: &FeistalState, physical: u64) -> u64 {
+        (0..state.sharing.n).fold(0, |logical, index| {
+            let (p0, p1) = state.sharing.pairs[index];
+            let value = ((physical >> p0) ^ (physical >> p1) ^ (physical >> state.free[index])) & 1;
+            logical | (value << index)
+        })
+    }
+
+    fn encode_three_share(state: &FeistalState, logical: u64, masks: u64) -> u64 {
+        let mut physical = 0u64;
+        for index in 0..state.sharing.n {
+            let p0 = (masks >> (2 * index)) & 1;
+            let p1 = (masks >> (2 * index + 1)) & 1;
+            let free = ((logical >> index) & 1) ^ p0 ^ p1;
+            let (p0_wire, p1_wire) = state.sharing.pairs[index];
+            physical |= p0 << p0_wire;
+            physical |= p1 << p1_wire;
+            physical |= free << state.free[index];
+        }
+        physical
+    }
+
+    /// Count secret-dependent single probes, same-prefix probe pairs, and all
+    /// space-time probe pairs. Randomness is enumerated exactly for each fixed
+    /// secret; unequal observation histograms are counted as leakage.
+    fn probe_leak_counts(
+        gates: &[XGate],
+        wires: usize,
+        secret_count: usize,
+        randomness_count: usize,
+        encode: impl Fn(usize, usize) -> u64,
+    ) -> (usize, usize, usize) {
+        let evolutions: Vec<Vec<Vec<u64>>> = (0..secret_count)
+            .map(|secret| {
+                (0..randomness_count)
+                    .map(|randomness| {
+                        let mut state = encode(secret, randomness);
+                        let mut evolution = vec![state];
+                        for gate in gates {
+                            state = gate.apply_u64(state);
+                            evolution.push(state);
+                        }
+                        evolution
+                    })
+                    .collect()
+            })
+            .collect();
+        let points = (gates.len() + 1) * wires;
+        let observed = |evolution: &[u64], point: usize| -> usize {
+            ((evolution[point / wires] >> (point % wires)) & 1) as usize
+        };
+
+        let mut singles = 0usize;
+        for point in 0..points {
+            let base: usize = evolutions[0]
+                .iter()
+                .map(|evolution| observed(evolution, point))
+                .sum();
+            if evolutions[1..].iter().any(|samples| {
+                samples
+                    .iter()
+                    .map(|evolution| observed(evolution, point))
+                    .sum::<usize>()
+                    != base
+            }) {
+                singles += 1;
+            }
+        }
+
+        let mut same_prefix_pairs = 0usize;
+        let mut space_time_pairs = 0usize;
+        for left in 0..points {
+            for right in left + 1..points {
+                let histogram = |samples: &[Vec<u64>]| {
+                    let mut counts = [0usize; 4];
+                    for evolution in samples {
+                        let value = observed(evolution, left) | (observed(evolution, right) << 1);
+                        counts[value] += 1;
+                    }
+                    counts
+                };
+                let base = histogram(&evolutions[0]);
+                if evolutions[1..]
+                    .iter()
+                    .any(|samples| histogram(samples) != base)
+                {
+                    space_time_pairs += 1;
+                    if left / wires == right / wires {
+                        same_prefix_pairs += 1;
+                    }
+                }
+            }
+        }
+        (singles, same_prefix_pairs, space_time_pairs)
+    }
+
+    fn algebraic_output_degrees(gates: &[XGate], wires: usize) -> Vec<usize> {
+        assert!(wires < usize::BITS as usize);
+        (0..wires)
+            .map(|output_wire| {
+                let mut anf: Vec<u8> = (0..1usize << wires)
+                    .map(|input| ((eval_u64(gates, input as u64) >> output_wire) & 1) as u8)
+                    .collect();
+                for variable in 0..wires {
+                    for monomial in 0..1usize << wires {
+                        if monomial & (1 << variable) != 0 {
+                            anf[monomial] ^= anf[monomial ^ (1 << variable)];
+                        }
+                    }
+                }
+                anf.iter()
+                    .enumerate()
+                    .filter_map(|(monomial, &coefficient)| {
+                        (coefficient != 0).then_some(monomial.count_ones() as usize)
+                    })
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect()
+    }
+
+    fn assert_cnot_network_is_gate_locally_noncomplete(
+        gates: &[XGate],
+        wires: usize,
+        share_groups: &[(usize, usize)],
+    ) {
+        let mut dependencies: Vec<u64> = (0..wires).map(|wire| 1u64 << wire).collect();
+        for (index, gate) in gates.iter().enumerate() {
+            assert!(
+                !gate.comp && gate.width() == 1,
+                "gate {index} is not a CNOT"
+            );
+            let target = gate.target as usize;
+            let control = gate.ctrls[0].0 as usize;
+            let gate_dependencies = dependencies[target] | dependencies[control];
+            for &(share0, share1) in share_groups {
+                let complete = (1u64 << share0) | (1u64 << share1);
+                assert_ne!(
+                    gate_dependencies & complete,
+                    complete,
+                    "gate {index} consumes a complete sharing ({share0},{share1})"
+                );
+            }
+            dependencies[target] ^= dependencies[control];
+        }
+    }
+
+    #[test]
+    fn w_i_cnot_has_the_required_linear_map() {
+        let mut gates = Vec::new();
+        emit_w_i_cnot(0, 1, 2, 3, &mut gates);
+        assert_eq!(gates.len(), 7);
+        assert!(gates.iter().all(|gate| !gate.comp && gate.width() == 1));
+        for input in 0..16u64 {
+            let q0 = input & 1;
+            let q1 = (input >> 1) & 1;
+            let q2 = (input >> 2) & 1;
+            let q3 = (input >> 3) & 1;
+            let expected = q2 | (q3 << 1) | ((q0 ^ q1) << 2) | (q1 << 3);
+            assert_eq!(eval_u64(&gates, input), expected);
+        }
+    }
+
+    #[test]
+    fn four_fragment_two_share_sg_is_correct_and_prefix_masked() {
+        let state = GadgetState {
+            n: 3,
+            pairs: vec![(0, 1), (2, 3), (4, 5)],
+        };
+        let mut gates = Vec::new();
+        emit_gadget_x(&state, [0, 1, 2], &mut gates);
+        assert_eq!(gates.len(), 4);
+        assert!(gates.iter().all(|gate| !gate.comp && gate.width() == 2));
+        for logical in 0..8u64 {
+            for prefix in 0..=gates.len() {
+                let mut ones = [0usize; 6];
+                for masks in 0..8u64 {
+                    let input = encode_two_share(logical, masks, &state.pairs);
+                    let output = eval_u64(&gates[..prefix], input);
+                    for (wire, count) in ones.iter_mut().enumerate() {
+                        *count += ((output >> wire) & 1) as usize;
+                    }
+                    if prefix == gates.len() {
+                        assert_eq!(
+                            decode_two_share(output, &state.pairs),
+                            XGate::from_g57([0, 1, 2]).apply_u64(logical)
+                        );
+                    }
+                }
+                assert_eq!(ones, [4; 6]);
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_three_share_sg_retains_stronger_two_probe_boundary_security() {
+        let state = canonical_state();
+        let mut legacy = Vec::new();
+        emit_sg3_x(&state, [0, 1, 2], &mut legacy);
+        assert_eq!(legacy.len(), 9);
+        assert!(legacy.iter().all(|gate| gate.comp && gate.width() == 2));
+
+        // Rejected eight-gate candidate: temporarily reduce each control from
+        // three carriers to two, use the four-fragment SG, then restore it.
+        let mut rejected = Vec::new();
+        emit_transvection_cnot(3, 4, &mut rejected);
+        emit_transvection_cnot(6, 7, &mut rejected);
+        emit_shared_g57_frag2(2, 3, 5, 6, 8, &mut rejected);
+        emit_transvection_cnot(6, 7, &mut rejected);
+        emit_transvection_cnot(3, 4, &mut rejected);
+        assert_eq!(rejected.len(), 8);
+
+        let legacy_leaks = probe_leak_counts(&legacy, 9, 8, 64, |secret, randomness| {
+            encode_three_share(&state, secret as u64, randomness as u64)
+        });
+        let rejected_leaks = probe_leak_counts(&rejected, 9, 8, 64, |secret, randomness| {
+            encode_three_share(&state, secret as u64, randomness as u64)
+        });
+        println!("three-share SG probes: legacy={legacy_leaks:?} rejected={rejected_leaks:?}");
+        assert_eq!(legacy_leaks, (0, 0, 26));
+        assert_eq!(rejected_leaks, (0, 12, 123));
+
+        for logical in 0..8u64 {
+            for prefix in 0..=legacy.len() {
+                let mut ones = [0usize; 9];
+                for masks in 0..64u64 {
+                    let input = encode_three_share(&state, logical, masks);
+                    let output = eval_u64(&legacy[..prefix], input);
+                    for (wire, count) in ones.iter_mut().enumerate() {
+                        *count += ((output >> wire) & 1) as usize;
+                    }
+                    if prefix == legacy.len() {
+                        assert_eq!(
+                            decode_three_share(&state, output),
+                            XGate::from_g57([0, 1, 2]).apply_u64(logical)
+                        );
+                    }
+                }
+                assert_eq!(ones, [32; 9]);
+            }
+        }
+    }
+
+    #[test]
+    fn two_share_sg_probe_comparison_favors_the_four_fragment_variant() {
+        let state = GadgetState {
+            n: 3,
+            pairs: vec![(0, 1), (2, 3), (4, 5)],
+        };
+        let mut old_g57 = Vec::new();
+        emit_gadget(&state, [0, 1, 2], &mut old_g57);
+        let old_g57: Vec<XGate> = old_g57.into_iter().map(XGate::from_g57).collect();
+        let mut fragments = Vec::new();
+        emit_gadget_x(&state, [0, 1, 2], &mut fragments);
+        let old_leaks = probe_leak_counts(&old_g57, 6, 8, 8, |secret, randomness| {
+            encode_two_share(secret as u64, randomness as u64, &state.pairs)
+        });
+        let new_leaks = probe_leak_counts(&fragments, 6, 8, 8, |secret, randomness| {
+            encode_two_share(secret as u64, randomness as u64, &state.pairs)
+        });
+        println!("two-share SG probes: legacy={old_leaks:?} fragments={new_leaks:?}");
+        assert_eq!(old_leaks, (0, 19, 151));
+        assert_eq!(new_leaks, (0, 14, 73));
+
+        // The old SG has gates reading both B carriers simultaneously. Every
+        // new fragment reads at most one carrier from each logical control.
+        assert!(old_g57.iter().any(|gate| gate.reads(2) && gate.reads(3)));
+        assert!(
+            fragments
+                .iter()
+                .all(|gate| !(gate.reads(2) && gate.reads(3)))
+        );
+        assert!(
+            fragments
+                .iter()
+                .all(|gate| !(gate.reads(4) && gate.reads(5)))
+        );
+    }
+
+    #[test]
+    fn selected_cnot_rg_variants_preserve_values_masks_and_noncompleteness() {
+        for variant in 1..=2 {
+            let original_pairs = vec![(0, 1), (2, 3)];
+            let mut state = GadgetState {
+                n: 2,
+                pairs: original_pairs.clone(),
+            };
+            let mut gates = Vec::new();
+            if variant == 1 {
+                emit_rg1_x(&mut state, 0, 1, &mut gates);
+                assert_eq!(gates.len(), 6);
+            } else {
+                emit_rg2_x(&mut state, 0, 1, &mut gates);
+                assert_eq!(gates.len(), 3);
+            }
+            assert_cnot_network_is_gate_locally_noncomplete(&gates, 4, &original_pairs);
+            for logical in 0..4u64 {
+                for prefix in 0..=gates.len() {
+                    let mut ones = [0usize; 4];
+                    for masks in 0..4u64 {
+                        let input = encode_two_share(logical, masks, &original_pairs);
+                        let output = eval_u64(&gates[..prefix], input);
+                        for (wire, count) in ones.iter_mut().enumerate() {
+                            *count += ((output >> wire) & 1) as usize;
+                        }
+                        if prefix == gates.len() {
+                            assert_eq!(decode_two_share(output, &state.pairs), logical);
+                        }
+                    }
+                    assert_eq!(ones, [2; 4], "RG{variant} prefix={prefix}");
+                }
+            }
+        }
+
+        let pairs = vec![(0, 1), (2, 3), (4, 5)];
+        let state = GadgetState {
+            n: 3,
+            pairs: pairs.clone(),
+        };
+        let mut gates = Vec::new();
+        emit_rg3_x(&state, 0, 2, &mut gates);
+        assert_eq!(gates.len(), 2);
+        assert_cnot_network_is_gate_locally_noncomplete(&gates, 6, &pairs);
+        for logical in 0..8u64 {
+            for prefix in 0..=gates.len() {
+                let mut ones = [0usize; 6];
+                for masks in 0..8u64 {
+                    let input = encode_two_share(logical, masks, &pairs);
+                    let output = eval_u64(&gates[..prefix], input);
+                    for (wire, count) in ones.iter_mut().enumerate() {
+                        *count += ((output >> wire) & 1) as usize;
+                    }
+                    if prefix == gates.len() {
+                        assert_eq!(decode_two_share(output, &pairs), logical);
+                    }
+                }
+                assert_eq!(ones, [4; 6], "RG3 prefix={prefix}");
+            }
+        }
+    }
+
+    #[test]
+    fn six_cnot_rg1_is_minimal_under_gate_local_noncompleteness() {
+        let start = [1u8, 2, 4, 8];
+        let goal = |rows: [u8; 4]| rows[3] ^ rows[2] == 3 && rows[0] ^ rows[1] == 12;
+        let noncomplete = |left: u8, right: u8| {
+            let dependencies = left | right;
+            dependencies & 3 != 3 && dependencies & 12 != 12
+        };
+        let mut queue = VecDeque::from([(start, 0usize)]);
+        let mut seen = std::collections::HashSet::from([start]);
+        while let Some((rows, depth)) = queue.pop_front() {
+            assert!(!(depth <= 5 && depth != 0 && goal(rows)));
+            if depth == 5 {
+                continue;
+            }
+            for target in 0..4 {
+                for control in 0..4 {
+                    if target == control || !noncomplete(rows[target], rows[control]) {
+                        continue;
+                    }
+                    let mut next = rows;
+                    next[target] ^= next[control];
+                    if seen.insert(next) {
+                        queue.push_back((next, depth + 1));
+                    }
+                }
+            }
+        }
+
+        let mut state = GadgetState {
+            n: 2,
+            pairs: vec![(0, 1), (3, 2)],
+        };
+        let mut selected = Vec::new();
+        emit_rg1_x(&mut state, 0, 1, &mut selected);
+        assert_eq!(selected.len(), 6);
+    }
+
+    #[test]
+    fn old_and_new_rg_probe_comparison_supports_cnot_replacements() {
+        let make_two_share = |variant: usize, mixed: bool| {
+            let mut state = GadgetState {
+                n: 2,
+                pairs: vec![(0, 1), (3, 2)],
+            };
+            if mixed {
+                let mut gates = Vec::new();
+                if variant == 1 {
+                    emit_rg1_x(&mut state, 0, 1, &mut gates);
+                } else {
+                    emit_rg2_x(&mut state, 0, 1, &mut gates);
+                }
+                gates
+            } else {
+                let mut gates = Vec::new();
+                if variant == 1 {
+                    emit_rg1(&mut state, 0, 1, &mut gates);
+                } else {
+                    emit_rg2(&mut state, 0, 1, &mut gates);
+                }
+                gates.into_iter().map(XGate::from_g57).collect()
+            }
+        };
+        let pairs = vec![(0, 1), (3, 2)];
+        for variant in 1..=2 {
+            let old = make_two_share(variant, false);
+            let new = make_two_share(variant, true);
+            let old_leaks = probe_leak_counts(&old, 4, 4, 4, |secret, randomness| {
+                encode_two_share(secret as u64, randomness as u64, &pairs)
+            });
+            let new_leaks = probe_leak_counts(&new, 4, 4, 4, |secret, randomness| {
+                encode_two_share(secret as u64, randomness as u64, &pairs)
+            });
+            println!("two-share RG{variant} probes: legacy={old_leaks:?} selected={new_leaks:?}");
+            // The first legacy G57 in both RG1 and RG2 reads both carriers of
+            // logical j. The selected CNOT networks are checked separately
+            // above with evolving symbolic dependencies.
+            assert!(old[0].reads(2) && old[0].reads(3));
+            if variant == 1 {
+                assert_eq!(old_leaks, (0, 14, 191));
+                assert_eq!(new_leaks, (0, 10, 68));
+            } else {
+                // Legacy RG2 has secret-dependent 1/4-vs-3/4 bias at four
+                // individual space-time probe locations.
+                assert_eq!(old_leaks, (4, 21, 205));
+                assert_eq!(new_leaks, (0, 6, 24));
+            }
+        }
+
+        // In the Feistel representation y and its pair mask are random while
+        // x is fixed. New RG1/RG2 retain second-order masking of x. Legacy
+        // RG2 does not: seven space-time pairs have x-dependent histograms.
+        let feistal_encode = |secret: usize, randomness: usize| {
+            let x0 = secret & 1;
+            let x1 = (secret >> 1) & 1;
+            let y0 = randomness & 1;
+            let m0 = (randomness >> 1) & 1;
+            let y1 = (randomness >> 2) & 1;
+            let m1 = (randomness >> 3) & 1;
+            (m0 | ((m0 ^ y0) << 1)
+                | ((x0 ^ y0) << 2)
+                | (m1 << 3)
+                | ((m1 ^ y1) << 4)
+                | ((x1 ^ y1) << 5)) as u64
+        };
+        for variant in 1..=2 {
+            let old = make_two_share(variant, false);
+            let new = make_two_share(variant, true);
+            let remap = |gates: Vec<XGate>| {
+                gates
+                    .into_iter()
+                    .map(|gate| {
+                        let map = [0u16, 1, 4, 3];
+                        let mut ctrls: crate::postmix::xgate::Lits = gate
+                            .ctrls
+                            .into_iter()
+                            .map(|(wire, polarity)| (map[wire as usize], polarity))
+                            .collect();
+                        ctrls.sort_unstable();
+                        XGate {
+                            target: map[gate.target as usize],
+                            comp: gate.comp,
+                            ctrls,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let old_leaks = probe_leak_counts(&remap(old), 6, 4, 16, feistal_encode);
+            let new_leaks = probe_leak_counts(&remap(new), 6, 4, 16, feistal_encode);
+            println!("Feistal RG{variant} probes: legacy={old_leaks:?} selected={new_leaks:?}");
+            if variant == 1 {
+                assert_eq!(old_leaks, (0, 0, 0));
+                assert_eq!(new_leaks, (0, 0, 0));
+            } else {
+                assert_eq!(old_leaks, (0, 1, 7));
+                assert_eq!(new_leaks, (0, 0, 0));
+            }
+        }
+    }
+
+    #[test]
+    fn rg3_g57_and_selected_cnot_probe_comparison() {
+        let pairs = vec![(0, 1), (2, 3), (4, 5)];
+        let state = GadgetState {
+            n: 3,
+            pairs: pairs.clone(),
+        };
+        let mut legacy_g57 = Vec::new();
+        emit_rg3(&state, 0, 2, 4, &mut legacy_g57);
+        let legacy: Vec<XGate> = legacy_g57.into_iter().map(XGate::from_g57).collect();
+        let mut selected = Vec::new();
+        emit_rg3_x(&state, 0, 2, &mut selected);
+        let legacy_leaks = probe_leak_counts(&legacy, 6, 8, 8, |secret, randomness| {
+            encode_two_share(secret as u64, randomness as u64, &pairs)
+        });
+        let selected_leaks = probe_leak_counts(&selected, 6, 8, 8, |secret, randomness| {
+            encode_two_share(secret as u64, randomness as u64, &pairs)
+        });
+        println!("two-share RG3 probes: legacy={legacy_leaks:?} selected={selected_leaks:?}");
+        assert_eq!(legacy_leaks, (0, 9, 27));
+        assert_eq!(selected_leaks, (0, 8, 22));
+        assert_eq!(legacy.len(), selected.len());
+        assert_eq!(algebraic_output_degrees(&legacy, 6)[..2], [2, 2]);
+        assert_eq!(algebraic_output_degrees(&selected, 6)[..2], [1, 1]);
+
+        // Survey the raw ordered (r1,r2) placement space. Production now
+        // excludes the third carrier; every remaining placement is clean.
+        let feistal = canonical_state();
+        let (p0, p1) = feistal.sharing.pairs[0];
+        let mut legacy_max = (0, 0, 0);
+        let mut linear_max = (0, 0, 0);
+        let mut legacy_unsafe = Vec::new();
+        let mut linear_unsafe = Vec::new();
+        for r1 in 0..9 {
+            if r1 == p0 || r1 == p1 {
+                continue;
+            }
+            for r2 in 0..9 {
+                if r2 == p0 || r2 == p1 || r2 == r1 {
+                    continue;
+                }
+                let mut old_g57 = Vec::new();
+                emit_rg3(&feistal.sharing, 0, r1, r2, &mut old_g57);
+                let old: Vec<XGate> = old_g57.into_iter().map(XGate::from_g57).collect();
+                let mut cnot = Vec::new();
+                emit_rg3_x(&feistal.sharing, 0, r1, &mut cnot);
+                let encode = |secret: usize, randomness: usize| {
+                    encode_three_share(&feistal, secret as u64, randomness as u64)
+                };
+                let old_leaks = probe_leak_counts(&old, 9, 8, 64, encode);
+                let cnot_leaks = probe_leak_counts(&cnot, 9, 8, 64, encode);
+                if r1 != feistal.free[0] && r2 != feistal.free[0] {
+                    assert_eq!(old_leaks, (0, 0, 0));
+                }
+                if r1 != feistal.free[0] {
+                    assert_eq!(cnot_leaks, (0, 0, 0));
+                }
+                if old_leaks.1 != 0 {
+                    legacy_unsafe.push((r1, r2, old_leaks));
+                }
+                if cnot_leaks.1 != 0 {
+                    linear_unsafe.push((r1, r2, cnot_leaks));
+                }
+                legacy_max.0 = legacy_max.0.max(old_leaks.0);
+                legacy_max.1 = legacy_max.1.max(old_leaks.1);
+                legacy_max.2 = legacy_max.2.max(old_leaks.2);
+                linear_max.0 = linear_max.0.max(cnot_leaks.0);
+                linear_max.1 = linear_max.1.max(cnot_leaks.1);
+                linear_max.2 = linear_max.2.max(cnot_leaks.2);
+            }
+        }
+        println!("three-share RG3 placement maxima: legacy={legacy_max:?} selected={linear_max:?}");
+        println!(
+            "three-share RG3 unsafe placements: legacy={legacy_unsafe:?} selected={linear_unsafe:?}"
+        );
+        assert_eq!(legacy_max, (0, 1, 5));
+        assert_eq!(linear_max, (0, 1, 5));
+        assert_eq!(legacy_unsafe.len(), 12);
+        assert_eq!(linear_unsafe.len(), 6);
+    }
+
+    #[test]
+    fn selected_rg_networks_are_deliberately_linear() {
+        let make = |variant: usize| {
+            let mut state = GadgetState {
+                n: 2,
+                pairs: vec![(0, 1), (3, 2)],
+            };
+            let mut gates = Vec::new();
+            if variant == 1 {
+                emit_rg1_x(&mut state, 0, 1, &mut gates);
+            } else {
+                emit_rg2_x(&mut state, 0, 1, &mut gates);
+            }
+            gates
+        };
+        assert_eq!(algebraic_output_degrees(&make(1), 4), vec![1; 4]);
+        assert_eq!(algebraic_output_degrees(&make(2), 4), vec![1; 4]);
+    }
+
+    #[test]
+    fn feistal_cnot_rgs_preserve_overlapping_x_y_and_prefix_masking() {
+        for variant in 1..=3 {
+            let initial_pairs = vec![(0, 1), (3, 4), (6, 7)];
+            let mut state = canonical_state();
+            state.q = vec![0, 1, 2];
+            let mut gates = Vec::new();
+            match variant {
+                1 => emit_rg1_x(&mut state.sharing, 0, 1, &mut gates),
+                2 => emit_rg2_x(&mut state.sharing, 0, 1, &mut gates),
+                _ => emit_rg3_x(&state.sharing, 0, state.free[1], &mut gates),
+            }
+            for x in 0..8u64 {
+                for prefix in 0..=gates.len() {
+                    let mut ones = [0usize; 9];
+                    for y in 0..8u64 {
+                        for masks in 0..8u64 {
+                            let mut input = 0u64;
+                            for index in 0..3 {
+                                let p0 = (masks >> index) & 1;
+                                let y_bit = (y >> index) & 1;
+                                let free = ((x >> index) & 1) ^ y_bit;
+                                input |= p0 << initial_pairs[index].0;
+                                input |= (p0 ^ y_bit) << initial_pairs[index].1;
+                                input |= free << state.free[index];
+                            }
+                            let output = eval_u64(&gates[..prefix], input);
+                            for (wire, count) in ones.iter_mut().enumerate() {
+                                *count += ((output >> wire) & 1) as usize;
+                            }
+                            if prefix == gates.len() {
+                                assert_eq!(decode_three_share(&state, output), x);
+                                let decoded_y = (0..3).fold(0u64, |value, host| {
+                                    let (p0, p1) = state.sharing.pairs[host];
+                                    value
+                                        | ((((output >> p0) ^ (output >> p1)) & 1) << state.q[host])
+                                });
+                                assert_eq!(decoded_y, y);
+                            }
+                        }
+                    }
+                    assert_eq!(ones, [32; 9], "Feistal RG{variant} prefix={prefix}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn two_share_homomorphic_cnot_is_correct_and_prefix_masked() {
+        let gates = homomorphic_cnot2((0, 1), (2, 3));
+        assert_eq!(gates.len(), 2);
+        assert_cnot_network_is_gate_locally_noncomplete(&gates, 4, &[(0, 1), (2, 3)]);
+        for logical in 0..4u64 {
+            let a = logical & 1;
+            let b = (logical >> 1) & 1;
+            for prefix in 0..=gates.len() {
+                let mut ones = [0usize; 4];
+                for masks in 0..4u64 {
+                    let a0 = masks & 1;
+                    let b0 = (masks >> 1) & 1;
+                    let input = a0 | ((a ^ a0) << 1) | (b0 << 2) | ((b ^ b0) << 3);
+                    let output = eval_u64(&gates[..prefix], input);
+                    for (wire, count) in ones.iter_mut().enumerate() {
+                        *count += ((output >> wire) & 1) as usize;
+                    }
+                    if prefix == gates.len() {
+                        assert_eq!(((output >> 0) ^ (output >> 1)) & 1, a ^ b);
+                        assert_eq!(((output >> 2) ^ (output >> 3)) & 1, b);
+                    }
+                }
+                assert_eq!(ones, [2; 4]);
+            }
+        }
+    }
+
+    #[test]
+    fn three_share_homomorphic_cnot_is_correct_and_prefix_masked() {
+        let state = canonical_state();
+        let gates = homomorphic_cnot3((0, 1, 2), (3, 4, 5));
+        assert_eq!(gates.len(), 3);
+        for logical in 0..8u64 {
+            for prefix in 0..=gates.len() {
+                let mut ones = [0usize; 9];
+                for masks in 0..64u64 {
+                    let input = encode_three_share(&state, logical, masks);
+                    let output = eval_u64(&gates[..prefix], input);
+                    for (wire, count) in ones.iter_mut().enumerate() {
+                        *count += ((output >> wire) & 1) as usize;
+                    }
+                    if prefix == gates.len() {
+                        let decoded = decode_three_share(&state, output);
+                        let expected = logical ^ (((logical >> 1) & 1) << 0);
+                        assert_eq!(decoded, expected);
+                    }
+                }
+                assert_eq!(ones, [32; 9]);
+            }
+        }
+    }
+
+    #[test]
+    fn shared_fragments_compute_without_unmasking_any_single_carrier() {
+        let state = canonical_state();
+        let logical_gates = [
+            XGate::cnot(0, 1),
+            XGate::conj(2, [(0, false)]).unwrap(),
+            XGate::conj(1, [(0, true), (2, false)]).unwrap(),
+            XGate::from_g57([0, 1, 2]),
+        ];
+        for logical_gate in logical_gates {
+            let mut physical_gates = Vec::new();
+            emit_shared_fragment3(&state, &logical_gate, &mut physical_gates);
+            for logical in 0..8u64 {
+                for masks in 0..64u64 {
+                    let encoded = encode_three_share(&state, logical, masks);
+                    let result = eval_u64(&physical_gates, encoded);
+                    assert_eq!(
+                        decode_three_share(&state, result),
+                        logical_gate.apply_u64(logical)
+                    );
+                }
+
+                // At every physical-gate prefix, every individual carrier is
+                // exactly balanced over the masks for each fixed secret.
+                for prefix in 0..=physical_gates.len() {
+                    let mut ones = [0usize; 9];
+                    for masks in 0..64u64 {
+                        let encoded = encode_three_share(&state, logical, masks);
+                        let result = eval_u64(&physical_gates[..prefix], encoded);
+                        for (wire, count) in ones.iter_mut().enumerate() {
+                            *count += ((result >> wire) & 1) as usize;
+                        }
+                    }
+                    assert_eq!(ones, [32; 9]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feistal_n_cnot_keeps_every_prefix_first_order_masked() {
+        for q in [
+            vec![0, 1, 2],
+            vec![0, 2, 1],
+            vec![1, 0, 2],
+            vec![1, 2, 0],
+            vec![2, 0, 1],
+            vec![2, 1, 0],
+        ] {
+            let mut state = canonical_state();
+            state.q = q;
+            let mut gates = Vec::new();
+            emit_feistal_n_cnot(&state, &mut gates);
+            for logical_x in 0..8u64 {
+                for prefix in 0..=gates.len() {
+                    let mut ones = [0usize; 9];
+                    for masks in 0..64u64 {
+                        // Independent p0/p1 choices are equivalent to averaging
+                        // over the Feistel y values and their random pair masks
+                        // for this fixed original x.
+                        let input = encode_three_share(&state, logical_x, masks);
+                        let output = eval_u64(&gates[..prefix], input);
+                        for (wire, count) in ones.iter_mut().enumerate() {
+                            *count += ((output >> wire) & 1) as usize;
+                        }
+                    }
+                    assert_eq!(ones, [32; 9], "q={:?} prefix={prefix}", state.q);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gadgetize_cnot_preserves_the_first_n_wires() {
+        let n = 3;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0xc001_0000 + seed);
+            let transformed = gadgetize_cnot(&main, n, 2, &mut rng);
+            assert_eq!(transformed.num_wires, 2 * n);
+            let mask = (1u64 << n) - 1;
+            for input in 0..(1u64 << (2 * n)) {
+                let expected = main.evaluate((input & mask) as usize) as u64 & mask;
+                assert_eq!(eval_u64(&transformed.gates, input) & mask, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn feistalize_cnot_moves_functionality_to_the_middle_n_wires() {
+        let n = 3;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0xfe15_0000 + seed);
+            let transformed = feistalize_cnot(&main, n, 2, &mut rng);
+            assert_eq!(transformed.num_wires, 3 * n);
+            let mask = (1u64 << n) - 1;
+            for input in 0..(1u64 << (3 * n)) {
+                let x = input & mask;
+                let y = (input >> n) & mask;
+                let expected = y ^ (main.evaluate(x as usize) as u64 & mask);
+                assert_eq!((eval_u64(&transformed.gates, input) >> n) & mask, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn random_fragment_preblock_has_one_and_only_one_fixed_aux_slice() {
+        let n = 3;
+        let mask = (1u64 << n) - 1;
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0x51ce_0000 + seed);
+            let preblock = slice_zero_random_preblock_cnot(n, 96, &mut rng);
+            assert_eq!(preblock.circuit.gates.len(), 96);
+            let public_y = preblock.public_y[0] & mask;
+            let public_z = preblock.public_z[0] & mask;
+            for y in 0..=mask {
+                for z in 0..=mask {
+                    for x in 0..=mask {
+                        let input = x | (y << n) | (z << (2 * n));
+                        let output = eval_u64(&preblock.circuit.gates, input);
+                        assert_eq!((output >> n) & ((1u64 << (2 * n)) - 1), input >> n);
+                        if y == public_y && z == public_z {
+                            assert_eq!(output, input);
+                        } else {
+                            assert_ne!(output & mask, x);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cnot_transformations_are_leaner_than_legacy_on_representative_circuits() {
+        let n = 8;
+        let main = CircuitSeq {
+            gates: (0..64)
+                .map(|index| {
+                    [
+                        (index % n) as u16,
+                        ((index + 1) % n) as u16,
+                        ((index + 2) % n) as u16,
+                    ]
+                })
+                .collect(),
+        };
+        let mut legacy_gadget_total = 0usize;
+        let mut cnot_gadget_total = 0usize;
+        let mut legacy_feistal_total = 0usize;
+        let mut cnot_feistal_total = 0usize;
+        for seed in 0..16u64 {
+            let mut legacy_rng = StdRng::seed_from_u64(0x1ea0_0000 + seed);
+            let mut cnot_rng = StdRng::seed_from_u64(0x1ea0_0000 + seed);
+            let legacy_gadget = gadgetize(&main, n, 2, &mut legacy_rng).gates.len();
+            let cnot_gadget = gadgetize_cnot(&main, n, 2, &mut cnot_rng).gates.len();
+            assert!(cnot_gadget < legacy_gadget, "gadget seed={seed}");
+            legacy_gadget_total += legacy_gadget;
+            cnot_gadget_total += cnot_gadget;
+
+            let mut legacy_rng = StdRng::seed_from_u64(0xfe15_0000 + seed);
+            let mut cnot_rng = StdRng::seed_from_u64(0xfe15_0000 + seed);
+            let legacy_feistal = feistalize(&main, n, 2, &mut legacy_rng).gates.len();
+            let cnot_feistal = feistalize_cnot(&main, n, 2, &mut cnot_rng).gates.len();
+            assert!(cnot_feistal < legacy_feistal, "Feistal seed={seed}");
+            legacy_feistal_total += legacy_feistal;
+            cnot_feistal_total += cnot_feistal;
+        }
+        println!(
+            "representative averages: gadget {} -> {}; Feistal {} -> {}",
+            legacy_gadget_total / 16,
+            cnot_gadget_total / 16,
+            legacy_feistal_total / 16,
+            cnot_feistal_total / 16,
+        );
+    }
+}
+

@@ -7,12 +7,15 @@
 // Self-contained: does not touch the ssg/sss replacement paths or the DB.
 pub mod arena;
 pub mod compress;
+pub mod db_replace;
 pub mod engine;
 pub mod format;
 pub mod mix;
 pub mod rules;
+pub mod samf;
 pub mod stats;
 pub mod xgate;
+pub mod xpoly;
 
 #[cfg(test)]
 mod tests;

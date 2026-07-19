@@ -711,8 +711,10 @@ impl CircuitSeq {
         let mut polys: Vec<Polynomial> = (0..n).map(|i| vec![1u64 << i]).collect();
 
         for &[a, b, c] in gates {
-            // a' = a + bc + b + 1 = a + b(c+1) = a + b*NOT(c) + 1
-            let term = poly_and_not(&polys[b as usize], &polys[c as usize]);
+            // evaluate_index toggles a on (b OR NOT c) = 1 + c*NOT(b) over GF(2),
+            // i.e. a' = a + NOT(b)*c + 1. Must match the executor (and from_g57);
+            // the arg order to poly_and_not is load-bearing for DB key agreement.
+            let term = poly_and_not(&polys[c as usize], &polys[b as usize]);
             poly_xor_assign(&mut polys[a as usize], term);
             toggle_monomial(&mut polys[a as usize], 0u64);
         }
@@ -749,7 +751,8 @@ impl CircuitSeq {
             {
                 return None;
             }
-            let term = poly_and_not(&polys[b as usize], &polys[c as usize]);
+            // Same convention as to_polynomial / the executor: a += NOT(b)*c + 1.
+            let term = poly_and_not(&polys[c as usize], &polys[b as usize]);
             poly_xor_assign(&mut polys[a as usize], term);
             toggle_monomial(&mut polys[a as usize], 0u64);
             if polys[a as usize].len() > cap {
@@ -822,7 +825,7 @@ impl CircuitSeq {
 
     /// Compute canonical polynomials for one direction only (forward or reversed).
     /// Returns (canonical_polys, final_order, used_wires).
-    /// Used by compress_lmdb to try forward first, then reverse on miss.
+    /// Used by compress_db to try forward first, then reverse on miss.
     pub fn canonicalize_polys_single(
         &self,
         reversed: bool,
@@ -2994,7 +2997,9 @@ mod tests {
             gates: vec![[0, 1, 2]],
         };
         let polys = circuit.to_polynomial(3, 0, 1);
-        assert_eq!(polys[0], vec![0, 1, 2, 6]);
+        // g57 [0,1,2] = w0 ^= (NOT w1 AND w2) XOR 1 (evaluate_index convention):
+        // 1(const) + w0 + w2 + w1*w2 = monomials {0, 1<<0, 1<<2, (1<<1)|(1<<2)}.
+        assert_eq!(polys[0], vec![0, 1, 4, 6]);
         assert_eq!(polys[1], vec![2]);
         assert_eq!(polys[2], vec![4]);
     }
@@ -3045,8 +3050,9 @@ mod tests {
             (0..n).map(|i| BTreeSet::from([1u64 << i])).collect();
 
         for &[a, b, c] in &circuit.gates {
-            let not_c = old_not(polys[c as usize].clone());
-            let term = old_and(&polys[b as usize], &not_c);
+            // NOT(b) AND c, matching evaluate_index / to_polynomial.
+            let not_b = old_not(polys[b as usize].clone());
+            let term = old_and(&not_b, &polys[c as usize]);
             let mut new_a = old_xor(polys[a as usize].clone(), term);
             old_toggle(&mut new_a, 0u64);
             polys[a as usize] = new_a;
@@ -3123,72 +3129,75 @@ mod canon_golden_tests {
         xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&polys))
     }
 
-    // Golden canonical-form hashes captured from the pre-set-bit-iteration implementation
-    // (commit cac81218). The canonical form defines every curated-DB key, so any change to
-    // these values means the DB has been silently invalidated. Do not regenerate casually.
+    // Golden canonical-form hashes. The canonical form defines every curated-DB key, so any
+    // change to these values means the DB has been silently invalidated. Do not regenerate
+    // casually. Regenerated 2026-07-18 after fixing a swapped-argument bug in to_polynomial
+    // (the g57 monomial was b*NOT(c); the executor and from_g57 use NOT(b)*c) — this realigns
+    // our DB keys with the source/upstream convention. Regenerate via the #[ignore]d
+    // regenerate_canon_golden test only when the canonical form legitimately changes.
     #[test]
     fn canonical_form_golden() {
         const GOLDEN: &[(&str, &str)] = &[
-        ("G0", "5a86273ea35de2831bb1ac7c41e9386a"),
-        ("H0", "9a235611c0883cbcd2633aec4547aa64"),
-        ("G1", "be090eb97ff913970eccb2a795638851"),
-        ("H1", "9dd0dfcfd5f2c6ba94675c9970315afa"),
-        ("G2", "99ba9f13c26dac268d26d386d1b906a5"),
-        ("H2", "952a605fd881ca9395b1cd60aeaac3b2"),
-        ("G3", "a0f04475fc544a993bd901f872aedf8b"),
-        ("H3", "cd9ef577bc9adbcab894600d85b117c1"),
-        ("G4", "8b47ff7a84852ffd4272a967b9033d5e"),
-        ("H4", "3169f9889ac5f52f61c29902828acc0b"),
-        ("G5", "75454e58d561b81278def6118e39e86b"),
-        ("H5", "24fed0d5485aab23b108dcb426af3a3f"),
-        ("G6", "70b0ebb96050a934ad9283bb3dafab6c"),
-        ("H6", "4b62f3e76063f143d69526182d055cc5"),
-        ("G7", "3262a23598f46576f1da166a0982a86a"),
-        ("H7", "12e987ef419e938a86cc2205e15e15f9"),
-        ("G8", "f94ea450ea48945ff496d56b263dbf36"),
-        ("H8", "7c97590f054570c298a89b0b0a340395"),
-        ("G9", "4e66c4f12d7b71f83f372216c8d37405"),
-        ("H9", "e5844cc19cc3fe0ead60c368d63ca168"),
-        ("G10", "da87c4997bccde5e45c43ebd1c8cd906"),
-        ("H10", "449801d33d878526fd1677eed2a3658f"),
-        ("G11", "a86c1819489ffde1f3d736fe62105ae6"),
-        ("H11", "d2865c2667aadea1cf0e45db6f407406"),
-        ("G12", "925b7156e922f54aedc4ee10900fd20c"),
-        ("H12", "38e53066524a89b05810c9223ec23d24"),
-        ("G13", "6294ff92e84c4ebd17fd05a75df435ba"),
-        ("H13", "dd779c0119e0a4029d0f58f2b3c5b58e"),
-        ("G14", "a464c3223fe39d27259cba0b3d6851b8"),
-        ("H14", "19bc0b8c1e7cfb4b9a436879e1b896d2"),
-        ("G15", "d625dbd41e375870ebfe9a0185632ec5"),
-        ("H15", "8dd197d824a451ffbb3e87e27a7688c1"),
-        ("G16", "7b8a51fbeb61cf35e040eb8fc5430066"),
-        ("H16", "0301e069e83aa6f4b73db82c5c7d837a"),
-        ("G17", "794faac0730225066a65bddd0b742e52"),
-        ("H17", "87bcbd550510b948eaa1ab6095441af9"),
-        ("G18", "f4b7008227f02125d99fd7c43e845a1e"),
-        ("H18", "b1ee36bc3fc45bdb943494319a6d8705"),
-        ("G19", "e9cd8de38a6cfad2a63101b3629d1bae"),
-        ("H19", "bc93ac6f4e322fa6ce717c73cbe9e745"),
-        ("G20", "5373d5c9179c45dbc4a4664f05f5e624"),
-        ("H20", "e46c9ad8e84dff37352480633f66a52b"),
-        ("G21", "127c9ac15090d586b02ef26642380d66"),
-        ("H21", "e3c8201bfddaa06c36d81a37de080758"),
-        ("G22", "0f3e6c0d1adc4c329ee1bf3381b69e6d"),
-        ("H22", "4cc1ff0d7c3dafa122d608b0616e4d5e"),
-        ("G23", "9d7aa850478bf9df4b4170c6a3a36fa9"),
-        ("H23", "429430a8369c6ca72e8587435d0848bf"),
-        ("G24", "539b2065949ec2fb61f7bf3c7d0342bc"),
-        ("H24", "f22f920ff36e79a8138b693170bfe647"),
-        ("G25", "1c97e1b5581d716c714a19e19a590b60"),
-        ("H25", "c4c2da4706e97f055cc061fc2c129918"),
-        ("G26", "8d75145ab91d5eae5a945c6e2113f3fe"),
-        ("H26", "9a9d3cc8288d7b8bd036ecddba9b5c44"),
-        ("G27", "02f74ec21c587c61173e63ba6e4e2e71"),
-        ("H27", "fec09553e5424463e662f68114183402"),
-        ("G28", "1e9a41e837ab7aa59afd2309dde7ade8"),
-        ("H28", "4f9531a4d7369be5da1fb88e24e7c8b9"),
-        ("G29", "153bbb6f933cf655d21ce5322bc17ffa"),
-        ("H29", "07c5b2fc1832273a112ec695f4e52bca")
+        ("G0", "6fa0209f74c6aca5a629ea4de7b882dd"),
+        ("H0", "f8decf2b941d92e0016521e783bea5a8"),
+        ("G1", "541946580565039aca15fdbd19755175"),
+        ("H1", "25fb31deb42fd599dc90d9dea6fba89d"),
+        ("G2", "5d551f5eba5474d33a871ecb0a8e46b7"),
+        ("H2", "36a43931107c7d80f1fffbc5527c313a"),
+        ("G3", "fd20b272d990c65207f9ffa0b3582b31"),
+        ("H3", "1502ecfb3f88e59418564f2185548dce"),
+        ("G4", "b6d47169d8e88efc8d965ff190d6c21f"),
+        ("H4", "56986adc1dfa776e9de5480a80e9ab46"),
+        ("G5", "fdf065eb905e344adb801bf88319a929"),
+        ("H5", "e924c80a183b499d7b576bde07129131"),
+        ("G6", "fbda8128fafdf7924880c95813641b7a"),
+        ("H6", "245dd8d448f23884fbbac2b87aacaa86"),
+        ("G7", "f7594dc87bdccb66a5e77d816b05b06a"),
+        ("H7", "e015d3a5ec42bab54220110ad22f2612"),
+        ("G8", "c29cd6d9be717edd6850b647f5370c0c"),
+        ("H8", "602c1fad413f6816a32e4d299d096879"),
+        ("G9", "e36265eba0672f79bbd54ed94c388564"),
+        ("H9", "3fd134840c7913907227cf9205bdac9e"),
+        ("G10", "d19251954f40b19ccb15c700f246276b"),
+        ("H10", "59e94f3dedd110d92c1dae1e0a74cade"),
+        ("G11", "b3cb06c6bb4c1f8f3f8e612e2622f2bf"),
+        ("H11", "5168e7504437bd05203e558be87d7a5a"),
+        ("G12", "3a2eebdc712c2cb9f8896f11169e4026"),
+        ("H12", "c6ad8d964f866af06894dae44cad7911"),
+        ("G13", "586eb625594255c9621e813a91669339"),
+        ("H13", "2bfc4e6ff9208214514c899ffc57bb62"),
+        ("G14", "1192d8249e2773dd389c2e8611bf256c"),
+        ("H14", "d28943f055eb4a63aa4e4f4c4670ba13"),
+        ("G15", "bca4629cf33574b8bd9eec6527e0c95f"),
+        ("H15", "3523ee73c966859cabd1a5e626cdc51f"),
+        ("G16", "2f0196c07918909d574b35e423bc60c7"),
+        ("H16", "b76ea7f0d46c738a83d5ccdfacec678c"),
+        ("G17", "1f0f68761b56f660f88c9ebdc2177bb7"),
+        ("H17", "bd6e51d525fbeab79ec34b154ee398b4"),
+        ("G18", "1d12417189ed645c0d68e74c85c3e4bd"),
+        ("H18", "360c53cc42d3591e7c3558384e5d7a7f"),
+        ("G19", "ac596d2604e6963258e9de7746f1efd7"),
+        ("H19", "c24ea23211b28ac22faac1480c51289b"),
+        ("G20", "e020d8c2d1dd740c9ef7e71d0ae52ac9"),
+        ("H20", "a5b37a68dddb773429da7672d6c4870d"),
+        ("G21", "39b636d94d180700abfe4e0b299e62c8"),
+        ("H21", "c7b6d35f0b75ee1a3a23910657d13935"),
+        ("G22", "b0a48bb2e87a13245269b1e309380d07"),
+        ("H22", "53c37dd76b64c030b4c50b3ffd68a2c9"),
+        ("G23", "631171335b8ff30b1a4406c1913cfed8"),
+        ("H23", "acf0954bed92446336cd7dd618c46a22"),
+        ("G24", "6d1677f347a24adaddd438be1758575f"),
+        ("H24", "227c2822c97ec6a2add6ef947e57557b"),
+        ("G25", "00c835f56a23564e21bc44105f1169b2"),
+        ("H25", "5fd407309e7f74231d8cc0890f7d63f6"),
+        ("G26", "783cd181e4f96d3bf9656d5aa0737b98"),
+        ("H26", "d8dc7d0de786e49c90e97f77cebc19bf"),
+        ("G27", "5d739004d2e1c3232660d923c341950f"),
+        ("H27", "e854979b9d3fe892e12223aa67f261a1"),
+        ("G28", "bcceaba13911caa90caddbd5c9090af3"),
+        ("H28", "7a70480cb8f8a667167669f7a1128d14"),
+        ("G29", "39c9d5702ff15e41a0504d0e6cbefe39"),
+        ("H29", "ece8b5e185ca0c4cb818fc3fea4cf033")
         ];
         for (tag, want) in GOLDEN {
             let (series, seed_s) = tag.split_at(1);
@@ -3198,6 +3207,17 @@ mod canon_golden_tests {
                 _ => canon_hash(seed.wrapping_mul(0x9e37), 14, 12),
             };
             assert_eq!(format!("{:032x}", got), *want, "canonical form changed for {}", tag);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn regenerate_canon_golden() {
+        for i in 0..30u64 {
+            let g = canon_hash(i, 10, 8);
+            let h = canon_hash(i.wrapping_mul(0x9e37), 14, 12);
+            println!("(\"G{i}\", \"{:032x}\"),", g);
+            println!("(\"H{i}\", \"{:032x}\"),", h);
         }
     }
 }

@@ -209,6 +209,29 @@ fn add_shoot_args(c: Command) -> Command {
                         .required(false)
                         .action(clap::ArgAction::SetTrue),
                 )
+                .arg(
+                    Arg::new("cnot")
+                        .long("cnot")
+                        .help("Keep all post-ingress stages in heterogeneous mpmct1 form, using native CNOTs/fragments where safe (the source remains G57). Routes to the CNOT gadgetizer + fmix mixer.")
+                        .required(false)
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("collision_rounds")
+                        .long("collision_rounds")
+                        .required(false)
+                        .default_value("1")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot) Shuffled collision-game rounds before each plain SAMF insertion"),
+                )
+                .arg(
+                    Arg::new("stable_compressions")
+                        .long("stable_compressions")
+                        .required(false)
+                        .default_value("6")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot) Base stable-compression window; the final round uses 2x this"),
+                )
 }
 
 fn main() {

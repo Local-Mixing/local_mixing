@@ -1,14 +1,11 @@
 use std::fs;
 use std::io::Write;
-use std::path::Path;
-
-use lmdb::{Environment, EnvironmentFlags};
 
 use local_mixing::circuit::CircuitSeq;
-use local_mixing::replace::main_mix::open_all_dbs;
+use local_mixing::replace::frozen::FrozenDb;
 use local_mixing::replace::replace::{compress_loop, print_compress_timers};
 
-/// Run compression on a circuit file against the sharded LMDB.
+/// Run compression on a circuit file against the frozen replacement store.
 pub fn run(sub: &clap::ArgMatches) {
     let s: &String = sub.get_one("s").expect("Missing -s <source>");
     let n: usize = *sub.get_one("n").expect("Missing -n <wires>");
@@ -35,17 +32,8 @@ pub fn run(sub: &clap::ArgMatches) {
         t
     });
 
-    let lmdb_path = "./db";
-    let _ = std::fs::create_dir_all(lmdb_path);
-    // Compression only READS the curated replacement DB; open it read-only and lock-free so a
-    // DB owned by another user (no write access to the lock file) can be shared.
-    let env = Environment::new()
-        .set_flags(EnvironmentFlags::READ_ONLY | EnvironmentFlags::NO_LOCK)
-        .set_max_dbs(556)
-        .set_max_readers(10000)
-        .set_map_size(800 * 1024 * 1024 * 1024)
-        .open(Path::new(lmdb_path))
-        .expect("Failed to open lmdb");
+    // Compression reads the regular frozen store (FROZEN_DB_DIR).
+    let db = FrozenDb::from_env();
 
     // Print timers on Ctrl+C.
     ctrlc::set_handler(|| {
@@ -55,12 +43,10 @@ pub fn run(sub: &clap::ArgMatches) {
     .expect("Failed to set Ctrl+C handler");
 
     println!("Starting compression");
-    let (shard_dbs, _curated_shard_dbs) = open_all_dbs(&env);
     acc = compress_loop(
         &acc,
         n,
-        &env,
-        &shard_dbs,
+        &db,
         12,
         1,
         1,

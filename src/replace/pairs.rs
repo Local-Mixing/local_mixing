@@ -1,11 +1,10 @@
 use rand::{Rng, prelude::SliceRandom};
 use serde::{Deserialize, Serialize};
 
-extern crate lmdb_sys;
-
 use crate::{
     circuit::circuit::CircuitSeq,
     random::random_data::random_circuit,
+    replace::frozen::FrozenDb,
     replace::sat_score::{
         compression_selection_score, expansion_selection_score, sat_bcp_enabled,
         sat_bcp_min_resistance, sat_compress_preserve_delta, sat_compress_protect_enabled,
@@ -48,38 +47,22 @@ impl GatePair {
     }
 }
 
-pub fn expand_curated_lmdb(
-    gates: &[[u16; 3]],
-    n: usize,
-    env: &lmdb::Environment,
-    curated_shard_dbs: &[lmdb::Database],
-    shard_dbs: &[lmdb::Database],
-) -> Option<Vec<[u16; 3]>> {
-    expand_curated_lmdb_neg(gates, n, env, curated_shard_dbs, shard_dbs, &[])
-}
-
-/// As `expand_curated_lmdb`, but `negated_inputs` lists control wires (in `gates`' own wire space)
-/// that carry a pending NOT. Their negation is absorbed into the forward canonical polynomials
-/// (#10 / Stage F) so the lookup finds a replacement equivalent to the window-with-those-controls-
-/// negated. With negations present only the forward curated path is used (reverse has no meaningful
-/// negation orientation). When `negated_inputs` is empty this is identical to `expand_curated_lmdb`.
-pub fn expand_curated_lmdb_neg(
-    gates: &[[u16; 3]],
-    n: usize,
-    env: &lmdb::Environment,
-    curated_shard_dbs: &[lmdb::Database],
-    shard_dbs: &[lmdb::Database],
+/// Probe the frozen stores for a window's replacement value, mirroring the
+/// legacy sharded-LMDB order: curated forward first (when enabled), then the
+/// regular store forward and reverse (when enabled). `negated_inputs` present
+/// restricts the probe to the curated-forward path, matching the old guard
+/// (reverse has no meaningful negation orientation). `use_curated=false` /
+/// `use_regular=false` correspond to passing an empty shard-db slice before.
+/// Returns (value bytes, wire order, is_reversed, used wires).
+fn frozen_lookup(
+    sub: &CircuitSeq,
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
     negated_inputs: &[u16],
-) -> Option<Vec<[u16; 3]>> {
-    use crate::circuit::circuit::{Permutation, polys_repr_blob};
-    use lmdb::Transaction;
-    use rand::prelude::SliceRandom;
+) -> Option<(Vec<u8>, crate::circuit::circuit::Permutation, bool, Vec<u16>)> {
+    use crate::circuit::circuit::polys_repr_blob;
     use xxhash_rust::xxh3::xxh3_128;
-
-    let mut rng = rand::rng();
-    let sub = CircuitSeq {
-        gates: gates.to_vec(),
-    };
 
     let (fwd_polys, fwd_order, used) = if negated_inputs.is_empty() {
         sub.canonicalize_polys_single(false)
@@ -89,52 +72,62 @@ pub fn expand_curated_lmdb_neg(
     if fwd_polys.is_empty() {
         return None;
     }
+    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
 
-    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
-        .to_le_bytes()
-        .to_vec();
-    let fwd_shard = fwd_key[0] as usize;
-
-    let txn = env.begin_ro_txn().ok()?;
-
-    // Try curated DBs first (forward direction only — no reversal needed for curated).
-    let curated_hit = if !curated_shard_dbs.is_empty() {
-        txn.get(curated_shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec())
-            .ok()
-    } else {
-        None
-    };
-
-    let (value, final_order, is_reversed) = if let Some(v) = curated_hit {
-        (v, fwd_order, false)
-    } else if negated_inputs.is_empty() && !shard_dbs.is_empty() {
-        // Fallback: try regular shard DBs (both forward and reverse, same as expand_lmdb).
-        if let Ok(v) = txn
-            .get(shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec())
-        {
-            (v, fwd_order, false)
-        } else {
-            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
-            if rev_polys.is_empty() {
-                return None;
-            }
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
-                .to_le_bytes()
-                .to_vec();
-            let rev_shard = rev_key[0] as usize;
-            match txn
-                .get(shard_dbs[rev_shard], &rev_key)
-                .map(|v: &[u8]| v.to_vec())
-            {
-                Ok(v) => (v, rev_order, true),
-                Err(_) => return None,
-            }
+    if use_curated {
+        if let Some(v) = db.get_curated(&fwd_key) {
+            return Some((v, fwd_order, false, used));
         }
-    } else {
-        return None;
+    }
+    if use_regular && negated_inputs.is_empty() {
+        if let Some(v) = db.get_regular(&fwd_key) {
+            return Some((v, fwd_order, false, used));
+        }
+        let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
+        if rev_polys.is_empty() {
+            return None;
+        }
+        let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
+        if let Some(v) = db.get_regular(&rev_key) {
+            return Some((v, rev_order, true, used));
+        }
+    }
+    None
+}
+
+pub fn expand_curated_db(
+    gates: &[[u16; 3]],
+    n: usize,
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
+) -> Option<Vec<[u16; 3]>> {
+    expand_curated_db_neg(gates, n, db, use_curated, use_regular, &[])
+}
+
+/// As `expand_curated_db`, but `negated_inputs` lists control wires (in `gates`' own wire space)
+/// that carry a pending NOT. Their negation is absorbed into the forward canonical polynomials
+/// (#10 / Stage F) so the lookup finds a replacement equivalent to the window-with-those-controls-
+/// negated. With negations present only the forward curated path is used (reverse has no meaningful
+/// negation orientation). When `negated_inputs` is empty this is identical to `expand_curated_db`.
+pub fn expand_curated_db_neg(
+    gates: &[[u16; 3]],
+    n: usize,
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
+    negated_inputs: &[u16],
+) -> Option<Vec<[u16; 3]>> {
+    use crate::circuit::circuit::Permutation;
+    use rand::prelude::SliceRandom;
+
+    let mut rng = rand::rng();
+    let sub = CircuitSeq {
+        gates: gates.to_vec(),
     };
+
+    let (value, final_order, is_reversed, used) =
+        frozen_lookup(&sub, db, use_curated, use_regular, negated_inputs)?;
 
     let mut candidates: Vec<CircuitSeq> = Vec::new();
     let mut pos = 0;
@@ -237,71 +230,23 @@ pub fn expand_curated_lmdb_neg(
     Some(CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates)
 }
 
-// Like expand_curated_lmdb but returns the minimum-gate replacement with <= gates.len() gates.
-pub fn compress_curated_lmdb(
+// Like expand_curated_db but returns the minimum-gate replacement with <= gates.len() gates.
+pub fn compress_curated_db(
     gates: &[[u16; 3]],
     n: usize,
-    env: &lmdb::Environment,
-    curated_shard_dbs: &[lmdb::Database],
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
 ) -> Option<Vec<[u16; 3]>> {
-    use crate::circuit::circuit::{Permutation, polys_repr_blob};
-    use lmdb::Transaction;
-    use xxhash_rust::xxh3::xxh3_128;
+    use crate::circuit::circuit::Permutation;
 
     let mut rng = rand::rng();
     let sub = CircuitSeq {
         gates: gates.to_vec(),
     };
 
-    let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
-    if fwd_polys.is_empty() {
-        return None;
-    }
-
-    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
-        .to_le_bytes()
-        .to_vec();
-    let fwd_shard = fwd_key[0] as usize;
-
-    let txn = env.begin_ro_txn().ok()?;
-
-    let curated_hit = if !curated_shard_dbs.is_empty() {
-        txn.get(curated_shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec())
-            .ok()
-    } else {
-        None
-    };
-
-    let (value, final_order, is_reversed) = if let Some(v) = curated_hit {
-        (v, fwd_order, false)
-    } else if !shard_dbs.is_empty() {
-        if let Ok(v) = txn
-            .get(shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec())
-        {
-            (v, fwd_order, false)
-        } else {
-            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
-            if rev_polys.is_empty() {
-                return None;
-            }
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
-                .to_le_bytes()
-                .to_vec();
-            let rev_shard = rev_key[0] as usize;
-            match txn
-                .get(shard_dbs[rev_shard], &rev_key)
-                .map(|v: &[u8]| v.to_vec())
-            {
-                Ok(v) => (v, rev_order, true),
-                Err(_) => return None,
-            }
-        }
-    } else {
-        return None;
-    };
+    let (value, final_order, is_reversed, used) =
+        frozen_lookup(&sub, db, use_curated, use_regular, &[])?;
 
     let mut candidates: Vec<CircuitSeq> = Vec::new();
     let mut pos = 0;
@@ -412,77 +357,29 @@ pub fn compress_curated_lmdb(
     Some(CircuitSeq::unrewire_subcircuit(&repl, &used_ext).gates)
 }
 
-/// Like compress_curated_lmdb, but returns ANY equivalent replacement for `gates` from the
+/// Like compress_curated_db, but returns ANY equivalent replacement for `gates` from the
 /// given DBs — NOT required to be a compression. Among the stored friends it prefers the
 /// fewest gates (so it still compresses when possible) but accepts equal-length or longer
 /// replacements, and does not reject lone equal-length options. Used as the relaxed fallback
 /// in the unsamfing stage so an undo SAMF can still be hidden even when no strictly-shorter
 /// curated replacement exists. Equivalence-preserving: all stored friends share the window's
 /// canonical polynomial form.
-pub fn find_any_replacement_lmdb(
+pub fn find_any_replacement_db(
     gates: &[[u16; 3]],
     n: usize,
-    env: &lmdb::Environment,
-    curated_shard_dbs: &[lmdb::Database],
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
 ) -> Option<Vec<[u16; 3]>> {
-    use crate::circuit::circuit::{Permutation, polys_repr_blob};
-    use lmdb::Transaction;
-    use xxhash_rust::xxh3::xxh3_128;
+    use crate::circuit::circuit::Permutation;
 
     let mut rng = rand::rng();
     let sub = CircuitSeq {
         gates: gates.to_vec(),
     };
 
-    let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
-    if fwd_polys.is_empty() {
-        return None;
-    }
-
-    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys))
-        .to_le_bytes()
-        .to_vec();
-    let fwd_shard = fwd_key[0] as usize;
-
-    let txn = env.begin_ro_txn().ok()?;
-
-    let curated_hit = if !curated_shard_dbs.is_empty() {
-        txn.get(curated_shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec())
-            .ok()
-    } else {
-        None
-    };
-
-    let (value, final_order, is_reversed) = if let Some(v) = curated_hit {
-        (v, fwd_order, false)
-    } else if !shard_dbs.is_empty() {
-        if let Ok(v) = txn
-            .get(shard_dbs[fwd_shard], &fwd_key)
-            .map(|v: &[u8]| v.to_vec())
-        {
-            (v, fwd_order, false)
-        } else {
-            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
-            if rev_polys.is_empty() {
-                return None;
-            }
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys))
-                .to_le_bytes()
-                .to_vec();
-            let rev_shard = rev_key[0] as usize;
-            match txn
-                .get(shard_dbs[rev_shard], &rev_key)
-                .map(|v: &[u8]| v.to_vec())
-            {
-                Ok(v) => (v, rev_order, true),
-                Err(_) => return None,
-            }
-        }
-    } else {
-        return None;
-    };
+    let (value, final_order, is_reversed, used) =
+        frozen_lookup(&sub, db, use_curated, use_regular, &[])?;
 
     // Accept ALL stored friends (any length), preferring the fewest gates.
     let mut candidates: Vec<CircuitSeq> = Vec::new();
@@ -543,20 +440,14 @@ pub fn replace_single_pair(
     left: &[u16; 3],
     right: &[u16; 3],
     num_wires: usize,
-    env: &lmdb::Environment,
-    curated_shard_dbs: &[lmdb::Database],
-    shard_dbs: &[lmdb::Database],
+    db: &FrozenDb,
+    use_curated: bool,
+    use_regular: bool,
 ) -> (Vec<[u16; 3]>, usize) {
-    if curated_shard_dbs.is_empty() {
+    if !use_curated {
         return (vec![], 0);
     }
-    match expand_curated_lmdb(
-        &[*left, *right],
-        num_wires,
-        env,
-        curated_shard_dbs,
-        shard_dbs,
-    ) {
+    match expand_curated_db(&[*left, *right], num_wires, db, use_curated, use_regular) {
         Some(repl) => (repl, 0),
         None => (vec![], 0),
     }
@@ -567,7 +458,7 @@ pub fn replace_single_pair(
 
 // Used in the interleave method
 // Create a circuit on n..2n wires and then interleave them
-pub fn interleave(circuit: &CircuitSeq, n: usize, env: &lmdb::Environment) -> CircuitSeq {
+pub fn interleave(circuit: &CircuitSeq, n: usize, db: &FrozenDb) -> CircuitSeq {
     let m = circuit.gates.len();
     let mut random = random_circuit(n, m);
     let mut rng = rand::rng();
@@ -583,7 +474,7 @@ pub fn interleave(circuit: &CircuitSeq, n: usize, env: &lmdb::Environment) -> Ci
         let choice = rng.random_range(0..2);
         if choice == 0 {
             let replaced_pair =
-                replace_single_pair(&circuit.gates[i], &random.gates[i], 2 * n, env, &[], &[]).0;
+                replace_single_pair(&circuit.gates[i], &random.gates[i], 2 * n, db, false, false).0;
             gates.extend_from_slice(&replaced_pair);
         } else {
             gates.push(circuit.gates[i]);
