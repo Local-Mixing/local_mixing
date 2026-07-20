@@ -364,6 +364,57 @@ impl Frozen {
     }
 }
 
+/// Diagnostic sequential scan: decode every entry value in one shard, calling
+/// `f(value)` with the legacy value bytes for each. Walks the same bucket
+/// layout `get` point-reads, needing only the shard file and tables.bin, so
+/// census tools (degree/gate-count histograms) can sample the store without
+/// keys or filters. Shards partition keys by hash, so any one shard is an
+/// unbiased ~1/256 sample of the whole store.
+pub fn scan_shard(dir: &str, shard: usize, f: &mut dyn FnMut(&[u8])) {
+    let tables = load_tables(&format!("{dir}/tables.bin"));
+    let head_len = 24usize + (BUCKETS + 1) * 5;
+    let path = format!("{dir}/shard_{shard:02x}.frz");
+    let file = std::fs::File::open(&path).unwrap_or_else(|e| panic!("frozen: open {path}: {e}"));
+    let mut head = vec![0u8; head_len];
+    file.read_exact_at(&mut head, 0).expect("frozen: shard header");
+    assert_eq!(&head[0..8], b"FRZTBL01", "frozen: bad magic in {path}");
+    let mut offs = Vec::with_capacity(BUCKETS + 1);
+    for i in 0..=BUCKETS {
+        let mut b = [0u8; 8];
+        b[0..5].copy_from_slice(&head[24 + i * 5..24 + i * 5 + 5]);
+        offs.push(u64::from_le_bytes(b));
+    }
+    let data_base = head_len as u64;
+    let mut buf = Vec::new();
+    let mut out = Vec::new();
+    for bkt in 0..BUCKETS {
+        let (o0, o1) = (offs[bkt], offs[bkt + 1]);
+        if o0 == o1 {
+            continue;
+        }
+        buf.clear();
+        buf.resize((o1 - o0) as usize, 0);
+        file.read_exact_at(&mut buf, data_base + o0)
+            .expect("frozen: bucket read");
+        let mut r = BitReader::new(&buf);
+        let n = r.get(16) as usize;
+        let l = r.get(6) as u32;
+        for _ in 0..n {
+            while r.get1() == 0 {}
+        }
+        if l > 0 {
+            for _ in 0..n {
+                r.get(l);
+            }
+        }
+        for _ in 0..n {
+            out.clear();
+            decode_value(&tables, &mut r, &mut out);
+            f(&out);
+        }
+    }
+}
+
 /// Native runtime handle for the immutable replacement stores.
 ///
 /// `open`/`from_env` require the regular store. The curated store is optional

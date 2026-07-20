@@ -155,14 +155,39 @@ struct Args {
     /// Degree cap for the DB lookup: a window whose function degree exceeds this
     /// cannot match any stored circuit and is skipped before canonicalization
     /// (the main speed guard on high-width windows). Set to the DB's max ANF
-    /// degree. 0 = off (every window canonicalizes). Leave off when MEASURING
-    /// match rate so high-degree misses are still recorded.
+    /// degree; must be <= 11 (the probe tests (cap+1)-dim subcubes and maxes
+    /// out at 12). 0 = off (every window canonicalizes). Degree-skipped
+    /// attempts are still recorded by --db-record, so measurement runs can
+    /// (and should) keep the cap on.
     #[arg(long, default_value_t = 0)]
     db_max_degree: usize,
     /// Random subcubes probed per direction by the degree cap (higher = fewer
     /// missed high-degree windows, at proportional cost).
     #[arg(long, default_value_t = 6)]
     db_degree_probes: usize,
+    /// Span cap for the DB lookup: a window touching more distinct wires than
+    /// this is recorded as a miss without canonicalizing. Set to the store's
+    /// max canonical support (measure with frozen_degree_scan). This is the
+    /// main speed guard: Rule-L canonicalization cost explodes with tied wire
+    /// count, and wide-span windows can't match anyway. 0 = off.
+    #[arg(long, default_value_t = 0)]
+    db_max_span: usize,
+    /// Per-wire polynomial term cap for the DB lookup budget: a window whose
+    /// wire poly outgrows the largest any stored function has cannot match,
+    /// and the budget bail lands before the expensive Rule-L canonicalization.
+    /// Set to the store's max (frozen_degree_scan census). 0 = default 2^18.
+    #[arg(long, default_value_t = 0)]
+    db_wire_terms: usize,
+    /// Total-terms cap across a window's wire polys (census: per-entry total).
+    /// 0 = default 2^20.
+    #[arg(long, default_value_t = 0)]
+    db_total_terms: usize,
+    /// Largest-first prefix descent: try the full sampled window, then its
+    /// len-1 prefix, etc. down to --db-min-window, splicing the LONGEST
+    /// matching prefix (live) or recording every prefix (with --db-dry-run).
+    /// Span/verify declines keep descending — shorter prefixes may still fit.
+    #[arg(long, default_value_t = false)]
+    db_prefixes: bool,
     /// Global sampled equality check every N moves
     #[arg(long, default_value_t = 10_000)]
     verify_every: u64,
@@ -227,6 +252,12 @@ fn main() {
         );
     }
 
+    assert!(
+        args.db_max_degree == 0 || args.db_max_degree <= 11,
+        "--db-max-degree {} unusable: the degree probe caps subcube dimension \
+         at 12, so caps above 11 would silently disable the guard",
+        args.db_max_degree
+    );
     let params = MixParams {
         k_max: args.k_max,
         split_damp: args.split_damp,
@@ -260,6 +291,10 @@ fn main() {
         db_dry_run: args.db_dry_run,
         db_max_degree: args.db_max_degree,
         db_degree_probes: args.db_degree_probes,
+        db_max_span: args.db_max_span,
+        db_wire_terms: args.db_wire_terms,
+        db_total_terms: args.db_total_terms,
+        db_prefixes: args.db_prefixes,
         verify_every: args.verify_every,
         report_every: args.report_every,
         local_verify: !args.no_local_verify,
@@ -293,6 +328,16 @@ fn main() {
     let stop_reason = mixer.run();
     let secs = t0.elapsed().as_secs_f64();
     mixer.report();
+    {
+        use std::sync::atomic::Ordering;
+        let rl = local_mixing::circuit::circuit::CANON_RULE_L_SKIPS.load(Ordering::Relaxed);
+        let mc = local_mixing::circuit::circuit::CANON_CAP_SKIPS.load(Ordering::Relaxed);
+        let rlb = local_mixing::circuit::circuit::CANON4_RULE_L_BRANCHES.load(Ordering::Relaxed);
+        let rlc = local_mixing::circuit::circuit::CANON4_RULE_L_CALLS.load(Ordering::Relaxed);
+        println!(
+            "[fmix] canon caps: rule_l_skips={rl} monomial_skips={mc} rule_l_calls={rlc} rule_l_branches={rlb}"
+        );
+    }
     println!(
         "[fmix] chain done in {:.1}s: {} ({} -> {} gates, {} -> {} g57 fossils)",
         secs,

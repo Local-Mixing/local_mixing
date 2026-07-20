@@ -42,6 +42,8 @@ pub enum DbSample {
     /// direction w.p. p, else the opposite — to the next non-commuting gate and
     /// absorb it, until w gates are collected.
     Convex,
+    /// Flip a fair coin per attempt between Contiguous and Convex.
+    Mixed,
 }
 
 impl DbSample {
@@ -49,6 +51,7 @@ impl DbSample {
         match s {
             "contiguous" => Some(DbSample::Contiguous),
             "convex" => Some(DbSample::Convex),
+            "mixed" => Some(DbSample::Mixed),
             _ => None,
         }
     }
@@ -374,6 +377,26 @@ pub struct MixParams {
     // tested per direction.
     pub db_max_degree: usize,
     pub db_degree_probes: usize,
+    // Span pre-filter for DB lookups: a window touching more distinct wires
+    // than this is recorded as a miss without canonicalizing. Set to the max
+    // canonical support any stored function has (census: frozen_degree_scan).
+    // Unlike the degree guard this is not a strict certificate — a window's
+    // FUNCTION could depend on fewer wires than the window touches — but exact
+    // cancellation is vanishingly rare, and canonicalizing wide-span windows
+    // is the dominant cost (Rule-L over large tied wire groups). 0 = off.
+    pub db_max_span: usize,
+    // Term caps for the DB lookup's polynomial budget: a window whose wire
+    // polys (or their sum) outgrow the largest any stored function has cannot
+    // match, and the budget Err lands BEFORE the Rule-L canonicalization that
+    // dominates dense-window cost. 0 = legacy XPolyBudget defaults (2^18/2^20).
+    // Set from the frozen_degree_scan census of the store.
+    pub db_wire_terms: usize,
+    pub db_total_terms: usize,
+    // Key every prefix window[..p] (p in [db_min_window, len]) of each sampled
+    // window instead of only the full window: one walk, many lookup shots.
+    // Dry-run measurement only for now — the splice policy when several
+    // prefixes match (longest vs uniform) is an open design choice.
+    pub db_prefixes: bool,
     pub verify_every: u64,
     pub report_every: u64,
     pub local_verify: bool,
@@ -421,6 +444,10 @@ impl Default for MixParams {
             db_dry_run: false,
             db_max_degree: 0,
             db_degree_probes: 6,
+            db_max_span: 0,
+            db_wire_terms: 0,
+            db_total_terms: 0,
+            db_prefixes: false,
             verify_every: 10_000,
             report_every: 50_000,
             local_verify: true,
@@ -457,6 +484,8 @@ pub struct MixCounters {
     pub db_wide_skip: u64,     // support > 24 wires with db_verify on: not verifiable, skipped
     pub db_attempts: u64,      // total DB lookups attempted (both modes)
     pub db_degree_skips: u64,  // attempts skipped by the degree guard (no lookup)
+    pub db_span_skips: u64,    // attempts skipped by the span guard (no lookup)
+    pub db_build_aborts: u64,  // window builds aborted by the evade budget
     pub cross_r1: u64,
     pub cross_r2: u64,
     pub cross_r3: u64,
@@ -608,6 +637,16 @@ impl Mixer {
         for (i, g) in gates.iter().enumerate() {
             index.entry(key_of(g)).or_default().push(i as u32);
         }
+        let db_budget = {
+            let mut b = XPolyBudget::default();
+            if params.db_wire_terms > 0 {
+                b.max_poly_terms = params.db_wire_terms;
+            }
+            if params.db_total_terms > 0 {
+                b.max_total_terms = params.db_total_terms;
+            }
+            b
+        };
         Mixer {
             arena: Arena::from_gates(gates.clone()),
             params,
@@ -628,7 +667,7 @@ impl Mixer {
             dump_out: String::new(),
             stop_requested: false,
             db,
-            db_budget: XPolyBudget::default(),
+            db_budget,
             db_record: None,
         }
     }
@@ -1784,8 +1823,11 @@ impl Mixer {
         if n < wmin {
             return false;
         }
-        let len = if wmin == wmax {
-            wmin
+        // Prefix descent always starts at the top of the range — the descent
+        // itself visits every shorter length, so sampling a shorter start
+        // would only duplicate coverage.
+        let len = if self.params.db_prefixes || wmin == wmax {
+            wmax.min(n)
         } else {
             self.rng.random_range(wmin..=wmax.min(n))
         };
@@ -1797,7 +1839,78 @@ impl Mixer {
         };
         let window: Vec<XGate> = ids.iter().map(|&id| self.arena.gate(id).clone()).collect();
 
+        // Prefix descent, largest first: try the full k-gate window, then the
+        // (k-1)-gate prefix, and so on down to db_min_window; splice the
+        // LONGEST prefix with a usable match (max rewrite per round). Every
+        // prefix attempt is recorded and counted. In dry-run the descent runs
+        // to the bottom recording hits without splicing (full measurement);
+        // live, the first hit splices and ends the round. A span-cap or
+        // wide-verify decline keeps descending — shorter prefixes span fewer
+        // wires and may still match.
+        if self.params.db_prefixes {
+            let wmin = self.params.db_min_window.max(2);
+            let guard = DegreeGuard {
+                max_degree: self.params.db_max_degree,
+                probes: self.params.db_degree_probes,
+            };
+            for p in (wmin..=window.len()).rev() {
+                let prefix = &window[..p];
+                self.counters.db_attempts += 1;
+                if self.params.db_max_span > 0
+                    && super::xpoly::xgate_used_wires(prefix).len() > self.params.db_max_span
+                {
+                    self.counters.db_span_skips += 1;
+                    self.record_db_attempt(prefix, 0, None);
+                    self.count_db_miss(mode);
+                    continue;
+                }
+                let res = db_replace(
+                    prefix,
+                    self.num_wires,
+                    &self.db,
+                    self.db_budget,
+                    mode,
+                    guard,
+                    &mut self.rng,
+                );
+                if res.degree_skipped {
+                    self.counters.db_degree_skips += 1;
+                }
+                let Some(replacement) = res.chosen else {
+                    self.record_db_attempt(prefix, res.match_count, None);
+                    self.count_db_miss(mode);
+                    continue;
+                };
+                if self.params.db_dry_run {
+                    self.record_db_attempt(prefix, res.match_count, None);
+                    self.count_db_hit(mode);
+                    continue;
+                }
+                if self.try_db_splice(&ids[..p], g1dir, prefix, replacement, res.match_count, mode)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         self.counters.db_attempts += 1;
+
+        // Span guard: canonicalizing a wide-span window is the dominant cost
+        // (Rule-L over large tied wire groups), and the store holds nothing
+        // that wide — record the (near-certain) miss and move on.
+        if self.params.db_max_span > 0
+            && super::xpoly::xgate_used_wires(&window).len() > self.params.db_max_span
+        {
+            self.counters.db_span_skips += 1;
+            self.record_db_attempt(&window, 0, None);
+            match mode {
+                DbMode::Compressing => self.counters.db_comp_misses += 1,
+                DbMode::SizeAgnostic => self.counters.db_agn_misses += 1,
+            }
+            return false;
+        }
+
         let guard = DegreeGuard {
             max_degree: self.params.db_max_degree,
             probes: self.params.db_degree_probes,
@@ -1833,19 +1946,41 @@ impl Mixer {
             return false;
         }
 
-        let miss = |m: &mut Self| {
-            match mode {
-                DbMode::Compressing => m.counters.db_comp_misses += 1,
-                DbMode::SizeAgnostic => m.counters.db_agn_misses += 1,
-            }
-        };
-
         let Some(replacement) = res.chosen else {
             self.record_db_attempt(&window, match_count, None);
-            miss(self);
+            self.count_db_miss(mode);
             return false;
         };
+        self.try_db_splice(&ids, g1dir, &window, replacement, match_count, mode)
+    }
 
+    fn count_db_hit(&mut self, mode: DbMode) {
+        match mode {
+            DbMode::Compressing => self.counters.db_comp_hits += 1,
+            DbMode::SizeAgnostic => self.counters.db_agn_hits += 1,
+        }
+    }
+
+    fn count_db_miss(&mut self, mode: DbMode) {
+        match mode {
+            DbMode::Compressing => self.counters.db_comp_misses += 1,
+            DbMode::SizeAgnostic => self.counters.db_agn_misses += 1,
+        }
+    }
+
+    // Verify (optionally), record, and splice `replacement` over the window
+    // nodes `ids` (whose gates are `window`). Returns false only when the
+    // combined support exceeds verify_rewrite's 24-wire cap with verification
+    // on — declined rather than spliced unchecked, recorded as a miss.
+    fn try_db_splice(
+        &mut self,
+        ids: &[u32],
+        g1dir: Dir,
+        window: &[XGate],
+        replacement: Vec<XGate>,
+        match_count: usize,
+        mode: DbMode,
+    ) -> bool {
         // Optional exhaustive equivalence check on the combined support.
         // verify_rewrite caps support at 24 wires; with verification on, a wider
         // window is not checkable so we decline it rather than splice unchecked.
@@ -1859,17 +1994,17 @@ impl Mixer {
             support.dedup();
             if support.len() > 24 {
                 self.counters.db_wide_skip += 1;
-                self.record_db_attempt(&window, match_count, None);
-                miss(self);
+                self.record_db_attempt(window, match_count, None);
+                self.count_db_miss(mode);
                 return false;
             }
             assert!(
-                rules::verify_rewrite(&window, &replacement),
+                rules::verify_rewrite(window, &replacement),
                 "DB replacement verification failed: {window:?} -> {replacement:?}"
             );
         }
 
-        self.record_db_attempt(&window, match_count, Some(&replacement));
+        self.record_db_attempt(window, match_count, Some(&replacement));
 
         // Size accounting (replacement may be shorter, equal, or longer).
         let old = window.len();
@@ -1879,10 +2014,7 @@ impl Mixer {
         } else {
             self.counters.db_gates_added += (new - old) as u64;
         }
-        match mode {
-            DbMode::Compressing => self.counters.db_comp_hits += 1,
-            DbMode::SizeAgnostic => self.counters.db_agn_hits += 1,
-        }
+        self.count_db_hit(mode);
 
         // Splice: insert the replacement after the node left of the window, then
         // unlink/free every window node (bumping stamps, which invalidates any
@@ -1893,7 +2025,7 @@ impl Mixer {
         let m0 = self.meta_of(ids[0]);
         let same_origin = ids.iter().all(|&id| self.meta_of(id).origin == m0.origin);
         let origin = if same_origin { m0.origin } else { ORIGIN_SYNTH };
-        for &id in &ids {
+        for &id in ids {
             self.index_remove(id);
             self.arena.unlink(id);
             self.arena.free_node(id);
@@ -2143,6 +2275,13 @@ impl Mixer {
         match self.params.db_sample {
             DbSample::Contiguous => self.collect_contiguous(w),
             DbSample::Convex => self.collect_convex(w),
+            DbSample::Mixed => {
+                if self.rng.random_bool(0.5) {
+                    self.collect_contiguous(w)
+                } else {
+                    self.collect_convex(w)
+                }
+            }
         }
     }
 
@@ -2159,6 +2298,14 @@ impl Mixer {
         None
     }
 
+    // Hard per-attempt bound on ctrl-cap evasion floats. Evading a wide gate
+    // "succeeds" whenever it floats at least one step, so a window build whose
+    // colliders are all wide can ping-pong between receding walls doing
+    // unbounded arena work while the collected count never grows (observed as
+    // a flat-RSS 100%-CPU livelock). Legitimate builds use a handful of
+    // evasions; past this budget the attempt aborts and the round is spent.
+    const EVADE_BUDGET: usize = 128;
+
     // Contiguous: g plus its w-1 neighbors in g's direction, spilling to the
     // other direction at the circuit end. A candidate with > L controls is first
     // floated out of the way; if it cannot float, the build reverses direction;
@@ -2171,6 +2318,7 @@ impl Mixer {
         let mut count = 1usize;
         let mut dir = dir1;
         let mut switched = false;
+        let mut evade_budget = Self::EVADE_BUDGET;
         while count < w {
             let end = if dir == Dir::R { hi } else { lo };
             let x = self.arena.neighbor(end, dir);
@@ -2183,6 +2331,11 @@ impl Mixer {
                 break; // both ends reached the circuit boundary
             }
             if cap > 0 && self.width_of(x) > cap {
+                if evade_budget == 0 {
+                    self.counters.db_build_aborts += 1;
+                    return None;
+                }
+                evade_budget -= 1;
                 if self.float_to_collision(x, dir) > 0 {
                     continue; // floated the wide gate out of the slot; retry
                 }
@@ -2219,6 +2372,7 @@ impl Mixer {
         self.float_to_collision(g1, dir1);
         let (mut lo, mut hi) = (g1, g1);
         let mut count = 1usize;
+        let mut evade_budget = Self::EVADE_BUDGET;
 
         while count < w {
             // The first collider is reached in g1's own direction (spec: float g1
@@ -2243,6 +2397,11 @@ impl Mixer {
             }
             // L-cap: evade a wide collider.
             if cap > 0 && self.width_of(g3) > cap {
+                if evade_budget == 0 {
+                    self.counters.db_build_aborts += 1;
+                    return None;
+                }
+                evade_budget -= 1;
                 if self.float_to_collision(g3, dir) > 0 {
                     continue; // g3 floated away; re-float the block to the next collider
                 }
@@ -2485,7 +2644,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -2514,6 +2673,8 @@ impl Mixer {
             c.db_gates_added,
             c.db_wide_skip,
             c.db_degree_skips,
+            c.db_span_skips,
+            c.db_build_aborts,
             c.cross_r1,
             c.cross_r2,
             c.cross_r3,

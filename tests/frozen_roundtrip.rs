@@ -104,5 +104,15 @@ fn lmdb_to_frozen_roundtrip_preserves_all_lookups() {
         }
     }
 
+    // --- scan_shard's sequential walk sees exactly the stored values ---
+    let mut walked: Vec<Vec<u8>> = Vec::new();
+    for s in 0..256 {
+        local_mixing::replace::frozen::scan_shard(od, s, &mut |v: &[u8]| walked.push(v.to_vec()));
+    }
+    let mut want: Vec<Vec<u8>> = entries.iter().map(|(_, v)| v.clone()).collect();
+    walked.sort();
+    want.sort();
+    assert_eq!(walked, want, "scan_shard walk differs from stored values");
+
     let _ = std::fs::remove_dir_all(&base);
 }
