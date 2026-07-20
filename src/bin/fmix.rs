@@ -119,6 +119,17 @@ struct Args {
     /// grow the circuit), instead of the normal contract/expand step. 0 = off.
     #[arg(long, default_value_t = 0.0)]
     p_db: f64,
+    /// Anneal p-db linearly across the move budget, ending at this value
+    /// (the "splitting phase" lever: retire the DB growth engine as material
+    /// turns wide). Negative = no anneal.
+    #[arg(long, default_value_t = -1.0)]
+    p_db_final: f64,
+    /// Size-steer the agnostic move: multiply the (annealed) p-db by
+    /// sigmoid(-(size-target)/temp), so one run grows to target and then
+    /// holds size (pair with --w-db for the shrink side). Reported as pdb=
+    /// in every progress line.
+    #[arg(long, default_value_t = false)]
+    p_db_steer: bool,
     /// Minimum DB-replacement window length (gates).
     #[arg(long, default_value_t = 2)]
     db_min_window: usize,
@@ -245,10 +256,11 @@ fn main() {
             args.w_twist_neg, args.w_twist_swap, args.w_twist_cnot, args.twist_min_len
         );
     }
-    if args.w_db > 0.0 || args.p_db > 0.0 {
+    if args.w_db > 0.0 || args.p_db > 0.0 || args.p_db_final > 0.0 {
         println!(
-            "[fmix] DB replacement ON: w_db(compress)={} p_db(agnostic)={} window=[{},{}] verify={} (FROZEN_DB_DIR required)",
-            args.w_db, args.p_db, args.db_min_window, args.db_max_window, !args.no_db_verify
+            "[fmix] DB replacement ON: w_db(compress)={} p_db(agnostic)={} p_db_final={} steer={} window=[{},{}] verify={} (FROZEN_DB_DIR required)",
+            args.w_db, args.p_db, args.p_db_final, args.p_db_steer,
+            args.db_min_window, args.db_max_window, !args.no_db_verify
         );
     }
 
@@ -281,6 +293,8 @@ fn main() {
         twist_min_len: args.twist_min_len,
         w_db: args.w_db,
         p_db: args.p_db,
+        p_db_final: args.p_db_final,
+        p_db_steer: args.p_db_steer,
         db_min_window: args.db_min_window,
         db_max_window: args.db_max_window,
         db_sample: local_mixing::postmix::mix::DbSample::parse(&args.db_sample)

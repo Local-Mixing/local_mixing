@@ -397,6 +397,17 @@ pub struct MixParams {
     // Dry-run measurement only for now — the splice policy when several
     // prefixes match (longest vs uniform) is an open design choice.
     pub db_prefixes: bool,
+    // Linear anneal of p_db across the move budget: the effective value runs
+    // from p_db (move 0) to p_db_final (last move). < 0 = no anneal. The
+    // "splitting phase" lever: retire the DB growth engine as material turns
+    // wide and its hit rate dies.
+    pub p_db_final: f64,
+    // Size-steer the agnostic move by the walk's own error signal: multiply
+    // the (possibly annealed) p_db by sigmoid(-excess/temp). Below target the
+    // factor is ~1 (full growth assist); above target it decays, so one run
+    // grows to target and then holds size while the compressing channel and
+    // walk contraction absorb the residual churn growth.
+    pub p_db_steer: bool,
     pub verify_every: u64,
     pub report_every: u64,
     pub local_verify: bool,
@@ -448,6 +459,8 @@ impl Default for MixParams {
             db_wire_terms: 0,
             db_total_terms: 0,
             db_prefixes: false,
+            p_db_final: -1.0,
+            p_db_steer: false,
             verify_every: 10_000,
             report_every: 50_000,
             local_verify: true,
@@ -603,7 +616,7 @@ impl Mixer {
     pub fn new(gates: Vec<XGate>, num_wires: usize, params: MixParams) -> Mixer {
         // Open the replacement store once, only when a DB move is enabled, so
         // runs without them never require FROZEN_DB_DIR.
-        let db = if params.w_db > 0.0 || params.p_db > 0.0 {
+        let db = if params.w_db > 0.0 || params.p_db > 0.0 || params.p_db_final > 0.0 {
             FrozenDb::from_env()
         } else {
             FrozenDb::empty()
@@ -748,20 +761,47 @@ impl Mixer {
 
     // ---- the chain ----
 
+    // Effective size-agnostic probability this round: base p_db, linearly
+    // annealed toward p_db_final across the move budget, then (optionally)
+    // size-steered by sigmoid(-excess/temp) — the same signal the walk's
+    // contract/expand coin uses.
+    pub fn p_db_eff(&self) -> f64 {
+        let mut p = self.params.p_db;
+        if self.params.p_db_final >= 0.0 {
+            let t = self.moves_done as f64 / self.params.moves.max(1) as f64;
+            p += (self.params.p_db_final - p) * t;
+        }
+        if self.params.p_db_steer {
+            let excess = self.arena.len() as f64 - self.params.target_size as f64;
+            p *= 1.0 / (1.0 + (excess / self.params.temp).exp());
+        }
+        p.clamp(0.0, 1.0)
+    }
+
     pub fn run(&mut self) -> MixStop {
         while self.moves_done < self.params.moves {
-            // Top-level: with probability p_db the whole round is a size-agnostic
-            // DB replacement move (a uniform random equivalent of any gate count),
-            // regardless of the contract/expand decision. On a miss the round is
-            // spent (no fallthrough) — that IS the chosen move.
-            let took_agnostic = self.params.p_db > 0.0
+            // Top-level: with probability p_db_eff the whole round is a
+            // size-agnostic DB replacement move (a uniform random equivalent of
+            // any gate count), regardless of the contract/expand decision. On a
+            // miss the round is spent (no fallthrough) — that IS the chosen move.
+            let p_db_now = if self.params.p_db > 0.0 || self.params.p_db_final > 0.0 {
+                self.p_db_eff()
+            } else {
+                0.0
+            };
+            let took_agnostic = p_db_now > 0.0
                 && self.arena.len() >= self.params.db_min_window.max(2)
-                && self.rng.random_bool(self.params.p_db.clamp(0.0, 1.0))
+                && self.rng.random_bool(p_db_now)
                 && { self.db_attempt(DbMode::SizeAgnostic); true };
             if !took_agnostic {
                 let excess = self.arena.len() as f64 - self.params.target_size as f64;
+                // In steer mode the 0.98 ceiling is the binding constraint on
+                // holding size: its 2% expansion floor is a structural growth
+                // source (measured +0.007/move) that saturated contraction
+                // cannot absorb. Above target, steered runs contract harder.
+                let hi = if self.params.p_db_steer && excess > 0.0 { 0.998 } else { 0.98 };
                 let p_contract =
-                    (1.0 / (1.0 + (-excess / self.params.temp).exp())).clamp(0.02, 0.98);
+                    (1.0 / (1.0 + (-excess / self.params.temp).exp())).clamp(0.02, hi);
                 // Nothing to contract below two gates; every contraction channel
                 // samples a linked node, so guard the empty/singleton arena (which
                 // a DB move can reach on a near-identity region).
@@ -2662,7 +2702,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -2683,6 +2723,7 @@ impl Mixer {
             c.undo_tabu,
             c.undo_gather_miss,
             self.journal.len(),
+            self.p_db_eff(),
             c.db_comp_hits,
             c.db_comp_misses,
             c.db_agn_hits,
