@@ -2110,6 +2110,51 @@ fn emit_gadget_x(state: &GadgetState, gate: [u16; 3], out: &mut Vec<XGate>) {
     emit_shared_g57_frag2(state.pairs[a].0, b0, b1, c0, c1, out);
 }
 
+/// Homomorphically share ONE arbitrary XGate into the two-share gadget,
+/// targeting the target value's `.0` (share) carrier and leaving `.1` (pad)
+/// as a mask. A positive control literal for value v expands as (v0 + v1), a
+/// negative one as (1 + v0 + v1); the gate's conjunction becomes an ANF over
+/// the carriers and each monomial is emitted as one fragment. Distinct
+/// control values have disjoint carriers, so no fragment ever reads both
+/// carriers of one value and every prefix stays first-order masked. Unlike
+/// `emit_gadget_x` (g57-only, four fixed fragments) this handles g57, CNOT,
+/// CCNOT and any conjunction fragment uniformly — the mpmct1-ingest path.
+fn emit_shared_xgate2(state: &GadgetState, gate: &XGate, out: &mut Vec<XGate>) {
+    let logical_target = gate.target as usize;
+    debug_assert!(logical_target < state.n);
+    let target_carrier = state.pairs[logical_target].0 as u16;
+
+    let mut terms: Vec<Vec<(u16, bool)>> = vec![Vec::new()];
+    for &(logical_control, positive) in &gate.ctrls {
+        let logical_control = logical_control as usize;
+        debug_assert_ne!(logical_control, logical_target);
+        let (c0, c1) = state.pairs[logical_control];
+        let carriers = [c0 as u16, c1 as u16];
+        let previous = std::mem::take(&mut terms);
+        for term in previous {
+            if !positive {
+                toggle_anf_term(&mut terms, term.clone());
+            }
+            for carrier in carriers {
+                let mut next = term.clone();
+                next.push((carrier, true));
+                next.sort_unstable();
+                toggle_anf_term(&mut terms, next);
+            }
+        }
+    }
+    if gate.comp {
+        toggle_anf_term(&mut terms, Vec::new());
+    }
+    terms.sort_unstable();
+    for term in terms {
+        // Empty term => constant 1 => X gate (XGate::conj returns that).
+        if let Some(fragment) = XGate::conj(target_carrier, term) {
+            out.push(fragment);
+        }
+    }
+}
+
 fn emit_rg1_x(state: &mut GadgetState, i: usize, j: usize, out: &mut Vec<XGate>) {
     // Six-CNOT RG1. Unlike the legacy nonlinear network, no gate consumes both
     // carriers of either logical value. Exhaustive bounded search (regressed
@@ -2561,6 +2606,176 @@ pub fn gadgetize_with_slice_zero_ccnot(
     circuit
 }
 
+/// Two-share gadgetization of a heterogeneous mpmct1 `source` (CNOT/CCNOT/
+/// g57/fragments) on `n` wires, producing a 2n-wire circuit whose low n
+/// output wires equal `source(x)` for any aux input. Identical scaffolding to
+/// [`gadgetize_cnot`] (bookends, W_i encode/decode, {RG2,RG3} policy) but each
+/// source gate is shared by the general `emit_shared_xgate2` rather than the
+/// g57-only four-fragment SG, so any mpmct1 circuit can be ingested. Unlike
+/// the g57 path there is no `shoot_random_gate` reorder (the source is a fixed
+/// heterogeneous list, not a g57 CircuitSeq).
+pub fn gadgetize_xgates(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "gadgetize_xgates requires n >= 3");
+    assert!(2 * n <= u16::MAX as usize, "too many wires");
+    assert!(rg_freq > 0, "rg_freq must be nonzero");
+    assert!(
+        source.iter().all(|g| {
+            (g.target as usize) < n && g.ctrls.iter().all(|&(w, _)| (w as usize) < n)
+        }),
+        "source wire outside 0..n"
+    );
+
+    let bookend_size = (2 * n * (n as f64).ln() as usize).max(64);
+    let total = 2 * n;
+    let mut out = rand_z_xgates(n, bookend_size, rng);
+    let mut dloc: Vec<usize> = (0..n).collect();
+    let mut aloc: Vec<usize> = (n..2 * n).collect();
+    let mut on: Vec<Slot> = (0..total)
+        .map(|wire| {
+            if wire < n {
+                Slot::Data(wire)
+            } else {
+                Slot::Aux(wire - n)
+            }
+        })
+        .collect();
+    let mut pairs = vec![(0usize, 0usize); n];
+
+    for value in 0..n {
+        let data = dloc[value];
+        let aux = aloc[value];
+        let share = loop {
+            let wire = rng.random_range(0..total);
+            if wire != data && wire != aux {
+                break wire;
+            }
+        };
+        let pad = loop {
+            let wire = rng.random_range(0..total);
+            if wire != data && wire != aux && wire != share {
+                break wire;
+            }
+        };
+        emit_w_i_cnot(data, aux, share, pad, &mut out);
+        let moved_share = on[share];
+        let moved_pad = on[pad];
+        on[share] = Slot::Pair(value);
+        on[pad] = Slot::Pair(value);
+        pairs[value] = (share, pad);
+        reloc(moved_share, share, data, &mut dloc, &mut aloc, &mut pairs);
+        reloc(moved_pad, pad, aux, &mut dloc, &mut aloc, &mut pairs);
+        on[data] = moved_share;
+        on[aux] = moved_pad;
+    }
+
+    let mut state = GadgetState { n, pairs };
+    let mut pair_queue = VecDeque::new();
+    let mut single_queue = VecDeque::new();
+    for (index, gate) in source.iter().enumerate() {
+        emit_shared_xgate2(&state, gate, &mut out);
+        if index + 1 == source.len() {
+            break;
+        }
+        for _ in 0..rg_freq {
+            if rng.random_bool(0.5) {
+                let (i, j) = next_pair(&mut pair_queue, n, rng);
+                emit_rg2_x(&mut state, i, j, &mut out);
+            } else {
+                let i = next_single(&mut single_queue, n, rng);
+                let (s, p) = state.pairs[i];
+                let random_carrier = random_wire_except(total, &[s, p], rng);
+                emit_rg3_x(&state, i, random_carrier, &mut out);
+            }
+        }
+    }
+
+    for wire in 0..total {
+        on[wire] = Slot::Output(usize::MAX);
+    }
+    for value in 0..n {
+        on[state.pairs[value].0] = Slot::Pair(value);
+        on[state.pairs[value].1] = Slot::Pair(value);
+    }
+    let mut finalized = vec![false; total];
+    for value in 0..n {
+        let (share, pad) = state.pairs[value];
+        if share == value {
+            emit_transvection_cnot(value, pad, &mut out);
+        } else if pad == value {
+            emit_transvection_cnot(value, share, &mut out);
+        } else {
+            let borrowed = (0..total)
+                .find(|&wire| !finalized[wire] && wire != value && wire != share && wire != pad)
+                .unwrap();
+            let moved_value = on[value];
+            let moved_borrowed = on[borrowed];
+            emit_w_i_inv_cnot(value, borrowed, share, pad, &mut out);
+            reloc(moved_value, value, share, &mut dloc, &mut aloc, &mut state.pairs);
+            reloc(moved_borrowed, borrowed, pad, &mut dloc, &mut aloc, &mut state.pairs);
+            on[share] = moved_value;
+            on[pad] = moved_borrowed;
+        }
+        finalized[value] = true;
+        on[value] = Slot::Output(value);
+    }
+    out.extend(rand_z_xgates(n, bookend_size, rng));
+    CnotCircuit {
+        gates: out,
+        num_wires: total,
+    }
+}
+
+/// New-gadgetize an mpmct1 `source`: the slice-zero-ccnot preblock prepended
+/// to `gadgetize_xgates`. Used to gadgetize the sliced sandwich (a second,
+/// independent zero-slice on top of the sandwich's own).
+pub fn gadgetize_xgates_with_slice_zero_ccnot(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut circuit = slice_zero_ccnot_preblock(n, gate_count, rng);
+    circuit
+        .gates
+        .extend(gadgetize_xgates(source, n, rg_freq, rng).gates);
+    circuit
+}
+
+/// The legacy "compose_A" sandwich (pure g57, 2n wires):
+///   A = [ C on 0..n-1 ] ++ [ n six-g57-gate CNOT copies w_{n+i} ^= w_i ]
+///       ++ [ D on 0..n-1 ],
+/// realizing (x, z) -> (D(C(x)), z ^ C(x)). Each copy block is the minimal
+/// six-g57 CNOT with helper wire (i+1) mod n (identity on control and helper).
+/// This is the OLD sandwiching mechanism, gadgetized by the legacy `gadgetize`.
+pub fn compose_a(c: &CircuitSeq, d: &CircuitSeq, n: usize) -> CircuitSeq {
+    assert!(n >= 2, "compose_a requires n >= 2");
+    assert!(2 * n <= u16::MAX as usize, "too many wires");
+    // Six-gate g57 CNOT, local wires 0=helper, 1=control, 2=target.
+    const CNOT6: [[usize; 3]; 6] = [
+        [0, 2, 1],
+        [2, 0, 1],
+        [1, 0, 2],
+        [2, 1, 0],
+        [0, 1, 2],
+        [1, 2, 0],
+    ];
+    let mut gates: Vec<[u16; 3]> = c.gates.clone();
+    for i in 0..n {
+        let map = [(i + 1) % n, i, n + i]; // helper, control, target
+        for g in CNOT6 {
+            gates.push([map[g[0]] as u16, map[g[1]] as u16, map[g[2]] as u16]);
+        }
+    }
+    gates.extend(d.gates.iter().copied());
+    CircuitSeq { gates }
+}
+
 pub const SANDWICH_SLICE_GATES_PER_WIRE_LOG: f64 = 1.0; // s = n log n
 pub const SANDWICH_D_GATES_PER_WIRE_LOG2: f64 = 1.0; // m = n (log n)^2
 
@@ -2664,11 +2879,32 @@ pub fn sliced_sandwich_cnot(
     s: usize,
     rng: &mut impl Rng,
 ) -> CnotCircuit {
-    assert!(n >= 3, "sliced_sandwich_cnot requires n >= 3");
+    let d_gates = random_g57_xgates(n, m, rng);
+    sliced_sandwich_with_d(main, &d_gates, n, s, rng)
+}
+
+/// Sliced sandwich with an explicit D block (given as XGates on wires 0..n).
+/// Used when C and D must be shared with another pipeline (e.g. an A/B against
+/// the legacy `compose_a` sandwich on the same C, D). See
+/// [`sliced_sandwich_cnot`] for the semantics.
+pub fn sliced_sandwich_with_d(
+    main: &CircuitSeq,
+    d_gates: &[XGate],
+    n: usize,
+    s: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "sliced_sandwich_with_d requires n >= 3");
     assert!(2 * n <= u16::MAX as usize, "too many wires");
     assert!(
         main.gates.iter().flatten().all(|&wire| (wire as usize) < n),
         "source wire outside 0..n"
+    );
+    assert!(
+        d_gates.iter().all(|g| {
+            (g.target as usize) < n && g.ctrls.iter().all(|&(w, _)| (w as usize) < n)
+        }),
+        "D wire outside 0..n"
     );
     let total = 2 * n;
 
@@ -2682,11 +2918,9 @@ pub fn sliced_sandwich_cnot(
         out.push(XGate::cnot((n + i) as u16, i as u16));
     }
 
-    // Block 2: D (fresh random g57 circuit of m gates, same design as C)
-    // interleaved with S2.
-    let d_gates = random_g57_xgates(n, m, rng);
+    // Block 2: D interleaved with S2.
     let s2 = sandwich_slice_gates(n, s, rng);
-    out.extend(random_interleave(d_gates, s2, rng));
+    out.extend(random_interleave(d_gates.to_vec(), s2, rng));
 
     CnotCircuit {
         gates: out,
@@ -4064,6 +4298,55 @@ mod cnot_gadget_tests {
                 leaks < (mask as usize + 1),
                 "inverse hands out C^-1 verbatim (seed={seed:#x})"
             );
+        }
+    }
+
+    #[test]
+    fn gadgetize_xgates_preserves_the_low_wires_for_heterogeneous_sources() {
+        let n = 3;
+        let mask = (1u64 << n) - 1;
+        // A heterogeneous mpmct1 source: g57, CNOT, CCNOT, and a negated
+        // fragment — everything emit_shared_xgate2 must handle.
+        let source = vec![
+            XGate::from_g57([0, 1, 2]),
+            XGate::cnot(0, 1),
+            XGate::conj(2, [(0u16, true), (1u16, true)]).unwrap(),
+            XGate::conj(1, [(2u16, false)]).unwrap(),
+        ];
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0xa11d_0000 + seed);
+            let g = gadgetize_xgates(&source, n, 2, &mut rng);
+            assert_eq!(g.num_wires, 2 * n);
+            // Low n output = source(low n input) for ANY aux value.
+            for input in 0..(1u64 << (2 * n)) {
+                let expected = eval_u64(&source, input & mask) & mask;
+                assert_eq!(eval_u64(&g.gates, input) & mask, expected, "input={input:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn compose_a_realizes_the_reference_map() {
+        let n = 3;
+        let mask = 1usize << n;
+        let c = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+        let d = CircuitSeq {
+            gates: vec![[1, 0, 2], [0, 2, 1]],
+        };
+        let a = compose_a(&c, &d, n);
+        assert!(a.gates.iter().flatten().all(|&w| (w as usize) < 2 * n));
+        for x in 0..mask {
+            for z in 0..mask {
+                let input = x | (z << n);
+                let out = a.evaluate(input);
+                let cx = c.evaluate(x);
+                let expected_lo = d.evaluate(cx); // D(C(x))
+                let expected_hi = z ^ cx; // z ^ C(x)
+                assert_eq!(out & (mask - 1), expected_lo, "low x={x} z={z}");
+                assert_eq!((out >> n) & (mask - 1), expected_hi, "high x={x} z={z}");
+            }
         }
     }
 
