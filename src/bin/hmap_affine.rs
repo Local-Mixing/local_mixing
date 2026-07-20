@@ -16,6 +16,26 @@
 //! n-vs-4n width mismatch that a raw Hamming comparison cannot handle. When C
 //! and G coincide (identity embedding) it reduces to the ordinary prefix map.
 //!
+//! DEGREE (`--degree`): degree 1 is the affine predictor above (linear terms +
+//! constant). Degree 2 additionally offers every pairwise product g_a·g_b of
+//! G_j's wires as a regressor (a product of two lane-words is their bitwise
+//! AND), so the fit can reconstruct C_i by a degree-2 GF(2) function of G_j —
+//! it sees through any degree-2 re-encoding, not just the affine part. Degree d
+//! would add all monomials of degree <= d. The predictor degree models a
+//! feasible reconstruction adversary of bounded algebraic degree; a diagonal
+//! that survives to higher degree is a stronger leak.
+//!
+//! COMPLEXITY: the regressor count is 1 + sum_{k=1..d} C(W, k) where W is the
+//! wire count used for products (`--deg2-wires`, default all G wires). The GF(2)
+//! span-membership solve needs MORE training samples than regressors to avoid
+//! spurious consistency, and the basis costs O(regressors^2 * samples/64) words
+//! per cell. So cost blows up as W^d: full degree 2 at W=512 is ~1.3e5
+//! regressors (needs >1.3e5 samples, ~TB basis) — intractable; restrict
+//! `--deg2-wires` to make degree 2 a LOWER BOUND on degree-2 leakage (products
+//! among excluded wires unseen), or run at small n. Degree >=3 is only
+//! feasible at small n or small W. See docs/HMAP_AFFINE.* for the reasoning and
+//! the higher-degree extension.
+//!
 //! Output: <out>.bin (row-major f32, rows = C prefixes, cols = G prefixes) plus
 //! <out>.meta.json (index vectors + mean/std), same format as `hmap`.
 
@@ -44,6 +64,17 @@ struct Args {
     /// C_i's target bits are wires 0..n-1.
     #[arg(long)]
     n: usize,
+    /// Predictor degree: 1 = affine (linear + const); 2 = also degree-2
+    /// products of G_j's wires (bitwise AND of lanes). Degree 2 adds
+    /// C(deg2_wires,2) regressors, so keep deg2_wires small enough that the
+    /// total stays well under the training-sample count.
+    #[arg(long, default_value_t = 1)]
+    degree: usize,
+    /// For --degree 2: form products only among wires 0..deg2_wires (0 = all G
+    /// wires). Linear terms always cover all wires. A subset makes degree-2 a
+    /// LOWER BOUND on degree-2 leakage (products among excluded wires unseen).
+    #[arg(long, default_value_t = 0)]
+    deg2_wires: usize,
     /// Prefix strides
     #[arg(long, default_value_t = 10)]
     c_step: usize,
@@ -133,21 +164,56 @@ fn main() {
     assert!(nw_g >= n, "G has fewer wires than n");
     let b = args.batches.max(2);
     let tb = args.train_batches.clamp(1, b - 1);
-    let n_reg = nw_g + 1; // + constant
+
+    // Regressor descriptors: all linear wires, the constant, then (degree 2)
+    // products among wires 0..dw. Both the basis build and the holdout eval
+    // iterate this list, so the two stay consistent.
+    #[derive(Clone, Copy)]
+    enum Reg {
+        Lin(usize),
+        Const,
+        Pair(usize, usize),
+    }
+    let mut regs: Vec<Reg> = (0..nw_g).map(Reg::Lin).collect();
+    regs.push(Reg::Const);
+    if args.degree >= 2 {
+        let dw = if args.deg2_wires == 0 { nw_g } else { args.deg2_wires.min(nw_g) };
+        for a in 0..dw {
+            for c2 in (a + 1)..dw {
+                regs.push(Reg::Pair(a, c2));
+            }
+        }
+    }
+    let n_reg = regs.len();
     assert!(
         tb * 64 > n_reg + 64,
-        "train samples ({}) must exceed regressors ({}) with margin",
+        "train samples ({}) must exceed regressors ({}) with margin; lower --deg2-wires or raise --batches/--train-batches",
         tb * 64,
         n_reg
     );
     let coef_words = n_reg.div_ceil(64);
+    // Train/holdout words for regressor r at G-column cj.
+    let reg_train = |r: Reg, cj: usize, gs: &Vec<Vec<Vec<u64>>>| -> Vec<u64> {
+        match r {
+            Reg::Lin(k) => (0..tb).map(|batch| gs[batch][cj][k]).collect(),
+            Reg::Const => vec![!0u64; tb],
+            Reg::Pair(a, c2) => (0..tb).map(|batch| gs[batch][cj][a] & gs[batch][cj][c2]).collect(),
+        }
+    };
+    let reg_ho_word = |r: Reg, cj: usize, batch: usize, gs: &Vec<Vec<Vec<u64>>>| -> u64 {
+        match r {
+            Reg::Lin(k) => gs[batch][cj][k],
+            Reg::Const => !0u64,
+            Reg::Pair(a, c2) => gs[batch][cj][a] & gs[batch][cj][c2],
+        }
+    };
 
     let i_idx = indices(c.len(), args.c_step.max(1));
     let j_idx = indices(g.len(), args.g_step.max(1));
     let (rows, cols) = (i_idx.len(), j_idx.len());
     println!(
-        "[hmap_affine] c={} gates ({}w), g={} gates ({}w), n={}; rows={} cols={}, samples={} (train {})",
-        c.len(), nw_c, g.len(), nw_g, n, rows, cols, b * 64, tb * 64
+        "[hmap_affine] c={} gates ({}w), g={} gates ({}w), n={}; degree={} regressors={}; rows={} cols={}, samples={} (train {})",
+        c.len(), nw_c, g.len(), nw_g, n, args.degree, n_reg, rows, cols, b * 64, tb * 64
     );
 
     // Per batch: snapshot C at each i (targets) and G at each j (regressors),
@@ -187,12 +253,9 @@ fn main() {
                     basis.push((p, Row { samp, coef }));
                 }
             };
-            // regressor k = G wire k (train words), then the constant column.
-            for k in 0..nw_g {
-                let train: Vec<u64> = (0..tb).map(|batch| gs[batch][cj][k]).collect();
-                add_col(train, k, &mut basis);
+            for (ridx, &r) in regs.iter().enumerate() {
+                add_col(reg_train(r, cj, &gs), ridx, &mut basis);
             }
-            add_col(vec![!0u64; tb], nw_g, &mut basis); // constant regressor
 
             // Reconstruct each target bit; accumulate error.
             let mut err_sum = 0f64;
@@ -206,20 +269,17 @@ fn main() {
                     }
                 }
                 if first_set(&samp).is_some() {
-                    err_sum += 0.5; // inconsistent: not an affine function of G_j
+                    err_sum += 0.5; // inconsistent: not a degree-<=d function of G_j
                     continue;
                 }
                 // Consistent: evaluate `coef` on the holdout batches.
                 let mut errbits = 0u64;
                 for batch in tb..b {
                     let mut acc = 0u64;
-                    for k in 0..nw_g {
-                        if (coef[k / 64] >> (k % 64)) & 1 == 1 {
-                            acc ^= gs[batch][cj][k];
+                    for (ridx, &r) in regs.iter().enumerate() {
+                        if (coef[ridx / 64] >> (ridx % 64)) & 1 == 1 {
+                            acc ^= reg_ho_word(r, cj, batch, &gs);
                         }
-                    }
-                    if (coef[nw_g / 64] >> (nw_g % 64)) & 1 == 1 {
-                        acc ^= !0u64;
                     }
                     errbits += (acc ^ cs[batch][ri][t]).count_ones() as u64;
                 }
