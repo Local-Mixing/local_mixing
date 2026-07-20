@@ -119,6 +119,33 @@ fn add_shoot_args(c: Command) -> Command {
                         .help("Number of M gates for --slice-zero-ccnot (default: 10n; ~1/3 CNOTs with invertible parity matrix and ~2/3 CCNOTs, in one uniformly random order)"),
                 )
                 .arg(
+                    Arg::new("sliced_sandwich")
+                        .long("sliced-sandwich")
+                        .alias("sliced_sandwich")
+                        .help("(--cnot) Sliced-sandwich construction on 2n wires: [C interleaved with S1] ; y^=x ; [D interleaved with S2], where C is the source, D a random reversible circuit of m gates, and S1/S2 slice blocks of s CNOT/CCNOT gates (targets on wires 0..n, reading the second half). On the zero slice A(x,0)=(junk, C(x)) with the answer on wires n..2n")
+                        .required(false)
+                        .requires("cnot")
+                        .conflicts_with("gadgetize")
+                        .conflicts_with("feistalize")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("sandwich_m")
+                        .long("sandwich-m")
+                        .alias("sandwich_m")
+                        .required(false)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Gates in the random D computation for --sliced-sandwich (default: n*(log2 n)^2)"),
+                )
+                .arg(
+                    Arg::new("sandwich_s")
+                        .long("sandwich-s")
+                        .alias("sandwich_s")
+                        .required(false)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Gates in each slice block S1, S2 for --sliced-sandwich (default: n*log2 n)"),
+                )
+                .arg(
                     Arg::new("gadget_path")
                         .long("gadget_path")
                         .required(false)

@@ -5,7 +5,7 @@ use local_mixing::circuit::CircuitSeq;
 use local_mixing::replace::frozen::FrozenDb;
 use local_mixing::replace::gadgets::{
     SLICE_ZERO_CCNOT_GATES_PER_WIRE, SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS,
-    SLICE_ZERO_RANDOM_GATES_PER_WIRE,
+    SLICE_ZERO_RANDOM_GATES_PER_WIRE, sandwich_default_m, sandwich_default_s,
 };
 use local_mixing::replace::main_mix::main_shuffle_shoot_shuffle;
 use local_mixing::replace::main_mix_cnot::{CnotSssParams, main_shuffle_shoot_shuffle_cnot};
@@ -42,6 +42,15 @@ pub fn run(sub: &clap::ArgMatches) {
         .get_one("slice_zero_ccnot_gates")
         .copied()
         .unwrap_or(SLICE_ZERO_CCNOT_GATES_PER_WIRE * n);
+    let sliced_sandwich = sub.get_flag("sliced_sandwich");
+    let sandwich_m: usize = sub
+        .get_one("sandwich_m")
+        .copied()
+        .unwrap_or_else(|| sandwich_default_m(n));
+    let sandwich_s: usize = sub
+        .get_one("sandwich_s")
+        .copied()
+        .unwrap_or_else(|| sandwich_default_s(n));
     let gadget_path = sub.get_one::<String>("gadget_path").map(|s| s.as_str());
     let full_shuffle = sub.get_flag("full-shuffle");
     let full_shuffle_early = sub.get_flag("full-shuffle-early");
@@ -86,6 +95,9 @@ pub fn run(sub: &clap::ArgMatches) {
             slice_zero_hardcoded_rounds,
             slice_zero_ccnot,
             slice_zero_ccnot_gates,
+            sliced_sandwich,
+            sandwich_m,
+            sandwich_s,
             gadget_path,
             full_shuffle,
             full_shuffle_early,

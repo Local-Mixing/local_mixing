@@ -2561,6 +2561,139 @@ pub fn gadgetize_with_slice_zero_ccnot(
     circuit
 }
 
+pub const SANDWICH_SLICE_GATES_PER_WIRE_LOG: f64 = 1.0; // s = n log n
+pub const SANDWICH_D_GATES_PER_WIRE_LOG2: f64 = 1.0; // m = n (log n)^2
+
+/// Default slice-block size s = round(n * log2 n), floored at n.
+pub fn sandwich_default_s(n: usize) -> usize {
+    ((n as f64) * (n as f64).log2()).round().max(n as f64) as usize
+}
+
+/// Default D-computation size m = round(n * (log2 n)^2), floored at n.
+pub fn sandwich_default_m(n: usize) -> usize {
+    let l = (n as f64).log2();
+    ((n as f64) * l * l).round().max(n as f64) as usize
+}
+
+/// One slice block for the sliced-sandwich construction: `s` gates whose
+/// targets are all in the first half (wires 0..n), each reading at least one
+/// second-half wire (n..2n) with positive polarity, so the whole block is
+/// dead when the second half is zero. ~1/3 are CNOTs `x_i ^= a_j` (control
+/// in the second half); the rest are CCNOTs `x_i ^= x_j & a_k` (one control
+/// per half).
+fn sandwich_slice_gates(n: usize, s: usize, rng: &mut impl Rng) -> Vec<XGate> {
+    (0..s)
+        .map(|_| {
+            let target = rng.random_range(0..n);
+            if rng.random_bool(1.0 / 3.0) {
+                let control = n + rng.random_range(0..n);
+                XGate::cnot(target as u16, control as u16)
+            } else {
+                let first_control = random_wire_except(n, &[target], rng);
+                let second_control = n + rng.random_range(0..n);
+                XGate::conj(
+                    target as u16,
+                    [(first_control as u16, true), (second_control as u16, true)],
+                )
+                .expect("sandwich CCNOT controls are distinct")
+            }
+        })
+        .collect()
+}
+
+/// `m` random g57 gates on wires 0..n, as XGates — the same design as the
+/// C (source) block, used for the sandwich's random D computation.
+fn random_g57_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
+    assert!(n >= 3, "random g57 gates need n >= 3 wires");
+    (0..m)
+        .map(|_| {
+            let a = rng.random_range(0..n);
+            let x = random_wire_except(n, &[a], rng);
+            let y = random_wire_except(n, &[a, x], rng);
+            XGate::from_g57([a as u16, x as u16, y as u16])
+        })
+        .collect()
+}
+
+/// A uniformly random interleaving of `computation` and `slice` that
+/// preserves the internal order of each. `computation`'s order is a hard
+/// constraint (it must still compute its function); `slice`'s order is
+/// immaterial on the zero slice (all its gates are dead there) but its
+/// gates must not be reordered relative to the shuffle already applied.
+fn random_interleave(computation: Vec<XGate>, slice: Vec<XGate>, rng: &mut impl Rng) -> Vec<XGate> {
+    let mut out = Vec::with_capacity(computation.len() + slice.len());
+    let (mut ci, mut si) = (0usize, 0usize);
+    while ci < computation.len() || si < slice.len() {
+        let rem_c = computation.len() - ci;
+        let rem_s = slice.len() - si;
+        let take_computation = si >= slice.len()
+            || (ci < computation.len() && rng.random_range(0..rem_c + rem_s) < rem_c);
+        if take_computation {
+            out.push(computation[ci].clone());
+            ci += 1;
+        } else {
+            out.push(slice[si].clone());
+            si += 1;
+        }
+    }
+    out
+}
+
+/// The **sliced sandwich** construction on 2n wires (first half = x, second
+/// half = y):
+///
+///   A = [ C interleaved with S1 ] ; N ; [ D interleaved with S2 ]
+///
+/// where C is the source circuit, D is a fresh random circuit of `m` g57
+/// gates on wires 0..n (same design as the C block), N copies the first
+/// half into the second (`y ^= x`, n CNOTs),
+/// and S1, S2 are independent slice blocks of `s` gates each
+/// (`sandwich_slice_gates`), randomly interleaved with C and D respectively.
+///
+/// On the zero slice the second half carries the answer:
+///   A(x, 0) = (junk, C(x)),
+/// because S1 is dead during C (second half still 0) and S2, though live
+/// during D (second half already holds C(x)), only targets the junk first
+/// half. Symmetrically the inverse gives A^-1(p, 0) = (junk, D^-1(p)): there
+/// S2 is dead and S1 fires, so neither direction hands out its computation
+/// on a wrong slice, and neither reveals the other's function in the clear.
+pub fn sliced_sandwich_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    m: usize,
+    s: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "sliced_sandwich_cnot requires n >= 3");
+    assert!(2 * n <= u16::MAX as usize, "too many wires");
+    assert!(
+        main.gates.iter().flatten().all(|&wire| (wire as usize) < n),
+        "source wire outside 0..n"
+    );
+    let total = 2 * n;
+
+    // Block 1: C (the source) interleaved with S1.
+    let c_gates: Vec<XGate> = main.gates.iter().map(|&g| XGate::from_g57(g)).collect();
+    let s1 = sandwich_slice_gates(n, s, rng);
+    let mut out = random_interleave(c_gates, s1, rng);
+
+    // N step: y ^= x.
+    for i in 0..n {
+        out.push(XGate::cnot((n + i) as u16, i as u16));
+    }
+
+    // Block 2: D (fresh random g57 circuit of m gates, same design as C)
+    // interleaved with S2.
+    let d_gates = random_g57_xgates(n, m, rng);
+    let s2 = sandwich_slice_gates(n, s, rng);
+    out.extend(random_interleave(d_gates, s2, rng));
+
+    CnotCircuit {
+        gates: out,
+        num_wires: total,
+    }
+}
+
 fn rand_feistal_z_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
     rand_feistal_z_gates(n, m, rng)
         .into_iter()
@@ -3930,6 +4063,91 @@ mod cnot_gadget_tests {
             assert!(
                 leaks < (mask as usize + 1),
                 "inverse hands out C^-1 verbatim (seed={seed:#x})"
+            );
+        }
+    }
+
+    #[test]
+    fn sandwich_slice_gates_are_dead_on_the_zero_slice() {
+        let n = 4;
+        let mask = (1u64 << n) - 1;
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0x5a2d_0000 + seed);
+            let block = sandwich_slice_gates(n, 5 * n, &mut rng);
+            for g in &block {
+                assert!(!g.comp);
+                assert!((g.target as usize) < n, "targets in the first half");
+                assert!(g.ctrls.iter().all(|&(_, p)| p), "positive controls");
+                assert!(
+                    g.ctrls.iter().any(|&(w, _)| (w as usize) >= n),
+                    "every gate reads a second-half wire"
+                );
+            }
+            // Second half zero => identity on any first-half value.
+            for x in 0..=mask {
+                assert_eq!(eval_u64(&block, x), x, "dead on the zero slice");
+            }
+        }
+    }
+
+    #[test]
+    fn sliced_sandwich_computes_c_on_the_second_half_on_the_zero_slice() {
+        let n = 3;
+        let mask = (1u64 << n) - 1;
+        let full = (1u64 << (2 * n)) - 1;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0], [0, 2, 1]],
+        };
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0x5a4d_0000 + seed);
+            let a = sliced_sandwich_cnot(&main, n, 12, 4 * n, &mut rng);
+            assert_eq!(a.num_wires, 2 * n);
+
+            // Zero slice: the second half carries C(x).
+            for x in 0..=mask {
+                let expected = main.evaluate(x as usize) as u64 & mask;
+                assert_eq!((eval_u64(&a.gates, x) >> n) & mask, expected, "A(x,0)");
+            }
+            // A is a permutation of the whole 2n-bit space.
+            let mut seen = std::collections::HashSet::new();
+            for input in 0..=full {
+                assert!(seen.insert(eval_u64(&a.gates, input)), "A not injective");
+            }
+            // Off-slice, the second-half output is y-masked and differs from
+            // C(x) for at least some inputs on some nonzero slice.
+            let differs = (1..=mask).any(|y| {
+                (0..=mask).any(|x| {
+                    let input = x | (y << n);
+                    let expected = main.evaluate(x as usize) as u64 & mask;
+                    (eval_u64(&a.gates, input) >> n) & mask != expected
+                })
+            });
+            assert!(differs, "seed={seed:#x}: no off-slice disturbance");
+        }
+    }
+
+    #[test]
+    fn sliced_sandwich_inverse_is_dead_slice_and_reveals_d_inverse() {
+        let n = 3;
+        let mask = (1u64 << n) - 1;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1]],
+        };
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0x5a5d_0000 + seed);
+            let a = sliced_sandwich_cnot(&main, n, 10, 4 * n, &mut rng);
+            let inverse: Vec<XGate> = a.gates.iter().rev().cloned().collect();
+            // The inverse computes some permutation on the second half on the
+            // zero slice (D^-1 up to the dead S2); check it is a bijection x
+            // -> second-half output, i.e. the slice really carries a function.
+            let mut outs = std::collections::HashSet::new();
+            for p in 0..=mask {
+                outs.insert((eval_u64(&inverse, p) >> n) & mask);
+            }
+            assert_eq!(
+                outs.len() as u64,
+                mask + 1,
+                "inverse second-half map is a bijection on the zero slice"
             );
         }
     }

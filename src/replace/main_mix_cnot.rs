@@ -21,7 +21,7 @@ use crate::{
     replace::gadgets::{
         CnotCircuit, feistalize_cnot, feistalize_with_slice_zero_cnot,
         feistalize_with_slice_zero_hardcoded_cnot, feistalize_with_slice_zero_random_cnot,
-        gadgetize_cnot, gadgetize_with_slice_zero_ccnot, packed_bit,
+        gadgetize_cnot, gadgetize_with_slice_zero_ccnot, packed_bit, sliced_sandwich_cnot,
     },
 };
 
@@ -30,6 +30,9 @@ enum FunctionView {
     Whole,
     GadgetLow,
     FeistalMiddle,
+    // Sliced sandwich: on the zero slice (second half = 0) the answer C(x)
+    // exits on the HIGH n wires.
+    SandwichSecond,
 }
 
 pub struct CnotSssParams<'a> {
@@ -48,6 +51,9 @@ pub struct CnotSssParams<'a> {
     pub slice_zero_hardcoded_rounds: usize,
     pub slice_zero_ccnot: bool,
     pub slice_zero_ccnot_gates: usize,
+    pub sliced_sandwich: bool,
+    pub sandwich_m: usize,
+    pub sandwich_s: usize,
     pub gadget_path: Option<&'a str>,
     pub full_shuffle: bool,
     pub full_shuffle_early: bool,
@@ -164,6 +170,12 @@ fn functionality_check(
                     input &= low_mask;
                     input |= public_y << n;
                 }
+                // The sliced sandwich's slice is the zero second half; pin
+                // it (public_y is 0 here).
+                FunctionView::SandwichSecond => {
+                    input &= low_mask;
+                    input |= public_y << n;
+                }
                 FunctionView::Whole => {}
             }
         }
@@ -178,6 +190,8 @@ fn functionality_check(
                 let y = (input >> n) & low_mask;
                 ((actual >> n) & low_mask) == (y ^ original_output)
             }
+            // On the zero slice the answer C(x) lands on the high n wires.
+            FunctionView::SandwichSecond => (actual >> n) & low_mask == original_output,
         };
         if !matches {
             return Err(format!(
@@ -283,7 +297,10 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
     assert!(p.x > 0, "--x must be nonzero");
     assert!(p.n > 0, "--n must be nonzero");
     assert!(p.rg_freq > 0, "--rg-frequency must be nonzero");
-    assert!(!(p.do_gadgetize && p.do_feistalize));
+    assert!(
+        (p.do_gadgetize as u8) + (p.do_feistalize as u8) + (p.sliced_sandwich as u8) <= 1,
+        "--gadgetize, --feistalize and --sliced-sandwich are mutually exclusive"
+    );
     println!(
         "[sss:cnot] XGate-native backend selected: G57 ingress, heterogeneous mpmct1 thereafter"
     );
@@ -364,6 +381,13 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
                 "gadgetized",
             )
         }
+    } else if p.sliced_sandwich {
+        fixed_slice = Some((U1024::zero(), U1024::zero()));
+        (
+            sliced_sandwich_cnot(original, p.n, p.sandwich_m, p.sandwich_s, &mut rng),
+            FunctionView::SandwichSecond,
+            "sliced sandwich (answer on wires n..2n on the zero slice)",
+        )
     } else {
         (
             CnotCircuit {
@@ -405,7 +429,7 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
     )
     .expect("CNOT transformation changed required functionality");
 
-    if p.do_gadgetize || p.do_feistalize || p.gadget_path.is_some() {
+    if p.do_gadgetize || p.do_feistalize || p.sliced_sandwich || p.gadget_path.is_some() {
         let path = p
             .gadget_path
             .map(str::to_owned)
@@ -605,6 +629,9 @@ mod tests {
                 slice_zero_hardcoded_rounds: 1,
                 slice_zero_ccnot: slice_ccnot,
                 slice_zero_ccnot_gates: 18,
+                sliced_sandwich: false,
+                sandwich_m: 12,
+                sandwich_s: 6,
                 gadget_path: Some(gadget.to_str().unwrap()),
                 full_shuffle: false,
                 full_shuffle_early: false,
