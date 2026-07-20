@@ -1,28 +1,35 @@
 # New Gadgetize
 
 **"New gadgetize"** is the canonical name for the current ×2 gadgetization
-recipe (2026-07-20). Use it for all new gadget-path runs:
+recipe (2026-07-20; RG policy + final shuffle revised 2026-07-20b). Use it
+for all new gadget-path runs:
 
 ```
 local_mixing_bin sss --cnot --gadgetize --slice-zero-ccnot \
     -n <n> -s <source> -d <dest> -r <rounds> -m <m> -x <x> \
     [--slice-zero-ccnot-gates <G>]   # default 10n
-    [--rg-frequency <K>]             # default 2
+    [--rg-frequency <K>]             # default 1 on this path
 ```
 
 It differs from the plain `--gadgetize` path in two ways: a **zero-slice
-preblock** (S1) at the input, and a leaner, faster **RG randomization
-policy** in the gadget body.
+preblock** (S1) at the input, and the **RG randomization policy** in the
+gadget body (nonlinear g57 networks, one per SG). The whole output is
+finished with a **commuting-order rerandomization** (see below).
 
 ## Structure
 
 The emitted circuit lives on 2n wires (`x` = wires `0..n`, second half =
-wires `n..2n`) and reads, left to right:
+wires `n..2n`) and is CONSTRUCTED, left to right, as:
 
 ```
 [ S1 slice preblock ] [ bookend ] [ W_i encode ] [ SG/RG body ] [ decode ] [ bookend ]
       10n gates         2n·ln n      7n CNOTs                       <=7n      2n·ln n
 ```
+
+The construction order is not the emitted order: a final commuting shuffle
+re-draws the gate order as a random linear extension of the wire-dependency
+partial order, so slice-block, bookend, W_i, and body gates interleave
+wherever dependencies allow.
 
 Contract: **`A(x, 0) = (C(x), J)`** — on the all-zero slice of the second
 half, the low n output wires carry `C(x)` and the high wires carry junk.
@@ -58,26 +65,49 @@ Design rationale: the block is pure positive-polarity CNOT/Toffoli material —
 indistinguishable in vocabulary from ordinary mixed-circuit content, with no
 complemented gates and no polarity pattern encoding a slice.
 
-## RG policy — basis {RG2, RG3}, two per gap
+## RG policy — nonlinear {RG1, RG2, RG3}, one per SG
 
 The gadget body interleaves re-randomization gadgets between the SG gadgets.
-As of new gadgetize, only the orthogonal basis is used:
+The policy (revised 2026-07-20b) reinstates the legacy NONLINEAR g57
+networks, drawn uniformly:
 
-- **RG2** (3 CNOTs): swaps one carrier of pair *i* with one of pair *j* and
-  re-pairs crosswise — the sole re-pairing move.
-- **RG3** (2 CNOTs): XORs a foreign carrier into both carriers of one pair —
-  the sole cross-value mask injector.
+- **RG1** (6 g57s, ANF degree 3): swaps the virtual values of pairs *i*, *j*.
+- **RG2** (6 g57s, degree 2/3): re-pairs pairs *i*, *j* crosswise while
+  keeping both virtual values.
+- **RG3** (2 g57s, degree 2): XORs `r1 OR NOT r2` of two random foreign
+  wires into both carriers of one pair — a nonlinear cross-value mask
+  refresh.
 
-RG1 (the 6-CNOT value-swap) is dropped from this path: it is a composite of
-two generalized RG2s plus a mask stir that RG3 covers.
+Rate: `--rg-frequency` uniform draws between every two consecutive SGs (none
+after the last SG); the sss `--cnot` driver defaults this to **1** — one
+random RG per SG. The feistel and legacy paths keep the old flag meaning
+("one RG every K SGs", default 2).
 
-Rate: `--rg-frequency` (default **2**) independent uniform RG2/RG3 draws are
-emitted **between every two consecutive SGs** (none after the last SG). Note
-the flag's meaning changed for this path — it used to mean "one RG every K
-SGs"; the feistel and legacy paths keep the old meaning.
+Why the reversal from the earlier linear {RG2, RG3} CNOT basis: the
+`hmap_affine` degree-1/degree-2 reconstruction maps showed the affine RGs
+leave the body's re-randomization transparent to low-degree predictors — the
+old gadget's non-affine encoding was precisely what blocked degree-2
+readout. The trade is deliberate: RG1/RG2 gates read both carriers of a
+value, so gate-local non-completeness (first-order probe masking) is given
+up in exchange for low-degree opacity. The linear emitters remain in the
+codebase (`emit_rg{1,2,3}_x`) for the feistel path and for comparison runs.
 
-Both RGs are gate-locally non-complete (no physical gate ever reads both
-carriers of one logical value), so first-order prefix masking is preserved.
+## Final commuting-order rerandomization (`commuting_shuffle`)
+
+After assembly (including S1), the gate order is re-drawn as a uniform-ready
+random linear extension of the read/write dependency order: two gates
+conflict iff one targets a wire the other reads; equal targets do not
+conflict (XOR toggles commute), shared reads are free. Implementation:
+per-wire alternating reader/writer runs bridged by virtual nodes (linear
+edge count), then a randomized Kahn topological draw.
+
+Motivation: the heatmaps of gadgetized circuits showed an S-shape — no
+mixing between the computation block and the bookends, with the linear W_i
+curtain sitting between the Z gates and the body. The shuffle dissolves the
+construction-time block layout: W_i CNOTs, slice-block gates, and bookend
+g57s migrate into any position their wire dependencies allow, at zero
+functional cost (the emitted circuit computes the identical function, so
+all slice/inverse guarantees are inherited verbatim).
 
 ## Verification
 
@@ -87,7 +117,9 @@ tests: `ccnot_preblock_fixes_exactly_the_zero_slice`,
 `ccnot_preblock_uses_only_the_agreed_gate_shapes`,
 `slice_zero_ccnot_gadgetize_matches_only_on_the_zero_slice`,
 `slice_block_stops_the_inverse_from_revealing_c_inverse`, plus the
-zero-round driver test.
+zero-round driver test. The 2026-07-20b revision adds
+`commuting_shuffle_preserves_function_and_relocates_gates` and
+`gadget_body_carries_nonlinear_rg_material`.
 
 ## Open thread
 

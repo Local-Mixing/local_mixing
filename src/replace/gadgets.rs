@@ -2206,10 +2206,143 @@ fn rand_z_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
         .collect()
 }
 
+/// One uniform draw among the legacy nonlinear g57 RG networks — RG1
+/// value-swap (deg 3), RG2 re-pair (deg 2), RG3 cross-value mask refresh
+/// (deg 2) — emitted as XGates. The sharing-state bookkeeping is identical to
+/// the linear `emit_rg1_x`/`emit_rg2_x` variants, so the decode bookend is
+/// unaffected by which family produced the final pairing.
+fn emit_nonlinear_rg(
+    state: &mut GadgetState,
+    total: usize,
+    pair_queue: &mut VecDeque<(usize, usize)>,
+    single_queue: &mut VecDeque<usize>,
+    out: &mut Vec<XGate>,
+    rng: &mut impl Rng,
+) {
+    let n = state.n;
+    let mut buf: Vec<[u16; 3]> = Vec::new();
+    match rng.random_range(0..3u32) {
+        0 => {
+            let (i, j) = next_pair(pair_queue, n, rng);
+            emit_rg1(state, i, j, &mut buf);
+        }
+        1 => {
+            let (i, j) = next_pair(pair_queue, n, rng);
+            emit_rg2(state, i, j, &mut buf);
+        }
+        _ => {
+            let i = next_single(single_queue, n, rng);
+            let (s, p) = state.pairs[i];
+            let r1 = random_wire_except(total, &[s, p], rng);
+            let r2 = random_wire_except(total, &[s, p, r1], rng);
+            emit_rg3(state, i, r1, r2, &mut buf);
+        }
+    }
+    out.extend(buf.into_iter().map(XGate::from_g57));
+}
+
+/// Rerandomize the order of commuting gates: replace `gates` with a fresh
+/// random linear extension of its read/write dependency order. Two gates
+/// conflict iff one targets a wire the other reads; equal targets alone do
+/// NOT conflict (XOR toggles on one wire commute) and shared reads are free.
+/// This is a conservative superset of [`XGate::collides`] conflicts (the
+/// opposite-literal separation exemption is ignored), so every emitted order
+/// computes the same function. Unlike adjacent-swap churn, the reorder is
+/// global: bookend, W_i, and slice-block gates migrate anywhere their wire
+/// dependencies allow, dissolving the construction-time block layout.
+///
+/// The DAG is built per wire from the alternating maximal runs of readers
+/// and writers; consecutive runs are bridged through one virtual node ("all
+/// of run k before any of run k+1", exactly the pairwise constraint since
+/// runs alternate kinds), keeping edges linear in total gate arity. A
+/// uniformly random ready-gate draw (randomized Kahn) yields the order.
+pub fn commuting_shuffle(gates: &mut Vec<XGate>, rng: &mut impl Rng) {
+    let m = gates.len();
+    if m < 2 {
+        return;
+    }
+    let wires = gates.iter().map(|g| g.max_wire()).max().unwrap() as usize + 1;
+    // Ops per wire in circuit order: (gate index, is_write). A gate touches a
+    // wire at most once (its target never appears among its controls).
+    let mut ops: Vec<Vec<(u32, bool)>> = vec![Vec::new(); wires];
+    for (i, g) in gates.iter().enumerate() {
+        ops[g.target as usize].push((i as u32, true));
+        for &(w, _) in &g.ctrls {
+            ops[w as usize].push((i as u32, false));
+        }
+    }
+    // Nodes 0..m are gates; virtual run-boundary nodes follow.
+    let mut succ: Vec<Vec<u32>> = vec![Vec::new(); m];
+    let mut indeg: Vec<u32> = vec![0; m];
+    for wire_ops in &ops {
+        let mut start = 0usize;
+        while start < wire_ops.len() {
+            let kind = wire_ops[start].1;
+            let mut end = start + 1;
+            while end < wire_ops.len() && wire_ops[end].1 == kind {
+                end += 1;
+            }
+            if end == wire_ops.len() {
+                break;
+            }
+            let mut next_end = end + 1;
+            while next_end < wire_ops.len() && wire_ops[next_end].1 == wire_ops[end].1 {
+                next_end += 1;
+            }
+            let v = succ.len() as u32;
+            succ.push(Vec::with_capacity(next_end - end));
+            indeg.push((end - start) as u32);
+            for &(gate, _) in &wire_ops[start..end] {
+                succ[gate as usize].push(v);
+            }
+            for &(gate, _) in &wire_ops[end..next_end] {
+                succ[v as usize].push(gate);
+                indeg[gate as usize] += 1;
+            }
+            start = end;
+        }
+    }
+    drop(ops);
+
+    let mut ready: Vec<u32> = (0..m as u32)
+        .filter(|&i| indeg[i as usize] == 0)
+        .collect();
+    let mut order: Vec<u32> = Vec::with_capacity(m);
+    let mut cascade: Vec<u32> = Vec::new();
+    while !ready.is_empty() {
+        let pick = rng.random_range(0..ready.len());
+        let gate = ready.swap_remove(pick);
+        order.push(gate);
+        cascade.push(gate);
+        // Virtual nodes release as soon as their whole source run is emitted.
+        while let Some(node) = cascade.pop() {
+            for k in 0..succ[node as usize].len() {
+                let s = succ[node as usize][k] as usize;
+                indeg[s] -= 1;
+                if indeg[s] == 0 {
+                    if s < m {
+                        ready.push(s as u32);
+                    } else {
+                        cascade.push(s as u32);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(order.len(), m, "commuting_shuffle: dependency cycle");
+    let mut reordered = Vec::with_capacity(m);
+    for &i in &order {
+        reordered.push(gates[i as usize].clone());
+    }
+    *gates = reordered;
+}
+
 /// Two-share gadgetization with native CNOT linear bookends, a four-fragment
-/// masking-safe SG, and gate-locally non-complete CNOT RGs drawn from the
-/// orthogonal basis {RG2 re-pair, RG3 mask-refresh} — `rg_freq` of them
-/// between consecutive SGs.
+/// masking-safe SG, and the legacy NONLINEAR g57 RGs drawn uniformly from
+/// {RG1 value-swap, RG2 re-pair, RG3 mask-refresh} — `rg_freq` of them
+/// (default 1) between consecutive SGs. The whole output is finished with a
+/// [`commuting_shuffle`] so W_i, bookend, and body gates interleave wherever
+/// wire dependencies allow.
 pub fn gadgetize_cnot(
     main: &CircuitSeq,
     n: usize,
@@ -2270,27 +2403,27 @@ pub fn gadgetize_cnot(
     let mut state = GadgetState { n, pairs };
     let mut pair_queue = VecDeque::new();
     let mut single_queue = VecDeque::new();
-    // RG policy: only the orthogonal basis {RG2, RG3} is used — RG2 is the
-    // sole re-pairing move and RG3 the sole cross-value mask injector, and
-    // together they generate every sharing configuration (RG1 is a composite
-    // of RG2s whose extra mask stir RG3 covers). `rg_freq` RGs (default 2),
-    // each an independent uniform draw, are emitted BETWEEN consecutive SG
-    // gadgets.
+    // RG policy: the legacy NONLINEAR g57 networks {RG1 value-swap (deg 3),
+    // RG2 re-pair (deg 2), RG3 cross-value mask refresh (deg 2)}, `rg_freq`
+    // uniform draws (default 1 on this path) between consecutive SG gadgets.
+    // Reinstated over the linear CNOT {RG2_x, RG3_x}: the affine RGs left the
+    // body's re-randomization transparent to degree-1/2 reconstruction. The
+    // trade is deliberate — RG1/RG2 gates read both carriers of a value, so
+    // gate-local non-completeness is given up for low-degree opacity.
     for (index, &gate) in main.gates.iter().enumerate() {
         emit_gadget_x(&state, gate, &mut out);
         if index + 1 == main.gates.len() {
             break;
         }
         for _ in 0..rg_freq {
-            if rng.random_bool(0.5) {
-                let (i, j) = next_pair(&mut pair_queue, n, rng);
-                emit_rg2_x(&mut state, i, j, &mut out);
-            } else {
-                let i = next_single(&mut single_queue, n, rng);
-                let (s, p) = state.pairs[i];
-                let random_carrier = random_wire_except(total, &[s, p], rng);
-                emit_rg3_x(&state, i, random_carrier, &mut out);
-            }
+            emit_nonlinear_rg(
+                &mut state,
+                total,
+                &mut pair_queue,
+                &mut single_queue,
+                &mut out,
+                rng,
+            );
         }
     }
 
@@ -2338,6 +2471,10 @@ pub fn gadgetize_cnot(
         on[value] = Slot::Output(value);
     }
     out.extend(rand_z_xgates(n, bookend_size, rng));
+    // Final rerandomization: the construction-time layout (Z | W | body | W^-1
+    // | Z) is a legibility artifact; a commuting shuffle interleaves whatever
+    // the wire dependencies do not pin down.
+    commuting_shuffle(&mut out, rng);
     CnotCircuit {
         gates: out,
         num_wires: total,
@@ -2603,13 +2740,17 @@ pub fn gadgetize_with_slice_zero_ccnot(
     circuit
         .gates
         .extend(gadgetize_cnot(main, n, rg_freq, rng).gates);
+    // Shuffle across the preblock/gadget seam too, so the slice block does
+    // not sit as a contiguous prefix.
+    commuting_shuffle(&mut circuit.gates, rng);
     circuit
 }
 
 /// Two-share gadgetization of a heterogeneous mpmct1 `source` (CNOT/CCNOT/
 /// g57/fragments) on `n` wires, producing a 2n-wire circuit whose low n
 /// output wires equal `source(x)` for any aux input. Identical scaffolding to
-/// [`gadgetize_cnot`] (bookends, W_i encode/decode, {RG2,RG3} policy) but each
+/// [`gadgetize_cnot`] (bookends, W_i encode/decode, nonlinear {RG1,RG2,RG3}
+/// policy, final [`commuting_shuffle`]) but each
 /// source gate is shared by the general `emit_shared_xgate2` rather than the
 /// g57-only four-fragment SG, so any mpmct1 circuit can be ingested. Unlike
 /// the g57 path there is no `shoot_random_gate` reorder (the source is a fixed
@@ -2676,21 +2817,21 @@ pub fn gadgetize_xgates(
     let mut state = GadgetState { n, pairs };
     let mut pair_queue = VecDeque::new();
     let mut single_queue = VecDeque::new();
+    // Same nonlinear {RG1, RG2, RG3} policy as `gadgetize_cnot`.
     for (index, gate) in source.iter().enumerate() {
         emit_shared_xgate2(&state, gate, &mut out);
         if index + 1 == source.len() {
             break;
         }
         for _ in 0..rg_freq {
-            if rng.random_bool(0.5) {
-                let (i, j) = next_pair(&mut pair_queue, n, rng);
-                emit_rg2_x(&mut state, i, j, &mut out);
-            } else {
-                let i = next_single(&mut single_queue, n, rng);
-                let (s, p) = state.pairs[i];
-                let random_carrier = random_wire_except(total, &[s, p], rng);
-                emit_rg3_x(&state, i, random_carrier, &mut out);
-            }
+            emit_nonlinear_rg(
+                &mut state,
+                total,
+                &mut pair_queue,
+                &mut single_queue,
+                &mut out,
+                rng,
+            );
         }
     }
 
@@ -2724,6 +2865,10 @@ pub fn gadgetize_xgates(
         on[value] = Slot::Output(value);
     }
     out.extend(rand_z_xgates(n, bookend_size, rng));
+    // Final rerandomization: the construction-time layout (Z | W | body | W^-1
+    // | Z) is a legibility artifact; a commuting shuffle interleaves whatever
+    // the wire dependencies do not pin down.
+    commuting_shuffle(&mut out, rng);
     CnotCircuit {
         gates: out,
         num_wires: total,
@@ -2744,6 +2889,9 @@ pub fn gadgetize_xgates_with_slice_zero_ccnot(
     circuit
         .gates
         .extend(gadgetize_xgates(source, n, rg_freq, rng).gates);
+    // Shuffle across the preblock/gadget seam too, so the slice block does
+    // not sit as a contiguous prefix.
+    commuting_shuffle(&mut circuit.gates, rng);
     circuit
 }
 
@@ -4326,6 +4474,84 @@ mod cnot_gadget_tests {
     }
 
     #[test]
+    fn commuting_shuffle_preserves_function_and_relocates_gates() {
+        let n = 6usize;
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0x5f1e_0000 + seed);
+            let mut gates: Vec<XGate> = Vec::new();
+            for _ in 0..200 {
+                let a = rng.random_range(0..n as u16);
+                let b = loop {
+                    let w = rng.random_range(0..n as u16);
+                    if w != a {
+                        break w;
+                    }
+                };
+                let c = loop {
+                    let w = rng.random_range(0..n as u16);
+                    if w != a && w != b {
+                        break w;
+                    }
+                };
+                gates.push(match rng.random_range(0..3u32) {
+                    0 => XGate::cnot(a, b),
+                    1 => XGate::conj(a, [(b, true), (c, rng.random_bool(0.5))]).unwrap(),
+                    _ => XGate::from_g57([a, b, c]),
+                });
+            }
+            let before = gates.clone();
+            commuting_shuffle(&mut gates, &mut rng);
+            // Same multiset of gates, same function on every input, new order.
+            let mut counts = std::collections::HashMap::new();
+            for g in &before {
+                *counts.entry(g.clone()).or_insert(0i64) += 1;
+            }
+            for g in &gates {
+                *counts.entry(g.clone()).or_insert(0i64) -= 1;
+            }
+            assert!(counts.values().all(|&c| c == 0), "gate multiset changed");
+            for input in 0..(1u64 << n) {
+                assert_eq!(
+                    eval_u64(&gates, input),
+                    eval_u64(&before, input),
+                    "seed={seed:#x} input={input:#x}"
+                );
+            }
+            assert_ne!(gates, before, "seed={seed:#x}: order untouched");
+        }
+    }
+
+    #[test]
+    fn gadget_body_carries_nonlinear_rg_material() {
+        // Complemented (comp=1) gates come only from the Z bookends and the
+        // reinstated nonlinear g57 RG networks; the preblock, W_i, SG
+        // fragments, and any linear RG are pure conjunctions. So a count
+        // well above the two bookends certifies the RG policy is nonlinear.
+        let n = 6;
+        let main = CircuitSeq {
+            gates: (0..40)
+                .map(|k| {
+                    [
+                        (k % n) as u16,
+                        ((k + 1) % n) as u16,
+                        ((k + 2) % n) as u16,
+                    ]
+                })
+                .collect(),
+        };
+        let bookend_size = (2 * n * (n as f64).ln() as usize).max(64);
+        let mut rng = StdRng::seed_from_u64(0xda7a_0001);
+        let g = gadgetize_cnot(&main, n, 1, &mut rng);
+        let comp_gates = g.gates.iter().filter(|g| g.comp).count();
+        assert!(
+            comp_gates > 2 * bookend_size,
+            "expected nonlinear RG g57s beyond the {} bookend gates, found {} comp gates",
+            2 * bookend_size,
+            comp_gates
+        );
+    }
+
+    #[test]
     fn compose_a_realizes_the_reference_map() {
         let n = 3;
         let mask = 1usize << n;
@@ -4456,8 +4682,11 @@ mod cnot_gadget_tests {
         for seed in 0..16u64 {
             let mut legacy_rng = StdRng::seed_from_u64(0x1ea0_0000 + seed);
             let mut cnot_rng = StdRng::seed_from_u64(0x1ea0_0000 + seed);
-            let legacy_gadget = gadgetize(&main, n, 2, &mut legacy_rng).gates.len();
-            let cnot_gadget = gadgetize_cnot(&main, n, 2, &mut cnot_rng).gates.len();
+            // Matched RG rate: one nonlinear RG per SG on both paths (the
+            // cnot path now draws the same {RG1,RG2,RG3} g57 networks, so the
+            // lean margin comes from the 4-fragment SG and 7-CNOT W_i alone).
+            let legacy_gadget = gadgetize(&main, n, 1, &mut legacy_rng).gates.len();
+            let cnot_gadget = gadgetize_cnot(&main, n, 1, &mut cnot_rng).gates.len();
             assert!(cnot_gadget < legacy_gadget, "gadget seed={seed}");
             legacy_gadget_total += legacy_gadget;
             cnot_gadget_total += cnot_gadget;

@@ -206,7 +206,7 @@ fn add_shoot_args(c: Command) -> Command {
                         .required(false)
                         .default_value("2")
                         .value_parser(clap::value_parser!(usize))
-                        .help("RG randomization rate. --cnot --gadgetize: number of RGs (uniform RG2/RG3 draws) between consecutive SG gadgets (default 2). Other paths: number of SG gadgets between each single RG"),
+                        .help("RG randomization rate. --cnot --gadgetize: number of nonlinear RGs (uniform RG1/RG2/RG3 draws) between consecutive SG gadgets (defaults to 1 there). Other paths: number of SG gadgets between each single RG (default 2)"),
                 )
                 .arg(
                     Arg::new("egg")

@@ -76,6 +76,16 @@ pub fn run(sub: &clap::ArgMatches) {
             println!("Empty file");
             return;
         }
+        // The cnot gadget path settles on ONE nonlinear RG per SG unless
+        // --rg-frequency is given explicitly (the clap default of 2 belongs
+        // to the legacy every-K-SGs meaning on the other paths).
+        let rg_freq = if sub.value_source("rg_frequency")
+            == Some(clap::parser::ValueSource::DefaultValue)
+        {
+            1
+        } else {
+            rg_freq
+        };
         let c = CircuitSeq::from_string(&data);
         let collision_rounds: usize = *sub.get_one("collision_rounds").unwrap();
         let stable_compressions: usize = *sub.get_one("stable_compressions").unwrap();
