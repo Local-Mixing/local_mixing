@@ -589,6 +589,9 @@ pub struct Mixer {
     // the outgoing window, the number of equivalent DB circuits, and (on
     // success) the replacing subcircuit.
     db_record: Option<std::io::BufWriter<std::fs::File>>,
+    // Which geometry built the window of the CURRENT db_attempt (see
+    // sample_window); stamped into --db-record attempt lines.
+    db_last_sampler: DbSample,
 }
 
 pub enum MixStop {
@@ -669,6 +672,7 @@ impl Mixer {
             db,
             db_budget,
             db_record: None,
+            db_last_sampler: DbSample::Contiguous,
         }
     }
 
@@ -1834,9 +1838,12 @@ impl Mixer {
 
         // Sample the window (contiguous or convex); g1dir drives the incoming
         // direction pivot below.
-        let Some((ids, g1dir)) = self.sample_window(len) else {
+        let Some((ids, g1dir, smp)) = self.sample_window(len) else {
             return false;
         };
+        // Stamped into every --db-record attempt line (smp=ctg|cvx) so stats
+        // can split hits by sampler geometry, esp. under --db-sample mixed.
+        self.db_last_sampler = smp;
         let window: Vec<XGate> = ids.iter().map(|&id| self.arena.gate(id).clone()).collect();
 
         // Prefix descent, largest first: try the full k-gate window, then the
@@ -2051,6 +2058,10 @@ impl Mixer {
     // are printed as `target:comp:ctrl(pol)...`, one circuit per line.
     fn record_db_attempt(&mut self, window: &[XGate], matches: usize, repl: Option<&[XGate]>) {
         use std::io::Write;
+        let smp = match self.db_last_sampler {
+            DbSample::Convex => "cvx",
+            _ => "ctg",
+        };
         let Some(w) = self.db_record.as_mut() else { return };
         fn fmt(gates: &[XGate]) -> String {
             gates
@@ -2065,10 +2076,11 @@ impl Mixer {
         }
         let _ = writeln!(
             w,
-            "attempt mv={} matches={} replaced={}",
+            "attempt mv={} matches={} replaced={} smp={}",
             self.moves_done,
             matches,
-            repl.is_some() as u8
+            repl.is_some() as u8,
+            smp
         );
         let _ = writeln!(w, "  out {}", fmt(window));
         if let Some(r) = repl {
@@ -2271,15 +2283,21 @@ impl Mixer {
         ids
     }
 
-    fn sample_window(&mut self, w: usize) -> Option<(Vec<u32>, Dir)> {
+    // Returns the sampled window plus WHICH geometry actually built it (the
+    // coin outcome under Mixed), so records and stats can split by sampler.
+    fn sample_window(&mut self, w: usize) -> Option<(Vec<u32>, Dir, DbSample)> {
         match self.params.db_sample {
-            DbSample::Contiguous => self.collect_contiguous(w),
-            DbSample::Convex => self.collect_convex(w),
+            DbSample::Contiguous => {
+                self.collect_contiguous(w).map(|(ids, d)| (ids, d, DbSample::Contiguous))
+            }
+            DbSample::Convex => {
+                self.collect_convex(w).map(|(ids, d)| (ids, d, DbSample::Convex))
+            }
             DbSample::Mixed => {
                 if self.rng.random_bool(0.5) {
-                    self.collect_contiguous(w)
+                    self.collect_contiguous(w).map(|(ids, d)| (ids, d, DbSample::Contiguous))
                 } else {
-                    self.collect_convex(w)
+                    self.collect_convex(w).map(|(ids, d)| (ids, d, DbSample::Convex))
                 }
             }
         }
@@ -3165,7 +3183,7 @@ mod mix_tests {
             let mut got = 0usize;
             for w in 0..4000 {
                 let win = (w % 5) + 2; // window sizes 2..=6
-                if let Some((ids, _dir)) = mx.sample_window(win) {
+                if let Some((ids, _dir, _smp)) = mx.sample_window(win) {
                     got += 1;
                     // contiguous in link order
                     for pair in ids.windows(2) {

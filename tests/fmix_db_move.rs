@@ -161,8 +161,12 @@ fn fmix_db_move_fires_and_preserves_equivalence() {
     let rec = std::fs::read_to_string(&rec_path).unwrap();
     assert!(rec.contains("matches="), "record missing match counts");
     assert!(
-        rec.lines().any(|l| l.starts_with("attempt") && l.ends_with("replaced=1")),
+        rec.lines().any(|l| l.starts_with("attempt") && l.contains("replaced=1")),
         "record shows no successful replacement"
+    );
+    assert!(
+        rec.lines().any(|l| l.starts_with("attempt") && (l.contains("smp=ctg") || l.contains("smp=cvx"))),
+        "record missing the sampler tag"
     );
     assert!(rec.contains("  in  "), "record missing the replacing subcircuit line");
 
