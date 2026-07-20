@@ -101,6 +101,24 @@ fn add_shoot_args(c: Command) -> Command {
                         .help("Number of hardcoded M rounds for --slice-zero-hardcoded"),
                 )
                 .arg(
+                    Arg::new("slice_zero_ccnot")
+                        .long("slice-zero-ccnot")
+                        .alias("slice_zero_ccnot")
+                        .help("(--cnot) Before gadgetization, insert an M of positive CNOT/CCNOTs (targets on wires 0..n, every gate reading >=1 wire of n..2n) that preserves the second-half=0 slice and affinely disturbs x off it")
+                        .required(false)
+                        .requires("gadgetize")
+                        .requires("cnot")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("slice_zero_ccnot_gates")
+                        .long("slice-zero-ccnot-gates")
+                        .alias("slice_zero_ccnot_gates")
+                        .required(false)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Number of M gates for --slice-zero-ccnot (default: 10n; ~1/3 CNOTs with invertible parity matrix and ~2/3 CCNOTs, in one uniformly random order)"),
+                )
+                .arg(
                     Arg::new("gadget_path")
                         .long("gadget_path")
                         .required(false)
@@ -161,7 +179,7 @@ fn add_shoot_args(c: Command) -> Command {
                         .required(false)
                         .default_value("2")
                         .value_parser(clap::value_parser!(usize))
-                        .help("Number of SG gadgets between each RG gadget (2 = two SGs then one RG)"),
+                        .help("RG randomization rate. --cnot --gadgetize: number of RGs (uniform RG2/RG3 draws) between consecutive SG gadgets (default 2). Other paths: number of SG gadgets between each single RG"),
                 )
                 .arg(
                     Arg::new("egg")

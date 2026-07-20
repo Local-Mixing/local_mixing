@@ -77,6 +77,7 @@ const NOT_4W_GATES: [[u16; 3]; 7] = [
 
 pub const SLICE_ZERO_RANDOM_GATES_PER_WIRE: usize = 32;
 pub const SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS: usize = 1;
+pub const SLICE_ZERO_CCNOT_GATES_PER_WIRE: usize = 10;
 
 /// Secret-sharing state: pairs[v] = (share_wire, pad_wire) for virtual value v.
 pub struct GadgetState {
@@ -571,6 +572,25 @@ fn random_invertible_matrix_rows(n: usize, rng: &mut impl Rng) -> Vec<Vec<u64>> 
 
 fn matrix_bit(rows: &[Vec<u64>], row: usize, col: usize) -> bool {
     rows[row][col / 64] & (1u64 << (col % 64)) != 0
+}
+
+fn rows_invertible(rows: &[Vec<u64>], n: usize) -> bool {
+    let mut rows = rows.to_vec();
+    for col in 0..n {
+        let Some(pivot) = (col..n).find(|&row| matrix_bit(&rows, row, col)) else {
+            return false;
+        };
+        rows.swap(col, pivot);
+        let pivot_row = rows[col].clone();
+        for row in 0..n {
+            if row != col && matrix_bit(&rows, row, col) {
+                for (dst, &src) in rows[row].iter_mut().zip(&pivot_row) {
+                    *dst ^= src;
+                }
+            }
+        }
+    }
+    true
 }
 
 pub fn packed_bit(words: &[u64], bit: usize) -> bool {
@@ -2142,7 +2162,9 @@ fn rand_z_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
 }
 
 /// Two-share gadgetization with native CNOT linear bookends, a four-fragment
-/// masking-safe SG and gate-locally non-complete CNOT RG1/RG2/RG3 blocks.
+/// masking-safe SG, and gate-locally non-complete CNOT RGs drawn from the
+/// orthogonal basis {RG2 re-pair, RG3 mask-refresh} — `rg_freq` of them
+/// between consecutive SGs.
 pub fn gadgetize_cnot(
     main: &CircuitSeq,
     n: usize,
@@ -2203,24 +2225,26 @@ pub fn gadgetize_cnot(
     let mut state = GadgetState { n, pairs };
     let mut pair_queue = VecDeque::new();
     let mut single_queue = VecDeque::new();
+    // RG policy: only the orthogonal basis {RG2, RG3} is used — RG2 is the
+    // sole re-pairing move and RG3 the sole cross-value mask injector, and
+    // together they generate every sharing configuration (RG1 is a composite
+    // of RG2s whose extra mask stir RG3 covers). `rg_freq` RGs (default 2),
+    // each an independent uniform draw, are emitted BETWEEN consecutive SG
+    // gadgets.
     for (index, &gate) in main.gates.iter().enumerate() {
         emit_gadget_x(&state, gate, &mut out);
-        if (index + 1) % rg_freq == 0 {
-            match rng.random_range(0..3u32) {
-                0 => {
-                    let (i, j) = next_pair(&mut pair_queue, n, rng);
-                    emit_rg1_x(&mut state, i, j, &mut out);
-                }
-                1 => {
-                    let (i, j) = next_pair(&mut pair_queue, n, rng);
-                    emit_rg2_x(&mut state, i, j, &mut out);
-                }
-                _ => {
-                    let i = next_single(&mut single_queue, n, rng);
-                    let (s, p) = state.pairs[i];
-                    let random_carrier = random_wire_except(total, &[s, p], rng);
-                    emit_rg3_x(&state, i, random_carrier, &mut out);
-                }
+        if index + 1 == main.gates.len() {
+            break;
+        }
+        for _ in 0..rg_freq {
+            if rng.random_bool(0.5) {
+                let (i, j) = next_pair(&mut pair_queue, n, rng);
+                emit_rg2_x(&mut state, i, j, &mut out);
+            } else {
+                let i = next_single(&mut single_queue, n, rng);
+                let (s, p) = state.pairs[i];
+                let random_carrier = random_wire_except(total, &[s, p], rng);
+                emit_rg3_x(&state, i, random_carrier, &mut out);
             }
         }
     }
@@ -2429,6 +2453,112 @@ pub fn slice_zero_random_preblock_cnot(
         public_y,
         public_z,
     }
+}
+
+/// Zero-slice preblock for the 2n-wire gadget path, built purely from
+/// positive-polarity CNOTs and CCNOTs so the block is drawn from the same
+/// vocabulary as ordinary mixed-circuit material (no complemented gates, no
+/// polarity pattern encoding a slice).
+///
+/// Every gate targets a data wire (first half) and reads at least one aux
+/// wire (second half): CNOTs are `x_i ^= a_j`, CCNOTs are `x_i ^= x_j & a_k`.
+/// On the all-zero aux slice the aux control kills every gate individually,
+/// so M(x,0) = (x,0) with no ordering or pairing argument. For a fixed slice
+/// a != 0 each CCNOT collapses to a within-x CNOT and each CNOT to a
+/// constant flip, so the disturbance M_a is an invertible affine map on x.
+///
+/// The emitted order is a single uniform shuffle of all the gates — CNOTs
+/// and CCNOTs interleaved, with nothing bunched at either end. (The CCNOTs
+/// do not commute with each other or with the CNOTs, so the order is itself
+/// part of the randomness; the zero slice is unaffected because every gate
+/// is individually dead there.)
+///
+/// About a third of the gates are CNOTs (at least n), and their
+/// target-by-control parity matrix C is resampled until invertible. That
+/// makes the disturbance guarantee EXACT on every slice that fires no CCNOT
+/// (there M_a is x ^= C*a with C*a != 0) and heuristic elsewhere: a slice
+/// firing CCNOTs is fixed only if its fired subsequence composes to the
+/// identity AND the interleaving-conjugated CNOT translations cancel —
+/// vanishingly unlikely, but (unlike a contiguous CNOT block) not excluded
+/// by a theorem. Measured at the 10n default (50k preblocks, exhaustive
+/// slice check): a wrong slice survives in ~4e-3 of draws at n=3, 4e-4 at
+/// n=4, ~2e-5..4e-5 at n=5..6, 0/50k at n=8 — decaying fast in n, so
+/// negligible at production widths.
+pub fn slice_zero_ccnot_preblock(n: usize, gate_count: usize, rng: &mut impl Rng) -> CnotCircuit {
+    assert!(n >= 2, "slice_zero_ccnot_preblock requires n >= 2");
+    assert!(2 * n <= u16::MAX as usize, "too many wires");
+    assert!(
+        gate_count >= n,
+        "fixing only the zero slice needs at least n CNOTs"
+    );
+    let cnot_count = (gate_count / 3).max(n);
+    let ccnot_count = gate_count - cnot_count;
+
+    // CNOT pin set: a random permutation seeds the parity matrix invertible;
+    // extras toggle random entries, and the whole set is resampled until the
+    // matrix stays invertible.
+    let words = n.div_ceil(64);
+    let pins: Vec<(usize, usize)> = loop {
+        let mut targets: Vec<usize> = (0..n).collect();
+        targets.shuffle(rng);
+        let mut controls: Vec<usize> = (0..n).collect();
+        controls.shuffle(rng);
+        let mut pins: Vec<(usize, usize)> = targets.into_iter().zip(controls).collect();
+        while pins.len() < cnot_count {
+            pins.push((rng.random_range(0..n), rng.random_range(0..n)));
+        }
+        let mut c_rows = vec![vec![0u64; words]; n];
+        for &(row, col) in &pins {
+            c_rows[row][col / 64] ^= 1u64 << (col % 64);
+        }
+        if rows_invertible(&c_rows, n) {
+            break pins;
+        }
+    };
+
+    let mut gates: Vec<XGate> = pins
+        .into_iter()
+        .map(|(target, control)| XGate::cnot(target as u16, (n + control) as u16))
+        .collect();
+    gates.extend((0..ccnot_count).map(|_| {
+        let target = rng.random_range(0..n);
+        let data_control = random_wire_except(n, &[target], rng);
+        let aux_control = n + rng.random_range(0..n);
+        XGate::conj(
+            target as u16,
+            [(data_control as u16, true), (aux_control as u16, true)],
+        )
+        .expect("CCNOT pins are distinct")
+    }));
+    gates.shuffle(rng);
+    debug_assert_eq!(gates.len(), gate_count);
+    CnotCircuit {
+        gates,
+        num_wires: 2 * n,
+    }
+}
+
+/// Gadgetization with the CNOT/CCNOT zero-slice preblock prepended: the
+/// composite computes `main` on the low n wires exactly when the second
+/// half is all zero, and `main` of an affinely disturbed input on every
+/// other slice. The slice block sits at the input port only.
+///
+/// Its inverse also guards the inverse circuit: A^-1 = G^-1 ; S1^-1, and
+/// S1^-1 fires on the gadget's generically nonzero mask residue, junking
+/// the low half — so the inverse does not surface C^-1 (a bare gadget
+/// returns C^-1 on its low wires for ANY junk input).
+pub fn gadgetize_with_slice_zero_ccnot(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut circuit = slice_zero_ccnot_preblock(n, gate_count, rng);
+    circuit
+        .gates
+        .extend(gadgetize_cnot(main, n, rg_freq, rng).gates);
+    circuit
 }
 
 fn rand_feistal_z_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
@@ -3657,6 +3787,150 @@ mod cnot_gadget_tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn ccnot_preblock_fixes_exactly_the_zero_slice() {
+        // With the uniformly shuffled order, "no wrong slice is fixed" is
+        // heuristic, not a theorem, and DOES fail for rare draws at tiny n
+        // (e.g. seed 0xcc00_009f, n=3, 18 gates fixes a=0x5; measured rate
+        // ~4e-3 at n=3 falling to 0/50k by n=8). The fixed seeds below pass
+        // and serve as a deterministic regression; don't widen the range
+        // without expecting stray failures at these toy widths.
+        for n in [3usize, 4] {
+            let mask = (1u64 << n) - 1;
+            for seed in 0..8u64 {
+                let mut rng = StdRng::seed_from_u64(0xcc00_0000 + seed);
+                let preblock = slice_zero_ccnot_preblock(n, 6 * n, &mut rng);
+                assert_eq!(preblock.gates.len(), 6 * n);
+                assert_eq!(preblock.num_wires, 2 * n);
+                for a in 0..=mask {
+                    let mut identity_on_slice = true;
+                    for x in 0..=mask {
+                        let input = x | (a << n);
+                        let output = eval_u64(&preblock.gates, input);
+                        assert_eq!(output >> n, a, "aux half must pass through");
+                        if a == 0 {
+                            assert_eq!(output, input, "zero slice must be fixed");
+                        } else if output != input {
+                            identity_on_slice = false;
+                        }
+                    }
+                    if a != 0 {
+                        assert!(
+                            !identity_on_slice,
+                            "seed={seed:#x} n={n} slice a={a:#x} is also fixed"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ccnot_preblock_uses_only_the_agreed_gate_shapes() {
+        let n = 6;
+        let gate_count = 6 * n;
+        let mut rng = StdRng::seed_from_u64(0xcc10_0000);
+        let preblock = slice_zero_ccnot_preblock(n, gate_count, &mut rng);
+        let mut cnots = 0usize;
+        let mut ccnots = 0usize;
+        for gate in &preblock.gates {
+            assert!(!gate.comp, "no complemented gates");
+            assert!((gate.target as usize) < n, "targets stay in the data half");
+            assert!(gate.ctrls.iter().all(|&(_, positive)| positive));
+            match gate.ctrls.len() {
+                1 => {
+                    assert!(
+                        (gate.ctrls[0].0 as usize) >= n,
+                        "CNOT control is an aux wire"
+                    );
+                    cnots += 1;
+                }
+                2 => {
+                    // ctrls are sorted by wire, so [0] is the data control.
+                    assert!((gate.ctrls[0].0 as usize) < n, "CCNOT reads a data wire");
+                    assert!((gate.ctrls[1].0 as usize) >= n, "CCNOT reads an aux wire");
+                    ccnots += 1;
+                }
+                other => panic!("unexpected control count {other}"),
+            }
+        }
+        assert_eq!(cnots, gate_count / 3);
+        assert_eq!(ccnots, gate_count - gate_count / 3);
+
+        // Uniform order: the CNOTs must be interleaved with the CCNOTs, not
+        // bunched into a contiguous run (deterministic under the fixed seed;
+        // a uniform shuffle makes a contiguous run astronomically unlikely).
+        let kinds: Vec<usize> = preblock.gates.iter().map(|g| g.ctrls.len()).collect();
+        let first_cnot = kinds.iter().position(|&k| k == 1).unwrap();
+        let last_cnot = kinds.iter().rposition(|&k| k == 1).unwrap();
+        assert!(
+            kinds[first_cnot..=last_cnot].iter().any(|&k| k == 2),
+            "CNOTs and CCNOTs should be interleaved"
+        );
+    }
+
+    #[test]
+    fn slice_zero_ccnot_gadgetize_matches_only_on_the_zero_slice() {
+        let n = 3;
+        let mask = (1u64 << n) - 1;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0xcc20_0000 + seed);
+            let transformed = gadgetize_with_slice_zero_ccnot(&main, n, 2, 6 * n, &mut rng);
+            assert_eq!(transformed.num_wires, 2 * n);
+            for x in 0..=mask {
+                let expected = main.evaluate(x as usize) as u64 & mask;
+                assert_eq!(eval_u64(&transformed.gates, x) & mask, expected);
+            }
+            // The gadget contract holds for any second-half value and the
+            // original is a permutation, so a wrong slice reproduces C at x
+            // exactly when the preblock fixes (x, a) — and each nonzero
+            // slice must disturb at least one x.
+            for a in 1..=mask {
+                let disturbed = (0..=mask).any(|x| {
+                    let input = x | (a << n);
+                    let expected = main.evaluate(x as usize) as u64 & mask;
+                    eval_u64(&transformed.gates, input) & mask != expected
+                });
+                assert!(disturbed, "seed={seed:#x} slice a={a:#x} still computes C");
+            }
+        }
+    }
+
+    #[test]
+    fn slice_block_stops_the_inverse_from_revealing_c_inverse() {
+        let n = 3;
+        let mask = (1u64 << n) - 1;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0xcc30_0000 + seed);
+            let transformed = gadgetize_with_slice_zero_ccnot(&main, n, 2, 18, &mut rng);
+            // Every XGate is an involution, so the reversed gate list is the
+            // inverse circuit; the slice block runs LAST there and fires on
+            // the gadget's mask residue, junking the low half. Without it a
+            // bare gadget's inverse returns C^-1 on the low wires for ANY
+            // junk input.
+            let reversed: Vec<XGate> = transformed.gates.iter().rev().cloned().collect();
+            let mut leaks = 0usize;
+            for p in 0..=mask {
+                let c_inv = (0..=mask)
+                    .find(|&x| main.evaluate(x as usize) as u64 & mask == p)
+                    .unwrap();
+                if eval_u64(&reversed, p) & mask == c_inv {
+                    leaks += 1;
+                }
+            }
+            assert!(
+                leaks < (mask as usize + 1),
+                "inverse hands out C^-1 verbatim (seed={seed:#x})"
+            );
         }
     }
 

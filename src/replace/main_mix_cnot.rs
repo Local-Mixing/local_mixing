@@ -21,7 +21,7 @@ use crate::{
     replace::gadgets::{
         CnotCircuit, feistalize_cnot, feistalize_with_slice_zero_cnot,
         feistalize_with_slice_zero_hardcoded_cnot, feistalize_with_slice_zero_random_cnot,
-        gadgetize_cnot, packed_bit,
+        gadgetize_cnot, gadgetize_with_slice_zero_ccnot, packed_bit,
     },
 };
 
@@ -46,6 +46,8 @@ pub struct CnotSssParams<'a> {
     pub slice_zero_random_gates: usize,
     pub slice_zero_hardcoded: bool,
     pub slice_zero_hardcoded_rounds: usize,
+    pub slice_zero_ccnot: bool,
+    pub slice_zero_ccnot_gates: usize,
     pub gadget_path: Option<&'a str>,
     pub full_shuffle: bool,
     pub full_shuffle_early: bool,
@@ -149,11 +151,20 @@ fn functionality_check(
         } else {
             random_u1024(&mut rng) & mask(total_wires)
         };
-        if view == FunctionView::FeistalMiddle {
-            if let Some((public_y, public_z)) = fixed_slice {
-                input &= low_mask;
-                input |= public_y << n;
-                input |= public_z << (2 * n);
+        if let Some((public_y, public_z)) = fixed_slice {
+            match view {
+                FunctionView::FeistalMiddle => {
+                    input &= low_mask;
+                    input |= public_y << n;
+                    input |= public_z << (2 * n);
+                }
+                // The gadget path has a single n-bit slice on the second
+                // half, carried in the pair's first element; pin it.
+                FunctionView::GadgetLow => {
+                    input &= low_mask;
+                    input |= public_y << n;
+                }
+                FunctionView::Whole => {}
             }
         }
 
@@ -333,11 +344,26 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
             )
         }
     } else if p.do_gadgetize {
-        (
-            gadgetize_cnot(original, p.n, p.rg_freq, &mut rng),
-            FunctionView::GadgetLow,
-            "gadgetized",
-        )
+        if p.slice_zero_ccnot {
+            fixed_slice = Some((U1024::zero(), U1024::zero()));
+            (
+                gadgetize_with_slice_zero_ccnot(
+                    original,
+                    p.n,
+                    p.rg_freq,
+                    p.slice_zero_ccnot_gates,
+                    &mut rng,
+                ),
+                FunctionView::GadgetLow,
+                "slice-zero-ccnot gadgetized",
+            )
+        } else {
+            (
+                gadgetize_cnot(original, p.n, p.rg_freq, &mut rng),
+                FunctionView::GadgetLow,
+                "gadgetized",
+            )
+        }
     } else {
         (
             CnotCircuit {
@@ -548,12 +574,17 @@ mod tests {
         let source = CircuitSeq {
             gates: vec![[0, 1, 2], [2, 0, 1]],
         };
-        for (gadgetize, feistalize) in [(true, false), (false, true)] {
+        for (gadgetize, feistalize, slice_ccnot) in [
+            (true, false, false),
+            (false, true, false),
+            (true, false, true),
+        ] {
             let dir = std::env::temp_dir().join(format!(
-                "local_mixing_cnot_driver_{}_{}_{}",
+                "local_mixing_cnot_driver_{}_{}_{}_{}",
                 std::process::id(),
                 gadgetize as u8,
-                feistalize as u8
+                feistalize as u8,
+                slice_ccnot as u8
             ));
             std::fs::create_dir_all(&dir).unwrap();
             let output = dir.join("out.txt");
@@ -572,6 +603,8 @@ mod tests {
                 slice_zero_random_gates: 96,
                 slice_zero_hardcoded: false,
                 slice_zero_hardcoded_rounds: 1,
+                slice_zero_ccnot: slice_ccnot,
+                slice_zero_ccnot_gates: 18,
                 gadget_path: Some(gadget.to_str().unwrap()),
                 full_shuffle: false,
                 full_shuffle_early: false,
