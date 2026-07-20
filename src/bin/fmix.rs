@@ -119,6 +119,15 @@ struct Args {
     /// grow the circuit), instead of the normal contract/expand step. 0 = off.
     #[arg(long, default_value_t = 0.0)]
     p_db: f64,
+    /// Fixed top-level twist rate: each round is a conjugation twist with this
+    /// probability, independent of the contract/expand economy (whose round
+    /// supply collapses when the size controller holds at target). Twist type
+    /// follows the w-twist-* weights as ratios (neg/swap 50/50 when all 0);
+    /// with this set, the expansion mix no longer performs twists. Size
+    /// machinery balances around the fixed rate. Rough sizing: coverage per
+    /// move ~= p-twist x mean-window-span / size.
+    #[arg(long, default_value_t = 0.0)]
+    p_twist: f64,
     /// Anneal p-db linearly across the move budget, ending at this value
     /// (the "splitting phase" lever: retire the DB growth engine as material
     /// turns wide). Negative = no anneal.
@@ -250,6 +259,12 @@ fn main() {
         args.moves,
         args.seed
     );
+    if args.p_twist > 0.0 {
+        println!(
+            "[fmix] first-class twist rounds ON: p_twist={} (w-twist-* weights serve as type ratios)",
+            args.p_twist
+        );
+    }
     if args.w_twist_neg > 0.0 || args.w_twist_swap > 0.0 || args.w_twist_cnot > 0.0 {
         println!(
             "[fmix] twists ON: w_twist_neg={} w_twist_swap={} w_twist_cnot={} twist_min_len={}",
@@ -293,6 +308,7 @@ fn main() {
         twist_min_len: args.twist_min_len,
         w_db: args.w_db,
         p_db: args.p_db,
+        p_twist: args.p_twist,
         p_db_final: args.p_db_final,
         p_db_steer: args.p_db_steer,
         db_min_window: args.db_min_window,

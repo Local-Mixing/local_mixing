@@ -397,6 +397,17 @@ pub struct MixParams {
     // Dry-run measurement only for now — the splice policy when several
     // prefixes match (longest vs uniform) is an open design choice.
     pub db_prefixes: bool,
+    // Fixed top-level twist rate: with this probability a round performs one
+    // conjugation twist directly, decoupling twist supply (set by mixing
+    // needs) from the expansion-move economy (whose round supply collapses
+    // when the size controller holds at target — measured starvation: 57
+    // twists per 700k moves at deep equilibrium). The twist TYPE is drawn
+    // from the w_twist_* weights as ratios (neg/swap 50/50 when all are 0),
+    // and with p_twist > 0 the expansion mix no longer performs twists (the
+    // weights serve as ratios only). The size machinery balances around the
+    // fixed twist rate: bracket mass is absorbed by the steered DB throttle
+    // and walk contraction like any other growth source.
+    pub p_twist: f64,
     // Linear anneal of p_db across the move budget: the effective value runs
     // from p_db (move 0) to p_db_final (last move). < 0 = no anneal. The
     // "splitting phase" lever: retire the DB growth engine as material turns
@@ -459,6 +470,7 @@ impl Default for MixParams {
             db_wire_terms: 0,
             db_total_terms: 0,
             db_prefixes: false,
+            p_twist: 0.0,
             p_db_final: -1.0,
             p_db_steer: false,
             verify_every: 10_000,
@@ -778,28 +790,58 @@ impl Mixer {
         p.clamp(0.0, 1.0)
     }
 
+    // One first-class twist round: type drawn from the w_twist_* weights as
+    // ratios, neg/swap 50/50 when all are zero.
+    fn twist_round(&mut self) {
+        let (wn, ws, wc) = (
+            self.params.w_twist_neg.max(0.0),
+            self.params.w_twist_swap.max(0.0),
+            self.params.w_twist_cnot.max(0.0),
+        );
+        let total = wn + ws + wc;
+        let kind = if total <= 0.0 {
+            if self.rng.random_bool(0.5) { TwistKind::Neg } else { TwistKind::Swap }
+        } else {
+            let r = self.rng.random_range(0.0..total);
+            if r < wn {
+                TwistKind::Neg
+            } else if r < wn + ws {
+                TwistKind::Swap
+            } else {
+                TwistKind::Cnot
+            }
+        };
+        self.twist_move(kind);
+    }
+
     pub fn run(&mut self) -> MixStop {
         while self.moves_done < self.params.moves {
-            // Top-level: with probability p_db_eff the whole round is a
-            // size-agnostic DB replacement move (a uniform random equivalent of
-            // any gate count), regardless of the contract/expand decision. On a
-            // miss the round is spent (no fallthrough) — that IS the chosen move.
+            // Top-level coins, in order: p_twist (a FIXED rate the rest of the
+            // machinery balances around), then p_db_eff, then the walk.
+            let took_twist = self.params.p_twist > 0.0
+                && self.rng.random_bool(self.params.p_twist.clamp(0.0, 1.0))
+                && { self.twist_round(); true };
+            // With probability p_db_eff the round is a size-agnostic DB
+            // replacement move (a uniform random equivalent of any gate count),
+            // regardless of the contract/expand decision. On a miss the round is
+            // spent (no fallthrough) — that IS the chosen move.
             let p_db_now = if self.params.p_db > 0.0 || self.params.p_db_final > 0.0 {
                 self.p_db_eff()
             } else {
                 0.0
             };
-            let took_agnostic = p_db_now > 0.0
+            let took_agnostic = !took_twist
+                && p_db_now > 0.0
                 && self.arena.len() >= self.params.db_min_window.max(2)
                 && self.rng.random_bool(p_db_now)
                 && { self.db_attempt(DbMode::SizeAgnostic); true };
-            if !took_agnostic {
+            if !took_twist && !took_agnostic {
                 let excess = self.arena.len() as f64 - self.params.target_size as f64;
                 // In steer mode the 0.98 ceiling is the binding constraint on
                 // holding size: its 2% expansion floor is a structural growth
                 // source (measured +0.007/move) that saturated contraction
                 // cannot absorb. Above target, steered runs contract harder.
-                let hi = if self.params.p_db_steer && excess > 0.0 { 0.998 } else { 0.98 };
+                let hi = if self.params.p_db_steer && excess > 0.0 { 0.9995 } else { 0.98 };
                 let p_contract =
                     (1.0 / (1.0 + (-excess / self.params.temp).exp())).clamp(0.02, hi);
                 // Nothing to contract below two gates; every contraction channel
@@ -893,13 +935,15 @@ impl Mixer {
 
     fn expand_move(&mut self) {
         let p = &self.params;
-        let total = p.w_cross
-            + p.w_fresh
-            + p.w_unsub
-            + p.w_insert
-            + p.w_twist_neg
-            + p.w_twist_swap
-            + p.w_twist_cnot;
+        // With p_twist > 0 twists are first-class rounds and the w_twist_*
+        // weights serve as type ratios only — the expansion mix must not
+        // double-dose them.
+        let (tw_n, tw_s, tw_c) = if p.p_twist > 0.0 {
+            (0.0, 0.0, 0.0)
+        } else {
+            (p.w_twist_neg, p.w_twist_swap, p.w_twist_cnot)
+        };
+        let total = p.w_cross + p.w_fresh + p.w_unsub + p.w_insert + tw_n + tw_s + tw_c;
         if total <= 0.0 {
             return;
         }
@@ -924,16 +968,16 @@ impl Mixer {
         // selection (and hence every seed's trajectory) is identical to the
         // pre-twist chain, and with only neg/swap set it is identical to the
         // pre-cnot chain.
-        if p.w_twist_neg > 0.0 && r - p.w_insert < p.w_twist_neg && r >= p.w_insert {
+        if tw_n > 0.0 && r - p.w_insert < tw_n && r >= p.w_insert {
             self.twist_move(TwistKind::Neg);
             return;
         }
-        let ns = p.w_insert + p.w_twist_neg;
-        if p.w_twist_swap > 0.0 && r - ns < p.w_twist_swap && r >= ns {
+        let ns = p.w_insert + tw_n;
+        if tw_s > 0.0 && r - ns < tw_s && r >= ns {
             self.twist_move(TwistKind::Swap);
             return;
         }
-        if p.w_twist_cnot > 0.0 && r >= ns + p.w_twist_swap {
+        if tw_c > 0.0 && r >= ns + tw_s {
             self.twist_move(TwistKind::Cnot);
             return;
         }
