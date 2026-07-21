@@ -1,0 +1,363 @@
+# CIRCUIT_GENERATION_INFO
+
+Provenance of every circuit in `circuits/`, reconstructed from the project memory
+records (`~/.claude/projects/.../memory/`) and confirmed against each file's
+on-disk gate count/format. Generated 2026-07-10.
+
+Where a run is fully documented, exact parameters are given. Where the records do
+not cover a file (mostly older June files), that is stated explicitly as
+**UNRECORDED** rather than guessed.
+
+--------------------------------------------------------------------------------
+## 0. File formats
+
+- **g57** — base-83 `repr()` text, one line, `;`-separated 3-wire gates
+  `[target, pos_ctrl, neg_ctrl]` computing `t ^= pos OR NOT neg`. Gate count =
+  number of `;`. All ssg/sss mixer outputs and their checkpoints are g57.
+- **mpmct1** — header `mpmct1 <wires> <gates>` then one gate/line
+  `target comp k w p ...` (mixed-polarity multi-controlled Toffolis, `comp=1`
+  marks a surviving original g57 = "fossil"). All `fsplit` / `fmix` / `fcompress`
+  outputs are mpmct1. Read back with `--input-format mpmct1`.
+- Feistelize+slice deliverables carry a 2-line `# y=0x…` / `# z=0x…` header
+  before the g57 body.
+
+## 1. Pipeline primitives (the building blocks referenced below)
+
+- **genran** — `local_mixing_bin genran -n <wires> -m <gates>`: a fresh random
+  reversible g57 circuit. Used as raw sources C, D, or standalone.
+- **compose_A.py sandwich** — `A = [C on wires 0..n-1] ++ n CNOT-blocks (6 g57
+  each, w_{n+i} ^= w_i) ++ [D on wires 0..n-1]`. For n=128, m=3000: **A = 6768
+  g57 gates / 256 wires**, self-testing A ≡ F(x,y) = (D(C(x)), y⊕C(x)). This is
+  the "cdcnot" block-cipher construction.
+- **gadgetize** — `ssg -n 256 -m 0 -x 10 --gadgetize`: expands the 256-wire A to
+  a ~67k-gate / **512-wire** g57 circuit (stage 0 of the sm/es/r/sl/cmp runs).
+- **ssg** — the generation-mixing mixer (variant of sss). Shoots/compresses in
+  size-thermostatted stages; every gate carries a generation tag; `--min-gen G`
+  stops when a fraction of gates reach generation ≥ G. Output is all-g57.
+- **fsplit** — post-mixer (`src/postmix/`, this project). Floats a g57 to a
+  collision and splits it past via the R0–R3 commutation rules, growing the
+  circuit toward `--size-bound`. Knobs: `--k-max K` (max controls/gate),
+  `--split-damp D` ("c"; a c-control gate splits w.p. min(2^-(c-D),1)),
+  `--seed`, and (later builds) g57×g57 collision targeting (`--g57-target-window`,
+  the "g57t" suffix). Surviving g57s = fossils; output mpmct1.
+- **fmix** — randomized size-thermostatted mixing chain over the mpmct1 gate set
+  (R-crossings + fresh-wire splits + merges under a temperature thermostat), a
+  *replacement* for fsplit whose goal is mixing at a held size. Knobs:
+  `--target-size`, `--moves`, `--k-max`, `--split-damp` (c), `--seed`.
+  `fmixdirect` = fmix run directly on an ssg g57 output (no fsplit stage);
+  `_fmix_` (plain) = fmix on an fsplit artifact; `fmixgad` = fmix on a gadgetized
+  A with no ssg at all. `.snapshot.mv<N>` = verified mid-run snapshot at N moves.
+- **fcompress** (`.fc`) — deterministic ESOP/ANF final compression pass
+  (attacker-computable "effective size"); gathers same-target gates, ANF-reduces,
+  re-emits mpmct1. Optional dead-cone pruning via `--live-wires`.
+- **feistelize + slice_zero_random** — `--feistalize --slice-zero-random`: turns a
+  genran source into a 384-wire feistelized circuit with a public (y,z) slice.
+
+--------------------------------------------------------------------------------
+## 2. cdcnot_m3000 lineage — block-cipher "sandwich" family
+
+Shared root: **C, D = genran n=128 m=3000; A = compose_A.py sandwich = 6768 g57 /
+256 wires; gadgetize → ~67k g57 / 512 wires.** Each named run draws its own fresh
+C/D/A of this recipe unless it explicitly shares an A. Source: `g57-cnot-identity.md`.
+
+### 2a. es / r experiment runs — delivered as stage CHECKPOINTS (not finals)
+Base ssg params (2026-07-03/04): `ssg -n 256 -m 0 -x 10 --gadgetize --pass-length
+100 --min-gen 30 --min-gen-fraction 0.95 --grow-threshold 200 --compress-fraction
+0.4` + rank scripts + `--equality_check`, env `CENTRALIZE=20`. Each was killed and
+resumed at least once (generation tags reset to 0 per resume). Source:
+`g57-cnot-identity.md`, `ssg-design-spec.md`.
+
+| File | fmt | gates | What it is |
+|---|---|---|---|
+| `cdcnot_m3000_es2_stage1_ckpt.txt` | g57 | 959,250 | es-series (adds `COMPRESS_STALL_FRAC=0.05 COMPRESS_STALL_WINDOW=2`). es2 = resume from `es_outstage7` (688,155 g). Stage-1 checkpoint captured during the "straggler freeze". Verified `equal -n 256` vs A. |
+| `cdcnot_m3000_es3_stage2_ckpt.txt` | g57 | 2,006,538 | es3 = resume of es2 from `es2_outstage1` on the budget binary (stall rule + `COMPRESS_CHUNK_BUDGET_MS=60000`). Stage-2 checkpoint (first >2M artifact). Verified vs A. |
+| `cdcnot_m3000_r4_stage3_ckpt.txt` | g57 | 616,239 | r-series, **legacy compression** (no stall rule), nice 10. r4 = resume from `r3_outstage7` (327,456 g). Stage-3 checkpoint (froze mid-compression, SIGKILLed). Verified vs A. |
+| `cdcnot_m3000_r5_stage3_ckpt.txt` | g57 | 1,152,754 | r5 = resume from `r4_outstage3` on the budget binary (legacy stop + `COMPRESS_CHUNK_BUDGET_MS=60000`), nice 10. Stage-3 checkpoint (outstage3). |
+
+Post-processing on 2a: **none** (all raw ssg checkpoints).
+
+### 2b. sl runs — litter + slow-compress, the gen-100 milestone
+ssg recipe: `--min-gen 100 --min-gen-fraction 0.95 --pass-length 100
+--target-size 2000000` + rank scripts + `--equality_check`, env `LITTER_RULES=1
+SLOW_COMPRESS=1 CENTRALIZE=20 VERIFY_DB_HITS=1 COMPRESS_CHUNK_BUDGET_MS=60000`.
+Ran the OLD uncapped binary (no FLOAT_SWEEP / DEGREE_FILTER / .tags). Source:
+`litter-mixing-design.md`, `session-handoff-2026-07-06.md`.
+
+| File | fmt | gates | What it is |
+|---|---|---|---|
+| `cdcnot_m3000_sl1_stage3_ckpt.txt` | g57 | 799,078 | sl1 stage-3 checkpoint, floor gen 38. Verified `equal -n 256` vs A. |
+| `cdcnot_m3000_sl1_midstage4_snapshot.txt` | g57 | 991,871 | sl1 live snapshot (via `write_now`/`temp_compression.txt`), mid stage-4. Verified vs A. |
+| `cdcnot_m3000_sl1_mixed_final.txt` | g57 | 847,272 | sl1 FINAL, gen 100 (floor 100, 95.2% ≥ gen100). Verified `equal -n 256 -i 1000` vs A. |
+| `cdcnot_m3000_sl2_mixed_final.txt` | g57 | 851,378 | sl2 = replica of sl1 on the **same A**, new seed, relaunched with `CANON_MONOMIAL_CAP=50000`. FINAL, gen 100 (95.1% ≥ gen100) — first run ever to reach gen 100. Verified vs A. |
+
+Post-processing on 2b: **none**.
+
+### 2c. sm runs — new-knob stack; the ssg finals that feed fsplit/fmix
+Fresh **shared** A `cdcnot_m3000_sm_A.txt` (new C/D, 6768 g / 256w → gadgetize
+~67.2k g57 / 512w), shared by sm50 and sm100. sl1 recipe **except**
+`--compress-fraction 0.5`, plus first production use of the new-knob stack
+`CANON_MONOMIAL_CAP=50000 FLOAT_SWEEP=1 DEGREE_FILTER=8` on top of
+LITTER_RULES/SLOW_COMPRESS/CENTRALIZE=20/VERIFY_DB_HITS/chunk-budget-60s; new
+binary writes `.tags`. Source: `session-handoff-2026-07-06.md`.
+
+| File | fmt | gates | What it is |
+|---|---|---|---|
+| `cdcnot_m3000_sm50_mixed_final.txt` | g57 | 1,036,567 | sm50 FINAL, `--min-gen 50` (floor 50, 95.5% ≥ gen50), all g57. **Input to all sm50 fsplit/fmix runs below.** Verified vs A. |
+| `cdcnot_m3000_sm100_mixed_final.txt` | g57 | 1,098,254 | sm100 FINAL, `--min-gen 100` (floor 100, 95.6% ≥ gen100), all g57. **Input to the sm100 fsplit/fmix runs.** Verified vs A. |
+
+Post-processing on 2c themselves: **none** (they are the raw ssg outputs).
+
+### 2d. sm50 / sm100 FSPLIT post-processing (mpmct1)
+All are `fsplit` on the corresponding sm ssg output, `--seed 1`. "c" = split-damp,
+g57t = g57×g57 targeting on. Source: `float-split-postmix-design.md`,
+`session-handoff-2026-07-08.md`. Fossils = surviving g57s.
+
+| File | gates | fsplit params | fossils |
+|---|---|---|---|
+| `cdcnot_m3000_sm50_fsplit.txt` | 1,200,000 | K=4, c=1, size-bound 3M **but stopped early**; delivered file is a fresh seed-1 K4/c1 run to size-bound 1.2M (same trajectory prefix). No targeting. | 976,803 |
+| `cdcnot_m3000_sm50_fsplit_c1_k12.txt` | 2,000,000 | K=12, c=1, size-bound 2M. No targeting. | 705,666 |
+| `cdcnot_m3000_sm50_fsplit_k10.txt` | 3,000,001 | K=10, c=1, size-bound 3M. No targeting. | 626,268 |
+| `cdcnot_m3000_sm50_fsplit_c2_k12.txt` | 3,000,001 | K=12, c=2, size-bound 3M. No targeting. | 780,715 |
+| `cdcnot_m3000_sm50_fsplit_c1_k12_g57t.txt` | 3,000,000 | K=12, c=1, size-bound 3M, **g57×g57 targeting on** (window 64). Later the input to the two sm50 fmix replicas. | 348,469 |
+| `cdcnot_m3000_sm100_fsplit_c1_k12_g57t.txt` | 3,000,000 | K=12, c=1, size-bound 3M, **g57×g57 targeting on**. Run on server .242. | 434,386 |
+
+### 2e. sm50 / sm100 FMIX (+ fcompress) post-processing (mpmct1)
+`fmix … --target-size 3000000 --moves 50000000 --k-max 12 --seed <s>` on the
+`f5735acb` binary. Source: `session-handoff-2026-07-08.md`,
+`float-split-postmix-design.md`. Fossils = surviving g57s.
+
+| File | gates | Pipeline | fossils |
+|---|---|---|---|
+| `cdcnot_m3000_sm50_fmixdirect_s1.txt` | 3,007,102 | fmix **direct** on raw sm50 ssg output (no fsplit). seed 1. | 518 |
+| `cdcnot_m3000_sm50_fmix_s1.txt` | 3,029,251 | **fsplit-then-fmix**: fmix on `…_fsplit_c1_k12_g57t.txt` (the 3M/348k-fossil artifact). seed 1. | 2,814 |
+| `cdcnot_m3000_sm50_fmix_s2.txt` | 3,029,006 | Same as s1, **seed 2** (replica; cross-seed agreement essentially exact). | 2,822 |
+| `cdcnot_m3000_sm100_fmixdirect_s1.txt` | 3,010,131 | fmix **direct** on raw sm100 ssg output. seed 1. 99.93% fossil erosion. | 765 |
+
+Recorded verdict: fmix-**direct** dominates fsplit-then-fmix on every mixing axis
+at equal effort (518 vs 2,814 fossils, 3× diffusion). No fcompress was run on
+these four.
+
+### 2f. cmp1M — compression A/B experiment
+One fresh A (genran C/D n128 m3000 → sandwich 6768 g → gadgetize once to a shared
+512-wire 67,104-g file). `cmp1M_stall` arm: `ssg -n 256 --gadgetize -m 0 -x 10
+-r 1 --pass-length 100 --min-gen 30 --min-gen-fraction 0.95 --target-size 1000000
+--compress-fraction 0.4` + `CENTRALIZE=20 VERIFY_DB_HITS=1
+COMPRESS_CHUNK_BUDGET_MS=60000` + stall rule `COMPRESS_STALL_FRAC=0.05
+COMPRESS_STALL_WINDOW=2`. Source: `cmp1M-compression-experiment.md`.
+
+| File | fmt | gates | What it is |
+|---|---|---|---|
+| `cmp1M_stall_1M_gen23.txt` | g57 | 997,646 | The `cmp1M_stall` arm's stage-126 checkpoint (`outstage126`), held ≈1M, generation ≈23 (plateaued, ended before min-gen 30). Verified `equal -n 256`. **Checkpoint, not a min-gen-met final.** No post-processing. |
+
+--------------------------------------------------------------------------------
+## 3. sm2 lineage — independent gadgetized A, fmix-ONLY (no ssg)
+
+Fresh independent A of the sm shape: C, D = genran n128 m3000 → compose_A → 6768 g
+/ 256w → gadgetize (standalone trick) → `sm2_A_gadgetized.txt` = **67,184 g57 /
+512 wires**. Then **fmix directly, no ssg at all** (purest fmix-only pipeline):
+`fmix --input-format g57 --target-size 3000000 --moves 50000000 --k-max 20
+--split-damp 2 --seed 1` (the `c2_k20_s1`), on the `e72eb44e` binary. Source:
+`sm2-fmixgad-run.md`.
+
+| File | fmt | gates | What it is |
+|---|---|---|---|
+| `sm2_fmixgad_c2_k20_s1.txt` | mpmct1 | 2,968,524 | FINAL fmix output. Fossils 67,184 → **0** (first full g57 erosion). Best positional mixing recorded (odiff 0.204). |
+| `sm2_fmixgad_c2_k20_s1.fc.txt` | mpmct1 | 2,669,716 | `fcompress` of the final → 89.9% of gates. Verified 64×64. |
+| `sm2_fmixgad_c2_k20_s1.snapshot.mv32000000.txt` | mpmct1 | 2,965,257 | Verified mid-run snapshot of the same run at 32,000,000 moves. |
+| `sm2_fmixgad_c2_k20_s1.snapshot.mv32000000.fc.txt` | mpmct1 | 2,546,871 | `fcompress` of that 32M-move snapshot → 85.9% (compresses more than the final — steady-state churn hardens the circuit). |
+
+--------------------------------------------------------------------------------
+## 4. fx1 lineage — fresh 256-wire cdcnot A, fmix-only + fcompress (no gadgetize, no ssg)
+
+A = compose_A.py(genran C n128 m3000, genran D n128 m3000) = **6768 g57 / 256
+wires**, plain (not gadgetized). fmix ONLY: `--input-format g57 --k-max 20
+--split-damp 2 --target-size 1000000 --moves 10000000 --seed 1` → 984,967 g, then
+`fcompress --live-wires all`. Source: `fmix-prefix-heatmap-fx1.md`.
+
+| File | fmt | gates | What it is |
+|---|---|---|---|
+| `cdcnot_m3000_fx1_fcmp.txt` | mpmct1 | 791,843 | fmix (c2/K20, 1M target, 10M moves, seed 1) then fcompress (80.4% of gates). Verified ≡ A end-to-end. (The pre-mix A is the unmixed source and is kept only on `.242` at `~/tds/cdcnot_m3000_fx1_A.txt`, 6768 g57, sha256 `4159c1fc…4bb4a17` — not on the Mac.) |
+| `cdcnot_m3000_fx2tw_fcmp.txt` | mpmct1 | 893,884 | **fx2tw** = same A/recipe as fx1 (c2/K20, 1M target, 10M moves, seed 1) **plus conjugation twists at DOUBLE rate** (`--w-twist-neg 1e-3 --w-twist-swap 1e-3 --twist-min-len 256`) under the **symmetric window-truncation law** (commit `ad2f811a`), then `fcompress --verify-rounds 128` (90.3% of gates — twists harden vs greedy compression more than fx1's 80.4%). Verified ≡ A (128 rounds). Fossils 6768→~1. Prefix-progress heatmap: full-plate σ=1.15 bits, mean 128.0 (ideal; below ssg's ~1.29 floor) — the twist mechanism drives the plate to isotropic coin-flip distance. Dose saturates by ~7M moves. Source: `conjugation-twist-move.md`. |
+
+--------------------------------------------------------------------------------
+## 4c. fmix_bench_20260715/ — fmix quality benchmark (7 configs × 3 A × 3 snapshots)
+
+Subdirectory `circuits/fmix_bench_20260715/` holds **63 raw fmix circuits** (no
+fcompress) for benchmarking mix quality across configs and dose. Base: **3
+independently sampled** sandwich A's (`compose_A.py(genran C n128 m3000, genran D
+n128 m3000)` = 6768 g57 / 256 wires each, self-tested). The A's are kept
+**server-only** (`.242:~/tds/bench/A{1,2,3}.txt`) and are deliberately NOT in this
+repo.
+
+Each A × 7 configs, all: `--input-format g57 --k-max 20 --split-damp 2
+--target-size 500000 --moves 5000000 --no-local-verify --verify-every 50000
+--twist-min-len 256`, current directional-walk fmix (commit `066f4c00`+, built on
+.242). Base weights **neg .02 / swap .05 / cnot .05 / unsub .05 / fresh .05 /
+insert .05 / cross = remainder**; each config overrides one thing:
+
+| config | change | temp |
+|---|---|---|
+| `defaults` | base | 5000 (default) |
+| `temp2500` | — | 2500 (½ default) |
+| `temp10000` | — | 10000 (2× default) |
+| `swap10` | swap .10 (cross .68) | default |
+| `trans10` | cnot .10 (cross .68) | default |
+| `no_swaptrans` | swap 0, cnot 0 (cross .83) | default |
+| `no_insert` | insert 0 (cross .78) | default |
+
+Files per config: `<A><cfg>.final.txt` (5M moves) + `.snapshot.txt.mv2000000` +
+`.snapshot.txt.mv3000000`, each with an `.origins` sidecar; all mpmct1, ~494K
+gates. Naming `A{1,2,3}_{config}.{final|snapshot.txt.mvN}`. Integrity: header
+gate-count == line-count on all 63. Observation from the run: the swap+cnot twist
+load (0.10) ran ~2.5× slower than the neg-only `no_swaptrans` config (twist dose
+has a real throughput cost). Source: session 2026-07-15/16, `run_bench.sh`.
+
+--------------------------------------------------------------------------------
+## 5. fz lineage — feistelize + slice_zero_random, ssg-only
+
+Source `genran -n 128 -m 3000` → `--feistalize --slice-zero-random` → **87,324 g57
+/ 384 wires**, public slice y=0xf493…, z=0x0709…. Then ssg `--min-gen 50` (same
+sm-era recipe/env). Original wedged on a Rule-L blowup and was resumed as `g50b`
+from `outstage1` with `CANON_RULE_L_BRANCH_CAP=20000` (ssg -n 384). Source:
+`session-handoff-2026-07-06.md`, `deliver-finished-runs.md`.
+
+| File | fmt | gates | What it is |
+|---|---|---|---|
+| `fz_m3000_g50_mixed_final.txt` | g57 (+Y/Z header) | 1,270,001 | ssg FINAL, gen 50 (floor 50, 96.1% ≥ gen50). Verified `equal -n 384 -i 1000` vs the feistelized original. **No fsplit/fmix/fcompress.** |
+
+--------------------------------------------------------------------------------
+## 6. rec* — recommended-recipe ssg deliverables
+
+Random source (`random_n…_unmixed`, see §8) mixed by ssg with the recommended
+production recipe: `--compress-fraction 0.15 --pass-length 100 --target-size
+<cap>`; cap is in the filename prefix. Source: `experiment-findings.md`. No
+post-processing beyond ssg. (Per-file exact min-gen not individually recorded.)
+
+| File | fmt | gates | source | cap |
+|---|---|---|---|---|
+| `rec200k_n128m900_mixed_final.txt` | g57 | 199,696 | random n128 m900 | 200k |
+| `rec1M_n128m900_mixed_final.txt` | g57 | 998,712 | random n128 m900 | 1M |
+| `rec1M_n256m1600_mixed_final.txt` | g57 | 998,600 | random n256 m1600 | 1M |
+| `rec2M_n256m1600_mixed_final.txt` | g57 | 1,997,932 | random n256 m1600 | 2M |
+| `rec2M_n256m2200_mixed_final.txt` | g57 | 1,998,057 | random n256 m2200 | 2M |
+
+--------------------------------------------------------------------------------
+## 7. gad_n128m900 — gadgetized random point-function runs
+
+Random n128 m900 source → `--gadgetize` (128→256 wires) → ssg. Source:
+`pm-batch-inflight.md`, `experiment-findings.md`. No post-processing beyond ssg.
+
+| File | fmt | gates | ssg params |
+|---|---|---|---|
+| `gad_n128m900_mixed_final.txt` | g57 | 406,846 | `ssg -n 128 -m 0 -x 10 -r 1 --gadgetize --min-gen 50 --min-gen-fraction 0.95 --pass-length 100 --grow-threshold 200 --compress-fraction 0.4`, legacy compression, no CENTRALIZE. |
+| `gad_n128m900_mg80_mixed_final.txt` | g57 | 2,188,115 | Fresh source, same recipe but **`--min-gen 80`** (floor 80, 95.1% ≥ gen80; 26 stages, ~7h). Verified `equal -n 128 -i 1000` vs src. |
+
+--------------------------------------------------------------------------------
+## 8. Raw / unmixed random sources and the incompressibility baseline
+
+Raw `genran`/random circuits (no mixing). Source class for the rec*/gad runs.
+
+| File | fmt | gates | What it is |
+|---|---|---|---|
+| `random_n128m900_unmixed.txt` | g57 | 900 | Raw random n128 m900 (source for gad/rec n128m900). |
+| `random_n256m1600_unmixed.txt` | g57 | 1,600 | Raw random n256 m1600 (source for rec*_n256m1600). |
+| `random_n256m2200_unmixed.txt` | g57 | 2,200 | Raw random n256 m2200 (source for rec2M_n256m2200). |
+| `random_n256m2000000_unmixed_for_stats.txt` | g57 | 2,000,000 | Raw random n256 2M-gate stats baseline (incompressibility experiment input). |
+| `randcomp_n256m2M_compressed.txt` | g57 | 1,999,994 | The above run through a compression pass — only 6 gates removed (random circuits are essentially incompressible). Source: `experiment-findings.md`. |
+| `n128m2000.txt` | g57 | 2,000 | Raw random/genran n128 m2000 source. Specific run UNRECORDED. |
+| `randomn128m2000.txt` | g57 | 2,000 | Raw random n128 m2000 (older no-underscore naming; separate draw). UNRECORDED. |
+| `randomn256m8000.txt` | g57 | 8,000 | Raw random n256 m8000 (older naming). UNRECORDED. |
+
+--------------------------------------------------------------------------------
+## 9. Older / partially- or un-attributed files (predate current memory)
+
+These June files have thin or no memory records; the filename convention
+(n=wires, m=gates, mixed_final/compressed/sss) is the only guide. Marked so
+honestly.
+
+| File | fmt | gates | Best reconstruction |
+|---|---|---|---|
+| `n128m4000_sss_st100.txt` | g57 | 2,264,150 | n128 m4000 source (the reused shared-C `n128m4000.txt`) mixed by **sss** (the predecessor mixer, not ssg) at `shooting_times=100` (`st100`). Source: `experiment-findings.md` (st=100), `fresh-c-per-mixing.md`. Older (Jun 17). |
+| `c256m2100_mixed_final.txt` | g57 | 30,580 | Name implies n256, ~m2100 source, mixed. **No memory record**; mixer/params UNRECORDED. |
+| `slice_scramble_v3_20260615_184349.txt` | g57 | 621,382 | **g57 feistelized "v3" slice-scramble challenge, 384 wires** — the solved SAT-preimage challenge (V=bab2…, X=d6eb…; kissat SAT in ~5.5 min). v3 breaks the feistelize identity for z≠0. Source: `experiment-findings.md` (exact 621,382 match). |
+| `slice_scramble_20260614_233938.txt` | g57 | 627,253 | Feistelized slice-scramble **v1** (2026-06-14). Same 384-wire family; specific params UNRECORDED. |
+| `slice_scramble_v2_20260615_121616.txt` | g57 | 634,179 | Feistelized slice-scramble **v2** (2026-06-15). Params UNRECORDED. |
+| `sdA_n128m900_mixed_final.txt` | g57 | 3,362 | **sd-series** = Stage-D lettered ssg experiment (n128 m900 source). Per-letter params **UNRECORDED**. |
+| `sdD_n128m900_mixed_final.txt` | g57 | 7,042 | sd-series, n128 m900. UNRECORDED. |
+| `sdG_n128m900_mixed_final.txt` | g57 | 10,115 | sd-series, n128 m900. UNRECORDED. |
+| `sdJ_n128m900_mixed_final.txt` | g57 | 12,926 | sd-series, n128 m900. UNRECORDED. |
+| `sdI_n128m900_mixed_final.txt` | g57 | 18,469 | sd-series, n128 m900. UNRECORDED. |
+| `sdO_n128m900_mixed_final.txt` | g57 | 33,096 | sd-series, n128 m900. UNRECORDED. |
+| `sdE_n128m2000_mixed_final.txt` | g57 | 111,326 | sd-series, n128 m2000. UNRECORDED. |
+| `sdF_n128m2000_mixed_final.txt` | g57 | 131,226 | sd-series, n128 m2000. UNRECORDED. |
+| `sdP_n128m900_mixed_final.txt` | g57 | 166,366 | sd-series, n128 m900. UNRECORDED. |
+| `sdU_n128m900_mixed_final.txt` | g57 | 243,461 | sd-series, n128 m900. UNRECORDED. |
+| `sdT_n128m900_mixed_final.txt` | g57 | 481,339 | sd-series, n128 m900. UNRECORDED. |
+| `sdV_n128m2000_mixed_final.txt` | g57 | 563,683 | sd-series, n128 m2000. UNRECORDED. |
+| `sdH_n128m2000_mixed_final.txt` | g57 | 569,622 | sd-series, n128 m2000. UNRECORDED. |
+
+Note: only `sdK`/`sdL` (feistelized runs that panicked ~360k gates) are documented
+in memory (`ssg-design-spec.md`); those two are not in `circuits/`. The lettered
+runs here are almost certainly a parameter sweep (ascending final sizes suggest a
+min-gen or target-size ladder), but the exact per-letter parameters are not
+recorded and are not reconstructable from the records.
+
+--------------------------------------------------------------------------------
+## 10. Source records
+
+Memory files consulted (under
+`~/.claude/projects/-Users-rancanetti-Documents-local-mixing/memory/`):
+`g57-cnot-identity.md`, `session-handoff-2026-07-06.md`,
+`session-handoff-2026-07-08.md`, `litter-mixing-design.md`,
+`cmp1M-compression-experiment.md`, `ssg-design-spec.md`,
+`float-split-postmix-design.md`, `sm2-fmixgad-run.md`,
+`fmix-prefix-heatmap-fx1.md`, `experiment-findings.md`,
+`point-function-mixing.md`, `pm-batch-inflight.md`, `deliver-finished-runs.md`,
+`fresh-c-per-mixing.md`. Tool reference: `docs/POSTMIX_MANUAL.md` (fmix/fcompress).
+All gate counts above were measured on the on-disk files 2026-07-10 and match the
+records where records exist.
+
+## cg1_phaseB{,1Mfa,2M,2Mfa,3M,3Mfa}.mpmct1 (2026-07-20/21, from cc@.242 ~/tds)
+Two-phase pipeline outputs, all descended from one lineage:
+  fresh C,D (genran 128w x 3000 g57) -> compose_A.py sandwich (6768g/256w,
+  self-tested) -> CNOT gadgetizer @ commit 2ed0222a (48165g/512w) ->
+  PHASE A (cg1_phaseA5, commit e4fa931f recipe): p_db 0.6 --p-db-steer,
+  w_db 1.0, p_twist 0.0016 neg-only, window [2,5] prefix descent, mixed
+  sampler L4, guards deg9/span16/terms 1024:2048, 4M moves, target 60k
+  -> 64782g, 73.5% g57, 824x twist coverage, heatmap floor 243/255.
+  PHASE B from cg1_phaseA5, six variants (targets 1M/2M/3M):
+  - slow anneal (suffix-less / 2M / 3M): p_db 0.6 -> 0 linearly over the
+    FULL budget (4M/6M/8M moves), p_twist 0.001 neg. Final g57
+    69.2% / 65.8% / 64.1%; sizes 1020340 / 2035987 / 3051468.
+  - fast anneal (1Mfa/2Mfa/3Mfa): leg 1 = anneal p_db 0.6 -> 0 over 1M
+    moves; leg 2 = p_db 0 pure split growth+churn (3M/5M/7M moves).
+    Final g57 16.3% / 2.2% / 1.0%; sizes 1016535 / 1996578 / 2984942.
+  All: size locked within +/-2% of target; prefix-distance heatmaps vs the
+  gadgetized original flat (~246/255, corridor <0.7%). Full measurements:
+  reports/frozen_store_match_rates_20260720.pdf + reports/dashboards/.
+  Seeds: A5=42; B slow 51/52/53; B fast legs 54,55 / 60,61 / 62,63.
+
+## ssgprod_n128_newgadget_mixed_final.txt (2026-07-21, from cc@.242 ~/tds/ssgprod)
+First production circuit through the REVISED new-gadgetize recipe (commits
+813bf256 nonlinear {RG1,RG2,RG3} 1/SG + commuting_shuffle; 4fe82458 seven-
+variant random CG menu; 5689c8ea exact-collides shuffle). Pipeline:
+  fresh C (genran 128w x 900 g57, secret, server-side mode 600) ->
+  new-gadgetize `sss --cnot --gadgetize --slice-zero-ccnot -n 128`
+  (13959g/256w, g57 8716 / CNOT 3384 / frag 1859 / X 0; GadgetLow equality
+  check passed) ->
+  two-phase fmix (guards deg9/span16/terms 1024:2048, CANON_RULE_L_BRANCH_CAP
+  20000, FROZEN_DB_DIR=frozen_m1_m11):
+  - PHASE A hold: p_db 0.6 --p-db-steer --w-db 1.0 --p-twist 0.0016 neg-only,
+    target 13959, 1.5M moves -> 17172g, fossils 8716->8336 (seed 11).
+  - LEG1 anneal: p_db 0.6->0 (--p-db-final 0), grow to 15000, --p-twist 0.001,
+    0.8M moves -> 17744g, fossils ->8168 (seed 12).
+  - LEG2 split-grow: p_db 0, --p-twist 0.001, target 45000, 3M moves ->
+    49105g, fossils ->9 (seed 13). R = 49105/17744 = 2.77.
+  Final: 49105 gates, 256 wires, 9 g57 fossils (0.018% residual, near-total
+  erosion). All final-float verifications passed; no panic/mismatch.
+  hmap_affine vs C (n=128), meta in reports/ssgprod_n128_20260721/:
+    degree 1: pre-mix mean 0.4086 std 0.1144 -> post-mix mean 0.4201 std 0.1022
+    degree 2 (deg2-wires 40, lower bound): pre 0.4075/0.1147 -> post 0.4190/0.1025
+  Mixing flattens the map (std -11%) and shifts the mean toward hidden (+0.011);
+  fossils essentially eliminated. Source C kept server-side (never delivered).
+  Calibration: ~533 fmix moves/s on .242 (160 cores).
