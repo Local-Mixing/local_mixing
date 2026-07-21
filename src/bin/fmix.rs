@@ -220,6 +220,28 @@ struct Args {
     /// instead of uniformly; the remainder keeps the unbiased churn.
     #[arg(long, default_value_t = 0.9)]
     gen_bias: f64,
+    /// Ingest-then-pay, CHEAP channel: probability a round is a
+    /// Compressing-mode DB attempt (non-growing replacements only — zero
+    /// growth risk, safe to run hot) seeded on a cheap-tier laggard. A seed
+    /// that keeps failing graduates to the hard tier at --gen-miss-budget.
+    /// 0 = off. Requires --gen-target > 0.
+    #[arg(long, default_value_t = 0.0)]
+    p_db_ingest: f64,
+    /// Ingest-then-pay, PAID channel: probability a round is a MinGrow-mode
+    /// attempt (uniform among the SHORTEST equivalents, growing allowed)
+    /// seeded on a hard-tier gate — growth is spent only on gates the cheap
+    /// channel provably cannot ingest, at the minimum spelling each, and the
+    /// cost is ledgered in the report's paid= field. Fires only while
+    /// hard-tier gates exist. 0 = off.
+    #[arg(long, default_value_t = 0.0)]
+    p_db_hard: f64,
+    /// Seed misses before a laggard graduates cheap -> hard tier.
+    #[arg(long, default_value_t = 6)]
+    gen_miss_budget: u16,
+    /// Seed misses before a gate is written off as unreachable (excluded
+    /// from targeting and from the dose stop, reported as u=). 0 = never.
+    #[arg(long, default_value_t = 0)]
+    gen_giveup: u16,
     /// Laggard-list rebuild cadence in moves (O(size) scan each rebuild;
     /// entries going stale between rebuilds are pruned at draw time).
     #[arg(long, default_value_t = 10_000)]
@@ -312,9 +334,15 @@ fn main() {
     }
     if args.gen_target > 0 {
         println!(
-            "[fmix] generation targeting ON: gen_target={} gen_bias={} gen_rescan={} gen_stop_frac={} twist_cov_stop={} (report: gen tgt/lag/wlag/min, cov)",
+            "[fmix] generation targeting ON: gen_target={} gen_bias={} gen_rescan={} gen_stop_frac={} twist_cov_stop={} (report: gen tgt/lag/c/h/u/wlag/min, cov, ing, hard, paid)",
             args.gen_target, args.gen_bias, args.gen_rescan, args.gen_stop_frac, args.twist_cov_stop
         );
+        if args.p_db_ingest > 0.0 || args.p_db_hard > 0.0 {
+            println!(
+                "[fmix] ingest-then-pay ON: p_db_ingest={} (cheap, non-growing) p_db_hard={} (paid, MinGrow) miss_budget={} giveup={}",
+                args.p_db_ingest, args.p_db_hard, args.gen_miss_budget, args.gen_giveup
+            );
+        }
     }
 
     assert!(
@@ -366,6 +394,10 @@ fn main() {
         gen_target: args.gen_target,
         gen_bias: args.gen_bias,
         gen_rescan: args.gen_rescan,
+        p_db_ingest: args.p_db_ingest,
+        p_db_hard: args.p_db_hard,
+        gen_miss_budget: args.gen_miss_budget,
+        gen_giveup: args.gen_giveup,
         gen_stop_frac: args.gen_stop_frac,
         twist_cov_stop: args.twist_cov_stop,
         verify_every: args.verify_every,

@@ -283,6 +283,11 @@ pub enum DbMode {
     /// Size-agnostic: pick uniformly among ALL equivalents, whatever their gate
     /// count (may grow the circuit).
     SizeAgnostic,
+    /// Minimal-growth: pick uniformly among the SHORTEST equivalents, with no
+    /// length restriction — pays the least possible growth to re-encode a
+    /// window that has no non-growing spelling. The paid channel of the
+    /// ingest-then-pay generation policy.
+    MinGrow,
 }
 
 /// Outcome of a store lookup for one window.
@@ -429,6 +434,11 @@ fn choose(
                 return None;
             }
             (0..matches.len()).collect()
+        }
+        // The shortest spelling that exists, growing or not.
+        DbMode::MinGrow => {
+            let min = matches.iter().map(|g| g.len()).min()?;
+            (0..matches.len()).filter(|&i| matches[i].len() == min).collect()
         }
     };
     let pick = eligible[rng.random_range(0..eligible.len())];
@@ -597,6 +607,14 @@ mod tests {
         let repl = agn.chosen.expect("size-agnostic accepts any length");
         assert!(repl.len() > window.len(), "this friend grows the window");
         let _ = (g, pad);
+        assert!(exhaustively_equal(&window, &repl, 8));
+
+        // MinGrow: also accepts it — the shortest spelling that exists is the
+        // paid channel's whole point when nothing non-growing is available.
+        let mut rng = StdRng::seed_from_u64(3);
+        let mg = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::MinGrow, DegreeGuard::OFF, &mut rng, |k| store.get(k).cloned());
+        let repl = mg.chosen.expect("min-grow accepts the shortest growing friend");
+        assert_eq!(repl.len(), 3);
         assert!(exhaustively_equal(&window, &repl, 8));
     }
 }
