@@ -1,14 +1,12 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
-    thread::sleep,
-    time::{Duration, Instant},
 };
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use crossbeam::queue::SegQueue;
 use dashmap::mapref::entry::Entry;
 use dashmap::{DashMap, DashSet};
@@ -105,9 +103,52 @@ fn canonicalize_perm_sparse_graph(
     (p.bit_shuffle(&wire_shuf), sphere)
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum CanonMethod {
+    /// Fast graph canonicalization via nauty (default).
+    Nauty,
+    /// Slow but unambiguous lex-min over all wire permutations.
+    Brute,
+}
+
+/// Dispatch to the selected canonicalizer. `scratch` is only touched by nauty.
+fn canonicalize(
+    method: CanonMethod,
+    p: &Permutation,
+    n: usize,
+    scratch: &mut sparsegraph,
+) -> (Permutation, usize) {
+    match method {
+        CanonMethod::Nauty => canonicalize_perm_sparse_graph(p, scratch),
+        CanonMethod::Brute => canonicalize_perm_brute(p, n),
+    }
+}
+
+/// Ground-truth wire-orbit canonicalization: the lexicographically minimal
+/// conjugate `σ p σ⁻¹` over every wire permutation `σ ∈ Sₙ`, plus the orbit
+/// size `|W·p|`. Unambiguous but `O(n!·2ⁿ)`, so only used for small `n` to
+/// validate the nauty path.
+fn canonicalize_perm_brute(p: &Permutation, n: usize) -> (Permutation, usize) {
+    use itertools::Itertools;
+
+    let mut best: Option<Permutation> = None;
+    let mut orbit: std::collections::HashSet<Vec<usize>> = std::collections::HashSet::new();
+
+    for shuffle in (0..n).permutations(n) {
+        let conjugate = p.bit_shuffle(&shuffle);
+        orbit.insert(conjugate.data.clone());
+        match &best {
+            Some(current) if current.data <= conjugate.data => {}
+            _ => best = Some(conjugate),
+        }
+    }
+
+    (best.unwrap(), orbit.len())
+}
+
 /// Packed truth-table. For domain size ≤ 256 (`n ≤ 8`) each image fits in a
 /// `u8`; otherwise `u16` (enough through `n = 16`).
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone)]
 enum CompactPerm {
     U8(Box<[u8]>),
     U16(Box<[u16]>),
@@ -130,6 +171,160 @@ impl CompactPerm {
             CompactPerm::U16(d) => Permutation {
                 data: d.iter().map(|&x| x as usize).collect(),
             },
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            CompactPerm::U8(values) => values.len(),
+            CompactPerm::U16(values) => values.len(),
+        }
+    }
+
+    fn lcp(&self, other: &Self) -> usize {
+        match (self, other) {
+            (CompactPerm::U8(a), CompactPerm::U8(b)) => {
+                a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+            }
+            (CompactPerm::U16(a), CompactPerm::U16(b)) => {
+                a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+            }
+            _ => 0,
+        }
+    }
+
+    fn symbol_bytes(&self) -> usize {
+        match self {
+            CompactPerm::U8(_) => 1,
+            CompactPerm::U16(_) => 2,
+        }
+    }
+}
+
+/// Exact Lehmer/factoradic rank for permutations that fit in 128 bits.
+///
+/// Reversible functions on five wires permute 32 values, and `32! < 2^118`,
+/// so their complete truth tables have a collision-free 128-bit key. The
+/// remaining-values bitset makes ranking O(N), with no allocation.
+fn lehmer_rank_u128(p: &CompactPerm) -> Option<u128> {
+    let values: Vec<u16> = match p {
+        CompactPerm::U8(values) => values.iter().map(|&value| value as u16).collect(),
+        CompactPerm::U16(values) => values.to_vec(),
+    };
+    let n = values.len();
+    if n > 64 {
+        return None;
+    }
+
+    let mut remaining = if n == 64 {
+        u64::MAX
+    } else {
+        (1u64 << n) - 1
+    };
+    let mut rank = 0u128;
+
+    for (index, &value) in values.iter().enumerate() {
+        if value as usize >= n {
+            return None;
+        }
+        let bit = 1u64 << value;
+        if remaining & bit == 0 {
+            return None;
+        }
+        let lower_mask = bit - 1;
+        let smaller = (remaining & lower_mask).count_ones() as u128;
+        rank = rank
+            .checked_mul((n - index) as u128)?
+            .checked_add(smaller)?;
+        remaining &= !bit;
+    }
+
+    Some(rank)
+}
+
+fn analyze_prefixes(mut layers: Vec<Vec<CompactPerm>>, nn: usize) {
+    const RESTART_INTERVAL: usize = 16;
+    let mut factorial = BigUint::from(1u8);
+    for i in 2..=nn {
+        factorial *= i;
+    }
+    let lehmer_bits = (&factorial - BigUint::from(1u8)).bits() as usize;
+    let lehmer_bytes = lehmer_bits.div_ceil(8);
+
+    println!("\nPrefix/encoding analysis (cumulative through each BFS depth)");
+    println!("Lehmer fixed width: {lehmer_bits} bits = {lehmer_bytes} bytes/permutation");
+    println!("depth  perms   raw_bytes  frontcoded_bytes  mean_unique_prefix  p50  p90  p99  max");
+
+    let mut cumulative = Vec::<CompactPerm>::new();
+    let final_depth = layers.len() - 1;
+    for (depth, layer) in layers.iter_mut().enumerate() {
+        cumulative.append(layer);
+        if cumulative.is_empty() {
+            continue;
+        }
+        cumulative.sort_unstable();
+
+        let key_len = cumulative[0].len();
+        let symbol_bytes = cumulative[0].symbol_bytes();
+        let mut unique_prefixes = Vec::with_capacity(cumulative.len());
+        let mut frontcoded_bytes = 0usize;
+
+        for i in 0..cumulative.len() {
+            let prev_lcp = if i == 0 {
+                0
+            } else {
+                cumulative[i].lcp(&cumulative[i - 1])
+            };
+            let next_lcp = if i + 1 == cumulative.len() {
+                0
+            } else {
+                cumulative[i].lcp(&cumulative[i + 1])
+            };
+            let unique = if cumulative.len() == 1 {
+                0
+            } else {
+                (prev_lcp.max(next_lcp) + 1).min(key_len)
+            };
+            unique_prefixes.push(unique);
+
+            if i % RESTART_INTERVAL == 0 {
+                frontcoded_bytes += key_len * symbol_bytes;
+            } else {
+                // u16 LCP length plus the unmatched suffix.
+                frontcoded_bytes += 2 + (key_len - prev_lcp) * symbol_bytes;
+            }
+        }
+        // Four-byte offset per restart block.
+        frontcoded_bytes += cumulative.len().div_ceil(RESTART_INTERVAL) * 4;
+
+        unique_prefixes.sort_unstable();
+        let percentile = |p: f64| {
+            let index = ((unique_prefixes.len() - 1) as f64 * p).round() as usize;
+            unique_prefixes[index]
+        };
+        let mean = unique_prefixes.iter().sum::<usize>() as f64 / unique_prefixes.len() as f64;
+        let raw_bytes = cumulative.len() * key_len * symbol_bytes;
+        println!(
+            "{depth:5} {count:7} {raw_bytes:11} {frontcoded_bytes:17} \
+             {mean:18.2} {p50:4} {p90:4} {p99:4} {max:4}",
+            count = cumulative.len(),
+            p50 = percentile(0.50),
+            p90 = percentile(0.90),
+            p99 = percentile(0.99),
+            max = unique_prefixes[unique_prefixes.len() - 1],
+        );
+
+        if depth == final_depth {
+            let mut histogram = vec![0usize; key_len + 1];
+            for &prefix in &unique_prefixes {
+                histogram[prefix] += 1;
+            }
+            println!("Final shortest-unique-prefix histogram (length: count)");
+            for (length, count) in histogram.into_iter().enumerate() {
+                if count != 0 {
+                    println!("{length:3}: {count}");
+                }
+            }
         }
     }
 }
@@ -213,13 +408,83 @@ impl PermTrie {
     }
 }
 
-/// Full permutations are retained only while on the active frontier.
-struct WorkItem {
-    depth: u16,
-    perm: CompactPerm,
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum StoreMethod {
+    /// Use exact Lehmer ranks when they fit in `u128`, otherwise use the trie.
+    Auto,
+    /// Concurrent value-prefix trie.
+    Trie,
+    /// Exact `u128` Lehmer ranks. Currently supports at most 32 values.
+    Lehmer128,
 }
 
-fn iso_bfs(n: usize, max_m: usize) {
+enum Visited {
+    Trie(PermTrie),
+    Lehmer128(DashSet<u128, FxBuildHasher>),
+}
+
+impl Visited {
+    fn new(method: StoreMethod, permutation_len: usize) -> Self {
+        let selected = match method {
+            StoreMethod::Auto if permutation_len <= 32 => StoreMethod::Lehmer128,
+            StoreMethod::Auto => StoreMethod::Trie,
+            other => other,
+        };
+
+        match selected {
+            StoreMethod::Trie => Self::Trie(PermTrie::new()),
+            StoreMethod::Lehmer128 => {
+                assert!(
+                    permutation_len <= 32,
+                    "exact u128 Lehmer keys support at most 32 values (n <= 5)"
+                );
+                Self::Lehmer128(DashSet::with_hasher(FxBuildHasher))
+            }
+            StoreMethod::Auto => unreachable!(),
+        }
+    }
+
+    fn insert(&self, permutation: &CompactPerm) -> bool {
+        match self {
+            Self::Trie(trie) => trie.insert(permutation).1,
+            Self::Lehmer128(set) => {
+                let rank = lehmer_rank_u128(permutation)
+                    .expect("permutation does not have an exact u128 Lehmer rank");
+                set.insert(rank)
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Trie(trie) => trie.permutation_count(),
+            Self::Lehmer128(set) => set.len(),
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Self::Trie(_) => "prefix trie",
+            Self::Lehmer128(_) => "exact u128 Lehmer keys",
+        }
+    }
+
+    fn trie_node_count(&self) -> Option<u64> {
+        match self {
+            Self::Trie(trie) => Some(trie.node_count()),
+            Self::Lehmer128(_) => None,
+        }
+    }
+}
+
+fn iso_bfs(
+    n: usize,
+    max_m: usize,
+    analyze_prefixes_enabled: bool,
+    requested_threads: Option<usize>,
+    canon_method: CanonMethod,
+    store_method: StoreMethod,
+) -> Vec<usize> {
     let nn = 1usize << n;
     let gen_gates = base_gates(n);
     let gens: Arc<Vec<Permutation>> = Arc::new(
@@ -231,7 +496,9 @@ fn iso_bfs(n: usize, max_m: usize) {
     );
     let gen_size = gens.len();
 
-    let trie = Arc::new(PermTrie::new());
+    let visited = Arc::new(Visited::new(store_method, nn));
+    let analysis = analyze_prefixes_enabled
+        .then(|| Arc::new(Mutex::new(vec![Vec::<CompactPerm>::new(); max_m + 1])));
     let dist_counts = Arc::new(DashMap::<usize, usize, FxBuildHasher>::with_hasher(
         FxBuildHasher,
     ));
@@ -242,145 +509,98 @@ fn iso_bfs(n: usize, max_m: usize) {
     // Seed: identity at depth 0 (recorded, not expanded).
     let mut seed_canonical_graph = sparsegraph::default();
     let id_perm = Permutation::id_perm(nn);
-    let (id_canon, _) = canonicalize_perm_sparse_graph(&id_perm, &mut seed_canonical_graph);
+    let (id_canon, _) = canonicalize(canon_method, &id_perm, n, &mut seed_canonical_graph);
     let id_key = CompactPerm::from_permutation(&id_canon);
-    let (_, inserted) = trie.insert(&id_key);
+    let inserted = visited.insert(&id_key);
     assert!(inserted);
+    if let Some(analysis) = &analysis {
+        analysis.lock().unwrap()[0].push(id_key.clone());
+    }
 
     // Seed: one length-1 gate (all single gates are one wire-orbit).
     let base_ckt = CircuitSeq {
         gates: vec![[0, 1, 2]],
     };
     let (base_canon, base_sphere) =
-        canonicalize_perm_sparse_graph(&base_ckt.perm(n), &mut seed_canonical_graph);
+        canonicalize(canon_method, &base_ckt.perm(n), n, &mut seed_canonical_graph);
     SG_FREE(&mut seed_canonical_graph);
     let base_key = CompactPerm::from_permutation(&base_canon);
-    let (_, inserted) = trie.insert(&base_key);
+    let inserted = visited.insert(&base_key);
     assert!(inserted);
+    if let Some(analysis) = &analysis {
+        analysis.lock().unwrap()[1].push(base_key.clone());
+    }
     *dist_counts.entry(1).or_default() += 1;
     *spheres.entry(1).or_default() += base_sphere;
 
-    let q = Arc::new(SegQueue::<WorkItem>::new());
-    q.push(WorkItem {
-        depth: 1,
-        perm: base_key,
-    });
+    let num_threads = requested_threads.unwrap_or_else(num_cpus::get);
+    assert!(num_threads > 0, "thread count must be positive");
+    assert!(max_m >= 1, "maximum gate depth must be at least one");
 
-    let circuits_stored = Arc::new(AtomicUsize::new(2)); // id + base
-    // Outstanding work: items in `q` plus items a worker has popped and is
-    // still expanding. Seeded with the base node.
-    let pending = Arc::new(AtomicUsize::new(1));
-    let num_threads = num_cpus::get();
+    // Strictly level-synchronous BFS. A single mixed-depth queue is incorrect:
+    // a longer path can win visited-set insertion before a shorter path,
+    // making sphere counts and even the explored ball schedule-dependent.
+    let mut frontier = Arc::new(SegQueue::<CompactPerm>::new());
+    frontier.push(base_key);
 
-    std::thread::scope(|s| {
-        for tid in 0..num_threads {
-            let q = q.clone();
-            let trie = trie.clone();
-            let dist_counts = dist_counts.clone();
-            let spheres = spheres.clone();
-            let gens = gens.clone();
-            let circuits_stored = circuits_stored.clone();
-            let pending = pending.clone();
+    for depth in 2..=max_m {
+        let next_frontier = Arc::new(SegQueue::<CompactPerm>::new());
 
-            let start = Instant::now();
-            let mut last_stored = 0usize;
+        std::thread::scope(|scope| {
+            for _ in 0..num_threads {
+                let frontier = frontier.clone();
+                let next_frontier = next_frontier.clone();
+                let visited = visited.clone();
+                let analysis = analysis.clone();
+                let dist_counts = dist_counts.clone();
+                let spheres = spheres.clone();
+                let gens = gens.clone();
 
-            s.spawn(move || {
-                let mut last_print = Instant::now();
-                // Reused across all nauty calls on this worker. The C library
-                // grows it as needed; retaining one avoids an allocation per
-                // canonicalization.
-                let mut canonical_graph_scratch = sparsegraph::default();
-                let mut batch: Vec<(CompactPerm, usize, usize, u16)> =
-                    Vec::with_capacity(gen_size);
+                scope.spawn(move || {
+                    // Reused across every canonicalization performed by this
+                    // worker during the current BFS layer.
+                    let mut canonical_graph_scratch = sparsegraph::default();
+                    let mut new_count = 0usize;
+                    let mut sphere_count = 0usize;
 
-                loop {
-                    let parent = match q.pop() {
-                        Some(item) => item,
-                        None => {
-                            if pending.load(Ordering::SeqCst) == 0 {
-                                break;
-                            }
-                            sleep(Duration::from_micros(100));
-                            continue;
-                        }
-                    };
+                    while let Some(parent) = frontier.pop() {
+                        let parent_perm = parent.to_permutation();
 
-                    let m = parent.depth as usize + 1;
-
-                    if m <= max_m {
-                        let parent_perm = parent.perm.to_permutation();
-                        batch.clear();
-
-                        for (gi, gperm) in gens.iter().enumerate() {
+                        for gperm in gens.iter() {
                             let h = gperm.compose(&parent_perm);
                             let (canon, sphere) =
-                                canonicalize_perm_sparse_graph(&h, &mut canonical_graph_scratch);
-                            batch.push((
-                                CompactPerm::from_permutation(&canon),
-                                m,
-                                sphere,
-                                gi as u16,
-                            ));
-                        }
+                                canonicalize(canon_method, &h, n, &mut canonical_graph_scratch);
+                            let key = CompactPerm::from_permutation(&canon);
 
-                        let mut counts_update = HashMap::<usize, usize>::new();
-                        let mut new_count = 0usize;
-
-                        for (key, depth, sphere, _gate_idx) in batch.drain(..) {
-                            let (_, inserted) = trie.insert(&key);
-                            if !inserted {
+                            if !visited.insert(&key) {
                                 continue;
                             }
 
-                            *counts_update.entry(depth).or_default() += 1;
-                            *spheres.entry(depth).or_default() += sphere;
                             new_count += 1;
+                            sphere_count += sphere;
+                            if let Some(analysis) = &analysis {
+                                analysis.lock().unwrap()[depth].push(key.clone());
+                            }
 
-                            // Count the frontier layer but do not expand it.
+                            // Count the final sphere but retain only states
+                            // that will be expanded in the following layer.
                             if depth != max_m {
-                                pending.fetch_add(1, Ordering::SeqCst);
-                                q.push(WorkItem {
-                                    depth: depth as u16,
-                                    perm: key,
-                                });
+                                next_frontier.push(key);
                             }
                         }
-
-                        let ql = q.len();
-                        let ct = circuits_stored.fetch_add(new_count, Ordering::Relaxed);
-
-                        for (depth, count) in counts_update {
-                            *dist_counts.entry(depth).or_default() += count;
-                        }
-
-                        let kper_sec = (ct as f64) / start.elapsed().as_secs_f64() / 1000.0;
-                        let eta = (ql as f64 / 1000.0) / kper_sec.max(1e-9);
-
-                        if last_print.elapsed().as_secs_f32() > 2.0 {
-                            if last_stored != ct {
-                                println!(
-                                    "t{tid:3} st:{ct:6} Q:{ql:6}    {kper_sec:.1}k/s  m={m}"
-                                );
-                            } else {
-                                println!(
-                                    "t{tid:3} st:{ct:6} Q:{ql:6}    {kper_sec:.1}k/s   eta {eta:.0} sec"
-                                );
-                            }
-                            last_print = Instant::now();
-                        }
-                        last_stored = ct;
                     }
 
-                    pending.fetch_sub(1, Ordering::SeqCst);
-                }
+                    *dist_counts.entry(depth).or_default() += new_count;
+                    *spheres.entry(depth).or_default() += sphere_count;
+                    SG_FREE(&mut canonical_graph_scratch);
+                });
+            }
+        });
 
-                SG_FREE(&mut canonical_graph_scratch);
-            });
-        }
-    });
+        frontier = next_frontier;
+    }
 
-    let can_ckt = trie.permutation_count();
+    let can_ckt = visited.len();
     // This exceeds usize quickly (e.g. 60^11 for five wires), even when the
     // discovered ball still fits in memory.
     let total_ckt = BigUint::from(gen_size).pow(max_m as u32);
@@ -388,27 +608,40 @@ fn iso_bfs(n: usize, max_m: usize) {
 
     println!("n={n} wires");
     println!(
-        "Final: {} canonical perms, {} permutation-trie nodes, {} total circuits, ({}x)",
+        "Final: {} canonical perms, {} storage, {} total circuits, ({}x)",
         can_ckt,
-        trie.node_count(),
+        visited.description(),
         total_ckt,
         compr_ratio
     );
-    let trie_edges = trie.node_count() - 1;
-    let unshared_values = (can_ckt as u128) * (nn as u128);
-    println!(
-        "Trie prefixes: {} edges vs {} unshared values ({:.1}% retained)",
-        trie_edges,
-        unshared_values,
-        100.0 * trie_edges as f64 / unshared_values as f64
-    );
+    if let Some(node_count) = visited.trie_node_count() {
+        let trie_edges = node_count - 1;
+        let unshared_values = (can_ckt as u128) * (nn as u128);
+        println!(
+            "Trie prefixes: {} nodes, {} edges vs {} unshared values ({:.1}% retained)",
+            node_count,
+            trie_edges,
+            unshared_values,
+            100.0 * trie_edges as f64 / unshared_values as f64
+        );
+    }
 
+    let mut layer_counts = vec![0usize; max_m + 1];
+    layer_counts[0] = 1;
     println!("m      count     sphere");
     for m in 1..=max_m {
         let count = dist_counts.get(&m).map(|c| *c).unwrap_or(0);
         let sp = spheres.get(&m).map(|c| *c).unwrap_or(0);
+        layer_counts[m] = count;
         println!("{m} {count:10} {sp:10}");
     }
+
+    if let Some(analysis) = analysis {
+        let mut guard = analysis.lock().unwrap();
+        analyze_prefixes(std::mem::take(&mut *guard), nn);
+    }
+
+    layer_counts
 }
 
 #[derive(Parser, Debug)]
@@ -419,13 +652,39 @@ struct Args {
 
     #[arg(short = 'm', default_value = None)]
     gates: Option<usize>,
+
+    /// Retain discovered permutations long enough to measure prefix and
+    /// front-coding compression. Intended for representative-sized runs.
+    #[arg(long)]
+    analyze_prefixes: bool,
+
+    /// Worker threads. Defaults to the host's logical CPU count.
+    #[arg(short = 't', long)]
+    threads: Option<usize>,
+
+    /// Canonicalization backend. `brute` is slow but unambiguous; use it to
+    /// validate `nauty` counts on small instances.
+    #[arg(long, value_enum, default_value_t = CanonMethod::Nauty)]
+    canon: CanonMethod,
+
+    /// Exact visited-set representation. `auto` uses compact Lehmer ranks for
+    /// n <= 5 and falls back to the prefix trie for larger permutations.
+    #[arg(long, value_enum, default_value_t = StoreMethod::Auto)]
+    store: StoreMethod,
 }
 
 fn main() {
     let args = Args::parse();
     let n = args.wires;
     let m = args.gates.unwrap_or(n * (n.ilog2() + 1) as usize);
-    iso_bfs(n, m);
+    let _ = iso_bfs(
+        n,
+        m,
+        args.analyze_prefixes,
+        args.threads,
+        args.canon,
+        args.store,
+    );
 }
 
 #[cfg(test)]
@@ -476,5 +735,145 @@ mod tests {
         assert_eq!(winners.load(Ordering::Relaxed), 1);
         assert_eq!(trie.permutation_count(), 1);
         assert_eq!(trie.node_count(), 33); // root + one node per value
+    }
+
+    #[test]
+    fn lehmer_rank_matches_lexicographic_order() {
+        for n in 1..=8 {
+            for (expected, permutation) in (0..n).permutations(n).enumerate() {
+                let key = CompactPerm::U8(
+                    permutation
+                        .into_iter()
+                        .map(|value| value as u8)
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                );
+                assert_eq!(lehmer_rank_u128(&key), Some(expected as u128));
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_lehmer_insert_has_one_winner() {
+        let visited = Arc::new(Visited::new(StoreMethod::Lehmer128, 32));
+        let key = CompactPerm::U8((0..32).collect::<Vec<_>>().into_boxed_slice());
+        let winners = Arc::new(AtomicUsize::new(0));
+
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let visited = visited.clone();
+                let key = key.clone();
+                let winners = winners.clone();
+                scope.spawn(move || {
+                    for _ in 0..100 {
+                        if visited.insert(&key) {
+                            winners.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+
+        assert_eq!(winners.load(Ordering::Relaxed), 1);
+        assert_eq!(visited.len(), 1);
+    }
+
+    #[test]
+    fn parallel_bfs_is_level_synchronous() {
+        let expected = vec![1, 1, 22, 369, 6544, 111_903];
+        for threads in [1, 8] {
+            let actual = iso_bfs(
+                4,
+                5,
+                false,
+                Some(threads),
+                CanonMethod::Nauty,
+                StoreMethod::Lehmer128,
+            );
+            assert_eq!(actual, expected, "wrong spheres with {threads} workers");
+        }
+    }
+
+    /// Deterministic pseudo-random reversible functions: compose `k` random
+    /// base gates onto the identity using a fixed-seed xorshift.
+    fn random_perms(n: usize, count: usize, gates_per: usize) -> Vec<Permutation> {
+        let gate_perms: Vec<Permutation> = base_gates(n)
+            .iter()
+            .copied()
+            .map(|g| CircuitSeq { gates: vec![g] }.perm(n))
+            .collect();
+
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        (0..count)
+            .map(|_| {
+                let mut p = Permutation::id_perm(1 << n);
+                for _ in 0..gates_per {
+                    let g = &gate_perms[(next() as usize) % gate_perms.len()];
+                    p = g.compose(&p);
+                }
+                p
+            })
+            .collect()
+    }
+
+    /// nauty must be a pure function of its input: identical calls, identical
+    /// output. A failure here indicates internal RNG / uninitialized state.
+    #[test]
+    fn nauty_canon_is_pure() {
+        let n = 5;
+        let mut scratch = sparsegraph::default();
+        for p in random_perms(n, 64, 6) {
+            let (first, first_sphere) = canonicalize_perm_sparse_graph(&p, &mut scratch);
+            for _ in 0..50 {
+                let (again, sphere) = canonicalize_perm_sparse_graph(&p, &mut scratch);
+                assert_eq!(again, first, "nauty canonicalization not deterministic");
+                assert_eq!(sphere, first_sphere, "nauty orbit size not deterministic");
+            }
+        }
+        SG_FREE(&mut scratch);
+    }
+
+    /// The decisive check: nauty and the unambiguous brute-force canonicalizer
+    /// must induce the *same* partition of functions into wire-orbits, and
+    /// agree on orbit sizes. If nauty ever splits or merges an orbit, the two
+    /// canonical maps will disagree on which perms share a representative.
+    #[test]
+    fn nauty_matches_brute_partition() {
+        let n = 5;
+        let mut scratch = sparsegraph::default();
+
+        // Map each brute-force representative to the nauty representative we saw
+        // for it. Any inconsistency means the two disagree on the partition.
+        let mut brute_to_nauty: HashMap<Vec<usize>, Vec<usize>> = HashMap::new();
+        let mut nauty_to_brute: HashMap<Vec<usize>, Vec<usize>> = HashMap::new();
+
+        for p in random_perms(n, 512, 8) {
+            let (nauty_canon, nauty_sphere) = canonicalize_perm_sparse_graph(&p, &mut scratch);
+            let (brute_canon, brute_sphere) = canonicalize_perm_brute(&p, n);
+
+            assert_eq!(
+                nauty_sphere, brute_sphere,
+                "orbit size mismatch: nauty {nauty_sphere} vs brute {brute_sphere}"
+            );
+
+            let nk = nauty_canon.data.clone();
+            let bk = brute_canon.data.clone();
+
+            if let Some(prev) = brute_to_nauty.insert(bk.clone(), nk.clone()) {
+                assert_eq!(prev, nk, "same brute-orbit mapped to two nauty reps (split)");
+            }
+            if let Some(prev) = nauty_to_brute.insert(nk.clone(), bk.clone()) {
+                assert_eq!(prev, bk, "two brute-orbits mapped to one nauty rep (merge)");
+            }
+        }
+
+        SG_FREE(&mut scratch);
     }
 }
