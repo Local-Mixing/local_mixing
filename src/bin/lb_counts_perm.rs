@@ -165,6 +165,7 @@ fn iso_bfs(n: usize, max_m: usize) {
                 while Q.is_empty() {
                     // Wait until queue becomes loaded...
                     sleep(Duration::from_millis(500));
+                    println!("...");
                 }
 
                 // Print every so often, but not too much
