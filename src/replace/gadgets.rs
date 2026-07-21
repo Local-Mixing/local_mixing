@@ -2155,6 +2155,127 @@ fn emit_shared_xgate2(state: &GadgetState, gate: &XGate, out: &mut Vec<XGate>) {
     }
 }
 
+/// Number of CG realizations in the menu drawn from by [`emit_cg_menu`].
+const CG_VARIANTS: u32 = 7;
+
+/// Emit ONE realization of the shared g57 update `A ^= B OR !C` (values
+/// two-share: X = x0 XOR x1), chosen by `variant`, with the carrier roles
+/// (which carrier of A is targeted, share/pad order of B and of C)
+/// randomized per call. Every variant stays inside the agreed vocabulary —
+/// g57s and pure conjunction fragments with one or two controls of any
+/// polarity, never a bare X (an X census would count the source gates) —
+/// leaves all non-target carriers wire-level unchanged, and never mutates
+/// the sharing state. Writing f = B OR !C = 1 + C + B*C over GF(2):
+///   0 "collapse both": 4 CNOT + 1 g57 — b0^=b1 and c0^=c1 put B and C on
+///     single wires, one g57 fires f, both collapses restored.
+///   1 "collapse c": 3 CNOT-kind + 2 g57 — with c0=C the pair
+///     [a,b0,c0]+[a,b1,c0] sums to B*C and a^=!c0 adds 1+C.
+///   2 "collapse b": 2 CNOT + 1 g57 + 1 fragment — with b0=B, [a,b0,c0]
+///     gives 1+c0+B*c0 and the fragment !b0&c1 gives c1+B*c1.
+///   3 "linear tail": !CNOT + CNOT + 4 g57 — a^=!c0 and a^=c1 give 1+C,
+///     the quad [a,bi,cj] sums to B*C; no collapse, and no gate reads both
+///     carriers of one value (masking-safe, like the ESOP).
+///   4 legacy GADGET: 6 g57 — the classic nonlinear network, C's second
+///     carrier borrowed as restored scratch.
+///   5 "quad+pair": 5 g57 + 1 fragment — the quad gives B*C, then
+///     (!c0&c1) + [a,c1,c0] = 1 + C (a g57 pair with one complement folded
+///     into a fragment). All-g57 apart from one fragment, no collapse.
+///   6 four-cube ESOP: 4 fragments (the previous fixed SG; masking-safe).
+/// A per-gate uniform draw over these breaks the fixed-period SG
+/// fingerprint and varies local gate-type statistics while keeping the
+/// body g57-rich (DB-warm) with only sprinkled CNOTs.
+fn emit_cg_variant(
+    state: &GadgetState,
+    gate: [u16; 3],
+    variant: u32,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) {
+    let [a, b, c] = gate.map(|w| w as usize);
+    assert!(a != b && a != c && b != c, "CG operands must be distinct values");
+    let (pa, pb, pc) = (state.pairs[a], state.pairs[b], state.pairs[c]);
+    let at = (if rng.random_bool(0.5) { pa.0 } else { pa.1 }) as u16;
+    let (b0, b1) = if rng.random_bool(0.5) { (pb.0, pb.1) } else { (pb.1, pb.0) };
+    let (c0, c1) = if rng.random_bool(0.5) { (pc.0, pc.1) } else { (pc.1, pc.0) };
+    let (b0, b1, c0, c1) = (b0 as u16, b1 as u16, c0 as u16, c1 as u16);
+    let g57 = |t: u16, x: u16, y: u16| XGate::from_g57([t, x, y]);
+    let ncnot = |t: u16, s: u16| XGate::conj(t, [(s, false)]).expect("distinct carriers");
+    let frag = |t: u16, l: [(u16, bool); 2]| XGate::conj(t, l).expect("distinct carriers");
+    match variant {
+        0 => {
+            out.push(XGate::cnot(b0, b1));
+            out.push(XGate::cnot(c0, c1));
+            out.push(g57(at, b0, c0));
+            out.push(XGate::cnot(c0, c1));
+            out.push(XGate::cnot(b0, b1));
+        }
+        1 => {
+            out.push(XGate::cnot(c0, c1));
+            out.push(g57(at, b0, c0));
+            out.push(g57(at, b1, c0));
+            out.push(ncnot(at, c0));
+            out.push(XGate::cnot(c0, c1));
+        }
+        2 => {
+            out.push(XGate::cnot(b0, b1));
+            out.push(g57(at, b0, c0));
+            out.push(frag(at, [(b0, false), (c1, true)]));
+            out.push(XGate::cnot(b0, b1));
+        }
+        3 => {
+            out.push(ncnot(at, c0));
+            out.push(XGate::cnot(at, c1));
+            out.push(g57(at, b0, c0));
+            out.push(g57(at, b1, c0));
+            out.push(g57(at, b0, c1));
+            out.push(g57(at, b1, c1));
+        }
+        4 => {
+            let map = [at, 0, 0, c0, c1, b0, b1];
+            for &[ga, gb, gc] in &GADGET {
+                out.push(g57(map[ga as usize], map[gb as usize], map[gc as usize]));
+            }
+        }
+        5 => {
+            out.push(g57(at, b0, c0));
+            out.push(g57(at, b1, c0));
+            out.push(g57(at, b0, c1));
+            out.push(g57(at, b1, c1));
+            out.push(frag(at, [(c0, false), (c1, true)]));
+            out.push(g57(at, c1, c0));
+        }
+        _ => emit_shared_g57_frag2(
+            at as usize,
+            b0 as usize,
+            b1 as usize,
+            c0 as usize,
+            c1 as usize,
+            out,
+        ),
+    }
+}
+
+/// One CG, drawn uniformly from the menu (see [`emit_cg_variant`]).
+fn emit_cg_menu(state: &GadgetState, gate: [u16; 3], rng: &mut impl Rng, out: &mut Vec<XGate>) {
+    let variant = rng.random_range(0..CG_VARIANTS);
+    emit_cg_variant(state, gate, variant, rng, out);
+}
+
+/// Recognize an XGate that IS a g57 — complemented with exactly one negative
+/// and one positive control — returning [target, x, y] with fires = x OR !y.
+fn as_g57_triple(g: &XGate) -> Option<[u16; 3]> {
+    if !g.comp || g.ctrls.len() != 2 {
+        return None;
+    }
+    let (w0, p0) = g.ctrls[0];
+    let (w1, p1) = g.ctrls[1];
+    match (p0, p1) {
+        (false, true) => Some([g.target, w0, w1]),
+        (true, false) => Some([g.target, w1, w0]),
+        _ => None,
+    }
+}
+
 fn emit_rg1_x(state: &mut GadgetState, i: usize, j: usize, out: &mut Vec<XGate>) {
     // Six-CNOT RG1. Unlike the legacy nonlinear network, no gate consumes both
     // carriers of either logical value. Exhaustive bounded search (regressed
@@ -2300,8 +2421,9 @@ pub fn commuting_shuffle(gates: &mut Vec<XGate>, rng: &mut impl Rng) {
     *gates = reordered;
 }
 
-/// Two-share gadgetization with native CNOT linear bookends, a four-fragment
-/// masking-safe SG, and the legacy NONLINEAR g57 RGs drawn uniformly from
+/// Two-share gadgetization with native CNOT linear bookends, a per-gate
+/// uniform draw from the seven-variant CG menu ([`emit_cg_variant`]), and
+/// the legacy NONLINEAR g57 RGs drawn uniformly from
 /// {RG1 value-swap, RG2 re-pair, RG3 mask-refresh} — `rg_freq` of them
 /// (default 1) between consecutive SGs. The whole output is finished with a
 /// [`commuting_shuffle`] so W_i, bookend, and body gates interleave wherever
@@ -2374,7 +2496,7 @@ pub fn gadgetize_cnot(
     // trade is deliberate — RG1/RG2 gates read both carriers of a value, so
     // gate-local non-completeness is given up for low-degree opacity.
     for (index, &gate) in main.gates.iter().enumerate() {
-        emit_gadget_x(&state, gate, &mut out);
+        emit_cg_menu(&state, gate, rng, &mut out);
         if index + 1 == main.gates.len() {
             break;
         }
@@ -2780,9 +2902,14 @@ pub fn gadgetize_xgates(
     let mut state = GadgetState { n, pairs };
     let mut pair_queue = VecDeque::new();
     let mut single_queue = VecDeque::new();
-    // Same nonlinear {RG1, RG2, RG3} policy as `gadgetize_cnot`.
+    // Same nonlinear {RG1, RG2, RG3} policy and CG menu as `gadgetize_cnot`;
+    // source gates that are not g57-shaped keep the general ANF sharing.
     for (index, gate) in source.iter().enumerate() {
-        emit_shared_xgate2(&state, gate, &mut out);
+        if let Some(triple) = as_g57_triple(gate) {
+            emit_cg_menu(&state, triple, rng, &mut out);
+        } else {
+            emit_shared_xgate2(&state, gate, &mut out);
+        }
         if index + 1 == source.len() {
             break;
         }
@@ -4481,6 +4608,56 @@ mod cnot_gadget_tests {
                 );
             }
             assert_ne!(gates, before, "seed={seed:#x}: order untouched");
+        }
+    }
+
+    #[test]
+    fn cg_menu_variants_are_correct_and_stay_in_vocabulary() {
+        // Values a,b,c live on carrier pairs (0,1), (2,3), (4,5). Every
+        // variant, under every random role assignment, must (a) apply
+        // exactly A ^= B OR !C to the target value, (b) leave every wire
+        // outside a's carriers unchanged (collapses restored at wire
+        // level), and (c) emit only g57s / 1-2-control conjunctions —
+        // never a bare X, whose census would count the source gates.
+        let state = GadgetState {
+            n: 3,
+            pairs: vec![(0, 1), (2, 3), (4, 5)],
+        };
+        let bit = |v: u64, w: usize| (v >> w) & 1;
+        for variant in 0..CG_VARIANTS {
+            for role_seed in 0..8u64 {
+                let mut rng = StdRng::seed_from_u64(0xc6_0000 + role_seed);
+                let mut gates = Vec::new();
+                emit_cg_variant(&state, [0, 1, 2], variant, &mut rng, &mut gates);
+                for g in &gates {
+                    if g.comp {
+                        assert_eq!(g.ctrls.len(), 2, "complemented gate must be a g57");
+                    } else {
+                        assert!(
+                            (1..=2).contains(&g.ctrls.len()),
+                            "conjunction must have 1 or 2 controls (no bare X)"
+                        );
+                    }
+                }
+                for input in 0..64u64 {
+                    let output = eval_u64(&gates, input);
+                    assert_eq!(
+                        output & !0b11,
+                        input & !0b11,
+                        "variant {variant}: non-target wires disturbed"
+                    );
+                    let b_val = bit(input, 2) ^ bit(input, 3);
+                    let c_val = bit(input, 4) ^ bit(input, 5);
+                    let f = b_val | (1 ^ c_val);
+                    let a_old = bit(input, 0) ^ bit(input, 1);
+                    let a_new = bit(output, 0) ^ bit(output, 1);
+                    assert_eq!(
+                        a_new,
+                        a_old ^ f,
+                        "variant {variant} input {input:#08b}: wrong update"
+                    );
+                }
+            }
         }
     }
 

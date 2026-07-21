@@ -92,6 +92,32 @@ value, so gate-local non-completeness (first-order probe masking) is given
 up in exchange for low-degree opacity. The linear emitters remain in the
 codebase (`emit_rg{1,2,3}_x`) for the feistel path and for comparison runs.
 
+## CG menu — one random realization per source gate
+
+Each source g57 (`A ^= B OR !C`, shares `X = x0^x1`) is emitted as ONE of
+seven structurally different realizations, drawn uniformly per gate, with
+the carrier roles (target carrier of A, share/pad order of B and C) also
+randomized per draw. Vocabulary is restricted to g57s and 1-2-control
+conjunction fragments of any polarity — never a bare X (its census would
+count the source gates). Writing `f = 1 + C + B*C`:
+
+| # | name          | shape                     | gates | notes |
+|---|---------------|---------------------------|-------|-------|
+| 0 | collapse both | 4 CNOT + 1 g57            | 5     | B and C collapsed onto single wires, one g57 fires, restored |
+| 1 | collapse c    | 2 CNOT + 2 g57 + !CNOT    | 5     | pair sums to B*C, `a^=!c0` adds 1+C |
+| 2 | collapse b    | 2 CNOT + 1 g57 + 1 frag   | 4     | `!b0&c1` carries the folded complement |
+| 3 | linear tail   | !CNOT + CNOT + 4 g57      | 6     | no collapse; masking-safe (single-carrier reads) |
+| 4 | legacy GADGET | 6 g57                     | 6     | the classic nonlinear network |
+| 5 | quad+pair     | 5 g57 + 1 frag            | 6     | all-g57 but one folded fragment, no collapse |
+| 6 | 4-cube ESOP   | 4 fragments               | 4     | the previous fixed SG; masking-safe |
+
+Rationale: a per-gate draw breaks the fixed-period SG fingerprint and
+varies local gate-type statistics (less regular/solvable), while keeping
+the body g57-rich — DB-warm for phase-A mixing (g57 material ~99% frozen-
+store match vs ~2.8% for mpmct fragments) — with only sprinkled CNOTs.
+Non-g57-shaped source gates on the mpmct1-ingest path (CNOT/CCNOT/pure
+fragments from the sandwich) keep the general ANF sharing.
+
 ## Final commuting-order rerandomization (`commuting_shuffle`)
 
 After assembly (including S1), the gate order is re-drawn preserving only
