@@ -11,6 +11,8 @@
 \newcommand{\CCNOT}{\textsc{ccnot}}
 \newcommand{\code}[1]{\texttt{#1}}
 \newcommand{\gf}{\mathrm{GF}(2)}
+\newcommand{\pe}{\mathrel{{+}{=}}}    % t += e  means  t <- t XOR e over GF(2)
+\newcommand{\at}{a^{\ast}}            % the targeted carrier of A
 
 \title{\textbf{Nonlinear Re-Randomization and CG Diversification}\\[2pt]
 \large Why the new gadgetize reverted to the nonlinear RGs, and why each CG
@@ -186,6 +188,89 @@ variants algebraically need a ``$\oplus 1$'', but an X census would count
 the source gates, so every constant is folded into a negative-control
 \CNOT{} or a complemented fragment.
 
+\textbf{Gate-by-gate.} Each realization writes only the target carrier
+$\at$ (one of $A$'s two carriers, chosen per draw); $b_0, b_1$ and $c_0,
+c_1$ are the two carriers of $B$ and of $C$ in a per-draw random order.
+Notation, all over $\gf$ (so $+$ is $\oplus$ and $\overline{w} = 1 \oplus
+w$): $t \pe w$ is a \CNOT{} ($t \leftarrow t \oplus w$); $t \pe
+\overline{w}$ a negative-control \CNOT{}; $t \pe (x \vee \overline{y})$ a
+g57; and $t \pe (\ell\,\ell')$ a two-control conjunction fragment
+(juxtaposition = AND, each literal $w$ or $\overline{w}$). Recall $f = 1
+\oplus C \oplus BC = B \vee \overline{C}$. Gates execute top to bottom.
+
+\newcommand{\note}[1]{\hfill{\footnotesize\itshape #1}}
+\newcommand{\cgvar}[1]{\smallskip\noindent\textbf{#1}\par\nopagebreak}
+
+\cgvar{0 --- collapse both} (4 \CNOT{} + 1 g57):
+\begin{enumerate}\itemsep1pt
+\item $b_0 \pe b_1$ \note{now $b_0 = B$}
+\item $c_0 \pe c_1$ \note{now $c_0 = C$}
+\item $\at \pe (b_0 \vee \overline{c_0})$ \note{$= B \vee \overline{C} = f$}
+\item $c_0 \pe c_1$ \note{restore $c_0$}
+\item $b_0 \pe b_1$ \note{restore $b_0$}
+\end{enumerate}
+
+\cgvar{1 --- collapse $c$} (2 \CNOT{}-type + 2 g57):
+\begin{enumerate}\itemsep1pt
+\item $c_0 \pe c_1$ \note{now $c_0 = C$}
+\item $\at \pe (b_0 \vee \overline{c_0})$
+\item $\at \pe (b_1 \vee \overline{c_0})$ \note{the two g57s sum to $BC$}
+\item $\at \pe \overline{c_0}$ \note{adds $\overline{C} = 1 \oplus C$}
+\item $c_0 \pe c_1$ \note{restore $c_0$}
+\end{enumerate}
+
+\cgvar{2 --- collapse $b$} (2 \CNOT{} + 1 g57 + 1 fragment):
+\begin{enumerate}\itemsep1pt
+\item $b_0 \pe b_1$ \note{now $b_0 = B$}
+\item $\at \pe (b_0 \vee \overline{c_0})$ \note{$= 1 \oplus c_0 \oplus B c_0$}
+\item $\at \pe (\overline{b_0}\, c_1)$ \note{$= c_1 \oplus B c_1$; total $= f$}
+\item $b_0 \pe b_1$ \note{restore $b_0$}
+\end{enumerate}
+
+\cgvar{3 --- linear tail} ($\overline{\CNOT{}}$ + \CNOT{} + 4 g57; masking-safe, no carrier collapsed):
+\begin{enumerate}\itemsep1pt
+\item $\at \pe \overline{c_0}$
+\item $\at \pe c_1$ \note{gates 1--2 give $\overline{c_0} \oplus c_1 = 1 \oplus C$}
+\item $\at \pe (b_0 \vee \overline{c_0})$
+\item $\at \pe (b_1 \vee \overline{c_0})$
+\item $\at \pe (b_0 \vee \overline{c_1})$
+\item $\at \pe (b_1 \vee \overline{c_1})$ \note{the four g57s sum to $BC$}
+\end{enumerate}
+
+\cgvar{4 --- legacy GADGET} (6 g57; $c_1$ borrowed as restored scratch):
+\begin{enumerate}\itemsep1pt
+\item $c_1 \pe (b_0 \vee \overline{b_1})$ \note{scratch on $c_1$}
+\item $\at \pe (c_1 \vee \overline{b_1})$
+\item $\at \pe (b_0 \vee \overline{c_1})$
+\item $c_1 \pe (b_0 \vee \overline{b_1})$ \note{restore $c_1$}
+\item $\at \pe (b_1 \vee \overline{c_0})$
+\item $\at \pe (c_0 \vee \overline{b_0})$
+\end{enumerate}
+
+\cgvar{5 --- quad $+$ pair} (5 g57 + 1 fragment; no carrier collapsed):
+\begin{enumerate}\itemsep1pt
+\item $\at \pe (b_0 \vee \overline{c_0})$
+\item $\at \pe (b_1 \vee \overline{c_0})$
+\item $\at \pe (b_0 \vee \overline{c_1})$
+\item $\at \pe (b_1 \vee \overline{c_1})$ \note{the four g57s sum to $BC$}
+\item $\at \pe (\overline{c_0}\, c_1)$
+\item $\at \pe (c_1 \vee \overline{c_0})$ \note{gates 5--6 sum to $1 \oplus C$}
+\end{enumerate}
+
+\cgvar{6 --- 4-cube ESOP} (4 fragments; the previous fixed CG, masking-safe):
+\begin{enumerate}\itemsep1pt
+\item $\at \pe (\overline{c_1}\, b_0)$
+\item $\at \pe (c_1\, \overline{b_1})$
+\item $\at \pe (c_0\, b_1)$
+\item $\at \pe (\overline{c_0}\, \overline{b_0})$ \note{the four cubes XOR to $B \vee \overline{C}$}
+\end{enumerate}
+
+\smallskip
+Every non-target carrier that a variant touches (the collapses in 0--2, the
+scratch in 4) is written an even number of times and so is restored exactly
+at the wire level; verified exhaustively over all $7$ variants, $8$ carrier
+role assignments, and $64$ inputs.
+
 \textbf{What diversification buys.}
 \begin{itemize}
 \item \emph{Irregularity}: no fixed CG period, no repeated shape, varying
@@ -193,8 +278,8 @@ local gate-type statistics --- less structure for syntactic profiling and
 for solvers to latch onto. The carrier-role randomization scrambles pin
 patterns even between same-variant draws.
 \item \emph{DB-warmth}: the body census flips from fragment-heavy to
-g57-dominant (at $n{=}16$: $822/277/707$ g57/\CNOT/fragment $\to$
-$1269/486/264$), with \CNOT{}s only sprinkled --- and a few \CNOT{}s
+g57-dominant (at $n{=}16$, g57 / \CNOT{} / fragment counts $822/277/707
+\to 1269/486/264$), with \CNOT{}s only sprinkled --- and a few \CNOT{}s
 within many g57s are well tolerated by the replacement store, while the
 g57 mass mixes at the ${\sim}99\%$ match rate.
 \item \emph{More nonlinearity in the body}: five of seven variants carry
