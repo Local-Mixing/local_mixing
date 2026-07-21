@@ -2241,95 +2241,58 @@ fn emit_nonlinear_rg(
     out.extend(buf.into_iter().map(XGate::from_g57));
 }
 
-/// Rerandomize the order of commuting gates: replace `gates` with a fresh
-/// random linear extension of its read/write dependency order. Two gates
-/// conflict iff one targets a wire the other reads; equal targets alone do
-/// NOT conflict (XOR toggles on one wire commute) and shared reads are free.
-/// This is a conservative superset of [`XGate::collides`] conflicts (the
-/// opposite-literal separation exemption is ignored), so every emitted order
-/// computes the same function. Unlike adjacent-swap churn, the reorder is
-/// global: bookend, W_i, and slice-block gates migrate anywhere their wire
-/// dependencies allow, dissolving the construction-time block layout.
+/// One randomized-insertion pass over `order`. Each gate, taken in the
+/// current order, is inserted uniformly at random among the legal slots of
+/// the output built so far: it may hop left over exactly the maximal suffix
+/// of gates it commutes with, where commutation is decided by
+/// [`XGate::collides`] — gates commute unless proven otherwise, including
+/// across a read/write crossing when a shared control with opposite
+/// polarities makes the firing supports disjoint. Every hop is an adjacent
+/// commuting swap, so the pass preserves the function exactly.
+fn insertion_pass(order: &mut Vec<u32>, gates: &[XGate], rng: &mut impl Rng) {
+    let mut out: Vec<u32> = Vec::with_capacity(order.len());
+    for &gi in order.iter() {
+        let g = &gates[gi as usize];
+        let mut span = 0usize;
+        while span < out.len() && !XGate::collides(g, &gates[out[out.len() - 1 - span] as usize])
+        {
+            span += 1;
+        }
+        let pos = out.len() - rng.random_range(0..=span);
+        out.insert(pos, gi);
+    }
+    *order = out;
+}
+
+/// Rerandomize the order of commuting gates, preserving the function
+/// exactly. The only constraint kept is the relative order of every pair
+/// that actually collides per [`XGate::collides`]; everything else is fair
+/// game — equal-target XOR toggles, disjoint gates, shared reads, and
+/// crossing pairs separated by an opposite-polarity shared control all
+/// reorder freely. Unlike adjacent-swap churn the relocation is global: a
+/// gate can land anywhere between its nearest colliding predecessor and
+/// successor, so bookend, W_i, and slice-block material migrates deep into
+/// the body, dissolving the construction-time block layout.
 ///
-/// The DAG is built per wire from the alternating maximal runs of readers
-/// and writers; consecutive runs are bridged through one virtual node ("all
-/// of run k before any of run k+1", exactly the pairwise constraint since
-/// runs alternate kinds), keeping edges linear in total gate arity. A
-/// uniformly random ready-gate draw (randomized Kahn) yields the order.
+/// Implementation: alternating-direction randomized insertion passes (a
+/// leftward pass gives every gate its full backward reach, the reversed
+/// pass the forward reach; `collides` is symmetric and only the relative
+/// order of colliding pairs matters, so working on the reversed index list
+/// is sound).
 pub fn commuting_shuffle(gates: &mut Vec<XGate>, rng: &mut impl Rng) {
     let m = gates.len();
     if m < 2 {
         return;
     }
-    let wires = gates.iter().map(|g| g.max_wire()).max().unwrap() as usize + 1;
-    // Ops per wire in circuit order: (gate index, is_write). A gate touches a
-    // wire at most once (its target never appears among its controls).
-    let mut ops: Vec<Vec<(u32, bool)>> = vec![Vec::new(); wires];
-    for (i, g) in gates.iter().enumerate() {
-        ops[g.target as usize].push((i as u32, true));
-        for &(w, _) in &g.ctrls {
-            ops[w as usize].push((i as u32, false));
-        }
+    let mut order: Vec<u32> = (0..m as u32).collect();
+    const PASSES: usize = 3;
+    for _ in 0..PASSES {
+        insertion_pass(&mut order, gates, rng);
+        order.reverse();
     }
-    // Nodes 0..m are gates; virtual run-boundary nodes follow.
-    let mut succ: Vec<Vec<u32>> = vec![Vec::new(); m];
-    let mut indeg: Vec<u32> = vec![0; m];
-    for wire_ops in &ops {
-        let mut start = 0usize;
-        while start < wire_ops.len() {
-            let kind = wire_ops[start].1;
-            let mut end = start + 1;
-            while end < wire_ops.len() && wire_ops[end].1 == kind {
-                end += 1;
-            }
-            if end == wire_ops.len() {
-                break;
-            }
-            let mut next_end = end + 1;
-            while next_end < wire_ops.len() && wire_ops[next_end].1 == wire_ops[end].1 {
-                next_end += 1;
-            }
-            let v = succ.len() as u32;
-            succ.push(Vec::with_capacity(next_end - end));
-            indeg.push((end - start) as u32);
-            for &(gate, _) in &wire_ops[start..end] {
-                succ[gate as usize].push(v);
-            }
-            for &(gate, _) in &wire_ops[end..next_end] {
-                succ[v as usize].push(gate);
-                indeg[gate as usize] += 1;
-            }
-            start = end;
-        }
+    if PASSES % 2 == 1 {
+        order.reverse();
     }
-    drop(ops);
-
-    let mut ready: Vec<u32> = (0..m as u32)
-        .filter(|&i| indeg[i as usize] == 0)
-        .collect();
-    let mut order: Vec<u32> = Vec::with_capacity(m);
-    let mut cascade: Vec<u32> = Vec::new();
-    while !ready.is_empty() {
-        let pick = rng.random_range(0..ready.len());
-        let gate = ready.swap_remove(pick);
-        order.push(gate);
-        cascade.push(gate);
-        // Virtual nodes release as soon as their whole source run is emitted.
-        while let Some(node) = cascade.pop() {
-            for k in 0..succ[node as usize].len() {
-                let s = succ[node as usize][k] as usize;
-                indeg[s] -= 1;
-                if indeg[s] == 0 {
-                    if s < m {
-                        ready.push(s as u32);
-                    } else {
-                        cascade.push(s as u32);
-                    }
-                }
-            }
-        }
-    }
-    assert_eq!(order.len(), m, "commuting_shuffle: dependency cycle");
     let mut reordered = Vec::with_capacity(m);
     for &i in &order {
         reordered.push(gates[i as usize].clone());
@@ -4519,6 +4482,32 @@ mod cnot_gadget_tests {
             }
             assert_ne!(gates, before, "seed={seed:#x}: order untouched");
         }
+    }
+
+    #[test]
+    fn commuting_shuffle_reorders_across_an_opposite_polarity_crossing() {
+        // A writes wire 0, B reads wire 0 — a read/write crossing — but they
+        // share control wire 3 with opposite polarities, so their firing
+        // supports are disjoint and they commute (two conjunction gates
+        // sharing an opposite-polarity control). The shuffle must treat the
+        // pair as mobile, not pin it by the crossing alone.
+        let a = XGate::conj(0, [(2u16, true), (3u16, true)]).unwrap();
+        let b = XGate::conj(1, [(0u16, true), (3u16, false)]).unwrap();
+        assert!(!XGate::collides(&a, &b));
+        let before = vec![a.clone(), b.clone()];
+        let mut seen_swapped = false;
+        for seed in 0..32u64 {
+            let mut rng = StdRng::seed_from_u64(0xccc0_0000 + seed);
+            let mut gates = before.clone();
+            commuting_shuffle(&mut gates, &mut rng);
+            for input in 0..(1u64 << 4) {
+                assert_eq!(eval_u64(&gates, input), eval_u64(&before, input));
+            }
+            if gates[0] == b {
+                seen_swapped = true;
+            }
+        }
+        assert!(seen_swapped, "the separation-exempt pair never reordered");
     }
 
     #[test]

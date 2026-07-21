@@ -94,12 +94,15 @@ codebase (`emit_rg{1,2,3}_x`) for the feistel path and for comparison runs.
 
 ## Final commuting-order rerandomization (`commuting_shuffle`)
 
-After assembly (including S1), the gate order is re-drawn as a uniform-ready
-random linear extension of the read/write dependency order: two gates
-conflict iff one targets a wire the other reads; equal targets do not
-conflict (XOR toggles commute), shared reads are free. Implementation:
-per-wire alternating reader/writer runs bridged by virtual nodes (linear
-edge count), then a randomized Kahn topological draw.
+After assembly (including S1), the gate order is re-drawn preserving only
+the relative order of pairs that actually collide per `XGate::collides` —
+gates commute unless proven otherwise. In particular a read/write crossing
+alone does not pin a pair: two conjunction gates sharing a control at
+opposite polarities have disjoint firing supports and reorder freely (the
+separation exemption; complemented g57s get no such exemption).
+Implementation: alternating-direction randomized insertion passes — each
+gate lands uniformly within its maximal commuting span, giving it global
+reach up to its nearest truly-colliding neighbors.
 
 Motivation: the heatmaps of gadgetized circuits showed an S-shape — no
 mixing between the computation block and the bookends, with the linear W_i
