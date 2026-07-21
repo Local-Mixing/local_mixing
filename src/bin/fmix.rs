@@ -247,6 +247,11 @@ struct Args {
     /// semantics (split children get parent + 1).
     #[arg(long, default_value_t = false)]
     gen_split_inherit: bool,
+    /// Median variant for the DB generation stamp: use the LOWER median
+    /// (rounded down on even windows; on 2-gate windows this is the min).
+    /// Default off = upper median (rounded up).
+    #[arg(long, default_value_t = false)]
+    gen_median_low: bool,
     /// Laggard-list rebuild cadence in moves (O(size) scan each rebuild;
     /// entries going stale between rebuilds are pruned at draw time).
     #[arg(long, default_value_t = 10_000)]
@@ -406,6 +411,7 @@ fn main() {
         gen_miss_budget: args.gen_miss_budget,
         gen_giveup: args.gen_giveup,
         gen_split_inherit: args.gen_split_inherit,
+        gen_median_low: args.gen_median_low,
         gen_stop_frac: args.gen_stop_frac,
         twist_cov_stop: args.twist_cov_stop,
         verify_every: args.verify_every,

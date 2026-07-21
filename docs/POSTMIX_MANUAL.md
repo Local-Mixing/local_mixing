@@ -184,6 +184,7 @@ final write are each verified. A failure panics immediately.
 | `--gen-miss-budget` | 6 | seed misses before a laggard graduates cheap → hard tier |
 | `--gen-giveup` | 0 | seed misses before a gate is written off as unreachable (excluded from targeting, reported `u=`; still counted by the all-gates dose criterion). 0 = never |
 | `--gen-split-inherit` | off | split children INHERIT the parent generation unchanged (only DB replacements raise generations — isolates DB re-encoding depth). Default = ratchet semantics: split children get parent + 1 |
+| `--gen-median-low` | off | DB stamp uses the LOWER median of the outgoing window (rounded down on even windows — on 2-gate windows this is the min). Default = upper median (rounded up) |
 | `--gen-stop-frac` | −1 | dose stop: end the run at the first report point where the eligible laggard fraction is ≤ this and `--twist-cov-stop` is met. Negative = off; the move budget becomes a ceiling when on |
 | `--twist-cov-stop` | 0 | twist-coverage requirement for the dose stop: cumulative twisted span / current size (saturation target ~600). `0` = no requirement |
 | `--gens-out` | none | write the per-gate generation sidecar (`4294967295` = born-random material) |

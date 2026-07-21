@@ -455,6 +455,12 @@ pub struct MixParams {
     // inherit the parent generation unchanged, so ONLY DB replacements raise
     // generations (isolates DB re-encoding depth from walk rewrite depth).
     pub gen_split_inherit: bool,
+    // Median variant for the DB stamp: false (default) = upper median
+    // (sorted[len/2], median rounded up on even windows); true = lower
+    // median (sorted[(len-1)/2], rounded down). On 2-gate windows — the most
+    // common splice — the lower median IS the min, so this probes how close
+    // the median rule sits to min-semantics' straggler-bound climb.
+    pub gen_median_low: bool,
     // Dose-based stop: with gen_target > 0 and gen_stop_frac >= 0, the run
     // ends (MixStop::DoseReached) at the first report point where the
     // laggard fraction among cap-eligible gates is <= gen_stop_frac AND the
@@ -525,6 +531,7 @@ impl Default for MixParams {
             gen_miss_budget: 6,
             gen_giveup: 0,
             gen_split_inherit: false,
+            gen_median_low: false,
             gen_stop_frac: -1.0,
             twist_cov_stop: 0.0,
             verify_every: 10_000,
@@ -2379,14 +2386,19 @@ impl Mixer {
         let same_origin = ids.iter().all(|&id| self.meta_of(id).origin == m0.origin);
         let origin = if same_origin { m0.origin } else { ORIGIN_SYNTH };
         // Gen: a DB-replacement increment site. Products get g+1 where g is
-        // the MEDIAN generation of the outgoing window, rounded up on even
-        // sizes (the upper middle of the sorted gens — benchmark semantics,
-        // 2026-07-21). Saturating: an all-fresh window stays fresh, and a
-        // window whose upper median is fresh yields fresh products.
+        // the MEDIAN generation of the outgoing window — upper middle of the
+        // sorted gens by default (median rounded up on even sizes, benchmark
+        // semantics 2026-07-21), lower middle under gen_median_low.
+        // Saturating: an all-fresh window stays fresh.
         let dgen = {
             let mut gens: Vec<u32> = ids.iter().map(|&id| self.meta_of(id).dgen).collect();
             gens.sort_unstable();
-            gens.get(gens.len() / 2).copied().unwrap_or(GEN_FRESH).saturating_add(1)
+            let mid = if self.params.gen_median_low {
+                gens.len().saturating_sub(1) / 2
+            } else {
+                gens.len() / 2
+            };
+            gens.get(mid).copied().unwrap_or(GEN_FRESH).saturating_add(1)
         };
         for &id in ids {
             self.index_remove(id);
@@ -3946,14 +3958,34 @@ mod mix_tests {
         let gens = mx.gens_in_order();
         assert_eq!(&gens[..2], &[8, 8], "products carry upper-median(3,7)+1 = 8: {gens:?}");
         assert_eq!(&gens[2..], &[0, 0], "untouched gates keep their gen: {gens:?}");
-        // Saturation: an all-fresh window stays fresh.
+        // Lower-median variant: same {3,7} spread now stamps min+1 on the
+        // 2-gate window.
+        mx.params.gen_median_low = true;
+        let ids = mx.arena.ids_in_order();
+        let m0 = mx.meta_of(ids[0]);
+        mx.set_meta(ids[0], Meta { dgen: 3, ..m0 });
+        let m1 = mx.meta_of(ids[1]);
+        mx.set_meta(ids[1], Meta { dgen: 7, ..m1 });
+        let window = vec![h.clone(), h.clone()];
+        let replacement = vec![g.clone(), g.clone()];
+        assert!(mx.try_db_splice(
+            &ids[..2],
+            Dir::R,
+            &window,
+            replacement,
+            1,
+            DbMode::SizeAgnostic
+        ));
+        assert_eq!(&mx.gens_in_order()[..2], &[4, 4], "lower median of (3,7) is 3 -> products 4");
+        // Saturation: an all-fresh window stays fresh (either median).
+        mx.params.gen_median_low = false;
         let ids = mx.arena.ids_in_order();
         for &id in &ids[..2] {
             let m = mx.meta_of(id);
             mx.set_meta(id, Meta { dgen: GEN_FRESH, ..m });
         }
-        let window = vec![h.clone(), h.clone()];
-        let replacement = vec![g.clone(), g.clone()];
+        let window = vec![g.clone(), g.clone()];
+        let replacement = vec![h.clone(), h.clone()];
         assert!(mx.try_db_splice(
             &ids[..2],
             Dir::R,
