@@ -2,7 +2,7 @@
 use crate::replace::frozen::FrozenDb;
 use crate::{
     circuit::{Permutation, circuit::CircuitSeq},
-    replace::replace::{ExpandPairMode, expand_once_scored},
+    replace::replace::{ExpandPairMode, expand_once_scored, expand_once_scored_bounded},
 };
 use rand::Rng;
 use rand::seq::IndexedRandom;
@@ -1846,6 +1846,31 @@ struct CollisionPassOptions {
 pub struct StageBPassResult {
     pub hidden_samfs: usize,
     pub replacements: usize,
+    /// True when the completed, functionality-preserving pass would exceed the configured
+    /// new-SSS size ceiling. In that case neither the circuit nor its generation tags are
+    /// modified.
+    pub cap_rejected: bool,
+    pub candidate_gates: usize,
+}
+
+fn commit_stage_b_candidate(
+    circuit: &mut CircuitSeq,
+    tags: &mut Vec<u32>,
+    candidate_gates: Vec<[u16; 3]>,
+    candidate_tags: Vec<u32>,
+    track: bool,
+    size_cap: Option<usize>,
+) -> Result<(), usize> {
+    let candidate_len = candidate_gates.len();
+    if size_cap.is_some_and(|cap| candidate_len > cap) {
+        return Err(candidate_len);
+    }
+
+    circuit.gates = candidate_gates;
+    if track {
+        *tags = candidate_tags;
+    }
+    Ok(())
 }
 
 // Shoot the first remaining gate right until its first collision. At that collision, make a
@@ -2658,6 +2683,7 @@ pub fn shuffled_shoot_then_samf_stage_b_pass(
     tags: &mut Vec<u32>,
     anchor: usize,
     replacement_budget: usize,
+    size_cap: Option<usize>,
 ) -> StageBPassResult {
     let track = !tags.is_empty();
     let mut input_gates = circuit.gates.clone();
@@ -2672,7 +2698,10 @@ pub fn shuffled_shoot_then_samf_stage_b_pass(
         } else {
             crate::replace::replace::new_gate_tag(&input_tags)
         };
-        input_gates = expand_once_scored(&current, n, db, &pair_mode).gates;
+        input_gates = match size_cap {
+            Some(cap) => expand_once_scored_bounded(&current, n, db, &pair_mode, cap).gates,
+            None => expand_once_scored(&current, n, db, &pair_mode).gates,
+        };
         if !input_tags.is_empty() {
             input_tags = std::iter::repeat(event_tag)
                 .take(input_gates.len())
@@ -2712,14 +2741,31 @@ pub fn shuffled_shoot_then_samf_stage_b_pass(
 
     if track {
         apply_unsamf_tagged(&mut out_b, &t_pass, &neg_pass, n, db, &mut tags_b);
-        *tags = tags_b;
     } else {
         apply_unsamf(&mut out_b, &t_pass, &neg_pass, n, db);
     }
-    circuit.gates = out_b;
+
+    let candidate_gates = out_b.len();
+    if let Err(candidate_gates) =
+        commit_stage_b_candidate(circuit, tags, out_b, tags_b, track, size_cap)
+    {
+        println!(
+            "[new-sss] rejecting Stage-B pass: candidate has {} gates above cap {}; circuit and generation tags unchanged",
+            candidate_gates,
+            size_cap.unwrap()
+        );
+        return StageBPassResult {
+            hidden_samfs: 0,
+            replacements: 0,
+            cap_rejected: true,
+            candidate_gates,
+        };
+    }
     StageBPassResult {
         hidden_samfs,
         replacements,
+        cap_rejected: false,
+        candidate_gates,
     }
 }
 
@@ -2770,11 +2816,58 @@ pub fn shuffled_shoot_then_samf(
 mod reversed_samf_tests {
     use super::{
         SWAP_3W, SWAP_4W, SWAP_N1_3W, SWAP_N1_4W, SWAP_N2_3W, SWAP_N2_4W, SWAP_N12_3W, SWAP_N12_4W,
-        Transpositions, neg_flips, random_neg_type, shoot_gate_to_first_collision,
-        shoot_materialized_gate_to_first_collision,
+        Transpositions, commit_stage_b_candidate, neg_flips, random_neg_type,
+        shoot_gate_to_first_collision, shoot_materialized_gate_to_first_collision,
     };
     use crate::circuit::circuit::CircuitSeq;
     use std::collections::VecDeque;
+
+    #[test]
+    fn over_cap_stage_b_candidate_is_transactionally_rejected() {
+        let original_gates = vec![[0, 1, 2], [2, 3, 4]];
+        let original_tags = vec![7, 9];
+        let mut circuit = CircuitSeq {
+            gates: original_gates.clone(),
+        };
+        let mut tags = original_tags.clone();
+        let candidate = vec![[0, 1, 2], [2, 3, 4], [4, 5, 6]];
+
+        let rejected = commit_stage_b_candidate(
+            &mut circuit,
+            &mut tags,
+            candidate,
+            vec![10; 3],
+            true,
+            Some(2),
+        );
+
+        assert_eq!(rejected, Err(3));
+        assert_eq!(circuit.gates, original_gates);
+        assert_eq!(tags, original_tags);
+    }
+
+    #[test]
+    fn exactly_at_cap_stage_b_candidate_commits_with_aligned_tags() {
+        let mut circuit = CircuitSeq {
+            gates: vec![[0, 1, 2]],
+        };
+        let mut tags = vec![1];
+        let candidate = vec![[0, 1, 2], [2, 3, 4]];
+        let candidate_tags = vec![10, 11];
+
+        let committed = commit_stage_b_candidate(
+            &mut circuit,
+            &mut tags,
+            candidate.clone(),
+            candidate_tags.clone(),
+            true,
+            Some(2),
+        );
+
+        assert_eq!(committed, Ok(()));
+        assert_eq!(circuit.gates, candidate);
+        assert_eq!(tags, candidate_tags);
+    }
 
     #[test]
     fn shot_gate_moves_to_its_first_collision() {

@@ -29,7 +29,17 @@ pub fn run(sub: &clap::ArgMatches) {
     .expect("Failed to set Ctrl+C handler");
 
     println!("Starting compression");
-    acc = compress_loop(&acc, n, &db, stable_compressions, 1, 1, d, &mut Vec::new());
+    acc = compress_loop(
+        &acc,
+        n,
+        &db,
+        stable_compressions,
+        1,
+        1,
+        d,
+        None,
+        &mut Vec::new(),
+    );
     print_compress_timers();
 
     let mut file = fs::File::create(d).expect("Failed to create new file");

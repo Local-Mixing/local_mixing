@@ -843,6 +843,9 @@ pub fn compress_loop(
     curr_round: usize,
     last_round: usize,
     output_path: &str,
+    // Optional Stage-D early stop. Compression still stops earlier if its
+    // normal no-progress rule fires at an incompressibility ceiling.
+    early_stop_target: Option<usize>,
     tags: &mut Vec<u32>,
 ) -> CircuitSeq {
     let track = !tags.is_empty();
@@ -1030,6 +1033,16 @@ pub fn compress_loop(
             println!("  {}/{}: Reduced: {} gates", curr_round, last_round, after);
         }
 
+        if let Some(target) = early_stop_target {
+            if after <= target {
+                println!(
+                    "  {}/{}: Stage-D compression target reached ({} <= {} gates), stopping",
+                    curr_round, last_round, after, target
+                );
+                break;
+            }
+        }
+
         // Check if user created write_now
         if std::path::Path::new("write_now").exists() {
             std::fs::remove_file("write_now").ok();
@@ -1044,13 +1057,60 @@ pub fn compress_loop(
     acc
 }
 
-/// Single pass of expansion: one round of chunked `expand_big_ancillas` with no loop.
-pub fn expand_once(
+fn merge_expanded_chunks(
+    circuit: &CircuitSeq,
+    mut chunks: Vec<(usize, usize, Vec<[u16; 3]>)>,
+    gate_cap: Option<usize>,
+) -> (Vec<[u16; 3]>, usize) {
+    chunks.sort_by_key(|(start, _, _)| *start);
+    let mut remaining_growth = gate_cap
+        .map(|cap| cap.saturating_sub(circuit.gates.len()))
+        .unwrap_or(usize::MAX);
+    let mut accepted = 0usize;
+    let mut new_gates = Vec::with_capacity(
+        gate_cap.unwrap_or_else(|| chunks.iter().map(|(_, _, gates)| gates.len()).sum()),
+    );
+
+    for (start, end, expanded) in chunks {
+        let original = &circuit.gates[start..end];
+        if gate_cap.is_none() {
+            new_gates.extend(expanded);
+            accepted += 1;
+            continue;
+        }
+
+        // Every chunk replacement is independently equivalent to its original range. Admit only
+        // expansions whose positive delta fits the remaining global budget; otherwise retain the
+        // original chunk. This makes the size governor functionality-preserving—never truncate an
+        // expanded circuit at an arbitrary gate boundary.
+        let growth = expanded.len().saturating_sub(original.len());
+        if expanded.len() > original.len() && growth <= remaining_growth {
+            new_gates.extend(expanded);
+            remaining_growth -= growth;
+            accepted += 1;
+        } else {
+            new_gates.extend_from_slice(original);
+        }
+    }
+
+    (new_gates, accepted)
+}
+
+fn expand_once_with_gate_cap(
     circuit: &CircuitSeq,
     n: usize,
     db: &FrozenDb,
     pair_mode: &ExpandPairMode,
+    gate_cap: Option<usize>,
 ) -> CircuitSeq {
+    if gate_cap.is_some_and(|cap| circuit.gates.len() >= cap) {
+        println!(
+            "  Bounded expand skipped: {} gates already at/above cap {}",
+            circuit.gates.len(),
+            gate_cap.unwrap()
+        );
+        return circuit.clone();
+    }
     let mut rng = rand::rng();
     let before = circuit.gates.len();
     let max_chunks = 4 * rayon::current_num_threads().max(1);
@@ -1060,21 +1120,54 @@ pub fn expand_once(
         ((before + 1499) / 1500).min(max_chunks)
     };
     let ranges = split_into_random_chunk_ranges(before, k, &mut rng);
-    let expanded_chunks: Vec<Vec<[u16; 3]>> = ranges
+    let expanded_chunks: Vec<(usize, usize, Vec<[u16; 3]>)> = ranges
         .into_par_iter()
         .map(|(start, end)| {
             let sub = CircuitSeq {
                 gates: circuit.gates[start..end].to_vec(),
             };
-            expand_big_ancillas(&sub, 100, n, db, 0, pair_mode).gates
+            (
+                start,
+                end,
+                expand_big_ancillas(&sub, 100, n, db, 0, pair_mode).gates,
+            )
         })
         .collect();
-    let mut new_gates = Vec::with_capacity(expanded_chunks.iter().map(|c| c.len()).sum());
-    for chunk in expanded_chunks {
-        new_gates.extend(chunk);
+    let (new_gates, accepted) = merge_expanded_chunks(circuit, expanded_chunks, gate_cap);
+    if let Some(cap) = gate_cap {
+        println!(
+            "  Bounded expand: {} -> {} gates (cap {}, accepted {} chunks)",
+            before,
+            new_gates.len(),
+            cap,
+            accepted
+        );
+    } else {
+        println!("  Expand: {} gates", new_gates.len());
     }
-    println!("  Expand: {} gates", new_gates.len());
     CircuitSeq { gates: new_gates }
+}
+
+/// Single pass of expansion: one round of chunked `expand_big_ancillas` with no loop.
+pub fn expand_once(
+    circuit: &CircuitSeq,
+    n: usize,
+    db: &FrozenDb,
+    pair_mode: &ExpandPairMode,
+) -> CircuitSeq {
+    expand_once_with_gate_cap(circuit, n, db, pair_mode, None)
+}
+
+/// Functionality-preserving expansion that admits whole equivalent chunks only while their total
+/// gate delta fits `gate_cap`. The output is never larger than the cap when the input is not.
+pub fn expand_once_bounded(
+    circuit: &CircuitSeq,
+    n: usize,
+    db: &FrozenDb,
+    pair_mode: &ExpandPairMode,
+    gate_cap: usize,
+) -> CircuitSeq {
+    expand_once_with_gate_cap(circuit, n, db, pair_mode, Some(gate_cap))
 }
 
 pub fn expand_to_gate_factor(
@@ -1127,8 +1220,31 @@ pub fn expand_once_scored(
     db: &FrozenDb,
     pair_mode: &ExpandPairMode,
 ) -> CircuitSeq {
+    expand_once_scored_with_gate_cap(circuit, n, db, pair_mode, None)
+}
+
+pub fn expand_once_scored_bounded(
+    circuit: &CircuitSeq,
+    n: usize,
+    db: &FrozenDb,
+    pair_mode: &ExpandPairMode,
+    gate_cap: usize,
+) -> CircuitSeq {
+    expand_once_scored_with_gate_cap(circuit, n, db, pair_mode, Some(gate_cap))
+}
+
+fn expand_once_scored_with_gate_cap(
+    circuit: &CircuitSeq,
+    n: usize,
+    db: &FrozenDb,
+    pair_mode: &ExpandPairMode,
+    gate_cap: Option<usize>,
+) -> CircuitSeq {
     if !sat_scoring_enabled() {
-        return expand_once(circuit, n, db, pair_mode);
+        return match gate_cap {
+            Some(cap) => expand_once_bounded(circuit, n, db, pair_mode, cap),
+            None => expand_once(circuit, n, db, pair_mode),
+        };
     }
 
     let seed = sat_score_seed();
@@ -1142,7 +1258,10 @@ pub fn expand_once_scored(
     let mut best: Option<(f64, CircuitSeq, usize, bool)> = None;
 
     for attempt in 0..attempts {
-        let candidate = expand_once(circuit, n, db, pair_mode);
+        let candidate = match gate_cap {
+            Some(cap) => expand_once_bounded(circuit, n, db, pair_mode, cap),
+            None => expand_once(circuit, n, db, pair_mode),
+        };
         let passes = 1usize;
         let stalled = candidate.gates.len() <= circuit.gates.len();
         if candidate.gates.len() <= circuit.gates.len() {
@@ -2269,7 +2388,9 @@ pub fn print_compress_timers() {
 
 #[cfg(test)]
 mod tests {
-    use super::{cand_features, candidate_to_circuit_space, order_coldest_first};
+    use super::{
+        cand_features, candidate_to_circuit_space, merge_expanded_chunks, order_coldest_first,
+    };
     use crate::circuit::circuit::{CircuitSeq, Permutation};
 
     #[test]
@@ -2294,6 +2415,38 @@ mod tests {
         CircuitSeq {
             gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
         }
+    }
+
+    #[test]
+    fn bounded_expansion_admits_only_whole_equivalent_chunks() {
+        let circuit = CircuitSeq {
+            gates: vec![[0, 1, 2], [1, 2, 3], [2, 3, 4], [3, 4, 5]],
+        };
+        let large = vec![[9, 9, 9]; 5]; // +3 gates; does not fit the two-gate budget.
+        let small = vec![[8, 8, 8]; 3]; // +1 gate; does fit.
+
+        let (merged, accepted) = merge_expanded_chunks(
+            &circuit,
+            vec![(0, 2, large), (2, 4, small.clone())],
+            Some(6),
+        );
+
+        assert_eq!(accepted, 1);
+        assert_eq!(&merged[..2], &circuit.gates[..2]);
+        assert_eq!(&merged[2..], small.as_slice());
+        assert_eq!(merged.len(), 5);
+    }
+
+    #[test]
+    fn bounded_expansion_accepts_exact_cap() {
+        let circuit = CircuitSeq {
+            gates: vec![[0, 1, 2], [1, 2, 3]],
+        };
+        let exact = vec![[7, 7, 7]; 4];
+        let (merged, accepted) =
+            merge_expanded_chunks(&circuit, vec![(0, 2, exact.clone())], Some(4));
+        assert_eq!(accepted, 1);
+        assert_eq!(merged, exact);
     }
 
     #[test]

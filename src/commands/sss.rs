@@ -28,6 +28,7 @@ pub fn run(sub: &clap::ArgMatches) {
     let leave = sub.get_flag("interleave");
     let do_gadgetize = sub.get_flag("gadgetize");
     let do_feistalize = sub.get_flag("feistalize");
+    let do_tdp4n = sub.get_flag("tdp4n");
     let do_cnot = sub.get_flag("cnot");
     let slice_zero = sub.get_flag("slice_zero");
     let slice_zero_random = sub.get_flag("slice_zero_random");
@@ -64,6 +65,10 @@ pub fn run(sub: &clap::ArgMatches) {
     let min_gen_fraction: f64 = *sub.get_one("min_gen_fraction").unwrap();
     let pass_length: usize = *sub.get_one("pass_length").unwrap();
     let max_passes: usize = *sub.get_one("max_passes").unwrap();
+    let grow_threshold: f64 = *sub.get_one("grow_threshold").unwrap();
+    let compress_fraction: f64 = *sub.get_one("compress_fraction").unwrap();
+    let target_size: usize = *sub.get_one("target_size").unwrap();
+    let stage_d = grow_threshold > 0.0 || target_size > 0;
     let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
     let data = fs::read_to_string(s).expect("Failed to read source circuit");
 
@@ -92,6 +97,10 @@ pub fn run(sub: &clap::ArgMatches) {
             samf_target == 0,
             "--samf-target belongs to the legacy G57 collision game and is not available with --cnot"
         );
+        assert!(
+            !stage_d && compress_fraction == 0.0,
+            "SSS/SSG cadence options are not yet available with --cnot"
+        );
         main_shuffle_shoot_shuffle_cnot(
             &c,
             &CnotSssParams {
@@ -103,6 +112,7 @@ pub fn run(sub: &clap::ArgMatches) {
                 source: s,
                 do_gadgetize,
                 do_feistalize,
+                do_tdp4n,
                 slice_zero,
                 slice_zero_random,
                 slice_zero_random_gates,
@@ -123,6 +133,22 @@ pub fn run(sub: &clap::ArgMatches) {
     }
 
     let db = FrozenDb::from_env();
+    assert!(
+        grow_threshold >= 0.0,
+        "--grow-threshold must be non-negative"
+    );
+    assert!(
+        (0.0..=1.0).contains(&compress_fraction),
+        "--compress-fraction must be between 0 and 1"
+    );
+    assert!(
+        !stage_d || min_gen > 0,
+        "--grow-threshold/--target-size requires --min-gen > 0 so the hybrid cadence has a stop condition"
+    );
+    assert!(
+        stage_d || compress_fraction == 0.0,
+        "--compress-fraction requires --grow-threshold or --target-size"
+    );
     if record_replacements {
         record_init(&format!("{}.replacements", d));
     }
@@ -163,6 +189,17 @@ pub fn run(sub: &clap::ArgMatches) {
             min_gen, min_gen_fraction, pass_length, max_passes
         );
     }
+    if stage_d {
+        let cadence = if target_size > 0 {
+            format!("target_size={target_size}")
+        } else {
+            format!("grow_threshold={grow_threshold:.1}%")
+        };
+        println!(
+            "[new-sss] bounded cadence ON: {} compress_fraction={:.3}; --rounds is ignored and each stage is checkpointed",
+            cadence, compress_fraction
+        );
+    }
     main_shuffle_shoot_shuffle(
         &c,
         rounds,
@@ -197,6 +234,9 @@ pub fn run(sub: &clap::ArgMatches) {
         min_gen_fraction,
         pass_length,
         max_passes,
+        grow_threshold,
+        compress_fraction,
+        target_size,
     );
     if record_replacements {
         record_finish();

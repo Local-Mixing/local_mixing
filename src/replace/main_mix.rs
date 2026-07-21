@@ -142,6 +142,25 @@ fn generation_goal_met(tags: &[u32], min_gen: usize, min_gen_fraction: f64) -> b
     generation_progress(tags, min_gen).fraction >= target
 }
 
+fn new_sss_stage_size_cap(
+    last_compressed: usize,
+    target_size: usize,
+    grow_permille: usize,
+) -> Option<usize> {
+    if target_size > 0 {
+        // An absolute target is a hard ceiling. In particular, do not raise it when a prior
+        // compression stalls above the requested target.
+        Some(target_size)
+    } else if grow_permille > 0 {
+        Some(
+            (((last_compressed as u128 * (1000 + grow_permille as u128)) / 1000) as usize)
+                .max(last_compressed.saturating_add(1)),
+        )
+    } else {
+        None
+    }
+}
+
 fn choose_low_generation_anchor(tags: &[u32], min_gen: usize, rng: &mut impl Rng) -> Option<usize> {
     let threshold = min_gen.min(u32::MAX as usize) as u32;
     let mut best_tag = u32::MAX;
@@ -401,6 +420,9 @@ pub fn main_shuffle_shoot_shuffle(
     min_gen_fraction: f64,
     pass_length: usize,
     max_passes: usize,
+    grow_threshold: f64,
+    compress_fraction: f64,
+    target_size: usize,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -529,9 +551,28 @@ pub fn main_shuffle_shoot_shuffle(
     let mut m_eff = m;
     let stage_b_enabled = min_gen > 0;
     let stage_b_target_fraction = min_gen_fraction.clamp(0.0, 1.0);
+    let grow_permille = (grow_threshold.max(0.0) * 10.0).round() as usize;
+    let compress_fraction_permille = (compress_fraction.clamp(0.0, 1.0) * 1000.0).round() as usize;
+    let stage_d_enabled = grow_permille > 0 || target_size > 0;
+    const STAGE_D_MAX_STAGES: usize = 100_000;
+    const STAGE_D_STALL_LIMIT: usize = 8;
+    let mut last_compressed = circuit.gates.len();
+    let mut best_floor_gen = 0u32;
+    let mut best_below_fraction = f64::INFINITY;
+    let mut stage_d_stall = 0usize;
     if stage_b_enabled && single_end {
         println!(
             "[stage-B] --single-end ignored while --min-gen is active; each low-gen pass resolves SAMF state immediately"
+        );
+    }
+    if stage_d_enabled {
+        println!(
+            "[new-sss] bounded Stage B: target_size={} grow_threshold={:.1}% compress_fraction={:.1}% pass_length={} collision_rounds={}",
+            target_size,
+            grow_permille as f64 / 10.0,
+            compress_fraction_permille as f64 / 10.0,
+            pass_length,
+            collision_rounds
         );
     }
 
@@ -580,7 +621,34 @@ pub fn main_shuffle_shoot_shuffle(
         }
     }
     let mut hardening_rng = rand::rng();
-    for i in 0..rounds {
+    let mut i = 0usize;
+    loop {
+        if !stage_d_enabled && i >= rounds {
+            break;
+        }
+        if stage_d_enabled && i >= STAGE_D_MAX_STAGES {
+            println!(
+                "[new-sss] reached the {}-stage runaway guard; stopping",
+                STAGE_D_MAX_STAGES
+            );
+            break;
+        }
+        if target_size > 0 && last_compressed >= target_size {
+            println!(
+                "[new-sss] absolute target-size ceiling reached after compression ({} >= {}); stopping instead of raising the cap",
+                last_compressed, target_size
+            );
+            break;
+        }
+        let stage_size_cap = new_sss_stage_size_cap(last_compressed, target_size, grow_permille);
+        if let Some(cap) = stage_size_cap {
+            println!(
+                "[new-sss] stage {}: grow from {} to at most {} gates before compression",
+                i + 1,
+                last_compressed,
+                cap
+            );
+        }
         crate::replace::replace::REC_ROUND.store(i + 1, Relaxed);
         if sat_global_mix_enabled() && i % sat_global_mix_every() == 0 {
             let mix_m = sat_global_mix_m(n);
@@ -681,6 +749,7 @@ pub fn main_shuffle_shoot_shuffle(
 
             while !generation_goal_met(&survivor_tags, min_gen, stage_b_target_fraction)
                 && passes < max_passes.max(1)
+                && stage_size_cap.is_none_or(|cap| circuit.gates.len() < cap)
             {
                 let reversed = stage_rng.random_bool(0.5);
                 if reversed {
@@ -711,12 +780,23 @@ pub fn main_shuffle_shoot_shuffle(
                     &mut survivor_tags,
                     anchor,
                     pass_length,
+                    stage_size_cap,
                 );
                 if reversed {
                     circuit.gates.reverse();
                     survivor_tags.reverse();
                 }
                 passes += 1;
+                if pass_result.cap_rejected {
+                    println!(
+                        "[new-sss] round {} pass {} stopped at the hard size ceiling: rejected {}-gate candidate (cap {})",
+                        i + 1,
+                        passes,
+                        pass_result.candidate_gates,
+                        stage_size_cap.unwrap()
+                    );
+                    break;
+                }
                 total_replacements += pass_result.replacements;
                 total_hidden_samfs += pass_result.hidden_samfs;
                 if pass_result.replacements == 0 {
@@ -750,6 +830,19 @@ pub fn main_shuffle_shoot_shuffle(
                         no_replacement_passes
                     );
                     break;
+                }
+            }
+
+            if let Some(cap) = stage_size_cap {
+                if circuit.gates.len() >= cap
+                    && !generation_goal_met(&survivor_tags, min_gen, stage_b_target_fraction)
+                {
+                    println!(
+                        "[new-sss] stage {} size cap reached at {} gates (cap {}); pausing Stage B for compression",
+                        i + 1,
+                        circuit.gates.len(),
+                        cap
+                    );
                 }
             }
 
@@ -843,6 +936,24 @@ pub fn main_shuffle_shoot_shuffle(
                 println!("Restored forward circuit direction");
             }
         }
+        let stage_compress_target = if stage_d_enabled && compress_fraction_permille > 0 {
+            let basis = if target_size > 0 {
+                target_size
+            } else {
+                circuit.gates.len()
+            };
+            let target = ((basis as u128 * compress_fraction_permille as u128) / 1000) as usize;
+            println!(
+                "[new-sss] stage {} compression target: {:.1}% of {} = {} gates",
+                i + 1,
+                compress_fraction_permille as f64 / 10.0,
+                basis,
+                target
+            );
+            Some(target.max(1))
+        } else {
+            None
+        };
         circuit = compress_loop(
             &circuit,
             n,
@@ -851,6 +962,7 @@ pub fn main_shuffle_shoot_shuffle(
             i + 1,
             rounds,
             "temp_compression.txt",
+            stage_compress_target,
             &mut survivor_tags,
         );
         println!("After compression: {} gates", circuit.gates.len());
@@ -926,15 +1038,17 @@ pub fn main_shuffle_shoot_shuffle(
             break;
         }
 
-        if circuit.gates.len() == post_len {
-            count += 1;
-        } else {
-            post_len = circuit.gates.len();
-            count = 0;
-        }
+        if !stage_d_enabled {
+            if circuit.gates.len() == post_len {
+                count += 1;
+            } else {
+                post_len = circuit.gates.len();
+                count = 0;
+            }
 
-        if count > 2 {
-            break;
+            if count > 2 {
+                break;
+            }
         }
         let mut j = 0;
         while j < circuit.gates.len().saturating_sub(1) {
@@ -1014,13 +1128,67 @@ pub fn main_shuffle_shoot_shuffle(
             }
         }
         {
-            // Write this round's circuit to its own file: same path as -d but with
-            // `round{n}` inserted before the .txt extension.
-            let round_path = format!("{}round{}.txt", save_base, i + 1);
-            println!("Writing round {} to {}", i + 1, round_path);
+            // Stage D keeps one checkpoint per bounded shoot/compress cadence; fixed-round
+            // mode retains the historical round names.
+            let checkpoint_label = if stage_d_enabled { "stage" } else { "round" };
+            let round_path = format!("{}{}{}.txt", save_base, checkpoint_label, i + 1);
+            println!("Writing {} {} to {}", checkpoint_label, i + 1, round_path);
             File::create(&round_path)
                 .and_then(|mut f| f.write_all(circuit.repr().as_bytes()))
                 .expect("Failed to write round circuit");
+        }
+        i += 1;
+        if stage_d_enabled {
+            last_compressed = circuit.gates.len();
+            let progress = generation_progress(&survivor_tags, min_gen);
+            let below_fraction = 1.0 - progress.fraction;
+            let skip = (((1.0 - stage_b_target_fraction) * survivor_tags.len() as f64).floor()
+                as usize)
+                .min(survivor_tags.len().saturating_sub(1));
+            let floor_gen = if survivor_tags.is_empty() {
+                0
+            } else {
+                let mut sorted = survivor_tags.clone();
+                *sorted.select_nth_unstable(skip).1
+            };
+            println!(
+                "[new-sss] stage {} progress: {}/{} ({:.2}%) at gen>={} target={:.2}% floor_gen={} abs_min={} compressed_gates={}",
+                i,
+                progress.reached,
+                progress.total,
+                100.0 * progress.fraction,
+                min_gen,
+                100.0 * stage_b_target_fraction,
+                floor_gen,
+                progress.min,
+                circuit.gates.len()
+            );
+            if generation_goal_met(&survivor_tags, min_gen, stage_b_target_fraction) {
+                println!(
+                    "[new-sss] min-generation condition met after {} stage(s); stopping",
+                    i
+                );
+                break;
+            }
+
+            let progressed =
+                floor_gen > best_floor_gen || below_fraction + f64::EPSILON < best_below_fraction;
+            if progressed {
+                best_floor_gen = best_floor_gen.max(floor_gen);
+                best_below_fraction = best_below_fraction.min(below_fraction);
+                stage_d_stall = 0;
+            } else {
+                stage_d_stall += 1;
+                if stage_d_stall >= STAGE_D_STALL_LIMIT {
+                    println!(
+                        "[new-sss] no generation progress for {} stages (best floor {}, best below target {:.2}%); stopping",
+                        stage_d_stall,
+                        best_floor_gen,
+                        100.0 * best_below_fraction
+                    );
+                    break;
+                }
+            }
         }
     }
 
@@ -1169,5 +1337,26 @@ pub fn main_shuffle_shoot_shuffle(
     }
     if let Some((public_y, public_z)) = &slice_zero_random_public {
         print_slice_zero_random_public_slice(original_n, public_y, public_z);
+    }
+}
+
+#[cfg(test)]
+mod new_sss_size_cap_tests {
+    use super::new_sss_stage_size_cap;
+
+    #[test]
+    fn absolute_target_never_drifts_above_requested_ceiling() {
+        assert_eq!(new_sss_stage_size_cap(1_196_261, 500_000, 0), Some(500_000));
+    }
+
+    #[test]
+    fn relative_growth_keeps_rounding_progress() {
+        assert_eq!(new_sss_stage_size_cap(7, 0, 1), Some(8));
+        assert_eq!(new_sss_stage_size_cap(1_000, 0, 150), Some(1_150));
+    }
+
+    #[test]
+    fn legacy_fixed_round_mode_has_no_size_cap() {
+        assert_eq!(new_sss_stage_size_cap(42_000, 0, 0), None);
     }
 }

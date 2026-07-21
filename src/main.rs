@@ -1,4 +1,4 @@
-use clap::{Arg, Command};
+use clap::{Arg, ArgGroup, Command};
 
 mod commands;
 
@@ -9,6 +9,11 @@ fn main() {
         .subcommand(
             Command::new("sss")
                 .about("Shuffle-shoot-shuffle obfuscation + compression game")
+                .group(
+                    ArgGroup::new("fixed_slice_transform")
+                        .args(["feistalize", "tdp4n"])
+                        .multiple(false),
+                )
                 .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
                 .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize)))
                 .arg(Arg::new("x").short('x').long("x").required(true).value_parser(clap::value_parser!(usize)))
@@ -66,6 +71,16 @@ fn main() {
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
+                    Arg::new("tdp4n")
+                        .long("tdp4n")
+                        .help("Build C; native CNOT X->Y; random D on X, then two-share gadgetize the 2n logical wires (4n physical wires)")
+                        .required(false)
+                        .requires("cnot")
+                        .conflicts_with("gadgetize")
+                        .conflicts_with("feistalize")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
                     Arg::new("slice_zero")
                         .long("slice-zero")
                         .alias("slice_zero")
@@ -78,9 +93,9 @@ fn main() {
                     Arg::new("slice_zero_random")
                         .long("slice-zero-random")
                         .alias("slice_zero_random")
-                        .help("Before feistalization, insert M that preserves a public random (y,z) slice and randomizes x off it")
+                        .help("Before Feistal/4n-TDP construction, insert M that preserves a public random (y,z) slice and randomizes x off it")
                         .required(false)
-                        .requires("feistalize")
+                        .requires("fixed_slice_transform")
                         .conflicts_with("slice_zero")
                         .action(clap::ArgAction::SetTrue),
                 )
@@ -311,6 +326,30 @@ fn main() {
                         .default_value("100000")
                         .value_parser(clap::value_parser!(usize))
                         .help("Stage B: safety cap on low-generation shooting passes per round"),
+                )
+                .arg(
+                    Arg::new("grow_threshold")
+                        .long("grow-threshold")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(f64))
+                        .help("SSS/SSG hybrid cadence: when >0, ignore --rounds and compress whenever a stage grows by this percentage from its previous compressed size"),
+                )
+                .arg(
+                    Arg::new("compress_fraction")
+                        .long("compress-fraction")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(f64))
+                        .help("SSS/SSG hybrid cadence: stop each compression at this fraction of the post-shooting size, or of --target-size; 0 compresses to the normal stall point"),
+                )
+                .arg(
+                    Arg::new("target_size")
+                        .long("target-size")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("SSS/SSG hybrid cadence: absolute per-stage shooting cap and held final size; overrides --grow-threshold and stops only on the min-generation condition"),
                 ),
         )
         .subcommand(

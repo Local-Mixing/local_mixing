@@ -49,6 +49,7 @@ path = "src/bin/canon_digest.rs"
 [[bin]]
 name = "db_value_stats"
 path = "src/bin/db_value_stats.rs"
+required-features = ["legacy-db-tools"]
 
 [[bin]]
 name = "expand_sample"
@@ -60,24 +61,29 @@ path = "src/bin/expand_sample.rs"
 [[bin]]
 name = "build_curated"
 path = "src/rainbow_table/bin/build_curated.rs"
+required-features = ["legacy-db-tools"]
 
 [[bin]]
 name = "curated_to_lmdb"
 path = "src/rainbow_table/bin/curated_to_lmdb.rs"
+required-features = ["legacy-db-tools"]
 
 [[bin]]
 name = "merge_rocks_parallel"
 path = "src/rainbow_table/bin/merge_rocks_parallel.rs"
+required-features = ["legacy-db-tools"]
 
 # Frozen-table toolchain: builder/validator, replay + pilot benchmarks,
 # filter persistence, probe-pack generator, data-stats samplers.
 [[bin]]
 name = "frozen_table"
 path = "src/rainbow_table/bin/frozen_table.rs"
+required-features = ["legacy-db-tools"]
 
 [[bin]]
 name = "frozen_replay"
 path = "src/rainbow_table/bin/frozen_replay.rs"
+required-features = ["legacy-db-tools"]
 
 [[bin]]
 name = "frozen_pilot"
@@ -90,18 +96,33 @@ path = "src/rainbow_table/bin/frozen_filter_persist.rs"
 [[bin]]
 name = "make_probes"
 path = "src/rainbow_table/bin/make_probes.rs"
+required-features = ["legacy-db-tools"]
 
 [[bin]]
 name = "frozen_calibrate2"
 path = "src/rainbow_table/bin/frozen_calibrate2.rs"
+required-features = ["legacy-db-tools"]
 
 [[bin]]
 name = "rocks_value_stats"
 path = "src/rainbow_table/bin/value_stats.rs"
+required-features = ["legacy-db-tools"]
 
 [[bin]]
 name = "friend_stats"
 path = "src/rainbow_table/bin/friend_stats.rs"
+required-features = ["legacy-db-tools"]
+
+[features]
+default = []
+# Offline migration/build/validation tools for the retired LMDB/RocksDB
+# stores. Runtime mixing and compression never enable this feature.
+legacy-db-tools = [
+    "dep:crossbeam-channel",
+    "dep:lmdb",
+    "dep:num_cpus",
+    "dep:rocksdb",
+]
 
 [profile.release]
 overflow-checks = false
@@ -126,18 +147,16 @@ ctrlc = "3.2"
 fastrand = "2.3.0"
 pyo3 = { version = "0.27.1", features = ["extension-module"] }
 numpy = "0.27.0"
-lmdb = "0.8.0"
-libc = "0.2.178"
-lmdb-sys = "0.8.0"
+lmdb = { version = "0.8.0", optional = true }
 signal-hook = "0.3.18"
 primitive-types = "0.14.0"
 uint = "0.10.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rustc-hash = "2"
 # Rainbow-table DB generation pipeline (src/rainbow_table).
-rocksdb = "0.24.0"
-crossbeam-channel = "0.5.15"
-num_cpus = "1.17.0"
+rocksdb = { version = "0.24.0", optional = true }
+crossbeam-channel = { version = "0.5.15", optional = true }
+num_cpus = { version = "1.17.0", optional = true }
 # Frozen-table read path (src/replace/frozen.rs).
 xorf = { version = "0.12", features = ["serde", "bincode"] }
 bincode2 = { package = "bincode", version = "2" }

@@ -1135,11 +1135,81 @@ fn emit_shared_g57_frag2(
     }
 }
 
+#[cfg(test)]
 fn emit_gadget_x(state: &GadgetState, gate: [u16; 3], out: &mut Vec<XGate>) {
     let [a, b, c] = gate.map(|wire| wire as usize);
     let (b0, b1) = state.pairs[b];
     let (c0, c1) = state.pairs[c];
     emit_shared_g57_frag2(state.pairs[a].0, b0, b1, c0, c1, out);
+}
+
+/// Homomorphically apply one heterogeneous logical gate to a two-share
+/// representation.  G57 and CNOT gates retain their smaller dedicated
+/// gadgets; the remaining conjunction fragments are expanded over the two
+/// carriers of each logical control and update only one target carrier.
+fn emit_shared_fragment2(state: &GadgetState, gate: &XGate, out: &mut Vec<XGate>) {
+    let logical_target = gate.target as usize;
+    debug_assert!(logical_target < state.n);
+
+    // Preserve the existing four-fragment G57 gadget.  XGate stores a G57's
+    // positive-OR input as a negative conjunction literal and its negative-OR
+    // input as a positive conjunction literal.
+    if gate.comp && gate.ctrls.len() == 2 {
+        let negative = gate.ctrls.iter().find(|&&(_, polarity)| !polarity);
+        let positive = gate.ctrls.iter().find(|&&(_, polarity)| polarity);
+        if let (Some(&(b, false)), Some(&(c, true))) = (negative, positive) {
+            let (b0, b1) = state.pairs[b as usize];
+            let (c0, c1) = state.pairs[c as usize];
+            emit_shared_g57_frag2(state.pairs[logical_target].0, b0, b1, c0, c1, out);
+            return;
+        }
+    }
+
+    if !gate.comp && gate.ctrls.len() == 1 && gate.ctrls[0].1 {
+        let logical_control = gate.ctrls[0].0 as usize;
+        out.extend(homomorphic_cnot2(
+            (
+                state.pairs[logical_target].0 as u16,
+                state.pairs[logical_target].1 as u16,
+            ),
+            (
+                state.pairs[logical_control].0 as u16,
+                state.pairs[logical_control].1 as u16,
+            ),
+        ));
+        return;
+    }
+
+    // Expand each logical literal in ANF: b = b0+b1 and !b = 1+b0+b1.
+    // Duplicate physical monomials cancel over GF(2).
+    let mut terms: Vec<Vec<(u16, bool)>> = vec![Vec::new()];
+    for &(logical_control, positive) in &gate.ctrls {
+        let logical_control = logical_control as usize;
+        debug_assert!(logical_control < state.n);
+        debug_assert_ne!(logical_control, logical_target);
+        let carriers = state.pairs[logical_control];
+        let previous = std::mem::take(&mut terms);
+        for term in previous {
+            if !positive {
+                toggle_anf_term(&mut terms, term.clone());
+            }
+            for carrier in [carriers.0, carriers.1] {
+                let mut next = term.clone();
+                next.push((carrier as u16, true));
+                next.sort_unstable();
+                toggle_anf_term(&mut terms, next);
+            }
+        }
+    }
+    if gate.comp {
+        toggle_anf_term(&mut terms, Vec::new());
+    }
+    terms.sort_unstable();
+    for term in terms {
+        if let Some(fragment) = XGate::conj(state.pairs[logical_target].0 as u16, term) {
+            out.push(fragment);
+        }
+    }
 }
 
 fn emit_rg1_x(state: &mut GadgetState, i: usize, j: usize, out: &mut Vec<XGate>) {
@@ -1193,21 +1263,19 @@ fn rand_z_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
         .collect()
 }
 
-/// Two-share gadgetization with native CNOT linear bookends, a four-fragment
-/// masking-safe SG and gate-locally non-complete CNOT RG1/RG2/RG3 blocks.
-pub fn gadgetize_cnot(
-    main: &CircuitSeq,
-    n: usize,
-    rg_freq: usize,
-    rng: &mut impl Rng,
-) -> CnotCircuit {
-    assert!(n >= 3, "gadgetize_cnot requires n >= 3");
+/// Two-share gadgetization of a heterogeneous logical circuit with native
+/// CNOT linear bookends, masking-safe SGs and gate-locally non-complete
+/// CNOT RG1/RG2/RG3 blocks.
+fn gadgetize_xgates(main: &[XGate], n: usize, rg_freq: usize, rng: &mut impl Rng) -> CnotCircuit {
+    assert!(n >= 3, "gadgetize_xgates requires n >= 3");
     assert!(2 * n <= u16::MAX as usize, "too many wires");
     assert!(rg_freq > 0, "rg_freq must be nonzero");
-
-    let mut main = main.clone();
-    let rounds = main.gates.len();
-    shoot_random_gate(&mut main, rounds);
+    assert!(
+        main.iter().all(|gate| {
+            (gate.target as usize) < n && gate.ctrls.iter().all(|&(wire, _)| (wire as usize) < n)
+        }),
+        "logical gate wire outside 0..n"
+    );
 
     let bookend_size = (2 * n * (n as f64).ln() as usize).max(64);
     let total = 2 * n;
@@ -1255,8 +1323,8 @@ pub fn gadgetize_cnot(
     let mut state = GadgetState { n, pairs };
     let mut pair_queue = VecDeque::new();
     let mut single_queue = VecDeque::new();
-    for (index, &gate) in main.gates.iter().enumerate() {
-        emit_gadget_x(&state, gate, &mut out);
+    for (index, gate) in main.iter().enumerate() {
+        emit_shared_fragment2(&state, gate, &mut out);
         if (index + 1) % rg_freq == 0 {
             match rng.random_range(0..3u32) {
                 0 => {
@@ -1325,6 +1393,23 @@ pub fn gadgetize_cnot(
         gates: out,
         num_wires: total,
     }
+}
+
+/// Two-share gadgetization of a legacy G57 source.  This public entry point
+/// keeps its historical API while delegating to the heterogeneous core used
+/// by the 4n TDP construction.
+pub fn gadgetize_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "gadgetize_cnot requires n >= 3");
+    let mut source = main.clone();
+    let rounds = source.gates.len();
+    shoot_random_gate(&mut source, rounds);
+    let gates: Vec<XGate> = source.gates.iter().copied().map(XGate::from_g57).collect();
+    gadgetize_xgates(&gates, n, rg_freq, rng)
 }
 
 fn slice_zero_preblock_cnot(n: usize, rng: &mut impl Rng) -> CnotCircuit {
@@ -1570,6 +1655,61 @@ fn random_feistal_d_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate>
         gates.push(XGate::conj(target, controls).expect("valid random D fragment"));
     }
     gates
+}
+
+/// Build the ordinary 2n-wire TDP computation before masking:
+///
+///   (x, y) --C--> (C(x), y)
+///          --N--> (C(x), y XOR C(x))
+///          --D--> (D(C(x)), y XOR C(x)).
+///
+/// N is the bank of native CNOTs from wire i to wire n+i, and D is the same
+/// random fragment computation used by the CNOT Feistal construction.
+fn tdp2n_xgates(main: &CircuitSeq, n: usize, rng: &mut impl Rng) -> Vec<XGate> {
+    let mut source = main.clone();
+    let rounds = source.gates.len();
+    shoot_random_gate(&mut source, rounds);
+
+    let mut gates = Vec::with_capacity(2 * main.gates.len() + n);
+    gates.extend(source.gates.into_iter().map(XGate::from_g57));
+    gates.extend((0..n).map(|wire| XGate::cnot((n + wire) as u16, wire as u16)));
+    gates.extend(random_feistal_d_xgates(n, main.gates.len(), rng));
+    gates
+}
+
+/// Construct the ordinary TDP layout on 2n logical wires and then apply the
+/// native two-share gadgetizer to all 2n values.  Physical input blocks are
+/// X,Y,Z,W (n wires each); the decoded low blocks are
+/// (D(C(x)), y XOR C(x)) and Z,W are randomized auxiliary outputs.
+pub fn tdp4n_cnot(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng) -> CnotCircuit {
+    assert!(n >= 3, "tdp4n_cnot requires n >= 3");
+    assert!(4 * n <= u16::MAX as usize, "too many wires");
+    assert!(rg_freq > 0, "rg_freq must be nonzero");
+    assert!(
+        main.gates.iter().flatten().all(|&wire| (wire as usize) < n),
+        "input wire outside 0..n"
+    );
+
+    let logical = tdp2n_xgates(main, n, rng);
+    gadgetize_xgates(&logical, 2 * n, rg_freq, rng)
+}
+
+/// Fixed-public-slice 4n TDP construction.  The existing M preblock acts on
+/// physical X,Y,Z and leaves W free.  At its public (Y,Z) slice M is exactly
+/// the identity for every X and W, so the middle decoded block remains
+/// y XOR C(x); away from that slice M disturbs X before the TDP computation.
+pub fn tdp4n_with_slice_zero_random_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotSliceZeroRandomCircuit {
+    let mut preblock = slice_zero_random_preblock_cnot(n, gate_count, rng);
+    let tdp = tdp4n_cnot(main, n, rg_freq, rng);
+    preblock.circuit.gates.extend(tdp.gates);
+    preblock.circuit.num_wires = tdp.num_wires;
+    preblock
 }
 
 fn toggle_anf_term(terms: &mut Vec<Vec<(u16, bool)>>, term: Vec<(u16, bool)>) {
@@ -2615,6 +2755,47 @@ mod cnot_gadget_tests {
     }
 
     #[test]
+    fn two_share_fragments_compute_without_unmasking_any_single_carrier() {
+        let state = GadgetState {
+            n: 4,
+            pairs: vec![(0, 1), (2, 3), (4, 5), (6, 7)],
+        };
+        let logical_gates = [
+            XGate::cnot(0, 1),
+            XGate::conj(2, [(0, false)]).unwrap(),
+            XGate::conj(1, [(0, true), (2, false)]).unwrap(),
+            XGate::from_g57([0, 1, 2]),
+            XGate::x_gate(3),
+        ];
+        for logical_gate in logical_gates {
+            let mut physical_gates = Vec::new();
+            emit_shared_fragment2(&state, &logical_gate, &mut physical_gates);
+            for logical in 0..16u64 {
+                for masks in 0..16u64 {
+                    let encoded = encode_two_share(logical, masks, &state.pairs);
+                    let result = eval_u64(&physical_gates, encoded);
+                    assert_eq!(
+                        decode_two_share(result, &state.pairs),
+                        logical_gate.apply_u64(logical)
+                    );
+                }
+
+                for prefix in 0..=physical_gates.len() {
+                    let mut ones = [0usize; 8];
+                    for masks in 0..16u64 {
+                        let encoded = encode_two_share(logical, masks, &state.pairs);
+                        let result = eval_u64(&physical_gates[..prefix], encoded);
+                        for (wire, count) in ones.iter_mut().enumerate() {
+                            *count += ((result >> wire) & 1) as usize;
+                        }
+                    }
+                    assert_eq!(ones, [8; 8]);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn feistal_n_cnot_keeps_every_prefix_first_order_masked() {
         for q in [
             vec![0, 1, 2],
@@ -2682,6 +2863,82 @@ mod cnot_gadget_tests {
                 let expected = y ^ (main.evaluate(x as usize) as u64 & mask);
                 assert_eq!((eval_u64(&transformed.gates, input) >> n) & mask, expected);
             }
+        }
+    }
+
+    #[test]
+    fn tdp4n_cnot_exhaustively_keeps_y_xor_cx_in_the_middle_block() {
+        let n = 3;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+        let mut rng = StdRng::seed_from_u64(0x4d54_4450);
+        let transformed = tdp4n_cnot(&main, n, 2, &mut rng);
+        assert_eq!(transformed.num_wires, 4 * n);
+        let mask = (1u64 << n) - 1;
+        for input in 0..(1u64 << (4 * n)) {
+            let x = input & mask;
+            let y = (input >> n) & mask;
+            let expected = y ^ (main.evaluate(x as usize) as u64 & mask);
+            assert_eq!(
+                (eval_u64(&transformed.gates, input) >> n) & mask,
+                expected,
+                "input={input:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn tdp4n_random_slice_fixes_yz_and_leaves_w_free() {
+        let n = 3;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+        let mut rng = StdRng::seed_from_u64(0x51ce_4d54);
+        let transformed = tdp4n_with_slice_zero_random_cnot(&main, n, 2, 96, &mut rng);
+        assert_eq!(transformed.circuit.num_wires, 4 * n);
+        let mask = (1u64 << n) - 1;
+        let public_y = transformed.public_y[0] & mask;
+        let public_z = transformed.public_z[0] & mask;
+        for x in 0..=mask {
+            for w in 0..=mask {
+                let input = x | (public_y << n) | (public_z << (2 * n)) | (w << (3 * n));
+                let output = eval_u64(&transformed.circuit.gates, input);
+                let expected = public_y ^ (main.evaluate(x as usize) as u64 & mask);
+                assert_eq!((output >> n) & mask, expected, "x={x:#x} w={w:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn tdp4n_representative_n8_circuit_preserves_the_middle_view() {
+        let n = 8;
+        let main = CircuitSeq {
+            gates: (0..64)
+                .map(|index| {
+                    [
+                        (index % n) as u16,
+                        ((index + 1) % n) as u16,
+                        ((index + 3) % n) as u16,
+                    ]
+                })
+                .collect(),
+        };
+        let mut rng = StdRng::seed_from_u64(0x4d54_0008);
+        let transformed = tdp4n_with_slice_zero_random_cnot(&main, n, 2, 256, &mut rng);
+        assert_eq!(transformed.circuit.num_wires, 32);
+        assert!(!transformed.circuit.gates.is_empty());
+        let mask = (1u64 << n) - 1;
+        let public_y = transformed.public_y[0] & mask;
+        let public_z = transformed.public_z[0] & mask;
+        let mut samples = StdRng::seed_from_u64(0x4d54_5a4d);
+        for _ in 0..128 {
+            let x = samples.random::<u64>() & mask;
+            let w = samples.random::<u64>() & mask;
+            let input = x | (public_y << n) | (public_z << (2 * n)) | (w << (3 * n));
+            let output = eval_u64(&transformed.circuit.gates, input);
+            let expected = public_y ^ (main.evaluate(x as usize) as u64 & mask);
+            assert_eq!((output >> n) & mask, expected);
         }
     }
 
