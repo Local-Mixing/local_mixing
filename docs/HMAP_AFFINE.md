@@ -172,3 +172,28 @@ Usage: `hmap_affine --c C --g G --n <n> --degree {1,2} [--deg2-wires W]
 [--c-step --g-step --batches --train-batches] --out <prefix>`. Output is a
 row-major f32 matrix `<prefix>.bin` plus `<prefix>.meta.json`, same format as
 `hmap`.
+
+## Reading the output: the ridge measure (canonical)
+
+Read these maps by the RIDGE, never the mean (which saturates near 0.5). A
+diagonal is a low-H valley whose location `argmax_j (0.5 - H(i,j))` advances
+monotonically with `i` — C's computational progress still legible in the mix.
+`reports/plot_hmap_ridge.py` is the canonical reader: it prints per-map scores
+and renders the plates with the detected ridge traced on top.
+
+- **depth** — mean per-row prominence of the ridge cell above its row
+  background. The number MIXING moves; a valley may fade mid-plate and stay a
+  ridge, so it is a per-row prominence, not a global contrast.
+- **rho** — Spearman(i, ridge column). Shape-agnostic monotonicity; `rho ~ 1`
+  = clean diagonal, tolerant of fading depth. The "is it a diagonal" number.
+- **perm z** — z-score of `rho` vs a null shuffling the per-row ridge columns;
+  makes "discernible above chance" quantitative.
+- **contrast** — on-band vs off-band mean H in sigmas.
+
+The traced ridge is a depth-weighted smoothing of the per-row argmins, so
+shallow rows are bridged by deep neighbours (it follows a fading valley
+instead of scattering).
+
+Usage: `python3 reports/plot_hmap_ridge.py --out plates.png <stem1> [stem2 ...]
+[--titles "a;b;c"] [--nperm 3000]` where each `<stem>` is an `hmap_affine`
+`--out` prefix.
