@@ -40,6 +40,23 @@ A = [ C interleaved with S1 ] ; N ; [ D interleaved with S2 ]
   interleaved with C, S2 randomly interleaved with D (a uniform interleaving
   that preserves each computation's internal order).
 
+**Final float stage** (2026-07-20): the N column is the sandwich's most
+structure-revealing feature (the C|N|D seam). Each N CNOT is **assigned an
+independent random direction, registered up front**, and then floats in
+that direction as far as commutation allows — until it meets a gate that
+truly collides per `XGate::collides` (a write to its control wire `i`, or a
+read of its target `n+i`), commuting freely past everything else, including
+the other N gates. The registered direction ensures each gate only ever
+travels one way — no oscillation — and one float pass provably reaches the
+fixpoint of same-direction floating: the blockers are static (only N gates
+move) and the floaters mutually commute, so further passes could only
+permute commuting floaters among themselves, which is travel-free. The
+contiguous column dissolves into a band
+(measured at n=16, m=150: span 15 -> ~76 positions) whose width is set by
+how densely C and D write the low wires. Every hop is an adjacent commuting
+swap, so A's function — and with it every slice/inverse guarantee — is
+unchanged.
+
 ## Slice semantics
 
 On the zero slice `y = 0` the answer exits on the **second half**:

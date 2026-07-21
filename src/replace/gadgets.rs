@@ -3092,6 +3092,25 @@ fn random_interleave(computation: Vec<XGate>, slice: Vec<XGate>, rng: &mut impl 
     out
 }
 
+/// Slide the gate at `pos` in one direction via adjacent swaps as far as it
+/// can go — until the neighbor truly collides per [`XGate::collides`]
+/// (commute unless proven otherwise) or the circuit end. Returns the final
+/// position. Function-preserving: every hop is an adjacent commuting swap.
+fn float_extremal(gates: &mut [XGate], mut pos: usize, dir_left: bool) -> usize {
+    if dir_left {
+        while pos > 0 && !XGate::collides(&gates[pos], &gates[pos - 1]) {
+            gates.swap(pos, pos - 1);
+            pos -= 1;
+        }
+    } else {
+        while pos + 1 < gates.len() && !XGate::collides(&gates[pos], &gates[pos + 1]) {
+            gates.swap(pos, pos + 1);
+            pos += 1;
+        }
+    }
+    pos
+}
+
 /// The **sliced sandwich** construction on 2n wires (first half = x, second
 /// half = y):
 ///
@@ -3102,6 +3121,9 @@ fn random_interleave(computation: Vec<XGate>, slice: Vec<XGate>, rng: &mut impl 
 /// half into the second (`y ^= x`, n CNOTs),
 /// and S1, S2 are independent slice blocks of `s` gates each
 /// (`sandwich_slice_gates`), randomly interleaved with C and D respectively.
+/// A final float stage then slides each N CNOT in a random direction as far
+/// as commutation allows, dissolving the middle column into a band (see the
+/// stage comment in [`sliced_sandwich_with_d`]).
 ///
 /// On the zero slice the second half carries the answer:
 ///   A(x, 0) = (junk, C(x)),
@@ -3159,6 +3181,44 @@ pub fn sliced_sandwich_with_d(
     // Block 2: D interleaved with S2.
     let s2 = sandwich_slice_gates(n, s, rng);
     out.extend(random_interleave(d_gates.to_vec(), s2, rng));
+
+    // Final float stage: the N column is the sandwich's most
+    // structure-revealing part (the C|N|D seam). Each of its CNOTs is
+    // ASSIGNED an independent random direction, registered up front, and
+    // then floats in that direction as far as commutation allows — deep
+    // into C/S1 or D/S2 wherever its wires stay cold — dissolving the
+    // column into a wide band before gadgetizing. The registered direction
+    // matters: float passes repeat until a fixpoint, and a gate always
+    // continues in ITS direction, so gates never oscillate and any gate
+    // unblocked by another's departure keeps drifting the same way. The N
+    // gates are exactly the gates targeting the second half (C, D, S1, S2
+    // all target 0..n) and mutually commute (they pass each other freely);
+    // every hop is a commuting swap, so A's function and all slice/inverse
+    // guarantees are unchanged.
+    let mut floaters: Vec<(usize, bool)> = (0..out.len())
+        .filter(|&i| (out[i].target as usize) >= n)
+        .map(|i| (i, rng.random_bool(0.5)))
+        .collect();
+    floaters.shuffle(rng);
+    // One pass reaches the fixpoint of same-direction floating: the blockers
+    // are static (only N gates move) and the floaters mutually commute, so
+    // once each has floated to its extreme, further passes could only swap
+    // commuting floaters among themselves — a functional no-op, not travel.
+    for k in 0..floaters.len() {
+        let (p, dir_left) = floaters[k];
+        let q = float_extremal(&mut out, p, dir_left);
+        floaters[k].0 = q;
+        for (idx, (r, _)) in floaters.iter_mut().enumerate() {
+            if idx == k {
+                continue;
+            }
+            if q < p && *r >= q && *r < p {
+                *r += 1;
+            } else if q > p && *r > p && *r <= q {
+                *r -= 1;
+            }
+        }
+    }
 
     CnotCircuit {
         gates: out,
@@ -4798,6 +4858,39 @@ mod cnot_gadget_tests {
                 })
             });
             assert!(differs, "seed={seed:#x}: no off-slice disturbance");
+        }
+    }
+
+    #[test]
+    fn sliced_sandwich_floats_the_middle_column_into_a_band() {
+        // After the float stage the N CNOTs (the only gates targeting the
+        // second half) must no longer sit as one contiguous column: their
+        // positions should straddle other material on both sides for at
+        // least some gates, under every seed.
+        let n = 6;
+        let main = CircuitSeq {
+            gates: (0..24)
+                .map(|k| {
+                    [
+                        (k % n) as u16,
+                        ((k + 1) % n) as u16,
+                        ((k + 2) % n) as u16,
+                    ]
+                })
+                .collect(),
+        };
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0x5a6d_0000 + seed);
+            let a = sliced_sandwich_cnot(&main, n, 20, 4 * n, &mut rng);
+            let positions: Vec<usize> = (0..a.gates.len())
+                .filter(|&i| (a.gates[i].target as usize) >= n)
+                .collect();
+            assert_eq!(positions.len(), n, "exactly the n column CNOTs");
+            let span = positions.last().unwrap() - positions.first().unwrap();
+            assert!(
+                span > n,
+                "seed={seed:#x}: column still contiguous (span {span})"
+            );
         }
     }
 
