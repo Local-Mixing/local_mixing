@@ -419,6 +419,25 @@ pub struct MixParams {
     // grows to target and then holds size while the compressing channel and
     // walk contraction absorb the residual churn growth.
     pub p_db_steer: bool,
+    // Generation targeting: drive every (cap-eligible) gate through at least
+    // gen_target DB re-encodings. With gen_target > 0, a DB seed is drawn
+    // from the laggard list (gates with gen < gen_target) with probability
+    // gen_bias instead of uniformly, turning the coupon-collector tail of
+    // uniform selection into direct work — fewer moves, hence less incidental
+    // growth, for the same minimum generation. 0 = off (trajectory identical
+    // to the untargeted chain at equal seed).
+    pub gen_target: u32,
+    pub gen_bias: f64,
+    // Laggard-list rebuild cadence in moves (an O(size) scan each time).
+    pub gen_rescan: u64,
+    // Dose-based stop: with gen_target > 0 and gen_stop_frac >= 0, the run
+    // ends (MixStop::DoseReached) at the first report point where the
+    // laggard fraction among cap-eligible gates is <= gen_stop_frac AND the
+    // cumulative per-position twist coverage (twist_span / size) has reached
+    // twist_cov_stop (0 = no coverage requirement). The move budget becomes a
+    // ceiling: phase A runs exactly as long as the dose requires.
+    pub gen_stop_frac: f64,
+    pub twist_cov_stop: f64,
     pub verify_every: u64,
     pub report_every: u64,
     pub local_verify: bool,
@@ -473,6 +492,11 @@ impl Default for MixParams {
             p_twist: 0.0,
             p_db_final: -1.0,
             p_db_steer: false,
+            gen_target: 0,
+            gen_bias: 0.9,
+            gen_rescan: 10_000,
+            gen_stop_frac: -1.0,
+            twist_cov_stop: 0.0,
             verify_every: 10_000,
             report_every: 50_000,
             local_verify: true,
@@ -558,7 +582,21 @@ struct Meta {
     // Persistent shooting direction: a cross floats this gate in `dir`.
     // Fossils draw it uniformly at birth; fragments inherit per dir_p.
     dir: Dir,
+    // DB re-encoding generation: how many DB replacements this gate's material
+    // has been through since the input (the ssg-generation analogue for the
+    // churn phase). Input gates start at 0; a DB splice stamps its products
+    // with min(window generations) + 1; every other move propagates
+    // conservatively (pieces inherit their parent, merges take the min).
+    // Born-random material (insert pairs, twist brackets) carries no input
+    // structure and gets GEN_FRESH — it never needs re-encoding and never
+    // drags the min down.
+    dgen: u32,
 }
+
+/// Generation stamp for born-random material (fresh insert pairs, twist
+/// bracket packets): these gates never held any input structure, so for the
+/// gen-target machinery they count as already re-encoded.
+pub const GEN_FRESH: u32 = u32::MAX;
 
 // A recorded crossing, eligible for exact reversal while every emitted node is
 // still alive and untouched (checked via arena stamps — any later split, merge
@@ -575,6 +613,7 @@ struct UndoEntry {
     after: Vec<(u32, u32)>, // (id, stamp) of every emitted node, incl. pivot
     event: u64,
     origins: [u32; 2], // origin of before[0], before[1]
+    gens: [u32; 2],    // gen of before[0], before[1] (restored on undo)
     misses: u8,        // failed gather attempts; entry dropped after a few
 }
 
@@ -617,11 +656,37 @@ pub struct Mixer {
     // Which geometry built the window of the CURRENT db_attempt (see
     // sample_window); stamped into --db-record attempt lines.
     db_last_sampler: DbSample,
+    // Generation targeting (gen_target > 0): ids of cap-eligible gates still
+    // below gen_target, rebuilt every gen_rescan moves. Entries go stale
+    // between scans (freed, reused, or re-encoded ids) and are validated and
+    // pruned at draw time in pick_seed — the list is a sampling bias, never
+    // an invariant.
+    laggards: Vec<u32>,
+    laggards_scan_due: u64,
 }
 
 pub enum MixStop {
     MovesBudget,
     StopFlag,
+    // Generation + twist-coverage dose targets met (gen_stop_frac): the run
+    // ended as soon as the mixing dose was achieved, spending no further
+    // moves (and hence no further incidental growth) past the requirement.
+    DoseReached,
+}
+
+/// Generation census over the linked circuit (see `Meta::gen`).
+pub struct GenStats {
+    /// Cap-eligible gates (width <= db_ctrl_cap, or all when cap = 0) still
+    /// below gen_target — the gates the targeted DB seed keeps chasing.
+    pub lag: u64,
+    /// Cap-eligible gates in total.
+    pub elig: u64,
+    /// Wide (cap-ineligible) gates below gen_target: unreachable by the DB
+    /// channel until some other move narrows or consumes them. Reported, but
+    /// never blocks the dose-stop.
+    pub wlag: u64,
+    /// Minimum gen over ALL linked gates (GEN_FRESH when nothing lags).
+    pub min: u32,
 }
 
 impl Mixer {
@@ -659,6 +724,7 @@ impl Mixer {
                 origin: i as u32,
                 event: 0,
                 dir: if rng.random_bool(0.5) { Dir::L } else { Dir::R },
+                dgen: 0,
             })
             .collect();
         let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
@@ -698,6 +764,8 @@ impl Mixer {
             db_budget,
             db_record: None,
             db_last_sampler: DbSample::Contiguous,
+            laggards: Vec::new(),
+            laggards_scan_due: 0,
         }
     }
 
@@ -718,7 +786,8 @@ impl Mixer {
     fn set_meta(&mut self, id: u32, m: Meta) {
         let i = id as usize;
         if i >= self.meta.len() {
-            self.meta.resize(i + 1, Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R });
+            self.meta
+                .resize(i + 1, Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R, dgen: GEN_FRESH });
         }
         self.meta[i] = m;
     }
@@ -727,7 +796,7 @@ impl Mixer {
         self.meta
             .get(id as usize)
             .copied()
-            .unwrap_or(Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R })
+            .unwrap_or(Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R, dgen: GEN_FRESH })
     }
 
     fn fresh_event(&mut self) -> u64 {
@@ -816,6 +885,13 @@ impl Mixer {
 
     pub fn run(&mut self) -> MixStop {
         while self.moves_done < self.params.moves {
+            // Generation targeting: refresh the laggard list on its cadence
+            // (an O(size) scan; entries invalidated between scans are pruned
+            // lazily at draw time in pick_seed).
+            if self.params.gen_target > 0 && self.moves_done >= self.laggards_scan_due {
+                self.rebuild_laggards();
+                self.laggards_scan_due = self.moves_done + self.params.gen_rescan.max(1);
+            }
             // Top-level coins, in order: p_twist (a FIXED rate the rest of the
             // machinery balances around), then p_db_eff, then the walk.
             let took_twist = self.params.p_twist > 0.0
@@ -881,6 +957,17 @@ impl Mixer {
                     self.global_check();
                     return MixStop::StopFlag;
                 }
+                if self.dose_reached() {
+                    println!(
+                        "[fmix] dose reached at move {}: eligible laggard frac <= {} (gen target {}), twist coverage {:.1} — stopping",
+                        self.moves_done,
+                        self.params.gen_stop_frac,
+                        self.params.gen_target,
+                        self.twist_coverage(),
+                    );
+                    self.global_check();
+                    return MixStop::DoseReached;
+                }
             }
         }
         self.global_check();
@@ -915,6 +1002,13 @@ impl Mixer {
                             }
                             if let Err(e) = std::fs::write(format!("{out}.origins"), s) {
                                 eprintln!("[fmix] dump origins write failed: {e}");
+                            }
+                            let mut s = String::with_capacity(gates.len() * 4);
+                            for g in self.gens_in_order() {
+                                s.push_str(&format!("{g}\n"));
+                            }
+                            if let Err(e) = std::fs::write(format!("{out}.gens"), s) {
+                                eprintln!("[fmix] dump gens write failed: {e}");
                             }
                             println!(
                                 "[fmix] DUMP: wrote {} gates to {} at move {} (verified, continuing)",
@@ -1020,7 +1114,7 @@ impl Mixer {
                     "presplit verification failed: {g:?} -> {pieces:?}"
                 );
             }
-            let origin = self.meta_of(id).origin;
+            let pm = self.meta_of(id);
             let ev = self.fresh_event();
             for p in &pieces {
                 self.counters.width_hist[p.width().min(15)] += 1;
@@ -1028,7 +1122,7 @@ impl Mixer {
             let ids = self.splice_replace_one(id, pieces);
             for &pid in &ids {
                 let d = self.child_dir(dir);
-                self.set_meta(pid, Meta { origin, event: ev, dir: d });
+                self.set_meta(pid, Meta { origin: pm.origin, event: ev, dir: d, dgen: pm.dgen });
             }
             self.advance_births(&ids);
             self.counters.presplits += 1;
@@ -1060,7 +1154,7 @@ impl Mixer {
                         "colliding presplit verification failed: {h:?} -> {hp:?}"
                     );
                 }
-                let origin = self.meta_of(h_id).origin;
+                let hm = self.meta_of(h_id);
                 let ev = self.fresh_event();
                 for p in &hp {
                     self.counters.width_hist[p.width().min(15)] += 1;
@@ -1070,7 +1164,7 @@ impl Mixer {
                     // Colliding-gate fragments still inherit from the SHOT
                     // gate's direction (per spec: regardless of parent).
                     let d = self.child_dir(dir);
-                    self.set_meta(pid, Meta { origin, event: ev, dir: d });
+                    self.set_meta(pid, Meta { origin: hm.origin, event: ev, dir: d, dgen: hm.dgen });
                 }
                 self.advance_births(&ids);
                 self.counters.presplits += 1;
@@ -1110,8 +1204,9 @@ impl Mixer {
                         self.counters.width_hist[gate.width().min(15)] += 1;
                     }
                 }
-                let g_origin = self.meta_of(id).origin;
-                let h_origin = self.meta_of(h_id).origin;
+                let gm = self.meta_of(id);
+                let hm = self.meta_of(h_id);
+                let (g_origin, h_origin) = (gm.origin, hm.origin);
                 let ev = self.fresh_event();
                 let placed = self.splice_pair(id, h_id, dir, seq);
                 let mut fresh: Vec<u32> = Vec::new();
@@ -1119,12 +1214,18 @@ impl Mixer {
                     match role {
                         Role::ShotPiece | Role::Core => {
                             let d = self.child_dir(dir);
-                            self.set_meta(pid, Meta { origin: g_origin, event: ev, dir: d });
+                            self.set_meta(
+                                pid,
+                                Meta { origin: g_origin, event: ev, dir: d, dgen: gm.dgen },
+                            );
                             fresh.push(pid);
                         }
                         Role::CollidingPiece => {
                             let d = self.child_dir(dir);
-                            self.set_meta(pid, Meta { origin: h_origin, event: ev, dir: d });
+                            self.set_meta(
+                                pid,
+                                Meta { origin: h_origin, event: ev, dir: d, dgen: hm.dgen },
+                            );
                             fresh.push(pid);
                         }
                         Role::CollidingIntact => {} // node reused, meta intact
@@ -1143,9 +1244,9 @@ impl Mixer {
                         .or_else(|| placed.iter().find(|(_, r)| *r == Role::ShotPiece))
                         .map(|&(i, _)| i)
                         .expect("rewrite emitted no pivot");
-                    let (before, origins) = match dir {
-                        Dir::R => ([g.clone(), h.clone()], [g_origin, h_origin]),
-                        Dir::L => ([h.clone(), g.clone()], [h_origin, g_origin]),
+                    let (before, origins, gens) = match dir {
+                        Dir::R => ([g.clone(), h.clone()], [g_origin, h_origin], [gm.dgen, hm.dgen]),
+                        Dir::L => ([h.clone(), g.clone()], [h_origin, g_origin], [hm.dgen, gm.dgen]),
                     };
                     let after: Vec<(u32, u32)> =
                         placed.iter().map(|&(i, _)| (i, self.arena.stamp(i))).collect();
@@ -1159,6 +1260,7 @@ impl Mixer {
                         after,
                         event: ev,
                         origins,
+                        gens,
                         misses: 0,
                     });
                 }
@@ -1210,7 +1312,7 @@ impl Mixer {
         let ids = self.splice_replace_one(id, pieces);
         for &pid in &ids {
             let d = self.child_dir(m.dir);
-            self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: d });
+            self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: d, dgen: m.dgen });
         }
         self.advance_births(&ids);
         self.counters.fresh_splits += 1;
@@ -1256,7 +1358,7 @@ impl Mixer {
         let ids = self.splice_replace_one(id, pieces);
         for &pid in &ids {
             let d = self.child_dir(m.dir);
-            self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: d });
+            self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: d, dgen: m.dgen });
         }
         self.advance_births(&ids);
         self.counters.unsubs += 1;
@@ -1301,8 +1403,9 @@ impl Mixer {
         self.index_add(b);
         let ev = self.fresh_event();
         let da = self.rand_dir();
-        self.set_meta(a, Meta { origin: ORIGIN_SYNTH, event: ev, dir: da });
-        self.set_meta(b, Meta { origin: ORIGIN_SYNTH, event: ev, dir: da.opposite() });
+        // Fresh identity material: no input structure, gen never lags.
+        self.set_meta(a, Meta { origin: ORIGIN_SYNTH, event: ev, dir: da, dgen: GEN_FRESH });
+        self.set_meta(b, Meta { origin: ORIGIN_SYNTH, event: ev, dir: da.opposite(), dgen: GEN_FRESH });
         self.counters.width_hist[self.arena.gate(a).width().min(15)] += 2;
         self.counters.inserts += 1;
         // Each copy is shot once as part of the insert.
@@ -1559,7 +1662,10 @@ impl Mixer {
                     for &pid in &ids {
                         // Twist material does not move: pieces keep the
                         // conjugated gate's direction exactly.
-                        self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: m.dir });
+                        self.set_meta(
+                            pid,
+                            Meta { origin: m.origin, event: ev, dir: m.dir, dgen: m.dgen },
+                        );
                     }
                     relabeled += 1;
                     case_splits += 1;
@@ -1590,7 +1696,7 @@ impl Mixer {
             anchor = self.arena.insert_after(anchor, g.clone());
             self.index_add(anchor);
             let d = self.rand_dir();
-            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d });
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d, dgen: GEN_FRESH });
         }
         let mut anchor = w_end;
         for g in &packet {
@@ -1598,7 +1704,7 @@ impl Mixer {
             anchor = self.arena.insert_after(anchor, g.clone());
             self.index_add(anchor);
             let d = self.rand_dir();
-            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d });
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d, dgen: GEN_FRESH });
         }
 
         match kind {
@@ -1739,7 +1845,7 @@ impl Mixer {
             c = self.arena.insert_after(c, gate.clone());
             self.index_add(c);
             let d = self.rand_dir();
-            self.set_meta(c, Meta { origin: e.origins[j], event: 0, dir: d });
+            self.set_meta(c, Meta { origin: e.origins[j], event: 0, dir: d, dgen: e.gens[j] });
             new_ids.push(c);
         }
         self.counters.undos += 1;
@@ -1874,8 +1980,10 @@ impl Mixer {
         for &nid in &new_ids {
             // Merged output stays in place (scatter is suspended) and keeps
             // shooting the way the initiating parent was headed, per dir_p.
+            // Gen: the merged content depends on both parents, so it is only
+            // as re-encoded as the LESS re-encoded of the two.
             let d = self.child_dir(mg.dir);
-            self.set_meta(nid, Meta { origin, event: 0, dir: d });
+            self.set_meta(nid, Meta { origin, event: 0, dir: d, dgen: mg.dgen.min(mh.dgen) });
         }
         if sibling {
             self.counters.merges_sibling += 1;
@@ -2116,6 +2224,16 @@ impl Mixer {
         let m0 = self.meta_of(ids[0]);
         let same_origin = ids.iter().all(|&id| self.meta_of(id).origin == m0.origin);
         let origin = if same_origin { m0.origin } else { ORIGIN_SYNTH };
+        // Gen: THE increment site. The replacement re-encodes everything the
+        // window held, so its products sit one re-encoding above the least
+        // re-encoded input (min, not max — a low-gen gate's structure is in
+        // the rewritten function). Saturating: an all-fresh window stays fresh.
+        let dgen = ids
+            .iter()
+            .map(|&id| self.meta_of(id).dgen)
+            .min()
+            .unwrap_or(GEN_FRESH)
+            .saturating_add(1);
         for &id in ids {
             self.index_remove(id);
             self.arena.unlink(id);
@@ -2132,7 +2250,7 @@ impl Mixer {
             c = self.arena.insert_after(c, gate);
             self.index_add(c);
             let d = if i <= pivot { Dir::L } else { Dir::R };
-            self.set_meta(c, Meta { origin, event: 0, dir: d });
+            self.set_meta(c, Meta { origin, event: 0, dir: d, dgen });
         }
         true
     }
@@ -2387,10 +2505,54 @@ impl Mixer {
         }
     }
 
+    // Rebuild the laggard list: every linked, cap-eligible gate still below
+    // gen_target. Wide gates are excluded — the window builder evades them, so
+    // they cannot seed (or join) a matchable window; they are reported
+    // separately (wlag=) and only re-enter the chase once some other move
+    // narrows or consumes them (their pieces inherit the low gen).
+    fn rebuild_laggards(&mut self) {
+        let target = self.params.gen_target;
+        let cap = self.params.db_ctrl_cap;
+        self.laggards.clear();
+        for id in self.arena.ids_in_order() {
+            if self.meta_of(id).dgen < target && (cap == 0 || self.width_of(id) <= cap) {
+                self.laggards.push(id);
+            }
+        }
+    }
+
     // Seed gate for a window: a random linked node whose width is within the
     // control cap (retried a few times), or None if the cap keeps rejecting.
+    // With gen_target > 0, the seed is drawn from the laggard list with
+    // probability gen_bias instead — direct targeting of under-re-encoded
+    // gates replaces the coupon-collector tail of uniform selection. Stale
+    // entries (freed, re-encoded, or widened since the last rescan) are
+    // pruned or skipped at draw time; a reused id that now holds a different
+    // low-gen eligible gate is a perfectly good target and is kept.
     fn pick_seed(&mut self) -> Option<u32> {
         let cap = self.params.db_ctrl_cap;
+        if self.params.gen_target > 0
+            && !self.laggards.is_empty()
+            && self.rng.random_bool(self.params.gen_bias.clamp(0.0, 1.0))
+        {
+            for _ in 0..8 {
+                if self.laggards.is_empty() {
+                    break;
+                }
+                let i = self.rng.random_range(0..self.laggards.len());
+                let id = self.laggards[i];
+                if !self.arena.is_linked(id) || self.meta_of(id).dgen >= self.params.gen_target {
+                    self.laggards.swap_remove(i);
+                    continue;
+                }
+                if cap == 0 || self.width_of(id) <= cap {
+                    return Some(id);
+                }
+                // Still a laggard but currently too wide to seed: leave it
+                // listed for a later round and fall through to uniform.
+                break;
+            }
+        }
         for _ in 0..8 {
             let g = self.arena.random_linked(&mut self.rng);
             if cap == 0 || self.width_of(g) <= cap {
@@ -2741,12 +2903,15 @@ impl Mixer {
         let origins = self.origins_in_order();
         let odiff = super::stats::origin_diffusion(&origins);
         let oadj = super::stats::adjacent_origin_autocorr(&origins);
+        let gs = self.gen_stats();
+        let gmin = if gs.min == GEN_FRESH { "F".to_string() } else { gs.min.to_string() };
+        let cov = self.twist_coverage();
         let c = &self.counters;
         let hist: Vec<String> = (0..=self.params.k_max.min(15))
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}] | gen tgt={} lag={}/{} wlag={} min={} cov={:.1}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -2806,12 +2971,67 @@ impl Mixer {
             leew,
             odiff,
             oadj,
-            hist.join(" ")
+            hist.join(" "),
+            self.params.gen_target,
+            gs.lag,
+            gs.elig,
+            gs.wlag,
+            gmin,
+            cov
         );
     }
 
     pub fn origins_in_order(&self) -> Vec<u32> {
         self.arena.ids_in_order().iter().map(|&id| self.meta_of(id).origin).collect()
+    }
+
+    /// Per-gate DB-generation stamps in circuit order (GEN_FRESH = born-random
+    /// material that never held input structure).
+    pub fn gens_in_order(&self) -> Vec<u32> {
+        self.arena.ids_in_order().iter().map(|&id| self.meta_of(id).dgen).collect()
+    }
+
+    pub fn gen_stats(&self) -> GenStats {
+        let target = self.params.gen_target;
+        let cap = self.params.db_ctrl_cap;
+        let mut s = GenStats { lag: 0, elig: 0, wlag: 0, min: GEN_FRESH };
+        for id in self.arena.ids_in_order() {
+            let g = self.meta_of(id).dgen;
+            s.min = s.min.min(g);
+            let eligible = cap == 0 || self.width_of(id) <= cap;
+            if eligible {
+                s.elig += 1;
+                if g < target {
+                    s.lag += 1;
+                }
+            } else if g < target {
+                s.wlag += 1;
+            }
+        }
+        s
+    }
+
+    /// Cumulative per-position twist coverage: total twisted window span over
+    /// the current size — the phase-A twist dose meter (target ~600x per the
+    /// saturation law).
+    pub fn twist_coverage(&self) -> f64 {
+        self.counters.twist_span as f64 / self.arena.len().max(1) as f64
+    }
+
+    // Dose-based stop (see MixParams::gen_stop_frac): eligible-laggard
+    // fraction at or below gen_stop_frac AND twist coverage at or above
+    // twist_cov_stop. Wide laggards never block — the DB channel cannot
+    // reach them, so waiting on them could hold the run open forever.
+    fn dose_reached(&self) -> bool {
+        if self.params.gen_target == 0 || self.params.gen_stop_frac < 0.0 {
+            return false;
+        }
+        let s = self.gen_stats();
+        let lag_frac = if s.elig == 0 { 0.0 } else { s.lag as f64 / s.elig as f64 };
+        if lag_frac > self.params.gen_stop_frac {
+            return false;
+        }
+        self.params.twist_cov_stop <= 0.0 || self.twist_coverage() >= self.params.twist_cov_stop
     }
 }
 
@@ -3422,5 +3642,155 @@ mod mix_tests {
         mx.moves_done = 200;
         let _ = mx.fresh_event(); // push triggers eviction of expired entries
         assert!(mx.tabu.len() <= 2, "expired tabu entries must be evicted");
+    }
+
+    // The DB splice is the ONE gen-increment site: products carry
+    // min(window gens) + 1, so a low-gen gate's structure is never laundered
+    // by being rewritten alongside high-gen neighbors.
+    #[test]
+    fn db_splice_stamps_min_window_gen_plus_one() {
+        let g = XGate::conj(0, [(1, true)]).unwrap();
+        let h = XGate::conj(2, [(3, true)]).unwrap();
+        // Two adjacent identity pairs; we splice over the first pair.
+        let gates = vec![g.clone(), g.clone(), h.clone(), h.clone()];
+        let params = MixParams { report_every: u64::MAX, ..MixParams::default() };
+        let mut mx = Mixer::new(gates, 8, params);
+        let ids = mx.arena.ids_in_order();
+        // Unequal gens across the window: the products must take min + 1.
+        let m0 = mx.meta_of(ids[0]);
+        mx.set_meta(ids[0], Meta { dgen: 3, ..m0 });
+        let m1 = mx.meta_of(ids[1]);
+        mx.set_meta(ids[1], Meta { dgen: 7, ..m1 });
+        let window = vec![g.clone(), g.clone()];
+        let replacement = vec![h.clone(), h.clone()]; // also an identity: verifies
+        assert!(mx.try_db_splice(
+            &ids[..2],
+            Dir::R,
+            &window,
+            replacement,
+            1,
+            DbMode::SizeAgnostic
+        ));
+        mx.global_check();
+        let gens = mx.gens_in_order();
+        assert_eq!(&gens[..2], &[4, 4], "products must carry min(3,7)+1: {gens:?}");
+        assert_eq!(&gens[2..], &[0, 0], "untouched gates keep their gen: {gens:?}");
+        // Saturation: an all-fresh window stays fresh.
+        let ids = mx.arena.ids_in_order();
+        for &id in &ids[..2] {
+            let m = mx.meta_of(id);
+            mx.set_meta(id, Meta { dgen: GEN_FRESH, ..m });
+        }
+        let window = vec![h.clone(), h.clone()];
+        let replacement = vec![g.clone(), g.clone()];
+        assert!(mx.try_db_splice(
+            &ids[..2],
+            Dir::R,
+            &window,
+            replacement,
+            1,
+            DbMode::SizeAgnostic
+        ));
+        assert_eq!(mx.gens_in_order()[0], GEN_FRESH, "fresh window must stay fresh");
+    }
+
+    // Without DB moves nothing increments: after heavy churn every gate is
+    // either still-original material (gen 0, possibly split/merged/twisted
+    // many times) or born-random (GEN_FRESH) — never anything in between.
+    #[test]
+    fn walk_without_db_keeps_gens_binary() {
+        let gates = random_mixed_circuit(29, 16, 300);
+        let params = MixParams {
+            k_max: 5,
+            moves: 20_000,
+            target_size: 600,
+            temp: 20.0,
+            w_twist_neg: 0.05,
+            w_twist_swap: 0.05,
+            verify_every: 5_000,
+            report_every: u64::MAX,
+            seed: 13,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        let gens = mx.gens_in_order();
+        assert!(
+            gens.iter().all(|&g| g == 0 || g == GEN_FRESH),
+            "no move but the DB splice may mint an intermediate generation"
+        );
+        assert!(gens.contains(&0), "original material cannot all vanish here");
+        assert!(gens.contains(&GEN_FRESH), "inserts/twist brackets must be marked fresh");
+    }
+
+    // Generation targeting: with bias 1.0 the seed comes from the laggard
+    // list while one exists, and entries that got re-encoded (or freed)
+    // between rescans are pruned at draw time.
+    #[test]
+    fn pick_seed_targets_laggards_and_prunes_stale() {
+        let gates = random_mixed_circuit(31, 16, 60);
+        let params = MixParams {
+            gen_target: 4,
+            gen_bias: 1.0,
+            report_every: u64::MAX,
+            seed: 17,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        let ids = mx.arena.ids_in_order();
+        // Everyone re-encoded past target except three laggards.
+        let lag: Vec<u32> = vec![ids[5], ids[20], ids[40]];
+        for &id in &ids {
+            let m = mx.meta_of(id);
+            let g = if lag.contains(&id) { 1 } else { 9 };
+            mx.set_meta(id, Meta { dgen: g, ..m });
+        }
+        mx.rebuild_laggards();
+        assert_eq!(mx.laggards.len(), 3);
+        for _ in 0..50 {
+            let s = mx.pick_seed().expect("seed");
+            assert!(lag.contains(&s), "bias 1.0 must draw laggard seeds while any exist");
+        }
+        // One laggard crosses the target between rescans: draws prune it.
+        let m = mx.meta_of(lag[0]);
+        mx.set_meta(lag[0], Meta { dgen: 4, ..m });
+        for _ in 0..200 {
+            let s = mx.pick_seed().expect("seed");
+            assert!(s != lag[0], "re-encoded gate must not be picked as a laggard");
+        }
+        assert_eq!(mx.laggards.len(), 2, "stale entry must be pruned at draw time");
+    }
+
+    // The dose stop: eligible-laggard fraction and twist coverage must BOTH
+    // clear their thresholds; wide laggards report but never block.
+    #[test]
+    fn dose_stop_predicate() {
+        let gates = random_mixed_circuit(37, 16, 40);
+        let params = MixParams {
+            gen_target: 2,
+            gen_stop_frac: 0.0,
+            db_ctrl_cap: 2,
+            report_every: u64::MAX,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        assert!(!mx.dose_reached(), "all-gen-0 input cannot be at dose");
+        let ids = mx.arena.ids_in_order();
+        for &id in &ids {
+            let m = mx.meta_of(id);
+            let g = if mx.width_of(id) <= 2 { 2 } else { 0 };
+            mx.set_meta(id, Meta { dgen: g, ..m });
+        }
+        let s = mx.gen_stats();
+        assert_eq!(s.lag, 0);
+        assert!(mx.dose_reached(), "eligible gates all at target; wide laggards must not block");
+        // Coverage requirement gates the stop until twists supply it.
+        mx.params.twist_cov_stop = 10.0;
+        assert!(!mx.dose_reached());
+        mx.counters.twist_span = (mx.arena.len() as u64) * 11;
+        assert!(mx.dose_reached());
+        // Off switches.
+        mx.params.gen_stop_frac = -1.0;
+        assert!(!mx.dose_reached());
     }
 }

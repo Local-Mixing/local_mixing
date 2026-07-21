@@ -176,6 +176,12 @@ final write are each verified. A failure panics immediately.
 | `--no-local-verify` | off | disable the per-move exhaustive local check |
 | `--skip-final-float` | off | skip the final uniform float pass |
 | `--origins-out` | none | write the per-gate origin sidecar |
+| `--gen-target` | 0 | generation targeting (needs the DB move on): drive every ctrl-cap-eligible gate through at least this many DB re-encodings. `0` = off, trajectory-identical to the untargeted chain |
+| `--gen-bias` | 0.9 | probability a DB seed is drawn from the below-target (laggard) gates instead of uniformly |
+| `--gen-rescan` | 10,000 | laggard-list rebuild cadence in moves (O(size) scan; stale entries are pruned at draw time) |
+| `--gen-stop-frac` | −1 | dose stop: end the run at the first report point where the eligible laggard fraction is ≤ this and `--twist-cov-stop` is met. Negative = off; the move budget becomes a ceiling when on |
+| `--twist-cov-stop` | 0 | twist-coverage requirement for the dose stop: cumulative twisted span / current size (saturation target ~600). `0` = no requirement |
+| `--gens-out` | none | write the per-gate generation sidecar (`4294967295` = born-random material) |
 | `--seed` | 0 | chain RNG seed. Metrics are sampled from a **separate** RNG (`seed ^ 0x5EED517A75`), so report cadence never perturbs the trajectory |
 
 Production convention: `--report-every 1000000 --verify-every 100000`.
@@ -223,6 +229,21 @@ Checked at every report point (so responsiveness = `--report-every`):
 | `odiff` | origin diffusion: piece-weighted std of each origin family's positions; 0 = clumped, 0.2887 (=1/√12) = uniformly dispersed |
 | `oadj` | Pearson autocorrelation of adjacent gates' origins: 1 = conveyor belt of the original order, 0 = ancestry-independent neighbors |
 | `width[i:n ...]` | **cumulative** histogram of created-piece widths over the run (bucket 15 = ≥15). *Not* the current circuit's width profile — use `fmix_stats` for that |
+| `gen tgt= lag=a/b wlag= min=` | generation targeting: target; eligible gates still below it / eligible total; below-target gates too wide for the DB channel (reported, never block the dose stop); minimum generation over all gates (`F` = everything is fresh) |
+| `cov` | cumulative per-position twist coverage (`twspan / size`) — the phase-A twist dose meter (saturation target ~600) |
+
+**Generation semantics.** Every gate carries a DB-re-encoding generation: input
+gates start at 0; a DB splice stamps its products `min(window generations)+1`
+(a low-gen gate's structure is never laundered by high-gen neighbors in the
+same window); splits, merges, unsubs and twist case-splits propagate
+conservatively (pieces inherit their parent, merges take the min); fresh
+insert pairs and twist brackets are born-random and count as done. The
+generation census is the DB-axis dose meter — the churn-phase analogue of
+ssg's generation mechanism — and `--gen-target`/`--gen-stop-frac` turn phase A
+from "run N moves and hope" into "run until every gate has been re-encoded G
+times, then stop," which is also the minimal-growth schedule: targeted seeds
+remove the coupon-collector tail, and the dose stop spends no moves (hence no
+incidental growth) past the requirement.
 
 **Known dynamics** (measured): the chain equilibrates at a content-dependent
 floor above target under extreme churn; positional transport is the slow mode —

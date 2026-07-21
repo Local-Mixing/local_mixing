@@ -20,7 +20,7 @@
 //     --target-size 3000000 --moves 50000000 --output mixed_fmix.txt
 use clap::Parser;
 use local_mixing::postmix::format;
-use local_mixing::postmix::mix::{MixParams, MixStop, Mixer, ORIGIN_SYNTH};
+use local_mixing::postmix::mix::{MixParams, MixStop, Mixer, GEN_FRESH, ORIGIN_SYNTH};
 use local_mixing::postmix::xgate::{XGate, max_wire};
 
 #[derive(Parser, Debug)]
@@ -208,6 +208,38 @@ struct Args {
     /// Span/verify declines keep descending — shorter prefixes may still fit.
     #[arg(long, default_value_t = false)]
     db_prefixes: bool,
+    /// Generation targeting: drive every (ctrl-cap-eligible) gate through at
+    /// least this many DB re-encodings. Each gate carries a generation (input
+    /// gates 0; a DB splice stamps min(window)+1; splits/merges propagate;
+    /// fresh insert/bracket material counts as done). DB seeds are drawn from
+    /// the below-target gates with probability --gen-bias, replacing the
+    /// coupon-collector tail of uniform selection with direct work. 0 = off.
+    #[arg(long, default_value_t = 0)]
+    gen_target: u32,
+    /// Probability a DB seed is drawn from the laggard (below-target) list
+    /// instead of uniformly; the remainder keeps the unbiased churn.
+    #[arg(long, default_value_t = 0.9)]
+    gen_bias: f64,
+    /// Laggard-list rebuild cadence in moves (O(size) scan each rebuild;
+    /// entries going stale between rebuilds are pruned at draw time).
+    #[arg(long, default_value_t = 10_000)]
+    gen_rescan: u64,
+    /// Dose-based stop: end the run (before the move budget) at the first
+    /// report point where the below-target fraction among eligible gates is
+    /// <= this AND --twist-cov-stop is met. The phase-A "minimal growth"
+    /// switch: spend exactly the moves the dose requires, no more. Negative =
+    /// off. Requires --gen-target > 0.
+    #[arg(long, default_value_t = -1.0)]
+    gen_stop_frac: f64,
+    /// Twist-coverage requirement for the dose stop: cumulative twisted span
+    /// over current size (per-position coverage; saturation target ~600).
+    /// 0 = no coverage requirement.
+    #[arg(long, default_value_t = 0.0)]
+    twist_cov_stop: f64,
+    /// Write per-gate DB-generation stamps (final order, one per line;
+    /// 4294967295 = born-random material) for dose analysis
+    #[arg(long)]
+    gens_out: Option<String>,
     /// Global sampled equality check every N moves
     #[arg(long, default_value_t = 10_000)]
     verify_every: u64,
@@ -278,6 +310,12 @@ fn main() {
             args.db_min_window, args.db_max_window, !args.no_db_verify
         );
     }
+    if args.gen_target > 0 {
+        println!(
+            "[fmix] generation targeting ON: gen_target={} gen_bias={} gen_rescan={} gen_stop_frac={} twist_cov_stop={} (report: gen tgt/lag/wlag/min, cov)",
+            args.gen_target, args.gen_bias, args.gen_rescan, args.gen_stop_frac, args.twist_cov_stop
+        );
+    }
 
     assert!(
         args.db_max_degree == 0 || args.db_max_degree <= 11,
@@ -325,6 +363,11 @@ fn main() {
         db_wire_terms: args.db_wire_terms,
         db_total_terms: args.db_total_terms,
         db_prefixes: args.db_prefixes,
+        gen_target: args.gen_target,
+        gen_bias: args.gen_bias,
+        gen_rescan: args.gen_rescan,
+        gen_stop_frac: args.gen_stop_frac,
+        twist_cov_stop: args.twist_cov_stop,
         verify_every: args.verify_every,
         report_every: args.report_every,
         local_verify: !args.no_local_verify,
@@ -374,6 +417,7 @@ fn main() {
         match stop_reason {
             MixStop::MovesBudget => "moves budget spent",
             MixStop::StopFlag => "stop flag",
+            MixStop::DoseReached => "dose reached (gen + twist coverage targets met)",
         },
         input_len,
         mixer.arena.len(),
@@ -409,5 +453,15 @@ fn main() {
         }
         std::fs::write(path, s).expect("write origins");
         println!("[fmix] wrote origins sidecar to {path} (synthetic = {ORIGIN_SYNTH})");
+    }
+
+    if let Some(path) = &args.gens_out {
+        let gens = mixer.gens_in_order();
+        let mut s = String::with_capacity(gens.len() * 4);
+        for g in gens {
+            s.push_str(&format!("{g}\n"));
+        }
+        std::fs::write(path, s).expect("write gens");
+        println!("[fmix] wrote gens sidecar to {path} (born-random = {GEN_FRESH})");
     }
 }
