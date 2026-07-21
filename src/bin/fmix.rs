@@ -242,6 +242,11 @@ struct Args {
     /// from targeting and from the dose stop, reported as u=). 0 = never.
     #[arg(long, default_value_t = 0)]
     gen_giveup: u16,
+    /// Split-rule variant: children INHERIT the parent generation unchanged
+    /// (only DB replacements raise generations). Default off = ratchet
+    /// semantics (split children get parent + 1).
+    #[arg(long, default_value_t = false)]
+    gen_split_inherit: bool,
     /// Laggard-list rebuild cadence in moves (O(size) scan each rebuild;
     /// entries going stale between rebuilds are pruned at draw time).
     #[arg(long, default_value_t = 10_000)]
@@ -334,8 +339,10 @@ fn main() {
     }
     if args.gen_target > 0 {
         println!(
-            "[fmix] generation targeting ON: gen_target={} gen_bias={} gen_rescan={} gen_stop_frac={} twist_cov_stop={} (report: gen tgt/lag/c/h/u/wlag/min, cov, ing, hard, paid)",
-            args.gen_target, args.gen_bias, args.gen_rescan, args.gen_stop_frac, args.twist_cov_stop
+            "[fmix] generation targeting ON: gen_target={} gen_bias={} gen_rescan={} gen_stop_frac={} twist_cov_stop={} split_rule={} (report: gen tgt/G/alag/lag/c/h/u/wlag/min, cov, ing, hard, paid)",
+            args.gen_target, args.gen_bias, args.gen_rescan, args.gen_stop_frac,
+            args.twist_cov_stop,
+            if args.gen_split_inherit { "inherit" } else { "ratchet(+1)" }
         );
         if args.p_db_ingest > 0.0 || args.p_db_hard > 0.0 {
             println!(
@@ -398,6 +405,7 @@ fn main() {
         p_db_hard: args.p_db_hard,
         gen_miss_budget: args.gen_miss_budget,
         gen_giveup: args.gen_giveup,
+        gen_split_inherit: args.gen_split_inherit,
         gen_stop_frac: args.gen_stop_frac,
         twist_cov_stop: args.twist_cov_stop,
         verify_every: args.verify_every,

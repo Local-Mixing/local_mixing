@@ -182,7 +182,8 @@ final write are each verified. A failure panics immediately.
 | `--p-db-ingest` | 0 | ingest-then-pay CHEAP channel: probability a round is a Compressing-mode DB attempt (non-growing replacements only — zero growth risk, safe to run hot) seeded on a cheap-tier laggard |
 | `--p-db-hard` | 0 | ingest-then-pay PAID channel: probability a round is a MinGrow-mode attempt (uniform among the SHORTEST equivalents, growing allowed) seeded on a hard-tier gate. The only channel that spends growth on the generation goal; cost ledgered in `paid=` |
 | `--gen-miss-budget` | 6 | seed misses before a laggard graduates cheap → hard tier |
-| `--gen-giveup` | 0 | seed misses before a gate is written off as unreachable (excluded from targeting and the dose stop, reported `u=`). 0 = never |
+| `--gen-giveup` | 0 | seed misses before a gate is written off as unreachable (excluded from targeting, reported `u=`; still counted by the all-gates dose criterion). 0 = never |
+| `--gen-split-inherit` | off | split children INHERIT the parent generation unchanged (only DB replacements raise generations — isolates DB re-encoding depth). Default = ratchet semantics: split children get parent + 1 |
 | `--gen-stop-frac` | −1 | dose stop: end the run at the first report point where the eligible laggard fraction is ≤ this and `--twist-cov-stop` is met. Negative = off; the move budget becomes a ceiling when on |
 | `--twist-cov-stop` | 0 | twist-coverage requirement for the dose stop: cumulative twisted span / current size (saturation target ~600). `0` = no requirement |
 | `--gens-out` | none | write the per-gate generation sidecar (`4294967295` = born-random material) |
@@ -233,22 +234,26 @@ Checked at every report point (so responsiveness = `--report-every`):
 | `odiff` | origin diffusion: piece-weighted std of each origin family's positions; 0 = clumped, 0.2887 (=1/√12) = uniformly dispersed |
 | `oadj` | Pearson autocorrelation of adjacent gates' origins: 1 = conveyor belt of the original order, 0 = ancestry-independent neighbors |
 | `width[i:n ...]` | **cumulative** histogram of created-piece widths over the run (bucket 15 = ≥15). *Not* the current circuit's width profile — use `fmix_stats` for that |
-| `gen tgt= lag=a/b c= h= u= wlag= min=` | generation targeting: target; still-targetable below-target gates / eligible total; cheap tier / hard tier / written-off unreachable; below-target gates too wide for the DB channel (like `u=`, reported but never blocks the dose stop); minimum generation over all gates (`F` = everything is fresh) |
+| `gen tgt= G= alag=x/y lag=a/b c= h= u= wlag= min=` | generation targeting: target; current CIRCUIT generation (5th-percentile over all gates); all gates below target / total (the dose-stop fraction); still-targetable below-target gates / eligible total; cheap tier / hard tier / written-off; below-target gates too wide for the DB channel; minimum generation over all gates (`F` = everything is fresh) |
 | `cov` | cumulative per-position twist coverage (`twspan / size`) — the phase-A twist dose meter (saturation target ~600) |
 | `ing= hard= paid=` | ingest-then-pay: cheap-round hits/rounds; paid-round hits/rounds; total gates the paid channel added (the growth actually spent on the generation goal) |
 
-**Generation semantics.** Every gate carries a DB-re-encoding generation: input
-gates start at 0; a DB splice stamps its products `min(window generations)+1`
-(a low-gen gate's structure is never laundered by high-gen neighbors in the
-same window); splits, merges, unsubs and twist case-splits propagate
-conservatively (pieces inherit their parent, merges take the min); fresh
-insert pairs and twist brackets are born-random and count as done. The
-generation census is the DB-axis dose meter — the churn-phase analogue of
-ssg's generation mechanism — and `--gen-target`/`--gen-stop-frac` turn phase A
-from "run N moves and hope" into "run until every gate has been re-encoded G
-times, then stop," which is also the minimal-growth schedule: targeted seeds
-remove the coupon-collector tail, and the dose stop spends no moves (hence no
-incidental growth) past the requirement.
+**Generation semantics** (benchmark definition, 2026-07-21). Every gate
+carries a rewrite generation: input gates start at 0; a DB splice stamps its
+products with the outgoing window's **upper-median generation + 1** (median
+rounded up on even window sizes); every **split** (presplit, cross piece,
+fresh-split, unsubsume, twist case-split) stamps children with **parent + 1**;
+merges take the min of their parents; fresh insert pairs and twist bracket
+packets are born-random MAXGEN (higher than every real generation). The
+**circuit generation** `G=` is the largest G such that at least 95% of ALL
+gates have generation ≥ G (the 5th-percentile generation), and the dose stop
+fires when `alag/total <= --gen-stop-frac` (0.05 = "circuit generation has
+reached the target"). The census is the phase-A dose meter — the churn-phase
+analogue of ssg's generation mechanism — and `--gen-target`/`--gen-stop-frac`
+turn phase A from "run N moves and hope" into "run until the circuit reaches
+generation G, then stop," which is also the minimal-growth schedule: targeted
+seeds remove the coupon-collector tail, and the dose stop spends no moves
+(hence no incidental growth) past the requirement.
 
 **Ingest-then-pay.** Reaching the generation target cheaply first, and paying
 growth only where unavoidable: `--p-db-ingest` rounds try to re-encode
