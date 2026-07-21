@@ -16,6 +16,9 @@ preblock** (S1) at the input, and the **RG randomization policy** in the
 gadget body (nonlinear g57 networks, one per SG). The whole output is
 finished with a **commuting-order rerandomization** (see below).
 
+The motivation for the 2026-07-20b revision (nonlinear RGs + the CG menu)
+is written up in `docs/NONLINEAR_RG_CG_MENU.{tex,pdf}`.
+
 ## Structure
 
 The emitted circuit lives on 2n wires (`x` = wires `0..n`, second half =
