@@ -1,9 +1,9 @@
 use std::{
-    collections::HashMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use clap::{Parser, ValueEnum};
@@ -216,11 +216,7 @@ fn lehmer_rank_u128(p: &CompactPerm) -> Option<u128> {
         return None;
     }
 
-    let mut remaining = if n == 64 {
-        u64::MAX
-    } else {
-        (1u64 << n) - 1
-    };
+    let mut remaining = if n == 64 { u64::MAX } else { (1u64 << n) - 1 };
     let mut rank = 0u128;
 
     for (index, &value) in values.iter().enumerate() {
@@ -521,8 +517,12 @@ fn iso_bfs(
     let base_ckt = CircuitSeq {
         gates: vec![[0, 1, 2]],
     };
-    let (base_canon, base_sphere) =
-        canonicalize(canon_method, &base_ckt.perm(n), n, &mut seed_canonical_graph);
+    let (base_canon, base_sphere) = canonicalize(
+        canon_method,
+        &base_ckt.perm(n),
+        n,
+        &mut seed_canonical_graph,
+    );
     SG_FREE(&mut seed_canonical_graph);
     let base_key = CompactPerm::from_permutation(&base_canon);
     let inserted = visited.insert(&base_key);
@@ -545,9 +545,12 @@ fn iso_bfs(
 
     for depth in 2..=max_m {
         let next_frontier = Arc::new(SegQueue::<CompactPerm>::new());
+        let layer_started = Instant::now();
+        let layer_circuits_done = Arc::new(AtomicU64::new(0));
+        let layer_circuit_total = frontier.len() as u64 * gen_size as u64;
 
         std::thread::scope(|scope| {
-            for _ in 0..num_threads {
+            for tid in 0..num_threads {
                 let frontier = frontier.clone();
                 let next_frontier = next_frontier.clone();
                 let visited = visited.clone();
@@ -555,6 +558,7 @@ fn iso_bfs(
                 let dist_counts = dist_counts.clone();
                 let spheres = spheres.clone();
                 let gens = gens.clone();
+                let layer_circuits_done = layer_circuits_done.clone();
 
                 scope.spawn(move || {
                     // Reused across every canonicalization performed by this
@@ -562,6 +566,9 @@ fn iso_bfs(
                     let mut canonical_graph_scratch = sparsegraph::default();
                     let mut new_count = 0usize;
                     let mut sphere_count = 0usize;
+                    let thread_started = Instant::now();
+                    let mut last_report = Instant::now();
+                    let mut thread_circuits = 0u64;
 
                     while let Some(parent) = frontier.pop() {
                         let parent_perm = parent.to_permutation();
@@ -587,6 +594,36 @@ fn iso_bfs(
                             if depth != max_m {
                                 next_frontier.push(key);
                             }
+                        }
+
+                        thread_circuits += gen_size as u64;
+                        let circuits_done = layer_circuits_done
+                            .fetch_add(gen_size as u64, Ordering::Relaxed)
+                            + gen_size as u64;
+
+                        // Each worker reports independently, but never more
+                        // often than once every two seconds.
+                        if last_report.elapsed() >= Duration::from_secs(2) {
+                            let thread_speed =
+                                thread_circuits as f64 / thread_started.elapsed().as_secs_f64();
+                            let layer_speed =
+                                circuits_done as f64 / layer_started.elapsed().as_secs_f64();
+                            let remaining = layer_circuit_total.saturating_sub(circuits_done);
+                            let eta = if layer_speed > 0.0 {
+                                remaining as f64 / layer_speed
+                            } else {
+                                f64::INFINITY
+                            };
+
+                            println!(
+                                "t{tid:3} m:{depth:3} perms:{perms:10} Q:{queued:10} \
+                                 next:{next:10} speed:{speed:8.1}k ckt/s eta:{eta:8.0}s",
+                                perms = visited.len(),
+                                queued = frontier.len(),
+                                next = next_frontier.len(),
+                                speed = thread_speed / 1000.0,
+                            );
+                            last_report = Instant::now();
                         }
                     }
 
@@ -691,6 +728,7 @@ fn main() {
 mod tests {
     use super::*;
     use itertools::Itertools;
+    use std::{collections::HashMap, sync::atomic::AtomicUsize};
 
     #[test]
     fn canonical_permutation_is_wire_shuffle_invariant() {
@@ -867,7 +905,10 @@ mod tests {
             let bk = brute_canon.data.clone();
 
             if let Some(prev) = brute_to_nauty.insert(bk.clone(), nk.clone()) {
-                assert_eq!(prev, nk, "same brute-orbit mapped to two nauty reps (split)");
+                assert_eq!(
+                    prev, nk,
+                    "same brute-orbit mapped to two nauty reps (split)"
+                );
             }
             if let Some(prev) = nauty_to_brute.insert(nk.clone(), bk.clone()) {
                 assert_eq!(prev, bk, "two brute-orbits mapped to one nauty rep (merge)");
