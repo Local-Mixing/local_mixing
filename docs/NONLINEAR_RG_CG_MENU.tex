@@ -6,6 +6,24 @@
 \usepackage[hidelinks]{hyperref}
 \usepackage{xcolor}
 \usepackage{parskip}
+\usepackage{graphicx}
+\usepackage{tikz}
+
+% ---- reversible-gate drawing primitives (control pins + active pin) ----
+\newcommand{\pc}[2]{\fill (#1,#2) circle (2.6pt);}                       % positive control
+\newcommand{\nc}[2]{\draw[fill=white] (#1,#2) circle (2.6pt);}          % negative control
+\newcommand{\tg}[2]{\draw (#1,#2) circle (4.2pt);                        % target (XOR)
+  \draw (#1,#2) ++(-4.2pt,0) -- ++(8.4pt,0);
+  \draw (#1,#2) ++(0,-4.2pt) -- ++(0,8.4pt);}
+\newcommand{\tgb}[2]{\tg{#1}{#2}                                         % complemented target (g57)
+  \draw[line width=1pt] (#1,#2) ++(-4.8pt,8pt) -- ++(9.6pt,0);}
+\newcommand{\gcol}[3]{\draw (#1,#2)--(#1,#3);}                           % gate's vertical line
+\newcommand{\wires}[1]{% #1 = number of gate columns
+  \foreach \yy/\lab in {0/{$a^\ast$},-1/{$b_0$},-2/{$b_1$},-3/{$c_0$},-4/{$c_1$}}{%
+    \draw (0.55,\yy)--({#1+0.45},\yy); \node[left] at (0.5,\yy){\small\lab};}
+  \foreach \j in {1,...,#1}{\node at (\j,0.82){\scriptsize\j};}}
+\newenvironment{cgcirc}{\begin{tikzpicture}[x=0.85cm,y=0.8cm,line width=0.7pt]}
+  {\end{tikzpicture}}
 
 \newcommand{\CNOT}{\textsc{cnot}}
 \newcommand{\CCNOT}{\textsc{ccnot}}
@@ -196,7 +214,9 @@ w$): $t \pe w$ is a \CNOT{} ($t \leftarrow t \oplus w$); $t \pe
 \overline{w}$ a negative-control \CNOT{}; $t \pe (x \vee \overline{y})$ a
 g57; and $t \pe (\ell\,\ell')$ a two-control conjunction fragment
 (juxtaposition = AND, each literal $w$ or $\overline{w}$). Recall $f = 1
-\oplus C \oplus BC = B \vee \overline{C}$. Gates execute top to bottom.
+\oplus C \oplus BC = B \vee \overline{C}$. Gates execute top to bottom. The
+same seven circuits are drawn in standard reversible-gate notation in
+Appendix~\ref{app:cgfigs}.
 
 \newcommand{\note}[1]{\hfill{\footnotesize\itshape #1}}
 \newcommand{\cgvar}[1]{\smallskip\noindent\textbf{#1}\par\nopagebreak}
@@ -323,5 +343,118 @@ of the linear XOR sharing remains the deepest open design question; the
 candidate answers are a nonlinear share encoding (snapshots stop being
 degree-1 in the wires) and generalized nonlinear RG3 injections
 (compensated pair-writes with arbitrary conjunction fragments).
+
+\appendix
+\section{Gate-level diagrams of the CG menu}\label{app:cgfigs}
+
+Each realization of Section~4 is drawn below in standard reversible-gate
+notation. The five horizontal lines are the carrier wires (top to bottom:
+$a^\ast$ the targeted carrier of $A$, then $b_0, b_1, c_0, c_1$); the
+untouched second carrier of $A$ is a mask and is omitted. A gate is a
+vertical line joining its pins. A filled pin~$\bullet$ is a positive
+control (active when its wire is $1$), an open pin~$\circ$ a negative
+control (active when $0$), and $\oplus$ the target that is flipped when the
+gate is active. A plain conjunction gate is active exactly when all its
+controls are satisfied. A \textbf{g57} gate carries a bar over its
+target,~$\overline{\oplus}$: it is \emph{complemented}, active on the
+complement of its control cube --- realizing $t \pe (x \vee \overline{y})$
+from pins $\circ$ on $x$ and $\bullet$ on $y$. Columns are numbered to match
+the gate sequences in Section~4 and apply left to right.
+
+\bigskip
+\begin{center}
+\begin{minipage}[t]{0.47\textwidth}\centering
+\textbf{0 --- collapse both}\\[4pt]
+\begin{cgcirc}
+\wires{5}
+\gcol{1}{-1}{-2}\tg{1}{-1}\pc{1}{-2}
+\gcol{2}{-3}{-4}\tg{2}{-3}\pc{2}{-4}
+\gcol{3}{0}{-3}\tgb{3}{0}\nc{3}{-1}\pc{3}{-3}
+\gcol{4}{-3}{-4}\tg{4}{-3}\pc{4}{-4}
+\gcol{5}{-1}{-2}\tg{5}{-1}\pc{5}{-2}
+\end{cgcirc}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.47\textwidth}\centering
+\textbf{1 --- collapse $c$}\\[4pt]
+\begin{cgcirc}
+\wires{5}
+\gcol{1}{-3}{-4}\tg{1}{-3}\pc{1}{-4}
+\gcol{2}{0}{-3}\tgb{2}{0}\nc{2}{-1}\pc{2}{-3}
+\gcol{3}{0}{-3}\tgb{3}{0}\nc{3}{-2}\pc{3}{-3}
+\gcol{4}{0}{-3}\tg{4}{0}\nc{4}{-3}
+\gcol{5}{-3}{-4}\tg{5}{-3}\pc{5}{-4}
+\end{cgcirc}
+\end{minipage}
+
+\vspace{1.6em}
+\begin{minipage}[t]{0.47\textwidth}\centering
+\textbf{2 --- collapse $b$}\\[4pt]
+\begin{cgcirc}
+\wires{4}
+\gcol{1}{-1}{-2}\tg{1}{-1}\pc{1}{-2}
+\gcol{2}{0}{-3}\tgb{2}{0}\nc{2}{-1}\pc{2}{-3}
+\gcol{3}{0}{-4}\tg{3}{0}\nc{3}{-1}\pc{3}{-4}
+\gcol{4}{-1}{-2}\tg{4}{-1}\pc{4}{-2}
+\end{cgcirc}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.47\textwidth}\centering
+\textbf{3 --- linear tail}\\[4pt]
+\begin{cgcirc}
+\wires{6}
+\gcol{1}{0}{-3}\tg{1}{0}\nc{1}{-3}
+\gcol{2}{0}{-4}\tg{2}{0}\pc{2}{-4}
+\gcol{3}{0}{-3}\tgb{3}{0}\nc{3}{-1}\pc{3}{-3}
+\gcol{4}{0}{-3}\tgb{4}{0}\nc{4}{-2}\pc{4}{-3}
+\gcol{5}{0}{-4}\tgb{5}{0}\nc{5}{-1}\pc{5}{-4}
+\gcol{6}{0}{-4}\tgb{6}{0}\nc{6}{-2}\pc{6}{-4}
+\end{cgcirc}
+\end{minipage}
+
+\vspace{1.6em}
+\begin{minipage}[t]{0.47\textwidth}\centering
+\textbf{4 --- legacy GADGET}\\[4pt]
+\begin{cgcirc}
+\wires{6}
+\gcol{1}{-1}{-4}\tgb{1}{-4}\nc{1}{-1}\pc{1}{-2}
+\gcol{2}{0}{-4}\tgb{2}{0}\pc{2}{-2}\nc{2}{-4}
+\gcol{3}{0}{-4}\tgb{3}{0}\nc{3}{-1}\pc{3}{-4}
+\gcol{4}{-1}{-4}\tgb{4}{-4}\nc{4}{-1}\pc{4}{-2}
+\gcol{5}{0}{-3}\tgb{5}{0}\nc{5}{-2}\pc{5}{-3}
+\gcol{6}{0}{-3}\tgb{6}{0}\pc{6}{-1}\nc{6}{-3}
+\end{cgcirc}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.47\textwidth}\centering
+\textbf{5 --- quad $+$ pair}\\[4pt]
+\begin{cgcirc}
+\wires{6}
+\gcol{1}{0}{-3}\tgb{1}{0}\nc{1}{-1}\pc{1}{-3}
+\gcol{2}{0}{-3}\tgb{2}{0}\nc{2}{-2}\pc{2}{-3}
+\gcol{3}{0}{-4}\tgb{3}{0}\nc{3}{-1}\pc{3}{-4}
+\gcol{4}{0}{-4}\tgb{4}{0}\nc{4}{-2}\pc{4}{-4}
+\gcol{5}{0}{-4}\tg{5}{0}\nc{5}{-3}\pc{5}{-4}
+\gcol{6}{0}{-4}\tgb{6}{0}\nc{6}{-4}\pc{6}{-3}
+\end{cgcirc}
+\end{minipage}
+
+\vspace{1.6em}
+\begin{minipage}[t]{0.47\textwidth}\centering
+\textbf{6 --- 4-cube ESOP}\\[4pt]
+\begin{cgcirc}
+\wires{4}
+\gcol{1}{0}{-4}\tg{1}{0}\pc{1}{-1}\nc{1}{-4}
+\gcol{2}{0}{-4}\tg{2}{0}\nc{2}{-2}\pc{2}{-4}
+\gcol{3}{0}{-3}\tg{3}{0}\pc{3}{-2}\pc{3}{-3}
+\gcol{4}{0}{-3}\tg{4}{0}\nc{4}{-1}\nc{4}{-3}
+\end{cgcirc}
+\end{minipage}
+\end{center}
+
+\bigskip\noindent
+Reading these against the algebra: in 0--2 a \CNOT{} pair collapses a value
+onto one carrier (the $\bullet$ on $b_1$/$c_1$ writing $b_0$/$c_0$) and the
+mirror pair at the end restores it; variant~4 uses $c_1$ as scratch,
+written and restored by the identical gates in columns~1 and~4. The
+masking-safe realizations (3 and~6) are exactly those whose every gate
+reads at most one carrier of each logical value.
 
 \end{document}
