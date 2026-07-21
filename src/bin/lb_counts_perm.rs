@@ -148,7 +148,7 @@ fn canonicalize_perm_brute(p: &Permutation, n: usize) -> (Permutation, usize) {
 
 /// Packed truth-table. For domain size ≤ 256 (`n ≤ 8`) each image fits in a
 /// `u8`; otherwise `u16` (enough through `n = 16`).
-#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 enum CompactPerm {
     U8(Box<[u8]>),
     U16(Box<[u16]>),
@@ -236,6 +236,66 @@ fn lehmer_rank_u128(p: &CompactPerm) -> Option<u128> {
     }
 
     Some(rank)
+}
+
+/// Number of bits needed to store one image value of an `nn`-element
+/// permutation, i.e. `log2(nn) = n`.
+#[inline]
+fn value_bits(nn: usize) -> usize {
+    debug_assert!(nn.is_power_of_two());
+    nn.trailing_zeros() as usize
+}
+
+/// Widest permutation that fits in a bit-packed `[u64; 6]` key: we need
+/// `nn * value_bits(nn) <= 384`, which holds for `n <= 6` (64 * 6 = 384).
+const PACKED_U384_MAX_VALUES: usize = 64;
+
+/// Exact, allocation-free key: each image value is bit-packed into a fixed
+/// `[u64; 6]`. Unlike the trie this has no per-permutation heap object, which
+/// is what makes the `n = 6` ball (order 10^9 states) tractable.
+fn pack_perm_u384(p: &CompactPerm, bits: usize) -> [u64; 6] {
+    let mut packed = [0u64; 6];
+    let mut place = |index: usize, value: u64| {
+        let start = index * bits;
+        let word = start / 64;
+        let offset = start % 64;
+        packed[word] |= value << offset;
+        if offset + bits > 64 {
+            packed[word + 1] |= value >> (64 - offset);
+        }
+    };
+    match p {
+        CompactPerm::U8(values) => {
+            for (index, &value) in values.iter().enumerate() {
+                place(index, value as u64);
+            }
+        }
+        CompactPerm::U16(values) => {
+            for (index, &value) in values.iter().enumerate() {
+                place(index, value as u64);
+            }
+        }
+    }
+    packed
+}
+
+/// Inverse of [`pack_perm_u384`]; used only by tests to prove injectivity.
+#[cfg(test)]
+fn unpack_perm_u384(packed: &[u64; 6], nn: usize, bits: usize) -> CompactPerm {
+    let mask = (1u64 << bits) - 1;
+    let values: Vec<u8> = (0..nn)
+        .map(|index| {
+            let start = index * bits;
+            let word = start / 64;
+            let offset = start % 64;
+            let mut raw = packed[word] >> offset;
+            if offset + bits > 64 {
+                raw |= packed[word + 1] << (64 - offset);
+            }
+            (raw & mask) as u8
+        })
+        .collect();
+    CompactPerm::U8(values.into_boxed_slice())
 }
 
 fn analyze_prefixes(mut layers: Vec<Vec<CompactPerm>>, nn: usize) {
@@ -410,19 +470,34 @@ enum StoreMethod {
     Auto,
     /// Concurrent value-prefix trie.
     Trie,
-    /// Exact `u128` Lehmer ranks. Currently supports at most 32 values.
+    /// Exact `u128` Lehmer ranks. Supports at most 32 values (`n <= 5`).
     Lehmer128,
+    /// Exact bit-packed `[u64; 6]` keys. Supports at most 64 values (`n <= 6`).
+    Packed384,
 }
+
+/// Fixed shard count so [`Visited::reserve_additional`] can convert a global
+/// capacity request into the per-shard argument `DashMap::try_reserve` expects.
+const VISITED_SHARDS: usize = 64;
 
 enum Visited {
     Trie(PermTrie),
-    Lehmer128(DashSet<u128, FxBuildHasher>),
+    /// `DashMap` rather than `DashSet` so we can call `try_reserve` between
+    /// BFS layers and avoid mid-layer rehash spikes near the RAM ceiling.
+    Lehmer128(DashMap<u128, (), FxBuildHasher>),
+    Packed384 {
+        map: DashMap<[u64; 6], (), FxBuildHasher>,
+        bits: usize,
+    },
 }
 
 impl Visited {
     fn new(method: StoreMethod, permutation_len: usize) -> Self {
         let selected = match method {
             StoreMethod::Auto if permutation_len <= 32 => StoreMethod::Lehmer128,
+            StoreMethod::Auto if permutation_len <= PACKED_U384_MAX_VALUES => {
+                StoreMethod::Packed384
+            }
             StoreMethod::Auto => StoreMethod::Trie,
             other => other,
         };
@@ -434,7 +509,25 @@ impl Visited {
                     permutation_len <= 32,
                     "exact u128 Lehmer keys support at most 32 values (n <= 5)"
                 );
-                Self::Lehmer128(DashSet::with_hasher(FxBuildHasher))
+                Self::Lehmer128(DashMap::with_capacity_and_hasher_and_shard_amount(
+                    0,
+                    FxBuildHasher,
+                    VISITED_SHARDS,
+                ))
+            }
+            StoreMethod::Packed384 => {
+                assert!(
+                    permutation_len <= PACKED_U384_MAX_VALUES,
+                    "bit-packed [u64; 6] keys support at most 64 values (n <= 6)"
+                );
+                Self::Packed384 {
+                    map: DashMap::with_capacity_and_hasher_and_shard_amount(
+                        0,
+                        FxBuildHasher,
+                        VISITED_SHARDS,
+                    ),
+                    bits: value_bits(permutation_len),
+                }
             }
             StoreMethod::Auto => unreachable!(),
         }
@@ -443,10 +536,13 @@ impl Visited {
     fn insert(&self, permutation: &CompactPerm) -> bool {
         match self {
             Self::Trie(trie) => trie.insert(permutation).1,
-            Self::Lehmer128(set) => {
+            Self::Lehmer128(map) => {
                 let rank = lehmer_rank_u128(permutation)
                     .expect("permutation does not have an exact u128 Lehmer rank");
-                set.insert(rank)
+                map.insert(rank, ()).is_none()
+            }
+            Self::Packed384 { map, bits } => {
+                map.insert(pack_perm_u384(permutation, *bits), ()).is_none()
             }
         }
     }
@@ -454,7 +550,8 @@ impl Visited {
     fn len(&self) -> usize {
         match self {
             Self::Trie(trie) => trie.permutation_count(),
-            Self::Lehmer128(set) => set.len(),
+            Self::Lehmer128(map) => map.len(),
+            Self::Packed384 { map, .. } => map.len(),
         }
     }
 
@@ -462,13 +559,36 @@ impl Visited {
         match self {
             Self::Trie(_) => "prefix trie",
             Self::Lehmer128(_) => "exact u128 Lehmer keys",
+            Self::Packed384 { .. } => "exact bit-packed [u64; 6] keys",
         }
     }
 
     fn trie_node_count(&self) -> Option<u64> {
         match self {
             Self::Trie(trie) => Some(trie.node_count()),
-            Self::Lehmer128(_) => None,
+            _ => None,
+        }
+    }
+
+    /// Grow the visited table for up to `additional` new keys.
+    ///
+    /// `DashMap::try_reserve(x)` reserves `x` slots in *each* shard, so we ask
+    /// for `ceil(additional / shards)` per shard. Best-effort: if the OS
+    /// refuses, we keep going and accept rehash risk.
+    fn reserve_additional(&mut self, additional: usize) {
+        if additional == 0 {
+            return;
+        }
+        let per_shard = additional.div_ceil(VISITED_SHARDS);
+        let result = match self {
+            Self::Trie(_) => return,
+            Self::Lehmer128(map) => map.try_reserve(per_shard),
+            Self::Packed384 { map, .. } => map.try_reserve(per_shard),
+        };
+        if let Err(_) = result {
+            eprintln!(
+                "warning: failed to reserve capacity for {additional} additional visited keys"
+            );
         }
     }
 }
@@ -492,7 +612,7 @@ fn iso_bfs(
     );
     let gen_size = gens.len();
 
-    let visited = Arc::new(Visited::new(store_method, nn));
+    let mut visited = Arc::new(Visited::new(store_method, nn));
     let analysis = analyze_prefixes_enabled
         .then(|| Arc::new(Mutex::new(vec![Vec::<CompactPerm>::new(); max_m + 1])));
     let dist_counts = Arc::new(DashMap::<usize, usize, FxBuildHasher>::with_hasher(
@@ -544,6 +664,14 @@ fn iso_bfs(
     frontier.push(base_key);
 
     for depth in 2..=max_m {
+        // Worst-case every generator neighbour is new. Reserving before the
+        // layer avoids a mid-layer 2× rehash spike when the table is already
+        // near the machine's RAM limit.
+        let layer_capacity = frontier.len().saturating_mul(gen_size);
+        Arc::get_mut(&mut visited)
+            .expect("visited Arc uniquely owned between BFS layers")
+            .reserve_additional(layer_capacity);
+
         let next_frontier = Arc::new(SegQueue::<CompactPerm>::new());
         let layer_started = Instant::now();
         let layer_circuits_done = Arc::new(AtomicU64::new(0));
@@ -814,6 +942,55 @@ mod tests {
 
         assert_eq!(winners.load(Ordering::Relaxed), 1);
         assert_eq!(visited.len(), 1);
+    }
+
+    #[test]
+    fn base_gates_are_involutions() {
+        // Justifies frontier-only BFS: g = g^{-1} makes the Cayley graph
+        // undirected, so a neighbour of a depth-d state has depth in
+        // {d-1, d, d+1}.
+        for n in 2..=6 {
+            let identity = Permutation::id_perm(1 << n);
+            for gate in base_gates(n) {
+                let g = CircuitSeq { gates: vec![gate] }.perm(n);
+                assert_eq!(
+                    g.compose(&g),
+                    identity,
+                    "gate {gate:?} is not an involution"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn packed_key_round_trips() {
+        for n in 3..=6 {
+            let nn = 1 << n;
+            let bits = value_bits(nn);
+            for p in random_perms(n, 256, 8) {
+                let key = CompactPerm::from_permutation(&p);
+                let packed = pack_perm_u384(&key, bits);
+                let restored = unpack_perm_u384(&packed, nn, bits);
+                assert_eq!(restored, key, "packed key round-trip failed for n={n}");
+            }
+        }
+    }
+
+    #[test]
+    fn packed_store_matches_known_counts() {
+        // n = 6 exercises the bit-packed backend end to end.
+        let expected = vec![1, 1, 31, 1536];
+        for threads in [1, 4] {
+            let actual = iso_bfs(
+                6,
+                3,
+                false,
+                Some(threads),
+                CanonMethod::Nauty,
+                StoreMethod::Packed384,
+            );
+            assert_eq!(actual, expected, "wrong spheres with {threads} workers");
+        }
     }
 
     #[test]
