@@ -469,6 +469,12 @@ pub struct MixParams {
     // ceiling: phase A runs exactly as long as the dose requires.
     pub gen_stop_frac: f64,
     pub twist_cov_stop: f64,
+    // Generation-multiple snapshots: at each report point, when the circuit
+    // generation (g_circ, the 5th-percentile gate generation) crosses a fresh
+    // multiple of this interval, write a verified snapshot to
+    // <base>.gen<m>.mpmct1 (+ .gens sidecar); the base path is armed with
+    // Mixer::set_gen_snap_base. 0 = off.
+    pub gen_snap_every: u32,
     pub verify_every: u64,
     pub report_every: u64,
     pub local_verify: bool,
@@ -534,6 +540,7 @@ impl Default for MixParams {
             gen_median_low: false,
             gen_stop_frac: -1.0,
             twist_cov_stop: 0.0,
+            gen_snap_every: 0,
             verify_every: 10_000,
             report_every: 50_000,
             local_verify: true,
@@ -711,6 +718,10 @@ pub struct Mixer {
     stop_flag: Option<String>,
     dump_flag: Option<String>,
     dump_out: String,
+    // Generation-multiple snapshots (params.gen_snap_every): output base path
+    // and the highest generation multiple already written.
+    gen_snap_base: Option<String>,
+    last_gen_snap: u32,
     stop_requested: bool,
     // Frozen replacement store for the DB moves. Opened from the environment
     // only when a DB move is enabled; an empty (miss-everything) store otherwise
@@ -853,6 +864,8 @@ impl Mixer {
             stop_flag: None,
             dump_flag: None,
             dump_out: String::new(),
+            gen_snap_base: None,
+            last_gen_snap: 0,
             stop_requested: false,
             db,
             db_budget,
@@ -878,6 +891,12 @@ impl Mixer {
         self.stop_flag = stop;
         self.dump_flag = dump;
         self.dump_out = dump_out;
+    }
+
+    /// Arm generation-multiple snapshots (params.gen_snap_every): files go to
+    /// `<base>.gen<m>.mpmct1` (+ `.gens` sidecar).
+    pub fn set_gen_snap_base(&mut self, base: String) {
+        self.gen_snap_base = Some(base);
     }
 
     fn set_meta(&mut self, id: u32, m: Meta) {
@@ -1098,6 +1117,7 @@ impl Mixer {
             if self.moves_done % self.params.report_every == 0 {
                 self.report();
                 self.check_flags();
+                self.check_gen_snap();
                 if self.stop_requested {
                     self.global_check();
                     return MixStop::StopFlag;
@@ -1168,6 +1188,77 @@ impl Mixer {
                 let _ = std::fs::remove_file(&f);
             }
         }
+    }
+
+    // Generation-multiple snapshots (--gen-snap-every): when the circuit
+    // generation crosses a fresh multiple of the interval, write ONE verified
+    // state and name it for every multiple crossed this interval (a report
+    // gap can jump several multiples; the same state honestly serves each).
+    fn check_gen_snap(&mut self) {
+        let every = self.params.gen_snap_every;
+        if every == 0 {
+            return;
+        }
+        let Some(base) = self.gen_snap_base.clone() else {
+            return;
+        };
+        let g = self.gen_stats().g_circ;
+        let reached = (g / every) * every;
+        if reached <= self.last_gen_snap {
+            return;
+        }
+        self.global_check();
+        let gates = self.arena.to_vec();
+        let mut gens = String::with_capacity(gates.len() * 4);
+        for gg in self.gens_in_order() {
+            gens.push_str(&format!("{gg}\n"));
+        }
+        let mut prev: Option<String> = None;
+        let mut m = self.last_gen_snap + every;
+        while m <= reached {
+            let out = format!("{base}.gen{m}.mpmct1");
+            let ok = match &prev {
+                None => {
+                    let tmp = format!("{out}.tmp");
+                    match super::format::write_mpmct(&tmp, &gates, self.num_wires) {
+                        Ok(()) => match std::fs::rename(&tmp, &out) {
+                            Ok(()) => true,
+                            Err(e) => {
+                                eprintln!("[fmix] gen-snap rename failed: {e}");
+                                false
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("[fmix] gen-snap write failed: {e}");
+                            false
+                        }
+                    }
+                }
+                Some(p) => match std::fs::copy(p, &out) {
+                    Ok(_) => true,
+                    Err(e) => {
+                        eprintln!("[fmix] gen-snap copy failed: {e}");
+                        false
+                    }
+                },
+            };
+            if ok {
+                if let Err(e) = std::fs::write(format!("{out}.gens"), &gens) {
+                    eprintln!("[fmix] gen-snap gens write failed: {e}");
+                }
+                println!(
+                    "[fmix] GEN-SNAP: circuit generation {} >= {}: wrote {} gates to {} at move {} (verified, continuing)",
+                    g,
+                    m,
+                    gates.len(),
+                    out,
+                    self.moves_done
+                );
+                prev = Some(out);
+            }
+            m += every;
+        }
+        self.last_gen_snap = reached;
     }
 
     // ---- expansion moves ----
@@ -3247,7 +3338,7 @@ impl Mixer {
         // Bucketed gen histogram for the percentile (everything at or past
         // the cap lands in the top bucket, incl. GEN_FRESH — fine, the 5th
         // percentile of interest sits far below it).
-        const GB: usize = 256;
+        const GB: usize = 1024;
         let mut hist = [0u64; GB];
         for id in self.arena.ids_in_order() {
             let m = self.meta_of(id);

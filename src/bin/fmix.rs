@@ -272,6 +272,12 @@ struct Args {
     /// 4294967295 = born-random material) for dose analysis
     #[arg(long)]
     gens_out: Option<String>,
+    /// Verified snapshot each time the circuit generation (G=, the
+    /// 5th-percentile gate generation) crosses a multiple of this value:
+    /// <output>.gen<m>.mpmct1 + .gens sidecar. 0 = off. Meaningful only with
+    /// --gen-target > 0 (generations move under DB re-encoding).
+    #[arg(long, default_value_t = 0)]
+    gen_snap_every: u32,
     /// Global sampled equality check every N moves
     #[arg(long, default_value_t = 10_000)]
     verify_every: u64,
@@ -414,6 +420,7 @@ fn main() {
         gen_median_low: args.gen_median_low,
         gen_stop_frac: args.gen_stop_frac,
         twist_cov_stop: args.twist_cov_stop,
+        gen_snap_every: args.gen_snap_every,
         verify_every: args.verify_every,
         report_every: args.report_every,
         local_verify: !args.no_local_verify,
@@ -423,6 +430,14 @@ fn main() {
     if let Some(path) = &args.db_record {
         mixer.enable_db_record(path);
         println!("[fmix] recording DB attempts to {path}");
+    }
+    if args.gen_snap_every > 0 {
+        let base = args.output.clone().unwrap_or_else(|| "fmix_out".to_string());
+        println!(
+            "[fmix] gen snapshots armed: every {} circuit generations -> {base}.gen<m>.mpmct1",
+            args.gen_snap_every
+        );
+        mixer.set_gen_snap_base(base);
     }
 
     let stop = std::env::var("FMIX_STOP_FLAG").ok().filter(|s| !s.is_empty());
