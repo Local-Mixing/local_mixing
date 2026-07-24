@@ -1,0 +1,256 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=black,urlcolor=blue]{hyperref}
+\usepackage{parskip}
+\newcommand{\xor}{\oplus}
+\title{\textbf{The product-share encoding}\\[2pt]
+\large A balanced nonlinear secret-sharing that removes the computational-progress
+diagonal from a gadgetized circuit}
+\author{}
+\date{2026-07-23}
+\begin{document}
+\maketitle
+
+\section{The problem: the progress diagonal}
+
+The gadgetizer rewrites a small circuit $C$ into a much larger equivalent $G$
+whose gates operate on \textbf{secret-shared} logical values. The security goal
+is that $G$ leak nothing about $C$ beyond its input/output behaviour---in
+particular, that an adversary cannot tell \emph{where in the original
+computation} any point of $G$ sits.
+
+The standard sharing is a linear XOR pair: a logical value $v$ is carried on two
+wires $c_0,c_1$ with $v=c_0\xor c_1$. This is the root of a persistent leak.
+Because the decode is linear, $v$ is a \textbf{degree-1 (affine) function of the
+wires at every snapshot}. The \texttt{hmap\_affine} tool measures exactly this:
+for each prefix $i$ of $C$ and prefix $j$ of $G$, it fits the best $\mathrm{GF}(2)$
+affine reconstruction of $C$'s state-$i$ from $G$'s wires at $j$ and reports the
+holdout error $H$ ($0$ = perfectly recoverable, $0.5$ = hidden). With linear
+sharing, at the aligned prefix $C_i$ is recoverable from the shares regardless of
+$C_i$'s algebraic complexity in the input, so a low-$H$ \textbf{diagonal} runs
+down the map. That diagonal reveals the temporal layout of the computation, and
+it \textbf{survives every mixing method} tried (ssg, fmix, generation
+targeting): mixing re-randomises the sharing, but the value stays affine in the
+new wires, so the diagonal persists at $\rho=1$.
+
+The measure is read by the \textbf{ridge}, never the mean (which saturates near
+$0.5$): \emph{depth} = mean per-row prominence of the low-$H$ valley above its
+row background; $\rho$ = ``is it a monotone diagonal''; \emph{perm-z} =
+significance vs.\ a shuffled null.
+
+\section{The encoding}
+
+Replace the pair decode with a \textbf{balanced nonlinear} one. Each logical
+value carries, on top of its XOR pair, $k$ permanent product mask terms sourced
+on a frozen band of extra wires:
+\[
+v_i \;=\; \underbrace{w_{u(i)}\xor w_{u'(i)}}_{\text{linear carrier}}
+\;\xor\; \underbrace{\bigoplus_{j}\ \prod_{l}\bigl(w_{p_{jl}}\xor a_{jl}\bigr)}_{k\text{ product terms}}
+\;\xor\; \underbrace{c_i}_{\text{ledger const}} .
+\]
+Each product term is a conjunction of $\deg$ band wires with per-factor offsets
+$a_l$; $c_i$ is a ledger constant. The offsets and $c$ are compile-time bits
+kept in the gadgetizer's ledger.
+
+\section{Why the linear carrier is not optional---the balance obstruction}
+
+One might hope to drop the XOR pair and carry $v$ as a \textbf{pure} two-wire
+product $v=(w_p\xor a)(w_q\xor b)$. This is impossible to gate.
+
+\textbf{Claim.} No exact reversible gadget can conditionally flip a value whose
+decode has unequal class sizes---with any ancillae, garbage, or re-encoding.
+
+\emph{Argument.} A pure 2-wire product decode is unbalanced: over the four
+$(w_p,w_q)$ states, $v=1$ has exactly one preimage $(\neg a,\neg b)$ and $v=0$
+has three (a \textbf{3:1} imbalance). Consider realising any gate that must
+conditionally flip a value---e.g.\ $\mathrm{CNOT}\colon v_t \mathrel{\xor}= v_x$.
+Exactness forces the gadget $F$ (a reversible map on all wires, ancillae
+included, with any new ledger afterward) to biject the state-class
+$\{v_x=\alpha,\,v_t=\beta\}$ onto $\{v_x=\alpha,\,v_t=\beta\xor\alpha\}$.
+Counting representations and cancelling common factors, the $\alpha=0$ equations
+give $R'(0)/R'(1)=R(0)/R(1)$ and the $\alpha=1$ equations give
+$R'(0)/R'(1)=R(1)/R(0)$, where $R,R'$ are the target's rep-counts before/after.
+Together these force $R(0)=R(1)$: \textbf{the target decode must be balanced.}
+The pure product is 3:1, so no exact CNOT- (or CCNOT-) gadget exists for it; a
+bijection cannot map a 3-class onto a 1-class. Randomising $(a,b)$ flips
+\emph{which} side is heavy but never the imbalance itself.
+
+The balanced-implies-affine lemma closes the loop: every nonlinear 2-wire decode
+is ungateable, so the nonlinearity must come from \textbf{more than the value's
+own two wires}---here, a linear carrier pair plus product terms over foreign band
+wires. A second, independent reason the pure product fails: even granting a
+gadget, its best degree-1 predictor is right on the whole 1-rep side and,
+optimising over the three 0-reps, still achieves accuracy $\mathbf{5/6}$---a
+degree-1 leak floor of $H\approx0.17$. The linear carrier symmetrises the classes
+and removes this floor.
+
+\section{The share-native fold-CG---never reconstruct an operand}
+
+The predecessor ``deferred-mask'' design masked values \emph{between} uses but,
+at each gate, momentarily \textbf{un-masked} the operands so a vanilla gate could
+read the true value (``peek''), then re-masked. Validation showed this does not
+move the diagonal: the peek re-exposes each gate's operands at exactly the
+use-points that form the diagonal. Masking hides between uses; the ridge lives
+\emph{at} uses.
+
+The product-share CG removes the peek. It applies $v_t \mathrel{\xor}= f(\text{controls})$
+by \textbf{folding $f$'s ANF over the operands' full decodes}: each control value
+contributes its summand atoms (two carrier literals, the $k$ product-literal
+sets, and a constant when the ledger constant / control polarity applies); every
+cross-product of one atom per control operand is emitted as \textbf{one
+conjunction fragment} written into a random carrier of $v_t$. A single value's
+own product term appears only \emph{inside} a fragment's firing condition,
+\textbf{never materialised on a wire}. Constants and the gate's complement go to
+the ledger constant $c_t$, so the encoding emits no bare $X$. No wire is ever
+written except the target's carriers---\textbf{operands stay masked through the
+gate}.
+
+\section{The frozen source band}
+
+The mask sources live on a dedicated band appended after the $2n$ carriers. At
+the input port each band wire is filled with an unbiased data-dependent bit (a
+random weight-$\ge2$ XOR of the data wires; on the zero slice, $\langle\alpha,x
+\rangle$) and then \textbf{never written again}. Because the sources are frozen,
+every registered product term is \textbf{time-invariant}---invariant under all RG
+churn and CG traffic. Nothing is ever flushed except the final unshare strip; a
+mask is one gate, not seven.
+
+\section{$k$ versus degree---two different jobs}
+
+$k$ (number of terms) and $\deg$ (literals per term) are independent levers.
+\begin{itemize}
+\item \textbf{Degree hides algebraically.} A degree-$d$ term is not in the
+degree-${<}d$ $\mathrm{GF}(2)$ span, so against the exact-span measure a single
+degree-$d$ term forces $H=0.5$ for \emph{every} adversary of degree $<d$,
+regardless of $k$.
+\item \textbf{$k$ hides statistically.} Against a best-approximation adversary
+the terms pile up: $k$ stacked degree-2 masks push the best affine readout error
+toward $1/2$ as $\tfrac12-2^{-(k+1)}$. Against the exact-span measure, $k>1$ is
+\emph{redundant} for the degree it already blocks.
+\end{itemize}
+A single degree-$d$ mask is a \emph{sparser} perturbation (it flips the value
+only $2^{-d}$ of the time), so wider masks are individually \emph{weaker}
+statistically even as they are stronger algebraically---the case for a mixed
+design (\S\ref{sec:mixed}).
+
+\section{Towers---raising the degree}
+
+To hide from a degree-$(d{-}1)$ adversary you need degree-$d$ masks. The cheapest
+realisation is a \textbf{wider conjunction}: $\deg=d$ uses $d$ band-wire literals,
+still one MPMCT gate, degree $d$ in the inputs. Each $+1$ of mask degree forces
+the adversary from degree $D$ to $D{+}1$, multiplying its regressor count by
+${\sim}W$ (the wire count) and its solve by $W^2$: one control literal for us, a
+factor ${\sim}W$ for the attacker.
+
+\textbf{Cost of a tower level is $\sim$flat in gate count.} The number of fold
+fragments is set by $k$ and the source-gate arity, not the mask degree; widening
+only adds control literals to existing fragments. (Measured at $n=16$:
+$\deg\text{-}3,k=3$ is $5\,944$ gates vs.\ $\deg\text{-}2,k=3$'s $6\,161$---
+slightly \emph{fewer}, as wider atoms hit more literal-contradictions.) The real
+price is \textbf{fragment width}: a degree-$d$ mask folded through a $w$-operand
+gate yields fragments up to width $d\cdot w$. Degree-3 reaches width 6 (the
+frozen-DB $m=6$ cliff), degree-4 width 8 (past it, needing scratch
+decomposition). Towers are nearly free to \emph{build}; the bill is downstream
+\textbf{mixing difficulty} (\S\ref{sec:mixing}).
+
+\section{The mixed design}\label{sec:mixed}
+
+Because degree and $k$ do different jobs, the production encoding mixes tiers:
+$k$ base degree-2 terms (statistical strength; each a strong $1/4$ perturbation)
+\emph{plus} $k_{\mathrm{hi}}$ degree-3 tower terms (degree-2 algebraic hiding).
+The validated setting is $[2,2,3,3]$---two deg-2 + two deg-3 terms---which kills
+the degree-1 \emph{and} degree-2 diagonals with margin (a single deg-3 term
+leaves a boundary residual; two do not).
+
+\section{Validation}
+
+All heatmaps read by the ridge measure with verified references (endpoint
+$H\approx0$). ``ALIVE'' $=$ clean diagonal ($\rho\approx1$); ``dead'' $=$
+median-row prominence at the noise floor and $\rho\approx0$.
+
+\textbf{$n=16$ degree grid} (fixed $C$, 3 gadget seeds). The plain gadget's
+degree-1 diagonal has depth $0.356$, $\rho\,1.0$.
+
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+encoding & deg-1 depth & deg-1 $\rho$ & deg-2 & deg-3 \\
+\midrule
+plain ($k=0$) & 0.356 & 1.00 & --- & --- \\
+deg-2 masks & dead (0.11) & $\sim$0.5 & \textbf{ALIVE 0.35}, $\rho$ 1.0 & --- \\
+deg-3 masks & dead (0.11) & $\sim$0.5 & dead (0.13) & \textbf{ALIVE 0.33}, $\rho$ 1.0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent $\deg=d$ masks kill every adversary of degree $<d$; the diagonal
+returns at degree exactly $d$ (the wall moves up one level per $+1$ mask degree,
+it does not vanish). $k=2$ hides the degree-2 diagonal as completely as $k=3$.
+All nulls are capability-controlled: a band-restricted degree-2 adversary
+\emph{does} recover degree-2 masks ($\rho\,1.0$).
+
+\textbf{$n=128$ sliced sandwich} (real production circuit). Original $C=3\,000$
+g57 gates; the mixed $[2,2,3,3]$ gadget is \textbf{$374\,478$ gates on $576$
+wires} (125$\times$ $C$).
+
+\begin{center}
+\begin{tabular}{llcccc}
+\toprule
+gadget & adversary & depth & depthMed & $\rho$ & meanH \\
+\midrule
+plain & degree 1 & 0.361 & 0.367 & \textbf{1.00} & 0.471 \\
+mixed $[2,2,3,3]$ & degree 1 & 0.060 & \textbf{0.000} & \textbf{$-0.02$} & 0.498 \\
+mixed $[2,2,3,3]$ & degree 2 & 0.060 & \textbf{0.000} & \textbf{$-0.04$} & 0.498 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The mixed encoding kills both diagonals on the real sandwich; the
+median original-circuit prefix has zero ridge prominence. Control: the plain
+gadget (512 wires) vs.\ mixed (576, only $+64$ band) reads a perfect diagonal, so
+the mixed flatness is real hiding, not a wire-count artifact.
+
+\section{Interaction with mixing---a caveat and a feature}\label{sec:mixing}
+
+The wide mask fragments (width up to ${\sim}15$ after folding through the
+256-wire sandwich's CCNOTs) are \textbf{ineligible for frozen-DB re-encoding}
+(the narrow $m1$--$m11$ store, \texttt{-{}-db-ctrl-cap 2}). Operationally,
+\textbf{generation-targeting mixing does not converge} on a product-share gadget:
+the 5th-percentile gate generation is pinned at 0 because a large fraction of
+gates can never be re-encoded, so ``run to generation $N$'' is not a meaningful
+target---a fixed dose (or growth phase) is used instead. Defensively, the same
+fact means the encoding \textbf{resists DB-based simplification}, which is a
+property one wants of an obfuscation.
+
+\section{Implementation}
+
+\begin{itemize}
+\item \texttt{src/replace/gadgets.rs}: \texttt{ProdConfig} / \texttt{ProdLedger}
+(draw/inject/strip, \texttt{fold\_cg}, \texttt{emit\_band\_fill}); wired into
+\texttt{gadgetize\_cnot}, \texttt{gadgetize\_xgates}, and the
+\texttt{slice\_zero\_ccnot} wrappers. \texttt{ProdConfig::off} reproduces the
+plain gadget bit-identically.
+\item CLI: \texttt{sss -{}-cnot -{}-gadgetize -{}-prod-k/-deg/-k-hi/-deg-hi/-band/-rsrc};
+env-var control in \texttt{gen\_sandwich\_gadget}; \texttt{prod\_grid.rs} harness.
+\item \texttt{hmap\_affine}: \texttt{Reg::Triple} so \texttt{-{}-degree 3} forms
+genuine triples over \texttt{-{}-deg2-wire-list} (previously capped at pairs).
+\item Correctness: library suite $166/166$; endpoint mismatches $0$ at
+$n=6,16,128$; masked builds pass the pinned zero-slice contract; no bare $X$.
+\end{itemize}
+
+\section{Open threads}
+\begin{itemize}
+\item The literal ``generation 100'' phase-A target is infeasible on the
+wide-gate gadget (\S\ref{sec:mixing}); the pipeline uses a fixed DB dose $+$ a
+$\times3$ growth phase.
+\item A deg-4 tower needs scratch decomposition of width-8 fragments (the cubic
+borrowed-scratch pattern in \texttt{emit\_poly\_add} is the template).
+\item Quantify the mixing/DB-match cost of width-6 gates directly.
+\item Production review against non-reconstruction (static gate-statistics)
+distinguishers; the heatmaps are execution-based only.
+\end{itemize}
+
+\end{document}
