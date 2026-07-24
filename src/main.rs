@@ -298,6 +298,24 @@ fn add_shoot_args(c: Command) -> Command {
                         .help("(--cnot gadgetize) Product-mask re-source moves per inter-SG gap (churn; 0 = off)"),
                 )
                 .arg(
+                    Arg::new("prod_max_width")
+                        .long("prod-max-width")
+                        .alias("prod_max_width")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Cap the encoding's emitted control width by laddering wider conjunctions over dedicated zero scratch wires (0 = legacy wide fragments; 2 = full narrow mode, every emitted gate a g57/CNOT — the phase-A DB vocabulary). Narrow mode is exact on the pinned zero-aux slice"),
+                )
+                .arg(
+                    Arg::new("prod_fill_nl")
+                        .long("prod-fill-nl")
+                        .alias("prod_fill_nl")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Nonlinear band fill: product terms per band wire, cascading over earlier band wires (0 = legacy linear fill). Kills learnable affine band invariants; input-degree multiplies up the band with only 2-control gates"),
+                )
+                .arg(
                     Arg::new("egg")
                         .long("egg")
                         .help("Use expansion game (expand_loop 2x) instead of the shuffled shooting game")

@@ -91,11 +91,19 @@ fn main() {
         deg_hi: env("PROD_DEG_HI", 3),
         band: env("PROD_BAND", 0),
         rsrc: env("PROD_RSRC", 1),
+        max_width: env("PROD_MAX_WIDTH", 0),
+        fill_nl: env("PROD_FILL_NL", 0),
     };
     if prod.enabled() {
         println!(
-            "[gen] product-share encoding ON: k={} deg={} k_hi={} deg_hi={} band(auto)={}",
-            prod.k, prod.deg, prod.k_hi, prod.deg_hi, prod.band_size(sandwich_n)
+            "[gen] product-share encoding ON: k={} deg={} k_hi={} deg_hi={} band(auto)={} max_width={} fill_nl={}",
+            prod.k,
+            prod.deg,
+            prod.k_hi,
+            prod.deg_hi,
+            prod.band_size(sandwich_n),
+            prod.max_width,
+            prod.fill_nl
         );
     }
     let gadget = gadgetize_xgates_with_slice_zero_ccnot(

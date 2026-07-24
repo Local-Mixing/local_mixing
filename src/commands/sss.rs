@@ -100,6 +100,8 @@ pub fn run(sub: &clap::ArgMatches) {
             deg_hi: *sub.get_one("prod_deg_hi").unwrap(),
             band: *sub.get_one("prod_band").unwrap(),
             rsrc: *sub.get_one("prod_rsrc").unwrap(),
+            max_width: *sub.get_one("prod_max_width").unwrap(),
+            fill_nl: *sub.get_one("prod_fill_nl").unwrap(),
         };
         let c = CircuitSeq::from_string(&data);
         let collision_rounds: usize = *sub.get_one("collision_rounds").unwrap();

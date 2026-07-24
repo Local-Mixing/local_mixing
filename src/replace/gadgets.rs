@@ -2964,11 +2964,43 @@ pub struct ProdConfig {
     pub band: usize,
     /// Re-source moves per inter-SG gap (mask churn; 0 disables).
     pub rsrc: usize,
+    /// Maximum control width of the encoding's own emissions (fold fragments,
+    /// slot injections). 0 = legacy wide fragments. >= 2 = ladder wider
+    /// conjunctions down to this cap over the dedicated zero scratch wires;
+    /// at 2 every emitted gate is a g57 or CNOT (the phase-A DB vocabulary,
+    /// fully DB-eligible). Narrow mode is exact on the pinned zero-aux slice
+    /// (scratch wires enter 0) — the slice-zero contract the new gadget
+    /// already lives under.
+    pub max_width: usize,
+    /// Nonlinear band fill: product terms per band wire (0 = legacy linear
+    /// fill). Each band wire gets junk ^ pivot ^ small linear part ^ fill_nl
+    /// two-source products whose sources are data wires AND earlier band
+    /// wires — the cascade multiplies input-degree up the band while every
+    /// fill gate stays a CNOT/g57. The fresh pivot (excluded from the rest of
+    /// the wire's transitive support) keeps every band bit exactly balanced.
+    /// Enabling prod also emits a mirror fill on the output side.
+    pub fill_nl: usize,
 }
 
 impl ProdConfig {
     pub fn off() -> ProdConfig {
-        ProdConfig { k: 0, deg: 2, k_hi: 0, deg_hi: 3, band: 0, rsrc: 1 }
+        ProdConfig {
+            k: 0,
+            deg: 2,
+            k_hi: 0,
+            deg_hi: 3,
+            band: 0,
+            rsrc: 1,
+            max_width: 0,
+            fill_nl: 0,
+        }
+    }
+
+    /// Narrow (phase-A vocabulary) mode: ladder emissions to <= max_width.
+    /// Ladders borrow dirty carriers and restore them exactly, so narrow mode
+    /// costs no extra wires and keeps the unconditional endpoint contract.
+    pub fn narrow(&self) -> bool {
+        self.enabled() && self.max_width >= 2
     }
 
     pub fn enabled(&self) -> bool {
@@ -3029,6 +3061,167 @@ impl ProdSlot {
     }
 }
 
+/// Emit `target ^= conj(lits)` (1 or 2 literals) in the phase-A g57/CNOT
+/// vocabulary, returning the extra constant the realization leaves on the
+/// wire (a g57's complement). The caller compensates it: ledger constant for
+/// fold/inject targets, verbatim-replay cancellation for scratch rungs, or —
+/// for band fills — absorption into F.
+fn emit_g57_form(
+    target: u16,
+    lits: &[(u16, bool)],
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) -> bool {
+    match *lits {
+        [(w, true)] => {
+            out.push(XGate::cnot(target, w));
+            false
+        }
+        [(w, false)] => {
+            // ¬w = w ^ 1.
+            out.push(XGate::cnot(target, w));
+            true
+        }
+        [a, b] => {
+            let ((xw, xp), (yw, yp)) = if rng.random_bool(0.5) { (a, b) } else { (b, a) };
+            match (xp, yp) {
+                // 1 ^ ¬x·y is exactly the g57 monomial.
+                (false, true) => {
+                    out.push(XGate::from_g57([target, xw, yw]));
+                    true
+                }
+                (true, false) => {
+                    out.push(XGate::from_g57([target, yw, xw]));
+                    true
+                }
+                // x·y = (1 ^ ¬x·y) ^ y ^ 1.
+                (true, true) => {
+                    out.push(XGate::from_g57([target, xw, yw]));
+                    out.push(XGate::cnot(target, yw));
+                    true
+                }
+                // ¬x·¬y = (1 ^ ¬x·y) ^ x — no residual constant.
+                (false, false) => {
+                    out.push(XGate::from_g57([target, xw, yw]));
+                    out.push(XGate::cnot(target, xw));
+                    false
+                }
+            }
+        }
+        _ => unreachable!("emit_g57_form takes 1..=2 literals"),
+    }
+}
+
+/// Narrow-mode realization of `target ^= conj(lits)` with every emitted gate
+/// at most `cap` controls, using **dirty borrowed carriers** — no clean
+/// ancilla, no dedicated wire, no assumption whatever about the borrowed
+/// wires' contents (the generalized Barenco double sweep; the codebase's
+/// `emit_poly_add` cubic case is its w=3 instance). Each borrowed wire is
+/// visited an even number of times and its dirty value cancels between the
+/// two readings, so the identity is exact for arbitrary inputs and every
+/// borrow is restored — the gadget keeps the "correct under any junk on the
+/// non-data wires" contract, and no wire is left sitting at a constant for a
+/// snapshot adversary to pick out.
+///
+/// Rungs must be EXACT: a g57's complement on a borrowed wire does not cancel
+/// (it leaks a spurious `c·κ` into the target), so rungs are plain width-<=cap
+/// conjunctions. The target gates carry their complement freely — each appears
+/// twice with the same polarities, so κ cancels there — and get the randomized
+/// g57 realization.
+///
+/// `lits` must be contradiction-free, deduped, and atom-interleaved by the
+/// caller, so no borrowed wire ever holds one value's whole mask term.
+/// Returns the residual constant parity (nonzero only on the direct path).
+fn emit_narrow_fragment(
+    target: u16,
+    lits: &[(u16, bool)],
+    cap: usize,
+    carrier_total: usize,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) -> bool {
+    debug_assert!(cap >= 2);
+    debug_assert!(!lits.is_empty());
+    if lits.len() <= cap {
+        if lits.len() <= 2 {
+            return emit_g57_form(target, lits, rng, out);
+        }
+        out.push(XGate::conj(target, lits.iter().copied()).expect("caller pre-normalizes"));
+        return false;
+    }
+    // Borrow w - cap rungs' worth of carriers, avoiding the target and every
+    // wire the fragment reads. Any content is fine; they are restored exactly.
+    let chunk = cap - 1;
+    let rung_count = (lits.len() - cap).div_ceil(chunk);
+    let mut taken: Vec<usize> = vec![target as usize];
+    taken.extend(lits.iter().map(|&(w, _)| w as usize));
+    let mut borrowed: Vec<u16> = Vec::with_capacity(rung_count);
+    for _ in 0..rung_count {
+        let h = random_wire_except(carrier_total, &taken, rng) as u16;
+        taken.push(h as usize);
+        borrowed.push(h);
+    }
+    // Rung i computes borrowed[i] ^= borrowed[i-1] & (next `chunk` literals);
+    // rung 0 takes the first `cap` literals outright.
+    let mut rungs: Vec<Vec<XGate>> = Vec::with_capacity(rung_count);
+    let mut consumed = 0;
+    for (i, &h) in borrowed.iter().enumerate() {
+        let mut rung_lits: Vec<(u16, bool)> = Vec::with_capacity(cap);
+        if i == 0 {
+            rung_lits.extend_from_slice(&lits[..cap]);
+            consumed = cap;
+        } else {
+            rung_lits.push((borrowed[i - 1], true));
+            let upto = (consumed + chunk).min(lits.len());
+            rung_lits.extend_from_slice(&lits[consumed..upto]);
+            consumed = upto;
+        }
+        rungs.push(vec![
+            XGate::conj(h, rung_lits).expect("borrowed wires are distinct from the literals"),
+        ]);
+    }
+    // Target gate: last borrow plus whatever literals remain.
+    let mut t_lits: Vec<(u16, bool)> = vec![(*borrowed.last().unwrap(), true)];
+    t_lits.extend_from_slice(&lits[consumed..]);
+    debug_assert!(t_lits.len() <= cap);
+    let mut emit_target = |rng: &mut _, out: &mut Vec<XGate>| {
+        if t_lits.len() <= 2 {
+            emit_g57_form(target, &t_lits, rng, out);
+        } else {
+            out.push(XGate::conj(target, t_lits.iter().copied()).expect("distinct wires"));
+        }
+    };
+    // One sweep block: target gate, down the rungs, back up (excluding rung 0).
+    // Emitted twice; every rung appears an even number of times, so all dirty
+    // contributions and all g57 complements cancel exactly.
+    for _ in 0..2 {
+        emit_target(rng, out);
+        for rung in rungs.iter().rev() {
+            out.extend(rung.iter().cloned());
+        }
+        for rung in rungs.iter().skip(1) {
+            out.extend(rung.iter().cloned());
+        }
+    }
+    false
+}
+
+/// Dedupe an interleaved literal list in place, preserving order. Returns
+/// None when two polarities meet on one wire (the conjunction is identically
+/// zero and the fragment must be dropped).
+fn normalize_lits(lits: &mut Vec<(u16, bool)>) -> Option<()> {
+    let mut seen: Vec<(u16, bool)> = Vec::with_capacity(lits.len());
+    for &(w, p) in lits.iter() {
+        match seen.iter().find(|&&(sw, _)| sw == w) {
+            Some(&(_, sp)) if sp != p => return None,
+            Some(_) => {}
+            None => seen.push((w, p)),
+        }
+    }
+    *lits = seen;
+    Some(())
+}
+
 /// Ledger for the product-share encoding: per-value slot lists + constants.
 /// Sources live on the frozen band, so slots are never disturbed by RGs or
 /// CGs — the only emissions are the inject ramp, optional re-source churn,
@@ -3040,6 +3233,9 @@ struct ProdLedger {
     /// 2n — random helper draws (constant folds) stay off the band.
     carrier_total: usize,
     band: std::ops::Range<u16>,
+    /// Narrow mode: emission width cap (0 = legacy wide fragments). Ladders
+    /// borrow dirty carriers, so there is no scratch region to track.
+    cap: usize,
     slots: Vec<Vec<ProdSlot>>,
     consts: Vec<bool>,
     used: std::collections::HashSet<ProdSlot>,
@@ -3075,6 +3271,7 @@ impl ProdLedger {
             plan,
             carrier_total,
             band: (carrier_total as u16)..((carrier_total + band_len) as u16),
+            cap: if cfg.narrow() { cfg.max_width } else { 0 },
             slots: vec![Vec::new(); n],
             consts: vec![false; n],
             used: std::collections::HashSet::new(),
@@ -3113,8 +3310,11 @@ impl ProdLedger {
 
     /// Emit the slot's fragment onto a random carrier of `value`: one
     /// conjunction over the product's factor literals — the product is
-    /// computed only inside the gate's firing condition, never onto a wire.
-    /// Self-inverse over GF(2): used identically for inject and strip.
+    /// computed only inside the gate's firing condition, never onto a wire
+    /// (narrow mode ladders it; the chain carries only partial prefixes,
+    /// never the whole term). Self-inverse over GF(2) up to the returned
+    /// constant parity, which the caller folds into the value's ledger
+    /// constant. Used identically for inject and strip.
     fn emit_slot(
         &self,
         value: usize,
@@ -3122,13 +3322,18 @@ impl ProdLedger {
         state: &GadgetState,
         rng: &mut impl Rng,
         out: &mut Vec<XGate>,
-    ) {
+    ) -> bool {
         let (c0, c1) = state.pairs[value];
         let target = if rng.random_bool(0.5) { c0 } else { c1 } as u16;
-        out.push(
-            XGate::conj(target, slot.lits())
-                .expect("band sources are distinct wires"),
-        );
+        if self.cap >= 2 {
+            emit_narrow_fragment(target, &slot.lits(), self.cap, self.carrier_total, rng, out)
+        } else {
+            out.push(
+                XGate::conj(target, slot.lits())
+                    .expect("band sources are distinct wires"),
+            );
+            false
+        }
     }
 
     fn inject(
@@ -3140,7 +3345,8 @@ impl ProdLedger {
         out: &mut Vec<XGate>,
     ) {
         let slot = self.draw_slot(deg, rng);
-        self.emit_slot(value, &slot, state, rng, out);
+        let konst = self.emit_slot(value, &slot, state, rng, out);
+        self.consts[value] ^= konst;
         self.slots[value].push(slot);
         self.injected += 1;
     }
@@ -3175,7 +3381,8 @@ impl ProdLedger {
         let deg = self.slots[value][old_index].factors.len();
         self.inject(value, deg, state, rng, out);
         let old = self.slots[value].remove(old_index);
-        self.emit_slot(value, &old, state, rng, out);
+        let konst = self.emit_slot(value, &old, state, rng, out);
+        self.consts[value] ^= konst;
         self.used.remove(&old);
         self.resourced += 1;
     }
@@ -3220,6 +3427,10 @@ impl ProdLedger {
             self.consts[t] ^= true;
             self.ledger_consts += 1;
         }
+        if self.cap >= 2 {
+            self.fold_cg_narrow(t, &lists, state, rng, out);
+            return;
+        }
         // Odometer over the cartesian product (an empty `lists` — an X/NOT
         // source — contributes exactly the single constant-1 term).
         let mut combo = vec![0usize; lists.len()];
@@ -3255,13 +3466,79 @@ impl ProdLedger {
         }
     }
 
+    /// Narrow-mode fold body: materialize the fragment list (one atom pick
+    /// per control), shuffle it, then realize each fragment as a g57/CNOT
+    /// ladder. Literals are interleaved round-robin across the controls'
+    /// atoms so no ladder-chain prefix ever equals a single value's whole
+    /// mask term — operands stay masked through the gate even against an
+    /// adversary reading the scratch wires.
+    fn fold_cg_narrow(
+        &mut self,
+        t: usize,
+        lists: &[Vec<Vec<(u16, bool)>>],
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        let mut frags: Vec<Vec<(u16, bool)>> = Vec::new();
+        let mut combo = vec![0usize; lists.len()];
+        'odometer: loop {
+            let picked: Vec<&Vec<(u16, bool)>> = lists
+                .iter()
+                .zip(&combo)
+                .map(|(list, &pick)| &list[pick])
+                .collect();
+            let width = picked.iter().map(|a| a.len()).max().unwrap_or(0);
+            let mut lits: Vec<(u16, bool)> = Vec::new();
+            for i in 0..width {
+                for atom in &picked {
+                    if let Some(&lit) = atom.get(i) {
+                        lits.push(lit);
+                    }
+                }
+            }
+            if lits.is_empty() {
+                self.consts[t] ^= true;
+                self.ledger_consts += 1;
+            } else if normalize_lits(&mut lits).is_some() {
+                frags.push(lits);
+            }
+            let mut axis = 0;
+            loop {
+                if axis == combo.len() {
+                    break 'odometer;
+                }
+                combo[axis] += 1;
+                if combo[axis] < lists[axis].len() {
+                    break;
+                }
+                combo[axis] = 0;
+                axis += 1;
+            }
+        }
+        use rand::seq::SliceRandom;
+        frags.shuffle(rng);
+        for lits in &frags {
+            let (c0, c1) = state.pairs[t];
+            let target = if rng.random_bool(0.5) { c0 } else { c1 } as u16;
+            let konst =
+                emit_narrow_fragment(target, lits, self.cap, self.carrier_total, rng, out);
+            self.consts[t] ^= konst;
+            self.cg_fragments += 1;
+        }
+    }
+
     /// Unshare: strip every slot and emit every pending ledger constant (as a
     /// !u/u fragment pair — no bare X), restoring the plain pair-XOR decode
     /// for the standard bookend.
     fn strip_all(&mut self, state: &GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
         for value in 0..state.n {
-            while let Some(slot) = self.slots[value].pop() {
-                self.emit_slot(value, &slot, state, rng, out);
+            // Strip in plan order (base terms first): the highest-degree
+            // tower term covers the value longest at the tail boundary.
+            while !self.slots[value].is_empty() {
+                let slot = self.slots[value].remove(0);
+                let konst = self.emit_slot(value, &slot, state, rng, out);
+                self.consts[value] ^= konst;
                 self.used.remove(&slot);
             }
             if self.consts[value] {
@@ -3315,6 +3592,80 @@ fn emit_band_fill(
             }
             break;
         }
+    }
+}
+
+/// W0 (nonlinear cascade): fill each band wire with
+///   junk ^ pivot ^ (small linear part) ^ XOR of `fill_nl` two-source
+///   products,
+/// where a product's sources are data wires AND already-filled band wires —
+/// the cascade multiplies input-degree up the band while every emitted gate
+/// stays a CNOT or g57 (no wide gates, no cheap affine invariants for a
+/// forward-learning SAT attacker). The fresh linear pivot is excluded from
+/// the rest of the wire's transitive data support, so every band bit is
+/// exactly balanced over uniform x for any junk, and distinct pivot draws
+/// keep the fill's linear parts non-degenerate. Also used as the mirror fill
+/// on the output side (the data wires then hold the output port).
+fn emit_band_fill_nl(
+    n: usize,
+    band: std::ops::Range<usize>,
+    fill_nl: usize,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) {
+    let band_start = band.start;
+    // Transitive data support per already-filled band wire (pivot included).
+    let mut supports: Vec<std::collections::HashSet<usize>> = Vec::new();
+    for band_wire in band {
+        let pivot = rng.random_range(0..n);
+        let mut support: std::collections::HashSet<usize> = std::iter::once(pivot).collect();
+        out.push(XGate::cnot(band_wire as u16, pivot as u16));
+        // Small linear part: 1..=min(7, n-1) extra data wires besides the pivot.
+        let lin_max = (n - 1).min(7);
+        let lin_w = 1 + rng.random_range(0..lin_max);
+        let mut pool: Vec<usize> = (0..n).filter(|&w| w != pivot).collect();
+        for _ in 0..lin_w {
+            let i = rng.random_range(0..pool.len());
+            let w = pool.swap_remove(i);
+            support.insert(w);
+            out.push(XGate::cnot(band_wire as u16, w as u16));
+        }
+        // Nonlinear products, cascading over pivot-free earlier band wires.
+        let eligible_band: Vec<usize> = (0..supports.len())
+            .filter(|&i| !supports[i].contains(&pivot))
+            .collect();
+        for _ in 0..fill_nl {
+            let mut draw = |exclude: Option<u16>| loop {
+                let wire = if !eligible_band.is_empty() && rng.random_bool(0.5) {
+                    let i = eligible_band[rng.random_range(0..eligible_band.len())];
+                    (band_start + i) as u16
+                } else {
+                    loop {
+                        let w = rng.random_range(0..n);
+                        if w != pivot {
+                            break w as u16;
+                        }
+                    }
+                };
+                if Some(wire) != exclude {
+                    break wire;
+                }
+            };
+            let s1 = draw(None);
+            let s2 = draw(Some(s1));
+            let lits = [(s1, rng.random::<bool>()), (s2, rng.random::<bool>())];
+            // Residual constants just complement F — balance is unaffected.
+            emit_g57_form(band_wire as u16, &lits, rng, out);
+            for s in [s1, s2] {
+                let s = s as usize;
+                if s >= band_start {
+                    support.extend(supports[s - band_start].iter().copied());
+                } else {
+                    support.insert(s);
+                }
+            }
+        }
+        supports.push(support);
     }
 }
 
@@ -3444,11 +3795,16 @@ pub fn gadgetize_cnot(
 
     let bookend_size = (2 * n * (n as f64).ln() as usize).max(64);
     let carrier_total = 2 * n;
-    let total = carrier_total + prod.band_size(n);
+    let band_range = carrier_total..carrier_total + prod.band_size(n);
+    let total = band_range.end;
     assert!(total <= u16::MAX as usize, "too many wires");
     let mut out = rand_z_xgates(n, bookend_size, rng);
     if prod.enabled() {
-        emit_band_fill(n, carrier_total..total, rng, &mut out);
+        if prod.fill_nl > 0 {
+            emit_band_fill_nl(n, band_range.clone(), prod.fill_nl, rng, &mut out);
+        } else {
+            emit_band_fill(n, band_range.clone(), rng, &mut out);
+        }
     }
     let mut dloc: Vec<usize> = (0..n).collect();
     let mut aloc: Vec<usize> = (n..2 * n).collect();
@@ -3589,6 +3945,16 @@ pub fn gadgetize_cnot(
         on[value] = Slot::Output(value);
     }
     out.extend(rand_z_xgates(n, bookend_size, rng));
+    // Mirror fill F' on the output side: the band is junk at both ports, so
+    // neither direction of a two-sided composition sees it anchored only at
+    // its far end. (All slots are stripped by now; the content is free.)
+    if prod.enabled() {
+        if prod.fill_nl > 0 {
+            emit_band_fill_nl(n, band_range, prod.fill_nl, rng, &mut out);
+        } else {
+            emit_band_fill(n, band_range, rng, &mut out);
+        }
+    }
     // Final rerandomization: the construction-time layout (Z | W | body | W^-1
     // | Z) is a legibility artifact; a commuting shuffle interleaves whatever
     // the wire dependencies do not pin down.
@@ -3898,11 +4264,16 @@ pub fn gadgetize_xgates(
 
     let bookend_size = (2 * n * (n as f64).ln() as usize).max(64);
     let carrier_total = 2 * n;
-    let total = carrier_total + prod.band_size(n);
+    let band_range = carrier_total..carrier_total + prod.band_size(n);
+    let total = band_range.end;
     assert!(total <= u16::MAX as usize, "too many wires");
     let mut out = rand_z_xgates(n, bookend_size, rng);
     if prod.enabled() {
-        emit_band_fill(n, carrier_total..total, rng, &mut out);
+        if prod.fill_nl > 0 {
+            emit_band_fill_nl(n, band_range.clone(), prod.fill_nl, rng, &mut out);
+        } else {
+            emit_band_fill(n, band_range.clone(), rng, &mut out);
+        }
     }
     let mut dloc: Vec<usize> = (0..n).collect();
     let mut aloc: Vec<usize> = (n..2 * n).collect();
@@ -4025,6 +4396,16 @@ pub fn gadgetize_xgates(
         on[value] = Slot::Output(value);
     }
     out.extend(rand_z_xgates(n, bookend_size, rng));
+    // Mirror fill F' on the output side: the band is junk at both ports, so
+    // neither direction of a two-sided composition sees it anchored only at
+    // its far end. (All slots are stripped by now; the content is free.)
+    if prod.enabled() {
+        if prod.fill_nl > 0 {
+            emit_band_fill_nl(n, band_range, prod.fill_nl, rng, &mut out);
+        } else {
+            emit_band_fill(n, band_range, rng, &mut out);
+        }
+    }
     // Final rerandomization: the construction-time layout (Z | W | body | W^-1
     // | Z) is a legibility artifact; a commuting shuffle interleaves whatever
     // the wire dependencies do not pin down.
@@ -5707,7 +6088,7 @@ mod cnot_gadget_tests {
     }
 
     fn prod_test_config() -> ProdConfig {
-        ProdConfig { k: 2, deg: 2, k_hi: 0, deg_hi: 3, band: 6, rsrc: 1 }
+        ProdConfig { k: 2, deg: 2, k_hi: 0, deg_hi: 3, band: 6, rsrc: 1, ..ProdConfig::off() }
     }
 
     /// Test-side decode under the product-share ledger state: pair-XOR of the
@@ -5736,7 +6117,7 @@ mod cnot_gadget_tests {
         let pairs = vec![(0usize, 1usize), (2, 3), (4, 5)];
         let band = 4usize; // wires 6..10
         let total = carrier_total + band;
-        let cfg = ProdConfig { k: 1, deg: 2, k_hi: 0, deg_hi: 3, band, rsrc: 0 };
+        let cfg = ProdConfig { k: 1, deg: 2, k_hi: 0, deg_hi: 3, band, rsrc: 0, ..ProdConfig::off() };
         let sources: Vec<XGate> = vec![
             XGate::from_g57([0, 1, 2]),
             XGate::cnot(1, 2),
@@ -5793,7 +6174,7 @@ mod cnot_gadget_tests {
         let n = MASKED_TEST_N;
         let main = masked_test_main();
         let mask = (1u64 << n) - 1;
-        let cfg = ProdConfig { k: 2, deg: 3, k_hi: 0, deg_hi: 3, band: 8, rsrc: 1 };
+        let cfg = ProdConfig { k: 2, deg: 3, k_hi: 0, deg_hi: 3, band: 8, rsrc: 1, ..ProdConfig::off() };
         for seed in 0..6u64 {
             let mut rng = StdRng::seed_from_u64(0x0e63_0000 + seed);
             let g = gadgetize_cnot(&main, n, 2, &MaskConfig::off(), &cfg, &mut rng);
@@ -5806,6 +6187,227 @@ mod cnot_gadget_tests {
                 assert_eq!(eval_u64(&g.gates, input) & mask, expected, "seed={seed}");
             }
         }
+    }
+
+    #[test]
+    fn emit_g57_form_realizes_the_exact_conjunction() {
+        // All 1- and 2-literal polarity combos, both variant draws: the gate
+        // run must add conj(lits) ^ konst to the target and nothing else.
+        for seed in 0..64u64 {
+            let mut rng = StdRng::seed_from_u64(0x657f_0000 + seed);
+            for lits in [
+                vec![(1u16, true)],
+                vec![(1u16, false)],
+                vec![(1u16, true), (2u16, true)],
+                vec![(1u16, false), (2u16, true)],
+                vec![(1u16, true), (2u16, false)],
+                vec![(1u16, false), (2u16, false)],
+            ] {
+                let mut gates = Vec::new();
+                let konst = emit_g57_form(0, &lits, &mut rng, &mut gates);
+                for input in 0..8u64 {
+                    let expected_fire = lits
+                        .iter()
+                        .all(|&(w, p)| ((input >> w) & 1 != 0) == p);
+                    let out_state = eval_u64(&gates, input);
+                    let expected =
+                        input ^ (expected_fire as u64 ^ konst as u64);
+                    assert_eq!(out_state, expected, "seed={seed} lits={lits:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn emit_narrow_fragment_ladders_exactly_over_dirty_borrows() {
+        // Widths 3..=6 over mixed polarities, caps 2 and 3. The ladder must
+        // add exactly conj(lits) ^ konst to the target and leave every other
+        // wire — including the DIRTY borrowed carriers — untouched, for EVERY
+        // input state (no clean-ancilla assumption anywhere), while staying
+        // within the width cap.
+        let total = 12usize; // literals on 1..=6, borrows drawn from 0..12
+        for seed in 0..48u64 {
+            let mut rng = StdRng::seed_from_u64(0x1add_0000 + seed);
+            for cap in 2..=3usize {
+                for width in 3..=6usize {
+                    let lits: Vec<(u16, bool)> = (1..=width as u16)
+                        .map(|w| (w, rng.random::<bool>()))
+                        .collect();
+                    let mut gates = Vec::new();
+                    let konst =
+                        emit_narrow_fragment(0, &lits, cap, total, &mut rng, &mut gates);
+                    assert!(
+                        gates.iter().all(|g| g.width() <= cap),
+                        "seed={seed} cap={cap} width={width}: ladder exceeded the cap"
+                    );
+                    for input in 0..(1u64 << total) {
+                        let expected_fire = lits
+                            .iter()
+                            .all(|&(w, p)| ((input >> w) & 1 != 0) == p);
+                        let out_state = eval_u64(&gates, input);
+                        let expected =
+                            input ^ (expected_fire as u64 ^ konst as u64);
+                        assert_eq!(
+                            out_state, expected,
+                            "seed={seed} cap={cap} width={width} input={input:#x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prod_narrow_fold_cg_is_share_native_and_two_control() {
+        // The narrow fold: same share-native contract as the wide fold — the
+        // target's decode transitions by exactly the virtual gate and every
+        // other value is untouched, for EVERY input (dirty borrows, no clean
+        // ancilla) — with every gate at most 2 controls.
+        let n = 3;
+        let carrier_total = 2 * n;
+        let pairs = vec![(0usize, 1usize), (2, 3), (4, 5)];
+        let band = 6usize; // wires 6..12; scratch 12..16
+        let cfg = ProdConfig {
+            k: 1,
+            deg: 2,
+            k_hi: 1,
+            deg_hi: 3,
+            band,
+            rsrc: 0,
+            max_width: 2,
+            fill_nl: 0,
+        };
+        let live = carrier_total + band; // the whole wire space: no pinned wires
+        let sources: Vec<XGate> = vec![
+            XGate::from_g57([0, 1, 2]),
+            XGate::cnot(1, 2),
+            XGate::conj(2, [(0u16, false), (1u16, true)]).unwrap(),
+            XGate::x_gate(0),
+        ];
+        for seed in 0..16u64 {
+            let mut rng = StdRng::seed_from_u64(0x9d0e_0000 + seed);
+            let state = GadgetState { n, pairs: pairs.clone() };
+            let mut ledger = ProdLedger::new(n, &cfg, carrier_total);
+            let mut ramp = Vec::new();
+            ledger.inject_all(&state, &mut rng, &mut ramp);
+            for gate in &sources {
+                let slots_before = ledger.slots.clone();
+                let consts_before = ledger.consts.clone();
+                let mut fold = Vec::new();
+                ledger.fold_cg(gate, &state, &mut rng, &mut fold);
+                let t = gate.target as usize;
+                for g in &fold {
+                    assert!(g.width() <= 2, "narrow fold emitted a wide gate");
+                    assert!(
+                        (g.target as usize) < carrier_total,
+                        "fold wrote to the frozen band"
+                    );
+                }
+                // Net effect must live ENTIRELY on the target's two carriers:
+                // every dirty borrow is restored, for every input.
+                let touched = (1u64 << pairs[t].0) | (1u64 << pairs[t].1);
+                for input in 0..(1u64 << live) {
+                    let before: Vec<u64> = (0..n)
+                        .map(|v| prod_decode(input, v, &pairs, &slots_before, &consts_before))
+                        .collect();
+                    let out_state = eval_u64(&fold, input);
+                    assert_eq!(
+                        (out_state ^ input) & !touched,
+                        0,
+                        "seed={seed}: a borrowed wire was not restored"
+                    );
+                    let after: Vec<u64> = (0..n)
+                        .map(|v| prod_decode(out_state, v, &pairs, &ledger.slots, &ledger.consts))
+                        .collect();
+                    let fires = gate.ctrls.iter().all(|&(w, pol)| {
+                        (before[w as usize] != 0) == pol
+                    }) ^ gate.comp;
+                    for v in 0..n {
+                        let expected = before[v] ^ ((v == t && fires) as u64);
+                        assert_eq!(after[v], expected, "seed={seed} gate={gate:?} value={v}");
+                    }
+                }
+                assert_eq!(slots_before, ledger.slots);
+            }
+        }
+    }
+
+    #[test]
+    fn prod_narrow_gadget_round_trips_in_the_g57_vocabulary() {
+        // Full narrow gadget (mixed [2,3] plan + nonlinear cascaded band fill
+        // + mirror): every gate is within the phase-A DB width, no wire is
+        // added over the wide build, and the endpoint contract holds for
+        // ARBITRARY junk on every non-data wire (dirty borrows, nothing
+        // pinned). Also records the true-g57 share.
+        let n = MASKED_TEST_N;
+        let main = masked_test_main();
+        let mask = (1u64 << n) - 1;
+        let cfg = ProdConfig {
+            k: 1,
+            deg: 2,
+            k_hi: 1,
+            deg_hi: 3,
+            band: 6,
+            rsrc: 1,
+            max_width: 2,
+            fill_nl: 2,
+        };
+        for seed in 0..3u64 {
+            let mut rng = StdRng::seed_from_u64(0xa550_0000 + seed);
+            let g = gadgetize_cnot(&main, n, 2, &MaskConfig::off(), &cfg, &mut rng);
+            // No scratch region: narrow mode costs exactly zero extra wires.
+            assert_eq!(g.num_wires, 2 * n + 6);
+            let mut g57s = 0usize;
+            for gate in &g.gates {
+                assert!(!gate.ctrls.is_empty(), "bare X in narrow gadget");
+                assert!(gate.width() <= 2, "wide gate in narrow gadget: {gate:?}");
+                let mut pols: Vec<bool> = gate.ctrls.iter().map(|&(_, p)| p).collect();
+                pols.sort_unstable();
+                if gate.width() == 2 && gate.comp && pols == vec![false, true] {
+                    g57s += 1;
+                }
+            }
+            // Ladder rungs must be EXACT, and an exact 2-control conjunction
+            // is not a sum of g57s (each g57 carries a constant 1: an odd
+            // count leaves a stray 1, an even count collapses the monomials
+            // to a plain XOR). So rungs are comp=0 width-2 gates — still
+            // inside the phase-A DB width, which filters on width, not comp.
+            assert!(g57s > 0, "seed={seed}: no g57s at all");
+            // Full domain: arbitrary junk on carriers and band alike.
+            for input in 0..(1u64 << g.num_wires) {
+                let expected = main.evaluate((input & mask) as usize) as u64 & mask;
+                assert_eq!(eval_u64(&g.gates, input) & mask, expected, "seed={seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn prod_band_fill_nl_is_balanced_and_nonlinear() {
+        // Every band wire's fill must be exactly balanced over uniform data
+        // (the pivot guarantee), and the cascade must actually produce
+        // nonlinearity in at least one band wire.
+        let n = 10;
+        let band = 10usize..18usize;
+        let mut rng = StdRng::seed_from_u64(0xf111_0001);
+        let mut gates = Vec::new();
+        emit_band_fill_nl(n, band.clone(), 2, &mut rng, &mut gates);
+        let f = |x: u64| eval_u64(&gates, x);
+        let mut any_nonlinear = false;
+        for bw in band.clone() {
+            let bit = |x: u64| (f(x) >> bw) & 1;
+            let ones: u64 = (0..(1u64 << n)).map(bit).sum();
+            assert_eq!(ones, 1 << (n - 1), "band wire {bw} fill is biased");
+            'nl: for i in 0..n {
+                for j in (i + 1)..n {
+                    let (ei, ej) = (1u64 << i, 1u64 << j);
+                    if bit(ei ^ ej) ^ bit(ei) ^ bit(ej) ^ bit(0) != 0 {
+                        any_nonlinear = true;
+                        break 'nl;
+                    }
+                }
+            }
+        }
+        assert!(any_nonlinear, "cascaded fill produced no nonlinear band wire");
     }
 
     #[test]
