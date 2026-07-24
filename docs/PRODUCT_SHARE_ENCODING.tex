@@ -213,6 +213,28 @@ median original-circuit prefix has zero ridge prominence. Control: the plain
 gadget (512 wires) vs.\ mixed (576, only $+64$ band) reads a perfect diagonal, so
 the mixed flatness is real hiding, not a wire-count artifact.
 
+\textbf{Full production pipeline ($n=128$).} Gadget $\to$ phase A (a 3M-move
+DB-mixing dose, holding size) $\to$ phase B (grown $\times3$ to 1.12M gates).
+Degree-1 hmap vs.\ the original $C$ at each stage (matched sampling, 101 rows):
+
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+stage & gates & depth & depthMed & $\rho$ & meanH \\
+\midrule
+plain gadget & 85\,k & 0.351 & 0.359 & \textbf{1.00} & 0.475 \\
+mixed gadget & 374\,k & 0.044 & \textbf{0.000} & 0.017 & 0.499 \\
+phase A (DB dose) & 392\,k & 0.044 & \textbf{0.000} & 0.018 & 0.499 \\
+phase B ($\times3$) & 1.12\,M & 0.044 & \textbf{0.000} & 0.017 & 0.498 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The diagonal is killed by the encoding and stays dead
+\emph{identically} through mixing and a threefold growth---depth, median-row
+prominence, and $\rho$ do not move. Mixing neither helps nor hurts, because the
+leak was already gone before mixing began.
+
 \section{Interaction with mixing---a caveat and a feature}\label{sec:mixing}
 
 The wide mask fragments (width up to ${\sim}15$ after folding through the
