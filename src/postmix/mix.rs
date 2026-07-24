@@ -475,6 +475,12 @@ pub struct MixParams {
     // <base>.gen<m>.mpmct1 (+ .gens sidecar); the base path is armed with
     // Mixer::set_gen_snap_base. 0 = off.
     pub gen_snap_every: u32,
+    // Move-multiple snapshots: at each report point where moves_done is a
+    // multiple of this interval, write a verified snapshot to
+    // <base>.mv<moves>.mpmct1 (+ .gens sidecar). The progress clock for
+    // regimes where the generation census is not meaningful (e.g. pure-split
+    // phase B, p_db = 0). Choose a multiple of report_every. 0 = off.
+    pub snap_every_moves: u64,
     pub verify_every: u64,
     pub report_every: u64,
     pub local_verify: bool,
@@ -541,6 +547,7 @@ impl Default for MixParams {
             gen_stop_frac: -1.0,
             twist_cov_stop: 0.0,
             gen_snap_every: 0,
+            snap_every_moves: 0,
             verify_every: 10_000,
             report_every: 50_000,
             local_verify: true,
@@ -1118,6 +1125,7 @@ impl Mixer {
                 self.report();
                 self.check_flags();
                 self.check_gen_snap();
+                self.check_move_snap();
                 if self.stop_requested {
                     self.global_check();
                     return MixStop::StopFlag;
@@ -1259,6 +1267,44 @@ impl Mixer {
             m += every;
         }
         self.last_gen_snap = reached;
+    }
+
+    // Move-multiple snapshots (--snap-every-moves): verified state at fixed
+    // move-count multiples — the progress clock when the generation census
+    // is not meaningful (pure-split runs).
+    fn check_move_snap(&mut self) {
+        let every = self.params.snap_every_moves;
+        if every == 0 || self.moves_done % every != 0 {
+            return;
+        }
+        let Some(base) = self.gen_snap_base.clone() else {
+            return;
+        };
+        self.global_check();
+        let gates = self.arena.to_vec();
+        let out = format!("{base}.mv{}.mpmct1", self.moves_done);
+        let tmp = format!("{out}.tmp");
+        match super::format::write_mpmct(&tmp, &gates, self.num_wires) {
+            Ok(()) => match std::fs::rename(&tmp, &out) {
+                Ok(()) => {
+                    let mut gens = String::with_capacity(gates.len() * 4);
+                    for gg in self.gens_in_order() {
+                        gens.push_str(&format!("{gg}\n"));
+                    }
+                    if let Err(e) = std::fs::write(format!("{out}.gens"), &gens) {
+                        eprintln!("[fmix] move-snap gens write failed: {e}");
+                    }
+                    println!(
+                        "[fmix] MOVE-SNAP: wrote {} gates to {} at move {} (verified, continuing)",
+                        gates.len(),
+                        out,
+                        self.moves_done
+                    );
+                }
+                Err(e) => eprintln!("[fmix] move-snap rename failed: {e}"),
+            },
+            Err(e) => eprintln!("[fmix] move-snap write failed: {e}"),
+        }
     }
 
     // ---- expansion moves ----

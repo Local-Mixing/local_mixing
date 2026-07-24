@@ -278,6 +278,12 @@ struct Args {
     /// --gen-target > 0 (generations move under DB re-encoding).
     #[arg(long, default_value_t = 0)]
     gen_snap_every: u32,
+    /// Verified snapshot at every multiple of this many moves
+    /// (<output>.mv<moves>.mpmct1 + .gens sidecar): the progress clock for
+    /// pure-split runs where the generation census is not meaningful. Use a
+    /// multiple of --report-every. 0 = off.
+    #[arg(long, default_value_t = 0)]
+    snap_every_moves: u64,
     /// Global sampled equality check every N moves
     #[arg(long, default_value_t = 10_000)]
     verify_every: u64,
@@ -421,6 +427,7 @@ fn main() {
         gen_stop_frac: args.gen_stop_frac,
         twist_cov_stop: args.twist_cov_stop,
         gen_snap_every: args.gen_snap_every,
+        snap_every_moves: args.snap_every_moves,
         verify_every: args.verify_every,
         report_every: args.report_every,
         local_verify: !args.no_local_verify,
@@ -431,12 +438,20 @@ fn main() {
         mixer.enable_db_record(path);
         println!("[fmix] recording DB attempts to {path}");
     }
-    if args.gen_snap_every > 0 {
+    if args.gen_snap_every > 0 || args.snap_every_moves > 0 {
         let base = args.output.clone().unwrap_or_else(|| "fmix_out".to_string());
-        println!(
-            "[fmix] gen snapshots armed: every {} circuit generations -> {base}.gen<m>.mpmct1",
-            args.gen_snap_every
-        );
+        if args.gen_snap_every > 0 {
+            println!(
+                "[fmix] gen snapshots armed: every {} circuit generations -> {base}.gen<m>.mpmct1",
+                args.gen_snap_every
+            );
+        }
+        if args.snap_every_moves > 0 {
+            println!(
+                "[fmix] move snapshots armed: every {} moves -> {base}.mv<m>.mpmct1",
+                args.snap_every_moves
+            );
+        }
         mixer.set_gen_snap_base(base);
     }
 
