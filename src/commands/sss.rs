@@ -8,6 +8,7 @@ use local_mixing::replace::gadgets::{
     SLICE_ZERO_RANDOM_GATES_PER_WIRE, sandwich_default_m, sandwich_default_s,
 };
 use local_mixing::replace::main_mix::main_shuffle_shoot_shuffle;
+use local_mixing::replace::gadgets::{MaskConfig, ProdConfig};
 use local_mixing::replace::main_mix_cnot::{CnotSssParams, main_shuffle_shoot_shuffle_cnot};
 use local_mixing::replace::mixing::install_kill_handler;
 use local_mixing::replace::replace::{
@@ -86,6 +87,20 @@ pub fn run(sub: &clap::ArgMatches) {
         } else {
             rg_freq
         };
+        let masks = MaskConfig {
+            cov: *sub.get_one("mask_cov").unwrap(),
+            k: *sub.get_one("mask_k").unwrap(),
+            depth: *sub.get_one("mask_depth").unwrap(),
+            taper: sub.get_one("mask_taper").copied(),
+        };
+        let prod = ProdConfig {
+            k: *sub.get_one("prod_k").unwrap(),
+            deg: *sub.get_one("prod_deg").unwrap(),
+            k_hi: *sub.get_one("prod_k_hi").unwrap(),
+            deg_hi: *sub.get_one("prod_deg_hi").unwrap(),
+            band: *sub.get_one("prod_band").unwrap(),
+            rsrc: *sub.get_one("prod_rsrc").unwrap(),
+        };
         let c = CircuitSeq::from_string(&data);
         let collision_rounds: usize = *sub.get_one("collision_rounds").unwrap();
         let stable_compressions: usize = *sub.get_one("stable_compressions").unwrap();
@@ -117,6 +132,8 @@ pub fn run(sub: &clap::ArgMatches) {
             expansion_game: egg,
             equality_check,
             rg_freq,
+            masks,
+            prod,
         };
         main_shuffle_shoot_shuffle_cnot(&c, &params);
         return;

@@ -209,6 +209,95 @@ fn add_shoot_args(c: Command) -> Command {
                         .help("RG randomization rate. --cnot --gadgetize: number of nonlinear RGs (uniform RG1/RG2/RG3 draws) between consecutive SG gadgets (defaults to 1 there). Other paths: number of SG gadgets between each single RG (default 2)"),
                 )
                 .arg(
+                    Arg::new("mask_cov")
+                        .long("mask-cov")
+                        .alias("mask_cov")
+                        .required(false)
+                        .default_value("0.0")
+                        .value_parser(clap::value_parser!(f64))
+                        .help("(--cnot gadgetize) Deferred-mask (RG4) coverage: target fraction of logical values carrying pending masks (0 = off, the current default). Actual coverage self-limits below 1 (masks need unmasked source carriers); ~0.75 is a workable validated setting. See docs/NONLINEAR_SHARE_ENCODING.md"),
+                )
+                .arg(
+                    Arg::new("mask_k")
+                        .long("mask-k")
+                        .alias("mask_k")
+                        .required(false)
+                        .default_value("1")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Pending mask terms per masked value (piling-up: k=1 caps degree-1 readout error at 0.25, k=3 at 0.4375)"),
+                )
+                .arg(
+                    Arg::new("mask_depth")
+                        .long("mask-depth")
+                        .alias("mask_depth")
+                        .required(false)
+                        .default_value("2")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Reserved for the deferred mask-tower thread (degree-3+ masks); a no-op in the v1 cascade-free ledger, which keeps masks at degree 2"),
+                )
+                .arg(
+                    Arg::new("mask_taper")
+                        .long("mask-taper")
+                        .alias("mask_taper")
+                        .required(false)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Gaps before the body's end to stop re-injecting masks (default: max(4, n/5))"),
+                )
+                .arg(
+                    Arg::new("prod_k")
+                        .long("prod-k")
+                        .alias("prod_k")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Product-share encoding: permanent multiplicative mask terms per value, sourced on a frozen read-only band (0 = off). Degree-1 readout error floor: k=1 -> 0.25, k=2 -> 0.375, k=3 -> 0.4375. Replaces the CG menu with the share-native ANF fold (no operand reconstruction). Mutually exclusive with --mask-cov"),
+                )
+                .arg(
+                    Arg::new("prod_deg")
+                        .long("prod-deg")
+                        .alias("prod_deg")
+                        .required(false)
+                        .default_value("2")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Base product-mask degree = literals per term (min 2). deg=2 is the base encoding; deg=d hides the value from any reconstruction adversary of degree < d, at the cost of fold fragments up to width d*(gate arity)"),
+                )
+                .arg(
+                    Arg::new("prod_k_hi")
+                        .long("prod-k-hi")
+                        .alias("prod_k_hi")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Additional higher-degree tower mask terms per value (mixed design: k base deg-D terms + k_hi deg-D_hi terms; statistical strength from the base tier, algebraic hiding to deg_hi-1 from the tower tier)"),
+                )
+                .arg(
+                    Arg::new("prod_deg_hi")
+                        .long("prod-deg-hi")
+                        .alias("prod_deg_hi")
+                        .required(false)
+                        .default_value("3")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Degree of the --prod-k-hi tower terms (default 3)"),
+                )
+                .arg(
+                    Arg::new("prod_band")
+                        .long("prod-band")
+                        .alias("prod_band")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Source-band width in extra wires for --prod-k (0 = auto ~max(sqrt(4nk), deg+3))"),
+                )
+                .arg(
+                    Arg::new("prod_rsrc")
+                        .long("prod-rsrc")
+                        .alias("prod_rsrc")
+                        .required(false)
+                        .default_value("1")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Product-mask re-source moves per inter-SG gap (churn; 0 = off)"),
+                )
+                .arg(
                     Arg::new("egg")
                         .long("egg")
                         .help("Use expansion game (expand_loop 2x) instead of the shuffled shooting game")

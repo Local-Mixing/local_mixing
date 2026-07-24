@@ -1,0 +1,78 @@
+//! Throwaway harness for the product-share encoding's n=16 degree-1 ridge grid
+//! (mirrors the RG4 validation methodology: gadgetize ONCE, no mixing, so the
+//! heatmap isolates the ENCODING's effect on the progress diagonal). Reads a
+//! g57 C, gadgetizes with the product-share encoding at a given k, writes the
+//! pre-mixing G as mpmct1 for hmap_affine. Also prints the endpoint Hamming
+//! self-check the ridge reader needs (H≈0 reference validity).
+//!
+//! Usage: prod_grid <c.g57> <n> <k> <band> <seed> <out.mpmct1> [deg] [k_hi] [deg_hi]
+//!        (band 0 = auto; k 0 = plain gadget; deg defaults to 2; k_hi tower
+//!         terms of degree deg_hi for a mixed deg-k + deg_hi-k_hi design)
+
+use local_mixing::circuit::circuit::CircuitSeq;
+use local_mixing::postmix::format::{read_g57_file, write_mpmct};
+use local_mixing::postmix::xgate::eval_u1024;
+use local_mixing::circuit::circuit::U1024;
+use local_mixing::replace::gadgets::{gadgetize_cnot, MaskConfig, ProdConfig};
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+
+fn low_mask(n: usize) -> U1024 {
+    (U1024::one() << n) - U1024::one()
+}
+
+fn main() {
+    let a: Vec<String> = std::env::args().skip(1).collect();
+    let c_path = &a[0];
+    let n: usize = a[1].parse().unwrap();
+    let k: usize = a[2].parse().unwrap();
+    let band: usize = a[3].parse().unwrap();
+    let seed: u64 = a[4].parse().unwrap();
+    let out = &a[5];
+    let deg: usize = a.get(6).and_then(|s| s.parse().ok()).unwrap_or(2);
+    let k_hi: usize = a.get(7).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let deg_hi: usize = a.get(8).and_then(|s| s.parse().ok()).unwrap_or(3);
+
+    let c_gates = read_g57_file(c_path).expect("read c g57");
+    // g57 file -> CircuitSeq triples (g57 gate = target,x,y).
+    let triples: Vec<[u16; 3]> = c_gates
+        .iter()
+        .map(|g| {
+            // from_g57 stores ctrls sorted; recover [target, x(neg), y(pos)]
+            // where fires = x OR !y. as_g57 convention: neg literal = x, pos = y.
+            let mut xw = 0u16;
+            let mut yw = 0u16;
+            for &(w, pol) in &g.ctrls {
+                if pol { yw = w } else { xw = w }
+            }
+            [g.target, xw, yw]
+        })
+        .collect();
+    let main = CircuitSeq { gates: triples };
+
+    let prod = ProdConfig { k, deg, k_hi, deg_hi, band, rsrc: 1 };
+    let mut rng = StdRng::seed_from_u64(seed);
+    let g = gadgetize_cnot(&main, n, 1, &MaskConfig::off(), &prod, &mut rng);
+
+    // Endpoint self-check: G(x,0..) low n wires == C(x) for random x.
+    let mut chk = StdRng::seed_from_u64(0xa11ce);
+    let mut mismatches = 0;
+    for _ in 0..2000 {
+        let x = {
+            use rand::Rng;
+            U1024::from(chk.random::<u64>() as u128 & ((1u128 << n.min(63)) - 1)) & low_mask(n)
+        };
+        let expected = main.evaluate_1024(x) & low_mask(n);
+        let got = eval_u1024(&g.gates, x) & low_mask(n);
+        if got != expected {
+            mismatches += 1;
+        }
+    }
+    write_mpmct(out, &g.gates, g.num_wires).expect("write mpmct1");
+    println!(
+        "[prod_grid] n={n} k={k} deg={deg} k_hi={k_hi} deg_hi={deg_hi} band={} -> {} gates, {} wires, endpoint_mismatches={mismatches} -> {out}",
+        prod.band_size(n),
+        g.gates.len(),
+        g.num_wires
+    );
+}

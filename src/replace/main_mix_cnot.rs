@@ -21,7 +21,8 @@ use crate::{
     replace::gadgets::{
         CnotCircuit, feistalize_cnot, feistalize_with_slice_zero_cnot,
         feistalize_with_slice_zero_hardcoded_cnot, feistalize_with_slice_zero_random_cnot,
-        gadgetize_cnot, gadgetize_with_slice_zero_ccnot, packed_bit, sliced_sandwich_cnot,
+        MaskConfig, ProdConfig, gadgetize_cnot, gadgetize_with_slice_zero_ccnot, packed_bit,
+        sliced_sandwich_cnot,
     },
 };
 
@@ -63,6 +64,8 @@ pub struct CnotSssParams<'a> {
     pub expansion_game: bool,
     pub equality_check: bool,
     pub rg_freq: usize,
+    pub masks: MaskConfig,
+    pub prod: ProdConfig,
 }
 
 fn mask(bits: usize) -> U1024 {
@@ -369,6 +372,8 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
                     p.n,
                     p.rg_freq,
                     p.slice_zero_ccnot_gates,
+                    &p.masks,
+                    &p.prod,
                     &mut rng,
                 ),
                 FunctionView::GadgetLow,
@@ -376,7 +381,7 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
             )
         } else {
             (
-                gadgetize_cnot(original, p.n, p.rg_freq, &mut rng),
+                gadgetize_cnot(original, p.n, p.rg_freq, &p.masks, &p.prod, &mut rng),
                 FunctionView::GadgetLow,
                 "gadgetized",
             )
@@ -641,6 +646,8 @@ mod tests {
                 expansion_game: false,
                 equality_check: true,
                 rg_freq: 2,
+                masks: MaskConfig::off(),
+                prod: ProdConfig::off(),
             };
             main_shuffle_shoot_shuffle_cnot(&source, &params);
             let (written, wires) = format::read_mpmct(output.to_str().unwrap()).unwrap();

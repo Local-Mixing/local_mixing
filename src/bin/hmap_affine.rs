@@ -75,6 +75,12 @@ struct Args {
     /// LOWER BOUND on degree-2 leakage (products among excluded wires unseen).
     #[arg(long, default_value_t = 0)]
     deg2_wires: usize,
+    /// For --degree 2: explicit product-wire set as ranges, e.g. "0-31,256-287"
+    /// (inclusive). Overrides --deg2-wires. Use to straddle blocks (data+aux)
+    /// instead of the prefix rule — the encoding pairs shares across blocks, so
+    /// a prefix-only set can miss every informative product.
+    #[arg(long, default_value = "")]
+    deg2_wire_list: String,
     /// Prefix strides
     #[arg(long, default_value_t = 10)]
     c_step: usize,
@@ -173,16 +179,58 @@ fn main() {
         Lin(usize),
         Const,
         Pair(usize, usize),
+        Triple(usize, usize, usize),
     }
     let mut regs: Vec<Reg> = (0..nw_g).map(Reg::Lin).collect();
     regs.push(Reg::Const);
     if args.degree >= 2 {
-        let dw = if args.deg2_wires == 0 { nw_g } else { args.deg2_wires.min(nw_g) };
-        for a in 0..dw {
-            for c2 in (a + 1)..dw {
+        let wires: Vec<usize> = if !args.deg2_wire_list.is_empty() {
+            let mut v = Vec::new();
+            for part in args.deg2_wire_list.split(',') {
+                let part = part.trim();
+                if let Some((lo, hi)) = part.split_once('-') {
+                    let lo: usize = lo.parse().expect("bad --deg2-wire-list range");
+                    let hi: usize = hi.parse().expect("bad --deg2-wire-list range");
+                    v.extend(lo..=hi.min(nw_g - 1));
+                } else if !part.is_empty() {
+                    v.push(part.parse().expect("bad --deg2-wire-list entry"));
+                }
+            }
+            v.sort_unstable();
+            v.dedup();
+            v
+        } else {
+            let dw = if args.deg2_wires == 0 { nw_g } else { args.deg2_wires.min(nw_g) };
+            (0..dw).collect()
+        };
+        let mut pairs = 0usize;
+        for (i, &a) in wires.iter().enumerate() {
+            for &c2 in &wires[i + 1..] {
                 regs.push(Reg::Pair(a, c2));
+                pairs += 1;
             }
         }
+        // Degree 3: all triples over the SAME wire set (the `--deg2-wire-list`
+        // doubles as the product-wire set for every degree >= 2). Targets the
+        // band where product-share masks live, so a degree-3 adversary can form
+        // the mask monomials without paying C(all_wires, 3).
+        let mut triples = 0usize;
+        if args.degree >= 3 {
+            for (i, &a) in wires.iter().enumerate() {
+                for (j, &b2) in wires[i + 1..].iter().enumerate() {
+                    for &c3 in &wires[i + 1 + j + 1..] {
+                        regs.push(Reg::Triple(a, b2, c3));
+                        triples += 1;
+                    }
+                }
+            }
+        }
+        println!(
+            "[hmap_affine] product wires: {} ({} pairs, {} triples)",
+            wires.len(),
+            pairs,
+            triples
+        );
     }
     let n_reg = regs.len();
     assert!(
@@ -198,6 +246,9 @@ fn main() {
             Reg::Lin(k) => (0..tb).map(|batch| gs[batch][cj][k]).collect(),
             Reg::Const => vec![!0u64; tb],
             Reg::Pair(a, c2) => (0..tb).map(|batch| gs[batch][cj][a] & gs[batch][cj][c2]).collect(),
+            Reg::Triple(a, b2, c3) => {
+                (0..tb).map(|batch| gs[batch][cj][a] & gs[batch][cj][b2] & gs[batch][cj][c3]).collect()
+            }
         }
     };
     let reg_ho_word = |r: Reg, cj: usize, batch: usize, gs: &Vec<Vec<Vec<u64>>>| -> u64 {
@@ -205,6 +256,7 @@ fn main() {
             Reg::Lin(k) => gs[batch][cj][k],
             Reg::Const => !0u64,
             Reg::Pair(a, c2) => gs[batch][cj][a] & gs[batch][cj][c2],
+            Reg::Triple(a, b2, c3) => gs[batch][cj][a] & gs[batch][cj][b2] & gs[batch][cj][c3],
         }
     };
 

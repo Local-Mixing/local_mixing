@@ -11,6 +11,7 @@ use local_mixing::postmix::xgate::{XGate, eval_u1024};
 use local_mixing::random::random_data::random_circuit;
 use local_mixing::replace::gadgets::{
     compose_a, gadgetize, gadgetize_xgates_with_slice_zero_ccnot, sandwich_default_s,
+    MaskConfig, ProdConfig,
     sliced_sandwich_with_d,
 };
 use rand::rngs::StdRng;
@@ -97,6 +98,10 @@ fn main() {
         sandwich_n,
         2,
         slice_gate_count,
+        // Deferred masks off: this bin reproduces the published old-vs-new
+        // comparison; enable via MaskConfig for masked A/B runs.
+        &MaskConfig::off(),
+        &ProdConfig::off(),
         &mut rng,
     );
     println!(
