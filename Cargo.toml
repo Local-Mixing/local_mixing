@@ -55,6 +55,18 @@ required-features = ["legacy-db-tools"]
 name = "expand_sample"
 path = "src/bin/expand_sample.rs"
 
+# Research heatmap sampler. Keeping the experiment source as the canonical
+# implementation makes the 4n fixed-slice/free-helper binary reproducible.
+[[bin]]
+name = "hmap_affine_fixed_slice"
+path = "experiments/affine_heatmaps_compact300_20260722/tools/hmap_affine_fixed_slice.rs"
+
+# Fast 64-lane semantic guard for strict 4n TDP artifacts. Its command-line
+# evidence is compatible with the existing Python slice-check logs.
+[[bin]]
+name = "slice_check_4n"
+path = "src/bin/slice_check_4n.rs"
+
 # Rainbow-table (replacement DB) pipeline tools, ported from the dbgen server
 # tree; see src/rainbow_table/mod.rs. Pipeline validators live as #[ignore]d
 # tests in src/rainbow_table/validation_tests.rs, not bins.
