@@ -449,3 +449,78 @@ Pipeline:
   Source C + sandwich + gadget + phase-A intermediate + all move snapshots
   kept SERVER-SIDE only (~/tds/prodshare233/); only this final circuit
   delivered to the Mac.
+
+## prodshare_n128_33_x3_final.mpmct1 (2026-07-25, from the server ~/tds/prod33_20260726)
+Third production circuit through the PRODUCT-SHARE nonlinear encoding, and the
+first under the BAND-HARDENING revision (commit 6aa54212; see
+docs/BAND_HARDENING.{tex,pdf} and docs/NONLINEAR_GADGETIZATION.{tex,pdf}).
+Four changes vs the [2,3,3] circuit above: the [3,3] plan (two deg-3 tower
+terms, NO deg-2 base term -- 22% fewer gates; two terms is the measured floor,
+a single term revives the deg-1 diagonal at rho 0.995), the band is now part
+of the INPUT SLICE (a nonzero band used to change nothing, which separated
+band from aux in two queries), a ROLLING BAND (the band variable's wire moves
+via RG2's swap, erasing a census that named the band exactly: writes/wire
+10-22 vs the carriers' 209-1004 before, indistinguishable after), and the
+wide fold path now shuffles its fragments (that fix had only ever reached the
+narrow path).
+Pipeline:
+  fresh C (128w x 3000 g57, SECRET, server-side only; gen_sandwich_gadget
+  seed 71 -- note the args are POSITIONAL: <out> n m_C m_D s rg_freq
+  slice_gates seed gadget_seed sandwich_seed, so s=896 rg_freq=1
+  slice_gates=2560 must be passed explicitly to reach the seeds) ->
+  sliced_sandwich_cnot (m_C=m_D=3000, s=896) = 7920 g / 256w ->
+  product-share gadgetize (PROD_K=0 PROD_K_HI=2 PROD_DEG_HI=3 PROD_FILL_NL=2
+  PROD_ROLL=1 => plan [3,3], band 46): 246808 g / 558 w, endpoint verify
+  PASSED (low-256 == sandwich, 200 samples) ->
+  fmix (FROZEN_DB_DIR=frozen_m1_m11, guards deg9/span30/terms 1024:2048):
+  - PHASE A (generation-100 dose over the DB-TARGETABLE material, seed 71):
+    --w-db 1.0 --gen-target 100 --gen-bias 0.9 --gen-giveup 30
+    --gen-stop-frac 0.02 --p-db-ingest 0.25 --p-db-hard 0.05 --db-ctrl-cap 2
+    --no-local-verify --p-twist 0.0016 neg-only, target 246808,
+    --moves 12000000 as a CEILING -> DOSE REACHED AT 8.2M MOVES, 474950 g.
+    NOTE: this is the first run where the dose stop could fire. Since
+    512ce31c, G= is the 5th-percentile generation over the TARGETABLE gates
+    (cap-eligible minus written-off) and dose_reached() tests lag/targetable;
+    both were measured over ALL gates before, which on ~60%-wide material
+    floors near 0.38 and can never trigger. G= climbed 0 -> 71 -> 82 -> 100
+    while the legacy Gall= stayed pinned at 0 throughout; 52 gates written
+    off. The fix only bites with --db-ctrl-cap > 0 (with the default 0 every
+    gate counts as targetable and the statistic silently reverts).
+    Size still drifts (+92%): the ingest/paid rounds are taken before the
+    thermostat, so --target-size does not hold it -- but the run now stops
+    when the dose is delivered rather than when the budget runs out.
+    g57-shaped gates 42934 -> 329685 (the DB emits g57-shaped material).
+    Wall clock 2043 s.
+  - PHASE B (grow to 3x the GADGET = 740424): k-max 12 --split-base 2.0
+    --no-local-verify --p-twist 0.001 neg-only, 15M moves (there is no
+    size-based stop; the walk churns at target for the rest of the budget)
+    -> 762362 g, x3.09 of the gadget, x1.61 of the phase-A output.
+    g57-shaped gates 329685 -> 12438 (1.6% of the circuit; the previous run
+    reached 0.2%, having had more growth headroom and so more crossing-driven
+    erosion). Wall clock 5279 s.
+  Final: 762362 gates, 558 wires. Eval on the ZERO SLICE: inject x on wires
+  0..127, all other wires (128..557) = 0 -> C(x) on wires 128..255.
+Verification:
+  - verify_zero_slice (new tool, src/bin/verify_zero_slice.rs): PASS 200/200
+    samples against the ORIGINAL C, run twice -- on the server (seed 7) and
+    again on the fetched Mac copy (seed 99), so the transfer is covered too.
+    This closes the correctness argument directly: fmix only ever verifies a
+    chain link against its own input.
+  - deg-1 ridge vs the original C (hmap_affine, c-step 30 / 101 rows, 152
+    cols): depth 0.0485, depthMed 0.0000, meanH 0.4961. Read the ROW
+    STRUCTURE, not rho: 0 of the 71 interior rows have any prominence; the
+    only reconstructable rows are the two ports (13 head rows peak at column
+    0 where x sits unencoded, 15 tail rows at the last columns where C(x)
+    does). The global rho=0.448 is that two-plateau shape plus noise in the
+    dead middle, NOT a progress diagonal -- confirmed by re-measuring the
+    previously delivered [2,3,3] artifact under identical parameters:
+    0.0436 / 0.0000 / 0.4979, interior 0/71 rows, rho 0.019. Same structure,
+    different noise draw.
+  - statistical readout (hmap_stat, the new best-approximate-predictor
+    measure): interior median 0.703 against a 0.526 null floor, versus 0.714
+    for the pre-mixing gadget -- so mixing and growth leave the residual
+    statistical bias unchanged, matching the ridge finding that the leak is
+    already gone before mixing begins.
+  Source C + sandwich + gadget + phase-A intermediate + all move snapshots
+  kept SERVER-SIDE only (~/tds/prod33_20260726/); only this final circuit
+  delivered to the Mac.
