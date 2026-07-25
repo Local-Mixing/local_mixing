@@ -361,3 +361,91 @@ variant random CG menu; 5689c8ea exact-collides shuffle). Pipeline:
   Mixing flattens the map (std -11%) and shifts the mean toward hidden (+0.011);
   fossils essentially eliminated. Source C kept server-side (never delivered).
   Calibration: ~533 fmix moves/s on .242 (160 cores).
+
+## prodshare_n128_2233_x3_final.mpmct1 (2026-07-24, from the server ~/tds/prodshare)
+First production circuit through the PRODUCT-SHARE nonlinear encoding (commits
+55e91dc1 encoding+towers; 66ddec18/96113b1b docs). The balanced nonlinear
+share decode v = w_u ^ w_u' ^ XOR PROD(w^a) ^ c removes the computational-
+progress diagonal (see docs/PRODUCT_SHARE_ENCODING.{md,tex,pdf}). Pipeline:
+  fresh C (128w x 3000 g57, SECRET, server-side only) ->
+  sliced_sandwich_cnot (m_C=m_D=3000, s=896) = 7920 g / 256w ->
+  product-share gadgetize (gen_sandwich_gadget, mixed encoding
+  PROD_K=2 PROD_DEG=2 PROD_K_HI=2 PROD_DEG_HI=3 => plan [2,2,3,3], band 64):
+  374478 g / 576 w, endpoint verify PASSED (low-256 == sandwich, 200 samples) ->
+  fmix (FROZEN_DB_DIR=frozen_m1_m11, guards deg9/span30/terms 1024:2048):
+  - PHASE A (hold size, DB-mixing dose): --w-db 1.0 --no-local-verify
+    --p-twist 0.0016 neg-only, target 374478, 3M moves -> 392115 g (seed 31).
+    NOTE generation targeting is INFEASIBLE here (wide mask gates are
+    DB-re-encoding-ineligible, 5th-pct generation pinned at 0); a fixed dose
+    is used instead.
+  - PHASE B (grow x3): default k12/split-base2.0 --no-local-verify
+    (the exhaustive per-rewrite verify caps support at 24 wires and panics on
+    the wide gates; whole-circuit --verify-every still runs), --p-twist 0.001,
+    target 1123434, 15M moves -> 1127387 g (seed 31). x3.01 of the gadget.
+  Final: 1127387 gates, 576 wires. Eval on the ZERO SLICE: inject x on wires
+  0..127, all other wires (128..575) = 0 -> C(x) appears on wires 128..255.
+  hmap_affine vs original C (n=128, deg-1, meta server-side ~/tds/prodshare/hmaps):
+    plain gadget:  depth 0.351 depthMed 0.359 rho 1.00 (diagonal ALIVE)
+    mixed gadget:  depth 0.044 depthMed 0.000 rho 0.02 (dead)
+    phase A:       depth 0.044 depthMed 0.000 rho 0.02 (dead)
+    phase B (x3):  depth 0.044 depthMed 0.000 rho 0.02 (dead)
+    mixed gadget deg-2 (band-restricted): depthMed 0.000 rho -0.04 (dead)
+  The encoding kills the degree-1 AND degree-2 diagonal and it stays dead
+  identically through mixing + x3 growth. Plates:
+  reports/prod_share_20260723/. Source C + sandwich + gadget + phase-A
+  intermediate + all snapshots kept SERVER-SIDE only (~/tds/prodshare/); only
+  this final circuit delivered to the Mac.
+
+## prodshare_n128_233_x3_final.mpmct1 (2026-07-24, from the server ~/tds/prodshare233)
+Second production circuit through the PRODUCT-SHARE nonlinear encoding, using
+the EFFICIENCY+HARDENING revision (commits 2b16aa70 encoding pass; d32bedf7
+docs; see docs/PRODUCT_SHARE_UPDATE.{tex,pdf} and
+docs/NONLINEAR_GADGETIZATION.{tex,pdf}). Three changes vs the [2,2,3,3]
+circuit above: the [2,3,3] plan (one deg-2 base + two deg-3 tower terms --
+25% fewer gates at identical measured security), a NONLINEAR CASCADED band
+fill (products over data wires AND earlier band wires, so the band is no
+longer a set of learnable affine invariants of the whole circuit), a mirror
+fill F' after the output bookend, and randomized fold-fragment emission order.
+Pipeline:
+  fresh C (128w x 3000 g57, SECRET, server-side only; gen_sandwich_gadget
+  seed 1) -> sliced_sandwich_cnot (m_C=m_D=3000, s=896) = 7920 g / 256w ->
+  product-share gadgetize (PROD_K=1 PROD_DEG=2 PROD_K_HI=2 PROD_DEG_HI=3
+  PROD_FILL_NL=2 => plan [2,3,3], band 56): 281068 g / 568 w, endpoint verify
+  PASSED (low-256 == sandwich, 200 samples) ->
+  fmix (FROZEN_DB_DIR=frozen_m1_m11, guards deg9/span30/terms 1024:2048):
+  - PHASE A (generation-100 dose over the DB-ELIGIBLE material, seed 41):
+    --w-db 1.0 --gen-target 100 --gen-bias 0.9 --gen-giveup 30
+    --p-db-ingest 0.25 --p-db-hard 0.05 --db-ctrl-cap 2 --no-local-verify
+    --p-twist 0.0016 neg-only, target 281068, --moves 7200000
+    -> 472608 g. Eligible-gate lag at stop 1692/295572 = 0.57%.
+    NOTE 1: "generation 100" here means over CAP-ELIGIBLE gates. G= (the
+    reported 5th-percentile generation over ALL gates) is pinned at 0 by
+    construction, because ~62% of the gadget is width>=3 and so is never
+    DB-re-encoded. Read lag=/elig=, not G=.
+    NOTE 2: --gen-stop-frac CANNOT fire here -- dose_reached() tests the
+    ALL-gates laggard fraction, which floors near 0.38 -- so the run must be
+    bounded by --moves at the observed dose point (a first, unbounded run was
+    aborted for this reason). Arm FMIX_STOP_FLAG at launch; it is env-only.
+    NOTE 3: size drifts +68% under the ingest-then-pay paid channel;
+    --target-size does not hold it.
+  - PHASE B (grow to 3x the GADGET): default k12/split-base2.0
+    --no-local-verify (the per-rewrite verify caps support at 24 wires and
+    panics on the wide gates; whole-circuit --verify-every still runs),
+    --p-twist 0.001, target 843204, 15M moves -> 862630 g (seed 41).
+    x3.07 of the gadget (x1.83 of the phase-A output).
+  Final: 862630 gates, 568 wires. Zero verification failures anywhere in the
+  pipeline; the final was written verified. Eval on the ZERO SLICE: inject x
+  on wires 0..127, all other wires (128..567) = 0 -> C(x) on wires 128..255.
+  hmap_affine vs original C (n=128, c-step 30/101 rows; deg-2 band-restricted
+  to wires 512-567). Plates reports/prod_narrow_20260724/:
+    gadget  deg-1: depth 0.0436 depthMed 0.0000 rho 0.015 meanH 0.4986 (dead)
+    phase A deg-1: depth 0.0436 depthMed 0.0000 rho 0.016 meanH 0.4980 (dead)
+    phase B deg-1: depth 0.0436 depthMed 0.0000 rho 0.019 meanH 0.4978 (dead)
+    phase B deg-2: depth 0.0427 depthMed 0.0000 rho 0.019 meanH 0.4969 (dead)
+  (reference: the PLAIN linear gadget on the same C reads depth 0.346
+  depthMed 0.356 rho 1.000 -- diagonal ALIVE.)
+  The diagonal is dead at the gadget and stays dead IDENTICALLY through the
+  generation-100 dose and the x3 growth, at degree 1 and degree 2 alike.
+  Source C + sandwich + gadget + phase-A intermediate + all move snapshots
+  kept SERVER-SIDE only (~/tds/prodshare233/); only this final circuit
+  delivered to the Mac.
