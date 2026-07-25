@@ -9,6 +9,7 @@ use local_mixing::replace::gadgets::{
 use local_mixing::replace::main_mix::main_shuffle_shoot_shuffle;
 use local_mixing::replace::main_mix_cnot::{CnotSssParams, main_shuffle_shoot_shuffle_cnot};
 use local_mixing::replace::mixing::install_kill_handler;
+use local_mixing::replace::nonlinear_handles::NonlinearHandleParams;
 use local_mixing::replace::replace::{
     GEN_MODE, INCOMING_RANK_MODE, IncomingRankMode, MAX_FANOUT, MIN_MEDIAN_LEEWAY,
     OUTGOING_GEN_MODE, SAMF_TARGET, TRACK_SURVIVORS, print_compress_timers, record_finish,
@@ -68,6 +69,29 @@ pub fn run(sub: &clap::ArgMatches) {
     let grow_threshold: f64 = *sub.get_one("grow_threshold").unwrap();
     let compress_fraction: f64 = *sub.get_one("compress_fraction").unwrap();
     let target_size: usize = *sub.get_one("target_size").unwrap();
+    let nonlinear_control_wires: usize = *sub.get_one("nonlinear_handle_control_wires").unwrap();
+    let nonlinear_target_wires: usize = *sub.get_one("nonlinear_handle_target_wires").unwrap();
+    let nonlinear_handles = NonlinearHandleParams {
+        handles: *sub.get_one("nonlinear_handles").unwrap(),
+        min_span: *sub.get_one("nonlinear_handle_min_span").unwrap(),
+        max_span: *sub.get_one("nonlinear_handle_max_span").unwrap(),
+        candidates: *sub.get_one("nonlinear_handle_candidates").unwrap(),
+        max_gates: *sub.get_one("nonlinear_handle_max_gates").unwrap(),
+        seed: *sub.get_one("nonlinear_handle_seed").unwrap(),
+        target_wire_limit: if nonlinear_target_wires == 0 {
+            n
+        } else {
+            nonlinear_target_wires
+        },
+        // On Feistal/TDP-style fixed slices, auxiliary y/z wires are public
+        // constants. Default the controls to the original x block so every
+        // accepted handle is genuinely nonlinear in the sampled input.
+        control_wire_limit: if nonlinear_control_wires == 0 {
+            n
+        } else {
+            nonlinear_control_wires
+        },
+    };
     let stage_d = grow_threshold > 0.0 || target_size > 0;
     let rg_freq: usize = *sub.get_one("rg_frequency").unwrap();
     let data = fs::read_to_string(s).expect("Failed to read source circuit");
@@ -237,6 +261,7 @@ pub fn run(sub: &clap::ArgMatches) {
         grow_threshold,
         compress_fraction,
         target_size,
+        &nonlinear_handles,
     );
     if record_replacements {
         record_finish();

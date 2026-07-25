@@ -5,6 +5,7 @@ pub mod gadgets;
 pub mod main_mix;
 pub mod main_mix_cnot;
 pub mod mixing;
+pub mod nonlinear_handles;
 pub mod pairs;
 pub mod ranking;
 pub mod replace;

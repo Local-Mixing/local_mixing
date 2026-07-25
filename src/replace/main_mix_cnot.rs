@@ -305,6 +305,35 @@ fn ensure_parent(path: &str) {
     }
 }
 
+fn assert_strict_tdp4n(enabled: bool, gates: &[XGate], total_wires: usize, n: usize, stage: &str) {
+    if !enabled {
+        return;
+    }
+    let expected_wires = n.checked_mul(4).expect("4n TDP wire count overflow");
+    assert_eq!(
+        total_wires, expected_wires,
+        "strict 4n TDP wire-count invariant failed {stage}"
+    );
+    for (gate_index, gate) in gates.iter().enumerate() {
+        assert!(
+            (gate.target as usize) < expected_wires,
+            "strict 4n TDP target wire {} is outside 0..{} at gate {} {stage}",
+            gate.target,
+            expected_wires,
+            gate_index
+        );
+        for &(wire, _) in &gate.ctrls {
+            assert!(
+                (wire as usize) < expected_wires,
+                "strict 4n TDP control wire {} is outside 0..{} at gate {} {stage}",
+                wire,
+                expected_wires,
+                gate_index
+            );
+        }
+    }
+}
+
 /// Run the XGate-native shuffle/shoot/shuffle path selected by `sss --cnot`.
 pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<'_>) {
     assert!(p.x > 0, "--x must be nonzero");
@@ -437,6 +466,7 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         "--cnot supports at most 1024 transformed wires"
     );
     let mut gates = transformed.gates;
+    assert_strict_tdp4n(p.do_tdp4n, &gates, total_wires, p.n, "after construction");
     println!(
         "[sss:cnot] {label}: source={} gates -> {} gates, {} wires; output format=mpmct1",
         original.gates.len(),
@@ -517,6 +547,7 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         mixer.final_float();
         mixer.global_check();
         gates = mixer.arena.to_vec();
+        assert_strict_tdp4n(p.do_tdp4n, &gates, total_wires, p.n, "after mixing");
         print_counts(&format!("round {} after mixing", round + 1), &gates);
 
         let compress_params = CompressParams {
@@ -527,6 +558,7 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         let before_compress_len = gates.len();
         let (compressed, report) = compress(gates, total_wires, &compress_params);
         gates = compressed;
+        assert_strict_tdp4n(p.do_tdp4n, &gates, total_wires, p.n, "after compression");
         println!(
             "[sss:cnot] round {} compression: {} -> {} gates in {} sweeps (fixed-point={})",
             round + 1,
@@ -571,7 +603,11 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
     if p.full_shuffle || p.full_shuffle_early {
         samf_requested = samf_requested.max(total_wires);
     }
-    if samf_requested > 0 {
+    if p.do_tdp4n && samf_requested > 0 {
+        println!(
+            "[sss:cnot] strict 4n TDP: skipping final masked-SAMF pass because it requires an additional helper wire"
+        );
+    } else if samf_requested > 0 {
         assert!(
             total_wires < 1024,
             "masked native SAMFs require one additional random helper wire"
@@ -617,6 +653,7 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         }
     }
 
+    assert_strict_tdp4n(p.do_tdp4n, &gates, total_wires, p.n, "before final write");
     ensure_parent(p.save);
     format::write_mpmct(p.save, &gates, total_wires).expect("write final CNOT circuit");
     if let Some((public_y, public_z)) = &public_slice_words {
@@ -739,5 +776,60 @@ mod tests {
         assert!(metadata.contains("sat_helper_wires=9..12\n"));
         assert!(metadata.contains("fixed_input_blocks=y,z\n"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn strict_tdp4n_full_shuffle_never_adds_a_helper_wire_or_samf_mask() {
+        let source = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1]],
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "local_mixing_cnot_tdp4n_no_samf_helper_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("out.mpmct1");
+        let params = CnotSssParams {
+            rounds: 0,
+            n: 3,
+            m: 1,
+            x: 2,
+            save: output.to_str().unwrap(),
+            source: "source.txt",
+            do_gadgetize: false,
+            do_feistalize: false,
+            do_tdp4n: true,
+            slice_zero: false,
+            slice_zero_random: false,
+            slice_zero_random_gates: 96,
+            slice_zero_hardcoded: false,
+            slice_zero_hardcoded_rounds: 1,
+            gadget_path: None,
+            full_shuffle: true,
+            full_shuffle_early: true,
+            shooting_times: 1,
+            collision_rounds: 1,
+            stable_compressions: 1,
+            expansion_game: false,
+            equality_check: true,
+            rg_freq: 2,
+        };
+        main_shuffle_shoot_shuffle_cnot(&source, &params);
+
+        let (written, wires) = format::read_mpmct(output.to_str().unwrap()).unwrap();
+        assert_eq!(wires, 4 * params.n);
+        assert!(written.iter().all(|gate| gate.max_wire() < wires as u16));
+        assert!(
+            !Path::new(&format!("{}.samf_mask", output.to_str().unwrap())).exists(),
+            "strict 4n output must not emit masked-SAMF helper metadata"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "strict 4n TDP control wire")]
+    fn strict_tdp4n_guard_rejects_out_of_range_gate_wires() {
+        let gate = XGate::cnot(0, 12);
+        assert_strict_tdp4n(true, &[gate], 12, 3, "in test");
     }
 }

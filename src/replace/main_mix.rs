@@ -10,6 +10,9 @@ use crate::{
             feistalize, feistalize_with_slice_zero, feistalize_with_slice_zero_hardcoded,
             feistalize_with_slice_zero_random, gadgetize, packed_bit,
         },
+        nonlinear_handles::{
+            NonlinearHandleParams, insert_nonlinear_handles, insert_nonlinear_handles_tagged,
+        },
         pairs::interleave,
         replace::compress_loop,
         transpositions::{
@@ -423,6 +426,7 @@ pub fn main_shuffle_shoot_shuffle(
     grow_threshold: f64,
     compress_fraction: f64,
     target_size: usize,
+    nonlinear_handles: &NonlinearHandleParams,
 ) {
     // Start with the input circuit
     let save_base = save.strip_suffix(".txt").unwrap_or(save);
@@ -1190,6 +1194,34 @@ pub fn main_shuffle_shoot_shuffle(
                 }
             }
         }
+    }
+
+    if nonlinear_handles.handles > 0 {
+        let before = circuit.gates.len();
+        let report = if track {
+            insert_nonlinear_handles_tagged(&mut circuit, n, nonlinear_handles, &mut survivor_tags)
+        } else {
+            insert_nonlinear_handles(&mut circuit, n, nonlinear_handles)
+        };
+        println!(
+            "[sss:nl] final nonlinear handles: attempts={} candidates={} applied={} span-rejected={} cap-rejected={} collision-limited={} gates={}→{} requested-visits={} covered-visits={} delivered={:.3} carrier-depth={:.3} span[min/mean/max]={}/{:.1}/{} distinct-targets={}",
+            report.attempts,
+            report.candidates_evaluated,
+            report.applied,
+            report.span_rejected,
+            report.cap_rejected,
+            report.collision_limited,
+            before,
+            circuit.gates.len(),
+            report.requested_gate_visits,
+            report.covered_gate_visits,
+            report.delivered_fraction(),
+            report.mean_carrier_depth(circuit.gates.len()),
+            report.min_achieved_span,
+            report.mean_span(),
+            report.max_achieved_span,
+            report.distinct_targets,
+        );
     }
 
     println!("Final len: {}", circuit.gates.len());

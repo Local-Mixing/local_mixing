@@ -350,6 +350,71 @@ fn main() {
                         .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("SSS/SSG hybrid cadence: absolute per-stage shooting cap and held final size; overrides --grow-threshold and stops only on the min-generation condition"),
+                )
+                .arg(
+                    Arg::new("nonlinear_handles")
+                        .long("nonlinear-handles")
+                        .required(false)
+                        .default_value("0")
+                        .conflicts_with("cnot")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("After the final legacy G57 compression, insert this many exact nonlinear state-mask handles; 0 disables"),
+                )
+                .arg(
+                    Arg::new("nonlinear_handle_min_span")
+                        .long("nonlinear-handle-min-span")
+                        .required(false)
+                        .default_value("64")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Minimum dependency-clean gate span required for an SSS nonlinear handle"),
+                )
+                .arg(
+                    Arg::new("nonlinear_handle_max_span")
+                        .long("nonlinear-handle-max-span")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Maximum requested nonlinear-handle span; 0 searches to the circuit boundary"),
+                )
+                .arg(
+                    Arg::new("nonlinear_handle_candidates")
+                        .long("nonlinear-handle-candidates")
+                        .required(false)
+                        .default_value("64")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Random nonlinear G57 carriers scored per handle attempt"),
+                )
+                .arg(
+                    Arg::new("nonlinear_handle_max_gates")
+                        .long("nonlinear-handle-max-gates")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Hard final gate ceiling for nonlinear-handle insertion; 0 adds no extra ceiling"),
+                )
+                .arg(
+                    Arg::new("nonlinear_handle_seed")
+                        .long("nonlinear-handle-seed")
+                        .required(false)
+                        .default_value("2026072201")
+                        .value_parser(clap::value_parser!(u64))
+                        .help("Deterministic SSS nonlinear-handle selection seed"),
+                )
+                .arg(
+                    Arg::new("nonlinear_handle_target_wires")
+                        .long("nonlinear-handle-target-wires")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Restrict handle targets to wires [0,L); 0 uses the original input width, keeping all handle pins input-dependent on fixed auxiliary slices"),
+                )
+                .arg(
+                    Arg::new("nonlinear_handle_control_wires")
+                        .long("nonlinear-handle-control-wires")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Restrict handle controls to wires [0,L); 0 uses the original input width, keeping handles active on fixed auxiliary slices"),
                 ),
         )
         .subcommand(
