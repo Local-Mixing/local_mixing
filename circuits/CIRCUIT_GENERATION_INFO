@@ -490,15 +490,22 @@ Pipeline:
     thermostat, so --target-size does not hold it -- but the run now stops
     when the dose is delivered rather than when the budget runs out.
     g57-shaped gates 42934 -> 329685 (the DB emits g57-shaped material).
-    Wall clock 2043 s.
-  - PHASE B (grow to 3x the GADGET = 740424): k-max 12 --split-base 2.0
-    --no-local-verify --p-twist 0.001 neg-only, 15M moves (there is no
-    size-based stop; the walk churns at target for the rest of the budget)
-    -> 762362 g, x3.09 of the gadget, x1.61 of the phase-A output.
-    g57-shaped gates 329685 -> 12438 (1.6% of the circuit; the previous run
-    reached 0.2%, having had more growth headroom and so more crossing-driven
-    erosion). Wall clock 5279 s.
-  Final: 762362 gates, 558 wires. Eval on the ZERO SLICE: inject x on wires
+    Wall clock 2043 s. Script run.sh (phases A and B; phase B there uses the
+    superseded target -- see the note below).
+  - PHASE B (grow to 3x PHASE B'S OWN INPUT = 3 x 474950 = 1424850): k-max 12
+    --split-base 2.0 --no-local-verify --p-twist 0.001 neg-only, 15M moves
+    (there is no size-based stop; the walk reaches target around move 1.7M and
+    churns there for the rest of the budget) -> 1428155 g, x3.01 of its input.
+    g57-shaped gates 329685 -> 637 (0.04% of the circuit -- better than the
+    previous delivery's 1758, since erosion is crossing-driven and this run
+    does more growth). Wall clock 3452 s. Script phaseB2.sh.
+    NOTE ON THE TARGET: "triple the size" means 3x the size phase B STARTS
+    from, i.e. 3x the phase-A output. The two earlier deliveries used 3x the
+    GADGET, which was flagged as an open ambiguity at the time; it is settled
+    here. A first pass of this run used the old reading (target 740424 ->
+    762362 g, x1.61 of its input) and is superseded -- it survives on the
+    server as phaseB.mpmct1 for comparison, and is what run.sh produces.
+  Final: 1428155 gates, 558 wires. Eval on the ZERO SLICE: inject x on wires
   0..127, all other wires (128..557) = 0 -> C(x) on wires 128..255.
 Verification:
   - verify_zero_slice (new tool, src/bin/verify_zero_slice.rs): PASS 200/200
@@ -507,20 +514,20 @@ Verification:
     This closes the correctness argument directly: fmix only ever verifies a
     chain link against its own input.
   - deg-1 ridge vs the original C (hmap_affine, c-step 30 / 101 rows, 152
-    cols): depth 0.0485, depthMed 0.0000, meanH 0.4961. Read the ROW
+    cols): depth 0.0485, depthMed 0.0000, meanH 0.4962. Read the ROW
     STRUCTURE, not rho: 0 of the 71 interior rows have any prominence; the
     only reconstructable rows are the two ports (13 head rows peak at column
     0 where x sits unencoded, 15 tail rows at the last columns where C(x)
-    does). The global rho=0.448 is that two-plateau shape plus noise in the
+    does). The global rho=0.447 is that two-plateau shape plus noise in the
     dead middle, NOT a progress diagonal -- confirmed by re-measuring the
     previously delivered [2,3,3] artifact under identical parameters:
     0.0436 / 0.0000 / 0.4979, interior 0/71 rows, rho 0.019. Same structure,
     different noise draw.
   - statistical readout (hmap_stat, the new best-approximate-predictor
-    measure): interior median 0.703 against a 0.526 null floor, versus 0.714
+    measure): interior median 0.692 against a 0.525 null floor, versus 0.714
     for the pre-mixing gadget -- so mixing and growth leave the residual
-    statistical bias unchanged, matching the ridge finding that the leak is
-    already gone before mixing begins.
+    statistical bias essentially unchanged (a hair lower), matching the ridge
+    finding that the leak is already gone before mixing begins.
   Source C + sandwich + gadget + phase-A intermediate + all move snapshots
   kept SERVER-SIDE only (~/tds/prod33_20260726/); only this final circuit
   delivered to the Mac.
