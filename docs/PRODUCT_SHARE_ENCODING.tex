@@ -243,10 +243,11 @@ leak was already gone before mixing began.
 The wide mask fragments (width up to ${\sim}15$ after folding through the
 256-wire sandwich's CCNOTs) are \textbf{ineligible for frozen-DB re-encoding}
 (the narrow $m1$--$m11$ store, \texttt{-{}-db-ctrl-cap 2}). Operationally,
-\textbf{generation-targeting mixing does not converge} on a product-share gadget:
-the 5th-percentile gate generation is pinned at 0 because a large fraction of
-gates can never be re-encoded, so ``run to generation $N$'' is not a meaningful
-target---a fixed dose (or growth phase) is used instead. Defensively, the same
+the all-gates 5th-percentile generation (\texttt{Gall=}) is pinned at 0 because
+a large fraction of gates can never be re-encoded. \emph{Since} \texttt{512ce31c}
+\emph{the reported} \texttt{G=} \emph{and the dose stop are measured over the
+targetable population instead, so ``run to generation $N$'' does converge --- it
+means $N$ over the DB-eligible material.} Defensively, the same
 fact means the encoding \textbf{resists DB-based simplification}, which is a
 property one wants of an obfuscation.
 

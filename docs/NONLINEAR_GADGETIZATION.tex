@@ -231,17 +231,26 @@ term count is a quadratic lever and everything else is second order.
 
 \section{Reading a mixing run on this material}
 
-\texttt{G=} in the fmix report is the 5th-percentile gate generation over
-\textbf{all} gates. Since ${\sim}62\%$ of a product-share gadget is
-cap-ineligible and never re-encoded, \texttt{G=} is \textbf{pinned at 0 by
-construction} and no amount of mixing moves it. ``Run to generation $N$'' cannot
-mean the reported \texttt{G=} here.
+Generations only advance under DB re-encoding, and ${\sim}62\%$ of a
+product-share gadget is width $\ge 3$, hence cap-ineligible: those gates sit at
+generation 0 forever. \texttt{G=} is therefore measured over the
+\textbf{targetable} population---cap-eligible and not written off---which is
+exactly the set the DB channel can move. \texttt{Gall=} reports the older
+all-gates percentile beside it, and on this material that one is
+\textbf{structurally pinned at 0}: it is not a progress number here, and no
+amount of mixing moves it.
 
-The meaningful target is generation $N$ over the DB-eligible material:
-\texttt{--gen-target N} drives it, \texttt{--gen-stop-frac} measures it as
-$\mathrm{lag}/\mathrm{elig}$, and \texttt{--gen-giveup} writes off eligible gates
-the DB genuinely cannot reach so the stop can fire. Read \texttt{lag=/elig=};
-\texttt{wlag=} is the wide population.
+So ``run to generation $N$'' means $N$ over the targetable material.
+\texttt{--gen-target N} drives it, \texttt{--gen-stop-frac} stops on
+$\mathrm{lag}/\mathrm{tgtbl}$, and \texttt{--gen-giveup} retires eligible gates
+the DB genuinely cannot reach. Read \texttt{G=}, \texttt{lag=} and
+\texttt{tgtbl=}; \texttt{wlag=} is the wide population, \texttt{Gall=} the
+legacy figure.
+
+(Before the fix in \texttt{512ce31c} both \texttt{G=} and the dose stop counted
+all gates, so on this material the stop could never fire and phase A would burn
+its whole move budget after the dose was complete---bound it with
+\texttt{--moves} if running an older build.)
 
 Also required: \texttt{--no-local-verify}. The exhaustive per-rewrite check caps
 support at 24 wires and \textbf{panics} on two wide gates. The whole-circuit
