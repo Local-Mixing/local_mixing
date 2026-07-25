@@ -463,10 +463,12 @@ pub struct MixParams {
     pub gen_median_low: bool,
     // Dose-based stop: with gen_target > 0 and gen_stop_frac >= 0, the run
     // ends (MixStop::DoseReached) at the first report point where the
-    // laggard fraction among cap-eligible gates is <= gen_stop_frac AND the
-    // cumulative per-position twist coverage (twist_span / size) has reached
-    // twist_cov_stop (0 = no coverage requirement). The move budget becomes a
-    // ceiling: phase A runs exactly as long as the dose requires.
+    // laggard fraction among the TARGETABLE gates (cap-eligible, not written
+    // off — i.e. lag/targetable, the same population behind g_circ) is
+    // <= gen_stop_frac AND the cumulative per-position twist coverage
+    // (twist_span / size) has reached twist_cov_stop (0 = no coverage
+    // requirement). The move budget becomes a ceiling: phase A runs exactly
+    // as long as the dose requires.
     pub gen_stop_frac: f64,
     pub twist_cov_stop: f64,
     // Generation-multiple snapshots: at each report point, when the circuit
@@ -791,13 +793,32 @@ pub struct GenStats {
     /// Minimum gen over ALL linked gates (GEN_FRESH when nothing lags).
     pub min: u32,
     /// ALL gates below gen_target (eligible + wide + written-off) and the
-    /// total — the benchmark dose criterion: the circuit has generation
-    /// >= target iff all_lag / total <= the stop fraction (5% default).
+    /// total.
     pub all_lag: u64,
     pub total: u64,
-    /// The circuit generation itself: the largest G such that at least 95%
-    /// of all gates have generation >= G (the 5th-percentile generation).
+    /// The circuit generation: the largest G such that at least 95% of the
+    /// TARGETABLE gates have generation >= G (the 5th-percentile generation
+    /// over the population the DB channel can actually move — cap-eligible
+    /// and not written off).
+    ///
+    /// It is deliberately NOT the percentile over all gates. Generations only
+    /// advance under DB re-encoding, so a gate the DB can never touch sits at
+    /// generation 0 forever; if such gates exceed 5% of the circuit they pin
+    /// the all-gates percentile at 0 permanently, no matter how much mixing
+    /// runs. That is a structural property of the material, not a measure of
+    /// progress. On a product-share gadget ~62% of gates are wide, so the
+    /// all-gates figure is identically 0 and says nothing.
+    ///
+    /// When every gate is targetable (the common case: no ctrl cap and no
+    /// write-offs) this is exactly the old all-gates percentile, so runs on
+    /// uniformly narrow material are unaffected.
     pub g_circ: u32,
+    /// The old all-gates percentile, kept for continuity with earlier runs
+    /// and reported as Gall=. Equals g_circ when everything is targetable.
+    pub g_all: u32,
+    /// Gates the DB channel can actually move: cap-eligible, minus those
+    /// written off as unreachable. The denominator behind g_circ.
+    pub targetable: u64,
 }
 
 impl Mixer {
@@ -3273,7 +3294,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}] | gen tgt={} G={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={}",
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -3336,6 +3357,8 @@ impl Mixer {
             hist.join(" "),
             self.params.gen_target,
             gs.g_circ,
+            gs.g_all,
+            gs.targetable,
             gs.all_lag,
             gs.total,
             gs.lag,
@@ -3380,12 +3403,17 @@ impl Mixer {
             all_lag: 0,
             total: 0,
             g_circ: 0,
+            g_all: 0,
+            targetable: 0,
         };
-        // Bucketed gen histogram for the percentile (everything at or past
-        // the cap lands in the top bucket, incl. GEN_FRESH — fine, the 5th
-        // percentile of interest sits far below it).
+        // Two bucketed gen histograms for the percentiles (everything at or
+        // past the cap lands in the top bucket, incl. GEN_FRESH — fine, the
+        // 5th percentile of interest sits far below it): `hist` over all
+        // gates (g_all, kept for continuity) and `thist` over the targetable
+        // ones (g_circ, the number that means something).
         const GB: usize = 1024;
         let mut hist = [0u64; GB];
+        let mut thist = [0u64; GB];
         for id in self.arena.ids_in_order() {
             let m = self.meta_of(id);
             s.min = s.min.min(m.dgen);
@@ -3403,6 +3431,9 @@ impl Mixer {
             }
             s.elig += 1;
             if m.dgen >= target {
+                // At or past target: targetable and done.
+                s.targetable += 1;
+                thist[(m.dgen as usize).min(GB - 1)] += 1;
                 continue;
             }
             if m.miss < budget {
@@ -3410,22 +3441,40 @@ impl Mixer {
             } else if giveup == 0 || m.miss < giveup {
                 s.hard += 1;
             } else {
+                // Written off as unreachable: excluded from targeting, from
+                // the dose stop, and from the circuit generation alike — the
+                // DB cannot move it, so it must not hold the percentile down.
                 s.unreach += 1;
+                continue;
             }
+            s.targetable += 1;
+            thist[(m.dgen as usize).min(GB - 1)] += 1;
         }
         s.lag = s.cheap + s.hard;
-        // g_circ = largest G with >= 95% of gates at generation >= G: walk the
-        // histogram until more than 5% of gates lie strictly below G.
-        let allow = s.total / 20;
-        let mut below = 0u64;
-        for g in 0..GB {
-            below += if g > 0 { hist[g - 1] } else { 0 };
-            if below <= allow {
-                s.g_circ = g as u32;
-            } else {
-                break;
+        // Largest G with >= 95% of the population at generation >= G: walk
+        // the histogram until more than 5% lie strictly below G.
+        let percentile = |h: &[u64; GB], population: u64| -> u32 {
+            let allow = population / 20;
+            let mut below = 0u64;
+            let mut g_out = 0u32;
+            for g in 0..GB {
+                below += if g > 0 { h[g - 1] } else { 0 };
+                if below <= allow {
+                    g_out = g as u32;
+                } else {
+                    break;
+                }
             }
-        }
+            g_out
+        };
+        s.g_all = percentile(&hist, s.total);
+        // With nothing targetable the generation census is meaningless; fall
+        // back to the all-gates figure rather than reporting a bare 0.
+        s.g_circ = if s.targetable == 0 {
+            s.g_all
+        } else {
+            percentile(&thist, s.targetable)
+        };
         s
     }
 
@@ -3447,7 +3496,19 @@ impl Mixer {
             return false;
         }
         let s = self.gen_stats();
-        let lag_frac = if s.total == 0 { 0.0 } else { s.all_lag as f64 / s.total as f64 };
+        // Laggard fraction among the gates targeting can actually move. This
+        // must NOT be all_lag/total: gates the DB channel can never re-encode
+        // stay below target forever, so on material where they exceed the
+        // stop fraction (a product-share gadget is ~62% wide) the all-gates
+        // ratio never falls and the dose stop never fires — the run burns its
+        // whole move budget after the dose is long since complete. With
+        // everything targetable the two agree, so narrow runs are unaffected.
+        if s.targetable == 0 {
+            // Nothing is re-encodable: the dose is unmeasurable, not met.
+            // Run the move budget rather than exiting immediately.
+            return false;
+        }
+        let lag_frac = s.lag as f64 / s.targetable as f64;
         if lag_frac > self.params.gen_stop_frac {
             return false;
         }
@@ -4277,17 +4338,21 @@ mod mix_tests {
         let s = mx.gen_stats();
         assert_eq!(s.unreach, n0 as u64);
         assert_eq!(s.lag, 0, "retired gates leave the targeting tiers");
-        assert_eq!(s.all_lag, n0 as u64, "...but still count against the circuit generation");
-        assert!(!mx.dose_reached(), "the all-gates criterion keeps the dose open");
+        assert_eq!(s.all_lag, n0 as u64, "...and still show in the all-gates census");
+        assert_eq!(s.targetable, 0, "written-off gates are not targetable");
+        assert!(
+            !mx.dose_reached(),
+            "with nothing targetable the dose is unmeasurable, not met"
+        );
     }
 
-    // The dose stop is the benchmark criterion — the fraction of ALL gates
-    // below target (wide ones included) and the twist coverage must BOTH
-    // clear their thresholds; g_circ reports the 5th-percentile generation.
+    // The dose stop and the circuit generation are both measured over the
+    // TARGETABLE gates — cap-eligible and not written off. Generations only
+    // advance under DB re-encoding, so a gate the DB can never touch must not
+    // hold either number down forever.
     #[test]
-    fn dose_stop_counts_all_gates() {
+    fn dose_stop_and_generation_count_targetable_gates() {
         let gates = random_mixed_circuit(37, 16, 40);
-        let n = gates.len() as u64;
         let params = MixParams {
             gen_target: 2,
             gen_stop_frac: 0.0,
@@ -4299,22 +4364,48 @@ mod mix_tests {
         assert!(!mx.dose_reached(), "all-gen-0 input cannot be at dose");
         assert_eq!(mx.gen_stats().g_circ, 0);
         let ids = mx.arena.ids_in_order();
+        let narrow: Vec<u32> =
+            ids.iter().copied().filter(|&id| mx.width_of(id) <= 2).collect();
+        let wide: Vec<u32> =
+            ids.iter().copied().filter(|&id| mx.width_of(id) > 2).collect();
+        assert!(
+            !narrow.is_empty() && !wide.is_empty(),
+            "fixture must contain both eligible and cap-ineligible gates"
+        );
         for &id in &ids {
             let m = mx.meta_of(id);
             mx.set_meta(id, Meta { dgen: 3, ..m });
         }
         let s = mx.gen_stats();
         assert_eq!(s.all_lag, 0);
+        assert_eq!(s.targetable, s.elig, "nothing written off yet");
         assert_eq!(s.g_circ, 3, "everything at 3 -> circuit generation 3");
         assert!(mx.dose_reached());
-        // One straggler blocks at frac 0.0 — wide or not, every gate counts —
-        // but is within a 5% allowance.
-        let m = mx.meta_of(ids[0]);
-        mx.set_meta(ids[0], Meta { dgen: 0, ..m });
-        assert!(!mx.dose_reached(), "a single laggard blocks at frac 0");
-        assert_eq!(mx.gen_stats().g_circ, 3, "1/40 = 2.5% below is inside the 5% allowance");
-        mx.params.gen_stop_frac = 0.05;
-        assert!(mx.dose_reached(), "1/{n} = 2.5% is within the 5% allowance");
+
+        // A WIDE straggler must not block the stop nor sink the generation:
+        // the DB channel can never re-encode it, so it would pin both forever.
+        // This is the product-share case, where ~62% of gates are wide.
+        let m = mx.meta_of(wide[0]);
+        mx.set_meta(wide[0], Meta { dgen: 0, ..m });
+        let s = mx.gen_stats();
+        assert_eq!(s.wlag, 1, "the wide gate lags");
+        assert_eq!(s.lag, 0, "...but is not targetable");
+        assert_eq!(s.g_circ, 3, "so the circuit generation is untouched");
+        assert!(mx.dose_reached(), "a wide laggard cannot block the dose");
+        // (One straggler in 40 is 2.5%, inside g_all's own 5% allowance, so
+        // g_all does not move here either. The divergence between the two
+        // shows up once the wide laggards exceed 5% — see the next test.)
+
+        // An ELIGIBLE straggler does block at frac 0, and is inside a 5%
+        // allowance.
+        let m = mx.meta_of(narrow[0]);
+        mx.set_meta(narrow[0], Meta { dgen: 0, ..m });
+        assert!(!mx.dose_reached(), "an eligible laggard blocks at frac 0");
+        let s = mx.gen_stats();
+        assert_eq!(s.lag, 1);
+        mx.params.gen_stop_frac = 1.0 / s.targetable as f64;
+        assert!(mx.dose_reached(), "one laggard is within its own fraction");
+
         // Coverage requirement gates the stop until twists supply it.
         mx.params.twist_cov_stop = 10.0;
         assert!(!mx.dose_reached());
@@ -4323,5 +4414,52 @@ mod mix_tests {
         // Off switches.
         mx.params.gen_stop_frac = -1.0;
         assert!(!mx.dose_reached());
+    }
+
+    // The regression this fix exists for: on majority-wide material (a
+    // product-share gadget) the old all-gates percentile pinned G= at 0 and
+    // the dose stop could never fire, however complete the dose actually was.
+    #[test]
+    fn wide_majority_does_not_pin_the_generation_or_the_dose() {
+        // 30 wide (3-control) gates + 10 narrow: 75% cap-ineligible, far past
+        // the 5% allowance, so the all-gates percentile is stuck at 0.
+        let mut gates: Vec<XGate> = Vec::new();
+        let mut rng = StdRng::seed_from_u64(4242);
+        while gates.len() < 30 {
+            let g = rand_gate(&mut rng, 16, 3, false);
+            if g.width() == 3 {
+                gates.push(g);
+            }
+        }
+        while gates.len() < 40 {
+            let g = rand_gate(&mut rng, 16, 2, false);
+            if g.width() <= 2 && g.width() >= 1 {
+                gates.push(g);
+            }
+        }
+        let params = MixParams {
+            gen_target: 100,
+            gen_stop_frac: 0.02,
+            db_ctrl_cap: 2,
+            report_every: u64::MAX,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        // Drive every ELIGIBLE gate past the target, as a completed dose does.
+        for &id in &mx.arena.ids_in_order() {
+            if mx.width_of(id) <= 2 {
+                let m = mx.meta_of(id);
+                mx.set_meta(id, Meta { dgen: 100, ..m });
+            }
+        }
+        let s = mx.gen_stats();
+        assert!(s.wlag >= 30, "the wide majority still lags by construction");
+        assert_eq!(s.lag, 0, "but the dose over eligible gates is complete");
+        assert_eq!(s.g_all, 0, "the all-gates percentile is pinned at 0 (the bug)");
+        assert_eq!(s.g_circ, 100, "the circuit generation reflects the real dose");
+        assert!(
+            mx.dose_reached(),
+            "and the dose stop fires instead of burning the whole move budget"
+        );
     }
 }
