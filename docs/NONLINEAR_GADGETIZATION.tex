@@ -9,7 +9,7 @@
 \title{\textbf{Nonlinear gadgetization}\\[2pt]
 \large The product-share encoding, described from scratch}
 \author{}
-\date{2026-07-24}
+\date{2026-07-25}
 \begin{document}
 \maketitle
 
@@ -80,8 +80,8 @@ re-symmetrizes the classes; it is structural, not a convenience.
 \section{The frozen source band}
 
 The mask sources live on a band of extra wires appended after the $2n$ carriers.
-Each band wire is filled at the input port and then \textbf{never written
-again}. Because the sources are frozen, every registered mask term is
+Each band wire is filled at the input port and its \textbf{value} is then never
+changed again. Because the sources are frozen, every registered mask term is
 \textbf{time-invariant}---unaffected by all re-randomization and all gate
 traffic---so a mask is one gate, not a maintained data structure, and nothing is
 ever flushed except the final unshare.
@@ -110,7 +110,31 @@ from the rest of that wire's transitive support, so the fill is balanced over
 uniform $x$ for any nonlinear part.
 
 The same fill is emitted again after the output bookend (\textbf{mirror $F'$}),
-so the band is not anchored only at one port.
+now over every non-output wire rather than the band's own, so the fill's target
+set does not itself publish where the band is.
+
+\textbf{The band rolls.} A frozen value on a fixed wire is a wire that is read
+constantly and written twice, which a one-pass census of the emitted gate list
+separates from the carriers perfectly---writes per wire 10--22 against the
+carriers' 209--1004, reads 9{,}725--14{,}712 against 272--804. Identifying a mask
+source is the first thing a restriction adversary must do, and that handed over
+the list. So the \emph{role} moves: one \textbf{roll} per inter-SG gap swaps a
+band variable's wire with a uniformly chosen other wire---another band wire, or a
+carrier, in which case the two exchange roles and the vacated wire becomes a live
+carrier. The bookkeeping re-points (\texttt{GadgetState::pairs} for the carrier,
+the ledger's location map for the band), so every decode is invariant; only the
+address changes. Mask slots therefore name band \emph{variables}, not wires, and
+resolve to literals at emission time.
+
+After rolling, no threshold on writes, on reads, or on gate shape separates band
+from carriers, and no wire is unwritten across any 50k-gate window. The swap is
+emitted in a mixed vocabulary---either a CNOT or the pair
+$t \mathrel{\xor}= s \wedge u$, $t \mathrel{\xor}= s \wedge \neg u$, which sums
+to $s$ exactly---because with plain CNOTs the write \emph{counts} matched but the
+gate \emph{shapes} did not: nothing but a roll writes a wire while it holds a
+band variable. Residual: a 10k-gate window still leaves about a dozen wires
+unwritten, so an adversary who stitches windows together and follows the swaps
+can still track the band. Cost ${\sim}12\%$ of the gadget's gates.
 
 \section{The share-native fold---the part that actually matters}
 
@@ -157,11 +181,31 @@ degree-2 and degree-3 adversaries, each capability-controlled.
 
 A degree-$d$ term is also a \textbf{sparser} perturbation (it flips the value
 only $2^{-d}$ of the time), so wider masks are individually \emph{weaker}
-statistically even as they are stronger algebraically. Hence a \textbf{mixed}
-design: a few low-degree terms for statistical margin plus tower terms for
-algebraic hiding. The production plan is $[2,3,3]$---one degree-2 base term and
-two degree-3 tower terms. Two degree-3 terms are what kill the degree-2
-diagonal; one leaves a boundary residual.
+statistically even as they are stronger algebraically. That argued for a mixed
+design---low-degree terms for statistical margin plus tower terms for algebraic
+hiding---and the plan was $[2,3,3]$.
+
+\textbf{The production plan is now $[3,3]$:} two degree-3 terms, no degree-2
+base term. Three measurements decided it.
+
+\emph{Two terms is the floor.} $[3]$---a single degree-3 term---puts the
+degree-1 diagonal straight back ($\rho = 0.995$, median row prominence 0.027),
+even though the tower argument says one degree-$d$ term should hide from every
+adversary below $d$. Whatever the mechanism, one term does not do it.
+
+\emph{The base term costs a third of the fold.} Fragments per source gate go as
+$(2+k_{\mathrm{total}})^{\mathrm{arity}}$ and 91\% of the source is arity 2, so
+dropping the third term removes 33\% of the fragments and 25\% of the gadget:
+247{,}326 gates against 318{,}813 at $n{=}128$.
+
+\emph{And it buys little against a degree-2 adversary.} Against a strictly
+linear predictor the base term is worth $0.09$ (best-predictor agreement
+$0.609$ for $[2,3,3]$ versus $0.703$ for $[3,3]$, floor $0.525$). But the term
+\emph{is} a product of two band wires, so one AND cancels it: allowing the
+predictor a single $(w_p\xor a)(w_q\xor b)$ takes $[2,3,3]$ from $0.602$ to
+$0.693$ while $[3,3]$ only moves $0.718 \to 0.728$. The gap between the plans
+falls to $0.036$. (With the band rolling, that AND search must first find the
+band, which buys the rolling build a further margin.)
 
 Raising the tower is nearly free in gate count (fragment \emph{count} is set by
 the term count and the source gate's arity, not by mask degree---widening a mask
@@ -196,6 +240,93 @@ $\mathbf{6.4\times}$ the gates and \emph{reduces} mobility to mean 259, so it is
 off by default. Its one live justification is DB re-encodability, and whether
 that is worth $6.4\times$ is not yet measured.
 
+\section{The slice block}
+
+The gadget computes $C$ on its low $n$ wires for \emph{arbitrary} junk on every
+other wire. A block prepended at the input port is what turns that into
+``computes $C$ only when the non-data wires are zero'', and it is also what stops
+the inverse circuit from handing out $C^{-1}$.
+
+\textbf{The band is part of the slice.} It was not, and that was a
+one-query distinguisher: with the band outside the block, setting a band wire to
+1 provably changed nothing, so comparing $G(x,s)$ with $G(x,0)$ sorted the
+non-data wires into ``matters'' (aux) and ``does not'' (band) in a handful of
+queries---and the band is where every mask source lives. The slice is now
+\textbf{every} non-data wire, aux and band alike.
+
+\textbf{The construction.} All gates are positive-polarity, target a data wire,
+and read exactly one slice wire, in three shapes:
+\[
+x_t \mathrel{\xor}= s_w, \qquad
+x_t \mathrel{\xor}= x_a \wedge s_w, \qquad
+x_t \mathrel{\xor}= x_a \wedge x_b \wedge s_w,
+\]
+in a $1{:}1{:}1$ mix, with the target and the data controls drawn freely over
+all $n$ data wires and the whole list uniformly shuffled. On the all-zero slice
+the slice control kills every gate individually, so the block is the identity
+there gate by gate---no ordering or pairing argument needed.
+
+The three-control shape is load-bearing. With at most one data control per gate,
+fixing any slice turns every gate into a constant flip or a transvection, and
+those compose to an \textbf{affine} map: $S(\cdot,s)$ would have degree 1 in $x$
+and be pinned by $n{+}1$ queries, so the ``looks like a random function of both
+arguments'' intent would hold in the $s$ direction only.
+
+Only one regularity is imposed: slice wires are covered by a balanced
+round-robin. A slice wire that no gate reads is a provably fixed slice, and free
+draws leave one uncovered a few percent of the time at these budgets.
+
+\textbf{The guarantee is checked, not proved.} ``No nonzero slice is fixed'' is
+a property of the draw, so the block is verified and redrawn until it holds:
+exhaustively over every slice and every input where the space fits
+($n+\mathit{band}\le 20$, which is exactly the regime where wrong-slice fixes
+were ever observed), and otherwise by sampling every single-wire slice, many
+weight-2 slices and random slices against 64 bit-sliced random inputs each. The
+sampled check is a spot check, not a proof; at production width the honest
+statement is the measured one---a slice is fixed only if its fired subsequence
+composes to the identity, seen in ${\approx}4\cdot10^{-3}$ of draws at $n{=}3$
+and $0/50\mathrm{k}$ by $n{=}8$, decaying fast in $n$.
+
+\subsection{An exactly-pinning two-layer variant, and why it is not used}
+
+The property \emph{can} be made a theorem. Split the data wires into disjoint
+pools---targets $T$, data controls $R$---with every gate targeting $T$ and
+reading only $R$. Then on a fixed slice each fired gate adds $e_t\,m(x_R)$ for a
+monomial $m\in\{1,\,x_c,\,x_a x_b\}$; no gate can change another's monomial, so
+they all commute and
+\[
+S(x,s) \;=\; x + \sum\nolimits_{(t,m)} q_{(t,m)}(s)\; e_t\; m(x_R),
+\]
+with every $q$ a \emph{linear} form in $s$. ``Identity on slice $s$'' is then a
+linear system, certified by a rank check on the emitted gates and seeded by one
+pin gate per slice wire---order-free, so the uniform shuffle stays free.
+
+One layer has two defects: $R$ is never disturbed, and the whole disturbance is
+a function of $x_R$ \emph{alone} (nine bits of the input at production sizing),
+so an adversary who sets $x_R = 0$ collapses the block to a translation.
+\textbf{Two layers repair both.} Run pools $(T_1,R_1)$ entirely, then
+$(T_2,R_2)=(R_1,T_1)$. Layer 2 never writes $T_1$, so
+\[
+z_{T_1} = x_{T_1} + F_1(x_{R_1}), \qquad
+z_{R_1} = x_{R_1} + F_2\bigl(x_{T_1} + F_1(x_{R_1})\bigr),
+\]
+and $z=x$ forces $F_1\equiv 0$ from the first line, then $F_2\equiv 0$ from the
+second. The conditions decouple, the certificate is the union of both layers'
+rows, the pins split across layers, and the gate budget is \textbf{unchanged}.
+Every data bit then influences the disturbance, and the input set that switches
+the nonlinearity off shrinks from a $2^{\,n-|R|}$ subcube to a single point.
+
+\textbf{It is not used, because of the mixing barrier.} Layer-2 gates read
+precisely what layer-1 gates write, so the two halves do not commute and cannot
+be shuffled into each other. That ordering survives the final commuting shuffle
+and every downstream mixing move that preserves the relative order of colliding
+pairs: the block would carry a permanent two-phase seam that no amount of mixing
+can dissolve. It would be bought to exclude a single failure---a nonzero slice
+that also computes $C$---whose payoff to an adversary is unclear, since $C$ is
+computable on the honest slice anyway. Structure that mixing cannot erase is the
+more expensive side of that trade. The unstructured block stands; its guarantee
+is checked rather than proved.
+
 \section{What it achieves}
 
 All heatmaps read by the ridge measure with verified references, on a real
@@ -206,12 +337,25 @@ $n{=}128$ sliced sandwich (source $C$ = 3000 g57 gates).
 \toprule
 gadget & adversary & depth & depthMed & $\rho$ & meanH \\
 \midrule
-linear (plain), 85{,}169 g / 512 w & degree 1 & 0.346 & 0.356 & \textbf{1.000} & 0.475 \\
-$[2,3,3]$, 281{,}068 g / 568 w & degree 1 & 0.044 & \textbf{0.000} & 0.015 & 0.499 \\
-$[2,3,3]$, 281{,}068 g / 568 w & degree 2 & 0.043 & \textbf{0.000} & $-0.007$ & 0.498 \\
+linear (plain), 85{,}354 g / 512 w & degree 1 & 0.356 & 0.363 & \textbf{1.000} & 0.475 \\
+$[3,3]$ + roll, 247{,}326 g / 558 w & degree 1 & 0.043 & \textbf{0.000} & 0.015 & 0.498 \\
+$[2,3,3]$, 281{,}436 g / 568 w & degree 1 & 0.043 & \textbf{0.000} & 0.018 & 0.498 \\
+$[2,3,3]$, 281{,}436 g / 568 w & degree 2 & 0.043 & \textbf{0.000} & $-0.007$ & 0.498 \\
+$[3,3]$, band-restricted & degree 2 & 0.044 & \textbf{0.004} & 0.031 & 0.498 \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+A second instrument now sits beside the ridge. The exact-span measure asks
+whether $C_i$'s bit is an \emph{exact} function of $G_j$'s wires and scores
+$0.5$ whenever it is not, so it is blind to bias---and bias is all the term
+count controls. \texttt{hmap\_stat} measures the best \emph{approximate}
+predictor instead (every single wire, every XOR of two wires, optionally one
+AND term), against a null floor from the same search on a random target. Median
+per-row best agreement at $n{=}128$: plain gadget $0.907$, $[2,3,3]$ $0.609$,
+$[3,3]$ $0.703$, $[3]$ $0.803$, floor $0.525$---tracking the piling-up
+prediction a few points low, as a two-wire family on a coarse grid must. Every
+such number is a lower bound.
 
 The median original-circuit prefix has \textbf{zero} ridge prominence and the
 reconstruction is uncorrelated with progress. The nulls are
@@ -224,10 +368,12 @@ $\to$ threefold growth---and the diagonal stayed dead \textbf{identically} at
 every stage. Mixing neither helps nor hurts, because the leak is gone before
 mixing begins.
 
-\textbf{Cost.} The encoding multiplies the plain gadget by ${\sim}3.3\times$ in
-gates and adds a band of extra wires (56 at $n{=}128$, versus 512 carriers). Per
-source gate the fold emits about $(k_{\mathrm{total}}+2)^2$ fragments, so the
-term count is a quadratic lever and everything else is second order.
+\textbf{Cost.} The encoding multiplies the plain gadget by ${\sim}2.9\times$ in
+gates and adds a band of extra wires (46 at $n{=}128$, versus 512 carriers). The
+fold is \textbf{76\% of the emitted gadget}, and per source gate it emits about
+$(k_{\mathrm{total}}+2)^{\mathrm{arity}}$ fragments. With 91\% of the source at
+arity 2 the term count is a quadratic lever and everything else is second order;
+the rolling band is the only other item above a few percent, at ${\sim}12\%$.
 
 \section{Reading a mixing run on this material}
 
@@ -275,6 +421,7 @@ flag & env var & default & meaning \\
 \texttt{--prod-rsrc} & \texttt{PROD\_RSRC} & 1 & mask re-source moves per inter-SG gap \\
 \texttt{--prod-max-width} & \texttt{PROD\_MAX\_WIDTH} & 0 (off) & ladder to this width; \texttt{2} = all DB-eligible. ${\sim}6.4\times$ gates \\
 \texttt{--prod-fill-nl} & \texttt{PROD\_FILL\_NL} & 0 (linear) & nonlinear cascaded band fill. Effectively free \\
+\texttt{--prod-roll} & \texttt{PROD\_ROLL} & 0 (off) & band relocations per inter-SG gap; \texttt{1} recommended. ${\sim}12\%$ gates \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -282,26 +429,34 @@ flag & env var & default & meaning \\
 Mutually exclusive with the deferred-mask \texttt{--mask-cov} (RG4).
 Auto band width is ${\approx}\max(\sqrt{4nk_{\mathrm{total}}},\,6,\,\deg_{\max}+3)$.
 
-\textbf{Production:}
+\textbf{Production} ($[3,3]$, band auto $= 46$ at $n{=}128$):
 \begin{verbatim}
-sss --cnot --gadgetize \
-    --prod-k 1 --prod-deg 2 --prod-k-hi 2 --prod-deg-hi 3 --prod-fill-nl 2
+sss --cnot --gadgetize --slice-zero-ccnot \
+    --prod-k 0 --prod-k-hi 2 --prod-deg-hi 3 --prod-fill-nl 2 --prod-roll 1
 \end{verbatim}
+Band width is the cost of the degree-3 adversary the tower deliberately admits:
+$\binom{b}{3}$ product regressors, so $15{,}180$ at $b{=}46$ against $220$ at the
+slot-space minimum $b{=}12$---and at $b{=}12$ that adversary reads a perfect
+$\rho{=}1$ diagonal back off the gadget. Do not shrink the band to its minimum;
+\texttt{--prod-band} can raise it for about ten fill gates per wire.
 
 \section{Known gaps}
 
 \begin{itemize}
-\item \textbf{The statistical readout does not exist.} The exact-span ridge
-measure saturates at $H=0.5$ for any $k\ge1$, so it cannot see what the term
-count buys. Every $k$ decision is currently made against a measure blind to
-precisely that axis. Highest-priority instrument.
-\item \textbf{Band wires are body-static}---never written between the ports,
-heavily read, hence trivially identifiable. That is what a restriction adversary
-needs to condition on one. The mirror fill does not fix it; a rolling band would.
-\item \textbf{Static distinguishers are not instrumented at all.} Every heatmap
-here is execution-based. Gate-statistics along the circuit are unexamined, and
-the fold-order fix of \S4 was found by reading code, not by a measurement that
-would have caught it.
+\item \textbf{The statistical readout only searches two wires.} It exists now
+(\texttt{hmap\_stat}, \S7), which is what priced $[2,3,3] \to [3,3]$, but its
+predictor family is one or two wires plus optionally one AND term. A greedy or
+LMS fit over more terms would tighten every number, all of which are lower
+bounds.
+\item \textbf{Rolling leaves a windowed residual.} Over any 50k-gate window no
+wire is unwritten, but a 10k-gate window still leaves about a dozen---the
+variables that did not roll---so an adversary stitching windows and following
+swaps can still track the band. Roll-rate tuning against a windowed adversary,
+and a schedule that rolls a variable just before its next read, are open.
+\item \textbf{Static distinguishers are instrumented only ad hoc.} The write /
+read / gate-shape census that caught the body-static band was written for that
+pass, not by a standing tool, and the fold-order leak was found by reading code.
+Everything else we measure is execution-based.
 \item \textbf{The degree-4 tower} needs scratch decomposition of width-8
 fragments.
 \item \textbf{The DB match-rate cost} of width-6 gates is predicted by the

@@ -5,10 +5,11 @@
 //! pre-mixing G as mpmct1 for hmap_affine. Also prints the endpoint Hamming
 //! self-check the ridge reader needs (H≈0 reference validity).
 //!
-//! Usage: prod_grid <c.g57> <n> <k> <band> <seed> <out.mpmct1> [deg] [k_hi] [deg_hi] [max_width] [fill_nl]
+//! Usage: prod_grid <c.g57> <n> <k> <band> <seed> <out.mpmct1> [deg] [k_hi] [deg_hi] [max_width] [fill_nl] [roll]
 //!        (band 0 = auto; k 0 = plain gadget; deg defaults to 2; k_hi tower
 //!         terms of degree deg_hi for a mixed deg-k + deg_hi-k_hi design;
-//!         max_width 2 = narrow g57 mode; fill_nl > 0 = nonlinear band fill)
+//!         max_width 2 = narrow g57 mode; fill_nl > 0 = nonlinear band fill;
+//!         roll > 0 = rolling band relocations per inter-SG gap)
 
 use local_mixing::circuit::circuit::CircuitSeq;
 use local_mixing::postmix::format::{read_g57_file, write_mpmct};
@@ -53,7 +54,8 @@ fn main() {
 
     let max_width: usize = a.get(9).and_then(|s| s.parse().ok()).unwrap_or(0);
     let fill_nl: usize = a.get(10).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let prod = ProdConfig { k, deg, k_hi, deg_hi, band, rsrc: 1, max_width, fill_nl };
+    let roll: usize = a.get(11).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let prod = ProdConfig { k, deg, k_hi, deg_hi, band, rsrc: 1, max_width, fill_nl, roll };
     let mut rng = StdRng::seed_from_u64(seed);
     let g = gadgetize_cnot(&main, n, 1, &MaskConfig::off(), &prod, &mut rng);
 

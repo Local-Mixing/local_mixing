@@ -1003,6 +1003,32 @@ Our gadgetized circuit retains functionality on the original $n$ wires, has rand
 The implementation is in
 [`gadgetize()` and the SG/RG helpers](../src/replace/gadgets.rs).
 
+### 5.5 The current gadgetizer (CNOT / product-share path)
+
+The construction described above is the **legacy** g57 gadgetizer. Production
+work now runs a different path — `sss --cnot --gadgetize --slice-zero-ccnot`,
+or `gen_sandwich_gadget` — which keeps the two-share skeleton but replaces the
+decode, the CG, and the slice block:
+
+* each logical value carries, on top of its XOR pair, two permanent degree-3
+  **multiplicative mask terms** over a frozen band of extra wires, so the decode
+  is nonlinear and an affine adversary cannot express it;
+* a source gate is applied by **expanding its ANF over the operands' full
+  decodes** — one conjunction fragment per cross-product of atoms — so an
+  operand is never reconstructed at its use point;
+* the band's **role rolls** between physical wires during the body, so the mask
+  sources are not a fixed, statically identifiable wire set;
+* the slice block covers **every** non-data wire (aux and band), and includes
+  three-control gates so the off-slice disturbance is quadratic in the data
+  rather than affine.
+
+That path is documented in `docs/NONLINEAR_GADGETIZATION` (the whole
+construction from scratch), `docs/PRODUCT_SHARE_ENCODING` + `_UPDATE` (design
+and revisions), and `docs/BAND_HARDENING` (the band/slice work and the
+measurements behind the current settings). This section is retained because the
+legacy path is still reachable and the SAMF/rainbow-table machinery below
+applies to both.
+
 ## 6. SAMFs
 
 We have many hard-coded circuits that **swap and maybe flip** (SAMF) two wires, which

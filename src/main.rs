@@ -104,7 +104,7 @@ fn add_shoot_args(c: Command) -> Command {
                     Arg::new("slice_zero_ccnot")
                         .long("slice-zero-ccnot")
                         .alias("slice_zero_ccnot")
-                        .help("(--cnot) Before gadgetization, insert an M of positive CNOT/CCNOTs (targets on wires 0..n, every gate reading >=1 wire of n..2n) that preserves the second-half=0 slice and affinely disturbs x off it")
+                        .help("(--cnot) Before gadgetization, insert an M of positive CNOT/CCNOTs (targets on data wires, every gate reading >=1 NON-DATA wire — aux AND the product-share band) that preserves the all-zero non-data slice and provably disturbs x on every other slice (pinned target/control split, rank-checked over the linear rows); three-control gates make the off-slice disturbance quadratic in x rather than affine")
                         .required(false)
                         .requires("gadgetize")
                         .requires("cnot")
@@ -116,7 +116,7 @@ fn add_shoot_args(c: Command) -> Command {
                         .alias("slice_zero_ccnot_gates")
                         .required(false)
                         .value_parser(clap::value_parser!(usize))
-                        .help("Number of M gates for --slice-zero-ccnot (default: 10n; ~1/3 CNOTs with invertible parity matrix and ~2/3 CCNOTs, in one uniformly random order)"),
+                        .help("Number of M gates for --slice-zero-ccnot (default: 10n; ~1/3 CNOTs and ~2/3 CCNOTs in one uniformly random order). Must be at least n+band: every non-data wire gets a pin gate, which is what makes the disturbance exact"),
                 )
                 .arg(
                     Arg::new("sliced_sandwich")
@@ -314,6 +314,15 @@ fn add_shoot_args(c: Command) -> Command {
                         .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Nonlinear band fill: product terms per band wire, cascading over earlier band wires (0 = legacy linear fill). Kills learnable affine band invariants; input-degree multiplies up the band with only 2-control gates"),
+                )
+                .arg(
+                    Arg::new("prod_roll")
+                        .long("prod-roll")
+                        .alias("prod_roll")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Rolling band: band-variable relocations per inter-SG gap (0 = band stays on its home wires). One roll is RG2's 3-CNOT swap applied across the carrier/band boundary, so the band is not a body-static, statically identifiable wire set. Costs 3 CNOTs per roll"),
                 )
                 .arg(
                     Arg::new("egg")

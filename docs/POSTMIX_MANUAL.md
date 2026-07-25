@@ -371,9 +371,70 @@ Convergence-curve recipe: touch the dump flag periodically during a run, then
 
 ---
 
+## 4b. Reconstruction readouts — `hmap_affine` and `hmap_stat`
+
+Two instruments, asking different questions about the same pair (original `C`,
+gadgetized/mixed `G`). Both snapshot `C` and `G` on a shared random input and
+compare prefix against prefix; both write `<out>.bin` + `<out>.meta.json`.
+
+`hmap_affine` — **exact** reconstruction. Per cell it fits a GF(2) map from
+`G_j`'s wires (degree 1, or products up to `--degree 3` over `--deg2-wire-list`)
+to `C_i`'s bit by span membership, and scores `H = 0.5` whenever no exact
+relation exists. Low `H` = leak. Read the plates with
+`reports/plot_hmap_ridge.py` — by the **ridge** (depth / depthMed / rho), never
+by the mean, which saturates at 0.5.
+
+`hmap_stat` — **approximate** reconstruction, the companion that closes the
+exact measure's blind spot. Per cell it takes the best agreement over every
+single wire and every XOR of two wires (the family containing a value's carrier
+pair), optionally plus one AND term over `--and-wires`, against a null floor
+from the same search on a random target. High agreement = leak.
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--c`, `--g`, `--n` | — | original, gadget, logical width |
+| `--c-step` / `--g-step` | 200 / 20000 | prefix strides — this measure is O(W²) per cell, so keep the grid coarse |
+| `--samples` | 4096 | rounded up to a multiple of 64 |
+| `--target-bits` | 16 | random subset of `C`'s state bits per cell (0 = all) |
+| `--wire-list` | all | restrict the predictor's wires |
+| `--and-wires` | none | allow one `(w_p^a)&(w_q^b)` over this set — the degree-2-capable adversary |
+
+⚠️ Do **not** read an `hmap_stat` plate with `plot_hmap_ridge.py`: it assumes
+the inverted convention and will trace the anti-ridge. Use
+`reports/band_hardening_20260725/stat_readout.py`, which trims the port rows
+**and** columns — cell (0,0) is `C`'s input state against `G`'s input wires and
+reads 1.0 in every build, encoded or not.
+
+---
+
 ## 5. Recipes
 
 ```bash
+# Build the production gadget first: sliced sandwich -> product-share
+# gadgetization. [3,3] = two degree-3 mask terms per value (two is the measured
+# floor; one revives the progress diagonal), nonlinear cascaded band fill, one
+# band roll per gap so the band is not a body-static wire set. Band auto = 46.
+PROD_K=0 PROD_K_HI=2 PROD_DEG_HI=3 PROD_FILL_NL=2 PROD_ROLL=1 \
+gen_sandwich_gadget gadget.mpmct1 128 3000 3000
+# -> 247k gates / 558 wires at n=128; writes gadget.mpmct1.source_c.g57 too,
+#    which is what the heatmaps reconstruct against.
+
+# Same settings on the CLI path:
+#   sss --cnot --gadgetize --slice-zero-ccnot \
+#       --prod-k 0 --prod-k-hi 2 --prod-deg-hi 3 --prod-fill-nl 2 --prod-roll 1
+
+# Check it before spending mixing time on it (both should be run):
+hmap_affine --c gadget.mpmct1.source_c.g57 --g gadget.mpmct1 --n 128 \
+            --degree 1 --c-step 30 --g-step 1600 --out ridge
+python3 reports/plot_hmap_ridge.py --out ridge.png ridge     # want depthMed 0, rho ~ 0
+hmap_stat  --c gadget.mpmct1.source_c.g57 --g gadget.mpmct1 --n 128 \
+           --c-step 100 --g-step 3800 --samples 8192 --target-bits 8 --out stat
+# want the interior median well under the plain gadget's ~0.91; [3,3] reads ~0.70
+
+# Mixing a product-share gadget needs --no-local-verify: the per-rewrite check
+# caps support at 24 wires and panics on two wide gates. Read G=/lag=/tgtbl=,
+# not Gall=, which is structurally pinned at 0 on this material.
+
 # Production mixing run, direct on a gadgetized g57 circuit, twists ON.
 # Twists collapse the prefix-progress diagonal (the state axis); the growth
 # phase does the material transport and fossil erosion. Keep twist weights

@@ -17,6 +17,12 @@
 \emph{For the construction described from scratch, see}
 \texttt{docs/NONLINEAR\_GADGETIZATION}.
 
+\noindent\textcolor{red}{\textbf{Partly superseded (2026-07-25) by}
+\texttt{docs/BAND\_HARDENING}}\emph{, which (i) applies the fold shuffle of
+\S4 to the wide production path---it had reached only the narrow path---(ii)
+puts the band inside the input slice, and (iii) builds the rolling band that
+\S3 lists as the unfixed weakness.}
+
 \section{Summary}
 
 The encoding worked---it was the first method to kill the computational-progress
@@ -104,10 +110,9 @@ $0.4931\to0.4994$, $\mathrm{stdH}$ $0.036\to0.016$.
 \textbf{What this does not fix.} Band wires are still \emph{body-static}: never
 written between the two ports, and heavily read. They remain trivially
 identifiable statically, which is what a restriction adversary needs in order to
-condition on one. The real fix is a \textbf{rolling band}---retire a band wire
-mid-body, migrate its live slots with the existing re-source machinery, refill
-it from current carrier values---which keeps the frozen-invariance property
-piecewise. Not built.
+condition on one. \emph{Built since, by a different route: the band variable's
+\textbf{location} rolls (RG2's swap extended across the carrier/band boundary)
+instead of the wire being retired---see} \texttt{docs/BAND\_HARDENING} \S4.
 
 \section{Fold-order randomization}
 
@@ -118,7 +123,10 @@ is a \textbf{progress clock requiring no execution at all}: an attacker segments
 the fold blocks by eye and reads off the source circuit's gate boundaries---the
 very thing the encoding exists to hide, handed over syntactically.
 
-Fragments are now shuffled within each fold. This is the cheap half of the fix;
+Fragments are now shuffled within each fold. \emph{(Correction: as shipped in
+this pass the shuffle reached only the narrow fold path; the wide production
+path still emitted in odometer order until} \texttt{docs/BAND\_HARDENING} \S2
+\emph{.)} This is the cheap half of the fix;
 the stronger version---interleaving fragments \emph{across} adjacent folds
 through the existing randomized-insertion pass, plus random ESOP re-covers and
 $k$-jitter so the per-fold fragment count is not constant---is designed but not
