@@ -235,7 +235,7 @@ Checked at every report point (so responsiveness = `--report-every`):
 | `odiff` | origin diffusion: piece-weighted std of each origin family's positions; 0 = clumped, 0.2887 (=1/√12) = uniformly dispersed |
 | `oadj` | Pearson autocorrelation of adjacent gates' origins: 1 = conveyor belt of the original order, 0 = ancestry-independent neighbors |
 | `width[i:n ...]` | **cumulative** histogram of created-piece widths over the run (bucket 15 = ≥15). *Not* the current circuit's width profile — use `fmix_stats` for that |
-| `gen tgt= G= alag=x/y lag=a/b c= h= u= wlag= min=` | generation targeting: target; current CIRCUIT generation (5th-percentile over all gates); all gates below target / total (the dose-stop fraction); still-targetable below-target gates / eligible total; cheap tier / hard tier / written-off; below-target gates too wide for the DB channel; minimum generation over all gates (`F` = everything is fresh) |
+| `gen tgt= G= Gall= tgtbl= alag=x/y lag=a/b c= h= u= wlag= min=` | generation targeting: target; current CIRCUIT generation (5th-percentile over the **targetable** gates); the legacy all-gates percentile; size of the targetable population; all gates below target / total; **still-targetable below-target gates / targetable total — this is the dose-stop fraction**; cheap tier / hard tier / written-off; below-target gates too wide for the DB channel; minimum generation over all gates (`F` = everything is fresh) |
 | `cov` | cumulative per-position twist coverage (`twspan / size`) — the phase-A twist dose meter (saturation target ~600) |
 | `ing= hard= paid=` | ingest-then-pay: cheap-round hits/rounds; paid-round hits/rounds; total gates the paid channel added (the growth actually spent on the generation goal) |
 
@@ -246,10 +246,16 @@ rounded up on even window sizes); every **split** (presplit, cross piece,
 fresh-split, unsubsume, twist case-split) stamps children with **parent + 1**;
 merges take the min of their parents; fresh insert pairs and twist bracket
 packets are born-random MAXGEN (higher than every real generation). The
-**circuit generation** `G=` is the largest G such that at least 95% of ALL
-gates have generation ≥ G (the 5th-percentile generation), and the dose stop
-fires when `alag/total <= --gen-stop-frac` (0.05 = "circuit generation has
-reached the target"). The census is the phase-A dose meter — the churn-phase
+**circuit generation** `G=` is the largest G such that at least 95% of the
+**targetable** gates have generation ≥ G (the 5th-percentile over that
+population), and the dose stop fires when `lag/targetable <=
+--gen-stop-frac`. ⚠️ Both were measured over ALL gates before `512ce31c`,
+which made them useless on material the DB channel cannot re-encode: a
+product-share gadget is ~60% width ≥ 3, so those gates never leave the laggard
+count, the all-gates fraction floors around 0.38, and the dose stop could never
+fire — the run burned its whole move budget after the dose was long complete.
+The legacy figure is still printed as `Gall=`; on narrow material the two
+agree. The census is the phase-A dose meter — the churn-phase
 analogue of ssg's generation mechanism — and `--gen-target`/`--gen-stop-frac`
 turn phase A from "run N moves and hope" into "run until the circuit reaches
 generation G, then stop," which is also the minimal-growth schedule: targeted

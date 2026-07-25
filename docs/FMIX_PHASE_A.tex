@@ -103,12 +103,18 @@ than every real generation.
 pre-split generations.
 \end{itemize}
 The \textbf{circuit generation} is the largest $G$ such that at least 95\%
-of \emph{all} gates have generation $\geq G$ (the 5th-percentile gate
-generation, reported \code{G=}). The \textbf{dose stop} ends the run at the
-first report point where the below-target fraction over all gates is
-$\leq$ \code{-{}-gen-stop-frac} (0.05 = ``the circuit has reached generation
-$G$'') and the twist coverage target (\code{-{}-twist-cov-stop}, if set) is
-met. The move budget becomes a ceiling: phase A runs exactly as long as the
+of the \textbf{targetable} gates---cap-eligible and not written off---have
+generation $\geq G$ (reported \code{G=}; the legacy all-gates percentile is
+printed beside it as \code{Gall=}). The \textbf{dose stop} ends the run at the
+first report point where $\mathrm{lag}/\mathrm{targetable} \leq$
+\code{-{}-gen-stop-frac} and the twist coverage target
+(\code{-{}-twist-cov-stop}, if set) is met.
+
+\textbf{Both were measured over all gates before \code{512ce31c}}, which made
+them meaningless on material the DB channel cannot re-encode: a product-share
+gadget is ${\sim}60\%$ width $\geq 3$, so those gates never leave the laggard
+count, the all-gates fraction floors near $0.38$, and no sane stop fraction
+could ever fire. On narrow material the two definitions agree. The move budget becomes a ceiling: phase A runs exactly as long as the
 dose requires, which is the minimal-growth schedule.
 
 \section{Targeting: the laggard census and tiers}
