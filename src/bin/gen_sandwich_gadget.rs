@@ -100,29 +100,30 @@ fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(d)
     };
+    // Same rule as the sss path: the validated production setting is the
+    // default, and an environment variable overrides one field of it.
+    let preset = ProdConfig::production_single();
     let prod = ProdConfig {
-        k: env("PROD_K", 0),
-        deg: env("PROD_DEG", 2),
-        k_hi: env("PROD_K_HI", 0),
-        deg_hi: env("PROD_DEG_HI", 3),
-        band: env("PROD_BAND", 0),
-        rsrc: env("PROD_RSRC", 1),
-        max_width: env("PROD_MAX_WIDTH", 0),
-        fill_nl: env("PROD_FILL_NL", 0),
-        roll: env("PROD_ROLL", 0),
-        src_dist: env("PROD_SRC_DIST", 0),
-        src_horizon: env("PROD_SRC_HORIZON", 0),
-        src_lo: env("PROD_SRC_LO", 0),
-        src_hi: env("PROD_SRC_HI", 0),
-        fill_pivots: env("PROD_FILL_PIVOTS", 0),
-        g57_narrow: env("PROD_G57_NARROW", 0),
-        ladder_cap: env("PROD_LADDER_CAP", 0),
-        cg_jitter: env("PROD_CG_JITTER", 0),
-
-        epoch: env("PROD_EPOCH", 0),
-        refill_data: env("PROD_REFILL_DATA", 0),
-
-        single: env("PROD_SINGLE", 0),
+        k: env("PROD_K", preset.k),
+        deg: env("PROD_DEG", preset.deg),
+        k_hi: env("PROD_K_HI", preset.k_hi),
+        deg_hi: env("PROD_DEG_HI", preset.deg_hi),
+        band: env("PROD_BAND", preset.band),
+        rsrc: env("PROD_RSRC", preset.rsrc),
+        max_width: env("PROD_MAX_WIDTH", preset.max_width),
+        fill_nl: env("PROD_FILL_NL", preset.fill_nl),
+        roll: env("PROD_ROLL", preset.roll),
+        src_dist: env("PROD_SRC_DIST", preset.src_dist),
+        src_horizon: env("PROD_SRC_HORIZON", preset.src_horizon),
+        src_lo: env("PROD_SRC_LO", preset.src_lo),
+        src_hi: env("PROD_SRC_HI", preset.src_hi),
+        fill_pivots: env("PROD_FILL_PIVOTS", preset.fill_pivots),
+        g57_narrow: env("PROD_G57_NARROW", preset.g57_narrow),
+        ladder_cap: env("PROD_LADDER_CAP", preset.ladder_cap),
+        cg_jitter: env("PROD_CG_JITTER", preset.cg_jitter),
+        epoch: env("PROD_EPOCH", preset.epoch),
+        refill_data: env("PROD_REFILL_DATA", preset.refill_data),
+        single: env("PROD_SINGLE", preset.single),
     };
     if prod.enabled() {
         println!(

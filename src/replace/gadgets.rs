@@ -3189,13 +3189,14 @@ impl ProdConfig {
     /// threshold separates the populations) and rules out `fill_pivots`, which
     /// needs room for non-pivot data wires. The other way round -- band ~ 3n/4
     /// with `fill_pivots` -- trades homogeneity for provable joint uniformity.
-    pub fn production_single(n: usize) -> ProdConfig {
+    pub fn production_single() -> ProdConfig {
         ProdConfig {
             k: 1,
             deg: 2,
             k_hi: 2,
             deg_hi: 3,
-            band: n,
+            // 0 = match the value count; see band_size.
+            band: 0,
             rsrc: 1,
             max_width: 0,
             fill_nl: 2,
@@ -3280,9 +3281,20 @@ impl ProdConfig {
         if self.band > 0 {
             return self.band;
         }
-        (((4 * n * self.k_total()) as f64).sqrt().ceil() as usize)
-            .max(6)
-            .max(self.max_deg() + 3)
+        // 0 = "match the value count". A 1:1 carrier/band split is what makes
+        // the write census fail to separate the two populations: at band = n
+        // the two write distributions sit on top of each other (185/452/847
+        // against 180/428/848 at n=128), while a narrow band is a minority a
+        // windowed census can still isolate. It also rules out the reserved
+        // pivot block, which needs room for non-pivot data wires -- that is
+        // the homogeneity-versus-provable-uniformity trade, resolved here in
+        // favour of homogeneity because the pivot theorem is forfeited by
+        // carrier-sourced refills anyway.
+        //
+        // This REPLACED an auto rule of ceil(sqrt(4*n*k_total)) (56 at n=256),
+        // which predates the homogeneity measurement. Pass --prod-band
+        // explicitly for any other sizing.
+        n.max(6).max(self.max_deg() + 3)
     }
 }
 
@@ -4557,7 +4569,12 @@ impl ProdLedger {
         busy.dedup();
         // Fall back to avoiding only the retired variable if the band is too
         // narrow to honour full disjointness -- correctness never depends on it.
-        let relax = (band_len as usize) < busy.len() + deg;
+        // `PROD_DISJOINT=0` relaxes here too: the ordinary `draw_slot` path
+        // honours that switch, and an A/B that silently kept enforcing it on
+        // the epoch path would measure a mixture of the two policies on any
+        // build with `--prod-epoch` on.
+        let relax = (band_len as usize) < busy.len() + deg
+            || std::env::var("PROD_DISJOINT").map(|v| v == "0").unwrap_or(false);
         for _ in 0..100_000 {
             let mut vars: Vec<u16> = Vec::with_capacity(deg);
             while vars.len() < deg {
@@ -9175,6 +9192,32 @@ mod cnot_gadget_tests {
             0,
             "an unbounded ceiling still left wide gates"
         );
+    }
+
+    /// The DEFAULT config is the hardened construction, not a bare encoding.
+    ///
+    /// `production_single` spent a day as a free-standing constant with no
+    /// callers, so every lever it named was off in every circuit anyone built
+    /// while the docs described it as "the validated production setting". Both
+    /// entry points now build from it, and this pins the values so a revert to
+    /// the old all-zero defaults fails here rather than silently shipping a
+    /// materially weaker gadget.
+    #[test]
+    fn production_preset_is_the_hardened_construction() {
+        let p = ProdConfig::production_single();
+        assert!(p.enabled(), "the default must have the encoding ON");
+        assert_eq!((p.k, p.deg, p.k_hi, p.deg_hi), (1, 2, 2, 3), "plan is [1,2,3,3]");
+        assert_eq!(p.single, 1, "single-carrier decode");
+        assert_eq!(p.band, 0, "band 0 == match the value count");
+        assert_eq!(p.band_size(128), 128, "band 0 must resolve to n");
+        assert!(p.rsrc >= 1, "single-carrier mode needs a representation refresh");
+        assert_eq!(p.fill_nl, 2, "nonlinear band fill");
+        assert_eq!(p.roll, 1, "rolling band -- without it the write census separates");
+        assert_eq!(p.g57_narrow, 1, "narrow fragments in the store's vocabulary");
+        assert_eq!(p.ladder_cap, 3, "the measured match-rate optimum");
+        assert_eq!(p.cg_jitter, 50, "block-count entropy at its maximum");
+        assert!(p.epoch > 0, "a frozen band is recoverable by function lifetime");
+        assert_eq!(p.fill_pivots, 0, "band = n leaves the pivot block no room");
     }
 
     /// Retire-and-refill epochs: a band variable's VALUE changes mid-body.

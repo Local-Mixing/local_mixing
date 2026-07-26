@@ -442,6 +442,7 @@ and the measure lands closer to the true value. One degree-2 term more than
 repays it.
 
 \subsection{Production, $n{=}128$ sliced sandwich}
+\label{sec:prod}
 
 \begin{center}
 \begin{tabular}{lrrrrr}
@@ -828,17 +829,46 @@ motif is worse than no lever at all.
 
 \textbf{The piling-up numbers are measurements, not theorems.} Equation
 \eqref{eq:piling} assumes the mask's source bits are \emph{jointly} uniform and
-that a value's terms are variable-disjoint. What the fill establishes is
+that a value's terms are variable-disjoint. \emph{The disjointness half is now
+enforced in code} (\code{d9916bc8}): \code{draw\_slot} excludes every variable a
+value's other live slots already name, and the retire-and-refill path
+(\code{inject\_avoiding\_var}) does the same, both relaxing only when the band is
+too narrow to honour it. Enforcing it is free and measurably helps --- at
+$n{=}64$, paired over three gadget seeds, disjoint draws beat the previous
+independent-per-term draws in $6/6$ pairs (mean $-0.010$ at $A{=}4$, $-0.006$ at
+$A{=}6$), which is the right sign and order: two terms sharing a source collapse
+as $w_a w_b \xor w_a w_c = w_a(w_b \xor w_c)$, paying two atoms of fold cost for
+one atom of hiding.
+
+What remains open is the \emph{joint uniformity} half. The fill establishes only
 \emph{marginal} balance, one wire at a time, and the accompanying test checks
-exactly that marginal. A mask multiplies three band wires together. Two
-concrete gaps: the nonlinear fill draws each wire's pivot \emph{with}
-replacement across band wires, and each wire's exclusions cover only its
-\emph{own} pivot, so one wire's pivot can re-enter another's linear part. A
-reserved pivot block (distinct pivots, the whole pivot set excluded from every
-wire's non-pivot material) makes the band exactly uniform on $\{0,1\}^b$ for
-\emph{any} nonlinear part, at zero gate cost --- see
-\code{docs/BAND\_INDEPENDENCE}. Until then, treat \eqref{eq:piling} as a model
-the measurements happen to track.
+exactly that marginal --- while a mask multiplies three band wires together. Two
+concrete gaps: the nonlinear fill draws each wire's pivot \emph{with} replacement
+across band wires, and each wire's exclusions cover only its \emph{own} pivot, so
+one wire's pivot can re-enter another's linear part. A reserved pivot block
+(distinct pivots, the whole pivot set excluded from every wire's non-pivot
+material) makes the band exactly uniform on $\{0,1\}^b$ for \emph{any} nonlinear
+part, at zero gate cost --- see \code{docs/BAND\_INDEPENDENCE}. This is now the
+\emph{only} unmet hypothesis of \eqref{eq:piling}, and it is the natural
+explanation for the residual excess over theory that survives with disjointness
+enforced ($+0.008$ at $A{=}4$, $+0.020$ at $A{=}6$, $n{=}64$). Until it lands,
+treat \eqref{eq:piling} as a model the measurements happen to track.
+
+\textbf{The agreement is progress-\emph{aligned}, which ``dead at degree 1'' does
+not say.} The ridge columns above are the exact-span measure, which snaps every
+inexact fit to $0.5$; the agreement columns report a level but not \emph{where}
+it sits. Measured with \code{stress\_battery} on the $[1,2,3,3]$ band-256 build
+of \S\ref{sec:prod} (the same file: $229\,712$ gates, $512$ wires), a degree-1
+\emph{bias} adversary recovers a diagonal that is both source-specific and
+monotonically advancing: prominence $0.056$ against an overfit floor of $0.013$,
+$\rho = 0.997$, perm-$z = 6.58$, and a decoy-source contrast of $+0.041$ (an
+unrelated $C'$ reads at the floor). So the exact-span diagonal is genuinely dead
+while a cheap bias adversary still reads computational progress. Single-carrier
+\emph{attenuates} this relative to two-carrier ($0.135 \to 0.056$ prominence) but
+does not remove it, and $6$M \code{fmix} transport moves with a $2.4\times$ growth
+leave it structurally intact ($\rho\ 0.996 \to 0.997$, contrast $+0.081 \to
++0.084$): it is a value-preserving leak, and every mixing move preserves values.
+See \code{docs/STRESS\_BATTERY}.
 
 \textbf{One-probe independence is lost in single-carrier mode.} A two-carrier
 share is uniform \emph{and} independent of the value, so a single probe learns
@@ -872,7 +902,7 @@ flag & env & meaning \\
 \code{--prod-k} / \code{--prod-deg} & \code{PROD\_K} / \code{PROD\_DEG} & base terms and their degree \\
 \code{--prod-k-hi} / \code{--prod-deg-hi} & \code{PROD\_K\_HI} / \code{PROD\_DEG\_HI} & tower terms and their degree \\
 \code{--prod-single} & \code{PROD\_SINGLE} & single-carrier decode (one linear term) \\
-\code{--prod-band} & \code{PROD\_BAND} & band width; 0 = auto \\
+\code{--prod-band} & \code{PROD\_BAND} & band width; 0 = match the value count \\
 \code{--prod-rsrc} & \code{PROD\_RSRC} & re-source moves per gap; load-bearing under \code{--prod-single} \\
 \code{--prod-roll} & \code{PROD\_ROLL} & band relocations per gap \\
 \code{--prod-fill-nl} & \code{PROD\_FILL\_NL} & nonlinear cascade fill \\
@@ -899,17 +929,27 @@ $[1,2,2,3]$ & \code{--prod-single 1 --prod-k 2 --prod-deg 2 --prod-k-hi 1 --prod
 \end{tabular}
 \end{center}
 
-both with \code{--prod-band 256 --prod-fill-nl 2 --prod-roll 1
---prod-epoch 5 --prod-refill-data 50} at the production sandwich, which is
-\code{ProdConfig::production\_single} in the tree.
+both with \code{--prod-fill-nl 2 --prod-roll 1 --prod-g57-narrow 1
+--prod-ladder-cap 3 --prod-cg-jitter 50 --prod-epoch 5 --prod-refill-data 50},
+which is \code{ProdConfig::production\_single} in the tree.
 
-\textbf{Every hardening lever defaults OFF}, which is right for
-reproducibility and wrong for anyone generating a circuit: the defaults (auto
-band 56, no nonlinear fill, no rolling, no epochs) produce a materially weaker
-gadget than any measurement in this document describes. Use the preset. Auto band width is
-$\max(\lceil\sqrt{4\,n\,k_{\mathrm{total}}}\,\rceil, 6, \max\deg + 3)$, where $n$
-is the \emph{entry point's} value count --- the sandwich width $2n$, not the
-source circuit's $n$. \code{--prod-single 0} reproduces the previous build
-bit-identically.
+\textbf{That preset is now the DEFAULT, and this is a change.} Every
+\code{--prod-*} lever used to default to $0$ --- and the preset itself sat in
+the tree with no callers, so the levers this document calls "the validated
+production setting" were off in every circuit anyone actually built. Both entry
+points (\code{sss} and \code{gen\_sandwich\_gadget}) now construct their config
+\emph{from} the preset and let an explicitly passed flag or environment
+variable override one field, so the values live in exactly one place and cannot
+drift out of the build again. A unit test pins them.
+
+Two consequences worth stating plainly. \code{--prod-k 0} is now the way to ask
+for no encoding at all; and \code{--prod-band 0} no longer means the old auto
+rule $\max(\lceil\sqrt{4\,n\,k_{\mathrm{total}}}\,\rceil, 6, \max\deg+3)$
+($56$ at the production sandwich) but \emph{match the value count}, which is
+the $1{:}1$ split the write census needs. Here $n$ is the \emph{entry point's}
+value count --- the sandwich width $2n$, not the source circuit's $n$ --- so the
+production build is $256$ carriers and $256$ band wires. Pass a number to
+\code{--prod-band} for any other sizing. \code{--prod-single 0} still
+reproduces the two-carrier build.
 
 \end{document}

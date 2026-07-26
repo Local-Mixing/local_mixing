@@ -248,16 +248,14 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-k")
                         .alias("prod_k")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
-                        .help("(--cnot gadgetize) Product-share encoding: permanent multiplicative mask terms per value, sourced on a frozen read-only band (0 = off). Degree-1 readout error floor: k=1 -> 0.25, k=2 -> 0.375, k=3 -> 0.4375. Replaces the CG menu with the share-native ANF fold (no operand reconstruction). Mutually exclusive with --mask-cov"),
+                        .help("(--cnot gadgetize) Product-share encoding: permanent multiplicative mask terms per value, sourced on a band (0 = off). ALL --prod-* FLAGS DEFAULT TO ProdConfig::production_single(), the validated production setting -- [1,2,3,3] single-carrier, band = value count, nonlinear fill, rolling, g57-form narrow fragments, ladder cap 3, 50% block jitter, epoch 5 -- and passing a flag overrides just that field. Pass --prod-k 0 for no encoding at all. Degree-1 readout error floor: k=1 -> 0.25, k=2 -> 0.375, k=3 -> 0.4375. Replaces the CG menu with the share-native ANF fold (no operand reconstruction). Mutually exclusive with --mask-cov"),
                 )
                 .arg(
                     Arg::new("prod_deg")
                         .long("prod-deg")
                         .alias("prod_deg")
                         .required(false)
-                        .default_value("2")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Base product-mask degree = literals per term (min 2). deg=2 is the base encoding; deg=d hides the value from any reconstruction adversary of degree < d, at the cost of fold fragments up to width d*(gate arity)"),
                 )
@@ -266,7 +264,6 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-k-hi")
                         .alias("prod_k_hi")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Additional higher-degree tower mask terms per value (mixed design: k base deg-D terms + k_hi deg-D_hi terms; statistical strength from the base tier, algebraic hiding to deg_hi-1 from the tower tier)"),
                 )
@@ -275,7 +272,6 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-deg-hi")
                         .alias("prod_deg_hi")
                         .required(false)
-                        .default_value("3")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Degree of the --prod-k-hi tower terms (default 3)"),
                 )
@@ -284,16 +280,14 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-band")
                         .alias("prod_band")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
-                        .help("(--cnot gadgetize) Source-band width in extra wires for --prod-k (0 = auto ~max(sqrt(4nk), deg+3))"),
+                        .help("(--cnot gadgetize) Source-band width in extra wires for --prod-k. DEFAULT 0 = match the value count, giving a 1:1 carrier/band split -- that is what makes the write census fail to separate the two populations (185/452/847 against 180/428/848 at n=128), where a narrow band is a minority a windowed census still isolates. Band = n also leaves --prod-fill-pivots no room, which is the homogeneity-versus-provable-uniformity trade. Pass a number for any other sizing; the pre-2026-07-26 auto rule was ceil(sqrt(4nk)) = 56 at n=256"),
                 )
                 .arg(
                     Arg::new("prod_rsrc")
                         .long("prod-rsrc")
                         .alias("prod_rsrc")
                         .required(false)
-                        .default_value("1")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Product-mask re-source moves per inter-SG gap (churn; 0 = off)"),
                 )
@@ -302,7 +296,6 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-max-width")
                         .alias("prod_max_width")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Cap the encoding's emitted control width by laddering wider conjunctions over dedicated zero scratch wires (0 = legacy wide fragments; 2 = full narrow mode, every emitted gate a g57/CNOT — the phase-A DB vocabulary). Narrow mode is exact on the pinned zero-aux slice"),
                 )
@@ -311,7 +304,6 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-fill-nl")
                         .alias("prod_fill_nl")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Nonlinear band fill: product terms per band wire, cascading over earlier band wires (0 = legacy linear fill). Kills learnable affine band invariants; input-degree multiplies up the band with only 2-control gates"),
                 )
@@ -320,7 +312,6 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-roll")
                         .alias("prod_roll")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Rolling band: band-variable relocations per inter-SG gap (0 = band stays on its home wires). One roll is RG2's 3-CNOT swap applied across the carrier/band boundary, so the band is not a body-static, statically identifiable wire set. Costs 3 CNOTs per roll"),
                 )
@@ -329,7 +320,6 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-single")
                         .alias("prod_single")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Single-carrier decode: ONE degree-1 term per value instead of two (0 = the legacy carrier pair). The second carrier is free to an affine adversary, so it adds nothing to the piling-up product; dropping it halves the carriers and cuts the fold to (1+k)^arity. Spend the freed atom on a mask: --prod-k 1 --prod-deg 2 --prod-k-hi 2 --prod-deg-hi 3 is [1,2,3,3] (recommended), --prod-k 2 --prod-k-hi 1 is [1,2,2,3] (better degree-1 statistics, half the degree-2 margin). Requires --prod-rsrc >= 1: with one carrier, re-sourcing is what refreshes the representation"),
                 )
@@ -338,7 +328,6 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-g57-narrow")
                         .alias("prod_g57_narrow")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Realize width-<=2 fold fragments in the g57/CNOT vocabulary instead of as bare conjunctions. Clearing --db-ctrl-cap 2 is NOT the same as being digestible: the X-free g57 span over {h,x,y} is <x, y, 1^xy>, so a comp=0 width-2 conjunction is invisible to a g57-built store however narrow it looks. Measured at n=128 band 256: DB match rate 35.1% -> 41.5% for +4.5% gates"),
                 )
@@ -347,25 +336,22 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-ladder-cap")
                         .alias("prod_ladder_cap")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
-                        .help("(--cnot gadgetize) Ladder fold fragments of width in (2, cap] down to <=2 controls over borrowed dirty carriers; wider fragments stay as single wide gates (0 = no laddering). This is the knob that reduces the ABSOLUTE count of >2-control gates, which --prod-max-width 2 does only by laddering everything at roughly 15x the fold"),
+                        .help("(--cnot gadgetize) Ladder fold fragments of width in (2, cap] down to <=2 controls over borrowed dirty carriers; wider fragments stay as single wide gates (0 = no laddering). This is the knob that reduces the ABSOLUTE count of >2-control gates, which --prod-max-width 2 does only by laddering everything at roughly 6.2x the fold"),
                 )
                 .arg(
                     Arg::new("prod_cg_jitter")
                         .long("prod-cg-jitter")
                         .alias("prod_cg_jitter")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
-                        .help("(--cnot gadgetize) Percent of values carrying one EXTRA high-degree mask term. Breaks the fixed (1+k_total)^arity fragment count per CG block, which otherwise segments the circuit into blocks and reveals each source gate's arity by counting. Jitter is extra terms only, never fewer, so the committed operating point (the weakest value) does not move. NOTE: the per-fragment ESOP re-cover conj(L+u)^conj(L+!u) was tried for this and REFUTED -- the two halves share every literal but one polarity and target the same carrier, so the twin is greppable within the block whatever order they are emitted in"),
+                        .help("(--cnot gadgetize) Percent of values carrying one EXTRA LOW-degree mask term. Breaks the fixed (1+k_total)^arity fragment count per CG block, which otherwise segments the circuit into blocks and reveals each source gate's arity by counting. Jitter is extra terms only, never fewer, so the committed operating point (the weakest value) does not move. NOTE: the per-fragment ESOP re-cover conj(L+u)^conj(L+!u) was tried for this and REFUTED -- the two halves share every literal but one polarity and target the same carrier, so the twin is greppable within the block whatever order they are emitted in"),
                 )
                 .arg(
                     Arg::new("prod_fill_pivots")
                         .long("prod-fill-pivots")
                         .alias("prod_fill_pivots")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Reserve a distinct pivot per band wire during the nonlinear fill, making the band exactly uniform on {0,1}^b at the port. Requires band <~ 3n/4 (the pivots leave the fill no legal non-pivot data wire otherwise). NOTE: --prod-refill-data > 0 forfeits the guarantee past the port"),
                 )
@@ -374,7 +360,6 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-epoch")
                         .alias("prod_epoch")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Retire-and-refill epochs: a band variable is re-sourced everywhere it is named and then rewritten, so band values stop being frozen functions of the input (0 = frozen band). Without this the band is recoverable by FUNCTION LIFETIME alone -- rolling relocates a variable but preserves its function. Smaller = more turnovers = more cost; merging the population fully costs about +41% gates"),
                 )
@@ -383,7 +368,6 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-refill-data")
                         .alias("prod_refill_data")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Percent of refill sources drawn from CARRIERS rather than from other band values. Band-only refills keep the band statistically independent of the data (good for correlation) but a band that never touches the data is itself a signature; carrier-sourced refills inject data at the cost of the port's joint-uniformity guarantee"),
                 )
@@ -392,7 +376,6 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-src-dist")
                         .alias("prod_src_dist")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Distributed sourcing: drop the dedicated band and source mask literals on ordinary carriers of other values, migrating a mask before anything writes its source (0 = band, 1 = no band). Costs no extra wires and leaves no globally quiet wire"),
                 )
@@ -401,7 +384,6 @@ fn add_shoot_args(c: Command) -> Command {
                         .long("prod-src-horizon")
                         .alias("prod_src_horizon")
                         .required(false)
-                        .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("(--cnot gadgetize) Lookahead horizon for --prod-src-dist, in source-gate positions (0 = auto n/2): prefer sources whose owning value is not targeted within this many gates, so masks usually die of ordinary churn rather than a forced migration"),
                 )

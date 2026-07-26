@@ -92,28 +92,41 @@ pub fn run(sub: &clap::ArgMatches) {
             depth: *sub.get_one("mask_depth").unwrap(),
             taper: sub.get_one("mask_taper").copied(),
         };
+        // Start from the validated production setting and let an explicitly
+        // passed flag override a field. Copying the values into clap defaults
+        // instead would recreate the bug this replaces: the preset sat in the
+        // tree with no callers, so every "production" lever it named was off
+        // in every circuit anyone actually built.
+        let preset = ProdConfig::production_single();
+        let opt = |id: &str, cur: usize| -> usize {
+            match sub.value_source(id) {
+                Some(clap::parser::ValueSource::CommandLine) => {
+                    sub.get_one::<usize>(id).copied().unwrap_or(cur)
+                }
+                _ => cur,
+            }
+        };
         let prod = ProdConfig {
-            k: *sub.get_one("prod_k").unwrap(),
-            deg: *sub.get_one("prod_deg").unwrap(),
-            k_hi: *sub.get_one("prod_k_hi").unwrap(),
-            deg_hi: *sub.get_one("prod_deg_hi").unwrap(),
-            band: *sub.get_one("prod_band").unwrap(),
-            rsrc: *sub.get_one("prod_rsrc").unwrap(),
-            max_width: *sub.get_one("prod_max_width").unwrap(),
-            fill_nl: *sub.get_one("prod_fill_nl").unwrap(),
-            roll: *sub.get_one("prod_roll").unwrap(),
-            src_dist: *sub.get_one("prod_src_dist").unwrap(),
-            src_horizon: *sub.get_one("prod_src_horizon").unwrap(),
+            k: opt("prod_k", preset.k),
+            deg: opt("prod_deg", preset.deg),
+            k_hi: opt("prod_k_hi", preset.k_hi),
+            deg_hi: opt("prod_deg_hi", preset.deg_hi),
+            band: opt("prod_band", preset.band),
+            rsrc: opt("prod_rsrc", preset.rsrc),
+            max_width: opt("prod_max_width", preset.max_width),
+            fill_nl: opt("prod_fill_nl", preset.fill_nl),
+            roll: opt("prod_roll", preset.roll),
+            src_dist: opt("prod_src_dist", preset.src_dist),
+            src_horizon: opt("prod_src_horizon", preset.src_horizon),
             src_lo: 0,
             src_hi: 0,
-            fill_pivots: *sub.get_one("prod_fill_pivots").unwrap(),
-            g57_narrow: *sub.get_one("prod_g57_narrow").unwrap(),
-            ladder_cap: *sub.get_one("prod_ladder_cap").unwrap(),
-            cg_jitter: *sub.get_one("prod_cg_jitter").unwrap(),
-            epoch: *sub.get_one("prod_epoch").unwrap(),
-            refill_data: *sub.get_one("prod_refill_data").unwrap(),
-
-            single: *sub.get_one("prod_single").unwrap(),
+            fill_pivots: opt("prod_fill_pivots", preset.fill_pivots),
+            g57_narrow: opt("prod_g57_narrow", preset.g57_narrow),
+            ladder_cap: opt("prod_ladder_cap", preset.ladder_cap),
+            cg_jitter: opt("prod_cg_jitter", preset.cg_jitter),
+            epoch: opt("prod_epoch", preset.epoch),
+            refill_data: opt("prod_refill_data", preset.refill_data),
+            single: opt("prod_single", preset.single),
         };
         let c = CircuitSeq::from_string(&data);
         let collision_rounds: usize = *sub.get_one("collision_rounds").unwrap();
