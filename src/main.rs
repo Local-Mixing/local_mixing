@@ -329,7 +329,7 @@ fn add_shoot_args(c: Command) -> Command {
                         .alias("prod_g57_narrow")
                         .required(false)
                         .value_parser(clap::value_parser!(usize))
-                        .help("(--cnot gadgetize) Realize width-<=2 fold fragments in the g57/CNOT vocabulary instead of as bare conjunctions. Clearing --db-ctrl-cap 2 is NOT the same as being digestible: the X-free g57 span over {h,x,y} is <x, y, 1^xy>, so a comp=0 width-2 conjunction is invisible to a g57-built store however narrow it looks. Measured at n=128 band 256: DB match rate 35.1% -> 41.5% for +4.5% gates"),
+                        .help("(--cnot gadgetize) Realize width-<=2 fold fragments in the g57/CNOT vocabulary instead of as bare conjunctions. MEASURED at n=128 band 256: DB match rate 35.1% -> 41.5% for +4.5% gates, via the pure sampler. The MECHANISM is open: an earlier rationale claimed a comp=0 width-2 conjunction is unreachable by a g57-built store because it lies outside the X-free span <x, y, 1^xy> over {h,x,y}; that span identity is real (it is the f with const = coeff_xy, and it is why three of four polarity patterns owe a ledger constant) but it only covers circuits that never write x or y -- g57+CNOT on three wires generates all of S8, so h ^= xy is reachable in 5 gates. Keep the flag for the measurement, not the argument"),
                 )
                 .arg(
                     Arg::new("prod_ladder_cap")

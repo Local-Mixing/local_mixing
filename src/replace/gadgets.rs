@@ -4849,13 +4849,26 @@ impl ProdLedger {
             if width <= 2 {
                 self.cg_narrow += 1;
                 // Realize the DB-eligible fragments in the g57/CNOT
-                // vocabulary rather than as exact conjunctions. Passing the
-                // width cap is not the same as being digestible: a comp=0
-                // width-2 conjunction like `xy` is NOT in the X-free g57
-                // span (which over {h,x,y} is <x, y, 1^xy>), so as a single
-                // gate it is invisible to a store built from g57 circuits,
-                // however narrow it looks. `~x~y` already is in the span,
-                // which is why the gain is a fraction rather than all of it.
+                // vocabulary rather than as exact conjunctions. MEASURED: at
+                // n=128 band 256 this raises the frozen store's match rate
+                // from 0.3506 to 0.4151 for +4.5% gates (pure sampler,
+                // --db-dry-run --p-db 1.0, every other weight 0).
+                //
+                // ⚠ The MECHANISM is not established. An earlier version of
+                // this comment argued that a comp=0 width-2 conjunction `xy`
+                // is outside the X-free g57 span over {h,x,y} -- which is
+                // <x, y, 1^xy>, i.e. exactly the f with const(f) = coeff_xy(f)
+                // -- and concluded such a gate is invisible to a g57-built
+                // store. The span identity is real, and it is why three of the
+                // four polarity patterns below owe a ledger constant while
+                // `~x~y` owes none. The CONCLUSION was wrong: the span only
+                // describes circuits that never write x or y, and g57+CNOT
+                // over three wires generates all of S8 -- `h ^= xy` is
+                // reachable in 5 gates and even a bare NOT in 5. fmix's
+                // replacement windows are [2,5] gates besides, so a lone gate
+                // is never matched by itself. Keep the lever for the number,
+                // not for the story.
+                //
                 // Costs 1-2 gates instead of 1; the residual goes to the
                 // ledger exactly as the narrow path already does.
                 if self.g57_narrow {

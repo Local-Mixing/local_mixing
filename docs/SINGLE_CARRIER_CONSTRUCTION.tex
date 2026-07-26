@@ -728,27 +728,36 @@ implementation detail.
 
 \subsection{Narrowness is not digestibility}
 
-The obvious reading of the cap is that a fragment with at most two controls is
-reachable. That reading is wrong, and the error is algebraic. Over the wires
-$\{h, x, y\}$ the $X$-free span of the g57/\textsc{cnot} vocabulary is
-\[
-  \langle\, x,\; y,\; 1 \oplus xy \,\rangle,
-\]
-which does \emph{not} contain $xy$. A width-2 conjunction with $\text{comp}=0$
-is therefore invisible to a store built from g57 circuits however narrow it
-looks, while $\lnot x \cdot \lnot y = (1 \oplus \lnot x \cdot y) \oplus x$ is
-already inside. \code{--prod-g57-narrow} re-realises every width-$\leq$2 fold
-fragment through the g57 form, at a cost of one or two gates instead of one,
-with the residual constant going to the ledger exactly as the narrow path
-already does. At $n{=}128$, band 256, plan $[1,2,3,3]$, the store's match rate
-on the result rises from $0.3506$ to $0.4151$ for $+4.5\%$ gates. The gain is a
-fraction rather than all of it precisely because the $\lnot x \lnot y$ corner
-was never the problem.
+\code{--prod-g57-narrow} re-realises every width-$\leq$2 fold fragment through
+the g57 form, at a cost of one or two gates instead of one, with the residual
+constant going to the ledger exactly as the narrow path already does. At
+$n{=}128$, band 256, plan $[1,2,3,3]$, the store's match rate on the result
+rises from $0.3506$ to $0.4151$ for $+4.5\%$ gates.
 
 The rate is measured with the pure sampler --- \code{--db-dry-run} with
 \code{--p-db 1.0}, every other move weight zero, \code{--db-ctrl-cap 2} --- so
 the circuit never changes under the instrument and the number is a property of
 the encoding rather than of a mixing trajectory.
+
+\textbf{The mechanism is open, and an earlier explanation here was wrong.}
+That explanation ran: over the wires $\{h,x,y\}$ the $X$-free span of the
+g57/\textsc{cnot} vocabulary is $\langle x,\; y,\; 1 \oplus xy \rangle$, so a
+width-2 conjunction with $\text{comp}=0$ is outside it and therefore invisible
+to a store built from g57 circuits. The span identity is correct and worth
+keeping: writing $f$ in ANF, the span is exactly
+$\{f : \text{const}(f) = \text{coeff}_{xy}(f)\}$, which places $\lnot x \lnot y$
+inside and $xy$, $\lnot x\, y$, $x \lnot y$ and the constant $1$ outside --- and
+that is precisely why three of the four polarity cases in \code{emit\_g57\_form}
+owe a deferred ledger constant while $\lnot x \lnot y$ owes none.
+
+The \emph{conclusion} does not follow. The span describes only circuits in
+which $x$ and $y$ are never written. Lift that restriction and g57 with
+\textsc{cnot} generates the \emph{entire} symmetric group on three wires (all
+$40\,320$ permutations, verified by closure): $h \mathrel{\oplus}= xy$ is
+reachable in five gates, and even a bare \textsc{not} in five. fmix's
+replacement windows are $[2,5]$ gates besides, so a lone gate is never matched
+on its own. The lever is kept for the measurement; why the measurement moves is
+not established.
 
 \subsection{A width ceiling, and where it stops paying}
 
@@ -848,11 +857,23 @@ across band wires, and each wire's exclusions cover only its \emph{own} pivot, s
 one wire's pivot can re-enter another's linear part. A reserved pivot block
 (distinct pivots, the whole pivot set excluded from every wire's non-pivot
 material) makes the band exactly uniform on $\{0,1\}^b$ for \emph{any} nonlinear
-part, at zero gate cost --- see \code{docs/BAND\_INDEPENDENCE}. This is now the
-\emph{only} unmet hypothesis of \eqref{eq:piling}, and it is the natural
-explanation for the residual excess over theory that survives with disjointness
-enforced ($+0.008$ at $A{=}4$, $+0.020$ at $A{=}6$, $n{=}64$). Until it lands,
-treat \eqref{eq:piling} as a model the measurements happen to track.
+part, at zero gate cost --- see \code{docs/BAND\_INDEPENDENCE}. It is available
+as \code{fill\_pivots}, and \textbf{the production preset sets it to $0$}, so
+this hypothesis is not merely unproved in the shipped build, it is switched off.
+It is now the \emph{only} unmet hypothesis of \eqref{eq:piling}.
+
+Do not read the measured-versus-theory residuals as a clean estimate of that
+gap: the deviation has no reliable sign, because two mechanisms push opposite
+ways. \code{hmap\_stat} searches only single wires and pairwise XORs and reports
+a median over interior rows, so it \emph{under}-reads a true affine adversary
+(at $n{=}128$, $[1,2,3,3]$ measures $0.618$ against a theory value of $0.641$);
+but each cell is a max over columns, which inflates upward, and at $n{=}64$ the
+disjoint builds land \emph{above} theory ($+0.008$ at $A{=}4$, $+0.020$ at
+$A{=}6$). Attributing either residual to source non-uniformity alone is not
+supported. Treat \eqref{eq:piling} as a model the measurements bracket rather
+than track, and note that the reduction behind it (predicting $v$ reduces to
+approximating the mask) is a \textbf{lower} bound on adversary success --- an
+equality only under jointly uniform sources, which is exactly what is off.
 
 \textbf{The agreement is progress-\emph{aligned}, which ``dead at degree 1'' does
 not say.} The ridge columns above are the exact-span measure, which snaps every
