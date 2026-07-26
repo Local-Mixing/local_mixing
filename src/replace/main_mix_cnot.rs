@@ -21,7 +21,8 @@ use crate::{
     replace::gadgets::{
         CnotCircuit, feistalize_cnot, feistalize_with_slice_zero_cnot,
         feistalize_with_slice_zero_hardcoded_cnot, feistalize_with_slice_zero_random_cnot,
-        MaskConfig, ProdConfig, gadgetize_cnot, gadgetize_with_slice_zero_ccnot, packed_bit,
+        MaskConfig, ProdConfig, gadgetize_cnot, gadgetize_cnot_single,
+        gadgetize_with_slice_zero_ccnot, packed_bit,
         sliced_sandwich_cnot,
     },
 };
@@ -378,6 +379,12 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
                 ),
                 FunctionView::GadgetLow,
                 "slice-zero-ccnot gadgetized",
+            )
+        } else if p.prod.single_carrier() {
+            (
+                gadgetize_cnot_single(original, p.n, p.rg_freq, &p.prod, &mut rng),
+                FunctionView::GadgetLow,
+                "gadgetized (single-carrier decode)",
             )
         } else {
             (

@@ -3894,7 +3894,10 @@ impl ProdLedger {
             return;
         }
         if self.sim.is_empty() {
-            self.sim = vec![0u64; self.carrier_total];
+            // The full wire space, not just the carriers: in band mode the
+            // replayed gates target band wires above `carrier_total` (the fill)
+            // and `slot_product` indexes through `loc`, which points there too.
+            self.sim = vec![0u64; self.borrow_total()];
             for w in 0..self.carrier_total / 4 {
                 self.sim[w] = rng.random::<u64>();
             }
@@ -5397,6 +5400,16 @@ pub fn gadgetize_with_slice_zero_ccnot(
     prod: &ProdConfig,
     rng: &mut impl Rng,
 ) -> CnotCircuit {
+    if prod.single_carrier() {
+        // No aux half to pin: the slice is the band alone.
+        let band = prod.band_size(n);
+        let mut circuit = slice_zero_preblock_dims(n, band, gate_count.max(band), rng);
+        let gadget = gadgetize_cnot_single(main, n, rg_freq, prod, rng);
+        circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+        circuit.gates.extend(gadget.gates);
+        commuting_shuffle(&mut circuit.gates, rng);
+        return circuit;
+    }
     // The band is part of the slice: the preblock must see its width.
     let mut circuit = slice_zero_ccnot_preblock(n, prod.band_size(n), gate_count, rng);
     let gadget = gadgetize_cnot(main, n, rg_freq, masks, prod, rng);
