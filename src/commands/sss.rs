@@ -4,12 +4,12 @@ use std::path::Path;
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::replace::frozen::FrozenDb;
 use local_mixing::replace::gadgets::{
-    SLICE_ZERO_CCNOT_GATES_PER_WIRE, SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS,
-    SLICE_ZERO_RANDOM_GATES_PER_WIRE, sandwich_default_m, sandwich_default_s,
+    sandwich_default_m, sandwich_default_s, SLICE_ZERO_CCNOT_GATES_PER_WIRE,
+    SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS, SLICE_ZERO_RANDOM_GATES_PER_WIRE,
 };
-use local_mixing::replace::main_mix::main_shuffle_shoot_shuffle;
 use local_mixing::replace::gadgets::{MaskConfig, ProdConfig};
-use local_mixing::replace::main_mix_cnot::{CnotSssParams, main_shuffle_shoot_shuffle_cnot};
+use local_mixing::replace::main_mix::main_shuffle_shoot_shuffle;
+use local_mixing::replace::main_mix_cnot::{main_shuffle_shoot_shuffle_cnot, CnotSssParams};
 use local_mixing::replace::mixing::install_kill_handler;
 use local_mixing::replace::replace::{
     print_compress_timers, record_finish, record_init, write_compression_histogram,
@@ -80,13 +80,12 @@ pub fn run(sub: &clap::ArgMatches) {
         // The cnot gadget path settles on ONE nonlinear RG per SG unless
         // --rg-frequency is given explicitly (the clap default of 2 belongs
         // to the legacy every-K-SGs meaning on the other paths).
-        let rg_freq = if sub.value_source("rg_frequency")
-            == Some(clap::parser::ValueSource::DefaultValue)
-        {
-            1
-        } else {
-            rg_freq
-        };
+        let rg_freq =
+            if sub.value_source("rg_frequency") == Some(clap::parser::ValueSource::DefaultValue) {
+                1
+            } else {
+                rg_freq
+            };
         let masks = MaskConfig {
             cov: *sub.get_one("mask_cov").unwrap(),
             k: *sub.get_one("mask_k").unwrap(),
@@ -108,6 +107,8 @@ pub fn run(sub: &clap::ArgMatches) {
             src_lo: 0,
             src_hi: 0,
             fill_pivots: 0,
+            g57_narrow: 0,
+
             epoch: 0,
             refill_data: 0,
 

@@ -19,17 +19,16 @@
 //! the SAME C. The sandwich is dumped to `<out>.sandwich.mpmct1` so same-A /
 //! fresh-A across runs is checkable byte-for-byte.
 
+use local_mixing::circuit::circuit::U1024;
 use local_mixing::postmix::format::write_mpmct;
 use local_mixing::postmix::xgate::eval_u1024;
-use local_mixing::circuit::circuit::U1024;
 use local_mixing::random::random_data::random_circuit;
 use local_mixing::replace::gadgets::{
-    MaskConfig, ProdConfig, gadgetize_xgates_with_slice_zero_ccnot,
-    gadgetize_xgates_with_slice_zero_ccnot_single, sandwich_default_s,
-    sliced_sandwich_cnot,
+    gadgetize_xgates_with_slice_zero_ccnot, gadgetize_xgates_with_slice_zero_ccnot_single,
+    sandwich_default_s, sliced_sandwich_cnot, MaskConfig, ProdConfig,
 };
-use rand::SeedableRng;
 use rand::rngs::StdRng;
+use rand::SeedableRng;
 
 fn mask_bits(bits: usize) -> U1024 {
     if bits >= 1024 {
@@ -41,14 +40,22 @@ fn mask_bits(bits: usize) -> U1024 {
 
 fn main() {
     let mut a = std::env::args().skip(1);
-    let out = a.next().expect("usage: gen_sandwich_gadget <out> [n m_C m_D s rg_freq slice_gates seed]");
+    let out = a
+        .next()
+        .expect("usage: gen_sandwich_gadget <out> [n m_C m_D s rg_freq slice_gates seed]");
     let n: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(128);
     let m_c: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(3000);
     let m_d: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(3000);
-    let s: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| sandwich_default_s(n));
+    let s: usize = a
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| sandwich_default_s(n));
     let rg_freq: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(1);
     let sandwich_n = 2 * n;
-    let slice_gates: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(10 * sandwich_n);
+    let slice_gates: usize = a
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10 * sandwich_n);
     let seed: u64 = a.next().and_then(|s| s.parse().ok()).unwrap_or(1);
     let gadget_seed: u64 = a.next().and_then(|s| s.parse().ok()).unwrap_or(seed);
     let sandwich_seed: u64 = a.next().and_then(|s| s.parse().ok()).unwrap_or(seed);
@@ -65,7 +72,10 @@ fn main() {
     // the whole gadget) bit-for-bit, so this recovers a past run's source.
     let c_path = format!("{out}.source_c.g57");
     std::fs::write(&c_path, c.repr()).expect("write source C");
-    println!("[gen] wrote source C ({} g57 gates) to {c_path}", c.gates.len());
+    println!(
+        "[gen] wrote source C ({} g57 gates) to {c_path}",
+        c.gates.len()
+    );
     let mut rng = StdRng::seed_from_u64(sandwich_seed ^ 0x5150_1CED);
 
     let sandwich = sliced_sandwich_cnot(&c, n, m_d, s, &mut rng);
@@ -84,7 +94,12 @@ fn main() {
 
     // Product-share encoding via env vars (PROD_K base deg-PROD_DEG terms +
     // PROD_K_HI tower deg-PROD_DEG_HI terms). Default off = plain gadget.
-    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let env = |k: &str, d: usize| {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(d)
+    };
     let prod = ProdConfig {
         k: env("PROD_K", 0),
         deg: env("PROD_DEG", 2),
@@ -98,7 +113,10 @@ fn main() {
         src_dist: env("PROD_SRC_DIST", 0),
         src_horizon: env("PROD_SRC_HORIZON", 0),
         src_lo: env("PROD_SRC_LO", 0),
-        src_hi: env("PROD_SRC_HI", 0),        fill_pivots: env("PROD_FILL_PIVOTS", 0),
+        src_hi: env("PROD_SRC_HI", 0),
+        fill_pivots: env("PROD_FILL_PIVOTS", 0),
+        g57_narrow: env("PROD_G57_NARROW", 0),
+
         epoch: env("PROD_EPOCH", 0),
         refill_data: env("PROD_REFILL_DATA", 0),
 
@@ -159,7 +177,10 @@ fn main() {
         }
         println!("[gen] verify PASSED (200 samples, low {sandwich_n} wires)");
     } else {
-        println!("[gen] skipped u1024 verify ({} wires > 1024)", gadget.num_wires);
+        println!(
+            "[gen] skipped u1024 verify ({} wires > 1024)",
+            gadget.num_wires
+        );
     }
 
     write_mpmct(&out, &gadget.gates, gadget.num_wires).expect("write mpmct1");

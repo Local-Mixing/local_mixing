@@ -37,7 +37,7 @@
 
 use clap::Parser;
 use local_mixing::postmix::format::{read_g57_file, read_mpmct};
-use local_mixing::postmix::xgate::{XGate, max_wire};
+use local_mixing::postmix::xgate::{max_wire, XGate};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashMap;
@@ -194,4 +194,53 @@ fn main() {
             cov.iter().filter(|&&c| c >= t).count()
         );
     }
+
+    // The threshold counts answer "is there a frozen population", which a
+    // refresh defeats by construction. The sharper question is whether the
+    // refreshed population's LIFETIME DISTRIBUTION sits inside the carriers'
+    // -- a band whose functions all live 4 checkpoints while carriers live 1
+    // is still a population, just a shorter-lived one, and the epochs it
+    // creates are as enumerable as the frozen functions they replaced. Report
+    // the whole distribution so that comparison is possible rather than
+    // inferred from a single number.
+    let mut hist = vec![0usize; cps.len() + 1];
+    for c in seen.values() {
+        hist[*c] += 1;
+    }
+    let total: usize = hist.iter().sum();
+    let mean: f64 = hist
+        .iter()
+        .enumerate()
+        .map(|(life, &n)| life as f64 * n as f64)
+        .sum::<f64>()
+        / total.max(1) as f64;
+    println!(
+        "  lifetime histogram (checkpoints alive -> #functions), mean {:.2} of {}:",
+        mean,
+        cps.len()
+    );
+    let mut line = String::new();
+    for (life, &n) in hist.iter().enumerate() {
+        if n > 0 {
+            line.push_str(&format!(" {life}:{n}"));
+        }
+    }
+    println!("   {}", line.trim());
+    // A population that stands out shows up as mass far from the bulk.
+    let mut sorted_life: Vec<usize> = seen.values().copied().collect();
+    sorted_life.sort_unstable();
+    let pct = |q: f64| -> usize {
+        sorted_life
+            .get(((sorted_life.len() as f64 - 1.0) * q) as usize)
+            .copied()
+            .unwrap_or(0)
+    };
+    println!(
+        "  lifetime percentiles: p50={} p90={} p99={} max={} (of {} checkpoints)",
+        pct(0.50),
+        pct(0.90),
+        pct(0.99),
+        sorted_life.last().copied().unwrap_or(0),
+        cps.len()
+    );
 }

@@ -12,12 +12,14 @@
 //!         roll > 0 = rolling band relocations per inter-SG gap)
 
 use local_mixing::circuit::circuit::CircuitSeq;
+use local_mixing::circuit::circuit::U1024;
 use local_mixing::postmix::format::{read_g57_file, write_mpmct};
 use local_mixing::postmix::xgate::eval_u1024;
-use local_mixing::circuit::circuit::U1024;
-use local_mixing::replace::gadgets::{gadgetize_cnot, gadgetize_cnot_single, MaskConfig, ProdConfig};
-use rand::SeedableRng;
+use local_mixing::replace::gadgets::{
+    gadgetize_cnot, gadgetize_cnot_single, MaskConfig, ProdConfig,
+};
 use rand::rngs::StdRng;
+use rand::SeedableRng;
 
 fn low_mask(n: usize) -> U1024 {
     (U1024::one() << n) - U1024::one()
@@ -45,7 +47,11 @@ fn main() {
             let mut xw = 0u16;
             let mut yw = 0u16;
             for &(w, pol) in &g.ctrls {
-                if pol { yw = w } else { xw = w }
+                if pol {
+                    yw = w
+                } else {
+                    xw = w
+                }
             }
             [g.target, xw, yw]
         })
@@ -56,7 +62,26 @@ fn main() {
     let fill_nl: usize = a.get(10).and_then(|s| s.parse().ok()).unwrap_or(0);
     let roll: usize = a.get(11).and_then(|s| s.parse().ok()).unwrap_or(0);
     let src_dist: usize = a.get(12).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let prod = ProdConfig { k, deg, k_hi, deg_hi, band, rsrc: 1, max_width, fill_nl, roll, src_dist, src_horizon: 0, src_lo: a.get(13).and_then(|s| s.parse().ok()).unwrap_or(0), src_hi: a.get(14).and_then(|s| s.parse().ok()).unwrap_or(0), single: a.get(15).and_then(|s| s.parse().ok()).unwrap_or(0), fill_pivots: a.get(16).and_then(|s| s.parse().ok()).unwrap_or(0), epoch: a.get(17).and_then(|s| s.parse().ok()).unwrap_or(0), refill_data: a.get(18).and_then(|s| s.parse().ok()).unwrap_or(0) };
+    let prod = ProdConfig {
+        k,
+        deg,
+        k_hi,
+        deg_hi,
+        band,
+        rsrc: 1,
+        max_width,
+        fill_nl,
+        roll,
+        src_dist,
+        src_horizon: 0,
+        src_lo: a.get(13).and_then(|s| s.parse().ok()).unwrap_or(0),
+        src_hi: a.get(14).and_then(|s| s.parse().ok()).unwrap_or(0),
+        single: a.get(15).and_then(|s| s.parse().ok()).unwrap_or(0),
+        fill_pivots: a.get(16).and_then(|s| s.parse().ok()).unwrap_or(0),
+        epoch: a.get(17).and_then(|s| s.parse().ok()).unwrap_or(0),
+        refill_data: a.get(18).and_then(|s| s.parse().ok()).unwrap_or(0),
+        g57_narrow: a.get(19).and_then(|s| s.parse().ok()).unwrap_or(0),
+    };
     let mut rng = StdRng::seed_from_u64(seed);
     let g = if prod.single_carrier() {
         gadgetize_cnot_single(&main, n, 1, &prod, &mut rng)
