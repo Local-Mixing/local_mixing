@@ -4767,6 +4767,10 @@ impl ProdLedger {
             let old = self.slots[value].remove(idx);
             let konst = self.emit_slot(value, &old, state, rng, out);
             self.consts[value] ^= konst;
+            // Release the retired slot's wires. Without this refs[] only ever
+            // grows on the epoch path, so wires stay permanently "named" and
+            // the distributed draw's legal pool shrinks toward empty.
+            self.drop_refs(&old);
             self.used.remove(&old);
             self.migrated += 1;
         }
@@ -4883,6 +4887,15 @@ impl ProdLedger {
                 self.used.insert(slot.clone());
                 let konst = self.emit_slot(value, &slot, state, rng, out);
                 self.consts[value] ^= konst;
+                // Register the new slot's wires, exactly as the ordinary inject
+                // does. Omitting this leaves refs[] under-counting a live slot,
+                // and refs[] is what invariant S is enforced with -- a wire
+                // could then be drawn as a mask source while still named.
+                // Currently masked because retire_refill returns early under
+                // distributed sourcing and add_refs is a no-op otherwise, so
+                // the two guards would have to be lifted together for this to
+                // bite; that is precisely the combination worth not leaving armed.
+                self.add_refs(&slot);
                 self.slots[value].push(slot);
                 self.injected += 1;
                 return;
@@ -5338,7 +5351,18 @@ impl ProdLedger {
             }
             if self.consts[value] {
                 let target = self.free_carrier(value, state, rng) as usize;
-                let u = random_wire_except(self.carrier_total, &[target], rng) as u16;
+                // The helper must not be the target value's OTHER carrier: this
+                // gate reads u and writes target, so a sibling here would put
+                // both carriers of one value into a single gate -- the
+                // gate-local non-completeness violation the whole construction
+                // is built to avoid. Drawing from the index range 0..carrier_total
+                // and excluding only the target does not prevent it; that is the
+                // role-versus-index confusion already fixed twice in this file,
+                // and it is live on any two-carrier build (--prod-single 0).
+                let (s0, s1) = state.pairs[value];
+                let sibling = if s0 == target { s1 } else { s0 };
+                let u =
+                    random_wire_except(self.borrow_total(), &[target, sibling], rng) as u16;
                 out.push(XGate::conj(target as u16, [(u, false)]).expect("distinct wires"));
                 out.push(XGate::cnot(target as u16, u));
                 self.consts[value] = false;
@@ -9562,6 +9586,64 @@ mod cnot_gadget_tests {
         assert_eq!(p.cg_jitter, 50, "block-count entropy at its maximum");
         assert!(p.epoch > 0, "a frozen band is recoverable by function lifetime");
         assert_eq!(p.fill_pivots, 0, "band = n leaves the pivot block no room");
+    }
+
+    /// `strip_all`'s constant discharge must not read the target's SIBLING.
+    ///
+    /// It emits `target ^= !u` then `target ^= u` to realize a bare constant
+    /// without an X gate, and it drew `u` from the index range
+    /// `0..carrier_total` excluding only the target -- so on a two-carrier build
+    /// the target value's other carrier was a legal draw, and that first gate
+    /// then read one carrier of a value while writing the other: a whole
+    /// sharing inside one gate. It is the role-versus-index confusion this file
+    /// has now had three times, invisible under `--prod-single 1` because there
+    /// is no sibling to hit, which is why the suite passed with it present.
+    ///
+    /// Tested on `strip_all` directly rather than on a finished gadget: the
+    /// sharing BOOKENDS legitimately touch both carriers (that is how the
+    /// sharing is created), so a whole-circuit scan cannot separate the two.
+    #[test]
+    fn prod_strip_constant_never_reads_the_targets_sibling() {
+        let n = MASKED_TEST_N;
+        let cfg = ProdConfig {
+            k: 1,
+            deg: 2,
+            k_hi: 1,
+            deg_hi: 3,
+            band: 10,
+            rsrc: 1,
+            fill_nl: 2,
+            single: 0, // two carriers: this is the only mode with a sibling
+            ..ProdConfig::off()
+        };
+        let carrier_total = 2 * n;
+        let pairs: Vec<(usize, usize)> = (0..n).map(|v| (2 * v, 2 * v + 1)).collect();
+        let state = GadgetState { n, pairs };
+        for seed in 0..64u64 {
+            let mut rng = StdRng::seed_from_u64(0x5721_0000 + seed);
+            let mut ledger = ProdLedger::new(n, &cfg, carrier_total, None);
+            let mut ramp = Vec::new();
+            ledger.inject_all(&state, &mut rng, &mut ramp);
+            // Force every value to owe a constant, so the discharge path runs
+            // for all of them rather than whichever parity happened to land.
+            for v in 0..n {
+                ledger.consts[v] = true;
+            }
+            let mut out = Vec::new();
+            ledger.strip_all(&state, &mut rng, &mut out);
+            for (i, gate) in out.iter().enumerate() {
+                let mut touched: Vec<u16> = gate.ctrls.iter().map(|&(w, _)| w).collect();
+                touched.push(gate.target);
+                for v in 0..n {
+                    let (c0, c1) = (2 * v as u16, 2 * v as u16 + 1);
+                    assert!(
+                        !(touched.contains(&c0) && touched.contains(&c1)),
+                        "seed={seed} strip gate {i} ({gate:?}) holds both carriers \
+                         {c0},{c1} of value {v}"
+                    );
+                }
+            }
+        }
     }
 
     /// Retire-and-refill epochs: a band variable's VALUE changes mid-body.
