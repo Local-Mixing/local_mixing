@@ -3040,6 +3040,14 @@ pub struct ProdConfig {
     /// removes NO wide gates -- it improves the QUALITY of the reachable
     /// material, not its extent. Fossil count is untouched; see --prod-ladder.
     pub g57_narrow: usize,
+    /// Ladder fold fragments of width in (2, ladder_cap] down to <=2 controls
+    /// with the borrowed-carrier double sweep; 0 disables. Wider fragments are
+    /// left as single wide gates -- laddering those is what full narrow mode's
+    /// ~15x cost is made of.
+    pub ladder_cap: usize,
+    /// Percent of values given one EXTRA high-degree mask term, so a CG block's
+    /// fragment count stops being the fixed (1+k_total)^arity.
+    pub cg_jitter: usize,
     /// Retire-and-refill epochs: inter-SG gaps between two events (0 = off).
     ///
     /// A band value is a FROZEN FUNCTION OF THE INPUT, and that is what a
@@ -3148,6 +3156,8 @@ impl ProdConfig {
             src_hi: 0,
             fill_pivots: 0,
             g57_narrow: 0,
+            ladder_cap: 0,
+            cg_jitter: 0,
 
             epoch: 0,
             refill_data: 0,
@@ -3196,6 +3206,8 @@ impl ProdConfig {
             src_hi: 0,
             fill_pivots: 0,
             g57_narrow: 1,
+            ladder_cap: 3,
+            cg_jitter: 50,
 
             epoch: 5,
             refill_data: 50,
@@ -3494,6 +3506,29 @@ fn emit_narrow_fragment(
 /// Dedupe an interleaved literal list in place, preserving order. Returns
 /// None when two polarities meet on one wire (the conjunction is identically
 /// zero and the fragment must be dropped).
+/// Flatten a fragment's per-control atoms round-robin rather than end to end.
+///
+/// This matters only when the fragment is going to be LADDERED, but it is
+/// applied unconditionally. A ladder parks partial products of a literal
+/// PREFIX on borrowed wires; concatenated order makes some prefix exactly one
+/// value's whole mask term, which would sit unmasked on a borrowed wire for
+/// the length of the sweep. Interleaved, no prefix ever completes a single
+/// value's term. A plain conjunction is order-insensitive, so applying it
+/// everywhere costs nothing and keeps laddered and unladdered fragments from
+/// being told apart by control order alone.
+fn interleave_atoms(atoms: &[Vec<(u16, bool)>]) -> Vec<(u16, bool)> {
+    let width = atoms.iter().map(|a| a.len()).max().unwrap_or(0);
+    let mut lits = Vec::new();
+    for i in 0..width {
+        for atom in atoms {
+            if let Some(&lit) = atom.get(i) {
+                lits.push(lit);
+            }
+        }
+    }
+    lits
+}
+
 fn normalize_lits(lits: &mut Vec<(u16, bool)>) -> Option<()> {
     let mut seen: Vec<(u16, bool)> = Vec::with_capacity(lits.len());
     for &(w, p) in lits.iter() {
@@ -3516,6 +3551,9 @@ struct ProdLedger {
     /// Per-value injection plan: the multiset of mask degrees each value
     /// carries (k copies of `deg` then k_hi copies of `deg_hi`).
     plan: Vec<usize>,
+    /// Per-value count of EXTRA high-degree mask terms beyond `plan`. Zero
+    /// everywhere unless `--prod-cg-jitter` is set.
+    plan_extra: Vec<usize>,
     /// 2n — random helper draws (constant folds) stay off the band.
     carrier_total: usize,
     /// Physical wire currently holding each band variable. Starts as the
@@ -3536,6 +3574,8 @@ struct ProdLedger {
     single: bool,
     /// Emit DB-eligible fold fragments in the g57/CNOT vocabulary.
     g57_narrow: bool,
+    ladder_cap: usize,
+    cg_jitter: usize,
     /// refs[wire] = live slot factors naming that wire. A wire with refs > 0
     /// is "named": nothing may write it until every naming slot is released.
     refs: Vec<u32>,
@@ -3583,6 +3623,8 @@ struct ProdLedger {
     /// the computation, so this is the fraction of the CORE that phase A's
     /// re-encoding can ever reach.
     cg_narrow: u64,
+    cg_laddered: u64,
+    cg_fossils: u64,
     ledger_consts: u64,
 }
 
@@ -3632,6 +3674,7 @@ impl ProdLedger {
         let hits = sched.unwrap_or_else(|| vec![Vec::new(); n]);
         ProdLedger {
             plan,
+            plan_extra: vec![0; n],
             carrier_total,
             loc: (carrier_total as u16..(carrier_total + band_len) as u16).collect(),
             cap: if cfg.narrow() { cfg.max_width } else { 0 },
@@ -3641,6 +3684,8 @@ impl ProdLedger {
             dist: cfg.dist(),
             single: cfg.single_carrier(),
             g57_narrow: cfg.g57_narrow > 0,
+            ladder_cap: cfg.ladder_cap,
+            cg_jitter: cfg.cg_jitter,
             refs: vec![0; carrier_total],
             owner: vec![u32::MAX; carrier_total],
             hits,
@@ -3662,6 +3707,8 @@ impl ProdLedger {
             refill_used_carriers: false,
             cg_fragments: 0,
             cg_narrow: 0,
+            cg_laddered: 0,
+            cg_fossils: 0,
             ledger_consts: 0,
         }
     }
@@ -3922,6 +3969,32 @@ impl ProdLedger {
                 self.carrier_total,
                 self.borrow_total(),
                 &sib,
+                rng,
+                out,
+            )
+        } else if lits.len() > 2 && lits.len() <= self.ladder_cap {
+            // The fold is where most of the wide gates are, but it is not the
+            // only place: a degree-3 mask term is a 3-control conjunction every
+            // time it is injected, re-sourced or stripped. Leaving those out
+            // would cap the ceiling's reach at the fold's share of the fossils
+            // and leave a residue that is, worse, ATTRIBUTABLE -- the surviving
+            // wide gates would be exactly the slot emissions, which name a
+            // value's mask sources directly.
+            let sibling = self.sibling_map(state);
+            let mut forbidden: Vec<u16> = vec![sibling[target as usize % sibling.len()]];
+            forbidden.extend(
+                lits.iter()
+                    .map(|&(w, _)| w)
+                    .filter(|&w| (w as usize) < sibling.len())
+                    .map(|w| sibling[w as usize]),
+            );
+            emit_narrow_fragment(
+                target,
+                &lits,
+                2,
+                self.carrier_total,
+                self.borrow_total(),
+                &forbidden,
                 rng,
                 out,
             )
@@ -4233,9 +4306,26 @@ impl ProdLedger {
         if !self.enabled() {
             return;
         }
+        if self.cg_jitter > 0 {
+            let p = (self.cg_jitter.min(100) as f64) / 100.0;
+            for value in 0..state.n {
+                self.plan_extra[value] = usize::from(rng.random_bool(p));
+            }
+        }
         for value in 0..state.n {
             for i in 0..self.plan.len() {
                 let deg = self.plan[i];
+                self.inject(value, deg, state, rng, out);
+            }
+            // Jitter is EXTRA terms only, never fewer. The operating point a
+            // build commits to is the weakest value in it, so removing a term
+            // anywhere would move the commitment; adding one can only raise a
+            // value above the floor. What it buys is that arity-2 CG blocks
+            // no longer all emit (1+k_total)^2 fragments -- the count varies
+            // with which values the source gate happens to read, and a block
+            // boundary stops being findable by counting to 16.
+            let deg = self.plan.last().copied().unwrap_or(2);
+            for _ in 0..self.plan_extra[value] {
                 self.inject(value, deg, state, rng, out);
             }
         }
@@ -4601,18 +4691,25 @@ impl ProdLedger {
         // are MATERIALIZED first and emitted in a shuffled order: the odometer
         // order is a static per-gate progress clock (consecutive fragments
         // share atom prefixes), readable with no execution at all.
-        let mut frags: Vec<Vec<(u16, bool)>> = Vec::new();
+        //
+        // A fragment is kept as its LIST OF ATOMS, not as a flat literal list.
+        // Laddering a fragment parks partial products on borrowed wires, and a
+        // borrowed wire must never hold one value's whole mask term — so the
+        // ladder path needs the atom boundaries to interleave across, which a
+        // flattened list has already thrown away.
+        let mut frags: Vec<Vec<Vec<(u16, bool)>>> = Vec::new();
         let mut combo = vec![0usize; lists.len()];
         'odometer: loop {
-            let mut lits: Vec<(u16, bool)> = Vec::new();
-            for (list, &pick) in lists.iter().zip(&combo) {
-                lits.extend_from_slice(&list[pick]);
-            }
-            if lits.is_empty() {
+            let picked: Vec<Vec<(u16, bool)>> = lists
+                .iter()
+                .zip(&combo)
+                .map(|(list, &pick)| list[pick].clone())
+                .collect();
+            if picked.iter().all(|a| a.is_empty()) {
                 self.consts[t] ^= true;
                 self.ledger_consts += 1;
             } else {
-                frags.push(lits);
+                frags.push(picked);
             }
             let mut axis = 0;
             loop {
@@ -4627,38 +4724,95 @@ impl ProdLedger {
                 axis += 1;
             }
         }
+        let sibling = self.sibling_map(state);
         // All fragments XOR into the same value's two carriers and read only
         // other values' carriers and the band, so they commute freely.
+        //
         use rand::seq::SliceRandom;
         frags.shuffle(rng);
-        for lits in frags {
+        for atoms in frags {
             let target = self.free_carrier(t, state, rng);
+            // Interleaving is only REQUIRED on the ladder path, but a fragment's
+            // width is not known until its literals are normalized, and using a
+            // different literal ORDER for laddered and unladdered fragments
+            // would make the two populations distinguishable by control order
+            // alone. Interleave uniformly; a conjunction does not care.
+            let mut lits = interleave_atoms(&atoms);
+            if normalize_lits(&mut lits).is_none() {
+                // Contradictory literals (w AND !w): the term is 0.
+                continue;
+            }
             self.debug_check_fragment(target, &lits, state);
-            // None = contradictory literals (w AND !w): the term is 0.
+            let width = lits.len();
+            if width <= 2 {
+                self.cg_narrow += 1;
+                // Realize the DB-eligible fragments in the g57/CNOT
+                // vocabulary rather than as exact conjunctions. Passing the
+                // width cap is not the same as being digestible: a comp=0
+                // width-2 conjunction like `xy` is NOT in the X-free g57
+                // span (which over {h,x,y} is <x, y, 1^xy>), so as a single
+                // gate it is invisible to a store built from g57 circuits,
+                // however narrow it looks. `~x~y` already is in the span,
+                // which is why the gain is a fraction rather than all of it.
+                // Costs 1-2 gates instead of 1; the residual goes to the
+                // ledger exactly as the narrow path already does.
+                if self.g57_narrow {
+                    let konst = emit_g57_form(target, &lits, rng, out);
+                    self.consts[t] ^= konst;
+                    self.cg_fragments += 1;
+                    continue;
+                }
+            } else if width <= self.ladder_cap {
+                // SELECTIVE LADDERING. Full narrow mode ladders every fragment
+                // and costs roughly 15x the fold; the fold's width profile is
+                // heavily bottom-weighted, so a ceiling buys most of the fossil
+                // reduction for a small fraction of that. Fragments wider than
+                // the ceiling stay as single wide gates: laddering them is what
+                // the 15x is made of, and they are the minority.
+                let mut forbidden: Vec<u16> = vec![sibling[target as usize % sibling.len()]];
+                forbidden.extend(
+                    lits.iter()
+                        .map(|&(w, _)| w)
+                        .filter(|&w| (w as usize) < sibling.len())
+                        .map(|w| sibling[w as usize]),
+                );
+                let konst = emit_narrow_fragment(
+                    target,
+                    &lits,
+                    2,
+                    self.carrier_total,
+                    self.borrow_total(),
+                    &forbidden,
+                    rng,
+                    out,
+                );
+                self.consts[t] ^= konst;
+                self.cg_fragments += 1;
+                self.cg_laddered += 1;
+                continue;
+            }
             if let Some(fragment) = XGate::conj(target, lits) {
-                if fragment.ctrls.len() <= 2 {
-                    self.cg_narrow += 1;
-                    // Realize the DB-eligible fragments in the g57/CNOT
-                    // vocabulary rather than as exact conjunctions. Passing the
-                    // width cap is not the same as being digestible: a comp=0
-                    // width-2 conjunction like `xy` is NOT in the X-free g57
-                    // span (which over {h,x,y} is <x, y, 1^xy>), so as a single
-                    // gate it is invisible to a store built from g57 circuits,
-                    // however narrow it looks. `~x~y` already is in the span,
-                    // which is why the gain is a fraction rather than all of it.
-                    // Costs 1-2 gates instead of 1; the residual goes to the
-                    // ledger exactly as the narrow path already does.
-                    if self.g57_narrow {
-                        let konst = emit_g57_form(target, &fragment.ctrls, rng, out);
-                        self.consts[t] ^= konst;
-                        self.cg_fragments += 1;
-                        continue;
-                    }
+                if fragment.ctrls.len() > 2 {
+                    self.cg_fossils += 1;
                 }
                 out.push(fragment);
                 self.cg_fragments += 1;
             }
         }
+    }
+
+    /// wire -> the other carrier of the same value (identity on the band).
+    /// Built over the WHOLE wire space: a roll can put a value's carrier on a
+    /// former band wire, so indexing by `carrier_total` alone goes out of
+    /// bounds the moment `--prod-roll` is on.
+    fn sibling_map(&self, state: &GadgetState) -> Vec<u16> {
+        let mut sibling: Vec<u16> = (0..self.borrow_total() as u16).collect();
+        for v in 0..state.n {
+            let (a, b) = state.pairs[v];
+            sibling[a] = b as u16;
+            sibling[b] = a as u16;
+        }
+        sibling
     }
 
     /// Narrow-mode fold body: materialize the fragment list (one atom pick
@@ -4683,15 +4837,8 @@ impl ProdLedger {
                 .zip(&combo)
                 .map(|(list, &pick)| &list[pick])
                 .collect();
-            let width = picked.iter().map(|a| a.len()).max().unwrap_or(0);
-            let mut lits: Vec<(u16, bool)> = Vec::new();
-            for i in 0..width {
-                for atom in &picked {
-                    if let Some(&lit) = atom.get(i) {
-                        lits.push(lit);
-                    }
-                }
-            }
+            let picked: Vec<Vec<(u16, bool)>> = picked.into_iter().cloned().collect();
+            let mut lits = interleave_atoms(&picked);
             if lits.is_empty() {
                 self.consts[t] ^= true;
                 self.ledger_consts += 1;
@@ -4722,12 +4869,7 @@ impl ProdLedger {
         // Over the WHOLE wire space: a roll can put a value's carrier on a
         // former band wire, so indexing by carrier_total alone goes out of
         // bounds the moment --prod-roll is on.
-        let mut sibling: Vec<u16> = (0..self.borrow_total() as u16).collect();
-        for v in 0..state.n {
-            let (a, b) = state.pairs[v];
-            sibling[a] = b as u16;
-            sibling[b] = a as u16;
-        }
+        let sibling = self.sibling_map(state);
         for lits in &frags {
             let target = self.free_carrier(t, state, rng);
             self.debug_check_fragment(target, lits, state);
@@ -4781,7 +4923,7 @@ impl ProdLedger {
         if self.enabled() {
             println!(
                 "[prod] plan={:?} band={} src={} injected={} resourced={} rolled={} migrated={} retired={} \
-                 degen_rejects={} cg_fragments={} cg_narrow={} ledger_consts={}{}",
+                 degen_rejects={} cg_fragments={} cg_narrow={} laddered={} fossils={} ledger_consts={}{}",
                 self.plan,
                 self.loc.len(),
                 if self.dist { "distributed" } else { "band" },
@@ -4793,6 +4935,8 @@ impl ProdLedger {
                 self.degenerate_rejects,
                 self.cg_fragments,
                 self.cg_narrow,
+                self.cg_laddered,
+                self.cg_fossils,
                 self.ledger_consts,
                 if self.retired > 0 && self.refill_used_carriers {
                     "  [port-uniformity forfeited: carrier-sourced refills]"
@@ -8356,6 +8500,8 @@ mod cnot_gadget_tests {
             src_hi: 0,
             fill_pivots: 0,
             g57_narrow: 0,
+            ladder_cap: 0,
+            cg_jitter: 0,
 
             epoch: 0,
             refill_data: 0,
@@ -8620,6 +8766,8 @@ mod cnot_gadget_tests {
                 src_hi: 0,
                 fill_pivots: 0,
                 g57_narrow: 0,
+                ladder_cap: 0,
+                cg_jitter: 0,
 
                 epoch: 0,
                 refill_data: 0,
@@ -8682,6 +8830,8 @@ mod cnot_gadget_tests {
             src_hi: 0,
             fill_pivots: 0,
             g57_narrow: 0,
+            ladder_cap: 0,
+            cg_jitter: 0,
 
             epoch: 0,
             refill_data: 0,
@@ -8751,6 +8901,8 @@ mod cnot_gadget_tests {
                 src_hi: 0,
                 fill_pivots: 0,
                 g57_narrow: 0,
+                ladder_cap: 0,
+                cg_jitter: 0,
 
                 epoch: 0,
                 refill_data: 0,
@@ -8816,6 +8968,8 @@ mod cnot_gadget_tests {
                 src_hi: 0,
                 fill_pivots: 0,
                 g57_narrow: 0,
+                ladder_cap: 0,
+                cg_jitter: 0,
 
                 epoch: 0,
                 refill_data: 0,
@@ -8839,6 +8993,78 @@ mod cnot_gadget_tests {
                 }
             }
         }
+    }
+
+    /// Selective laddering: fold fragments of width in (2, cap] are realized
+    /// over BORROWED DIRTY carriers instead of as one wide gate.
+    ///
+    /// The borrows are the whole risk. A ladder parks partial products on
+    /// wires it does not own, so it is exact only if every borrow is visited
+    /// an even number of times and restored before anything else reads it --
+    /// and the borrow pool now has to dodge the target's sibling carrier and
+    /// every operand's sibling, or one gate ends up seeing both carriers of a
+    /// single value. Run the full input domain (band junk included, since the
+    /// high wires are unconstrained) at several ceilings, and check that the
+    /// fossil count actually falls -- an exactness test alone would pass on a
+    /// ladder_cap that silently did nothing.
+    #[test]
+    fn prod_laddering_is_exact_and_removes_wide_gates() {
+        let n = 6usize;
+        let main = masked_test_main_wide(n);
+        let mask = (1u64 << n) - 1;
+        let build = |ladder_cap: usize, seed: u64| {
+            let cfg = ProdConfig {
+                k: 1,
+                deg: 2,
+                k_hi: 2,
+                deg_hi: 3,
+                band: 8,
+                rsrc: 1,
+                max_width: 0,
+                fill_nl: 2,
+                roll: 1,
+                src_dist: 0,
+                src_horizon: 0,
+                src_lo: 0,
+                src_hi: 0,
+                fill_pivots: 0,
+                g57_narrow: 1,
+                ladder_cap,
+                cg_jitter: 0,
+                epoch: 0,
+                refill_data: 0,
+                single: 1,
+            };
+            let mut rng = StdRng::seed_from_u64(0x1add_0000 + seed);
+            gadgetize_cnot_single(&main, n, 2, &cfg, &mut rng)
+        };
+        let wide = |g: &CnotCircuit| g.gates.iter().filter(|x| x.ctrls.len() > 2).count();
+        let base = wide(&build(0, 0));
+        for cap in [3usize, 4, 6] {
+            let g = build(cap, 0);
+            assert!(
+                wide(&g) < base,
+                "ladder_cap {cap} removed no wide gates ({} vs baseline {base})",
+                wide(&g)
+            );
+            for seed in 0..2u64 {
+                let g = build(cap, seed);
+                for input in 0..(1u64 << g.num_wires) {
+                    let expected = main.evaluate((input & mask) as usize) as u64 & mask;
+                    assert_eq!(
+                        eval_u64(&g.gates, input) & mask,
+                        expected,
+                        "ladder_cap={cap} seed={seed} input={input:#x}"
+                    );
+                }
+            }
+        }
+        // A ceiling above every fragment width must leave nothing wide behind.
+        assert_eq!(
+            wide(&build(64, 0)),
+            0,
+            "an unbounded ceiling still left wide gates"
+        );
     }
 
     /// Retire-and-refill epochs: a band variable's VALUE changes mid-body.
@@ -8877,6 +9103,8 @@ mod cnot_gadget_tests {
                 src_hi: 0,
                 fill_pivots: 1,
                 g57_narrow: 0,
+                ladder_cap: 0,
+                cg_jitter: 0,
                 epoch,
                 refill_data,
                 single: 0,
@@ -8924,6 +9152,8 @@ mod cnot_gadget_tests {
             src_hi: 0,
             fill_pivots: 0,
             g57_narrow: 0,
+            ladder_cap: 0,
+            cg_jitter: 0,
 
             epoch: 0,
             refill_data: 0,

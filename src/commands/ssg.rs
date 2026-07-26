@@ -45,8 +45,11 @@ pub fn run(sub: &clap::ArgMatches) {
     TARGET_SIZE.store(target_size, Ordering::Relaxed);
     if target_size > 0 {
         let compress_desc = if compress_fraction_permille > 0 {
-            format!("compress to {:.1}% = {} each stage", compress_fraction * 100.0,
-                (target_size as u128 * compress_fraction_permille as u128 / 1000) as usize)
+            format!(
+                "compress to {:.1}% = {} each stage",
+                compress_fraction * 100.0,
+                (target_size as u128 * compress_fraction_permille as u128 / 1000) as usize
+            )
         } else {
             "compress fully each stage".to_string()
         };
@@ -57,7 +60,10 @@ pub fn run(sub: &clap::ArgMatches) {
     }
     if grow_permille > 0 {
         let compress_desc = if compress_fraction_permille > 0 {
-            format!("compress to {:.1}% of post-shoot size", compress_fraction_permille as f64 / 10.0)
+            format!(
+                "compress to {:.1}% of post-shoot size",
+                compress_fraction_permille as f64 / 10.0
+            )
         } else {
             "compress fully".to_string()
         };

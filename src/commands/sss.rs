@@ -106,11 +106,12 @@ pub fn run(sub: &clap::ArgMatches) {
             src_horizon: *sub.get_one("prod_src_horizon").unwrap(),
             src_lo: 0,
             src_hi: 0,
-            fill_pivots: 0,
-            g57_narrow: 0,
-
-            epoch: 0,
-            refill_data: 0,
+            fill_pivots: *sub.get_one("prod_fill_pivots").unwrap(),
+            g57_narrow: *sub.get_one("prod_g57_narrow").unwrap(),
+            ladder_cap: *sub.get_one("prod_ladder_cap").unwrap(),
+            cg_jitter: *sub.get_one("prod_cg_jitter").unwrap(),
+            epoch: *sub.get_one("prod_epoch").unwrap(),
+            refill_data: *sub.get_one("prod_refill_data").unwrap(),
 
             single: *sub.get_one("prod_single").unwrap(),
         };

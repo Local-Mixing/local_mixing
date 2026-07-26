@@ -81,6 +81,8 @@ fn main() {
         epoch: a.get(17).and_then(|s| s.parse().ok()).unwrap_or(0),
         refill_data: a.get(18).and_then(|s| s.parse().ok()).unwrap_or(0),
         g57_narrow: a.get(19).and_then(|s| s.parse().ok()).unwrap_or(0),
+        ladder_cap: a.get(20).and_then(|s| s.parse().ok()).unwrap_or(0),
+        cg_jitter: a.get(21).and_then(|s| s.parse().ok()).unwrap_or(0),
     };
     let mut rng = StdRng::seed_from_u64(seed);
     let g = if prod.single_carrier() {

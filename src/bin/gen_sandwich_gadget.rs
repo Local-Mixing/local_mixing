@@ -116,6 +116,8 @@ fn main() {
         src_hi: env("PROD_SRC_HI", 0),
         fill_pivots: env("PROD_FILL_PIVOTS", 0),
         g57_narrow: env("PROD_G57_NARROW", 0),
+        ladder_cap: env("PROD_LADDER_CAP", 0),
+        cg_jitter: env("PROD_CG_JITTER", 0),
 
         epoch: env("PROD_EPOCH", 0),
         refill_data: env("PROD_REFILL_DATA", 0),

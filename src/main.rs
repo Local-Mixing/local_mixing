@@ -334,6 +334,60 @@ fn add_shoot_args(c: Command) -> Command {
                         .help("(--cnot gadgetize) Single-carrier decode: ONE degree-1 term per value instead of two (0 = the legacy carrier pair). The second carrier is free to an affine adversary, so it adds nothing to the piling-up product; dropping it halves the carriers and cuts the fold to (1+k)^arity. Spend the freed atom on a mask: --prod-k 1 --prod-deg 2 --prod-k-hi 2 --prod-deg-hi 3 is [1,2,3,3] (recommended), --prod-k 2 --prod-k-hi 1 is [1,2,2,3] (better degree-1 statistics, half the degree-2 margin). Requires --prod-rsrc >= 1: with one carrier, re-sourcing is what refreshes the representation"),
                 )
                 .arg(
+                    Arg::new("prod_g57_narrow")
+                        .long("prod-g57-narrow")
+                        .alias("prod_g57_narrow")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Realize width-<=2 fold fragments in the g57/CNOT vocabulary instead of as bare conjunctions. Clearing --db-ctrl-cap 2 is NOT the same as being digestible: the X-free g57 span over {h,x,y} is <x, y, 1^xy>, so a comp=0 width-2 conjunction is invisible to a g57-built store however narrow it looks. Measured at n=128 band 256: DB match rate 35.1% -> 41.5% for +4.5% gates"),
+                )
+                .arg(
+                    Arg::new("prod_ladder_cap")
+                        .long("prod-ladder-cap")
+                        .alias("prod_ladder_cap")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Ladder fold fragments of width in (2, cap] down to <=2 controls over borrowed dirty carriers; wider fragments stay as single wide gates (0 = no laddering). This is the knob that reduces the ABSOLUTE count of >2-control gates, which --prod-max-width 2 does only by laddering everything at roughly 15x the fold"),
+                )
+                .arg(
+                    Arg::new("prod_cg_jitter")
+                        .long("prod-cg-jitter")
+                        .alias("prod_cg_jitter")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Percent of values carrying one EXTRA high-degree mask term. Breaks the fixed (1+k_total)^arity fragment count per CG block, which otherwise segments the circuit into blocks and reveals each source gate's arity by counting. Jitter is extra terms only, never fewer, so the committed operating point (the weakest value) does not move. NOTE: the per-fragment ESOP re-cover conj(L+u)^conj(L+!u) was tried for this and REFUTED -- the two halves share every literal but one polarity and target the same carrier, so the twin is greppable within the block whatever order they are emitted in"),
+                )
+                .arg(
+                    Arg::new("prod_fill_pivots")
+                        .long("prod-fill-pivots")
+                        .alias("prod_fill_pivots")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Reserve a distinct pivot per band wire during the nonlinear fill, making the band exactly uniform on {0,1}^b at the port. Requires band <~ 3n/4 (the pivots leave the fill no legal non-pivot data wire otherwise). NOTE: --prod-refill-data > 0 forfeits the guarantee past the port"),
+                )
+                .arg(
+                    Arg::new("prod_epoch")
+                        .long("prod-epoch")
+                        .alias("prod_epoch")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Retire-and-refill epochs: a band variable is re-sourced everywhere it is named and then rewritten, so band values stop being frozen functions of the input (0 = frozen band). Without this the band is recoverable by FUNCTION LIFETIME alone -- rolling relocates a variable but preserves its function. Smaller = more turnovers = more cost; merging the population fully costs about +41% gates"),
+                )
+                .arg(
+                    Arg::new("prod_refill_data")
+                        .long("prod-refill-data")
+                        .alias("prod_refill_data")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Percent of refill sources drawn from CARRIERS rather than from other band values. Band-only refills keep the band statistically independent of the data (good for correlation) but a band that never touches the data is itself a signature; carrier-sourced refills inject data at the cost of the port's joint-uniformity guarantee"),
+                )
+                .arg(
                     Arg::new("prod_src_dist")
                         .long("prod-src-dist")
                         .alias("prod_src_dist")
