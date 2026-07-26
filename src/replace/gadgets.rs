@@ -3119,6 +3119,42 @@ impl ProdConfig {
         (self.src_lo.min(hi), hi)
     }
 
+    /// The validated production setting, as measured, in one place.
+    ///
+    /// Every hardening lever here defaults OFF, which is right for
+    /// reproducibility and wrong for anyone generating a circuit: the defaults
+    /// (auto band, no nonlinear fill, no rolling, no epochs) produce a
+    /// materially weaker gadget than anything the measurements describe. This
+    /// is the setting the numbers in docs/SINGLE_CARRIER_CONSTRUCTION refer
+    /// to. `n` is the ENTRY POINT's value count -- the sandwich width, not the
+    /// source circuit's.
+    ///
+    /// Note band = n: that buys the 1:1 carrier/band split (no write-count
+    /// threshold separates the populations) and rules out `fill_pivots`, which
+    /// needs room for non-pivot data wires. The other way round -- band ~ 3n/4
+    /// with `fill_pivots` -- trades homogeneity for provable joint uniformity.
+    pub fn production_single(n: usize) -> ProdConfig {
+        ProdConfig {
+            k: 1,
+            deg: 2,
+            k_hi: 2,
+            deg_hi: 3,
+            band: n,
+            rsrc: 1,
+            max_width: 0,
+            fill_nl: 2,
+            roll: 1,
+            src_dist: 0,
+            src_horizon: 0,
+            src_lo: 0,
+            src_hi: 0,
+            fill_pivots: 0,
+            epoch: 5,
+            refill_data: 50,
+            single: 1,
+        }
+    }
+
     /// Distributed (band-free) sourcing: mask literals live on ordinary
     /// carriers, protected by the write barrier instead of by a freeze.
     pub fn dist(&self) -> bool {
@@ -4913,6 +4949,15 @@ pub fn gadgetize_cnot_single(
         !prod.dist(),
         "distributed sourcing and single-carrier are not combined yet"
     );
+    // With one carrier there is no RG3 to refresh the representation: a
+    // re-source is the ONLY move that changes a carrier's bit. rsrc = 0 leaves
+    // relocation as the sole churn, which moves values without re-randomising
+    // them -- documented as load-bearing, so enforce it rather than trust it.
+    assert!(
+        prod.rsrc >= 1,
+        "--prod-single needs --prod-rsrc >= 1: with a single carrier, mask \
+         re-sourcing is the only representation refresh (R2/R3 have no analogue)"
+    );
 
     let mut main = main.clone();
     let rounds = main.gates.len();
@@ -5898,6 +5943,15 @@ pub fn gadgetize_xgates_single(
     assert!(
         !prod.dist(),
         "distributed sourcing and single-carrier are not combined yet"
+    );
+    // With one carrier there is no RG3 to refresh the representation: a
+    // re-source is the ONLY move that changes a carrier's bit. rsrc = 0 leaves
+    // relocation as the sole churn, which moves values without re-randomising
+    // them -- documented as load-bearing, so enforce it rather than trust it.
+    assert!(
+        prod.rsrc >= 1,
+        "--prod-single needs --prod-rsrc >= 1: with a single carrier, mask \
+         re-sourcing is the only representation refresh (R2/R3 have no analogue)"
     );
     assert!(
         source.iter().all(|g| {

@@ -792,8 +792,14 @@ $[1,2,2,3]$ & \code{--prod-single 1 --prod-k 2 --prod-deg 2 --prod-k-hi 1 --prod
 \end{tabular}
 \end{center}
 
-both with \code{--prod-band 256 --prod-fill-nl 2 --prod-roll 1} at the
-production sandwich. Auto band width is
+both with \code{--prod-band 256 --prod-fill-nl 2 --prod-roll 1
+--prod-epoch 5 --prod-refill-data 50} at the production sandwich, which is
+\code{ProdConfig::production\_single} in the tree.
+
+\textbf{Every hardening lever defaults OFF}, which is right for
+reproducibility and wrong for anyone generating a circuit: the defaults (auto
+band 56, no nonlinear fill, no rolling, no epochs) produce a materially weaker
+gadget than any measurement in this document describes. Use the preset. Auto band width is
 $\max(\lceil\sqrt{4\,n\,k_{\mathrm{total}}}\,\rceil, 6, \max\deg + 3)$, where $n$
 is the \emph{entry point's} value count --- the sandwich width $2n$, not the
 source circuit's $n$. \code{--prod-single 0} reproduces the previous build
