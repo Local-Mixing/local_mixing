@@ -716,6 +716,103 @@ against the band build's 2, and four of five sampled pairs are carriers of
 its mask (a census of bare values reads $0/256$ at every position). The
 micro-mechanism is not established.
 
+\section{Digestibility: making the fold reachable by the store}
+\label{sec:digest}
+
+The gadgetiser's output is not the deliverable; it is the input to phase~A,
+whose only re-encoding channel is the frozen store, and that channel is capped
+at two controls. A fold the store cannot reach is a fold that phase~A cannot
+mix, so the encoding's width profile is a security parameter and not an
+implementation detail.
+
+\subsection{Narrowness is not digestibility}
+
+The obvious reading of the cap is that a fragment with at most two controls is
+reachable. That reading is wrong, and the error is algebraic. Over the wires
+$\{h, x, y\}$ the $X$-free span of the g57/\textsc{cnot} vocabulary is
+\[
+  \langle\, x,\; y,\; 1 \oplus xy \,\rangle,
+\]
+which does \emph{not} contain $xy$. A width-2 conjunction with $\text{comp}=0$
+is therefore invisible to a store built from g57 circuits however narrow it
+looks, while $\lnot x \cdot \lnot y = (1 \oplus \lnot x \cdot y) \oplus x$ is
+already inside. \code{--prod-g57-narrow} re-realises every width-$\leq$2 fold
+fragment through the g57 form, at a cost of one or two gates instead of one,
+with the residual constant going to the ledger exactly as the narrow path
+already does. At $n{=}128$, band 256, plan $[1,2,3,3]$, the store's match rate
+on the result rises from $0.3506$ to $0.4151$ for $+4.5\%$ gates. The gain is a
+fraction rather than all of it precisely because the $\lnot x \lnot y$ corner
+was never the problem.
+
+The rate is measured with the pure sampler --- \code{--db-dry-run} with
+\code{--p-db 1.0}, every other move weight zero, \code{--db-ctrl-cap 2} --- so
+the circuit never changes under the instrument and the number is a property of
+the encoding rather than of a mixing trajectory.
+
+\subsection{A width ceiling, and where it stops paying}
+
+\code{--prod-ladder-cap $U$} ladders every fold fragment of width in $(2, U]$
+down to two controls over borrowed dirty carriers, leaving wider fragments as
+single gates. The same ceiling applies to slot emission: a degree-3 mask term
+is a three-control gate at every inject, re-source and strip, and excluding
+those would leave a residue that is \emph{attributable} --- the surviving wide
+gates would be exactly the slot emissions, which name a value's mask sources
+directly.
+
+\begin{center}
+\begin{tabular}{rrrrrrr}
+\toprule
+$U$ & gates & $\times$base & wide ($>2$) & frac & matched & rate\\
+\midrule
+0  & 240\,016 & 1.00 & 134\,785 & 0.562 & 151\,459 & 0.414\\
+\textbf{3}  & \textbf{404\,249} & \textbf{1.68} & \textbf{93\,618} & \textbf{0.232} & \textbf{182\,136} & 0.393\\
+4  & 694\,579 & 2.89 & 57\,350 & 0.083 & 139\,273 & 0.291\\
+5  & 1\,041\,443 & 4.34 & 28\,635 & 0.028 & 118\,277 & 0.247\\
+64 & 1\,488\,911 & 6.20 & 853 & 0.0006 & 105\,805 & 0.221\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Eliminating the wide gates is achievable --- from $56\%$ of the circuit to
+$0.06\%$ --- and the sweep says not to buy it. \textbf{Laddering makes a gate
+eligible without making it matchable at the same rate.} The match rate falls
+monotonically with the ceiling, and the absolute number of successful rewrites
+per unit of sampling effort peaks at $U{=}3$, some $20\%$ above the unladdered
+build, before falling below it. The recommended operating point is therefore
+$U{=}3$: a third of the wide gates removed and a fifth more effective store
+reach, for $1.68\times$ the gates.
+
+The $853$ width-3 gates that survive every ceiling are the
+\code{--slice-zero-ccnot} preblock, three-control by design --- they are what
+makes the off-slice disturbance quadratic in $x$ rather than affine. They are
+not fold material.
+
+\subsection{Diversifying CG}
+
+A fold block emits exactly $(1 + k_{\text{total}})^{\text{arity}}$ fragments,
+which is 16 for $[1,2,3,3]$ at arity 2. That is a block boundary an adversary
+can find by counting and an arity it can read off the count.
+\code{--prod-cg-jitter} gives a percentage of values one extra high-degree
+term, so the count becomes $(1 + k_a)(1 + k_b)$ and varies with which values
+the source gate happens to read. Jitter adds terms and never removes them: the
+operating point a build commits to is its weakest value, so removing a term
+anywhere would move the commitment, while adding one only raises a value above
+the floor.
+
+A per-fragment ESOP re-cover was built for the same job and is \textbf{refuted}.
+The identity
+\[
+  \operatorname{conj}(L \cup \{u\}) \;\oplus\; \operatorname{conj}(L \cup \{\lnot u\}) \;=\; \operatorname{conj}(L)
+\]
+is exact and does vary the block size, but the two halves share every literal
+but one polarity and write the same carrier, so the twin is greppable within
+the block \emph{whatever order they are emitted in}; shuffling only makes
+adjacency less likely, and the test written to defend the lever found adjacent
+twins anyway. Over $\mathrm{GF}(2)$ every two-term ESOP cover of a product term
+\emph{is} a polarity split, so no variant of the lever escapes this. It is the
+same failure mode that ruled out decoy fragments: a planted opposite-polarity
+motif is worse than no lever at all.
+
 \section{What is not proved}
 \label{sec:limits}
 
