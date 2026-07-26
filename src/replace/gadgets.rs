@@ -3494,10 +3494,12 @@ fn emit_narrow_fragment(
         }
     }
     // Rung i computes borrowed[i] ^= borrowed[i-1] & (next `chunk` literals);
-    // rung 0 takes the first `cap` literals outright.
-    let mut rungs: Vec<Vec<XGate>> = Vec::with_capacity(rung_count);
+    // rung 0 takes the first `cap` literals outright. Kept as LITERAL LISTS,
+    // not prebuilt gates, so each of a rung's emissions can pick its own
+    // spelling -- see the duplicate-pair note below.
+    let mut rung_lits_all: Vec<Vec<(u16, bool)>> = Vec::with_capacity(rung_count);
     let mut consumed = 0;
-    for (i, &h) in borrowed.iter().enumerate() {
+    for i in 0..borrowed.len() {
         let mut rung_lits: Vec<(u16, bool)> = Vec::with_capacity(cap);
         if i == 0 {
             rung_lits.extend_from_slice(&lits[..cap]);
@@ -3508,34 +3510,93 @@ fn emit_narrow_fragment(
             rung_lits.extend_from_slice(&lits[consumed..upto]);
             consumed = upto;
         }
-        rungs.push(vec![
-            XGate::conj(h, rung_lits).expect("borrowed wires are distinct from the literals")
-        ]);
+        rung_lits_all.push(rung_lits);
     }
     // Target gate: last borrow plus whatever literals remain.
     let mut t_lits: Vec<(u16, bool)> = vec![(*borrowed.last().unwrap(), true)];
     t_lits.extend_from_slice(&lits[consumed..]);
     debug_assert!(t_lits.len() <= cap);
-    let mut emit_target = |rng: &mut _, out: &mut Vec<XGate>| {
+
+    // A g57-spelled rung, and why it is allowed to vary between emissions.
+    //
+    // The sweep gives `t ^= R * lambda` for ANY rung function R, where lambda
+    // is the conjunction of the target gate's non-borrow literals. Spelling the
+    // rung through emit_g57_form makes R = conj(rung_lits) ^ kappa, so the
+    // target picks up a spurious `kappa * lambda` -- a LITERAL, not a constant,
+    // which is why the old comment here said rungs must be exact. It is still
+    // cancellable: emitting lambda once more on the target removes it, and that
+    // emission is itself a g57 form whose own residual goes to the ledger.
+    //
+    // kappa depends only on the POLARITY PATTERN of rung_lits, never on
+    // emit_g57_form's internal coin, so both emissions of a rung contribute the
+    // same R and the borrow is still restored exactly -- while the two may be
+    // spelled differently. That matters: the previous code cloned one prebuilt
+    // gate, so every laddered fragment planted a BYTE-IDENTICAL gate pair. On
+    // the shipped n=128 build 143,100 of 184,898 comp=0 width-2 instances
+    // (77.4%) sat in duplicate groups and 50.4% of the whole circuit sat in
+    // exact pairs, so `sort | uniq -c` -- no execution, no algebra -- located
+    // every ladder, its borrowed wire and two of its three literals.
+    //
+    // Restricted to the single-rung case, which is every ladder in production
+    // (ladder_cap 3 means width 3, cap 2, chunk 1, rung_count 1). With several
+    // rungs each kappa_i multiplies a DIFFERENT partial lambda and the
+    // corrections compound; that generalization is not verified, so it keeps
+    // the exact spelling.
+    let g57_rungs = rung_count == 1 && !rung_lits_all[0].is_empty();
+    let mut rung_konst = false;
+    for _ in 0..2 {
+        // Target gate first, then down the rungs and back up (rung 0 once per
+        // block, the rest twice), so every borrow is visited an even number of
+        // times and its dirty value cancels.
         if t_lits.len() <= 2 {
             emit_g57_form(target, &t_lits, rng, out);
         } else {
             out.push(XGate::conj(target, t_lits.iter().copied()).expect("distinct wires"));
         }
-    };
-    // One sweep block: target gate, down the rungs, back up (excluding rung 0).
-    // Emitted twice; every rung appears an even number of times, so all dirty
-    // contributions and all g57 complements cancel exactly.
-    for _ in 0..2 {
-        emit_target(rng, out);
-        for rung in rungs.iter().rev() {
-            out.extend(rung.iter().cloned());
+        for i in (0..rung_lits_all.len()).rev() {
+            rung_konst = emit_rung(borrowed[i], &rung_lits_all[i], g57_rungs, rng, out);
         }
-        for rung in rungs.iter().skip(1) {
-            out.extend(rung.iter().cloned());
+        for i in 1..rung_lits_all.len() {
+            rung_konst = emit_rung(borrowed[i], &rung_lits_all[i], g57_rungs, rng, out);
         }
     }
+    // Cancel the kappa * lambda the g57 rung left on the target. lambda is the
+    // target gate's literals minus the borrow; with one rung that is
+    // `lits[consumed..]`, at most cap-1 literals.
+    if g57_rungs && rung_konst {
+        let lambda = &lits[consumed..];
+        if lambda.is_empty() {
+            // lambda == 1: the residual is the bare constant, which the caller
+            // XORs into the ledger.
+            return true;
+        }
+        return emit_g57_form(target, lambda, rng, out);
+    }
     false
+}
+
+
+/// One emission of a ladder rung. `g57` picks the store-native spelling, whose
+/// residual constant the caller cancels once on the target; the plain spelling
+/// is exact. Called afresh for every emission rather than cloning a prebuilt
+/// gate, so emit_g57_form's coin can hand the two emissions different
+/// spellings of the same function.
+fn emit_rung(
+    h: u16,
+    rung_lits: &[(u16, bool)],
+    g57: bool,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) -> bool {
+    if g57 && rung_lits.len() <= 2 {
+        emit_g57_form(h, rung_lits, rng, out)
+    } else {
+        out.push(
+            XGate::conj(h, rung_lits.iter().copied())
+                .expect("borrowed wires are distinct from the literals"),
+        );
+        false
+    }
 }
 
 /// Dedupe an interleaved literal list in place, preserving order. Returns
@@ -4069,6 +4130,13 @@ impl ProdLedger {
                 rng,
                 out,
             )
+        } else if lits.len() <= 2 {
+            // Same treatment fold_cg gives its narrow fragments. This was a
+            // bare conjunction purely by omission: the caller already XORs the
+            // returned residual into the ledger, so the g57 spelling costs
+            // nothing extra in bookkeeping and one gate at most in size, and a
+            // mask term is emitted on every inject, re-source and strip.
+            emit_g57_form(target, &lits, rng, out)
         } else {
             out.push(XGate::conj(target, lits).expect("band sources are distinct wires"));
             false
@@ -5101,9 +5169,20 @@ fn emit_transvection_mixed(
         return;
     }
     let u = random_wire_except(total, &[target as usize, source as usize], rng) as u16;
+    // The two halves sum to `source`. Spelling each in the g57 form keeps the
+    // roll inside the store's vocabulary; it is sound WITHOUT a ledger because
+    // emit_g57_form returns konst=true for both the (true,true) and the
+    // (true,false) polarity case, so the two residual constants cancel each
+    // other and a roll -- which has no ledger to defer a constant to -- stays
+    // exact. Asserted rather than assumed.
+    let mut konst = false;
     for polarity in [true, false] {
-        out.push(XGate::conj(target, [(source, true), (u, polarity)]).expect("distinct wires"));
+        konst ^= emit_g57_form(target, &[(source, true), (u, polarity)], rng, out);
     }
+    debug_assert!(
+        !konst,
+        "transvection halves must leave no net constant: a roll has no ledger"
+    );
 }
 
 /// W0: fill each band wire with an unbiased data-dependent bit — its input
@@ -8754,7 +8833,15 @@ mod cnot_gadget_tests {
                 ledger.inject_all(&state, &mut rng, &mut ramp);
                 let mut fold = Vec::new();
                 ledger.fold_cg(&gate, &state, &mut rng, &mut fold);
-                assert!(fold.len() >= 16, "expected a wide fold, got {}", fold.len());
+                // 4 atoms per control gives 16 combinations, but a fold
+                // fragment is DROPPED when two atoms meet on one wire with
+                // opposite polarity (the conjunction is identically zero), and
+                // at band 6 with two degree-2 masks per value such a collision
+                // is ordinary. Assert only that the fold is wide enough for the
+                // run-length test below to mean something -- pinning the exact
+                // count makes this test a hostage to the RNG stream, which any
+                // change in how earlier gates are spelled will shift.
+                assert!(fold.len() >= 12, "expected a wide fold, got {}", fold.len());
                 // Odometer order walks the first control's atoms fastest, so
                 // it emits long runs that read the same second-control atom.
                 // A shuffled order breaks those runs.
@@ -8820,17 +8907,23 @@ mod cnot_gadget_tests {
                 let loc_before = ledger.loc.clone();
                 let mut moved = Vec::new();
                 ledger.roll(&mut state, &mut rng, &mut moved);
-                // RG2's three transvections, each either a CNOT or its
-                // two-conjunction form, so no wire is written only by
-                // width-1 gates.
+                // RG2's three transvections, each either a plain CNOT or the
+                // two-term form, so no wire is written only by width-1 gates.
+                // The two-term form is spelled in the g57 vocabulary: the
+                // same-polarity half costs g57+CNOT and the mixed-polarity
+                // half one g57, so that branch is 3 gates and a roll spans
+                // 3 (all CNOT) to 9 (all two-term) gates.
                 assert!(
-                    (3..=6).contains(&moved.len()),
+                    (3..=9).contains(&moved.len()),
                     "a roll is three transvections, got {}",
                     moved.len()
                 );
-                assert!(moved
-                    .iter()
-                    .all(|g| !g.comp && (1..=2).contains(&g.width())));
+                // Width 1..=2 still holds, but comp=1 is now EXPECTED: the
+                // two-term transvection is spelled in the g57 vocabulary, and
+                // a g57 carries comp. What must hold is that the pair leaves no
+                // NET constant -- a roll has no ledger to defer one to -- and
+                // that is what the decode check below actually verifies.
+                assert!(moved.iter().all(|g| (1..=2).contains(&g.width())));
                 for input in 0..(1u64 << total) {
                     let out_state = eval_u64(&moved, input);
                     for v in 0..n {
