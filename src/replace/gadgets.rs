@@ -3397,19 +3397,30 @@ fn emit_g57_form(
 /// caller, so no borrowed wire ever holds one value's whole mask term.
 /// Returns the residual constant parity (nonzero only on the direct path).
 ///
-/// Borrows come from `0..carrier_total` bar the target and the fragment's own
-/// literals, and only widen to `0..borrow_total` (band included) when that
-/// leaves too few — which a fragment whose literals cover most of the carriers
+/// Borrows come from `pool`, the wires CURRENTLY holding carriers, bar the
+/// target and the fragment's own literals; it widens to the whole wire space
+/// when that leaves too few, which a fragment covering most of the carriers
 /// otherwise would. Any wire is sound (the double sweep restores it before
 /// anything else can read it); carriers are merely preferred, since a band
-/// wire's content is constant across the body and a partial product parked on
-/// one is a longer-lived difference than the same product on a churning
+/// variable's value is constant across the body and a partial product parked
+/// on one is a longer-lived difference than the same product on a churning
 /// carrier.
+///
+/// The pool must be resolved by ROLE, not by wire index. An earlier version
+/// used `0..carrier_total` as the pool, which is the carriers' HOME index
+/// range -- and `--prod-roll` moves variables between wires without moving
+/// indices, so index and role come apart the moment rolling is on. That
+/// version therefore missed its own stated goal (band variables sitting at low
+/// indices were borrowed anyway) AND pinned every ladder rung's write traffic
+/// to the low half of the wire space, which is a static separator that no
+/// amount of rolling can average away: measured write-count AUC between the
+/// two home halves went 0.518 (no laddering) to 0.875 (`ladder_cap` 3) at
+/// n=16, band 32, roll 1.
 fn emit_narrow_fragment(
     target: u16,
     lits: &[(u16, bool)],
     cap: usize,
-    carrier_total: usize,
+    carrier_wires: &[u16],
     borrow_total: usize,
     forbidden: &[u16],
     rng: &mut impl Rng,
@@ -3441,22 +3452,34 @@ fn emit_narrow_fragment(
     // entry would overcount the exclusions and underflow the free count.
     taken.sort_unstable();
     taken.dedup();
-    let free_in = |pool: usize| pool.saturating_sub(taken.iter().filter(|&&w| w < pool).count());
-    let pool = if free_in(carrier_total) >= rung_count {
-        carrier_total
-    } else {
-        borrow_total
-    };
-    assert!(
-        free_in(pool) >= rung_count,
-        "narrow fragment needs {rung_count} borrows but only {} of {pool} wires are free",
-        free_in(pool)
-    );
+    let free_roles: Vec<u16> = carrier_wires
+        .iter()
+        .copied()
+        .filter(|&w| !taken.contains(&(w as usize)))
+        .collect();
     let mut borrowed: Vec<u16> = Vec::with_capacity(rung_count);
-    for _ in 0..rung_count {
-        let h = random_wire_except(pool, &taken, rng) as u16;
-        taken.push(h as usize);
-        borrowed.push(h);
+    if free_roles.len() >= rung_count {
+        // Preferred: wires currently PLAYING the carrier role, wherever they
+        // sit. Because rolling keeps exchanging roles, this set sweeps the
+        // whole wire space over the body and leaves no index-shaped residue.
+        use rand::seq::IndexedRandom;
+        for &h in free_roles.choose_multiple(rng, rung_count) {
+            taken.push(h as usize);
+            borrowed.push(h);
+        }
+    } else {
+        let free_in =
+            |pool: usize| pool.saturating_sub(taken.iter().filter(|&&w| w < pool).count());
+        assert!(
+            free_in(borrow_total) >= rung_count,
+            "narrow fragment needs {rung_count} borrows but only {} of {borrow_total} wires are free",
+            free_in(borrow_total)
+        );
+        for _ in 0..rung_count {
+            let h = random_wire_except(borrow_total, &taken, rng) as u16;
+            taken.push(h as usize);
+            borrowed.push(h);
+        }
     }
     // Rung i computes borrowed[i] ^= borrowed[i-1] & (next `chunk` literals);
     // rung 0 takes the first `cap` literals outright.
@@ -3910,14 +3933,50 @@ impl ProdLedger {
         self.carrier_total + self.loc.len()
     }
 
-    /// A fresh, currently-unused degree-`deg` slot over the band variables.
-    fn draw_slot(&mut self, deg: usize, rng: &mut impl Rng) -> ProdSlot {
+    /// A fresh, currently-unused degree-`deg` slot over the band variables,
+    /// whose factors are DISJOINT from every variable this value's other live
+    /// slots already name.
+    ///
+    /// Why disjointness matters (measured). The statistical strength of a
+    /// value's mask is the piling-up product over its terms,
+    /// `1/2 + (1/2) PROD_j (1 - 2^(1-d_j))`, and that formula assumes the
+    /// terms are INDEPENDENT. Two terms sharing a source variable are not:
+    /// `w_a w_b XOR w_a w_c = w_a (w_b XOR w_c)` has the strength of a SINGLE
+    /// degree-2 term, not two. Drawing each term independently over the whole
+    /// band (the previous behaviour) collides often — 14 draws over a 56-wire
+    /// band expect ~1.6 colliding pairs — so added terms paid full fold cost
+    /// and returned less than full hiding, and the shortfall GREW with `k`.
+    /// Measured at n=64, plan `[2,2,3,3]`: predicted agreement 0.5703 for
+    /// disjoint terms, 0.5874 as previously drawn, 0.5873 observed — the gap
+    /// was entirely this. Excluding the value's own live variables is free
+    /// (the band has ample slot space) and makes the piling-up figure the
+    /// quantity the design actually gets.
+    ///
+    /// Only the value's OWN terms must be disjoint; sharing sources ACROSS
+    /// values is both harmless to each value's own statistics and necessary,
+    /// since the band is far smaller than the value count.
+    fn draw_slot(&mut self, value: usize, deg: usize, rng: &mut impl Rng) -> ProdSlot {
         let band_len = self.loc.len() as u16;
+        // Variables this value's live slots already name.
+        let mut taken: Vec<u16> = Vec::new();
+        for slot in &self.slots[value] {
+            for &(b, _) in &slot.factors {
+                if !taken.contains(&b) {
+                    taken.push(b);
+                }
+            }
+        }
+        // Enforce disjointness only when the band can still afford it; a band
+        // sized near the correctness minimum falls back to the old best-effort
+        // draw rather than panicking. `PROD_DISJOINT=0` restores the legacy
+        // independent-per-term draw, for A/B measurement of the effect above.
+        let enforce = (band_len as usize).saturating_sub(taken.len()) >= deg
+            && std::env::var("PROD_DISJOINT").map(|v| v != "0").unwrap_or(true);
         for _ in 0..100_000 {
             let mut vars: Vec<u16> = Vec::with_capacity(deg);
             while vars.len() < deg {
                 let b = rng.random_range(0..band_len);
-                if !vars.contains(&b) {
+                if !vars.contains(&b) && !(enforce && taken.contains(&b)) {
                     vars.push(b);
                 }
             }
@@ -3966,7 +4025,7 @@ impl ProdLedger {
                 target,
                 &lits,
                 self.cap,
-                self.carrier_total,
+                &self.carrier_wires(state),
                 self.borrow_total(),
                 &sib,
                 rng,
@@ -3992,7 +4051,7 @@ impl ProdLedger {
                 target,
                 &lits,
                 2,
-                self.carrier_total,
+                &self.carrier_wires(state),
                 self.borrow_total(),
                 &forbidden,
                 rng,
@@ -4031,7 +4090,7 @@ impl ProdLedger {
             self.advance_sim(out, rng);
             self.draw_slot_dist(value, deg, forbidden, state, rng)
         } else {
-            self.draw_slot(deg, rng)
+            self.draw_slot(value, deg, rng)
         };
         let konst = self.emit_slot(value, &slot, state, rng, out);
         self.consts[value] ^= konst;
@@ -4481,11 +4540,30 @@ impl ProdLedger {
             (band_len as usize) > deg,
             "retire-refill needs a band wider than one slot's degree"
         );
+        // Avoid the retired variable AND every variable this value's other live
+        // slots already name. Excluding only the retired one is not enough: the
+        // piling-up value assumes a value's terms are variable-DISJOINT, and
+        // `draw_slot` enforces that on the ordinary path -- so a re-source that
+        // ignores it lets an epoch quietly undo the guarantee the ordinary draw
+        // maintains, on a build (epoch 5) where migrations are a large fraction
+        // of all injections.
+        let mut busy: Vec<u16> = vec![avoid];
+        for slot in &self.slots[value] {
+            for &(b, _) in &slot.factors {
+                busy.push(b);
+            }
+        }
+        busy.sort_unstable();
+        busy.dedup();
+        // Fall back to avoiding only the retired variable if the band is too
+        // narrow to honour full disjointness -- correctness never depends on it.
+        let relax = (band_len as usize) < busy.len() + deg;
         for _ in 0..100_000 {
             let mut vars: Vec<u16> = Vec::with_capacity(deg);
             while vars.len() < deg {
                 let b = rng.random_range(0..band_len);
-                if b != avoid && !vars.contains(&b) {
+                let blocked = if relax { b == avoid } else { busy.contains(&b) };
+                if !blocked && !vars.contains(&b) {
                     vars.push(b);
                 }
             }
@@ -4787,7 +4865,7 @@ impl ProdLedger {
                     target,
                     &lits,
                     2,
-                    self.carrier_total,
+                    &self.carrier_wires(state),
                     self.borrow_total(),
                     &forbidden,
                     rng,
@@ -4806,6 +4884,25 @@ impl ProdLedger {
                 self.cg_fragments += 1;
             }
         }
+    }
+
+    /// The wires CURRENTLY holding carriers, resolved by role rather than by
+    /// index. Rolling exchanges a band variable with an arbitrary wire, so the
+    /// home index range stops describing the carrier set as soon as
+    /// `--prod-roll` is on, and anything that borrows by index leaves a static
+    /// index-shaped trace that rolling cannot average out.
+    fn carrier_wires(&self, state: &GadgetState) -> Vec<u16> {
+        let mut ws: Vec<u16> = Vec::with_capacity(2 * state.n);
+        for v in 0..state.n {
+            let (a, b) = state.pairs[v];
+            ws.push(a as u16);
+            if b != a {
+                ws.push(b as u16);
+            }
+        }
+        ws.sort_unstable();
+        ws.dedup();
+        ws
     }
 
     /// wire -> the other carrier of the same value (identity on the band).
@@ -4891,7 +4988,7 @@ impl ProdLedger {
                 target,
                 lits,
                 self.cap,
-                self.carrier_total,
+                &self.carrier_wires(state),
                 self.borrow_total(),
                 &forbidden,
                 rng,
@@ -5313,7 +5410,10 @@ pub fn gadgetize_cnot_single(
     assert!(total <= u16::MAX as usize, "too many wires");
 
     // The band is filled from the data wires while they still hold x, and is
-    // never written again — the same frozen-source contract as the two-carrier
+    // not written again by the ordinary body path — the same source contract as
+    // the two-carrier build. (With --prod-epoch > 0 a retire-and-refill DOES
+    // rewrite a band wire mid-body; that is the point of epochs, and the
+    // release-then-rewrite order is what keeps it exact.)
     // build, and the reason the strip cancels exactly under arbitrary junk.
     let mut out: Vec<XGate> = Vec::new();
     let band_home: Vec<u16> = (carrier_total..total).map(|w| w as u16).collect();
@@ -8453,11 +8553,14 @@ mod cnot_gadget_tests {
                         .map(|w| (w, rng.random::<bool>()))
                         .collect();
                     let mut gates = Vec::new();
+                    // Role set = every wire: this unit test has no ledger, and
+                    // the point here is the ladder algebra, not the pool policy.
+                    let all: Vec<u16> = (0..total as u16).collect();
                     let konst = emit_narrow_fragment(
                         0,
                         &lits,
                         cap,
-                        total,
+                        &all,
                         total,
                         &[],
                         &mut rng,
