@@ -486,14 +486,19 @@ write, so an unwritten band wire stands out against a sharper contrast, and the
 roll-0 separation is cleaner than in the paired build. Rolls erase it at about
 $+17\%$ gates.
 
-Second, \textbf{band 256 is the shape to ship}. At 512 wires it is
-\emph{narrower} than the current 558, yet the carrier and band populations are
-equal in size with write distributions sitting on top of each other. That is
-qualitatively different from rolling a 46-wire minority: there is no small
-subpopulation left for a windowed census to narrow down --- the residual that
-\code{BAND\_HARDENING} conceded rolling could not fix. The restricted degree-3
-attack cost rises from $\binom{46}{3}\approx 1.5\cdot 10^4$ regressors to
-$\binom{256}{3}\approx 2.8\cdot 10^6$.
+Second, band 256 makes the two populations equal in size with write
+distributions sitting on top of each other, so no \emph{write-count} threshold
+separates them --- qualitatively better than rolling a 46-wire minority, which
+a windowed census can still narrow down.
+
+\textbf{What this does NOT buy, and an argument to retract.} An earlier draft
+of this section also claimed band 256 raises the restricted degree-3 attack
+from $\binom{46}{3}\approx 1.5\cdot10^4$ regressors to
+$\binom{256}{3}\approx 2.8\cdot10^6$. That is arithmetically true and
+strategically irrelevant: it prices an adversary that \emph{enumerates}
+candidate band subsets, and \S\ref{sec:persist} exhibits one that
+\emph{recovers} the band instead. Against that adversary, band width is not a
+defense at any size --- it only moves where the elbow sits.
 
 \subsection{Are the source bits good sources?}
 
@@ -564,6 +569,129 @@ two degree-3 terms. $[1,2,2,3]$ buys roughly $0.035$ of degree-1 margin and
 spends half the degree-2 margin for it; the wall is the thing meant to hold as
 adversary budgets grow. $[1,2,2,3]$ remains a one-flag alternative if the
 threat model ever narrows to degree-1 statistical adversaries specifically.
+
+\section{The band is recoverable by lifetime, and what fixes it}
+\label{sec:persist}
+
+\subsection{The attack}
+
+Every instrument above is either per-snapshot (the two heatmaps) or a
+write/read census. None of them sees the invariant that \emph{defines} the
+band: a band value is a \textbf{frozen function of the input}, unchanged from
+the fill to the strip. That is not incidental --- it is what the fold requires,
+since a registered mask must denote the same bit at every use.
+
+Fingerprint each wire's Boolean function at checkpoints (bit-sliced over chosen
+inputs, complements identified), and match fingerprints \emph{across} wires.
+Rolling relocates a variable but preserves its function, so the fingerprint
+follows it for free, and the band separates from the carriers by lifetime
+alone --- without ever guessing a wire set. \code{src/bin/persistence\_census}
+implements the statistic: coverage of a fingerprint is the fraction of
+checkpoints at which it appears on some wire.
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+build & band & elbow rank & coverage drop & recovered ($\ge 0.50$) \\
+\midrule
+$[3,3]$ two-carrier + roll 1 & 46 & \textbf{45} & $0.875 \to 0.175$ & 45 \\
+$[1,2,3,3]$ single, band 256, roll 1 & 256 & \textbf{254} & $0.850 \to 0.275$ & 254 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both with rolling on, at $n{=}128$. The elbow lands on the band size, and it is
+reported to survive phase-B growth. Once the population is known the rest is
+cheap, and cheaper than a monomial search suggests: the carrier/band
+\emph{partition} means a gate whose controls are all band wires is a mask
+injection or strip, and one mixing band and carrier controls is a fold
+fragment. The invariant recorded above as a safety property is a classifier.
+
+\subsection{Retire-and-refill epochs}
+
+The fix has to change what the attack keys on, so it must change the band
+values' \emph{functions}, not their locations. One event retires a band
+variable --- re-sourcing every live mask that names it, so nothing reads it ---
+and then rewrites the wire; round-robin, so the population turns over every
+$\text{epoch}\times\text{band}$ gaps. Ordering is the correctness argument:
+release first, rewrite second, so the ledger never holds a reference across
+the rewrite.
+
+Measured at $n{=}16$, band 14, rolling on:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+epoch & gates & elbow drop & recovered \\
+\midrule
+off & 4\,698 & 0.550 & \textbf{14 / 14} \\
+8 & 5\,226 & 0.075 & 14 \\
+4 & 5\,719 & 0.050 & 1 \\
+3 & 6\,043 & 0.050 & \textbf{0} \\
+2 & 6\,786 & 0.025 & \textbf{0} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The signal dies at 3--4 full band turnovers, a scale-free criterion: a variable
+refilled $k$ times covers about $1/k$ of the checkpoints, so $k \gtrsim 3$ puts
+every function below any useful threshold. At production ($7\,920$ source
+gates, band 256) that is $\text{turnovers} = 30.9/\text{epoch}$, so epoch 10.
+Confirmed:
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+$n{=}128$, band 256 & baseline & epoch 10 \\
+\midrule
+gates & 229\,712 & 247\,929 \ ($+7.9\%$) \\
+fingerprints $\ge 0.50$ coverage & \textbf{254} & \textbf{0} \\
+elbow drop & 0.575 & \textbf{0.025} \\
+degree-1 ridge (median) & 0.0000 & 0.0000 \\
+agreement (peak) & 0.618 (0.652) & 0.623 (0.649) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+So the defense is close to free on every other axis: the ridge does not move
+and the statistical cost is within noise. The per-event cost is the slots
+naming the retired variable, $n\,k_{\mathrm{total}}\deg/\text{band}$, so the
+cost of $N$ turnovers is independent of band width --- which is why this is
+$+8\%$ at production against $+29\%$ at $n{=}16$.
+
+\textbf{Refill composition} (\code{--prod-refill-data}) barely moves the elbow:
+band-internal and carrier-injecting refills are indistinguishable on it. The
+argument for a nonzero rate is not statistical but structural --- a
+band-internal-only recursion keeps every future band value inside the algebra
+generated by the initial band --- and the counter-argument is computational:
+closure is not recoverability, and following that recursion through phase A/B
+is a much harder problem than fingerprinting through it. The parameter is
+therefore left open rather than defaulted on this evidence.
+
+\subsection{A three-way tension}
+
+Trying to combine everything is what surfaced it. The reserved pivot block
+(\S\ref{sec:limits}) removes every pivot from both the linear pool and the
+product-source draw, so at $\text{band} = n$ there is no legal non-pivot data
+wire and the fill cannot terminate; the guard now requires roughly
+$\text{band} \le \tfrac34 n$. Hence:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+property & wants & compatible with epochs? \\
+\midrule
+write-census homogeneity (1:1 split) & band $= n$ & yes \\
+provable joint uniformity (pivot block) & band $\lesssim \tfrac34 n$ & yes \\
+persistence defense (epochs) & any band & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The first two are mutually exclusive at band 256. Band 128 buys both at a
+smaller band; band 256 buys homogeneity and leaves the statistics measured
+rather than proved. Which to prefer depends on which adversary is weighted,
+and this document does not settle it.
 
 \section{Distributed sourcing: a negative result}
 \label{sec:dist}
@@ -642,6 +770,9 @@ flag & env & meaning \\
 \code{--prod-roll} & \code{PROD\_ROLL} & band relocations per gap \\
 \code{--prod-fill-nl} & \code{PROD\_FILL\_NL} & nonlinear cascade fill \\
 \code{--prod-max-width} & \code{PROD\_MAX\_WIDTH} & narrow mode (not recommended) \\
+\code{--prod-epoch} & \code{PROD\_EPOCH} & gaps between retire-and-refill events; kills the persistence signal (\S\ref{sec:persist}) \\
+\code{--prod-refill-data} & \code{PROD\_REFILL\_DATA} & \% of refill sources drawn from carriers rather than band wires \\
+\code{--prod-fill-pivots} & \code{PROD\_FILL\_PIVOTS} & reserved pivot block; needs band $\lesssim \tfrac34 n$ \\
 \code{--prod-src-dist} & \code{PROD\_SRC\_DIST} & distributed sourcing (not recommended, \S\ref{sec:dist}) \\
 \bottomrule
 \end{tabular}

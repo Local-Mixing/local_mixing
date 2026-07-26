@@ -98,7 +98,10 @@ fn main() {
         src_dist: env("PROD_SRC_DIST", 0),
         src_horizon: env("PROD_SRC_HORIZON", 0),
         src_lo: env("PROD_SRC_LO", 0),
-        src_hi: env("PROD_SRC_HI", 0),
+        src_hi: env("PROD_SRC_HI", 0),        fill_pivots: env("PROD_FILL_PIVOTS", 0),
+        epoch: env("PROD_EPOCH", 0),
+        refill_data: env("PROD_REFILL_DATA", 0),
+
         single: env("PROD_SINGLE", 0),
     };
     if prod.enabled() {

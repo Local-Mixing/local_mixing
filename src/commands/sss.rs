@@ -107,6 +107,10 @@ pub fn run(sub: &clap::ArgMatches) {
             src_horizon: *sub.get_one("prod_src_horizon").unwrap(),
             src_lo: 0,
             src_hi: 0,
+            fill_pivots: 0,
+            epoch: 0,
+            refill_data: 0,
+
             single: *sub.get_one("prod_single").unwrap(),
         };
         let c = CircuitSeq::from_string(&data);
