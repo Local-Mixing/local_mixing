@@ -4324,7 +4324,14 @@ impl ProdLedger {
             // no longer all emit (1+k_total)^2 fragments -- the count varies
             // with which values the source gate happens to read, and a block
             // boundary stops being findable by counting to 16.
-            let deg = self.plan.last().copied().unwrap_or(2);
+            // The extra term is the LOW-degree one, not a copy of the high
+            // one. Both break the count identically -- k_total goes 3 -> 4 and
+            // an arity-2 block emits 20 or 25 fragments instead of 16 -- but a
+            // degree-3 extra widens the fold's fragments, and measurement says
+            // that is expensive in exactly the currency the width ceiling is
+            // spending: at n=128 a high-degree jitter of 50% cost +14% gates
+            // and +32% MORE wide gates, for no change in store reach.
+            let deg = self.plan.first().copied().unwrap_or(2);
             for _ in 0..self.plan_extra[value] {
                 self.inject(value, deg, state, rng, out);
             }

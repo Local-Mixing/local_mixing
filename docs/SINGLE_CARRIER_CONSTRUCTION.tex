@@ -792,12 +792,22 @@ not fold material.
 A fold block emits exactly $(1 + k_{\text{total}})^{\text{arity}}$ fragments,
 which is 16 for $[1,2,3,3]$ at arity 2. That is a block boundary an adversary
 can find by counting and an arity it can read off the count.
-\code{--prod-cg-jitter} gives a percentage of values one extra high-degree
-term, so the count becomes $(1 + k_a)(1 + k_b)$ and varies with which values
-the source gate happens to read. Jitter adds terms and never removes them: the
-operating point a build commits to is its weakest value, so removing a term
-anywhere would move the commitment, while adding one only raises a value above
-the floor.
+\code{--prod-cg-jitter} gives a percentage of values one extra mask
+term, so the count becomes $(1 + k_a)(1 + k_b) \in \{16, 20, 25\}$ and varies
+with which values the source gate happens to read. Jitter adds terms and never
+removes them: the operating point a build commits to is its weakest value, so
+removing a term anywhere would move the commitment, while adding one only raises
+a value above the floor. At $50\%$ the block-count distribution is
+$\{\tfrac14, \tfrac12, \tfrac14\}$, which maximises its entropy.
+
+The extra term is the \emph{low}-degree one. Both choices break the count
+identically, but a degree-3 extra widens the fold's fragments, and that is
+expensive in exactly the currency the width ceiling is spending: at $n{=}128$,
+$U{=}3$, a high-degree jitter of $50\%$ cost $+14\%$ gates and $+32\%$ more wide
+gates, against $+15\%$ gates and $+25\%$ wide for the low-degree version. Jitter
+does not move the store's reach in either direction (matched $182\,136$ against
+$182\,108$) --- it is a pure diversification spend, and $25\%$ halves the bill
+if the block-count entropy is worth less than the gates.
 
 A per-fragment ESOP re-cover was built for the same job and is \textbf{refuted}.
 The identity
