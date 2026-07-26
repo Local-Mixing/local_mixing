@@ -1,6 +1,7 @@
 use crate::circuit::circuit::CircuitSeq;
 use crate::postmix::xgate::XGate;
 use crate::random::random_data::shoot_random_gate;
+use itertools::Itertools;
 use rand::{prelude::SliceRandom, Rng};
 use std::collections::VecDeque;
 
@@ -3048,6 +3049,9 @@ pub struct ProdConfig {
     /// Percent of values given one EXTRA high-degree mask term, so a CG block's
     /// fragment count stops being the fixed (1+k_total)^arity.
     pub cg_jitter: usize,
+    /// Draw each ladder emission's spelling from the full equivalent menu,
+    /// forcing a rung's two copies to differ (0 = one fixed spelling).
+    pub rung_menu: usize,
     /// Retire-and-refill epochs: inter-SG gaps between two events (0 = off).
     ///
     /// A band value is a FROZEN FUNCTION OF THE INPUT, and that is what a
@@ -3158,6 +3162,7 @@ impl ProdConfig {
             g57_narrow: 0,
             ladder_cap: 0,
             cg_jitter: 0,
+            rung_menu: 0,
 
             epoch: 0,
             refill_data: 0,
@@ -3207,8 +3212,24 @@ impl ProdConfig {
             src_hi: 0,
             fill_pivots: 0,
             g57_narrow: 1,
-            ladder_cap: 3,
+            // Laddering OFF by default. It is the single largest lever on
+            // store-reachability (82.40% at cap 3 against 31.98% at cap 0) but
+            // it costs 2.2x the gates, its own output is progressively harder
+            // for the store to reach (reachability PEAKS at cap 4 and declines
+            // after -- at cap 6 the ctrl-cap blocks 0.04% yet 20.30% is
+            // store-blocked), and a ladder is collectively pinned where the
+            // wide gate it replaces is not: rigid float box against its own
+            // members' leeway is 1.5x at one rung, 5.4x at four, with 4.5% of
+            // fully-laddered ladders having ZERO rigid mobility. Turn it on
+            // deliberately with --prod-ladder-cap.
+            ladder_cap: 0,
             cg_jitter: 50,
+            // Spelling variability ON: it is now restricted to the emissions
+            // where the equivalent spellings are the SAME SIZE, so it costs
+            // nothing. (Applied uniformly it cost +54% gates, which is why it
+            // was briefly off.) Moot unless --prod-ladder-cap is set, since the
+            // pair it breaks is the double sweep's.
+            rung_menu: 1,
 
             epoch: 5,
             refill_data: 50,
@@ -3435,6 +3456,8 @@ fn emit_narrow_fragment(
     carrier_wires: &[u16],
     borrow_total: usize,
     forbidden: &[u16],
+    atoms: &[Vec<(u16, bool)>],
+    menu: bool,
     rng: &mut impl Rng,
     out: &mut Vec<XGate>,
 ) -> bool {
@@ -3497,7 +3520,68 @@ fn emit_narrow_fragment(
     // rung 0 takes the first `cap` literals outright. Kept as LITERAL LISTS,
     // not prebuilt gates, so each of a rung's emissions can pick its own
     // spelling -- see the duplicate-pair note below.
+    // PIVOT SELECTION. Which literals form rung 0 is free, and the positional
+    // `lits[..cap]` choice spends that freedom on nothing. Two things want it:
+    //
+    // ADMISSIBILITY (a correctness-adjacent property, and currently VIOLATED).
+    // A borrowed wire must never park a literal set equal to one value's whole
+    // mask term -- that is what interleave_atoms exists to prevent. It does not
+    // always succeed: instrumenting the shipped fold found 95 of 38,318 width-3
+    // fragments where lits[..2] IS exactly one atom. Testing it here makes it
+    // exact rather than something the interleave has to achieve structurally.
+    //
+    // COST. A same-polarity rung has two 2-gate spellings, so its two emissions
+    // can differ for FREE; a mixed-polarity rung pays +2 gates to differ. That
+    // difference is worth 29% of the circuit -- forcing spelling diversity
+    // without steering the pivot cost exactly that at n=128 -- so among
+    // admissible choices, prefer a same-polarity pair.
     let mut rung_lits_all: Vec<Vec<(u16, bool)>> = Vec::with_capacity(rung_count);
+    let mut lits: Vec<(u16, bool)> = lits.to_vec();
+    if rung_count >= 1 && lits.len() > cap {
+        let is_whole_atom = |cand: &[(u16, bool)]| -> bool {
+            atoms.iter().any(|a| {
+                a.len() == cand.len() && a.iter().all(|l| cand.contains(l))
+            })
+        };
+        let mut best: Option<(u8, Vec<usize>)> = None;
+        for combo in (0..lits.len()).combinations(cap) {
+            let cand: Vec<(u16, bool)> = combo.iter().map(|&i| lits[i]).collect();
+            if is_whole_atom(&cand) {
+                continue; // inadmissible: parks a whole mask term on the borrow
+            }
+            // Steer BOTH halves of the sweep's bracket into the free class.
+            // A same-polarity pair has two equal-size spellings, so its two
+            // emissions can differ at no cost; a mixed pair would have to pay
+            // +2. The rung is `cand`; the target gate is [(borrow, true)] plus
+            // whatever literals are left, so it is same-polarity exactly when
+            // those leftovers are all positive. Score 0 = both free.
+            let rung_mixed = !cand.iter().all(|l| l.1 == cand[0].1);
+            let rest_all_positive = (0..lits.len())
+                .filter(|i| !combo.contains(i))
+                .all(|i| lits[i].1);
+            let score = u8::from(rung_mixed) + u8::from(!rest_all_positive);
+            let better = match &best {
+                None => true,
+                Some((s, _)) => score < *s || (score == *s && rng.random_bool(0.5)),
+            };
+            if better {
+                best = Some((score, combo));
+            }
+        }
+        if let Some((_, combo)) = best {
+            // Reorder so the chosen pivot is the prefix; the rest keeps its
+            // interleaved order, which is what keeps laddered and unladdered
+            // fragments indistinguishable by control order.
+            let mut chosen: Vec<(u16, bool)> = combo.iter().map(|&i| lits[i]).collect();
+            let rest: Vec<(u16, bool)> = (0..lits.len())
+                .filter(|i| !combo.contains(i))
+                .map(|i| lits[i])
+                .collect();
+            chosen.extend(rest);
+            lits = chosen;
+        }
+    }
+    let lits = &lits[..];
     let mut consumed = 0;
     for i in 0..borrowed.len() {
         let mut rung_lits: Vec<(u16, bool)> = Vec::with_capacity(cap);
@@ -3544,20 +3628,46 @@ fn emit_narrow_fragment(
     // the exact spelling.
     let g57_rungs = rung_count == 1 && !rung_lits_all[0].is_empty();
     let mut rung_konst = false;
+    // Last spelling used per rung, so the next emission can avoid repeating it.
+    let mut last_spelling: Vec<Option<usize>> = vec![None; rung_lits_all.len()];
+    // The TARGET gate is emitted twice as well, and it needs the same treatment
+    // for the same reason: the sweep's bracket is a pair, so leaving this half
+    // on emit_g57_form's coin left half the planted pairs intact (measured at
+    // n=128: fixing only the rung took width-2 duplicate groups 64.6% -> 51.1%,
+    // not to the coincidence floor). Its two emissions contribute the same
+    // function whichever spelling is drawn, so the g57 complements still cancel
+    // and no ledger constant is owed -- exactly as before.
+    let mut last_target: Option<usize> = None;
     for _ in 0..2 {
         // Target gate first, then down the rungs and back up (rung 0 once per
         // block, the rest twice), so every borrow is visited an even number of
         // times and its dirty value cancels.
         if t_lits.len() <= 2 {
-            emit_g57_form(target, &t_lits, rng, out);
+            let (spellings, _) = free_spellings(target, &t_lits);
+            let prev = if menu { last_target } else { None };
+            let pick = if spellings.len() < 2 {
+                0
+            } else {
+                let choices: Vec<usize> =
+                    (0..spellings.len()).filter(|i| Some(*i) != prev).collect();
+                choices[rng.random_range(0..choices.len())]
+            };
+            out.extend(spellings[pick].iter().cloned());
+            last_target = if menu { Some(pick) } else { None };
         } else {
             out.push(XGate::conj(target, t_lits.iter().copied()).expect("distinct wires"));
         }
         for i in (0..rung_lits_all.len()).rev() {
-            rung_konst = emit_rung(borrowed[i], &rung_lits_all[i], g57_rungs, rng, out);
+            let prev = if menu { last_spelling[i] } else { None };
+            let (pick, k) = emit_rung(borrowed[i], &rung_lits_all[i], g57_rungs, prev, rng, out);
+            last_spelling[i] = if menu { pick } else { None };
+            rung_konst = k;
         }
         for i in 1..rung_lits_all.len() {
-            rung_konst = emit_rung(borrowed[i], &rung_lits_all[i], g57_rungs, rng, out);
+            let prev = if menu { last_spelling[i] } else { None };
+            let (pick, k) = emit_rung(borrowed[i], &rung_lits_all[i], g57_rungs, prev, rng, out);
+            last_spelling[i] = if menu { pick } else { None };
+            rung_konst = k;
         }
     }
     // Cancel the kappa * lambda the g57 rung left on the target. lambda is the
@@ -3576,27 +3686,129 @@ fn emit_narrow_fragment(
 }
 
 
-/// One emission of a ladder rung. `g57` picks the store-native spelling, whose
-/// residual constant the caller cancels once on the target; the plain spelling
-/// is exact. Called afresh for every emission rather than cloning a prebuilt
-/// gate, so emit_g57_form's coin can hand the two emissions different
-/// spellings of the same function.
+
+/// Every ordered gate sequence that contributes the SAME function to `h`, so a
+/// rung's two emissions can be spelled differently while still cancelling.
+///
+/// Why a menu is needed at all: the double sweep emits its rung twice, and the
+/// old code cloned one prebuilt gate, so every laddered fragment planted a pair
+/// of BYTE-IDENTICAL gates. On the shipped n=128 build 143,100 of 184,898
+/// comp=0 width-2 instances (77.4%) sat in duplicate groups and 50.4% of the
+/// whole circuit sat in exact pairs, so `sort | uniq -c` -- no execution, no
+/// algebra -- located every ladder, its borrowed wire and two of its three
+/// literals. Routing the rung through `emit_g57_form`'s coin did NOT fix it
+/// (63.2% -> 69.6%), and the enumeration below says why: for a MIXED-polarity
+/// pair that coin emits the same gate either way, so those pairs always matched.
+///
+/// The menu is exact and complete. Over generators {cnot(h,x), cnot(h,y),
+/// g57(h;x,y), g57(h;y,x)} the reachable functions span dimension 3 with the
+/// single relation g1^g2^g3^g4 = 0, so every achievable function has exactly
+/// TWO subset spellings; and since each gate is `h ^= f(x,y)` and none READS h,
+/// they all commute, so every ordering of a subset is equally valid. Same
+/// polarity gives two 2-gate spellings -- differing is FREE. Mixed polarity
+/// gives one 1-gate and one 3-gate spelling, so differing costs +2 there.
+///
+/// All spellings of one function share the same residual constant by
+/// construction, which is what keeps the borrow restored when the two
+/// emissions differ.
+fn rung_spellings(h: u16, lits: &[(u16, bool)]) -> (Vec<Vec<XGate>>, bool) {
+    let g57 = |p: u16, q: u16| XGate::from_g57([h, p, q]);
+    match *lits {
+        [(w, p)] => (vec![vec![XGate::cnot(h, w)]], !p),
+        [(xw, xp), (yw, yp)] => {
+            let cx = || XGate::cnot(h, xw);
+            let cy = || XGate::cnot(h, yw);
+            let menu = match (xp, yp) {
+                // ~x&y : short g57(h;x,y); long cnot_x + cnot_y + g57(h;y,x)
+                (false, true) => vec![
+                    vec![g57(xw, yw)],
+                    vec![cx(), cy(), g57(yw, xw)],
+                    vec![cy(), g57(yw, xw), cx()],
+                    vec![g57(yw, xw), cx(), cy()],
+                ],
+                // x&~y : the same with the roles of x and y exchanged
+                (true, false) => vec![
+                    vec![g57(yw, xw)],
+                    vec![cy(), cx(), g57(xw, yw)],
+                    vec![cx(), g57(xw, yw), cy()],
+                    vec![g57(xw, yw), cy(), cx()],
+                ],
+                // x&y and ~x&~y : two 2-gate spellings, both orderings of each
+                (true, true) => vec![
+                    vec![g57(xw, yw), cy()],
+                    vec![cy(), g57(xw, yw)],
+                    vec![g57(yw, xw), cx()],
+                    vec![cx(), g57(yw, xw)],
+                ],
+                (false, false) => vec![
+                    vec![g57(xw, yw), cx()],
+                    vec![cx(), g57(xw, yw)],
+                    vec![g57(yw, xw), cy()],
+                    vec![cy(), g57(yw, xw)],
+                ],
+            };
+            // Residual constant: only the both-negative pattern realizes its
+            // conjunction outright; the other three carry a 1.
+            (menu, xp || yp)
+        }
+        _ => unreachable!("rung_spellings takes 1..=2 literals"),
+    }
+}
+
+
+/// The COST-FREE part of a spelling menu: only the shortest realizations.
+///
+/// Over the generators {cnot(h,x), cnot(h,y), g57(h;x,y), g57(h;y,x)} there is
+/// exactly one relation, g1^g2^g3^g4 = 0, so every reachable function has
+/// exactly two subset spellings -- a set and its complement. That makes the
+/// sizes 2 and 2 for a SAME-polarity conjunction (the function is a 2-subset)
+/// but 1 and 3 for a MIXED-polarity one (the function IS a generator). So
+/// varying the spelling is free on same-polarity emissions and costs +2 gates
+/// on mixed ones.
+///
+/// Filtering to minimal length therefore yields a menu of 4 equal-size
+/// spellings for same polarity and a single spelling for mixed -- diversity
+/// exactly where it is free, and no diversity where it would be paid for.
+/// Applying the FULL menu uniformly instead cost +54% gates at n=16 for a
+/// 71.2% -> 41.0% cut in the duplicate-pair signature; this gets the same kind
+/// of cut on the free half at no cost at all.
+fn free_spellings(h: u16, lits: &[(u16, bool)]) -> (Vec<Vec<XGate>>, bool) {
+    let (menu, konst) = rung_spellings(h, lits);
+    let min_len = menu.iter().map(|m| m.len()).min().unwrap_or(0);
+    (menu.into_iter().filter(|m| m.len() == min_len).collect(), konst)
+}
+
+/// One emission of a ladder rung, spelled DIFFERENTLY from the previous one.
+///
+/// `prev` is the menu index the rung's last emission used; this picks uniformly
+/// from everything else, so a rung's two copies are never byte-identical and the
+/// duplicate-pair census that located every ladder finds nothing. All spellings
+/// of a rung contribute the same function, so the borrow is still restored
+/// exactly whichever pair is drawn. Returns the index used and the residual.
 fn emit_rung(
     h: u16,
     rung_lits: &[(u16, bool)],
     g57: bool,
+    prev: Option<usize>,
     rng: &mut impl Rng,
     out: &mut Vec<XGate>,
-) -> bool {
-    if g57 && rung_lits.len() <= 2 {
-        emit_g57_form(h, rung_lits, rng, out)
-    } else {
+) -> (Option<usize>, bool) {
+    if !g57 || rung_lits.len() > 2 {
         out.push(
             XGate::conj(h, rung_lits.iter().copied())
                 .expect("borrowed wires are distinct from the literals"),
         );
-        false
+        return (None, false);
     }
+    let (menu, konst) = free_spellings(h, rung_lits);
+    let pick = if menu.len() < 2 {
+        0
+    } else {
+        let choices: Vec<usize> = (0..menu.len()).filter(|i| Some(*i) != prev).collect();
+        choices[rng.random_range(0..choices.len())]
+    };
+    out.extend(menu[pick].iter().cloned());
+    (Some(pick), konst)
 }
 
 /// Dedupe an interleaved literal list in place, preserving order. Returns
@@ -3672,6 +3884,7 @@ struct ProdLedger {
     g57_narrow: bool,
     ladder_cap: usize,
     cg_jitter: usize,
+    rung_menu: bool,
     /// refs[wire] = live slot factors naming that wire. A wire with refs > 0
     /// is "named": nothing may write it until every naming slot is released.
     refs: Vec<u32>,
@@ -3782,6 +3995,7 @@ impl ProdLedger {
             g57_narrow: cfg.g57_narrow > 0,
             ladder_cap: cfg.ladder_cap,
             cg_jitter: cfg.cg_jitter,
+            rung_menu: cfg.rung_menu > 0,
             refs: vec![0; carrier_total],
             owner: vec![u32::MAX; carrier_total],
             hits,
@@ -4101,6 +4315,11 @@ impl ProdLedger {
                 &self.carrier_wires(state),
                 self.borrow_total(),
                 &sib,
+                // A mask slot is ONE atom, so no 2-subset of a degree-3 term
+                // can equal it and the admissibility test never binds here --
+                // pass it anyway so the rule lives in one place.
+                std::slice::from_ref(&lits),
+                self.rung_menu,
                 rng,
                 out,
             )
@@ -4127,6 +4346,8 @@ impl ProdLedger {
                 &self.carrier_wires(state),
                 self.borrow_total(),
                 &forbidden,
+                std::slice::from_ref(&lits),
+                self.rung_menu,
                 rng,
                 out,
             )
@@ -4966,6 +5187,8 @@ impl ProdLedger {
                     &self.carrier_wires(state),
                     self.borrow_total(),
                     &forbidden,
+                    &atoms,
+                    self.rung_menu,
                     rng,
                     out,
                 );
@@ -5089,6 +5312,8 @@ impl ProdLedger {
                 &self.carrier_wires(state),
                 self.borrow_total(),
                 &forbidden,
+                &[],
+                self.rung_menu,
                 rng,
                 out,
             );
@@ -8672,6 +8897,8 @@ mod cnot_gadget_tests {
                         &all,
                         total,
                         &[],
+                        &[],
+                        true,
                         &mut rng,
                         &mut gates,
                     );
@@ -8721,6 +8948,7 @@ mod cnot_gadget_tests {
             g57_narrow: 0,
             ladder_cap: 0,
             cg_jitter: 0,
+            rung_menu: 0,
 
             epoch: 0,
             refill_data: 0,
@@ -9001,6 +9229,7 @@ mod cnot_gadget_tests {
                 g57_narrow: 0,
                 ladder_cap: 0,
                 cg_jitter: 0,
+                rung_menu: 0,
 
                 epoch: 0,
                 refill_data: 0,
@@ -9065,6 +9294,7 @@ mod cnot_gadget_tests {
             g57_narrow: 0,
             ladder_cap: 0,
             cg_jitter: 0,
+            rung_menu: 0,
 
             epoch: 0,
             refill_data: 0,
@@ -9136,6 +9366,7 @@ mod cnot_gadget_tests {
                 g57_narrow: 0,
                 ladder_cap: 0,
                 cg_jitter: 0,
+                rung_menu: 0,
 
                 epoch: 0,
                 refill_data: 0,
@@ -9203,6 +9434,7 @@ mod cnot_gadget_tests {
                 g57_narrow: 0,
                 ladder_cap: 0,
                 cg_jitter: 0,
+                rung_menu: 0,
 
                 epoch: 0,
                 refill_data: 0,
@@ -9264,6 +9496,7 @@ mod cnot_gadget_tests {
                 g57_narrow: 1,
                 ladder_cap,
                 cg_jitter: 0,
+                rung_menu: 0,
                 epoch: 0,
                 refill_data: 0,
                 single: 1,
@@ -9320,7 +9553,12 @@ mod cnot_gadget_tests {
         assert_eq!(p.fill_nl, 2, "nonlinear band fill");
         assert_eq!(p.roll, 1, "rolling band -- without it the write census separates");
         assert_eq!(p.g57_narrow, 1, "narrow fragments in the store's vocabulary");
-        assert_eq!(p.ladder_cap, 3, "the measured match-rate optimum");
+        // Laddering and spelling variability are OFF by default: both are
+        // large, deliberate spends (2.2x and +54% gates) whose benefits --
+        // store-reachability and the duplicate-pair signature -- are the
+        // operator's call, not a silent default. Pinned so a change is visible.
+        assert_eq!(p.ladder_cap, 0, "laddering is opt-in via --prod-ladder-cap");
+        assert_eq!(p.rung_menu, 1, "free spelling variability is on -- it costs nothing");
         assert_eq!(p.cg_jitter, 50, "block-count entropy at its maximum");
         assert!(p.epoch > 0, "a frozen band is recoverable by function lifetime");
         assert_eq!(p.fill_pivots, 0, "band = n leaves the pivot block no room");
@@ -9364,6 +9602,7 @@ mod cnot_gadget_tests {
                 g57_narrow: 0,
                 ladder_cap: 0,
                 cg_jitter: 0,
+                rung_menu: 0,
                 epoch,
                 refill_data,
                 single: 0,
@@ -9413,6 +9652,7 @@ mod cnot_gadget_tests {
             g57_narrow: 0,
             ladder_cap: 0,
             cg_jitter: 0,
+            rung_menu: 0,
 
             epoch: 0,
             refill_data: 0,

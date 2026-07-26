@@ -348,6 +348,14 @@ fn add_shoot_args(c: Command) -> Command {
                         .help("(--cnot gadgetize) Percent of values carrying one EXTRA LOW-degree mask term. Breaks the fixed (1+k_total)^arity fragment count per CG block, which otherwise segments the circuit into blocks and reveals each source gate's arity by counting. Jitter is extra terms only, never fewer, so the committed operating point (the weakest value) does not move. NOTE: the per-fragment ESOP re-cover conj(L+u)^conj(L+!u) was tried for this and REFUTED -- the two halves share every literal but one polarity and target the same carrier, so the twin is greppable within the block whatever order they are emitted in"),
                 )
                 .arg(
+                    Arg::new("prod_rung_menu")
+                        .long("prod-rung-menu")
+                        .alias("prod_rung_menu")
+                        .required(false)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Draw each ladder emission's spelling from the full equivalent menu so a rung's two copies are never byte-identical (0 = one fixed spelling, the default). The double sweep emits its rung AND its target gate twice, which plants exact gate pairs: a `sort | uniq -c` census with no execution locates every laddered fragment, its borrowed wire and two of its three literals. Measured n=16: width-2 gates in duplicate groups 71.2% -> 41.0%, but +54% gates, because a mixed-polarity rung pays 1+3 gates to differ where a fixed spelling pays 1+1. Correctness is unaffected either way -- all spellings of a rung contribute the same function, so the borrow is restored whichever pair is drawn"),
+                )
+                .arg(
                     Arg::new("prod_fill_pivots")
                         .long("prod-fill-pivots")
                         .alias("prod_fill_pivots")

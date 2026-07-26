@@ -121,6 +121,7 @@ fn main() {
         g57_narrow: env("PROD_G57_NARROW", preset.g57_narrow),
         ladder_cap: env("PROD_LADDER_CAP", preset.ladder_cap),
         cg_jitter: env("PROD_CG_JITTER", preset.cg_jitter),
+        rung_menu: env("PROD_RUNG_MENU", preset.rung_menu),
         epoch: env("PROD_EPOCH", preset.epoch),
         refill_data: env("PROD_REFILL_DATA", preset.refill_data),
         single: env("PROD_SINGLE", preset.single),

@@ -124,6 +124,7 @@ pub fn run(sub: &clap::ArgMatches) {
             g57_narrow: opt("prod_g57_narrow", preset.g57_narrow),
             ladder_cap: opt("prod_ladder_cap", preset.ladder_cap),
             cg_jitter: opt("prod_cg_jitter", preset.cg_jitter),
+            rung_menu: opt("prod_rung_menu", preset.rung_menu),
             epoch: opt("prod_epoch", preset.epoch),
             refill_data: opt("prod_refill_data", preset.refill_data),
             single: opt("prod_single", preset.single),
