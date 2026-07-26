@@ -2971,6 +2971,69 @@ pub struct ProdConfig {
     /// band wires are body-static and so statically identifiable, which is
     /// exactly what a restriction adversary needs.
     pub roll: usize,
+    /// Distributed sourcing (0 = the dedicated band; 1 = no band at all).
+    ///
+    /// The band exists only to guarantee that a registered product term
+    /// denotes the SAME runtime bit from injection to strip, and freezing a
+    /// dedicated wire set is the cheapest way to get that. It is not the only
+    /// way: with the whole gate list in hand the gadgetizer knows every future
+    /// write, so a mask can instead be sourced on an ORDINARY CARRIER of some
+    /// other value and migrated (the re-source move) before anything writes
+    /// it. Then there are no extra wires, no globally quiet wires, and the
+    /// mask sources roll with the computation.
+    ///
+    /// Invariants that make this sound, all asserted in tests:
+    /// * no slot names a carrier of its own value (self-reference would put a
+    ///   value's own mask literal in its own fold's firing condition);
+    /// * at most ONE carrier of any value is named by live slots ("invariant
+    ///   S"), so every value always has a free carrier to be written on and
+    ///   no fragment can see both carriers of a third value;
+    /// * every emitted write to a named wire is preceded by a release (each
+    ///   slot naming it is re-sourced first).
+    pub src_dist: usize,
+    /// Lookahead horizon for distributed sourcing, in SOURCE-GATE positions
+    /// (0 = auto, n/2). A candidate source is preferred when its owning value
+    /// is not targeted within the next `src_horizon` source gates, so masks
+    /// usually die of ordinary re-source churn rather than of a forced
+    /// migration. Relaxed automatically when no candidate qualifies.
+    pub src_horizon: usize,
+    /// Restrict distributed sources to the value range `[src_lo, src_hi)`
+    /// (`src_hi = 0` means "up to n"). Default `0..0` = every value.
+    ///
+    /// Sourcing a mask on a carrier of an ACTIVELY COMPUTING value makes the
+    /// mask move with the computation, which is measurably a progress leak:
+    /// on the real n=128 sandwich, unrestricted distributed sourcing leaves a
+    /// faint but perfectly monotone ridge (rho 0.995) where the frozen band
+    /// leaves none. Restricting the pool to values that carry keyed junk
+    /// rather than computation restores a progress-independent source without
+    /// spending a wire — on the sliced sandwich the upper half `[n/2, n)` of
+    /// the gadget's values is exactly that: each is targeted once, by the
+    /// N-column CNOT, and otherwise carries slicing junk.
+    pub src_lo: usize,
+    pub src_hi: usize,
+    /// Single-carrier decode: one linear term instead of two.
+    ///
+    /// The shipped `[3,3]` decode is really `[1,1,3,3]` — two degree-1 carrier
+    /// literals plus two degree-3 products. Only ONE linear term is forced:
+    /// the balance obstruction rules out a decode with no linear part (a pure
+    /// product is 3:1 and ungateable), but `D = c ^ g(sources)` is exactly
+    /// balanced for any `g`, since flipping `c` flips `D`. The second carrier
+    /// is free to an affine adversary — it just XORs both in — so it
+    /// contributes nothing to the piling-up product, which runs over the
+    /// NONLINEAR terms alone.
+    ///
+    /// Fold cost is the product over operands of their atom counts, so
+    /// swapping the redundant carrier for a degree-2 mask is cost-neutral in
+    /// fragments and strictly better statistically: `[1,2,3,3]` is 5 atoms and
+    /// 0.641 agreement against `[1,1,3,3]`'s 5 atoms and 0.781. It also halves
+    /// the carriers, n instead of 2n.
+    ///
+    /// What it costs: (a) one probe now sees `v ^ masks ^ κ`, correlated with
+    /// the value at the piling-up rate, where a two-carrier share is uniform
+    /// AND independent; (b) RG2 (re-pair) and RG3 (refresh both carriers) have
+    /// no single-carrier analogue — only relocation and mask re-sourcing
+    /// survive, so the re-randomisation layer is thinner.
+    pub single: usize,
 }
 
 impl ProdConfig {
@@ -2985,6 +3048,40 @@ impl ProdConfig {
             max_width: 0,
             fill_nl: 0,
             roll: 0,
+            src_dist: 0,
+            src_horizon: 0,
+            src_lo: 0,
+            src_hi: 0,
+            single: 0,
+        }
+    }
+
+    /// The value range distributed sourcing may draw from.
+    pub fn src_range(&self, n: usize) -> (usize, usize) {
+        let hi = if self.src_hi == 0 { n } else { self.src_hi.min(n) };
+        (self.src_lo.min(hi), hi)
+    }
+
+    /// Distributed (band-free) sourcing: mask literals live on ordinary
+    /// carriers, protected by the write barrier instead of by a freeze.
+    pub fn dist(&self) -> bool {
+        self.enabled() && self.src_dist > 0
+    }
+
+    /// Single-carrier decode: one linear term per value instead of two.
+    pub fn single_carrier(&self) -> bool {
+        self.enabled() && self.single > 0
+    }
+
+    /// Lookahead horizon in source-gate positions. Auto is `n/2`, which at the
+    /// production sandwich sits just past the measured median inter-targeting
+    /// gap (89 gates at n=128, 2n=256 values), so a typical draw survives to
+    /// its natural re-source rather than to a forced migration.
+    pub fn horizon(&self, n: usize) -> usize {
+        if self.src_horizon > 0 {
+            self.src_horizon
+        } else {
+            (n / 2).max(8)
         }
     }
 
@@ -3022,7 +3119,9 @@ impl ProdConfig {
     /// so the linear bound (>= maxdeg + a small pad) plus the sqrt term covers
     /// both.
     pub fn band_size(&self, n: usize) -> usize {
-        if !self.enabled() {
+        if !self.enabled() || self.dist() {
+            // Distributed sourcing has no band: the source "role" moves over
+            // the 2n carriers and costs no wire of its own.
             return 0;
         }
         if self.band > 0 {
@@ -3054,12 +3153,22 @@ struct ProdSlot {
 
 impl ProdSlot {
     /// Control literals realizing the product as one conjunction, resolved
-    /// against the band's current physical placement.
+    /// against the band's current physical placement. Under distributed
+    /// sourcing there is no band and no placement map: factors name physical
+    /// carriers outright, and `loc` is empty (the identity).
     fn lits(&self, loc: &[u16]) -> Vec<(u16, bool)> {
         self.factors
             .iter()
-            .map(|&(b, a)| (loc[b as usize], !a))
+            .map(|&(b, a)| {
+                let wire = if loc.is_empty() { b } else { loc[b as usize] };
+                (wire, !a)
+            })
             .collect()
+    }
+
+    /// The wires this slot names (physical under distributed sourcing).
+    fn wires(&self) -> impl Iterator<Item = usize> + '_ {
+        self.factors.iter().map(|&(b, _)| b as usize)
     }
 }
 
@@ -3267,20 +3376,75 @@ struct ProdLedger {
     slots: Vec<Vec<ProdSlot>>,
     consts: Vec<bool>,
     used: std::collections::HashSet<ProdSlot>,
+    // ---- distributed sourcing (src_dist) ----
+    /// Sources are ordinary carriers rather than band variables.
+    dist: bool,
+    /// One linear carrier per value instead of a pair.
+    single: bool,
+    /// refs[wire] = live slot factors naming that wire. A wire with refs > 0
+    /// is "named": nothing may write it until every naming slot is released.
+    refs: Vec<u32>,
+    /// owner[wire] = the value currently carrying on that wire, refreshed
+    /// from `GadgetState::pairs` whenever the pairing changes.
+    owner: Vec<u32>,
+    /// Per-value source-gate positions at which it is a target, with a cursor
+    /// advanced as the body is emitted: the lookahead that keeps a fresh
+    /// source from being written soon after it is drawn.
+    hits: Vec<Vec<usize>>,
+    cursor: Vec<usize>,
+    pos: usize,
+    horizon: usize,
+    /// Value range distributed sourcing draws from (see `ProdConfig::src_lo`).
+    src_lo: usize,
+    src_hi: usize,
+    /// A 64-sample bit-sliced simulation of the circuit emitted so far, under
+    /// the zero-slice convention, advanced lazily.
+    ///
+    /// Band wires are generic bits by construction; CARRIERS ARE NOT. A value
+    /// that is identically 0 on the zero slice has two EQUAL shares, so the
+    /// carrier space contains exact linear degeneracies — measured: 23 exact
+    /// wire-pair relations at 25% depth in a distributed build, against 1 in a
+    /// banded one. A mask drawn across such a pair collapses: with opposite
+    /// offsets the product is identically zero, with equal offsets it drops a
+    /// degree. Either way the value is silently short a term, and the
+    /// gadgetizer cannot see it, because it picks factors by wire id and never
+    /// looks at what they carry. This simulation is what lets the draw look.
+    sim: Vec<u64>,
+    sim_cursor: usize,
+    degenerate_rejects: u64,
     injected: u64,
     resourced: u64,
     rolled: u64,
+    migrated: u64,
     cg_fragments: u64,
     ledger_consts: u64,
 }
 
 impl ProdLedger {
-    fn new(n: usize, cfg: &ProdConfig, carrier_total: usize) -> ProdLedger {
+    fn new(
+        n: usize,
+        cfg: &ProdConfig,
+        carrier_total: usize,
+        sched: Option<Vec<Vec<usize>>>,
+    ) -> ProdLedger {
         let band_len = cfg.band_size(n);
         let mut plan: Vec<usize> = Vec::new();
         plan.extend(std::iter::repeat(cfg.deg.max(2)).take(cfg.k));
         plan.extend(std::iter::repeat(cfg.deg_hi.max(2)).take(cfg.k_hi));
-        if cfg.enabled() {
+        if cfg.dist() {
+            // Slot space is the carriers themselves, minus the owner's own two
+            // and the sibling of every named wire; C(2n, deg) dwarfs the live
+            // demand at every production sizing, but keep the guard honest.
+            assert!(
+                carrier_total >= 2 * cfg.max_deg() + 4,
+                "distributed sourcing needs more carriers than one slot's factors"
+            );
+            assert!(
+                cfg.roll == 0,
+                "--prod-roll relocates band variables; distributed sourcing has no band"
+            );
+        }
+        if cfg.enabled() && !cfg.dist() {
             let max_deg = cfg.max_deg();
             assert!(band_len >= max_deg + 1, "prod band needs >= max_deg+1 wires");
             // Distinct degree-`d` factor tuples for the widest tier: C(band,d)*2^d.
@@ -3296,6 +3460,7 @@ impl ProdLedger {
                 n * cfg.k_total()
             );
         }
+        let hits = sched.unwrap_or_else(|| vec![Vec::new(); n]);
         ProdLedger {
             plan,
             carrier_total,
@@ -3304,12 +3469,205 @@ impl ProdLedger {
             slots: vec![Vec::new(); n],
             consts: vec![false; n],
             used: std::collections::HashSet::new(),
+            dist: cfg.dist(),
+            single: cfg.single_carrier(),
+            refs: vec![0; carrier_total],
+            owner: vec![u32::MAX; carrier_total],
+            hits,
+            cursor: vec![0; n],
+            pos: 0,
+            horizon: cfg.horizon(n),
+            src_lo: cfg.src_range(n).0,
+            src_hi: cfg.src_range(n).1,
+            sim: Vec::new(),
+            sim_cursor: 0,
+            degenerate_rejects: 0,
             injected: 0,
             resourced: 0,
             rolled: 0,
+            migrated: 0,
             cg_fragments: 0,
             ledger_consts: 0,
         }
+    }
+
+    /// Refresh the wire -> owning-value map. The pairing changes under RG1/RG2
+    /// (and the W_i ramp), so every barrier point re-reads it; it is O(n) on a
+    /// per-source-gate cadence, not per emitted gate.
+    fn sync(&mut self, state: &GadgetState) {
+        if !self.dist {
+            return;
+        }
+        for w in self.owner.iter_mut() {
+            *w = u32::MAX;
+        }
+        for value in 0..state.n {
+            let (c0, c1) = state.pairs[value];
+            self.owner[c0] = value as u32;
+            self.owner[c1] = value as u32;
+        }
+    }
+
+    /// The carrier of `value` that no live slot names — always one of the two
+    /// under invariant S, and the only wire the encoding may write. When both
+    /// are free the choice stays random, as in the band build.
+    fn free_carrier(&self, value: usize, state: &GadgetState, rng: &mut impl Rng) -> u16 {
+        let (c0, c1) = state.pairs[value];
+        let mut coin = || if rng.random_bool(0.5) { c0 } else { c1 } as u16;
+        if !self.dist {
+            return coin();
+        }
+        match (self.refs[c0], self.refs[c1]) {
+            (0, 0) => coin(),
+            (0, _) => c0 as u16,
+            (_, 0) => c1 as u16,
+            _ => unreachable!("invariant S: a value never has both carriers named"),
+        }
+    }
+
+    /// Position of the next source gate targeting `value`, or `usize::MAX`.
+    /// `self.pos` only advances, so the per-value cursor is amortized O(1).
+    fn next_hit(&mut self, value: usize) -> usize {
+        let hits = &self.hits[value];
+        let cur = &mut self.cursor[value];
+        while *cur < hits.len() && hits[*cur] < self.pos {
+            *cur += 1;
+        }
+        hits.get(*cur).copied().unwrap_or(usize::MAX)
+    }
+
+    fn add_refs(&mut self, slot: &ProdSlot) {
+        if self.dist {
+            for w in slot.wires() {
+                self.refs[w] += 1;
+            }
+        }
+    }
+
+    fn drop_refs(&mut self, slot: &ProdSlot) {
+        if self.dist {
+            for w in slot.wires() {
+                self.refs[w] -= 1;
+            }
+        }
+    }
+
+    /// Draw a fresh degree-`deg` slot for `value` over ordinary carriers.
+    ///
+    /// A candidate wire `w` is legal when (a) it is not a carrier of `value`
+    /// itself, (b) it is not in `forbidden` (the wires this emission is about
+    /// to write or read completely), and (c) its sibling carrier is unnamed —
+    /// which is what maintains invariant S, and hence what guarantees every
+    /// value keeps a writable carrier and no fragment ever sees both carriers
+    /// of a third value. Preference, not a requirement, is given to wires
+    /// whose owning value is not targeted within the lookahead horizon.
+    fn draw_slot_dist(
+        &mut self,
+        value: usize,
+        deg: usize,
+        forbidden: &[usize],
+        state: &GadgetState,
+        rng: &mut impl Rng,
+    ) -> ProdSlot {
+        let (own0, own1) = state.pairs[value];
+        // Enumerate the legal candidates once (O(2n)) rather than rejection-
+        // sampling them: at small n the legal tuple space is tight enough that
+        // sampling-with-rejection spins essentially forever, and at production
+        // n the enumeration is still one cheap pass per draw.
+        //
+        // Candidates are grouped by OWNING VALUE, and at most one is taken per
+        // group — a value with both carriers free offers two, and taking both
+        // would put its whole sharing into one fragment.
+        let mut soon: Vec<(u32, [Option<u16>; 2])> = Vec::new();
+        let mut later: Vec<(u32, [Option<u16>; 2])> = Vec::new();
+        for owner in self.src_lo..self.src_hi {
+            let (s0, s1) = state.pairs[owner];
+            if s0 == own0 || s0 == own1 || s1 == own0 || s1 == own1 {
+                continue; // the owner IS this value
+            }
+            let legal = |w: usize, sibling: usize| -> Option<u16> {
+                // Invariant S: name a wire only while its sibling is free.
+                (!forbidden.contains(&w) && self.refs[sibling] == 0).then_some(w as u16)
+            };
+            let pick = [legal(s0, s1), legal(s1, s0)];
+            if pick[0].is_none() && pick[1].is_none() {
+                continue;
+            }
+            let due = self.next_hit(owner);
+            if due != usize::MAX && due < self.pos + self.horizon {
+                soon.push((owner as u32, pick));
+            } else {
+                later.push((owner as u32, pick));
+            }
+        }
+        // Lookahead is a preference: prefer groups that are not written soon,
+        // and fall back to the rest rather than fail.
+        use rand::seq::SliceRandom;
+        later.shuffle(rng);
+        soon.shuffle(rng);
+        let mut pool: Vec<(u32, [Option<u16>; 2])> = later.into_iter().chain(soon).collect();
+        assert!(
+            pool.len() >= deg,
+            "distributed sourcing found only {} legal source values for a degree-{deg} slot \
+             (need {deg}); the gadget is too narrow for --prod-deg/--prod-deg-hi",
+            pool.len()
+        );
+        // A handful of attempts to land a tuple no live slot already carries;
+        // duplicates are a diversity nit, not a correctness problem (the dedup
+        // set only steers the draw), so accept one rather than spin.
+        let mut fallback: Option<Vec<u16>> = None;
+        for attempt in 0..64 {
+            if attempt > 0 {
+                // Re-roll which groups are in front, so a collision retries a
+                // different tuple rather than the same wires with new signs.
+                pool.shuffle(rng);
+            }
+            let mut wires: Vec<u16> = Vec::with_capacity(deg);
+            for (_, pick) in pool.iter().take(deg) {
+                let w = match (pick[0], pick[1]) {
+                    (Some(a), Some(b)) => if rng.random_bool(0.5) { a } else { b },
+                    (Some(a), None) => a,
+                    (None, Some(b)) => b,
+                    (None, None) => unreachable!("empty groups are skipped"),
+                };
+                wires.push(w);
+            }
+            wires.sort_unstable();
+            // Reject a factor set that is degenerate on the live simulation:
+            // carriers, unlike band wires, contain exact linear relations.
+            // This is a QUALITY filter, never a correctness one — on a narrow
+            // gadget every legal tuple can be degenerate, and refusing to
+            // return one would abort a build that is perfectly correct. So the
+            // first rejected candidate is kept as a fallback.
+            if self.tuple_is_degenerate(&wires) || self.duplicates_live_term(value, &wires) {
+                self.degenerate_rejects += 1;
+                if fallback.is_none() {
+                    fallback = Some(wires);
+                }
+                continue;
+            }
+            // Offsets are all-positive here, unlike the band draw. Under
+            // uniform sources the offsets buy nothing statistically (the term
+            // fires at 2^-deg either way), but carriers are NOT uniform: they
+            // contain exactly-equal pairs (a value that is identically 0 on
+            // the zero slice has c0 == c1), and a term drawn over two equal
+            // wires with OPPOSITE offsets is identically zero — a dead mask,
+            // silently leaving that value short a term. Measured: dead terms
+            // occur only in distributed builds, concentrated early
+            // (docs/DISTRIBUTED_SOURCE_ENCODING.md).
+            let factors: Vec<(u16, bool)> = wires.into_iter().map(|w| (w, false)).collect();
+            let slot = ProdSlot { factors };
+            if !self.used.contains(&slot) || attempt == 63 {
+                self.used.insert(slot.clone());
+                return slot;
+            }
+        }
+        let wires = fallback.expect("at least one candidate tuple was formed");
+        let slot = ProdSlot {
+            factors: wires.into_iter().map(|w| (w, false)).collect(),
+        };
+        self.used.insert(slot.clone());
+        slot
     }
 
     fn enabled(&self) -> bool {
@@ -3362,9 +3720,11 @@ impl ProdLedger {
         rng: &mut impl Rng,
         out: &mut Vec<XGate>,
     ) -> bool {
-        let (c0, c1) = state.pairs[value];
-        let target = if rng.random_bool(0.5) { c0 } else { c1 } as u16;
+        // Distributed sourcing writes the value's unnamed carrier; the band
+        // build has no named carriers at all and keeps the coin flip.
+        let target = self.free_carrier(value, state, rng);
         let lits = slot.lits(&self.loc);
+        self.debug_check_fragment(target, &lits, state);
         if self.cap >= 2 {
             emit_narrow_fragment(target, &lits, self.cap, self.carrier_total, self.borrow_total(), rng, out)
         } else {
@@ -3381,11 +3741,284 @@ impl ProdLedger {
         rng: &mut impl Rng,
         out: &mut Vec<XGate>,
     ) {
-        let slot = self.draw_slot(deg, rng);
+        self.inject_avoiding(value, deg, &[], state, rng, out);
+    }
+
+    /// `inject`, with wires this emission must not name (the wire being
+    /// released, and the carriers a fold is about to read or write).
+    fn inject_avoiding(
+        &mut self,
+        value: usize,
+        deg: usize,
+        forbidden: &[usize],
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        let slot = if self.dist {
+            self.sync(state);
+            self.advance_sim(out, rng);
+            self.draw_slot_dist(value, deg, forbidden, state, rng)
+        } else {
+            self.draw_slot(deg, rng)
+        };
         let konst = self.emit_slot(value, &slot, state, rng, out);
         self.consts[value] ^= konst;
+        self.add_refs(&slot);
         self.slots[value].push(slot);
         self.injected += 1;
+    }
+
+    /// Release `wire` so it can be written: re-source every live slot that
+    /// names it (fresh term first, old term stripped after, exactly as
+    /// `resource` does, so no value is ever momentarily bare). The fresh draw
+    /// avoids `wire` itself, and each emission writes its owner's free
+    /// carrier, so releasing one wire never dirties another named one.
+    fn release_wire(
+        &mut self,
+        wire: usize,
+        barrier: &[usize],
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        if !self.dist || self.refs[wire] == 0 {
+            return;
+        }
+        while self.refs[wire] > 0 {
+            let found = (0..state.n).find_map(|value| {
+                self.slots[value]
+                    .iter()
+                    .position(|s| s.wires().any(|w| w == wire))
+                    .map(|idx| (value, idx))
+            });
+            let Some((value, idx)) = found else {
+                debug_assert!(false, "refs[{wire}] > 0 with no slot naming it");
+                break;
+            };
+            let deg = self.slots[value][idx].factors.len();
+            // Forbid the WHOLE barrier, not just this wire: a fresh draw that
+            // landed on another wire this same emission is about to overwrite
+            // would be released again (or, worse, after that wire had already
+            // been cleared) — the one way the discipline could still let a
+            // live mask meet a write.
+            self.inject_avoiding(value, deg, barrier, state, rng, out);
+            let old = self.slots[value].remove(idx);
+            let konst = self.emit_slot(value, &old, state, rng, out);
+            self.consts[value] ^= konst;
+            self.drop_refs(&old);
+            self.used.remove(&old);
+            self.migrated += 1;
+        }
+    }
+
+    /// Release every wire in `wires` (a write barrier for one emission).
+    fn release(
+        &mut self,
+        wires: &[usize],
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        if !self.dist {
+            return;
+        }
+        self.sync(state);
+        for &w in wires {
+            self.release_wire(w, wires, state, rng, out);
+        }
+        debug_assert!(
+            wires.iter().all(|&w| self.refs[w] == 0),
+            "write barrier left a named wire behind"
+        );
+    }
+
+    /// Advance the lookahead clock to source-gate position `pos`, and (when
+    /// PROD_BARE_CENSUS is set) sample how many values are currently bare.
+    fn set_pos(&mut self, pos: usize) {
+        self.pos = pos;
+    }
+
+    /// Census hook: called per source gate when the env var is set.
+    fn bare_census(&mut self, state: &GadgetState, out: &[XGate], rng: &mut impl Rng) {
+        if !self.enabled() || std::env::var("PROD_BARE_CENSUS").is_err() {
+            return;
+        }
+        if self.pos % 200 != 0 {
+            return;
+        }
+        self.advance_sim(out, rng);
+        let bare = self.bare_values(state);
+        println!(
+            "[bare] pos={} bare_values={}/{} gates={}",
+            self.pos,
+            bare,
+            state.n,
+            out.len()
+        );
+        if let Ok(spec) = std::env::var("PROD_DUMP_PAIRS") {
+            // Is a given wire pair the two carriers of ONE value? That is the
+            // difference between "a value lost its mask" and "the leak runs
+            // across values", and the two have completely different fixes.
+            for want in spec.split(',') {
+                let Some((a, b)) = want.split_once(':') else { continue };
+                let (a, b): (usize, usize) = (a.parse().unwrap(), b.parse().unwrap());
+                let same = (0..state.n).find(|&v| {
+                    let (c0, c1) = state.pairs[v];
+                    (c0 == a && c1 == b) || (c0 == b && c1 == a)
+                });
+                match same {
+                    Some(v) => println!("  [pairs] ({a},{b}) ARE both carriers of value {v}"),
+                    None => {
+                        let ov = |w: usize| (0..state.n).find(|&v| {
+                            let (c0, c1) = state.pairs[v];
+                            c0 == w || c1 == w
+                        });
+                        println!(
+                            "  [pairs] ({a},{b}) are carriers of DIFFERENT values {:?} and {:?}",
+                            ov(a),
+                            ov(b)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bring the 64-sample simulation up to the end of `out`. Seeded on first
+    /// use with the zero-slice convention (random data on the low half of the
+    /// values' wires, zeros elsewhere), which is the distribution every
+    /// measurement in the project reads the gadget under.
+    fn advance_sim(&mut self, out: &[XGate], rng: &mut impl Rng) {
+        if !self.enabled() {
+            return;
+        }
+        if self.sim.is_empty() {
+            self.sim = vec![0u64; self.carrier_total];
+            for w in 0..self.carrier_total / 4 {
+                self.sim[w] = rng.random::<u64>();
+            }
+        }
+        for gate in &out[self.sim_cursor..] {
+            gate.apply_lanes(&mut self.sim);
+        }
+        self.sim_cursor = out.len();
+    }
+
+    /// How many values are BARE right now: their live mask terms XOR to zero
+    /// on every sample, so the value decodes as a plain `c0 ^ c1` and is an
+    /// exactly affine function of two wires. This is the leak the heatmap
+    /// actually finds — every predictive relation measured had support 2 — so
+    /// counting it directly is the difference between knowing the mechanism
+    /// and guessing at it. Works in band mode too, for the control.
+    fn bare_values(&self, state: &GadgetState) -> usize {
+        if self.sim.is_empty() {
+            return 0;
+        }
+        (0..state.n)
+            .filter(|&v| {
+                !self.slots[v].is_empty()
+                    && self.slots[v]
+                        .iter()
+                        .fold(0u64, |acc, s| acc ^ self.slot_product(s))
+                        == 0
+            })
+            .count()
+    }
+
+    /// The product a slot's factors evaluate to, on the 64-sample simulation.
+    fn slot_product(&self, slot: &ProdSlot) -> u64 {
+        let mut prod = !0u64;
+        for (w, a) in slot.lits(&self.loc) {
+            let v = self.sim[w as usize];
+            prod &= if a { v } else { !v };
+        }
+        prod
+    }
+
+    /// Would this factor set duplicate a term the value already carries?
+    ///
+    /// The dedup set compares slots by WIRE TUPLE, which is the right notion
+    /// when sources are band variables — distinct band wires are distinct
+    /// bits. Over carriers it is not: the carrier space contains exactly-equal
+    /// pairs, so two slots with completely different wire tuples can be the
+    /// SAME FUNCTION. When that happens to the two terms of one value they
+    /// cancel, `m1 ^ m2 = 0`, and the value decodes as a bare `c0 ^ c1` — an
+    /// exactly affine value, which is precisely the leak the heatmap finds
+    /// (every leaking relation measured had support exactly 2). The tuple
+    /// dedup cannot see it; only evaluating can.
+    fn duplicates_live_term(&self, value: usize, wires: &[u16]) -> bool {
+        if self.sim.is_empty() {
+            return false;
+        }
+        let mut prod = !0u64;
+        for &w in wires {
+            prod &= self.sim[w as usize];
+        }
+        self.slots[value]
+            .iter()
+            .any(|s| self.slot_product(s) == prod)
+    }
+
+    /// Would this factor set collapse? Rejects a tuple whose wires are not
+    /// distinct as BITS (equal or complementary on every sample), and one
+    /// whose product is constant. Both make the term degenerate: it either
+    /// vanishes or loses a degree, and the value silently carries less mask
+    /// than its plan says. 64 samples is a cheap filter, not a proof — a pair
+    /// that agrees on all 64 is overwhelmingly an exact relation, and one that
+    /// does not is certainly fine.
+    fn tuple_is_degenerate(&self, wires: &[u16]) -> bool {
+        if self.sim.is_empty() {
+            return false;
+        }
+        for (i, &a) in wires.iter().enumerate() {
+            for &b in &wires[i + 1..] {
+                let (x, y) = (self.sim[a as usize], self.sim[b as usize]);
+                if x == y || x == !y {
+                    return true;
+                }
+            }
+        }
+        let mut prod = !0u64;
+        for &w in wires {
+            prod &= self.sim[w as usize];
+        }
+        prod == 0
+    }
+
+    /// Gate-local non-completeness: one emitted fragment must never touch both
+    /// carriers of any value (as literals, or as one literal and the target).
+    /// That is the property the share-native fold is FOR — the legacy g57
+    /// gadget hides at degree 2 precisely because no gate reconstructs an
+    /// operand — and it is invisible to any endpoint test, so it is asserted
+    /// at the point of emission. Under distributed sourcing it is also the
+    /// property most at risk, since mask literals now live on carriers.
+    fn debug_check_fragment(&self, target: u16, lits: &[(u16, bool)], state: &GadgetState) {
+        if !self.dist {
+            return;
+        }
+        // Repeated literals on ONE wire are fine and common — two operands'
+        // masks may share a source, and `XGate::conj` folds equal-polarity
+        // duplicates (opposite polarities make the fragment identically zero
+        // and it is dropped). What must never happen is two DISTINCT wires
+        // that are the two carriers of one value.
+        let mut seen_wires: Vec<u16> = Vec::with_capacity(lits.len() + 1);
+        let mut seen_values: Vec<u32> = Vec::with_capacity(lits.len() + 1);
+        for wire in std::iter::once(target).chain(lits.iter().map(|&(w, _)| w)) {
+            if seen_wires.contains(&wire) {
+                continue;
+            }
+            seen_wires.push(wire);
+            let v = self.owner[wire as usize];
+            debug_assert_ne!(v, u32::MAX, "fragment touches a wire with no owning value");
+            debug_assert!(
+                !seen_values.contains(&v),
+                "fragment sees both carriers of value {v} (target {target}, wires {:?}, pair {:?})",
+                lits.iter().map(|&(w, _)| w).collect::<Vec<_>>(),
+                state.pairs[v as usize]
+            );
+            seen_values.push(v);
+        }
     }
 
     /// W1 ramp: the planned mask multiset per value (k deg-`deg` + k_hi
@@ -3420,6 +4053,7 @@ impl ProdLedger {
         let old = self.slots[value].remove(old_index);
         let konst = self.emit_slot(value, &old, state, rng, out);
         self.consts[value] ^= konst;
+        self.drop_refs(&old);
         self.used.remove(&old);
         self.resourced += 1;
     }
@@ -3460,6 +4094,16 @@ impl ProdLedger {
             let mut found = false;
             for value in 0..state.n {
                 let (s, p) = state.pairs[value];
+                if self.single {
+                    // One carrier: both entries name the same wire, so both
+                    // must follow it across the swap.
+                    if s == to as usize {
+                        state.pairs[value] = (from as usize, from as usize);
+                        found = true;
+                        break;
+                    }
+                    continue;
+                }
                 if s == to as usize {
                     state.pairs[value].0 = from as usize;
                     found = true;
@@ -3495,6 +4139,61 @@ impl ProdLedger {
     /// No wire is ever written except the target's carriers, and no fragment
     /// ever computes a single value's own two-carrier XOR or its product term
     /// onto a wire: operands stay masked through the gate.
+    /// Distributed-sourcing barrier for one fold.
+    ///
+    /// The fold writes the target's free carrier and reads, per fragment, one
+    /// atom of each operand — carrier literals plus mask literals. Two hazards
+    /// follow, both removed by re-sourcing the offending slots first:
+    ///
+    /// * a mask of one operand naming a carrier of the TARGET would be read by
+    ///   a fragment that also writes the target's other carrier — one gate
+    ///   seeing both carriers of a value, the gate-local completeness the
+    ///   share-native fold exists to keep;
+    /// * a mask of one operand naming a carrier of ANOTHER OPERAND is the same
+    ///   violation across the two read atoms.
+    ///
+    /// Invariant S already rules out the third case (two different slots
+    /// naming the two different carriers of a third value), because only one
+    /// carrier per value is ever named.
+    fn guard_fold(
+        &mut self,
+        gate: &XGate,
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        if !self.dist {
+            return;
+        }
+        self.sync(state);
+        let t = gate.target as usize;
+        let mut hot: Vec<usize> = vec![state.pairs[t].0, state.pairs[t].1];
+        for &(w, _) in &gate.ctrls {
+            let (c0, c1) = state.pairs[w as usize];
+            hot.push(c0);
+            hot.push(c1);
+        }
+        for &(w, _) in &gate.ctrls {
+            let operand = w as usize;
+            loop {
+                let Some(idx) = self.slots[operand]
+                    .iter()
+                    .position(|s| s.wires().any(|x| hot.contains(&x)))
+                else {
+                    break;
+                };
+                let deg = self.slots[operand][idx].factors.len();
+                self.inject_avoiding(operand, deg, &hot, state, rng, out);
+                let old = self.slots[operand].remove(idx);
+                let konst = self.emit_slot(operand, &old, state, rng, out);
+                self.consts[operand] ^= konst;
+                self.drop_refs(&old);
+                self.used.remove(&old);
+                self.migrated += 1;
+            }
+        }
+    }
+
     fn fold_cg(
         &mut self,
         gate: &XGate,
@@ -3502,6 +4201,7 @@ impl ProdLedger {
         rng: &mut impl Rng,
         out: &mut Vec<XGate>,
     ) {
+        self.guard_fold(gate, state, rng, out);
         let t = gate.target as usize;
         debug_assert!(t < state.n);
         let mut lists: Vec<Vec<Vec<(u16, bool)>>> = Vec::with_capacity(gate.ctrls.len());
@@ -3509,8 +4209,16 @@ impl ProdLedger {
             let w = w as usize;
             debug_assert_ne!(w, t);
             let (c0, c1) = state.pairs[w];
-            let mut atoms: Vec<Vec<(u16, bool)>> =
-                vec![vec![(c0 as u16, true)], vec![(c1 as u16, true)]];
+            // Single-carrier decode contributes ONE linear atom, not two: the
+            // pair collapses to a single wire, and emitting it twice would
+            // cancel. Every other atom (the mask terms, the constant) is
+            // unchanged, so the fold's fragment count drops from
+            // (2 + k)^arity to (1 + k)^arity at equal mask strength.
+            let mut atoms: Vec<Vec<(u16, bool)>> = if self.single {
+                vec![vec![(c0 as u16, true)]]
+            } else {
+                vec![vec![(c0 as u16, true)], vec![(c1 as u16, true)]]
+            };
             for slot in &self.slots[w] {
                 atoms.push(slot.lits(&self.loc));
             }
@@ -3565,8 +4273,8 @@ impl ProdLedger {
         use rand::seq::SliceRandom;
         frags.shuffle(rng);
         for lits in frags {
-            let (c0, c1) = state.pairs[t];
-            let target = if rng.random_bool(0.5) { c0 } else { c1 } as u16;
+            let target = self.free_carrier(t, state, rng);
+            self.debug_check_fragment(target, &lits, state);
             // None = contradictory literals (w AND !w): the term is 0.
             if let Some(fragment) = XGate::conj(target, lits) {
                 out.push(fragment);
@@ -3628,8 +4336,8 @@ impl ProdLedger {
         use rand::seq::SliceRandom;
         frags.shuffle(rng);
         for lits in &frags {
-            let (c0, c1) = state.pairs[t];
-            let target = if rng.random_bool(0.5) { c0 } else { c1 } as u16;
+            let target = self.free_carrier(t, state, rng);
+            self.debug_check_fragment(target, lits, state);
             let konst =
                 emit_narrow_fragment(target, lits, self.cap, self.carrier_total, self.borrow_total(), rng, out);
             self.consts[t] ^= konst;
@@ -3648,11 +4356,11 @@ impl ProdLedger {
                 let slot = self.slots[value].remove(0);
                 let konst = self.emit_slot(value, &slot, state, rng, out);
                 self.consts[value] ^= konst;
+                self.drop_refs(&slot);
                 self.used.remove(&slot);
             }
             if self.consts[value] {
-                let (c0, c1) = state.pairs[value];
-                let target = if rng.random_bool(0.5) { c0 } else { c1 };
+                let target = self.free_carrier(value, state, rng) as usize;
                 let u = random_wire_except(self.carrier_total, &[target], rng) as u16;
                 out.push(
                     XGate::conj(target as u16, [(u, false)]).expect("distinct wires"),
@@ -3666,12 +4374,16 @@ impl ProdLedger {
     fn report(&self) {
         if self.enabled() {
             println!(
-                "[prod] plan={:?} band={} injected={} resourced={} rolled={} cg_fragments={} ledger_consts={}",
+                "[prod] plan={:?} band={} src={} injected={} resourced={} rolled={} migrated={} \
+                 degen_rejects={} cg_fragments={} ledger_consts={}",
                 self.plan,
                 self.loc.len(),
+                if self.dist { "distributed" } else { "band" },
                 self.injected,
                 self.resourced,
                 self.rolled,
+                self.migrated,
+                self.degenerate_rejects,
                 self.cg_fragments,
                 self.ledger_consts
             );
@@ -3810,23 +4522,34 @@ fn emit_nonlinear_rg(
     state: &mut GadgetState,
     pair_queue: &mut VecDeque<(usize, usize)>,
     single_queue: &mut VecDeque<usize>,
+    prod: &mut ProdLedger,
     out: &mut Vec<XGate>,
     rng: &mut impl Rng,
 ) {
     let n = state.n;
     let total = 2 * n;
     let mut buf: Vec<[u16; 3]> = Vec::new();
+    // Every RG network overwrites the carriers it touches (RG1 and RG2 target
+    // all four wires of the two pairs, RG3 both carriers of one value), so
+    // under distributed sourcing each of those wires is released first: any
+    // mask naming one is re-sourced while its bit still means what the ledger
+    // says. RG1/RG2 additionally re-pair, and releasing all four wires is what
+    // keeps invariant S true across the re-pairing.
     match rng.random_range(0..3u32) {
         0 => {
             let (i, j) = next_pair(pair_queue, n, rng);
+            prod.release(&rg_pair_wires(state, i, j), state, rng, out);
             emit_rg1(state, i, j, &mut buf);
         }
         1 => {
             let (i, j) = next_pair(pair_queue, n, rng);
+            prod.release(&rg_pair_wires(state, i, j), state, rng, out);
             emit_rg2(state, i, j, &mut buf);
         }
         _ => {
             let i = next_single(single_queue, n, rng);
+            let (s, p) = state.pairs[i];
+            prod.release(&[s, p], state, rng, out);
             let (s, p) = state.pairs[i];
             let r1 = random_wire_except(total, &[s, p], rng);
             let r2 = random_wire_except(total, &[s, p, r1], rng);
@@ -3834,6 +4557,13 @@ fn emit_nonlinear_rg(
         }
     }
     out.extend(buf.into_iter().map(XGate::from_g57));
+}
+
+/// The four carriers an RG1/RG2 network rewrites.
+fn rg_pair_wires(state: &GadgetState, i: usize, j: usize) -> [usize; 4] {
+    let (a, b) = state.pairs[i];
+    let (c, d) = state.pairs[j];
+    [a, b, c, d]
 }
 
 /// One randomized-insertion pass over `order`. Each gate, taken in the
@@ -3903,6 +4633,168 @@ pub fn commuting_shuffle(gates: &mut Vec<XGate>, rng: &mut impl Rng) {
 /// (RG4, per `masks`; [`MaskConfig::off`] reproduces the unmasked gadget).
 /// The whole output is finished with a [`commuting_shuffle`] so W_i,
 /// bookend, and body gates interleave wherever wire dependencies allow.
+/// Gadgetize with a SINGLE-CARRIER decode: `v = c_v ^ (mask terms) ^ κ`.
+///
+/// The two-carrier build spends a wire per value on a linear share that an
+/// affine adversary gets for free — it simply XORs both carriers in, so the
+/// second one contributes nothing to the piling-up product, which runs over
+/// the nonlinear terms alone. One linear term is all the balance obstruction
+/// requires: flipping `c_v` flips the decode, so the representation classes
+/// are equal for any masks.
+///
+/// Dropping it makes the construction strictly smaller in three ways: `n`
+/// carriers instead of `2n`, `(1 + k)^arity` fold fragments instead of
+/// `(2 + k)^arity`, and no `W_i` sharing ramp at all — a value simply sits on
+/// its wire and is masked in place. Spending the saved atom on a degree-2 mask
+/// (`[1,2,3,3]`) is cost-neutral against the shipped `[1,1,3,3]` and hides
+/// strictly better (0.641 vs 0.781 best-predictor agreement).
+///
+/// What changes elsewhere, and is NOT free:
+/// * one probe now reads `v ^ masks ^ κ`, correlated with the value at the
+///   piling-up rate, where a two-carrier share is uniform AND independent;
+/// * RG2 (re-pair) and RG3 (refresh both carriers) have no analogue here —
+///   there is no pair to re-pair, and XORing into a lone carrier changes the
+///   value. Only RG1's relocation survives, so churn is relocation plus mask
+///   re-sourcing.
+pub fn gadgetize_cnot_single(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "gadgetize_cnot_single requires n >= 3");
+    assert!(
+        prod.single_carrier(),
+        "gadgetize_cnot_single needs --prod-single with a nonempty mask plan"
+    );
+    assert!(
+        !prod.dist(),
+        "distributed sourcing and single-carrier are not combined yet"
+    );
+
+    let mut main = main.clone();
+    let rounds = main.gates.len();
+    shoot_random_gate(&mut main, rounds);
+
+    let carrier_total = n;
+    let band_len = prod.band_size(n);
+    let total = carrier_total + band_len;
+    assert!(total <= u16::MAX as usize, "too many wires");
+
+    // The band is filled from the data wires while they still hold x, and is
+    // never written again — the same frozen-source contract as the two-carrier
+    // build, and the reason the strip cancels exactly under arbitrary junk.
+    let mut out: Vec<XGate> = Vec::new();
+    let band_home: Vec<u16> = (carrier_total..total).map(|w| w as u16).collect();
+    if prod.fill_nl > 0 {
+        emit_band_fill_nl(n, &band_home, prod.fill_nl, rng, &mut out);
+    } else {
+        emit_band_fill(n, &band_home, rng, &mut out);
+    }
+
+    // Value v lives on wire v; `pairs` records only where, with both entries
+    // equal so every carrier lookup returns the one wire.
+    let mut state = GadgetState {
+        n,
+        pairs: (0..n).map(|w| (w, w)).collect(),
+    };
+    let mut prod_ledger = ProdLedger::new(n, prod, carrier_total, None);
+    prod_ledger.inject_all(&state, rng, &mut out);
+
+    for (index, &gate) in main.gates.iter().enumerate() {
+        prod_ledger.set_pos(index);
+        prod_ledger.fold_cg(&XGate::from_g57(gate), &state, rng, &mut out);
+        if index + 1 == main.gates.len() {
+            break;
+        }
+        // The only surviving RG: relocate a value to another wire. It is
+        // RG1's move without the pair — a content swap plus a re-point — and
+        // it keeps every decode invariant because the masks name band
+        // variables, not carriers.
+        for _ in 0..rg_freq {
+            emit_value_relocation(&mut state, carrier_total, &mut out, rng);
+        }
+        for _ in 0..prod.rsrc {
+            prod_ledger.resource(&state, rng, &mut out);
+        }
+        // Roll the band across the carrier/band boundary. This matters MORE
+        // here than in the paired build, not less: the band is a larger share
+        // of a narrower gadget, and with one carrier per value each carrier
+        // absorbs every fold write, so an unwritten band wire stands out
+        // against a sharper contrast.
+        for _ in 0..prod.roll {
+            prod_ledger.roll(&mut state, rng, &mut out);
+        }
+    }
+    prod_ledger.strip_all(&state, rng, &mut out);
+    prod_ledger.report();
+
+    // Relocations and rolls permuted the values across the WHOLE wire space —
+    // after a roll a value can sit on a former band wire. Route every value
+    // home by cycle resolution, so wires 0..n hold the values and n..total
+    // hold band junk, which is what makes the mirror fill below safe.
+    let mut owner: Vec<Option<usize>> = vec![None; total];
+    for value in 0..n {
+        owner[state.pairs[value].0] = Some(value);
+    }
+    for value in 0..n {
+        let cur = state.pairs[value].0;
+        if cur == value {
+            continue;
+        }
+        emit_wire_swap(cur, value, &mut out);
+        let displaced = owner[value];
+        owner[cur] = displaced;
+        if let Some(u) = displaced {
+            state.pairs[u] = (cur, cur);
+        }
+        owner[value] = Some(value);
+        state.pairs[value] = (value, value);
+    }
+
+    // Mirror fill so the band is junk at both ports, as in the paired build.
+    let band_final: Vec<u16> = (carrier_total..total).map(|w| w as u16).collect();
+    if prod.fill_nl > 0 {
+        emit_band_fill_nl(n, &band_final, prod.fill_nl, rng, &mut out);
+    } else {
+        emit_band_fill(n, &band_final, rng, &mut out);
+    }
+
+    commuting_shuffle(&mut out, rng);
+    CnotCircuit { gates: out, num_wires: total }
+}
+
+/// Swap the contents of two wires with the three-CNOT network.
+fn emit_wire_swap(a: usize, b: usize, out: &mut Vec<XGate>) {
+    for (t, c) in [(a, b), (b, a), (a, b)] {
+        out.push(XGate::cnot(t as u16, c as u16));
+    }
+}
+
+/// Relocate one value to a different carrier wire (the single-carrier RG).
+fn emit_value_relocation(
+    state: &mut GadgetState,
+    carrier_total: usize,
+    out: &mut Vec<XGate>,
+    rng: &mut impl Rng,
+) {
+    let i = rng.random_range(0..state.n);
+    let j = loop {
+        let j = rng.random_range(0..state.n);
+        if j != i {
+            break j;
+        }
+    };
+    // No carrier-space assumption: once the band rolls, a value can sit on a
+    // former band wire, and relocation has to move it from wherever it is.
+    let (wi, wj) = (state.pairs[i].0, state.pairs[j].0);
+    let _ = carrier_total;
+    emit_wire_swap(wi, wj, out);
+    state.pairs[i] = (wj, wj);
+    state.pairs[j] = (wi, wi);
+}
+
 pub fn gadgetize_cnot(
     main: &CircuitSeq,
     n: usize,
@@ -3984,8 +4876,11 @@ pub fn gadgetize_cnot(
     let mut pair_queue = VecDeque::new();
     let mut single_queue = VecDeque::new();
     let targets = target_schedule(main.gates.len(), n, |pos| main.gates[pos][0] as usize);
+    let prod_sched = prod
+        .dist()
+        .then(|| target_schedule(main.gates.len(), n, |pos| main.gates[pos][0] as usize));
     let mut ledger = MaskLedger::new(n, masks, targets, rng);
-    let mut prod_ledger = ProdLedger::new(n, prod, carrier_total);
+    let mut prod_ledger = ProdLedger::new(n, prod, carrier_total, prod_sched);
     prod_ledger.inject_all(&state, rng, &mut out);
     // RG policy: the legacy NONLINEAR g57 networks {RG1 value-swap (deg 3),
     // RG2 re-pair (deg 2), RG3 cross-value mask refresh (deg 2)}, `rg_freq`
@@ -4001,6 +4896,8 @@ pub fn gadgetize_cnot(
     // share-native fold (the menu's collapse variants reconstruct operands,
     // which is exactly the use-point exposure the encoding exists to remove).
     for (index, &gate) in main.gates.iter().enumerate() {
+        prod_ledger.set_pos(index);
+        prod_ledger.bare_census(&state, &out, rng);
         if prod_ledger.enabled() {
             prod_ledger.fold_cg(&XGate::from_g57(gate), &state, rng, &mut out);
         } else {
@@ -4017,6 +4914,7 @@ pub fn gadgetize_cnot(
                 &mut state,
                 &mut pair_queue,
                 &mut single_queue,
+                &mut prod_ledger,
                 &mut out,
                 rng,
             );
@@ -4340,10 +5238,24 @@ pub fn slice_zero_ccnot_preblock(
     gate_count: usize,
     rng: &mut impl Rng,
 ) -> CnotCircuit {
+    // Paired build: the slice is the aux half plus the band.
+    slice_zero_preblock_dims(n, n + band, gate_count, rng)
+}
+
+/// The preblock, parameterised by how wide the slice actually is. A
+/// single-carrier gadget has no aux half, so its slice is the band alone;
+/// everything below already works in terms of (data, slice, total) and only
+/// the dimensions differ.
+fn slice_zero_preblock_dims(
+    n: usize,
+    nondata: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
     assert!(n >= 3, "slice_zero_ccnot_preblock requires n >= 3");
-    let total = 2 * n + band;
+    let total = n + nondata;
     assert!(total <= u16::MAX as usize, "too many wires");
-    let nondata = n + band;
+    let band = nondata.saturating_sub(n);
     assert!(
         gate_count >= nondata,
         "every non-data wire must be read: needs at least {nondata} gates"
@@ -4588,8 +5500,11 @@ pub fn gadgetize_xgates(
     let mut pair_queue = VecDeque::new();
     let mut single_queue = VecDeque::new();
     let targets = target_schedule(source.len(), n, |pos| source[pos].target as usize);
+    let prod_sched = prod
+        .dist()
+        .then(|| target_schedule(source.len(), n, |pos| source[pos].target as usize));
     let mut ledger = MaskLedger::new(n, masks, targets, rng);
-    let mut prod_ledger = ProdLedger::new(n, prod, carrier_total);
+    let mut prod_ledger = ProdLedger::new(n, prod, carrier_total, prod_sched);
     prod_ledger.inject_all(&state, rng, &mut out);
     // Same nonlinear {RG1, RG2, RG3} policy, CG menu, and value-sourced
     // deferred-mask (RG4) handling as `gadgetize_cnot` (flush masks sourced
@@ -4597,6 +5512,8 @@ pub fn gadgetize_xgates(
     // not g57-shaped keep the general ANF sharing. With the product-share
     // encoding every source gate goes through the share-native fold instead.
     for (index, gate) in source.iter().enumerate() {
+        prod_ledger.set_pos(index);
+        prod_ledger.bare_census(&state, &out, rng);
         if prod_ledger.enabled() {
             prod_ledger.fold_cg(gate, &state, rng, &mut out);
         } else {
@@ -4617,6 +5534,7 @@ pub fn gadgetize_xgates(
                 &mut state,
                 &mut pair_queue,
                 &mut single_queue,
+                &mut prod_ledger,
                 &mut out,
                 rng,
             );
@@ -4696,6 +5614,129 @@ pub fn gadgetize_xgates(
 /// New-gadgetize an mpmct1 `source`: the slice-zero-ccnot preblock prepended
 /// to `gadgetize_xgates`. Used to gadgetize the sliced sandwich (a second,
 /// independent zero-slice on top of the sandwich's own).
+/// Single-carrier gadgetization of an XGate source (the sliced sandwich path).
+/// Same decode as [`gadgetize_cnot_single`] — `v = c_v ^ masks ^ κ` on `n`
+/// carriers rather than `2n` — for the production pipeline's input format.
+///
+/// Re-randomisation is R1 plus mask re-sourcing, which together cover what the
+/// paired build got from R1/R2/R3: relocation moves a value to another wire
+/// (position), and a re-source XORs a fresh product in and the old one out, so
+/// the carrier's BIT changes (representation). R2 and R3 have no analogue and
+/// are not needed.
+pub fn gadgetize_xgates_single(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "gadgetize_xgates_single requires n >= 3");
+    assert!(
+        prod.single_carrier(),
+        "gadgetize_xgates_single needs --prod-single with a nonempty mask plan"
+    );
+    assert!(
+        !prod.dist(),
+        "distributed sourcing and single-carrier are not combined yet"
+    );
+    assert!(
+        source.iter().all(|g| {
+            (g.target as usize) < n && g.ctrls.iter().all(|&(w, _)| (w as usize) < n)
+        }),
+        "source wire outside 0..n"
+    );
+
+    let carrier_total = n;
+    let band_len = prod.band_size(n);
+    let total = carrier_total + band_len;
+    assert!(total <= u16::MAX as usize, "too many wires");
+
+    let mut out: Vec<XGate> = Vec::new();
+    let band_home: Vec<u16> = (carrier_total..total).map(|w| w as u16).collect();
+    if prod.fill_nl > 0 {
+        emit_band_fill_nl(n, &band_home, prod.fill_nl, rng, &mut out);
+    } else {
+        emit_band_fill(n, &band_home, rng, &mut out);
+    }
+
+    let mut state = GadgetState {
+        n,
+        pairs: (0..n).map(|w| (w, w)).collect(),
+    };
+    let mut prod_ledger = ProdLedger::new(n, prod, carrier_total, None);
+    prod_ledger.inject_all(&state, rng, &mut out);
+
+    for (index, gate) in source.iter().enumerate() {
+        prod_ledger.set_pos(index);
+        prod_ledger.fold_cg(gate, &state, rng, &mut out);
+        if index + 1 == source.len() {
+            break;
+        }
+        for _ in 0..rg_freq {
+            emit_value_relocation(&mut state, carrier_total, &mut out, rng);
+        }
+        for _ in 0..prod.rsrc {
+            prod_ledger.resource(&state, rng, &mut out);
+        }
+        for _ in 0..prod.roll {
+            prod_ledger.roll(&mut state, rng, &mut out);
+        }
+    }
+    prod_ledger.strip_all(&state, rng, &mut out);
+    prod_ledger.report();
+
+    // Route every value home (rolls can leave one on a former band wire), so
+    // wires 0..n hold the values and n..total hold band junk.
+    let mut owner: Vec<Option<usize>> = vec![None; total];
+    for value in 0..n {
+        owner[state.pairs[value].0] = Some(value);
+    }
+    for value in 0..n {
+        let cur = state.pairs[value].0;
+        if cur == value {
+            continue;
+        }
+        emit_wire_swap(cur, value, &mut out);
+        let displaced = owner[value];
+        owner[cur] = displaced;
+        if let Some(u) = displaced {
+            state.pairs[u] = (cur, cur);
+        }
+        owner[value] = Some(value);
+        state.pairs[value] = (value, value);
+    }
+
+    let band_final: Vec<u16> = (carrier_total..total).map(|w| w as u16).collect();
+    if prod.fill_nl > 0 {
+        emit_band_fill_nl(n, &band_final, prod.fill_nl, rng, &mut out);
+    } else {
+        emit_band_fill(n, &band_final, rng, &mut out);
+    }
+
+    commuting_shuffle(&mut out, rng);
+    CnotCircuit { gates: out, num_wires: total }
+}
+
+/// Single-carrier gadget behind the zero-slice preblock. The slice is the band
+/// alone — there is no aux half to pin — so the preblock is built over
+/// `(data n, slice band)` instead of `(data n, slice n+band)`.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_single(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let band = prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, band, gate_count.max(band), rng);
+    let gadget = gadgetize_xgates_single(source, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
 pub fn gadgetize_xgates_with_slice_zero_ccnot(
     source: &[XGate],
     n: usize,
@@ -6153,6 +7194,30 @@ mod cnot_gadget_tests {
         CircuitSeq { gates }
     }
 
+    /// A random-ish g57 body on `n >= 4` wires, for tests that need a width
+    /// the 4-wire fixture cannot give (a wire census wants room for a band).
+    fn masked_test_main_wide(n: usize) -> CircuitSeq {
+        let mut rng = StdRng::seed_from_u64(0x9e37_9b91);
+        let mut gates = Vec::new();
+        for _ in 0..4 * n {
+            let a = rng.random_range(0..n) as u16;
+            let b = loop {
+                let w = rng.random_range(0..n) as u16;
+                if w != a {
+                    break w;
+                }
+            };
+            let c = loop {
+                let w = rng.random_range(0..n) as u16;
+                if w != a && w != b {
+                    break w;
+                }
+            };
+            gates.push([a, b, c]);
+        }
+        CircuitSeq { gates }
+    }
+
     fn masked_test_config() -> MaskConfig {
         // cov 0.75 keeps an unmasked source pool alive on this width.
         MaskConfig { cov: 0.75, k: 2, depth: 2, taper: Some(0) }
@@ -6413,7 +7478,7 @@ mod cnot_gadget_tests {
         for seed in 0..32u64 {
             let mut rng = StdRng::seed_from_u64(0x9d0d_0000 + seed);
             let state = GadgetState { n, pairs: pairs.clone() };
-            let mut ledger = ProdLedger::new(n, &cfg, carrier_total);
+            let mut ledger = ProdLedger::new(n, &cfg, carrier_total, None);
             let mut ramp = Vec::new();
             ledger.inject_all(&state, &mut rng, &mut ramp);
             for gate in &sources {
@@ -6563,6 +7628,11 @@ mod cnot_gadget_tests {
             max_width: 2,
             fill_nl: 0,
             roll: 0,
+            src_dist: 0,
+            src_horizon: 0,
+            src_lo: 0,
+            src_hi: 0,
+            single: 0,
         };
         let live = carrier_total + band; // the whole wire space: no pinned wires
         let sources: Vec<XGate> = vec![
@@ -6574,7 +7644,7 @@ mod cnot_gadget_tests {
         for seed in 0..16u64 {
             let mut rng = StdRng::seed_from_u64(0x9d0e_0000 + seed);
             let state = GadgetState { n, pairs: pairs.clone() };
-            let mut ledger = ProdLedger::new(n, &cfg, carrier_total);
+            let mut ledger = ProdLedger::new(n, &cfg, carrier_total, None);
             let mut ramp = Vec::new();
             ledger.inject_all(&state, &mut rng, &mut ramp);
             for gate in &sources {
@@ -6643,7 +7713,7 @@ mod cnot_gadget_tests {
             let mut shuffled = 0usize;
             for seed in 0..8u64 {
                 let mut rng = StdRng::seed_from_u64(0x5017_0000 + seed);
-                let mut ledger = ProdLedger::new(n, &cfg, carrier_total);
+                let mut ledger = ProdLedger::new(n, &cfg, carrier_total, None);
                 let mut ramp = Vec::new();
                 ledger.inject_all(&state, &mut rng, &mut ramp);
                 let mut fold = Vec::new();
@@ -6693,7 +7763,7 @@ mod cnot_gadget_tests {
                 n,
                 pairs: vec![(0usize, 1usize), (2, 3), (4, 5)],
             };
-            let mut ledger = ProdLedger::new(n, &cfg, carrier_total);
+            let mut ledger = ProdLedger::new(n, &cfg, carrier_total, None);
             let mut ramp = Vec::new();
             ledger.inject_all(&state, &mut rng, &mut ramp);
             for _ in 0..6 {
@@ -6777,6 +7847,11 @@ mod cnot_gadget_tests {
                 max_width,
                 fill_nl,
                 roll,
+                src_dist: 0,
+                src_horizon: 0,
+                src_lo: 0,
+                src_hi: 0,
+                single: 0,
             };
             let band_writes = |g: &CnotCircuit| -> usize {
                 g.gates
@@ -6829,6 +7904,11 @@ mod cnot_gadget_tests {
             max_width: 2,
             fill_nl: 2,
             roll: 0,
+            src_dist: 0,
+            src_horizon: 0,
+            src_lo: 0,
+            src_hi: 0,
+            single: 0,
         };
         for seed in 0..3u64 {
             let mut rng = StdRng::seed_from_u64(0xa550_0000 + seed);
@@ -6857,6 +7937,176 @@ mod cnot_gadget_tests {
                 assert_eq!(eval_u64(&g.gates, input) & mask, expected, "seed={seed}");
             }
         }
+    }
+
+    /// Distributed sourcing: the encoding with NO band at all.
+    ///
+    /// Exactness is the barrier's own test. A mask whose source wire is
+    /// written between injection and strip fails to cancel — the strip emits
+    /// the same conjunction over a bit that has since changed — so the value
+    /// decodes wrong and the endpoint moves. Running the full input domain
+    /// with RG traffic (rg_freq 2, so RG1/RG2 re-pair and RG3 refreshes fire
+    /// throughout) and re-source churn on top exercises every release path.
+    /// The gate-local non-completeness that no endpoint test can see is
+    /// asserted at emission time inside `debug_check_fragment`.
+    #[test]
+    fn prod_distributed_sourcing_is_exact_and_costs_no_wires() {
+        // Width 6, not the 4-wire fixture: with one factor per owning value,
+        // a degree-3 slot needs three values besides its own, so n = 4 leaves
+        // the draw no freedom at all (and the dedup set nothing to draw from).
+        let n = 6usize;
+        let main = masked_test_main_wide(n);
+        let mask = (1u64 << n) - 1;
+        for max_width in [0usize, 2] {
+            let cfg = ProdConfig {
+                k: 1,
+                deg: 2,
+                k_hi: 1,
+                deg_hi: 3,
+                band: 0,
+                rsrc: 1,
+                max_width,
+                fill_nl: 0,
+                roll: 0,
+                src_dist: 1,
+                src_horizon: 0,
+                src_lo: 0,
+                src_hi: 0,
+                single: 0,
+            };
+            for seed in 0..2u64 {
+                let mut rng = StdRng::seed_from_u64(0x0d15_0000 + seed);
+                let g = gadgetize_cnot(&main, n, 2, &MaskConfig::off(), &cfg, &mut rng);
+                assert_eq!(
+                    g.num_wires,
+                    2 * n,
+                    "distributed sourcing must not widen the gadget"
+                );
+                assert!(
+                    g.gates.iter().all(|gate| !gate.ctrls.is_empty()),
+                    "distributed build must not contain a bare X"
+                );
+                // Arbitrary junk on every non-data wire, exhaustively.
+                for input in 0..(1u64 << g.num_wires) {
+                    let expected = main.evaluate((input & mask) as usize) as u64 & mask;
+                    assert_eq!(
+                        eval_u64(&g.gates, input) & mask,
+                        expected,
+                        "max_width={max_width} seed={seed} input={input:#x}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Single-carrier decode `v = c_v ^ masks ^ κ`: exact under arbitrary band
+    /// junk, on n carriers instead of 2n. Exactness is the real test here —
+    /// the strip only cancels if every mask term still denotes the bit it did
+    /// at injection, which is what makes the frozen band load-bearing, and the
+    /// relocations must leave value v back on wire v at the end.
+    #[test]
+    fn prod_single_carrier_is_exact_on_half_the_wires() {
+        let n = 6usize;
+        let main = masked_test_main_wide(n);
+        let mask = (1u64 << n) - 1;
+        // [1,2,3,3] and [1,2,2,3]: one linear term, the rest nonlinear.
+        // Rolls on: a roll can leave a value sitting on a former band wire, so
+        // the final routing has to be a full permutation, not a carrier-space
+        // one. That is exactly what this exercises.
+        for (k, deg, k_hi, deg_hi, roll) in
+            [(1usize, 2usize, 2usize, 3usize, 0usize), (2, 2, 1, 3, 0), (1, 2, 2, 3, 1)]
+        {
+            let cfg = ProdConfig {
+                k,
+                deg,
+                k_hi,
+                deg_hi,
+                band: 8,
+                rsrc: 1,
+                max_width: 0,
+                fill_nl: 2,
+                roll,
+                src_dist: 0,
+                src_horizon: 0,
+                src_lo: 0,
+                src_hi: 0,
+                single: 1,
+            };
+            for seed in 0..3u64 {
+                let mut rng = StdRng::seed_from_u64(0x51_0000 + seed);
+                let g = gadgetize_cnot_single(&main, n, 2, &cfg, &mut rng);
+                assert_eq!(g.num_wires, n + 8, "single carrier: n carriers, not 2n");
+                assert!(
+                    g.gates.iter().all(|gate| !gate.ctrls.is_empty()),
+                    "single-carrier build must not contain a bare X"
+                );
+                for input in 0..(1u64 << g.num_wires) {
+                    let expected = main.evaluate((input & mask) as usize) as u64 & mask;
+                    assert_eq!(
+                        eval_u64(&g.gates, input) & mask,
+                        expected,
+                        "plan [{deg}x{k},{deg_hi}x{k_hi}] seed={seed} input={input:#x}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The point of the design: no wire is quiet, because no wire has the
+    /// dedicated source role. In the band build the band wires are written
+    /// only by the two fills — a census separates them from the carriers by a
+    /// single threshold. Here every wire must be written by BODY traffic.
+    #[test]
+    fn prod_distributed_sourcing_leaves_no_quiet_wire() {
+        let n = 6usize;
+        let main = masked_test_main_wide(n);
+        let cfg = |src_dist| ProdConfig {
+            k: 1,
+            deg: 2,
+            k_hi: 1,
+            deg_hi: 3,
+            band: 8,
+            rsrc: 1,
+            max_width: 0,
+            fill_nl: 2,
+            roll: 0,
+            src_dist,
+            src_horizon: 0,
+            src_lo: 0,
+            src_hi: 0,
+            single: 0,
+        };
+        let mut rng = StdRng::seed_from_u64(0x0d16_0001);
+        let dist = gadgetize_cnot(&main, n, 2, &MaskConfig::off(), &cfg(1), &mut rng);
+        let mut rng = StdRng::seed_from_u64(0x0d16_0001);
+        let band = gadgetize_cnot(&main, n, 2, &MaskConfig::off(), &cfg(0), &mut rng);
+        assert_eq!(dist.num_wires, 2 * n, "no band wires");
+        assert_eq!(band.num_wires, 2 * n + 8, "band build keeps its band");
+
+        // Body = everything strictly between the ports, so the input/output
+        // fills (which write every band wire in the band build) do not mask
+        // the distinction being measured.
+        let writes = |g: &CnotCircuit, wires: usize| -> Vec<usize> {
+            let lo = g.gates.len() / 4;
+            let hi = g.gates.len() - g.gates.len() / 4;
+            let mut w = vec![0usize; wires];
+            for gate in &g.gates[lo..hi] {
+                w[gate.target as usize] += 1;
+            }
+            w
+        };
+        let dist_w = writes(&dist, dist.num_wires);
+        assert!(
+            dist_w.iter().all(|&c| c > 0),
+            "distributed build left an unwritten wire in the body: {dist_w:?}"
+        );
+        let band_w = writes(&band, band.num_wires);
+        assert!(
+            band_w[2 * n..].iter().all(|&c| c == 0),
+            "band wires should be body-static in the band build (the weakness \
+             distributed sourcing removes): {:?}",
+            &band_w[2 * n..]
+        );
     }
 
     #[test]

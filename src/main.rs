@@ -325,6 +325,33 @@ fn add_shoot_args(c: Command) -> Command {
                         .help("(--cnot gadgetize) Rolling band: band-variable relocations per inter-SG gap (0 = band stays on its home wires). One roll is RG2's 3-CNOT swap applied across the carrier/band boundary, so the band is not a body-static, statically identifiable wire set. Costs 3 CNOTs per roll"),
                 )
                 .arg(
+                    Arg::new("prod_single")
+                        .long("prod-single")
+                        .alias("prod_single")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Single-carrier decode: ONE degree-1 term per value instead of two (0 = the legacy carrier pair). The second carrier is free to an affine adversary, so it adds nothing to the piling-up product; dropping it halves the carriers and cuts the fold to (1+k)^arity. Spend the freed atom on a mask: --prod-k 1 --prod-deg 2 --prod-k-hi 2 --prod-deg-hi 3 is [1,2,3,3] (recommended), --prod-k 2 --prod-k-hi 1 is [1,2,2,3] (better degree-1 statistics, half the degree-2 margin). Requires --prod-rsrc >= 1: with one carrier, re-sourcing is what refreshes the representation"),
+                )
+                .arg(
+                    Arg::new("prod_src_dist")
+                        .long("prod-src-dist")
+                        .alias("prod_src_dist")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Distributed sourcing: drop the dedicated band and source mask literals on ordinary carriers of other values, migrating a mask before anything writes its source (0 = band, 1 = no band). Costs no extra wires and leaves no globally quiet wire"),
+                )
+                .arg(
+                    Arg::new("prod_src_horizon")
+                        .long("prod-src-horizon")
+                        .alias("prod_src_horizon")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Lookahead horizon for --prod-src-dist, in source-gate positions (0 = auto n/2): prefer sources whose owning value is not targeted within this many gates, so masks usually die of ordinary churn rather than a forced migration"),
+                )
+                .arg(
                     Arg::new("egg")
                         .long("egg")
                         .help("Use expansion game (expand_loop 2x) instead of the shuffled shooting game")

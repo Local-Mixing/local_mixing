@@ -24,7 +24,8 @@ use local_mixing::postmix::xgate::eval_u1024;
 use local_mixing::circuit::circuit::U1024;
 use local_mixing::random::random_data::random_circuit;
 use local_mixing::replace::gadgets::{
-    MaskConfig, ProdConfig, gadgetize_xgates_with_slice_zero_ccnot, sandwich_default_s,
+    MaskConfig, ProdConfig, gadgetize_xgates_with_slice_zero_ccnot,
+    gadgetize_xgates_with_slice_zero_ccnot_single, sandwich_default_s,
     sliced_sandwich_cnot,
 };
 use rand::SeedableRng;
@@ -94,6 +95,11 @@ fn main() {
         max_width: env("PROD_MAX_WIDTH", 0),
         fill_nl: env("PROD_FILL_NL", 0),
         roll: env("PROD_ROLL", 0),
+        src_dist: env("PROD_SRC_DIST", 0),
+        src_horizon: env("PROD_SRC_HORIZON", 0),
+        src_lo: env("PROD_SRC_LO", 0),
+        src_hi: env("PROD_SRC_HI", 0),
+        single: env("PROD_SINGLE", 0),
     };
     if prod.enabled() {
         println!(
@@ -108,15 +114,26 @@ fn main() {
             prod.roll
         );
     }
-    let gadget = gadgetize_xgates_with_slice_zero_ccnot(
-        &sandwich.gates,
-        sandwich_n,
-        rg_freq,
-        slice_gates,
-        &MaskConfig::off(),
-        &prod,
-        &mut rng,
-    );
+    let gadget = if prod.single_carrier() {
+        gadgetize_xgates_with_slice_zero_ccnot_single(
+            &sandwich.gates,
+            sandwich_n,
+            rg_freq,
+            slice_gates,
+            &prod,
+            &mut rng,
+        )
+    } else {
+        gadgetize_xgates_with_slice_zero_ccnot(
+            &sandwich.gates,
+            sandwich_n,
+            rg_freq,
+            slice_gates,
+            &MaskConfig::off(),
+            &prod,
+            &mut rng,
+        )
+    };
     println!(
         "[gen] diversified gadget: {} gates, {} wires",
         gadget.gates.len(),

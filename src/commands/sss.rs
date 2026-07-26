@@ -103,6 +103,11 @@ pub fn run(sub: &clap::ArgMatches) {
             max_width: *sub.get_one("prod_max_width").unwrap(),
             fill_nl: *sub.get_one("prod_fill_nl").unwrap(),
             roll: *sub.get_one("prod_roll").unwrap(),
+            src_dist: *sub.get_one("prod_src_dist").unwrap(),
+            src_horizon: *sub.get_one("prod_src_horizon").unwrap(),
+            src_lo: 0,
+            src_hi: 0,
+            single: *sub.get_one("prod_single").unwrap(),
         };
         let c = CircuitSeq::from_string(&data);
         let collision_rounds: usize = *sub.get_one("collision_rounds").unwrap();

@@ -15,7 +15,7 @@ use local_mixing::circuit::circuit::CircuitSeq;
 use local_mixing::postmix::format::{read_g57_file, write_mpmct};
 use local_mixing::postmix::xgate::eval_u1024;
 use local_mixing::circuit::circuit::U1024;
-use local_mixing::replace::gadgets::{gadgetize_cnot, MaskConfig, ProdConfig};
+use local_mixing::replace::gadgets::{gadgetize_cnot, gadgetize_cnot_single, MaskConfig, ProdConfig};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
@@ -55,9 +55,14 @@ fn main() {
     let max_width: usize = a.get(9).and_then(|s| s.parse().ok()).unwrap_or(0);
     let fill_nl: usize = a.get(10).and_then(|s| s.parse().ok()).unwrap_or(0);
     let roll: usize = a.get(11).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let prod = ProdConfig { k, deg, k_hi, deg_hi, band, rsrc: 1, max_width, fill_nl, roll };
+    let src_dist: usize = a.get(12).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let prod = ProdConfig { k, deg, k_hi, deg_hi, band, rsrc: 1, max_width, fill_nl, roll, src_dist, src_horizon: 0, src_lo: a.get(13).and_then(|s| s.parse().ok()).unwrap_or(0), src_hi: a.get(14).and_then(|s| s.parse().ok()).unwrap_or(0), single: a.get(15).and_then(|s| s.parse().ok()).unwrap_or(0) };
     let mut rng = StdRng::seed_from_u64(seed);
-    let g = gadgetize_cnot(&main, n, 1, &MaskConfig::off(), &prod, &mut rng);
+    let g = if prod.single_carrier() {
+        gadgetize_cnot_single(&main, n, 1, &prod, &mut rng)
+    } else {
+        gadgetize_cnot(&main, n, 1, &MaskConfig::off(), &prod, &mut rng)
+    };
 
     // Endpoint self-check: G(x,0..) low n wires == C(x) for random x.
     let mut chk = StdRng::seed_from_u64(0xa11ce);

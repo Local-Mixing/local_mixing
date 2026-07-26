@@ -95,6 +95,12 @@ struct Args {
     train_batches: usize,
     #[arg(long, default_value_t = 12345)]
     seed: u64,
+    /// Dump the SUPPORT of the fitted relation for the N leakiest interior
+    /// cells: how many wires the reconstruction actually uses, and which. A
+    /// leak is only interpretable once you know what it reads — e.g. whether
+    /// it runs through the wires that carry mask sources.
+    #[arg(long, default_value_t = 0)]
+    dump_best: usize,
     #[arg(long)]
     out: String,
 }
@@ -285,6 +291,8 @@ fn main() {
 
     let ho = b - tb; // holdout batches
     let mut mat = vec![0f32; rows * cols];
+    // (holdout error, row, col, target bit, linear support) for --dump-best.
+    let mut fits: Vec<(f64, usize, usize, usize, Vec<usize>)> = Vec::new();
 
     // Scratch reused per cell.
     for (ri, &_i) in i_idx.iter().enumerate() {
@@ -335,9 +343,52 @@ fn main() {
                     }
                     errbits += (acc ^ cs[batch][ri][t]).count_ones() as u64;
                 }
-                err_sum += errbits as f64 / (ho as f64 * 64.0);
+                let ho_err = errbits as f64 / (ho as f64 * 64.0);
+                err_sum += ho_err;
+                // Interior only: both axes have unencoded ends (cell (0,0) is
+                // C's input against G's input wires and reads perfectly in
+                // EVERY build, encoded or not), so port cells say nothing.
+                let interior = ri >= rows / 10
+                    && ri < rows - rows / 10
+                    && cj >= cols / 10
+                    && cj < cols - cols / 10;
+                if args.dump_best > 0 && interior && ho_err < 0.10 {
+                    // A relation that actually predicts. Record its support so
+                    // the leak can be attributed to specific wires.
+                    let used: Vec<usize> = regs
+                        .iter()
+                        .enumerate()
+                        .filter(|(ridx, _)| (coef[ridx / 64] >> (ridx % 64)) & 1 == 1)
+                        .filter_map(|(_, &r)| match r {
+                            Reg::Lin(k) => Some(k),
+                            _ => None,
+                        })
+                        .collect();
+                    fits.push((ho_err, ri, cj, t, used));
+                }
             }
             mat[ri * cols + cj] = (err_sum / n as f64) as f32;
+        }
+    }
+    if args.dump_best > 0 {
+        fits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        println!(
+            "[hmap_affine] {} predictive relations (holdout err < 0.10); {} leakiest:",
+            fits.len(),
+            args.dump_best.min(fits.len())
+        );
+        for (err, ri, cj, t, used) in fits.iter().take(args.dump_best) {
+            let mut w = used.clone();
+            w.sort_unstable();
+            println!(
+                "  row {ri} (C prefix {}) col {cj} (G prefix {}) target bit {t}: err {err:.4}, \
+                 {} wires: {:?}{}",
+                i_idx[*ri],
+                j_idx[*cj],
+                w.len(),
+                &w[..w.len().min(24)],
+                if w.len() > 24 { " ..." } else { "" }
+            );
         }
     }
 
