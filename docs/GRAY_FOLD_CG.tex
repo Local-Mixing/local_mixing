@@ -114,6 +114,13 @@ The instrument is sensitive to the failure it guards. Run against a
 CLEAN-accumulator variant of the same schedule, it recovers $b$ at correlation
 $1.0$ and flags 35 prefixes on the span test.
 
+The audit covers the emitted \emph{family}, not one schedule. The
+implementation spreads each free product fragment over a random allowed phase
+and draws a pivot per atom, so the block is one member of a
+$64 \times 81$ space. Re-running the exact deg-1 audit over 64 sampled members
+gives $64/64$ functionally exact, all 45 gates, and worst-case correlation
+$0.28125$ --- the bound, for every secret, in every member.
+
 \paragraph{Admissibility, in the spirit.} \code{u += x1*x2} does park a whole
 degree-2 atom's literal pair in one gate's support --- as the shipped fold's
 carrier${\times}$mask2 fragments already do. It sits on top of $u_0$, which is
@@ -247,6 +254,48 @@ the wide fold left $55\%$ of it permanently out of reach. The duplicate
 structure is a property of the \emph{raw} gadget, and fmix is now in a position
 to churn it. The honest place to check that is a post-fmix census; it is an
 open measurement, not a claim made here.
+
+\section{What the stress battery says: digestibility, not hiding}
+
+The fold changes how the CG is \emph{spelled}, not what the encoding hides, so
+the honest expectation is that the statistical leak axes do not move. They do
+not. Both builds, same $C$, same probe budget (\code{--n 128 --band 256-511
+--and-wires 256-511}, overfit floor $0.024$):
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+ & \multicolumn{2}{c}{wide fold} & \multicolumn{2}{c}{gray fold} \\
+ & promin & rho & promin & rho \\
+\midrule
+\code{bit} F1 (xor-pair)      & 0.0516 & 0.993 & 0.0575 & 0.996 \\
+\code{bit} F2 (xor $+$ 1 AND) & 0.0820 & 0.993 & 0.0869 & 0.996 \\
+\code{par2} F1                & $-$0.0017 & 0.644 & $-$0.0018 & 0.241 \\
+\code{par2} F2                & 0.0078 & 0.759 & 0.0068 & 0.786 \\
+\code{traj} F1/F2             & \multicolumn{2}{c}{flat} & \multicolumn{2}{c}{flat} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both builds are \textbf{ALIGNED-LEAK} on the single-bit target and flat
+everywhere else. The progress-aligned bias diagonal is untouched --- marginally
+stronger in prominence ($+0.006$ on both rows) while the peak is unchanged
+($0.0734 \to 0.0731$, $0.1178 \to 0.1213$). \textbf{The Gray fold is not a fix
+for the diagonal and should not be sold as one.} It buys reachability; the
+diagonal is the encoding's problem and remains open.
+
+Two syntactic probes did move, in opposite directions. Band localization by
+write count improved to chance, $\mathrm{AUC}\;0.587 \to 0.502$ --- the
+accumulators are borrowed carrier roles and the extra write traffic lands
+across the whole pool, which is exactly what the role-resolved borrow was for.
+Against that, the width-1 share AUC drifts $0.657 \to 0.674$ and the write
+bimodality gap $0.102 \to 0.127$. Hidden affine relations fell (max $2 \to 1$).
+
+One census row must not be read as a regression: \emph{unwritten in a
+50\,000-gate window} goes $3 \to 309$ wires. The window is a FIXED gate count
+against a circuit $2.38\times$ longer, so it spans $6.2\%$ of the gray build
+against $14.7\%$ of the wide one. The comparison needs a window scaled to
+circuit length, which this run did not do.
 
 \section{Scope and fallbacks}
 
