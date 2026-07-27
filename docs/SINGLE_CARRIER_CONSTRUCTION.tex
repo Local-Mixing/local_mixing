@@ -797,6 +797,23 @@ The $853$ width-3 gates that survive every ceiling are the
 makes the off-slice disturbance quadratic in $x$ rather than affine. They are
 not fold material.
 
+\paragraph{Superseded as the way to remove wide gates; intact as a statement
+about laddering.} The sweep above says that \emph{spelling out} the fold's wide
+fragments is a bad trade, and that remains true --- deep multi-rung ladders
+manufacture material the store cannot reach, which is why reach peaks at
+$U{=}4$ and declines. But the conclusion ``eliminating the wide gates is not
+worth buying'' no longer follows, because laddering is no longer the only way
+to eliminate them. The \textbf{Gray-code fold} (\code{--prod-gray-fold},
+\code{docs/GRAY\_FOLD\_CG}) gathers each operand's mask sum once onto a dirty
+borrowed accumulator and reads it back four times, so the fold never
+\emph{constructs} a wide fragment and there is nothing to ladder: at $n{=}128$
+it takes fold fossils to zero and store-reachable gates from $31.6\%$ to
+$95.5\%$ for $2.38\times$ the gates, against this table's $6.20\times$ for a
+reach that \emph{fell}. The residue it leaves is exactly the slot emissions
+this subsection identifies as attributable, and \code{--prod-ladder-cap 3}
+clears those --- single-rung, which is the one regime the sweep endorses ---
+reaching $99.87\%$ at $3.01\times$.
+
 \subsection{Diversifying CG}
 
 A fold block emits exactly $(1 + k_{\text{total}})^{\text{arity}}$ fragments,

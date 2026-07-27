@@ -429,6 +429,29 @@ gen_sandwich_gadget gadget.mpmct1 128 3000 3000
 #   sss --cnot --gadgetize --slice-zero-ccnot \
 #       --prod-k 0 --prod-k-hi 2 --prod-deg-hi 3 --prod-fill-nl 2 --prod-roll 1
 
+# STRONGLY RECOMMENDED: add the Gray-code fold. Without it the fold emits its
+# cartesian product as gates of width up to arity*max_deg, and everything above
+# 2 controls is material fmix can NEVER re-encode -- 56% of the gadget, and the
+# reason a mixing run's reach is capped before it starts. See docs/GRAY_FOLD_CG.
+PROD_GRAY_FOLD=1 PROD_LADDER_CAP=3 \
+gen_sandwich_gadget gadget.mpmct1 128 3000 3000
+#   ... or --prod-gray-fold 1 --prod-ladder-cap 3 on the sss path.
+#
+# What it costs and buys at n=128 (same sandwich, same C, all verify PASSED):
+#                        gates    fold fossils   store-reachable
+#   wide fold (today)    340k     153,421         31.6%
+#   + gray fold          809k     0               95.5%
+#   + gray + ladder 3   1021k     0               99.9%
+# Gray fold alone leaves 4.3% wide gates -- NOT from the fold (fossils=0) but
+# from emit_slot, where a degree-3 mask is a 3-control gate every time it is
+# injected/re-sourced/stripped. --prod-ladder-cap 3 clears those. This does not
+# contradict "laddering peaks at cap 4 and declines after": the gray fold
+# REMOVES the wide fold fragments rather than spelling them out, so cap 3 is
+# left doing only single-rung width-3 slot emissions, which is what it is good
+# at. Check reachability, never match rate -- they move in opposite directions:
+#   blocker_census --g gadget.mpmct1 --min-window 2 --max-window 5 \
+#                  --ctrl-cap 2 --db-max-degree 9   # needs FROZEN_DB_DIR
+
 # Check it before spending mixing time on it (both should be run):
 hmap_affine --c gadget.mpmct1.source_c.g57 --g gadget.mpmct1 --n 128 \
             --degree 1 --c-step 30 --g-step 1600 --out ridge
@@ -440,6 +463,9 @@ hmap_stat  --c gadget.mpmct1.source_c.g57 --g gadget.mpmct1 --n 128 \
 # Mixing a product-share gadget needs --no-local-verify: the per-rewrite check
 # caps support at 24 wires and panics on two wide gates. Read G=/lag=/tgtbl=,
 # not Gall=, which is structurally pinned at 0 on this material.
+# (With --prod-gray-fold the fold emits no wide gates at all, and adding
+# --prod-ladder-cap 3 leaves only ~0.08% of the circuit above 2 controls, so
+# this flag may no longer be needed -- UNTESTED, try without it first.)
 
 # Production mixing run, direct on a gadgetized g57 circuit, twists ON.
 # Twists collapse the prefix-progress diagonal (the state axis); the growth
