@@ -3457,7 +3457,7 @@ fn emit_narrow_fragment(
     borrow_total: usize,
     forbidden: &[u16],
     atoms: &[Vec<(u16, bool)>],
-    menu: bool,
+    menu: usize,
     rng: &mut impl Rng,
     out: &mut Vec<XGate>,
 ) -> bool {
@@ -3643,8 +3643,8 @@ fn emit_narrow_fragment(
         // block, the rest twice), so every borrow is visited an even number of
         // times and its dirty value cancels.
         if t_lits.len() <= 2 {
-            let (spellings, _) = free_spellings(target, &t_lits);
-            let prev = if menu { last_target } else { None };
+            let (spellings, _) = spellings_at(target, &t_lits, menu);
+            let prev = if menu > 0 { last_target } else { None };
             let pick = if spellings.len() < 2 {
                 0
             } else {
@@ -3653,20 +3653,22 @@ fn emit_narrow_fragment(
                 choices[rng.random_range(0..choices.len())]
             };
             out.extend(spellings[pick].iter().cloned());
-            last_target = if menu { Some(pick) } else { None };
+            last_target = if menu > 0 { Some(pick) } else { None };
         } else {
             out.push(XGate::conj(target, t_lits.iter().copied()).expect("distinct wires"));
         }
         for i in (0..rung_lits_all.len()).rev() {
-            let prev = if menu { last_spelling[i] } else { None };
-            let (pick, k) = emit_rung(borrowed[i], &rung_lits_all[i], g57_rungs, prev, rng, out);
-            last_spelling[i] = if menu { pick } else { None };
+            let prev = if menu > 0 { last_spelling[i] } else { None };
+            let (pick, k) =
+                emit_rung(borrowed[i], &rung_lits_all[i], g57_rungs, menu, prev, rng, out);
+            last_spelling[i] = if menu > 0 { pick } else { None };
             rung_konst = k;
         }
         for i in 1..rung_lits_all.len() {
-            let prev = if menu { last_spelling[i] } else { None };
-            let (pick, k) = emit_rung(borrowed[i], &rung_lits_all[i], g57_rungs, prev, rng, out);
-            last_spelling[i] = if menu { pick } else { None };
+            let prev = if menu > 0 { last_spelling[i] } else { None };
+            let (pick, k) =
+                emit_rung(borrowed[i], &rung_lits_all[i], g57_rungs, menu, prev, rng, out);
+            last_spelling[i] = if menu > 0 { pick } else { None };
             rung_konst = k;
         }
     }
@@ -3756,7 +3758,7 @@ fn rung_spellings(h: u16, lits: &[(u16, bool)]) -> (Vec<Vec<XGate>>, bool) {
 }
 
 
-/// The COST-FREE part of a spelling menu: only the shortest realizations.
+/// The spelling menu at a given variability LEVEL.
 ///
 /// Over the generators {cnot(h,x), cnot(h,y), g57(h;x,y), g57(h;y,x)} there is
 /// exactly one relation, g1^g2^g3^g4 = 0, so every reachable function has
@@ -3764,18 +3766,30 @@ fn rung_spellings(h: u16, lits: &[(u16, bool)]) -> (Vec<Vec<XGate>>, bool) {
 /// sizes 2 and 2 for a SAME-polarity conjunction (the function is a 2-subset)
 /// but 1 and 3 for a MIXED-polarity one (the function IS a generator). So
 /// varying the spelling is free on same-polarity emissions and costs +2 gates
-/// on mixed ones.
+/// on mixed ones, and the level chooses which of those to buy:
 ///
-/// Filtering to minimal length therefore yields a menu of 4 equal-size
-/// spellings for same polarity and a single spelling for mixed -- diversity
-/// exactly where it is free, and no diversity where it would be paid for.
-/// Applying the FULL menu uniformly instead cost +54% gates at n=16 for a
-/// 71.2% -> 41.0% cut in the duplicate-pair signature; this gets the same kind
-/// of cut on the free half at no cost at all.
-fn free_spellings(h: u16, lits: &[(u16, bool)]) -> (Vec<Vec<XGate>>, bool) {
-    let (menu, konst) = rung_spellings(h, lits);
-    let min_len = menu.iter().map(|m| m.len()).min().unwrap_or(0);
-    (menu.into_iter().filter(|m| m.len() == min_len).collect(), konst)
+///   0  the single canonical spelling -- no variability, no cost.
+///   1  only the equal-size spellings: four for same polarity, one for mixed.
+///      Diversity exactly where it is free. Measured n=16 at ladder_cap 3:
+///      identical gate count to level 0, width-2 duplicate groups 60.7% -> 52.6%.
+///   2  every spelling, longer ones included. Reaches 41.0% but at +18.8%
+///      gates, because each mixed-polarity emission then pays 1+3 instead of
+///      1+1 to differ.
+///
+/// All spellings of one function share the same residual constant by
+/// construction, which is what keeps the borrow restored when two emissions of
+/// a rung differ.
+fn spellings_at(h: u16, lits: &[(u16, bool)], level: usize) -> (Vec<Vec<XGate>>, bool) {
+    let (full, konst) = rung_spellings(h, lits);
+    if level >= 2 {
+        return (full, konst);
+    }
+    let min_len = full.iter().map(|m| m.len()).min().unwrap_or(0);
+    let mut free: Vec<Vec<XGate>> = full.into_iter().filter(|m| m.len() == min_len).collect();
+    if level == 0 {
+        free.truncate(1);
+    }
+    (free, konst)
 }
 
 /// One emission of a ladder rung, spelled DIFFERENTLY from the previous one.
@@ -3789,6 +3803,7 @@ fn emit_rung(
     h: u16,
     rung_lits: &[(u16, bool)],
     g57: bool,
+    level: usize,
     prev: Option<usize>,
     rng: &mut impl Rng,
     out: &mut Vec<XGate>,
@@ -3800,7 +3815,7 @@ fn emit_rung(
         );
         return (None, false);
     }
-    let (menu, konst) = free_spellings(h, rung_lits);
+    let (menu, konst) = spellings_at(h, rung_lits, level);
     let pick = if menu.len() < 2 {
         0
     } else {
@@ -3884,7 +3899,7 @@ struct ProdLedger {
     g57_narrow: bool,
     ladder_cap: usize,
     cg_jitter: usize,
-    rung_menu: bool,
+    rung_menu: usize,
     /// refs[wire] = live slot factors naming that wire. A wire with refs > 0
     /// is "named": nothing may write it until every naming slot is released.
     refs: Vec<u32>,
@@ -3995,7 +4010,7 @@ impl ProdLedger {
             g57_narrow: cfg.g57_narrow > 0,
             ladder_cap: cfg.ladder_cap,
             cg_jitter: cfg.cg_jitter,
-            rung_menu: cfg.rung_menu > 0,
+            rung_menu: cfg.rung_menu,
             refs: vec![0; carrier_total],
             owner: vec![u32::MAX; carrier_total],
             hits,
@@ -8922,7 +8937,7 @@ mod cnot_gadget_tests {
                         total,
                         &[],
                         &[],
-                        true,
+                        1,
                         &mut rng,
                         &mut gates,
                     );
