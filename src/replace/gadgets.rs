@@ -3211,9 +3211,46 @@ impl ProdConfig {
     /// with `fill_pivots` -- trades homogeneity for provable joint uniformity.
     pub fn production_single() -> ProdConfig {
         ProdConfig {
-            k: 1,
+            // [2,2,2,3]: three degree-2 mask terms and one degree-3, against
+            // the [2,3,3] this replaces.
+            //
+            // A degree-`d` atom contributes `1 - 2^(1-d)` to the piling-up
+            // product, so a degree-2 term is the STRONGER statistical masker
+            // (0.5 against a degree-3's 0.75) while a degree-3 term is the
+            // stronger ALGEBRAIC one -- a degree-2 atom sits inside a degree-2
+            // exact adversary's span and a degree-3 atom does not. Low degree
+            // buys statistics, high degree buys algebra; the plan is the mix.
+            // [2,2,2,3] is 0.09375 against [2,3,3]'s 0.28125.
+            //
+            // MEASURED at n=128 (docs/CORRELATING_TWO_COMPUTATIONS), same C and
+            // sandwich, every arm verified: the statistical leak is LINEAR in
+            // the piling-up product (F1_raw = 0.262*eps + 0.007, R^2 = 0.996
+            // over five plans spanning 4x in eps), so this is a 3.2x reduction
+            // -- 0.0318 against 0.0817 -- and the stress battery drops from
+            // ALIGNED-LEAK on both probes to flat on both. It also costs LESS:
+            // 692,653 gates against 808,618, and store-reachability rises to
+            // 97.53% from 95.47%. Cheaper, more digestible, lower leak.
+            //
+            // It is only affordable because of the Gray fold. Under the wide
+            // fold a block emits (1+k)^arity fragments, so a fourth mask term
+            // is MULTIPLICATIVE (+56%); the Gray fold's product part is a fixed
+            // ~9 gates whatever k is, and a term costs only its own gather --
+            // ~1 gate at degree 2 against ~4 at degree 3. Mask-plan cost is
+            // additive here, which is why trading a degree-3 atom for degree-2
+            // atoms makes the circuit smaller.
+            //
+            // What it gives up is REDUNDANCY, not threshold. Exact degree-D
+            // recovery needs D >= max atom degree, so [2,2,2,3] and [2,3,3] are
+            // equally out of a degree-2 adversary's reach -- both measured dead
+            // at degree 2, zero interior rows -- but this plan holds ONE
+            // degree-3 atom where the old one held two. If that atom is ever
+            // compromised the value falls into degree-2 range with nothing
+            // behind it. The natural step-up is [2,2,2,3,3] (`--prod-k-hi 2`):
+            // eps 0.0703, F1 raw 0.0258, both degree-3 atoms back, for 924,284
+            // gates (+14% over the old default rather than -14%).
+            k: 3,
             deg: 2,
-            k_hi: 2,
+            k_hi: 1,
             deg_hi: 3,
             // 0 = match the value count; see band_size.
             band: 0,
@@ -3249,10 +3286,12 @@ impl ProdConfig {
             epoch: 5,
             refill_data: 50,
             single: 1,
-            // Opt-in until the n=128 A/B (size, reachability, ridge, stress
-            // battery) is on the record; the audit is exact but it is an audit
-            // of the block, not of a circuit.
-            gray_fold: 0,
+            // ON. The fold no longer emits a single wide fragment, and
+            // store-reachability goes 31.55% -> 95.47% at 2.38x the gates on
+            // the [2,3,3] A/B -- more than half the old circuit was material
+            // phase A could never re-encode. It is also what makes the mask
+            // plan above affordable; see docs/GRAY_FOLD_CG.
+            gray_fold: 1,
         }
     }
 
@@ -10289,7 +10328,19 @@ mod cnot_gadget_tests {
     fn production_preset_is_the_hardened_construction() {
         let p = ProdConfig::production_single();
         assert!(p.enabled(), "the default must have the encoding ON");
-        assert_eq!((p.k, p.deg, p.k_hi, p.deg_hi), (1, 2, 2, 3), "plan is [1,2,3,3]");
+        // [2,2,2,3] -- three degree-2 mask terms and one degree-3, replacing
+        // [2,3,3]. A degree-2 atom is the stronger STATISTICAL masker (piling-up
+        // factor 0.5 against 0.75) and the weaker ALGEBRAIC one (it sits inside
+        // a degree-2 exact adversary's span), so the mix trades one against the
+        // other: eps 0.09375 against 0.28125, measured leak 3.2x lower, at 14%
+        // FEWER gates. The single surviving degree-3 atom is what keeps the plan
+        // out of degree-2 exact reach; drop it and the value is recoverable
+        // exactly, which is why deg_hi and k_hi >= 1 are pinned here.
+        assert_eq!((p.k, p.deg, p.k_hi, p.deg_hi), (3, 2, 1, 3), "plan is [2,2,2,3]");
+        assert!(
+            p.k_hi >= 1 && p.deg_hi >= 3,
+            "at least one degree-3 atom, or the value drops into degree-2 exact range"
+        );
         assert_eq!(p.single, 1, "single-carrier decode");
         assert_eq!(p.band, 0, "band 0 == match the value count");
         assert_eq!(p.band_size(128), 128, "band 0 must resolve to n");
@@ -10302,6 +10353,9 @@ mod cnot_gadget_tests {
         // store-reachability and the duplicate-pair signature -- are the
         // operator's call, not a silent default. Pinned so a change is visible.
         assert_eq!(p.ladder_cap, 0, "laddering is opt-in via --prod-ladder-cap");
+        // The Gray fold is ON: the fold emits no wide fragment at all, and
+        // store-reachability goes 31.55% -> 95.47% (97.53% at this mask plan).
+        assert_eq!(p.gray_fold, 1, "the Gray-code fold is the default CG");
         assert_eq!(p.rung_menu, 1, "free spelling variability is on -- it costs nothing");
         assert_eq!(p.cg_jitter, 50, "block-count entropy at its maximum");
         assert!(p.epoch > 0, "a frozen band is recoverable by function lifetime");

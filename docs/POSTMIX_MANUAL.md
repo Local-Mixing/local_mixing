@@ -417,38 +417,44 @@ reads 1.0 in every build, encoded or not.
 
 ```bash
 # Build the production gadget first: sliced sandwich -> product-share
-# gadgetization. [3,3] = two degree-3 mask terms per value (two is the measured
-# floor; one revives the progress diagonal), nonlinear cascaded band fill, one
-# band roll per gap so the band is not a body-static wire set. Band auto = 46.
-PROD_K=0 PROD_K_HI=2 PROD_DEG_HI=3 PROD_FILL_NL=2 PROD_ROLL=1 \
+# gadgetization. THE DEFAULTS ARE NOW THE PRODUCTION SETTING -- mask plan
+# [2,2,2,3] with the Gray-code fold, single-carrier decode, nonlinear cascaded
+# band fill, one band roll per gap, retire-refill epochs. Pass NO --prod flags:
 gen_sandwich_gadget gadget.mpmct1 128 3000 3000
-# -> 247k gates / 558 wires at n=128; writes gadget.mpmct1.source_c.g57 too,
+# -> 693k gates / 512 wires at n=128; writes gadget.mpmct1.source_c.g57 too,
 #    which is what the heatmaps reconstruct against.
-
-# Same settings on the CLI path:
-#   sss --cnot --gadgetize --slice-zero-ccnot \
-#       --prod-k 0 --prod-k-hi 2 --prod-deg-hi 3 --prod-fill-nl 2 --prod-roll 1
-
-# STRONGLY RECOMMENDED: add the Gray-code fold. Without it the fold emits its
-# cartesian product as gates of width up to arity*max_deg, and everything above
-# 2 controls is material fmix can NEVER re-encode -- 56% of the gadget, and the
-# reason a mixing run's reach is capped before it starts. See docs/GRAY_FOLD_CG.
-PROD_GRAY_FOLD=1 PROD_LADDER_CAP=3 \
-gen_sandwich_gadget gadget.mpmct1 128 3000 3000
-#   ... or --prod-gray-fold 1 --prod-ladder-cap 3 on the sss path.
 #
-# What it costs and buys at n=128 (same sandwich, same C, all verify PASSED):
-#                        gates    fold fossils   store-reachable
-#   wide fold (today)    340k     153,421         31.6%
-#   + Gray fold          809k     0               95.5%
-#   + gray + ladder 3   1021k     0               99.9%
-# Gray fold alone leaves 4.3% wide gates -- NOT from the fold (fossils=0) but
-# from emit_slot, where a degree-3 mask is a 3-control gate every time it is
-# injected/re-sourced/stripped. --prod-ladder-cap 3 clears those. This does not
-# contradict "laddering peaks at cap 4 and declines after": the Gray fold
-# REMOVES the wide fold fragments rather than spelling them out, so cap 3 is
-# left doing only single-rung width-3 slot emissions, which is what it is good
-# at. Check reachability, never match rate -- they move in opposite directions:
+#   sss --cnot --gadgetize --slice-zero-ccnot        # same, on the CLI path
+#
+# WARNING: do NOT assemble --prod flags in a shell variable. zsh does not
+# word-split on expansion, so "$FLAGS" arrives as ONE argument and the encoding
+# silently reverts to defaults. Pass them literally, or use the env-var form.
+
+# WHY THIS PLAN -- docs/CORRELATING_TWO_COMPUTATIONS. Measured at n=128, same C
+# and same sandwich, every arm verified. eps = the piling-up product
+# PROD_r (1 - 2^(1-d_r)), and the statistical leak is LINEAR in it (R^2 = 0.996
+# across five plans spanning 4x in eps):
+#   plan           eps     gates  reachable  F1 raw  battery verdict F1/F2
+#   [2,3,3] (old)  0.281   809k    95.5%     0.0817  ALIGNED-LEAK / ALIGNED-LEAK
+#   [2,2,2,3] NOW  0.094   693k    97.5%     0.0318  flat / flat
+#   [2,2,2,3,3]    0.070   924k    96.6%     0.0258  flat / flat
+# A degree-2 atom is the stronger STATISTICAL masker (factor 0.5 against a
+# degree-3's 0.75) and the weaker ALGEBRAIC one (it sits inside a degree-2 exact
+# adversary's span), so a plan trades one against the other. All of these read
+# dead on hmap_affine at degree 1 AND 2 -- what differs is only the statistical
+# margin. The new default is cheaper, more digestible AND lower leak than the
+# plan it replaces; that is the Gray fold's doing, since it made mask-plan cost
+# additive rather than multiplicative.
+
+# STEP UP with --prod-k-hi 2 (= [2,2,2,3,3]) when redundancy matters more than
+# size. The default keeps ONE degree-3 atom, and that atom is the only thing
+# holding the value out of degree-2 exact range; this restores the second, at
+# the lowest leak measured, for +14% gates against the old default.
+
+# Laddering stays OFF. The Gray fold reaches 97.5% without it, and the residual
+# wide gates are emit_slot mask emissions rather than fold material.
+# --prod-ladder-cap 3 would take reachability to ~99.9% for roughly +40% gates.
+# Check reachability, never match rate -- they move in opposite directions:
 #   blocker_census --g gadget.mpmct1 --min-window 2 --max-window 5 \
 #                  --ctrl-cap 2 --db-max-degree 9   # needs FROZEN_DB_DIR
 
@@ -459,6 +465,9 @@ python3 reports/plot_hmap_ridge.py --out ridge.png ridge     # want depthMed 0, 
 hmap_stat  --c gadget.mpmct1.source_c.g57 --g gadget.mpmct1 --n 128 \
            --c-step 100 --g-step 3800 --samples 8192 --target-bits 8 --out stat
 # want the interior median well under the plain gadget's ~0.91; [3,3] reads ~0.70
+# Read the ridge by INTERIOR ROWS, not rho: both axes have unencoded ports, so
+# rho is two plateaus ranked against noise in a dead middle (two equally-dead
+# artifacts once scored 0.448 and 0.019). Want depthMed 0 and zero interior rows.
 
 # Mixing a product-share gadget needs --no-local-verify: the per-rewrite check
 # caps support at 24 wires and panics on two wide gates. Read G=/lag=/tgtbl=,

@@ -352,7 +352,27 @@ Five traps, all of which bit during this work:
   this list, and §2 says why: they answer a question whose answer is already
   known.
 
-## 11. Practical summary
+## 11. What was changed as a result
+
+**`[2,2,2,3]` is now the production default** (`ProdConfig::production_single`),
+replacing `[2,3,3]`, together with the Gray fold. This analysis is the reason:
+the plan is cheaper (692,653 gates against 808,618, **−14%**), more digestible
+(97.53% store-reachable against 95.47%), and leaks 3.2× less (F1 raw 0.0318
+against 0.0817, both battery probes going from `ALIGNED-LEAK` to `flat`), with
+identical algebraic standing — both dead at degree 2, measured.
+
+`--prod-ladder-cap` stays retired. At this plan the Gray fold already reaches
+97.53% without it, and the residual wide gates are mask-slot emissions rather
+than fold material.
+
+**`[2,2,2,3,3]` is the natural step-up** (`--prod-k-hi 2`): ε 0.0703, F1 raw
+0.0258 — the lowest measured — and *both* degree-3 atoms retained, for 924,284
+gates (+14% against the old default rather than −14%). Take it when the
+redundancy matters more than the size: the default holds a single degree-3
+atom, and if that one atom is ever compromised the value falls into degree-2
+exact range with nothing behind it.
+
+## 12. Practical summary
 
 * The statistical leak is the carrier's marginal mask bias, and it is **linear in
   the piling-up product** (R² ≈ 0.996). To reduce it, reduce `ε`.

@@ -368,6 +368,28 @@ Five traps, all of which bit during this work.
         why.
 \end{itemize}
 
+\section{What was changed as a result}
+
+\textbf{\code{[2,2,2,3]} is now the production default}
+(\code{ProdConfig::production\_single}), replacing \code{[2,3,3]}, together with
+the Gray fold. This analysis is the reason: the plan is cheaper
+($692{,}653$ gates against $808{,}618$, \textbf{$-14\%$}), more digestible
+($97.53\%$ store-reachable against $95.47\%$), and leaks $3.2\times$ less
+(F1 raw $0.0318$ against $0.0817$, both battery probes going from
+\code{ALIGNED-LEAK} to \code{flat}), with identical algebraic standing --- both
+dead at degree 2, measured.
+
+\code{--prod-ladder-cap} stays retired: at this plan the Gray fold already
+reaches $97.53\%$ without it, and the residual wide gates are mask-slot
+emissions rather than fold material.
+
+\textbf{\code{[2,2,2,3,3]} is the natural step-up} (\code{--prod-k-hi 2}):
+$\varepsilon = 0.0703$, F1 raw $0.0258$ --- the lowest measured --- and
+\emph{both} degree-3 atoms retained, for $924{,}284$ gates ($+14\%$ against the
+old default rather than $-14\%$). Take it when redundancy matters more than
+size: the default holds a single degree-3 atom, and if that one atom is ever
+compromised the value falls into degree-2 exact range with nothing behind it.
+
 \section{Practical summary}
 
 \begin{itemize}
