@@ -2,8 +2,8 @@ use clap::{Arg, ArgGroup, Command};
 
 mod commands;
 
-fn main() {
-    let matches = Command::new("local_mixing")
+fn command() -> Command {
+    Command::new("local_mixing")
         .subcommand_required(true)
         .arg_required_else_help(true)
         .subcommand(
@@ -13,6 +13,11 @@ fn main() {
                     ArgGroup::new("fixed_slice_transform")
                         .args(["feistalize", "tdp4n"])
                         .multiple(false),
+                )
+                .group(
+                    ArgGroup::new("cnot_backend")
+                        .args(["cnot", "nonlinear_gadgetize"])
+                        .multiple(true),
                 )
                 .arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
                 .arg(Arg::new("m").short('m').long("m").required(true).value_parser(clap::value_parser!(usize)))
@@ -56,6 +61,19 @@ fn main() {
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
+                    Arg::new("nonlinear_gadgetize")
+                        .long("nonlinear_gadgetize")
+                        .visible_alias("nonlinear-gadgetize")
+                        .help("Apply the production [3,3] nonlinear product-share gadget through the heterogeneous backend: nonlinear band fill, roll-1 band relocation, and an all-zero aux+band slice preblock (implies --cnot). With --tdp4n, use the local [3,3]+rolling 4n+band extension; explicit TDP slice modes retain their own slice contract")
+                        .required(false)
+                        .conflicts_with_all([
+                            "gadgetize",
+                            "feistalize",
+                            "nonlinear_handles",
+                        ])
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
                     Arg::new("cnot")
                         .long("cnot")
                         .help("Keep all post-ingress stages in heterogeneous mpmct1 form, using native CNOTs/fragments where safe (the source remains G57)")
@@ -75,7 +93,7 @@ fn main() {
                         .long("tdp4n")
                         .help("Build C; native CNOT X->Y; random D on X, then two-share gadgetize the 2n logical wires (4n physical wires)")
                         .required(false)
-                        .requires("cnot")
+                        .requires("cnot_backend")
                         .conflicts_with("gadgetize")
                         .conflicts_with("feistalize")
                         .action(clap::ArgAction::SetTrue),
@@ -215,7 +233,7 @@ fn main() {
                         .required(false)
                         .default_value("2")
                         .value_parser(clap::value_parser!(usize))
-                        .help("Number of SG gadgets between each RG gadget (2 = two SGs then one RG)"),
+                        .help("Legacy paths: SG gadgets between RGs (default 2). --nonlinear_gadgetize: nonlinear RG draws between consecutive source gates (default 1 unless supplied explicitly)"),
                 )
                 .arg(
                     Arg::new("expansion_game")
@@ -709,8 +727,10 @@ fn main() {
                         .help("Output path for the LMDB store"),
                 ),
         )
-        .get_matches();
+}
 
+fn main() {
+    let matches = command().get_matches();
     match matches.subcommand() {
         Some(("sss", sub)) => commands::sss::run(sub),
         Some(("compress", sub)) => commands::compress::run(sub),
@@ -724,5 +744,39 @@ fn main() {
         Some(("combine_rocks", sub)) => commands::rainbow_table::run_combine_rocks(sub),
         Some(("rocks_to_lmdb", sub)) => commands::rainbow_table::run_rocks_to_lmdb(sub),
         _ => unreachable!("subcommand_required guarantees a match"),
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    fn parse_sss(extra: &[&str]) -> Result<clap::ArgMatches, clap::Error> {
+        let mut argv = vec![
+            "local_mixing",
+            "sss",
+            "-n",
+            "3",
+            "-m",
+            "1",
+            "-x",
+            "2",
+            "-s",
+            "source.txt",
+            "-r",
+            "0",
+            "-d",
+            "out.txt",
+        ];
+        argv.extend_from_slice(extra);
+        command().try_get_matches_from(argv)
+    }
+
+    #[test]
+    fn nonlinear_shortcut_satisfies_the_tdp_backend_requirement() {
+        assert!(parse_sss(&["--nonlinear_gadgetize"]).is_ok());
+        assert!(parse_sss(&["--nonlinear_gadgetize", "--tdp4n"]).is_ok());
+        assert!(parse_sss(&["--tdp4n"]).is_err());
+        assert!(parse_sss(&["--cnot", "--tdp4n"]).is_ok());
     }
 }

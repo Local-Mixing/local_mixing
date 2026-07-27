@@ -250,14 +250,15 @@ struct Args {
     /// Stamp DB replacements from the lower rather than upper median.
     #[arg(long, default_value_t = false)]
     gen_median_low: bool,
-    /// Stop at a report point when the below-target fraction is at most this
+    /// Stop at a report point when the below-target fraction among targetable
+    /// gates (cap-eligible and not retired by --gen-giveup) is at most this
     /// and --twist-cov-stop is met. Negative disables the dose stop.
     #[arg(long, default_value_t = -1.0)]
     gen_stop_frac: f64,
     /// Use only live gates without an identifiable seeded-G57-pair frame tag
-    /// as the denominator for generation dose stop and final revalidation.
-    /// The historical all-gate census is still reported. This is opt-in so
-    /// existing new-SSS runs retain their original stopping semantics.
+    /// as the scope for generation dose stop and final revalidation. Within
+    /// that scope, only targetable gates form the dose denominator. The
+    /// historical all-gate and all-non-pair censuses are still reported.
     #[arg(long, default_value_t = false)]
     gen_dose_exclude_g57_pair_frames: bool,
     /// Minimum cumulative twisted-span/current-size coverage for dose stop.
@@ -800,56 +801,64 @@ struct DoseCensus {
     dose_met: bool,
 }
 
+fn census_fraction(numerator: u64, denominator: u64) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
+    }
+}
+
+fn targetable_lag_fraction(lag: u64, targetable: u64) -> Option<f64> {
+    (targetable > 0).then(|| census_fraction(lag, targetable))
+}
+
 fn report_dose_census(label: &str, mixer: &Mixer, args: &Args) -> DoseCensus {
     let stats = mixer.generation_dose_stats();
-    let all_lag_fraction = if stats.all.total == 0 {
-        0.0
-    } else {
-        stats.all.all_lag as f64 / stats.all.total as f64
+    let describe = |scope: &str, census: local_mixing::postmix::mix::GenStats| {
+        format!(
+            "{scope} G={} Gall={} tgtbl={} alag={}/{} afrac={:.6} lag={}/{} frac={:.6} cheap={} hard={} unreach={} width_lag={} eligible={} fresh={}",
+            census.g_circ,
+            census.g_all,
+            census.targetable,
+            census.all_lag,
+            census.total,
+            census_fraction(census.all_lag, census.total),
+            census.lag,
+            census.targetable,
+            census_fraction(census.lag, census.targetable),
+            census.cheap,
+            census.hard,
+            census.unreach,
+            census.wlag,
+            census.elig,
+            census.fresh,
+        )
     };
-    let non_pair_lag_fraction = if stats.non_pair.total == 0 {
-        0.0
+    let all_summary = describe("all", stats.all);
+    let non_pair_summary = describe("non_pair", stats.non_pair);
+    let (dose_scope, selected) = if args.gen_dose_exclude_g57_pair_frames {
+        ("non-pair", stats.non_pair)
     } else {
-        stats.non_pair.all_lag as f64 / stats.non_pair.total as f64
+        ("all", stats.all)
     };
-    let (dose_scope, selected, lag_fraction) = if args.gen_dose_exclude_g57_pair_frames {
-        ("non-pair", stats.non_pair, non_pair_lag_fraction)
-    } else {
-        ("all", stats.all, all_lag_fraction)
-    };
+    let legacy_selected_lag_fraction = census_fraction(selected.all_lag, selected.total);
+    let selected_targetable_fraction = targetable_lag_fraction(selected.lag, selected.targetable);
+    let lag_fraction = selected_targetable_fraction.unwrap_or(0.0);
     let twist_coverage = mixer.twist_coverage();
-    let denominator_nonempty = !args.gen_dose_exclude_g57_pair_frames || selected.total > 0;
+    let denominator_nonempty = selected_targetable_fraction.is_some();
     let lag_met =
         args.gen_stop_frac >= 0.0 && denominator_nonempty && lag_fraction <= args.gen_stop_frac;
     let dose_met = lag_met && (args.twist_cov_stop <= 0.0 || twist_coverage >= args.twist_cov_stop);
     println!(
-        "[fmix] {label} census: mv={} size={} target={} G={} all_lag={} lag={} cheap={} hard={} unreach={} width_lag={} eligible={} total={} lag_fraction={:.6} fresh={} | non_pair G={} all_lag={} lag={} cheap={} hard={} unreach={} width_lag={} eligible={} total={} lag_fraction={:.6} fresh={} | dose_scope={} selected_lag_fraction={:.6} denominator_nonempty={} required_lag<={:.6} twist_coverage={:.6} required_coverage>={:.6} dose_met={}",
+        "[fmix] {label} census: mv={} size={} target={} | {} | {} | dose_scope={} selected_lag_fraction={:.6} dose_lag_fraction={:.6} denominator_nonempty={} required_lag<={:.6} twist_coverage={:.6} required_coverage>={:.6} dose_met={}",
         mixer.counters.moves,
         mixer.arena.len(),
         args.gen_target,
-        stats.all.g_circ,
-        stats.all.all_lag,
-        stats.all.lag,
-        stats.all.cheap,
-        stats.all.hard,
-        stats.all.unreach,
-        stats.all.wlag,
-        stats.all.elig,
-        stats.all.total,
-        all_lag_fraction,
-        stats.all.fresh,
-        stats.non_pair.g_circ,
-        stats.non_pair.all_lag,
-        stats.non_pair.lag,
-        stats.non_pair.cheap,
-        stats.non_pair.hard,
-        stats.non_pair.unreach,
-        stats.non_pair.wlag,
-        stats.non_pair.elig,
-        stats.non_pair.total,
-        non_pair_lag_fraction,
-        stats.non_pair.fresh,
+        all_summary,
+        non_pair_summary,
         dose_scope,
+        legacy_selected_lag_fraction,
         lag_fraction,
         denominator_nonempty,
         args.gen_stop_frac,
@@ -1022,26 +1031,28 @@ fn emit_final_g57_pair_census(mixer: &Mixer, args: &Args, num_wires: usize) {
     );
 
     let generation = mixer.generation_dose_stats();
-    let fraction = |numerator: u64, denominator: u64| {
-        if denominator == 0 {
-            0.0
-        } else {
-            numerator as f64 / denominator as f64
-        }
-    };
-    let all_lag_fraction = fraction(generation.all.all_lag, generation.all.total);
-    let non_pair_lag_fraction = fraction(generation.non_pair.all_lag, generation.non_pair.total);
-    let all_fresh_fraction = fraction(generation.all.fresh, generation.all.total);
-    let non_pair_fresh_fraction = fraction(generation.non_pair.fresh, generation.non_pair.total);
+    let all_lag_fraction = census_fraction(generation.all.all_lag, generation.all.total);
+    let non_pair_lag_fraction =
+        census_fraction(generation.non_pair.all_lag, generation.non_pair.total);
+    let all_dose_lag_fraction = census_fraction(generation.all.lag, generation.all.targetable);
+    let non_pair_dose_lag_fraction =
+        census_fraction(generation.non_pair.lag, generation.non_pair.targetable);
+    let all_fresh_fraction = census_fraction(generation.all.fresh, generation.all.total);
+    let non_pair_fresh_fraction =
+        census_fraction(generation.non_pair.fresh, generation.non_pair.total);
     let (dose_scope, selected) = if args.gen_dose_exclude_g57_pair_frames {
         ("non-pair", generation.non_pair)
     } else {
         ("all", generation.all)
     };
-    let selected_lag_fraction = fraction(selected.all_lag, selected.total);
+    // Preserve selected_* as the historical scoped all-gate census for the
+    // v1 campaign sidecar. The additive dose_targetable_* fields below record
+    // the population now used by generation stopping.
+    let selected_lag_fraction = census_fraction(selected.all_lag, selected.total);
+    let dose_lag_fraction = census_fraction(selected.lag, selected.targetable);
 
     println!(
-        "[fmix] g57-pair final census: stage={} requested_pairs={} live_pair_ids={} complete_pairs={} requested_copy_frames={} live_copy_frames={} tagged_gates={} union_span_coverage={:.9} | generation_all lag={}/{} frac={:.9} fresh={} fresh_frac={:.9} | generation_non_pair lag={}/{} frac={:.9} fresh={} fresh_frac={:.9} | dose_scope={} selected_lag_fraction={:.9}",
+        "[fmix] g57-pair final census: stage={} requested_pairs={} live_pair_ids={} complete_pairs={} requested_copy_frames={} live_copy_frames={} tagged_gates={} union_span_coverage={:.9} | generation_all G={} Gall={} targetable_lag={}/{} frac={:.9} all_lag={}/{} frac={:.9} fresh={} fresh_frac={:.9} | generation_non_pair G={} Gall={} targetable_lag={}/{} frac={:.9} all_lag={}/{} frac={:.9} fresh={} fresh_frac={:.9} | dose_scope={} selected_lag_fraction={:.9} dose_lag_fraction={:.9}",
         pair_stage_name(stage),
         pairs_requested,
         pair.distinct_pair_ids,
@@ -1050,11 +1061,21 @@ fn emit_final_g57_pair_census(mixer: &Mixer, args: &Args, num_wires: usize) {
         pair.distinct_copy_frames,
         pair.tagged_gates,
         pair.union_span_coverage,
+        generation.all.g_circ,
+        generation.all.g_all,
+        generation.all.lag,
+        generation.all.targetable,
+        all_dose_lag_fraction,
         generation.all.all_lag,
         generation.all.total,
         all_lag_fraction,
         generation.all.fresh,
         all_fresh_fraction,
+        generation.non_pair.g_circ,
+        generation.non_pair.g_all,
+        generation.non_pair.lag,
+        generation.non_pair.targetable,
+        non_pair_dose_lag_fraction,
         generation.non_pair.all_lag,
         generation.non_pair.total,
         non_pair_lag_fraction,
@@ -1062,6 +1083,7 @@ fn emit_final_g57_pair_census(mixer: &Mixer, args: &Args, num_wires: usize) {
         non_pair_fresh_fraction,
         dose_scope,
         selected_lag_fraction,
+        dose_lag_fraction,
     );
 
     let Some(path) = &args.g57_pair_census_out else {
@@ -1082,17 +1104,30 @@ fn emit_final_g57_pair_census(mixer: &Mixer, args: &Args, num_wires: usize) {
             "generation_all_total={}\n",
             "generation_all_lag={}\n",
             "generation_all_lag_fraction={:.12}\n",
+            "generation_all_G={}\n",
+            "generation_all_Gall={}\n",
+            "generation_all_targetable={}\n",
+            "generation_all_targetable_lag={}\n",
+            "generation_all_targetable_lag_fraction={:.12}\n",
             "generation_all_fresh={}\n",
             "generation_all_fresh_fraction={:.12}\n",
             "generation_non_pair_total={}\n",
             "generation_non_pair_lag={}\n",
             "generation_non_pair_lag_fraction={:.12}\n",
+            "generation_non_pair_G={}\n",
+            "generation_non_pair_Gall={}\n",
+            "generation_non_pair_targetable={}\n",
+            "generation_non_pair_targetable_lag={}\n",
+            "generation_non_pair_targetable_lag_fraction={:.12}\n",
             "generation_non_pair_fresh={}\n",
             "generation_non_pair_fresh_fraction={:.12}\n",
             "generation_dose_scope={}\n",
             "generation_selected_total={}\n",
             "generation_selected_lag={}\n",
             "generation_selected_lag_fraction={:.12}\n",
+            "generation_dose_targetable_total={}\n",
+            "generation_dose_targetable_lag={}\n",
+            "generation_dose_targetable_lag_fraction={:.12}\n",
             "generation_required_max_lag_fraction={:.12}\n",
             "twist_coverage={:.12}\n"
         ),
@@ -1108,17 +1143,30 @@ fn emit_final_g57_pair_census(mixer: &Mixer, args: &Args, num_wires: usize) {
         generation.all.total,
         generation.all.all_lag,
         all_lag_fraction,
+        generation.all.g_circ,
+        generation.all.g_all,
+        generation.all.targetable,
+        generation.all.lag,
+        all_dose_lag_fraction,
         generation.all.fresh,
         all_fresh_fraction,
         generation.non_pair.total,
         generation.non_pair.all_lag,
         non_pair_lag_fraction,
+        generation.non_pair.g_circ,
+        generation.non_pair.g_all,
+        generation.non_pair.targetable,
+        generation.non_pair.lag,
+        non_pair_dose_lag_fraction,
         generation.non_pair.fresh,
         non_pair_fresh_fraction,
         dose_scope,
         selected.total,
         selected.all_lag,
         selected_lag_fraction,
+        selected.targetable,
+        selected.lag,
+        dose_lag_fraction,
         args.gen_stop_frac,
         mixer.twist_coverage(),
     );
@@ -1164,6 +1212,14 @@ fn main() {
         }
         other => panic!("unknown --input-format {other}"),
     };
+    let identity_noops = gates.iter().filter(|gate| gate.is_noop()).count();
+    if identity_noops > 0 {
+        println!("[fmix] canonicalized away {identity_noops} complemented empty identity gates");
+    }
+    let canonical_input_len = gates.len() - identity_noops;
+    if canonical_input_len == 0 {
+        println!("[fmix] canonical input is the empty identity circuit");
+    }
     let num_wires = file_wires.max(max_wire(&gates) as usize + 1);
     if let Err(e) = args.validate_wire_capacity(num_wires) {
         Args::command().error(ErrorKind::ValueValidation, e).exit();
@@ -1173,8 +1229,11 @@ fn main() {
     {
         Args::command().error(ErrorKind::ValueValidation, e).exit();
     }
-    let input_len = gates.len();
-    let comp0 = gates.iter().filter(|g| g.comp).count();
+    let input_len = canonical_input_len;
+    let comp0 = gates
+        .iter()
+        .filter(|gate| gate.comp && !gate.is_noop())
+        .count();
     let target = args.target_size.unwrap_or(input_len);
     if let Err(error) = validate_hard_cap_admission(input_len, target, args.hard_size_cap) {
         Args::command()
@@ -1553,6 +1612,12 @@ mod cli_tests {
         let mut argv = vec!["fmix", "--input", "unused.mpmct1"];
         argv.extend_from_slice(extra);
         Args::try_parse_from(argv)
+    }
+
+    #[test]
+    fn targetable_lag_fraction_fails_closed_on_an_empty_population() {
+        assert_eq!(targetable_lag_fraction(1, 4), Some(0.25));
+        assert_eq!(targetable_lag_fraction(0, 0), None);
     }
 
     #[test]

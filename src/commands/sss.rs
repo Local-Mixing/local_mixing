@@ -28,9 +28,10 @@ pub fn run(sub: &clap::ArgMatches) {
     let x: usize = *sub.get_one("x").unwrap();
     let leave = sub.get_flag("interleave");
     let do_gadgetize = sub.get_flag("gadgetize");
+    let do_nonlinear_gadgetize = sub.get_flag("nonlinear_gadgetize");
     let do_feistalize = sub.get_flag("feistalize");
     let do_tdp4n = sub.get_flag("tdp4n");
-    let do_cnot = sub.get_flag("cnot");
+    let do_cnot = sub.get_flag("cnot") || do_nonlinear_gadgetize;
     let slice_zero = sub.get_flag("slice_zero");
     let slice_zero_random = sub.get_flag("slice_zero_random");
     let slice_zero_hardcoded = sub.get_flag("slice_zero_hardcoded");
@@ -104,6 +105,13 @@ pub fn run(sub: &clap::ArgMatches) {
 
     let c = CircuitSeq::from_string(&data);
     if do_cnot {
+        let rg_freq = if do_nonlinear_gadgetize
+            && sub.value_source("rg_frequency") == Some(clap::parser::ValueSource::DefaultValue)
+        {
+            1
+        } else {
+            rg_freq
+        };
         assert!(!leave, "--cnot does not yet support --interleave");
         assert!(
             !single_end,
@@ -135,6 +143,7 @@ pub fn run(sub: &clap::ArgMatches) {
                 save: d,
                 source: s,
                 do_gadgetize,
+                do_nonlinear_gadgetize,
                 do_feistalize,
                 do_tdp4n,
                 slice_zero,

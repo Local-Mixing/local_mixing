@@ -36,7 +36,6 @@ pub struct Arena {
 impl Arena {
     pub fn from_gates(gs: Vec<XGate>) -> Arena {
         let n = gs.len();
-        assert!(n > 0, "empty circuit");
         let mut a = Arena {
             gates: gs,
             prev: (0..n)
@@ -47,8 +46,8 @@ impl Arena {
                 .collect(),
             stamp: vec![0; n],
             linked: vec![true; n],
-            head: 0,
-            tail: (n - 1) as u32,
+            head: if n == 0 { NIL } else { 0 },
+            tail: if n == 0 { NIL } else { (n - 1) as u32 },
             len: n,
             free: Vec::new(),
         };
@@ -86,7 +85,10 @@ impl Arena {
     // Remove from the list; the slot stays allocated (gate, stamp intact) so the
     // node can be relinked elsewhere.
     pub fn unlink(&mut self, id: u32) {
-        debug_assert!(self.linked[id as usize]);
+        assert!(
+            self.linked[id as usize],
+            "attempted to unlink stale or already-unlinked arena node {id}"
+        );
         let (p, n) = (self.prev[id as usize], self.next[id as usize]);
         if p == NIL {
             self.head = n;
@@ -104,7 +106,14 @@ impl Arena {
 
     // Relink an allocated-but-unlinked node after `after` (NIL = at head).
     pub fn link_after(&mut self, id: u32, after: u32) {
-        debug_assert!(!self.linked[id as usize]);
+        assert!(
+            !self.linked[id as usize],
+            "attempted to link already-linked arena node {id}"
+        );
+        assert!(
+            after == NIL || self.linked[after as usize],
+            "attempted to link arena node {id} after stale anchor {after}"
+        );
         let next = if after == NIL {
             self.head
         } else {
@@ -127,6 +136,10 @@ impl Arena {
     }
 
     pub fn link_before(&mut self, id: u32, before: u32) {
+        assert!(
+            before == NIL || self.linked[before as usize],
+            "attempted to link arena node {id} before stale anchor {before}"
+        );
         let after = if before == NIL {
             self.tail
         } else {
@@ -138,6 +151,10 @@ impl Arena {
     // Allocate a fresh node (unlinked) for `gate`.
     fn alloc(&mut self, gate: XGate) -> u32 {
         if let Some(id) = self.free.pop() {
+            assert!(
+                !self.linked[id as usize],
+                "arena free list contained linked node {id}"
+            );
             self.gates[id as usize] = gate;
             self.stamp[id as usize] = self.stamp[id as usize].wrapping_add(1);
             id
@@ -161,14 +178,24 @@ impl Arena {
     // Bumps the stamp so anything holding (id, stamp) — undo-journal entries —
     // sees the node as touched.
     pub fn replace_gate(&mut self, id: u32, gate: XGate) {
-        debug_assert!(self.linked[id as usize]);
+        assert!(
+            self.linked[id as usize],
+            "attempted to replace stale or unlinked arena node {id}"
+        );
         self.gates[id as usize] = gate;
         self.stamp[id as usize] = self.stamp[id as usize].wrapping_add(1);
     }
 
     // Free an unlinked node's slot for reuse.
     pub fn free_node(&mut self, id: u32) {
-        debug_assert!(!self.linked[id as usize]);
+        assert!(
+            !self.linked[id as usize],
+            "attempted to free linked arena node {id}"
+        );
+        debug_assert!(
+            !self.free.contains(&id),
+            "attempted to free arena node {id} twice"
+        );
         self.stamp[id as usize] = self.stamp[id as usize].wrapping_add(1);
         self.free.push(id);
     }

@@ -1,7 +1,7 @@
 use crate::circuit::circuit::CircuitSeq;
 use crate::postmix::xgate::XGate;
-use crate::random::random_data::shoot_random_gate;
-use rand::{Rng, prelude::SliceRandom};
+use crate::random::random_data::shoot_random_gate_with_rng;
+use rand::{Rng, RngCore, prelude::SliceRandom};
 use std::collections::VecDeque;
 
 /// 6-gate homomorphic gadget for secret-shared g57.
@@ -293,7 +293,7 @@ pub fn gadgetize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rng
     // shoot_random_gate only slides gates past non-colliding neighbors).
     let mut main = main.clone();
     let rounds = main.gates.len();
-    shoot_random_gate(&mut main, rounds);
+    shoot_random_gate_with_rng(&mut main, rounds, rng);
     let main = &main;
 
     let bookend_size = (2 * n * (n as f64).ln() as usize).max(64);
@@ -545,6 +545,25 @@ fn random_invertible_matrix_rows(n: usize, rng: &mut impl Rng) -> Vec<Vec<u64>> 
 
 fn matrix_bit(rows: &[Vec<u64>], row: usize, col: usize) -> bool {
     rows[row][col / 64] & (1u64 << (col % 64)) != 0
+}
+
+fn rows_invertible(rows: &[Vec<u64>], n: usize) -> bool {
+    let mut rows = rows.to_vec();
+    for col in 0..n {
+        let Some(pivot) = (col..n).find(|&row| matrix_bit(&rows, row, col)) else {
+            return false;
+        };
+        rows.swap(col, pivot);
+        let pivot_row = rows[col].clone();
+        for row in 0..n {
+            if row != col && matrix_bit(&rows, row, col) {
+                for (dst, &src) in rows[row].iter_mut().zip(&pivot_row) {
+                    *dst ^= src;
+                }
+            }
+        }
+    }
+    true
 }
 
 pub fn packed_bit(words: &[u64], bit: usize) -> bool {
@@ -996,7 +1015,7 @@ pub fn feistalize(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rn
     };
     let mut c = main.clone();
     let rounds = c.gates.len();
-    shoot_random_gate(&mut c, rounds);
+    shoot_random_gate_with_rng(&mut c, rounds, rng);
     emit_sg3_rg_block(&c, &mut state, rg_freq, rng, &mut out);
     emit_feistal_n(&state, &mut out);
     let d = random_circuit_with_rng(n, main.gates.len(), rng);
@@ -1263,12 +1282,967 @@ fn rand_z_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
         .collect()
 }
 
+// ---- Nonlinear product-share encoding -----------------------------------------------
+
+/// Tuning for the product-share encoding used by nonlinear gadgetization.
+///
+/// A logical value is decoded as its ordinary XOR pair plus permanent
+/// multiplicative terms over frozen band values whose physical locations may
+/// roll. The production preset is
+/// the validated `[3, 3]` plan: two independent degree-3 terms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProdConfig {
+    pub k: usize,
+    pub deg: usize,
+    pub k_hi: usize,
+    pub deg_hi: usize,
+    /// Extra source-band wires (0 selects the automatic size).
+    pub band: usize,
+    /// Re-source moves per gap between logical source gates.
+    pub rsrc: usize,
+    /// Maximum emitted control width (0 keeps the native wide fragments).
+    pub max_width: usize,
+    /// Cascaded nonlinear products used to fill each band wire.
+    pub fill_nl: usize,
+    /// Band-variable relocations per gap between logical source gates.
+    pub roll: usize,
+}
+
+impl ProdConfig {
+    pub const fn off() -> ProdConfig {
+        ProdConfig {
+            k: 0,
+            deg: 2,
+            k_hi: 0,
+            deg_hi: 3,
+            band: 0,
+            rsrc: 1,
+            max_width: 0,
+            fill_nl: 0,
+            roll: 0,
+        }
+    }
+
+    /// Production nonlinear gadgetization from `NONLINEAR_GADGETIZATION`:
+    /// two degree-3 terms, a wide shuffled fold, two cascaded nonlinear terms
+    /// per band wire, and one rolling-band relocation per source-gate gap.
+    pub const fn production() -> ProdConfig {
+        ProdConfig {
+            k: 0,
+            deg: 2,
+            k_hi: 2,
+            deg_hi: 3,
+            band: 0,
+            rsrc: 1,
+            max_width: 0,
+            fill_nl: 2,
+            roll: 1,
+        }
+    }
+
+    /// Historical research plan with two degree-2 terms and two degree-3
+    /// terms per logical value. This is intentionally separate from
+    /// [`ProdConfig::production`] so experiments can reproduce `[2,2,3,3]`
+    /// without changing the production `[3,3]` default.
+    pub const fn research_2233() -> ProdConfig {
+        ProdConfig {
+            k: 2,
+            deg: 2,
+            k_hi: 2,
+            deg_hi: 3,
+            band: 0,
+            rsrc: 1,
+            max_width: 0,
+            fill_nl: 2,
+            roll: 1,
+        }
+    }
+
+    /// The original `[2,2,3,3]` sliced-sandwich experiment preset from the
+    /// product-share implementation: two degree-2 terms, two degree-3 terms,
+    /// the original affine band fill, and no later rolling-band hardening.
+    ///
+    /// Keep this separate from [`ProdConfig::research_2233`], which layers the
+    /// current nonlinear-fill and rolling-band hardening onto the same mask
+    /// degrees.
+    pub const fn historical_2233() -> ProdConfig {
+        ProdConfig {
+            k: 2,
+            deg: 2,
+            k_hi: 2,
+            deg_hi: 3,
+            band: 0,
+            rsrc: 1,
+            max_width: 0,
+            fill_nl: 0,
+            roll: 0,
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.k > 0 || self.k_hi > 0
+    }
+
+    fn narrow(&self) -> bool {
+        self.enabled() && self.max_width >= 2
+    }
+
+    fn k_total(&self) -> usize {
+        self.k + self.k_hi
+    }
+
+    fn max_deg(&self) -> usize {
+        let mut degree = 2;
+        if self.k > 0 {
+            degree = degree.max(self.deg);
+        }
+        if self.k_hi > 0 {
+            degree = degree.max(self.deg_hi);
+        }
+        degree
+    }
+
+    fn band_size(&self, n: usize) -> usize {
+        if !self.enabled() {
+            return 0;
+        }
+        if self.band > 0 {
+            return self.band;
+        }
+        (((4 * n * self.k_total()) as f64).sqrt().ceil() as usize)
+            .max(6)
+            .max(self.max_deg() + 3)
+    }
+}
+
+/// One permanent multiplicative mask term over distinct band variables.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ProdSlot {
+    /// `(band-variable id, a)` represents the factor `variable XOR a`.
+    factors: Vec<(u16, bool)>,
+}
+
+impl ProdSlot {
+    fn lits(&self, locations: &[u16]) -> Vec<(u16, bool)> {
+        self.factors
+            .iter()
+            .map(|&(variable, a)| (locations[variable as usize], !a))
+            .collect()
+    }
+}
+
+/// Emit `target ^= AND(lits)` for one or two literals using CNOT/g57
+/// vocabulary. The return value is the extra constant left by that
+/// realization; callers absorb it into their ledger (or free band junk).
+fn emit_g57_form(
+    target: u16,
+    lits: &[(u16, bool)],
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) -> bool {
+    match *lits {
+        [(wire, true)] => {
+            out.push(XGate::cnot(target, wire));
+            false
+        }
+        [(wire, false)] => {
+            out.push(XGate::cnot(target, wire));
+            true
+        }
+        [a, b] => {
+            let ((xw, xp), (yw, yp)) = if rng.random_bool(0.5) { (a, b) } else { (b, a) };
+            match (xp, yp) {
+                (false, true) => {
+                    out.push(XGate::from_g57([target, xw, yw]));
+                    true
+                }
+                (true, false) => {
+                    out.push(XGate::from_g57([target, yw, xw]));
+                    true
+                }
+                (true, true) => {
+                    out.push(XGate::from_g57([target, xw, yw]));
+                    out.push(XGate::cnot(target, yw));
+                    true
+                }
+                (false, false) => {
+                    out.push(XGate::from_g57([target, xw, yw]));
+                    out.push(XGate::cnot(target, xw));
+                    false
+                }
+            }
+        }
+        _ => unreachable!("emit_g57_form takes one or two literals"),
+    }
+}
+
+/// Realize a wide conjunction using dirty borrowed carrier wires and restore
+/// every borrow exactly. This is the generalized Barenco double sweep used by
+/// the reference implementation's optional narrow mode.
+fn emit_narrow_fragment(
+    target: u16,
+    lits: &[(u16, bool)],
+    cap: usize,
+    carrier_total: usize,
+    borrow_total: usize,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) -> bool {
+    debug_assert!(cap >= 2);
+    debug_assert!(!lits.is_empty());
+    if lits.len() <= cap {
+        if lits.len() <= 2 {
+            return emit_g57_form(target, lits, rng, out);
+        }
+        out.push(XGate::conj(target, lits.iter().copied()).expect("normalized literals"));
+        return false;
+    }
+
+    let chunk = cap - 1;
+    let rung_count = (lits.len() - cap).div_ceil(chunk);
+    let mut taken = vec![target as usize];
+    taken.extend(lits.iter().map(|&(wire, _)| wire as usize));
+    let free_in = |pool: usize| pool - taken.iter().filter(|&&wire| wire < pool).count();
+    let borrow_pool = if free_in(carrier_total) >= rung_count {
+        carrier_total
+    } else {
+        borrow_total
+    };
+    assert!(
+        free_in(borrow_pool) >= rung_count,
+        "narrow fragment needs {rung_count} borrows but only {} of {borrow_pool} wires are free",
+        free_in(borrow_pool)
+    );
+    let mut borrowed = Vec::with_capacity(rung_count);
+    for _ in 0..rung_count {
+        let helper = random_wire_except(borrow_pool, &taken, rng) as u16;
+        taken.push(helper as usize);
+        borrowed.push(helper);
+    }
+
+    let mut rungs: Vec<XGate> = Vec::with_capacity(rung_count);
+    let mut consumed = 0;
+    for (index, &helper) in borrowed.iter().enumerate() {
+        let mut rung_lits = Vec::with_capacity(cap);
+        if index == 0 {
+            rung_lits.extend_from_slice(&lits[..cap]);
+            consumed = cap;
+        } else {
+            rung_lits.push((borrowed[index - 1], true));
+            let upto = (consumed + chunk).min(lits.len());
+            rung_lits.extend_from_slice(&lits[consumed..upto]);
+            consumed = upto;
+        }
+        rungs.push(
+            XGate::conj(helper, rung_lits)
+                .expect("borrowed wires are distinct from fragment literals"),
+        );
+    }
+
+    let mut target_lits = vec![(*borrowed.last().unwrap(), true)];
+    target_lits.extend_from_slice(&lits[consumed..]);
+    debug_assert!(target_lits.len() <= cap);
+
+    for _ in 0..2 {
+        if target_lits.len() <= 2 {
+            let _ = emit_g57_form(target, &target_lits, rng, out);
+        } else {
+            out.push(
+                XGate::conj(target, target_lits.iter().copied())
+                    .expect("borrowed target fragment is valid"),
+            );
+        }
+        for rung in rungs.iter().rev() {
+            out.push(rung.clone());
+        }
+        for rung in rungs.iter().skip(1) {
+            out.push(rung.clone());
+        }
+    }
+    false
+}
+
+/// Dedupe an interleaved literal list without sorting it. Opposite
+/// polarities on one wire make the conjunction identically zero.
+fn normalize_prod_lits(lits: &mut Vec<(u16, bool)>) -> Option<()> {
+    let mut seen = Vec::with_capacity(lits.len());
+    for &(wire, polarity) in lits.iter() {
+        match seen.iter().find(|&&(seen_wire, _)| seen_wire == wire) {
+            Some(&(_, seen_polarity)) if seen_polarity != polarity => return None,
+            Some(_) => {}
+            None => seen.push((wire, polarity)),
+        }
+    }
+    *lits = seen;
+    Some(())
+}
+
+/// Ledger for the nonlinear decode. Product sources are frozen band values,
+/// whose physical locations may roll through the carrier/band wire space.
+struct ProdLedger {
+    plan: Vec<usize>,
+    carrier_total: usize,
+    /// Physical wire currently holding each band variable.
+    loc: Vec<u16>,
+    cap: usize,
+    slots: Vec<Vec<ProdSlot>>,
+    consts: Vec<bool>,
+    used: std::collections::HashSet<ProdSlot>,
+    injected: u64,
+    resourced: u64,
+    rolled: u64,
+    cg_fragments: u64,
+    ledger_consts: u64,
+}
+
+impl ProdLedger {
+    fn new(n: usize, config: &ProdConfig, carrier_total: usize) -> ProdLedger {
+        let band_len = config.band_size(n);
+        let mut plan = Vec::new();
+        plan.extend(std::iter::repeat_n(config.deg.max(2), config.k));
+        plan.extend(std::iter::repeat_n(config.deg_hi.max(2), config.k_hi));
+
+        if config.enabled() {
+            let max_degree = config.max_deg();
+            assert!(
+                band_len > max_degree,
+                "nonlinear gadget source band needs at least max_degree+1 wires"
+            );
+            let mut tuple_space = 1u128;
+            for index in 0..max_degree {
+                tuple_space = tuple_space * (band_len - index) as u128 / (index as u128 + 1);
+            }
+            tuple_space = tuple_space.saturating_mul(1u128 << max_degree);
+            assert!(
+                tuple_space >= (2 * n * config.k_total()) as u128,
+                "nonlinear gadget source band is too small: {band_len} wires provide \
+                 {tuple_space} degree-{max_degree} slots for {} live terms",
+                n * config.k_total()
+            );
+        }
+
+        ProdLedger {
+            plan,
+            carrier_total,
+            loc: (carrier_total as u16..(carrier_total + band_len) as u16).collect(),
+            cap: if config.narrow() { config.max_width } else { 0 },
+            slots: vec![Vec::new(); n],
+            consts: vec![false; n],
+            used: std::collections::HashSet::new(),
+            injected: 0,
+            resourced: 0,
+            rolled: 0,
+            cg_fragments: 0,
+            ledger_consts: 0,
+        }
+    }
+
+    fn enabled(&self) -> bool {
+        !self.plan.is_empty()
+    }
+
+    fn borrow_total(&self) -> usize {
+        self.carrier_total + self.loc.len()
+    }
+
+    fn draw_slot(&mut self, degree: usize, rng: &mut impl Rng) -> ProdSlot {
+        let band_len = self.loc.len() as u16;
+        for _ in 0..100_000 {
+            let mut variables = Vec::with_capacity(degree);
+            while variables.len() < degree {
+                let variable = rng.random_range(0..band_len);
+                if !variables.contains(&variable) {
+                    variables.push(variable);
+                }
+            }
+            variables.sort_unstable();
+            let slot = ProdSlot {
+                factors: variables
+                    .into_iter()
+                    .map(|variable| (variable, rng.random::<bool>()))
+                    .collect(),
+            };
+            if self.used.insert(slot.clone()) {
+                return slot;
+            }
+        }
+        panic!("nonlinear gadget source band exhausted");
+    }
+
+    fn emit_slot(
+        &self,
+        value: usize,
+        slot: &ProdSlot,
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) -> bool {
+        let (carrier0, carrier1) = state.pairs[value];
+        let target = if rng.random_bool(0.5) {
+            carrier0
+        } else {
+            carrier1
+        } as u16;
+        let lits = slot.lits(&self.loc);
+        if self.cap >= 2 {
+            emit_narrow_fragment(
+                target,
+                &lits,
+                self.cap,
+                self.carrier_total,
+                self.borrow_total(),
+                rng,
+                out,
+            )
+        } else {
+            out.push(XGate::conj(target, lits).expect("product sources are distinct band values"));
+            false
+        }
+    }
+
+    fn inject(
+        &mut self,
+        value: usize,
+        degree: usize,
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        let slot = self.draw_slot(degree, rng);
+        self.consts[value] ^= self.emit_slot(value, &slot, state, rng, out);
+        self.slots[value].push(slot);
+        self.injected += 1;
+    }
+
+    fn inject_all(&mut self, state: &GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
+        if !self.enabled() {
+            return;
+        }
+        for value in 0..state.n {
+            for index in 0..self.plan.len() {
+                self.inject(value, self.plan[index], state, rng, out);
+            }
+        }
+    }
+
+    /// Replace one live term, injecting the replacement before stripping the
+    /// old term so the value is never momentarily left with fewer masks.
+    fn resource(&mut self, state: &GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
+        if !self.enabled() {
+            return;
+        }
+        let value = rng.random_range(0..state.n);
+        let old_index = rng.random_range(0..self.slots[value].len());
+        let degree = self.slots[value][old_index].factors.len();
+        self.inject(value, degree, state, rng, out);
+        let old = self.slots[value].remove(old_index);
+        self.consts[value] ^= self.emit_slot(value, &old, state, rng, out);
+        self.used.remove(&old);
+        self.resourced += 1;
+    }
+
+    /// Relocate one band value by swapping its physical wire with another
+    /// band wire or carrier. Slots continue naming values and resolve through
+    /// `loc`, while carrier ownership is re-pointed in `state`.
+    fn roll(&mut self, state: &mut GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
+        if !self.enabled() || self.loc.is_empty() {
+            return;
+        }
+        let total = self.borrow_total();
+        let variable = rng.random_range(0..self.loc.len());
+        let from = self.loc[variable];
+        let to = loop {
+            let wire = rng.random_range(0..total) as u16;
+            if wire != from {
+                break wire;
+            }
+        };
+
+        if let Some(other_variable) = self.loc.iter().position(|&wire| wire == to) {
+            self.loc[other_variable] = from;
+        } else {
+            let mut found = false;
+            for value in 0..state.n {
+                let (carrier0, carrier1) = state.pairs[value];
+                if carrier0 == to as usize {
+                    state.pairs[value].0 = from as usize;
+                    found = true;
+                    break;
+                }
+                if carrier1 == to as usize {
+                    state.pairs[value].1 = from as usize;
+                    found = true;
+                    break;
+                }
+            }
+            debug_assert!(
+                found,
+                "roll partner {to} is neither a band wire nor a carrier"
+            );
+        }
+        self.loc[variable] = to;
+
+        let (first, second) = if rng.random_bool(0.5) {
+            (from, to)
+        } else {
+            (to, from)
+        };
+        for (target, source) in [(first, second), (second, first), (first, second)] {
+            emit_transvection_mixed(target, source, total, rng, out);
+        }
+        self.rolled += 1;
+    }
+
+    /// Apply one logical gate without reconstructing any operand. Each
+    /// operand literal is expanded into its full nonlinear decode, and the
+    /// Cartesian products are emitted directly as target-carrier fragments.
+    fn fold_cg(
+        &mut self,
+        gate: &XGate,
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        let target_value = gate.target as usize;
+        debug_assert!(target_value < state.n);
+
+        let mut lists: Vec<Vec<Vec<(u16, bool)>>> = Vec::with_capacity(gate.ctrls.len());
+        for &(wire, positive) in &gate.ctrls {
+            let value = wire as usize;
+            debug_assert_ne!(value, target_value);
+            let (carrier0, carrier1) = state.pairs[value];
+            let mut atoms = vec![vec![(carrier0 as u16, true)], vec![(carrier1 as u16, true)]];
+            atoms.extend(self.slots[value].iter().map(|slot| slot.lits(&self.loc)));
+            if self.consts[value] ^ !positive {
+                atoms.push(Vec::new());
+            }
+            lists.push(atoms);
+        }
+
+        if gate.comp {
+            self.consts[target_value] ^= true;
+            self.ledger_consts += 1;
+        }
+
+        let mut fragments = Vec::new();
+        let mut combination = vec![0usize; lists.len()];
+        'odometer: loop {
+            let picked: Vec<&Vec<(u16, bool)>> = lists
+                .iter()
+                .zip(&combination)
+                .map(|(list, &index)| &list[index])
+                .collect();
+            let width = picked.iter().map(|atom| atom.len()).max().unwrap_or(0);
+            let mut lits = Vec::new();
+            // Interleave atom literals so optional narrow ladders never
+            // materialize one complete logical operand on a helper wire.
+            for index in 0..width {
+                for atom in &picked {
+                    if let Some(&lit) = atom.get(index) {
+                        lits.push(lit);
+                    }
+                }
+            }
+
+            if lits.is_empty() {
+                self.consts[target_value] ^= true;
+                self.ledger_consts += 1;
+            } else if normalize_prod_lits(&mut lits).is_some() {
+                fragments.push(lits);
+            }
+
+            let mut axis = 0;
+            loop {
+                if axis == combination.len() {
+                    break 'odometer;
+                }
+                combination[axis] += 1;
+                if combination[axis] < lists[axis].len() {
+                    break;
+                }
+                combination[axis] = 0;
+                axis += 1;
+            }
+        }
+
+        fragments.shuffle(rng);
+        for lits in &fragments {
+            let (carrier0, carrier1) = state.pairs[target_value];
+            let target = if rng.random_bool(0.5) {
+                carrier0
+            } else {
+                carrier1
+            } as u16;
+            let residual = if self.cap >= 2 {
+                emit_narrow_fragment(
+                    target,
+                    lits,
+                    self.cap,
+                    self.carrier_total,
+                    self.borrow_total(),
+                    rng,
+                    out,
+                )
+            } else {
+                out.push(
+                    XGate::conj(target, lits.iter().copied())
+                        .expect("normalized product-fold fragment"),
+                );
+                false
+            };
+            self.consts[target_value] ^= residual;
+            self.cg_fragments += 1;
+        }
+    }
+
+    /// Original product-share fold used by the 2026-07-23 sliced-sandwich
+    /// experiment. It emits the odometer fragments immediately, preserving
+    /// the historical literal order and RNG stream (no fragment shuffle).
+    fn fold_cg_historical(
+        &mut self,
+        gate: &XGate,
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        let target_value = gate.target as usize;
+        debug_assert!(target_value < state.n);
+        let mut lists: Vec<Vec<Vec<(u16, bool)>>> = Vec::with_capacity(gate.ctrls.len());
+        for &(wire, positive) in &gate.ctrls {
+            let value = wire as usize;
+            debug_assert_ne!(value, target_value);
+            let (carrier0, carrier1) = state.pairs[value];
+            let mut atoms = vec![vec![(carrier0 as u16, true)], vec![(carrier1 as u16, true)]];
+            atoms.extend(self.slots[value].iter().map(|slot| slot.lits(&self.loc)));
+            if self.consts[value] ^ !positive {
+                atoms.push(Vec::new());
+            }
+            lists.push(atoms);
+        }
+        if gate.comp {
+            self.consts[target_value] ^= true;
+            self.ledger_consts += 1;
+        }
+
+        let mut combination = vec![0usize; lists.len()];
+        loop {
+            let mut lits = Vec::new();
+            for (list, &pick) in lists.iter().zip(&combination) {
+                lits.extend_from_slice(&list[pick]);
+            }
+            if lits.is_empty() {
+                self.consts[target_value] ^= true;
+                self.ledger_consts += 1;
+            } else {
+                let (carrier0, carrier1) = state.pairs[target_value];
+                let target = if rng.random_bool(0.5) {
+                    carrier0
+                } else {
+                    carrier1
+                } as u16;
+                if let Some(fragment) = XGate::conj(target, lits) {
+                    out.push(fragment);
+                    self.cg_fragments += 1;
+                }
+            }
+            let mut axis = 0;
+            loop {
+                if axis == combination.len() {
+                    return;
+                }
+                combination[axis] += 1;
+                if combination[axis] < lists[axis].len() {
+                    break;
+                }
+                combination[axis] = 0;
+                axis += 1;
+            }
+        }
+    }
+
+    fn strip_all(&mut self, state: &GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
+        for value in 0..state.n {
+            while !self.slots[value].is_empty() {
+                let slot = self.slots[value].remove(0);
+                self.consts[value] ^= self.emit_slot(value, &slot, state, rng, out);
+                self.used.remove(&slot);
+            }
+            if self.consts[value] {
+                let (carrier0, carrier1) = state.pairs[value];
+                let target = if rng.random_bool(0.5) {
+                    carrier0
+                } else {
+                    carrier1
+                };
+                let helper = random_wire_except(self.carrier_total, &[target], rng) as u16;
+                out.push(
+                    XGate::conj(target as u16, [(helper, false)])
+                        .expect("helper differs from target"),
+                );
+                out.push(XGate::cnot(target as u16, helper));
+                self.consts[value] = false;
+            }
+        }
+    }
+
+    /// Historical unshare order. The original encoder popped slots from the
+    /// tail; retaining that order is necessary for deterministic reproduction.
+    fn strip_all_historical(
+        &mut self,
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        for value in 0..state.n {
+            while let Some(slot) = self.slots[value].pop() {
+                self.consts[value] ^= self.emit_slot(value, &slot, state, rng, out);
+                self.used.remove(&slot);
+            }
+            if self.consts[value] {
+                let (carrier0, carrier1) = state.pairs[value];
+                let target = if rng.random_bool(0.5) {
+                    carrier0
+                } else {
+                    carrier1
+                };
+                let helper = random_wire_except(self.carrier_total, &[target], rng) as u16;
+                out.push(
+                    XGate::conj(target as u16, [(helper, false)])
+                        .expect("helper differs from target"),
+                );
+                out.push(XGate::cnot(target as u16, helper));
+                self.consts[value] = false;
+            }
+        }
+    }
+
+    fn report(&self) {
+        if self.enabled() {
+            println!(
+                "[nonlinear-gadgetize] plan={:?} band={} injected={} resourced={} \
+                 rolled={} cg_fragments={} ledger_consts={}",
+                self.plan,
+                self.loc.len(),
+                self.injected,
+                self.resourced,
+                self.rolled,
+                self.cg_fragments,
+                self.ledger_consts
+            );
+        }
+    }
+}
+
+/// Realize `target ^= source` either as a CNOT or as two complementary
+/// width-2 conjunctions. Both forms are exact, while the mixed shapes avoid
+/// making rolled band locations identifiable by width-1 writes alone.
+fn emit_transvection_mixed(
+    target: u16,
+    source: u16,
+    total: usize,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) {
+    if rng.random_bool(0.5) {
+        out.push(XGate::cnot(target, source));
+        return;
+    }
+    let helper = random_wire_except(total, &[target as usize, source as usize], rng) as u16;
+    for polarity in [true, false] {
+        out.push(
+            XGate::conj(target, [(source, true), (helper, polarity)])
+                .expect("mixed transvection wires are distinct"),
+        );
+    }
+}
+
+/// Fill the band's current physical wires with balanced affine functions of
+/// the input.
+fn emit_band_fill(n: usize, band: &[u16], rng: &mut impl Rng, out: &mut Vec<XGate>) {
+    for &band_wire in band {
+        loop {
+            let subset: Vec<usize> = (0..n).filter(|_| rng.random_bool(0.5)).collect();
+            if subset.len() < 2 {
+                continue;
+            }
+            for data_wire in subset {
+                out.push(XGate::cnot(band_wire, data_wire as u16));
+            }
+            break;
+        }
+    }
+}
+
+/// Fill the frozen band with balanced nonlinear cascades. A fresh pivot that
+/// does not occur in the remainder of the wire's transitive support preserves
+/// exact balance, while products involving earlier band wires raise degree.
+fn emit_band_fill_nl(
+    n: usize,
+    band: &[u16],
+    nonlinear_terms: usize,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) {
+    let mut supports: Vec<std::collections::HashSet<usize>> = Vec::new();
+
+    for (band_index, &band_wire) in band.iter().enumerate() {
+        let pivot = rng.random_range(0..n);
+        let mut support: std::collections::HashSet<usize> = std::iter::once(pivot).collect();
+        out.push(XGate::cnot(band_wire, pivot as u16));
+
+        let linear_max = (n - 1).min(7);
+        let linear_weight = 1 + rng.random_range(0..linear_max);
+        let mut pool: Vec<usize> = (0..n).filter(|&wire| wire != pivot).collect();
+        for _ in 0..linear_weight {
+            let index = rng.random_range(0..pool.len());
+            let wire = pool.swap_remove(index);
+            support.insert(wire);
+            out.push(XGate::cnot(band_wire as u16, wire as u16));
+        }
+
+        let eligible_band: Vec<usize> = (0..supports.len())
+            .filter(|&index| !supports[index].contains(&pivot))
+            .collect();
+        for _ in 0..nonlinear_terms {
+            let mut draw = |exclude: Option<u16>| loop {
+                let wire = if !eligible_band.is_empty() && rng.random_bool(0.5) {
+                    let index = eligible_band[rng.random_range(0..eligible_band.len())];
+                    band[index]
+                } else {
+                    loop {
+                        let wire = rng.random_range(0..n);
+                        if wire != pivot {
+                            break wire as u16;
+                        }
+                    }
+                };
+                if Some(wire) != exclude {
+                    break wire;
+                }
+            };
+            let source1 = draw(None);
+            let source2 = draw(Some(source1));
+            let lits = [
+                (source1, rng.random::<bool>()),
+                (source2, rng.random::<bool>()),
+            ];
+            let _ = emit_g57_form(band_wire, &lits, rng, out);
+            for source in [source1, source2] {
+                match band[..band_index].iter().position(|&wire| wire == source) {
+                    Some(earlier) => support.extend(supports[earlier].iter().copied()),
+                    None => {
+                        support.insert(source as usize);
+                    }
+                }
+            }
+        }
+        supports.push(support);
+    }
+}
+
+/// Uniform nonlinear RG draw from the legacy g57 RG1/RG2/RG3 networks.
+fn emit_nonlinear_rg(
+    state: &mut GadgetState,
+    pair_queue: &mut VecDeque<(usize, usize)>,
+    single_queue: &mut VecDeque<usize>,
+    out: &mut Vec<XGate>,
+    rng: &mut impl Rng,
+) {
+    let n = state.n;
+    let total = 2 * n;
+    let mut gates = Vec::new();
+    match rng.random_range(0..3u32) {
+        0 => {
+            let (i, j) = next_pair(pair_queue, n, rng);
+            emit_rg1(state, i, j, &mut gates);
+        }
+        1 => {
+            let (i, j) = next_pair(pair_queue, n, rng);
+            emit_rg2(state, i, j, &mut gates);
+        }
+        _ => {
+            let i = next_single(single_queue, n, rng);
+            let (carrier0, carrier1) = state.pairs[i];
+            let source1 = random_wire_except(total, &[carrier0, carrier1], rng);
+            let source2 = random_wire_except(total, &[carrier0, carrier1, source1], rng);
+            emit_rg3(state, i, source1, source2, &mut gates);
+        }
+    }
+    out.extend(gates.into_iter().map(XGate::from_g57));
+}
+
+fn commuting_insertion_pass(order: &mut Vec<u32>, gates: &[XGate], rng: &mut impl Rng) {
+    let mut output = Vec::with_capacity(order.len());
+    for &gate_index in order.iter() {
+        let gate = &gates[gate_index as usize];
+        let mut span = 0;
+        while span < output.len()
+            && !XGate::collides(gate, &gates[output[output.len() - 1 - span] as usize])
+        {
+            span += 1;
+        }
+        let position = output.len() - rng.random_range(0..=span);
+        output.insert(position, gate_index);
+    }
+    *order = output;
+}
+
+/// Redraw a random linear extension of the gate-dependency order. Every move
+/// is an adjacent swap of commuting gates, so functionality is unchanged.
+fn commuting_shuffle(gates: &mut Vec<XGate>, rng: &mut impl Rng) {
+    if gates.len() < 2 {
+        return;
+    }
+    let mut order: Vec<u32> = (0..gates.len() as u32).collect();
+    const PASSES: usize = 3;
+    for _ in 0..PASSES {
+        commuting_insertion_pass(&mut order, gates, rng);
+        order.reverse();
+    }
+    if PASSES % 2 == 1 {
+        order.reverse();
+    }
+    let reordered = order
+        .into_iter()
+        .map(|index| gates[index as usize].clone())
+        .collect();
+    *gates = reordered;
+}
+
 /// Two-share gadgetization of a heterogeneous logical circuit with native
 /// CNOT linear bookends, masking-safe SGs and gate-locally non-complete
 /// CNOT RG1/RG2/RG3 blocks.
 fn gadgetize_xgates(main: &[XGate], n: usize, rg_freq: usize, rng: &mut impl Rng) -> CnotCircuit {
+    gadgetize_xgates_with_prod(main, n, rg_freq, &ProdConfig::off(), rng)
+}
+
+/// Shared implementation for the ordinary two-share path and the nonlinear
+/// product-share path. `ProdConfig::off()` preserves the historical path:
+/// 2n wires, linear RG cadence, no source band, and no final commuting
+/// shuffle.
+fn gadgetize_xgates_with_prod(
+    main: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    gadgetize_xgates_with_prod_mode(main, n, rg_freq, prod, true, false, rng)
+}
+
+/// Internal compatibility switch for the original product-share experiment.
+/// The historical `[2,2,3,3]` circuit predates the mirrored output-band fill;
+/// every current production/research caller keeps it enabled.
+fn gadgetize_xgates_with_prod_mode(
+    main: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    mirror_output_fill: bool,
+    historical_fold: bool,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
     assert!(n >= 3, "gadgetize_xgates requires n >= 3");
-    assert!(2 * n <= u16::MAX as usize, "too many wires");
     assert!(rg_freq > 0, "rg_freq must be nonzero");
     assert!(
         main.iter().all(|gate| {
@@ -1278,16 +2252,31 @@ fn gadgetize_xgates(main: &[XGate], n: usize, rg_freq: usize, rng: &mut impl Rng
     );
 
     let bookend_size = (2 * n * (n as f64).ln() as usize).max(64);
-    let total = 2 * n;
+    let carrier_total = 2 * n;
+    let band_range = carrier_total..carrier_total + prod.band_size(n);
+    let total = band_range.end;
+    assert!(total <= u16::MAX as usize, "too many wires");
     let mut out = rand_z_xgates(n, bookend_size, rng);
+    let band_home: Vec<u16> = band_range.clone().map(|wire| wire as u16).collect();
+    if prod.enabled() {
+        if prod.fill_nl > 0 {
+            emit_band_fill_nl(n, &band_home, prod.fill_nl, rng, &mut out);
+        } else {
+            emit_band_fill(n, &band_home, rng, &mut out);
+        }
+    }
     let mut dloc: Vec<usize> = (0..n).collect();
     let mut aloc: Vec<usize> = (n..2 * n).collect();
     let mut on: Vec<Slot> = (0..total)
         .map(|wire| {
             if wire < n {
                 Slot::Data(wire)
-            } else {
+            } else if wire < carrier_total {
                 Slot::Aux(wire - n)
+            } else {
+                // Band values start on these home wires. Rolling may later
+                // exchange their physical role with a carrier.
+                Slot::Output(usize::MAX)
             }
         })
         .collect();
@@ -1297,13 +2286,13 @@ fn gadgetize_xgates(main: &[XGate], n: usize, rg_freq: usize, rng: &mut impl Rng
         let data = dloc[value];
         let aux = aloc[value];
         let share = loop {
-            let wire = rng.random_range(0..total);
+            let wire = rng.random_range(0..carrier_total);
             if wire != data && wire != aux {
                 break wire;
             }
         };
         let pad = loop {
-            let wire = rng.random_range(0..total);
+            let wire = rng.random_range(0..carrier_total);
             if wire != data && wire != aux && wire != share {
                 break wire;
             }
@@ -1323,9 +2312,44 @@ fn gadgetize_xgates(main: &[XGate], n: usize, rg_freq: usize, rng: &mut impl Rng
     let mut state = GadgetState { n, pairs };
     let mut pair_queue = VecDeque::new();
     let mut single_queue = VecDeque::new();
+    let mut prod_ledger = ProdLedger::new(n, prod, carrier_total);
+    prod_ledger.inject_all(&state, rng, &mut out);
+
     for (index, gate) in main.iter().enumerate() {
-        emit_shared_fragment2(&state, gate, &mut out);
-        if (index + 1) % rg_freq == 0 {
+        if prod.enabled() {
+            if historical_fold {
+                prod_ledger.fold_cg_historical(gate, &state, rng, &mut out);
+            } else {
+                prod_ledger.fold_cg(gate, &state, rng, &mut out);
+            }
+        } else {
+            emit_shared_fragment2(&state, gate, &mut out);
+        }
+
+        if prod.enabled() {
+            if index + 1 == main.len() {
+                continue;
+            }
+            // On nonlinear gadgetization `rg_freq` is the number of
+            // nonlinear RG draws per inter-source-gate gap.
+            for _ in 0..rg_freq {
+                emit_nonlinear_rg(
+                    &mut state,
+                    &mut pair_queue,
+                    &mut single_queue,
+                    &mut out,
+                    rng,
+                );
+            }
+            for _ in 0..prod.rsrc {
+                prod_ledger.resource(&state, rng, &mut out);
+            }
+            for _ in 0..prod.roll {
+                prod_ledger.roll(&mut state, rng, &mut out);
+            }
+        } else if (index + 1) % rg_freq == 0 {
+            // Historical plain-CNOT semantics: one linear RG after every
+            // `rg_freq` source gadgets.
             match rng.random_range(0..3u32) {
                 0 => {
                     let (i, j) = next_pair(&mut pair_queue, n, rng);
@@ -1338,12 +2362,22 @@ fn gadgetize_xgates(main: &[XGate], n: usize, rg_freq: usize, rng: &mut impl Rng
                 _ => {
                     let i = next_single(&mut single_queue, n, rng);
                     let (s, p) = state.pairs[i];
-                    let random_carrier = random_wire_except(total, &[s, p], rng);
+                    let random_carrier = random_wire_except(carrier_total, &[s, p], rng);
                     emit_rg3_x(&state, i, random_carrier, &mut out);
                 }
             }
         }
     }
+    if historical_fold {
+        prod_ledger.strip_all_historical(&state, rng, &mut out);
+    } else {
+        prod_ledger.strip_all(&state, rng, &mut out);
+    }
+    prod_ledger.report();
+    // Filling only the band's final locations would reveal where rolling left
+    // it. Every non-output wire is junk after decode and is therefore a safe,
+    // deliberately uninformative mirror-fill target.
+    let band_final: Vec<u16> = (n..total).map(|wire| wire as u16).collect();
 
     for wire in 0..total {
         on[wire] = Slot::Output(usize::MAX);
@@ -1360,7 +2394,7 @@ fn gadgetize_xgates(main: &[XGate], n: usize, rg_freq: usize, rng: &mut impl Rng
         } else if pad == value {
             emit_transvection_cnot(value, share, &mut out);
         } else {
-            let borrowed = (0..total)
+            let borrowed = (0..carrier_total)
                 .find(|&wire| !finalized[wire] && wire != value && wire != share && wire != pad)
                 .unwrap();
             let moved_value = on[value];
@@ -1389,10 +2423,211 @@ fn gadgetize_xgates(main: &[XGate], n: usize, rg_freq: usize, rng: &mut impl Rng
         on[value] = Slot::Output(value);
     }
     out.extend(rand_z_xgates(n, bookend_size, rng));
+    if prod.enabled() && mirror_output_fill {
+        if prod.fill_nl > 0 {
+            emit_band_fill_nl(n, &band_final, prod.fill_nl, rng, &mut out);
+        } else {
+            emit_band_fill(n, &band_final, rng, &mut out);
+        }
+    }
+    if prod.enabled() {
+        commuting_shuffle(&mut out, rng);
+    }
     CnotCircuit {
         gates: out,
         num_wires: total,
     }
+}
+
+/// Default production budget for the zero-slice preblock.
+pub const SLICE_ZERO_CCNOT_GATES_PER_WIRE: usize = 10;
+
+/// Positive-polarity zero-slice preblock over
+/// `data 0..n | aux n..2n | band 2n..2n+band`.
+///
+/// Every gate targets data and reads exactly one non-data wire. Consequently
+/// the block is gate-by-gate inert only when every aux and band input is zero.
+/// Draws are rejected when an exhaustive (small widths) or sampled (large
+/// widths) check finds a nonzero slice on which the data map is the identity.
+pub fn slice_zero_ccnot_preblock(
+    n: usize,
+    band: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "slice_zero_ccnot_preblock requires n >= 3");
+    let total = 2 * n + band;
+    assert!(total <= u16::MAX as usize, "too many wires");
+    let nondata = n + band;
+    assert!(
+        gate_count >= nondata,
+        "every non-data wire must be read: needs at least {nondata} gates"
+    );
+
+    // One third CNOTs; split the remainder between one- and two-data-control
+    // gates so off-slice behavior is nonlinear in the data.
+    let cnots = gate_count / 3;
+    let remainder = gate_count - cnots;
+    let three_control = remainder / 2;
+    let two_control = remainder - three_control;
+
+    for _ in 0..1_000 {
+        // Balanced coverage prevents an unread slice wire from being a
+        // trivially fixed nonzero slice.
+        let mut slice_controls: Vec<usize> =
+            (0..gate_count).map(|index| n + index % nondata).collect();
+        slice_controls.shuffle(rng);
+        let mut gates = Vec::with_capacity(gate_count);
+        for (index, &slice_wire) in slice_controls.iter().enumerate() {
+            let target = rng.random_range(0..n);
+            let data_controls = if index < cnots {
+                0
+            } else if index < cnots + two_control {
+                1
+            } else {
+                2
+            };
+            let mut literals = Vec::with_capacity(data_controls + 1);
+            let mut taken = vec![target];
+            for _ in 0..data_controls {
+                let control = random_wire_except(n, &taken, rng);
+                taken.push(control);
+                literals.push((control as u16, true));
+            }
+            literals.push((slice_wire as u16, true));
+            gates.push(
+                XGate::conj(target as u16, literals).expect("slice preblock wires are distinct"),
+            );
+        }
+        gates.shuffle(rng);
+        let valid = if total <= 20 {
+            slice_preblock_fixes_only_zero_slice(&gates, n, nondata)
+        } else {
+            slice_preblock_spot_check(&gates, n, total, rng)
+        };
+        if valid {
+            return CnotCircuit {
+                gates,
+                num_wires: total,
+            };
+        }
+    }
+    panic!(
+        "no slice preblock with every checked nonzero slice disturbed found at \
+         n={n} band={band} gates={gate_count} in 1000 draws"
+    );
+}
+
+/// Original zero-slice CNOT/CCNOT preblock used by the sliced-sandwich
+/// `[2,2,3,3]` experiment. It covers the `n` auxiliary carrier wires only;
+/// the later product band is not part of this historical slice layer.
+fn slice_zero_ccnot_preblock_historical(
+    n: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(
+        n >= 2,
+        "slice_zero_ccnot_preblock_historical requires n >= 2"
+    );
+    assert!(2 * n <= u16::MAX as usize, "too many wires");
+    assert!(
+        gate_count >= n,
+        "fixing only the zero slice needs at least n CNOTs"
+    );
+    let cnot_count = (gate_count / 3).max(n);
+    let ccnot_count = gate_count - cnot_count;
+
+    let words = n.div_ceil(64);
+    let pins: Vec<(usize, usize)> = loop {
+        let mut targets: Vec<usize> = (0..n).collect();
+        targets.shuffle(rng);
+        let mut controls: Vec<usize> = (0..n).collect();
+        controls.shuffle(rng);
+        let mut pins: Vec<(usize, usize)> = targets.into_iter().zip(controls).collect();
+        while pins.len() < cnot_count {
+            pins.push((rng.random_range(0..n), rng.random_range(0..n)));
+        }
+        let mut rows = vec![vec![0u64; words]; n];
+        for &(row, col) in &pins {
+            rows[row][col / 64] ^= 1u64 << (col % 64);
+        }
+        if rows_invertible(&rows, n) {
+            break pins;
+        }
+    };
+
+    let mut gates: Vec<XGate> = pins
+        .into_iter()
+        .map(|(target, control)| XGate::cnot(target as u16, (n + control) as u16))
+        .collect();
+    gates.extend((0..ccnot_count).map(|_| {
+        let target = rng.random_range(0..n);
+        let data_control = random_wire_except(n, &[target], rng);
+        let aux_control = n + rng.random_range(0..n);
+        XGate::conj(
+            target as u16,
+            [(data_control as u16, true), (aux_control as u16, true)],
+        )
+        .expect("historical CCNOT pins are distinct")
+    }));
+    gates.shuffle(rng);
+    debug_assert_eq!(gates.len(), gate_count);
+    CnotCircuit {
+        gates,
+        num_wires: 2 * n,
+    }
+}
+
+fn slice_preblock_fixes_only_zero_slice(gates: &[XGate], n: usize, nondata: usize) -> bool {
+    let data_mask = (1u64 << n) - 1;
+    (1..(1u64 << nondata)).all(|slice| {
+        (0..=data_mask).any(|data| {
+            crate::postmix::xgate::eval_u64(gates, data | (slice << n)) & data_mask != data
+        })
+    })
+}
+
+fn slice_preblock_spot_check(gates: &[XGate], n: usize, total: usize, rng: &mut impl Rng) -> bool {
+    let disturbs = |hot: &[usize], rng: &mut dyn RngCore| {
+        let mut state = vec![0u64; total];
+        for data in state.iter_mut().take(n) {
+            *data = rng.next_u64();
+        }
+        let input = state[..n].to_vec();
+        for &wire in hot {
+            state[wire] = !0u64;
+        }
+        for gate in gates {
+            gate.apply_lanes(&mut state);
+        }
+        (0..n).any(|wire| state[wire] != input[wire])
+    };
+
+    for wire in n..total {
+        if !disturbs(&[wire], rng) {
+            return false;
+        }
+    }
+    for _ in 0..512 {
+        let first = rng.random_range(n..total);
+        let second = loop {
+            let wire = rng.random_range(n..total);
+            if wire != first {
+                break wire;
+            }
+        };
+        if !disturbs(&[first, second], rng) {
+            return false;
+        }
+    }
+    for _ in 0..512 {
+        let hot: Vec<usize> = (n..total).filter(|_| rng.random_bool(0.5)).collect();
+        if !hot.is_empty() && !disturbs(&hot, rng) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Two-share gadgetization of a legacy G57 source.  This public entry point
@@ -1407,9 +2642,115 @@ pub fn gadgetize_cnot(
     assert!(n >= 3, "gadgetize_cnot requires n >= 3");
     let mut source = main.clone();
     let rounds = source.gates.len();
-    shoot_random_gate(&mut source, rounds);
+    shoot_random_gate_with_rng(&mut source, rounds, rng);
     let gates: Vec<XGate> = source.gates.iter().copied().map(XGate::from_g57).collect();
     gadgetize_xgates(&gates, n, rg_freq, rng)
+}
+
+/// Bare product-share nonlinear gadgetization using the validated production
+/// `[3,3]` mask plan. `rg_draws` is the number of nonlinear RG draws
+/// between consecutive logical source gates.
+///
+/// This core retains the stronger historical endpoint contract: low outputs
+/// are correct for arbitrary non-data junk. The SSS production shortcut uses
+/// [`nonlinear_gadgetize_with_slice_zero_cnot`] instead.
+pub fn nonlinear_gadgetize_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    rg_draws: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    nonlinear_gadgetize_cnot_with_config(main, n, rg_draws, &ProdConfig::production(), rng)
+}
+
+/// Configurable form used by focused tests and experiment code. SSS exposes
+/// the production preset through `--nonlinear_gadgetize`.
+pub fn nonlinear_gadgetize_cnot_with_config(
+    main: &CircuitSeq,
+    n: usize,
+    rg_draws: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(
+        prod.enabled(),
+        "nonlinear gadgetization requires at least one product mask term"
+    );
+    let mut source = main.clone();
+    let rounds = source.gates.len();
+    shoot_random_gate_with_rng(&mut source, rounds, rng);
+    let gates: Vec<XGate> = source.gates.iter().copied().map(XGate::from_g57).collect();
+    gadgetize_xgates_with_prod(&gates, n, rg_draws, prod, rng)
+}
+
+/// Full documented production nonlinear gadgetization: the current `[3,3]`
+/// product-share core with nonlinear fill and rolling band, behind a
+/// positive CNOT/CCNOT/three-control preblock whose all-zero slice includes
+/// every aux and band wire.
+pub fn nonlinear_gadgetize_with_slice_zero_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    rg_draws: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let config = ProdConfig::production();
+    let mut circuit = slice_zero_ccnot_preblock(
+        n,
+        config.band_size(n),
+        SLICE_ZERO_CCNOT_GATES_PER_WIRE * n,
+        rng,
+    );
+    let gadget = nonlinear_gadgetize_cnot_with_config(main, n, rg_draws, &config, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Gadgetize an already-heterogeneous logical circuit behind the positive
+/// zero-slice preblock. This is the second layer of the sliced-sandwich
+/// construction: a `2n`-wire sandwich is treated as one `2n`-value logical
+/// circuit, then encoded onto `4n + band` physical wires.
+///
+/// Every non-data carrier and product-band wire belongs to the outer zero
+/// slice. On that slice, the low `n` physical outputs equal `source` on its
+/// low `n` logical inputs. The caller may impose an independent inner slice
+/// within those logical inputs (the sliced sandwich uses its high half).
+pub fn gadgetize_xgates_with_slice_zero_ccnot(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut circuit = slice_zero_ccnot_preblock(n, prod.band_size(n), gate_count, rng);
+    let gadget = gadgetize_xgates_with_prod(source, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    // Shuffle across the preblock/gadget seam so the outer slice block does
+    // not remain a contiguous prefix.
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Exact outer gadget stage used by the original `[2,2,3,3]`
+/// sliced-sandwich experiment. This keeps the historical affine input-band
+/// fill and omits the later mirrored output-band hardening.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_historical_2233(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let prod = ProdConfig::historical_2233();
+    let mut circuit = slice_zero_ccnot_preblock_historical(n, gate_count, rng);
+    let gadget = gadgetize_xgates_with_prod_mode(source, n, rg_freq, &prod, false, true, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
 }
 
 fn slice_zero_preblock_cnot(n: usize, rng: &mut impl Rng) -> CnotCircuit {
@@ -1657,6 +2998,180 @@ fn random_feistal_d_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate>
     gates
 }
 
+pub const SANDWICH_SLICE_GATES_PER_WIRE_LOG: f64 = 1.0;
+pub const SANDWICH_D_GATES_PER_WIRE_LOG2: f64 = 1.0;
+
+/// Default sliced-sandwich block size `s = round(n log2(n))`, floored at n.
+pub fn sandwich_default_s(n: usize) -> usize {
+    ((n as f64) * (n as f64).log2()).round().max(n as f64) as usize
+}
+
+/// Default random-D size `m = round(n log2(n)^2)`, floored at n.
+pub fn sandwich_default_m(n: usize) -> usize {
+    let log_n = (n as f64).log2();
+    ((n as f64) * log_n * log_n).round().max(n as f64) as usize
+}
+
+/// One sliced-sandwich guard block. Every gate targets the first n wires and
+/// reads at least one positive-polarity wire from the second half, so the
+/// complete block is gate-by-gate dead when the second half is zero.
+fn sandwich_slice_gates(n: usize, s: usize, rng: &mut impl Rng) -> Vec<XGate> {
+    (0..s)
+        .map(|_| {
+            let target = rng.random_range(0..n);
+            if rng.random_bool(1.0 / 3.0) {
+                let control = n + rng.random_range(0..n);
+                XGate::cnot(target as u16, control as u16)
+            } else {
+                let first_control = random_wire_except(n, &[target], rng);
+                let second_control = n + rng.random_range(0..n);
+                XGate::conj(
+                    target as u16,
+                    [(first_control as u16, true), (second_control as u16, true)],
+                )
+                .expect("sandwich CCNOT controls are distinct")
+            }
+        })
+        .collect()
+}
+
+/// `m` random G57 gates over wires 0..n, represented as heterogeneous gates.
+fn random_g57_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate> {
+    assert!(n >= 3, "random G57 gates need n >= 3 wires");
+    (0..m)
+        .map(|_| {
+            let target = rng.random_range(0..n);
+            let positive = random_wire_except(n, &[target], rng);
+            let negative = random_wire_except(n, &[target, positive], rng);
+            XGate::from_g57([target as u16, positive as u16, negative as u16])
+        })
+        .collect()
+}
+
+/// Uniformly interleave two ordered gate streams while preserving each
+/// stream's internal order.
+fn random_interleave(computation: Vec<XGate>, slice: Vec<XGate>, rng: &mut impl Rng) -> Vec<XGate> {
+    let mut output = Vec::with_capacity(computation.len() + slice.len());
+    let (mut computation_index, mut slice_index) = (0usize, 0usize);
+    while computation_index < computation.len() || slice_index < slice.len() {
+        let remaining_computation = computation.len() - computation_index;
+        let remaining_slice = slice.len() - slice_index;
+        let take_computation = slice_index >= slice.len()
+            || (computation_index < computation.len()
+                && rng.random_range(0..remaining_computation + remaining_slice)
+                    < remaining_computation);
+        if take_computation {
+            output.push(computation[computation_index].clone());
+            computation_index += 1;
+        } else {
+            output.push(slice[slice_index].clone());
+            slice_index += 1;
+        }
+    }
+    output
+}
+
+/// Float one gate in a registered direction across adjacent commuting gates.
+fn float_extremal(gates: &mut [XGate], mut position: usize, left: bool) -> usize {
+    if left {
+        while position > 0 && !XGate::collides(&gates[position], &gates[position - 1]) {
+            gates.swap(position, position - 1);
+            position -= 1;
+        }
+    } else {
+        while position + 1 < gates.len() && !XGate::collides(&gates[position], &gates[position + 1])
+        {
+            gates.swap(position, position + 1);
+            position += 1;
+        }
+    }
+    position
+}
+
+/// Build the sliced sandwich on 2n wires:
+///
+/// `[C interleaved with S1] ; N ; [D interleaved with S2]`.
+///
+/// The N step copies `x` into the second half (`y ^= x`). S1 and S2 are
+/// independently sampled guard blocks, and the N gates are floated in fixed
+/// random directions to dissolve the central column.
+///
+/// On the inner zero slice:
+///
+/// `A(x, 0) = (junk, C(x))`.
+pub fn sliced_sandwich_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    m: usize,
+    s: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let d_gates = random_g57_xgates(n, m, rng);
+    sliced_sandwich_with_d(main, &d_gates, n, s, rng)
+}
+
+/// Sliced sandwich with an explicit random-D stream.
+pub fn sliced_sandwich_with_d(
+    main: &CircuitSeq,
+    d_gates: &[XGate],
+    n: usize,
+    s: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "sliced_sandwich_with_d requires n >= 3");
+    assert!(2 * n <= u16::MAX as usize, "too many wires");
+    assert!(
+        main.gates.iter().flatten().all(|&wire| (wire as usize) < n),
+        "source wire outside 0..n"
+    );
+    assert!(
+        d_gates.iter().all(|gate| {
+            (gate.target as usize) < n && gate.ctrls.iter().all(|&(wire, _)| (wire as usize) < n)
+        }),
+        "D wire outside 0..n"
+    );
+
+    let c_gates: Vec<XGate> = main.gates.iter().copied().map(XGate::from_g57).collect();
+    let s1 = sandwich_slice_gates(n, s, rng);
+    let mut output = random_interleave(c_gates, s1, rng);
+
+    for wire in 0..n {
+        output.push(XGate::cnot((n + wire) as u16, wire as u16));
+    }
+
+    let s2 = sandwich_slice_gates(n, s, rng);
+    output.extend(random_interleave(d_gates.to_vec(), s2, rng));
+
+    // The only gates targeting the second half are the n mutually commuting
+    // N gates. Register one direction per gate, then float each to its
+    // commutation extreme while maintaining the other registered positions.
+    let mut floaters: Vec<(usize, bool)> = (0..output.len())
+        .filter(|&index| (output[index].target as usize) >= n)
+        .map(|index| (index, rng.random_bool(0.5)))
+        .collect();
+    floaters.shuffle(rng);
+    for current in 0..floaters.len() {
+        let (before, left) = floaters[current];
+        let after = float_extremal(&mut output, before, left);
+        floaters[current].0 = after;
+        for (index, (position, _)) in floaters.iter_mut().enumerate() {
+            if index == current {
+                continue;
+            }
+            if after < before && *position >= after && *position < before {
+                *position += 1;
+            } else if after > before && *position > before && *position <= after {
+                *position -= 1;
+            }
+        }
+    }
+
+    CnotCircuit {
+        gates: output,
+        num_wires: 2 * n,
+    }
+}
+
 /// Build the ordinary 2n-wire TDP computation before masking:
 ///
 ///   (x, y) --C--> (C(x), y)
@@ -1668,7 +3183,7 @@ fn random_feistal_d_xgates(n: usize, m: usize, rng: &mut impl Rng) -> Vec<XGate>
 fn tdp2n_xgates(main: &CircuitSeq, n: usize, rng: &mut impl Rng) -> Vec<XGate> {
     let mut source = main.clone();
     let rounds = source.gates.len();
-    shoot_random_gate(&mut source, rounds);
+    shoot_random_gate_with_rng(&mut source, rounds, rng);
 
     let mut gates = Vec::with_capacity(2 * main.gates.len() + n);
     gates.extend(source.gates.into_iter().map(XGate::from_g57));
@@ -1694,6 +3209,44 @@ pub fn tdp4n_cnot(main: &CircuitSeq, n: usize, rg_freq: usize, rng: &mut impl Rn
     gadgetize_xgates(&logical, 2 * n, rg_freq, rng)
 }
 
+/// Construct the ordinary 2n-logical-wire TDP and encode all 2n values with
+/// the production nonlinear product-share gadgetizer.  The first 4n physical
+/// wires retain the X,Y,Z,W carrier layout; a rolling nonlinear source band
+/// is appended after W.
+pub fn tdp4n_nonlinear_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    rg_draws: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    tdp4n_nonlinear_cnot_with_config(main, n, rg_draws, &ProdConfig::production(), rng)
+}
+
+/// Configurable nonlinear TDP constructor used by focused research
+/// experiments. Production callers should continue to use
+/// [`tdp4n_nonlinear_cnot`].
+pub fn tdp4n_nonlinear_cnot_with_config(
+    main: &CircuitSeq,
+    n: usize,
+    rg_draws: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "tdp4n_nonlinear_cnot requires n >= 3");
+    assert!(rg_draws > 0, "rg_draws must be nonzero");
+    assert!(
+        prod.enabled(),
+        "nonlinear TDP requires at least one product mask term"
+    );
+    assert!(
+        main.gates.iter().flatten().all(|&wire| (wire as usize) < n),
+        "input wire outside 0..n"
+    );
+
+    let logical = tdp2n_xgates(main, n, rng);
+    gadgetize_xgates_with_prod(&logical, 2 * n, rg_draws, prod, rng)
+}
+
 /// Fixed-public-slice 4n TDP construction.  The existing M preblock acts on
 /// physical X,Y,Z and leaves W free.  At its public (Y,Z) slice M is exactly
 /// the identity for every X and W, so the middle decoded block remains
@@ -1707,6 +3260,45 @@ pub fn tdp4n_with_slice_zero_random_cnot(
 ) -> CnotSliceZeroRandomCircuit {
     let mut preblock = slice_zero_random_preblock_cnot(n, gate_count, rng);
     let tdp = tdp4n_cnot(main, n, rg_freq, rng);
+    preblock.circuit.gates.extend(tdp.gates);
+    preblock.circuit.num_wires = tdp.num_wires;
+    preblock
+}
+
+/// Fixed-public-slice TDP with production nonlinear product-share
+/// gadgetization.  Y and Z remain the fixed public slice blocks, W remains a
+/// free n-wire helper block, and the appended product-source band is also
+/// arbitrary helper input.
+pub fn tdp4n_nonlinear_with_slice_zero_random_cnot(
+    main: &CircuitSeq,
+    n: usize,
+    rg_draws: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotSliceZeroRandomCircuit {
+    tdp4n_nonlinear_with_slice_zero_random_cnot_with_config(
+        main,
+        n,
+        rg_draws,
+        gate_count,
+        &ProdConfig::production(),
+        rng,
+    )
+}
+
+/// Configurable fixed-public-slice nonlinear TDP constructor used by focused
+/// research experiments. Production callers should continue to use
+/// [`tdp4n_nonlinear_with_slice_zero_random_cnot`].
+pub fn tdp4n_nonlinear_with_slice_zero_random_cnot_with_config(
+    main: &CircuitSeq,
+    n: usize,
+    rg_draws: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotSliceZeroRandomCircuit {
+    let mut preblock = slice_zero_random_preblock_cnot(n, gate_count, rng);
+    let tdp = tdp4n_nonlinear_cnot_with_config(main, n, rg_draws, prod, rng);
     preblock.circuit.gates.extend(tdp.gates);
     preblock.circuit.num_wires = tdp.num_wires;
     preblock
@@ -1941,7 +3533,7 @@ pub fn feistalize_cnot(
     };
     let mut source = main.clone();
     let source_rounds = source.gates.len();
-    shoot_random_gate(&mut source, source_rounds);
+    shoot_random_gate_with_rng(&mut source, source_rounds, rng);
     emit_sg3_rg_block_x(&source, &mut state, rg_freq, rng, &mut out);
     emit_feistal_n_cnot(&state, &mut out);
     let d = random_feistal_d_xgates(n, main.gates.len(), rng);
@@ -2032,6 +3624,26 @@ mod cnot_gadget_tests {
             .fold(0, |logical, (index, &(p0, p1))| {
                 logical | ((((physical >> p0) ^ (physical >> p1)) & 1) << index)
             })
+    }
+
+    fn prod_decode(
+        physical: u64,
+        value: usize,
+        pairs: &[(usize, usize)],
+        slots: &[Vec<ProdSlot>],
+        consts: &[bool],
+        locations: &[u16],
+    ) -> u64 {
+        let (carrier0, carrier1) = pairs[value];
+        let mut decoded = ((physical >> carrier0) ^ (physical >> carrier1)) & 1;
+        for slot in &slots[value] {
+            let factor = slot
+                .factors
+                .iter()
+                .all(|&(variable, a)| (((physical >> locations[variable as usize]) & 1) != 0) ^ a);
+            decoded ^= factor as u64;
+        }
+        decoded ^ consts[value] as u64
     }
 
     fn decode_three_share(state: &FeistalState, physical: u64) -> u64 {
@@ -2178,6 +3790,581 @@ mod cnot_gadget_tests {
                 );
             }
             dependencies[target] ^= dependencies[control];
+        }
+    }
+
+    #[test]
+    fn nonlinear_tdp_construction_seed_replays_and_diversifies() {
+        let n = 6;
+        let source = CircuitSeq {
+            gates: (0..36)
+                .map(|index| {
+                    [
+                        (index % n) as u16,
+                        ((index + 1) % n) as u16,
+                        ((index + 3) % n) as u16,
+                    ]
+                })
+                .collect(),
+        };
+        let construct = |seed| {
+            let mut rng = StdRng::seed_from_u64(seed);
+            tdp4n_nonlinear_with_slice_zero_random_cnot(&source, n, 1, 192, &mut rng)
+        };
+
+        let first = construct(0x5eed_2026_0727);
+        let replay = construct(0x5eed_2026_0727);
+        assert_eq!(first.public_y, replay.public_y);
+        assert_eq!(first.public_z, replay.public_z);
+        assert_eq!(first.circuit.num_wires, replay.circuit.num_wires);
+        assert_eq!(first.circuit.gates, replay.circuit.gates);
+
+        let different = construct(0x5eed_2026_0728);
+        assert!(
+            first.public_y != different.public_y
+                || first.public_z != different.public_z
+                || first.circuit.gates != different.circuit.gates,
+            "distinct construction seeds produced identical artifacts"
+        );
+    }
+
+    #[test]
+    fn nonlinear_gadgetization_uses_the_production_33_plan() {
+        let config = ProdConfig::production();
+        assert_eq!(
+            (
+                config.k,
+                config.deg,
+                config.k_hi,
+                config.deg_hi,
+                config.rsrc,
+                config.max_width,
+                config.fill_nl,
+                config.roll,
+            ),
+            (0, 2, 2, 3, 1, 0, 2, 1)
+        );
+        assert_eq!(config.band_size(3), 6);
+        assert_eq!(config.band_size(5), 7);
+        assert_eq!(config.band_size(128), 32);
+        assert_eq!(config.band_size(256), 46);
+
+        let source = CircuitSeq {
+            gates: vec![[0, 1, 2]],
+        };
+        let mut rng = StdRng::seed_from_u64(0x3300_0005);
+        assert_eq!(
+            nonlinear_gadgetize_cnot(&source, 5, 1, &mut rng).num_wires,
+            17
+        );
+    }
+
+    #[test]
+    fn research_2233_plan_is_explicit_and_does_not_replace_production() {
+        let config = ProdConfig::research_2233();
+        assert_eq!(
+            (
+                config.k,
+                config.deg,
+                config.k_hi,
+                config.deg_hi,
+                config.rsrc,
+                config.max_width,
+                config.fill_nl,
+                config.roll,
+            ),
+            (2, 2, 2, 3, 1, 0, 2, 1)
+        );
+        assert_eq!(config.band_size(256), 64);
+        assert_eq!(ProdConfig::production().band_size(256), 46);
+    }
+
+    #[test]
+    fn historical_2233_plan_retains_the_original_unhardened_knobs() {
+        let config = ProdConfig::historical_2233();
+        assert_eq!(
+            (
+                config.k,
+                config.deg,
+                config.k_hi,
+                config.deg_hi,
+                config.rsrc,
+                config.max_width,
+                config.fill_nl,
+                config.roll,
+            ),
+            (2, 2, 2, 3, 1, 0, 0, 0)
+        );
+        assert_eq!(config.band_size(256), 64);
+    }
+
+    #[test]
+    fn product_share_fold_applies_virtual_gates_without_reconstructing_operands() {
+        let n = 3;
+        let carrier_total = 2 * n;
+        let pairs = vec![(0usize, 1usize), (2, 3), (4, 5)];
+        let config = ProdConfig {
+            k: 1,
+            deg: 2,
+            k_hi: 1,
+            deg_hi: 3,
+            band: 6,
+            rsrc: 0,
+            max_width: 0,
+            fill_nl: 0,
+            roll: 0,
+        };
+        let total = carrier_total + config.band_size(n);
+        let source_gates = [
+            XGate::from_g57([0, 1, 2]),
+            XGate::cnot(1, 2),
+            XGate::conj(2, [(0, false), (1, true)]).unwrap(),
+            XGate::x_gate(0),
+        ];
+
+        for seed in 0..4u64 {
+            let mut rng = StdRng::seed_from_u64(0x9d0d_0000 + seed);
+            let state = GadgetState {
+                n,
+                pairs: pairs.clone(),
+            };
+            let mut ledger = ProdLedger::new(n, &config, carrier_total);
+            ledger.inject_all(&state, &mut rng, &mut Vec::new());
+
+            for source_gate in &source_gates {
+                let slots_before = ledger.slots.clone();
+                let consts_before = ledger.consts.clone();
+                let mut fold = Vec::new();
+                ledger.fold_cg(source_gate, &state, &mut rng, &mut fold);
+                let target = source_gate.target as usize;
+                assert!(fold.iter().all(|gate| {
+                    !gate.ctrls.is_empty()
+                        && [pairs[target].0, pairs[target].1].contains(&(gate.target as usize))
+                }));
+
+                for input in 0..(1u64 << total) {
+                    let before: Vec<u64> = (0..n)
+                        .map(|value| {
+                            prod_decode(
+                                input,
+                                value,
+                                &pairs,
+                                &slots_before,
+                                &consts_before,
+                                &ledger.loc,
+                            )
+                        })
+                        .collect();
+                    let output = eval_u64(&fold, input);
+                    let after: Vec<u64> = (0..n)
+                        .map(|value| {
+                            prod_decode(
+                                output,
+                                value,
+                                &pairs,
+                                &ledger.slots,
+                                &ledger.consts,
+                                &ledger.loc,
+                            )
+                        })
+                        .collect();
+                    let fires = source_gate
+                        .ctrls
+                        .iter()
+                        .all(|&(wire, polarity)| (before[wire as usize] != 0) == polarity)
+                        ^ source_gate.comp;
+                    for value in 0..n {
+                        assert_eq!(
+                            after[value],
+                            before[value] ^ ((value == target && fires) as u64),
+                            "seed={seed} gate={source_gate:?} value={value}"
+                        );
+                    }
+                }
+                assert_eq!(slots_before, ledger.slots);
+            }
+        }
+    }
+
+    #[test]
+    fn product_band_roll_relocates_sources_without_changing_any_decode() {
+        let n = 3;
+        let carrier_total = 2 * n;
+        let band = 4;
+        let total = carrier_total + band;
+        let config = ProdConfig {
+            k: 1,
+            deg: 2,
+            band,
+            rsrc: 0,
+            roll: 1,
+            ..ProdConfig::off()
+        };
+        let mut left_home = 0;
+
+        for seed in 0..12u64 {
+            let mut rng = StdRng::seed_from_u64(0x0011_0000 + seed);
+            let mut state = GadgetState {
+                n,
+                pairs: vec![(0, 1), (2, 3), (4, 5)],
+            };
+            let mut ledger = ProdLedger::new(n, &config, carrier_total);
+            ledger.inject_all(&state, &mut rng, &mut Vec::new());
+
+            for _ in 0..4 {
+                let pairs_before = state.pairs.clone();
+                let slots_before = ledger.slots.clone();
+                let consts_before = ledger.consts.clone();
+                let locations_before = ledger.loc.clone();
+                let mut emitted = Vec::new();
+                ledger.roll(&mut state, &mut rng, &mut emitted);
+                assert!((3..=6).contains(&emitted.len()));
+                assert!(
+                    emitted
+                        .iter()
+                        .all(|gate| !gate.comp && (1..=2).contains(&gate.width()))
+                );
+
+                for input in 0..(1u64 << total) {
+                    let output = eval_u64(&emitted, input);
+                    for value in 0..n {
+                        let before = prod_decode(
+                            input,
+                            value,
+                            &pairs_before,
+                            &slots_before,
+                            &consts_before,
+                            &locations_before,
+                        );
+                        let after = prod_decode(
+                            output,
+                            value,
+                            &state.pairs,
+                            &ledger.slots,
+                            &ledger.consts,
+                            &ledger.loc,
+                        );
+                        assert_eq!(
+                            after, before,
+                            "seed={seed} value={value}: rolling changed the decode"
+                        );
+                    }
+                }
+
+                let mut occupied = ledger.loc.clone();
+                for &(carrier0, carrier1) in &state.pairs {
+                    occupied.extend([carrier0 as u16, carrier1 as u16]);
+                }
+                occupied.sort_unstable();
+                assert_eq!(occupied, (0..total as u16).collect::<Vec<_>>());
+            }
+            if ledger
+                .loc
+                .iter()
+                .any(|&wire| (wire as usize) < carrier_total)
+            {
+                left_home += 1;
+            }
+        }
+        assert!(
+            left_home >= 9,
+            "the rolling band rarely left its home range ({left_home}/12)"
+        );
+    }
+
+    #[test]
+    fn wide_product_fold_does_not_emit_odometer_order() {
+        let n = 3;
+        let carrier_total = 2 * n;
+        let state = GadgetState {
+            n,
+            pairs: vec![(0, 1), (2, 3), (4, 5)],
+        };
+        let config = ProdConfig {
+            k: 2,
+            deg: 2,
+            band: 6,
+            rsrc: 0,
+            ..ProdConfig::off()
+        };
+        let gate = XGate::from_g57([0, 1, 2]);
+
+        for seed in 0..4u64 {
+            let mut rng = StdRng::seed_from_u64(0x5017_0000 + seed);
+            let mut ledger = ProdLedger::new(n, &config, carrier_total);
+            ledger.inject_all(&state, &mut rng, &mut Vec::new());
+
+            let mut lists = Vec::new();
+            for &(wire, positive) in &gate.ctrls {
+                let value = wire as usize;
+                let (carrier0, carrier1) = state.pairs[value];
+                let mut atoms = vec![vec![(carrier0 as u16, true)], vec![(carrier1 as u16, true)]];
+                atoms.extend(
+                    ledger.slots[value]
+                        .iter()
+                        .map(|slot| slot.lits(&ledger.loc)),
+                );
+                if ledger.consts[value] ^ !positive {
+                    atoms.push(Vec::new());
+                }
+                lists.push(atoms);
+            }
+            let mut odometer = Vec::new();
+            let mut combination = vec![0usize; lists.len()];
+            'enumerate: loop {
+                let picked: Vec<&Vec<(u16, bool)>> = lists
+                    .iter()
+                    .zip(&combination)
+                    .map(|(list, &index)| &list[index])
+                    .collect();
+                let width = picked.iter().map(|atom| atom.len()).max().unwrap_or(0);
+                let mut literals = Vec::new();
+                for index in 0..width {
+                    for atom in &picked {
+                        if let Some(&literal) = atom.get(index) {
+                            literals.push(literal);
+                        }
+                    }
+                }
+                if !literals.is_empty() && normalize_prod_lits(&mut literals).is_some() {
+                    let fragment = XGate::conj(0, literals).unwrap();
+                    odometer.push(fragment.ctrls);
+                }
+                let mut axis = 0;
+                loop {
+                    if axis == combination.len() {
+                        break 'enumerate;
+                    }
+                    combination[axis] += 1;
+                    if combination[axis] < lists[axis].len() {
+                        break;
+                    }
+                    combination[axis] = 0;
+                    axis += 1;
+                }
+            }
+
+            let mut emitted = Vec::new();
+            ledger.fold_cg(&gate, &state, &mut rng, &mut emitted);
+            let actual: Vec<_> = emitted
+                .iter()
+                .map(|fragment| fragment.ctrls.clone())
+                .collect();
+            assert_eq!(actual.len(), odometer.len());
+            let mut actual_multiset = actual.clone();
+            let mut expected_multiset = odometer.clone();
+            actual_multiset.sort();
+            expected_multiset.sort();
+            assert_eq!(actual_multiset, expected_multiset);
+            assert_ne!(
+                actual, odometer,
+                "seed={seed}: wide fold retained its static odometer clock"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_rolling_product_gadget_preserves_arbitrary_junk() {
+        let n = 3;
+        let source = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+        let config = ProdConfig {
+            k: 1,
+            deg: 2,
+            k_hi: 1,
+            deg_hi: 3,
+            band: 6,
+            rsrc: 1,
+            max_width: 2,
+            fill_nl: 2,
+            roll: 1,
+        };
+        let mut rng = StdRng::seed_from_u64(0x0b0d_0001);
+        let transformed = nonlinear_gadgetize_cnot_with_config(&source, n, 1, &config, &mut rng);
+        assert_eq!(transformed.num_wires, 12);
+        assert!(
+            transformed
+                .gates
+                .iter()
+                .all(|gate| !gate.ctrls.is_empty() && gate.width() <= 2)
+        );
+        let low_mask = (1u64 << n) - 1;
+        for input in 0..1u64 << transformed.num_wires {
+            let expected = source.evaluate((input & low_mask) as usize) as u64 & low_mask;
+            assert_eq!(
+                eval_u64(&transformed.gates, input) & low_mask,
+                expected,
+                "input={input:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn nonlinear_band_fill_is_balanced_and_nonlinear() {
+        let n = 4;
+        let band = [9u16, 5, 11, 4, 8, 6];
+        let mut rng = StdRng::seed_from_u64(0xbadd_f111);
+        let mut gates = Vec::new();
+        emit_band_fill_nl(n, &band, 2, &mut rng, &mut gates);
+
+        let tables: Vec<Vec<bool>> = band
+            .iter()
+            .map(|&wire| {
+                (0..1u64 << n)
+                    .map(|input| ((eval_u64(&gates, input) >> wire) & 1) != 0)
+                    .collect()
+            })
+            .collect();
+        for (index, table) in tables.iter().enumerate() {
+            assert_eq!(
+                table.iter().filter(|&&value| value).count(),
+                1 << (n - 1),
+                "band wire {} is not balanced",
+                band[index]
+            );
+        }
+        let any_nonlinear = tables.iter().any(|table| {
+            (0..1usize << n).any(|left| {
+                (0..1usize << n)
+                    .any(|right| table[0] ^ table[left] ^ table[right] ^ table[left ^ right])
+            })
+        });
+        assert!(
+            any_nonlinear,
+            "cascaded fill produced only affine functions"
+        );
+    }
+
+    #[test]
+    fn production_slice_preblock_covers_aux_and_band_with_nonlinear_shapes() {
+        let (n, band, gate_count) = (5usize, 2usize, 50usize);
+        let mut rng = StdRng::seed_from_u64(0xcc60_0000);
+        let preblock = slice_zero_ccnot_preblock(n, band, gate_count, &mut rng);
+        assert_eq!(preblock.num_wires, 2 * n + band);
+        assert_eq!(preblock.gates.len(), gate_count);
+        assert!(slice_preblock_fixes_only_zero_slice(
+            &preblock.gates,
+            n,
+            n + band
+        ));
+
+        let mut covered = std::collections::HashSet::new();
+        let mut widths = [0usize; 4];
+        for gate in &preblock.gates {
+            assert!(!gate.comp);
+            assert!((gate.target as usize) < n);
+            assert!(gate.ctrls.iter().all(|&(_, positive)| positive));
+            let slice_controls: Vec<u16> = gate
+                .ctrls
+                .iter()
+                .map(|&(wire, _)| wire)
+                .filter(|&wire| wire as usize >= n)
+                .collect();
+            assert_eq!(slice_controls.len(), 1);
+            covered.insert(slice_controls[0]);
+            widths[gate.width()] += 1;
+        }
+        assert_eq!(covered.len(), n + band);
+        assert!(widths[1] > 0 && widths[2] > 0 && widths[3] > 0);
+
+        let data_mask = (1u64 << n) - 1;
+        let nonlinear = (1..1u64 << (n + band)).any(|slice| {
+            let evaluate = |data| eval_u64(&preblock.gates, data | (slice << n)) & data_mask;
+            let base = evaluate(0);
+            (0..n).any(|left| {
+                ((left + 1)..n).any(|right| {
+                    let a = 1u64 << left;
+                    let b = 1u64 << right;
+                    evaluate(a ^ b) ^ evaluate(a) ^ evaluate(b) ^ base != 0
+                })
+            })
+        });
+        assert!(
+            nonlinear,
+            "three-control preblock shapes produced no observed quadratic slice"
+        );
+    }
+
+    #[test]
+    fn production_nonlinear_wrapper_is_correct_on_the_aux_and_band_zero_slice() {
+        let n = 3;
+        let source = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+        let mut rng = StdRng::seed_from_u64(0xcc70_0000);
+        let transformed = nonlinear_gadgetize_with_slice_zero_cnot(&source, n, 1, &mut rng);
+        assert_eq!(transformed.num_wires, 12);
+        let low_mask = (1u64 << n) - 1;
+        for data in 0..=low_mask {
+            let expected = source.evaluate(data as usize) as u64 & low_mask;
+            assert_eq!(
+                eval_u64(&transformed.gates, data) & low_mask,
+                expected,
+                "data={data:#x}"
+            );
+        }
+        let has_three_control_slice_gate = transformed.gates.iter().any(|gate| {
+            gate.width() == 3
+                && !gate.comp
+                && (gate.target as usize) < n
+                && gate.ctrls.iter().all(|&(_, positive)| positive)
+                && gate
+                    .ctrls
+                    .iter()
+                    .filter(|&&(wire, _)| (wire as usize) < n)
+                    .count()
+                    == 2
+                && gate
+                    .ctrls
+                    .iter()
+                    .filter(|&&(wire, _)| (wire as usize) >= n)
+                    .count()
+                    == 1
+        });
+        assert!(has_three_control_slice_gate);
+
+        // Every individual non-data wire, including every band home wire,
+        // must affect the exposed low function for at least one data input.
+        for slice_wire in n..transformed.num_wires {
+            let slice = 1u64 << slice_wire;
+            let disturbed = (0..=low_mask).any(|data| {
+                let expected = source.evaluate(data as usize) as u64 & low_mask;
+                eval_u64(&transformed.gates, data | slice) & low_mask != expected
+            });
+            assert!(disturbed, "slice wire {slice_wire} did not affect the data");
+        }
+    }
+
+    #[test]
+    fn nonlinear_gadgetization_preserves_low_outputs_for_arbitrary_junk() {
+        let n = 3;
+        let source = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+        let mut rng = StdRng::seed_from_u64(0x2330_c001);
+        let transformed = nonlinear_gadgetize_cnot(&source, n, 1, &mut rng);
+        assert_eq!(transformed.num_wires, 12);
+        assert!(transformed.gates.iter().all(|gate| !gate.ctrls.is_empty()));
+        assert!(
+            transformed
+                .gates
+                .iter()
+                .map(XGate::width)
+                .max()
+                .unwrap_or(0)
+                >= 3,
+            "the degree-3 tower did not produce wide fragments"
+        );
+
+        let low_mask = (1u64 << n) - 1;
+        for input in 0..1u64 << transformed.num_wires {
+            let expected = source.evaluate((input & low_mask) as usize) as u64 & low_mask;
+            assert_eq!(
+                eval_u64(&transformed.gates, input) & low_mask,
+                expected,
+                "input={input:#x}"
+            );
         }
     }
 
@@ -2907,6 +5094,176 @@ mod cnot_gadget_tests {
                 let expected = public_y ^ (main.evaluate(x as usize) as u64 & mask);
                 assert_eq!((output >> n) & mask, expected, "x={x:#x} w={w:#x}");
             }
+        }
+    }
+
+    #[test]
+    fn nonlinear_tdp_random_slice_fixes_yz_and_leaves_w_and_band_free() {
+        let n = 3;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+        let mut rng = StdRng::seed_from_u64(0x51ce_2330);
+        let transformed = tdp4n_nonlinear_with_slice_zero_random_cnot(&main, n, 1, 96, &mut rng);
+        let band_width = ProdConfig::production().band_size(2 * n);
+        assert_eq!(transformed.circuit.num_wires, 4 * n + band_width);
+        let mask = (1u64 << n) - 1;
+        let public_y = transformed.public_y[0] & mask;
+        let public_z = transformed.public_z[0] & mask;
+        let mut helpers = StdRng::seed_from_u64(0x51ce_badd);
+        for x in 0..=mask {
+            for _ in 0..32 {
+                let w = helpers.random::<u64>() & mask;
+                let band = helpers.random::<u64>() & ((1u64 << band_width) - 1);
+                let input = x
+                    | (public_y << n)
+                    | (public_z << (2 * n))
+                    | (w << (3 * n))
+                    | (band << (4 * n));
+                let output = eval_u64(&transformed.circuit.gates, input);
+                let expected = public_y ^ (main.evaluate(x as usize) as u64 & mask);
+                assert_eq!(
+                    (output >> n) & mask,
+                    expected,
+                    "x={x:#x} w={w:#x} band={band:#x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nonlinear_tdp_2233_random_slice_preserves_middle_for_free_helpers() {
+        let n = 3;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0]],
+        };
+        let config = ProdConfig::research_2233();
+        let mut rng = StdRng::seed_from_u64(0x51ce_2233);
+        let transformed = tdp4n_nonlinear_with_slice_zero_random_cnot_with_config(
+            &main, n, 1, 96, &config, &mut rng,
+        );
+        let band_width = config.band_size(2 * n);
+        assert_eq!(transformed.circuit.num_wires, 4 * n + band_width);
+        let mask = (1u64 << n) - 1;
+        let public_y = transformed.public_y[0] & mask;
+        let public_z = transformed.public_z[0] & mask;
+        let mut helpers = StdRng::seed_from_u64(0x51ce_b223);
+        for x in 0..=mask {
+            for _ in 0..32 {
+                let w = helpers.random::<u64>() & mask;
+                let band = helpers.random::<u64>() & ((1u64 << band_width) - 1);
+                let input = x
+                    | (public_y << n)
+                    | (public_z << (2 * n))
+                    | (w << (3 * n))
+                    | (band << (4 * n));
+                let output = eval_u64(&transformed.circuit.gates, input);
+                let expected = public_y ^ (main.evaluate(x as usize) as u64 & mask);
+                assert_eq!(
+                    (output >> n) & mask,
+                    expected,
+                    "x={x:#x} w={w:#x} band={band:#x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sandwich_slice_gates_are_dead_on_the_zero_slice() {
+        let n = 4;
+        let mask = (1u64 << n) - 1;
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0x5a2d_0000 + seed);
+            let block = sandwich_slice_gates(n, 5 * n, &mut rng);
+            for gate in &block {
+                assert!(!gate.comp);
+                assert!((gate.target as usize) < n);
+                assert!(gate.ctrls.iter().all(|&(_, positive)| positive));
+                assert!(gate.ctrls.iter().any(|&(wire, _)| (wire as usize) >= n));
+            }
+            for x in 0..=mask {
+                assert_eq!(eval_u64(&block, x), x);
+            }
+        }
+    }
+
+    #[test]
+    fn sliced_sandwich_computes_c_on_the_second_half_on_the_zero_slice() {
+        let n = 3;
+        let mask = (1u64 << n) - 1;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0], [0, 2, 1]],
+        };
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0x5a4d_0000 + seed);
+            let sandwich = sliced_sandwich_cnot(&main, n, 12, 4 * n, &mut rng);
+            assert_eq!(sandwich.num_wires, 2 * n);
+            for x in 0..=mask {
+                let expected = main.evaluate(x as usize) as u64 & mask;
+                let actual = (eval_u64(&sandwich.gates, x) >> n) & mask;
+                assert_eq!(actual, expected, "seed={seed} x={x:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn sliced_sandwich_floats_the_copy_column_into_a_band() {
+        let n = 6;
+        let main = CircuitSeq {
+            gates: (0..24)
+                .map(|index| {
+                    [
+                        (index % n) as u16,
+                        ((index + 1) % n) as u16,
+                        ((index + 2) % n) as u16,
+                    ]
+                })
+                .collect(),
+        };
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0x5a6d_0000 + seed);
+            let sandwich = sliced_sandwich_cnot(&main, n, 20, 4 * n, &mut rng);
+            let positions: Vec<usize> = sandwich
+                .gates
+                .iter()
+                .enumerate()
+                .filter_map(|(index, gate)| ((gate.target as usize) >= n).then_some(index))
+                .collect();
+            assert_eq!(positions.len(), n);
+            assert!(
+                positions.last().unwrap() - positions.first().unwrap() > n,
+                "seed={seed}: copy column remained contiguous"
+            );
+        }
+    }
+
+    #[test]
+    fn sliced_sandwich_2233_gadget_preserves_the_nested_zero_slice() {
+        let n = 3;
+        let sandwich_n = 2 * n;
+        let mask = (1u64 << n) - 1;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2], [2, 0, 1], [1, 2, 0], [0, 2, 1]],
+        };
+        let mut sandwich_rng = StdRng::seed_from_u64(0x5a4d_2233);
+        let sandwich = sliced_sandwich_cnot(&main, n, 12, 4 * n, &mut sandwich_rng);
+        let mut gadget_rng = StdRng::seed_from_u64(0x6ad6_2233);
+        let gadget = gadgetize_xgates_with_slice_zero_ccnot_historical_2233(
+            &sandwich.gates,
+            sandwich_n,
+            1,
+            10 * sandwich_n,
+            &mut gadget_rng,
+        );
+        let config = ProdConfig::historical_2233();
+        assert_eq!(
+            gadget.num_wires,
+            2 * sandwich_n + config.band_size(sandwich_n)
+        );
+        for x in 0..=mask {
+            let expected = main.evaluate(x as usize) as u64 & mask;
+            let actual = (eval_u64(&gadget.gates, x) >> n) & mask;
+            assert_eq!(actual, expected, "x={x:#x}");
         }
     }
 

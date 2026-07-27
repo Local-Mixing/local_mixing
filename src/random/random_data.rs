@@ -868,9 +868,12 @@ pub fn contiguous_convex(
     Some((start, end))
 }
 
-// Shoots a random gate left or right without collisions
-pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
-    let mut rng = rand::rng();
+/// Shoot random gates left or right without crossing collisions, consuming
+/// randomness from the caller-provided stream.
+///
+/// Seeded construction paths must use this form so their advertised seed
+/// determines the resulting artifact.
+pub fn shoot_random_gate_with_rng(circuit: &mut CircuitSeq, rounds: usize, rng: &mut impl Rng) {
     let len = circuit.gates.len();
 
     if len == 0 {
@@ -911,6 +914,14 @@ pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
             }
         }
     }
+}
+
+/// Compatibility wrapper for callers that intentionally use ambient
+/// randomness. Seeded construction code should call
+/// [`shoot_random_gate_with_rng`] instead.
+pub fn shoot_random_gate(circuit: &mut CircuitSeq, rounds: usize) {
+    let mut rng = rand::rng();
+    shoot_random_gate_with_rng(circuit, rounds, &mut rng);
 }
 
 pub fn shoot_left_vec(circuit: &mut Vec<[u16; 3]>, gate_idx: usize) -> usize {

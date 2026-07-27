@@ -61,6 +61,13 @@ path = "src/bin/expand_sample.rs"
 name = "hmap_affine_fixed_slice"
 path = "experiments/affine_heatmaps_compact300_20260722/tools/hmap_affine_fixed_slice.rs"
 
+# Held-out statistical companion to the exact affine reader. Candidate
+# selection is frozen on training lanes before agreement is measured on
+# disjoint holdout lanes.
+[[bin]]
+name = "hmap_stat"
+path = "src/bin/hmap_stat.rs"
+
 # Fast 64-lane semantic guard for strict 4n TDP artifacts. Its command-line
 # evidence is compatible with the existing Python slice-check logs.
 [[bin]]

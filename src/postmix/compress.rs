@@ -67,6 +67,11 @@ impl Default for CompressParams {
 pub struct CompressReport {
     pub iters: usize,
     pub liveness_dropped: usize,
+    /// Complemented empty identities removed from the input boundary.
+    pub identity_noops_dropped_input: usize,
+    /// Complemented empty identities synthesized by ESOP reduction and
+    /// removed before they could escape a pass.
+    pub identity_noops_dropped_synthesized: usize,
     pub groups: u64,
     pub multi_groups: u64,
     pub max_group: usize,
@@ -841,6 +846,13 @@ pub fn compress_traced_with_sources(
         .zip(source_marks)
         .map(|((gate, root), source)| TrackedGate { gate, root, source })
         .collect();
+    // A complemented empty cube fires as 1 XOR AND(empty) = 0.  Remove these
+    // identities before gathering: leaving one in the tape would make the
+    // gatherer treat its nominal target as a real write and create a false
+    // barrier between otherwise movable gates.
+    let before_noop_filter = cur.len();
+    cur.retain(|tracked| !tracked.gate.is_noop());
+    rep.identity_noops_dropped_input = before_noop_filter - cur.len();
     for iter in 1..=p.max_iters {
         let before = cur.len();
         let mut changed_before_gather = false;
@@ -850,7 +862,7 @@ pub fn compress_traced_with_sources(
             rep.liveness_dropped += dropped;
             changed_before_gather = dropped != 0;
         }
-        let next = gather_reduce_pass(
+        let mut next = gather_reduce_pass(
             &cur,
             iter,
             wires,
@@ -861,6 +873,13 @@ pub fn compress_traced_with_sources(
             &mut recovery,
             &mut rep,
         );
+        // ESOP parity can transiently be attached to an empty surviving cube,
+        // producing the same complemented-empty identity.  Drop it after
+        // every pass, including the final allowed pass, so fcompress never
+        // serializes a non-canonical no-op.
+        let before_noop_filter = next.len();
+        next.retain(|tracked| !tracked.gate.is_noop());
+        rep.identity_noops_dropped_synthesized += before_noop_filter - next.len();
         let fixed_point = !changed_before_gather
             && next.len() == cur.len()
             && next
@@ -870,7 +889,7 @@ pub fn compress_traced_with_sources(
         cur = next;
         rep.iters = iter;
         println!(
-            "[fcompress] iter={} gates {} -> {} | groups={} multi={} max={} | direct_pass1={}/{}frags direct_later={} catalogue={} anf_wins={} anf_g57={} live_dropped={} fixed={}",
+            "[fcompress] iter={} gates {} -> {} | groups={} multi={} max={} | direct_pass1={}/{}frags direct_later={} catalogue={} anf_wins={} anf_g57={} live_dropped={} noop_dropped={}/{} fixed={}",
             iter,
             before,
             cur.len(),
@@ -884,6 +903,8 @@ pub fn compress_traced_with_sources(
             rep.anf_wins,
             rep.anf_structural_g57,
             rep.liveness_dropped,
+            rep.identity_noops_dropped_input,
+            rep.identity_noops_dropped_synthesized,
             fixed_point
         );
         if fixed_point {
@@ -893,6 +914,10 @@ pub fn compress_traced_with_sources(
     }
     rep.gates_out = cur.len();
     rep.lits_out = cur.iter().map(|tracked| tracked.gate.width() as u64).sum();
+    debug_assert!(
+        cur.iter().all(|tracked| !tracked.gate.is_noop()),
+        "fcompress must not emit complemented empty identities"
+    );
     let mut gates = Vec::with_capacity(cur.len());
     let mut roots = Vec::with_capacity(cur.len());
     let mut source_marks = Vec::with_capacity(cur.len());
@@ -995,6 +1020,78 @@ mod compress_tests {
         let (out2, _) = compress(gates2.clone(), 3, &CompressParams::default());
         assert!(out2.is_empty());
         assert!(equal_on(&gates2, &out2, 3, None));
+    }
+
+    #[test]
+    fn singleton_complemented_empty_is_dropped() {
+        let noop = XGate {
+            target: 0,
+            comp: true,
+            ctrls: Lits::new(),
+        };
+        let gates = vec![noop];
+        let (out, rep) = compress(gates.clone(), 1, &CompressParams::default());
+        assert_eq!(rep.identity_noops_dropped_input, 1);
+        assert_eq!(rep.identity_noops_dropped_synthesized, 0);
+        assert!(out.is_empty());
+        assert!(equal_on(&gates, &out, 1, None));
+    }
+
+    #[test]
+    fn catalogue_zero_function_does_not_emit_complemented_empty() {
+        // (1 XOR x) XOR !x = 0.  DropLit reduces the two cubes to the
+        // empty product while odd parity complements it into a no-op.
+        let mut complemented = conj(0, &[(1, true)]);
+        complemented.comp = true;
+        let gates = vec![complemented, conj(0, &[(1, false)])];
+        let (out, rep) = compress(gates.clone(), 2, &CompressParams::default());
+        assert!(rep.catalogue_merges >= 1);
+        assert_eq!(rep.identity_noops_dropped_input, 0);
+        assert_eq!(rep.identity_noops_dropped_synthesized, 1);
+        assert!(out.is_empty());
+        assert!(equal_on(&gates, &out, 2, None));
+    }
+
+    #[test]
+    fn noop_does_not_create_a_false_gather_barrier() {
+        let gate = conj(0, &[(1, true)]);
+        let noop = XGate {
+            target: 1,
+            comp: true,
+            ctrls: Lits::new(),
+        };
+        let gates = vec![gate.clone(), noop, gate];
+        let (out, _) = compress(
+            gates.clone(),
+            2,
+            &CompressParams {
+                max_iters: 1,
+                ..Default::default()
+            },
+        );
+        assert!(out.is_empty());
+        assert!(equal_on(&gates, &out, 2, None));
+    }
+
+    #[test]
+    fn noop_removal_keeps_traced_sidecars_aligned() {
+        let noop = XGate {
+            target: 0,
+            comp: true,
+            ctrls: Lits::new(),
+        };
+        let survivor = conj(1, &[(0, true)]);
+        let (traced, _) = compress_traced_with_sources(
+            vec![noop, survivor.clone()],
+            2,
+            &CompressParams::default(),
+            vec![7, 9],
+            Vec::new(),
+        );
+        assert_eq!(traced.gates, vec![survivor]);
+        assert_eq!(traced.gates.len(), traced.roots.len());
+        assert_eq!(traced.gates.len(), traced.source_marks.len());
+        assert_eq!(traced.source_marks, vec![9]);
     }
 
     #[test]
@@ -1272,6 +1369,10 @@ mod compress_tests {
         }
         let (out, rep) = compress(gates.clone(), wires as usize, &CompressParams::default());
         assert!(out.len() <= gates.len());
+        assert!(
+            out.iter().all(|gate| !gate.is_noop()),
+            "fcompress emitted a complemented empty identity"
+        );
         assert!(rep.iters >= 1);
         assert!(equal_on(&gates, &out, wires as usize, None));
         // On a dense 8-wire circuit real reduction should happen.

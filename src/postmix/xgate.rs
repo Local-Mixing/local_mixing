@@ -59,6 +59,14 @@ impl XGate {
         }
     }
 
+    /// True when this encoding has no effect on any state.
+    ///
+    /// The empty conjunction is `1`, so `comp XOR AND(ctrls)` is
+    /// `1 XOR 1 = 0` for a complemented gate with no controls.
+    pub fn is_noop(&self) -> bool {
+        self.comp && self.ctrls.is_empty()
+    }
+
     /// Positive-control CNOT: `target ^= control`.
     pub fn cnot(target: u16, control: u16) -> XGate {
         XGate::conj(target, [(control, true)]).expect("a CNOT has one valid control")

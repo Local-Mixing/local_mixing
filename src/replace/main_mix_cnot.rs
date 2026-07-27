@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use rand::{Rng, RngCore, SeedableRng, rngs::StdRng};
+use rand::{RngCore, SeedableRng, rngs::StdRng};
 
 use crate::{
     circuit::circuit::{CircuitSeq, U1024},
@@ -19,9 +19,11 @@ use crate::{
         xgate::{XGate, eval_u1024},
     },
     replace::gadgets::{
-        CnotCircuit, feistalize_cnot, feistalize_with_slice_zero_cnot,
+        CnotCircuit, ProdConfig, feistalize_cnot, feistalize_with_slice_zero_cnot,
         feistalize_with_slice_zero_hardcoded_cnot, feistalize_with_slice_zero_random_cnot,
-        gadgetize_cnot, packed_bit, tdp4n_cnot, tdp4n_with_slice_zero_random_cnot,
+        gadgetize_cnot, nonlinear_gadgetize_with_slice_zero_cnot, packed_bit, tdp4n_cnot,
+        tdp4n_nonlinear_cnot, tdp4n_nonlinear_with_slice_zero_random_cnot,
+        tdp4n_with_slice_zero_random_cnot,
     },
 };
 
@@ -29,6 +31,7 @@ use crate::{
 enum FunctionView {
     Whole,
     GadgetLow,
+    GadgetLowZeroNonData { slice_end: usize },
     FeistalMiddle,
     Tdp4nMiddle,
 }
@@ -47,6 +50,7 @@ pub struct CnotSssParams<'a> {
     pub save: &'a str,
     pub source: &'a str,
     pub do_gadgetize: bool,
+    pub do_nonlinear_gadgetize: bool,
     pub do_feistalize: bool,
     pub do_tdp4n: bool,
     pub slice_zero: bool,
@@ -104,10 +108,16 @@ fn write_slice_metadata(
     path: &str,
     n: usize,
     total_wires: usize,
-    gate_count: usize,
+    artifact_gates: usize,
+    slice_preblock_gates: usize,
+    construction_seed: u64,
+    rg_frequency: usize,
+    source_gates: usize,
+    source_repr_xxh3_128: &str,
     public_y: &[u64],
     public_z: &[u64],
     layout: SliceLayout,
+    nonlinear_config: Option<ProdConfig>,
 ) {
     let y = packed_words_to_hex(public_y, n);
     let z = packed_words_to_hex(public_z, n);
@@ -123,13 +133,66 @@ fn write_slice_metadata(
             ("tdp4n_two_share", format!("{}..{}", three_n, 4 * n), 4 * n)
         }
     };
+    let nonlinear_metadata = if let Some(config) = nonlinear_config {
+        assert_eq!(
+            layout,
+            SliceLayout::Tdp4n,
+            "nonlinear fixed-slice metadata currently describes the TDP layout"
+        );
+        let band_start = 4 * n;
+        assert!(
+            total_wires > band_start,
+            "nonlinear TDP metadata needs a nonempty appended band"
+        );
+        let mut plan = Vec::with_capacity(config.k + config.k_hi);
+        plan.extend(std::iter::repeat_n(config.deg.max(2), config.k));
+        plan.extend(std::iter::repeat_n(config.deg_hi.max(2), config.k_hi));
+        let plan = plan
+            .into_iter()
+            .map(|degree| degree.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "nonlinear_enabled=true\n\
+             nonlinear_plan={plan}\n\
+             nonlinear_k={}\n\
+             nonlinear_deg={}\n\
+             nonlinear_k_hi={}\n\
+             nonlinear_deg_hi={}\n\
+             nonlinear_band_config={}\n\
+             nonlinear_band_size={}\n\
+             nonlinear_band_wires={band_start}..{total_wires}\n\
+             nonlinear_rsrc={}\n\
+             nonlinear_max_width={}\n\
+             nonlinear_fill_nl={}\n\
+             nonlinear_roll={}\n",
+            config.k,
+            config.deg,
+            config.k_hi,
+            config.deg_hi,
+            config.band,
+            total_wires - band_start,
+            config.rsrc,
+            config.max_width,
+            config.fill_nl,
+            config.roll,
+        )
+    } else {
+        "nonlinear_enabled=false\n".to_owned()
+    };
     let contents = format!(
         "mode=slice_zero_random\n\
          representation=mpmct1\n\
          layout={layout_name}\n\
          n={n}\n\
          total_wires={total_wires}\n\
-         gates={gate_count}\n\
+         gates={artifact_gates}\n\
+         slice_preblock_gates={slice_preblock_gates}\n\
+         construction_seed={construction_seed}\n\
+         rg_frequency={rg_frequency}\n\
+         source_gates={source_gates}\n\
+         source_repr_xxh3_128={source_repr_xxh3_128}\n\
+         {nonlinear_metadata}\
          y_hex={y}\n\
          z_hex={z}\n\
          x_wires=0..{n}\n\
@@ -147,6 +210,31 @@ fn write_slice_metadata(
     );
     std::fs::write(&meta_path, contents).expect("write slice-zero-random metadata");
     println!("[sss:cnot] public slice Y={y} Z={z} ({meta_path})");
+}
+
+fn zero_nondata_slice_end(view: FunctionView) -> Option<usize> {
+    match view {
+        FunctionView::GadgetLowZeroNonData { slice_end } => Some(slice_end),
+        _ => None,
+    }
+}
+
+fn write_zero_nondata_metadata(path: &str, n: usize, total_wires: usize, slice_end: usize) {
+    assert!(n <= slice_end && slice_end <= total_wires);
+    let meta_path = format!("{path}.slice_zero_ccnot");
+    let contents = format!(
+        "mode=slice_zero_ccnot\n\
+         representation=mpmct1\n\
+         n={n}\n\
+         total_wires={total_wires}\n\
+         data_wires=0..{n}\n\
+         fixed_input_wires={n}..{slice_end}\n\
+         fixed_input_value=0\n\
+         independent_helper_wires={slice_end}..{total_wires}\n\
+         band_is_in_fixed_slice=true\n"
+    );
+    std::fs::write(&meta_path, contents).expect("write slice-zero-ccnot metadata");
+    println!("[sss:cnot] production zero slice fixes wires {n}..{slice_end} ({meta_path})");
 }
 
 fn random_u1024(rng: &mut impl RngCore) -> U1024 {
@@ -183,6 +271,10 @@ fn functionality_check(
         } else {
             random_u1024(&mut rng) & mask(total_wires)
         };
+        if let FunctionView::GadgetLowZeroNonData { slice_end } = view {
+            let fixed_mask = mask(slice_end) ^ low_mask;
+            input &= !fixed_mask;
+        }
         if matches!(
             view,
             FunctionView::FeistalMiddle | FunctionView::Tdp4nMiddle
@@ -200,7 +292,9 @@ fn functionality_check(
         let actual = eval_u1024(transformed, input);
         let matches = match view {
             FunctionView::Whole => actual == original.evaluate_1024(input),
-            FunctionView::GadgetLow => actual & low_mask == original_output,
+            FunctionView::GadgetLow | FunctionView::GadgetLowZeroNonData { .. } => {
+                actual & low_mask == original_output
+            }
             FunctionView::FeistalMiddle | FunctionView::Tdp4nMiddle => {
                 let y = (input >> n) & low_mask;
                 ((actual >> n) & low_mask) == (y ^ original_output)
@@ -305,47 +399,66 @@ fn ensure_parent(path: &str) {
     }
 }
 
-fn assert_strict_tdp4n(enabled: bool, gates: &[XGate], total_wires: usize, n: usize, stage: &str) {
+fn assert_tdp_namespace(
+    enabled: bool,
+    nonlinear: bool,
+    gates: &[XGate],
+    total_wires: usize,
+    n: usize,
+    stage: &str,
+) {
     if !enabled {
         return;
     }
-    let expected_wires = n.checked_mul(4).expect("4n TDP wire count overflow");
-    assert_eq!(
-        total_wires, expected_wires,
-        "strict 4n TDP wire-count invariant failed {stage}"
-    );
+    let base_wires = n.checked_mul(4).expect("4n TDP wire count overflow");
+    if nonlinear {
+        assert!(
+            total_wires > base_wires,
+            "nonlinear TDP must append a source band after 4n wires {stage}"
+        );
+    } else {
+        assert_eq!(
+            total_wires, base_wires,
+            "strict 4n TDP wire-count invariant failed {stage}"
+        );
+    }
     for (gate_index, gate) in gates.iter().enumerate() {
         assert!(
-            (gate.target as usize) < expected_wires,
+            (gate.target as usize) < total_wires,
             "strict 4n TDP target wire {} is outside 0..{} at gate {} {stage}",
             gate.target,
-            expected_wires,
+            total_wires,
             gate_index
         );
         for &(wire, _) in &gate.ctrls {
             assert!(
-                (wire as usize) < expected_wires,
+                (wire as usize) < total_wires,
                 "strict 4n TDP control wire {} is outside 0..{} at gate {} {stage}",
                 wire,
-                expected_wires,
+                total_wires,
                 gate_index
             );
         }
     }
 }
 
-/// Run the XGate-native shuffle/shoot/shuffle path selected by `sss --cnot`.
+/// Run the XGate-native shuffle/shoot/shuffle path selected by `sss --cnot`
+/// or implicitly by `sss --nonlinear_gadgetize`.
 pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<'_>) {
     assert!(p.x > 0, "--x must be nonzero");
     assert!(p.n > 0, "--n must be nonzero");
     assert!(p.rg_freq > 0, "--rg-frequency must be nonzero");
+    let selected_transforms = [p.do_gadgetize, p.do_feistalize, p.do_tdp4n]
+        .into_iter()
+        .filter(|selected| *selected)
+        .count();
     assert!(
-        [p.do_gadgetize, p.do_feistalize, p.do_tdp4n]
-            .into_iter()
-            .filter(|selected| *selected)
-            .count()
-            <= 1,
+        selected_transforms <= 1,
         "--gadgetize, --feistalize, and --tdp4n are mutually exclusive"
+    );
+    assert!(
+        !(p.do_nonlinear_gadgetize && (p.do_gadgetize || p.do_feistalize)),
+        "--nonlinear_gadgetize may be direct or combined only with --tdp4n"
     );
     println!(
         "[sss:cnot] XGate-native backend selected: G57 ingress, heterogeneous mpmct1 thereafter"
@@ -357,7 +470,15 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         println!("[sss:cnot] expansion-game maps to native fresh-wire fragment splits");
     }
 
-    let mut rng = rand::rng();
+    let configured_seed = env_u64("SSS_CNOT_SEED");
+    let construction_seed = configured_seed.unwrap_or_else(rand::random);
+    let mut rng = StdRng::seed_from_u64(construction_seed);
+    let source_repr = original.repr();
+    let source_repr_xxh3_128 = format!(
+        "{:032x}",
+        xxhash_rust::xxh3::xxh3_128(source_repr.as_bytes())
+    );
+    println!("[sss:cnot] reproducibility seed={construction_seed}");
     let mut public_slice_words: Option<(Vec<u64>, Vec<u64>)> = None;
     let mut public_slice_layout = None;
     let mut fixed_slice = None;
@@ -367,13 +488,23 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
             "--tdp4n currently supports only --slice-zero-random"
         );
         if p.slice_zero_random {
-            let output = tdp4n_with_slice_zero_random_cnot(
-                original,
-                p.n,
-                p.rg_freq,
-                p.slice_zero_random_gates,
-                &mut rng,
-            );
+            let output = if p.do_nonlinear_gadgetize {
+                tdp4n_nonlinear_with_slice_zero_random_cnot(
+                    original,
+                    p.n,
+                    p.rg_freq,
+                    p.slice_zero_random_gates,
+                    &mut rng,
+                )
+            } else {
+                tdp4n_with_slice_zero_random_cnot(
+                    original,
+                    p.n,
+                    p.rg_freq,
+                    p.slice_zero_random_gates,
+                    &mut rng,
+                )
+            };
             fixed_slice = Some((
                 packed_words_to_u1024(&output.public_y, p.n),
                 packed_words_to_u1024(&output.public_z, p.n),
@@ -383,15 +514,35 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
             (
                 output.circuit,
                 FunctionView::Tdp4nMiddle,
-                "slice-zero-random 4n TDP",
+                if p.do_nonlinear_gadgetize {
+                    "slice-zero-random nonlinear 4n+band TDP"
+                } else {
+                    "slice-zero-random 4n TDP"
+                },
             )
         } else {
             (
-                tdp4n_cnot(original, p.n, p.rg_freq, &mut rng),
+                if p.do_nonlinear_gadgetize {
+                    tdp4n_nonlinear_cnot(original, p.n, p.rg_freq, &mut rng)
+                } else {
+                    tdp4n_cnot(original, p.n, p.rg_freq, &mut rng)
+                },
                 FunctionView::Tdp4nMiddle,
-                "4n TDP",
+                if p.do_nonlinear_gadgetize {
+                    "nonlinear 4n+band TDP"
+                } else {
+                    "4n TDP"
+                },
             )
         }
+    } else if p.do_nonlinear_gadgetize {
+        let output = nonlinear_gadgetize_with_slice_zero_cnot(original, p.n, p.rg_freq, &mut rng);
+        let slice_end = output.num_wires;
+        (
+            output,
+            FunctionView::GadgetLowZeroNonData { slice_end },
+            "slice-zero production nonlinear product-share gadgetized",
+        )
     } else if p.do_feistalize {
         if p.slice_zero_random {
             let output = feistalize_with_slice_zero_random_cnot(
@@ -466,7 +617,14 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         "--cnot supports at most 1024 transformed wires"
     );
     let mut gates = transformed.gates;
-    assert_strict_tdp4n(p.do_tdp4n, &gates, total_wires, p.n, "after construction");
+    assert_tdp_namespace(
+        p.do_tdp4n,
+        p.do_nonlinear_gadgetize,
+        &gates,
+        total_wires,
+        p.n,
+        "after construction",
+    );
     println!(
         "[sss:cnot] {label}: source={} gates -> {} gates, {} wires; output format=mpmct1",
         original.gates.len(),
@@ -487,7 +645,12 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
     )
     .expect("CNOT transformation changed required functionality");
 
-    if p.do_gadgetize || p.do_feistalize || p.do_tdp4n || p.gadget_path.is_some() {
+    if p.do_gadgetize
+        || p.do_nonlinear_gadgetize
+        || p.do_feistalize
+        || p.do_tdp4n
+        || p.gadget_path.is_some()
+    {
         let path = p
             .gadget_path
             .map(str::to_owned)
@@ -500,15 +663,27 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
                 &path,
                 p.n,
                 total_wires,
+                gates.len(),
                 p.slice_zero_random_gates,
+                construction_seed,
+                p.rg_freq,
+                original.gates.len(),
+                &source_repr_xxh3_128,
                 public_y,
                 public_z,
                 public_slice_layout.expect("public slice layout"),
+                p.do_nonlinear_gadgetize.then_some(ProdConfig::production()),
             );
+        }
+        if let Some(slice_end) = zero_nondata_slice_end(view) {
+            write_zero_nondata_metadata(&path, p.n, total_wires, slice_end);
         }
     }
 
-    let base_seed = env_u64("SSS_CNOT_SEED").unwrap_or_else(|| rng.random());
+    // A printed construction seed must replay the whole run even when the
+    // original invocation did not receive SSS_CNOT_SEED.  Do not derive this
+    // differently based on whether the seed came from the environment.
+    let base_seed = construction_seed;
     let explicit_moves = env_u64("SSS_CNOT_MOVES_PER_ROUND");
     for round in 0..p.rounds {
         let before = gates.clone();
@@ -547,7 +722,14 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         mixer.final_float();
         mixer.global_check();
         gates = mixer.arena.to_vec();
-        assert_strict_tdp4n(p.do_tdp4n, &gates, total_wires, p.n, "after mixing");
+        assert_tdp_namespace(
+            p.do_tdp4n,
+            p.do_nonlinear_gadgetize,
+            &gates,
+            total_wires,
+            p.n,
+            "after mixing",
+        );
         print_counts(&format!("round {} after mixing", round + 1), &gates);
 
         let compress_params = CompressParams {
@@ -558,7 +740,14 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         let before_compress_len = gates.len();
         let (compressed, report) = compress(gates, total_wires, &compress_params);
         gates = compressed;
-        assert_strict_tdp4n(p.do_tdp4n, &gates, total_wires, p.n, "after compression");
+        assert_tdp_namespace(
+            p.do_tdp4n,
+            p.do_nonlinear_gadgetize,
+            &gates,
+            total_wires,
+            p.n,
+            "after compression",
+        );
         println!(
             "[sss:cnot] round {} compression: {} -> {} gates in {} sweeps (fixed-point={})",
             round + 1,
@@ -592,6 +781,26 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         let round_path = format!("{save_base}round{}.txt", round + 1);
         ensure_parent(&round_path);
         format::write_mpmct(&round_path, &gates, total_wires).expect("write CNOT round");
+        if let Some((public_y, public_z)) = &public_slice_words {
+            write_slice_metadata(
+                &round_path,
+                p.n,
+                total_wires,
+                gates.len(),
+                p.slice_zero_random_gates,
+                construction_seed,
+                p.rg_freq,
+                original.gates.len(),
+                &source_repr_xxh3_128,
+                public_y,
+                public_z,
+                public_slice_layout.expect("public slice layout"),
+                p.do_nonlinear_gadgetize.then_some(ProdConfig::production()),
+            );
+        }
+        if let Some(slice_end) = zero_nondata_slice_end(view) {
+            write_zero_nondata_metadata(&round_path, p.n, total_wires, slice_end);
+        }
         println!("[sss:cnot] round circuit written to {round_path}");
     }
 
@@ -653,7 +862,14 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         }
     }
 
-    assert_strict_tdp4n(p.do_tdp4n, &gates, total_wires, p.n, "before final write");
+    assert_tdp_namespace(
+        p.do_tdp4n,
+        p.do_nonlinear_gadgetize,
+        &gates,
+        total_wires,
+        p.n,
+        "before final write",
+    );
     ensure_parent(p.save);
     format::write_mpmct(p.save, &gates, total_wires).expect("write final CNOT circuit");
     if let Some((public_y, public_z)) = &public_slice_words {
@@ -661,11 +877,20 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
             p.save,
             p.n,
             total_wires,
+            gates.len(),
             p.slice_zero_random_gates,
+            construction_seed,
+            p.rg_freq,
+            original.gates.len(),
+            &source_repr_xxh3_128,
             public_y,
             public_z,
             public_slice_layout.expect("public slice layout"),
+            p.do_nonlinear_gadgetize.then_some(ProdConfig::production()),
         );
+    }
+    if let Some(slice_end) = zero_nondata_slice_end(view) {
+        write_zero_nondata_metadata(p.save, p.n, total_wires, slice_end);
     }
     print_counts("final", &gates);
     println!("[sss:cnot] final mpmct1 circuit written to {}", p.save);
@@ -676,19 +901,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn zero_slice_metadata_leaves_later_samf_helpers_independent() {
+        let dir = std::env::temp_dir().join(format!(
+            "local_mixing_zero_slice_metadata_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("out.mpmct1");
+        write_zero_nondata_metadata(output.to_str().unwrap(), 3, 13, 12);
+        let metadata =
+            std::fs::read_to_string(format!("{}.slice_zero_ccnot", output.to_str().unwrap()))
+                .unwrap();
+        assert!(metadata.contains("fixed_input_wires=3..12\n"));
+        assert!(metadata.contains("independent_helper_wires=12..13\n"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn zero_round_driver_writes_mpmct_and_preserves_views() {
         let source = CircuitSeq {
             gates: vec![[0, 1, 2], [2, 0, 1]],
         };
-        for (gadgetize, feistalize, tdp4n, expected_wires) in [
-            (true, false, false, 6),
-            (false, true, false, 9),
-            (false, false, true, 12),
+        for (gadgetize, nonlinear_gadgetize, feistalize, tdp4n, expected_wires) in [
+            (true, false, false, false, 6),
+            (false, true, false, false, 12),
+            (false, false, true, false, 9),
+            (false, false, false, true, 12),
+            (false, true, false, true, 19),
         ] {
             let dir = std::env::temp_dir().join(format!(
-                "local_mixing_cnot_driver_{}_{}_{}_{}",
+                "local_mixing_cnot_driver_{}_{}_{}_{}_{}",
                 std::process::id(),
                 gadgetize as u8,
+                nonlinear_gadgetize as u8,
                 feistalize as u8,
                 tdp4n as u8,
             ));
@@ -703,6 +948,7 @@ mod tests {
                 save: output.to_str().unwrap(),
                 source: "source.txt",
                 do_gadgetize: gadgetize,
+                do_nonlinear_gadgetize: nonlinear_gadgetize,
                 do_feistalize: feistalize,
                 do_tdp4n: tdp4n,
                 slice_zero: false,
@@ -724,6 +970,16 @@ mod tests {
             let (written, wires) = format::read_mpmct(output.to_str().unwrap()).unwrap();
             assert_eq!(wires, expected_wires);
             assert!(!written.is_empty());
+            if nonlinear_gadgetize && !tdp4n {
+                let metadata = std::fs::read_to_string(format!(
+                    "{}.slice_zero_ccnot",
+                    output.to_str().unwrap()
+                ))
+                .unwrap();
+                assert!(metadata.contains("fixed_input_wires=3..12\n"));
+                assert!(metadata.contains("independent_helper_wires=12..12\n"));
+                assert!(metadata.contains("band_is_in_fixed_slice=true\n"));
+            }
             std::fs::remove_dir_all(dir).unwrap();
         }
     }
@@ -733,48 +989,86 @@ mod tests {
         let source = CircuitSeq {
             gates: vec![[0, 1, 2], [2, 0, 1]],
         };
+        let expected_source_fingerprint = format!(
+            "{:032x}",
+            xxhash_rust::xxh3::xxh3_128(source.repr().as_bytes())
+        );
         let dir = std::env::temp_dir().join(format!(
             "local_mixing_cnot_tdp4n_metadata_{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let output = dir.join("out.mpmct1");
-        let gadget = dir.join("gadget.mpmct1");
-        let params = CnotSssParams {
-            rounds: 0,
-            n: 3,
-            m: 1,
-            x: 2,
-            save: output.to_str().unwrap(),
-            source: "source.txt",
-            do_gadgetize: false,
-            do_feistalize: false,
-            do_tdp4n: true,
-            slice_zero: false,
-            slice_zero_random: true,
-            slice_zero_random_gates: 96,
-            slice_zero_hardcoded: false,
-            slice_zero_hardcoded_rounds: 1,
-            gadget_path: Some(gadget.to_str().unwrap()),
-            full_shuffle: false,
-            full_shuffle_early: false,
-            shooting_times: 1,
-            collision_rounds: 1,
-            stable_compressions: 1,
-            expansion_game: false,
-            equality_check: true,
-            rg_freq: 2,
-        };
-        main_shuffle_shoot_shuffle_cnot(&source, &params);
+        for (nonlinear, expected_wires) in [(false, 12), (true, 19)] {
+            let output = dir.join(format!("out_{}.mpmct1", nonlinear as u8));
+            let gadget = dir.join(format!("gadget_{}.mpmct1", nonlinear as u8));
+            let params = CnotSssParams {
+                rounds: 0,
+                n: 3,
+                m: 1,
+                x: 2,
+                save: output.to_str().unwrap(),
+                source: "source.txt",
+                do_gadgetize: false,
+                do_nonlinear_gadgetize: nonlinear,
+                do_feistalize: false,
+                do_tdp4n: true,
+                slice_zero: false,
+                slice_zero_random: true,
+                slice_zero_random_gates: 96,
+                slice_zero_hardcoded: false,
+                slice_zero_hardcoded_rounds: 1,
+                gadget_path: Some(gadget.to_str().unwrap()),
+                full_shuffle: false,
+                full_shuffle_early: false,
+                shooting_times: 1,
+                collision_rounds: 1,
+                stable_compressions: 1,
+                expansion_game: false,
+                equality_check: true,
+                rg_freq: 2,
+            };
+            main_shuffle_shoot_shuffle_cnot(&source, &params);
 
-        let metadata =
-            std::fs::read_to_string(format!("{}.slice_zero_random", output.to_str().unwrap()))
-                .unwrap();
-        assert!(metadata.contains("layout=tdp4n_two_share\n"));
-        assert!(metadata.contains("total_wires=12\n"));
-        assert!(metadata.contains("w_wires=9..12\n"));
-        assert!(metadata.contains("sat_helper_wires=9..12\n"));
-        assert!(metadata.contains("fixed_input_blocks=y,z\n"));
+            let metadata =
+                std::fs::read_to_string(format!("{}.slice_zero_random", output.to_str().unwrap()))
+                    .unwrap();
+            let (artifact_gates, _) = format::read_mpmct(output.to_str().unwrap()).unwrap();
+            assert!(metadata.contains("layout=tdp4n_two_share\n"));
+            assert!(metadata.contains(&format!("total_wires={expected_wires}\n")));
+            assert!(metadata.contains(&format!("gates={}\n", artifact_gates.len())));
+            assert!(metadata.contains("slice_preblock_gates=96\n"));
+            assert!(metadata.contains("construction_seed="));
+            assert!(metadata.contains("rg_frequency=2\n"));
+            assert!(metadata.contains("source_gates=2\n"));
+            assert!(metadata.contains(&format!(
+                "source_repr_xxh3_128={expected_source_fingerprint}\n"
+            )));
+            assert!(metadata.contains("w_wires=9..12\n"));
+            assert!(metadata.contains(&format!("sat_helper_wires=9..{expected_wires}\n")));
+            assert!(metadata.contains(&format!("extra_helper_wires=12..{expected_wires}\n")));
+            assert!(metadata.contains("fixed_input_blocks=y,z\n"));
+            if nonlinear {
+                for expected in [
+                    "nonlinear_enabled=true\n",
+                    "nonlinear_plan=3,3\n",
+                    "nonlinear_k=0\n",
+                    "nonlinear_deg=2\n",
+                    "nonlinear_k_hi=2\n",
+                    "nonlinear_deg_hi=3\n",
+                    "nonlinear_band_config=0\n",
+                    "nonlinear_band_size=7\n",
+                    "nonlinear_band_wires=12..19\n",
+                    "nonlinear_rsrc=1\n",
+                    "nonlinear_max_width=0\n",
+                    "nonlinear_fill_nl=2\n",
+                    "nonlinear_roll=1\n",
+                ] {
+                    assert!(metadata.contains(expected), "missing metadata: {expected}");
+                }
+            } else {
+                assert!(metadata.contains("nonlinear_enabled=false\n"));
+            }
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -797,6 +1091,7 @@ mod tests {
             save: output.to_str().unwrap(),
             source: "source.txt",
             do_gadgetize: false,
+            do_nonlinear_gadgetize: false,
             do_feistalize: false,
             do_tdp4n: true,
             slice_zero: false,
@@ -830,6 +1125,6 @@ mod tests {
     #[should_panic(expected = "strict 4n TDP control wire")]
     fn strict_tdp4n_guard_rejects_out_of_range_gate_wires() {
         let gate = XGate::cnot(0, 12);
-        assert_strict_tdp4n(true, &[gate], 12, 3, "in test");
+        assert_tdp_namespace(true, false, &[gate], 12, 3, "in test");
     }
 }

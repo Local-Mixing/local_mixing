@@ -528,6 +528,8 @@ pub struct MixParams {
     pub gen_giveup: u16,
     pub gen_split_inherit: bool,
     pub gen_median_low: bool,
+    /// Dose stop threshold over targetable gates: cap-eligible gates that
+    /// have not been retired by `gen_giveup`.
     pub gen_stop_frac: f64,
     /// When true, generation dose stop/revalidation uses only gates that do
     /// not carry an identifiable G57-pair frame tag. The all-gate census is
@@ -758,16 +760,22 @@ pub struct GenStats {
     /// Live gates carrying the born-random generation sentinel.
     pub fresh: u64,
     pub total: u64,
-    /// Largest generation reached by at least 95% of all live gates.
+    /// Largest generation reached by at least 95% of targetable gates.
     pub g_circ: u32,
+    /// Legacy 5th-percentile generation over every gate in this scope.
+    pub g_all: u32,
+    /// Cap-eligible gates not retired by `gen_giveup`; the population used by
+    /// `g_circ` and the generation-dose stop.
+    pub targetable: u64,
 }
 
 /// The two generation denominators reported for a dose decision.
 ///
-/// `all` is the historical whole-circuit census. `non_pair` excludes only
-/// gates whose live metadata still identifies them as descendants of a seeded
-/// G57 pair. Generic nonlinear frames and other synthetic material remain in
-/// both denominators.
+/// `all` includes the whole circuit. `non_pair` excludes only gates whose live
+/// metadata still identifies them as descendants of a seeded G57 pair.
+/// Within either scope, generation and dose use that scope's targetable
+/// population; the historical all-gate census remains available in `g_all`,
+/// `all_lag`, and `total`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GenerationDoseStats {
     pub all: GenStats,
@@ -976,6 +984,19 @@ impl Mixer {
         mut params: MixParams,
         db: Option<FrozenDb>,
     ) -> Mixer {
+        // Complemented empty gates are exact identities.  Older fcompress
+        // outputs may contain them, and the complemented-gate crossing path
+        // otherwise mistakes them for splittable G57 fossils.  Canonicalize
+        // them away at the mixer boundary before building arena metadata.
+        // Retain the raw input index as the origin of every surviving gate.
+        let (gates, input_origins): (Vec<XGate>, Vec<u32>) = gates
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, gate)| {
+                (!gate.is_noop())
+                    .then_some((gate, u32::try_from(index).expect("too many input gates")))
+            })
+            .unzip();
         let n = gates.len();
         if params.target_size == 0 {
             params.target_size = if params.hard_size_cap > 0 {
@@ -1020,9 +1041,10 @@ impl Mixer {
         }
         let mut rng = StdRng::seed_from_u64(params.seed);
         let metrics_rng = StdRng::seed_from_u64(params.seed ^ 0x5EED_517A75);
-        let meta = (0..n)
-            .map(|i| Meta {
-                origin: i as u32,
+        let meta = input_origins
+            .into_iter()
+            .map(|origin| Meta {
+                origin,
                 event: 0,
                 dir: if rng.random_bool(0.5) { Dir::L } else { Dir::R },
                 frame: 0,
@@ -1164,8 +1186,9 @@ impl Mixer {
     /// DB-targeting census using the established new-SSS tier semantics.
     ///
     /// `control_cap == 0` makes every gate eligible. A nonzero
-    /// `giveup_misses` moves exhausted laggards into `unreach`; they still
-    /// count in `all_lag` and therefore in the whole-circuit generation.
+    /// `giveup_misses` moves exhausted laggards into `unreach`; they remain in
+    /// the legacy all-gate census but leave the targetable generation/dose
+    /// population.
     pub fn gen_stats_for(
         &self,
         target: u32,
@@ -1202,7 +1225,8 @@ impl Mixer {
             min: GEN_FRESH,
             ..GenStats::default()
         };
-        let mut gens = Vec::with_capacity(ids.len());
+        let mut all_generations = Vec::with_capacity(ids.len());
+        let mut targetable_generations = Vec::with_capacity(ids.len());
         for id in ids {
             let meta = self.meta_of(id);
             if exclude_g57_pair_frames && decode_g57_pair_frame(meta.frame).is_some() {
@@ -1211,12 +1235,15 @@ impl Mixer {
             stats.total += 1;
             let eligible = control_cap == 0 || self.arena.gate(id).width() <= control_cap;
             stats.min = stats.min.min(meta.dgen);
-            gens.push(meta.dgen);
+            all_generations.push(meta.dgen);
             stats.fresh += u64::from(meta.dgen == GEN_FRESH);
             if eligible {
                 stats.elig += 1;
             }
             if meta.dgen >= target {
+                if eligible {
+                    targetable_generations.push(meta.dgen);
+                }
                 continue;
             }
             stats.all_lag += 1;
@@ -1226,15 +1253,28 @@ impl Mixer {
                 stats.unreach += 1;
             } else if meta.miss >= hard_after_misses {
                 stats.hard += 1;
+                targetable_generations.push(meta.dgen);
             } else {
                 stats.cheap += 1;
+                targetable_generations.push(meta.dgen);
             }
         }
         stats.lag = stats.cheap + stats.hard;
-        if !gens.is_empty() {
-            gens.sort_unstable();
-            stats.g_circ = gens[(gens.len() / 20).min(gens.len() - 1)];
-        }
+        stats.targetable = targetable_generations.len() as u64;
+        let percentile = |generations: &mut Vec<u32>| {
+            if generations.is_empty() {
+                0
+            } else {
+                generations.sort_unstable();
+                generations[(generations.len() / 20).min(generations.len() - 1)]
+            }
+        };
+        stats.g_all = percentile(&mut all_generations);
+        stats.g_circ = if targetable_generations.is_empty() {
+            stats.g_all
+        } else {
+            percentile(&mut targetable_generations)
+        };
         stats
     }
 
@@ -1276,14 +1316,10 @@ impl Mixer {
         } else {
             self.gen_stats()
         };
-        if self.params.gen_dose_exclude_g57_pair_frames && stats.total == 0 {
+        if stats.targetable == 0 {
             return false;
         }
-        let lag_fraction = if stats.total == 0 {
-            0.0
-        } else {
-            stats.all_lag as f64 / stats.total as f64
-        };
+        let lag_fraction = stats.lag as f64 / stats.targetable as f64;
         lag_fraction <= self.params.gen_stop_frac
             && (self.params.twist_cov_stop <= 0.0
                 || self.twist_coverage() >= self.params.twist_cov_stop)
@@ -1858,6 +1894,15 @@ impl Mixer {
     }
 
     pub fn run(&mut self) -> MixStop {
+        // The canonical form of an identity-only input is the empty tape.
+        // Nothing can be mixed, but it remains a valid circuit and must pass
+        // through the same final equivalence contract.
+        if self.arena.len() == 0 {
+            self.moves_done = self.params.moves;
+            self.counters.moves = self.moves_done;
+            self.global_check();
+            return MixStop::MovesBudget;
+        }
         while self.moves_done < self.params.moves {
             if self.params.gen_target > 0 && self.moves_done >= self.laggards_scan_due {
                 self.rebuild_laggards();
@@ -2328,6 +2373,19 @@ impl Mixer {
     fn cross_move_on(&mut self, id: u32) -> CrossTrace {
         let g_meta = self.meta_of(id);
         let dir = g_meta.dir;
+        // Defensive support for non-canonical legacy inputs.  Treating a
+        // complemented empty identity as a G57 presplit yields zero pieces;
+        // the ordinary "split was blocked" path would then try to retreat an
+        // arena id that splice_replace_one had already freed.  Delete the
+        // identity before any floating instead.
+        if self.arena.gate(id).is_noop() {
+            self.splice_replace_one(id, Vec::new());
+            return CrossTrace {
+                changed: true,
+                crossed: false,
+                shot_descendants: Vec::new(),
+            };
+        }
         let way = self.float_to_collision(id, dir);
         let h_id = self.arena.neighbor(id, dir);
         if h_id == NIL {
@@ -4743,7 +4801,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db p={:.3} comp={}/{} agn={}/{} rm={} add={} attempts={} degree={} span={} wide={} build={} protected={} frame={} cap={} ingest={}/{} hard={}/{} paid={} | gen tgt={} G={} alag={}/{} lag={}/{} cheap={} hard={} unreach={} wlag={} min={} cov={:.1} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | nl try={} ok={} skip={} packet={} shots={} crossed={} prep={} blocked={} span={} nodes={} protect-blocks={} live={}/{} cover={:.3} protected={}/{} pcover={:.3} | declined={} blockw={} blockcap={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db p={:.3} comp={}/{} agn={}/{} rm={} add={} attempts={} degree={} span={} wide={} build={} protected={} frame={} cap={} ingest={}/{} hard={}/{} paid={} | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} elig={} cheap={} hard={} unreach={} wlag={} min={} cov={:.1} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | nl try={} ok={} skip={} packet={} shots={} crossed={} prep={} blocked={} span={} nodes={} protect-blocks={} live={}/{} cover={:.3} protected={}/{} pcover={:.3} | declined={} blockw={} blockcap={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -4786,9 +4844,12 @@ impl Mixer {
             c.db_hard_added,
             self.params.gen_target,
             generation.g_circ,
+            generation.g_all,
+            generation.targetable,
             generation.all_lag,
             generation.total,
             generation.lag,
+            generation.targetable,
             generation.elig,
             generation.cheap,
             generation.hard,
@@ -4875,6 +4936,112 @@ mod mix_tests {
                 return g;
             }
         }
+    }
+
+    #[test]
+    fn mixer_canonicalizes_complemented_empty_input() {
+        let noop = XGate {
+            target: 1,
+            comp: true,
+            ctrls: Default::default(),
+        };
+        let raw = vec![XGate::x_gate(0), noop, XGate::cnot(1, 0)];
+        let canonical = vec![XGate::x_gate(0), XGate::cnot(1, 0)];
+        let params = MixParams {
+            moves: 1_000,
+            verify_every: 1,
+            report_every: u64::MAX,
+            seed: 0x1D_E17,
+            ..MixParams::default()
+        };
+        let mut mixer = Mixer::new(raw.clone(), 2, params);
+        assert_eq!(mixer.original, canonical);
+        assert_eq!(mixer.arena.to_vec(), canonical);
+        assert_eq!(mixer.origins_in_order(), vec![0, 2]);
+        mixer.run();
+        let mixed = mixer.arena.to_vec();
+        assert!(mixed.iter().all(|gate| !gate.is_noop()));
+        for state in 0..4 {
+            assert_eq!(eval_u64(&raw, state), eval_u64(&mixed, state));
+        }
+    }
+
+    #[test]
+    fn mixer_accepts_an_identity_only_input_as_an_empty_tape() {
+        let noop = |target| XGate {
+            target,
+            comp: true,
+            ctrls: Default::default(),
+        };
+        let raw = vec![noop(0), noop(1)];
+        let mut mixer = Mixer::new(
+            raw.clone(),
+            2,
+            MixParams {
+                moves: 100,
+                verify_every: 1,
+                report_every: 1,
+                ..MixParams::default()
+            },
+        );
+        assert!(mixer.original.is_empty());
+        assert!(mixer.arena.to_vec().is_empty());
+        assert!(matches!(mixer.run(), MixStop::MovesBudget));
+        assert_eq!(mixer.counters.moves, 100);
+        assert!(mixer.arena.to_vec().is_empty());
+        for state in 0..4 {
+            assert_eq!(eval_u64(&raw, state), state);
+        }
+    }
+
+    #[test]
+    fn crossing_defensively_deletes_an_injected_complemented_empty() {
+        let baseline = vec![
+            XGate::x_gate(0),
+            // Commutes with the injected target-1 identity, forcing that
+            // identity to float before it reaches the target-1 reader.
+            XGate::cnot(3, 4),
+            XGate::cnot(2, 1),
+        ];
+        let mut mixer = Mixer::new(
+            baseline.clone(),
+            5,
+            MixParams {
+                // The historical empty-presplit path tried to retreat the
+                // already-freed arena id by the full one-gate float distance.
+                dir_q: 0.0,
+                report_every: u64::MAX,
+                ..MixParams::default()
+            },
+        );
+        let noop = XGate {
+            target: 1,
+            comp: true,
+            ctrls: Default::default(),
+        };
+        let noop_id = mixer.arena.insert_after(mixer.arena.head(), noop);
+        mixer.index_add(noop_id);
+        mixer.set_meta(
+            noop_id,
+            Meta {
+                origin: ORIGIN_SYNTH,
+                event: 0,
+                dir: Dir::R,
+                frame: 0,
+                protected_until: 0,
+                dgen: 0,
+                miss: 0,
+            },
+        );
+
+        let trace = mixer.cross_move_on(noop_id);
+        assert!(trace.changed);
+        assert!(!trace.crossed);
+        assert!(trace.shot_descendants.is_empty());
+        assert!(!mixer.arena.is_linked(noop_id));
+        assert_eq!(mixer.arena.to_vec(), baseline);
+        assert_eq!(mixer.arena.len(), mixer.arena.ids_in_order().len());
+        mixer.global_check();
     }
 
     #[test]
@@ -5789,6 +5956,8 @@ mod mix_tests {
                 fresh: 0,
                 total: 3,
                 g_circ: 0,
+                g_all: 0,
+                targetable: 3,
             }
         );
 
@@ -5809,6 +5978,86 @@ mod mix_tests {
         );
         assert!(mx.generation_goal_met(target));
         assert_eq!(mx.gen_stats_for(2, 0, 6, 0).g_circ, 2);
+    }
+
+    #[test]
+    fn wide_majority_does_not_pin_targetable_generation_or_dose() {
+        let mut gates = Vec::new();
+        let mut rng = StdRng::seed_from_u64(4242);
+        while gates.len() < 30 {
+            let gate = rand_gate(&mut rng, 16, 3, false);
+            if gate.width() == 3 {
+                gates.push(gate);
+            }
+        }
+        while gates.len() < 40 {
+            let gate = rand_gate(&mut rng, 16, 2, false);
+            if (1..=2).contains(&gate.width()) {
+                gates.push(gate);
+            }
+        }
+        let params = MixParams {
+            gen_target: 100,
+            gen_stop_frac: 0.02,
+            db_ctrl_cap: 2,
+            report_every: u64::MAX,
+            ..MixParams::default()
+        };
+        let mut mixer = Mixer::new(gates, 16, params);
+        for id in mixer.arena.ids_in_order() {
+            if mixer.width_of(id) <= 2 {
+                let meta = mixer.meta_of(id);
+                mixer.set_meta(id, Meta { dgen: 100, ..meta });
+            }
+        }
+
+        let stats = mixer.gen_stats();
+        assert_eq!((stats.all_lag, stats.total), (30, 40));
+        assert_eq!(stats.wlag, 30);
+        assert_eq!(stats.elig, 10);
+        assert_eq!(stats.targetable, 10);
+        assert_eq!(stats.lag, 0);
+        assert_eq!(
+            stats.g_all, 0,
+            "the legacy all-gate percentile stays pinned"
+        );
+        assert_eq!(
+            stats.g_circ, 100,
+            "G must measure the population the DB channel can move"
+        );
+        assert!(mixer.dose_reached());
+    }
+
+    #[test]
+    fn an_empty_targetable_population_never_meets_the_dose() {
+        let gates = vec![
+            XGate::conj(0, [(1, true)]).unwrap(),
+            XGate::conj(2, [(3, false)]).unwrap(),
+        ];
+        let params = MixParams {
+            gen_target: 10,
+            gen_stop_frac: 1.0,
+            gen_giveup: 1,
+            report_every: u64::MAX,
+            ..MixParams::default()
+        };
+        let mut mixer = Mixer::new(gates, 4, params);
+        for id in mixer.arena.ids_in_order() {
+            let meta = mixer.meta_of(id);
+            mixer.set_meta(id, Meta { miss: 1, ..meta });
+        }
+
+        let stats = mixer.gen_stats();
+        assert_eq!(stats.unreach, 2);
+        assert_eq!(stats.targetable, 0);
+        assert_eq!(
+            stats.g_circ, stats.g_all,
+            "display fallback remains defined"
+        );
+        assert!(
+            !mixer.dose_reached(),
+            "an unmeasurable dose must fail closed"
+        );
     }
 
     #[test]

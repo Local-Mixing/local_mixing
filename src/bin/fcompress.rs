@@ -487,7 +487,7 @@ fn main() {
         "post-ESOP",
     );
     println!(
-        "[fcompress] done in {:.1}s (verified {} rounds x64 lanes): gates {} -> {} ({:.1}%), lits {} -> {} ({:.1}%), live_dropped={} fixed_point={}",
+        "[fcompress] done in {:.1}s (verified {} rounds x64 lanes): gates {} -> {} ({:.1}%), lits {} -> {} ({:.1}%), live_dropped={} noop_dropped={}/{} fixed_point={}",
         secs,
         args.verify_rounds,
         rep.gates_in,
@@ -497,6 +497,8 @@ fn main() {
         rep.lits_out,
         100.0 * rep.lits_out as f64 / rep.lits_in.max(1) as f64,
         rep.liveness_dropped,
+        rep.identity_noops_dropped_input,
+        rep.identity_noops_dropped_synthesized,
         rep.reached_fixed_point,
     );
     print_source_counts("after_esop", "direct_pass1", rep.direct_pass1_sources);
@@ -523,10 +525,10 @@ fn main() {
         ),
     );
     println!(
-        "fcompress_summary_csv,input_gates,output_gates,input_lits,output_lits,iters,reached_fixed_point,groups,multi_groups,max_group,catalogue_merges,anf_wins,anf_structural_g57,esop_structural_g57,direct_pass1_pairs,direct_pass1_operands,direct_total_pairs,direct_later_pairs,direct_total_operands,pass1_plain_percent,pass1_candidate_percent,pass1_all_gates_percent,pass1_upper_bound_percent,liveness_dropped,seconds,verify_rounds"
+        "fcompress_summary_csv,input_gates,output_gates,input_lits,output_lits,iters,reached_fixed_point,groups,multi_groups,max_group,catalogue_merges,anf_wins,anf_structural_g57,esop_structural_g57,direct_pass1_pairs,direct_pass1_operands,direct_total_pairs,direct_later_pairs,direct_total_operands,pass1_plain_percent,pass1_candidate_percent,pass1_all_gates_percent,pass1_upper_bound_percent,liveness_dropped,identity_noops_input,identity_noops_synthesized,seconds,verify_rounds"
     );
     println!(
-        "fcompress_summary_csv,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.9},{:.9},{:.9},{:.9},{},{:.9},{}",
+        "fcompress_summary_csv,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.9},{:.9},{:.9},{:.9},{},{},{},{:.9},{}",
         rep.gates_in,
         rep.gates_out,
         rep.lits_in,
@@ -559,6 +561,8 @@ fn main() {
             input_analysis.stats.reassemblable_fragments,
         ),
         rep.liveness_dropped,
+        rep.identity_noops_dropped_input,
+        rep.identity_noops_dropped_synthesized,
         secs,
         args.verify_rounds,
     );

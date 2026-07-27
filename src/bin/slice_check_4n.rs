@@ -1,4 +1,5 @@
-//! Fast fixed-slice semantic checker for strict 4n two-share TDP circuits.
+//! Fast fixed-slice semantic checker for 4n two-share TDP circuits, including
+//! variants with an appended arbitrary helper band.
 //!
 //! The scalar research checker evaluates every `(x, W)` case separately.  This
 //! binary packs 64 such cases into the bits of each `u64` lane word, so one
@@ -28,7 +29,7 @@ struct Args {
     #[arg(long, alias = "base")]
     base_circuit: String,
 
-    /// Logical block width. The candidate must declare exactly 4*n wires.
+    /// Logical block width. The candidate must declare at least 4*n wires.
     #[arg(long)]
     n: usize,
 
@@ -311,6 +312,30 @@ fn set_lane_bits(state: &mut [u64], start: usize, width: usize, value: u128, lan
     }
 }
 
+fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn extra_helper_bit(pattern: usize, bit: usize) -> bool {
+    match pattern {
+        0 => false,
+        1 => true,
+        2 => bit % 2 == 0,
+        3 => bit % 2 != 0,
+        _ => {
+            let word = splitmix64(
+                HELPER_SEED_DOMAIN
+                    ^ (pattern as u64).wrapping_mul(0xd6e8_feb8_6659_fd93)
+                    ^ ((bit / 64) as u64).wrapping_mul(0xa076_1d64_78bd_642f),
+            );
+            ((word >> (bit % 64)) & 1) != 0
+        }
+    }
+}
+
 fn check_slices(
     base: &[XGate],
     candidate: &[XGate],
@@ -327,9 +352,9 @@ fn check_slices(
     let expected_wires = n
         .checked_mul(4)
         .ok_or_else(|| "4*n overflows usize".to_string())?;
-    if candidate_wires != expected_wires {
+    if candidate_wires < expected_wires {
         return Err(format!(
-            "candidate must declare exactly 4*n={expected_wires} wires (got {candidate_wires})"
+            "candidate must declare at least 4*n={expected_wires} wires (got {candidate_wires})"
         ));
     }
     if samples == 0 {
@@ -379,6 +404,11 @@ fn check_slices(
             set_lane_bits(&mut candidate_state, n, n, fixed_y, lane);
             set_lane_bits(&mut candidate_state, 2 * n, n, fixed_z, lane);
             set_lane_bits(&mut candidate_state, 3 * n, n, patterns[helper_index], lane);
+            for extra in 0..candidate_wires - expected_wires {
+                if extra_helper_bit(helper_index, extra) {
+                    candidate_state[expected_wires + extra] |= 1u64 << lane;
+                }
+            }
         }
 
         eval_lanes(base, &mut base_state);
@@ -413,7 +443,7 @@ fn check_slices(
         circuit_gates: candidate.len(),
         base_wires,
         base_gates: base.len(),
-        helper_wires: n,
+        helper_wires: candidate_wires - 3 * n,
         helper_patterns: HELPER_PATTERN_COUNT,
         x_samples: samples,
         checked_cases,
@@ -530,11 +560,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_4n_header() {
+    fn accepts_an_appended_helper_band() {
         let n = 3;
         let (base, candidate) = semantic_candidate(n);
+        let report = check_slices(&base, &candidate, 4 * n + 1, n, 0, 0, 1, 7)
+            .expect("an unused appended helper is valid");
+        assert_eq!(report.helper_wires, n + 1);
+    }
+
+    #[test]
+    fn detects_appended_helper_band_leak_into_middle() {
+        let n = 3;
+        let (base, mut candidate) = semantic_candidate(n);
+        candidate.push(XGate::cnot(n as u16, (4 * n) as u16));
         let error = check_slices(&base, &candidate, 4 * n + 1, n, 0, 0, 1, 7)
-            .expect_err("non-4n header must fail");
-        assert!(error.contains("exactly 4*n=12"), "{error}");
+            .expect_err("band-dependent middle output must fail");
+        assert!(error.contains("fixed-slice mismatch"), "{error}");
     }
 }
