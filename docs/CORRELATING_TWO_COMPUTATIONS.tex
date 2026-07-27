@@ -1,0 +1,389 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=black,urlcolor=blue]{hyperref}
+\usepackage{parskip}
+\newcommand{\xor}{\oplus}
+\newcommand{\code}[1]{\texttt{#1}}
+\title{\textbf{Correlating two computations}\\[2pt]
+\large Prediction and classification attacks between a reference computation
+and an encoded one}
+\author{}
+\date{2026-07-27}
+\begin{document}
+\maketitle
+
+\noindent\emph{A tutorial: the general problem of correlating two computations,
+the three families of predictor that attack it, and what each of our protection
+plans does against each attack. Measurements are on the $n{=}128$ sliced
+sandwich with the Gray-code fold} (\code{docs/GRAY\_FOLD\_CG}).
+
+\section{The general setting}
+
+Take two computations run on the same inputs: $C$ (the reference --- what we are
+trying to hide) and $C'$ (what an adversary holds). Fix a prefix $i$ of $C$ and
+a prefix $j$ of $C'$, run both on $s$ shared random inputs $x_1 \dots x_s$, and
+you have two binary matrices
+\[
+  Y = C_i,\quad Y[a,b] = \bigl(\text{state of } C \text{ after } i \text{ gates on } x_a\bigr)_b
+  \qquad (s \times n)
+\]
+\[
+  Z = C'_j,\quad Z[a,b] = \bigl(\text{state of } C' \text{ after } j \text{ gates on } x_a\bigr)_b
+  \qquad (s \times m)
+\]
+Every attack below tests whether $Z$ tells you about $Y$, evaluated at each
+$(i,j)$ and read as a heatmap. In our case $C' = G$, the gadgetized circuit,
+with $m = 4n$ wires against $C$'s $n$; the extra inputs are pinned to zero.
+
+\section{The trivial answer, and why security must be class-relative}
+
+Ask ``are $Y$ and $Z$ dependent?'' and the answer is \textbf{always yes}. Both
+are deterministic functions of the same $x$, and $G$ is an invertible encoding,
+so $Z$ determines $x$ determines $Y$. The mutual information is maximal by
+construction.
+
+This dictates what can be measured. A test that is \emph{consistent against all
+alternatives} --- distance correlation, HSIC, any universal independence test
+--- fires at full strength on every build, secure or not. \textbf{No test can
+certify ``no dependence.''} Every meaningful statement has the form
+\begin{quote}
+\emph{no adversary in class} \textbf{A} \emph{can extract feature} \textbf{f}
+\emph{of $C$'s state from $G$'s state, at sample budget $s$},
+\end{quote}
+so every number below is a \textbf{lower bound}, and the class must always be
+named. That is not modesty; it is the only claim the setting admits.
+
+\section{The unifying object: the cross-correlation spectrum}
+
+Fix $i,j$. For a target mask $\alpha \in \mathbb{F}_2^n$ and a predictor mask
+$\beta \in \mathbb{F}_2^m$, define
+\[
+  M[\alpha,\beta] \;=\; \mathbb{E}_x\Bigl[(-1)^{\,\alpha \cdot Y \;\xor\; \beta \cdot Z}\Bigr].
+\]
+This is the \textbf{Walsh cross-spectrum}. $|M| = 1$ means $\alpha\cdot Y$ is an
+exact affine function of $Z$; $M = 0$ means that parity carries nothing;
+in between are biases. Every instrument is a restriction of this one object:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+restriction & gives you \\
+\midrule
+$|M| = 1$ exactly, $\beta$ unrestricted & \textbf{algebraic / exact} predictors (\S4) \\
+$|M|$ maximized, $\beta$ of bounded weight & \textbf{statistical} predictors (\S5) \\
+replace $\beta \cdot Z$ by any degree-$\le D$ function of $Z$ & degree-$D$ versions of both \\
+the full singular spectrum, over $\mathbb{R}$ & \textbf{canonical correlation} (\S6) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The matrix is $2^n \times 2^m$, so nobody enumerates it; every instrument picks
+a restriction, and its blind spots follow from that choice.
+
+\section{Algebraic (exact) predictors}
+
+\textbf{The question.} Is $\alpha \cdot Y$ \emph{exactly} a degree-$\le D$
+function of $Z$, on every input?
+
+\textbf{How it is answered.} Build the design matrix of all monomials of $Z$ up
+to degree $D$ --- $N_D = \sum_{k \le D}\binom{m}{k}$ columns --- and test whether
+$\alpha \cdot Y$ lies in its GF(2) column span, with a held-out split to reject
+spurious fits. The answer is \emph{binary per cell}.
+
+\textbf{Our instrument.} \code{hmap\_affine}, reporting $H(i,j)$ = mean over
+$C$'s $n$ target bits of the holdout error, scoring an inconsistent bit at
+exactly $0.5$. So $H \approx 0$ is total leakage, $H \approx 0.5$ is hidden.
+
+\textbf{Why it exists.} It is \emph{invariant to the affine part of the
+encoding}. $G$ carries each value as a XOR of shares over unrelated wires; a raw
+Hamming comparison sees noise, and an early ``the diagonal is destroyed''
+conclusion was exactly that artifact, corrected once the affine-invariant
+measure existed. Degree 2 additionally sees through any quadratic re-encoding.
+
+\textbf{Its blind spot.} It cannot see \emph{bias}. A relation holding on 99\%
+of inputs scores the same as one holding on 50\% --- both are ``not exact.''
+This is why it and the statistical measures disagree, and why neither subsumes
+the other.
+
+\section{Statistical (bias) predictors}
+
+\textbf{The question.} How well can a \emph{bounded} predictor \textbf{guess}
+$\alpha \cdot Y$ from $Z$?
+
+\textbf{Our instrument.} \code{stress\_battery}, with two families:
+\begin{itemize}
+  \item \textbf{F1} --- best over \{constant, single wire, XOR of two wires\}:
+        $|\beta| \le 2$, degree 1. A GF(2) analogue of correlation power analysis.
+  \item \textbf{F2} --- F1 plus one AND over a declared wire set (for us the 256
+        band wires): degree 2.
+\end{itemize}
+
+Three design points make the numbers readable:
+\begin{enumerate}
+  \item \textbf{Lift, not agreement.} Each cell reports $\text{best} -
+        \text{base rate}$, the base rate being the best \emph{constant}
+        predictor, so a merely skewed target scores zero.
+  \item \textbf{An overfit floor.} With $W = 512$ predictor wires the search is
+        over ${\sim}131$k candidates, and maximizing over that many buys
+        agreement by chance. The floor is the same search against a
+        \emph{random} target; \code{prominence} $=$ raw $-$ floor, and the leak
+        gate is $\text{prominence} > 2\cdot\text{floor}$.
+  \item \textbf{Two gates.} \code{ALIGNED-LEAK} needs exploitable information
+        \emph{and} progress alignment ($\rho$, perm-$z$): the best-predicting
+        $G$-prefix must advance as the $C$-prefix does.
+\end{enumerate}
+
+\textbf{Scaling.} The floor behaves as $\sqrt{\ln N / 2s}$, so resolving a bias
+$\delta$ needs $s \gtrsim \ln N/\delta^2$, while
+\[
+  \text{cost} \;=\; \text{rows} \times \text{cols} \times n_t \times
+  \Bigl(\tfrac{W^2}{2} + 2A^2\Bigr) \times \tfrac{s}{64}
+\]
+is \emph{linear} in $s$ and \emph{quadratic} in wires. Resolving a leak $k\times$
+smaller costs $k^2$; widening $G$ from $4n$ to $8n$ needs only ${\sim}12\%$ more
+samples but ${\sim}4.5\times$ the time.
+
+\section{Canonical correlation, and the right basis}
+
+Classical CCA maximizes $\mathrm{corr}(Ya, Zb)$ over \emph{real} vectors $a,b$,
+solved by an SVD of the whitened cross-covariance; the singular values are the
+canonical correlations. The translation to our setting is the useful part.
+Encode bits as $\pm 1$; then
+\[
+  \text{XOR of a set of bits} \;\longleftrightarrow\; \text{PRODUCT of the } \pm 1
+  \text{ variables} \;\longleftrightarrow\; \text{one Fourier character}.
+\]
+So a GF(2)-linear relation is a \emph{multiplicative} monomial, not an additive
+one. Consequently:
+\begin{itemize}
+  \item \textbf{Real-linear CCA} on raw bits finds \emph{additive} combinations
+        --- essentially Hamming-weight relations. That is the classical
+        side-channel leakage model, natural when the observable is analog.
+  \item \textbf{GF(2) character analysis} finds XOR relations. That is
+        \emph{linear cryptanalysis}, natural for a Boolean circuit.
+\end{itemize}
+Both are canonical correlation over different bases. For our problem the
+XOR basis is the right one, and real CCA on raw wire values would mostly measure
+Hamming-weight structure the encoding neither especially protects nor exposes.
+The GF(2) analogue of CCA's full singular spectrum is the entire Walsh
+cross-spectrum of \S3 --- which is why practical instruments are all
+\emph{restrictions} rather than decompositions.
+
+\section{Our case: $G$ is a masking scheme, so order matters}
+
+The product-share encoding represents each value as
+\[
+  v \;=\; w \;\xor\; A_1 \;\xor\; \dots \;\xor\; A_k, \qquad
+  A_r = \text{product of } d_r \text{ band bits},
+\]
+with $w$ the carrier. This is \textbf{Boolean masking}, and the side-channel
+literature on masked implementations transfers directly.
+
+\textbf{The piling-up lemma.} For a degree-$d$ product of uniform independent
+bits, $\mathbb{E}[(-1)^{A}] = 1 - 2^{1-d}$: a degree-2 atom contributes $0.5$, a
+degree-3 atom $0.75$. If the atoms are variable-disjoint (which \code{draw\_slot}
+enforces per value) the biases multiply:
+\[
+  \varepsilon \;=\; \prod_r \bigl(1 - 2^{1-d_r}\bigr), \qquad
+  \mathrm{corr}(\text{carrier}, \text{value}) = \varepsilon,
+\]
+so a predictor reading the bare carrier guesses the value with agreement
+$(1+\varepsilon)/2$. \textbf{$\varepsilon$ is the single number governing the
+statistical attack.}
+
+\textbf{Order of attack.} To \emph{remove} an atom of degree $d$ the adversary
+must compute a degree-$d$ monomial of band wires --- a $d$-th order combining
+function. After cancelling a set $S$ the residual is $\prod_{r \notin S}$. Hence
+F1 sees the full $\varepsilon$; F2 can cancel one degree-2 atom and see
+$\varepsilon/0.5 = 2\varepsilon$; an F3 would cancel a degree-3 atom and see
+$\varepsilon/0.75$.
+
+\textbf{The design tension, in one line.} A degree-2 atom is a \emph{stronger}
+statistical masker ($0.5$ vs $0.75$) but a \emph{weaker} algebraic one --- it
+lies inside a degree-2 adversary's span, where a degree-3 atom does not. Low
+degree buys statistics; high degree buys algebra.
+
+\section{Results: each plan against each attack}
+
+Five mask plans, all with the Gray fold, $n{=}128$, same source $C$ and sandwich,
+$s = 8192$, plate geometry matched per build.
+
+\subsection{Predicted bias, before and after cancellation}
+
+\begin{center}
+\begin{tabular}{llrrr}
+\toprule
+plan & atoms & $\varepsilon$ (order 1) & after one 2-AND & after one 3-AND \\
+\midrule
+\code{[2,3,3]} \emph{(shipped)} & d2, d3, d3 & 0.28125 & 0.5625 & 0.375 \\
+\code{[2,2,3]}     & d2, d2, d3       & 0.1875  & 0.375   & 0.25 \\
+\code{[2,2,3,3]}   & d2, d2, d3, d3   & 0.140625& 0.28125 & 0.1875 \\
+\code{[2,2,2,3]}   & d2$\times$3, d3  & 0.09375 & 0.1875  & 0.125 \\
+\code{[2,2,2,3,3]} & d2$\times$3, d3, d3 & 0.0703 & 0.140625 & 0.09375 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Measured}
+
+\begin{center}
+\begin{tabular}{lrrrrrrl}
+\toprule
+plan & $\varepsilon$ & gates & vs base & reachable & F1 raw & F2 raw & verdict F1/F2 \\
+\midrule
+\code{[2,3,3]}     & 0.28125 & 808{,}618 & --- & 95.47\% & 0.0817 & 0.1111 & \textbf{LEAK / LEAK} \\
+\code{[2,2,3]}     & 0.1875  & 634{,}790 & \textbf{$-$21\%} & 97.01\% & 0.0536 & 0.0782 & flat / \textbf{LEAK} \\
+\code{[2,2,3,3]}   & 0.1406  & 864{,}497 & $+$6.9\% & 96.16\% & 0.0435 & 0.0660 & flat / flat \\
+\code{[2,2,2,3]}   & 0.09375 & 692{,}653 & \textbf{$-$14\%} & \textbf{97.53\%} & 0.0318 & 0.0487 & flat / flat \\
+\code{[2,2,2,3,3]} & 0.0703  & 924{,}284 & $+$14\% & 96.56\% & 0.0258 & 0.0409 & flat / flat \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+``Raw'' $=$ prominence $+$ floor; compare arms by raw, because the floor is a
+noisy single-sample estimate (\S9).
+
+\subsection{The law}
+
+Regressing the measured signal on the predicted piling-up bias:
+\[
+  \mathrm{F1_{raw}} = 0.262\,\varepsilon + 0.007 \quad (R^2 = 0.996),
+  \qquad
+  \mathrm{F2_{raw}} = 0.330\,\varepsilon + 0.018 \quad (R^2 = 0.998).
+\]
+Five plans spanning a $4\times$ range of $\varepsilon$, and the statistical leak
+is \textbf{linear in the piling-up product} to within half a percent. This
+identifies the leak as the carrier's \emph{marginal mask bias} and nothing else.
+
+Two readings follow. The \textbf{slope ratio} $0.330/0.262 = 1.26$ is the payoff
+of second order: theory says a \emph{perfectly targeted} 2-AND doubles the
+effective bias (ratio 2.0), so the blind search over $\binom{256}{2}$ pairs
+realizes about a quarter of it --- a targeted F2 using ledger knowledge would
+reach the full factor. The \textbf{intercepts} (0.007, 0.018) are residual
+overfit inflation the floor subtraction does not remove, a reminder that
+``flat'' is a statement about a threshold, not about zero.
+
+\subsection{What the algebraic attack says, and why it is flat across the board}
+
+\code{hmap\_affine}, matched geometry, reads every plate measured as dead:
+$\mathrm{depthMed} = 0.0000$, depth $0.044$--$0.046$ against an ``alive''
+calibration of ${\approx}0.35$, and \textbf{zero genuine interior rows}.
+
+\begin{center}
+\begin{tabular}{llrrrr}
+\toprule
+plate & degree & depth & depthMed & $\rho$ & interior leaks \\
+\midrule
+wide fold \code{[2,3,3]} & 1 & 0.0438 & 0.0000 & 0.017 & 0 / 88 \\
+Gray fold \code{[2,3,3]} & 1 & 0.0436 & 0.0000 & 0.016 & 0 / 88 \\
+wide fold \code{[2,3,3]} & 2 & 0.0455 & 0.0000 & $-$0.042 & 0 / 88 \\
+Gray fold \code{[2,3,3]} & 2 & 0.0439 & 0.0000 & 0.016 & 0 / 88 \\
+\code{[2,2,3]}   & 2 & 0.0439 & 0.0000 & 0.016 & \textbf{0 / 88} \\
+\code{[2,2,2,3]} & 2 & 0.0444 & 0.0000 & $-$0.047 & \textbf{0 / 88} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The last two rows are the ones that mattered: \code{[2,2,3]} and
+\code{[2,2,2,3]} trade degree-3 atoms for degree-2 ones, so they are where a
+degree-2 exact adversary would surface first if the margin were thinner than
+theory says. It is not. (\code{[2,2,3,3]} and \code{[2,2,2,3,3]} were not run at
+degree 2; they carry \emph{more} degree-3 material than the plans that passed,
+so they are covered a fortiori.)
+
+That is forced, not lucky. Exact degree-$D$ reconstruction requires
+\emph{every} atom to lie in the degree-$D$ span, i.e. $D \ge \max_r d_r$. All
+five plans keep at least one degree-3 atom, so \textbf{the algebraic verdict is
+identical for every plan} and they differ \emph{only} statistically.
+
+What does differ is \textbf{redundancy, not threshold}: \code{[2,2,3]} and
+\code{[2,2,2,3]} hold a single degree-3 atom, so if one is ever compromised the
+value drops into degree-2 range; the other three plans keep two. A pure
+\code{[2,2,2]} plan would have no algebraic margin at all --- statistically the
+best of all, and dead at $D=2$.
+
+\subsection{The Pareto surprise}
+
+\code{[2,2,2,3]} \textbf{dominates the shipped \code{[2,3,3]} on every axis
+measured at once}: 14\% fewer gates, higher store-reachability (97.53\% vs
+95.47\%), $3\times$ lower statistical leak, identical algebraic standing.
+
+It is affordable because of the Gray fold. Under the wide fold a block emits
+$(1+k)^{\text{arity}}$ fragments, so a mask term is \emph{multiplicative} ---
+3 to 4 terms costs $+56\%$. Under the Gray fold the product part is a fixed
+${\sim}9$ gates regardless of $k$, and a term costs only its own gather
+(${\sim}1$ gate at degree 2, ${\sim}4$ at degree 3). Mask-plan cost becomes
+\textbf{additive}, and trading a degree-3 atom for degree-2 atoms makes the
+circuit \emph{smaller}.
+
+\section{How to read these numbers without fooling yourself}
+
+Five traps, all of which bit during this work.
+
+\begin{enumerate}
+  \item \textbf{Never read a heatmap by its mean} --- it saturates near 0.5.
+        Read the ridge.
+  \item \textbf{Never read $\rho$ alone on a plate with ports.} Both axes have
+        unencoded ends; cell $(0,0)$ compares $C$'s input against $G$'s input
+        wires and reads perfectly in \emph{every} build. On such a plate $\rho$
+        is two plateaus ranked against noise in a dead middle: two equally-dead
+        artefacts once scored $\rho = 0.448$ and $0.019$. Report \textbf{interior
+        rows with prominence}. Our degree-1 plates report perm-$z = 4.91$,
+        $p = 0.0003$ --- and are dead.
+  \item \textbf{The overfit floor is a noisy single-sample estimate, and the
+        verdict rides on it.} Measured floors are not monotone in $s$: $0.0454$,
+        $0.0205$, $0.0242$, $0.0136$ at $s = 2048, 4096, 8192, 16384$. The
+        \emph{same circuit} scored \code{flat} at $s{=}2048$ and
+        \code{ALIGNED-LEAK} at $s{=}4096$. Compare by raw.
+  \item \textbf{A fixed \code{--g-step} across circuits of different length is a
+        confound.} $\text{cols} = |G|/\text{g\_step}$ and row-best is a max over
+        columns, so a longer circuit scores leakier for free. A $+24\%$-gate arm
+        ran 52 columns against 42 and looked 13\% worse; matching geometry
+        removed a third to a half of that.
+  \item \textbf{``Flat'' means ``below threshold at this $s$.''} Floor
+        $\propto 1/\sqrt{s}$. \code{[2,2,2,3]}'s F1 raw of $0.0318$ sits just
+        above a $0.0239$ floor with $\rho = 0.996$ --- the diagonal is still
+        there; it no longer clears the bar.
+\end{enumerate}
+
+\section{What we did not test}
+
+\begin{itemize}
+  \item \textbf{A structure-aware adversary.} The mask atoms are \emph{readable
+        off the gate list} --- the fold's own gates name the band wires of each
+        atom. Such an adversary does not search; it reads and cancels exactly,
+        achieving the full order-$d$ factor rather than the blind search's
+        quarter. Strictly stronger than anything run here, and what rolling,
+        re-sourcing and epochs exist to complicate.
+  \item \textbf{Targeted F3}, cancelling a degree-3 atom ($\varepsilon/0.75$):
+        trivial targeted, ${\sim}2800\times$ F2's cost blind.
+  \item \textbf{Differential correlation}, $\Delta C$ against $\Delta G$ under
+        input differences. The battery's \code{traj} target is a \emph{temporal}
+        difference, not an input one.
+  \item \textbf{Machine-learned predictors} over all $4n$ wires.
+  \item \textbf{Universal independence tests} are deliberately absent; \S2 says
+        why.
+\end{itemize}
+
+\section{Practical summary}
+
+\begin{itemize}
+  \item The statistical leak is the carrier's marginal mask bias, \textbf{linear
+        in the piling-up product} ($R^2 \approx 0.996$). To reduce it, reduce
+        $\varepsilon$.
+  \item Refresh \textbf{rate} and refresh \textbf{source} do not touch it ---
+        measured flat across \code{--prod-refill-data} 0/50/100. They change the
+        band's provenance, not its marginal, and the marginal is what F1 sees.
+  \item Low-degree-heavy plans win statistically at \emph{every} attack order;
+        degree-3 atoms buy the algebraic margin. Keep at least two for
+        redundancy.
+  \item \code{[2,2,2,3]} is Pareto-better than the shipped \code{[2,3,3]} on
+        size, digestibility and statistical leak, with identical algebraic
+        standing but one fewer degree-3 atom of margin. \code{[2,2,2,3,3]} buys
+        that margin back for $+14\%$ gates and the lowest leak measured.
+\end{itemize}
+
+\end{document}
