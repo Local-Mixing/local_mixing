@@ -3140,6 +3140,20 @@ pub struct ProdConfig {
     /// no single-carrier analogue — only relocation and mask re-sourcing
     /// survive, so the re-randomisation layer is thinner.
     pub single: usize,
+    /// Gray-code fold: gather each operand's mask sum onto a dirty accumulator
+    /// once and read it back four times, instead of expanding the cartesian
+    /// product into fragments of width up to `arity * max_deg` (0 = off).
+    ///
+    /// Every emitted gate is then at most two controls WITHOUT laddering
+    /// anything: the fold stops producing the width-3..6 material the frozen
+    /// store cannot digest (0.41% hit rate at width 3, absent above), at ~3x the
+    /// block's fragment count rather than full narrow mode's ~6.2x, because the
+    /// mask products are derived once per block instead of once per fragment.
+    /// Blocks it cannot amortize (arity != 2, an operand with no mask terms)
+    /// fall back to the odometer with laddering forced on.
+    ///
+    /// Exposure is audited exactly, per prefix: see [`ProdLedger::fold_cg_gray`].
+    pub gray_fold: usize,
 }
 
 impl ProdConfig {
@@ -3167,6 +3181,7 @@ impl ProdConfig {
             epoch: 0,
             refill_data: 0,
             single: 0,
+            gray_fold: 0,
         }
     }
 
@@ -3234,6 +3249,10 @@ impl ProdConfig {
             epoch: 5,
             refill_data: 50,
             single: 1,
+            // Opt-in until the n=128 A/B (size, reachability, ridge, stress
+            // battery) is on the record; the audit is exact but it is an audit
+            // of the block, not of a circuit.
+            gray_fold: 0,
         }
     }
 
@@ -3689,6 +3708,145 @@ fn emit_narrow_fragment(
 
 
 
+/// Spellings already used for each (target, literal list) within one CG block.
+///
+/// The Gray fold emits the SAME function several times by construction -- four
+/// times for `A_u * A_z` and for each accumulator gate across the gather and the
+/// strip, twice for each `L x A` pair -- so avoiding only the IMMEDIATELY
+/// PRECEDING spelling is not enough; the emissions are interleaved with other
+/// gates and the repeats land far apart. Keeping the used set per block lets a
+/// same-polarity function, which has exactly four equal-size spellings, use a
+/// different one every time.
+type SpellingLog = std::collections::HashMap<(u16, Vec<(u16, bool)>), Vec<usize>>;
+
+/// Pick a spelling not yet used for this (target, literals) in this block,
+/// falling back to a fresh uniform draw once every spelling has been used.
+fn pick_spelling(
+    target: u16,
+    lits: &[(u16, bool)],
+    len: usize,
+    seen: &mut SpellingLog,
+    rng: &mut impl Rng,
+) -> usize {
+    if len < 2 {
+        return 0;
+    }
+    let key = (target, lits.to_vec());
+    let used = seen.entry(key).or_default();
+    let fresh: Vec<usize> = (0..len).filter(|i| !used.contains(i)).collect();
+    let pick = if fresh.is_empty() {
+        // Every spelling is spent; restart the cycle rather than repeat the
+        // most recent one.
+        let last = used.last().copied();
+        let choices: Vec<usize> = (0..len).filter(|i| Some(*i) != last).collect();
+        used.clear();
+        choices[rng.random_range(0..choices.len())]
+    } else {
+        fresh[rng.random_range(0..fresh.len())]
+    };
+    used.push(pick);
+    pick
+}
+
+/// Add one mask atom to a DIRTY accumulator, every emitted gate at most two
+/// controls, over a dirty borrowed helper. Returns the residual constant.
+///
+/// `pivot` fixes which literal pairs with the helper on the accumulator's own
+/// gates, and the caller draws it ONCE for both the gather and the strip. That
+/// is not cosmetic. The residual depends on the rung's POLARITY PATTERN, and
+/// [`emit_narrow_fragment`] chooses its pivot at random among equally-scored
+/// candidates -- so routing a gather and its strip through it independently
+/// leaves DIFFERENT residuals, and the accumulator comes back off by one. The
+/// borrow is then not restored at all, which is a corrupted wire rather than a
+/// wrong constant. (Caught by `prod_gray_fold_keeps_the_accumulators_dirty`.)
+///
+/// Spellings still differ between the two passes: every spelling of one
+/// function carries the same constant, which is exactly what makes varying them
+/// safe here and is why the ladder's own double sweep may vary them too.
+fn emit_atom_onto(
+    acc: u16,
+    atom: &[(u16, bool)],
+    helper: u16,
+    pivot: usize,
+    menu: usize,
+    seen: &mut SpellingLog,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) -> bool {
+    if atom.len() <= 2 {
+        let (spellings, konst) = spellings_at(acc, atom, menu);
+        let pick = pick_spelling(acc, atom, spellings.len(), seen, rng);
+        out.extend(spellings[pick].iter().cloned());
+        return konst;
+    }
+    debug_assert_eq!(atom.len(), 3, "only degree <= 3 masks are gathered");
+    let lam = atom[pivot];
+    let rung: Vec<(u16, bool)> = (0..atom.len())
+        .filter(|&i| i != pivot)
+        .map(|i| atom[i])
+        .collect();
+    // The helper literal's polarity is FREE -- the sweep contributes
+    // `lam * (f(h0) + f(h0 + R))` for whichever literal `f` of the helper is
+    // used, and negating it adds 1 to both readings, which cancels. Matching it
+    // to `lam` would make this gate same-polarity and so give it four
+    // equal-size spellings instead of one. MEASURED and REJECTED: it costs
+    // +5.7% gates (a mixed-polarity conjunction is a 1-gate emission, a
+    // same-polarity one is 2) and bought nothing, because the four spellings of
+    // a same-polarity function are only TWO distinct gate multisets reordered,
+    // and both the duplicate census and `commuting_shuffle` are order-blind.
+    // Keep the cheap spelling.
+    let t_lits = [lam, (helper, true)];
+    let (_, rung_konst) = rung_spellings(helper, &rung);
+    // Accumulator gate, then rung, twice: the helper is visited an even number
+    // of times, so its unknown incoming value cancels and it is restored. The
+    // accumulator gate's own complement cancels between its two emissions.
+    for _ in 0..2 {
+        let (sp, _) = spellings_at(acc, &t_lits, menu);
+        let pick = pick_spelling(acc, &t_lits, sp.len(), seen, rng);
+        out.extend(sp[pick].iter().cloned());
+        let (sp, _) = spellings_at(helper, &rung, menu);
+        let pick = pick_spelling(helper, &rung, sp.len(), seen, rng);
+        out.extend(sp[pick].iter().cloned());
+    }
+    // A rung spelled with a complement leaves `kappa * lam` on the accumulator
+    // -- a LITERAL, not a constant, because it multiplies the accumulator
+    // gate's other literal. One more emission of `lam` removes it; that
+    // emission's own constant is what the caller absorbs.
+    if rung_konst {
+        return emit_g57_form(acc, &[lam], rng, out);
+    }
+    false
+}
+
+/// Which literal of a degree-3 atom to pair with the helper. A rung of two
+/// NEGATIVE literals is the one polarity pattern that realizes its conjunction
+/// outright, so choosing it saves the correction gate in [`emit_atom_onto`];
+/// among the choices that do, and otherwise among all of them, the draw is
+/// uniform.
+///
+/// Steering instead toward a SAME-polarity rung (always available among three
+/// literals, by pigeonhole) would give the rung four equal-size spellings
+/// rather than one. Measured and rejected for the same reason as the helper
+/// polarity above: those four spellings are two gate multisets reordered, so an
+/// order-blind duplicate census does not see them, and forcing the choice
+/// costs gates.
+fn choose_pivot(atom: &[(u16, bool)], rng: &mut impl Rng) -> usize {
+    let rung_pols = |i: usize| -> Vec<bool> {
+        (0..atom.len())
+            .filter(|&j| j != i)
+            .map(|j| atom[j].1)
+            .collect()
+    };
+    let cheap: Vec<usize> = (0..atom.len())
+        .filter(|&i| rung_pols(i).iter().all(|&x| !x))
+        .collect();
+    if cheap.is_empty() {
+        rng.random_range(0..atom.len())
+    } else {
+        cheap[rng.random_range(0..cheap.len())]
+    }
+}
+
 /// Every ordered gate sequence that contributes the SAME function to `h`, so a
 /// rung's two emissions can be spelled differently while still cancelling.
 ///
@@ -3895,6 +4053,9 @@ struct ProdLedger {
     dist: bool,
     /// One linear carrier per value instead of a pair.
     single: bool,
+    /// Gather each operand's mask sum onto a dirty accumulator (see
+    /// [`ProdLedger::fold_cg_gray`]).
+    gray_fold: bool,
     /// Emit DB-eligible fold fragments in the g57/CNOT vocabulary.
     g57_narrow: bool,
     ladder_cap: usize,
@@ -3949,6 +4110,8 @@ struct ProdLedger {
     cg_narrow: u64,
     cg_laddered: u64,
     cg_fossils: u64,
+    /// CG blocks emitted by the Gray fold rather than the odometer.
+    cg_gray: u64,
     ledger_consts: u64,
 }
 
@@ -4007,6 +4170,7 @@ impl ProdLedger {
             used: std::collections::HashSet::new(),
             dist: cfg.dist(),
             single: cfg.single_carrier(),
+            gray_fold: cfg.gray_fold > 0,
             g57_narrow: cfg.g57_narrow > 0,
             ladder_cap: cfg.ladder_cap,
             cg_jitter: cfg.cg_jitter,
@@ -4034,6 +4198,7 @@ impl ProdLedger {
             cg_narrow: 0,
             cg_laddered: 0,
             cg_fossils: 0,
+            cg_gray: 0,
             ledger_consts: 0,
         }
     }
@@ -5101,6 +5266,20 @@ impl ProdLedger {
             self.consts[t] ^= true;
             self.ledger_consts += 1;
         }
+        // The Gray fold handles the arity-2 blocks -- which is every source
+        // gate in the g57 body -- with no wide fragment at all. It declines the
+        // shapes it cannot amortize (arity != 2, an operand with no mask terms,
+        // no room to borrow); those fall through, and are laddered below rather
+        // than left wide, since a single surviving 3-control gate would undo
+        // the point of the exercise.
+        if self.gray_fold && self.fold_cg_gray(t, &lists, state, rng, out) {
+            return;
+        }
+        let ladder_cap = if self.gray_fold {
+            usize::MAX
+        } else {
+            self.ladder_cap
+        };
         if self.cap >= 2 {
             self.fold_cg_narrow(t, &lists, state, rng, out);
             return;
@@ -5194,7 +5373,7 @@ impl ProdLedger {
                     self.cg_fragments += 1;
                     continue;
                 }
-            } else if width <= self.ladder_cap {
+            } else if width <= ladder_cap {
                 // SELECTIVE LADDERING. Full narrow mode ladders every fragment
                 // and costs roughly 15x the fold; the fold's width profile is
                 // heavily bottom-weighted, so a ceiling buys most of the fossil
@@ -5233,6 +5412,319 @@ impl ProdLedger {
                 self.cg_fragments += 1;
             }
         }
+    }
+
+    /// Two dirty accumulator wires for the Gray fold, drawn by ROLE from the
+    /// carriers and excluding everything the block reads or writes. `None` when
+    /// the pool is too small, which makes the caller fall back to the odometer.
+    fn pick_accumulators(
+        &self,
+        forbidden: &[u16],
+        state: &GadgetState,
+        rng: &mut impl Rng,
+    ) -> Option<(u16, u16)> {
+        let sibling = self.sibling_map(state);
+        let free: Vec<u16> = self
+            .carrier_wires(state)
+            .into_iter()
+            .filter(|w| !forbidden.contains(w))
+            .collect();
+        use rand::seq::IndexedRandom;
+        let u = *free.choose(rng)?;
+        // The second accumulator must not be the first's sibling: the four
+        // A_u * A_z gates read BOTH, and one gate seeing both carriers of one
+        // value is exactly the gate-local completeness the construction bans.
+        let free2: Vec<u16> = free
+            .into_iter()
+            .filter(|&w| w != u && w != sibling[u as usize])
+            .collect();
+        let z = *free2.choose(rng)?;
+        Some((u, z))
+    }
+
+    /// Add every mask term in `atoms` to the dirty accumulator `acc`, following
+    /// the per-atom `plan` of (helper wire, pivot) the caller drew ONCE. Returns
+    /// the residual constant parity the realization leaves on `acc`.
+    ///
+    /// Reusing the plan is what makes the gather and the strip leave the SAME
+    /// residual, which is what restores the accumulator: see [`emit_atom_onto`].
+    fn gather_atoms(
+        &self,
+        acc: u16,
+        atoms: &[Vec<(u16, bool)>],
+        plan: &[(u16, usize)],
+        seen: &mut SpellingLog,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) -> bool {
+        let mut konst = false;
+        for (atom, &(helper, pivot)) in atoms.iter().zip(plan) {
+            konst ^= emit_atom_onto(acc, atom, helper, pivot, self.rung_menu, seen, rng, out);
+        }
+        konst
+    }
+
+    /// GRAY-CODE FOLD: the arity-2 CG with every emitted gate at most TWO
+    /// controls, without laddering a single fragment.
+    ///
+    /// The wide fold expands `PROD_w (carrier_w + masks_w)` into one gate per
+    /// term of the cartesian product, so a `[1,2,3,3]` share gives 16 fragments
+    /// of width up to `arity * max_deg` = 6. Everything above width 2 is
+    /// invisible to the frozen store (width-3 gates hit at 0.41% against ~99%
+    /// for narrow material) and is 56% of the shipped gadget. Laddering each
+    /// wide fragment individually is full narrow mode's ~6.2x, because every
+    /// fragment re-derives the same mask products from scratch.
+    ///
+    /// This gathers each operand's mask sum ONCE onto a borrowed wire and reads
+    /// it back four times. Write `S_w = L_w + M_w` for operand `w`, with `L_w`
+    /// the width-<=1 atoms (the carrier literal and the ledger's constant atom)
+    /// and `M_w` the mask terms. Two dirty accumulators `u`, `z` are toggled
+    /// around the Gray cycle over `(u holds M_b, z holds M_c)`:
+    ///
+    /// ```text
+    ///   A=(0,0) --gather b--> B=(1,0) --gather c--> C=(1,1)
+    ///                                                  |
+    ///           A=(0,0) <--strip c-- D=(0,1) <--strip b--
+    /// ```
+    ///
+    /// Reading `u` at one phase from each column and `z` at one from each row
+    /// gives `A_u = U_1 + U_2 = M_b` and `A_z = M_c` -- the borrows' unknown
+    /// incoming values cancel between the two readings, exactly as the ladder's
+    /// double sweep cancels its own. Emitting `L_b x L_c` once, `L_b x A_z` and
+    /// `A_u x L_c` once per column/row, and `A_u x A_z` once at every phase sums
+    /// to `(L_b + A_u)(L_c + A_z) = S_b S_c`, and every one of those gates has at
+    /// most two controls by construction.
+    ///
+    /// WHY THE ACCUMULATORS MUST BE DIRTY. `carrier_b + M_b` IS the operand's
+    /// value: a clean accumulator would put `b` one XOR away from a wire pair,
+    /// which is the same use-point re-exposure that sank the deferred-mask peek.
+    /// Borrowed, the wire holds `u_0 + M_b`, and `u_0` is off the wire set for
+    /// the whole dirty window. MEASURED over all 46 prefixes of the [1,2,3,3]
+    /// block, exactly (Walsh transform per residual component, masks restricted
+    /// to variables still live): the best affine predictor of any of `a, b, c,
+    /// a'` peaks at 0.28125 = (1/2)(3/4)^2, which is the encoding's own
+    /// steady-state piling-up bound -- the block's interior gives an affine
+    /// adversary nothing the endpoints do not. No secret enters the span of the
+    /// wires and their pairwise products at any prefix, and a quadratic mirror
+    /// search peaks at the (3/4)^2 design bound. The same audit run against a
+    /// CLEAN-accumulator variant recovers `b` at correlation 1.0.
+    ///
+    /// THE RESIDUAL-CONSTANT TRAP. `emit_g57_form` leaves a complement on its
+    /// target, so a gather actually lands `M_b + delta`. Left alone that is not
+    /// a leak but a WRONG FUNCTION: the four-phase sum becomes
+    /// `(M_b + delta)(M_c + eps)`, i.e. the block silently acquires
+    /// `delta*M_c + eps*M_b`. It is absorbed for free by toggling the operand's
+    /// CONSTANT ATOM -- `L'_w = L_w + delta` restores `L'_w + A_w = S_w` -- which
+    /// is the same ledger mechanism the wide fold already uses for a negative
+    /// control, and costs at most one extra width-<=1 fragment per operand.
+    ///
+    /// Returns false when the block does not fit the shape (arity != 2, or an
+    /// operand with no mask terms to gather, or no room to borrow), leaving the
+    /// caller to emit it the ordinary way.
+    fn fold_cg_gray(
+        &mut self,
+        t: usize,
+        lists: &[Vec<Vec<(u16, bool)>>],
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) -> bool {
+        if lists.len() != 2 {
+            return false;
+        }
+        // The width-<=1 atoms stay in place; the mask terms are what an
+        // accumulator gathers. Gathering a carrier would be pointless (it is
+        // already one literal) and actively harmful: `u_0 + carrier_b` next to
+        // the mask terms is the clean-accumulator failure in another spelling.
+        let mut simple: Vec<Vec<Vec<(u16, bool)>>> = Vec::with_capacity(2);
+        let mut masks: Vec<Vec<Vec<(u16, bool)>>> = Vec::with_capacity(2);
+        for list in lists {
+            simple.push(list.iter().filter(|a| a.len() <= 1).cloned().collect());
+            masks.push(list.iter().filter(|a| a.len() >= 2).cloned().collect());
+        }
+        if masks[0].is_empty() || masks[1].is_empty() {
+            // Nothing to amortize on one side: the plain expansion is at most
+            // `1 + max_deg` wide and the accumulator would cost more than the
+            // laddering it saves.
+            return false;
+        }
+        if masks.iter().flatten().any(|a| a.len() > 3) {
+            // A degree-4+ term needs a helper chain rather than one sandwich;
+            // the production plan is [1,2,3,3] and the generalization is not
+            // verified, so decline rather than emit something unaudited.
+            return false;
+        }
+        // Borrow nothing the block reads or writes, nor any sibling of those:
+        // a borrow that is the sibling of a literal would put both carriers of
+        // one value into one gate across a read and a write.
+        let sibling = self.sibling_map(state);
+        let mut forbid: Vec<u16> = vec![state.pairs[t].0 as u16, state.pairs[t].1 as u16];
+        for list in lists {
+            for atom in list {
+                for &(w, _) in atom {
+                    forbid.push(w);
+                    if (w as usize) < sibling.len() {
+                        forbid.push(sibling[w as usize]);
+                    }
+                }
+            }
+        }
+        for w in [state.pairs[t].0, state.pairs[t].1] {
+            if w < sibling.len() {
+                forbid.push(sibling[w]);
+            }
+        }
+        forbid.sort_unstable();
+        forbid.dedup();
+        let Some((u, z)) = self.pick_accumulators(&forbid, state, rng) else {
+            return false;
+        };
+        // The sandwich helper must avoid the OTHER accumulator: it is restored
+        // either way, but a gate reading `z` while writing `u` would mix the two
+        // operands' mask material on one wire for no reason.
+        let mut helper_forbid = forbid.clone();
+        helper_forbid.push(u);
+        helper_forbid.push(z);
+        helper_forbid.sort_unstable();
+        helper_forbid.dedup();
+        let helper_pool: Vec<u16> = self
+            .carrier_wires(state)
+            .into_iter()
+            .filter(|w| !helper_forbid.contains(w))
+            .collect();
+        if helper_pool.is_empty() {
+            return false;
+        }
+        // Per mask atom: the helper it sandwiches over and which literal pairs
+        // with that helper. Drawn ONCE and reused by both the gather and the
+        // strip, because a re-draw would change the residual and leave the
+        // accumulator unrestored.
+        let mut plans: Vec<Vec<(u16, usize)>> = Vec::with_capacity(2);
+        for side in 0..2 {
+            plans.push(
+                masks[side]
+                    .iter()
+                    .map(|atom| {
+                        (
+                            helper_pool[rng.random_range(0..helper_pool.len())],
+                            choose_pivot(atom, rng),
+                        )
+                    })
+                    .collect(),
+            );
+        }
+
+        // Emit the four toggles into buffers FIRST, so the residual parities are
+        // known before the product terms are planned. A strip must return the
+        // same parity as its gather -- that is what restores the borrow -- so
+        // assert it rather than trust it.
+        let mut tog: Vec<Vec<XGate>> = Vec::with_capacity(4);
+        let mut konst = [false; 2];
+        // One spelling log for the whole block: a function emitted in the
+        // gather and again in the strip must not be spelled the same way twice.
+        let mut seen: SpellingLog = std::collections::HashMap::new();
+        for (i, (acc, side)) in [(u, 0usize), (z, 1usize), (u, 0), (z, 1)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut buf = Vec::new();
+            let k = self.gather_atoms(acc, &masks[side], &plans[side], &mut seen, rng, &mut buf);
+            if i < 2 {
+                konst[side] = k;
+            } else {
+                assert_eq!(
+                    k, konst[side],
+                    "gray fold: strip parity differs from its gather, so the \
+                     accumulator would not be restored"
+                );
+            }
+            tog.push(buf);
+        }
+        // Absorb the gathers' residual into the operand's constant atom.
+        for side in 0..2 {
+            if konst[side] {
+                match simple[side].iter().position(|a| a.is_empty()) {
+                    Some(i) => {
+                        simple[side].remove(i);
+                    }
+                    None => simple[side].push(Vec::new()),
+                }
+            }
+        }
+
+        // Phase (u holds M_b, z holds M_c): A=(0,0) B=(1,0) C=(1,1) D=(0,1).
+        const PA: usize = 0;
+        const PB: usize = 1;
+        const PC: usize = 2;
+        const PD: usize = 3;
+        let mut phases: Vec<Vec<Vec<(u16, bool)>>> = vec![Vec::new(); 4];
+        // L_b x L_c: both factors are phase-independent, so these may sit
+        // anywhere -- and they are spread at random rather than parked at one
+        // phase, which would make the block's opening a fixed signature.
+        for a in &simple[0] {
+            for b in &simple[1] {
+                let mut lits = a.clone();
+                lits.extend_from_slice(b);
+                phases[rng.random_range(0..4)].push(lits);
+            }
+        }
+        // L_b x A_z: once where z is bare, once where it carries M_c.
+        for a in &simple[0] {
+            let mut lits = a.clone();
+            lits.push((z, true));
+            phases[[PA, PB][rng.random_range(0..2)]].push(lits.clone());
+            phases[[PC, PD][rng.random_range(0..2)]].push(lits);
+        }
+        // A_u x L_c: once where u is bare, once where it carries M_b.
+        for b in &simple[1] {
+            let mut lits = vec![(u, true)];
+            lits.extend_from_slice(b);
+            phases[[PA, PD][rng.random_range(0..2)]].push(lits.clone());
+            phases[[PB, PC][rng.random_range(0..2)]].push(lits);
+        }
+        // A_u x A_z: once at every phase, which is the inclusion-exclusion.
+        for phase in phases.iter_mut() {
+            phase.push(vec![(u, true), (z, true)]);
+        }
+
+        use rand::seq::SliceRandom;
+        // The Gray structure emits the SAME literal list more than once by
+        // construction -- `A_u * A_z` at all four phases, each `L x A` pair
+        // twice -- so leaving each emission to its own coin plants exact gate
+        // groups that `sort | uniq -c` finds without executing anything. Track
+        // the last spelling per literal list and pick a different one; the
+        // product fragments are mostly all-positive (carrier and accumulator
+        // literals), which is precisely the case with four equal-size
+        // spellings, so this costs nothing.
+        for (i, &p) in [PA, PB, PC, PD].iter().enumerate() {
+            let mut frags = std::mem::take(&mut phases[p]);
+            // Within a phase the fragments commute (they all XOR into the
+            // target's carriers and read nothing the block writes), so the
+            // order is free -- and a fixed one would be a per-block clock in
+            // the same way the odometer was.
+            frags.shuffle(rng);
+            for mut lits in frags {
+                if normalize_lits(&mut lits).is_none() {
+                    continue; // contradictory literals: the term is 0
+                }
+                if lits.is_empty() {
+                    self.consts[t] ^= true;
+                    self.ledger_consts += 1;
+                    continue;
+                }
+                let target = self.free_carrier(t, state, rng);
+                self.debug_check_fragment(target, &lits, state);
+                let (spellings, k) = spellings_at(target, &lits, self.rung_menu);
+                let pick = pick_spelling(target, &lits, spellings.len(), &mut seen, rng);
+                out.extend(spellings[pick].iter().cloned());
+                self.consts[t] ^= k;
+                self.cg_fragments += 1;
+                self.cg_narrow += 1;
+            }
+            out.extend(tog[i].iter().cloned());
+        }
+        self.cg_gray += 1;
+        true
     }
 
     /// The wires CURRENTLY holding carriers, resolved by role rather than by
@@ -5389,7 +5881,8 @@ impl ProdLedger {
         if self.enabled() {
             println!(
                 "[prod] plan={:?} band={} src={} injected={} resourced={} rolled={} migrated={} retired={} \
-                 degen_rejects={} cg_fragments={} cg_narrow={} laddered={} fossils={} ledger_consts={}{}",
+                 degen_rejects={} cg_fragments={} cg_narrow={} laddered={} gray_blocks={} fossils={} \
+                 ledger_consts={}{}",
                 self.plan,
                 self.loc.len(),
                 if self.dist { "distributed" } else { "band" },
@@ -5402,6 +5895,7 @@ impl ProdLedger {
                 self.cg_fragments,
                 self.cg_narrow,
                 self.cg_laddered,
+                self.cg_gray,
                 self.cg_fossils,
                 self.ledger_consts,
                 if self.retired > 0 && self.refill_used_carriers {
@@ -8744,7 +9238,15 @@ mod cnot_gadget_tests {
         consts: &[bool],
         loc: &[u16],
     ) -> u64 {
-        let mut v = ((state >> pairs[value].0) ^ (state >> pairs[value].1)) & 1;
+        // Single-carrier builds record `pairs[v] = (w, w)`, and XORing the wire
+        // with itself would decode every value as 0 -- so read one carrier when
+        // the pair collapses, both when it does not.
+        let (c0, c1) = pairs[value];
+        let mut v = if c0 == c1 {
+            (state >> c0) & 1
+        } else {
+            ((state >> c0) ^ (state >> c1)) & 1
+        };
         for slot in &slots[value] {
             // Factors name band VARIABLES; `loc` says where each one lives.
             let factor = slot
@@ -8992,6 +9494,7 @@ mod cnot_gadget_tests {
             epoch: 0,
             refill_data: 0,
             single: 0,
+            gray_fold: 0,
         };
         let live = carrier_total + band; // the whole wire space: no pinned wires
         let sources: Vec<XGate> = vec![
@@ -9066,6 +9569,203 @@ mod cnot_gadget_tests {
                     }
                 }
                 assert_eq!(slots_before, ledger.slots);
+            }
+        }
+    }
+
+    #[test]
+    fn prod_gray_fold_is_share_native_and_two_control() {
+        // The Gray fold's contract, over the WHOLE input domain (dirty borrows,
+        // no clean-ancilla assumption anywhere): the target value's decode
+        // transitions by exactly the virtual gate, every other value is
+        // untouched, every borrowed accumulator and sandwich helper is restored,
+        // and no emitted gate has more than two controls.
+        //
+        // The residual-constant trap lives here: a gather lands `M + delta`, and
+        // if the constant-atom absorption were wrong the fold would silently
+        // compute `(M_b + delta)(M_c + eps)` -- a WRONG FUNCTION, not a leak.
+        // Only a full-domain check over both operands' masks catches it, which
+        // is why the source list below includes a mixed-polarity CCNOT.
+        // n must leave carriers over to borrow: with n=3 every carrier is the
+        // target or an operand, the fold declines, and the test would only be
+        // re-checking the odometer (the `gray_blocks` assertion at the end).
+        let n = 6;
+        let carrier_total = n; // single-carrier: value v lives on wire v
+        let pairs: Vec<(usize, usize)> = (0..n).map(|v| (v, v)).collect();
+        let band = 5usize; // wires 6..11
+        let live = carrier_total + band;
+        let cfg = ProdConfig {
+            k: 1,
+            deg: 2,
+            k_hi: 1,
+            deg_hi: 3,
+            band,
+            rsrc: 0,
+            single: 1,
+            g57_narrow: 1,
+            gray_fold: 1,
+            ..ProdConfig::off()
+        };
+        let sources: Vec<XGate> = vec![
+            XGate::from_g57([0, 1, 2]),
+            XGate::conj(2, [(0u16, false), (1u16, true)]).unwrap(),
+            XGate::conj(0, [(1u16, true), (2u16, true)]).unwrap(),
+            XGate::conj(1, [(0u16, false), (2u16, false)]).unwrap(),
+            XGate::cnot(1, 2),
+            XGate::x_gate(0),
+        ];
+        let mut gray_blocks = 0u64;
+        for seed in 0..24u64 {
+            let mut rng = StdRng::seed_from_u64(0x67a4_0000 + seed);
+            let state = GadgetState {
+                n,
+                pairs: pairs.clone(),
+            };
+            let mut ledger = ProdLedger::new(n, &cfg, carrier_total, None);
+            let mut ramp = Vec::new();
+            ledger.inject_all(&state, &mut rng, &mut ramp);
+            for gate in &sources {
+                let slots_before = ledger.slots.clone();
+                let consts_before = ledger.consts.clone();
+                let mut fold = Vec::new();
+                ledger.fold_cg(gate, &state, &mut rng, &mut fold);
+                let t = gate.target as usize;
+                for g in &fold {
+                    assert!(
+                        g.width() <= 2,
+                        "seed={seed} gate={gate:?}: gray fold emitted a {}-control gate",
+                        g.width()
+                    );
+                }
+                let touched = 1u64 << pairs[t].0;
+                for input in 0..(1u64 << live) {
+                    let before: Vec<u64> = (0..n)
+                        .map(|v| {
+                            prod_decode(
+                                input,
+                                v,
+                                &pairs,
+                                &slots_before,
+                                &consts_before,
+                                &ledger.loc,
+                            )
+                        })
+                        .collect();
+                    let out_state = eval_u64(&fold, input);
+                    // Every accumulator and every sandwich helper is restored:
+                    // the net effect lives entirely on the target's carrier.
+                    assert_eq!(
+                        (out_state ^ input) & !touched,
+                        0,
+                        "seed={seed} gate={gate:?}: a borrowed wire was not restored"
+                    );
+                    let after: Vec<u64> = (0..n)
+                        .map(|v| {
+                            prod_decode(
+                                out_state,
+                                v,
+                                &pairs,
+                                &ledger.slots,
+                                &ledger.consts,
+                                &ledger.loc,
+                            )
+                        })
+                        .collect();
+                    let fires = gate
+                        .ctrls
+                        .iter()
+                        .all(|&(w, pol)| (before[w as usize] != 0) == pol)
+                        ^ gate.comp;
+                    for v in 0..n {
+                        let expected = before[v] ^ ((v == t && fires) as u64);
+                        assert_eq!(
+                            after[v], expected,
+                            "seed={seed} gate={gate:?} value={v} input={input:#x}"
+                        );
+                    }
+                }
+                assert_eq!(slots_before, ledger.slots, "the fold disturbed a slot");
+            }
+            gray_blocks += ledger.cg_gray;
+        }
+        // The arity-2 sources must actually take the Gray path, or the test
+        // above is only re-checking the odometer.
+        assert!(
+            gray_blocks >= 24 * 4,
+            "expected every arity-2 block to fold the Gray way, got {gray_blocks}"
+        );
+    }
+
+    #[test]
+    fn prod_gray_fold_keeps_the_accumulators_dirty() {
+        // The security invariant, structurally: no emitted gate may read an
+        // accumulator while that wire holds a CLEAN mask sum. Equivalently --
+        // and this is what is checkable without re-running the exposure audit --
+        // the fold must never write a wire that is bare-zero-initialized, and
+        // every wire it borrows must be one the block does not otherwise read.
+        //
+        // What is asserted here: the accumulators are drawn from the CARRIER
+        // roles (not the band, not by index), they are distinct from the
+        // target's carrier and from every literal the block reads, and each is
+        // written by an even number of gates so its incoming junk survives to
+        // cancel. A clean accumulator would show up as a wire whose first
+        // touch is a write with no prior read -- covered by the restoration
+        // assertion in the test above, which a clean-ancilla variant fails.
+        let n = 6;
+        let carrier_total = n;
+        let pairs: Vec<(usize, usize)> = (0..n).map(|v| (v, v)).collect();
+        let band = 8usize;
+        let cfg = ProdConfig {
+            k: 1,
+            deg: 2,
+            k_hi: 2,
+            deg_hi: 3,
+            band,
+            rsrc: 0,
+            single: 1,
+            g57_narrow: 1,
+            gray_fold: 1,
+            ..ProdConfig::off()
+        };
+        for seed in 0..32u64 {
+            let mut rng = StdRng::seed_from_u64(0x67a5_0000 + seed);
+            let state = GadgetState {
+                n,
+                pairs: pairs.clone(),
+            };
+            let mut ledger = ProdLedger::new(n, &cfg, carrier_total, None);
+            let mut ramp = Vec::new();
+            ledger.inject_all(&state, &mut rng, &mut ramp);
+            let gate = XGate::from_g57([0, 1, 2]);
+            let mut fold = Vec::new();
+            ledger.fold_cg(&gate, &state, &mut rng, &mut fold);
+            assert_eq!(ledger.cg_gray, 1, "seed={seed}: not the gray path");
+            // Wires the block reads as mask/carrier literals of its operands.
+            let mut operand_wires: Vec<u16> = vec![0, 1, 2];
+            for w in [1usize, 2] {
+                for slot in &ledger.slots[w] {
+                    operand_wires.extend(slot.lits(&ledger.loc).iter().map(|&(x, _)| x));
+                }
+            }
+            let mut writes: std::collections::HashMap<u16, usize> =
+                std::collections::HashMap::new();
+            for g in &fold {
+                *writes.entry(g.target).or_default() += 1;
+            }
+            for (&w, &count) in &writes {
+                if w == 0 {
+                    continue; // the target's carrier: written an odd number of times
+                }
+                assert_eq!(
+                    count % 2,
+                    0,
+                    "seed={seed}: borrowed wire {w} is written {count} times, so its \
+                     incoming value does not cancel"
+                );
+                assert!(
+                    !operand_wires.contains(&w),
+                    "seed={seed}: wire {w} is both borrowed and read as an operand literal"
+                );
             }
         }
     }
@@ -9273,6 +9973,7 @@ mod cnot_gadget_tests {
                 epoch: 0,
                 refill_data: 0,
                 single: 0,
+                gray_fold: 0,
             };
             let band_writes = |g: &CnotCircuit| -> usize {
                 g.gates
@@ -9338,6 +10039,7 @@ mod cnot_gadget_tests {
             epoch: 0,
             refill_data: 0,
             single: 0,
+            gray_fold: 0,
         };
         for seed in 0..3u64 {
             let mut rng = StdRng::seed_from_u64(0xa550_0000 + seed);
@@ -9410,6 +10112,7 @@ mod cnot_gadget_tests {
                 epoch: 0,
                 refill_data: 0,
                 single: 0,
+                gray_fold: 0,
             };
             for seed in 0..2u64 {
                 let mut rng = StdRng::seed_from_u64(0x0d15_0000 + seed);
@@ -9478,6 +10181,7 @@ mod cnot_gadget_tests {
                 epoch: 0,
                 refill_data: 0,
                 single: 1,
+                gray_fold: 0,
             };
             for seed in 0..3u64 {
                 let mut rng = StdRng::seed_from_u64(0x51_0000 + seed);
@@ -9539,6 +10243,7 @@ mod cnot_gadget_tests {
                 epoch: 0,
                 refill_data: 0,
                 single: 1,
+                gray_fold: 0,
             };
             let mut rng = StdRng::seed_from_u64(0x1add_0000 + seed);
             gadgetize_cnot_single(&main, n, 2, &cfg, &mut rng)
@@ -9703,6 +10408,7 @@ mod cnot_gadget_tests {
                 epoch,
                 refill_data,
                 single: 0,
+                gray_fold: 0,
             };
             for seed in 0..3u64 {
                 let mut rng = StdRng::seed_from_u64(0xbeef_0000 + seed);
@@ -9754,6 +10460,7 @@ mod cnot_gadget_tests {
             epoch: 0,
             refill_data: 0,
             single: 0,
+            gray_fold: 0,
         };
         let mut rng = StdRng::seed_from_u64(0x0d16_0001);
         let dist = gadgetize_cnot(&main, n, 2, &MaskConfig::off(), &cfg(1), &mut rng);

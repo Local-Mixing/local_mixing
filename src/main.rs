@@ -324,6 +324,14 @@ fn add_shoot_args(c: Command) -> Command {
                         .help("(--cnot gadgetize) Single-carrier decode: ONE degree-1 term per value instead of two (0 = the legacy carrier pair). The second carrier is free to an affine adversary, so it adds nothing to the piling-up product; dropping it halves the carriers and cuts the fold to (1+k)^arity. Spend the freed atom on a mask: --prod-k 1 --prod-deg 2 --prod-k-hi 2 --prod-deg-hi 3 is [1,2,3,3] (recommended), --prod-k 2 --prod-k-hi 1 is [1,2,2,3] (better degree-1 statistics, half the degree-2 margin). Requires --prod-rsrc >= 1: with one carrier, re-sourcing is what refreshes the representation"),
                 )
                 .arg(
+                    Arg::new("prod_gray_fold")
+                        .long("prod-gray-fold")
+                        .alias("prod_gray_fold")
+                        .required(false)
+                        .value_parser(clap::value_parser!(usize))
+                        .help("(--cnot gadgetize) Gray-code CG fold: gather each operand's mask sum ONCE onto a dirty borrowed accumulator and read it back four times, instead of expanding the cartesian product into fragments of width up to arity*max_deg. Every emitted gate is then <=2 controls with NOTHING laddered -- the fold stops producing the width-3..6 material the frozen store cannot digest (0.41% hit at width 3, absent above) -- at ~3x the block's fragment count against full narrow mode's ~6.2x, because the mask products are derived once per block rather than once per fragment. The accumulators must stay DIRTY: `carrier + masks` IS the operand value, so a clean accumulator would re-expose it, and the audit confirms a clean variant recovers the operand at correlation 1.0. MEASURED exactly over all 46 prefixes of a [1,2,3,3] block: the best affine predictor of a, b, c or a' peaks at 0.28125 = (1/2)(3/4)^2, which is the encoding's own steady-state bound, and no secret enters the span of the wires and their pairwise products at any prefix"),
+                )
+                .arg(
                     Arg::new("prod_g57_narrow")
                         .long("prod-g57-narrow")
                         .alias("prod_g57_narrow")

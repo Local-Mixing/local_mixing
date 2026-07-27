@@ -125,6 +125,7 @@ fn main() {
         epoch: env("PROD_EPOCH", preset.epoch),
         refill_data: env("PROD_REFILL_DATA", preset.refill_data),
         single: env("PROD_SINGLE", preset.single),
+        gray_fold: env("PROD_GRAY_FOLD", preset.gray_fold),
     };
     if prod.enabled() {
         println!(

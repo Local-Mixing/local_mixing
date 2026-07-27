@@ -128,6 +128,7 @@ pub fn run(sub: &clap::ArgMatches) {
             epoch: opt("prod_epoch", preset.epoch),
             refill_data: opt("prod_refill_data", preset.refill_data),
             single: opt("prod_single", preset.single),
+            gray_fold: opt("prod_gray_fold", preset.gray_fold),
         };
         let c = CircuitSeq::from_string(&data);
         let collision_rounds: usize = *sub.get_one("collision_rounds").unwrap();
