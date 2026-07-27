@@ -163,11 +163,11 @@ $C$ and differ only in the fold; all three report
 \begin{center}
 \begin{tabular}{lrrr}
 \toprule
- & wide fold & gray fold & gray $+$ \code{--prod-ladder-cap 3} \\
+ & wide fold & Gray fold & Gray $+$ \code{--prod-ladder-cap 3} \\
 \midrule
 gadget gates            & 339{,}786 & 808{,}618 ($2.38\times$) & 1{,}021{,}244 ($3.01\times$) \\
 fold fossils ($>$2 ctrl)& 153{,}421 & \textbf{0} & \textbf{0} \\
-gray blocks             & 0         & 7{,}209    & 7{,}209 \\
+Gray blocks             & 0         & 7{,}209    & 7{,}209 \\
 \midrule
 \textbf{store-reachable}& \textbf{31.55\%} & \textbf{95.47\%} & \textbf{99.87\%} \\
 policy-blocked ($>$2 ctrl) & 54.96\% & 4.28\%  & 0.08\% \\
@@ -184,7 +184,7 @@ this gate resolves to something the store holds. $95.47\%$ is above the
 previous best on record ($82.40\%$, at \code{--prod-ladder-cap 3} alone, which
 cost $2.2\times$ for $5.7\times$ the reachable material and peaked there).
 
-The residual $4.28\%$ of wide gates under the plain gray fold is \emph{not} the
+The residual $4.28\%$ of wide gates under the plain Gray fold is \emph{not} the
 fold, which emits none. They are mask-slot emissions: a degree-3 mask term is a
 3-control conjunction every time it is injected, re-sourced, retired or
 stripped (\code{emit\_slot}), and that path honours \code{--prod-ladder-cap}
@@ -222,8 +222,8 @@ resamples only the wire labels.
 $n=128$ & \multicolumn{3}{c}{in exact pairs: obs / null / excess} \\
 \midrule
 wide fold      & 14.9\% & 6.0\%  & $+8.9$ pts \\
-gray fold      & 45.1\% & 16.0\% & $+29.0$ pts \\
-gray $+$ cap 3 & 30.4\% & 13.9\% & $+16.5$ pts \\
+Gray fold      & 45.1\% & 16.0\% & $+29.0$ pts \\
+Gray $+$ cap 3 & 30.4\% & 13.9\% & $+16.5$ pts \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -255,6 +255,48 @@ structure is a property of the \emph{raw} gadget, and fmix is now in a position
 to churn it. The honest place to check that is a post-fmix census; it is an
 open measurement, not a claim made here.
 
+\section{The exact-span measure: both builds dead at degree 1 and 2}
+
+\code{hmap\_affine} asks the complementary question to the battery below: is
+$C_i$ an \emph{exact} GF(2) function of degree $\le d$ of $G_j$'s wires,
+scoring every inexact cell at $0.5$. Run on both builds with matched plate
+geometry --- \code{--c-step 30} on both, \code{--g-step} scaled $1700$ vs
+$4050$ so each plate is $101 \times 201$ --- and at degree 2 with the product
+set straddling carriers and band (\code{--deg2-wire-list "0-23,256-279"},
+$1641$ regressors against $8192$ training samples, a $5\times$ margin):
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\toprule
+plate & meanH & depth & depthMed & rho & interior leaks \\
+\midrule
+wide fold, deg 1 & 0.4992 & 0.0438 & \textbf{0.0000} & 0.017 & \textbf{0 / 88} \\
+Gray fold, deg 1 & 0.4994 & 0.0436 & \textbf{0.0000} & 0.016 & \textbf{0 / 88} \\
+wide fold, deg 2 & 0.4992 & 0.0455 & \textbf{0.0000} & $-$0.042 & \textbf{0 / 88} \\
+Gray fold, deg 2 & 0.4994 & 0.0439 & \textbf{0.0000} & 0.016 & \textbf{0 / 88} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All four sit on the repo's dead calibration (depth $0.044$--$0.060$, depthMed
+$0.0000$, rho $\approx 0$), against alive at depth $\sim\!0.35$ with rho $1.00$.
+
+\paragraph{Read the interior rows, not rho.} Every one of these plates has
+eleven rows carrying prominence, and all eleven are ports: rows 1--6 peaking in
+the first columns, where $x$ enters unencoded, and rows 95--99 in the last,
+where $C(x)$ leaves. Every build reads those perfectly, encoded or not. In the
+88 genuinely interior rows, no build has a single row above the $0.10$
+threshold and the median prominence is exactly zero. This is why rho must not
+be the verdict: the wide-fold degree-1 plate reports perm-z $4.91$ at
+$p = 0.0003$, which looks like a significant diagonal and is nothing but the
+two plateaus ranked against noise in a dead middle.
+
+One detail worth keeping: at degree 2 the wide fold's head plateau sits at
+column 2 rather than column 0, i.e.\ a degree-2 predictor reconstructs about
+$1\%$ deeper into that circuit than into the Gray one. A port test written as
+an absolute column index rather than a depth FRACTION scores those six rows as
+interior leaks; they are not.
+
 \section{What the stress battery says: digestibility, not hiding}
 
 The fold changes how the CG is \emph{spelled}, not what the encoding hides, so
@@ -265,7 +307,7 @@ not. Both builds, same $C$, same probe budget (\code{--n 128 --band 256-511
 \begin{center}
 \begin{tabular}{lrrrr}
 \toprule
- & \multicolumn{2}{c}{wide fold} & \multicolumn{2}{c}{gray fold} \\
+ & \multicolumn{2}{c}{wide fold} & \multicolumn{2}{c}{Gray fold} \\
  & promin & rho & promin & rho \\
 \midrule
 \code{bit} F1 (xor-pair)      & 0.0516 & 0.993 & 0.0575 & 0.996 \\
@@ -293,7 +335,7 @@ bimodality gap $0.102 \to 0.127$. Hidden affine relations fell (max $2 \to 1$).
 
 One census row must not be read as a regression: \emph{unwritten in a
 50\,000-gate window} goes $3 \to 309$ wires. The window is a FIXED gate count
-against a circuit $2.38\times$ longer, so it spans $6.2\%$ of the gray build
+against a circuit $2.38\times$ longer, so it spans $6.2\%$ of the Gray build
 against $14.7\%$ of the wide one. The comparison needs a window scaled to
 circuit length, which this run did not do.
 

@@ -440,12 +440,12 @@ gen_sandwich_gadget gadget.mpmct1 128 3000 3000
 # What it costs and buys at n=128 (same sandwich, same C, all verify PASSED):
 #                        gates    fold fossils   store-reachable
 #   wide fold (today)    340k     153,421         31.6%
-#   + gray fold          809k     0               95.5%
+#   + Gray fold          809k     0               95.5%
 #   + gray + ladder 3   1021k     0               99.9%
 # Gray fold alone leaves 4.3% wide gates -- NOT from the fold (fossils=0) but
 # from emit_slot, where a degree-3 mask is a 3-control gate every time it is
 # injected/re-sourced/stripped. --prod-ladder-cap 3 clears those. This does not
-# contradict "laddering peaks at cap 4 and declines after": the gray fold
+# contradict "laddering peaks at cap 4 and declines after": the Gray fold
 # REMOVES the wide fold fragments rather than spelling them out, so cap 3 is
 # left doing only single-rung width-3 slot emissions, which is what it is good
 # at. Check reachability, never match rate -- they move in opposite directions:
