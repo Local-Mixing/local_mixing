@@ -570,6 +570,16 @@ pub struct MixCounters {
     pub db_hard_hits: u64,
     pub db_hard_rounds: u64,
     pub db_hard_added: u64,
+    // Litter census (observation only — nothing bans or prefers on these yet;
+    // see docs/FMIX_MENU.md 2.6). `litter_windows`/`litter_distinct_sum` give
+    // the mean distinct litters per sampled DB window, i.e. how fast churn
+    // fragments litters. `litter_full_spliced` counts splices whose outgoing
+    // window was exactly one COMPLETE litter — precisely the replacements an
+    // ssg-style full-litter ban would have refused, and therefore the number
+    // that says whether the ban is worth wiring in here.
+    pub litter_windows: u64,
+    pub litter_distinct_sum: u64,
+    pub litter_full_spliced: u64,
     pub gen_misses: u64,
     pub merges_cancel: u64,
     pub merges_xfuse: u64,
@@ -662,6 +672,21 @@ struct Meta {
     // unreachable, excluded from the dose stop). Every splice product starts
     // back at 0 — rewritten material may have become cheaply ingestable.
     miss: u16,
+    // Litter tag (ssg `80a2c1d2` semantics, ported for measurement): the
+    // replacement event that CREATED this gate. Input gates and born-random
+    // material are singleton litters. A DB splice stamps all of its products
+    // with one fresh id; splits and merges PROPAGATE the parent's id, so a
+    // litter fragments under churn rather than being reassigned.
+    //
+    // `litter_size` is the size at creation and is deliberately NOT maintained
+    // under splits: a window is "a complete litter" only when every gate shares
+    // one id AND the count still equals that recorded size, so churn makes the
+    // test conservative (it misses, never over-fires) exactly as in ssg.
+    //
+    // Observation only today — nothing bans or prefers on these yet; see
+    // docs/FMIX_MENU.md §2.6.
+    litter: u64,
+    litter_size: u16,
 }
 
 // Which pool a DB window seed is drawn from (set per-attempt; see pick_seed).
@@ -698,7 +723,11 @@ struct UndoEntry {
     event: u64,
     origins: [u32; 2], // origin of before[0], before[1]
     gens: [u32; 2],    // gen of before[0], before[1] (restored on undo)
-    misses: u8,        // failed gather attempts; entry dropped after a few
+    // Litter of before[0], before[1], restored on undo so that reversing a
+    // crossing also reverses its provenance rather than minting new litters.
+    litters: [u64; 2],
+    litter_sizes: [u16; 2],
+    misses: u8, // failed gather attempts; entry dropped after a few
 }
 
 pub struct Mixer {
@@ -714,6 +743,9 @@ pub struct Mixer {
     journal: VecDeque<UndoEntry>,
     tabu: VecDeque<(u64, u64)>, // (event, move at creation)
     next_event: u64,
+    // Next litter id. Input gates take 0..n as singleton litters, so fresh ids
+    // start at n and never collide with them.
+    next_litter: u64,
     original: Vec<XGate>,
     num_wires: usize,
     moves_done: u64,
@@ -858,6 +890,11 @@ impl Mixer {
                 dir: if rng.random_bool(0.5) { Dir::L } else { Dir::R },
                 dgen: 0,
                 miss: 0,
+                // Input gates are singleton litters, as in ssg: they were not
+                // emitted by any replacement, so there is no prior spelling a
+                // full-litter rule could send them back to.
+                litter: i as u64,
+                litter_size: 1,
             })
             .collect();
         let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
@@ -884,6 +921,7 @@ impl Mixer {
             journal: VecDeque::new(),
             tabu: VecDeque::new(),
             next_event: 1,
+            next_litter: n as u64,
             original: gates,
             num_wires,
             moves_done: 0,
@@ -931,7 +969,7 @@ impl Mixer {
         let i = id as usize;
         if i >= self.meta.len() {
             self.meta
-                .resize(i + 1, Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R, dgen: GEN_FRESH, miss: 0 });
+                .resize(i + 1, Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R, dgen: GEN_FRESH, miss: 0, litter: 0, litter_size: 1 });
         }
         self.meta[i] = m;
     }
@@ -940,7 +978,41 @@ impl Mixer {
         self.meta
             .get(id as usize)
             .copied()
-            .unwrap_or(Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R, dgen: GEN_FRESH, miss: 0 })
+            .unwrap_or(Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R, dgen: GEN_FRESH, miss: 0, litter: 0, litter_size: 1 })
+    }
+
+    // Litter census of a window: (distinct litters, is-exactly-one-complete-
+    // litter). "Complete" requires every gate to share one id AND the count to
+    // still equal the size recorded when that litter was emitted — so a litter
+    // that has since been split or partly merged reads as incomplete, making
+    // the test conservative under churn.
+    //
+    // Singleton litters are excluded by construction: input gates and
+    // born-random material carry no earlier spelling to be returned to, and a
+    // ban on them would also refuse the descent's length-1 rung, which is the
+    // one rung that always makes progress.
+    fn litter_census(&self, ids: &[u32]) -> (usize, bool) {
+        if ids.is_empty() {
+            return (0, false);
+        }
+        let mut distinct: Vec<u64> = Vec::with_capacity(ids.len());
+        for &id in ids {
+            let l = self.meta_of(id).litter;
+            if !distinct.contains(&l) {
+                distinct.push(l);
+            }
+        }
+        let size = self.meta_of(ids[0]).litter_size;
+        let full = distinct.len() == 1 && size >= 2 && ids.len() == size as usize;
+        (distinct.len(), full)
+    }
+
+    // A new litter id. Unlike events these carry no tabu bookkeeping — a litter
+    // is pure provenance.
+    fn fresh_litter(&mut self) -> u64 {
+        let l = self.next_litter;
+        self.next_litter += 1;
+        l
     }
 
     fn fresh_event(&mut self) -> u64 {
@@ -1425,7 +1497,7 @@ impl Mixer {
             let ids = self.splice_replace_one(id, pieces);
             for &pid in &ids {
                 let d = self.child_dir(dir);
-                self.set_meta(pid, Meta { origin: pm.origin, event: ev, dir: d, dgen: self.child_gen(pm.dgen), miss: 0 });
+                self.set_meta(pid, Meta { origin: pm.origin, event: ev, dir: d, dgen: self.child_gen(pm.dgen), miss: 0, litter: pm.litter, litter_size: pm.litter_size });
             }
             self.advance_births(&ids);
             self.counters.presplits += 1;
@@ -1467,7 +1539,7 @@ impl Mixer {
                     // Colliding-gate fragments still inherit from the SHOT
                     // gate's direction (per spec: regardless of parent).
                     let d = self.child_dir(dir);
-                    self.set_meta(pid, Meta { origin: hm.origin, event: ev, dir: d, dgen: self.child_gen(hm.dgen), miss: 0 });
+                    self.set_meta(pid, Meta { origin: hm.origin, event: ev, dir: d, dgen: self.child_gen(hm.dgen), miss: 0, litter: hm.litter, litter_size: hm.litter_size });
                 }
                 self.advance_births(&ids);
                 self.counters.presplits += 1;
@@ -1519,7 +1591,7 @@ impl Mixer {
                             let d = self.child_dir(dir);
                             self.set_meta(
                                 pid,
-                                Meta { origin: g_origin, event: ev, dir: d, dgen: self.child_gen(gm.dgen), miss: 0 },
+                                Meta { origin: g_origin, event: ev, dir: d, dgen: self.child_gen(gm.dgen), miss: 0, litter: gm.litter, litter_size: gm.litter_size },
                             );
                             fresh.push(pid);
                         }
@@ -1527,7 +1599,7 @@ impl Mixer {
                             let d = self.child_dir(dir);
                             self.set_meta(
                                 pid,
-                                Meta { origin: h_origin, event: ev, dir: d, dgen: self.child_gen(hm.dgen), miss: 0 },
+                                Meta { origin: h_origin, event: ev, dir: d, dgen: self.child_gen(hm.dgen), miss: 0, litter: hm.litter, litter_size: hm.litter_size },
                             );
                             fresh.push(pid);
                         }
@@ -1547,9 +1619,21 @@ impl Mixer {
                         .or_else(|| placed.iter().find(|(_, r)| *r == Role::ShotPiece))
                         .map(|&(i, _)| i)
                         .expect("rewrite emitted no pivot");
-                    let (before, origins, gens) = match dir {
-                        Dir::R => ([g.clone(), h.clone()], [g_origin, h_origin], [gm.dgen, hm.dgen]),
-                        Dir::L => ([h.clone(), g.clone()], [h_origin, g_origin], [hm.dgen, gm.dgen]),
+                    let (before, origins, gens, litters, litter_sizes) = match dir {
+                        Dir::R => (
+                            [g.clone(), h.clone()],
+                            [g_origin, h_origin],
+                            [gm.dgen, hm.dgen],
+                            [gm.litter, hm.litter],
+                            [gm.litter_size, hm.litter_size],
+                        ),
+                        Dir::L => (
+                            [h.clone(), g.clone()],
+                            [h_origin, g_origin],
+                            [hm.dgen, gm.dgen],
+                            [hm.litter, gm.litter],
+                            [hm.litter_size, gm.litter_size],
+                        ),
                     };
                     let after: Vec<(u32, u32)> =
                         placed.iter().map(|&(i, _)| (i, self.arena.stamp(i))).collect();
@@ -1564,6 +1648,8 @@ impl Mixer {
                         event: ev,
                         origins,
                         gens,
+                        litters,
+                        litter_sizes,
                         misses: 0,
                     });
                 }
@@ -1615,7 +1701,7 @@ impl Mixer {
         let ids = self.splice_replace_one(id, pieces);
         for &pid in &ids {
             let d = self.child_dir(m.dir);
-            self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: d, dgen: self.child_gen(m.dgen), miss: 0 });
+            self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: d, dgen: self.child_gen(m.dgen), miss: 0, litter: m.litter, litter_size: m.litter_size });
         }
         self.advance_births(&ids);
         self.counters.fresh_splits += 1;
@@ -1661,7 +1747,7 @@ impl Mixer {
         let ids = self.splice_replace_one(id, pieces);
         for &pid in &ids {
             let d = self.child_dir(m.dir);
-            self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: d, dgen: self.child_gen(m.dgen), miss: 0 });
+            self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: d, dgen: self.child_gen(m.dgen), miss: 0, litter: m.litter, litter_size: m.litter_size });
         }
         self.advance_births(&ids);
         self.counters.unsubs += 1;
@@ -1706,9 +1792,12 @@ impl Mixer {
         self.index_add(b);
         let ev = self.fresh_event();
         let da = self.rand_dir();
-        // Fresh identity material: no input structure, gen never lags.
-        self.set_meta(a, Meta { origin: ORIGIN_SYNTH, event: ev, dir: da, dgen: GEN_FRESH, miss: 0 });
-        self.set_meta(b, Meta { origin: ORIGIN_SYNTH, event: ev, dir: da.opposite(), dgen: GEN_FRESH, miss: 0 });
+        // Fresh identity material: no input structure, gen never lags. Each copy
+        // is its own singleton litter — born-random gates have no earlier
+        // spelling to be sent back to.
+        let (la, lb) = (self.fresh_litter(), self.fresh_litter());
+        self.set_meta(a, Meta { origin: ORIGIN_SYNTH, event: ev, dir: da, dgen: GEN_FRESH, miss: 0, litter: la, litter_size: 1 });
+        self.set_meta(b, Meta { origin: ORIGIN_SYNTH, event: ev, dir: da.opposite(), dgen: GEN_FRESH, miss: 0, litter: lb, litter_size: 1 });
         self.counters.width_hist[self.arena.gate(a).width().min(15)] += 2;
         self.counters.inserts += 1;
         // Each copy is shot once as part of the insert.
@@ -1967,7 +2056,7 @@ impl Mixer {
                         // conjugated gate's direction exactly.
                         self.set_meta(
                             pid,
-                            Meta { origin: m.origin, event: ev, dir: m.dir, dgen: self.child_gen(m.dgen), miss: 0 },
+                            Meta { origin: m.origin, event: ev, dir: m.dir, dgen: self.child_gen(m.dgen), miss: 0, litter: m.litter, litter_size: m.litter_size },
                         );
                     }
                     relabeled += 1;
@@ -1999,7 +2088,8 @@ impl Mixer {
             anchor = self.arena.insert_after(anchor, g.clone());
             self.index_add(anchor);
             let d = self.rand_dir();
-            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d, dgen: GEN_FRESH, miss: 0 });
+            let lit = self.fresh_litter();
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d, dgen: GEN_FRESH, miss: 0, litter: lit, litter_size: 1 });
         }
         let mut anchor = w_end;
         for g in &packet {
@@ -2007,7 +2097,8 @@ impl Mixer {
             anchor = self.arena.insert_after(anchor, g.clone());
             self.index_add(anchor);
             let d = self.rand_dir();
-            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d, dgen: GEN_FRESH, miss: 0 });
+            let lit = self.fresh_litter();
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d, dgen: GEN_FRESH, miss: 0, litter: lit, litter_size: 1 });
         }
 
         match kind {
@@ -2148,7 +2239,7 @@ impl Mixer {
             c = self.arena.insert_after(c, gate.clone());
             self.index_add(c);
             let d = self.rand_dir();
-            self.set_meta(c, Meta { origin: e.origins[j], event: 0, dir: d, dgen: e.gens[j], miss: 0 });
+            self.set_meta(c, Meta { origin: e.origins[j], event: 0, dir: d, dgen: e.gens[j], miss: 0, litter: e.litters[j], litter_size: e.litter_sizes[j] });
             new_ids.push(c);
         }
         self.counters.undos += 1;
@@ -2286,7 +2377,15 @@ impl Mixer {
             // Gen: the merged content depends on both parents, so it is only
             // as re-encoded as the LESS re-encoded of the two.
             let d = self.child_dir(mg.dir);
-            self.set_meta(nid, Meta { origin, event: 0, dir: d, dgen: mg.dgen.min(mh.dgen), miss: 0 });
+            // Litter follows the same parent the generation does: the merged
+            // gate is only as re-encoded as the less re-encoded parent, so it
+            // inherits that parent's provenance too.
+            let (litter, litter_size) = if mg.dgen <= mh.dgen {
+                (mg.litter, mg.litter_size)
+            } else {
+                (mh.litter, mh.litter_size)
+            };
+            self.set_meta(nid, Meta { origin, event: 0, dir: d, dgen: mg.dgen.min(mh.dgen), miss: 0, litter, litter_size });
         }
         if sibling {
             self.counters.merges_sibling += 1;
@@ -2355,6 +2454,10 @@ impl Mixer {
         // Stamped into every --db-record attempt line (smp=ctg|cvx) so stats
         // can split hits by sampler geometry, esp. under --db-sample mixed.
         self.db_last_sampler = smp;
+        // Litter fragmentation census over the sampled window (observation only).
+        let (distinct, _) = self.litter_census(&ids);
+        self.counters.litter_windows += 1;
+        self.counters.litter_distinct_sum += distinct as u64;
         let window: Vec<XGate> = ids.iter().map(|&id| self.arena.gate(id).clone()).collect();
 
         // Prefix descent, largest first: try the full k-gate window, then the
@@ -2558,6 +2661,11 @@ impl Mixer {
             };
             gens.get(mid).copied().unwrap_or(GEN_FRESH).saturating_add(1)
         };
+        // Would an ssg-style full-litter ban have refused this splice? Counted,
+        // not enforced.
+        if self.litter_census(ids).1 {
+            self.counters.litter_full_spliced += 1;
+        }
         for &id in ids {
             self.index_remove(id);
             self.arena.unlink(id);
@@ -2569,12 +2677,18 @@ impl Mixer {
         // (inclusive) head left, the rest head right.
         let m = replacement.len();
         let pivot = if g1dir == Dir::L { (2 * m) / 3 } else { m / 3 };
+        // The splice is the litter-creating event: every product carries one
+        // fresh id and the size this replacement emitted. A later window that
+        // is exactly this set is the case where the store can hand the outgoing
+        // spelling straight back (A -> B -> A).
+        let litter = self.fresh_litter();
+        let litter_size = m.min(u16::MAX as usize) as u16;
         let mut c = cursor;
         for (i, gate) in replacement.into_iter().enumerate() {
             c = self.arena.insert_after(c, gate);
             self.index_add(c);
             let d = if i <= pivot { Dir::L } else { Dir::R };
-            self.set_meta(c, Meta { origin, event: 0, dir: d, dgen, miss: 0 });
+            self.set_meta(c, Meta { origin, event: 0, dir: d, dgen, miss: 0, litter, litter_size });
         }
         true
     }
@@ -3294,7 +3408,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={}",
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={} | litter distinct={:.2} full={}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -3373,7 +3487,13 @@ impl Mixer {
             c.db_ing_rounds,
             c.db_hard_hits,
             c.db_hard_rounds,
-            c.db_hard_added
+            c.db_hard_added,
+            if c.litter_windows > 0 {
+                c.litter_distinct_sum as f64 / c.litter_windows as f64
+            } else {
+                0.0
+            },
+            c.litter_full_spliced
         );
     }
 
