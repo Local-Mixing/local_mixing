@@ -769,6 +769,14 @@ pub struct MixCounters {
     pub canary_fallthrough: u64,
     // Descent rungs refused by the full-litter ban.
     pub litter_banned: u64,
+    // Distance-from-minimal: sampled windows for which the store held ANY
+    // non-identical equivalent, and how many of those admitted a STRICTLY
+    // SHORTER one. The ratio is a live fcompress residual without running
+    // fcompress -- as COMP drives the circuit toward its locally-minimal form
+    // (the form the attacker-computable compressor would reach anyway) this
+    // falls toward zero, which is the spelling diversity being spent.
+    pub dmin_windows: u64,
+    pub dmin_shorter: u64,
     // Twists placed on a pattern match, and twists that fell back to a random
     // position because no candidate matched within the try budget.
     pub twist_placed: u64,
@@ -1035,6 +1043,8 @@ impl MixCounters {
             self.litter_banned,
             self.twist_placed,
             self.twist_place_fallback,
+            self.dmin_windows,
+            self.dmin_shorter,
             self.litter_windows,
             self.litter_distinct_sum,
             self.litter_full_spliced,
@@ -1121,6 +1131,8 @@ impl MixCounters {
             litter_banned: next_u64(&mut it)?,
             twist_placed: next_u64(&mut it)?,
             twist_place_fallback: next_u64(&mut it)?,
+            dmin_windows: next_u64(&mut it)?,
+            dmin_shorter: next_u64(&mut it)?,
             litter_windows: next_u64(&mut it)?,
             litter_distinct_sum: next_u64(&mut it)?,
             litter_full_spliced: next_u64(&mut it)?,
@@ -3292,6 +3304,12 @@ impl Mixer {
                 if res.chosen.is_some() && res.chosen_curated {
                     self.counters.db_curated_hits += 1;
                 }
+                if let Some(ml) = res.min_match_len {
+                    self.counters.dmin_windows += 1;
+                    if ml < prefix.len() {
+                        self.counters.dmin_shorter += 1;
+                    }
+                }
                 if res.degree_skipped {
                     self.counters.db_degree_skips += 1;
                 }
@@ -3359,6 +3377,12 @@ impl Mixer {
             &mut self.rng,
         );
         self.counters.db_identity_skips += res.identity_skipped as u64;
+        if let Some(ml) = res.min_match_len {
+            self.counters.dmin_windows += 1;
+            if ml < window.len() {
+                self.counters.dmin_shorter += 1;
+            }
+        }
         if res.chosen.is_some() && res.chosen_curated {
             self.counters.db_curated_hits += 1;
         }
@@ -4335,7 +4359,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{}",
+            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -4426,7 +4450,12 @@ impl Mixer {
             c.litter_full_spliced,
             c.litter_banned,
             c.twist_placed,
-            c.twist_place_fallback
+            c.twist_place_fallback,
+            if c.dmin_windows > 0 {
+                c.dmin_shorter as f64 / c.dmin_windows as f64
+            } else {
+                0.0
+            }
         );
         let sizes = self.splice_size_line();
         if !sizes.is_empty() {

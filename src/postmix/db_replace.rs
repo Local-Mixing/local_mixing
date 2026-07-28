@@ -330,6 +330,13 @@ pub struct DbResult {
     pub curated_matches: usize,
     /// Whether the selected replacement came from the curated store.
     pub chosen_curated: bool,
+    /// Length of the SHORTEST non-identical equivalent the store returned, if
+    /// any. Comparing it to the window length says whether this window still
+    /// admits a strictly shorter spelling -- the adversary-aligned quantity,
+    /// since `fcompress` is attacker-computable and a circuit driven to its
+    /// locally-minimal form has spent the spelling diversity that re-encoding
+    /// buys. Reported as dmin=.
+    pub min_match_len: Option<usize>,
     /// True when BOTH directions were skipped by the degree guard (a certain
     /// miss reached without any canonicalization or store lookup).
     pub degree_skipped: bool,
@@ -396,6 +403,7 @@ where
         identity_skipped: 0,
         curated_matches: 0,
         chosen_curated: false,
+        min_match_len: None,
     };
     let window_len = window.len();
     if window_len == 0 {
@@ -469,6 +477,7 @@ where
 
     let match_count = matches.len();
     let curated_matches = matches.iter().filter(|(_, c)| *c).count();
+    let min_match_len = matches.iter().map(|(g, _)| g.len()).min();
     let picked = choose(&mut matches, window_len, mode, rng);
     let (chosen, chosen_curated) = match picked {
         Some((g, c)) => (Some(g), c),
@@ -481,6 +490,7 @@ where
         identity_skipped,
         curated_matches,
         chosen_curated,
+        min_match_len,
     }
 }
 
