@@ -604,6 +604,7 @@ fn main() {
             MixStop::MovesBudget => "moves budget spent",
             MixStop::StopFlag => "stop flag",
             MixStop::DoseReached => "dose reached (gen + twist coverage targets met)",
+            MixStop::CanaryFired => "canary fired (pool is unspellable by the store)",
         },
         input_len,
         mixer.arena.len(),

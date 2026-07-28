@@ -1001,6 +1001,10 @@ pub enum MixStop {
     // ended as soon as the mixing dose was achieved, spending no further
     // moves (and hence no further incidental growth) past the requirement.
     DoseReached,
+    // The canary fired: over the trailing window of qualifying rounds the
+    // failure fraction exceeded canary_theta, i.e. the pool has converged on
+    // material the store cannot spell and further moves buy nothing.
+    CanaryFired,
 }
 
 /// Generation census over the linked circuit (see `Meta::dgen`).
@@ -1522,6 +1526,18 @@ impl Mixer {
                 if self.stop_requested {
                     self.global_check();
                     return MixStop::StopFlag;
+                }
+                if self.canary_fired() {
+                    println!(
+                        "[fmix] canary fired at move {}: {:.1}% of the last {} pool-seeded rounds failed at every rung (theta {}), fall-through {} — the pool is material the store cannot spell; stopping",
+                        self.moves_done,
+                        100.0 * self.canary_frac(),
+                        self.canary.len(),
+                        self.params.canary_theta,
+                        self.counters.canary_fallthrough,
+                    );
+                    self.global_check();
+                    return MixStop::CanaryFired;
                 }
                 if self.dose_reached() {
                     println!(
