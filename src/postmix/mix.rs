@@ -507,16 +507,6 @@ pub struct MixParams {
     // and walk contraction like any other growth source.
     pub p_twist: f64,
     // Linear anneal of p_db across the move budget: the effective value runs
-    // from p_db (move 0) to p_db_final (last move). < 0 = no anneal. The
-    // "splitting phase" lever: retire the DB growth engine as material turns
-    // wide and its hit rate dies.
-    pub p_db_final: f64,
-    // Size-steer the agnostic move by the walk's own error signal: multiply
-    // the (possibly annealed) p_db by sigmoid(-excess/temp). Below target the
-    // factor is ~1 (full growth assist); above target it decays, so one run
-    // grows to target and then holds size while the compressing channel and
-    // walk contraction absorb the residual churn growth.
-    pub p_db_steer: bool,
     // Generation targeting: drive every (cap-eligible) gate through at least
     // gen_target DB re-encodings. With gen_target > 0, a DB seed is drawn
     // from the laggard list (gates with gen < gen_target) with probability
@@ -548,6 +538,18 @@ pub struct MixParams {
     // wide gap. 0 = off.
     pub canary_theta: f64,
     pub canary_window: usize,
+    // litter_ban: refuse a window that is exactly one COMPLETE litter -- the
+    // unit some earlier replacement emitted, and therefore precisely where the
+    // store can hand the outgoing spelling straight back (A -> B -> A).
+    // Singleton litters are exempt by construction: an input gate has no
+    // earlier spelling to be returned to, and banning it would also refuse the
+    // descent's length-1 rung, the one rung that always makes progress.
+    pub litter_ban: bool,
+    // litter_samples: draw this many candidate windows and keep the one
+    // spanning the MOST distinct litters. 1 = off. Discarded candidates may
+    // leave ctrl-cap evasion floats behind; those are function-preserving and
+    // the walk floats constantly, so the cost is arena churn, not correctness.
+    pub litter_samples: usize,
     // Pool rebuild cadence in moves (an O(size) scan each time).
     pub gen_rescan: u64,
     // Split-rule variant for the generation benchmark: false (default) =
@@ -656,13 +658,13 @@ impl Default for MixParams {
             p_comp_g57: 0.0,
             s_db_g57: 9,
             p_twist: 0.0,
-            p_db_final: -1.0,
-            p_db_steer: false,
             gen_target: 0,
             p_mingen: 0.8,
             pool_k: 20_000,
             canary_theta: 0.0,
             canary_window: 2000,
+            litter_ban: false,
+            litter_samples: 1,
             gen_rescan: 10_000,
             gen_split_inherit: false,
             gen_median_low: false,
@@ -709,6 +711,8 @@ pub struct MixCounters {
     pub brake_rounds: u64,
     // Heads coins that found the pool drained (see db_attempt).
     pub canary_fallthrough: u64,
+    // Descent rungs refused by the full-litter ban.
+    pub litter_banned: u64,
     // Joint size distribution of successful splices: [outgoing len][incoming
     // len]. The shape of what the store actually trades, which the scalar rm=
     // and add= totals cannot show -- a channel that swaps 3 gates for 3 and one
@@ -994,7 +998,6 @@ impl Mixer {
         // result; they are gone now, but the invariant remains.
         let db = if params.p_comp > 0.0
             || params.p_db > 0.0
-            || params.p_db_final > 0.0
         {
             FrozenDb::from_env()
         } else {
@@ -1301,22 +1304,6 @@ impl Mixer {
 
     // ---- the chain ----
 
-    // Effective size-agnostic probability this round: base p_db, linearly
-    // annealed toward p_db_final across the move budget, then (optionally)
-    // size-steered by sigmoid(-excess/temp) — the same signal the walk's
-    // contract/expand coin uses.
-    pub fn p_db_eff(&self) -> f64 {
-        let mut p = self.params.p_db;
-        if self.params.p_db_final >= 0.0 {
-            let t = self.moves_done as f64 / self.params.moves.max(1) as f64;
-            p += (self.params.p_db_final - p) * t;
-        }
-        if self.params.p_db_steer {
-            let excess = self.arena.len() as f64 - self.params.target_size as f64;
-            p *= 1.0 / (1.0 + (excess / self.params.temp).exp());
-        }
-        p.clamp(0.0, 1.0)
-    }
 
     // One first-class twist round: type drawn from the w_twist_* weights as
     // ratios, neg/swap 50/50 when all are zero.
@@ -2570,7 +2557,7 @@ impl Mixer {
 
         // Sample the window (contiguous or convex); g1dir drives the incoming
         // direction pivot below.
-        let Some((ids, g1dir, smp)) = self.sample_window(len) else {
+        let Some((ids, g1dir, smp)) = self.sample_best_window(len) else {
             return false;
         };
         // Stamped into every --db-record attempt line (smp=ctg|cvx) so stats
@@ -2612,6 +2599,22 @@ impl Mixer {
                     break;
                 }
                 let prefix = &window[lo..=hi];
+                // Full-litter ban: this rung is exactly the set some earlier
+                // replacement emitted, so it is where the store is most likely
+                // to hand that spelling straight back. Descending past it is
+                // free -- a shorter rung is no longer a complete litter.
+                if self.params.litter_ban && self.litter_census(&ids[lo..=hi]).1 {
+                    self.counters.litter_banned += 1;
+                    if p == wmin {
+                        break;
+                    }
+                    if k.saturating_sub(lo) >= hi.saturating_sub(k) {
+                        lo += 1;
+                    } else {
+                        hi -= 1;
+                    }
+                    continue;
+                }
                 self.counters.db_attempts += 1;
                 if self.params.db_max_span > 0
                     && super::xpoly::xgate_used_wires(prefix).len() > self.params.db_max_span
@@ -3106,6 +3109,28 @@ impl Mixer {
 
     // Returns the sampled window plus WHICH geometry actually built it (the
     // coin outcome under Mixed), so records and stats can split by sampler.
+    /// Draw `litter_samples` candidate windows and keep the one spanning the
+    /// most distinct litters. Diversity is the point: a window drawn from many
+    /// replacement events is one no single earlier splice can undo, which is
+    /// the same property the full-litter ban enforces at the other end.
+    fn sample_best_window(&mut self, w: usize) -> Option<(Vec<u32>, Dir, DbSample)> {
+        let n = self.params.litter_samples.max(1);
+        let mut best: Option<(Vec<u32>, Dir, DbSample)> = None;
+        let mut best_distinct = 0usize;
+        for _ in 0..n {
+            let Some(cand) = self.sample_window(w) else { continue };
+            let d = self.litter_census(&cand.0).0;
+            if best.is_none() || d > best_distinct {
+                best_distinct = d;
+                best = Some(cand);
+            }
+            if best_distinct >= w {
+                break; // already maximal; more draws cannot improve it
+            }
+        }
+        best
+    }
+
     fn sample_window(&mut self, w: usize) -> Option<(Vec<u32>, Dir, DbSample)> {
         match if self.rng.random_bool(self.params.p_convex.clamp(0.0, 1.0)) {
             DbSample::Convex
@@ -3656,7 +3681,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={}",
+            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -3679,7 +3704,7 @@ impl Mixer {
             c.undo_tabu,
             c.undo_gather_miss,
             self.journal.len(),
-            self.p_db_eff(),
+            self.params.p_db,
             c.db_comp_hits,
             c.db_comp_misses,
             c.db_agn_hits,
@@ -3744,7 +3769,8 @@ impl Mixer {
             } else {
                 0.0
             },
-            c.litter_full_spliced
+            c.litter_full_spliced,
+            c.litter_banned
         );
         let sizes = self.splice_size_line();
         if !sizes.is_empty() {

@@ -134,17 +134,6 @@ struct Args {
     /// move ~= p-twist x mean-window-span / size.
     #[arg(long, default_value_t = 0.0)]
     p_twist: f64,
-    /// Anneal p-db linearly across the move budget, ending at this value
-    /// (the "splitting phase" lever: retire the DB growth engine as material
-    /// turns wide). Negative = no anneal.
-    #[arg(long, default_value_t = -1.0)]
-    p_db_final: f64,
-    /// Size-steer the agnostic move: multiply the (annealed) p-db by
-    /// sigmoid(-(size-target)/temp), so one run grows to target and then
-    /// holds size (pair with --w-db for the shrink side). Reported as pdb=
-    /// in every progress line.
-    #[arg(long, default_value_t = false)]
-    p_db_steer: bool,
     /// Window length the descent STARTS from. The descent visits every shorter
     /// length down to 1, so there is no separate minimum.
     #[arg(long, default_value_t = 5)]
@@ -309,6 +298,17 @@ struct Args {
     /// Trailing window for the canary, in qualifying rounds.
     #[arg(long, default_value_t = 2000)]
     canary_window: usize,
+    /// Refuse a descent rung that is exactly one COMPLETE litter -- the set some
+    /// earlier replacement emitted, and so where the store is most likely to
+    /// hand that spelling straight back. Singleton litters are exempt: an input
+    /// gate has no earlier spelling, and banning it would also refuse the
+    /// length-1 rung, the one that always makes progress.
+    #[arg(long, default_value_t = false)]
+    litter_ban: bool,
+    /// Draw this many candidate windows and keep the one spanning the most
+    /// distinct litters. 1 = off.
+    #[arg(long, default_value_t = 1)]
+    litter_samples: usize,
     /// Split-rule variant: children INHERIT the parent generation unchanged
     /// (only DB replacements raise generations). Default off = ratchet
     /// semantics (split children get parent + 1).
@@ -414,7 +414,7 @@ fn main() {
             args.w_twist_neg, args.w_twist_swap, args.w_twist_cnot, args.twist_min_len
         );
     }
-    if args.p_comp > 0.0 || args.p_db > 0.0 || args.p_any > 0.0 || args.p_db_final > 0.0 {
+    if args.p_comp > 0.0 || args.p_db > 0.0 || args.p_any > 0.0 {
         println!(
             "[fmix] DB ON: p_db(slot2)={} db_mode={} p_comp(contract)={} p_any(expand)={} s_db={} p_convex={} w_window={} w_pool={} verify={} curated={} (FROZEN_DB_DIR required)",
             args.p_db, args.db_mode, args.p_comp, args.p_any, args.s_db, args.p_convex,
@@ -495,8 +495,6 @@ fn main() {
             .unwrap_or_else(|| panic!("unknown --db-mode {} (mix|comp|any)", args.db_mode)),
         p_db: args.p_db,
         p_twist: args.p_twist,
-        p_db_final: args.p_db_final,
-        p_db_steer: args.p_db_steer,
         s_db: args.s_db,
         w_window: args.w_window,
         w_pool: args.w_pool,
@@ -525,6 +523,8 @@ fn main() {
         pool_k: args.pool_k,
         canary_theta: args.canary_theta,
         canary_window: args.canary_window,
+        litter_ban: args.litter_ban,
+        litter_samples: args.litter_samples,
         gen_rescan: args.gen_rescan,
         gen_split_inherit: args.gen_split_inherit,
         gen_median_low: args.gen_median_low,
