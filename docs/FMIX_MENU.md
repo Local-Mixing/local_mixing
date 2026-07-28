@@ -741,15 +741,26 @@ one canary.
 
 ## 10. Open
 
-- **`p_db = 1` leaves the directional walk dormant.** Per-gate directions
-  (`Meta::dir`, `dir_p`, `dir_q`) are the mechanism that makes transport
-  ballistic rather than diffusive, and the DB splice already assigns them —
-  each replacement is split at a pivot so the block shoots outward from `g1`'s
-  direction. But directions are only *consumed* by the **cross** move, which
-  lives on the expand branch of slot 3, so at `p_db = 1` they are assigned and
-  never acted on. This is an independent reason to set `p_db < 1`, separate
-  from the (resolved) absorption argument. Measurable directly: same C, same
-  seed, `dir_p 0.75` vs `dir_p 0.5`, compare `odiff`/`oadj` trajectories.
+- **Transport under a DB-dominated schedule — resolved by `db_advance`, still
+  to be measured.** The DB move already uses direction in three places: the
+  contiguous sampler extends the window along `g1`'s own direction, the convex
+  sampler floats `g1` and then the block along it, and the splice assigns
+  product directions by pivot from `g1dir`. What was missing is the ballistic
+  **birth-advance** — `advance_births` fires at all five split sites but not at
+  the splice, so products were handed a direction nothing ever acted on.
+
+  The obvious alternative, restoring crossings by setting `p_db < 1`, is the
+  wrong fix: crossings widen material, and width is what kills DB matching (one
+  width-3 gate takes a window from 36% to 0.2% across m = 3…6, and ~62% of a
+  product-share gadget is already width ≥ 3). Phase A would be manufacturing
+  exactly what the store cannot digest.
+
+  `--db-advance` gives splice products the same birth-advance split pieces get.
+  Float-only, so the function is preserved by construction, and it scatters the
+  litter as a side effect — making a later window less likely to be exactly one
+  earlier replacement. **Off by default because it changes trajectories**; the
+  A/B is one flag, read on `odiff`/`oadj`, and it belongs in calibration stage 2.
+  The menu spec wants it on.
 - **`p_twist` is under-set at 0.002.** With the COMP brake as the absorber
   rather than the merge catalogue (§3.1), 0.01 costs only a ~20% COMP duty
   cycle and delivers a twist per gate every 0.4 generations. 0.002 is a safe

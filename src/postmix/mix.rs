@@ -397,6 +397,16 @@ pub struct MixParams {
     // Dry-run measurement only for now — the splice policy when several
     // prefixes match (longest vs uniform) is an open design choice.
     pub db_prefixes: bool,
+    // db_advance: give DB splice products the same ballistic birth-advance the
+    // split moves get (advance floor(dir_q * slack) along the product's own
+    // direction). Without it a splice assigns directions that nothing ever acts
+    // on: `advance_births` fires at every split site but not here, so under a
+    // DB-dominated schedule the directional walk is written and never read.
+    // The alternative source of transport -- crossings -- widens material, and
+    // width is what kills DB matching, so this is the transport channel that
+    // does not fight the store. Off by default: it changes trajectories, so the
+    // A/B is one flag.
+    pub db_advance: bool,
     // Fixed top-level twist rate: with this probability a round performs one
     // conjugation twist directly, decoupling twist supply (set by mixing
     // needs) from the expansion-move economy (whose round supply collapses
@@ -534,6 +544,7 @@ impl Default for MixParams {
             db_wire_terms: 0,
             db_total_terms: 0,
             db_prefixes: false,
+            db_advance: false,
             p_twist: 0.0,
             p_db_final: -1.0,
             p_db_steer: false,
@@ -2684,11 +2695,20 @@ impl Mixer {
         let litter = self.fresh_litter();
         let litter_size = m.min(u16::MAX as usize) as u16;
         let mut c = cursor;
+        let mut placed: Vec<u32> = Vec::with_capacity(m);
         for (i, gate) in replacement.into_iter().enumerate() {
             c = self.arena.insert_after(c, gate);
             self.index_add(c);
             let d = if i <= pivot { Dir::L } else { Dir::R };
             self.set_meta(c, Meta { origin, event: 0, dir: d, dgen, miss: 0, litter, litter_size });
+            placed.push(c);
+        }
+        // Products ride their assigned direction outward, exactly as split
+        // pieces do. Float-only, so the function is preserved by construction;
+        // it also scatters the litter, which makes a later window less likely
+        // to be exactly this replacement.
+        if self.params.db_advance {
+            self.advance_births(&placed);
         }
         true
     }

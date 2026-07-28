@@ -208,6 +208,14 @@ struct Args {
     /// Span/verify declines keep descending — shorter prefixes may still fit.
     #[arg(long, default_value_t = false)]
     db_prefixes: bool,
+    /// Give DB splice products the ballistic birth-advance that split pieces
+    /// get: each product floats floor(dir_q * slack) along its own direction.
+    /// Without this a splice assigns directions nothing acts on, so a
+    /// DB-dominated schedule has no directional transport at all. The other
+    /// source of transport -- crossings -- widens gates, and width is what
+    /// kills DB matching. Off by default (it changes trajectories).
+    #[arg(long, default_value_t = false)]
+    db_advance: bool,
     /// Generation targeting: drive every (ctrl-cap-eligible) gate through at
     /// least this many DB re-encodings. Each gate carries a generation (input
     /// gates 0; a DB splice stamps min(window)+1; splits/merges propagate;
@@ -415,6 +423,7 @@ fn main() {
         db_wire_terms: args.db_wire_terms,
         db_total_terms: args.db_total_terms,
         db_prefixes: args.db_prefixes,
+        db_advance: args.db_advance,
         gen_target: args.gen_target,
         gen_bias: args.gen_bias,
         gen_rescan: args.gen_rescan,
