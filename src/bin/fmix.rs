@@ -285,32 +285,30 @@ struct Args {
     /// coupon-collector tail of uniform selection with direct work. 0 = off.
     #[arg(long, default_value_t = 0)]
     gen_target: u32,
-    /// Probability a DB seed is drawn from the laggard (below-target) list
-    /// instead of uniformly; the remainder keeps the unbiased churn.
-    #[arg(long, default_value_t = 0.9)]
-    gen_bias: f64,
-    /// Ingest-then-pay, CHEAP channel: probability a round is a
-    /// Compressing-mode DB attempt (non-growing replacements only — zero
-    /// growth risk, safe to run hot) seeded on a cheap-tier laggard. A seed
-    /// that keeps failing graduates to the hard tier at --gen-miss-budget.
-    /// 0 = off. Requires --gen-target > 0.
+    /// Probability a DB seed comes from the generation POOL rather than
+    /// uniformly. This is what stops the walk being a coupon collector, where
+    /// the last few percent of gates soak up most of the moves.
+    #[arg(long, default_value_t = 0.8)]
+    p_mingen: f64,
+    /// Pool size in GATES: the K lowest-generation gates that are pool-eligible
+    /// and still below the goal. A count rather than a fraction, because the
+    /// drain rate is set by the move economy (gen_rescan x p_db x p_mingen) and
+    /// is independent of circuit size. K must exceed the draws taken between
+    /// rebuilds or the pool empties and the biased coin silently degrades to
+    /// uniform -- watch the fall-through counter.
+    #[arg(long, default_value_t = 20_000)]
+    pool_k: usize,
+    /// Stop when the failure fraction over the last --canary-window QUALIFYING
+    /// rounds exceeds this. A qualifying round is one whose seed genuinely came
+    /// from the pool; heads coins that fell through a drained pool are counted
+    /// separately, since those mean the rebuild is too slow rather than that the
+    /// material is unreachable. Asleep while the brake holds COMP, because COMP
+    /// declines far more often by construction. 0 = off.
     #[arg(long, default_value_t = 0.0)]
-    p_db_ingest: f64,
-    /// Ingest-then-pay, PAID channel: probability a round is a MinGrow-mode
-    /// attempt (uniform among the SHORTEST equivalents, growing allowed)
-    /// seeded on a hard-tier gate — growth is spent only on gates the cheap
-    /// channel provably cannot ingest, at the minimum spelling each, and the
-    /// cost is ledgered in the report's paid= field. Fires only while
-    /// hard-tier gates exist. 0 = off.
-    #[arg(long, default_value_t = 0.0)]
-    p_db_hard: f64,
-    /// Seed misses before a laggard graduates cheap -> hard tier.
-    #[arg(long, default_value_t = 6)]
-    gen_miss_budget: u16,
-    /// Seed misses before a gate is written off as unreachable (excluded
-    /// from targeting and from the dose stop, reported as u=). 0 = never.
-    #[arg(long, default_value_t = 0)]
-    gen_giveup: u16,
+    canary_theta: f64,
+    /// Trailing window for the canary, in qualifying rounds.
+    #[arg(long, default_value_t = 2000)]
+    canary_window: usize,
     /// Split-rule variant: children INHERIT the parent generation unchanged
     /// (only DB replacements raise generations). Default off = ratchet
     /// semantics (split children get parent + 1).
@@ -451,15 +449,15 @@ fn main() {
     }
     if args.gen_target > 0 {
         println!(
-            "[fmix] generation targeting ON: gen_target={} gen_bias={} gen_rescan={} gen_stop_frac={} twist_cov_stop={} split_rule={} (report: gen tgt/G/alag/lag/c/h/u/wlag/min, cov, ing, hard, paid)",
-            args.gen_target, args.gen_bias, args.gen_rescan, args.gen_stop_frac,
+            "[fmix] generation targeting ON: gen_target={} p_mingen={} pool_k={} gen_rescan={} gen_stop_frac={} twist_cov_stop={} split_rule={}",
+            args.gen_target, args.p_mingen, args.pool_k, args.gen_rescan, args.gen_stop_frac,
             args.twist_cov_stop,
             if args.gen_split_inherit { "inherit" } else { "ratchet(+1)" }
         );
-        if args.p_db_ingest > 0.0 || args.p_db_hard > 0.0 {
+        if args.canary_theta > 0.0 {
             println!(
-                "[fmix] ingest-then-pay ON: p_db_ingest={} (cheap, non-growing) p_db_hard={} (paid, MinGrow) miss_budget={} giveup={}",
-                args.p_db_ingest, args.p_db_hard, args.gen_miss_budget, args.gen_giveup
+                "[fmix] canary ON: theta={} window={} qualifying rounds",
+                args.canary_theta, args.canary_window
             );
         }
     }
@@ -523,12 +521,11 @@ fn main() {
         comp_release_window: args.comp_release_window,
         s_db_g57: args.s_db_g57,
         gen_target: args.gen_target,
-        gen_bias: args.gen_bias,
+        p_mingen: args.p_mingen,
+        pool_k: args.pool_k,
+        canary_theta: args.canary_theta,
+        canary_window: args.canary_window,
         gen_rescan: args.gen_rescan,
-        p_db_ingest: args.p_db_ingest,
-        p_db_hard: args.p_db_hard,
-        gen_miss_budget: args.gen_miss_budget,
-        gen_giveup: args.gen_giveup,
         gen_split_inherit: args.gen_split_inherit,
         gen_median_low: args.gen_median_low,
         gen_stop_frac: args.gen_stop_frac,

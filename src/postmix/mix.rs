@@ -525,29 +525,31 @@ pub struct MixParams {
     // growth, for the same minimum generation. 0 = off (trajectory identical
     // to the untargeted chain at equal seed).
     pub gen_target: u32,
-    pub gen_bias: f64,
-    // Laggard-list rebuild cadence in moves (an O(size) scan each time).
+    // p_mingen: probability a DB seed is drawn from the generation POOL rather
+    // than uniformly -- what stops the process being a coupon collector, where
+    // the last few percent of gates soak up most of the moves.
+    pub p_mingen: f64,
+    // pool_k: the pool is the K lowest-generation gates among those that are
+    // pool-eligible AND still below the goal. Both filters are load-bearing. An
+    // ineligible gate can never be re-encoded, so its generation is pinned
+    // forever and an unfiltered pool converges on exactly that set; and without
+    // the below-goal filter a late-run pool is padded with ordinary
+    // low-but-finished gates that re-encode fine, so the canary could never
+    // fire. A COUNT, not a fraction: the drain rate is set by the move economy
+    // (gen_rescan x p_db x p_mingen) and is independent of circuit size, so a
+    // percentage over-provisions as the circuit grows and under-provisions on
+    // small ones. K must exceed the draws taken between rebuilds, or the pool
+    // empties and the biased coin silently degrades to uniform.
+    pub pool_k: usize,
+    // Canary: fire when the failure fraction over the last canary_window
+    // QUALIFYING rounds exceeds canary_theta. Healthy failure rates sit well
+    // under 0.2 (five rungs against ~99% per-window hit rates on width-<=2
+    // material) while the pathological case drives toward 1.0, so 0.9 sits in a
+    // wide gap. 0 = off.
+    pub canary_theta: f64,
+    pub canary_window: usize,
+    // Pool rebuild cadence in moves (an O(size) scan each time).
     pub gen_rescan: u64,
-    // Ingest-then-pay policy (all inert at 0; needs gen_target > 0):
-    // p_db_ingest — probability a round is a CHEAP ingest attempt: a
-    // Compressing-mode (non-growing replacements only) DB attempt seeded on a
-    // cheap-tier laggard. Zero growth risk, so it can run at a high rate
-    // regardless of the thermostat. A failed seed bumps the gate's miss
-    // counter; at gen_miss_budget the gate is proven hard.
-    pub p_db_ingest: f64,
-    // p_db_hard — probability a round is a PAID attempt: a MinGrow-mode
-    // (uniform among the SHORTEST equivalents, growing allowed) attempt
-    // seeded on a hard-tier gate. This is the only channel that spends
-    // growth on the generation goal, it pays the minimum spelling for each
-    // hard core, and it fires only while hard-tier gates exist. Deliberately
-    // NOT size-steered; the cost is ledgered in the paid= report field.
-    pub p_db_hard: f64,
-    // Seed misses before a laggard graduates cheap -> hard.
-    pub gen_miss_budget: u16,
-    // Seed misses before a gate is written off as unreachable (excluded from
-    // targeting AND from the dose-stop laggard fraction, reported as u=).
-    // 0 = never give up.
-    pub gen_giveup: u16,
     // Split-rule variant for the generation benchmark: false (default) =
     // ratchet semantics, split children get parent + 1; true = children
     // inherit the parent generation unchanged, so ONLY DB replacements raise
@@ -657,12 +659,11 @@ impl Default for MixParams {
             p_db_final: -1.0,
             p_db_steer: false,
             gen_target: 0,
-            gen_bias: 0.9,
+            p_mingen: 0.8,
+            pool_k: 20_000,
+            canary_theta: 0.0,
+            canary_window: 2000,
             gen_rescan: 10_000,
-            p_db_ingest: 0.0,
-            p_db_hard: 0.0,
-            gen_miss_budget: 6,
-            gen_giveup: 0,
             gen_split_inherit: false,
             gen_median_low: false,
             gen_stop_frac: -1.0,
@@ -706,6 +707,8 @@ pub struct MixCounters {
     // Times the brake engaged, and rounds spent under it.
     pub brake_engagements: u64,
     pub brake_rounds: u64,
+    // Heads coins that found the pool drained (see db_attempt).
+    pub canary_fallthrough: u64,
     // Joint size distribution of successful splices: [outgoing len][incoming
     // len]. The shape of what the store actually trades, which the scalar rm=
     // and add= totals cannot show -- a channel that swaps 3 gates for 3 and one
@@ -806,13 +809,6 @@ struct Meta {
     // structure and gets GEN_FRESH (= the spec's MAXGEN, higher than every
     // real generation; saturating arithmetic keeps it fixed).
     dgen: u32,
-    // Failed laggard-seeded DB attempts on this gate (ingest-then-pay tiers):
-    // below gen_miss_budget the gate is "cheap tier" (non-growing ingestion
-    // keeps trying); at the budget it is proven hard and graduates to the
-    // paid MinGrow channel; at gen_giveup it is written off (reported as
-    // unreachable, excluded from the dose stop). Every splice product starts
-    // back at 0 — rewritten material may have become cheaply ingestable.
-    miss: u16,
     // Litter tag (ssg `80a2c1d2` semantics, ported for measurement): the
     // replacement event that CREATED this gate. Input gates and born-random
     // material are singleton litters. A DB splice stamps all of its products
@@ -830,18 +826,6 @@ struct Meta {
     litter_size: u16,
 }
 
-// Which pool a DB window seed is drawn from (set per-attempt; see pick_seed).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SeedPool {
-    // Uniform, with the gen_bias coin toward cheap-tier laggards (the
-    // pre-existing behavior of the generic agnostic/compressing rounds).
-    Biased,
-    // Cheap-tier laggards (fall back to uniform when the tier runs dry).
-    Cheap,
-    // Hard-tier laggards only — the paid channel never wastes its growth
-    // budget on material the cheap channel can still reach (no fallback).
-    Hard,
-}
 
 /// Generation stamp for born-random material (fresh insert pairs, twist
 /// bracket packets): these gates never held any input structure, so for the
@@ -921,40 +905,30 @@ pub struct Mixer {
     // Which geometry built the window of the CURRENT db_attempt (see
     // sample_window); stamped into --db-record attempt lines.
     db_last_sampler: DbSample,
-    // (seed id, its left neighbour when drawn). Window building floats gates --
-    // convex sampling floats the seed itself, ctrl-cap evasion floats
-    // colliders -- so a FAILED attempt would otherwise leave the seed
-    // displaced. Under min-generation targeting the same stubborn gate is drawn
-    // over and over, so failure would write a characteristic displacement into
-    // the circuit: hard-to-re-encode gates would drift. A failed attempt must be
-    // a no-op, which is deliberately unlike the cross move, where a declined
-    // shot only partially retreats.
+    // (seed id, its left neighbour when drawn). Window building floats gates,
+    // so a FAILED attempt would otherwise leave the seed displaced -- and under
+    // pool targeting the same stubborn gate is drawn repeatedly, which would
+    // write a characteristic displacement into the circuit.
     db_seed_home: Option<(u32, u32)>,
     // Set for the duration of one COMP attempt drawn as g57-only.
     db_g57_only: bool,
-    // The LIVE slot-2 mode. params.db_mode is the value the brake returns to;
-    // this is what the round actually uses.
+    // The LIVE slot-2 mode. params.db_mode is what the brake returns to.
     db_mode_cur: DbMode,
     brake_on: bool,
     brake_mark_move: u64,
     brake_mark_size: usize,
-    // Generation targeting (gen_target > 0): ids of cap-eligible gates still
-    // below gen_target, rebuilt every gen_rescan moves and partitioned by
-    // their miss count — cheap tier (miss < gen_miss_budget, non-growing
-    // ingestion keeps trying) and hard tier (budget <= miss < giveup, only
-    // the paid MinGrow channel touches them). Entries go stale between scans
-    // (freed, reused, re-encoded, or graduated ids) and are validated and
-    // pruned at draw time in pick_seed — the lists are a sampling bias,
-    // never an invariant.
-    lag_cheap: Vec<u32>,
-    lag_hard: Vec<u32>,
-    laggards_scan_due: u64,
-    // Which pool the CURRENT db_attempt's seed comes from (set per round).
-    seed_pool: SeedPool,
-    // (id, stamp) of the laggard the current attempt was seeded on, when the
-    // draw came from a laggard list; used for miss accounting after the
-    // attempt (stamp equality proves the same gate survived unconsumed).
-    last_seed: Option<(u32, u32)>,
+    // Next move at which the pool is rebuilt.
+    pool_scan_due: u64,
+    // The generation pool (see MixParams::pool_k).
+    pool: Vec<u32>,
+    // Whether the current attempt's seed genuinely came from the pool, and
+    // whether a heads coin fell through because the pool had drained.
+    seed_from_pool: bool,
+    seed_fell_through: bool,
+    // Trailing window of qualifying-round outcomes (true = failed at every
+    // rung), with a running failure count so the fraction is O(1).
+    canary: VecDeque<bool>,
+    canary_failures: usize,
 }
 
 pub enum MixStop {
@@ -971,13 +945,6 @@ pub struct GenStats {
     /// Cap-eligible gates still below gen_target and still targetable
     /// (cheap + hard tiers) — the dose-stop numerator.
     pub lag: u64,
-    /// ...of which cheap tier (miss < gen_miss_budget).
-    pub cheap: u64,
-    /// ...of which hard tier (graduated to the paid channel).
-    pub hard: u64,
-    /// Below target but written off (miss >= gen_giveup > 0): excluded from
-    /// targeting and from the dose stop, reported as u=.
-    pub unreach: u64,
     /// Cap-eligible gates in total.
     pub elig: u64,
     /// Wide (cap-ineligible) gates below gen_target: invisible to the DB
@@ -1022,13 +989,12 @@ impl Mixer {
         // Every channel that can reach the store must be in this test. Leaving
         // one out yields FrozenDb::empty(), so every lookup misses, the run does
         // zero re-encoding, and nothing says so -- it looks like a measurement.
-        // p_db_ingest and p_db_hard were missing here; production only escaped
-        // it because every recipe also set --w-db.
+        // The ingest/paid channels were once missing here, which yielded an
+        // empty store and a run that reported zero re-encoding as if it were a
+        // result; they are gone now, but the invariant remains.
         let db = if params.p_comp > 0.0
             || params.p_db > 0.0
             || params.p_db_final > 0.0
-            || params.p_db_ingest > 0.0
-            || params.p_db_hard > 0.0
         {
             FrozenDb::from_env()
         } else {
@@ -1061,7 +1027,6 @@ impl Mixer {
                 event: 0,
                 dir: if rng.random_bool(0.5) { Dir::L } else { Dir::R },
                 dgen: 0,
-                miss: 0,
                 // Input gates are singleton litters, as in ssg: they were not
                 // emitted by any replacement, so there is no prior spelling a
                 // full-litter rule could send them back to.
@@ -1128,11 +1093,12 @@ impl Mixer {
             brake_on: false,
             brake_mark_move: 0,
             brake_mark_size: 0,
-            lag_cheap: Vec::new(),
-            lag_hard: Vec::new(),
-            laggards_scan_due: 0,
-            seed_pool: SeedPool::Biased,
-            last_seed: None,
+            pool: Vec::new(),
+            seed_from_pool: false,
+            seed_fell_through: false,
+            canary: VecDeque::new(),
+            canary_failures: 0,
+            pool_scan_due: 0,
         }
     }
 
@@ -1160,7 +1126,7 @@ impl Mixer {
         let i = id as usize;
         if i >= self.meta.len() {
             self.meta
-                .resize(i + 1, Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R, dgen: GEN_FRESH, miss: 0, litter: 0, litter_size: 1 });
+                .resize(i + 1, Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R, dgen: GEN_FRESH, litter: 0, litter_size: 1 });
         }
         self.meta[i] = m;
     }
@@ -1169,7 +1135,7 @@ impl Mixer {
         self.meta
             .get(id as usize)
             .copied()
-            .unwrap_or(Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R, dgen: GEN_FRESH, miss: 0, litter: 0, litter_size: 1 })
+            .unwrap_or(Meta { origin: ORIGIN_SYNTH, event: 0, dir: Dir::R, dgen: GEN_FRESH, litter: 0, litter_size: 1 })
     }
 
     // Litter census of a window: (distinct litters, is-exactly-one-complete-
@@ -1431,9 +1397,9 @@ impl Mixer {
             // Generation targeting: refresh the laggard list on its cadence
             // (an O(size) scan; entries invalidated between scans are pruned
             // lazily at draw time in pick_seed).
-            if self.params.gen_target > 0 && self.moves_done >= self.laggards_scan_due {
-                self.rebuild_laggards();
-                self.laggards_scan_due = self.moves_done + self.params.gen_rescan.max(1);
+            if self.params.gen_target > 0 && self.moves_done >= self.pool_scan_due {
+                self.rebuild_pool();
+                self.pool_scan_due = self.moves_done + self.params.gen_rescan.max(1);
             }
             // Slot 0 continued: the size brake.
             self.apply_size_brake();
@@ -1745,7 +1711,7 @@ impl Mixer {
             let ids = self.splice_replace_one(id, pieces);
             for &pid in &ids {
                 let d = self.child_dir(dir);
-                self.set_meta(pid, Meta { origin: pm.origin, event: ev, dir: d, dgen: self.child_gen(pm.dgen), miss: 0, litter: pm.litter, litter_size: pm.litter_size });
+                self.set_meta(pid, Meta { origin: pm.origin, event: ev, dir: d, dgen: self.child_gen(pm.dgen), litter: pm.litter, litter_size: pm.litter_size });
             }
             self.advance_births(&ids);
             self.counters.presplits += 1;
@@ -1787,7 +1753,7 @@ impl Mixer {
                     // Colliding-gate fragments still inherit from the SHOT
                     // gate's direction (per spec: regardless of parent).
                     let d = self.child_dir(dir);
-                    self.set_meta(pid, Meta { origin: hm.origin, event: ev, dir: d, dgen: self.child_gen(hm.dgen), miss: 0, litter: hm.litter, litter_size: hm.litter_size });
+                    self.set_meta(pid, Meta { origin: hm.origin, event: ev, dir: d, dgen: self.child_gen(hm.dgen), litter: hm.litter, litter_size: hm.litter_size });
                 }
                 self.advance_births(&ids);
                 self.counters.presplits += 1;
@@ -1839,7 +1805,7 @@ impl Mixer {
                             let d = self.child_dir(dir);
                             self.set_meta(
                                 pid,
-                                Meta { origin: g_origin, event: ev, dir: d, dgen: self.child_gen(gm.dgen), miss: 0, litter: gm.litter, litter_size: gm.litter_size },
+                                Meta { origin: g_origin, event: ev, dir: d, dgen: self.child_gen(gm.dgen), litter: gm.litter, litter_size: gm.litter_size },
                             );
                             fresh.push(pid);
                         }
@@ -1847,7 +1813,7 @@ impl Mixer {
                             let d = self.child_dir(dir);
                             self.set_meta(
                                 pid,
-                                Meta { origin: h_origin, event: ev, dir: d, dgen: self.child_gen(hm.dgen), miss: 0, litter: hm.litter, litter_size: hm.litter_size },
+                                Meta { origin: h_origin, event: ev, dir: d, dgen: self.child_gen(hm.dgen), litter: hm.litter, litter_size: hm.litter_size },
                             );
                             fresh.push(pid);
                         }
@@ -2136,7 +2102,7 @@ impl Mixer {
                         // conjugated gate's direction exactly.
                         self.set_meta(
                             pid,
-                            Meta { origin: m.origin, event: ev, dir: m.dir, dgen: self.child_gen(m.dgen), miss: 0, litter: m.litter, litter_size: m.litter_size },
+                            Meta { origin: m.origin, event: ev, dir: m.dir, dgen: self.child_gen(m.dgen), litter: m.litter, litter_size: m.litter_size },
                         );
                     }
                     relabeled += 1;
@@ -2169,7 +2135,7 @@ impl Mixer {
             self.index_add(anchor);
             let d = self.rand_dir();
             let lit = self.fresh_litter();
-            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d, dgen: GEN_FRESH, miss: 0, litter: lit, litter_size: 1 });
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d, dgen: GEN_FRESH, litter: lit, litter_size: 1 });
         }
         let mut anchor = w_end;
         for g in &packet {
@@ -2178,7 +2144,7 @@ impl Mixer {
             self.index_add(anchor);
             let d = self.rand_dir();
             let lit = self.fresh_litter();
-            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d, dgen: GEN_FRESH, miss: 0, litter: lit, litter_size: 1 });
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d, dgen: GEN_FRESH, litter: lit, litter_size: 1 });
         }
 
         match kind {
@@ -2319,7 +2285,7 @@ impl Mixer {
             c = self.arena.insert_after(c, gate.clone());
             self.index_add(c);
             let d = self.rand_dir();
-            self.set_meta(c, Meta { origin: e.origins[j], event: 0, dir: d, dgen: e.gens[j], miss: 0, litter: e.litters[j], litter_size: e.litter_sizes[j] });
+            self.set_meta(c, Meta { origin: e.origins[j], event: 0, dir: d, dgen: e.gens[j], litter: e.litters[j], litter_size: e.litter_sizes[j] });
             new_ids.push(c);
         }
         self.counters.undos += 1;
@@ -2471,7 +2437,7 @@ impl Mixer {
             if self.anc_words > 0 && mg.litter != mh.litter {
                 litter = self.anc_union_litter(&[mg.litter, mh.litter]);
             }
-            self.set_meta(nid, Meta { origin, event: 0, dir: d, dgen: mg.dgen.min(mh.dgen), miss: 0, litter, litter_size });
+            self.set_meta(nid, Meta { origin, event: 0, dir: d, dgen: mg.dgen.min(mh.dgen), litter, litter_size });
         }
         if sibling {
             self.counters.merges_sibling += 1;
@@ -2523,9 +2489,36 @@ impl Mixer {
     }
 
     fn db_attempt(&mut self, mode: DbMode) -> bool {
-        self.last_seed = None;
         self.db_seed_home = None;
+        self.seed_from_pool = false;
+        self.seed_fell_through = false;
         let spliced = self.db_attempt_inner(mode);
+        // Canary accounting. A round QUALIFIES only when the seed genuinely
+        // came from the pool; a heads coin that fell through because the pool
+        // had drained is counted separately, because it means the rebuild is
+        // too slow (scan more often) rather than that the material is
+        // unreachable (stop the run) -- opposite remedies, so conflating them
+        // would let a slow rescan masquerade as exhaustion.
+        //
+        // The canary SLEEPS under the brake: COMP declines far more often by
+        // construction, and since this is a stop condition, mixing those
+        // samples in would end runs for a reason that has nothing to do with
+        // reachability.
+        if self.seed_fell_through {
+            self.counters.canary_fallthrough += 1;
+        }
+        if self.seed_from_pool && mode != DbMode::Compressing {
+            let w = self.params.canary_window.max(1);
+            if self.canary.len() == w {
+                if self.canary.pop_front() == Some(true) {
+                    self.canary_failures -= 1;
+                }
+            }
+            self.canary.push_back(!spliced);
+            if !spliced {
+                self.canary_failures += 1;
+            }
+        }
         // A failed attempt must leave no trace: put the seed back. On success
         // the seed was consumed by the splice, so there is nothing to restore.
         if spliced {
@@ -2533,12 +2526,29 @@ impl Mixer {
         } else {
             self.restore_seed();
         }
-        if let Some((id, stamp)) = self.last_seed.take() {
-            if self.arena.is_linked(id) && self.arena.stamp(id) == stamp {
-                self.bump_miss(id);
-            }
-        }
         spliced
+    }
+
+    /// The canary condition: the trailing window is FULL and the failure
+    /// fraction in it exceeds `canary_theta`. Buffer-fullness is the
+    /// minimum-sample guard, and the window is denominated in qualifying rounds
+    /// rather than moves -- the right units, since the qualifying rate itself
+    /// varies with the fall-through rate.
+    pub fn canary_fired(&self) -> bool {
+        let w = self.params.canary_window.max(1);
+        if self.params.canary_theta <= 0.0 || self.canary.len() < w {
+            return false;
+        }
+        self.canary_failures as f64 / self.canary.len() as f64 > self.params.canary_theta
+    }
+
+    /// Failure fraction currently in the canary window (0 until it fills).
+    pub fn canary_frac(&self) -> f64 {
+        if self.canary.is_empty() {
+            0.0
+        } else {
+            self.canary_failures as f64 / self.canary.len() as f64
+        }
     }
 
     fn db_attempt_inner(&mut self, mode: DbMode) -> bool {
@@ -2851,7 +2861,7 @@ impl Mixer {
             c = self.arena.insert_after(c, gate);
             self.index_add(c);
             let d = if i <= pivot { Dir::L } else { Dir::R };
-            self.set_meta(c, Meta { origin, event: 0, dir: d, dgen, miss: 0, litter, litter_size });
+            self.set_meta(c, Meta { origin, event: 0, dir: d, dgen, litter, litter_size });
             placed.push(c);
         }
         // Products ride their assigned direction outward, exactly as split
@@ -3118,77 +3128,48 @@ impl Mixer {
         }
     }
 
-    // Rebuild the laggard lists: every linked, cap-eligible gate still below
-    // gen_target, partitioned into the cheap tier (miss < gen_miss_budget)
-    // and the hard tier (budget <= miss, and < gen_giveup when set — gates at
-    // the giveup cap are written off as unreachable). Wide gates are excluded
-    // — the window builder evades them, so they cannot seed (or join) a
-    // matchable window; they are reported separately (wlag=) and only
-    // re-enter the chase once some other move narrows or consumes them
-    // (their pieces inherit the low gen).
-    fn rebuild_laggards(&mut self) {
+    /// Rebuild the generation pool: the `pool_k` lowest-generation gates among
+    /// those that are pool-eligible AND still below the goal. An O(size) scan,
+    /// so it runs on the `gen_rescan` cadence rather than every round.
+    fn rebuild_pool(&mut self) {
         let target = self.params.gen_target;
-        let budget = self.params.gen_miss_budget;
-        let giveup = self.params.gen_giveup;
-        self.lag_cheap.clear();
-        self.lag_hard.clear();
+        self.pool.clear();
+        let mut cands: Vec<(u32, u32)> = Vec::new();
         for id in self.arena.ids_in_order() {
             let m = self.meta_of(id);
             if m.dgen >= target || !self.pool_eligible(id) {
                 continue;
             }
-            if m.miss < budget {
-                self.lag_cheap.push(id);
-            } else if giveup == 0 || m.miss < giveup {
-                self.lag_hard.push(id);
-            }
+            cands.push((m.dgen, id));
         }
+        let k = self.params.pool_k.max(1);
+        if cands.len() > k {
+            cands.select_nth_unstable(k - 1);
+            cands.truncate(k);
+        }
+        self.pool.extend(cands.into_iter().map(|(_, id)| id));
     }
 
-    // Validated draw from one laggard list: prunes stale entries (freed,
-    // re-encoded, or tier-migrated ids), records the seed for miss
-    // accounting, and rejects currently-too-wide gates without unlisting
-    // them. `lo..hi` is the miss range the list is supposed to hold.
-    fn draw_laggard(&mut self, cheap: bool) -> Option<u32> {
+    /// Draw from the pool, pruning entries that went stale since the rebuild
+    /// (freed, re-encoded past the goal, or now too wide to seed).
+    fn draw_pool(&mut self) -> Option<u32> {
         let target = self.params.gen_target;
-        let budget = self.params.gen_miss_budget;
-        let giveup = self.params.gen_giveup;
         for _ in 0..8 {
-            let list = if cheap { &self.lag_cheap } else { &self.lag_hard };
-            if list.is_empty() {
+            if self.pool.is_empty() {
                 return None;
             }
-            let i = self.rng.random_range(0..list.len());
-            let id = list[i];
+            let i = self.rng.random_range(0..self.pool.len());
+            let id = self.pool[i];
             let m = self.meta_of(id);
-            let in_tier = if cheap {
-                m.miss < budget
-            } else {
-                m.miss >= budget && (giveup == 0 || m.miss < giveup)
-            };
-            if !self.arena.is_linked(id) || m.dgen >= target || !in_tier {
-                let list = if cheap { &mut self.lag_cheap } else { &mut self.lag_hard };
-                list.swap_remove(i);
+            if !self.arena.is_linked(id) || m.dgen >= target || !self.pool_eligible(id) {
+                self.pool.swap_remove(i);
                 continue;
             }
-            if self.pool_eligible(id) {
-                self.last_seed = Some((id, self.arena.stamp(id)));
-                return Some(id);
-            }
-            return None; // valid laggard, currently too wide — try next round
+            return Some(id);
         }
         None
     }
 
-    // Seed gate for a window, per the active seed_pool:
-    //  Biased — uniform, except with probability gen_bias the seed comes from
-    //  the cheap-tier laggards (the pre-existing targeting of the generic
-    //  rounds); Cheap — cheap tier, falling back to uniform when dry;
-    //  Hard — hard tier only, never falling back (the paid channel must not
-    //  spend growth on material the cheap channel can still reach).
-    // Laggard draws record last_seed for miss accounting. Stale entries are
-    // pruned at draw time; a reused id that now holds a different low-gen
-    // eligible gate is a perfectly good target and is kept.
     /// True g57 shape: `comp = 1`, two controls, opposite polarity.
     fn gate_is_g57(&self, id: u32) -> bool {
         let g = self.arena.gate(id);
@@ -3248,24 +3229,25 @@ impl Mixer {
         }
     }
 
+    /// One coin, one pool. Heads (probability `p_mingen`) draws from the
+    /// generation pool; tails draws uniformly. `seed_from_pool` records which,
+    /// because the canary must count only rounds that genuinely came from the
+    /// pool -- a heads round that fell through because the pool had drained is
+    /// a DIFFERENT failure (rebuild too slow) with the opposite remedy, and
+    /// conflating them would let the brake or a slow rescan look like
+    /// unreachable material.
     fn pick_seed_inner(&mut self) -> Option<u32> {
-        match self.seed_pool {
-            SeedPool::Hard => return self.draw_laggard(false),
-            SeedPool::Cheap => {
-                if let Some(id) = self.draw_laggard(true) {
-                    return Some(id);
-                }
+        self.seed_from_pool = false;
+        self.seed_fell_through = false;
+        if self.params.gen_target > 0
+            && self.params.p_mingen > 0.0
+            && self.rng.random_bool(self.params.p_mingen.clamp(0.0, 1.0))
+        {
+            if let Some(id) = self.draw_pool() {
+                self.seed_from_pool = true;
+                return Some(id);
             }
-            SeedPool::Biased => {
-                if self.params.gen_target > 0
-                    && !self.lag_cheap.is_empty()
-                    && self.rng.random_bool(self.params.gen_bias.clamp(0.0, 1.0))
-                {
-                    if let Some(id) = self.draw_laggard(true) {
-                        return Some(id);
-                    }
-                }
-            }
+            self.seed_fell_through = true;
         }
         for _ in 0..8 {
             let g = self.arena.random_linked(&mut self.rng);
@@ -3281,13 +3263,6 @@ impl Mixer {
     // generation; MAXGEN stays MAXGEN either way (saturating).
     fn child_gen(&self, parent: u32) -> u32 {
         if self.params.gen_split_inherit { parent } else { parent.saturating_add(1) }
-    }
-
-    fn bump_miss(&mut self, id: u32) {
-        if let Some(m) = self.meta.get_mut(id as usize) {
-            m.miss = m.miss.saturating_add(1);
-            self.counters.gen_misses += 1;
-        }
     }
 
     // Hard per-attempt bound on ctrl-cap evasion floats. Evading a wide gate
@@ -3681,7 +3656,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={} | litter distinct={:.2} full={}",
+            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -3759,17 +3734,11 @@ impl Mixer {
             gs.total,
             gs.lag,
             gs.elig,
-            gs.cheap,
-            gs.hard,
-            gs.unreach,
             gs.wlag,
             gmin,
             cov,
-            c.db_ing_hits,
-            c.db_ing_rounds,
-            c.db_hard_hits,
-            c.db_hard_rounds,
-            c.db_hard_added,
+            self.canary_frac(),
+            c.canary_fallthrough,
             if c.litter_windows > 0 {
                 c.litter_distinct_sum as f64 / c.litter_windows as f64
             } else {
@@ -3795,13 +3764,8 @@ impl Mixer {
 
     pub fn gen_stats(&self) -> GenStats {
         let target = self.params.gen_target;
-        let budget = self.params.gen_miss_budget;
-        let giveup = self.params.gen_giveup;
         let mut s = GenStats {
             lag: 0,
-            cheap: 0,
-            hard: 0,
-            unreach: 0,
             elig: 0,
             wlag: 0,
             min: GEN_FRESH,
@@ -3841,21 +3805,16 @@ impl Mixer {
                 thist[(m.dgen as usize).min(GB - 1)] += 1;
                 continue;
             }
-            if m.miss < budget {
-                s.cheap += 1;
-            } else if giveup == 0 || m.miss < giveup {
-                s.hard += 1;
-            } else {
-                // Written off as unreachable: excluded from targeting, from
-                // the dose stop, and from the circuit generation alike — the
-                // DB cannot move it, so it must not hold the percentile down.
-                s.unreach += 1;
-                continue;
-            }
+            // Below target and eligible: this is the population targeting can
+            // actually move, and the denominator the dose stop reads. Nothing
+            // is written off any more -- with the descent reaching length 1,
+            // which cannot decline for free, an eligible gate the store knows
+            // at all advances; the residue that truly cannot is what the canary
+            // is for, rather than a per-gate miss counter.
+            s.lag += 1;
             s.targetable += 1;
             thist[(m.dgen as usize).min(GB - 1)] += 1;
         }
-        s.lag = s.cheap + s.hard;
         // Largest G with >= 95% of the population at generation >= G: walk
         // the histogram until more than 5% lie strictly below G.
         let percentile = |h: &[u64; GB], population: u64| -> u32 {
@@ -4668,15 +4627,16 @@ mod mix_tests {
         assert!(gens.contains(&0), "original material cannot all vanish here");
     }
 
-    // Generation targeting: with bias 1.0 the seed comes from the laggard
-    // list while one exists, and entries that got re-encoded (or freed)
-    // between rescans are pruned at draw time.
+    // The generation pool: with p_mingen 1.0 the seed comes from the pool
+    // while one exists, and entries that got re-encoded (or freed) between
+    // rebuilds are pruned at draw time.
     #[test]
-    fn pick_seed_targets_laggards_and_prunes_stale() {
+    fn pick_seed_targets_pool_and_prunes_stale() {
         let gates = random_mixed_circuit(31, 16, 60);
         let params = MixParams {
             gen_target: 4,
-            gen_bias: 1.0,
+            p_mingen: 1.0,
+            w_pool: 0,
             report_every: u64::MAX,
             seed: 17,
             ..MixParams::default()
@@ -4690,83 +4650,49 @@ mod mix_tests {
             let g = if lag.contains(&id) { 1 } else { 9 };
             mx.set_meta(id, Meta { dgen: g, ..m });
         }
-        mx.rebuild_laggards();
-        assert_eq!(mx.lag_cheap.len(), 3);
+        mx.rebuild_pool();
+        assert_eq!(mx.pool.len(), 3);
         for _ in 0..50 {
             let s = mx.pick_seed().expect("seed");
-            assert!(lag.contains(&s), "bias 1.0 must draw laggard seeds while any exist");
+            assert!(lag.contains(&s), "p_mingen 1.0 must draw pool seeds while any exist");
         }
-        // One laggard crosses the target between rescans: draws prune it.
+        // One crosses the target between rebuilds: draws prune it.
         let m = mx.meta_of(lag[0]);
         mx.set_meta(lag[0], Meta { dgen: 4, ..m });
         for _ in 0..200 {
             let s = mx.pick_seed().expect("seed");
-            assert!(s != lag[0], "re-encoded gate must not be picked as a laggard");
+            assert!(s != lag[0], "re-encoded gate must not be picked from the pool");
         }
-        assert_eq!(mx.lag_cheap.len(), 2, "stale entry must be pruned at draw time");
+        assert_eq!(mx.pool.len(), 2, "stale entry must be pruned at draw time");
     }
 
-    // Ingest-then-pay tiers: laggard-seeded attempts against an empty store
-    // bump exactly the drawn seed; at the miss budget a gate leaves the
-    // cheap tier for the hard tier; at the giveup cap it is retired as
-    // unreachable (dropped from targeting — but still counted by the
-    // all-gates dose criterion).
+    // The pool is capped at pool_k, holding the LOWEST-generation gates: the
+    // count is what bounds the drain between rebuilds, so it must be honoured
+    // exactly rather than approximately.
     #[test]
-    fn miss_budget_graduates_then_retires() {
-        let gates = random_mixed_circuit(41, 16, 40);
-        let n0 = gates.len();
+    fn pool_keeps_only_k_lowest_generations() {
+        let gates = random_mixed_circuit(43, 16, 60);
         let params = MixParams {
-            gen_target: 1,
-            gen_miss_budget: 2,
-            gen_giveup: 3,
-            gen_stop_frac: 0.0,
-            report_every: u64::MAX,
-            // This test predates the w_window/w_pool split and counts EVERY
-            // gate as poolable; keep it uncapped so it measures tier mechanics
-            // rather than eligibility.
+            gen_target: 100,
+            pool_k: 5,
             w_pool: 0,
-            seed: 19,
+            report_every: u64::MAX,
+            seed: 23,
             ..MixParams::default()
         };
-        let mut mx = Mixer::new_with_db(gates, 16, params, FrozenDb::empty());
-        mx.rebuild_laggards();
-        assert_eq!(mx.lag_cheap.len(), n0);
-        assert!(mx.lag_hard.is_empty());
-        assert!(!mx.dose_reached(), "everything lags at the start");
-        // Cheap phase: every attempt misses (empty store), bumping its seed;
-        // gates hit the budget and drain from the (lazily pruned) cheap list.
-        for _ in 0..400 {
-            mx.seed_pool = SeedPool::Cheap;
-            assert!(!mx.db_attempt(DbMode::Compressing), "empty store cannot splice");
+        let mut mx = Mixer::new(gates, 16, params);
+        let ids = mx.arena.ids_in_order();
+        for (i, &id) in ids.iter().enumerate() {
+            let m = mx.meta_of(id);
+            mx.set_meta(id, Meta { dgen: i as u32, ..m });
         }
-        mx.seed_pool = SeedPool::Biased;
-        assert!(mx.counters.gen_misses > 0, "cheap misses must be accounted");
-        mx.rebuild_laggards();
-        assert!(mx.lag_cheap.is_empty(), "every gate must exhaust its cheap budget");
-        assert_eq!(mx.lag_hard.len(), n0, "every gate must graduate to the hard tier");
-        // Paid phase: same, until every gate hits the giveup cap.
-        for _ in 0..400 {
-            mx.seed_pool = SeedPool::Hard;
-            assert!(!mx.db_attempt(DbMode::MinGrow));
-        }
-        mx.seed_pool = SeedPool::Biased;
-        mx.rebuild_laggards();
-        assert!(mx.lag_hard.is_empty(), "every hard gate must hit the giveup cap");
-        let s = mx.gen_stats();
-        assert_eq!(s.unreach, n0 as u64);
-        assert_eq!(s.lag, 0, "retired gates leave the targeting tiers");
-        assert_eq!(s.all_lag, n0 as u64, "...and still show in the all-gates census");
-        assert_eq!(s.targetable, 0, "written-off gates are not targetable");
-        assert!(
-            !mx.dose_reached(),
-            "with nothing targetable the dose is unmeasurable, not met"
-        );
+        mx.rebuild_pool();
+        assert_eq!(mx.pool.len(), 5, "pool must be capped at pool_k");
+        let mut gens: Vec<u32> = mx.pool.iter().map(|&id| mx.meta_of(id).dgen).collect();
+        gens.sort_unstable();
+        assert_eq!(gens, vec![0, 1, 2, 3, 4], "pool must hold the K lowest generations");
     }
 
-    // The dose stop and the circuit generation are both measured over the
-    // TARGETABLE gates — cap-eligible and not written off. Generations only
-    // advance under DB re-encoding, so a gate the DB can never touch must not
-    // hold either number down forever.
     #[test]
     fn dose_stop_and_generation_count_targetable_gates() {
         let gates = random_mixed_circuit(37, 16, 40);
