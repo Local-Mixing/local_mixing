@@ -288,6 +288,27 @@ pub enum DbMode {
     /// window that has no non-growing spelling. The paid channel of the
     /// ingest-then-pay generation policy.
     MinGrow,
+    /// Free if possible, else pay the minimum: uniform over all non-growing
+    /// equivalents when any exist, otherwise uniform over the shortest. This
+    /// makes the ingest-versus-pay decision PER WINDOW, from the match list the
+    /// lookup already returned, which is what replaces the per-gate cheap/hard
+    /// tier machinery. The asymmetry against Compressing is deliberate:
+    /// Compressing is a contraction move so minimum size is its job, while Mix
+    /// is a re-encoding move so entropy is — Mix therefore maximises the draw
+    /// pool exactly when re-encoding is free and minimises cost only when it is
+    /// not.
+    Mix,
+}
+
+impl DbMode {
+    pub fn parse(s: &str) -> Option<DbMode> {
+        match s {
+            "mix" => Some(DbMode::Mix),
+            "comp" => Some(DbMode::Compressing),
+            "any" => Some(DbMode::SizeAgnostic),
+            _ => None,
+        }
+    }
 }
 
 /// Outcome of a store lookup for one window.
@@ -497,6 +518,17 @@ fn choose(
         DbMode::MinGrow => {
             let min = pool.iter().map(|&i| len_of(i)).min()?;
             pool.into_iter().filter(|&i| len_of(i) == min).collect()
+        }
+        // Free if any free spelling exists, else the cheapest paid one.
+        DbMode::Mix => {
+            let free: Vec<usize> =
+                pool.iter().copied().filter(|&i| len_of(i) <= window_len).collect();
+            if free.is_empty() {
+                let min = pool.iter().map(|&i| len_of(i)).min()?;
+                pool.into_iter().filter(|&i| len_of(i) == min).collect()
+            } else {
+                free
+            }
         }
     };
     if eligible.is_empty() {

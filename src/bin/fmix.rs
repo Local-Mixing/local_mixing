@@ -107,13 +107,19 @@ struct Args {
     /// Minimum twist window length (max is the current circuit size)
     #[arg(long, default_value_t = 64)]
     twist_min_len: usize,
-    /// Compressing DB move: probability that a CONTRACTION attempt first samples
-    /// a contiguous window and replaces it with a non-growing equivalent from the
-    /// store (uniform among the shortest), falling through to undo/merge on a
-    /// miss. 0 = off. Requires FROZEN_DB_DIR (and optionally FROZEN_CURATED_DIR)
-    /// when > 0 or --p-db > 0. Handles conjunction-control gates, not just g57s.
-    #[arg(long, default_value_t = 0.0)]
-    w_db: f64,
+    /// Probability a CONTRACTION tries COMP-DB (non-growing, uniform among the
+    /// shortest) before falling through to journal undo and the merge
+    /// catalogue. Requires FROZEN_DB_DIR.
+    #[arg(long, default_value_t = 1.0)]
+    p_comp: f64,
+    /// Probability an EXPANSION is an ANY-DB move rather than a cross.
+    #[arg(long, default_value_t = 0.1)]
+    p_any: f64,
+    /// Slot-2 admission rule: mix | comp | any. MIX is free-if-possible else
+    /// pay-the-minimum and is the phase-A default; COMP refuses to grow and is
+    /// the manual size brake; ANY takes any equivalent and accelerates growth.
+    #[arg(long, default_value = "mix")]
+    db_mode: String,
     /// Size-agnostic DB move: probability that a whole round is spent replacing a
     /// sampled window with a uniform random equivalent of ANY gate count (may
     /// grow the circuit), instead of the normal contract/expand step. 0 = off.
@@ -139,21 +145,22 @@ struct Args {
     /// in every progress line.
     #[arg(long, default_value_t = false)]
     p_db_steer: bool,
-    /// Minimum DB-replacement window length (gates).
-    #[arg(long, default_value_t = 2)]
-    db_min_window: usize,
-    /// Maximum DB-replacement window length (gates).
-    #[arg(long, default_value_t = 12)]
-    db_max_window: usize,
-    /// Window sampling geometry: `contiguous` (a gate plus its neighbors in its
-    /// own direction) or `convex` (float a block together, absorbing colliders).
-    #[arg(long, default_value = "contiguous")]
-    db_sample: String,
-    /// Control cap L for window building: a candidate gate with more than L
-    /// controls is evaded (floated away, else the build reverses, else aborts),
-    /// keeping high-degree always-miss gates out of the window. 0 = no cap.
-    #[arg(long, default_value_t = 0)]
-    db_ctrl_cap: usize,
+    /// Window length the descent STARTS from. The descent visits every shorter
+    /// length down to 1, so there is no separate minimum.
+    #[arg(long, default_value_t = 5)]
+    s_db: usize,
+    /// Probability the window sampler is convex rather than contiguous.
+    #[arg(long, default_value_t = 0.5)]
+    p_convex: f64,
+    /// A gate with this many controls or more may not sit INSIDE a window.
+    #[arg(long, default_value_t = 4)]
+    w_window: usize,
+    /// A gate with this many controls or more may not SEED a window or count
+    /// toward the dose. Stricter than --w-window on purpose: width-3 gates
+    /// match in context but re-encode end-to-end at 0.41% against 98.98% for
+    /// width <= 2, so at a shared threshold they pile up in the pool forever.
+    #[arg(long, default_value_t = 3)]
+    w_pool: usize,
     /// Convex sampling: probability each growth step floats the block in g1's
     /// direction (else the opposite).
     #[arg(long, default_value_t = 0.75)]
@@ -390,12 +397,18 @@ fn main() {
             args.w_twist_neg, args.w_twist_swap, args.w_twist_cnot, args.twist_min_len
         );
     }
-    if args.w_db > 0.0 || args.p_db > 0.0 || args.p_db_final > 0.0 {
+    if args.p_comp > 0.0 || args.p_db > 0.0 || args.p_any > 0.0 || args.p_db_final > 0.0 {
         println!(
-            "[fmix] DB replacement ON: w_db(compress)={} p_db(agnostic)={} p_db_final={} steer={} window=[{},{}] verify={} (FROZEN_DB_DIR required)",
-            args.w_db, args.p_db, args.p_db_final, args.p_db_steer,
-            args.db_min_window, args.db_max_window, !args.no_db_verify
+            "[fmix] DB ON: p_db(slot2)={} db_mode={} p_comp(contract)={} p_any(expand)={} s_db={} p_convex={} w_window={} w_pool={} verify={} curated={} (FROZEN_DB_DIR required)",
+            args.p_db, args.db_mode, args.p_comp, args.p_any, args.s_db, args.p_convex,
+            args.w_window, args.w_pool, !args.no_db_verify, args.curated
         );
+        if args.p_comp_g57 > 0.0 {
+            println!(
+                "[fmix] g57-only COMP attempts: p={} starting at s_db_g57={}",
+                args.p_comp_g57, args.s_db_g57
+            );
+        }
     }
     if let Some(d) = &args.frozen_db_dir {
         unsafe { std::env::set_var("FROZEN_DB_DIR", d) };
@@ -459,16 +472,18 @@ fn main() {
         w_twist_swap: args.w_twist_swap,
         w_twist_cnot: args.w_twist_cnot,
         twist_min_len: args.twist_min_len,
-        w_db: args.w_db,
+        p_comp: args.p_comp,
+        p_any: args.p_any,
+        db_mode: local_mixing::postmix::db_replace::DbMode::parse(&args.db_mode)
+            .unwrap_or_else(|| panic!("unknown --db-mode {} (mix|comp|any)", args.db_mode)),
         p_db: args.p_db,
         p_twist: args.p_twist,
         p_db_final: args.p_db_final,
         p_db_steer: args.p_db_steer,
-        db_min_window: args.db_min_window,
-        db_max_window: args.db_max_window,
-        db_sample: local_mixing::postmix::mix::DbSample::parse(&args.db_sample)
-            .unwrap_or_else(|| panic!("unknown --db-sample {} (contiguous|convex)", args.db_sample)),
-        db_ctrl_cap: args.db_ctrl_cap,
+        s_db: args.s_db,
+        w_window: args.w_window,
+        w_pool: args.w_pool,
+        p_convex: args.p_convex,
         db_convex_p: args.db_convex_p,
         db_verify: !args.no_db_verify,
         db_dry_run: args.db_dry_run,

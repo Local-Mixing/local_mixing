@@ -371,18 +371,37 @@ pub struct MixParams {
     //
     // Both off (0.0) by default: the store is then never opened and the
     // trajectory is identical to the pre-DB chain.
-    pub w_db: f64,
+    // p_comp: probability a CONTRACTION tries COMP-DB before undo/merge.
+    pub p_comp: f64,
+    // p_any: probability an EXPANSION is an ANY-DB move rather than a cross.
+    pub p_any: f64,
     pub p_db: f64,
-    pub db_min_window: usize,
-    pub db_max_window: usize,
+    // s_db: the length the descent STARTS from. The descent itself visits every
+    // shorter length down to 1, so there is no separate minimum: one parameter
+    // sets the ambition and the descent handles reality.
+    pub s_db: usize,
+    // p_convex: probability the window sampler is convex rather than contiguous.
+    // Replaces the three-valued DbSample: contiguous is 0, convex is 1, and the
+    // old `mixed` is 0.5.
+    pub p_convex: f64,
     // Window sampling geometry and its guards (see DbSample / db_attempt).
     // db_ctrl_cap (L): while building a window, a gate with more than L controls
     // is evaded (floated out of the way, else the build reverses, else aborts) so
     // high-degree gates that always miss are kept out of the window. 0 = no cap.
     // db_convex_p: for Convex, the probability each growth step floats the block
     // in g1's original direction (else the opposite).
-    pub db_sample: DbSample,
-    pub db_ctrl_cap: usize,
+    // db_mode: the slot-2 admission rule. Deterministic, not a coin -- set by
+    // slot-0 rules, and the manual size brake (COMP arrests growth while still
+    // stamping generations, so it slows the dose rather than stopping it).
+    pub db_mode: DbMode,
+    // Two eligibility thresholds, not one. w_window governs what may sit INSIDE
+    // a window; w_pool governs what may SEED one and count toward the dose.
+    // They want different values: width-3 gates match in context often enough
+    // to be worth admitting to windows, but their end-to-end per-gate re-encode
+    // rate is 0.41% against 98.98% for width <= 2, so at a shared threshold they
+    // pile up at the bottom of the pool with nothing to eject them.
+    pub w_window: usize,
+    pub w_pool: usize,
     pub db_convex_p: f64,
     // Exhaustive per-splice equivalence check on DB replacements. Correctness
     // rests on the key/decode invariants, so this is a safety net; disabling it
@@ -578,12 +597,18 @@ impl Default for MixParams {
             w_twist_swap: 0.0,
             w_twist_cnot: 0.0,
             twist_min_len: 64,
-            w_db: 0.0,
+            // Store-free by default: MixParams::default() is the test/base
+            // value, and any positive DB rate here would make every construction
+            // demand FROZEN_DB_DIR. The SPEC defaults (p_comp 1.0, p_any 0.1)
+            // live on the CLI, where a run that wants the store asks for it.
+            p_comp: 0.0,
+            p_any: 0.0,
             p_db: 0.0,
-            db_min_window: 2,
-            db_max_window: 12,
-            db_sample: DbSample::Contiguous,
-            db_ctrl_cap: 0,
+            s_db: 5,
+            p_convex: 0.5,
+            db_mode: DbMode::Mix,
+            w_window: 4,
+            w_pool: 3,
             db_convex_p: 0.75,
             db_verify: true,
             db_dry_run: false,
@@ -956,7 +981,7 @@ impl Mixer {
         // zero re-encoding, and nothing says so -- it looks like a measurement.
         // p_db_ingest and p_db_hard were missing here; production only escaped
         // it because every recipe also set --w-db.
-        let db = if params.w_db > 0.0
+        let db = if params.p_comp > 0.0
             || params.p_db > 0.0
             || params.p_db_final > 0.0
             || params.p_db_ingest > 0.0
@@ -1321,7 +1346,7 @@ impl Mixer {
             // Compressing-mode attempt seeded on a cheap-tier laggard —
             // non-growing replacements only, so this channel can run hot
             // without disturbing the size regardless of the thermostat.
-            let wmin = self.params.db_min_window.max(2);
+            let wmin = 1usize;
             let gen_on = self.params.gen_target > 0;
             let took_ingest = !took_twist
                 && gen_on
@@ -1397,8 +1422,8 @@ impl Mixer {
                     // The compressing DB replacement is tried first with probability
                     // w_db (the only channel that can contract non-ladder material),
                     // then undo/merge as before.
-                    let did_db = self.params.w_db > 0.0
-                        && self.rng.random_bool(self.params.w_db.clamp(0.0, 1.0))
+                    let did_db = self.params.p_comp > 0.0
+                        && self.rng.random_bool(self.params.p_comp.clamp(0.0, 1.0))
                         && self.db_attempt_comp();
                     if did_db {
                         // done
@@ -2667,8 +2692,8 @@ impl Mixer {
 
     fn db_attempt_inner(&mut self, mode: DbMode) -> bool {
         let n = self.arena.len();
-        let wmin = self.params.db_min_window.max(2);
-        let wmax = self.params.db_max_window.max(wmin);
+        let wmin = 1usize;
+        let wmax = self.params.s_db.max(1);
         if n < wmin {
             return false;
         }
@@ -2705,7 +2730,7 @@ impl Mixer {
         // wide-verify decline keeps descending — shorter prefixes span fewer
         // wires and may still match.
         if self.params.db_prefixes {
-            let wmin = self.params.db_min_window.max(2);
+            let wmin = 1usize;
             let guard = DegreeGuard {
                 max_degree: self.params.db_max_degree,
                 probes: self.params.db_degree_probes,
@@ -2796,7 +2821,7 @@ impl Mixer {
             self.record_db_attempt(&window, 0, None);
             match mode {
                 DbMode::Compressing => self.counters.db_comp_misses += 1,
-                DbMode::SizeAgnostic | DbMode::MinGrow => self.counters.db_agn_misses += 1,
+                DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => self.counters.db_agn_misses += 1,
             }
             return false;
         }
@@ -2830,12 +2855,12 @@ impl Mixer {
             if match_count > 0 {
                 match mode {
                     DbMode::Compressing => self.counters.db_comp_hits += 1,
-                    DbMode::SizeAgnostic | DbMode::MinGrow => self.counters.db_agn_hits += 1,
+                    DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => self.counters.db_agn_hits += 1,
                 }
             } else {
                 match mode {
                     DbMode::Compressing => self.counters.db_comp_misses += 1,
-                    DbMode::SizeAgnostic | DbMode::MinGrow => self.counters.db_agn_misses += 1,
+                    DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => self.counters.db_agn_misses += 1,
                 }
             }
             return false;
@@ -2852,14 +2877,14 @@ impl Mixer {
     fn count_db_hit(&mut self, mode: DbMode) {
         match mode {
             DbMode::Compressing => self.counters.db_comp_hits += 1,
-            DbMode::SizeAgnostic | DbMode::MinGrow => self.counters.db_agn_hits += 1,
+            DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => self.counters.db_agn_hits += 1,
         }
     }
 
     fn count_db_miss(&mut self, mode: DbMode) {
         match mode {
             DbMode::Compressing => self.counters.db_comp_misses += 1,
-            DbMode::SizeAgnostic | DbMode::MinGrow => self.counters.db_agn_misses += 1,
+            DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => self.counters.db_agn_misses += 1,
         }
     }
 
@@ -3221,7 +3246,11 @@ impl Mixer {
     // Returns the sampled window plus WHICH geometry actually built it (the
     // coin outcome under Mixed), so records and stats can split by sampler.
     fn sample_window(&mut self, w: usize) -> Option<(Vec<u32>, Dir, DbSample)> {
-        match self.params.db_sample {
+        match if self.rng.random_bool(self.params.p_convex.clamp(0.0, 1.0)) {
+            DbSample::Convex
+        } else {
+            DbSample::Contiguous
+        } {
             DbSample::Contiguous => {
                 self.collect_contiguous(w).map(|(ids, d)| (ids, d, DbSample::Contiguous))
             }
@@ -3248,14 +3277,13 @@ impl Mixer {
     // (their pieces inherit the low gen).
     fn rebuild_laggards(&mut self) {
         let target = self.params.gen_target;
-        let cap = self.params.db_ctrl_cap;
         let budget = self.params.gen_miss_budget;
         let giveup = self.params.gen_giveup;
         self.lag_cheap.clear();
         self.lag_hard.clear();
         for id in self.arena.ids_in_order() {
             let m = self.meta_of(id);
-            if m.dgen >= target || (cap > 0 && self.width_of(id) > cap) {
+            if m.dgen >= target || !self.pool_eligible(id) {
                 continue;
             }
             if m.miss < budget {
@@ -3272,7 +3300,6 @@ impl Mixer {
     // them. `lo..hi` is the miss range the list is supposed to hold.
     fn draw_laggard(&mut self, cheap: bool) -> Option<u32> {
         let target = self.params.gen_target;
-        let cap = self.params.db_ctrl_cap;
         let budget = self.params.gen_miss_budget;
         let giveup = self.params.gen_giveup;
         for _ in 0..8 {
@@ -3293,7 +3320,7 @@ impl Mixer {
                 list.swap_remove(i);
                 continue;
             }
-            if cap == 0 || self.width_of(id) <= cap {
+            if self.pool_eligible(id) {
                 self.last_seed = Some((id, self.arena.stamp(id)));
                 return Some(id);
             }
@@ -3322,11 +3349,20 @@ impl Mixer {
     /// that is not a g57, so the window cannot contain the intruder that
     /// collapses the long-window match rate.
     fn window_eligible(&self, id: u32) -> bool {
-        let cap = self.params.db_ctrl_cap;
-        if cap > 0 && self.width_of(id) > cap {
+        let cap = self.params.w_window;
+        if cap > 0 && self.width_of(id) >= cap {
             return false;
         }
         !self.db_g57_only || self.gate_is_g57(id)
+    }
+
+    /// May this gate seed a window and count toward the dose? Stricter than
+    /// `window_eligible`: an ineligible gate can never be re-encoded, so its
+    /// generation is pinned forever and an unfiltered pool converges on exactly
+    /// that set and stays there.
+    fn pool_eligible(&self, id: u32) -> bool {
+        let cap = self.params.w_pool;
+        cap == 0 || self.width_of(id) < cap
     }
 
     fn pick_seed(&mut self) -> Option<u32> {
@@ -3458,7 +3494,7 @@ impl Mixer {
             count += 1;
         }
         let ids = self.span_ids(lo, hi);
-        if ids.len() < self.params.db_min_window.max(2) {
+        if ids.is_empty() {
             return None;
         }
         Some((ids, dir1))
@@ -3524,7 +3560,7 @@ impl Mixer {
             count += 1;
         }
         let ids = self.span_ids(lo, hi);
-        if ids.len() < self.params.db_min_window.max(2) {
+        if ids.is_empty() {
             return None;
         }
         Some((ids, dir1))
@@ -3908,7 +3944,6 @@ impl Mixer {
 
     pub fn gen_stats(&self) -> GenStats {
         let target = self.params.gen_target;
-        let cap = self.params.db_ctrl_cap;
         let budget = self.params.gen_miss_budget;
         let giveup = self.params.gen_giveup;
         let mut s = GenStats {
@@ -3941,7 +3976,7 @@ impl Mixer {
             if m.dgen < target {
                 s.all_lag += 1;
             }
-            let eligible = cap == 0 || self.width_of(id) <= cap;
+            let eligible = self.pool_eligible(id);
             if !eligible {
                 if m.dgen < target {
                     s.wlag += 1;
@@ -4475,10 +4510,10 @@ mod mix_tests {
             let gates = random_mixed_circuit(19, 16, 400);
             let reference = gates.clone();
             let params = MixParams {
-                db_sample: sample,
-                db_ctrl_cap: 2, // no window gate may exceed width 2
-                db_min_window: 2,
-                db_max_window: 6,
+                p_convex: if sample == DbSample::Convex { 1.0 } else { 0.0 },
+                w_window: 3, // no window gate may reach width 3
+                w_pool: 3,
+                s_db: 6,
                 db_convex_p: 0.75,
                 report_every: u64::MAX,
                 seed: 5,
@@ -4527,7 +4562,7 @@ mod mix_tests {
             XGate::conj(4, [(5, true)]).unwrap(),
             XGate::conj(6, [(7, true)]).unwrap(),
         ];
-        let params = MixParams { db_min_window: 2, report_every: u64::MAX, seed: 2, ..MixParams::default() };
+        let params = MixParams { s_db: 2, report_every: u64::MAX, seed: 2, ..MixParams::default() };
         let mut mx = Mixer::new(gates, 8, params);
         for _ in 0..50 {
             let (ids, _d) = mx.collect_contiguous(4).expect("window");
@@ -4827,6 +4862,10 @@ mod mix_tests {
             gen_giveup: 3,
             gen_stop_frac: 0.0,
             report_every: u64::MAX,
+            // This test predates the w_window/w_pool split and counts EVERY
+            // gate as poolable; keep it uncapped so it measures tier mechanics
+            // rather than eligibility.
+            w_pool: 0,
             seed: 19,
             ..MixParams::default()
         };
@@ -4875,7 +4914,8 @@ mod mix_tests {
         let params = MixParams {
             gen_target: 2,
             gen_stop_frac: 0.0,
-            db_ctrl_cap: 2,
+            w_window: 3,
+            w_pool: 3,
             report_every: u64::MAX,
             ..MixParams::default()
         };
@@ -4959,7 +4999,8 @@ mod mix_tests {
         let params = MixParams {
             gen_target: 100,
             gen_stop_frac: 0.02,
-            db_ctrl_cap: 2,
+            w_window: 3,
+            w_pool: 3,
             report_every: u64::MAX,
             ..MixParams::default()
         };
