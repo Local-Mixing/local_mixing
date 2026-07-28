@@ -374,6 +374,17 @@ struct Args {
     origins_out: Option<String>,
     #[arg(long, default_value_t = 0)]
     seed: u64,
+    /// Write a resume file on every stop (and at each snapshot). Holds what the
+    /// circuit file cannot: per-gate direction/generation/litter/event, the undo
+    /// journal, the ORIGINAL circuit that global_check verifies against, and the
+    /// condition state (moves, twist coverage, canary ring, brake, pool).
+    #[arg(long)]
+    state_out: Option<String>,
+    /// Resume from a state file instead of --input. Parameters still come from
+    /// the command line, so a paused run can be re-steered; only the state
+    /// VERSION must match, since field meanings would otherwise drift silently.
+    #[arg(long)]
+    resume: Option<String>,
 }
 
 fn main() {
@@ -543,7 +554,23 @@ fn main() {
         local_verify: !args.no_local_verify,
         seed: args.seed,
     };
-    let mut mixer = Mixer::new(gates, num_wires, params);
+    let mut mixer = match &args.resume {
+        Some(path) => {
+            let db = if params.p_comp > 0.0 || params.p_db > 0.0 || params.p_any > 0.0 {
+                local_mixing::replace::frozen::FrozenDb::from_env()
+            } else {
+                local_mixing::replace::frozen::FrozenDb::empty()
+            };
+            let mx = Mixer::resume_state(path, params, db).expect("resume from state file");
+            println!(
+                "[fmix] RESUMED from {path}: {} gates at move {}, verifying against the original",
+                mx.arena.len(),
+                mx.moves_done
+            );
+            mx
+        }
+        None => Mixer::new(gates, num_wires, params),
+    };
     if let Some(path) = &args.db_record {
         mixer.enable_db_record(path);
         println!("[fmix] recording DB attempts to {path}");
@@ -624,6 +651,10 @@ fn main() {
         );
     }
 
+    if let Some(sp) = &args.state_out {
+        mixer.save_state(sp).expect("write state file");
+        println!("[fmix] wrote resume state to {sp}");
+    }
     if let Some(out) = &args.output {
         let final_gates = mixer.arena.to_vec();
         format::write_mpmct(out, &final_gates, num_wires).expect("write output");

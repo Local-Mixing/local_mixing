@@ -349,6 +349,7 @@ enum TwistKind {
     Cnot,
 }
 
+#[derive(Clone)]
 pub struct MixParams {
     pub k_max: usize,
     // Width damping for expansion moves, same convention as fsplit.
@@ -940,7 +941,7 @@ pub struct Mixer {
     anc_m: usize,
     original: Vec<XGate>,
     num_wires: usize,
-    moves_done: u64,
+    pub moves_done: u64,
     rng: StdRng,
     // Sampling RNG for report-line gauges only. Separate from `rng` so adding
     // or re-cadencing metrics never perturbs the move trajectory of a seed.
@@ -1005,6 +1006,530 @@ pub enum MixStop {
     // failure fraction exceeded canary_theta, i.e. the pool has converged on
     // material the store cannot spell and further moves buy nothing.
     CanaryFired,
+}
+
+impl MixCounters {
+    /// Whitespace-separated dump of every counter, in declaration order. These
+    /// are trajectory statistics rather than chain state, but a resumed run
+    /// whose report restarted from zero would make its own history unreadable,
+    /// and two of them -- twist_span and canary_fallthrough -- feed conditions.
+    pub fn to_line(&self) -> String {
+        let vals: Vec<u64> = vec![
+            self.moves,
+            self.db_ing_hits,
+            self.db_ing_rounds,
+            self.db_hard_hits,
+            self.db_hard_rounds,
+            self.db_hard_added,
+            self.db_identity_skips,
+            self.db_curated_hits,
+            self.merges_absorb,
+            self.db_g57_rounds,
+            self.db_g57_hits,
+            self.db_slot2_rounds,
+            self.db_slot2_hits,
+            self.db_slot2_added,
+            self.brake_engagements,
+            self.brake_rounds,
+            self.canary_fallthrough,
+            self.litter_banned,
+            self.twist_placed,
+            self.twist_place_fallback,
+            self.litter_windows,
+            self.litter_distinct_sum,
+            self.litter_full_spliced,
+            self.gen_misses,
+            self.merges_cancel,
+            self.merges_xfuse,
+            self.merges_drop,
+            self.merges_subsume,
+            self.merges_sibling,
+            self.merges_cross_origin,
+            self.tabu_blocked,
+            self.merge_no_partner,
+            self.merge_wall_blocked,
+            self.merge_too_far,
+            self.merge_not_adjacent,
+            self.undos,
+            self.undo_dead,
+            self.undo_tabu,
+            self.undo_gather_miss,
+            self.db_comp_hits,
+            self.db_comp_misses,
+            self.db_agn_hits,
+            self.db_agn_misses,
+            self.db_gates_removed,
+            self.db_gates_added,
+            self.db_wide_skip,
+            self.db_attempts,
+            self.db_degree_skips,
+            self.db_span_skips,
+            self.db_build_aborts,
+            self.cross_r1,
+            self.cross_r2,
+            self.cross_r3,
+            self.presplits,
+            self.fresh_splits,
+            self.unsubs,
+            self.inserts,
+            self.twist_negs,
+            self.twist_swaps,
+            self.twist_cnots,
+            self.twist_relabels,
+            self.twist_case_splits,
+            self.twist_span,
+            self.twist_skips,
+            self.blocked_width,
+            self.blocked_deadlock,
+            self.declined,
+            self.boundary,
+            self.floats,
+            self.float_steps,
+            self.scatters,
+            self.scatter_steps,
+            self.dropped_neverfire
+        ];
+        vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" ")
+    }
+
+    /// Inverse of `to_line`. The two histograms (`splice_sizes`, `width_hist`)
+    /// are deliberately not carried: they describe SHAPES rather than totals,
+    /// and a resumed run should report the shapes it produced itself.
+    pub fn from_line(s: &str) -> Option<MixCounters> {
+        let mut it = s.split_whitespace();
+        fn next_u64<'a>(it: &mut impl Iterator<Item = &'a str>) -> Option<u64> {
+            it.next()?.parse().ok()
+        }
+        Some(MixCounters {
+            moves: next_u64(&mut it)?,
+            db_ing_hits: next_u64(&mut it)?,
+            db_ing_rounds: next_u64(&mut it)?,
+            db_hard_hits: next_u64(&mut it)?,
+            db_hard_rounds: next_u64(&mut it)?,
+            db_hard_added: next_u64(&mut it)?,
+            db_identity_skips: next_u64(&mut it)?,
+            db_curated_hits: next_u64(&mut it)?,
+            merges_absorb: next_u64(&mut it)?,
+            db_g57_rounds: next_u64(&mut it)?,
+            db_g57_hits: next_u64(&mut it)?,
+            db_slot2_rounds: next_u64(&mut it)?,
+            db_slot2_hits: next_u64(&mut it)?,
+            db_slot2_added: next_u64(&mut it)?,
+            brake_engagements: next_u64(&mut it)?,
+            brake_rounds: next_u64(&mut it)?,
+            canary_fallthrough: next_u64(&mut it)?,
+            litter_banned: next_u64(&mut it)?,
+            twist_placed: next_u64(&mut it)?,
+            twist_place_fallback: next_u64(&mut it)?,
+            litter_windows: next_u64(&mut it)?,
+            litter_distinct_sum: next_u64(&mut it)?,
+            litter_full_spliced: next_u64(&mut it)?,
+            gen_misses: next_u64(&mut it)?,
+            merges_cancel: next_u64(&mut it)?,
+            merges_xfuse: next_u64(&mut it)?,
+            merges_drop: next_u64(&mut it)?,
+            merges_subsume: next_u64(&mut it)?,
+            merges_sibling: next_u64(&mut it)?,
+            merges_cross_origin: next_u64(&mut it)?,
+            tabu_blocked: next_u64(&mut it)?,
+            merge_no_partner: next_u64(&mut it)?,
+            merge_wall_blocked: next_u64(&mut it)?,
+            merge_too_far: next_u64(&mut it)?,
+            merge_not_adjacent: next_u64(&mut it)?,
+            undos: next_u64(&mut it)?,
+            undo_dead: next_u64(&mut it)?,
+            undo_tabu: next_u64(&mut it)?,
+            undo_gather_miss: next_u64(&mut it)?,
+            db_comp_hits: next_u64(&mut it)?,
+            db_comp_misses: next_u64(&mut it)?,
+            db_agn_hits: next_u64(&mut it)?,
+            db_agn_misses: next_u64(&mut it)?,
+            db_gates_removed: next_u64(&mut it)?,
+            db_gates_added: next_u64(&mut it)?,
+            db_wide_skip: next_u64(&mut it)?,
+            db_attempts: next_u64(&mut it)?,
+            db_degree_skips: next_u64(&mut it)?,
+            db_span_skips: next_u64(&mut it)?,
+            db_build_aborts: next_u64(&mut it)?,
+            cross_r1: next_u64(&mut it)?,
+            cross_r2: next_u64(&mut it)?,
+            cross_r3: next_u64(&mut it)?,
+            presplits: next_u64(&mut it)?,
+            fresh_splits: next_u64(&mut it)?,
+            unsubs: next_u64(&mut it)?,
+            inserts: next_u64(&mut it)?,
+            twist_negs: next_u64(&mut it)?,
+            twist_swaps: next_u64(&mut it)?,
+            twist_cnots: next_u64(&mut it)?,
+            twist_relabels: next_u64(&mut it)?,
+            twist_case_splits: next_u64(&mut it)?,
+            twist_span: next_u64(&mut it)?,
+            twist_skips: next_u64(&mut it)?,
+            blocked_width: next_u64(&mut it)?,
+            blocked_deadlock: next_u64(&mut it)?,
+            declined: next_u64(&mut it)?,
+            boundary: next_u64(&mut it)?,
+            floats: next_u64(&mut it)?,
+            float_steps: next_u64(&mut it)?,
+            scatters: next_u64(&mut it)?,
+            scatter_steps: next_u64(&mut it)?,
+            dropped_neverfire: next_u64(&mut it)?,
+            splice_sizes: Vec::new(),
+            width_hist: [0u64; 16],
+        })
+    }
+}
+
+/// Version stamp for the resume file. The parameter set has changed repeatedly,
+/// and silently reinterpreting fields would be worse than refusing to load.
+pub const STATE_VERSION: u32 = 1;
+
+impl Mixer {
+    /// Write everything a resumed run needs and the circuit file does not
+    /// carry. A run is hours long and every measurement depends on it, so a
+    /// stop -- flag, canary, dose or budget -- should be a PAUSE, not a loss.
+    ///
+    /// Three things make this more than a gate dump:
+    ///
+    /// - Per-gate `dir` is load-bearing and has no sidecar. Directions are
+    ///   drawn at load and the whole directional walk rides on them, so a
+    ///   resume that redrew them would restart transport rather than continue
+    ///   it. Same for `dgen`, `litter` and `event`.
+    /// - The undo journal references arena IDs, so the checkpoint RENUMBERS to
+    ///   0..n-1 in arena order -- exactly what `Arena::from_gates` reproduces --
+    ///   and remaps the entries. Entries with any dead piece are dropped; they
+    ///   were already unusable.
+    /// - The ORIGINAL circuit is what `global_check` compares against. A
+    ///   resumed run verifying against its own resume point would verify
+    ///   nothing about fidelity to the true input.
+    ///
+    /// `StdRng` is not serialisable, so a fresh `u64` is drawn from each
+    /// generator and stored: a clean continuation, not a bit-identical replay.
+    pub fn save_state(&mut self, path: &str) -> std::io::Result<()> {
+        use std::fmt::Write as _;
+        let ids = self.arena.ids_in_order();
+        let mut newid: HashMap<u32, u32> = HashMap::with_capacity(ids.len());
+        for (i, &id) in ids.iter().enumerate() {
+            newid.insert(id, i as u32);
+        }
+        let gate_line = |o: &mut String, g: &XGate| {
+            let _ = write!(o, "{} {} {}", g.target, g.comp as u8, g.ctrls.len());
+            for &(w, p) in &g.ctrls {
+                let _ = write!(o, " {} {}", w, p as u8);
+            }
+        };
+        let mut o = String::with_capacity(ids.len() * 48);
+        let _ = writeln!(o, "fmix-state {STATE_VERSION}");
+        let _ = writeln!(o, "wires {}", self.num_wires);
+        let _ = writeln!(o, "moves {}", self.moves_done);
+        let _ = writeln!(o, "next_event {}", self.next_event);
+        let _ = writeln!(o, "next_litter {}", self.next_litter);
+        let _ = writeln!(o, "rng {}", self.rng.random::<u64>());
+        let _ = writeln!(o, "metrics_rng {}", self.metrics_rng.random::<u64>());
+        let _ = writeln!(
+            o,
+            "db_mode {}",
+            match self.db_mode_cur {
+                DbMode::Mix => "mix",
+                DbMode::Compressing => "comp",
+                DbMode::SizeAgnostic => "any",
+                DbMode::MinGrow => "mingrow",
+            }
+        );
+        let _ = writeln!(
+            o,
+            "brake {} {} {}",
+            self.brake_on as u8, self.brake_mark_move, self.brake_mark_size
+        );
+        let _ = writeln!(o, "pool_scan_due {}", self.pool_scan_due);
+        let _ = writeln!(o, "canary_failures {}", self.canary_failures);
+        let _ = writeln!(o, "anc {} {}", self.anc_words, self.anc_m);
+        let _ = writeln!(o, "counters {}", self.counters.to_line());
+
+        let _ = writeln!(o, "gates {}", ids.len());
+        for &id in &ids {
+            let m = self.meta_of(id);
+            let g = self.arena.gate(id).clone();
+            gate_line(&mut o, &g);
+            let _ = writeln!(
+                o,
+                " | {} {} {} {} {} {}",
+                m.origin,
+                m.event,
+                (m.dir == Dir::R) as u8,
+                m.dgen,
+                m.litter,
+                m.litter_size
+            );
+        }
+        let _ = writeln!(o, "original {}", self.original.len());
+        for g in self.original.clone().iter() {
+            gate_line(&mut o, g);
+            o.push('\n');
+        }
+        let _ = writeln!(o, "tabu {}", self.tabu.len());
+        for &(e, mv) in self.tabu.iter() {
+            let _ = writeln!(o, "{e} {mv}");
+        }
+        let pool: Vec<u32> = self.pool.iter().filter_map(|id| newid.get(id).copied()).collect();
+        let _ = writeln!(o, "pool {}", pool.len());
+        for id in &pool {
+            let _ = writeln!(o, "{id}");
+        }
+        let _ = writeln!(o, "canary {}", self.canary.len());
+        for b in self.canary.iter() {
+            let _ = writeln!(o, "{}", *b as u8);
+        }
+        // Journal: keep only entries every piece of which is still live, then
+        // remap. Stamps are NOT stored -- the rebuilt arena assigns its own, and
+        // resume reads them back from it.
+        let keep: Vec<&UndoEntry> = self
+            .journal
+            .iter()
+            .filter(|e| e.after.iter().all(|&(id, st)| {
+                self.arena.is_linked(id) && self.arena.stamp(id) == st && newid.contains_key(&id)
+            }))
+            .collect();
+        let _ = writeln!(o, "journal {}", keep.len());
+        for e in keep {
+            gate_line(&mut o, &e.before[0]);
+            o.push(' ');
+            gate_line(&mut o, &e.before[1]);
+            let _ = write!(
+                o,
+                " | {} {} {} {} {} {} {} {} {} {} {}",
+                (e.dir == Dir::R) as u8,
+                newid[&e.pivot],
+                e.event,
+                e.origins[0],
+                e.origins[1],
+                e.gens[0],
+                e.gens[1],
+                e.litters[0],
+                e.litters[1],
+                e.litter_sizes[0],
+                e.litter_sizes[1]
+            );
+            let _ = write!(o, " | {}", e.after.len());
+            for &(id, _) in &e.after {
+                let _ = write!(o, " {}", newid[&id]);
+            }
+            let _ = writeln!(o, " {}", e.misses);
+        }
+        let _ = writeln!(o, "ancsets {}", self.anc.len());
+        for (l, bits) in self.anc.iter() {
+            let _ = write!(o, "{l}");
+            for w in bits {
+                let _ = write!(o, " {w}");
+            }
+            o.push('\n');
+        }
+        std::fs::write(path, o)
+    }
+
+    /// Rebuild a mixer from a state file. `params` come from the CLI as usual:
+    /// a resume is free to change rates, targets, the brake or the mode, which
+    /// is the point -- a paused run should be steerable. What it must NOT
+    /// change is the version, since the field meanings would drift silently.
+    pub fn resume_state(path: &str, params: MixParams, db: FrozenDb) -> std::io::Result<Mixer> {
+        let text = std::fs::read_to_string(path)?;
+        let mut lines = text.lines();
+        let bad = |m: &str| std::io::Error::other(m.to_string());
+        let mut hdr = lines.next().ok_or_else(|| bad("empty state file"))?.split_whitespace();
+        if hdr.next() != Some("fmix-state") {
+            return Err(bad("missing fmix-state header"));
+        }
+        let v: u32 = hdr.next().and_then(|x| x.parse().ok()).ok_or_else(|| bad("bad version"))?;
+        if v != STATE_VERSION {
+            return Err(bad(&format!(
+                "state file version {v} != {STATE_VERSION}; refusing to reinterpret its fields"
+            )));
+        }
+        // Scalars, in the order save_state writes them.
+        fn scalar(
+            lines: &mut std::str::Lines<'_>,
+            want: &str,
+        ) -> std::io::Result<Vec<String>> {
+            let l = lines
+                .next()
+                .ok_or_else(|| std::io::Error::other(format!("missing {want}")))?;
+            let mut it = l.split_whitespace();
+            if it.next() != Some(want) {
+                return Err(std::io::Error::other(format!("expected {want} in state file")));
+            }
+            Ok(it.map(|x| x.to_string()).collect())
+        }
+        let num_wires: usize = scalar(&mut lines, "wires")?[0].parse().map_err(|_| bad("wires"))?;
+        let moves_done: u64 = scalar(&mut lines, "moves")?[0].parse().map_err(|_| bad("moves"))?;
+        let next_event: u64 = scalar(&mut lines, "next_event")?[0].parse().map_err(|_| bad("next_event"))?;
+        let next_litter: u64 = scalar(&mut lines, "next_litter")?[0].parse().map_err(|_| bad("next_litter"))?;
+        let rng_seed: u64 = scalar(&mut lines, "rng")?[0].parse().map_err(|_| bad("rng"))?;
+        let mrng_seed: u64 = scalar(&mut lines, "metrics_rng")?[0].parse().map_err(|_| bad("metrics_rng"))?;
+        let mode_s = scalar(&mut lines, "db_mode")?[0].clone();
+        let brake = scalar(&mut lines, "brake")?;
+        let pool_scan_due: u64 = scalar(&mut lines, "pool_scan_due")?[0].parse().map_err(|_| bad("scan"))?;
+        let canary_failures: usize = scalar(&mut lines, "canary_failures")?[0].parse().map_err(|_| bad("cf"))?;
+        let anc_hdr = scalar(&mut lines, "anc")?;
+        let counters_line = scalar(&mut lines, "counters")?.join(" ");
+
+        // Sections. Gates carry their meta on the same line after a `|`.
+        fn section(lines: &mut std::str::Lines<'_>, want: &str) -> std::io::Result<usize> {
+            let l = lines
+                .next()
+                .ok_or_else(|| std::io::Error::other(format!("missing {want}")))?;
+            let mut it = l.split_whitespace();
+            if it.next() != Some(want) {
+                return Err(std::io::Error::other(format!("expected section {want}")));
+            }
+            it.next()
+                .and_then(|x| x.parse().ok())
+                .ok_or_else(|| std::io::Error::other(format!("{want} count")))
+        }
+        let parse_gate = |it: &mut std::str::SplitWhitespace| -> Option<XGate> {
+            let target: u16 = it.next()?.parse().ok()?;
+            let comp: u8 = it.next()?.parse().ok()?;
+            let k: usize = it.next()?.parse().ok()?;
+            let mut ctrls: Lits = Lits::new();
+            for _ in 0..k {
+                let w: u16 = it.next()?.parse().ok()?;
+                let p: u8 = it.next()?.parse().ok()?;
+                ctrls.push((w, p != 0));
+            }
+            ctrls.sort_unstable();
+            Some(XGate { target, comp: comp != 0, ctrls })
+        };
+
+        let ng = section(&mut lines, "gates")?;
+        let mut gates = Vec::with_capacity(ng);
+        let mut metas = Vec::with_capacity(ng);
+        for _ in 0..ng {
+            let l = lines.next().ok_or_else(|| bad("short gates section"))?;
+            let (gp, mp) = l.split_once(" | ").ok_or_else(|| bad("gate line missing meta"))?;
+            let g = parse_gate(&mut gp.split_whitespace()).ok_or_else(|| bad("bad gate"))?;
+            let m: Vec<&str> = mp.split_whitespace().collect();
+            if m.len() != 6 {
+                return Err(bad("gate meta must have 6 fields"));
+            }
+            let p = |i: usize| -> std::io::Result<u64> {
+                m[i].parse().map_err(|_| bad("bad meta field"))
+            };
+            metas.push(Meta {
+                origin: p(0)? as u32,
+                event: p(1)?,
+                dir: if p(2)? != 0 { Dir::R } else { Dir::L },
+                dgen: p(3)? as u32,
+                litter: p(4)?,
+                litter_size: p(5)? as u16,
+            });
+            gates.push(g);
+        }
+        let no = section(&mut lines, "original")?;
+        let mut original = Vec::with_capacity(no);
+        for _ in 0..no {
+            let l = lines.next().ok_or_else(|| bad("short original section"))?;
+            original.push(parse_gate(&mut l.split_whitespace()).ok_or_else(|| bad("bad orig"))?);
+        }
+        let nt = section(&mut lines, "tabu")?;
+        let mut tabu: VecDeque<(u64, u64)> = VecDeque::with_capacity(nt);
+        for _ in 0..nt {
+            let l = lines.next().ok_or_else(|| bad("short tabu"))?;
+            let mut it = l.split_whitespace();
+            let e: u64 = it.next().and_then(|x| x.parse().ok()).ok_or_else(|| bad("tabu"))?;
+            let mv: u64 = it.next().and_then(|x| x.parse().ok()).ok_or_else(|| bad("tabu"))?;
+            tabu.push_back((e, mv));
+        }
+        let np = section(&mut lines, "pool")?;
+        let mut pool = Vec::with_capacity(np);
+        for _ in 0..np {
+            let l = lines.next().ok_or_else(|| bad("short pool"))?;
+            pool.push(l.trim().parse::<u32>().map_err(|_| bad("pool id"))?);
+        }
+        let nc = section(&mut lines, "canary")?;
+        let mut canary: VecDeque<bool> = VecDeque::with_capacity(nc);
+        for _ in 0..nc {
+            let l = lines.next().ok_or_else(|| bad("short canary"))?;
+            canary.push_back(l.trim() != "0");
+        }
+        let nj = section(&mut lines, "journal")?;
+        let mut journal_raw = Vec::with_capacity(nj);
+        for _ in 0..nj {
+            let l = lines.next().ok_or_else(|| bad("short journal"))?;
+            let parts: Vec<&str> = l.split(" | ").collect();
+            if parts.len() != 3 {
+                return Err(bad("journal line shape"));
+            }
+            let mut gi = parts[0].split_whitespace();
+            let b0 = parse_gate(&mut gi).ok_or_else(|| bad("journal before0"))?;
+            let b1 = parse_gate(&mut gi).ok_or_else(|| bad("journal before1"))?;
+            let f: Vec<u64> = parts[1]
+                .split_whitespace()
+                .map(|x| x.parse().unwrap_or(0))
+                .collect();
+            if f.len() != 11 {
+                return Err(bad("journal meta shape"));
+            }
+            let mut ai = parts[2].split_whitespace();
+            let n: usize = ai.next().and_then(|x| x.parse().ok()).ok_or_else(|| bad("after n"))?;
+            let after: Vec<u32> =
+                (0..n).filter_map(|_| ai.next().and_then(|x| x.parse().ok())).collect();
+            let misses: u8 = ai.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+            journal_raw.push((b0, b1, f, after, misses));
+        }
+        let na = section(&mut lines, "ancsets")?;
+        let mut anc: HashMap<u64, Vec<u64>> = HashMap::with_capacity(na);
+        for _ in 0..na {
+            let l = lines.next().ok_or_else(|| bad("short ancsets"))?;
+            let mut it = l.split_whitespace();
+            let key: u64 = it.next().and_then(|x| x.parse().ok()).ok_or_else(|| bad("anc key"))?;
+            anc.insert(key, it.filter_map(|x| x.parse().ok()).collect());
+        }
+
+        // Build the mixer on the SAME id assignment the checkpoint renumbered
+        // to: Arena::from_gates hands out 0..n-1 in order, which is what
+        // save_state mapped the journal and pool onto.
+        let mut mx = Mixer::new_with_db(gates, num_wires, params, db);
+        mx.original = original;
+        mx.moves_done = moves_done;
+        mx.counters = MixCounters::from_line(&counters_line).ok_or_else(|| bad("counters"))?;
+        mx.counters.moves = moves_done;
+        mx.next_event = next_event;
+        mx.next_litter = next_litter;
+        mx.rng = StdRng::seed_from_u64(rng_seed);
+        mx.metrics_rng = StdRng::seed_from_u64(mrng_seed);
+        mx.db_mode_cur = DbMode::parse(&mode_s).unwrap_or(mx.params.db_mode);
+        mx.brake_on = brake[0] != "0";
+        mx.brake_mark_move = brake[1].parse().unwrap_or(0);
+        mx.brake_mark_size = brake[2].parse().unwrap_or(0);
+        mx.pool_scan_due = pool_scan_due;
+        mx.canary = canary;
+        mx.canary_failures = canary_failures;
+        mx.pool = pool;
+        mx.anc = anc;
+        mx.anc_words = anc_hdr[0].parse().unwrap_or(0);
+        mx.anc_m = anc_hdr[1].parse().unwrap_or(0);
+        for (i, m) in metas.into_iter().enumerate() {
+            mx.set_meta(i as u32, m);
+        }
+        // Stamps come from the freshly built arena; the checkpoint kept only
+        // entries whose pieces were all live, so every id here is linked.
+        mx.journal = journal_raw
+            .into_iter()
+            .map(|(b0, b1, f, after, misses)| UndoEntry {
+                before: [b0, b1],
+                dir: if f[0] != 0 { Dir::R } else { Dir::L },
+                pivot: f[1] as u32,
+                after: after.iter().map(|&id| (id, mx.arena.stamp(id))).collect(),
+                event: f[2],
+                origins: [f[3] as u32, f[4] as u32],
+                gens: [f[5] as u32, f[6] as u32],
+                litters: [f[7], f[8]],
+                litter_sizes: [f[9] as u16, f[10] as u16],
+                misses,
+            })
+            .collect();
+        mx.tabu = tabu;
+        Ok(mx)
+    }
 }
 
 /// Generation census over the linked circuit (see `Meta::dgen`).
@@ -4782,6 +5307,82 @@ mod mix_tests {
             "under inherit semantics only DB splices may mint generations"
         );
         assert!(gens.contains(&0), "original material cannot all vanish here");
+    }
+
+// Checkpoint round-trip: a resumed chain must continue rather than restart.
+    // The circuit file alone cannot do this -- directions, generations, litters,
+    // the journal and the original are all outside it -- so the test checks the
+    // state that has no other home, and that the resumed run still verifies
+    // against the TRUE original rather than against its own resume point.
+    #[test]
+    fn checkpoint_round_trip_preserves_chain_state() {
+        let gates = random_mixed_circuit(37, 16, 200);
+        let params = MixParams {
+            k_max: 5,
+            moves: 4_000,
+            target_size: 260,
+            temp: 20.0,
+            p_twist: 0.05,
+            w_twist_neg: 1.0,
+            gen_target: 3,
+            verify_every: 1_000,
+            report_every: u64::MAX,
+            seed: 11,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates.clone(), 16, params.clone());
+        mx.run();
+        let before_gates = mx.arena.to_vec();
+        let before_meta: Vec<(u32, u32, u64)> = mx
+            .arena
+            .ids_in_order()
+            .iter()
+            .map(|&id| {
+                let m = mx.meta_of(id);
+                (m.dgen, m.origin, m.litter)
+            })
+            .collect();
+        let before_moves = mx.moves_done;
+        let before_twspan = mx.counters.twist_span;
+        let dir_r = mx
+            .arena
+            .ids_in_order()
+            .iter()
+            .filter(|&&id| mx.meta_of(id).dir == Dir::R)
+            .count();
+
+        let path = std::env::temp_dir().join("fmix_ckpt_test.state");
+        let path = path.to_str().unwrap();
+        mx.save_state(path).expect("save");
+
+        let mut rs = Mixer::resume_state(path, params, FrozenDb::empty()).expect("resume");
+        assert_eq!(rs.arena.to_vec(), before_gates, "circuit must survive verbatim");
+        assert_eq!(rs.moves_done, before_moves, "move counter must continue");
+        assert_eq!(rs.counters.twist_span, before_twspan, "twist coverage feeds the dose stop");
+        let after_meta: Vec<(u32, u32, u64)> = rs
+            .arena
+            .ids_in_order()
+            .iter()
+            .map(|&id| {
+                let m = rs.meta_of(id);
+                (m.dgen, m.origin, m.litter)
+            })
+            .collect();
+        assert_eq!(after_meta, before_meta, "generations, origins and litters must survive");
+        let after_dir_r = rs
+            .arena
+            .ids_in_order()
+            .iter()
+            .filter(|&&id| rs.meta_of(id).dir == Dir::R)
+            .count();
+        assert_eq!(after_dir_r, dir_r, "directions have no sidecar and must survive");
+        // The resumed chain still verifies against the TRUE original.
+        rs.global_check();
+        rs.params.moves = before_moves + 2_000;
+        rs.run();
+        rs.global_check();
+        assert!(rs.moves_done > before_moves, "resumed run must make progress");
+        let _ = std::fs::remove_file(path);
     }
 
     // The generation pool: with p_mingen 1.0 the seed comes from the pool
