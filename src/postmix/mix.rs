@@ -3919,18 +3919,38 @@ impl Mixer {
         if home != NIL && !self.arena.is_linked(home) {
             return; // its anchor was consumed; leave it where it is
         }
-        self.arena.unlink(id);
-        if home == NIL {
-            let head = self.arena.head();
-            if head == NIL {
-                self.arena.link_after(id, NIL);
-            } else {
-                self.arena.link_before(id, head);
+        // Hop back toward home ONE gate at a time, and only over neighbours the
+        // seed commutes with. An unchecked relink is wrong here even though the
+        // seed floated in along this path: `retreat` may reverse a float
+        // immediately, with nothing intervening, but a window build moves OTHER
+        // gates too -- ctrl-cap evasion parks a collider out of the way, and an
+        // evaded collider is by definition one that does NOT commute. Teleport
+        // the seed across that and the circuit's function changes.
+        for dir in [Dir::L, Dir::R] {
+            for _ in 0..Self::RESTORE_HOPS {
+                if self.arena.neighbor(id, Dir::L) == home {
+                    return;
+                }
+                let nb = self.arena.neighbor(id, dir);
+                if nb == NIL {
+                    break;
+                }
+                if XGate::collides(self.arena.gate(id), self.arena.gate(nb)) {
+                    break; // blocked: leave it here rather than jump the gate
+                }
+                self.arena.unlink(id);
+                match dir {
+                    Dir::R => self.arena.link_after(id, nb),
+                    Dir::L => self.arena.link_before(id, nb),
+                }
             }
-        } else {
-            self.arena.link_after(id, home);
         }
     }
+
+    /// Bound on the checked walk home. A seed that cannot get back within this
+    /// many hops stays where it is: a partly-restored seed is still correct,
+    /// only less tidy.
+    const RESTORE_HOPS: usize = 512;
 
     /// One coin, one pool. Heads (probability `p_mingen`) draws from the
     /// generation pool; tails draws uniformly. `seed_from_pool` records which,
@@ -5412,6 +5432,41 @@ mod mix_tests {
         rs.global_check();
         assert!(rs.moves_done > before_moves, "resumed run must make progress");
         let _ = std::fs::remove_file(path);
+    }
+
+// The seed restore must be COLLISION-CHECKED, not an unchecked relink.
+    // Window building floats gates other than the seed -- ctrl-cap evasion
+    // parks a collider out of the way, and an evaded collider is by definition
+    // one that does not commute with the window -- so restoring the seed by
+    // teleporting it back to its recorded home can jump it across a gate it
+    // does not commute with, changing the circuit's function. This reproduces
+    // the regression: wide gates plus a low w_window make evasion fire on
+    // nearly every attempt, and an empty store makes every attempt FAIL, so the
+    // restore path runs constantly.
+    #[test]
+    fn failed_db_attempts_restore_seed_without_breaking_function() {
+        let gates = random_mixed_circuit(97, 12, 400);
+        let params = MixParams {
+            k_max: 6,
+            moves: 20_000,
+            target_size: 400,
+            temp: 20.0,
+            p_db: 1.0,          // every round is a slot-2 attempt
+            db_mode: DbMode::Mix,
+            p_convex: 0.5,
+            w_window: 2,        // width >= 2 is evaded: evasion on almost every build
+            w_pool: 0,
+            s_db: 5,
+            verify_every: 1_000, // global_check catches any functional drift
+            report_every: u64::MAX,
+            seed: 5,
+            ..MixParams::default()
+        };
+        // Empty store: every attempt misses, so every attempt restores its seed.
+        let mut mx = Mixer::new_with_db(gates, 12, params, FrozenDb::empty());
+        mx.run();
+        mx.global_check();
+        assert!(mx.counters.db_build_aborts > 0 || mx.counters.db_attempts > 0);
     }
 
     // The generation pool: with p_mingen 1.0 the seed comes from the pool
