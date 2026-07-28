@@ -908,3 +908,28 @@ point below 1, and this is the first thing stage 2 should test.
 
 Throughout: **one parameter per run, same C, same seed** — the A/B discipline
 behind every reliable finding in this project's record.
+
+---
+
+## 14. Pending measurements
+
+Everything above is specified; almost none of it is measured. These five gate
+decisions currently being made on inference. Run order matters — stage 1 gives
+the baselines the rest are read against.
+
+| # | experiment | read | decides |
+|---|---|---|---|
+| 1 | **`--db-advance` off vs on**, same C and seed | `odiff`, `oadj` trajectories | whether the flag becomes the default (the spec wants it on) |
+| 2 | **`full=` baseline**, one production-shape run, `db_advance` OFF | `litter distinct=` / `full=` | whether the §2.6 litter ban is worth building at all |
+| 3 | **Curated hit rate per rung**, `--db-dry-run` with the recorder | curated vs regular matches at window 1–5 | whether `curated` belongs on by default |
+| 4 | **COMP shed rate under the identity guard** | gates/move over a COMP leg | band width and COMP duty cycle (§7.2) |
+| 5 | **Saturation proxy vs heatmap**, mid-plateau and well past | `hmap_affine` / `hmap_stat` | whether the §12 exit rule tracks the thing it stands in for |
+
+⚠️ Run 2 with `--db-advance` **off**. The advance scatters litters, which
+directly suppresses `full=` — measuring both at once confounds them.
+
+The −0.06…−0.12 g/move figure the band is sized against (experiment 4) comes
+from a benchmark in which 79.6% of hits were trivial identity/reorder splices,
+which the identity guard (§2.3) now refuses. Whether that lowers the shed rate
+or redirects those rounds into real shrinks further down the descent is exactly
+what the experiment settles.
