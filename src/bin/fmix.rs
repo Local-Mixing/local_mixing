@@ -225,6 +225,15 @@ struct Args {
     /// Compressing mode ignores it. Requires FROZEN_CURATED_DIR.
     #[arg(long, default_value_t = false)]
     curated: bool,
+    /// Track, per litter, the SET of original input gates that contributed to
+    /// it (the union of the sets its outgoing window drew on). Reports anc=
+    /// (mean set size: what a mixed gate is made of) and ancspan= (mean
+    /// normalised index span: how far input material travels to meet). Immune
+    /// to the ORIGIN_SYNTH erosion that makes odiff/oadj unreadable. Costs
+    /// |input| bits per live litter, so SMALL INPUTS ONLY -- it refuses above
+    /// 20k input gates.
+    #[arg(long, default_value_t = false)]
+    ancestors: bool,
     /// Generation targeting: drive every (ctrl-cap-eligible) gate through at
     /// least this many DB re-encodings. Each gate carries a generation (input
     /// gates 0; a DB splice stamps min(window)+1; splits/merges propagate;
@@ -448,6 +457,7 @@ fn main() {
         db_prefixes: args.db_prefixes,
         db_advance: args.db_advance,
         curated: args.curated,
+        ancestors: args.ancestors,
         gen_target: args.gen_target,
         gen_bias: args.gen_bias,
         gen_rescan: args.gen_rescan,

@@ -414,6 +414,14 @@ pub struct MixParams {
     // compressible -- a route fcompress cannot partially undo. Compressing mode
     // ignores it (shrinking is that branch's job).
     pub curated: bool,
+    // ancestors: track, per litter, the SET of original input gates that
+    // contributed to it -- the union of the sets of the litters the outgoing
+    // window drew on. Unlike the single `origin` label (which a mixed-lineage
+    // splice destroys, see osyn=), a union never loses information, so it
+    // measures how far input material actually travels and what a mixed gate is
+    // made of. Cost is |litters| x |input| bits, so this is a small-input
+    // instrument: it refuses to arm above `ANC_MAX_INPUT` gates.
+    pub ancestors: bool,
     // Fixed top-level twist rate: with this probability a round performs one
     // conjugation twist directly, decoupling twist supply (set by mixing
     // needs) from the expansion-move economy (whose round supply collapses
@@ -553,6 +561,7 @@ impl Default for MixParams {
             db_prefixes: false,
             db_advance: false,
             curated: false,
+            ancestors: false,
             p_twist: 0.0,
             p_db_final: -1.0,
             p_db_steer: false,
@@ -769,6 +778,10 @@ pub struct Mixer {
     // Next litter id. Input gates take 0..n as singleton litters, so fresh ids
     // start at n and never collide with them.
     next_litter: u64,
+    // litter id -> bitset over input-gate indices (see MixParams::ancestors).
+    anc: HashMap<u64, Vec<u64>>,
+    anc_words: usize,
+    anc_m: usize,
     original: Vec<XGate>,
     num_wires: usize,
     moves_done: u64,
@@ -920,6 +933,15 @@ impl Mixer {
                 litter_size: 1,
             })
             .collect();
+        let (anc_words0, anc_m0) = if params.ancestors {
+            assert!(
+                n <= 20_000,
+                "--ancestors stores |input| bits per litter; {n} input gates is past                  the small-input envelope this instrument is for"
+            );
+            (n.div_ceil(64), n)
+        } else {
+            (0, 0)
+        };
         let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
         for (i, g) in gates.iter().enumerate() {
             index.entry(key_of(g)).or_default().push(i as u32);
@@ -945,6 +967,9 @@ impl Mixer {
             tabu: VecDeque::new(),
             next_event: 1,
             next_litter: n as u64,
+            anc: HashMap::new(),
+            anc_words: anc_words0,
+            anc_m: anc_m0,
             original: gates,
             num_wires,
             moves_done: 0,
@@ -1032,6 +1057,92 @@ impl Mixer {
 
     // A new litter id. Unlike events these carry no tabu bookkeeping — a litter
     // is pure provenance.
+    /// OR litter `l`'s ancestor set into `out`. Singleton sets are NOT stored:
+    /// input gate `i` is litter `i` by construction, so any id below `anc_m`
+    /// with no map entry denotes `{id}`. Ids at or above it with no entry are
+    /// born-random material (twist brackets, insert pairs) and contribute
+    /// nothing. That keeps init O(1) instead of O(input^2).
+    fn anc_or_into(&self, l: u64, out: &mut [u64]) {
+        if let Some(v) = self.anc.get(&l) {
+            for (o, x) in out.iter_mut().zip(v.iter()) {
+                *o |= *x;
+            }
+        } else if (l as usize) < self.anc_m {
+            out[l as usize / 64] |= 1u64 << (l as usize % 64);
+        }
+    }
+
+    /// Union the ancestor sets of `srcs`' litters and record it under a fresh
+    /// litter id, which is returned. The union is what makes this survive
+    /// mixed-lineage replacement, where the scalar `origin` label is discarded.
+    fn anc_union_litter(&mut self, srcs: &[u64]) -> u64 {
+        let l = self.fresh_litter();
+        if self.anc_words == 0 {
+            return l;
+        }
+        let mut bits = vec![0u64; self.anc_words];
+        for &src in srcs {
+            self.anc_or_into(src, &mut bits);
+        }
+        self.anc.insert(l, bits);
+        l
+    }
+
+    /// Mean ancestor-set cardinality and mean normalised ancestor SPAN over
+    /// live gates. Cardinality answers "what is a mixed gate made of"; span --
+    /// (max index - min index) / (input - 1) -- answers "how far has input
+    /// material travelled to meet". Both are immune to the ORIGIN_SYNTH erosion
+    /// that makes odiff/oadj unreadable (see osyn=).
+    fn anc_stats(&self) -> (f64, f64) {
+        if self.anc_words == 0 {
+            return (0.0, 0.0);
+        }
+        let (mut card_sum, mut span_sum, mut n) = (0f64, 0f64, 0u64);
+        let mut bits = vec![0u64; self.anc_words];
+        let mut cur = self.arena.head();
+        while cur != NIL {
+            bits.iter_mut().for_each(|w| *w = 0);
+            self.anc_or_into(self.meta_of(cur).litter, &mut bits);
+            let card: u32 = bits.iter().map(|w| w.count_ones()).sum();
+            if card > 0 {
+                let lo = bits
+                    .iter()
+                    .enumerate()
+                    .find(|(_, w)| **w != 0)
+                    .map(|(i, w)| i * 64 + w.trailing_zeros() as usize)
+                    .unwrap_or(0);
+                let hi = bits
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, w)| **w != 0)
+                    .map(|(i, w)| i * 64 + 63 - w.leading_zeros() as usize)
+                    .unwrap_or(0);
+                card_sum += card as f64;
+                span_sum += (hi.saturating_sub(lo)) as f64 / (self.anc_m.max(2) - 1) as f64;
+                n += 1;
+            }
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        if n == 0 { (0.0, 0.0) } else { (card_sum / n as f64, span_sum / n as f64) }
+    }
+
+    /// Drop ancestor sets for litters with no live gates. Without this the map
+    /// grows with every splice for the whole run; with it, it is bounded by the
+    /// live litter count.
+    fn anc_prune(&mut self) {
+        if self.anc_words == 0 {
+            return;
+        }
+        let mut live: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut cur = self.arena.head();
+        while cur != NIL {
+            live.insert(self.meta_of(cur).litter);
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        self.anc.retain(|k, _| live.contains(k));
+    }
+
     fn fresh_litter(&mut self) -> u64 {
         let l = self.next_litter;
         self.next_litter += 1;
@@ -2403,11 +2514,17 @@ impl Mixer {
             // Litter follows the same parent the generation does: the merged
             // gate is only as re-encoded as the less re-encoded parent, so it
             // inherits that parent's provenance too.
-            let (litter, litter_size) = if mg.dgen <= mh.dgen {
+            let (mut litter, litter_size) = if mg.dgen <= mh.dgen {
                 (mg.litter, mg.litter_size)
             } else {
                 (mh.litter, mh.litter_size)
             };
+            // Ancestry, unlike provenance, comes from both: the merged content
+            // depends on each parent, so under --ancestors the merge mints a
+            // litter carrying the union rather than picking a side.
+            if self.anc_words > 0 && mg.litter != mh.litter {
+                litter = self.anc_union_litter(&[mg.litter, mh.litter]);
+            }
             self.set_meta(nid, Meta { origin, event: 0, dir: d, dgen: mg.dgen.min(mh.dgen), miss: 0, litter, litter_size });
         }
         if sibling {
@@ -2714,7 +2831,10 @@ impl Mixer {
         // fresh id and the size this replacement emitted. A later window that
         // is exactly this set is the case where the store can hand the outgoing
         // spelling straight back (A -> B -> A).
-        let litter = self.fresh_litter();
+        let litter = {
+            let srcs: Vec<u64> = ids.iter().map(|&id| self.meta_of(id).litter).collect();
+            self.anc_union_litter(&srcs)
+        };
         let litter_size = m.min(u16::MAX as usize) as u16;
         let mut c = cursor;
         let mut placed: Vec<u32> = Vec::with_capacity(m);
@@ -3447,6 +3567,7 @@ impl Mixer {
     }
 
     pub fn report(&mut self) {
+        self.anc_prune();
         // Flush the attempt recorder so a long run is inspectable mid-flight.
         if let Some(w) = self.db_record.as_mut() {
             use std::io::Write;
@@ -3466,6 +3587,7 @@ impl Mixer {
         // material mixing has failed to touch, and they get more selective the
         // better the mixing works. Without this field that bias is invisible:
         // read osyn first, and treat the other three as unusable once it is high.
+        let (anc_card, anc_span) = self.anc_stats();
         let osyn = if origins.is_empty() {
             0.0
         } else {
@@ -3479,7 +3601,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={} | litter distinct={:.2} full={}",
+            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={} | litter distinct={:.2} full={}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -3543,6 +3665,8 @@ impl Mixer {
             odiff,
             oadj,
             osyn,
+            anc_card,
+            anc_span,
             hist.join(" "),
             self.params.gen_target,
             gs.g_circ,
