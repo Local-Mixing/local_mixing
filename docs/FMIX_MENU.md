@@ -167,6 +167,17 @@ created it — plus that litter's size; input gates are singleton litters. Then:
   4; measured tier-1 average 3.29 distinct litters, ~165 full-litter bans per
   sweep).
 
+**MEASURED here, 2026-07-28** (3M moves, [2,2,2,3] Gray-fold gadget, 689,178
+gates): the full-litter rate is **11.1% of splices** over the last interval and
+still climbing (1.1% → 2.9% → 4.3% → 4.8% at 50k-move steps early, 11.1% at
+3M), while `distinct` falls monotonically 4.90 → 4.71 → 4.14 with **no turn
+yet**. So the litter population has not equilibrated even at 3M moves, and the
+rate a ban would act on is rising. The mechanism transfers; the ban looks worth
+building.
+
+⚠️ `--db-advance` cuts full-litter splices by **57%** (§10), so it is a partial
+substitute for the ban, not a complement. Do not evaluate the two together.
+
 **Why it matters.** In the controlled ssg pair, litter rules + slow compression
 reached **floor generation 100 at 95.1% of gates** — no prior run had ever
 passed floor 45–54 — while the legacy control on the same input sat at **floor
@@ -741,26 +752,43 @@ one canary.
 
 ## 10. Open
 
-- **Transport under a DB-dominated schedule — resolved by `db_advance`, still
-  to be measured.** The DB move already uses direction in three places: the
-  contiguous sampler extends the window along `g1`'s own direction, the convex
-  sampler floats `g1` and then the block along it, and the splice assigns
-  product directions by pivot from `g1dir`. What was missing is the ballistic
-  **birth-advance** — `advance_births` fires at all five split sites but not at
-  the splice, so products were handed a direction nothing ever acted on.
+- **`db_advance` does NOT buy transport — MEASURED 2026-07-28, and this
+  supersedes the argument that motivated it.** The reasoning was that the DB
+  move already uses direction in three places (the contiguous sampler extends
+  along `g1`'s direction, the convex sampler floats `g1` and then the block,
+  the splice assigns product directions by pivot) but never applied the
+  ballistic **birth-advance**, since `advance_births` fires at all five split
+  sites and not at the splice — so products were handed a direction nothing
+  acted on. Adding it was expected to restore transport.
 
-  The obvious alternative, restoring crossings by setting `p_db < 1`, is the
-  wrong fix: crossings widen material, and width is what kills DB matching (one
-  width-3 gate takes a window from 36% to 0.2% across m = 3…6, and ~62% of a
-  product-share gadget is already width ≥ 3). Phase A would be manufacturing
-  exactly what the store cannot digest.
+  It does not. A/B at 3M moves on the [2,2,2,3] Gray-fold gadget, same C and
+  seed 101, one flag apart:
 
-  `--db-advance` gives splice products the same birth-advance split pieces get.
-  Float-only, so the function is preserved by construction, and it scatters the
-  litter as a side effect — making a later window less likely to be exactly one
-  earlier replacement. **Off by default because it changes trajectories**; the
-  A/B is one flag, read on `odiff`/`oadj`, and it belongs in calibration stage 2.
-  The menu spec wants it on.
+  | | OFF | ON |
+  |---|---|---|
+  | `odiff` / `oadj` | **0.0005 / 1.0000** | **0.0005 / 1.0000** |
+  | litter `full` | 75,419 | **32,114** (−57%) |
+  | litter `distinct` | 4.14 | 4.38 |
+  | DB hits | 678,744 | 620,345 (−8.6%) |
+  | size 689,178 → | 734,097 (+6.5%) | 744,163 (+8.0%) |
+
+  Positional transport is **identical to every printed digit**. That is
+  consistent with the standing finding that transport comes from *growth*, not
+  from floating: this recipe grows 6.5% over 3M moves, and a float within a
+  gate's commuting box is far too local to move an origin family.
+
+  What the flag actually does is **scatter litters** — a 57% cut in full-litter
+  splices. It is a litter mechanism, not a transport one, and therefore a
+  partial substitute for the §2.6 ban rather than a complement to it. Whether
+  it should default on depends on whether the ban gets built; they overlap.
+
+  Separately, the obvious alternative — restoring crossings via `p_db < 1` —
+  remains the wrong fix for transport: crossings widen material and width is
+  what kills DB matching (one width-3 gate takes a window from 36% to 0.2%
+  across m = 3…6). Phase A would be manufacturing what the store cannot digest.
+  **Transport in phase A is still unsolved**; the honest current answer is that
+  it arrives with the growth legs of the breathing cycle (§7.2), not from any
+  per-move mechanism.
 - **`p_twist` is under-set at 0.002.** With the COMP brake as the absorber
   rather than the merge catalogue (§3.1), 0.01 costs only a ~20% COMP duty
   cycle and delivers a twist per gate every 0.4 generations. 0.002 is a safe
@@ -838,6 +866,15 @@ Two readings from that column. `oadj = 0.9999` after 60k fixed-size moves —
 composition while the conveyor belt of the original gate order stays intact.
 And **`owin` saturates far too early to be a criterion**: it is already at
 30.5/32 when nothing has moved. Choose meters still far from their asymptote.
+
+⚠️ **`distinct` starts at `s_db` by construction and can only fall at first.**
+Every input gate is its own singleton litter, so on a fresh gadget any window
+trivially spans `s_db` distinct litters. The level early in a run is therefore
+meaningless — it is a trivial ceiling, not an achievement. The signal is the
+**turn**: `distinct` dips as splices mint multi-gate litters, then recovers
+toward `s_db` once churn fragments them faster than splices create them, and
+`full` peaks and falls. That turn is the equilibrium. Measured to 3M moves it
+has not happened (4.90 → 4.71 → 4.14, still falling).
 
 **The litter meters are the most direct saturation signal**, because they
 measure whether re-encoding is still *braiding* or merely churning. Mean
@@ -919,14 +956,21 @@ the baselines the rest are read against.
 
 | # | experiment | read | decides |
 |---|---|---|---|
-| 1 | **`--db-advance` off vs on**, same C and seed | `odiff`, `oadj` trajectories | whether the flag becomes the default (the spec wants it on) |
-| 2 | **`full=` baseline**, one production-shape run, `db_advance` OFF | `litter distinct=` / `full=` | whether the §2.6 litter ban is worth building at all |
+| 1 | ~~`--db-advance` off vs on~~ **RUN 2026-07-28** | `odiff`/`oadj` identical; `full` −57% | **no transport**; it is a litter mechanism (§10) |
+| 2 | ~~`full=` baseline~~ **RUN 2026-07-28** | 11.1% at 3M and rising, `distinct` still falling | ban transfers, worth building (§2.6) |
 | 3 | **Curated hit rate per rung**, `--db-dry-run` with the recorder | curated vs regular matches at window 1–5 | whether `curated` belongs on by default |
 | 4 | **COMP shed rate under the identity guard** | gates/move over a COMP leg | band width and COMP duty cycle (§7.2) |
 | 5 | **Saturation proxy vs heatmap**, mid-plateau and well past | `hmap_affine` / `hmap_stat` | whether the §12 exit rule tracks the thing it stands in for |
 
 ⚠️ Run 2 with `--db-advance` **off**. The advance scatters litters, which
 directly suppresses `full=` — measuring both at once confounds them.
+
+⚠️ **Use a unique log name per launch.** `>` opens without `O_APPEND`, so two
+runs pointed at one file each keep their own offset and overwrite each other's
+regions, yielding a single banner over interleaved output. This happened on
+2026-07-28 and was recoverable only because every report line carries
+`target=`. Verify the banner *and* spot-check that `target=` is constant down
+the log before reading any result.
 
 The −0.06…−0.12 g/move figure the band is sized against (experiment 4) comes
 from a benchmark in which 79.6% of hits were trivial identity/reorder splices,

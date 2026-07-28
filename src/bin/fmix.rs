@@ -362,6 +362,12 @@ fn main() {
             args.db_min_window, args.db_max_window, !args.no_db_verify
         );
     }
+    if args.db_advance {
+        println!(
+            "[fmix] db-advance ON: splice products take the ballistic birth-advance (dir_q={})",
+            args.dir_q
+        );
+    }
     if args.gen_target > 0 {
         println!(
             "[fmix] generation targeting ON: gen_target={} gen_bias={} gen_rescan={} gen_stop_frac={} twist_cov_stop={} split_rule={} (report: gen tgt/G/alag/lag/c/h/u/wlag/min, cov, ing, hard, paid)",
