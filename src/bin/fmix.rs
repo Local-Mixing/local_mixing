@@ -216,6 +216,15 @@ struct Args {
     /// kills DB matching. Off by default (it changes trajectories).
     #[arg(long, default_value_t = false)]
     db_advance: bool,
+    /// Also probe the curated store (FROZEN_CURATED_DIR) and prefer a
+    /// non-identical curated match over a regular one REGARDLESS OF SIZE. The
+    /// curated store holds circuits every strict subcircuit of which is
+    /// shortest, so its replacements are routes fcompress cannot partially
+    /// undo -- but it is built from splits of minimal identities and so holds
+    /// LONGER equivalents, meaning this deliberately prefers growth.
+    /// Compressing mode ignores it. Requires FROZEN_CURATED_DIR.
+    #[arg(long, default_value_t = false)]
+    curated: bool,
     /// Generation targeting: drive every (ctrl-cap-eligible) gate through at
     /// least this many DB re-encodings. Each gate carries a generation (input
     /// gates 0; a DB splice stamps min(window)+1; splits/merges propagate;
@@ -362,6 +371,14 @@ fn main() {
             args.db_min_window, args.db_max_window, !args.no_db_verify
         );
     }
+    if args.curated {
+        assert!(
+            std::env::var("FROZEN_CURATED_DIR").is_ok(),
+            "--curated needs FROZEN_CURATED_DIR; refusing to run, because \
+             degrading silently to regular-only would look like a measurement"
+        );
+        println!("[fmix] curated ON: curated matches preferred over regular, any size");
+    }
     if args.db_advance {
         println!(
             "[fmix] db-advance ON: splice products take the ballistic birth-advance (dir_q={})",
@@ -430,6 +447,7 @@ fn main() {
         db_total_terms: args.db_total_terms,
         db_prefixes: args.db_prefixes,
         db_advance: args.db_advance,
+        curated: args.curated,
         gen_target: args.gen_target,
         gen_bias: args.gen_bias,
         gen_rescan: args.gen_rescan,

@@ -298,6 +298,17 @@ pub struct DbResult {
     pub match_count: usize,
     /// The replacement selected per [`DbMode`], if any qualified.
     pub chosen: Option<Vec<XGate>>,
+    /// Candidates dropped because they were gate-for-gate identical to the
+    /// outgoing window. Splicing one is a no-op that still costs a round and
+    /// still stamps a generation, so the dose meter would count a re-encoding
+    /// that did not happen. ssg measured 79.6% of compressing hits as trivial
+    /// identity/reorder, which is why this is excluded rather than merely
+    /// counted.
+    pub identity_skipped: usize,
+    /// Of the surviving candidates, how many came from the curated store.
+    pub curated_matches: usize,
+    /// Whether the selected replacement came from the curated store.
+    pub chosen_curated: bool,
     /// True when BOTH directions were skipped by the degree guard (a certain
     /// miss reached without any canonicalization or store lookup).
     pub degree_skipped: bool,
@@ -332,9 +343,16 @@ pub fn db_replace(
     budget: XPolyBudget,
     mode: DbMode,
     guard: DegreeGuard,
+    curated: bool,
     rng: &mut impl Rng,
 ) -> DbResult {
-    db_replace_with(window, num_wires, budget, mode, guard, rng, |key| db.get_regular(key))
+    db_replace_with(window, num_wires, budget, mode, guard, rng, |key, want_curated| {
+        if want_curated {
+            if curated { db.get_curated(key) } else { None }
+        } else {
+            db.get_regular(key)
+        }
+    })
 }
 
 /// Testable core: `lookup` stands in for the frozen store.
@@ -348,9 +366,16 @@ pub fn db_replace_with<F>(
     mut lookup: F,
 ) -> DbResult
 where
-    F: FnMut(&[u8; 16]) -> Option<Vec<u8>>,
+    F: FnMut(&[u8; 16], bool) -> Option<Vec<u8>>,
 {
-    let miss = |degree_skipped| DbResult { match_count: 0, chosen: None, degree_skipped };
+    let miss = |degree_skipped| DbResult {
+        match_count: 0,
+        chosen: None,
+        degree_skipped,
+        identity_skipped: 0,
+        curated_matches: 0,
+        chosen_curated: false,
+    };
     let window_len = window.len();
     if window_len == 0 {
         return miss(false);
@@ -383,64 +408,100 @@ where
         return miss(false);
     }
 
-    // Every placeable equivalent circuit across both distinct keys, ANY length.
+    // Every placeable equivalent circuit across both distinct keys, ANY length,
+    // from both stores. Each candidate carries whether it came from the curated
+    // store, because curated-ness is a lexicographic first key in `choose`.
     let mut seen_keys = std::collections::HashSet::new();
-    let mut matches: Vec<Vec<XGate>> = Vec::new();
+    let mut matches: Vec<(Vec<XGate>, bool)> = Vec::new();
+    let mut identity_skipped = 0usize;
     for (reversed, canonical) in &directions {
         let key = key_of(canonical);
         if !seen_keys.insert(key) {
             continue;
         }
-        let Some(value) = lookup(&key) else { continue };
-        for friend in decode_value(&value) {
-            if let Some(gates) = friend_to_xgates(
-                friend,
-                *reversed,
-                &canonical.order,
-                &canonical.used_wires,
-                num_wires,
-                rng,
-            ) {
-                matches.push(gates);
+        for from_curated in [true, false] {
+            let Some(value) = lookup(&key, from_curated) else { continue };
+            for friend in decode_value(&value) {
+                if let Some(gates) = friend_to_xgates(
+                    friend,
+                    *reversed,
+                    &canonical.order,
+                    &canonical.used_wires,
+                    num_wires,
+                    rng,
+                ) {
+                    // The identity guard. `friend_to_xgates` has already mapped
+                    // the candidate back into the window's own global wire
+                    // space, so a plain sequence comparison IS the comparison
+                    // in a common frame -- no separate canonicalisation needed.
+                    // Reorderings that map to a different sequence compare as
+                    // different and are kept: no benefit, no harm.
+                    if gates == window {
+                        identity_skipped += 1;
+                        continue;
+                    }
+                    matches.push((gates, from_curated));
+                }
             }
         }
     }
 
     let match_count = matches.len();
-    let chosen = choose(&mut matches, window_len, mode, rng);
-    DbResult { match_count, chosen, degree_skipped: false }
+    let curated_matches = matches.iter().filter(|(_, c)| *c).count();
+    let picked = choose(&mut matches, window_len, mode, rng);
+    let (chosen, chosen_curated) = match picked {
+        Some((g, c)) => (Some(g), c),
+        None => (None, false),
+    };
+    DbResult {
+        match_count,
+        chosen,
+        degree_skipped: false,
+        identity_skipped,
+        curated_matches,
+        chosen_curated,
+    }
 }
 
 /// Select one replacement from `matches` per `mode` (consumes the pick).
 fn choose(
-    matches: &mut Vec<Vec<XGate>>,
+    matches: &mut Vec<(Vec<XGate>, bool)>,
     window_len: usize,
     mode: DbMode,
     rng: &mut impl Rng,
-) -> Option<Vec<XGate>> {
+) -> Option<(Vec<XGate>, bool)> {
+    // Curated-ness is a lexicographic FIRST key: when any curated candidate
+    // survived, the mode's size rule is applied within the curated class only,
+    // regardless of size. The curated store is built from splits of minimal
+    // identities, so it holds LONGER equivalents -- preferring it therefore
+    // prefers growth, deliberately, to buy a route whose pieces are not
+    // locally compressible. Compressing mode is exempt: its job is to shrink.
+    let restrict_curated =
+        mode != DbMode::Compressing && matches.iter().any(|(_, c)| *c);
+    let pool: Vec<usize> = (0..matches.len())
+        .filter(|&i| !restrict_curated || matches[i].1)
+        .collect();
+    if pool.is_empty() {
+        return None;
+    }
+    let len_of = |i: usize| matches[i].0.len();
     let eligible: Vec<usize> = match mode {
         // Non-growing only, then narrow to the shortest.
         DbMode::Compressing => {
-            let min = matches
-                .iter()
-                .map(|g| g.len())
-                .filter(|&l| l <= window_len)
-                .min()?;
-            (0..matches.len()).filter(|&i| matches[i].len() == min).collect()
+            let min = pool.iter().map(|&i| len_of(i)).filter(|&l| l <= window_len).min()?;
+            pool.into_iter().filter(|&i| len_of(i) == min).collect()
         }
         // Anything the store returned.
-        DbMode::SizeAgnostic => {
-            if matches.is_empty() {
-                return None;
-            }
-            (0..matches.len()).collect()
-        }
+        DbMode::SizeAgnostic => pool,
         // The shortest spelling that exists, growing or not.
         DbMode::MinGrow => {
-            let min = matches.iter().map(|g| g.len()).min()?;
-            (0..matches.len()).filter(|&i| matches[i].len() == min).collect()
+            let min = pool.iter().map(|&i| len_of(i)).min()?;
+            pool.into_iter().filter(|&i| len_of(i) == min).collect()
         }
     };
+    if eligible.is_empty() {
+        return None;
+    }
     let pick = eligible[rng.random_range(0..eligible.len())];
     Some(matches.swap_remove(pick))
 }
@@ -508,7 +569,7 @@ mod tests {
             DbMode::Compressing,
             DegreeGuard::OFF,
             &mut rng,
-            |k| store.get(k).cloned(),
+            |k, cur| if cur { None } else { store.get(k).cloned() },
         );
         assert_eq!(res.match_count, 1);
         let repl = res.chosen.expect("a shorter friend exists");
@@ -530,7 +591,7 @@ mod tests {
             DbMode::SizeAgnostic,
             DegreeGuard::OFF,
             &mut rng,
-            |_| None,
+            |_, _| None,
         );
         assert_eq!(res.match_count, 0);
         assert!(res.chosen.is_none());
@@ -555,7 +616,7 @@ mod tests {
             DbMode::SizeAgnostic,
             guard,
             &mut rng,
-            |_| {
+            |_, _| {
                 lookups += 1;
                 None
             },
@@ -573,7 +634,7 @@ mod tests {
             DbMode::SizeAgnostic,
             guard,
             &mut rng,
-            |_| None,
+            |_, _| None,
         );
         assert!(!res.degree_skipped, "a degree-2 window must not be degree-skipped");
     }
@@ -596,13 +657,13 @@ mod tests {
 
         // Compressing: the only friend (3 gates) grows the 1-gate window -> reject.
         let mut rng = StdRng::seed_from_u64(3);
-        let comp = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::Compressing, DegreeGuard::OFF, &mut rng, |k| store.get(k).cloned());
+        let comp = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::Compressing, DegreeGuard::OFF, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         assert_eq!(comp.match_count, 1);
         assert!(comp.chosen.is_none(), "compressing must reject a growing friend");
 
         // Size-agnostic: accept the longer equivalent.
         let mut rng = StdRng::seed_from_u64(3);
-        let agn = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::SizeAgnostic, DegreeGuard::OFF, &mut rng, |k| store.get(k).cloned());
+        let agn = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::SizeAgnostic, DegreeGuard::OFF, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         assert_eq!(agn.match_count, 1);
         let repl = agn.chosen.expect("size-agnostic accepts any length");
         assert!(repl.len() > window.len(), "this friend grows the window");
@@ -612,7 +673,7 @@ mod tests {
         // MinGrow: also accepts it — the shortest spelling that exists is the
         // paid channel's whole point when nothing non-growing is available.
         let mut rng = StdRng::seed_from_u64(3);
-        let mg = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::MinGrow, DegreeGuard::OFF, &mut rng, |k| store.get(k).cloned());
+        let mg = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::MinGrow, DegreeGuard::OFF, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         let repl = mg.chosen.expect("min-grow accepts the shortest growing friend");
         assert_eq!(repl.len(), 3);
         assert!(exhaustively_equal(&window, &repl, 8));

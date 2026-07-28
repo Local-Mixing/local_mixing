@@ -113,6 +113,7 @@ fn main() {
                             budget,
                             DbMode::SizeAgnostic,
                             guard,
+                            false,
                             &mut rng,
                         );
                         if res.degree_skipped {

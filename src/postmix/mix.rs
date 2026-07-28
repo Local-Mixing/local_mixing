@@ -407,6 +407,13 @@ pub struct MixParams {
     // does not fight the store. Off by default: it changes trajectories, so the
     // A/B is one flag.
     pub db_advance: bool,
+    // curated: also probe the curated store (FROZEN_CURATED_DIR) and prefer a
+    // non-identical curated match over a regular one regardless of size. The
+    // curated store holds circuits every strict subcircuit of which is
+    // shortest, so a curated replacement is one whose pieces are not locally
+    // compressible -- a route fcompress cannot partially undo. Compressing mode
+    // ignores it (shrinking is that branch's job).
+    pub curated: bool,
     // Fixed top-level twist rate: with this probability a round performs one
     // conjugation twist directly, decoupling twist supply (set by mixing
     // needs) from the expansion-move economy (whose round supply collapses
@@ -545,6 +552,7 @@ impl Default for MixParams {
             db_total_terms: 0,
             db_prefixes: false,
             db_advance: false,
+            curated: false,
             p_twist: 0.0,
             p_db_final: -1.0,
             p_db_steer: false,
@@ -581,6 +589,10 @@ pub struct MixCounters {
     pub db_hard_hits: u64,
     pub db_hard_rounds: u64,
     pub db_hard_added: u64,
+    // Candidates refused by the identity guard, and splices whose replacement
+    // came from the curated store.
+    pub db_identity_skips: u64,
+    pub db_curated_hits: u64,
     // Litter census (observation only — nothing bans or prefers on these yet;
     // see docs/FMIX_MENU.md 2.6). `litter_windows`/`litter_distinct_sum` give
     // the mean distinct litters per sampled DB window, i.e. how fast churn
@@ -2503,8 +2515,13 @@ impl Mixer {
                     self.db_budget,
                     mode,
                     guard,
+                    self.params.curated,
                     &mut self.rng,
                 );
+                self.counters.db_identity_skips += res.identity_skipped as u64;
+                if res.chosen.is_some() && res.chosen_curated {
+                    self.counters.db_curated_hits += 1;
+                }
                 if res.degree_skipped {
                     self.counters.db_degree_skips += 1;
                 }
@@ -2554,8 +2571,13 @@ impl Mixer {
             self.db_budget,
             mode,
             guard,
+            self.params.curated,
             &mut self.rng,
         );
+        self.counters.db_identity_skips += res.identity_skipped as u64;
+        if res.chosen.is_some() && res.chosen_curated {
+            self.counters.db_curated_hits += 1;
+        }
         let match_count = res.match_count;
         if res.degree_skipped {
             self.counters.db_degree_skips += 1;
@@ -3331,6 +3353,23 @@ impl Mixer {
         }
     }
 
+    /// True g57 shape: `comp = 1` with exactly two controls of OPPOSITE
+    /// polarity (`a ^= b OR !c`). Distinct from `remaining_g57`, which counts
+    /// every `comp = 1` gate regardless of width -- the report's `comp=` field.
+    /// The DB stores g57 circuits, so this is the population it can spell.
+    pub fn true_g57(&self) -> usize {
+        let mut cur = self.arena.head();
+        let mut n = 0usize;
+        while cur != NIL {
+            let g = self.arena.gate(cur);
+            if g.comp && g.ctrls.len() == 2 && g.ctrls[0].1 != g.ctrls[1].1 {
+                n += 1;
+            }
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        n
+    }
+
     pub fn remaining_g57(&self) -> usize {
         let mut cur = self.arena.head();
         let mut n = 0usize;
@@ -3420,6 +3459,18 @@ impl Mixer {
         let origins = self.origins_in_order();
         let odiff = super::stats::origin_diffusion(&origins);
         let oadj = super::stats::adjacent_origin_autocorr(&origins);
+        // Fraction of gates whose ancestry label has been destroyed. A DB splice
+        // over a window spanning mixed lineage stamps its products ORIGIN_SYNTH,
+        // and origin_diffusion / adjacent_origin_autocorr / origin_displacement
+        // all SKIP those gates. So odiff, oadj and disp are computed over the
+        // material mixing has failed to touch, and they get more selective the
+        // better the mixing works. Without this field that bias is invisible:
+        // read osyn first, and treat the other three as unusable once it is high.
+        let osyn = if origins.is_empty() {
+            0.0
+        } else {
+            origins.iter().filter(|&&o| o == ORIGIN_SYNTH).count() as f64 / origins.len() as f64
+        };
         let gs = self.gen_stats();
         let gmin = if gs.min == GEN_FRESH { "F".to_string() } else { gs.min.to_string() };
         let cov = self.twist_coverage();
@@ -3428,11 +3479,12 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={} | litter distinct={:.2} full={}",
+            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={} | litter distinct={:.2} full={}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
             self.remaining_g57(),
+            self.true_g57(),
             c.merges_cancel,
             c.merges_xfuse,
             c.merges_drop,
@@ -3460,6 +3512,8 @@ impl Mixer {
             c.db_degree_skips,
             c.db_span_skips,
             c.db_build_aborts,
+            c.db_identity_skips,
+            c.db_curated_hits,
             c.cross_r1,
             c.cross_r2,
             c.cross_r3,
@@ -3488,6 +3542,7 @@ impl Mixer {
             leew,
             odiff,
             oadj,
+            osyn,
             hist.join(" "),
             self.params.gen_target,
             gs.g_circ,
