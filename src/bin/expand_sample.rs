@@ -1,4 +1,4 @@
-// Expand a circuit against the regular frozen store (one sss-style inflation pass) so the
+// Expand a circuit against the curated frozen store (one sss-style inflation pass) so the
 // instrumented compress command can be run on a realistic expanded circuit.
 //
 // Usage: expand_sample <in_circuit> <out_circuit> <n_wires> <trials>
@@ -19,7 +19,7 @@ fn main() {
 
     let db = FrozenDb::from_env();
 
-    let expanded = expand_frozen(&c, trials, n, &db, &ExpandPairMode::Regular);
+    let expanded = expand_frozen(&c, trials, n, &db, &ExpandPairMode::Curated);
     println!("out gates: {}", expanded.gates.len());
     std::fs::write(dst, expanded.repr()).unwrap();
 }

@@ -3,9 +3,10 @@
 //!
 //! A convex/contiguous window of arbitrary-width, mixed-polarity XGates is keyed
 //! by its exact function polynomial ([`crate::postmix::xpoly`]) — identical to
-//! the legacy g57 key path, so one frozen store serves both — and looked up in
-//! the regular store. Stored friends are g57 circuits; strictly shorter ones are
-//! decoded back into XGates and one is returned at random.
+//! the legacy g57 key path, so the frozen stores serve both. Compressing moves
+//! use the regular store; growth-capable moves try curated first, then fall back
+//! to regular. Stored friends are g57 circuits, decoded back into XGates before
+//! one is selected according to the requested [`DbMode`].
 //!
 //! The frozen store's keys and values share this crate's g57 convention: a
 //! triple `[a,b,c]` is `a ^= (NOT b AND c) XOR 1` (the `evaluate_index` gate,
@@ -330,6 +331,21 @@ impl DegreeGuard {
     };
 }
 
+/// Route one key lookup according to the move's growth policy.
+///
+/// Explicit compression stays on the regular store. Modes that may grow try
+/// curated first and consult regular only when curated has no entry for the key.
+fn lookup_stores_for_mode<T>(
+    mode: DbMode,
+    curated: impl FnOnce() -> Option<T>,
+    regular: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    match mode {
+        DbMode::Compressing => regular(),
+        DbMode::SizeAgnostic | DbMode::MinGrow => curated().or_else(regular),
+    }
+}
+
 /// Look up `window` in the frozen store and select a replacement per `mode`.
 /// `num_wires` is the full circuit wire count (for scratch-wire assignment).
 /// `guard` cheaply skips over-degree directions before canonicalization.
@@ -346,7 +362,7 @@ pub fn db_replace(
     rng: &mut impl Rng,
 ) -> DbResult {
     db_replace_with(window, num_wires, budget, mode, guard, rng, |key| {
-        db.get_regular(key)
+        lookup_stores_for_mode(mode, || db.get_curated(key), || db.get_regular(key))
     })
 }
 
@@ -476,6 +492,7 @@ mod tests {
     use crate::postmix::xgate::eval_lanes;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use std::cell::RefCell;
     use std::collections::HashMap;
 
     fn exhaustively_equal(a: &[XGate], b: &[XGate], n: usize) -> bool {
@@ -511,6 +528,56 @@ mod tests {
         stored.rewire(&order.invert(), stored.max_wire() as usize + 1);
         stored.canonicalize();
         (key, encode_value(&[stored]))
+    }
+
+    #[test]
+    fn store_routing_tracks_growth_policy_and_fallback() {
+        let calls = RefCell::new(Vec::new());
+        let hit = lookup_stores_for_mode(
+            DbMode::Compressing,
+            || {
+                calls.borrow_mut().push("curated");
+                Some(1)
+            },
+            || {
+                calls.borrow_mut().push("regular");
+                Some(2)
+            },
+        );
+        assert_eq!(hit, Some(2));
+        assert_eq!(*calls.borrow(), ["regular"]);
+
+        for mode in [DbMode::SizeAgnostic, DbMode::MinGrow] {
+            let calls = RefCell::new(Vec::new());
+            let hit = lookup_stores_for_mode(
+                mode,
+                || {
+                    calls.borrow_mut().push("curated");
+                    Some(1)
+                },
+                || {
+                    calls.borrow_mut().push("regular");
+                    Some(2)
+                },
+            );
+            assert_eq!(hit, Some(1));
+            assert_eq!(*calls.borrow(), ["curated"]);
+
+            let calls = RefCell::new(Vec::new());
+            let fallback = lookup_stores_for_mode(
+                mode,
+                || {
+                    calls.borrow_mut().push("curated");
+                    None
+                },
+                || {
+                    calls.borrow_mut().push("regular");
+                    Some(2)
+                },
+            );
+            assert_eq!(fallback, Some(2));
+            assert_eq!(*calls.borrow(), ["curated", "regular"]);
+        }
     }
 
     // A 3-gate window (one real g57 plus a cancelling involution pad) that a

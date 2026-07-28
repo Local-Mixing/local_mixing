@@ -59,14 +59,14 @@ impl GatePair {
 }
 
 pub fn expand_curated_frozen(gates: &[[u16; 3]], n: usize, db: &FrozenDb) -> Option<Vec<[u16; 3]>> {
-    expand_curated_frozen_neg(gates, n, db, &[], LookupScope::CuratedThenRegular)
+    expand_curated_frozen_neg(gates, n, db, &[], LookupScope::CuratedOnly)
 }
 
 /// Shared lookup: probe the curated frozen store with the possibly adjusted
 /// forward key, then optionally fall back to the regular frozen store.
-/// The shard fallback honours MIN_DIR_LOOKUP exactly like expand_frozen /
-/// compress_frozen (see replace.rs), and every probe goes through the exact
-/// process-wide lookup cache. Returns (value, final_order, is_reversed).
+/// The shard fallback honours MIN_DIR_LOOKUP exactly like compress_frozen
+/// (see replace.rs), and every probe goes through the exact process-wide
+/// lookup cache. Returns (value, final_order, is_reversed).
 fn curated_then_shard_lookup(
     sub: &CircuitSeq,
     db: &FrozenDb,
@@ -151,6 +151,15 @@ pub fn expand_curated_frozen_neg(
     scope: LookupScope,
 ) -> Option<Vec<[u16; 3]>> {
     use crate::circuit::circuit::Permutation;
+
+    assert!(
+        scope != LookupScope::RegularOnly,
+        "frozen expansion must use the curated store"
+    );
+    assert!(
+        db.has_curated(),
+        "frozen expansion requires FROZEN_CURATED_DIR"
+    );
 
     let mut rng = rand::rng();
     let sub = CircuitSeq {

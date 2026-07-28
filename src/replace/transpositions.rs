@@ -1382,10 +1382,10 @@ impl Transpositions {
 }
 
 // Append a SAMF/NOT gadget (`samf`) to `gates`, first trying to fuse it with the last
-// up-to-3 already-emitted gates through a single curated-DB lookup. On a hit, that window
-// (the trailing gates + the gadget) is replaced by the equal-or-shorter equivalent the DB
-// returns; on a miss the gadget is appended verbatim. Frozen replacements are
-// functionally equivalent to the window, so this is equivalence-preserving.
+// up-to-3 already-emitted gates through tiered curated-to-regular FrozenDB lookups. On a
+// hit, that window (the trailing gates + the gadget) is replaced by an equivalent the DB
+// returns; on a miss the gadget is appended verbatim. Frozen replacements are functionally
+// equivalent to the window, so this is equivalence-preserving.
 fn integrate_samf_compressed(
     gates: &mut Vec<[u16; 3]>,
     samf: &[[u16; 3]],
@@ -1431,9 +1431,9 @@ fn integrate_samf_compressed(
 // Undo the accumulated wire permutation + pending negations described by `t_list` and
 // `negation_mask`, appending the inverse SAMFs (and any leftover NOTs for permutation fixed
 // points) to `output`. Each gadget is fused with the trailing emitted gates via the curated
-// DB (integrate_samf_compressed). This is the shared final "unsamf" step for every shuffle
-// function. `negation_mask` must be indexed in the same (current) wire space that `t_list`'s
-// net permutation maps the original wires into.
+// DB with regular fallback (`integrate_samf_compressed`). This is the shared final "unsamf"
+// step for every shuffle function. `negation_mask` must be indexed in the same (current)
+// wire space that `t_list`'s net permutation maps the original wires into.
 pub fn apply_unsamf(
     output: &mut Vec<[u16; 3]>,
     t_list: &Transpositions,
@@ -2204,7 +2204,7 @@ fn collision_game_core(
                     continue;
                 }
                 if let Some(expansion) =
-                    expand_curated_frozen_neg(window, n, db, &neg, LookupScope::CuratedThenRegular)
+                    expand_curated_frozen_neg(window, n, db, &neg, LookupScope::CuratedOnly)
                 {
                     if expansion.len() >= 3 {
                         expanded = Some((idxs.clone(), window.clone(), expansion, neg));

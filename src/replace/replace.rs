@@ -724,6 +724,10 @@ fn cached_shard_get(db: &FrozenDb, key: &[u8; 16]) -> Option<std::sync::Arc<[u8]
     cached_db_get(db, LOOKUP_NS_SHARD, key)
 }
 
+fn cached_curated_get(db: &FrozenDb, key: &[u8; 16]) -> Option<std::sync::Arc<[u8]>> {
+    cached_db_get(db, LOOKUP_NS_CURATED, key)
+}
+
 // ---------------------------------------------------------------------------
 // Lookup direction strategy.
 //
@@ -1339,12 +1343,13 @@ fn print_expand_loop_summary(
 
 // Expand with ancilla wires or gates
 /// Selects which method to use when a 2-gate subcircuit is sampled in the expand functions.
-/// Larger subcircuits use the regular frozen-store expansion path.
+/// Larger subcircuits always use the curated frozen-store expansion path.
 pub enum ExpandPairMode {
     /// Use the curated frozen store to find a longer equivalent pair.
     Curated,
-    /// Force the regular frozen-store lookup even for 2-gate subcircuits.
-    Regular,
+    /// Skip the specialized pair helper and use the generic curated expansion
+    /// lookup for 2-gate subcircuits too. Database routing remains curated.
+    GenericCurated,
 }
 
 pub fn expand_frozen(
@@ -1356,6 +1361,11 @@ pub fn expand_frozen(
 ) -> CircuitSeq {
     use crate::circuit::circuit::polys_repr_blob;
     use xxhash_rust::xxh3::xxh3_128;
+
+    assert!(
+        db.has_curated(),
+        "frozen expansion requires FROZEN_CURATED_DIR"
+    );
 
     let mut expanded = c.clone();
 
@@ -1388,7 +1398,7 @@ pub fn expand_frozen(
                     TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     continue;
                 }
-                ExpandPairMode::Regular => { /* fall through to regular frozen store */ }
+                ExpandPairMode::GenericCurated => { /* fall through to generic curated lookup */ }
             }
         }
 
@@ -1400,87 +1410,18 @@ pub fn expand_frozen(
             continue;
         }
 
-        let lookup_mode = min_dir_lookup_mode();
-
-        let (value, final_order, is_reversed) = if lookup_mode == MinDirLookup::Legacy {
-            let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
-            let t_lookup = Instant::now();
-            let fwd_result = cached_shard_get(db, &fwd_key);
-            FROZEN_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-            if let Some(v) = fwd_result {
-                (v, fwd_order, false)
-            } else {
-                let t_canon2 = Instant::now();
-                let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
-                CANONICALIZE_TIME
-                    .fetch_add(t_canon2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-                if rev_polys.is_empty() {
-                    continue;
-                }
-
-                let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
-                let t_lookup2 = Instant::now();
-                let rev_result = cached_shard_get(db, &rev_key);
-                FROZEN_LOOKUP_TIME
-                    .fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-                match rev_result {
-                    Some(v) => (v, rev_order, true),
-                    None => continue,
-                }
-            }
-        } else {
-            // Min-direction probe: canonicalize both directions (cheap), probe
-            // only the direction whose canonical form the DB can contain.
-            let t_canon2 = Instant::now();
-            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
-            CANONICALIZE_TIME.fetch_add(t_canon2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-            if rev_polys.is_empty() {
-                continue;
-            }
-
-            // Canonical polys have sorted monomials, so lexicographic Vec
-            // comparison matches the poly_vec_key ordering the DB build used.
-            let rev_is_min = rev_polys < fwd_polys;
-            let (min_polys, min_order, min_reversed, alt_polys, alt_order, alt_reversed) =
-                if rev_is_min {
-                    (rev_polys, rev_order, true, fwd_polys, fwd_order, false)
-                } else {
-                    (fwd_polys, fwd_order, false, rev_polys, rev_order, true)
-                };
-
-            let min_key = xxh3_128(&polys_repr_blob(&min_polys)).to_le_bytes();
-            let t_lookup = Instant::now();
-            let min_result = cached_shard_get(db, &min_key);
-            FROZEN_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-            if let Some(v) = min_result {
-                (v, min_order, min_reversed)
-            } else if lookup_mode == MinDirLookup::Validate {
-                MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
-                let alt_key = xxh3_128(&polys_repr_blob(&alt_polys)).to_le_bytes();
-                let t_lookup2 = Instant::now();
-                let alt_result = cached_shard_get(db, &alt_key);
-                FROZEN_LOOKUP_TIME
-                    .fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                match alt_result {
-                    Some(v) => {
-                        MIN_DIR_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
-                        eprintln!(
-                            "[min-dir-violation] expand: non-min canonical key present while min key absent (gates={})",
-                            sub.gates.len()
-                        );
-                        (v, alt_order, alt_reversed)
-                    }
-                    None => continue,
-                }
-            } else {
-                continue;
-            }
+        // Curated entries are keyed by the forward canonical form. Expansion
+        // must never consult the regular compression store.
+        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
+        let t_lookup = Instant::now();
+        let lookup_result = cached_curated_get(db, &fwd_key);
+        FROZEN_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let value = match lookup_result {
+            Some(value) => value,
+            None => continue,
         };
+        let final_order = fwd_order;
+        let is_reversed = false;
 
         let t_blob = Instant::now();
         let mut candidates: Vec<CircuitSeq> = Vec::new();
@@ -2179,7 +2120,7 @@ pub fn expand_big_ancillas(
                         db,
                     )
                 }
-                ExpandPairMode::Regular => None, // handled by expand_frozen below
+                ExpandPairMode::GenericCurated => None, // generic curated lookup below
             };
             if let Some(repl) = repl_opt {
                 if repl.len() > 2 {
@@ -2192,7 +2133,7 @@ pub fn expand_big_ancillas(
             REPLACE_TIME.fetch_add(t6.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
 
-        // --- 3-5 gate path (and 2-gate Db/miss path): use expand_frozen. Keep pair_mode so
+        // --- 3-5 gate path (and 2-gate DB/miss path): use expand_frozen. Keep pair_mode so
         // any 2-gate subproblem sampled inside expand_frozen can still use curated pairs.
         // Pass num_wires (full circuit wire count) so extra wires are assigned correctly.
         let t4 = Instant::now();
