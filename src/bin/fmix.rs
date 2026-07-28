@@ -234,6 +234,23 @@ struct Args {
     /// 20k input gates.
     #[arg(long, default_value_t = false)]
     ancestors: bool,
+    /// Probability a COMP-DB attempt restricts itself to PURE g57 material and
+    /// starts its descent at --s-db-g57. Only g57-only windows survive length:
+    /// measured match rate is 100% to m=5 and 94% at 6, but ANY non-g57 gate in
+    /// a 6-gate window drops it to <=7%, so the long-window compression that
+    /// pays is unavailable except on pure windows.
+    #[arg(long, default_value_t = 0.0)]
+    p_comp_g57: f64,
+    /// Starting window length for a g57-only COMP attempt.
+    #[arg(long, default_value_t = 9)]
+    s_db_g57: usize,
+    /// Frozen store directory. Overrides FROZEN_DB_DIR, which is env-only and
+    /// in no rc file -- detached runs that miss it abort instantly.
+    #[arg(long)]
+    frozen_db_dir: Option<String>,
+    /// Curated store directory. Overrides FROZEN_CURATED_DIR.
+    #[arg(long)]
+    frozen_curated_dir: Option<String>,
     /// Generation targeting: drive every (ctrl-cap-eligible) gate through at
     /// least this many DB re-encodings. Each gate carries a generation (input
     /// gates 0; a DB splice stamps min(window)+1; splits/merges propagate;
@@ -380,6 +397,12 @@ fn main() {
             args.db_min_window, args.db_max_window, !args.no_db_verify
         );
     }
+    if let Some(d) = &args.frozen_db_dir {
+        unsafe { std::env::set_var("FROZEN_DB_DIR", d) };
+    }
+    if let Some(d) = &args.frozen_curated_dir {
+        unsafe { std::env::set_var("FROZEN_CURATED_DIR", d) };
+    }
     if args.curated {
         assert!(
             std::env::var("FROZEN_CURATED_DIR").is_ok(),
@@ -458,6 +481,8 @@ fn main() {
         db_advance: args.db_advance,
         curated: args.curated,
         ancestors: args.ancestors,
+        p_comp_g57: args.p_comp_g57,
+        s_db_g57: args.s_db_g57,
         gen_target: args.gen_target,
         gen_bias: args.gen_bias,
         gen_rescan: args.gen_rescan,

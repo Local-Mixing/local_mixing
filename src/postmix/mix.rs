@@ -447,6 +447,15 @@ pub struct MixParams {
     // made of. Cost is |litters| x |input| bits, so this is a small-input
     // instrument: it refuses to arm above `ANC_MAX_INPUT` gates.
     pub ancestors: bool,
+    // p_comp_g57: probability that a COMP-DB attempt restricts itself to PURE
+    // g57 material and starts its descent at s_db_g57 instead of the usual
+    // window. Pure-g57 windows are the only ones that survive length: the
+    // measured decay is 100% at m<=5, 94% at 6, then 56/31/20/8/3/0 through 12,
+    // whereas ANY non-g57 intruder in a 6-gate window drops it to <=7%. So the
+    // long-window compression that actually pays is only available on g57-only
+    // windows, and it needs its own coin and its own length.
+    pub p_comp_g57: f64,
+    pub s_db_g57: usize,
     // Fixed top-level twist rate: with this probability a round performs one
     // conjugation twist directly, decoupling twist supply (set by mixing
     // needs) from the expansion-move economy (whose round supply collapses
@@ -587,6 +596,8 @@ impl Default for MixParams {
             db_advance: false,
             curated: false,
             ancestors: false,
+            p_comp_g57: 0.0,
+            s_db_g57: 9,
             p_twist: 0.0,
             p_db_final: -1.0,
             p_db_steer: false,
@@ -630,6 +641,9 @@ pub struct MixCounters {
     // NOT-into-comp=1 absorptions (Merge::Absorb): the channel that lets a
     // twist bracket be swallowed by a neighbouring g57 rather than paid for.
     pub merges_absorb: u64,
+    // g57-only COMP attempts and their hits.
+    pub db_g57_rounds: u64,
+    pub db_g57_hits: u64,
     // Joint size distribution of successful splices: [outgoing len][incoming
     // len]. The shape of what the store actually trades, which the scalar rm=
     // and add= totals cannot show -- a channel that swaps 3 gates for 3 and one
@@ -845,6 +859,17 @@ pub struct Mixer {
     // Which geometry built the window of the CURRENT db_attempt (see
     // sample_window); stamped into --db-record attempt lines.
     db_last_sampler: DbSample,
+    // (seed id, its left neighbour when drawn). Window building floats gates --
+    // convex sampling floats the seed itself, ctrl-cap evasion floats
+    // colliders -- so a FAILED attempt would otherwise leave the seed
+    // displaced. Under min-generation targeting the same stubborn gate is drawn
+    // over and over, so failure would write a characteristic displacement into
+    // the circuit: hard-to-re-encode gates would drift. A failed attempt must be
+    // a no-op, which is deliberately unlike the cross move, where a declined
+    // shot only partially retreats.
+    db_seed_home: Option<(u32, u32)>,
+    // Set for the duration of one COMP attempt drawn as g57-only.
+    db_g57_only: bool,
     // Generation targeting (gen_target > 0): ids of cap-eligible gates still
     // below gen_target, rebuilt every gen_rescan moves and partitioned by
     // their miss count — cheap tier (miss < gen_miss_budget, non-growing
@@ -1028,6 +1053,8 @@ impl Mixer {
             db_budget,
             db_record: None,
             db_last_sampler: DbSample::Contiguous,
+            db_seed_home: None,
+            db_g57_only: false,
             lag_cheap: Vec::new(),
             lag_hard: Vec::new(),
             laggards_scan_due: 0,
@@ -1372,7 +1399,7 @@ impl Mixer {
                     // then undo/merge as before.
                     let did_db = self.params.w_db > 0.0
                         && self.rng.random_bool(self.params.w_db.clamp(0.0, 1.0))
-                        && self.db_attempt(DbMode::Compressing);
+                        && self.db_attempt_comp();
                     if did_db {
                         // done
                     } else if self.rng.random_bool(self.params.undo_frac) {
@@ -2603,9 +2630,33 @@ impl Mixer {
     // round unconsumed (same id, same arena stamp — a reused id fails the
     // stamp check), the seed missed: bump its counter so the tier machinery
     // can graduate it to the paid channel or retire it as unreachable.
+    /// A COMP-DB attempt that may be drawn as g57-only (see `p_comp_g57`).
+    fn db_attempt_comp(&mut self) -> bool {
+        let g57 = self.params.p_comp_g57 > 0.0
+            && self.rng.random_bool(self.params.p_comp_g57.clamp(0.0, 1.0));
+        self.db_g57_only = g57;
+        if g57 {
+            self.counters.db_g57_rounds += 1;
+        }
+        let hit = self.db_attempt(DbMode::Compressing);
+        if g57 && hit {
+            self.counters.db_g57_hits += 1;
+        }
+        self.db_g57_only = false;
+        hit
+    }
+
     fn db_attempt(&mut self, mode: DbMode) -> bool {
         self.last_seed = None;
+        self.db_seed_home = None;
         let spliced = self.db_attempt_inner(mode);
+        // A failed attempt must leave no trace: put the seed back. On success
+        // the seed was consumed by the splice, so there is nothing to restore.
+        if spliced {
+            self.db_seed_home = None;
+        } else {
+            self.restore_seed();
+        }
         if let Some((id, stamp)) = self.last_seed.take() {
             if self.arena.is_linked(id) && self.arena.stamp(id) == stamp {
                 self.bump_miss(id);
@@ -2624,6 +2675,7 @@ impl Mixer {
         // Prefix descent always starts at the top of the range — the descent
         // itself visits every shorter length, so sampling a shorter start
         // would only duplicate coverage.
+        let wmax = if self.db_g57_only { self.params.s_db_g57.max(wmin) } else { wmax };
         let len = if self.params.db_prefixes || wmin == wmax {
             wmax.min(n)
         } else {
@@ -2658,8 +2710,22 @@ impl Mixer {
                 max_degree: self.params.db_max_degree,
                 probes: self.params.db_degree_probes,
             };
-            for p in (wmin..=window.len()).rev() {
-                let prefix = &window[..p];
+            // Shrink from whichever end is FARTHER from the seed, so the seed
+            // survives to the shortest rung. Dropping from a fixed end walks
+            // away from the very gate the descent exists to re-encode: the seed
+            // sits at the left edge only when its own direction is R, so a
+            // fixed-end descent abandons it immediately on about half of
+            // contiguous windows, and on every convex one, where the block
+            // grows outward in both directions around it.
+            let seed = self.db_seed_home.map(|(id, _)| id);
+            let k = seed.and_then(|sd| ids.iter().position(|&x| x == sd)).unwrap_or(0);
+            let (mut lo, mut hi) = (0usize, window.len() - 1);
+            loop {
+                let p = hi - lo + 1;
+                if p < wmin {
+                    break;
+                }
+                let prefix = &window[lo..=hi];
                 self.counters.db_attempts += 1;
                 if self.params.db_max_span > 0
                     && super::xpoly::xgate_used_wires(prefix).len() > self.params.db_max_span
@@ -2696,9 +2762,23 @@ impl Mixer {
                     self.count_db_hit(mode);
                     continue;
                 }
-                if self.try_db_splice(&ids[..p], g1dir, prefix, replacement, res.match_count, mode)
-                {
+                if self.try_db_splice(
+                    &ids[lo..=hi],
+                    g1dir,
+                    prefix,
+                    replacement,
+                    res.match_count,
+                    mode,
+                ) {
                     return true;
+                }
+                if p == wmin {
+                    break;
+                }
+                if k.saturating_sub(lo) >= hi.saturating_sub(k) {
+                    lo += 1;
+                } else {
+                    hi -= 1;
                 }
             }
             return false;
@@ -3231,8 +3311,57 @@ impl Mixer {
     // Laggard draws record last_seed for miss accounting. Stale entries are
     // pruned at draw time; a reused id that now holds a different low-gen
     // eligible gate is a perfectly good target and is kept.
-    fn pick_seed(&mut self) -> Option<u32> {
+    /// True g57 shape: `comp = 1`, two controls, opposite polarity.
+    fn gate_is_g57(&self, id: u32) -> bool {
+        let g = self.arena.gate(id);
+        g.comp && g.ctrls.len() == 2 && g.ctrls[0].1 != g.ctrls[1].1
+    }
+
+    /// May this gate sit inside the window currently being built? The width cap
+    /// always applies; a g57-only COMP attempt additionally excludes everything
+    /// that is not a g57, so the window cannot contain the intruder that
+    /// collapses the long-window match rate.
+    fn window_eligible(&self, id: u32) -> bool {
         let cap = self.params.db_ctrl_cap;
+        if cap > 0 && self.width_of(id) > cap {
+            return false;
+        }
+        !self.db_g57_only || self.gate_is_g57(id)
+    }
+
+    fn pick_seed(&mut self) -> Option<u32> {
+        let g = self.pick_seed_inner();
+        self.db_seed_home = g.map(|id| (id, self.arena.neighbor(id, Dir::L)));
+        g
+    }
+
+    /// Put the seed back where it was drawn from. Retracing a float path the
+    /// gate already passed through, exactly as `retreat` does for a declined
+    /// cross -- the intervening gates commute with it by construction.
+    fn restore_seed(&mut self) {
+        let Some((id, home)) = self.db_seed_home.take() else {
+            return;
+        };
+        if !self.arena.is_linked(id) || self.arena.neighbor(id, Dir::L) == home {
+            return;
+        }
+        if home != NIL && !self.arena.is_linked(home) {
+            return; // its anchor was consumed; leave it where it is
+        }
+        self.arena.unlink(id);
+        if home == NIL {
+            let head = self.arena.head();
+            if head == NIL {
+                self.arena.link_after(id, NIL);
+            } else {
+                self.arena.link_before(id, head);
+            }
+        } else {
+            self.arena.link_after(id, home);
+        }
+    }
+
+    fn pick_seed_inner(&mut self) -> Option<u32> {
         match self.seed_pool {
             SeedPool::Hard => return self.draw_laggard(false),
             SeedPool::Cheap => {
@@ -3253,7 +3382,7 @@ impl Mixer {
         }
         for _ in 0..8 {
             let g = self.arena.random_linked(&mut self.rng);
-            if cap == 0 || self.width_of(g) <= cap {
+            if self.window_eligible(g) {
                 return Some(g);
             }
         }
@@ -3287,7 +3416,6 @@ impl Mixer {
     // floated out of the way; if it cannot float, the build reverses direction;
     // if that side is also blocked, the attempt aborts.
     fn collect_contiguous(&mut self, w: usize) -> Option<(Vec<u32>, Dir)> {
-        let cap = self.params.db_ctrl_cap;
         let g1 = self.pick_seed()?;
         let dir1 = self.meta_of(g1).dir;
         let (mut lo, mut hi) = (g1, g1);
@@ -3306,7 +3434,7 @@ impl Mixer {
                 }
                 break; // both ends reached the circuit boundary
             }
-            if cap > 0 && self.width_of(x) > cap {
+            if !self.window_eligible(x) {
                 if evade_budget == 0 {
                     self.counters.db_build_aborts += 1;
                     return None;
@@ -3341,7 +3469,6 @@ impl Mixer {
     // The L-cap evades a wide collider the same way (float it away; else reverse;
     // else abort).
     fn collect_convex(&mut self, w: usize) -> Option<(Vec<u32>, Dir)> {
-        let cap = self.params.db_ctrl_cap;
         let p = self.params.db_convex_p;
         let g1 = self.pick_seed()?;
         let dir1 = self.meta_of(g1).dir;
@@ -3372,7 +3499,7 @@ impl Mixer {
                 dir = dirb;
             }
             // L-cap: evade a wide collider.
-            if cap > 0 && self.width_of(g3) > cap {
+            if !self.window_eligible(g3) {
                 if evade_budget == 0 {
                     self.counters.db_build_aborts += 1;
                     return None;
@@ -3383,7 +3510,7 @@ impl Mixer {
                 }
                 // Reverse: look for a collider on the other side instead.
                 let (g3r, dirr) = self.float_block_to_collider(lo, hi, dir.opposite());
-                if g3r == NIL || (cap > 0 && self.width_of(g3r) > cap) {
+                if g3r == NIL || !self.window_eligible(g3r) {
                     return None; // wide gate unavoidable -> abort
                 }
                 g3 = g3r;
@@ -3667,7 +3794,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={} | litter distinct={:.2} full={}",
+            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={} | litter distinct={:.2} full={}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -3703,6 +3830,8 @@ impl Mixer {
             c.db_build_aborts,
             c.db_identity_skips,
             c.db_curated_hits,
+            c.db_g57_hits,
+            c.db_g57_rounds,
             c.cross_r1,
             c.cross_r2,
             c.cross_r3,
