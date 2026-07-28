@@ -248,6 +248,25 @@ struct Args {
     /// pays is unavailable except on pure windows.
     #[arg(long, default_value_t = 0.0)]
     p_comp_g57: f64,
+    /// Upper clamp on the contraction probability. 0.98 leaves a 2% expansion
+    /// floor above target -- a structural growth source, but also what keeps
+    /// crossings (hence fossil erosion) running while the walk sits at target.
+    #[arg(long, default_value_t = 0.98)]
+    contract_ceiling: f64,
+    /// Size brake: growth to this size forces slot 2 into COMP. 0 = brake off.
+    #[arg(long, default_value_t = 0)]
+    size_hi: usize,
+    /// Release the brake at this size, or earlier if COMP stops paying.
+    #[arg(long, default_value_t = 0)]
+    size_lo: usize,
+    /// Release the brake when COMP sheds fewer than this many gates per round
+    /// over the trailing window. This is what makes a WIDE band safe: the risk
+    /// was never band width but sitting in COMP past its usefulness.
+    #[arg(long, default_value_t = 0.0)]
+    comp_release_eps: f64,
+    /// Trailing window (moves) for the productivity release.
+    #[arg(long, default_value_t = 250_000)]
+    comp_release_window: u64,
     /// Starting window length for a g57-only COMP attempt.
     #[arg(long, default_value_t = 9)]
     s_db_g57: usize,
@@ -497,6 +516,11 @@ fn main() {
         curated: args.curated,
         ancestors: args.ancestors,
         p_comp_g57: args.p_comp_g57,
+        contract_ceiling: args.contract_ceiling,
+        size_hi: args.size_hi,
+        size_lo: args.size_lo,
+        comp_release_eps: args.comp_release_eps,
+        comp_release_window: args.comp_release_window,
         s_db_g57: args.s_db_g57,
         gen_target: args.gen_target,
         gen_bias: args.gen_bias,

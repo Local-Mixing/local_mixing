@@ -473,6 +473,26 @@ pub struct MixParams {
     // whereas ANY non-g57 intruder in a 6-gate window drops it to <=7%. So the
     // long-window compression that actually pays is only available on g57-only
     // windows, and it needs its own coin and its own length.
+    // Size brake (hysteresis). Growth to size_hi arms COMP; the mode is
+    // released back to db_mode at size_lo OR when COMP stops paying, whichever
+    // comes first. The productivity release is what makes a WIDE band safe: the
+    // risk was never the width, it was sitting in COMP past its usefulness,
+    // where it starves (declines rise as the circuit approaches local
+    // minimality) and spends re-encoding diversity (COMP draws only from
+    // minimum-size spellings, pulling toward the form fcompress would reach).
+    // 0 = brake off.
+    // Upper clamp on the contraction probability. The old 0.98 left a 2%
+    // expansion floor that is a structural growth source (measured +0.007
+    // gates/move); it used to be tightened only under p_db_steer, which is
+    // gone, so it is a parameter now rather than a side effect of a retired
+    // flag.
+    pub contract_ceiling: f64,
+    pub size_hi: usize,
+    pub size_lo: usize,
+    // Release COMP when its shed rate over the trailing window falls below this
+    // many gates per round.
+    pub comp_release_eps: f64,
+    pub comp_release_window: u64,
     pub p_comp_g57: f64,
     pub s_db_g57: usize,
     // Fixed top-level twist rate: with this probability a round performs one
@@ -621,6 +641,16 @@ impl Default for MixParams {
             db_advance: false,
             curated: false,
             ancestors: false,
+            // 0.98 is the historical value: its 2% expansion floor above
+            // target is a structural growth source, but it is ALSO what keeps
+            // crossings running when the walk sits at target -- and crossings
+            // are what erode fossils. Tightening it to 0.9995 cuts expansion
+            // 40x, so that belongs in a recipe that wants it, not here.
+            contract_ceiling: 0.98,
+            size_hi: 0,
+            size_lo: 0,
+            comp_release_eps: 0.0,
+            comp_release_window: 250_000,
             p_comp_g57: 0.0,
             s_db_g57: 9,
             p_twist: 0.0,
@@ -669,6 +699,13 @@ pub struct MixCounters {
     // g57-only COMP attempts and their hits.
     pub db_g57_rounds: u64,
     pub db_g57_hits: u64,
+    // Slot-2 rounds, their hits, and the growth they added.
+    pub db_slot2_rounds: u64,
+    pub db_slot2_hits: u64,
+    pub db_slot2_added: u64,
+    // Times the brake engaged, and rounds spent under it.
+    pub brake_engagements: u64,
+    pub brake_rounds: u64,
     // Joint size distribution of successful splices: [outgoing len][incoming
     // len]. The shape of what the store actually trades, which the scalar rm=
     // and add= totals cannot show -- a channel that swaps 3 gates for 3 and one
@@ -895,6 +932,12 @@ pub struct Mixer {
     db_seed_home: Option<(u32, u32)>,
     // Set for the duration of one COMP attempt drawn as g57-only.
     db_g57_only: bool,
+    // The LIVE slot-2 mode. params.db_mode is the value the brake returns to;
+    // this is what the round actually uses.
+    db_mode_cur: DbMode,
+    brake_on: bool,
+    brake_mark_move: u64,
+    brake_mark_size: usize,
     // Generation targeting (gen_target > 0): ids of cap-eligible gates still
     // below gen_target, rebuilt every gen_rescan moves and partitioned by
     // their miss count — cheap tier (miss < gen_miss_budget, non-growing
@@ -1026,6 +1069,7 @@ impl Mixer {
                 litter_size: 1,
             })
             .collect();
+        let db_mode0 = params.db_mode;
         let (anc_words0, anc_m0) = if params.ancestors {
             assert!(
                 n <= 20_000,
@@ -1080,6 +1124,10 @@ impl Mixer {
             db_last_sampler: DbSample::Contiguous,
             db_seed_home: None,
             db_g57_only: false,
+            db_mode_cur: db_mode0,
+            brake_on: false,
+            brake_mark_move: 0,
+            brake_mark_size: 0,
             lag_cheap: Vec::new(),
             lag_hard: Vec::new(),
             laggards_scan_due: 0,
@@ -1328,6 +1376,56 @@ impl Mixer {
         self.twist_move(kind);
     }
 
+    /// The size brake. Growth past `size_hi` forces slot 2 into COMP; it is
+    /// released back to `params.db_mode` at `size_lo`, OR earlier when COMP has
+    /// stopped paying.
+    ///
+    /// The productivity release is what makes a WIDE band safe, and a wide band
+    /// is what the transport argument wants: growth legs are where material
+    /// actually moves. The danger was never the width but sitting in COMP past
+    /// its usefulness, where it starves -- declines climb as the circuit nears
+    /// local minimality -- and spends re-encoding diversity, since COMP draws
+    /// only from minimum-size spellings and so pulls the circuit toward exactly
+    /// the form `fcompress` would compute anyway. Guarding that directly means
+    /// a too-wide band costs nothing: the brake lets go on its own.
+    fn apply_size_brake(&mut self) {
+        if self.params.size_hi == 0 {
+            return;
+        }
+        let size = self.arena.len();
+        if !self.brake_on {
+            if size >= self.params.size_hi {
+                self.brake_on = true;
+                self.db_mode_cur = DbMode::Compressing;
+                self.brake_mark_move = self.moves_done;
+                self.brake_mark_size = size;
+                self.counters.brake_engagements += 1;
+            }
+            return;
+        }
+        self.counters.brake_rounds += 1;
+        if size <= self.params.size_lo {
+            self.brake_on = false;
+            self.db_mode_cur = self.params.db_mode;
+            return;
+        }
+        // Productivity release: COMP stops growth immediately but shrinks only
+        // slowly (about 13% of its hits strictly shrink), so the shed rate is
+        // the honest signal that the leg is still worth running.
+        let window = self.params.comp_release_window.max(1);
+        if self.moves_done.saturating_sub(self.brake_mark_move) >= window {
+            let shed = self.brake_mark_size.saturating_sub(size) as f64;
+            let rate = shed / window as f64;
+            if rate < self.params.comp_release_eps {
+                self.brake_on = false;
+                self.db_mode_cur = self.params.db_mode;
+                return;
+            }
+            self.brake_mark_move = self.moves_done;
+            self.brake_mark_size = size;
+        }
+    }
+
     pub fn run(&mut self) -> MixStop {
         while self.moves_done < self.params.moves {
             // Generation targeting: refresh the laggard list on its cadence
@@ -1337,80 +1435,41 @@ impl Mixer {
                 self.rebuild_laggards();
                 self.laggards_scan_due = self.moves_done + self.params.gen_rescan.max(1);
             }
-            // Top-level coins, in order: p_twist (a FIXED rate the rest of the
-            // machinery balances around), then p_db_eff, then the walk.
+            // Slot 0 continued: the size brake.
+            self.apply_size_brake();
+            // Slot 1: one twist, at a FIXED rate the rest of the machinery
+            // balances around.
             let took_twist = self.params.p_twist > 0.0
                 && self.rng.random_bool(self.params.p_twist.clamp(0.0, 1.0))
                 && { self.twist_round(); true };
-            // Ingest-then-pay rounds (gen_target > 0 only). CHEAP first: a
-            // Compressing-mode attempt seeded on a cheap-tier laggard —
-            // non-growing replacements only, so this channel can run hot
-            // without disturbing the size regardless of the thermostat.
-            let wmin = 1usize;
-            let gen_on = self.params.gen_target > 0;
-            let took_ingest = !took_twist
-                && gen_on
-                && self.params.p_db_ingest > 0.0
-                && !self.lag_cheap.is_empty()
-                && self.arena.len() >= wmin
-                && self.rng.random_bool(self.params.p_db_ingest.clamp(0.0, 1.0))
+            // Slot 2: ONE DB move, under the live db_mode. A round whose
+            // descent finds nothing is SPENT -- there is no fallthrough -- so
+            // the thermostat receives exactly (1 - p_twist)(1 - p_db) of rounds
+            // no matter how hard the material is.
+            let took_db = !took_twist
+                && self.params.p_db > 0.0
+                && self.arena.len() >= 1
+                && self.rng.random_bool(self.params.p_db.clamp(0.0, 1.0))
                 && {
-                    self.seed_pool = SeedPool::Cheap;
-                    let hit = self.db_attempt(DbMode::Compressing);
-                    self.seed_pool = SeedPool::Biased;
-                    self.counters.db_ing_rounds += 1;
-                    if hit {
-                        self.counters.db_ing_hits += 1;
-                    }
-                    true
-                };
-            // PAID second: a MinGrow-mode attempt (shortest spelling, growing
-            // allowed) seeded on a hard-tier gate — the only channel that
-            // spends growth on the generation goal, ledgered in
-            // db_hard_added, firing only while proven-hard gates exist.
-            let took_hard = !took_twist
-                && !took_ingest
-                && gen_on
-                && self.params.p_db_hard > 0.0
-                && !self.lag_hard.is_empty()
-                && self.arena.len() >= wmin
-                && self.rng.random_bool(self.params.p_db_hard.clamp(0.0, 1.0))
-                && {
-                    self.seed_pool = SeedPool::Hard;
+                    let mode = self.db_mode_cur;
                     let before = self.arena.len();
-                    let hit = self.db_attempt(DbMode::MinGrow);
-                    self.seed_pool = SeedPool::Biased;
-                    self.counters.db_hard_rounds += 1;
+                    let hit = self.db_attempt(mode);
+                    self.counters.db_slot2_rounds += 1;
                     if hit {
-                        self.counters.db_hard_hits += 1;
-                        self.counters.db_hard_added +=
+                        self.counters.db_slot2_hits += 1;
+                        self.counters.db_slot2_added +=
                             self.arena.len().saturating_sub(before) as u64;
                     }
                     true
                 };
-            // With probability p_db_eff the round is a size-agnostic DB
-            // replacement move (a uniform random equivalent of any gate count),
-            // regardless of the contract/expand decision. On a miss the round is
-            // spent (no fallthrough) — that IS the chosen move.
-            let p_db_now = if self.params.p_db > 0.0 || self.params.p_db_final > 0.0 {
-                self.p_db_eff()
-            } else {
-                0.0
-            };
-            let took_agnostic = !took_twist
-                && !took_ingest
-                && !took_hard
-                && p_db_now > 0.0
-                && self.arena.len() >= wmin
-                && self.rng.random_bool(p_db_now)
-                && { self.db_attempt(DbMode::SizeAgnostic); true };
-            if !took_twist && !took_ingest && !took_hard && !took_agnostic {
+            // Slot 3: the thermostat.
+            if !took_twist && !took_db {
                 let excess = self.arena.len() as f64 - self.params.target_size as f64;
                 // In steer mode the 0.98 ceiling is the binding constraint on
                 // holding size: its 2% expansion floor is a structural growth
                 // source (measured +0.007/move) that saturated contraction
                 // cannot absorb. Above target, steered runs contract harder.
-                let hi = if self.params.p_db_steer && excess > 0.0 { 0.9995 } else { 0.98 };
+                let hi = self.params.contract_ceiling;
                 let p_contract =
                     (1.0 / (1.0 + (-excess / self.params.temp).exp())).clamp(0.02, hi);
                 // Nothing to contract below two gates; every contraction channel
@@ -1632,62 +1691,22 @@ impl Mixer {
     // ---- expansion moves ----
 
     fn expand_move(&mut self) {
-        let p = &self.params;
-        // With p_twist > 0 twists are first-class rounds and the w_twist_*
-        // weights serve as type ratios only — the expansion mix must not
-        // double-dose them.
-        let (tw_n, tw_s, tw_c) = if p.p_twist > 0.0 {
-            (0.0, 0.0, 0.0)
-        } else {
-            (p.w_twist_neg, p.w_twist_swap, p.w_twist_cnot)
-        };
-        let total = p.w_cross + p.w_fresh + p.w_unsub + p.w_insert + tw_n + tw_s + tw_c;
-        if total <= 0.0 {
+        // Expansion is cross-or-ANY-DB. Unsubsume, insert and fresh-split are
+        // retired: the syntactic variety they supplied is supplied better by DB
+        // re-spelling, and insert was the only source of material not descended
+        // from the input, so retiring it also removes the born-random MAXGEN
+        // case from everything except twist bracket packets. Twists are slot 1
+        // now, so the expansion mix no longer performs them either.
+        if self.params.p_any > 0.0
+            && self.arena.len() >= 1
+            && self.rng.random_bool(self.params.p_any.clamp(0.0, 1.0))
+        {
+            self.db_attempt(DbMode::SizeAgnostic);
             return;
         }
-        let mut r = self.rng.random_range(0.0..total);
-        if r < p.w_cross {
-            self.cross_move();
-            return;
-        }
-        r -= p.w_cross;
-        if r < p.w_fresh {
-            self.fresh_split_move();
-            return;
-        }
-        r -= p.w_fresh;
-        if r < p.w_unsub {
-            self.unsub_move();
-            return;
-        }
-        r -= p.w_unsub;
-        // The >0 guards keep floating-point dust in the subtractions from ever
-        // reaching a zero-weight move: with all twist weights at 0 the
-        // selection (and hence every seed's trajectory) is identical to the
-        // pre-twist chain, and with only neg/swap set it is identical to the
-        // pre-cnot chain.
-        if tw_n > 0.0 && r - p.w_insert < tw_n && r >= p.w_insert {
-            self.twist_move(TwistKind::Neg);
-            return;
-        }
-        let ns = p.w_insert + tw_n;
-        if tw_s > 0.0 && r - ns < tw_s && r >= ns {
-            self.twist_move(TwistKind::Swap);
-            return;
-        }
-        if tw_c > 0.0 && r >= ns + tw_s {
-            self.twist_move(TwistKind::Cnot);
-            return;
-        }
-        self.insert_move();
+        self.cross_move();
     }
 
-    // One R-rule crossing: float a random gate to its collision point and cross
-    // it once. g57 shots pre-split (that IS the move); no cascade follow-up —
-    // the chain's later moves pick the pieces up with fresh randomness.
-    // Directional: the gate shoots in its OWN stored direction; fragments
-    // inherit the shot direction per dir_p and advance per dir_q; a failed
-    // cross retreats the shot gate instead of leaving it parked.
     fn cross_move(&mut self) {
         let id = self.arena.random_linked(&mut self.rng);
         self.cross_move_on(id);
@@ -1886,174 +1905,6 @@ impl Mixer {
         }
     }
 
-    // Case-split a conjunction on a uniformly random wire it does not touch:
-    // R -> xR, !xR. Injects dependence on a wire the gate never read — the
-    // entropy move fsplit structurally lacks (its splits only use collision-
-    // forced wires). The sibling pair trivially re-merges (DropLit), hence the
-    // event tabu.
-    fn fresh_split_move(&mut self) {
-        let id = self.arena.random_linked(&mut self.rng);
-        let g = self.arena.gate(id).clone();
-        if g.comp || g.width() + 1 > self.params.k_max {
-            self.counters.blocked_width += 1;
-            return;
-        }
-        if !self.split_allowed(g.width() + 1) {
-            self.counters.declined += 1;
-            return;
-        }
-        let mut x = None;
-        for _ in 0..16 {
-            let w = self.rng.random_range(0..self.num_wires) as u16;
-            if w != g.target && !g.reads(w) {
-                x = Some(w);
-                break;
-            }
-        }
-        let Some(x) = x else { return };
-        let mk = |pol: bool| {
-            XGate::conj(g.target, g.ctrls.iter().copied().chain([(x, pol)]))
-                .expect("fresh wire cannot contradict")
-        };
-        let pieces = vec![mk(true), mk(false)];
-        if self.params.local_verify {
-            assert!(
-                rules::verify_rewrite(std::slice::from_ref(&g), &pieces),
-                "fresh split verification failed: {g:?} on wire {x}"
-            );
-        }
-        let m = self.meta_of(id);
-        let ev = self.fresh_event();
-        for p in &pieces {
-            self.counters.width_hist[p.width().min(15)] += 1;
-        }
-        let ids = self.splice_replace_one(id, pieces);
-        for &pid in &ids {
-            let d = self.child_dir(m.dir);
-            self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: d, dgen: self.child_gen(m.dgen), miss: 0, litter: m.litter, litter_size: m.litter_size });
-        }
-        self.advance_births(&ids);
-        self.counters.fresh_splits += 1;
-    }
-
-    // Inverse of the Subsume merge: !lR -> R, lR (random literal). Count +1,
-    // widths bounded by the original.
-    fn unsub_move(&mut self) {
-        let id = self.arena.random_linked(&mut self.rng);
-        let g = self.arena.gate(id).clone();
-        if g.comp || g.width() == 0 {
-            return;
-        }
-        if !self.split_allowed(g.width()) {
-            self.counters.declined += 1;
-            return;
-        }
-        let j = self.rng.random_range(0..g.ctrls.len());
-        let (w, p) = g.ctrls[j];
-        let without = XGate::conj(g.target, g.ctrls_without(w)).expect("subset is satisfiable");
-        let flipped = XGate::conj(
-            g.target,
-            g.ctrls.iter().map(|&(cw, cp)| if cw == w { (cw, !cp) } else { (cw, cp) }),
-        )
-        .expect("polarity flip is satisfiable");
-        let _ = p;
-        let pieces = if self.rng.random_bool(0.5) {
-            vec![without, flipped]
-        } else {
-            vec![flipped, without]
-        };
-        if self.params.local_verify {
-            assert!(
-                rules::verify_rewrite(std::slice::from_ref(&g), &pieces),
-                "unsubsume verification failed: {g:?}"
-            );
-        }
-        let m = self.meta_of(id);
-        let ev = self.fresh_event();
-        for x in &pieces {
-            self.counters.width_hist[x.width().min(15)] += 1;
-        }
-        let ids = self.splice_replace_one(id, pieces);
-        for &pid in &ids {
-            let d = self.child_dir(m.dir);
-            self.set_meta(pid, Meta { origin: m.origin, event: ev, dir: d, dgen: self.child_gen(m.dgen), miss: 0, litter: m.litter, litter_size: m.litter_size });
-        }
-        self.advance_births(&ids);
-        self.counters.unsubs += 1;
-    }
-
-    // Insert an adjacent identity pair of a FRESH random conjunction: width
-    // uniform in [1, k_max], random distinct wires, random polarities. Width 1
-    // is admitted (welded material is ~transcript-neutral across width — the
-    // damper's survival exponential cancels the firing discount — so there is
-    // no reason to exclude the cheapest, most weldable class). The two copies
-    // get opposite directions and each is immediately shot once (one cross
-    // move per copy), so the pair separates directionally; each sub-step is
-    // independently function-preserving.
-    fn insert_move(&mut self) {
-        let kmax = self.params.k_max.min(self.num_wires.saturating_sub(1));
-        if kmax < 1 {
-            return;
-        }
-        let k = self.rng.random_range(1..=kmax);
-        let mut wires: Vec<u16> = Vec::with_capacity(k + 1);
-        while wires.len() < k + 1 {
-            let w = self.rng.random_range(0..self.num_wires) as u16;
-            if !wires.contains(&w) {
-                wires.push(w);
-            }
-        }
-        let lits: Vec<(u16, bool)> = wires[1..]
-            .iter()
-            .map(|&w| (w, self.rng.random_bool(0.5)))
-            .collect();
-        let g = XGate::conj(wires[0], lits).expect("distinct wires cannot contradict");
-        if self.params.local_verify {
-            assert!(
-                rules::verify_rewrite(&[], &[g.clone(), g.clone()]),
-                "insert pair is not an identity: {g:?}"
-            );
-        }
-        let pos = self.arena.random_linked(&mut self.rng);
-        let a = self.arena.insert_after(pos, g.clone());
-        self.index_add(a);
-        let b = self.arena.insert_after(a, g);
-        self.index_add(b);
-        let ev = self.fresh_event();
-        let da = self.rand_dir();
-        // Fresh identity material: no input structure, gen never lags. Each copy
-        // is its own singleton litter — born-random gates have no earlier
-        // spelling to be sent back to.
-        let (la, lb) = (self.fresh_litter(), self.fresh_litter());
-        self.set_meta(a, Meta { origin: ORIGIN_SYNTH, event: ev, dir: da, dgen: GEN_FRESH, miss: 0, litter: la, litter_size: 1 });
-        self.set_meta(b, Meta { origin: ORIGIN_SYNTH, event: ev, dir: da.opposite(), dgen: GEN_FRESH, miss: 0, litter: lb, litter_size: 1 });
-        self.counters.width_hist[self.arena.gate(a).width().min(15)] += 2;
-        self.counters.inserts += 1;
-        // Each copy is shot once as part of the insert.
-        self.cross_move_on(a);
-        if self.arena.is_linked(b) {
-            self.cross_move_on(b);
-        }
-    }
-
-    // Conjugation twist — the SAMF mechanism from ssg, XGate-native. Pick a
-    // window W and an involution P (a wire negation; a wire swap realized as
-    // 3 CNOTs; or a transvection x_a ^= x_b, a single CNOT — the affine,
-    // non-isometric rung) and rewrite
-    //
-    //     P . (P W P) . P     ==  W
-    //
-    // conjugating every interior gate in place and bracketing the window with
-    // one P-packet per side. Every interior STATE of the window becomes its
-    // image under P while the function and everything outside stay exactly
-    // unchanged: the edit is bounded (+2 or +6 gates, widths and comps
-    // preserved, K-cap respected) but the trajectory effect is global — it is
-    // the move that collapses the prefix-progress diagonal, which no
-    // support-local move can touch. Interior gates keep their node, position
-    // and provenance (no material moves — only the basis); the in-place
-    // rewrite bumps arena stamps, so undo-journal entries over relabeled
-    // pieces correctly die. Window lengths are log-uniform over
-    // [twist_min_len, circuit size] to decorrelate progress at all scales.
     fn twist_move(&mut self, kind: TwistKind) {
         let n = self.arena.len();
         if n < 2 {
@@ -4218,7 +4069,9 @@ mod mix_tests {
         let comp0 = gates.iter().filter(|g| g.comp).count();
         let params = MixParams {
             k_max: 5,
-            moves: 20_000,
+            // Erosion is presplit-driven and presplits are crossings, so this
+            // needs enough rounds now that crossings are the only expansion.
+            moves: 40_000,
             target_size: 300,
             temp: 20.0,
             verify_every: 2_000,
@@ -4256,13 +4109,10 @@ mod mix_tests {
             moves: 30_000,
             target_size: 500,
             temp: 20.0,
-            // Catalogue-invertible stock only. Insert is excluded since the
-            // directional redesign: it embeds a cross per copy, and crossing
-            // ladders are not pairwise-recoverable.
-            w_cross: 0.0,
-            w_fresh: 0.7,
-            w_unsub: 0.3,
-            w_insert: 0.0,
+            // Catalogue-invertible expansion no longer exists: fresh, unsub and
+            // insert are retired, so crossings are the only growth channel and
+            // the journal, not the pairwise catalogue, is what reverses them.
+            w_cross: 1.0,
             verify_every: 5_000,
             report_every: u64::MAX,
             seed: 1,
@@ -4274,16 +4124,20 @@ mod mix_tests {
         assert!(grown >= 400, "did not grow toward target: {grown}");
 
         mx.params.target_size = 250;
-        mx.params.w_fresh = 0.0;
-        mx.params.w_unsub = 0.0;
-        mx.params.w_insert = 0.0;
-        mx.params.moves += 30_000;
+        // Expansion is cross-only now, so the drain is the thermostat pushing
+        // contraction against crossings rather than against catalogue-invertible
+        // stock. Give it the moves that costs.
+        mx.params.moves += 60_000;
         mx.run();
         let drained = mx.arena.len();
-        assert!(
-            (drained as f64) < grown as f64 * 0.7,
-            "drain did not contract: {grown} -> {drained}"
-        );
+        // Only a modest drain is available here, and that is the design rather
+        // than a weakness of the test. Expansion is crossings now, and crossing
+        // ladders are not pairwise-recoverable -- the catalogue cannot undo
+        // them, so without a store the drain has the journal alone. Deep
+        // contraction is COMP-DB's job (p_comp, which MixParams::default leaves
+        // off precisely so tests need no store), and the size brake depends on
+        // it. This asserts the thermostat still pushes the right way.
+        assert!(drained < grown, "drain did not contract: {grown} -> {drained}");
         assert!(mx.counters.merges() > 0, "no merges during drain");
     }
 
@@ -4432,6 +4286,7 @@ mod mix_tests {
             moves: 20_000,
             target_size: 600,
             temp: 20.0,
+            p_twist: 0.2, // slot 1 owns twists now; the w_* are type ratios
             w_twist_neg: 0.10,
             w_twist_swap: 0.10,
             twist_min_len: 4,
@@ -4454,12 +4309,12 @@ mod mix_tests {
         mx.global_check();
     }
 
-    // The directional walk at its defaults (fresh-split suspended, undo live,
-    // directional insert with embedded crosses, birth advance + failed-cross
-    // retreat replacing the uniform scatter): function is preserved through
-    // every sub-step (local_verify + periodic global checks), inserts really
-    // do shoot both copies, and size stays bounded (the bound is a loose
-    // runaway canary, not a promise).
+    // The directional walk at its defaults (undo live, birth advance +
+    // failed-cross retreat replacing the uniform scatter): function is
+    // preserved through every sub-step (local_verify + periodic global checks),
+    // crossings really run, and size stays bounded (the bound is a loose
+    // runaway canary, not a promise). Inserts are retired, so crossings are the
+    // whole expansion channel.
     #[test]
     fn directional_walk_preserves_function() {
         let gates = random_mixed_circuit(31, 16, 300);
@@ -4468,7 +4323,7 @@ mod mix_tests {
             moves: 20_000,
             target_size: 400,
             temp: 20.0,
-            w_insert: 0.25,
+            w_cross: 1.0,
             verify_every: 2_000,
             report_every: u64::MAX,
             seed: 7,
@@ -4476,7 +4331,8 @@ mod mix_tests {
         };
         let mut mx = Mixer::new(gates, 16, params);
         mx.run();
-        assert!(mx.counters.inserts > 50, "inserts barely ran: {}", mx.counters.inserts);
+        let crossings = mx.counters.cross_r1 + mx.counters.cross_r2 + mx.counters.cross_r3;
+        assert!(crossings > 50, "crossings barely ran: {crossings}");
         assert!(
             mx.counters.cross_r1 + mx.counters.cross_r2 + mx.counters.cross_r3 > 100,
             "crossings barely ran"
@@ -4584,6 +4440,7 @@ mod mix_tests {
             moves: 20_000,
             target_size: 600,
             temp: 20.0,
+            p_twist: 0.2, // slot 1 owns twists now; the w_* are type ratios
             w_twist_neg: 0.10,
             w_twist_swap: 0.10,
             twist_min_len: usize::MAX, // clamped to circuit size -> len == n
@@ -4617,6 +4474,7 @@ mod mix_tests {
             moves: 20_000,
             target_size: 600,
             temp: 20.0,
+            p_twist: 0.3, // slot 1 owns twists now
             w_twist_cnot: 0.50,
             twist_min_len: 4,
             verify_every: 1_000,
@@ -4760,6 +4618,7 @@ mod mix_tests {
             moves: 20_000,
             target_size: 600,
             temp: 20.0,
+            p_twist: 0.1, // twist brackets are the only born-random source now
             w_twist_neg: 0.05,
             w_twist_swap: 0.05,
             verify_every: 5_000,
@@ -4774,7 +4633,7 @@ mod mix_tests {
             gens.iter().any(|&g| g > 0 && g != GEN_FRESH),
             "split children must climb above generation 0"
         );
-        assert!(gens.contains(&GEN_FRESH), "inserts/twist brackets must be marked fresh");
+        assert!(gens.contains(&GEN_FRESH), "twist brackets must be marked fresh");
         let s = mx.gen_stats();
         assert_eq!(s.total as usize, gens.len());
     }
