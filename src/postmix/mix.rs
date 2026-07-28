@@ -31,6 +31,10 @@ use std::hash::{Hash, Hasher};
 
 pub const ORIGIN_SYNTH: u32 = u32::MAX;
 
+/// Largest window/replacement length tracked in the splice size histogram;
+/// anything longer is folded into the top bucket.
+pub const SPLICE_HIST_MAX: usize = 16;
+
 /// How a DB move samples its outgoing window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DbSample {
@@ -72,13 +76,24 @@ pub enum Merge {
     // Wire sets differ by one literal, shared literals equal, equal comp:
     // R XOR lR = !lR.
     Subsume(XGate),
+    // A bare NOT absorbed into a comp=1 gate of ANY width: 1 XOR (1 XOR M) = M,
+    // i.e. the partner with its comp bit cleared. Always a single monomial, so
+    // it is always a legal merge -- but the catalogue used to refuse it for
+    // width >= 2 because the comp guard rejects every comp-differing pair. That
+    // guard is right for a comp=0 partner (the result would CREATE a fossil);
+    // for a comp=1 partner the result clears one, which is the allowed
+    // direction. This is what lets a twist bracket be swallowed by a
+    // neighbouring g57 instead of being paid for.
+    Absorb(XGate),
 }
 
 impl Merge {
     pub fn gates(&self) -> Vec<XGate> {
         match self {
             Merge::Cancel => vec![],
-            Merge::XFuse(g) | Merge::DropLit(g) | Merge::Subsume(g) => vec![g.clone()],
+            Merge::XFuse(g) | Merge::DropLit(g) | Merge::Subsume(g) | Merge::Absorb(g) => {
+                vec![g.clone()]
+            }
         }
     }
 }
@@ -93,6 +108,16 @@ pub fn merge_result(g: &XGate, h: &XGate) -> Option<Merge> {
         } else {
             Merge::XFuse(XGate::x_gate(g.target))
         });
+    }
+    // A bare NOT (empty control set, comp = 0, so f = 1) absorbs into a comp=1
+    // partner of any width, clearing its comp bit. The generic comp guard below
+    // would refuse this along with the genuinely banned direction.
+    for (a, b) in [(g, h), (h, g)] {
+        if a.ctrls.is_empty() && !a.comp && b.comp && !b.ctrls.is_empty() {
+            let mut out = b.clone();
+            out.comp = false;
+            return Some(Merge::Absorb(out));
+        }
     }
     // Below here the monomials differ; a complemented result is banned, and
     // comp1 != comp2 always complements the residual monomial.
@@ -602,6 +627,14 @@ pub struct MixCounters {
     // came from the curated store.
     pub db_identity_skips: u64,
     pub db_curated_hits: u64,
+    // NOT-into-comp=1 absorptions (Merge::Absorb): the channel that lets a
+    // twist bracket be swallowed by a neighbouring g57 rather than paid for.
+    pub merges_absorb: u64,
+    // Joint size distribution of successful splices: [outgoing len][incoming
+    // len]. The shape of what the store actually trades, which the scalar rm=
+    // and add= totals cannot show -- a channel that swaps 3 gates for 3 and one
+    // that alternates 2->5 and 5->2 report identically.
+    pub splice_sizes: Vec<Vec<u64>>,
     // Litter census (observation only — nothing bans or prefers on these yet;
     // see docs/FMIX_MENU.md 2.6). `litter_windows`/`litter_distinct_sum` give
     // the mean distinct litters per sampled DB window, i.e. how fast churn
@@ -893,7 +926,17 @@ impl Mixer {
     pub fn new(gates: Vec<XGate>, num_wires: usize, params: MixParams) -> Mixer {
         // Open the replacement store once, only when a DB move is enabled, so
         // runs without them never require FROZEN_DB_DIR.
-        let db = if params.w_db > 0.0 || params.p_db > 0.0 || params.p_db_final > 0.0 {
+        // Every channel that can reach the store must be in this test. Leaving
+        // one out yields FrozenDb::empty(), so every lookup misses, the run does
+        // zero re-encoding, and nothing says so -- it looks like a measurement.
+        // p_db_ingest and p_db_hard were missing here; production only escaped
+        // it because every recipe also set --w-db.
+        let db = if params.w_db > 0.0
+            || params.p_db > 0.0
+            || params.p_db_final > 0.0
+            || params.p_db_ingest > 0.0
+            || params.p_db_hard > 0.0
+        {
             FrozenDb::from_env()
         } else {
             FrozenDb::empty()
@@ -2535,6 +2578,7 @@ impl Mixer {
             Merge::XFuse(_) => self.counters.merges_xfuse += 1,
             Merge::DropLit(_) => self.counters.merges_drop += 1,
             Merge::Subsume(_) => self.counters.merges_subsume += 1,
+            Merge::Absorb(_) => self.counters.merges_absorb += 1,
         }
         true
     }
@@ -2836,6 +2880,15 @@ impl Mixer {
             self.anc_union_litter(&srcs)
         };
         let litter_size = m.min(u16::MAX as usize) as u16;
+        {
+            // Joint (outgoing, incoming) size of this splice.
+            let (o, i) = (ids.len().min(SPLICE_HIST_MAX), m.min(SPLICE_HIST_MAX));
+            if self.counters.splice_sizes.is_empty() {
+                self.counters.splice_sizes =
+                    vec![vec![0u64; SPLICE_HIST_MAX + 1]; SPLICE_HIST_MAX + 1];
+            }
+            self.counters.splice_sizes[o][i] += 1;
+        }
         let mut c = cursor;
         let mut placed: Vec<u32> = Vec::with_capacity(m);
         for (i, gate) in replacement.into_iter().enumerate() {
@@ -3566,6 +3619,19 @@ impl Mixer {
         acc as f64 / samples as f64
     }
 
+    /// Non-zero cells of the splice size histogram, as `out->in:count`.
+    pub fn splice_size_line(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        for (o, row) in self.counters.splice_sizes.iter().enumerate() {
+            for (i, &c) in row.iter().enumerate() {
+                if c > 0 {
+                    parts.push(format!("{o}->{i}:{c}"));
+                }
+            }
+        }
+        parts.join(" ")
+    }
+
     pub fn report(&mut self) {
         self.anc_prune();
         // Flush the attempt recorder so a long run is inspectable mid-flight.
@@ -3601,7 +3667,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={} | litter distinct={:.2} full={}",
+            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} c={} h={} u={} wlag={} min={} cov={:.1} ing={}/{} hard={}/{} paid={} | litter distinct={:.2} full={}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -3611,6 +3677,7 @@ impl Mixer {
             c.merges_xfuse,
             c.merges_drop,
             c.merges_subsume,
+            c.merges_absorb,
             c.merges_sibling,
             c.merges_cross_origin,
             c.tabu_blocked,
@@ -3694,6 +3761,10 @@ impl Mixer {
             },
             c.litter_full_spliced
         );
+        let sizes = self.splice_size_line();
+        if !sizes.is_empty() {
+            println!("[fmix] splice sizes out->in: {sizes}");
+        }
     }
 
     pub fn origins_in_order(&self) -> Vec<u32> {

@@ -236,6 +236,14 @@ fn reduce_group(
                     let repl = match m {
                         Merge::Cancel => None,
                         Merge::DropLit(g) | Merge::Subsume(g) | Merge::XFuse(g) => Some(g.ctrls),
+                        // Both operands are built comp=false two lines above,
+                        // and Absorb requires a comp=1 partner, so it cannot
+                        // arise here. Assert rather than map, so that changing
+                        // the operands fails loudly instead of silently
+                        // dropping the comp bit the merge was carrying.
+                        Merge::Absorb(_) => {
+                            unreachable!("ESOP cubes are comp=0; Absorb needs a comp=1 partner")
+                        }
                     };
                     cubes.swap_remove(j);
                     match repl {
