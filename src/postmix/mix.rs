@@ -31,6 +31,55 @@ use std::hash::{Hash, Hasher};
 
 pub const ORIGIN_SYNTH: u32 = u32::MAX;
 
+/// A gate pattern the twist placer looks for when choosing where to put a
+/// twist's bracket. Absorption is the point: a bracket dropped next to a gate
+/// that can swallow it costs nothing, where one dropped at a uniform-random
+/// position has to be paid for. The set of welcoming shapes is small and known
+/// ahead of time, so it is a table rather than a search.
+///
+/// `matches` inspects `span` consecutive gates and, on a hit, names the wire
+/// the twist should prefer for its conjugating involution -- normally the
+/// absorbing gate's target, since that is the wire whose bracket it can eat.
+pub struct TwistPattern {
+    pub name: &'static str,
+    pub span: usize,
+    pub matches: fn(&[XGate]) -> Option<u16>,
+}
+
+/// A verified hidden-swap identity, in g57 notation `[x,y,z]` = `x ^= y OR !z`
+/// (exhaustively checked over all 8 inputs on wires a,b,c):
+///
+/// ```text
+///   [a,b,c] . swap(a,b) . [b,c,a]  ==  [b,a,c] . [b,c,a] . [a,b,c] . [a,c,b]
+/// ```
+///
+/// The left side is two g57s bracketing a wire swap; the right is four g57s and
+/// no swap at all. So a swap conjugation sited between a matching g57 pair
+/// costs +2 gates in this form against +6 for the three-CNOT realisation, and
+/// leaves no swap-shaped fingerprint behind -- the whole neighbourhood is
+/// ordinary g57 material afterwards.
+///
+/// NOT YET CONSUMED. Taking it needs the rewrite path (emit the four-g57 form
+/// in place of the pair-plus-bracket), which is a different operation from
+/// choosing where to put a twist; the placer below only sites brackets. Kept
+/// here so the identity is not lost between sessions.
+pub const HIDDEN_SWAP_IDENTITY: &str =
+    "[a,b,c].swap(a,b).[b,c,a] == [b,a,c].[b,c,a].[a,b,c].[a,c,b]";
+
+/// The pattern table. Deliberately small for now: this is the machinery, and
+/// the full menu of welcoming neighbourhood configurations is precomputed
+/// separately. The one entry here is the case the merge catalogue already
+/// settles -- a comp=1 gate absorbs a NOT on its target and comes out comp=0,
+/// which erodes a fossil in the bargain (see Merge::Absorb).
+pub static TWIST_PATTERNS: &[TwistPattern] = &[TwistPattern {
+    name: "comp1-absorber",
+    span: 1,
+    matches: |gs| {
+        let g = gs.first()?;
+        if g.comp && !g.ctrls.is_empty() { Some(g.target) } else { None }
+    },
+}];
+
 /// Largest window/replacement length tracked in the splice size histogram;
 /// anything longer is folded into the top bucket.
 pub const SPLICE_HIST_MAX: usize = 16;
@@ -550,6 +599,11 @@ pub struct MixParams {
     // leave ctrl-cap evasion floats behind; those are function-preserving and
     // the walk floats constantly, so the cost is arena churn, not correctness.
     pub litter_samples: usize,
+    // twist_place_tries: how many candidate positions the twist placer samples
+    // looking for a TWIST_PATTERNS match before giving up and placing the twist
+    // uniformly at random. 0 = always random, which is the historical
+    // behaviour.
+    pub twist_place_tries: usize,
     // Pool rebuild cadence in moves (an O(size) scan each time).
     pub gen_rescan: u64,
     // Split-rule variant for the generation benchmark: false (default) =
@@ -665,6 +719,7 @@ impl Default for MixParams {
             canary_window: 2000,
             litter_ban: false,
             litter_samples: 1,
+            twist_place_tries: 0,
             gen_rescan: 10_000,
             gen_split_inherit: false,
             gen_median_low: false,
@@ -713,6 +768,10 @@ pub struct MixCounters {
     pub canary_fallthrough: u64,
     // Descent rungs refused by the full-litter ban.
     pub litter_banned: u64,
+    // Twists placed on a pattern match, and twists that fell back to a random
+    // position because no candidate matched within the try budget.
+    pub twist_placed: u64,
+    pub twist_place_fallback: u64,
     // Joint size distribution of successful splices: [outgoing len][incoming
     // len]. The shape of what the store actually trades, which the scalar rm=
     // and add= totals cannot show -- a channel that swaps 3 gates for 3 and one
@@ -1858,6 +1917,38 @@ impl Mixer {
         }
     }
 
+    /// Look for a welcoming neighbourhood: sample up to `twist_place_tries`
+    /// candidate positions and return the first that matches any entry of
+    /// TWIST_PATTERNS, together with the wire that pattern prefers. `None`
+    /// means no candidate matched and the caller should place the twist
+    /// uniformly at random, exactly as before.
+    fn find_twist_site(&mut self) -> Option<(u32, u16)> {
+        let tries = self.params.twist_place_tries;
+        if tries == 0 || TWIST_PATTERNS.is_empty() || self.arena.len() < 2 {
+            return None;
+        }
+        let max_span = TWIST_PATTERNS.iter().map(|p| p.span).max().unwrap_or(1);
+        let mut run: Vec<XGate> = Vec::with_capacity(max_span);
+        for _ in 0..tries {
+            let at = self.arena.random_linked(&mut self.rng);
+            run.clear();
+            let mut cur = at;
+            while run.len() < max_span && cur != NIL {
+                run.push(self.arena.gate(cur).clone());
+                cur = self.arena.neighbor(cur, Dir::R);
+            }
+            for pat in TWIST_PATTERNS {
+                if run.len() < pat.span {
+                    continue;
+                }
+                if let Some(w) = (pat.matches)(&run[..pat.span]) {
+                    return Some((at, w));
+                }
+            }
+        }
+        None
+    }
+
     fn twist_move(&mut self, kind: TwistKind) {
         let n = self.arena.len();
         if n < 2 {
@@ -1884,12 +1975,28 @@ impl Mixer {
         // exactly as right-overshoots pile closings at the tail. Uniform
         // start with right-only truncation starves the head of straddling
         // frames (measured 100x head/tail decorrelation asymmetry, fx1tw).
-        let (start, len) = {
-            let draw = self.rng.random_range(0..n + len - 1);
-            if draw < len - 1 {
-                (self.arena.head(), draw + 1) // left-truncated: [0, draw+1)
+        // Placement: prefer a position where a bracket can be absorbed, and
+        // fall back to the symmetric random draw when none is found within the
+        // try budget. `prefer_wire` is the absorbing gate's target, offered to
+        // the P draw below.
+        let site = self.find_twist_site();
+        let prefer_wire = site.map(|(_, w)| w);
+        if self.params.twist_place_tries > 0 {
+            if site.is_some() {
+                self.counters.twist_placed += 1;
             } else {
-                (self.arena.random_linked(&mut self.rng), len)
+                self.counters.twist_place_fallback += 1;
+            }
+        }
+        let (start, len) = match site {
+            Some((at, _)) => (at, len),
+            None => {
+                let draw = self.rng.random_range(0..n + len - 1);
+                if draw < len - 1 {
+                    (self.arena.head(), draw + 1) // left-truncated: [0, draw+1)
+                } else {
+                    (self.arena.random_linked(&mut self.rng), len)
+                }
             }
         };
 
@@ -1961,7 +2068,13 @@ impl Mixer {
                     self.counters.twist_skips += 1;
                     return;
                 }
-                let w = reads[self.rng.random_range(0..reads.len())];
+                // Take the pattern's preferred wire when the window actually
+                // reads it: that is the absorbing gate's target, so the bracket
+                // this twist emits can be swallowed rather than paid for.
+                let w = match prefer_wire {
+                    Some(pw) if reads.contains(&pw) => pw,
+                    _ => reads[self.rng.random_range(0..reads.len())],
+                };
                 (w, w, vec![XGate::x_gate(w)])
             }
             TwistKind::Cnot => {
@@ -3681,7 +3794,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={}",
+            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -3770,7 +3883,9 @@ impl Mixer {
                 0.0
             },
             c.litter_full_spliced,
-            c.litter_banned
+            c.litter_banned,
+            c.twist_placed,
+            c.twist_place_fallback
         );
         let sizes = self.splice_size_line();
         if !sizes.is_empty() {

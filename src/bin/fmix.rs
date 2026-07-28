@@ -309,6 +309,11 @@ struct Args {
     /// distinct litters. 1 = off.
     #[arg(long, default_value_t = 1)]
     litter_samples: usize,
+    /// Candidate positions the twist placer samples looking for a welcoming
+    /// neighbourhood (a gate that can absorb the bracket) before giving up and
+    /// placing the twist uniformly at random. 0 = always random.
+    #[arg(long, default_value_t = 0)]
+    twist_place_tries: usize,
     /// Split-rule variant: children INHERIT the parent generation unchanged
     /// (only DB replacements raise generations). Default off = ratchet
     /// semantics (split children get parent + 1).
@@ -525,6 +530,7 @@ fn main() {
         canary_window: args.canary_window,
         litter_ban: args.litter_ban,
         litter_samples: args.litter_samples,
+        twist_place_tries: args.twist_place_tries,
         gen_rescan: args.gen_rescan,
         gen_split_inherit: args.gen_split_inherit,
         gen_median_low: args.gen_median_low,
