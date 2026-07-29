@@ -479,60 +479,106 @@ where
     // Every placeable equivalent circuit across both distinct keys, ANY length,
     // from both stores. Each candidate carries whether it came from the curated
     // store, because curated-ness is a lexicographic first key in `choose`.
+    // Catalogue candidates WITHOUT decoding them. The stored value is a flat
+    // [len][len bytes] sequence, so gate counts -- everything the selection
+    // rules need -- can be read by walking offsets. Decoding was the whole cost
+    // of curated: one window there offered 430,568 candidates against the
+    // regular store's 6, and friend_to_xgates builds an occupancy vector and a
+    // shuffled availability list PER CANDIDATE, so a single lookup did roughly
+    // 70,000x the work of a regular one and curated runs never reached their
+    // first checkpoint. Only the chosen candidate is decoded now.
+    struct CandRef {
+        vi: usize,
+        off: usize,
+        nbytes: usize,
+        gates: usize,
+        curated: bool,
+        reversed: bool,
+        dir_ix: usize,
+    }
+    impl CandLen for CandRef {
+        fn gate_count(&self) -> usize {
+            self.gates
+        }
+        fn curated(&self) -> bool {
+            self.curated
+        }
+    }
     let mut seen_keys = std::collections::HashSet::new();
-    let mut matches: Vec<(Vec<XGate>, bool)> = Vec::new();
+    let mut values: Vec<Vec<u8>> = Vec::new();
+    let mut refs: Vec<CandRef> = Vec::new();
     let mut identity_skipped = 0usize;
-    for (reversed, canonical) in &directions {
+    for (dir_ix, (reversed, canonical)) in directions.iter().enumerate() {
         let key = key_of(canonical);
         if !seen_keys.insert(key) {
             continue;
         }
-        // CURATED IS FORWARD-ONLY. The ssg path restricts it the same way and
-        // the store docs say so outright: "curated lookup itself uses the
-        // forward canonical form; the regular fallback may also try the
-        // reversed form." Probing curated with the reverse key returns entries
-        // that do not survive being placed in the forward orientation -- caught
-        // by the per-splice verification as a non-equivalent replacement, on a
-        // window whose support the replacement did not even share. Overriding
-        // the restriction because "both keys are already computed" was wrong.
+        // CURATED IS FORWARD-ONLY. The store docs say so outright: "curated
+        // lookup itself uses the forward canonical form; the regular fallback
+        // may also try the reversed form." Probing curated with the reverse key
+        // returns entries belonging to a different permutation -- measured at
+        // 430,568 candidates for one window, none of them equivalent.
         for from_curated in [true, false] {
             if from_curated && *reversed {
                 continue;
             }
             let Some(value) = lookup(&key, from_curated) else { continue };
-            for friend in decode_value(&value) {
-                if let Some(gates) = friend_to_xgates(
-                    friend,
-                    *reversed,
-                    &canonical.order,
-                    &canonical.used_wires,
-                    num_wires,
-                    rng,
-                ) {
-                    // The identity guard. `friend_to_xgates` has already mapped
-                    // the candidate back into the window's own global wire
-                    // space, so a plain sequence comparison IS the comparison
-                    // in a common frame -- no separate canonicalisation needed.
-                    // Reorderings that map to a different sequence compare as
-                    // different and are kept: no benefit, no harm.
-                    if gates == window {
-                        identity_skipped += 1;
-                        continue;
-                    }
-                    matches.push((gates, from_curated));
+            let vi = values.len();
+            let mut pos = 0usize;
+            while pos < value.len() {
+                let len = value[pos] as usize;
+                pos += 1;
+                if len % 3 != 0 || pos.checked_add(len).is_none_or(|e| e > value.len()) {
+                    break;
                 }
+                refs.push(CandRef {
+                    vi,
+                    off: pos,
+                    nbytes: len,
+                    gates: len / 3,
+                    curated: from_curated,
+                    reversed: *reversed,
+                    dir_ix,
+                });
+                pos += len;
             }
+            values.push(value);
         }
     }
 
-    let match_count = matches.len();
-    let curated_matches = matches.iter().filter(|(_, c)| *c).count();
-    let min_match_len = matches.iter().map(|(g, _)| g.len()).min();
-    let picked = choose(&mut matches, window_len, mode, rng);
-    let (chosen, chosen_curated) = match picked {
-        Some((g, c)) => (Some(g), c),
-        None => (None, false),
-    };
+    let match_count = refs.len();
+    let curated_matches = refs.iter().filter(|r| r.curated).count();
+    let min_match_len = refs.iter().map(|r| r.gates).min();
+
+    // Select on gate counts alone, then decode ONLY the winner. A candidate
+    // that fails to place, or that turns out to be the window itself, is
+    // dropped and the choice retried -- the identity guard still applies, it
+    // just no longer costs a decode of every sibling to enforce.
+    let mut chosen: Option<Vec<XGate>> = None;
+    let mut chosen_curated = false;
+    while !refs.is_empty() {
+        let Some(pick) = choose_ref(&refs, window_len, mode, rng) else { break };
+        let r = refs.swap_remove(pick);
+        let (rev, canonical) = &directions[r.dir_ix];
+        let friend = CircuitSeq::from_blob(&values[r.vi][r.off..r.off + r.nbytes]);
+        let Some(gates) = friend_to_xgates(
+            friend,
+            *rev,
+            &canonical.order,
+            &canonical.used_wires,
+            num_wires,
+            rng,
+        ) else {
+            continue;
+        };
+        if gates == window {
+            identity_skipped += 1;
+            continue;
+        }
+        chosen = Some(gates);
+        chosen_curated = r.curated;
+        break;
+    }
     DbResult {
         match_count,
         chosen,
@@ -544,28 +590,26 @@ where
     }
 }
 
-/// Select one replacement from `matches` per `mode` (consumes the pick).
-fn choose(
-    matches: &mut Vec<(Vec<XGate>, bool)>,
-    window_len: usize,
-    mode: DbMode,
-    rng: &mut impl Rng,
-) -> Option<(Vec<XGate>, bool)> {
-    // Curated-ness is a lexicographic FIRST key: when any curated candidate
-    // survived, the mode's size rule is applied within the curated class only,
-    // regardless of size. The curated store is built from splits of minimal
-    // identities, so it holds LONGER equivalents -- preferring it therefore
-    // prefers growth, deliberately, to buy a route whose pieces are not
-    // locally compressible. Compressing mode is exempt: its job is to shrink.
-    let restrict_curated =
-        mode != DbMode::Compressing && matches.iter().any(|(_, c)| *c);
-    let pool: Vec<usize> = (0..matches.len())
-        .filter(|&i| !restrict_curated || matches[i].1)
+/// Pick which candidate to decode, from gate counts alone.
+///
+/// Curated-ness is a lexicographic FIRST key: when any curated candidate
+/// survived, the mode's size rule is applied within the curated class only,
+/// regardless of size. The curated store is built from splits of minimal
+/// identities, so it holds LONGER equivalents -- preferring it therefore prefers
+/// growth, deliberately, to buy a route whose pieces are not locally
+/// compressible. Compressing mode is exempt: its job is to shrink.
+fn choose_ref<R>(refs: &[R], window_len: usize, mode: DbMode, rng: &mut impl Rng) -> Option<usize>
+where
+    R: CandLen,
+{
+    let restrict_curated = mode != DbMode::Compressing && refs.iter().any(|r| r.curated());
+    let pool: Vec<usize> = (0..refs.len())
+        .filter(|&i| !restrict_curated || refs[i].curated())
         .collect();
     if pool.is_empty() {
         return None;
     }
-    let len_of = |i: usize| matches[i].0.len();
+    let len_of = |i: usize| refs[i].gate_count();
     let eligible: Vec<usize> = match mode {
         // Non-growing only, then narrow to the shortest.
         DbMode::Compressing => {
@@ -594,8 +638,13 @@ fn choose(
     if eligible.is_empty() {
         return None;
     }
-    let pick = eligible[rng.random_range(0..eligible.len())];
-    Some(matches.swap_remove(pick))
+    Some(eligible[rng.random_range(0..eligible.len())])
+}
+
+/// Just enough of a candidate to select on, so selection never decodes.
+trait CandLen {
+    fn gate_count(&self) -> usize;
+    fn curated(&self) -> bool;
 }
 
 #[cfg(test)]
