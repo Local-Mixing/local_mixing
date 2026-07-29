@@ -1520,7 +1520,15 @@ impl Mixer {
         mx.next_litter = next_litter;
         mx.rng = StdRng::seed_from_u64(rng_seed);
         mx.metrics_rng = StdRng::seed_from_u64(mrng_seed);
-        mx.db_mode_cur = DbMode::parse(&mode_s).unwrap_or(mx.params.db_mode);
+        // The LIVE mode comes from the command line, not the file. A resume is
+        // meant to be re-steerable -- changing --db-mode is the whole point of a
+        // manual breathing cycle -- and letting the saved value win silently
+        // ignores the flag: a resume asked for COMP would keep growing in MIX
+        // and look like COMP was broken. The saved mode is kept for diagnostics
+        // only. If the brake was engaged it re-engages on the next round
+        // anyway, since apply_size_brake runs before slot 1.
+        let _saved_mode = DbMode::parse(&mode_s);
+        mx.db_mode_cur = mx.params.db_mode;
         mx.brake_on = brake[0] != "0";
         mx.brake_mark_move = brake[1].parse().unwrap_or(0);
         mx.brake_mark_size = brake[2].parse().unwrap_or(0);
