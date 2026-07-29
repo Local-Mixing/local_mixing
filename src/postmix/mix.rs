@@ -1504,7 +1504,14 @@ impl Mixer {
         // Build the mixer on the SAME id assignment the checkpoint renumbered
         // to: Arena::from_gates hands out 0..n-1 in order, which is what
         // save_state mapped the journal and pool onto.
-        let mut mx = Mixer::new_with_db(gates, num_wires, params, db);
+        // Construct with ancestors OFF: the sizing guard in new_with_db reads
+        // the CURRENT gate count, but ancestor sets are indexed by ORIGINAL
+        // input gates and their width comes from the state file. A resumed 1.4M
+        // gate circuit whose input was 20k would trip a guard meant for the
+        // input. Restore the real setting and the recorded widths below.
+        let ancestors_wanted = params.ancestors;
+        let mut mx = Mixer::new_with_db(gates, num_wires, MixParams { ancestors: false, ..params }, db);
+        mx.params.ancestors = ancestors_wanted;
         mx.original = original;
         mx.moves_done = moves_done;
         mx.counters = MixCounters::from_line(&counters_line).ok_or_else(|| bad("counters"))?;
