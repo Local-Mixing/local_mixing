@@ -191,6 +191,7 @@ fn decode_value(value: &[u8]) -> Vec<CircuitSeq> {
 fn friend_to_xgates(
     mut friend: CircuitSeq,
     reversed: bool,
+    from_curated: bool,
     order: &Permutation,
     used_wires: &[u16],
     num_wires: usize,
@@ -242,6 +243,19 @@ fn friend_to_xgates(
     let dense_slots = slots(&friend);
     let mut dense_to_global = used_wires.to_vec();
     if dense_to_global.len() < dense_slots {
+        // A CURATED friend may not borrow. Scratch wires here are drawn from
+        // wires the WINDOW does not use, but those are live in the CIRCUIT, so
+        // borrowing is only sound when the friend restores them for ANY initial
+        // value -- which regular entries do (the minimal CNOT identity is
+        // helper-preserving whatever the helper holds). A curated entry is one
+        // half of a split minimal identity and can require the ancilla to start
+        // at a known value: the observed failure is a 4-gate friend
+        // 13,53,13,53 whose first gate reads wire 53 BEFORE its own second gate
+        // writes it, so its effect on 13 depends on what 53 already held.
+        // Refuse rather than hand it a dirty wire.
+        if from_curated {
+            return None;
+        }
         let mut occupied = vec![false; num_wires];
         for &w in &dense_to_global {
             occupied[w as usize] = true;
@@ -465,6 +479,7 @@ where
                 if let Some(gates) = friend_to_xgates(
                     friend,
                     *reversed,
+                    from_curated,
                     &canonical.order,
                     &canonical.used_wires,
                     num_wires,
