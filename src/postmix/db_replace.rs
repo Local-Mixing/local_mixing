@@ -191,7 +191,6 @@ fn decode_value(value: &[u8]) -> Vec<CircuitSeq> {
 fn friend_to_xgates(
     mut friend: CircuitSeq,
     reversed: bool,
-    from_curated: bool,
     order: &Permutation,
     used_wires: &[u16],
     num_wires: usize,
@@ -243,19 +242,6 @@ fn friend_to_xgates(
     let dense_slots = slots(&friend);
     let mut dense_to_global = used_wires.to_vec();
     if dense_to_global.len() < dense_slots {
-        // A CURATED friend may not borrow. Scratch wires here are drawn from
-        // wires the WINDOW does not use, but those are live in the CIRCUIT, so
-        // borrowing is only sound when the friend restores them for ANY initial
-        // value -- which regular entries do (the minimal CNOT identity is
-        // helper-preserving whatever the helper holds). A curated entry is one
-        // half of a split minimal identity and can require the ancilla to start
-        // at a known value: the observed failure is a 4-gate friend
-        // 13,53,13,53 whose first gate reads wire 53 BEFORE its own second gate
-        // writes it, so its effect on 13 depends on what 53 already held.
-        // Refuse rather than hand it a dirty wire.
-        if from_curated {
-            return None;
-        }
         let mut occupied = vec![false; num_wires];
         for &w in &dense_to_global {
             occupied[w as usize] = true;
@@ -286,6 +272,45 @@ fn friend_to_xgates(
         out.push(db_g57_to_xgate(mapped));
     }
     Some(out)
+}
+
+/// Diagnostic: return EVERY candidate the store decodes for `window`, each
+/// tagged with whether it came from the curated store and which canonical
+/// direction matched. No identity filtering, no mode selection, no scratch-wire
+/// refusal -- this is for asking whether the STORE's answers are equivalent to
+/// the window at all, which the normal path only ever answers for the one
+/// candidate it happens to pick.
+pub fn db_probe(
+    window: &[XGate],
+    num_wires: usize,
+    db: &FrozenDb,
+    budget: XPolyBudget,
+    rng: &mut impl Rng,
+) -> Vec<(Vec<XGate>, bool, bool)> {
+    let mut out = Vec::new();
+    for reversed in [false, true] {
+        let Ok(canonical) = canonicalize_xgates_single(window, reversed, budget) else {
+            continue;
+        };
+        let key = key_of(&canonical);
+        for from_curated in [true, false] {
+            let value = if from_curated { db.get_curated(&key) } else { db.get_regular(&key) };
+            let Some(value) = value else { continue };
+            for friend in decode_value(&value) {
+                if let Some(g) = friend_to_xgates(
+                    friend,
+                    reversed,
+                    &canonical.order,
+                    &canonical.used_wires,
+                    num_wires,
+                    rng,
+                ) {
+                    out.push((g, from_curated, reversed));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Which replacement to pick from the equivalents the store returns.
@@ -479,7 +504,6 @@ where
                 if let Some(gates) = friend_to_xgates(
                     friend,
                     *reversed,
-                    from_curated,
                     &canonical.order,
                     &canonical.used_wires,
                     num_wires,
