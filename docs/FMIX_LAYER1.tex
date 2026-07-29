@@ -1,0 +1,337 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.0in]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{longtable}
+\usepackage[hidelinks]{hyperref}
+\usepackage{underscore}
+
+\title{\texttt{fmix} layer 1: the round menu}
+\author{The per-round move menu as implemented}
+\date{28 July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent This describes \texttt{fmix}'s per-round move menu as it now stands,
+after the restructure of 27--28 July. It is a reference for what the system
+does, not a design history; where a measurement has since argued against a
+design choice, the measurement is stated inline. The phase overlay --- the rule
+engine that changes parameters mid-run --- is layer 2 and does not exist yet.
+Design rationale is in \texttt{docs/FMIX_MENU.md}; the ancestry measurements are
+in \texttt{docs/ANCESTRY_INSTRUMENTATION.pdf}.
+\end{abstract}
+
+\section{The round}
+
+Every move is one round. Four slots, evaluated in order; the first that fires
+consumes the round.
+
+\begin{center}
+\begin{tabular}{clll}
+\toprule
+\# & slot & fires with & effect on size \\
+\midrule
+0 & conditions & always & none \\
+1 & twist & $p_{\text{twist}}$ & $+2$ / $+6$ before absorption \\
+2 & DB move & $p_{\text{db}}$ & depends on \texttt{db_mode} \\
+3 & thermostat & otherwise & $\pm$small \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Slot 3 runs \emph{iff the slot-2 coin did not fire}. A slot-2 round whose
+descent finds nothing is spent --- there is no fallthrough --- so the thermostat
+receives exactly $(1-p_{\text{twist}})(1-p_{\text{db}})$ of rounds regardless of
+how hard the material is.
+
+\paragraph{Slot 0.} Two hardcoded conditions: the pool rebuild on its cadence,
+and the size brake (\S\ref{sec:brake}). The stop checks --- flag, canary, dose
+--- run at the report point. A general condition$\to$action rule engine is layer 2.
+
+\section{The DB move}
+
+One operation with three admission rules. The rule is selected by
+\texttt{db_mode} at slot 2, and fixed by role on the thermostat branches.
+
+\subsection{Window selection and the descent}
+
+Draw a seed gate (\S\ref{sec:pool}); sample $s_{db}$ gates around it, convex with
+probability $p_{\text{convex}}$ else contiguous. Both gather until the block is
+contiguous in the arena. A gate with $\ge w_{\text{window}}$ controls is
+ineligible; a window containing one is truncated before it.
+
+The descent then tries the window and, on failure, drops one gate and retries,
+down to length 1. \textbf{The gate dropped is the one farthest from the seed},
+so the seed survives to the shortest rung --- dropping from a fixed end instead
+walks away from the very gate the descent exists to re-encode, on roughly half
+of contiguous windows and \emph{every} convex one.
+
+\paragraph{The bottom rung always pays.} A single gate's permutation has exactly
+one one-gate implementation: itself. So at length 1 the free branch is
+unreachable and MIX-DB either finds nothing or pays the smallest non-identical
+spelling. Every descent therefore ends in a paid expansion or a genuine miss,
+which is what makes per-gate miss accounting unnecessary. Measured: the length-1
+rung is the busiest of all, carrying 24\% of splices.
+
+\subsection{The identity guard}
+
+A candidate identical to the outgoing window, gate for gate, is never spliced,
+in all three modes. Splicing one is a no-op that still costs a round and still
+stamps a generation --- a re-encoding the dose meter would count and that did not
+happen. Measured: it refuses roughly \textbf{one candidate in six}.
+
+\subsection{The three modes}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+mode & admission & selection \\
+\midrule
+ANY-DB & any size & uniform over all non-identical equivalents \\
+MIX-DB & free if possible, else pay & uniform over non-identical $\le$ window; \\
+       &                            & else uniform over the smallest \\
+COMP-DB & only if some match $\le$ window & uniform over the minimum-size ones \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The asymmetry between MIX and COMP is deliberate: COMP is a contraction move so
+minimum size is its job, while MIX is a re-encoding move so entropy is. MIX-DB
+makes the ingest-versus-pay decision \emph{per window}, from the match list the
+lookup already returned --- which is what replaced an entire per-gate tier state
+machine.
+
+\paragraph{Where each is used.} Slot 2 uses \texttt{db_mode}, a deterministic
+three-way flag. The contract branch is always COMP-DB (it must not grow); the
+expand branch is always ANY-DB (it exists to grow).
+
+\paragraph{Selection is lazy.} Every rule is a function of gate counts, and the
+stored value is a flat length-prefixed sequence, so candidates are catalogued by
+walking offsets and \emph{only the winner is decoded}. A candidate that fails to
+place, or turns out to be the window, is dropped and the choice retried.
+
+\subsection{The curated store}
+
+Optional (\texttt{--curated}), off by default. Curated entries are halves of
+split minimal identities, so their internal pieces are not locally compressible
+--- a route \texttt{fcompress} cannot partially undo. Curated-ness is a
+lexicographic first key: a non-identical curated match beats a regular one
+regardless of size, with the mode's own rule applied inside the winning class.
+COMP is exempt.
+
+\paragraph{Forward key only.} Probing curated on the reverse canonical key
+returns entries belonging to a \emph{different} permutation. A store-level probe
+of one window found 430{,}568 curated candidates, all from the reverse key,
+\emph{none} equivalent; the forward key returned none, and the regular store
+returned 6, all equivalent. A curated replacement that still fails verification
+is refused and counted rather than fatal, and \texttt{--curated} refuses
+\texttt{--no-db-verify}.
+
+\paragraph{Status: not runnable.} The store's fan-in per key is enormous, and
+even with lazy decoding the catalogue walk is linear in it. Curated runs are
+roughly $30\times$ slower than uncurated and have not completed.
+
+\section{Twists}
+
+Slot 1 is the only twist channel. Type is drawn from the three
+\texttt{w_twist_*} weights as ratios; window length is log-uniform over
+$[\texttt{twist_min_len}, |C|]$ with the virtual start drawn symmetrically, so
+head and tail accumulate coverage equally.
+
+\paragraph{Placement.} A bracket dropped at random must be paid for; one dropped
+next to a gate that can swallow it costs nothing. \texttt{TWIST_PATTERNS} is a
+table of welcoming shapes; the placer samples up to
+\texttt{twist_place_tries} candidate positions and falls back to the random draw
+otherwise, reporting \texttt{tplace=placed/fallback} so an inert table is
+visible. One entry so far: a \texttt{comp=1} gate absorbs a NOT on its target and
+comes out \texttt{comp=0}, eroding a fossil in the bargain. That absorption
+needed a \texttt{merge_result} extension --- it is always mathematically legal,
+but the catalogue previously refused it at width $\ge 2$.
+
+\paragraph{Recorded, unconsumed.} A verified hidden-swap identity, in g57
+notation $[x,y,z] = x \mathbin{\hat{=}} y \vee \neg z$:
+\[
+  [a,b,c]\cdot \mathrm{swap}(a,b)\cdot [b,c,a] \;=\; [b,a,c]\cdot[b,c,a]\cdot[a,b,c]\cdot[a,c,b]
+\]
+checked exhaustively on all 8 inputs. Two g57s bracketing a swap equal four g57s
+and \emph{no swap}, so a swap conjugation sited between a matching pair costs
+$+2$ gates rather than $+6$ and leaves no swap-shaped fingerprint. Consuming it
+needs a rewrite path, which is a different operation from siting a bracket.
+
+\paragraph{Cost.} Measured at 500k moves: the interior relabel costs
+\textbf{0.4\%} of runtime at $p_{\text{twist}}=0.002$, and 28\,ns per
+gate-visit. A deferred-relabel ledger was designed and then dropped on that
+evidence.
+
+\section{The thermostat}
+
+\[
+  p(\text{contract}) = \sigma\!\left(\frac{\text{size}-\texttt{target_size}}{\texttt{temp}}\right),
+  \quad \text{clamped to } [0.02,\ \texttt{contract_ceiling}]
+\]
+
+\texttt{target_size} sets where the equilibrium sits; \texttt{temp} is the width
+of the transition band, not a rate --- small \texttt{temp} gives tight regulation
+and fast approach, large gives breathing.
+
+\textbf{Contract} tries COMP-DB with probability $p_{\text{comp}}$, then journal
+undo, then the merge catalogue. \textbf{Expand} is an ANY-DB move with
+probability $p_{\text{any}}$, else a cross. Unsubsume, insert and fresh-split are
+retired.
+
+Two consequences worth stating. The contraction ceiling stays at $0.98$: its 2\%
+expansion floor is a structural growth source, but it is also what keeps
+crossings --- hence fossil erosion --- running at target, and tightening it to
+$0.9995$ starves erosion by $40\times$. And with the catalogue-invertible
+expansions gone, \textbf{deep contraction is COMP-DB's job}: crossing ladders are
+not pairwise-recoverable, so without a store the drain has only the journal.
+
+\paragraph{Caveat.} At phase-A rates ($p_{\text{db}}$ near 1) slot 3 barely runs,
+so \texttt{target_size} and \texttt{temp} set the contract/expand mix rather than
+the size. Size control there comes from the brake.
+
+\section{Seeding and the generation pool}\label{sec:pool}
+
+Every gate carries a generation: inputs start at 0, a splice stamps the outgoing
+window's upper-median $+1$, splits stamp parent $+1$, merges take the min, twist
+brackets are born-random.
+
+Seed selection is one coin: with probability $p_{\text{mingen}}$ draw from the
+\emph{generation pool}, else uniformly. The pool is the
+$\texttt{pool_k}$ lowest-generation gates that are \textbf{pool-eligible}
+($< w_{\text{pool}}$ controls) \textbf{and below the goal}. Both filters carry
+weight: an ineligible gate can never be re-encoded, so an unfiltered pool
+converges on exactly that set; and without the below-goal filter a late pool
+fills with ordinary finished gates and the canary can never fire.
+
+$\texttt{pool_k}$ is a \emph{count}, not a fraction, because the drain rate is
+set by the move economy and is independent of circuit size.
+
+\paragraph{Two eligibility thresholds.} $w_{\text{window}}$ governs what may sit
+\emph{inside} a window; $w_{\text{pool}}$ what may \emph{seed} one and count
+toward the dose. They differ because width-3 gates match in context often enough
+to admit to windows but re-encode end-to-end at 0.41\% against 98.98\% for width
+$\le 2$, so at a shared threshold they accumulate in the pool with nothing to
+eject them.
+
+\section{The canary}
+
+Over a ring buffer of the last \texttt{canary_window} \emph{qualifying} rounds,
+the fraction that failed at every rung. A round qualifies only if its seed
+genuinely came from the pool; a heads coin that fell through a drained pool is
+counted separately, because that means the rebuild is too slow rather than that
+the material is unreachable --- opposite remedies. The condition fires when the
+buffer is full and the fraction exceeds $\theta$, and it stops the run
+(\texttt{MixStop::CanaryFired}), checked ahead of the dose stop.
+
+It \textbf{sleeps while the brake holds COMP}: COMP declines far more often by
+construction, and since this is a stop condition those samples would end runs for
+a reason unrelated to reachability.
+
+\section{Size control and breathing}\label{sec:brake}
+
+Growth past \texttt{size_hi} forces slot 2 into COMP; it is released at
+\texttt{size_lo} \emph{or} when COMP's shed rate over a trailing window falls
+below \texttt{comp_release_eps}, whichever comes first.
+
+The productivity release is what makes a \emph{wide} band safe, and a wide band
+is what transport wants, since growth legs are where material moves. The danger
+was never width but sitting in COMP past its usefulness, where it starves as the
+circuit nears local minimality and spends re-encoding diversity --- COMP draws
+only from minimum-size spellings, pulling toward exactly the form
+\texttt{fcompress} would compute anyway.
+
+\paragraph{Measured, manually.} A 2M-move exhale at $s_{db}=12$ shed
+$-0.060$ gates/move against $-0.054$ at $s_{db}=9$ --- \textbf{COMP wants a
+longer window than MIX}. Mixing did \emph{not} degrade: \texttt{anc},
+\texttt{span} and litter diversity all rose. The only cost was \texttt{dmin},
+$0.168 \to 0.136$. No bend in the shed rate appeared in 2M moves.
+
+\section{Litter rules}
+
+Every gate carries a litter id --- the replacement event that created it --- and
+its litter's birth size. Splits propagate the id, a splice mints a fresh one, a
+merge unions. Two optional rules, both off by default and neither yet A/B'd:
+\texttt{--litter-ban} refuses a rung that is exactly one complete litter (the
+unit an earlier replacement emitted, and so where the store can hand that
+spelling straight back), and \texttt{--litter-samples} draws several candidate
+windows and keeps the most litter-diverse.
+
+Measured: at equilibrium roughly 70 full-litter splices per 100k moves, and
+windows drawing from only $\sim$3 distinct litters against a ceiling of $s_{db}$
+--- reached almost immediately, not a transient. That gap is the largest visible
+untouched lever.
+
+\section{Instrumentation}
+
+Beyond the long-standing report line:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+field & meaning \\
+\midrule
+\texttt{idsk} & candidates refused by the identity guard \\
+\texttt{cur} & curated hits / curated rejections \\
+\texttt{g57only} & g57-only COMP attempts and hits \\
+\texttt{dmin} & fraction of windows admitting a strictly shorter spelling \\
+\texttt{osyn} & fraction of gates whose ancestry label is destroyed \\
+\texttt{anc}, \texttt{ancspan} & mean ancestor-set size and span \\
+\texttt{distinct}, \texttt{full}, \texttt{ban} & litter diversity, complete-litter splices, bans \\
+\texttt{tplace} & twists placed on a pattern / fallen back \\
+\texttt{canary}, \texttt{cft} & canary failure fraction, pool fall-throughs \\
+\texttt{g57} & true g57 census (comp=1, two opposite-polarity controls) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Plus two extra lines: the \textbf{splice size histogram} (joint outgoing
+$\to$ incoming length, which the scalar totals cannot show) and, under
+\texttt{--ancestors}, the \textbf{ancestry report} with log-bucketed histograms
+of \texttt{anc}, span and fan-out.
+
+\paragraph{Do not quote \texttt{odiff}, \texttt{oadj} or \texttt{disp} without
+\texttt{osyn}.} All three skip gates whose ancestry label a mixed-lineage splice
+destroyed, so they are computed over the material mixing has failed to touch and
+grow more selective the better it works. \texttt{osyn} reaches 50.7\% by 1M moves
+and 1.000 on small circuits, where those three are undefined rather than merely
+degraded.
+
+\section{Checkpoint and resume}
+
+\texttt{--state-out} writes a resume file at every stop, and one is written
+beside each \texttt{--snap-every-moves} snapshot. \texttt{--resume} rebuilds the
+chain; \texttt{--input} is then not required.
+
+The circuit file alone cannot do this. Per-gate direction has no sidecar and the
+whole directional walk rides on it; the undo journal references arena ids, so the
+checkpoint renumbers to arena order and remaps, dropping entries with dead
+pieces; and the \emph{original} circuit is what \texttt{global_check} verifies
+against, so a resumed run without it would verify nothing about fidelity to the
+true input. Also carried: moves, event and litter counters, the tabu queue,
+\texttt{twspan}, the canary ring, \texttt{db_mode_cur} and brake state, the pool,
+ancestor sets, and every counter. \texttt{StdRng} is not serialisable, so a fresh
+seed is drawn and stored --- a clean continuation, not a bit-identical replay.
+The file is version-stamped and refuses to load across versions.
+
+\textbf{A resume takes every parameter from the command line}, including
+\texttt{--db-mode} and \texttt{--p-mingen}. The saved mode is diagnostic only.
+
+\section{What is not built}
+
+\begin{itemize}
+\item The slot-0 rule engine. The brake and canary are hardcoded.
+\item \texttt{twist_db_mode} and DB absorption of CNOT packets; the hidden-swap
+identity is verified but unconsumed, and wants table entries to be rewrite rules
+rather than site hints.
+\item A bounded candidate walk for curated, without which it cannot run.
+\item Store guards read from store metadata rather than retyped per run.
+\item A forced pool rebuild on COMP $\to$ MIX.
+\end{itemize}
+
+\end{document}
