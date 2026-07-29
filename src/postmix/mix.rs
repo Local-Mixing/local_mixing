@@ -2342,6 +2342,23 @@ impl Mixer {
                     if let Err(e) = std::fs::write(format!("{out}.gens"), &gens) {
                         eprintln!("[fmix] move-snap gens write failed: {e}");
                     }
+                    // A resumable state alongside the circuit. A circuit
+                    // snapshot on its own cannot be continued -- directions,
+                    // generations, litters, the journal and the original all
+                    // live outside it -- so a long run could only be restarted,
+                    // not resumed, from any point but its end. Written to a
+                    // temp path and renamed, so an interrupted write never
+                    // leaves a half-file that looks resumable.
+                    let sp = format!("{out}.state");
+                    let sptmp = format!("{sp}.tmp");
+                    match self.save_state(&sptmp) {
+                        Ok(()) => {
+                            if let Err(e) = std::fs::rename(&sptmp, &sp) {
+                                eprintln!("[fmix] move-snap state rename failed: {e}");
+                            }
+                        }
+                        Err(e) => eprintln!("[fmix] move-snap state write failed: {e}"),
+                    }
                     println!(
                         "[fmix] MOVE-SNAP: wrote {} gates to {} at move {} (verified, continuing)",
                         gates.len(),
