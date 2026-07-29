@@ -142,18 +142,28 @@ Curated-ness is thus a lexicographic first key. Because the curated store is
 systematically prefers growth. This is intentional: it buys re-encoding quality
 with size.
 
-Probe **both** canonical directions. (The ssg path in `replace/pairs.rs` probes
-curated forward-only; that restriction is not carried over — both keys are
-already computed here, so the second probe is free.)
+**FORWARD KEY ONLY.** The ssg path restricts curated the same way and the store
+docs say so outright. Probing curated on the reverse key returns entries
+belonging to a different permutation: a store-level probe of one window found
+**430,568 curated candidates, all from the reverse key, none equivalent**, while
+the forward key returned none at all and the regular store returned 6, all
+equivalent. A curated replacement that still fails verification is refused and
+counted (`cur=hits/rejected`) rather than fatal.
+
+⚠️ **Curated is ~30× too slow to run.** The store's fan-in per key is enormous
+(430k candidates where regular has 6). Selection is now lazy — candidates are
+catalogued by gate count from the blob and only the winner is decoded — but the
+catalogue walk itself is still linear in that list, on every rung of every
+descent. Bounding or length-filtering the walk is the remaining fix.
 
 The store is `/home/cc/frozen_curated_m1_m11`, 6.1 GB, 256 shards — 2% the size
 of the regular store, and now co-located with it.
 
-### 2.6 Litter rules (designed in ssg, not scheduled here)
+### 2.6 Litter rules (BUILT: `--litter-ban`, `--litter-samples`)
 
 The known fix for re-encoding *count* diverging from re-encoding *displacement*
-(§7.2). Carried from ssg commit `80a2c1d2`; recorded here so the port is
-specified when the need arises.
+(§7.2). Carried from ssg commit `80a2c1d2`. Both halves are now implemented and
+both default OFF; neither has been A/B'd against a baseline.
 
 **Mechanism.** Every gate carries a **litter id** — the replacement event that
 created it — plus that litter's size; input gates are singleton litters. Then:
@@ -361,33 +371,31 @@ replacement is function-preserving by construction, so replacing any contiguous
 chunk containing a bracket preserves the conjugation identity with no extra
 reasoning.
 
-### 3.4 Deferred relabelling (sketch)
+### 3.4 Deferred relabelling — DROPPED, measured
 
-Placement removes the bracket cost but not the interior cost: the twist still
-walks its window flipping every literal on `w`, an O(|W|) pass. Batching that
-across twists is worthwhile — `B` twists cost `B·m/ln(m/twist_min_len)`
-individually versus `O(m)` for one combined pass, so batching wins once
-`B > ln(m/twist_min_len) ≈ 8.5`, which at `p_twist = 0.002` is about one
-10,000-move interval.
+The ledger was to batch the O(|W|) interior relabel across twists. Measured
+instead, 500k moves, same seed, only `p_twist` differing:
 
-The representation is a ledger of pending `(wire, span)` flips, with the flip
-applied lazily at every read site and materialised in one left-to-right pass at
-flush. Constraints that must be settled before building it:
+| `p_twist` | wall | twists | gate-visits |
+|---|---|---|---|
+| 0 | 54.9 s | 0 | 0 |
+| 0.002 | 55.1 s | 1,024 | 98.2 M |
+| 0.01 | 65.4 s | 5,068 | 462.2 M |
 
-- **Spans need arena-id anchors, not positions** — positions shift under every
-  splice.
-- **Every read site must apply pending flips.** DB lookups can do so on the
-  window copy before canonicalising and invert on the replacement (windows are
-  ≤5 gates, so this is cheap); `global_check` must apply them during
-  evaluation. The merge index is keyed on `(target, wire-set)` and so is
-  unaffected, but `merge_result` compares polarities: two gates inside the same
-  pending span compare correctly (both flipped), while a merge straddling a
-  span boundary would not — those must be suppressed or flushed.
-- **Flush before** any checkpoint, and before any condition that reads the
-  circuit's function.
+At the production rate the relabel costs **0.4%** — inside noise. The slope
+between the non-zero arms gives 28 ns per gate-visit (cache-miss dominated
+linked-list traversal), so at `p_twist = 0.01` it would be ~20%.
 
-Left as a sketch; the placement work in §3.2–3.3 is independent of it and
-should land first.
+So the ledger would buy 0.4% today, and 20% only at a five-fold higher twist
+rate — against a lazy-evaluation layer threaded through `merge_result`, the DB
+lookup and `global_check`, where a merge straddling a pending-span boundary
+compares stale polarities. **Not worth it.** If the rate ever rises, the cheaper
+lever is a *ceiling* on twist window length: windows are log-uniform with no
+upper bound, so the cost lives entirely in the tail, and a clamp touches no
+correctness surface.
+
+This also retracts the earlier claim that compute becomes the binding constraint
+on `p_twist`. It does not; duty cycle does.
 
 ### 3.5 Parallelisation
 
@@ -664,31 +672,44 @@ project's history with lifetime- and persistence-based attacks.
 
 ### 8.1 The menu
 
-| name | default | controls |
-|---|---|---|
-| `p_twist` | 0.002 | probability a round is a twist |
-| `p_db` | 1.0 | probability a round is a slot-2 DB move |
-| `db_mode` | MIX | slot-2 admission rule; set by slot-0 rules |
-| `p_comp` | 1.0 | probability a contraction tries COMP-DB before undo/merge |
-| `p_any` | 0.1 | probability an expansion is ANY-DB rather than a cross |
-| `s_db` | 5 | window length the descent starts from |
-| `p_convex` | 0.5 | probability the sampler is convex rather than contiguous |
-| `db_convex_p` | 0.75 | *within* convex growth, probability of floating in `g1`'s direction |
-| `w_window` | 4 | a gate with this many controls or more may not sit in a window |
-| `w_pool` | 3 | a gate with this many controls or more may not seed one or count toward the dose |
-| `curated` | off | prefer curated matches (§2.5) |
-| `twist_db_mode` | MIX | acceptance rule for twist-packet DB absorption (§3.3) |
-| `p_mingen` | 0.8 | probability a seed comes from the generation pool |
-| `K` | 20,000 | pool size, in gates |
-| `gen_rescan` | 10,000 | pool rebuild cadence, in moves |
-| `θ` | 0.9 | canary failure fraction that fires the condition |
-| `W` | 2000 | canary ring buffer, in qualifying rounds |
-| `target_size` | input size | thermostat setpoint (§4) |
-| `temp` | max(target/100, 64) | thermostat band width (§4) |
+Names and defaults as implemented. Where a measurement has since argued for a
+different value, the measured recommendation is in the last column.
 
-Pool headroom check: `K / (gen_rescan × p_db × p_mingen) = 20,000/8,000 =
-2.5×`. Adequate but not generous — a splice can drain several pool members at
-once, so watch the fall-through counter.
+| name | CLI default | controls | measured |
+|---|---|---|---|
+| `p_twist` | 0.0 | probability a round is a twist | 0.002 costs 0.4% of runtime; the ceiling is duty cycle, not compute |
+| `p_db` | 0.0 | probability a round is a slot-2 DB move | 1.0 in every run so far |
+| `db_mode` | `mix` | slot-2 admission rule (`mix`\|`comp`\|`any`); settable by rules | — |
+| `p_comp` | 1.0 | probability a contraction tries COMP-DB first | — |
+| `p_any` | 0.1 | probability an expansion is ANY-DB rather than a cross | — |
+| `s_db` | 5 | window length the descent starts from | **8–9 for MIX, ≥12 for COMP** (§14) |
+| `p_convex` | 0.5 | probability the sampler is convex | never separated from contiguous |
+| `db_convex_p` | 0.75 | within convex growth, direction coin | — |
+| `w_window` | 4 | a gate this wide or wider may not sit in a window | — |
+| `w_pool` | 3 | a gate this wide or wider may not seed one or count toward the dose | — |
+| `curated` | off | prefer curated matches (§2.5) | **~30× slower; forward-key only** |
+| `twist_db_mode` | *not built* | acceptance rule for twist-packet DB absorption | — |
+| `twist_place_tries` | 0 | candidate positions the twist placer samples (§3.3) | table has one entry |
+| `p_mingen` | 0.8 | probability a seed comes from the generation pool | untested in COMP; 0.3 under test |
+| `pool_k` | 20,000 | pool size, in gates | — |
+| `gen_rescan` | 10,000 | pool rebuild cadence, in moves | — |
+| `canary_theta` | 0.0 (off) | canary failure fraction that stops the run | 0.9; observed healthy at 0.34–0.44 |
+| `canary_window` | 2000 | canary ring buffer, in qualifying rounds | — |
+| `litter_ban` | off | refuse a rung that is exactly one complete litter | ~70 splices per 100k moves at equilibrium |
+| `litter_samples` | 1 (off) | candidate windows drawn, keeping the most litter-diverse | **untested; the largest visible lever** |
+| `contract_ceiling` | 0.98 | upper clamp on the contraction probability | 0.9995 starves fossil erosion |
+| `size_hi` / `size_lo` | 0 (brake off) | hysteresis marks for the mode brake (§7.2) | never exercised automatically |
+| `comp_release_eps` | 0.0 | shed rate below which COMP is released | shed rate is the *less* responsive signal; see §14 |
+| `comp_release_window` | 250,000 | trailing window for the productivity release | — |
+| `p_comp_g57` / `s_db_g57` | 0.0 / 9 | g57-only COMP attempts and their window | untested |
+| `ancestors` | off | per-litter ancestor sets (§12) | ≤20k input gates |
+| `db_advance` | off | ballistic birth-advance for splice products | **no transport effect; keep off** |
+| `target_size` | input size | thermostat setpoint (§4) | not size control at phase-A rates |
+| `temp` | max(target/100, 64) | thermostat band width (§4) | — |
+
+Pool headroom: `pool_k / (gen_rescan × p_db × p_mingen)`. At the defaults that is
+`20,000/8,000 = 2.5×` — adequate, and the fall-through counter reports when it
+is not.
 
 ### 8.2 Store guards
 
@@ -752,154 +773,115 @@ one canary.
 
 ## 10. Open
 
-- **`db_advance` does NOT buy transport — MEASURED 2026-07-28, and this
-  supersedes the argument that motivated it.** The reasoning was that the DB
-  move already uses direction in three places (the contiguous sampler extends
-  along `g1`'s direction, the convex sampler floats `g1` and then the block,
-  the splice assigns product directions by pivot) but never applied the
-  ballistic **birth-advance**, since `advance_births` fires at all five split
-  sites and not at the splice — so products were handed a direction nothing
-  acted on. Adding it was expected to restore transport.
-
-  It does not. A/B at 3M moves on the [2,2,2,3] Gray-fold gadget, same C and
-  seed 101, one flag apart:
-
-  | | OFF | ON |
-  |---|---|---|
-  | `odiff` / `oadj` | **0.0005 / 1.0000** | **0.0005 / 1.0000** |
-  | litter `full` | 75,419 | **32,114** (−57%) |
-  | litter `distinct` | 4.14 | 4.38 |
-  | DB hits | 678,744 | 620,345 (−8.6%) |
-  | size 689,178 → | 734,097 (+6.5%) | 744,163 (+8.0%) |
-
-  Positional transport is **identical to every printed digit**. That is
-  consistent with the standing finding that transport comes from *growth*, not
-  from floating: this recipe grows 6.5% over 3M moves, and a float within a
-  gate's commuting box is far too local to move an origin family.
-
-  What the flag actually does is **scatter litters** — a 57% cut in full-litter
-  splices. It is a litter mechanism, not a transport one, and therefore a
-  partial substitute for the §2.6 ban rather than a complement to it. Whether
-  it should default on depends on whether the ban gets built; they overlap.
-
-  Separately, the obvious alternative — restoring crossings via `p_db < 1` —
-  remains the wrong fix for transport: crossings widen material and width is
-  what kills DB matching (one width-3 gate takes a window from 36% to 0.2%
-  across m = 3…6). Phase A would be manufacturing what the store cannot digest.
-  **Transport in phase A is still unsolved**; the honest current answer is that
-  it arrives with the growth legs of the breathing cycle (§7.2), not from any
-  per-move mechanism.
-- **`p_twist` is under-set at 0.002.** With the COMP brake as the absorber
-  rather than the merge catalogue (§3.1), 0.01 costs only a ~20% COMP duty
-  cycle and delivers a twist per gate every 0.4 generations. 0.002 is a safe
-  starting point, not a ceiling; the ceiling is now compute, addressed by
-  §3.4.
-- **Duty cycle in COMP** — the fraction of phase A spent braking is a real
-  cost (dose accrues more slowly there) and is set by the band width. A
-  layer-2 number, but worth measuring early.
+- **`db_advance` does not buy transport — MEASURED, keep it off.** A/B at 3M
+  moves, same C and seed: `odiff`/`oadj` identical to every printed digit
+  (0.0005 / 1.0000), while full-litter splices fell 57% and DB hits fell 8.6%.
+  It is a **litter-scattering** mechanism, not a transport one, and therefore a
+  partial substitute for the §2.6 ban rather than a complement. Over 40M moves
+  it also cost **14 generations of dose** and ran 23% slower. The transport
+  argument that motivated it is withdrawn.
+- **Transport in phase A is still unsolved.** Restoring crossings via
+  `p_db < 1` is the wrong fix — crossings widen material and width is what kills
+  DB matching. What §12 now shows is that **span is set by window length**, so
+  `s_db` is the transport lever, not run length.
+- **Curated is unusable at production rates** (§2.5) until the candidate walk is
+  bounded.
 - **`target_size` / `temp`** — kept as parameters; whether the report's
-  `target=` field is renamed to stop implying size control is undecided.
-- **Hysteresis marks** for the mode brake — layer 2.
-- **Condition evaluation cadence** — cheap counters per round, O(size) census
-  on its own cadence; numbers are layer 2.
-
----
+  `target=` is renamed to stop implying size control is still undecided.
+- **The slot-0 rule engine does not exist.** The brake and the canary are
+  hardcoded conditions. A general condition→action layer is layer 2.
+- **`twist_db_mode` and the CNOT-packet DB absorption** are unbuilt; the
+  hidden-swap identity is verified and recorded but not consumed, and it wants
+  the table entries to be *rewrite rules* rather than site hints.
+- **Hysteresis marks** for the mode brake, and the **condition evaluation
+  cadence** — layer 2.
 
 ## 11. Implementation notes
 
-- **Extend `merge_result`** with `NOT + (comp=1, any width) → (comp=0, same
-  ctrls)` (§3.2). Without it the neg-twist placement search finds a partner
-  only ~1–2 times per 5,000-gate neighbourhood instead of ~5–8.
-- **The store-open guard must include `p_db`.** Today the store opens only when
-  `w_db || p_db || p_db_final` is positive; under the new naming the primary DB
-  channel is not in that list, which yields an empty store, zero re-encoding,
-  and no diagnostic.
-- **Abort when `curated` is on and no curated store is present.** Do not
-  degrade silently to regular-only. `probes.bin` is *not* required — it appears
-  nowhere in `src/`; `Frozen::open` needs `tables.bin` and the shards, and
-  loads `filters.bin` only under `FROZEN_FILTER=1`.
-- **`FROZEN_DB_DIR` is env-only and in no rc file**; detached runs must export
-  it or abort instantly. Worth promoting to a flag.
-- **On COMP → MIX, force a pool rebuild** before the first biased draw. The
-  pool goes stale during a brake because crossings and merges keep changing
-  which gates sit at the bottom.
-- **Checkpoint and resume.** On any stop, persist enough to resume seamlessly:
-  per-gate `dgen`, `origin`, `dir` (no sidecar today, and load-bearing for
-  transport) and `event`; the **undo journal**, whose entries reference arena
-  ids and stamps and therefore require the checkpoint to preserve arena
-  identity, not just gate order; the **original circuit**, which is the
-  fidelity anchor `global_check` compares against; `moves_done`, `next_event`,
-  the tabu queue, `twspan`, the canary buffer, `db_mode`, the phase id, the
-  pool scan due-time, and any pending twist ledger (§3.4). `StdRng` is not
-  serialisable — draw a fresh `u64` at checkpoint and reseed from it. Write it
-  as circuit + separate state file so the circuit stays readable by
-  `fmix_stats`/`fcompress`/the hmap tools, and version-stamp the state file so
-  checkpoints from an older parameter set refuse to resume rather than being
-  silently reinterpreted.
+**Done.**
 
----
+- `merge_result` extended with `NOT + (comp=1, any width) → (comp=0, same
+  ctrls)`, which only ever decreases the comp population.
+- The store-open guard covers every DB channel.
+- `--frozen-db-dir` / `--frozen-curated-dir`.
+- A failed DB attempt restores its seed — with a **collision-checked** walk, one
+  gate at a time. An unchecked relink broke function preservation on the first
+  real run: ctrl-cap evasion parks a non-commuting collider between the seed and
+  its home, and `retreat`'s justification does not transfer because it reverses
+  a float with nothing intervening.
+- **Checkpoint / resume.** `--state-out` and `--resume`, plus a resumable state
+  beside every `--snap-every-moves` snapshot. Carries per-gate
+  `dgen`/`origin`/`dir`/`event`/litter, the undo journal (renumbered to arena
+  order, entries with dead pieces dropped), the **original circuit** that
+  `global_check` verifies against, `twspan`, the canary ring, `db_mode_cur` and
+  brake state, the pool and ancestor sets, and every counter. `StdRng` is not
+  serialisable, so a fresh seed is drawn and stored — a clean continuation, not
+  a bit-identical replay. Version-stamped.
+- **A resume takes every parameter from the command line**, including
+  `--db-mode` and `--p-mingen`. The saved mode is diagnostic only; letting it
+  win silently made a COMP resume run MIX and look like COMP was broken.
+
+**Still open.**
+
+- `FROZEN_DB_DIR` remains the env fallback and is in no rc file.
+- Store guards (`db_max_degree`, `db_max_span`, term caps) are still retyped per
+  run rather than read from store metadata.
+- On COMP → MIX the pool is not force-rebuilt; it goes stale during a brake.
+
+**Operational lessons, both of which cost runs.**
+
+- `rsync -a` preserves mtimes, so a deployed file can be *older* than the
+  server's build artifacts and cargo will skip the rebuild. **`touch` after
+  rsync.** A stale binary made a correct curated fix look refuted and sent the
+  diagnosis two hypotheses deeper.
+- `pkill -f <pattern>` from an ssh command whose own command line contains the
+  pattern kills the launching shell. Use a separate call.
 
 ## 12. Saturation: when phase A is done
 
-The observed behaviour to explain: after some number of breathing cycles the
-process is evidently saturated — generations keep climbing but no further
-mixing happens. That is the clock-versus-displacement gap again, so the stop
-rule must be built on **displacement** meters, not on generation.
+**The origin meters are dead — use ancestry.** `odiff`, `oadj` and `disp` all
+read the per-gate origin tag, and a splice over a window of mixed lineage stamps
+its products `ORIGIN_SYNTH`, which all three **skip**. They are therefore
+computed over the material mixing has failed to touch, and get more selective
+the better mixing works. `osyn` reports the erosion: **22.9% of gates have lost
+their label by 250k moves, 50.7% by 1M, 77.0% by 3M, and 1.000 on the small-
+circuit runs** — where the three meters are not degraded but undefined. Read
+`osyn` first; once it is high, do not quote them.
 
-Several already exist, each with a **known asymptote**. The right-hand column
-is a fresh n=128 gadget after 60k fixed-size moves — how far from saturation
-the starting point is:
+**`--ancestors` replaces them** (see `docs/ANCESTRY_INSTRUMENTATION.md` for the
+full writeup). Each litter carries the set of original input gates that
+contributed to it — a union, so mixed lineage *adds* information where the
+scalar label had to discard it.
 
-| meter | asymptote | fresh gadget, 60k moves |
+| meter | asymptote / target | what it says |
 |---|---|---|
-| `oadj` — adjacent-origin autocorrelation | **0** | 0.9999 |
-| `odiff` — origin diffusion | **0.2887** (1/√12) | 0.0009 |
-| `disp` — mean normalised displacement | **1/3** | 0.0054 |
-| `owin` — distinct origins per 32 gates | 32 | 30.5 |
-| `cov` — twist coverage | ~600 at 256 wires; scale by `n` | 55.9 |
-| `comp` — g57 fossils | 0 | 4116 |
-| **litter distinct per window** | **`s_db`** | — (needs a store) |
-| **litter full-splices** | **0** | — |
+| **`anc`** | material-dependent | how many original gates a gate descends from |
+| **`span`** | set by `s_db`, not by input size | how far apart in the input its ancestors were |
+| `fanout` | — | redundant: `anc × gates / inputs` exactly |
+| **`dmin`** | 0 = fully minimal | fraction of windows still admitting a shorter spelling |
+| **litter `distinct`** | `s_db` | how braided the sampled windows are |
+| `comp` / `g57` | 0 | fossils |
+| `cov` | ~600 at 256 wires, scale by `n` | twist dose |
+| `owin` | 32 | **saturates far too early to be a criterion** |
 
-Two readings from that column. `oadj = 0.9999` after 60k fixed-size moves —
-*with* crossings enabled — is a direct demonstration that fixed size churns
-composition while the conveyor belt of the original gate order stays intact.
-And **`owin` saturates far too early to be a criterion**: it is already at
-30.5/32 when nothing has moved. Choose meters still far from their asymptote.
+**What the measurements settled.**
 
-⚠️ **`distinct` starts at `s_db` by construction and can only fall at first.**
-Every input gate is its own singleton litter, so on a fresh gadget any window
-trivially spans `s_db` distinct litters. The level early in a run is therefore
-meaningless — it is a trivial ceiling, not an achievement. The signal is the
-**turn**: `distinct` dips as splices mint multi-gate litters, then recovers
-toward `s_db` once churn fragments them faster than splices create them, and
-`full` peaks and falls. That turn is the equilibrium. Measured to 3M moves it
-has not happened (4.90 → 4.71 → 4.14, still falling).
+- **Span saturates because of the mixing, not the input.** Halving the input
+  (20k → 10k) leaves span at 405 vs 408, across runs differing 2× in input and
+  2× in growth ratio. Growth drives `anc`; **window length pins `span`**.
+- **`dmin` is not comparable across `s_db`** — it is measured over the windows
+  the descent probes, and longer windows admit shorter spellings almost
+  mechanically. Comparing it across a sweep needs a *fixed* probe length.
+- **`fanout` should not be read as a spreading measure.** Its turnover at
+  `s_db = 10` was the circuit shrinking, not information failing to spread.
 
-**The litter meters are the most direct saturation signal**, because they
-measure whether re-encoding is still *braiding* or merely churning. Mean
-distinct litters per window reaching `s_db`, with full-litter splices at zero,
-means every window is drawn from `s_db` different replacement events — no
-coherent unit remains for a splice to undo.
+**Three rules for reading them.** Plateau on the *derivative*, not the level;
+sample once per breathing cycle at the same phase of the cycle; stop when a
+whole cycle buys less than ε on every axis for N consecutive cycles.
 
-**Three rules for reading them:**
-
-1. **Plateau on the derivative, not the level.** The achievable asymptote is
-   material-dependent; absolute targets are guidance, slopes are the criterion.
-2. **Sample once per breathing cycle, at the same phase of the cycle** (e.g.
-   every low-water crossing). Within a cycle the meters race during growth and
-   stall during COMP, so intra-cycle sampling mostly reports where in the cycle
-   you are. Fixed-phase, cycle-to-cycle differencing removes that component.
-3. **Stop when a whole cycle buys less than ε on every axis**, for N
-   consecutive cycles — loop-until-dry, not a single threshold.
-
-⚠️ These are syntactic and positional proxies. The security question is the
-heatmap, which is expensive. **Validate the proxy once**: run
-`hmap_affine`/`hmap_stat` mid-plateau and well past it, and confirm the heatmap
-has genuinely stopped improving where the cheap meters say so. Otherwise the
-exit rule is calibrated against an unverified correlate.
-
----
+⚠️ These remain syntactic and positional proxies. **Validate once** against
+`hmap_affine`/`hmap_stat` mid-plateau and well past it, or the exit rule is
+calibrated on an unverified correlate.
 
 ## 13. Phase-A starting point and calibration
 
@@ -948,32 +930,41 @@ behind every reliable finding in this project's record.
 
 ---
 
-## 14. Pending measurements
+## 14. Measurements
 
-Everything above is specified; almost none of it is measured. These five gate
-decisions currently being made on inference. Run order matters — stage 1 gives
-the baselines the rest are read against.
+**Run** (details and figures in `docs/ANCESTRY_INSTRUMENTATION.md`).
 
-| # | experiment | read | decides |
-|---|---|---|---|
-| 1 | ~~`--db-advance` off vs on~~ **RUN 2026-07-28** | `odiff`/`oadj` identical; `full` −57% | **no transport**; it is a litter mechanism (§10) |
-| 2 | ~~`full=` baseline~~ **RUN 2026-07-28** | 11.1% at 3M and rising, `distinct` still falling | ban transfers, worth building (§2.6) |
-| 3 | **Curated hit rate per rung**, `--db-dry-run` with the recorder | curated vs regular matches at window 1–5 | whether `curated` belongs on by default |
-| 4 | **COMP shed rate under the identity guard** | gates/move over a COMP leg | band width and COMP duty cycle (§7.2) |
-| 5 | **Saturation proxy vs heatmap**, mid-plateau and well past | `hmap_affine` / `hmap_stat` | whether the §12 exit rule tracks the thing it stands in for |
+| experiment | result | consequence |
+|---|---|---|
+| `--db-advance` off vs on, 3M | `odiff`/`oadj` identical; `full` −57%; dose −14 generations | keep off; it is a litter mechanism (§10) |
+| full-litter baseline | ~70 splices per 100k at **equilibrium**, not a transient | the ban is worth ~0.7% of rounds, permanently |
+| `osyn` trajectory | 22.9% → 77.0% → 1.000 | origin meters retired (§12) |
+| `p_twist` timing, 500k | 0.4% of runtime at 0.002; 28 ns/gate-visit | ledger dropped (§3.4) |
+| **`s_db` sweep 5–10**, 400k | span 129→**334** at 9, falls at 10; size −60%; wall +192% | **`s_db` 8–9, not 5** |
+| **input-size control**, 10k vs 20k | span 405 vs 408 | saturation is the mixing, not the input |
+| **COMP exhale**, `s_db` 9 and 12 | −0.054 vs **−0.060** g/move; `anc`/`span`/`distinct` all *rise*; `dmin` 0.168→0.136 | **COMP wants a longer window**; an exhale costs only `dmin` |
+| curated | forward key only; ~30× too slow | unusable until the candidate walk is bounded |
 
-⚠️ Run 2 with `--db-advance` **off**. The advance scatters litters, which
-directly suppresses `full=` — measuring both at once confounds them.
+**Not yet run.**
 
-⚠️ **Use a unique log name per launch.** `>` opens without `O_APPEND`, so two
-runs pointed at one file each keep their own offset and overwrite each other's
-regions, yielding a single banner over interleaved output. This happened on
-2026-07-28 and was recoverable only because every report line carries
-`target=`. Verify the banner *and* spot-check that `target=` is constant down
-the log before reading any result.
+- The `s_db` knee on the **n=128 gadget** — store decay with window length is
+  material-dependent, so 8–9 should not become a production default on n=16
+  evidence.
+- **Where the shed rate bends**, and whether the other statistics turn at the
+  same point — the hypothesised natural inhale trigger. In flight: 6M-move
+  exhale with a resumable state every 1M.
+- **`--litter-samples`** against these baselines. Windows draw from ~3
+  replacement events against a ceiling of `s_db`, from the start — the largest
+  visible untouched lever.
+- **`p_mingen` in COMP** (0.8 vs 0.3). In flight as a matched pair.
+- **Contiguous vs convex**, never separated (`p_convex = 0.5` throughout); COMP
+  and MIX may want different geometry.
+- **The saturation proxy against a heatmap** (§12).
 
-The −0.06…−0.12 g/move figure the band is sized against (experiment 4) comes
-from a benchmark in which 79.6% of hits were trivial identity/reorder splices,
-which the identity guard (§2.3) now refuses. Whether that lowers the shed rate
-or redirects those rounds into real shrinks further down the descent is exactly
-what the experiment settles.
+⚠️ Everything measured before the identity guard (`b5a7dc7a`) is superseded: it
+refuses ~1 candidate in 6, so any earlier dose or splice figure counted no-ops
+as re-encodings.
+
+⚠️ **Unique log name per launch, and `touch` after rsync.** `>` without
+`O_APPEND` lets two runs overwrite each other's regions; a preserved mtime lets
+cargo skip a rebuild. Both have cost runs here.
