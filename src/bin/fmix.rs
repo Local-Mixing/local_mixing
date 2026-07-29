@@ -26,9 +26,10 @@ use local_mixing::postmix::xgate::{XGate, max_wire};
 #[derive(Parser, Debug)]
 #[command(name = "fmix")]
 struct Args {
-    /// Input circuit file
-    #[arg(long)]
-    input: String,
+    /// Input circuit file. Not required when --resume is given: a resume
+    /// rebuilds the circuit, its metadata and the original from the state file.
+    #[arg(long, required_unless_present = "resume")]
+    input: Option<String>,
     /// Input format: mpmct1 | g57
     #[arg(long, default_value = "mpmct1")]
     input_format: String,
@@ -390,19 +391,25 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let (gates, file_wires): (Vec<XGate>, usize) = match args.input_format.as_str() {
-        "mpmct1" => format::read_mpmct(&args.input).expect("read mpmct1 circuit"),
-        "g57" => {
-            let g = format::read_g57_file(&args.input).expect("read g57 circuit");
-            let w = max_wire(&g) as usize + 1;
-            (g, w)
-        }
-        other => panic!("unknown --input-format {other}"),
+    // A resume carries its own circuit, so there is nothing to read here.
+    let (gates, file_wires): (Vec<XGate>, usize) = match (&args.resume, &args.input) {
+        (Some(_), _) => (Vec::new(), 0),
+        (None, Some(path)) => match args.input_format.as_str() {
+            "mpmct1" => format::read_mpmct(path).expect("read mpmct1 circuit"),
+            "g57" => {
+                let g = format::read_g57_file(path).expect("read g57 circuit");
+                let w = max_wire(&g) as usize + 1;
+                (g, w)
+            }
+            other => panic!("unknown --input-format {other}"),
+        },
+        (None, None) => unreachable!("clap requires --input unless --resume"),
     };
     let num_wires = file_wires.max(max_wire(&gates) as usize + 1);
     let input_len = gates.len();
     let comp0 = gates.iter().filter(|g| g.comp).count();
     let target = args.target_size.unwrap_or(input_len);
+    if args.resume.is_none() {
     println!(
         "[fmix] input: {} gates ({} g57 fossils), {} wires; k_max={} split_damp={} split_base={} dir_p={} dir_q={} target={} temp={} moves={} seed={}",
         input_len,
@@ -418,6 +425,7 @@ fn main() {
         args.moves,
         args.seed
     );
+    }
     if args.p_twist > 0.0 {
         println!(
             "[fmix] first-class twist rounds ON: p_twist={} (w-twist-* weights serve as type ratios)",
@@ -570,6 +578,13 @@ fn main() {
             mx
         }
         None => Mixer::new(gates, num_wires, params),
+    };
+    // A resumed run has no input file, so the summary's "before" figures must
+    // come from the resumed circuit or it reports 0 -> N and reads as if the
+    // chain started from nothing.
+    let (input_len, comp0) = match &args.resume {
+        Some(_) => (mixer.arena.len(), mixer.remaining_g57()),
+        None => (input_len, comp0),
     };
     if let Some(path) = &args.db_record {
         mixer.enable_db_record(path);
