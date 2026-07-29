@@ -752,6 +752,9 @@ pub struct MixCounters {
     // came from the curated store.
     pub db_identity_skips: u64,
     pub db_curated_hits: u64,
+    // Curated replacements refused because they did not verify (see
+    // try_db_splice_curated).
+    pub db_curated_rejected: u64,
     // NOT-into-comp=1 absorptions (Merge::Absorb): the channel that lets a
     // twist bracket be swallowed by a neighbouring g57 rather than paid for.
     pub merges_absorb: u64,
@@ -1042,6 +1045,7 @@ impl MixCounters {
             self.canary_fallthrough,
             self.litter_banned,
             self.twist_placed,
+            self.db_curated_rejected,
             self.twist_place_fallback,
             self.dmin_windows,
             self.dmin_shorter,
@@ -1130,6 +1134,7 @@ impl MixCounters {
             canary_fallthrough: next_u64(&mut it)?,
             litter_banned: next_u64(&mut it)?,
             twist_placed: next_u64(&mut it)?,
+            db_curated_rejected: next_u64(&mut it)?,
             twist_place_fallback: next_u64(&mut it)?,
             dmin_windows: next_u64(&mut it)?,
             dmin_shorter: next_u64(&mut it)?,
@@ -1837,6 +1842,88 @@ impl Mixer {
             cur = self.arena.neighbor(cur, Dir::R);
         }
         if n == 0 { (0.0, 0.0) } else { (card_sum / n as f64, span_sum / n as f64) }
+    }
+
+    /// Log-bucketed histogram, rendered as `lo-hi:count` for non-empty buckets.
+    fn log_hist(vals: &[u64]) -> String {
+        let mut b = [0u64; 32];
+        for &v in vals {
+            let k = if v == 0 { 0 } else { 64 - (v.leading_zeros() as usize) };
+            b[k.min(31)] += 1;
+        }
+        let mut out: Vec<String> = Vec::new();
+        for (k, &c) in b.iter().enumerate() {
+            if c == 0 {
+                continue;
+            }
+            if k == 0 {
+                out.push(format!("0:{c}"));
+            } else {
+                let lo = 1u64 << (k - 1);
+                let hi = (1u64 << k) - 1;
+                if lo == hi { out.push(format!("{lo}:{c}")) } else { out.push(format!("{lo}-{hi}:{c}")) }
+            }
+        }
+        out.join(" ")
+    }
+
+    /// Ancestry in absolute units, with shapes rather than means.
+    ///
+    /// Three views of the same sets. `anc` is per-gate cardinality -- how many
+    /// ORIGINAL gates a current gate descends from. `span` is per-gate, the
+    /// index distance between the first and last of those ancestors, in
+    /// original-circuit gate positions: how far apart in the input the material
+    /// meeting in one gate came from. `fanout` is the dual, per INPUT gate: how
+    /// many current gates carry any information about it. The two are linked by
+    /// double counting, mean_fanout = mean_anc * gates / inputs, so quoting only
+    /// the mean of one hides nothing -- but the distributions differ, and it is
+    /// the tails that say whether spreading is uniform or a few gates are doing
+    /// all the mixing.
+    pub fn anc_report(&self) -> String {
+        if self.anc_words == 0 {
+            return String::new();
+        }
+        let mut cards: Vec<u64> = Vec::new();
+        let mut spans: Vec<u64> = Vec::new();
+        let mut fanout = vec![0u64; self.anc_m];
+        let mut bits = vec![0u64; self.anc_words];
+        let mut cur = self.arena.head();
+        while cur != NIL {
+            bits.iter_mut().for_each(|w| *w = 0);
+            self.anc_or_into(self.meta_of(cur).litter, &mut bits);
+            let mut lo = usize::MAX;
+            let mut hi = 0usize;
+            let mut card = 0u64;
+            for (wi, &w) in bits.iter().enumerate() {
+                let mut x = w;
+                while x != 0 {
+                    let b = x.trailing_zeros() as usize;
+                    let idx = wi * 64 + b;
+                    if idx < self.anc_m {
+                        fanout[idx] += 1;
+                        card += 1;
+                        lo = lo.min(idx);
+                        hi = hi.max(idx);
+                    }
+                    x &= x - 1;
+                }
+            }
+            if card > 0 {
+                cards.push(card);
+                spans.push((hi - lo) as u64);
+            }
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        let mean = |v: &[u64]| if v.is_empty() { 0.0 } else { v.iter().sum::<u64>() as f64 / v.len() as f64 };
+        format!(
+            "[fmix] ancestry: anc mean={:.1} [{}] | span(input gates) mean={:.0} [{}] | fanout/input mean={:.0} [{}]",
+            mean(&cards),
+            Self::log_hist(&cards),
+            mean(&spans),
+            Self::log_hist(&spans),
+            mean(&fanout),
+            Self::log_hist(&fanout)
+        )
     }
 
     /// Drop ancestor sets for litters with no live gates. Without this the map
@@ -3323,7 +3410,8 @@ impl Mixer {
                     self.count_db_hit(mode);
                     continue;
                 }
-                if self.try_db_splice(
+                if self.try_db_splice_curated(
+                    res.chosen_curated,
                     &ids[lo..=hi],
                     g1dir,
                     prefix,
@@ -3408,12 +3496,13 @@ impl Mixer {
             return false;
         }
 
+        let curated_pick = res.chosen_curated;
         let Some(replacement) = res.chosen else {
             self.record_db_attempt(&window, match_count, None);
             self.count_db_miss(mode);
             return false;
         };
-        self.try_db_splice(&ids, g1dir, &window, replacement, match_count, mode)
+        self.try_db_splice_curated(curated_pick, &ids, g1dir, &window, replacement, match_count, mode)
     }
 
     fn count_db_hit(&mut self, mode: DbMode) {
@@ -3434,8 +3523,9 @@ impl Mixer {
     // nodes `ids` (whose gates are `window`). Returns false only when the
     // combined support exceeds verify_rewrite's 24-wire cap with verification
     // on — declined rather than spliced unchecked, recorded as a miss.
-    fn try_db_splice(
+    fn try_db_splice_curated(
         &mut self,
+        from_curated: bool,
         ids: &[u32],
         g1dir: Dir,
         window: &[XGate],
@@ -3460,10 +3550,25 @@ impl Mixer {
                 self.count_db_miss(mode);
                 return false;
             }
-            assert!(
-                rules::verify_rewrite(window, &replacement),
-                "DB replacement verification failed: {window:?} -> {replacement:?}"
-            );
+            if !rules::verify_rewrite(window, &replacement) {
+                // A CURATED replacement that fails verification is refused and
+                // counted, not fatal. Curated entries are halves of split
+                // minimal identities, and a half need not restore the helper
+                // wires it borrows -- the observed failures write a wire the
+                // window never touched. Until that invariant is pinned down,
+                // treat curated as best-effort and let the run continue on the
+                // regular store. A REGULAR failure stays fatal: there it would
+                // mean the store or the canonicalisation is wrong, which is not
+                // something to paper over.
+                assert!(
+                    from_curated,
+                    "DB replacement verification failed: {window:?} -> {replacement:?}"
+                );
+                self.counters.db_curated_rejected += 1;
+                self.record_db_attempt(window, match_count, None);
+                self.count_db_miss(mode);
+                return false;
+            }
         }
 
         self.record_db_attempt(window, match_count, Some(&replacement));
@@ -4379,7 +4484,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3}",
+            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -4415,6 +4520,7 @@ impl Mixer {
             c.db_build_aborts,
             c.db_identity_skips,
             c.db_curated_hits,
+            c.db_curated_rejected,
             c.db_g57_hits,
             c.db_g57_rounds,
             c.cross_r1,
@@ -4477,6 +4583,10 @@ impl Mixer {
                 0.0
             }
         );
+        let anc = self.anc_report();
+        if !anc.is_empty() {
+            println!("{anc}");
+        }
         let sizes = self.splice_size_line();
         if !sizes.is_empty() {
             println!("[fmix] splice sizes out->in: {sizes}");
@@ -5246,7 +5356,8 @@ mod mix_tests {
         mx.set_meta(ids[1], Meta { dgen: 7, ..m1 });
         let window = vec![g.clone(), g.clone()];
         let replacement = vec![h.clone(), h.clone()]; // also an identity: verifies
-        assert!(mx.try_db_splice(
+        assert!(mx.try_db_splice_curated(
+            false,
             &ids[..2],
             Dir::R,
             &window,
@@ -5268,7 +5379,8 @@ mod mix_tests {
         mx.set_meta(ids[1], Meta { dgen: 7, ..m1 });
         let window = vec![h.clone(), h.clone()];
         let replacement = vec![g.clone(), g.clone()];
-        assert!(mx.try_db_splice(
+        assert!(mx.try_db_splice_curated(
+            false,
             &ids[..2],
             Dir::R,
             &window,
@@ -5286,7 +5398,8 @@ mod mix_tests {
         }
         let window = vec![g.clone(), g.clone()];
         let replacement = vec![h.clone(), h.clone()];
-        assert!(mx.try_db_splice(
+        assert!(mx.try_db_splice_curated(
+            false,
             &ids[..2],
             Dir::R,
             &window,
