@@ -448,7 +448,18 @@ where
         if !seen_keys.insert(key) {
             continue;
         }
+        // CURATED IS FORWARD-ONLY. The ssg path restricts it the same way and
+        // the store docs say so outright: "curated lookup itself uses the
+        // forward canonical form; the regular fallback may also try the
+        // reversed form." Probing curated with the reverse key returns entries
+        // that do not survive being placed in the forward orientation -- caught
+        // by the per-splice verification as a non-equivalent replacement, on a
+        // window whose support the replacement did not even share. Overriding
+        // the restriction because "both keys are already computed" was wrong.
         for from_curated in [true, false] {
+            if from_curated && *reversed {
+                continue;
+            }
             let Some(value) = lookup(&key, from_curated) else { continue };
             for friend in decode_value(&value) {
                 if let Some(gates) = friend_to_xgates(

@@ -463,7 +463,11 @@ fn main() {
             "--curated needs FROZEN_CURATED_DIR; refusing to run, because \
              degrading silently to regular-only would look like a measurement"
         );
-        println!("[fmix] curated ON: curated matches preferred over regular, any size");
+        assert!(
+            !args.no_db_verify,
+            "--curated with --no-db-verify is refused: the curated store has already been              observed returning a non-equivalent replacement (forward/reverse key confusion),              and the per-splice check is what caught it"
+        );
+        println!("[fmix] curated ON: curated matches preferred over regular, any size (forward key only)");
     }
     if args.db_advance {
         println!(
