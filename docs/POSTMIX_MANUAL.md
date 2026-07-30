@@ -119,6 +119,34 @@ one twist rewrites `O(window)` gates. Neg/swap are Hamming isometries (invisible
 to avalanche/difference gauges); the transvection twist is the affine rung that
 is not.
 
+**g57-word brackets** (`--twist-g57`, off by default; needs `--p-twist > 0`).
+Replaces the twist bracket packets with **adaptive all-g57 words** — the ssg
+hidden-SAMF mechanism, XGate-native. Pure swap only (`--twist-neg-p` is
+ignored on this path). Each bracket seam asks a built-in BFS+MITM engine
+(`swap_words.rs`: 16-state perms packed in `u64` over the 24 g57 gates on 4
+abstract wires; ~10 ms one-time build) for the shortest all-g57 word
+realizing `ctx · S` (opening) / `S · ctx` (closing), consuming up to 3
+neighborhood gates of any shape into the bracket — non-g57 context is worth
+several g57s, so a seam can even net negative (a twist that shrinks the
+circuit). Placement is anchor-first (candidate wire pairs from the boundary
+gates' own pins, plus one uniform pair for fresh-wire routing), a bare seam
+may **slide** its bracket outward (≤ 512 gates, extending the conjugated
+window) to a g57 pinning both twist wires, and the two ends are accepted
+**jointly** — a window whose best plan nets worse than +8 total is redrawn
+(≤ 4 tries). Every inserted gate takes the ballistic birth-advance
+**unconditionally** (the `--db-advance` treatment, aimed outward; independent
+of that flag, which still governs DB splice products only), and consumed
+context unions its litters' ancestor sets into the replacement litter,
+DB-splice style. Every splice verifies against the reference 3-CNOT packet
+under local verify. Env kill-switches for A/Bs: `TWIST_G57_NO_SLIDE=1`,
+`TWIST_G57_NO_RETRY=1` (both features default ON). Report line:
+`twist-g57: consumed= emitted= net/seam[hist] solves= avg_us= slides=
+retries=`. Measured (20k n=64 sample, C schedule, rate 0.002): ~40% smaller
+circuits and 5–7× the ancestry transport vs the legacy 3-CNOT swap brackets;
+this path emits `ORIGIN_SYNTH` comp=1 material, so `comp=`/`shaped=` read
+population form under it (same caveat as `p_db > 0`). Spec and measurements:
+`docs/FMIX_MENU.md` §3.3.1, `docs/G57_TWIST_BRACKETS.pdf`.
+
 **Contraction moves.** With probability `--undo-frac` first try a **journal
 undo**: exactly reverse a recorded crossing while all its pieces are alive
 (arena-stamp-validated). Crossings are the one expansion the pairwise

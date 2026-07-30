@@ -1,0 +1,269 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{longtable}
+\usepackage[T1]{fontenc}
+\newcommand{\code}[1]{\texttt{#1}}
+\title{G57 Twist Brackets: Adaptive All-g57 Bracket Insertion for \code{fmix},\\
+and the Measurements That Validate It}
+\author{local\_mixing working notes}
+\date{2026-07-30}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The \code{fmix} conjugation twist used to bracket its window with two 3-CNOT
+swap packets --- six \code{comp=0} single-control gates per twist, a distinctive
+syntactic fingerprint that the frozen store cannot digest. This note describes
+the replacement (\code{--twist-g57}, commits \code{4e9dbf40} and
+\code{83ae0d11}): each bracket is spelled as a shortest \emph{all-g57 word}
+solved online per seam, sited adaptively so it absorbs neighborhood gates ---
+the hidden-SAMF mechanism of \code{ssg}, made XGate-native. We describe the
+word engine, the two-generation placer, and the measurement campaign:
+A/B/C-schedule mixing runs at two twist rates against no-twist and legacy-twist
+baselines, a placement factorial, an ancestry-instrument audit, and a
+functional-legibility audit (degree-1/degree-2 affine plates and the stress
+battery). Headline: at rate $0.002$ the new brackets give $\sim$40\% smaller
+circuits and 5--7$\times$ the ancestry transport of the legacy packets; and
+across \emph{all} twist variants and rates, no functional instrument in the
+battery detects either harm or benefit from twisting at these doses --- the
+one measurable twist effect is syntactic (write-census smearing).
+\end{abstract}
+
+\section{The bracket problem}
+
+A twist rewrites $W \mapsto P\,(P W P)\,P \equiv W$: it conjugates a window's
+interior in place and pays for two bracket packets $P$. With
+$P = \mathrm{swap}(a,b)$ realized as 3 CNOTs per side, every twist deposits six
+\code{comp=0} single-control gates. Three problems: (i) the packets are a
+syntactic fingerprint (nothing else in the mixed bulk looks like them);
+(ii) the frozen store's match rate collapses on CNOT-bearing windows (the
+$m{=}6$ cliff), so the packets are indigestible and accumulate; (iii) they are
+pure cost --- placed uniformly at random, nothing ever cancels.
+
+The fix follows the \code{ssg} hidden-SAMF idea: spell the bracket in the bulk
+material's own alphabet (g57 gates, \code{comp=1} width-2), and \emph{site} it
+where the neighborhood pays part of the bill.
+
+\section{The swap-word engine}
+
+The bracket seam only needs the shortest all-g57 word for a
+\emph{permutation}: $R \equiv \mathit{ctx}\cdot S$ at the opening seam,
+$S\cdot \mathit{ctx}$ at the closing seam, where $\mathit{ctx}$ is a few real
+neighborhood gates and $S = \mathrm{swap}(a,b)$. This is answerable online,
+with no precomputed replacement database: on 4 abstract wires a 16-state
+permutation packs into one \code{u64}; the radius-4 BFS ball over the 24 g57
+gates (165{,}443 permutations) builds once in $\sim$10\,ms, and a
+meet-in-the-middle scan answers any target up to word length 7 in
+$\sim$200--350\,$\mu$s. The tables are target-independent: one engine serves
+every context shape, any consumption depth, 3-wire supports, non-g57
+neighbors, and (later) the negation twist variants. An earlier design ---
+a SQLite enumeration of 218k syntactic contexts requiring offline synthesis
+--- was retired in favor of this after its $\le k{+}3$ replacement contract
+proved unachievable at $k{=}2$ in its own scope (every such context sits at
+distance 6).
+
+Ground facts (exhaustive; Appendix~A for the full tables):
+$\mathrm{dist}(S) = 6$ over the g57 alphabet on 3 \emph{and} 4 wires ---
+the fourth wire buys nothing; there are exactly \textbf{64} minimal words
+(32 per choice of helper wire, none genuinely 4-wire). Consuming $k$
+neighborhood gates nets $6-2k$ when they cancel: $k{=}1$ always possible in
+the abstract (8 of 24 gates are attachable for fixed $S$), $k{=}2$ net $+2$,
+$k{=}3$ net $0$ (48\% of same-support triples), and with \emph{non-g57}
+context (worth several g57s each) a seam can net \emph{negative} --- a twist
+that shrinks the circuit.
+
+\section{The placer}
+
+\textbf{v1 (anchor-first).} Candidate wire pairs $(a,b)$ are seeded from the
+boundary gates' own pins (a uniformly random $b$ almost never lands inside
+the 4-wire seam support), plus one uniform pair to keep fresh-wire routing on
+the menu. Both seams are solved for every candidate; cheapest total net wins.
+Each seam may consume up to 3 context gates of any shape. Every splice is
+verified against the reference 3-CNOT packet under local verification.
+
+\textbf{v1's failure mode.} The per-seam net histogram showed almost exactly
+\emph{one} bare (+6) seam per twist: the closing bracket inherits $(a,b)$
+from the opening seam, and its fixed neighbor almost never pins both wires.
+
+\textbf{v2 (slide + joint acceptance).} Two composable fixes, each with an
+env kill-switch for A/Bs (\code{TWIST\_G57\_NO\_SLIDE},
+\code{TWIST\_G57\_NO\_RETRY}; both default on):
+\begin{itemize}
+\item \emph{Slide}: a seam that stays bare walks its bracket outward (up to
+512 gates, extending the conjugated window over what it passes --- window
+length was a random draw, and a relabel is far cheaper than the word the
+slide saves) to the next g57 pinning both twist wires.
+\item \emph{Joint acceptance}: both ends are solved before committing; a
+window whose best plan nets worse than $+8$ in total is redrawn (up to 4
+tries), so one side stays bare only when its partner's match pays for it
+(net $\le +2$) or every redraw failed.
+\end{itemize}
+
+\textbf{Always-advance.} Every inserted gate takes the ballistic
+birth-advance unconditionally (the \code{--db-advance} treatment, aimed
+outward per bracket) --- bracket material rides away from the seam instead of
+sitting on the window edge. This is independent of the \code{--db-advance}
+flag itself, which still governs DB splice products only.
+
+\textbf{Ancestry.} Consumed context unions its litters' ancestor sets into
+the replacement litter, exactly as a DB splice would (v1 dropped them ---
+an instrument bug worth $+1.5$--$10\%$ of \code{anc}, isolated by rerunning
+v1-placement arms with only the recording changed).
+
+\section{Mixing experiments}
+
+All runs: the same 20{,}000-gate, 64-wire sample (the first $3/7$ of a Gray-fold
+gadgetized sliced sandwich, $n{=}16$), seed 101, 2M moves, ancestry recording
+on, C schedule (\code{--p-mix 0.1}) unless noted; ``legacy'' is the shipped
+swap-family 3-CNOT packet twist, rates are \code{--p-twist}.
+
+\begin{table}[h]\centering\small
+\begin{tabular}{lrrrr}
+\toprule
+C-schedule arm & size & anc & span & polf \\
+\midrule
+no twist                & 48{,}493  & 7{,}941 & 8{,}626 & 0.000 \\
+legacy 0.002            & 133{,}665 & 425     & 1{,}111 & 0.422 \\
+legacy 0.01             & 262{,}115 & 62      & 369     & 0.487 \\
+g57 v1 0.002            & 86{,}696  & 2{,}604 & 3{,}374 & 0.000 \\
+g57 v1 0.01             & 216{,}281 & 637     & 1{,}341 & 0.000 \\
+g57 v2 0.002            & \textbf{78{,}233} & \textbf{3{,}038} & \textbf{3{,}895} & 0.000 \\
+g57 v2 0.01             & \textbf{168{,}192} & \textbf{921} & \textbf{1{,}625} & 0.000 \\
+\bottomrule
+\end{tabular}
+\caption{Final size and ancestry measures, C arm. The A and B schedules give
+the same ordering. \code{polf}$=0$ because the g57 path is pure swap --- the
+negation arms (the polarity-mixing capability) still use the legacy packet;
+their word tables are the open extension.}
+\end{table}
+
+At matched \emph{effective work} (cumulative moves per gate), the ancestry cost
+of twisting is: legacy $-89\%$ vs.\ no-twist, g57 $-45\%$ --- the new
+brackets keep 5--6$\times$ more transport at equal dose, \emph{and} end
+smaller, despite emitting more gates per twist ($\sim$8--9 net vs.\ 6): the
+brackets are store-digestible, so COMP chews them back down instead of
+accumulating CNOT bulk.
+
+\textbf{Placement factorial} (C arm, rate 0.01): mean net gates per seam
+$4.51$ (v1) $\to 4.38$ (slide only) $\to 3.93$ (retry only) $\to
+\mathbf{3.72}$ (both); bare seams $50\%\to35\%$; size $216\mathrm{k}\to
+168\mathrm{k}$; anc $637\to921$. The joint-acceptance retry is the larger
+lever; the slide composes. Cost: $2.6\times$ the MITM solves and $\sim$1.6
+extra window draws per twist --- microseconds per move at production rates.
+
+\begin{figure}[h]\centering
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/abc_twistrate_g57v2_20260730.png}
+\caption{A/B/C $\times$ twist rate: legacy packets (dashed/dotted) vs.\ g57 v2
+brackets (dash-dot styles), no-twist solid. Panels: anc, span, size, dmin vs.\
+effective work.}
+\end{figure}
+
+\section{Is the ancestry drop a mixing loss? The instrument audit}
+
+Twists still cost \code{anc}/\code{span} relative to no-twist even under v2.
+Two audits asked whether that reading is real.
+
+\textbf{(1) Recording audit.} A conditional census over all run states
+(parsing litters and ancestor sets) shows the reported \code{anc} was
+\emph{already} conditional on non-empty sets, and the empty-ancestry gate
+fraction is moderate (3--21\% for g57, up to 46\% for legacy at 0.01) --- so
+the drop is not mean-deflation by ancestry-less brackets; conditioning
+changes nothing about the ordering. The union-recording fix (above) moves
+\code{anc} by only $+1.5$--$10\%$.
+
+\textbf{(2) Functional audit.} Affine-reconstruction plates
+(\code{hmap\_affine}) of the \emph{input circuit's} prefix progress against
+each mixed circuit, read by the ridge measure:
+\begin{itemize}
+\item Degree 1: identical for all seven arms ($\rho = 1.000$, perm
+$z \approx 7.1$, depth $0.22$--$0.26$). \emph{Caveat discovered in the
+process:} every current twist type is an affine conjugation and the degree-1
+measure is affine-invariant --- it is \textbf{blind to twist effects by
+construction}, in both directions.
+\item Degree 2 (2{,}081 regressors --- not affine-blind): the diagonal is at
+ceiling in every arm ($\rho = 1.000$, $z \approx 4.5$); depth $0.305$
+(no twist) vs.\ $0.26$--$0.30$ (twisted) --- at most a marginal hint of
+benefit, within noise.
+\item Stress battery (bias-sensitive statistical probes; single-wire /
+XOR-pair predictors on state bits, parities, and trajectory bits): no
+benefit --- prominence $0.26$--$0.31$ above floor in \emph{every} arm
+including no-twist, with progress monotonicity $\rho = 0.85$--$0.99$,
+$z = 7$--$9$ everywhere. The progress clock is readable by near-trivial
+predictors in all arms; no twist dose or variant dents it.
+\item The one measurable twist effect is \emph{syntactic}: the per-wire
+write-count bimodality gap falls from $0.283$ (no twist) to $0.09$--$0.22$
+under twists.
+\end{itemize}
+
+\textbf{Verdict.} At these doses, twisting costs real ancestry transport and
+size while buying nothing measurable on functional channels; its measurable
+value is syntactic-census smearing. The ancestry gap \emph{between twist
+variants} is therefore not a mixing-quality gap --- but the case for twisting
+at all now rests on adversary classes not yet in the battery. Practical
+recommendation: keep \code{--p-twist} at $0.002$ or below, use
+\code{--twist-g57} so the dose costs 5--6$\times$ less, and treat any
+proposal to raise twist rates as requiring a demonstrated adversary it
+defeats.
+
+\begin{figure}[h]\centering
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/ridge2_g57_20260730.png}
+\caption{Degree-2 plates, six of the seven C-family arms: the input-progress
+diagonal survives identically everywhere.}
+\end{figure}
+
+\section{Usage}
+
+\begin{itemize}
+\item \code{--p-twist R --twist-g57} --- the full v2 path: all-g57 words,
+anchor-first seams, context consumption, slide, joint acceptance,
+unconditional birth-advance, ancestry union. Pure swap only
+(\code{--twist-neg-p} is ignored on this path).
+\item \code{TWIST\_G57\_NO\_SLIDE=1} / \code{TWIST\_G57\_NO\_RETRY=1} ---
+env kill-switches for the two v2 placement features (A/B use).
+\item Omit \code{--twist-g57} for the legacy 3-CNOT swap-family packets
+(\code{--twist-neg-p} active there).
+\item \code{--db-advance} --- separate flag; birth-advance for \emph{DB
+splice} products. The g57 bracket path advances its insertions regardless.
+\item Report line: \code{twist-g57: consumed= emitted= net/seam[hist]
+solves= avg\_us= slides= retries=}. Note: this path emits
+\code{ORIGIN\_SYNTH} \code{comp=1} material, so \code{comp=}/\code{shaped=}
+read population form under it (same caveat as \code{p\_db>0}).
+\item Tuning constants (compile-time, \code{mix.rs}):
+\code{TG\_SLIDE\_CAP}=512, \code{TG\_SLIDE\_TRIES}=3, \code{TG\_RETRIES}=4,
+\code{TG\_ACCEPT\_NET}=+8.
+\end{itemize}
+
+\appendix
+\section{The replacement table}
+
+The complete machine-generated table lives in
+\code{docs/G57\_TWIST\_REPLACEMENTS.txt}: \textbf{T1}, all 64 minimal
+(length-6) all-g57 words realizing $S=\mathrm{swap}(a,b)$ (32 per helper
+wire; gate $[t,n,p]$ means $t \mathrel{\hat{}}= n \lor \lnot p$);
+\textbf{T2}, the 12 ordered pair-consumption identities on $\{a,b,c\}$
+($h_1\,h_2\,S \equiv R$ with $|R|=4$, net $+2$); \textbf{T3}, the 8
+single-gate attachment identities ($h\,S \equiv R$ with $|R|=5$, net $+4$).
+The engine does not read this table --- it re-derives everything from the
+BFS ball at startup --- but the table is the exhaustive human-checkable
+inventory of what the seams can do at $k\le2$ on a 3-wire support.
+Representative entries:
+
+\begin{center}\small
+\begin{tabular}{ll}
+\toprule
+kind & identity \\
+\midrule
+bare word & $S \equiv [a,b,c]\,[a,c,b]\,[b,a,c]\,[b,c,a]\,[a,b,c]\,[a,c,b]$ \\
+pair, net $+2$ & $[a,b,c]\,[a,c,b]\;S \equiv [b,a,c]\,[b,c,a]\,[a,b,c]\,[a,c,b]$ \\
+attach, net $+4$ & $[a,b,c]\;S \equiv [a,c,b]\,[b,a,c]\,[b,c,a]\,[a,b,c]\,[a,c,b]$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}
