@@ -112,7 +112,9 @@ fn reduce(mut esop: Esop) -> Esop {
         esop.cubes.swap_remove(i);
         match merge {
             Merge::Cancel => {}
-            Merge::XFuse(g) | Merge::DropLit(g) | Merge::Subsume(g) => xor_add(&mut esop, g),
+            Merge::XFuse(g) | Merge::DropLit(g) | Merge::Subsume(g) | Merge::Absorb(g) => {
+                xor_add(&mut esop, g)
+            }
         }
     }
     esop
