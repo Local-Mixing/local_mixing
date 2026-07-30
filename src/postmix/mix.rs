@@ -531,6 +531,18 @@ pub struct MixParams {
     // made of. Cost is |litters| x |input| bits, so this is a small-input
     // instrument: it refuses to arm above `ANC_MAX_INPUT` gates.
     pub ancestors: bool,
+    /// SAMPLED ancestry: instead of the full ancestor set per litter (which
+    /// costs |input| bits and caps the instrument at 20k input gates), track
+    /// only `anc_samples` randomly chosen input gates -- "tracers" -- and for
+    /// each one the set of current gates descended from it. Cost is a fixed
+    /// K bits per litter regardless of input size, so this scales to production
+    /// circuits. 0 = off; takes precedence over `ancestors` when both are set.
+    pub anc_samples: usize,
+    /// Tracer-selection seed. Default 0 means the tracer set is a function of
+    /// (input size, K) alone, so it is identical across runs and across a
+    /// resume -- which makes schedules comparable and makes a resumed run track
+    /// the same input gates. Vary it for independent replicates.
+    pub anc_sample_seed: u64,
     // p_comp_g57: probability that a COMP-DB attempt restricts itself to PURE
     // g57 material and starts its descent at s_db_g57 instead of the usual
     // window. Pure-g57 windows are the only ones that survive length: the
@@ -720,6 +732,8 @@ impl Default for MixParams {
             db_advance: false,
             curated: false,
             ancestors: false,
+            anc_samples: 0,
+            anc_sample_seed: 0,
             // 0.98 is the historical value: its 2% expansion floor above
             // target is a structural growth source, but it is ALSO what keeps
             // crossings running when the walk sits at target -- and crossings
@@ -1011,6 +1025,11 @@ pub struct Mixer {
     anc: HashMap<u64, Vec<u64>>,
     anc_words: usize,
     anc_m: usize,
+    // Sampled mode: the bitset universe is the K tracers rather than all
+    // `anc_m` input gates, and `anc_tracers[t]` is the input-gate index that
+    // bit `t` stands for (sorted). Empty in exact mode.
+    anc_sampled: bool,
+    anc_tracers: Vec<u32>,
     original: Vec<XGate>,
     num_wires: usize,
     pub moves_done: u64,
@@ -1570,9 +1589,21 @@ impl Mixer {
         // input gates and their width comes from the state file. A resumed 1.4M
         // gate circuit whose input was 20k would trip a guard meant for the
         // input. Restore the real setting and the recorded widths below.
+        // Same reasoning applies to --anc-samples: tracers index the ORIGINAL
+        // input gates, but new_with_db would draw them against the RESUMED gate
+        // count. Construct with sampling off and regenerate below from the
+        // restored anc_m.
         let ancestors_wanted = params.ancestors;
-        let mut mx = Mixer::new_with_db(gates, num_wires, MixParams { ancestors: false, ..params }, db);
+        let anc_samples_wanted = params.anc_samples;
+        let anc_sample_seed = params.anc_sample_seed;
+        let mut mx = Mixer::new_with_db(
+            gates,
+            num_wires,
+            MixParams { ancestors: false, anc_samples: 0, ..params },
+            db,
+        );
         mx.params.ancestors = ancestors_wanted;
+        mx.params.anc_samples = anc_samples_wanted;
         mx.original = original;
         mx.moves_done = moves_done;
         mx.counters = MixCounters::from_line(&counters_line).ok_or_else(|| bad("counters"))?;
@@ -1600,6 +1631,24 @@ impl Mixer {
         mx.anc = anc;
         mx.anc_words = anc_hdr[0].parse().unwrap_or(0);
         mx.anc_m = anc_hdr[1].parse().unwrap_or(0);
+        // The tracer set is NOT serialised -- it is a pure function of
+        // (anc_m, K, anc_sample_seed), all of which survive a resume, so it
+        // regenerates identically without touching the state format. The
+        // assertion catches a resume that changed K (or the seed, when that
+        // changes K's rounding): the stored masks would otherwise be read
+        // against a different tracer-to-input mapping, silently.
+        if anc_samples_wanted > 0 && mx.anc_m > 0 {
+            let k = anc_samples_wanted.min(mx.anc_m);
+            assert_eq!(
+                mx.anc_words,
+                k.div_ceil(64),
+                "resume changed --anc-samples ({k} tracers now, {} words stored): the recorded \
+                 masks index the ORIGINAL tracer set and cannot be reinterpreted",
+                mx.anc_words
+            );
+            mx.anc_sampled = true;
+            mx.anc_tracers = Self::pick_tracers(mx.anc_m, k, anc_sample_seed);
+        }
         for (i, m) in metas.into_iter().enumerate() {
             mx.set_meta(i as u32, m);
         }
@@ -1719,15 +1768,30 @@ impl Mixer {
             })
             .collect();
         let db_mode0 = params.db_mode;
-        let (anc_words0, anc_m0) = if params.ancestors {
+        // Ancestry universe: SAMPLED (K tracer input gates, fixed cost, scales)
+        // takes precedence over EXACT (all input gates, |input| bits/litter).
+        let (anc_words0, anc_m0, anc_sampled0, anc_tracers0) = if params.anc_samples > 0 {
+            let k = params.anc_samples.min(n);
+            (k.div_ceil(64), n, true, Self::pick_tracers(n, k, params.anc_sample_seed))
+        } else if params.ancestors {
             assert!(
                 n <= 20_000,
-                "--ancestors stores |input| bits per litter; {n} input gates is past                  the small-input envelope this instrument is for"
+                "--ancestors stores |input| bits per litter; {n} input gates is past                  the small-input envelope this instrument is for (use --anc-samples for large inputs)"
             );
-            (n.div_ceil(64), n)
+            (n.div_ceil(64), n, false, Vec::new())
         } else {
-            (0, 0)
+            (0, 0, false, Vec::new())
         };
+        // In sampled mode the tracers' own singleton sets are stored EXPLICITLY
+        // (K entries), which is what lets `anc_or_into` drop the implicit
+        // singleton rule: a non-tracer input gate then contributes nothing, so
+        // untracked lineage costs no memory at all.
+        let mut anc0: HashMap<u64, Vec<u64>> = HashMap::new();
+        for (t, &gi) in anc_tracers0.iter().enumerate() {
+            let mut bits = vec![0u64; anc_words0];
+            bits[t / 64] |= 1u64 << (t % 64);
+            anc0.insert(gi as u64, bits);
+        }
         let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
         for (i, g) in gates.iter().enumerate() {
             index.entry(key_of(g)).or_default().push(i as u32);
@@ -1753,9 +1817,11 @@ impl Mixer {
             tabu: VecDeque::new(),
             next_event: 1,
             next_litter: n as u64,
-            anc: HashMap::new(),
+            anc: anc0,
             anc_words: anc_words0,
             anc_m: anc_m0,
+            anc_sampled: anc_sampled0,
+            anc_tracers: anc_tracers0,
             original: gates,
             num_wires,
             moves_done: 0,
@@ -1860,9 +1926,31 @@ impl Mixer {
             for (o, x) in out.iter_mut().zip(v.iter()) {
                 *o |= *x;
             }
-        } else if (l as usize) < self.anc_m {
+        } else if !self.anc_sampled && (l as usize) < self.anc_m {
+            // Exact mode only: bit `l` IS input gate `l`. In sampled mode the
+            // bit space is the tracer set, tracer singletons are stored
+            // explicitly, and a missing entry means "descends from no tracer".
             out[l as usize / 64] |= 1u64 << (l as usize % 64);
         }
+    }
+
+    /// Choose `k` distinct input-gate indices to trace, uniformly without
+    /// replacement, from a DEDICATED rng: tracer choice must not perturb the
+    /// mixing trajectory, so an exact-mode and a sampled-mode run with the same
+    /// `--seed` follow the identical chain and can be compared gate for gate.
+    /// Rejection sampling is O(k) expected for k << n and needs no O(n) buffer,
+    /// which matters at production input sizes.
+    fn pick_tracers(n: usize, k: usize, sample_seed: u64) -> Vec<u32> {
+        let mut rng = StdRng::seed_from_u64(
+            sample_seed ^ 0x7ACE_5EED_0000_0000 ^ ((n as u64) << 17) ^ ((k as u64) << 3),
+        );
+        let mut set: std::collections::HashSet<u32> = std::collections::HashSet::with_capacity(k);
+        while set.len() < k {
+            set.insert(rng.random_range(0..n) as u32);
+        }
+        let mut v: Vec<u32> = set.into_iter().collect();
+        v.sort_unstable();
+        v
     }
 
     /// Union the ancestor sets of `srcs`' litters and record it under a fresh
@@ -1877,7 +1965,14 @@ impl Mixer {
         for &src in srcs {
             self.anc_or_into(src, &mut bits);
         }
-        self.anc.insert(l, bits);
+        // An all-zero union needs no entry: fresh litter ids are always >= anc_m
+        // (next_litter starts at the input count), so a missing entry can never
+        // alias an implicit singleton and reads back as empty either way. In
+        // sampled mode this is the main memory win -- only litters that actually
+        // carry a tracer are stored, and most carry none.
+        if bits.iter().any(|&w| w != 0) {
+            self.anc.insert(l, bits);
+        }
         l
     }
 
@@ -1887,7 +1982,11 @@ impl Mixer {
     /// material travelled to meet". Both are immune to the ORIGIN_SYNTH erosion
     /// that makes odiff/oadj unreadable (see osyn=).
     fn anc_stats(&self) -> (f64, f64) {
-        if self.anc_words == 0 {
+        // Sampled mode reports through `tracer_report` instead: a sampled
+        // popcount is not `anc` and a sampled index range is a biased `span`,
+        // so leaving anc=/ancspan= at zero keeps those fields from silently
+        // changing meaning (the mistake the g57=/shaped= split had to undo).
+        if self.anc_words == 0 || self.anc_sampled {
             return (0.0, 0.0);
         }
         let (mut card_sum, mut span_sum, mut n) = (0f64, 0f64, 0u64);
@@ -1959,6 +2058,9 @@ impl Mixer {
         if self.anc_words == 0 {
             return String::new();
         }
+        if self.anc_sampled {
+            return self.tracer_report();
+        }
         let mut cards: Vec<u64> = Vec::new();
         let mut spans: Vec<u64> = Vec::new();
         let mut fanout = vec![0u64; self.anc_m];
@@ -1999,6 +2101,142 @@ impl Mixer {
             Self::log_hist(&spans),
             mean(&fanout),
             Self::log_hist(&fanout)
+        )
+    }
+
+    /// Total gate x input-gate incidence: the sum over live gates of how many
+    /// original gates each descends from. This is the one transport quantity
+    /// both modes can report on the same footing -- exactly in exact mode, and
+    /// in sampled mode as the Horvitz-Thompson estimate (every input has
+    /// inclusion probability K/m, so the sampled sum scaled by m/K is unbiased).
+    /// It is also the schedule-invariant measure: `anc` per gate is this divided
+    /// by the gate count, which compression inflates.
+    pub fn anc_incidence(&self) -> f64 {
+        if self.anc_words == 0 {
+            return 0.0;
+        }
+        let mut sum = 0u64;
+        let mut bits = vec![0u64; self.anc_words];
+        let mut cur = self.arena.head();
+        while cur != NIL {
+            bits.iter_mut().for_each(|w| *w = 0);
+            self.anc_or_into(self.meta_of(cur).litter, &mut bits);
+            sum += bits.iter().map(|w| w.count_ones() as u64).sum::<u64>();
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        if self.anc_sampled {
+            sum as f64 * self.anc_m as f64 / self.anc_tracers.len().max(1) as f64
+        } else {
+            sum as f64
+        }
+    }
+
+    /// Sampled-ancestry readout: for each traced input gate, the set of current
+    /// gates descended from it, summarised three ways.
+    ///
+    /// - **`desc`** -- how many current gates descend from one input gate. This
+    ///   is the per-input FANOUT, measured exactly for the traced gates, so its
+    ///   mean over tracers is an unbiased estimate of the mean fanout over all
+    ///   input gates (each input has inclusion probability K/m). Everything else
+    ///   global follows from it: `incid = desc x m` is the total gate x input
+    ///   incidence, and `anc = incid / size` is the mean ancestors per gate --
+    ///   the exact-mode `anc`, estimated without storing |input| bits anywhere.
+    /// - **`cov`** -- of `POS_BUCKETS` equal slices of the CURRENT circuit, the
+    ///   fraction that hold at least one descendant. 1.0 means one input gate's
+    ///   influence is present everywhere in the mixed circuit.
+    /// - **`ent`** -- normalised entropy of the descendant positions over those
+    ///   buckets. `cov` says how far the influence reaches, `ent` says how
+    ///   evenly: cov can be 1.0 while the mass sits in one slice.
+    ///
+    /// `cov`/`ent` are the security-facing quantities and have no exact-mode
+    /// analogue -- they ask directly whether an adversary can localise which
+    /// part of the mixed circuit a given original gate went to. They are also
+    /// natively samplable, unlike `span`, which a column sample can only
+    /// underestimate.
+    pub fn tracer_report(&self) -> String {
+        const POS_BUCKETS: usize = 64;
+        let k = self.anc_tracers.len();
+        if k == 0 {
+            return String::new();
+        }
+        let size = self.arena.len().max(1);
+        let mut cnt = vec![0u64; k];
+        let (mut lo, mut hi) = (vec![usize::MAX; k], vec![0usize; k]);
+        let mut buckets = vec![0u32; k * POS_BUCKETS];
+        let mut sampled_card_sum = 0u64;
+        let mut carriers = 0u64;
+        let mut bits = vec![0u64; self.anc_words];
+        let mut cur = self.arena.head();
+        let mut pos = 0usize;
+        while cur != NIL {
+            bits.iter_mut().for_each(|w| *w = 0);
+            self.anc_or_into(self.meta_of(cur).litter, &mut bits);
+            let b = (pos * POS_BUCKETS / size).min(POS_BUCKETS - 1);
+            let mut card = 0u64;
+            for (wi, &w) in bits.iter().enumerate() {
+                let mut x = w;
+                while x != 0 {
+                    let t = wi * 64 + x.trailing_zeros() as usize;
+                    if t < k {
+                        cnt[t] += 1;
+                        lo[t] = lo[t].min(pos);
+                        hi[t] = hi[t].max(pos);
+                        buckets[t * POS_BUCKETS + b] += 1;
+                        card += 1;
+                    }
+                    x &= x - 1;
+                }
+            }
+            if card > 0 {
+                carriers += 1;
+                sampled_card_sum += card;
+            }
+            pos += 1;
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        let (mut reach, mut cov, mut ent) = (Vec::new(), Vec::new(), Vec::new());
+        for t in 0..k {
+            if cnt[t] == 0 {
+                reach.push(0.0);
+                cov.push(0.0);
+                ent.push(0.0);
+                continue;
+            }
+            reach.push((hi[t] - lo[t] + 1) as f64 / size as f64);
+            let row = &buckets[t * POS_BUCKETS..(t + 1) * POS_BUCKETS];
+            cov.push(row.iter().filter(|&&c| c > 0).count() as f64 / POS_BUCKETS as f64);
+            let n_t = cnt[t] as f64;
+            let h: f64 = row
+                .iter()
+                .filter(|&&c| c > 0)
+                .map(|&c| {
+                    let q = c as f64 / n_t;
+                    -q * q.log2()
+                })
+                .sum();
+            ent.push(h / (POS_BUCKETS as f64).log2());
+        }
+        let meanf = |v: &[f64]| if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 };
+        // desc: exact per-tracer fanout, so its mean estimates mean fanout/input.
+        let desc = cnt.iter().sum::<u64>() as f64 / k as f64;
+        let incid = desc * self.anc_m as f64;
+        let anc_all = incid / size as f64;
+        // Reported for honesty about the sample's resolution: gates whose
+        // ancestry misses every tracer look empty, and at small K most do.
+        let hit = carriers as f64 / size as f64;
+        format!(
+            "[fmix] tracers: K={} of m={} | desc mean={:.0} [{}] | cov mean={:.3} ent mean={:.3} reach mean={:.3} | est anc={:.1} incid={:.3e} | carriers={:.3} sampled_card={:.2}",
+            k,
+            self.anc_m,
+            desc,
+            Self::log_hist(&cnt),
+            meanf(&cov),
+            meanf(&ent),
+            meanf(&reach),
+            anc_all,
+            incid,
+            hit,
+            if carriers > 0 { sampled_card_sum as f64 / carriers as f64 } else { 0.0 },
         )
     }
 
@@ -5388,6 +5626,80 @@ mod mix_tests {
         assert!(mx.counters.twist_relabels > 0, "twists never relabeled a gate");
         assert!(mx.remaining_g57() <= comp0, "fossil count increased");
         assert!(mx.counters.merges() > 0, "no merges alongside twists");
+        mx.global_check();
+    }
+
+    // Sampled ancestry must agree with exact ancestry on the quantity they both
+    // measure. Tracer choice comes from a dedicated rng, so the two runs follow
+    // the IDENTICAL chain (asserted gate-for-gate) and the only difference is
+    // the instrument -- which makes this a real calibration rather than two
+    // independent samples that happen to be close.
+    #[test]
+    fn sampled_ancestry_calibrates_to_exact() {
+        let gates = random_mixed_circuit(31, 16, 400);
+        let base = MixParams {
+            k_max: 5,
+            moves: 20_000,
+            target_size: 600,
+            temp: 20.0,
+            p_twist: 0.05,
+            verify_every: 5_000,
+            report_every: u64::MAX,
+            seed: 9,
+            ..MixParams::default()
+        };
+        let mut ex = Mixer::new(gates.clone(), 16, MixParams { ancestors: true, ..base.clone() });
+        ex.run();
+        let mut sa =
+            Mixer::new(gates.clone(), 16, MixParams { anc_samples: 128, ..base.clone() });
+        sa.run();
+
+        // Same chain: the instrument may not perturb the walk.
+        assert_eq!(ex.arena.to_vec(), sa.arena.to_vec(), "tracer selection changed the trajectory");
+
+        // Exact mode still reports anc/span; sampled mode deliberately does not.
+        assert!(ex.anc_stats().0 > 0.0, "exact mode lost its anc reading");
+        assert_eq!(sa.anc_stats(), (0.0, 0.0), "sampled mode must not fill anc=/ancspan=");
+        assert!(sa.tracer_report().contains("tracers: K=128"), "{}", sa.tracer_report());
+
+        let exact = ex.anc_incidence();
+        let est = sa.anc_incidence();
+        assert!(exact > 0.0, "no incidence to compare");
+        let rel = (est - exact).abs() / exact;
+        assert!(rel < 0.25, "sampled incidence off by {rel:.3} (exact {exact:.0}, est {est:.0})");
+    }
+
+    // The whole point of sampling: it runs on inputs the exact instrument
+    // refuses (it asserts n <= 20_000). Cost is K bits per litter regardless of
+    // input size, so the ancestor map stays far smaller than the circuit.
+    #[test]
+    fn sampled_ancestry_runs_past_the_exact_cap() {
+        let n = 25_000;
+        let gates = random_mixed_circuit(5, 24, n);
+        let params = MixParams {
+            k_max: 5,
+            moves: 3_000,
+            target_size: n + 200,
+            temp: 50.0,
+            anc_samples: 64,
+            verify_every: 1_500,
+            report_every: u64::MAX,
+            seed: 3,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 24, params);
+        mx.run();
+        assert!(mx.anc_incidence() > 0.0, "sampled ancestry recorded nothing");
+        let rep = mx.tracer_report();
+        assert!(rep.contains("K=64 of m=25000"), "{rep}");
+        // Only litters that actually carry a tracer are stored, so the map is a
+        // small fraction of the circuit -- this is what makes it scale.
+        assert!(
+            mx.anc.len() < mx.arena.len(),
+            "ancestor map ({}) is not smaller than the circuit ({})",
+            mx.anc.len(),
+            mx.arena.len()
+        );
         mx.global_check();
     }
 

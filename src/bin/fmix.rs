@@ -110,6 +110,17 @@ struct Args {
     /// (no polarity flips, but the 3-CNOT brackets are still inserted).
     #[arg(long, default_value_t = 0.5)]
     twist_neg_p: f64,
+    /// SAMPLED ancestry: trace this many randomly chosen INPUT gates and report,
+    /// per traced gate, the set of current gates descended from it (count,
+    /// positional coverage and entropy). Fixed K-bit-per-litter cost, so unlike
+    /// --ancestors it scales to production circuits. Overrides --ancestors.
+    #[arg(long, default_value_t = 0)]
+    anc_samples: usize,
+    /// Tracer-selection seed. 0 (default) makes the tracer set depend only on
+    /// (input size, K), so runs are comparable and a resume traces the same
+    /// gates; vary for independent replicates.
+    #[arg(long, default_value_t = 0)]
+    anc_sample_seed: u64,
     /// Minimum twist window length (max is the current circuit size)
     #[arg(long, default_value_t = 64)]
     twist_min_len: usize,
@@ -460,6 +471,12 @@ fn main() {
             args.p_twist, args.twist_min_len, args.twist_neg_p
         );
     }
+    if args.anc_samples > 0 {
+        println!(
+            "[fmix] SAMPLED ancestry ON: tracing {} input gates (sample_seed={}); reports per-tracer descendant count, positional coverage and entropy. Scales to any input size; anc=/ancspan= stay 0 (see the tracers line).",
+            args.anc_samples, args.anc_sample_seed
+        );
+    }
     if args.p_mix >= 0.0 {
         println!(
             "[fmix] mode overlay ON (slot 0): p_mix={} -> MIX-DB w.p. p_mix else COMP-DB, per round; COMP knobs s_db_comp={} p_convex_comp={} p_mingen_comp={} (0/<0 => fall back to base)",
@@ -572,6 +589,8 @@ fn main() {
         p_mingen_comp: args.p_mingen_comp,
         curated: args.curated,
         ancestors: args.ancestors,
+        anc_samples: args.anc_samples,
+        anc_sample_seed: args.anc_sample_seed,
         p_comp_g57: args.p_comp_g57,
         contract_ceiling: args.contract_ceiling,
         size_hi: args.size_hi,
