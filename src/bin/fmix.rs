@@ -105,6 +105,11 @@ struct Args {
     /// caps these windows at the mid scale (~n*ln n gates).
     #[arg(long, default_value_t = 0.0)]
     w_twist_cnot: f64,
+    /// Probability each swapped wire is negated (swap family). 0.5 = default
+    /// (swap 1/4, negate-one 1/2, negate-both 1/4); 0.0 = pure positive swaps
+    /// (no polarity flips, but the 3-CNOT brackets are still inserted).
+    #[arg(long, default_value_t = 0.5)]
+    twist_neg_p: f64,
     /// Minimum twist window length (max is the current circuit size)
     #[arg(long, default_value_t = 64)]
     twist_min_len: usize,
@@ -213,6 +218,23 @@ struct Args {
     /// kills DB matching. Off by default (it changes trajectories).
     #[arg(long, default_value_t = false)]
     db_advance: bool,
+    /// Layer-2 mode overlay (slot 0): per-round probability the slot-2 DB move
+    /// is MIX-DB, else COMP-DB. Each round flips this coin, overriding --db-mode
+    /// and reading the chosen mode's own knobs -- MIX uses --s-db / --p-convex /
+    /// --p-mingen, COMP uses the *-comp overrides below. < 0 disables the
+    /// overlay (single --db-mode, as before). The thermostat is unaffected, so
+    /// pair with --p-db 1.0 for a pure per-round MIX/COMP schedule.
+    #[arg(long, default_value_t = -1.0)]
+    p_mix: f64,
+    /// COMP-mode window length under --p-mix (0 = use --s-db).
+    #[arg(long, default_value_t = 0)]
+    s_db_comp: usize,
+    /// COMP-mode convex probability under --p-mix (< 0 = use --p-convex).
+    #[arg(long, default_value_t = -1.0)]
+    p_convex_comp: f64,
+    /// COMP-mode pool-seed probability under --p-mix (< 0 = use --p-mingen).
+    #[arg(long, default_value_t = -1.0)]
+    p_mingen_comp: f64,
     /// Also probe the curated store (FROZEN_CURATED_DIR) and prefer a
     /// non-identical curated match over a regular one REGARDLESS OF SIZE. The
     /// curated store holds circuits every strict subcircuit of which is
@@ -432,10 +454,16 @@ fn main() {
             args.p_twist
         );
     }
-    if args.w_twist_neg > 0.0 || args.w_twist_swap > 0.0 || args.w_twist_cnot > 0.0 {
+    if args.p_twist > 0.0 {
         println!(
-            "[fmix] twists ON: w_twist_neg={} w_twist_swap={} w_twist_cnot={} twist_min_len={}",
-            args.w_twist_neg, args.w_twist_swap, args.w_twist_cnot, args.twist_min_len
+            "[fmix] twists ON (swap family): p_twist={} twist_min_len={} twist_neg_p={} -- each swapped wire negated w.p. twist_neg_p (0.5 => swap 1/4, negate-one 1/2, negate-both 1/4; 0 => pure swap, no polarity flips) (w_twist_* retired/ignored)",
+            args.p_twist, args.twist_min_len, args.twist_neg_p
+        );
+    }
+    if args.p_mix >= 0.0 {
+        println!(
+            "[fmix] mode overlay ON (slot 0): p_mix={} -> MIX-DB w.p. p_mix else COMP-DB, per round; COMP knobs s_db_comp={} p_convex_comp={} p_mingen_comp={} (0/<0 => fall back to base)",
+            args.p_mix, args.s_db_comp, args.p_convex_comp, args.p_mingen_comp
         );
     }
     if args.p_comp > 0.0 || args.p_db > 0.0 || args.p_any > 0.0 {
@@ -516,6 +544,7 @@ fn main() {
         w_twist_neg: args.w_twist_neg,
         w_twist_swap: args.w_twist_swap,
         w_twist_cnot: args.w_twist_cnot,
+        twist_neg_p: args.twist_neg_p,
         twist_min_len: args.twist_min_len,
         p_comp: args.p_comp,
         p_any: args.p_any,
@@ -537,6 +566,10 @@ fn main() {
         db_total_terms: args.db_total_terms,
         db_prefixes: args.db_prefixes,
         db_advance: args.db_advance,
+        p_mix: args.p_mix,
+        s_db_comp: args.s_db_comp,
+        p_convex_comp: args.p_convex_comp,
+        p_mingen_comp: args.p_mingen_comp,
         curated: args.curated,
         ancestors: args.ancestors,
         p_comp_g57: args.p_comp_g57,

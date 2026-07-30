@@ -165,16 +165,46 @@ fn load_tables(path: &str) -> Tables {
     Tables { header, gates }
 }
 
-fn decode_value(t: &Tables, r: &mut BitReader, out: &mut Vec<u8>) {
+/// How many curated candidates a single lookup materialises. Every candidate
+/// under a key is equivalent, so this bounds only redundant choice, never
+/// correctness -- and it turns the curated store from unusable (0.6s+/lookup,
+/// reconstructing the whole complete-coverage list) into sub-millisecond.
+const CURATED_CAP: usize = 256;
+
+// Decode a stored value into `out` as a chain of length-prefixed circuits
+// ([len][len bytes]...). Each loop iteration emits exactly one circuit, so
+// `max_circuits` bounds the decode: usize::MAX reconstructs the whole value
+// (the original behaviour), a small cap stops after that many circuits on a
+// clean boundary. The cap is what makes the curated store usable -- its values
+// are the huge complete-coverage candidate lists, and every candidate under a
+// key is equivalent, so decoding all of them (0.6s+/lookup) is pure waste.
+fn decode_value(t: &Tables, r: &mut BitReader, out: &mut Vec<u8>, max_circuits: usize) {
+    let mut circuits = 0usize;
     loop {
         let hs = t.header.decode(r);
         let (g, w, chain);
         if hs == ESC {
             let ge = r.get(8) as u32;
             if ge == 121 {
+                // Raw block: the value's bytes verbatim, themselves a chain of
+                // length-prefixed circuits. Walk them so a bounded decode can
+                // stop on a circuit boundary; usize::MAX reads all `len` bytes,
+                // bit-for-bit as the original `for _ in 0..len` did.
                 let len = r.get(16) as usize;
-                for _ in 0..len {
-                    out.push(r.get(8) as u8);
+                let mut read = 0usize;
+                while read < len {
+                    let l = r.get(8) as u8;
+                    read += 1;
+                    out.push(l);
+                    let take = (l as usize).min(len - read);
+                    for _ in 0..take {
+                        out.push(r.get(8) as u8);
+                        read += 1;
+                    }
+                    circuits += 1;
+                    if circuits >= max_circuits {
+                        return;
+                    }
                 }
                 return;
             }
@@ -206,6 +236,10 @@ fn decode_value(t: &Tables, r: &mut BitReader, out: &mut Vec<u8>) {
                 out.push(((sym >> 5) & 0x1f) as u8);
                 out.push((sym & 0x1f) as u8);
             }
+        }
+        circuits += 1;
+        if circuits >= max_circuits {
+            return;
         }
         if chain == 0 {
             return;
@@ -318,6 +352,17 @@ impl Frozen {
     /// Exact point lookup; returns legacy value bytes, byte-identical to the
     /// source replacement value for this key.
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.get_capped(key, usize::MAX)
+    }
+
+    /// Like `get`, but decodes at most `cap` circuits of the TARGET value.
+    /// Predecessor values in the same bucket are still decoded in full -- that
+    /// is how the bit-reader advances to the target -- but the 20-bit bucket
+    /// index makes buckets sparse (idx is almost always 0), so in practice only
+    /// the target is decoded. Regular lookups pass usize::MAX (values are tiny);
+    /// curated lookups pass a small cap so a single lookup no longer
+    /// reconstructs a multi-megabyte candidate list.
+    fn get_capped(&self, key: &[u8], cap: usize) -> Option<Vec<u8>> {
         debug_assert_eq!(key.len(), 16);
         let (shard, bucket, tail) = split_key(key);
         if let Some(filters) = &self.filters {
@@ -355,7 +400,8 @@ impl Frozen {
         let mut out = Vec::new();
         for i in 0..=idx {
             out.clear();
-            decode_value(&self.tables, &mut r, &mut out);
+            let m = if i == idx { cap } else { usize::MAX };
+            decode_value(&self.tables, &mut r, &mut out, m);
             if i == idx {
                 return Some(out);
             }
@@ -409,7 +455,7 @@ pub fn scan_shard(dir: &str, shard: usize, f: &mut dyn FnMut(&[u8])) {
         }
         for _ in 0..n {
             out.clear();
-            decode_value(&tables, &mut r, &mut out);
+            decode_value(&tables, &mut r, &mut out, usize::MAX);
             f(&out);
         }
     }
@@ -472,7 +518,11 @@ impl FrozenDb {
 
     #[inline]
     pub fn get_curated(&self, key: &[u8; 16]) -> Option<Vec<u8>> {
-        self.curated.as_ref()?.get(key)
+        // Curated values are the huge complete-coverage candidate lists; every
+        // candidate under a key is equivalent, so a bounded sample is all the
+        // move machinery needs to choose one, and it turns a ~0.6s lookup into
+        // a sub-millisecond one.
+        self.curated.as_ref()?.get_capped(key, CURATED_CAP)
     }
 
     pub fn has_curated(&self) -> bool {
