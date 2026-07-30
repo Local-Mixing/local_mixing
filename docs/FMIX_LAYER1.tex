@@ -278,7 +278,7 @@ field & meaning \\
 \midrule
 \texttt{idsk} & candidates refused by the identity guard \\
 \texttt{cur} & curated hits / curated rejections \\
-\texttt{g57only} & g57-only COMP attempts and hits \\
+\texttt{g57only} & g57-only COMP attempts and hits (prints hits / rounds) \\
 \texttt{dmin} & fraction of windows admitting a strictly shorter spelling \\
 \texttt{osyn} & fraction of gates whose ancestry label is destroyed \\
 \texttt{anc}, \texttt{ancspan} & mean ancestor-set size and span \\
@@ -286,9 +286,31 @@ field & meaning \\
 \texttt{tplace} & twists placed on a pattern / fallen back \\
 \texttt{canary}, \texttt{cft} & canary failure fraction, pool fall-throughs \\
 \texttt{g57} & true g57 census (comp=1, two opposite-polarity controls) \\
+\texttt{shaped} & the same census with polarity ignored --- see below \\
+\texttt{polf} & $(\texttt{shaped}-\texttt{g57})/\texttt{shaped}$: the twist odometer \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\paragraph{Reading \texttt{shaped} against \texttt{g57}.} These two answer
+different questions and the single \texttt{g57} field used to conflate them.
+The store emits g57 circuits and nothing else --- measured directly, with
+twists disabled \texttt{g57/comp} holds at $1.000$ for a whole run --- so
+\texttt{shaped} is the DB-effectiveness reading: $1-\texttt{shaped}/\text{size}$
+is exactly the material the DB did not produce.
+
+\texttt{polf} is a twist dose, not erosion. A negation twist conjugates its
+window by NOT on one wire, flipping the polarity of every literal on it. A
+g57's two controls lie on distinct wires, so a twist touches at most one, and
+touching one flips the pair from opposite to same: the gate keeps its
+\texttt{comp}, its width and its place, and only stops matching the strict
+shape. Swap twists carry polarity with the wire and leave \texttt{polf} at
+zero. A/B at equal twist count over 400k moves gives \texttt{g57/comp} =
+$1.000$ (no twists), $0.704$ (neg), $1.000$ (swap, at $2.6\times$ the relabel
+count), while \texttt{comp}/size never leaves $0.996$.
+
+Unlike \texttt{cov}, whose denominator is the growing circuit, \texttt{polf} is
+bounded in $[0,\tfrac12]$ and cannot fall while twists keep firing.
 
 Plus two extra lines: the \textbf{splice size histogram} (joint outgoing
 $\to$ incoming length, which the scalar totals cannot show) and, under

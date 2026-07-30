@@ -52,8 +52,15 @@ cases:
 
 **The comp guard:** a fusion whose result would be complemented — which is
 precisely the rejoin of a g57's two presplit pieces — is *refused*. This makes
-the fossil count monotone non-increasing under `fmix`: g57 erosion is
-irreversible.
+the fossil count monotone non-increasing **through the merge catalogue**: a
+merge never creates a `comp=1` gate, so crossing-driven erosion is irreversible
+by that route.
+
+⚠️ It does **not** make the reported `comp=` field monotone, and in the shipped
+configuration it is not. DB splices insert `comp=1` g57 material with no comp
+filter at the insertion site, so with `p_db > 0` the count grows with the
+circuit. The four `"fossil count increased"` tests pass only because
+`MixParams::default()` has `p_db: 0.0`; they do not cover production.
 
 ---
 
@@ -215,7 +222,10 @@ Checked at every report point (so responsiveness = `--report-every`):
 | Field | Meaning |
 |---|---|
 | `mv, size, target` | moves attempted; current gate count; thermostat target |
-| `comp` | surviving g57 fossils (monotone ↓) |
+| `comp` | every `comp=1` gate, any width. **Not monotone once `p_db > 0`** — DB splices insert `comp=1` material, so this grows with the circuit (measured: pinned at 0.996 of size across a 70× phase-A inhale). Monotone only in the no-DB configuration the comp guard was written for. |
+| `g57` | of those, exactly two controls of **opposite** polarity — a true g57 |
+| `shaped` | of those, exactly two controls, polarity ignored: the shape the store emits, so `1 − shaped/size` is the material the DB did not produce. **This is the DB-effectiveness reading.** |
+| `polf` | `(shaped − g57) / shaped`: a **twist odometer**, not erosion. A negation twist conjugates a window by NOT on one wire and flips one control's polarity, moving a gate out of g57 form without changing its shape, width or `comp`. Random-walks toward 0.5 under twist pressure; swap twists leave it at 0. |
 | `merges c/x/d/s` | successful Cancel / XFuse / DropLit / Subsume merges |
 | `sib / xorig` | merges between siblings (same split event) vs cross-origin — sibling share ≈ how much contraction merely undoes splits |
 | `tabu, nopart, wall, far, noadj` | merges blocked: partner too recent / no partner in index / wall between / beyond `merge-reach` / could not be floated adjacent |
