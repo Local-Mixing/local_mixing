@@ -115,6 +115,62 @@ impl DbSample {
     }
 }
 
+// ---- --twist-g57 placer tuning ----
+// The two v2 placement features default ON; the env vars are kill-switches
+// for factorial A/Bs (mirrors the SAMF_HIDE_PAIRS pattern in ssg).
+/// How far a bracket may slide outward looking for an attachment gate.
+pub const TG_SLIDE_CAP: usize = 512;
+/// Attachment candidates actually solved per slide (first improving <= +4 wins).
+pub const TG_SLIDE_TRIES: usize = 3;
+/// Window redraws before settling for the best plan seen.
+pub const TG_RETRIES: usize = 4;
+/// A window is accepted outright when both seams total at most this net —
+/// either both sides found homes (<= +4 each) or one side's match is good
+/// enough (<= +2) to be worth the other staying bare.
+pub const TG_ACCEPT_NET: i64 = 8;
+
+fn tg_slide_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TWIST_G57_NO_SLIDE").is_none())
+}
+
+fn tg_retry_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TWIST_G57_NO_RETRY").is_none())
+}
+
+/// One planned bracket seam: the window boundary node it ends up at (possibly
+/// slid outward from the drawn boundary), the context gates it consumes, and
+/// the word that replaces context-plus-bracket.
+struct TgSeam {
+    edge: u32,
+    ids: Vec<u32>,
+    repl: Vec<XGate>,
+}
+
+impl TgSeam {
+    fn net(&self) -> i64 {
+        self.repl.len() as i64 - self.ids.len() as i64
+    }
+}
+
+/// A fully-evaluated candidate twist: wires, final window, both seams.
+struct TgPlan {
+    a: u16,
+    b: u16,
+    l: TgSeam,
+    r: TgSeam,
+    slides: u64,
+}
+
+impl TgPlan {
+    fn score(&self) -> (i64, i64) {
+        // (total net, -consumed): cheapest first, more absorption on ties.
+        let consumed = (self.l.ids.len() + self.r.ids.len()) as i64;
+        (self.l.net() + self.r.net(), -consumed)
+    }
+}
+
 // Closed-form pairwise merge catalogue: for same-target gates, f_g XOR f_h is a
 // (possibly complemented) monomial in exactly these cases. Results are always
 // comp=0 (or a cancellation): pairs whose fusion would be complemented — which
@@ -938,6 +994,11 @@ pub struct MixCounters {
     pub tg_emitted: u64,
     pub tg_solves: u64,
     pub tg_solve_ns: u64,
+    // v2 placement gauges (session-local): seams that found their home by
+    // sliding the window edge, and extra window redraws the joint-acceptance
+    // rule spent.
+    pub tg_slides: u64,
+    pub tg_retries: u64,
     // Histogram of per-seam net cost (word len - context consumed), 0..=7.
     // A shape, so like splice_sizes it is not carried across resumes.
     pub tg_net_hist: [u64; 8],
@@ -1306,6 +1367,8 @@ impl MixCounters {
             tg_emitted: next_u64(&mut it).unwrap_or(0),
             tg_solves: 0,
             tg_solve_ns: 0,
+            tg_slides: 0,
+            tg_retries: 0,
             splice_sizes: Vec::new(),
             width_hist: [0u64; 16],
             tg_net_hist: [0u64; 8],
@@ -3310,6 +3373,65 @@ impl Mixer {
         (ids[..k].to_vec(), eng.decode(&word, &wires))
     }
 
+    /// Bracket positions further out than `from` whose next-outward gate is a
+    /// g57 pinning both twist wires — the only shape a k=1 attachment can
+    /// cancel against. Sliding a bracket outward just extends the conjugated
+    /// window over the gates stepped past, which is free (window length was a
+    /// random draw, and a relabel costs far less than the word the slide
+    /// saves), so the scan may roam TG_SLIDE_CAP gates.
+    fn slide_candidates(&self, from: u32, dir: Dir, a: u16, b: u16) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut e = from;
+        for _ in 0..TG_SLIDE_CAP {
+            let nxt = self.arena.neighbor(e, dir);
+            if nxt == NIL {
+                break;
+            }
+            e = nxt;
+            let h = self.arena.neighbor(e, dir);
+            if h == NIL {
+                break;
+            }
+            let g = self.arena.gate(h);
+            if g.comp && g.ctrls.len() == 2 {
+                let pins = [g.target, g.ctrls[0].0, g.ctrls[1].0];
+                if pins.contains(&a) && pins.contains(&b) {
+                    out.push(e);
+                    if out.len() >= TG_SLIDE_TRIES {
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Solve one seam at its drawn boundary and, when that stays bare and
+    /// sliding is enabled, retry at up to TG_SLIDE_TRIES attachment positions
+    /// further out. First position reaching +4 wins (a k=1 cancel cannot be
+    /// beaten by another single attachment; deeper context can, and is kept
+    /// when found). Returns the seam and how many slides were adopted.
+    fn eval_seam(&mut self, edge: u32, dir: Dir, a: u16, b: u16) -> (TgSeam, u64) {
+        let (ids, repl) = self.solve_seam(edge, dir, a, b);
+        let mut seam = TgSeam { edge, ids, repl };
+        let mut slid = 0u64;
+        if tg_slide_on() && seam.net() >= 6 {
+            for e in self.slide_candidates(edge, dir, a, b) {
+                let (ids2, repl2) = self.solve_seam(e, dir, a, b);
+                let cand = TgSeam { edge: e, ids: ids2, repl: repl2 };
+                if cand.net() < seam.net() {
+                    let good = cand.net() <= 4;
+                    seam = cand;
+                    slid = 1;
+                    if good {
+                        break;
+                    }
+                }
+            }
+        }
+        (seam, slid)
+    }
+
     /// The --twist-g57 realization of a pure-swap conjugation twist: same
     /// window draw and interior relabel as twist_move, but each bracket is an
     /// all-g57 word sited by solve_seam so it absorbs neighborhood gates —
@@ -3318,112 +3440,152 @@ impl Mixer {
     /// the segment becomes R . W' . R' = ctx_l . S . W' . S . ctx_r, which is
     /// the original since W' is the swap-conjugated interior. All inserted
     /// gates take the ballistic birth-advance unconditionally, aimed outward.
+    ///
+    /// v2 placement: seams that stay bare may SLIDE outward to an attachment
+    /// gate (extending the conjugated window), and the two ends are chosen
+    /// TOGETHER — a window whose best plan still totals worse than
+    /// TG_ACCEPT_NET is redrawn (up to TG_RETRIES), so a side is left bare
+    /// only when its partner's match pays for it or every redraw failed.
     fn twist_move_g57(&mut self) {
-        let n = self.arena.len();
-        if n < 2 || self.num_wires < 4 {
+        if self.arena.len() < 2 || self.num_wires < 4 {
             self.counters.twist_skips += 1;
             return;
         }
-        let cap = n;
-        let lmin = (self.params.twist_min_len.max(2).min(cap)) as f64;
-        let len = (self.rng.random_range(lmin.ln()..=(cap as f64).ln()).exp().round() as usize)
-            .clamp(2, cap);
-        // Symmetric truncation, exactly as in twist_move; the adaptivity here
-        // lives in the seams, not the site.
-        let draw = self.rng.random_range(0..n + len - 1);
-        let (start, len) = if draw < len - 1 {
-            (self.arena.head(), draw + 1)
-        } else {
-            (self.arena.random_linked(&mut self.rng), len)
-        };
 
-        // Pass 1: window end + touched wires (a must touch the window or the
-        // conjugation is a no-op).
-        let mut touch_seen = vec![false; self.num_wires];
-        let mut touches: Vec<u16> = Vec::new();
-        let mut end = start;
-        let mut span = 0usize;
-        let mut cur = start;
-        while cur != NIL && span < len {
-            let g = self.arena.gate(cur);
-            for w in std::iter::once(g.target).chain(g.ctrls.iter().map(|&(w, _)| w)) {
-                if !touch_seen[w as usize] {
-                    touch_seen[w as usize] = true;
-                    touches.push(w);
+        // Draw-and-evaluate loop: each attempt draws a window, seeds wire
+        // pairs from its boundary gates, solves both seams (with slides for
+        // whichever side stays bare), and the round commits the first plan
+        // reaching TG_ACCEPT_NET — else the best plan any attempt produced.
+        // Evaluation is read-only, so plans stay valid across attempts.
+        let mut best: Option<TgPlan> = None;
+        let mut draws = 0u64;
+        let attempts = if tg_retry_on() { TG_RETRIES } else { 1 };
+        for _ in 0..attempts {
+            draws += 1;
+            let n = self.arena.len();
+            let cap = n;
+            let lmin = (self.params.twist_min_len.max(2).min(cap)) as f64;
+            let len = (self.rng.random_range(lmin.ln()..=(cap as f64).ln()).exp().round()
+                as usize)
+                .clamp(2, cap);
+            // Symmetric truncation, exactly as in twist_move.
+            let draw = self.rng.random_range(0..n + len - 1);
+            let (start, len) = if draw < len - 1 {
+                (self.arena.head(), draw + 1)
+            } else {
+                (self.arena.random_linked(&mut self.rng), len)
+            };
+
+            // Pass 1: window end + touched wires (a must touch the window or
+            // the conjugation is a no-op).
+            let mut touch_seen = vec![false; self.num_wires];
+            let mut touches: Vec<u16> = Vec::new();
+            let mut end = start;
+            let mut span = 0usize;
+            let mut cur = start;
+            while cur != NIL && span < len {
+                let g = self.arena.gate(cur);
+                for w in std::iter::once(g.target).chain(g.ctrls.iter().map(|&(w, _)| w)) {
+                    if !touch_seen[w as usize] {
+                        touch_seen[w as usize] = true;
+                        touches.push(w);
+                    }
                 }
+                end = cur;
+                span += 1;
+                cur = self.arena.neighbor(cur, Dir::R);
             }
-            end = cur;
-            span += 1;
-            cur = self.arena.neighbor(cur, Dir::R);
-        }
-        if touches.is_empty() {
-            self.counters.twist_skips += 1;
-            return;
-        }
-        // Candidate wire pairs, anchor-first: a pair drawn from a boundary
-        // gate's own pins makes that gate consumable at its seam (a uniform
-        // random b almost never lands inside the 4-wire support, which is
-        // what left the legacy placer's absorption rate near zero on wide
-        // circuits). The uniform pair stays in the pool so fresh-wire
-        // routing — a twist value in its own right — is still on the menu;
-        // it wins whenever no boundary pair beats its net.
-        let mut cands: Vec<(u16, u16)> = Vec::new();
-        for edge in [self.arena.neighbor(start, Dir::L), self.arena.neighbor(end, Dir::R)] {
-            if edge == NIL {
+            if touches.is_empty() {
                 continue;
             }
-            let g = self.arena.gate(edge);
-            let pins: Vec<u16> =
-                std::iter::once(g.target).chain(g.ctrls.iter().map(|&(w, _)| w)).collect();
-            for &pa in &pins {
-                if !touch_seen[pa as usize] {
-                    continue; // `a` must touch the window or the twist is a no-op
+            // Candidate wire pairs, anchor-first: a pair drawn from a
+            // boundary gate's own pins makes that gate consumable at its
+            // seam (a uniform random b almost never lands inside the 4-wire
+            // support). The uniform pair keeps fresh-wire routing on the
+            // menu; it wins whenever no boundary pair beats its net.
+            let mut cands: Vec<(u16, u16)> = Vec::new();
+            for edge in [self.arena.neighbor(start, Dir::L), self.arena.neighbor(end, Dir::R)] {
+                if edge == NIL {
+                    continue;
                 }
-                for &pb in &pins {
-                    if pb != pa && !cands.contains(&(pa, pb)) {
-                        cands.push((pa, pb));
+                let g = self.arena.gate(edge);
+                let pins: Vec<u16> =
+                    std::iter::once(g.target).chain(g.ctrls.iter().map(|&(w, _)| w)).collect();
+                for &pa in &pins {
+                    if !touch_seen[pa as usize] {
+                        continue; // `a` must touch the window
+                    }
+                    for &pb in &pins {
+                        if pb != pa && !cands.contains(&(pa, pb)) {
+                            cands.push((pa, pb));
+                        }
                     }
                 }
             }
-        }
-        cands.truncate(6);
-        let a0 = touches[self.rng.random_range(0..touches.len())];
-        for _ in 0..16 {
-            let c = self.rng.random_range(0..self.num_wires) as u16;
-            if c != a0 {
-                if !cands.contains(&(a0, c)) {
-                    cands.push((a0, c));
+            cands.truncate(6);
+            let a0 = touches[self.rng.random_range(0..touches.len())];
+            for _ in 0..16 {
+                let c = self.rng.random_range(0..self.num_wires) as u16;
+                if c != a0 {
+                    if !cands.contains(&(a0, c)) {
+                        cands.push((a0, c));
+                    }
+                    break;
                 }
+            }
+            if cands.is_empty() {
+                continue;
+            }
+
+            // Both seams for every pair, no slides yet; cheapest total wins.
+            let mut pair_best: Option<TgPlan> = None;
+            for &(a, b) in &cands {
+                let (l_ids, l_repl) = self.solve_seam(start, Dir::L, a, b);
+                let (r_ids, r_repl) = self.solve_seam(end, Dir::R, a, b);
+                let plan = TgPlan {
+                    a,
+                    b,
+                    l: TgSeam { edge: start, ids: l_ids, repl: l_repl },
+                    r: TgSeam { edge: end, ids: r_ids, repl: r_repl },
+                    slides: 0,
+                };
+                if pair_best.as_ref().map_or(true, |p| plan.score() < p.score()) {
+                    pair_best = Some(plan);
+                }
+            }
+            let mut plan = pair_best.expect("cands is non-empty");
+            // Slides, for whichever side of the winning pair stayed bare.
+            if plan.l.net() >= 6 {
+                let (seam, s) = self.eval_seam(start, Dir::L, plan.a, plan.b);
+                if seam.net() < plan.l.net() {
+                    plan.l = seam;
+                    plan.slides += s;
+                }
+            }
+            if plan.r.net() >= 6 {
+                let (seam, s) = self.eval_seam(end, Dir::R, plan.a, plan.b);
+                if seam.net() < plan.r.net() {
+                    plan.r = seam;
+                    plan.slides += s;
+                }
+            }
+            if best.as_ref().map_or(true, |p| plan.score() < p.score()) {
+                best = Some(plan);
+            }
+            if best.as_ref().expect("just set").score().0 <= TG_ACCEPT_NET {
                 break;
             }
         }
-        if cands.is_empty() {
+        let Some(plan) = best else {
             self.counters.twist_skips += 1;
             return;
-        }
-
-        // Solve both seams for every candidate pair before touching anything:
-        // context gates sit strictly outside [start, end], so the interior
-        // relabel below cannot invalidate them, and the two seams' contexts
-        // are disjoint. Cheapest total net wins; more absorption on ties.
-        let mut chosen: Option<(u16, u16, Vec<u32>, Vec<XGate>, Vec<u32>, Vec<XGate>)> = None;
-        let mut chosen_score = (i64::MAX, i64::MIN); // (net, -consumed) minimized
-        for &(a, b) in &cands {
-            let (l_ids, l_repl) = self.solve_seam(start, Dir::L, a, b);
-            let (r_ids, r_repl) = self.solve_seam(end, Dir::R, a, b);
-            let consumed = (l_ids.len() + r_ids.len()) as i64;
-            let net = (l_repl.len() + r_repl.len()) as i64 - consumed;
-            if (net, -consumed) < chosen_score {
-                chosen_score = (net, -consumed);
-                chosen = Some((a, b, l_ids, l_repl, r_ids, r_repl));
-            }
-        }
-        let (a, b, l_ids, l_repl, r_ids, r_repl) = chosen.expect("cands is non-empty");
+        };
+        self.counters.tg_retries += draws - 1;
+        self.counters.tg_slides += plan.slides;
+        let (a, b) = (plan.a, plan.b);
         // Negative nets (shrinking seams) fold into bucket 0.
-        self.counters.tg_net_hist
-            [(l_repl.len() as i64 - l_ids.len() as i64).clamp(0, 7) as usize] += 1;
-        self.counters.tg_net_hist
-            [(r_repl.len() as i64 - r_ids.len() as i64).clamp(0, 7) as usize] += 1;
+        self.counters.tg_net_hist[plan.l.net().clamp(0, 7) as usize] += 1;
+        self.counters.tg_net_hist[plan.r.net().clamp(0, 7) as usize] += 1;
 
         // The reference bracket for verification: the known-correct 3-CNOT
         // swap packet (a palindrome, so it is its own inverse).
@@ -3434,10 +3596,14 @@ impl Mixer {
         ];
 
         // Pass 2: conjugate the interior by the swap — a pure 1->1 relabel.
+        // Slid seams extended the window, so the walk runs between the PLAN's
+        // edges (l.edge <= drawn start, r.edge >= drawn end, both real nodes).
         let mut relabeled = 0u64;
-        let mut cur = start;
+        let mut span_walked = 0u64;
+        let mut cur = plan.l.edge;
         loop {
-            let is_last = cur == end;
+            let is_last = cur == plan.r.edge;
+            span_walked += 1;
             let next = self.arena.neighbor(cur, Dir::R);
             let g = self.arena.gate(cur).clone();
             if let Some(g2) = conj_by_swap(&g, a, b) {
@@ -3465,45 +3631,57 @@ impl Mixer {
         // circuit order is ids reversed; anchors are read before unlinking.
         if self.params.local_verify {
             let mut old: Vec<XGate> =
-                l_ids.iter().rev().map(|&id| self.arena.gate(id).clone()).collect();
+                plan.l.ids.iter().rev().map(|&id| self.arena.gate(id).clone()).collect();
             old.extend(packet3.iter().cloned());
             assert!(
-                rules::verify_rewrite(&old, &l_repl),
+                rules::verify_rewrite(&old, &plan.l.repl),
                 "g57-twist left seam failed: a={a} b={b}"
             );
             let mut old: Vec<XGate> = packet3.clone();
-            old.extend(r_ids.iter().map(|&id| self.arena.gate(id).clone()));
+            old.extend(plan.r.ids.iter().map(|&id| self.arena.gate(id).clone()));
             assert!(
-                rules::verify_rewrite(&old, &r_repl),
+                rules::verify_rewrite(&old, &plan.r.repl),
                 "g57-twist right seam failed: a={a} b={b}"
             );
         }
         let ev = self.fresh_event();
-        let mut inserted: Vec<u32> = Vec::with_capacity(l_repl.len() + r_repl.len());
-        let l_anchor = match l_ids.last() {
+        let mut inserted: Vec<u32> =
+            Vec::with_capacity(plan.l.repl.len() + plan.r.repl.len());
+        let l_anchor = match plan.l.ids.last() {
             Some(&far) => self.arena.neighbor(far, Dir::L),
-            None => self.arena.neighbor(start, Dir::L),
+            None => self.arena.neighbor(plan.l.edge, Dir::L),
         };
-        for &id in l_ids.iter().chain(r_ids.iter()) {
+        // Consumed context carried real lineage: union its litters' ancestor
+        // sets into the replacement's litter, exactly as a DB splice would —
+        // v1 dropped them, which silently deflated anc under consumption.
+        let mut l_srcs: Vec<u64> =
+            plan.l.ids.iter().map(|&id| self.meta_of(id).litter).collect();
+        l_srcs.sort_unstable();
+        l_srcs.dedup();
+        let mut r_srcs: Vec<u64> =
+            plan.r.ids.iter().map(|&id| self.meta_of(id).litter).collect();
+        r_srcs.sort_unstable();
+        r_srcs.dedup();
+        for &id in plan.l.ids.iter().chain(plan.r.ids.iter()) {
             self.index_remove(id);
             self.arena.unlink(id);
         }
+        let l_lit = self.anc_union_litter(&l_srcs);
+        let r_lit = self.anc_union_litter(&r_srcs);
         let mut anchor = l_anchor;
-        for g in &l_repl {
+        for g in &plan.l.repl {
             self.counters.width_hist[g.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, g.clone());
             self.index_add(anchor);
-            let lit = self.fresh_litter();
-            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: Dir::L, dgen: GEN_FRESH, litter: lit, litter_size: 1 });
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: Dir::L, dgen: GEN_FRESH, litter: l_lit, litter_size: plan.l.repl.len() as u16 });
             inserted.push(anchor);
         }
-        let mut anchor = end;
-        for g in &r_repl {
+        let mut anchor = plan.r.edge;
+        for g in &plan.r.repl {
             self.counters.width_hist[g.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, g.clone());
             self.index_add(anchor);
-            let lit = self.fresh_litter();
-            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: Dir::R, dgen: GEN_FRESH, litter: lit, litter_size: 1 });
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: Dir::R, dgen: GEN_FRESH, litter: r_lit, litter_size: plan.r.repl.len() as u16 });
             inserted.push(anchor);
         }
 
@@ -3514,9 +3692,9 @@ impl Mixer {
         self.advance_births(&inserted);
 
         self.counters.twist_swaps += 1;
-        self.counters.twist_span += span as u64;
+        self.counters.twist_span += span_walked;
         self.counters.twist_relabels += relabeled;
-        self.counters.tg_consumed += (l_ids.len() + r_ids.len()) as u64;
+        self.counters.tg_consumed += (plan.l.ids.len() + plan.r.ids.len()) as u64;
         self.counters.tg_emitted += inserted.len() as u64;
     }
 
@@ -5237,12 +5415,14 @@ impl Mixer {
             };
             let hist: Vec<String> = c.tg_net_hist.iter().map(|v| v.to_string()).collect();
             println!(
-                "[fmix] twist-g57: consumed={} emitted={} net/seam[{}] solves={} avg_us={:.1}",
+                "[fmix] twist-g57: consumed={} emitted={} net/seam[{}] solves={} avg_us={:.1} slides={} retries={}",
                 c.tg_consumed,
                 c.tg_emitted,
                 hist.join(","),
                 c.tg_solves,
-                us
+                us,
+                c.tg_slides,
+                c.tg_retries
             );
         }
     }
@@ -5994,6 +6174,39 @@ mod mix_tests {
         let net = (mx.counters.tg_emitted as i64 - mx.counters.tg_consumed as i64) as f64
             / mx.counters.twist_swaps as f64;
         assert!(net <= 12.0 + 1e-9, "twist net cost exceeded the bare-word bound: {net}");
+        mx.global_check();
+    }
+
+    // v2 seam consumption must PROPAGATE ancestry: a bracket word that
+    // consumed real context takes the union of the consumed litters' ancestor
+    // sets (DB-splice semantics). v1 dropped them, silently deflating anc.
+    #[test]
+    fn g57_twist_consumption_inherits_ancestry() {
+        let gates = random_mixed_circuit(31, 16, 300);
+        let params = MixParams {
+            k_max: 6,
+            moves: 20_000,
+            target_size: 600,
+            temp: 20.0,
+            p_twist: 0.3,
+            twist_min_len: 4,
+            twist_g57: true,
+            local_verify: true,
+            ancestors: true,
+            verify_every: 1_000,
+            report_every: u64::MAX,
+            seed: 9,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        assert!(mx.counters.tg_consumed > 0, "no consumption to test");
+        let inherited = mx.arena.ids_in_order().iter().any(|&id| {
+            let m = mx.meta_of(id);
+            m.origin == ORIGIN_SYNTH
+                && mx.anc.get(&m.litter).is_some_and(|bits| bits.iter().any(|&w| w != 0))
+        });
+        assert!(inherited, "no synthetic gate carries inherited ancestry");
         mx.global_check();
     }
 

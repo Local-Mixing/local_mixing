@@ -397,12 +397,28 @@ and **every inserted gate takes the ballistic birth-advance unconditionally**
 — the `--db-advance` treatment, always on for this path. Every seam splice is
 verified against the reference 3-CNOT packet under `local_verify`.
 
-Measured (2000-gate random g57 circuit, 32 wires, 30k twists): net cost
-**8.3 gates/twist** vs 12 bare (legacy packet: 6), with 13% of seams at net
-0, 13% at +2, 26% at +4, 47% paying the bare word. Report line:
-`twist-g57: consumed= emitted= net/seam[hist] solves= avg_us=`. Counters
-`tg_consumed`/`tg_emitted` are appended to the state line with zero-default
-parsing, so pre-existing `.state` files still load. NOTE: this path emits
+**v2 placement (2026-07-30).** Two composable refinements, each with an env
+kill-switch for A/Bs (`TWIST_G57_NO_SLIDE` / `TWIST_G57_NO_RETRY`, default
+both ON): a seam that stays bare may **slide** its bracket outward (up to
+`TG_SLIDE_CAP`=512 gates, extending the conjugated window over the gates
+passed) to the next g57 pinning both twist wires; and the two ends are
+chosen **together** — a window whose best plan totals worse than
+`TG_ACCEPT_NET`=+8 is redrawn (up to `TG_RETRIES`=4), so a side stays bare
+only when its partner pays for it or every redraw failed. v1's histogram
+showed exactly one scoring seam per twist (the closing seam inherits (a,b)
+and its neighbor almost never pins both wires); v2 fixes that from both
+directions. Consumed context also now UNIONS its litters' ancestor sets
+into the replacement litter (DB-splice semantics) — v1 dropped them.
+
+Measured, C-arm factorial (20k n=64 sample, 2M moves, seed 101, rate 0.01):
+mean net/seam 4.51 (v1) → 4.38 (slide) → 3.93 (retry) → **3.72 (both)**;
+bare-seam rate 50% → 35%; final size 216k → **168k**; anc 637 → **921**.
+Retry is the bigger lever, slide composes. Cost: ~2.6× the MITM solves and
+~1.6 extra window draws per twist — still ~µs-per-move at production rates.
+Report line: `twist-g57: consumed= emitted= net/seam[hist] solves= avg_us=
+slides= retries=`. Counters `tg_consumed`/`tg_emitted` are appended to the
+state line with zero-default parsing, so pre-existing `.state` files still
+load. NOTE: this path emits
 comp=1 material (`ORIGIN_SYNTH`), so `comp=`/`shaped=` read population form,
 not fossils — same caveat as `p_db > 0`, with `tg_emitted` as the odometer.
 Negation arms still use the legacy packet; their word tables (or the
