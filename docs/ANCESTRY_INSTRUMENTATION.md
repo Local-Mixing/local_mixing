@@ -273,3 +273,132 @@ way still to go.
 - `p_mingen` has been 0.8 throughout, including in COMP where weaker pool
   targeting may serve better.
 - What counts as "enough" span needs a reference scale from the construction.
+
+---
+
+# Addendum, 2026-07-29 — mode schedules, effective work, and the twist cost
+
+New machinery since §1–5, all on the 20k-gate n=16 prefix, seed 101, ancestry on:
+
+- **Slot-0 mode overlay** (`--p-mix`): each round picks MIX-DB w.p. `p_mix` else
+  COMP-DB, with per-mode knobs (`--s-db-comp` / `--p-convex-comp` /
+  `--p-mingen-comp`). Lets a single run interleave growth and compression per
+  move instead of phasing them.
+- **`--twist-neg-p`**: probability each swapped wire is negated. 0.5 is the
+  swap-family default; 0.0 is pure positive swaps (CNOT brackets, no polarity
+  flips) — the control used in §10 below.
+- **`g57_census`** report split: `shaped` (polarity-blind g57 shape =
+  DB-effectiveness) vs `polf` (same-polarity fraction = twist odometer).
+
+## 6. `anc` is `incidence / size`; total incidence is the invariant
+
+![A/B/C schedules](abc_and_dbadvance_20260729.png)
+
+Three 2M-move schedules of the same MIX/COMP budget: **A** = 200k MIX then 1.8M
+COMP (phased); **B** = steady `p_mix=0.2`; **C** = steady `p_mix=0.1`. MIX uses
+`s_db=9, p_convex=1, p_mingen=0.8`; COMP uses `s_db=12, p_convex=0.5,
+p_mingen=0`; no twists.
+
+| end of run | size | `anc` | `span` | `fanout` |
+|---|---|---|---|---|
+| A phased | 64k | 2649 | 3260 | 8521 |
+| B 20% MIX | 122k | 3165 | 3820 | 19282 |
+| C 10% MIX | 48k | 7941 | 8626 | 19255 |
+
+`anc` per gate is **not** a pure mixing measure — it is `incidence / size`, so
+compression inflates it. The schedule-invariant quantity is **total ancestry
+incidence `anc × size` = the gate×input incidence relation**, which the report
+exposes as `fanout/input`. By that measure **B ≈ C (~386M, fanout ~19,300) ≫ A
+(~170M)**: steady interleave spreads far more than a single front-loaded breath,
+because a short inhale is spent before compression locks it in. B and C reach
+the *same* total but distribute it oppositely — C compresses into 48k gates so
+each reaches 43% of the input (`span` 8626), B holds 122k gates at half that.
+
+This retires the §3.2 "span saturates ~408" claim as an artifact of
+MIX-dominated large circuits: under compression `span` climbs past 8000.
+
+## 7. The effective-work rescale (moves per gate)
+
+![effective work](abc_vs_effwork_20260729.png)
+
+Plotting against cumulative **moves-per-gate** (`∫ dm / size`, trapezoidal)
+instead of raw moves removes the fact that a move on a small circuit does more
+per-gate work. The runs reach very different effective work in 2M moves —
+~25× (A), ~33× (B), ~56× (C) — and **on this axis the transport curves nearly
+collapse**: at 20 moves/gate, `anc` = 2.0k / 2.3k / 1.9k and `span` =
+2.6k / 3.1k / 2.7k (within ~20%). So C's raw-move lead was mostly that a small
+circuit buys more per-gate work per move. Residual schedule signal: A leads at
+*low* work (front-loaded MIX), B's `span` genuinely saturates once its circuit
+grows large (window reach diluted, not just `anc`/size), and `dmin` does **not**
+collapse — B (growth) holds ~0.11 while COMP-heavy A/C decay to ~0.065, so
+growth keeps the circuit farther from the `fcompress`-minimal form per unit work.
+
+## 8. `--db-advance` rescues contiguous sampling
+
+![db-advance](abc_and_dbadvance_20260729.png)
+
+Repeating the §3-era convex-vs-contiguous A/B with `--db-advance` on (ballistic
+birth-advance floats splice products apart):
+
+| end `anc` | db-advance OFF | db-advance ON |
+|---|---|---|
+| convex | 155 | 230 |
+| **contiguous** | **12** | **216** |
+
+Contiguous sampling transported almost nothing (products born adjacent, never
+moved); db-advance takes it from `anc` 12 → 216 (18×), `span` 20 → 580 (29×) —
+nearly to convex parity. It is the built litter-spread, and it is what makes
+contiguous windows viable.
+
+## 9. Twists crater ancestry transport
+
+![twist rate](abc_twistrate_20260729.png)
+
+A/B/C re-run at swap-family twist rates 0, 0.002, 0.01. Each twist rate step
+drops `anc`/`span`/`fanout` by roughly an order of magnitude, **even at matched
+effective work** (so not a size artifact), while `polf` climbs to its ~0.5
+ceiling and `dmin` drifts *down*. Example (C): `anc` 7941 → 425 → 62;
+`polf` 0 → 0.42 → 0.49. The odometer `polf` is nearly saturated already at
+0.002, so **0.002 buys almost all the polarity scrambling of 0.01 at a fraction
+of the ancestry cost** — if twists are wanted at all.
+
+Mechanism: twist brackets are born-random (zero input ancestry), and a DB window
+that gathers them unions less ancestry, so the DB keeps minting a large
+low-ancestry population that drags the per-gate mean down. Non-comp (foreign
+CNOT) material also does **not** breed — surviving foreign gates are *fewer* than
+the brackets inserted (ratio 0.5–0.9); the merge/COMP machinery even removes some.
+
+## 10. It is the CNOT brackets, not the polarity flips
+
+![CNOT vs polarity](bpos_cnot_vs_polarity_20260729.png)
+
+Schedule B at 1% twist, isolating the two effects with `--twist-neg-p 0` (pure
+positive swaps: the 3-CNOT brackets are inserted but no wire is negated):
+
+| B, 1% twist | `anc` | `span` | `polf` | foreign CNOT |
+|---|---|---|---|---|
+| no twist | 3165 | 3820 | 0 | 0.3% |
+| pure swap (CNOTs, no flips) | 304 | 840 | **0.000** | 22.8% |
+| full family (CNOTs + flips) | 80 | 451 | 0.489 | 21.0% |
+
+`polf=0.000` confirms the control flipped no polarities. The **foreign CNOTs
+alone** collapse `anc` 3165 → 304 (**10.4×**) at the same ~22% contamination;
+the polarity flips add a further 304 → 80 (3.8×). Multiplicatively
+10.4 × 3.8 ≈ 39.6 = the full collapse. So blocking-by-foreign-CNOTs is the
+**dominant** cost of twists and is independent of the negations — every
+swap-family twist pays it. `--twist-neg-p 0` recovers only the 3.8× flip
+component; the 10.4× bracket cost is structural.
+
+## 11. What this changes
+
+- **Report `anc × size` (or `fanout`), not `anc` alone**, when comparing
+  schedules of different size — `anc`/gate is a ratio and compression inflates it.
+- **Steady interleave beats a single phased breath** at equal MIX budget; the
+  `p_mix` overlay is the knob. Whether *cyclic* breathing (a size band) beats
+  steady C — C-like span at B-like `dmin` under bounded size — is the open test.
+- **`p_convex=1` for inhale, `--db-advance` for contiguous**: both materially
+  increase transport; the old `p_convex=0.5` default halved it.
+- **Twists are expensive for ancestry** at any negation setting, because the
+  3-CNOT brackets block mixing as foreign objects (§10). Reserve them for when
+  affine/distance-gauge resistance (the `polf` axis) is worth a large ancestry
+  hit, and prefer the lowest rate that moves `polf` (≈0.002).
