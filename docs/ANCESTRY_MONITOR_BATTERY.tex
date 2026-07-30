@@ -1,0 +1,288 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[T1]{fontenc}
+\newcommand{\code}[1]{\texttt{#1}}
+\title{The Ancestry Recording Monitor:\\
+Definitions, the 2026-07-30 Experiment Battery, and What It Established}
+\author{local\_mixing working notes}
+\date{2026-07-30}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The ancestry monitor is \code{fmix}'s instrument for \emph{material
+transport}: it tracks, for every gate of the evolving circuit, the set of
+original input gates its material descends from. This note documents the
+monitor itself --- the recording rules and the definition and rationale of
+every reported measure --- and then gives a complete account of the
+experiment battery run against it on 2026-07-29/30: the A/B/C
+$\times$ twist-rate campaign, the bracket-placer factorial, the
+recording-semantics isolation, the conditional census that audited the
+instrument, the functional cross-checks that bounded its meaning, and the
+slice-4 sanity battery. Conclusions: the monitor is sound (its headline
+number was already immune to the suspected dilution artifact); its readings
+are genuinely about transport, not about feasible-adversary legibility ---
+a 100$\times$ spread in \code{anc} across twist arms has no counterpart in
+any functional channel measured; and its cross-run comparisons are valid at
+matched effective work within one input universe, with saturation the main
+caveat across universes.
+\end{abstract}
+
+\section{The monitor}
+
+\subsection{Recording layer}
+
+\textbf{Litters.} Every gate carries a \emph{litter} tag: the replacement
+event that created it. Input gates and born-random material are singleton
+litters; splits and merges \emph{propagate} the parent's id (a litter
+fragments under churn rather than being reassigned); a DB splice stamps all
+its products with one fresh id.
+
+\textbf{Ancestor sets.} Per litter, a bitset over the $m$ input-gate
+indices: the union of the input gates whose material fed that litter.
+Recording rules:
+\begin{itemize}
+\item input gate $i$ starts as the implicit singleton $\{i\}$ (litter ids
+$< m$ read as singletons unless an explicit entry overrides; fresh ids
+start at $m$, so no aliasing);
+\item a DB splice's product litter gets the \emph{union} of the consumed
+window's litters' sets; catalogue merges likewise union their two parents;
+\item born-random material (\code{ORIGIN\_SYNTH}: copy-pair inserts, twist
+brackets) starts \emph{empty} --- it carries no input material;
+\item since placer v2 (commit \code{83ae0d11}), a g57 twist seam that
+consumes context gates unions the consumed litters into the bracket word's
+litter, exactly like a DB splice. (v1 dropped them; the isolation experiment
+in \S\ref{sec:union} measures what that was worth.)
+\end{itemize}
+The union can only grow: unlike the scalar \code{origin} label --- which a
+mixed-lineage splice destroys (the \code{osyn} fraction measures exactly
+that erosion) --- an ancestor set never loses information. That is the
+monitor's reason to exist: it keeps answering ``what is this gate made of,
+and how far has input material travelled'' long after per-gate origin labels
+have become meaningless.
+
+\textbf{Cost envelope.} Exact mode (\code{--ancestors}) stores $m$ bits per
+litter and refuses to arm above 20{,}000 input gates. Sampled mode
+(\code{--anc-samples K}, from the parallel monitoring session, commit
+\code{8b73a98c}) tracks only $K$ randomly chosen input gates (``tracers''),
+$K$ bits per litter, which removes the size ceiling; the tracer set is a
+pure function of $(m, K, \code{anc\_sample\_seed})$ and survives resumes.
+Calibration on an identical trajectory: the sampled estimate of \code{anc}
+agrees with exact within $3\%$ at $K{=}256$ and $8\%$ at $K{=}64$.
+
+\subsection{The measures}
+
+\textbf{\code{anc}} --- mean ancestor-set cardinality over live gates,
+\emph{conditional on a non-empty set} (gates whose set is empty are skipped
+--- established by reading \code{anc\_stats} and confirmed by the census of
+\S\ref{sec:census}). Rationale: ``what is a mixed gate made of'' --- the
+width of the input window a gate's material has been assembled from.
+
+\textbf{\code{ancspan}} --- mean over the same gates of
+$(\max - \min)/(m-1)$ of the set's input indices: how far apart in the
+\emph{original} circuit the meeting material originated. The report line
+carries the normalised form; the ancestry report prints the raw mean
+(``span (input gates)'') plus log-bucketed histograms of per-gate
+cardinality, span, and per-input fanout. Rationale: \code{anc} can grow by
+merging neighbours; \code{span} only grows when \emph{distant} input
+material actually meets --- it is the transport-distance reading.
+
+\textbf{\code{fanout/input}} --- per original gate, how many live gates
+descend from it (the transpose view; its histogram exposes extinct inputs
+vs.\ super-spreaders).
+
+\textbf{Sampled-mode readouts} (\code{tracer\_report}): \code{desc} = exact
+per-tracer fanout (unbiased for mean fanout since each input has inclusion
+probability $K/m$); from it \code{est anc} $= \code{desc}\cdot m /
+\mathrm{size}$ recovers the exact-mode \code{anc} without storing $m$ bits
+anywhere. \code{cov} = fraction of 64 equal position-buckets of the
+\emph{current} circuit containing at least one descendant of a tracer;
+\code{ent} = normalised entropy of the descendant positions over those
+buckets. \code{cov}/\code{ent} are the security-facing pair --- they ask
+directly whether an adversary can \emph{localise} where an original gate
+went --- and they are natively samplable, unlike \code{span}, which a
+sample can only underestimate. In sampled mode the \code{anc=}/\code{ancspan=}
+fields are deliberately left at zero rather than silently changing meaning.
+
+\section{The experiment battery}
+
+Common setup unless noted: the 20{,}000-gate, 64-wire sample
+(\code{g16\_20k.mpmct1}, the first ${\approx}3/7$ of a Gray-fold gadgetized
+sliced sandwich, $n{=}16$), seed 101, 2M moves, C schedule
+(\code{--p-mix 0.1}), exact ancestry on, server directory
+\code{\textasciitilde/tds/menucal\_20260728}. ``Effective work'' (eff) is
+the trapezoid integral of moves per gate --- the dose axis that removes
+size-inflation bias. Legacy = shipped 3-CNOT swap-family brackets; g57 v1 =
+anchor-first all-g57 brackets; v2 = v1 + edge slide + joint acceptance +
+ancestry union.
+
+\subsection{E1: A/B/C $\times$ twist rate, legacy vs.\ g57 v1}
+Fifteen runs: three schedules (A phased, B 20\% MIX, C 10\% MIX) $\times$
+\{no twist, legacy, g57 v1\} $\times$ rates \{0.002, 0.01\}. C-arm finals:
+
+\begin{center}\small
+\begin{tabular}{lrrrr}
+\toprule
+arm & size & anc & span & polf \\
+\midrule
+no twist     & 48{,}493  & 7{,}941 & 8{,}626 & 0.000 \\
+legacy 0.002 & 133{,}665 & 425     & 1{,}111 & 0.422 \\
+legacy 0.01  & 262{,}115 & 62      & 369     & 0.487 \\
+g57v1 0.002  & 86{,}696  & 2{,}604 & 3{,}374 & 0.000 \\
+g57v1 0.01   & 216{,}281 & 637     & 1{,}341 & 0.000 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+At matched eff ${\approx}32$: no-twist \code{anc} 3{,}961, g57 2{,}170
+($-45\%$), legacy 425 ($-89\%$). \textbf{Result:} both twist kinds suppress
+transport at equal dose; the g57 brackets suppress 5--6$\times$ less while
+also ending smaller. A and B schedules reproduce the ordering.
+
+\subsection{E2: placer factorial}
+C arm, four placer configurations via the env kill-switches
+(v1 / slide-only / retry-only / both), both rates. At 0.01: mean net gates
+per seam $4.51 \to 4.38 \to 3.93 \to 3.72$; size $216\mathrm{k} \to
+168\mathrm{k}$; \code{anc} $637 \to 921$ (v1 $\to$ both). \textbf{Result:}
+joint acceptance (window redraw unless both seams land) is the larger
+transport lever; the slide composes.
+
+\subsection{E3: v2 full trio}
+Six runs, all schedules $\times$ both rates, full v2. C-arm finals:
+size 78{,}233 / \code{anc} 3{,}038 / span 3{,}895 at 0.002; 168{,}192 /
+921 / 1{,}625 at 0.01. \textbf{Result:} v2 vs.\ legacy at 0.002 = 7$\times$
+the transport in a 41\% smaller circuit.
+
+\subsection{E4: recording-semantics isolation}\label{sec:union}
+Six runs with v2's placement disabled (both env switches) so only the
+\emph{ancestry-union} recording change differs from E1's g57 v1 arms.
+Sizes match v1 within 1\% (clean isolation); \code{anc} moves by only
+$+1.5$--$10\%$ (C 0.002: $2{,}604 \to 2{,}716$; C 0.01: $637 \to 698$).
+\textbf{Result:} of the v1$\to$v2 \code{anc} gain, ${\sim}10\%$ is the
+fairer recording, ${\sim}90\%$ is placement. The fix matters more as
+consumption rates rise (v1 consumed only ${\sim}0.8$ gates/twist).
+
+\subsection{E5: the conditional census (instrument audit)}\label{sec:census}
+Conjecture under test: the \code{anc} drop under twists is an artifact ---
+bracket gates carry no ancestry, so means are deflated. A state-file census
+(litters + ancestor sets parsed directly) recomputed, for all fifteen E1
+states: the unconditional mean, the conditional mean over non-empty sets,
+and the empty-set fraction. Extract:
+
+\begin{center}\small
+\begin{tabular}{lrrrr}
+\toprule
+state & anc$_{\mathrm{all}}$ & anc$_{\mathrm{cond}}$ & $f_{\mathrm{empty}}$ & $f_{\mathrm{synth}}$ \\
+\midrule
+expC (no twist) & 7941.4 & 7941.4 & 0.000 & 0.993 \\
+C\_tw002 (legacy) & 378.6 & 424.6 & 0.108 & 0.998 \\
+A\_tw01 (legacy) & 37.8 & 69.4 & 0.455 & 0.997 \\
+C\_g57tw002 & 2527.4 & 2604.1 & 0.029 & 0.996 \\
+C\_g57tw01 & 505.6 & 636.6 & 0.206 & 0.998 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Result:} the reported \code{anc} \emph{already equals the
+conditional mean} (the reporter skips empty sets), so the simple dilution
+form of the conjecture is refuted; conditioning changes no ordering. The
+empty-lineage \emph{population} is nonetheless real at high rates (up to
+46\% legacy at 0.01) --- brackets do dilute the material, just not the
+reported statistic. ($f_{\mathrm{synth}}\approx0.99$ everywhere is the old
+\code{osyn} story --- scalar origins die under ordinary churn --- and is
+what the set-based monitor exists to survive.)
+
+\subsection{E6: functional cross-checks (what \code{anc} does not measure)}
+Affine-reconstruction plates of the input's prefix progress against each
+mixed circuit, plus the stress battery, on the seven C-family arms:
+degree-1 plates are identical across all arms ($\rho = 1.000$,
+$z \approx 7.1$) --- and are provably \emph{blind} to twists (every twist
+type is an affine conjugation; the measure is affine-invariant). Degree-2
+plates (not blind): at ceiling in every arm ($\rho = 1.000$,
+$z \approx 4.5$), depth differences within noise. Battery statistical
+probes: prominence $0.26$--$0.31$ in every arm, progress monotonicity
+$z = 7$--$9$ everywhere. \textbf{Result:} a 100$\times$ spread in
+\code{anc} across arms has \emph{no counterpart} in any measured
+feasible-adversary channel. \code{anc} is a transport gauge, not a
+legibility gauge; twist-arm \code{anc} gaps must not be read as security
+deltas. (The one twist-sensitive channel found --- the syntactic
+write-census gap --- reversed direction on slice 4, E7, so it is not robust
+either.)
+
+\subsection{E7: slice-4 sanity battery}
+The same seven arms on the \emph{middle seventh} of the source gadget
+(6{,}640 gates containing the gadgetized N-band / C$|$D seam), at matched
+moves per gate. Transport results (finals; anc as fraction of the input
+universe in parentheses):
+
+\begin{center}\small
+\begin{tabular}{lrrr}
+\toprule
+arm & size ($\times$input) & anc & span frac \\
+\midrule
+no twist    & 2.23 & 6{,}464 (0.97) & 0.99 \\
+legacy 0.002& 6.66 & 697 (0.105)    & 0.229 \\
+legacy 0.01 & 13.1 & 81 (0.012)     & 0.064 \\
+g57v1 0.002 & 4.13 & 2{,}927 (0.44) & 0.528 \\
+g57v2 0.002 & 3.59 & 3{,}669 (0.55) & 0.642 \\
+g57v2 0.01  & 7.95 & 1{,}140 (0.18) & 0.253 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Result:} size-growth ratios are slice-independent to a few percent;
+the arm ordering replicates exactly; but all anc \emph{fractions} run
+${\sim}1.4$--$2\times$ higher than on the prefix sample because the
+6{,}640-gate ancestor universe saturates (the no-twist arm reaches 97\% of
+it, span 99\%). Legibility instruments, by contrast, do see the slice
+difference: every arm is more affine-recoverable (deg-1 mean H
+$0.31$--$0.34$ vs.\ $0.38$--$0.41$; battery parity prominence doubled) ---
+the N-band's linear material survives as a softer region regardless of
+twist treatment.
+
+\section{Conclusions}
+
+\begin{enumerate}
+\item \textbf{The monitor is sound.} Its headline statistic was already
+conditional (immune to the empty-set dilution suspected of it), and its one
+genuine recording unfairness --- twist seams dropping consumed lineage ---
+is fixed and measured at only $+1.5$--$10\%$. Readings replicate across
+schedules and slices.
+\item \textbf{What it measures is transport, and only transport.} Twists
+genuinely suppress input-material transport per unit work ($-45\%$ g57,
+$-89\%$ legacy at matched eff) --- that is a true statement about material
+flow. But no functional instrument (degree-1/2 affine, statistical probe
+battery) registers any corresponding legibility change. Until an adversary
+class is exhibited that tracks \code{anc}, twist-arm \code{anc} gaps are
+economics, not security.
+\item \textbf{Reading rules.} Compare \code{anc}/\code{span} only at
+matched effective work; within one input universe, absolute values are
+fine; across universes, use fractions and beware saturation (slice 4);
+remember both are conditional means and check the empty fraction
+($f_{\mathrm{empty}}$, or \code{carriers} in sampled mode) when twist or
+insert rates are high; for localisation questions use the sampled
+\code{cov}/\code{ent}, which have no exact-mode analogue.
+\item \textbf{Instrument portfolio.} The battery only worked because the
+monitor was cross-examined: the state-file census audited the reporter, the
+affine plates exposed their own blindness (twists are affine), and the
+degree-2/battery probes bounded the functional meaning. That
+cross-examination pattern --- instrument, audit, ground-truth --- is the
+reusable method here.
+\item \textbf{Production.} Exact mode stays a small-input instrument;
+\code{--anc-samples 256} is the production-scale monitor (3\% calibration),
+with \code{est anc} recovering this note's headline quantity and
+\code{cov}/\code{ent} adding the localisation reading.
+\end{enumerate}
+
+\begin{figure}[h]\centering
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/abc_twistrate_g57v2_20260730.png}
+\caption{E1/E3 combined: anc, span, size, dmin vs.\ effective work; A/B/C
+colours, twist variant by line style.}
+\end{figure}
+
+\end{document}
