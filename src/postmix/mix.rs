@@ -10,8 +10,12 @@
 // ssg, XGate-native: bracket a window with a wire negation or a 3-CNOT wire
 // swap and conjugate its interior — see twist_move). Contraction move: a
 // pairwise merge from the closed-form catalogue (see merge_result). Every move
-// is exhaustively verified on its support; the chain never emits comp=1 gates,
-// so the comp count is a monotone "fossil" count of surviving original g57s.
+// is exhaustively verified on its support. The split/merge chain never emits
+// comp=1 gates, so with the DB and g57 twists off the comp count is a monotone
+// "fossil" count of surviving original g57s; DB splices (p_db > 0) and
+// --twist-g57 brackets both emit g57-form material (real origins and
+// ORIGIN_SYNTH respectively), so under either the comp/shaped censuses read
+// population form, not fossils — tg_emitted is the twist-side odometer.
 //
 // Provenance: every gate carries (origin, event) — the original-gate index its
 // material descends from, and the split event that created it. A merge whose
@@ -20,6 +24,7 @@
 use super::arena::{Arena, Dir, NIL};
 use super::db_replace::{db_replace, DbMode, DegreeGuard};
 use super::rules::{self, BlockReason, Outcome, Role, RuleKind};
+use super::swap_words;
 use super::xgate::{Lits, XGate};
 use super::xpoly::XPolyBudget;
 use crate::replace::frozen::FrozenDb;
@@ -408,6 +413,14 @@ pub struct MixParams {
     /// negate-both 1/4); 0.0 = pure positive swaps only (no polarity flips,
     /// though the 3-CNOT swap brackets are still inserted).
     pub twist_neg_p: f64,
+    // twist_g57: spell twist brackets as all-g57 words instead of 3-CNOT
+    // packets, siting each bracket adaptively so it absorbs neighborhood
+    // gates (the hidden-SAMF mechanism, XGate-native). Pure swap only: the
+    // negation arms keep the legacy packet until their word tables exist.
+    // Every gate the move inserts takes the ballistic birth-advance
+    // unconditionally (the db_advance treatment; legacy brackets sit tight).
+    // See twist_move_g57 and swap_words.rs.
+    pub twist_g57: bool,
     // Twist window lengths are log-uniform over [twist_min_len, circuit size]:
     // the all-scales dial that decorrelates computational progress at every
     // window scale, the structured analog of ssg's long-range shooting.
@@ -703,6 +716,7 @@ impl Default for MixParams {
             w_twist_swap: 0.0,
             w_twist_cnot: 0.0,
             twist_neg_p: 0.5,
+            twist_g57: false,
             twist_min_len: 64,
             // Store-free by default: MixParams::default() is the test/base
             // value, and any positive DB rate here would make every construction
@@ -916,6 +930,17 @@ pub struct MixCounters {
     pub twist_case_splits: u64,
     pub twist_span: u64,
     pub twist_skips: u64,
+    // --twist-g57 seam economics: context gates the brackets consumed, g57
+    // word gates they emitted (net growth = emitted - consumed vs a flat +6
+    // for the legacy packets), and total MITM solve time (the online-cost
+    // answer, session-local).
+    pub tg_consumed: u64,
+    pub tg_emitted: u64,
+    pub tg_solves: u64,
+    pub tg_solve_ns: u64,
+    // Histogram of per-seam net cost (word len - context consumed), 0..=7.
+    // A shape, so like splice_sizes it is not carried across resumes.
+    pub tg_net_hist: [u64; 8],
     pub blocked_width: u64,
     pub blocked_deadlock: u64,
     pub declined: u64,
@@ -1181,7 +1206,11 @@ impl MixCounters {
             self.float_steps,
             self.scatters,
             self.scatter_steps,
-            self.dropped_neverfire
+            self.dropped_neverfire,
+            // Trailing fields are parsed with a zero default so pre-existing
+            // .state files stay loadable; append here, never insert.
+            self.tg_consumed,
+            self.tg_emitted,
         ];
         vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" ")
     }
@@ -1271,8 +1300,15 @@ impl MixCounters {
             scatters: next_u64(&mut it)?,
             scatter_steps: next_u64(&mut it)?,
             dropped_neverfire: next_u64(&mut it)?,
+            // Appended after the twist-g57 work landed: absent in older state
+            // files, so they default to zero rather than failing the resume.
+            tg_consumed: next_u64(&mut it).unwrap_or(0),
+            tg_emitted: next_u64(&mut it).unwrap_or(0),
+            tg_solves: 0,
+            tg_solve_ns: 0,
             splice_sizes: Vec::new(),
             width_hist: [0u64; 16],
+            tg_net_hist: [0u64; 8],
         })
     }
 }
@@ -2353,7 +2389,11 @@ impl Mixer {
     // swap 1/4, swap+negate-one 1/2, swap+negate-both 1/4. The legacy
     // w_twist_* weights are retired (accepted-but-ignored on the CLI).
     fn twist_round(&mut self) {
-        self.twist_move();
+        if self.params.twist_g57 {
+            self.twist_move_g57();
+        } else {
+            self.twist_move();
+        }
     }
 
     /// The size brake. Growth past `size_hi` forces slot 2 into COMP; it is
@@ -3163,6 +3203,321 @@ impl Mixer {
         }
         self.counters.twist_span += span as u64;
         self.counters.twist_relabels += relabeled;
+    }
+
+    /// One seam of a --twist-g57 bracket: gather up to 3 neighborhood gates
+    /// outward from `edge` (support capped at 4 wires including a, b), then
+    /// for every context depth k ask the swap-word engine for the shortest
+    /// all-g57 word realizing [ctx . S] (left seam) or [S . ctx] (right
+    /// seam), and keep the cheapest by net cost (word len - k), deeper
+    /// context on ties. k = 0 always solves (dist(S_ab) = 6), so a bracket
+    /// always exists. Returns (consumed ids nearest-first, replacement gates
+    /// in circuit order).
+    fn solve_seam(&mut self, edge: u32, dir: Dir, a: u16, b: u16) -> (Vec<u32>, Vec<XGate>) {
+        let eng = swap_words::engine();
+        // Context gather: a gate joins while the combined support (with a, b)
+        // still fits the engine's 4 abstract wires.
+        let mut ids: Vec<u32> = Vec::new();
+        let mut sup: Vec<u16> = vec![a, b];
+        let mut cur = self.arena.neighbor(edge, dir);
+        while ids.len() < 3 && cur != NIL {
+            let g = self.arena.gate(cur);
+            let mut s2 = sup.clone();
+            for w in std::iter::once(g.target).chain(g.ctrls.iter().map(|&(w, _)| w)) {
+                if !s2.contains(&w) {
+                    s2.push(w);
+                }
+            }
+            if s2.len() > 4 {
+                break;
+            }
+            sup = s2;
+            ids.push(cur);
+            cur = self.arena.neighbor(cur, dir);
+        }
+        // Bind the abstract wires: 0 = a, 1 = b, then the context's own
+        // wires, padded with fresh random wires (the engine may route
+        // through a helper the context never touched).
+        let mut wires: [u16; 4] = [a, b, a, a];
+        for i in 2..4 {
+            if let Some(&w) = sup.get(i) {
+                wires[i] = w;
+            } else {
+                // Random start, deterministic scan: with num_wires >= 4 a
+                // free wire always exists, so this cannot fail.
+                let off = self.rng.random_range(0..self.num_wires);
+                for d in 0..self.num_wires {
+                    let w = ((off + d) % self.num_wires) as u16;
+                    if !wires[..i].contains(&w) {
+                        wires[i] = w;
+                        break;
+                    }
+                }
+            }
+        }
+        let abs_of = |w: u16| wires.iter().position(|&x| x == w).unwrap() as u8;
+        let perms: Vec<u64> = ids
+            .iter()
+            .map(|&id| {
+                let g = self.arena.gate(id);
+                let ctrls: Vec<(u8, bool)> =
+                    g.ctrls.iter().map(|&(w, p)| (abs_of(w), p)).collect();
+                swap_words::xgate_perm(abs_of(g.target), &ctrls, g.comp)
+            })
+            .collect();
+        // k = 0 is the precomputed bare spelling of S_ab — no scan needed.
+        let mut best: Option<(usize, Vec<u8>)> = Some((0, eng.bare_word().to_vec()));
+        let t0 = std::time::Instant::now();
+        for k in 1..=perms.len() {
+            // Segment perm in circuit (= apply) order. Context ids are
+            // nearest-first, so the left seam's circuit order is h_k..h_1
+            // then the bracket; the right seam is the bracket then h_1..h_k.
+            let mut t = match dir {
+                Dir::L => {
+                    let mut t = swap_words::IDENT;
+                    for i in (0..k).rev() {
+                        t = swap_words::compose(t, perms[i]);
+                    }
+                    swap_words::compose(t, eng.s_ab)
+                }
+                Dir::R => eng.s_ab,
+            };
+            if dir == Dir::R {
+                for p in perms.iter().take(k) {
+                    t = swap_words::compose(t, *p);
+                }
+            }
+            self.counters.tg_solves += 1;
+            if let Some(w) = eng.solve(t, swap_words::MAX_WORD) {
+                let better = match &best {
+                    None => true,
+                    Some((bk, bw)) => {
+                        // Signed: non-g57 context gates are worth several
+                        // g57s each, so a seam can solve BELOW its consumed
+                        // count (net < 0 — a twist that shrinks the circuit).
+                        let net = w.len() as i64 - k as i64;
+                        let bnet = bw.len() as i64 - *bk as i64;
+                        net < bnet || (net == bnet && k > *bk)
+                    }
+                };
+                if better {
+                    best = Some((k, w));
+                }
+            }
+        }
+        self.counters.tg_solve_ns += t0.elapsed().as_nanos() as u64;
+        let (k, word) = best.expect("k = 0 always solves: dist(S_ab) = 6");
+        (ids[..k].to_vec(), eng.decode(&word, &wires))
+    }
+
+    /// The --twist-g57 realization of a pure-swap conjugation twist: same
+    /// window draw and interior relabel as twist_move, but each bracket is an
+    /// all-g57 word sited by solve_seam so it absorbs neighborhood gates —
+    /// the ssg hidden-SAMF mechanism, XGate-native. The left seam spells
+    /// [ctx . S] as one word (consuming ctx), the right spells [S . ctx]:
+    /// the segment becomes R . W' . R' = ctx_l . S . W' . S . ctx_r, which is
+    /// the original since W' is the swap-conjugated interior. All inserted
+    /// gates take the ballistic birth-advance unconditionally, aimed outward.
+    fn twist_move_g57(&mut self) {
+        let n = self.arena.len();
+        if n < 2 || self.num_wires < 4 {
+            self.counters.twist_skips += 1;
+            return;
+        }
+        let cap = n;
+        let lmin = (self.params.twist_min_len.max(2).min(cap)) as f64;
+        let len = (self.rng.random_range(lmin.ln()..=(cap as f64).ln()).exp().round() as usize)
+            .clamp(2, cap);
+        // Symmetric truncation, exactly as in twist_move; the adaptivity here
+        // lives in the seams, not the site.
+        let draw = self.rng.random_range(0..n + len - 1);
+        let (start, len) = if draw < len - 1 {
+            (self.arena.head(), draw + 1)
+        } else {
+            (self.arena.random_linked(&mut self.rng), len)
+        };
+
+        // Pass 1: window end + touched wires (a must touch the window or the
+        // conjugation is a no-op).
+        let mut touch_seen = vec![false; self.num_wires];
+        let mut touches: Vec<u16> = Vec::new();
+        let mut end = start;
+        let mut span = 0usize;
+        let mut cur = start;
+        while cur != NIL && span < len {
+            let g = self.arena.gate(cur);
+            for w in std::iter::once(g.target).chain(g.ctrls.iter().map(|&(w, _)| w)) {
+                if !touch_seen[w as usize] {
+                    touch_seen[w as usize] = true;
+                    touches.push(w);
+                }
+            }
+            end = cur;
+            span += 1;
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        if touches.is_empty() {
+            self.counters.twist_skips += 1;
+            return;
+        }
+        // Candidate wire pairs, anchor-first: a pair drawn from a boundary
+        // gate's own pins makes that gate consumable at its seam (a uniform
+        // random b almost never lands inside the 4-wire support, which is
+        // what left the legacy placer's absorption rate near zero on wide
+        // circuits). The uniform pair stays in the pool so fresh-wire
+        // routing — a twist value in its own right — is still on the menu;
+        // it wins whenever no boundary pair beats its net.
+        let mut cands: Vec<(u16, u16)> = Vec::new();
+        for edge in [self.arena.neighbor(start, Dir::L), self.arena.neighbor(end, Dir::R)] {
+            if edge == NIL {
+                continue;
+            }
+            let g = self.arena.gate(edge);
+            let pins: Vec<u16> =
+                std::iter::once(g.target).chain(g.ctrls.iter().map(|&(w, _)| w)).collect();
+            for &pa in &pins {
+                if !touch_seen[pa as usize] {
+                    continue; // `a` must touch the window or the twist is a no-op
+                }
+                for &pb in &pins {
+                    if pb != pa && !cands.contains(&(pa, pb)) {
+                        cands.push((pa, pb));
+                    }
+                }
+            }
+        }
+        cands.truncate(6);
+        let a0 = touches[self.rng.random_range(0..touches.len())];
+        for _ in 0..16 {
+            let c = self.rng.random_range(0..self.num_wires) as u16;
+            if c != a0 {
+                if !cands.contains(&(a0, c)) {
+                    cands.push((a0, c));
+                }
+                break;
+            }
+        }
+        if cands.is_empty() {
+            self.counters.twist_skips += 1;
+            return;
+        }
+
+        // Solve both seams for every candidate pair before touching anything:
+        // context gates sit strictly outside [start, end], so the interior
+        // relabel below cannot invalidate them, and the two seams' contexts
+        // are disjoint. Cheapest total net wins; more absorption on ties.
+        let mut chosen: Option<(u16, u16, Vec<u32>, Vec<XGate>, Vec<u32>, Vec<XGate>)> = None;
+        let mut chosen_score = (i64::MAX, i64::MIN); // (net, -consumed) minimized
+        for &(a, b) in &cands {
+            let (l_ids, l_repl) = self.solve_seam(start, Dir::L, a, b);
+            let (r_ids, r_repl) = self.solve_seam(end, Dir::R, a, b);
+            let consumed = (l_ids.len() + r_ids.len()) as i64;
+            let net = (l_repl.len() + r_repl.len()) as i64 - consumed;
+            if (net, -consumed) < chosen_score {
+                chosen_score = (net, -consumed);
+                chosen = Some((a, b, l_ids, l_repl, r_ids, r_repl));
+            }
+        }
+        let (a, b, l_ids, l_repl, r_ids, r_repl) = chosen.expect("cands is non-empty");
+        // Negative nets (shrinking seams) fold into bucket 0.
+        self.counters.tg_net_hist
+            [(l_repl.len() as i64 - l_ids.len() as i64).clamp(0, 7) as usize] += 1;
+        self.counters.tg_net_hist
+            [(r_repl.len() as i64 - r_ids.len() as i64).clamp(0, 7) as usize] += 1;
+
+        // The reference bracket for verification: the known-correct 3-CNOT
+        // swap packet (a palindrome, so it is its own inverse).
+        let packet3 = vec![
+            XGate::cnot(b, a),
+            XGate::cnot(a, b),
+            XGate::cnot(b, a),
+        ];
+
+        // Pass 2: conjugate the interior by the swap — a pure 1->1 relabel.
+        let mut relabeled = 0u64;
+        let mut cur = start;
+        loop {
+            let is_last = cur == end;
+            let next = self.arena.neighbor(cur, Dir::R);
+            let g = self.arena.gate(cur).clone();
+            if let Some(g2) = conj_by_swap(&g, a, b) {
+                if self.params.local_verify {
+                    let mut seq = packet3.clone();
+                    seq.push(g.clone());
+                    seq.extend(packet3.iter().cloned());
+                    assert!(
+                        rules::verify_rewrite(&seq, std::slice::from_ref(&g2)),
+                        "g57-twist conjugation failed: {g:?} a={a} b={b}"
+                    );
+                }
+                self.index_remove(cur);
+                self.arena.replace_gate(cur, g2);
+                self.index_add(cur);
+                relabeled += 1;
+            }
+            if is_last {
+                break;
+            }
+            cur = next;
+        }
+
+        // Splice the seams. Consumed ids are nearest-first, so the left run's
+        // circuit order is ids reversed; anchors are read before unlinking.
+        if self.params.local_verify {
+            let mut old: Vec<XGate> =
+                l_ids.iter().rev().map(|&id| self.arena.gate(id).clone()).collect();
+            old.extend(packet3.iter().cloned());
+            assert!(
+                rules::verify_rewrite(&old, &l_repl),
+                "g57-twist left seam failed: a={a} b={b}"
+            );
+            let mut old: Vec<XGate> = packet3.clone();
+            old.extend(r_ids.iter().map(|&id| self.arena.gate(id).clone()));
+            assert!(
+                rules::verify_rewrite(&old, &r_repl),
+                "g57-twist right seam failed: a={a} b={b}"
+            );
+        }
+        let ev = self.fresh_event();
+        let mut inserted: Vec<u32> = Vec::with_capacity(l_repl.len() + r_repl.len());
+        let l_anchor = match l_ids.last() {
+            Some(&far) => self.arena.neighbor(far, Dir::L),
+            None => self.arena.neighbor(start, Dir::L),
+        };
+        for &id in l_ids.iter().chain(r_ids.iter()) {
+            self.index_remove(id);
+            self.arena.unlink(id);
+        }
+        let mut anchor = l_anchor;
+        for g in &l_repl {
+            self.counters.width_hist[g.width().min(15)] += 1;
+            anchor = self.arena.insert_after(anchor, g.clone());
+            self.index_add(anchor);
+            let lit = self.fresh_litter();
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: Dir::L, dgen: GEN_FRESH, litter: lit, litter_size: 1 });
+            inserted.push(anchor);
+        }
+        let mut anchor = end;
+        for g in &r_repl {
+            self.counters.width_hist[g.width().min(15)] += 1;
+            anchor = self.arena.insert_after(anchor, g.clone());
+            self.index_add(anchor);
+            let lit = self.fresh_litter();
+            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: Dir::R, dgen: GEN_FRESH, litter: lit, litter_size: 1 });
+            inserted.push(anchor);
+        }
+
+        // Part (b): every inserted gate rides its (outward) direction, the
+        // db_advance treatment applied unconditionally. Same-support g57s
+        // mostly collide pairwise, so the packet spreads caterpillar-style —
+        // outer gates travel, inner ones stop at their siblings.
+        self.advance_births(&inserted);
+
+        self.counters.twist_swaps += 1;
+        self.counters.twist_span += span as u64;
+        self.counters.twist_relabels += relabeled;
+        self.counters.tg_consumed += (l_ids.len() + r_ids.len()) as u64;
+        self.counters.tg_emitted += inserted.len() as u64;
     }
 
     // ---- the contraction moves ----
@@ -4873,6 +5228,23 @@ impl Mixer {
         if !sizes.is_empty() {
             println!("[fmix] splice sizes out->in: {sizes}");
         }
+        if self.params.twist_g57 {
+            let c = &self.counters;
+            let us = if c.tg_solves > 0 {
+                c.tg_solve_ns as f64 / 1000.0 / c.tg_solves as f64
+            } else {
+                0.0
+            };
+            let hist: Vec<String> = c.tg_net_hist.iter().map(|v| v.to_string()).collect();
+            println!(
+                "[fmix] twist-g57: consumed={} emitted={} net/seam[{}] solves={} avg_us={:.1}",
+                c.tg_consumed,
+                c.tg_emitted,
+                hist.join(","),
+                c.tg_solves,
+                us
+            );
+        }
     }
 
     pub fn origins_in_order(&self) -> Vec<u32> {
@@ -5563,6 +5935,66 @@ mod mix_tests {
             let (ids, _d) = mx.collect_contiguous(4).expect("window");
             assert_eq!(ids.len(), 4, "boundary spill did not reach the quota");
         }
+    }
+
+    // The tg_* counter fields are APPENDED to the state line and parsed with
+    // a zero default, so a .state written before they existed must still
+    // load. Simulated here by stripping the trailing tokens.
+    #[test]
+    fn counters_line_tolerates_missing_trailing_fields() {
+        let mut c = MixCounters::default();
+        c.moves = 7;
+        c.tg_consumed = 3;
+        c.tg_emitted = 9;
+        let line = c.to_line();
+        let full = MixCounters::from_line(&line).expect("roundtrip");
+        assert_eq!((full.tg_consumed, full.tg_emitted), (3, 9));
+        let old: Vec<&str> = line.split_whitespace().collect();
+        let truncated = old[..old.len() - 2].join(" ");
+        let parsed = MixCounters::from_line(&truncated).expect("pre-tg state must load");
+        assert_eq!(parsed.moves, 7);
+        assert_eq!((parsed.tg_consumed, parsed.tg_emitted), (0, 0));
+    }
+
+    // --twist-g57: brackets become adaptive all-g57 words solved online per
+    // seam. Thousands of twists under local_verify (every seam splice checked
+    // exhaustively against the reference 3-CNOT packet) plus periodic full
+    // verification and a final global_check. The seams must also actually
+    // absorb neighborhood material — a run where tg_consumed stays 0 means
+    // the placer degenerated to bare words and the mechanism is dead.
+    #[test]
+    fn mixer_g57_twists_preserve_function_and_absorb() {
+        let gates = random_mixed_circuit(29, 16, 300);
+        let params = MixParams {
+            k_max: 6,
+            moves: 20_000,
+            target_size: 600,
+            temp: 20.0,
+            p_twist: 0.3,
+            twist_min_len: 4,
+            twist_g57: true,
+            local_verify: true,
+            verify_every: 1_000,
+            report_every: u64::MAX,
+            seed: 7,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        assert!(mx.counters.twist_swaps > 100, "g57 twists barely ran: {}", mx.counters.twist_swaps);
+        assert!(mx.counters.tg_emitted > 0, "brackets emitted nothing");
+        assert!(
+            mx.counters.tg_consumed > 0,
+            "no seam ever absorbed a neighbor -- the adaptive placement is dead"
+        );
+        // The solver minimizes NET (word len minus context consumed), so a
+        // seam may emit up to 7 gates while consuming 3; what can never
+        // happen is a twist NET above the 12-gate bare spelling, since k=0
+        // always offers the 6-word per seam.
+        let net = (mx.counters.tg_emitted as i64 - mx.counters.tg_consumed as i64) as f64
+            / mx.counters.twist_swaps as f64;
+        assert!(net <= 12.0 + 1e-9, "twist net cost exceeded the bare-word bound: {net}");
+        mx.global_check();
     }
 
     // Symmetric truncation: with twist_min_len at circuit scale every draw is

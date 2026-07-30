@@ -7,9 +7,11 @@
 // expand; catalogue merges (cancel / X-fuse / drop-literal / subsume)
 // contract. The thermostat holds the gate count near --target-size; the
 // objective is churn (distance from the original description), not size.
-// Never emits comp=1 gates, so the g57 "fossil" count is monotone. Ends with a
-// final uniform float, a sampled global check against the input, and an mpmct1
-// write.
+// The split/merge chain never emits comp=1 gates, so with the DB channels and
+// --twist-g57 off the g57 "fossil" count is monotone; DB splices and g57-word
+// twist brackets both emit g57-form material (see the mix.rs header). Ends with
+// a final uniform float, a sampled global check against the input, and an
+// mpmct1 write.
 //
 // Graceful stop: touch $FMIX_STOP_FLAG and the run finishes cleanly (verified
 // write) at the next report point. Snapshot: touch $FMIX_DUMP_FLAG to get a
@@ -124,6 +126,12 @@ struct Args {
     /// Minimum twist window length (max is the current circuit size)
     #[arg(long, default_value_t = 64)]
     twist_min_len: usize,
+    /// Spell twist brackets as all-g57 words sited adaptively so they absorb
+    /// neighborhood gates (hidden-SAMF style), instead of 3-CNOT packets.
+    /// Pure swap only (twist_neg_p is ignored on this path); every inserted
+    /// gate takes the ballistic birth-advance unconditionally.
+    #[arg(long, default_value_t = false)]
+    twist_g57: bool,
     /// Probability a CONTRACTION tries COMP-DB (non-growing, uniform among the
     /// shortest) before falling through to journal undo and the merge
     /// catalogue. Requires FROZEN_DB_DIR.
@@ -471,6 +479,15 @@ fn main() {
             args.p_twist, args.twist_min_len, args.twist_neg_p
         );
     }
+    if args.twist_g57 {
+        // Force-build the engine now so its cost is paid (and printed) at
+        // startup rather than silently inside the first twist round.
+        let eng = local_mixing::postmix::swap_words::engine();
+        println!(
+            "[fmix] twist-g57 ON: brackets are adaptive all-g57 words (pure swap; twist_neg_p ignored), inserted gates take the birth-advance; engine ball {} perms, built in {} ms",
+            eng.back_len, eng.build_ms
+        );
+    }
     if args.anc_samples > 0 {
         println!(
             "[fmix] SAMPLED ancestry ON: tracing {} input gates (sample_seed={}); reports per-tracer descendant count, positional coverage and entropy. Scales to any input size; anc=/ancspan= stay 0 (see the tracers line).",
@@ -562,6 +579,7 @@ fn main() {
         w_twist_swap: args.w_twist_swap,
         w_twist_cnot: args.w_twist_cnot,
         twist_neg_p: args.twist_neg_p,
+        twist_g57: args.twist_g57,
         twist_min_len: args.twist_min_len,
         p_comp: args.p_comp,
         p_any: args.p_any,

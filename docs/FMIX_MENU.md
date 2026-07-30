@@ -371,6 +371,43 @@ replacement is function-preserving by construction, so replacing any contiguous
 chunk containing a bracket preserves the conjugation identity with no extra
 reasoning.
 
+### 3.3.1 BUILT: `--twist-g57` — exact all-g57 brackets (swap-word engine)
+
+For **pure swaps** the store probe above is superseded by exact online
+synthesis (`swap_words.rs`, 2026-07-29). The bracket seam only needs the
+shortest all-g57 word for the *permutation* `ctx · S_ab` (left seam) or
+`S_ab · ctx` (right), and that is answerable without any DB: two
+target-independent BFS tables over the 24 g57 gates on 4 abstract wires
+(16-state perms packed into `u64`; radius-4 ball = 165,443 perms, built once
+in ~10 ms) give a meet-in-the-middle solve covering every word length ≤ 7 in
+~180 µs. Ground truth, exhaustive: `dist(S_ab) = 6`; a context pair on one
+3-wire support always admits length 4 (net **+2**); 48% of 3-gate contexts
+admit net **0**; the 4-wire-scope k=2 contexts of the sqlite enumeration
+(`g57_swap_identities.sqlite`) all sit at distance 6, so its `≤ k+3`
+replacement contract is unachievable there without the exceptional gate.
+
+Mechanics per twist: window and interior relabel exactly as the legacy swap
+twist (pure swap only — `twist_neg_p` is ignored); candidate `(a, b)` pairs
+are seeded **anchor-first** from the boundary gates' own pins (a uniform `b`
+almost never lands inside the 4-wire seam support) plus one uniform pair for
+fresh-wire routing; both seams are solved for every candidate and the
+cheapest total net wins, more absorption on ties. Consumed neighbours are
+spliced out, the word spliced in (`ORIGIN_SYNTH`, one event, outward dirs),
+and **every inserted gate takes the ballistic birth-advance unconditionally**
+— the `--db-advance` treatment, always on for this path. Every seam splice is
+verified against the reference 3-CNOT packet under `local_verify`.
+
+Measured (2000-gate random g57 circuit, 32 wires, 30k twists): net cost
+**8.3 gates/twist** vs 12 bare (legacy packet: 6), with 13% of seams at net
+0, 13% at +2, 26% at +4, 47% paying the bare word. Report line:
+`twist-g57: consumed= emitted= net/seam[hist] solves= avg_us=`. Counters
+`tg_consumed`/`tg_emitted` are appended to the state line with zero-default
+parsing, so pre-existing `.state` files still load. NOTE: this path emits
+comp=1 material (`ORIGIN_SYNTH`), so `comp=`/`shaped=` read population form,
+not fossils — same caveat as `p_db > 0`, with `tg_emitted` as the odometer.
+Negation arms still use the legacy packet; their word tables (or the
+exceptional-gate MITM variant) are the open extension.
+
 ### 3.4 Deferred relabelling — DROPPED, measured
 
 The ledger was to batch the O(|W|) interior relabel across twists. Measured
@@ -860,8 +897,10 @@ scalar label had to discard it.
 | `fanout` | — | redundant: `anc × gates / inputs` exactly |
 | **`dmin`** | 0 = fully minimal | fraction of windows still admitting a shorter spelling |
 | **litter `distinct`** | `s_db` | how braided the sampled windows are |
-| `comp` / `g57` | 0 | fossils |
-| `cov` | ~600 at 256 wires, scale by `n` | twist dose |
+| `shaped` / `size` | — | **DB effectiveness**: the store emits width-2 `comp=1` gates and nothing else, so `1 − shaped/size` is the material the DB did not produce. Not a fossil count and not headed for 0 — DB splices raise it. |
+| `polf` | 0.5 = fully scrambled | **twist odometer**: fraction of shaped gates a negation twist has flipped out of g57 form. Bounded and size-independent, unlike `cov`. |
+| `comp` / `g57` | — | ⚠️ not fossil counts under `p_db > 0`; see `POSTMIX_MANUAL.md`. `comp` measured pinned at 0.996 of size across a 70× inhale. |
+| `cov` | ~600 at 256 wires, scale by `n` | twist dose — but the denominator is the *growing* circuit, so it can fall while twists keep firing; prefer `polf` for saturation |
 | `owin` | 32 | **saturates far too early to be a criterion** |
 
 **What the measurements settled.**
