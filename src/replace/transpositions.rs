@@ -1469,12 +1469,13 @@ fn integrate_samf_compressed(
     let mut window: Vec<[u16; 3]> = gates[ctx_start..].to_vec();
     window.extend_from_slice(samf);
     // Tiered replacement, best-quality first; all tiers are equivalence-preserving:
-    //   1. curated compression (strictly-useful shorter replacement),
-    //   2. any curated equivalent (even if not a compression) — still hides the SAMF,
-    //   3. any sharded equivalent — fall back to the full sharded DB.
+    //   1. regular compression (strictly-useful shorter replacement),
+    //   2. any regular equivalent (even if not a compression) — still hides the SAMF.
     // On a total miss, emit the undo SAMF gadget verbatim (correct, just unhidden).
-    let repl = compress_curated_db(&window, n, db, use_curated, false)
-        .or_else(|| find_any_replacement_db(&window, n, db, use_curated, false))
+    // ROUTING CONTRACT (bounded curated DB, 2026-07-30): compression —
+    // including SAMF hiding — uses the REGULAR store only; the curated store
+    // serves ordinary expansion only. The earlier curated tiers are gone.
+    let repl = compress_curated_db(&window, n, db, false, use_regular)
         .or_else(|| find_any_replacement_db(&window, n, db, false, use_regular));
     if let Some(repl) = repl {
         gates.truncate(ctx_start);
@@ -2485,8 +2486,10 @@ fn shuffled_shooting_game_core(
                     window.extend_from_slice(&output[out_keep..]);
                     window.extend_from_slice(&expansion[exp_tail_start..]);
                     window.extend_from_slice(&samf[..3]);
+                    // ROUTING CONTRACT (bounded curated DB, 2026-07-30): SAMF
+                    // hiding is a compression lookup — regular store only.
                     if let Some(repl) =
-                        compress_curated_db(&window, n, db, use_curated, use_regular)
+                        compress_curated_db(&window, n, db, false, use_regular)
                     {
                         // Accept only if the SAMF gates are genuinely absorbed (not surviving verbatim).
                         let samf_slice = &samf[..3];

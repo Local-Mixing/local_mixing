@@ -529,7 +529,7 @@ fn main() {
             !args.no_db_verify,
             "--curated with --no-db-verify is refused: the curated store has already been              observed returning a non-equivalent replacement (forward/reverse key confusion),              and the per-splice check is what caught it"
         );
-        println!("[fmix] curated ON: curated matches preferred over regular, any size (forward key only)");
+        println!("[fmix] curated ON: ordinary expansion probes the CURATED store only (forward key, any size); compression stays regular-only");
     }
     if args.db_advance {
         println!(

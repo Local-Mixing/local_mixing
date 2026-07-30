@@ -413,7 +413,7 @@ pub fn db_replace(
     curated: bool,
     rng: &mut impl Rng,
 ) -> DbResult {
-    db_replace_with(window, num_wires, budget, mode, guard, rng, |key, want_curated| {
+    db_replace_with(window, num_wires, budget, mode, guard, curated, rng, |key, want_curated| {
         if want_curated {
             if curated { db.get_curated(key) } else { None }
         } else {
@@ -422,19 +422,28 @@ pub fn db_replace(
     })
 }
 
-/// Testable core: `lookup` stands in for the frozen store.
+/// Testable core: `lookup` stands in for the frozen store. `curated_armed`
+/// drives the routing contract of the bounded curated DB (2026-07-30):
+/// ordinary expansion (Mix / MinGrow / SizeAgnostic) probes the CURATED
+/// store only when it is armed — no regular fallback — and every
+/// Compressing lookup probes the REGULAR store only. Unarmed processes use
+/// regular for everything, as before.
+#[allow(clippy::too_many_arguments)]
 pub fn db_replace_with<F>(
     window: &[XGate],
     num_wires: usize,
     budget: XPolyBudget,
     mode: DbMode,
     guard: DegreeGuard,
+    curated_armed: bool,
     rng: &mut impl Rng,
     mut lookup: F,
 ) -> DbResult
 where
     F: FnMut(&[u8; 16], bool) -> Option<Vec<u8>>,
 {
+    let curated_only = curated_armed && mode != DbMode::Compressing;
+    let probes: &[bool] = if curated_only { &[true] } else { &[false] };
     let miss = |degree_skipped| DbResult {
         match_count: 0,
         chosen: None,
@@ -461,13 +470,16 @@ where
 
     // Canonicalize each not-over-degree direction; a window shorter under its
     // inverse still keys into the store the way the builder recorded it.
+    // Curated-only routing skips the reverse direction entirely: curated is
+    // forward-only (below), so the reverse canonicalization would be pure
+    // dead cost.
     let mut directions: Vec<(bool, CanonicalXPolys)> = Vec::with_capacity(2);
     if !fwd_over {
         if let Ok(c) = canonicalize_xgates_single(window, false, budget) {
             directions.push((false, c));
         }
     }
-    if !rev_over {
+    if !rev_over && !curated_only {
         if let Ok(c) = canonicalize_xgates_single(window, true, budget) {
             directions.push((true, c));
         }
@@ -518,7 +530,9 @@ where
         // may also try the reversed form." Probing curated with the reverse key
         // returns entries belonging to a different permutation -- measured at
         // 430,568 candidates for one window, none of them equivalent.
-        for from_curated in [true, false] {
+        // Which store(s) to probe is the routing contract (`probes` above):
+        // expansion = curated only when armed, compression = regular only.
+        for &from_curated in probes {
             if from_curated && *reversed {
                 continue;
             }
@@ -709,6 +723,7 @@ mod tests {
             XPolyBudget::default(),
             DbMode::Compressing,
             DegreeGuard::OFF,
+            false,
             &mut rng,
             |k, cur| if cur { None } else { store.get(k).cloned() },
         );
@@ -731,6 +746,7 @@ mod tests {
             XPolyBudget::default(),
             DbMode::SizeAgnostic,
             DegreeGuard::OFF,
+            false,
             &mut rng,
             |_, _| None,
         );
@@ -756,6 +772,7 @@ mod tests {
             XPolyBudget::default(),
             DbMode::SizeAgnostic,
             guard,
+            false,
             &mut rng,
             |_, _| {
                 lookups += 1;
@@ -774,6 +791,7 @@ mod tests {
             XPolyBudget::default(),
             DbMode::SizeAgnostic,
             guard,
+            false,
             &mut rng,
             |_, _| None,
         );
@@ -798,13 +816,13 @@ mod tests {
 
         // Compressing: the only friend (3 gates) grows the 1-gate window -> reject.
         let mut rng = StdRng::seed_from_u64(3);
-        let comp = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::Compressing, DegreeGuard::OFF, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
+        let comp = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::Compressing, DegreeGuard::OFF, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         assert_eq!(comp.match_count, 1);
         assert!(comp.chosen.is_none(), "compressing must reject a growing friend");
 
         // Size-agnostic: accept the longer equivalent.
         let mut rng = StdRng::seed_from_u64(3);
-        let agn = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::SizeAgnostic, DegreeGuard::OFF, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
+        let agn = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::SizeAgnostic, DegreeGuard::OFF, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         assert_eq!(agn.match_count, 1);
         let repl = agn.chosen.expect("size-agnostic accepts any length");
         assert!(repl.len() > window.len(), "this friend grows the window");
@@ -814,7 +832,7 @@ mod tests {
         // MinGrow: also accepts it — the shortest spelling that exists is the
         // paid channel's whole point when nothing non-growing is available.
         let mut rng = StdRng::seed_from_u64(3);
-        let mg = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::MinGrow, DegreeGuard::OFF, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
+        let mg = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::MinGrow, DegreeGuard::OFF, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         let repl = mg.chosen.expect("min-grow accepts the shortest growing friend");
         assert_eq!(repl.len(), 3);
         assert!(exhaustively_equal(&window, &repl, 8));

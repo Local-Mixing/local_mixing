@@ -281,6 +281,43 @@ struct Frozen {
     shards: Vec<FrozenShard>,
     tables: Tables,
     filters: Option<Vec<BinaryFuse8>>,
+    // Value convention: when true, every decoded gate triple [t, c1, c2] has
+    // its two controls swapped (bytes 1 and 2) before the value is returned.
+    // The curated store was BUILT under the legacy swapped-controls
+    // convention (its keys were canonicalized with the b/c-swapped polynomial
+    // of pre-2ed0222a, so its values read back swapped relative to native) —
+    // this is the store-side half of FROZEN_*_VALUE_CONVENTION.
+    swap_ctrls: bool,
+}
+
+/// Per-store value convention, from `FROZEN_REGULAR_VALUE_CONVENTION` /
+/// `FROZEN_CURATED_VALUE_CONVENTION`. `native` (default) returns values as
+/// stored; `legacy-swapped-controls` swaps each gate's two controls at decode.
+fn value_convention(var: &str) -> (&'static str, bool) {
+    match std::env::var(var).as_deref() {
+        Err(_) | Ok("native") => ("native", false),
+        Ok("legacy-swapped-controls") => ("legacy-swapped-controls", true),
+        Ok(other) => panic!(
+            "{var}={other}: unknown value convention (native | legacy-swapped-controls)"
+        ),
+    }
+}
+
+/// Swap the two controls of every gate in a legacy value chain
+/// (`[len][len bytes]*`, gates are 3-byte triples `[t, c1, c2]`).
+fn swap_value_controls(v: &mut [u8]) {
+    let mut pos = 0usize;
+    while pos < v.len() {
+        let len = v[pos] as usize;
+        pos += 1;
+        debug_assert_eq!(len % 3, 0, "frozen: value chunk not gate-aligned");
+        let end = (pos + len).min(v.len());
+        while pos + 3 <= end {
+            v.swap(pos + 1, pos + 2);
+            pos += 3;
+        }
+        pos = end;
+    }
 }
 
 #[derive(bincode2::Decode)]
@@ -292,7 +329,7 @@ struct FiltersFile {
 }
 
 impl Frozen {
-    fn open(dir: &str) -> Frozen {
+    fn open(dir: &str, swap_ctrls: bool) -> Frozen {
         let tables = load_tables(&format!("{dir}/tables.bin"));
         let head_len = 24usize + (BUCKETS + 1) * 5;
         let mut shards = Vec::with_capacity(256);
@@ -346,6 +383,7 @@ impl Frozen {
             shards,
             tables,
             filters,
+            swap_ctrls,
         }
     }
 
@@ -403,6 +441,11 @@ impl Frozen {
             let m = if i == idx { cap } else { usize::MAX };
             decode_value(&self.tables, &mut r, &mut out, m);
             if i == idx {
+                // Store-side convention fix-up at the single choke point:
+                // covers all four emission paths (incl. verbatim raw blocks).
+                if self.swap_ctrls {
+                    swap_value_controls(&mut out);
+                }
                 return Some(out);
             }
         }
@@ -477,8 +520,14 @@ pub struct FrozenDb {
 impl FrozenDb {
     /// Open stores from explicit directories.
     pub fn open(regular_dir: &str, curated_dir: Option<&str>) -> Self {
-        let regular = Some(Self::open_store("regular", regular_dir));
-        let curated = curated_dir.map(|dir| Self::open_store("curated", dir));
+        let (reg_name, reg_swap) = value_convention("FROZEN_REGULAR_VALUE_CONVENTION");
+        let (cur_name, cur_swap) = value_convention("FROZEN_CURATED_VALUE_CONVENTION");
+        let regular = Some(Self::open_store("regular", regular_dir, reg_swap));
+        let curated = curated_dir.map(|dir| Self::open_store("curated", dir, cur_swap));
+        eprintln!(
+            "[frozen] value conventions: regular={reg_name}, curated={}",
+            if curated.is_some() { cur_name } else { "-" }
+        );
         Self { regular, curated }
     }
 
@@ -500,9 +549,9 @@ impl FrozenDb {
         Self::open(&regular, curated.as_deref())
     }
 
-    fn open_store(label: &str, dir: &str) -> Frozen {
+    fn open_store(label: &str, dir: &str, swap_ctrls: bool) -> Frozen {
         let t0 = std::time::Instant::now();
-        let store = Frozen::open(dir);
+        let store = Frozen::open(dir, swap_ctrls);
         eprintln!(
             "[frozen] {label}={dir} opened in {:.1}s (filter {})",
             t0.elapsed().as_secs_f64(),
@@ -518,11 +567,32 @@ impl FrozenDb {
 
     #[inline]
     pub fn get_curated(&self, key: &[u8; 16]) -> Option<Vec<u8>> {
-        // Curated values are the huge complete-coverage candidate lists; every
-        // candidate under a key is equivalent, so a bounded sample is all the
-        // move machinery needs to choose one, and it turns a ~0.6s lookup into
-        // a sub-millisecond one.
-        self.curated.as_ref()?.get_capped(key, CURATED_CAP)
+        // CURATED_CAP predates the bounded rebuild (max 20 candidates / 512
+        // decoded bytes per key, largest bucket 361 encoded bytes); against
+        // that store it never binds, and it stays as a backstop against a
+        // stale unbounded install. The guardrail below is the tripwire: a
+        // value that exceeds the bounded contract means the process is
+        // pointed at the wrong DB, stale data, or a broken parser.
+        let v = self.curated.as_ref()?.get_capped(key, CURATED_CAP)?;
+        let mut candidates = 0usize;
+        let mut pos = 0usize;
+        while pos < v.len() {
+            candidates += 1;
+            pos += 1 + v[pos] as usize;
+        }
+        if candidates > 20 || v.len() > 512 {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                eprintln!(
+                    "[frozen] WARNING: curated value with {candidates} candidates / {} bytes \
+                     exceeds the bounded-DB contract (<=20 / <=512) — wrong DB, stale data, \
+                     or bad parser? (warning once)",
+                    v.len()
+                );
+            }
+        }
+        Some(v)
     }
 
     pub fn has_curated(&self) -> bool {
@@ -552,5 +622,17 @@ mod tests {
     fn runtime_handle_is_thread_shareable() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<FrozenDb>();
+    }
+
+    // legacy-swapped-controls: bytes 1 and 2 of every 3-byte gate swap, per
+    // circuit chunk of the [len][len bytes]* value chain, targets untouched.
+    #[test]
+    fn swap_value_controls_swaps_per_gate_within_chunks() {
+        let mut v = vec![
+            6, /* two gates */ 10, 1, 2, 20, 3, 4, //
+            3, /* one gate */ 30, 5, 6,
+        ];
+        swap_value_controls(&mut v);
+        assert_eq!(v, vec![6, 10, 2, 1, 20, 4, 3, 3, 30, 6, 5]);
     }
 }
