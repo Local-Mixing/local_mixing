@@ -260,6 +260,68 @@ direction nothing ever reads; measured at the curated operating point it
 adds ~+50–63% ancestry transport and widens the curated advantage. The CLI
 default is still off — set it in every launch script.
 
+### 2.1.2 LAYER 2: the phase-A preset and the size profile
+
+**`--phase-a`** sets the phase-A default block (each knob only if you left
+it at its own default): `--twist-g57` with `--p-twist 0.0005`,
+`--db-advance`, `--curated`, `--mix-pay-random`, `--p-convex 0.5` (equal
+parts convex and contiguous), `--p-mingen 0.6` for MIX with COMP at 0.
+
+**`--mix-pay-random`**: when a MIX window's store answer contains only
+*larger* spellings, take a uniformly random one rather than a minimal one.
+More growth and more spelling diversity per paid splice — and a stronger
+up-lever for the controller below.
+
+**`--profile N0,N1,N2,R1,R2`** — a three-phase, best-effort size schedule
+in effective-work units (moves per gate, the same clock the analysis uses):
+
+1. **expand** to `R1 x` the input size, by effective work `N0`;
+2. **hold** near `R1 x` until `N1`;
+3. **compress** toward `R2 x`, ending on arrival or at `N2` — whichever
+   comes first.
+
+`N2` may be given as an absolute mark (`N2 >= N1`) or as the compression
+leg's *budget*; a value below `N1` can only mean the latter, and the run
+logs the absolute end mark it derived. A completed schedule ends the run
+(`profile complete`) rather than burning the remaining budget outside any
+setpoint.
+
+**How it steers.** Every `--prof-cadence-eff` of effective work the
+controller reads the live counters and identifies the plant in gates per
+move: `ghat` (drift with the lever at 1), `shat` (removal rate at 0), and
+`dhat` — the **disturbance**, i.e. the residual between observed drift and
+what the DB move accounts for. Twists live in `dhat`: the controller cannot
+steer the twist rate, so it measures its effect instead and solves
+`p*ghat - (1-p)*shat + dhat = v*` for the lever, plus a small integral
+term on the tracking error. Guards against over-steering: a relative
+deadband (`--prof-deadband`), a per-update rate limit (`--prof-dp-max`,
+lifted only when more than four deadbands from the setpoint), EWMA
+smoothing of the estimates (`--prof-ewma`), and a cadence measured in
+effective work so control frequency scales with the circuit.
+
+**Single size authority.** While a profile is active the controller *owns*
+`target_size` (the thermostat is conscripted to the moving setpoint) and
+the static size brake is inert. Passing `--target-size`, `--size-hi`,
+`--size-lo` or `--p-mix` alongside `--profile` is refused outright.
+
+**Best effort, and what that means in practice.** Not every profile is
+reachable. The compression leg is the usual limit: `shat` decays as the
+circuit approaches local minimality, so an aggressive `R2` may simply not
+arrive within `N2`. The controller then pins the lever, logs
+`profile: SATURATED`, and carries on. When the disturbance exceeds the
+maximum available removal (`dhat > shat` — e.g. a high twist rate), phase 3
+says so explicitly: the circuit grows with the lever at 0 no matter what,
+and the fix is a lower twist rate or a relaxed `R2`. Measured at
+`p_twist 0.005` on a 20k sample, compression was impossible in exactly this
+way; at `0.0005` the same profile tracked to ~1% through expand and hold.
+
+Report line: `[fmix] profile: phase= eff= size= S*= pmix= ghat= shat=
+dhat= integ= sat=`.
+
+⚠️ A profile is a whole-run construct: its effective-work clock is not
+serialised, so `--profile` on a `--resume` restarts the schedule at eff 0
+(warned at startup).
+
 ### 2.2 Environment flags: pause-free control
 
 Checked at every report point (so responsiveness = `--report-every`):
