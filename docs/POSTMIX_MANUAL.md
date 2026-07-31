@@ -262,10 +262,16 @@ default is still off — set it in every launch script.
 
 ### 2.1.2 LAYER 2: the phase-A preset and the size profile
 
-**`--phase-a`** sets the phase-A default block (each knob only if you left
-it at its own default): `--twist-g57` with `--p-twist 0.0005`,
-`--db-advance`, `--curated`, `--mix-pay-random`, `--p-convex 0.5` (equal
-parts convex and contiguous), `--p-mingen 0.6` for MIX with COMP at 0.
+**`--phase-a`** sets the phase-A default block: `--twist-g57` with
+`--p-twist 0.0005`, `--db-advance`, `--curated`, `--mix-pay-random`,
+`--p-convex 0.5` (equal parts convex and contiguous), `--p-mingen 0.6` for
+MIX with `--p-mingen-comp 0` for COMP. A knob you pass **explicitly on the
+command line** always wins — the preset keys on whether the flag was given,
+not on whether its value differs from the default, so `--phase-a
+--p-twist 0` really does mean no twists (it did not, before 2026-07-31:
+0 is also p_twist's default, and an intended no-twist arm silently ran at
+0.0005). The startup banner prints the **resolved** values, so a run states
+what it actually is.
 
 **`--mix-pay-random`**: when a MIX window's store answer contains only
 *larger* spellings, take a uniformly random one rather than a minimal one.
@@ -311,9 +317,21 @@ arrive within `N2`. The controller then pins the lever, logs
 `profile: SATURATED`, and carries on. When the disturbance exceeds the
 maximum available removal (`dhat > shat` — e.g. a high twist rate), phase 3
 says so explicitly: the circuit grows with the lever at 0 no matter what,
-and the fix is a lower twist rate or a relaxed `R2`. Measured at
-`p_twist 0.005` on a 20k sample, compression was impossible in exactly this
-way; at `0.0005` the same profile tracked to ~1% through expand and hold.
+and the fix is a lower twist rate or a relaxed `R2`.
+
+**The twist ceiling is real and it binds early.** Measured on the 100k
+512-wire slice with `5,50,20,2,1.2`: at `p_twist 0.0005` the controller
+holds the setpoint to within 3%, but at `0.005` it cannot even *hold* —
+the lever sits pinned at 0 and the circuit still runs 82% above target
+(twist growth ≈ +0.037 gates/move against a maximum COMP removal of
+≈ +0.021). So a size contract and a high twist rate are mutually
+exclusive; choose the twist rate first, then ask for a profile the plant
+can deliver. The same experiment at 20k reproduced the effect exactly.
+
+**Tracking, measured.** Same slice, four `R1` values (1.5 / 2 / 2.5 / 3)
+with `N = 5, 50, +20`: expansion ramps land and the hold tracks within
+−3% … +3% of setpoint across the sweep, and a short-hold variant
+(`5,20,+20`) tracked its compression ramp to +1%.
 
 Report line: `[fmix] profile: phase= eff= size= S*= pmix= ghat= shat=
 dhat= integ= sat=`.

@@ -34,6 +34,20 @@ may be evaluated every round; predicates requiring an O(size) census run on
 their own cadence. The full condition vocabulary belongs to layer 2; §6 defines
 the one predicate intrinsic to the menu.
 
+**BUILT (2026-07-31): layer 2 occupies this slot.** `--phase-a` sets the
+phase-A knob block and `--profile N0,N1,N2,R1,R2` installs a three-phase
+size schedule in effective-work units (expand to `R1x`, hold, compress
+toward `R2x`). Its controller identifies the plant every cadence — drift
+per move at each lever extreme, plus a **disturbance** term that absorbs
+everything the DB move does not explain (twists above all) — and steers
+`p_mix` by feed-forward inversion plus a small integral term, deadbanded
+and rate-limited. While a profile is active it is the ONE size authority:
+it owns `target_size`, the static brake is inert, and passing
+`--target-size` / `--size-hi` / `--size-lo` / `--p-mix` alongside it is
+refused. Full contract, knobs and measured behaviour (including the twist
+ceiling above which no size contract is achievable):
+`docs/POSTMIX_MANUAL.md` §2.1.2.
+
 **Slot 1 — twist.** One conjugation twist. The type is drawn from
 `w_twist_neg` / `w_twist_swap` / `w_twist_cnot` as ratios (neg/swap 50/50 when
 all are zero). Window length is log-uniform over
