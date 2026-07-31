@@ -442,8 +442,15 @@ pub fn db_replace_with<F>(
 where
     F: FnMut(&[u8; 16], bool) -> Option<Vec<u8>>,
 {
-    let curated_only = curated_armed && mode != DbMode::Compressing;
-    let probes: &[bool] = if curated_only { &[true] } else { &[false] };
+    // Cascade routing (2026-07-30 selection rule): expansion probes the
+    // CURATED store first (forward key only); only on a complete curated
+    // miss does it fall back to the REGULAR store (forward + reverse keys).
+    // The mode's size rule then applies within whichever store answered —
+    // for Mix: random among no-larger spellings, else random among the
+    // minimal ones. Compression (and unarmed processes) go straight to
+    // regular. Reverse canonicalization is computed only if the regular
+    // stage runs, so the curated fast path never pays for it.
+    let curated_first = curated_armed && mode != DbMode::Compressing;
     let miss = |degree_skipped| DbResult {
         match_count: 0,
         chosen: None,
@@ -468,24 +475,14 @@ where
         return miss(true); // both directions certain misses — no lookup at all
     }
 
-    // Canonicalize each not-over-degree direction; a window shorter under its
-    // inverse still keys into the store the way the builder recorded it.
-    // Curated-only routing skips the reverse direction entirely: curated is
-    // forward-only (below), so the reverse canonicalization would be pure
-    // dead cost.
+    // Canonicalize the forward direction now; the reverse (regular-only, a
+    // window shorter under its inverse still keys the way the builder
+    // recorded it) is deferred to the regular stage below.
     let mut directions: Vec<(bool, CanonicalXPolys)> = Vec::with_capacity(2);
     if !fwd_over {
         if let Ok(c) = canonicalize_xgates_single(window, false, budget) {
             directions.push((false, c));
         }
-    }
-    if !rev_over && !curated_only {
-        if let Ok(c) = canonicalize_xgates_single(window, true, budget) {
-            directions.push((true, c));
-        }
-    }
-    if directions.is_empty() {
-        return miss(false);
     }
 
     // Every placeable equivalent circuit across both distinct keys, ANY length,
@@ -516,47 +513,65 @@ where
             self.curated
         }
     }
-    let mut seen_keys = std::collections::HashSet::new();
+    fn catalogue(
+        value: Vec<u8>,
+        from_curated: bool,
+        reversed: bool,
+        dir_ix: usize,
+        values: &mut Vec<Vec<u8>>,
+        refs: &mut Vec<CandRef>,
+    ) {
+        let vi = values.len();
+        let mut pos = 0usize;
+        while pos < value.len() {
+            let len = value[pos] as usize;
+            pos += 1;
+            if len % 3 != 0 || pos.checked_add(len).is_none_or(|e| e > value.len()) {
+                break;
+            }
+            refs.push(CandRef { vi, off: pos, nbytes: len, gates: len / 3, curated: from_curated, reversed, dir_ix });
+            pos += len;
+        }
+        values.push(value);
+    }
+
     let mut values: Vec<Vec<u8>> = Vec::new();
     let mut refs: Vec<CandRef> = Vec::new();
     let mut identity_skipped = 0usize;
-    for (dir_ix, (reversed, canonical)) in directions.iter().enumerate() {
-        let key = key_of(canonical);
-        if !seen_keys.insert(key) {
-            continue;
+
+    // Stage A: the curated store, FORWARD KEY ONLY. The store docs say so
+    // outright: "curated lookup itself uses the forward canonical form; the
+    // regular fallback may also try the reversed form." Probing curated with
+    // the reverse key returns entries belonging to a different permutation --
+    // measured at 430,568 candidates for one window, none of them equivalent.
+    if curated_first {
+        if let Some((dir_ix, (_, canonical))) =
+            directions.iter().enumerate().find(|(_, (rev, _))| !rev)
+        {
+            let key = key_of(canonical);
+            if let Some(value) = lookup(&key, true) {
+                catalogue(value, true, false, dir_ix, &mut values, &mut refs);
+            }
         }
-        // CURATED IS FORWARD-ONLY. The store docs say so outright: "curated
-        // lookup itself uses the forward canonical form; the regular fallback
-        // may also try the reversed form." Probing curated with the reverse key
-        // returns entries belonging to a different permutation -- measured at
-        // 430,568 candidates for one window, none of them equivalent.
-        // Which store(s) to probe is the routing contract (`probes` above):
-        // expansion = curated only when armed, compression = regular only.
-        for &from_curated in probes {
-            if from_curated && *reversed {
+    }
+
+    // Stage B: the regular store (both keys), on a complete curated miss or
+    // whenever the cascade does not apply (compression, unarmed).
+    if refs.is_empty() {
+        if !rev_over {
+            if let Ok(c) = canonicalize_xgates_single(window, true, budget) {
+                directions.push((true, c));
+            }
+        }
+        let mut seen_keys = std::collections::HashSet::new();
+        for (dir_ix, (reversed, canonical)) in directions.iter().enumerate() {
+            let key = key_of(canonical);
+            if !seen_keys.insert(key) {
                 continue;
             }
-            let Some(value) = lookup(&key, from_curated) else { continue };
-            let vi = values.len();
-            let mut pos = 0usize;
-            while pos < value.len() {
-                let len = value[pos] as usize;
-                pos += 1;
-                if len % 3 != 0 || pos.checked_add(len).is_none_or(|e| e > value.len()) {
-                    break;
-                }
-                refs.push(CandRef {
-                    vi,
-                    off: pos,
-                    nbytes: len,
-                    gates: len / 3,
-                    curated: from_curated,
-                    reversed: *reversed,
-                    dir_ix,
-                });
-                pos += len;
+            if let Some(value) = lookup(&key, false) {
+                catalogue(value, false, *reversed, dir_ix, &mut values, &mut refs);
             }
-            values.push(value);
         }
     }
 
@@ -752,6 +767,71 @@ mod tests {
         );
         assert_eq!(res.match_count, 0);
         assert!(res.chosen.is_none());
+    }
+
+    // The 2026-07-30 cascade: expansion with curated armed probes curated
+    // (forward key) FIRST and, on a hit, never touches regular; on a miss it
+    // falls back to regular. Compression never probes curated.
+    #[test]
+    fn cascade_probes_curated_first_then_regular_on_miss() {
+        let window = vec![db_g57_to_xgate([0, 1, 2]), db_g57_to_xgate([3, 4, 5])];
+        // Curated HIT: value = one 2-gate circuit (identical to nothing we
+        // check here — probe order is the point).
+        let hit_value = vec![6u8, 0, 1, 2, 3, 4, 5];
+        let mut probes: Vec<bool> = Vec::new();
+        let mut rng = StdRng::seed_from_u64(7);
+        let _ = db_replace_with(
+            &window,
+            16,
+            XPolyBudget::default(),
+            DbMode::Mix,
+            DegreeGuard::OFF,
+            true,
+            &mut rng,
+            |_, cur| {
+                probes.push(cur);
+                if cur { Some(hit_value.clone()) } else { None }
+            },
+        );
+        assert_eq!(probes, vec![true], "curated hit must suppress the regular probe");
+
+        // Curated MISS: regular must be probed (both keys where distinct).
+        let mut probes: Vec<bool> = Vec::new();
+        let mut rng = StdRng::seed_from_u64(7);
+        let _ = db_replace_with(
+            &window,
+            16,
+            XPolyBudget::default(),
+            DbMode::Mix,
+            DegreeGuard::OFF,
+            true,
+            &mut rng,
+            |_, cur| {
+                probes.push(cur);
+                None
+            },
+        );
+        assert!(probes.first() == Some(&true), "curated probed first");
+        assert!(probes.iter().skip(1).all(|&c| !c), "fallback probes are regular");
+        assert!(probes.len() >= 2, "regular fallback must actually fire");
+
+        // Compression: never curated, even when armed.
+        let mut probes: Vec<bool> = Vec::new();
+        let mut rng = StdRng::seed_from_u64(7);
+        let _ = db_replace_with(
+            &window,
+            16,
+            XPolyBudget::default(),
+            DbMode::Compressing,
+            DegreeGuard::OFF,
+            true,
+            &mut rng,
+            |_, cur| {
+                probes.push(cur);
+                None
+            },
+        );
+        assert!(!probes.is_empty() && probes.iter().all(|&c| !c), "COMP is regular-only");
     }
 
     #[test]
