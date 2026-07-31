@@ -462,31 +462,51 @@ struct Args {
 }
 
 fn main() {
-    let mut args = Args::parse();
+    // Keep the raw matches so the preset below can tell "the user asked for
+    // this value" from "the user said nothing" — `--p-twist 0` is a real
+    // request and must not be overwritten just because 0 is also the default.
+    let matches = <Args as clap::CommandFactory>::command().get_matches();
+    let given = |name: &str| {
+        matches.value_source(name) == Some(clap::parser::ValueSource::CommandLine)
+    };
+    let mut args =
+        <Args as clap::FromArgMatches>::from_arg_matches(&matches).expect("parse args");
 
     // LAYER-2 phase-A preset: fill the phase-A default block for any knob the
-    // user left at its own default. Explicit flags always win.
+    // user did not pass explicitly. Explicit flags always win.
     if args.phase_a {
-        if !args.twist_g57 {
+        if !given("twist_g57") {
             args.twist_g57 = true;
         }
-        if args.p_twist == 0.0 {
+        if !given("p_twist") {
             args.p_twist = 0.0005;
         }
-        if !args.db_advance {
+        if !given("db_advance") {
             args.db_advance = true;
         }
-        if !args.curated {
+        if !given("curated") {
             args.curated = true;
         }
-        if !args.mix_pay_random {
+        if !given("mix_pay_random") {
             args.mix_pay_random = true;
         }
-        // p_convex 0.5 and p_mingen 0.6 are already the shipped defaults;
-        // COMP p_mingen 0 is set via the profile controller's COMP branch
-        // (p_mingen_comp default -1 already means "0 in COMP" when p_mingen
-        // drives MIX only — see the overlay). Nothing to force here.
-        println!("[fmix] phase-A preset ON: twist-g57 p_twist=0.0005 db-advance curated mix-pay-random p_convex=0.5 p_mingen=0.6");
+        // p_convex 0.5 IS the shipped default; p_mingen is NOT (it ships at
+        // 0.8), so phase A has to set it. COMP's 0 comes from
+        // --p-mingen-comp, which callers pass explicitly.
+        if !given("p_convex") {
+            args.p_convex = 0.5;
+        }
+        if !given("p_mingen") {
+            args.p_mingen = 0.6;
+        }
+        if !given("p_mingen_comp") {
+            args.p_mingen_comp = 0.0;
+        }
+        println!(
+            "[fmix] phase-A preset ON: twist-g57={} p_twist={} db-advance={} curated={} mix-pay-random={} p_convex={} p_mingen={} (explicit flags win)",
+            args.twist_g57, args.p_twist, args.db_advance, args.curated,
+            args.mix_pay_random, args.p_convex, args.p_mingen
+        );
     }
 
     // Parse the size profile and enforce single size authority.
