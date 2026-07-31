@@ -934,6 +934,9 @@ pub struct MixCounters {
     // and add= totals cannot show -- a channel that swaps 3 gates for 3 and one
     // that alternates 2->5 and 5->2 report identically.
     pub splice_sizes: Vec<Vec<u64>>,
+    // Same joint histogram, curated-store splices only (splice_sizes minus
+    // this = regular). A shape: not carried across resumes.
+    pub splice_sizes_curated: Vec<Vec<u64>>,
     // Litter census (observation only — nothing bans or prefers on these yet;
     // see docs/FMIX_MENU.md 2.6). `litter_windows`/`litter_distinct_sum` give
     // the mean distinct litters per sampled DB window, i.e. how fast churn
@@ -1370,6 +1373,7 @@ impl MixCounters {
             tg_slides: 0,
             tg_retries: 0,
             splice_sizes: Vec::new(),
+            splice_sizes_curated: Vec::new(),
             width_hist: [0u64; 16],
             tg_net_hist: [0u64; 8],
         })
@@ -2337,6 +2341,109 @@ impl Mixer {
             hit,
             if carriers > 0 { sampled_card_sum as f64 / carriers as f64 } else { 0.0 },
         )
+    }
+
+    /// JOINT census of re-encoding depth against ancestry: for each generation
+    /// band, how many gates are in it and what their mean ancestor count and
+    /// mean ancestor span are.
+    ///
+    /// `anc` and `dgen` have only ever been reported as separate marginals, which
+    /// cannot answer the question that matters: does depth BUY ancestry? A
+    /// protocol where anc rises steeply with generation is compounding -- each
+    /// re-encoding folds in genuinely new lineage. One where anc is flat across
+    /// generations is re-spelling the same material over and over, and its depth
+    /// counter is measuring effort rather than mixing. Different mode schedules
+    /// can produce the same mean anc with very different shapes here.
+    ///
+    /// `r` is the Pearson correlation of (dgen, anc) over gates with a real
+    /// generation. GEN_FRESH is a sentinel (born-random material: twist
+    /// brackets, insert pairs), not a large number, so it is excluded from `r`
+    /// and reported as its own band. In sampled mode the per-gate ancestor count
+    /// is scaled by m/K, so the bands are comparable to exact mode; `span` is
+    /// omitted there (a column sample can only underestimate it).
+    pub fn gen_anc_report(&self) -> String {
+        if self.anc_words == 0 {
+            return String::new();
+        }
+        // Upper bound of each band; the last band is GEN_FRESH alone.
+        const EDGES: [u32; 9] = [0, 1, 2, 4, 8, 16, 32, 64, u32::MAX - 1];
+        const NAMES: [&str; 9] =
+            ["g0", "g1", "g2", "g3-4", "g5-8", "g9-16", "g17-32", "g33-64", "g65+"];
+        let nb = EDGES.len();
+        let mut n = vec![0u64; nb + 1];
+        let mut anc_sum = vec![0f64; nb + 1];
+        let mut span_sum = vec![0f64; nb + 1];
+        // Pearson accumulators over real-generation gates.
+        let (mut cn, mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0f64, 0f64, 0f64, 0f64, 0f64, 0f64);
+        let scale = if self.anc_sampled {
+            self.anc_m as f64 / self.anc_tracers.len().max(1) as f64
+        } else {
+            1.0
+        };
+        let mut bits = vec![0u64; self.anc_words];
+        let mut cur = self.arena.head();
+        while cur != NIL {
+            bits.iter_mut().for_each(|w| *w = 0);
+            self.anc_or_into(self.meta_of(cur).litter, &mut bits);
+            let mut card = 0u64;
+            let (mut lo, mut hi) = (usize::MAX, 0usize);
+            for (wi, &w) in bits.iter().enumerate() {
+                let mut x = w;
+                while x != 0 {
+                    let idx = wi * 64 + x.trailing_zeros() as usize;
+                    card += 1;
+                    lo = lo.min(idx);
+                    hi = hi.max(idx);
+                    x &= x - 1;
+                }
+            }
+            let g = self.meta_of(cur).dgen;
+            let bi = if g == GEN_FRESH {
+                nb // the born-random band
+            } else {
+                EDGES.iter().position(|&e| g <= e).unwrap_or(nb - 1)
+            };
+            let a = card as f64 * scale;
+            n[bi] += 1;
+            anc_sum[bi] += a;
+            if !self.anc_sampled && card > 0 {
+                span_sum[bi] += (hi - lo) as f64;
+            }
+            if g != GEN_FRESH {
+                let (x, y) = (g as f64, a);
+                cn += 1.0;
+                sx += x;
+                sy += y;
+                sxx += x * x;
+                syy += y * y;
+                sxy += x * y;
+            }
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        let r = {
+            let num = cn * sxy - sx * sy;
+            let den = ((cn * sxx - sx * sx) * (cn * syy - sy * sy)).sqrt();
+            if den > 0.0 { num / den } else { 0.0 }
+        };
+        let mut parts: Vec<String> = Vec::new();
+        for bi in 0..=nb {
+            if n[bi] == 0 {
+                continue;
+            }
+            let label = if bi == nb { "FRESH" } else { NAMES[bi] };
+            let cnt = n[bi] as f64;
+            if self.anc_sampled {
+                parts.push(format!("{label}:n={} anc={:.1}", n[bi], anc_sum[bi] / cnt));
+            } else {
+                parts.push(format!(
+                    "{label}:n={} anc={:.1} span={:.0}",
+                    n[bi],
+                    anc_sum[bi] / cnt,
+                    span_sum[bi] / cnt
+                ));
+            }
+        }
+        format!("[fmix] gen-anc: r={r:.3} (n={:.0} real-gen gates) | {}", cn, parts.join(" | "))
     }
 
     /// Drop ancestor sets for litters with no live gates. Without this the map
@@ -4441,6 +4548,13 @@ impl Mixer {
                     vec![vec![0u64; SPLICE_HIST_MAX + 1]; SPLICE_HIST_MAX + 1];
             }
             self.counters.splice_sizes[o][i] += 1;
+            if from_curated {
+                if self.counters.splice_sizes_curated.is_empty() {
+                    self.counters.splice_sizes_curated =
+                        vec![vec![0u64; SPLICE_HIST_MAX + 1]; SPLICE_HIST_MAX + 1];
+                }
+                self.counters.splice_sizes_curated[o][i] += 1;
+            }
         }
         let mut c = cursor;
         let mut placed: Vec<u32> = Vec::with_capacity(m);
@@ -5249,6 +5363,18 @@ impl Mixer {
     }
 
     /// Non-zero cells of the splice size histogram, as `out->in:count`.
+    pub fn splice_size_line_curated(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        for (o, row) in self.counters.splice_sizes_curated.iter().enumerate() {
+            for (i, &c) in row.iter().enumerate() {
+                if c > 0 {
+                    parts.push(format!("{o}->{i}:{c}"));
+                }
+            }
+        }
+        parts.join(" ")
+    }
+
     pub fn splice_size_line(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         for (o, row) in self.counters.splice_sizes.iter().enumerate() {
@@ -5402,9 +5528,17 @@ impl Mixer {
         if !anc.is_empty() {
             println!("{anc}");
         }
+        let ga = self.gen_anc_report();
+        if !ga.is_empty() {
+            println!("{ga}");
+        }
         let sizes = self.splice_size_line();
         if !sizes.is_empty() {
             println!("[fmix] splice sizes out->in: {sizes}");
+        }
+        let csizes = self.splice_size_line_curated();
+        if !csizes.is_empty() {
+            println!("[fmix] splice sizes (curated) out->in: {csizes}");
         }
         if self.params.twist_g57 {
             let c = &self.counters;
@@ -6312,6 +6446,54 @@ mod mix_tests {
         assert!(exact > 0.0, "no incidence to compare");
         let rel = (est - exact).abs() / exact;
         assert!(rel < 0.25, "sampled incidence off by {rel:.3} (exact {exact:.0}, est {est:.0})");
+    }
+
+    // The joint gen x anc census must partition the circuit exactly (every gate
+    // lands in exactly one band, including the GEN_FRESH sentinel band) and must
+    // work in BOTH ancestry modes.
+    #[test]
+    fn gen_anc_census_partitions_the_circuit() {
+        let gates = random_mixed_circuit(23, 16, 400);
+        let base = MixParams {
+            k_max: 5,
+            moves: 20_000,
+            target_size: 600,
+            temp: 20.0,
+            p_twist: 0.1, // mint some GEN_FRESH bracket material
+            gen_target: 5,
+            verify_every: 5_000,
+            report_every: u64::MAX,
+            seed: 4,
+            ..MixParams::default()
+        };
+        for (label, p) in [
+            ("exact", MixParams { ancestors: true, ..base.clone() }),
+            ("sampled", MixParams { anc_samples: 64, ..base.clone() }),
+        ] {
+            let mut mx = Mixer::new(gates.clone(), 16, p);
+            mx.run();
+            let line = mx.gen_anc_report();
+            assert!(line.starts_with("[fmix] gen-anc: r="), "{label}: {line}");
+            // Band counts must sum to the circuit size.
+            let total: usize = line
+                .split('|')
+                .filter_map(|s| s.split("n=").nth(1))
+                .filter_map(|s| s.split_whitespace().next())
+                .filter_map(|s| s.parse::<usize>().ok())
+                .sum();
+            // The first "n=" is the real-gen count in the header, so subtract it.
+            let hdr: usize = line
+                .split("(n=")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|f| f as usize)
+                .expect("header count");
+            assert_eq!(total - hdr, mx.arena.len(), "{label} bands do not partition: {line}");
+            assert!(hdr <= mx.arena.len(), "{label}: more real-gen gates than gates");
+            // Exact mode reports span per band, sampled mode must not.
+            assert_eq!(line.contains("span="), label == "exact", "{label}: {line}");
+        }
     }
 
     // The whole point of sampling: it runs on inputs the exact instrument
