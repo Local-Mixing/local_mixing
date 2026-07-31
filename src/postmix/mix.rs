@@ -1004,6 +1004,17 @@ pub struct MixCounters {
     // profile controller's plant observables: ghat = (mix_added -
     // mix_removed)/mix rounds, shat = (comp_removed - comp_added)/comp
     // rounds. Session-local (zero after a resume, like the histograms).
+    // SELECTION ENTROPY of successful splices (session-local). `choice_*`
+    // counts splices by whether the mode's eligible set held more than one
+    // candidate; `choice_sum` totals the eligible-set sizes and
+    // `choice_bits_milli` totals log2(eligible) in millibits, so the run can
+    // report both "how often was there a choice", "how many on average" and
+    // the actual entropy those choices injected through WHICH gates were
+    // spliced -- as opposed to where.
+    pub choice_splices: u64,
+    pub choice_multi: u64,
+    pub choice_sum: u64,
+    pub choice_bits_milli: u64,
     pub db_mix_added: u64,
     pub db_mix_removed: u64,
     pub db_cmp_added: u64,
@@ -1467,6 +1478,10 @@ impl MixCounters {
             tg_solve_ns: 0,
             tg_slides: 0,
             tg_retries: 0,
+            choice_splices: 0,
+            choice_multi: 0,
+            choice_sum: 0,
+            choice_bits_milli: 0,
             db_mix_added: 0,
             db_mix_removed: 0,
             db_cmp_added: 0,
@@ -2652,6 +2667,19 @@ impl Mixer {
         } else {
             DbMode::Compressing
         };
+    }
+
+    /// Record the branching factor of one successful splice's selection.
+    fn note_choice(&mut self, k: usize) {
+        if k == 0 {
+            return;
+        }
+        self.counters.choice_splices += 1;
+        self.counters.choice_sum += k as u64;
+        if k > 1 {
+            self.counters.choice_multi += 1;
+            self.counters.choice_bits_milli += ((k as f64).log2() * 1000.0).round() as u64;
+        }
     }
 
     fn prof_init(&mut self) {
@@ -4615,6 +4643,9 @@ impl Mixer {
                 if res.chosen.is_some() && res.chosen_curated {
                     self.counters.db_curated_hits += 1;
                 }
+                if res.chosen.is_some() {
+                    self.note_choice(res.choice_count);
+                }
                 if let Some(ml) = res.min_match_len {
                     self.counters.dmin_windows += 1;
                     if ml < prefix.len() {
@@ -4690,6 +4721,9 @@ impl Mixer {
             &mut self.rng,
         );
         self.counters.db_identity_skips += res.identity_skipped as u64;
+        if res.chosen.is_some() {
+            self.note_choice(res.choice_count);
+        }
         if let Some(ml) = res.min_match_len {
             self.counters.dmin_windows += 1;
             if ml < window.len() {
@@ -5750,7 +5784,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={}",
+            "[fmix] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -5853,7 +5887,25 @@ impl Mixer {
             // The DENOMINATOR alongside the ratio: windows for which the
             // store held any non-identical equivalent. Without it a moving
             // dmin cannot be told from a moving sample.
-            c.dmin_windows
+            c.dmin_windows,
+            // Selection entropy: how often a successful splice had a real
+            // choice, how wide that choice was, and the bits it injected.
+            c.choice_splices,
+            if c.choice_splices > 0 {
+                c.choice_multi as f64 / c.choice_splices as f64
+            } else {
+                0.0
+            },
+            if c.choice_splices > 0 {
+                c.choice_sum as f64 / c.choice_splices as f64
+            } else {
+                0.0
+            },
+            if c.choice_splices > 0 {
+                c.choice_bits_milli as f64 / 1000.0 / c.choice_splices as f64
+            } else {
+                0.0
+            }
         );
         let anc = self.anc_report();
         if !anc.is_empty() {

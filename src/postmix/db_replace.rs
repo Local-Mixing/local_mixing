@@ -369,6 +369,14 @@ pub struct DbResult {
     pub curated_matches: usize,
     /// Whether the selected replacement came from the curated store.
     pub chosen_curated: bool,
+    /// SELECTION ENTROPY, per successful splice: the size of the eligible
+    /// set the winner was actually drawn from, i.e. the candidates the
+    /// mode's size rule admitted (not `match_count`, which is everything
+    /// the store returned before filtering). 1 means the replacement was
+    /// forced; k > 1 means log2(k) bits of choice entered the circuit
+    /// through WHICH gates were spliced -- distinct from the entropy of
+    /// where the splice happened. 0 when nothing was chosen.
+    pub choice_count: usize,
     /// Length of the SHORTEST non-identical equivalent the store returned, if
     /// any. Comparing it to the window length says whether this window still
     /// admits a strictly shorter spelling -- the adversary-aligned quantity,
@@ -460,6 +468,7 @@ where
         identity_skipped: 0,
         curated_matches: 0,
         chosen_curated: false,
+        choice_count: 0,
         min_match_len: None,
     };
     let window_len = window.len();
@@ -587,8 +596,11 @@ where
     // just no longer costs a decode of every sibling to enforce.
     let mut chosen: Option<Vec<XGate>> = None;
     let mut chosen_curated = false;
+    let mut choice_count = 0usize;
     while !refs.is_empty() {
-        let Some(pick) = choose_ref(&refs, window_len, mode, pay_random, rng) else { break };
+        let Some((pick, n_eligible)) = choose_ref(&refs, window_len, mode, pay_random, rng) else {
+        break;
+    };
         let r = refs.swap_remove(pick);
         let (rev, canonical) = &directions[r.dir_ix];
         let friend = CircuitSeq::from_blob(&values[r.vi][r.off..r.off + r.nbytes]);
@@ -608,6 +620,7 @@ where
         }
         chosen = Some(gates);
         chosen_curated = r.curated;
+        choice_count = n_eligible;
         break;
     }
     DbResult {
@@ -617,6 +630,7 @@ where
         identity_skipped,
         curated_matches,
         chosen_curated,
+        choice_count,
         min_match_len,
     }
 }
@@ -635,7 +649,7 @@ fn choose_ref<R>(
     mode: DbMode,
     pay_random: bool,
     rng: &mut impl Rng,
-) -> Option<usize>
+) -> Option<(usize, usize)>
 where
     R: CandLen,
 {
@@ -680,7 +694,10 @@ where
     if eligible.is_empty() {
         return None;
     }
-    Some(eligible[rng.random_range(0..eligible.len())])
+    // The eligible-set size travels with the pick: it is the branching
+    // factor of this selection, and hence the choice entropy the splice
+    // injects.
+    Some((eligible[rng.random_range(0..eligible.len())], eligible.len()))
 }
 
 /// Just enough of a candidate to select on, so selection never decodes.
