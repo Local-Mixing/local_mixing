@@ -495,8 +495,21 @@ fn main() {
     } else {
         let v: Vec<f64> = args.profile.split(',').map(|x| x.trim().parse().expect("--profile wants N0,N1,N2,R1,R2 reals")).collect();
         assert_eq!(v.len(), 5, "--profile wants exactly 5 comma-separated values N0,N1,N2,R1,R2");
-        let (n, r) = ([v[0], v[1], v[2]], [v[3], v[4]]);
-        assert!(n[0] > 0.0 && n[1] >= n[0] && n[2] >= n[1], "--profile needs 0 < N0 <= N1 <= N2");
+        // N2 may be given either as an ABSOLUTE effective-work mark (N2 >= N1)
+        // or, as the original spec phrased it ("or N3 moves per gate"), as the
+        // compression leg's BUDGET. A value below N1 can only mean the latter,
+        // so read it that way and say so rather than rejecting the profile.
+        let mut n = [v[0], v[1], v[2]];
+        if n[2] < n[1] {
+            let budget = n[2];
+            n[2] = n[1] + budget;
+            println!(
+                "[fmix] profile: N2={budget} < N1={} read as the COMPRESSION BUDGET -> absolute end mark {}",
+                n[1], n[2]
+            );
+        }
+        let r = [v[3], v[4]];
+        assert!(n[0] > 0.0 && n[1] >= n[0] && n[2] >= n[1], "--profile needs 0 < N0 <= N1 and a positive compression leg");
         assert!(r[0] > 1.0 && r[1] >= 1.0 && r[0] >= r[1], "--profile needs R1 > 1 and R1 >= R2 >= 1");
         assert!(
             args.target_size.is_none() && args.size_hi == 0 && args.size_lo == 0,
@@ -803,6 +816,7 @@ fn main() {
             MixStop::StopFlag => "stop flag",
             MixStop::DoseReached => "dose reached (gen + twist coverage targets met)",
             MixStop::CanaryFired => "canary fired (pool is unspellable by the store)",
+            MixStop::ProfileDone => "profile complete (size schedule finished)",
         },
         input_len,
         mixer.arena.len(),

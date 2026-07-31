@@ -1141,13 +1141,23 @@ pub struct ProfState {
     pub phase: u8, // 1 expand, 2 hold, 3 compress, 4 done (hold at r2)
     pub pmix: f64,
     pub integ: f64,
-    pub ghat: f64, // EWMA net gates per MIX-family round (may be negative)
-    pub shat: f64, // EWMA net gates REMOVED per COMP round (positive)
+    // Plant, all in GATES PER MOVE at full lever: ghat = drift if p_mix
+    // were 1, shat = removal rate if p_mix were 0, dhat = the DISTURBANCE —
+    // everything that changes size and is NOT the DB move (twists above all,
+    // plus expansion moves and thermostat contractions). The controller does
+    // not model twists; it measures their effect as the residual between
+    // observed drift and DB-attributed drift, which is why it works at any
+    // twist rate without being told what that rate is.
+    pub ghat: f64,
+    pub shat: f64,
+    pub dhat: f64,
     pub eff: f64,
     pub next_eff: f64,
     pub sat: u32,
     pub s_in: f64,
     base_moves: u64,
+    base_size: f64,
+    base_pmix: f64,
     base_mix: [u64; 4], // agn_hits, agn_misses, db_mix_added, db_mix_removed
     base_cmp: [u64; 4], // comp_hits, comp_misses, db_cmp_added, db_cmp_removed
 }
@@ -1265,6 +1275,12 @@ pub enum MixStop {
     // failure fraction exceeded canary_theta, i.e. the pool has converged on
     // material the store cannot spell and further moves buy nothing.
     CanaryFired,
+    // The layer-2 size profile finished its third phase (arrived at R2, or
+    // reached N2). The contract is fulfilled, so the run ends there rather
+    // than burning the remaining move budget outside any setpoint -- which,
+    // at a twist rate whose growth the lever cannot offset, would actively
+    // undo the compression leg.
+    ProfileDone,
 }
 
 impl MixCounters {
@@ -2644,15 +2660,24 @@ impl Mixer {
         // the expansion leg (matching pay-random's strong up-lever).
         self.prof = Some(ProfState {
             phase: 1,
-            pmix: 1.0,
+            // Moderate prior: the plant is unknown for exactly one interval,
+            // and a hot prior overshoots the expansion ramp before the first
+            // update can react (measured: p_mix=1 grows ~1.7 gates/move on a
+            // fresh 100k gadget, ~3x the steepest ramp anyone asks for).
+            pmix: 0.5,
             integ: 0.0,
             ghat: 0.0,
             shat: 0.0,
+            dhat: 0.0,
             eff: 0.0,
-            next_eff: self.params.prof_cadence_eff.max(0.05),
+            // First update comes early (quarter cadence) so the plant is
+            // identified before much work is spent on a guess.
+            next_eff: self.params.prof_cadence_eff.max(0.05) * 0.25,
             sat: 0,
             s_in,
             base_moves: self.moves_done,
+            base_size: s_in,
+            base_pmix: 0.5,
             base_mix: [0; 4],
             base_cmp: [0; 4],
         });
@@ -2672,8 +2697,12 @@ impl Mixer {
         let c = &self.counters;
         let mix = [c.db_agn_hits, c.db_agn_misses, c.db_mix_added, c.db_mix_removed];
         let cmp = [c.db_comp_hits, c.db_comp_misses, c.db_cmp_added, c.db_cmp_removed];
+        let size = self.arena.len() as f64;
+        let moves = self.moves_done;
         if let Some(p) = self.prof.as_mut() {
-            p.base_moves = self.moves_done;
+            p.base_moves = moves;
+            p.base_size = size;
+            p.base_pmix = p.pmix;
             p.base_mix = mix;
             p.base_cmp = cmp;
         }
@@ -2717,19 +2746,34 @@ impl Mixer {
             self.params.prof_ki,
         );
         if let Some(p) = self.prof.as_mut() {
-            // Plant estimates from the interval, EWMA'd when well-sampled.
-            let mix_rounds = (mix_now[0] + mix_now[1]) - (p.base_mix[0] + p.base_mix[1]);
-            if mix_rounds >= 200 {
-                let net = (mix_now[2] - p.base_mix[2]) as f64 - (mix_now[3] - p.base_mix[3]) as f64;
-                let g_new = net / mix_rounds as f64;
+            // ---- Plant identification over the interval, in gates/move ----
+            // The lever splits rounds into MIX (w.p. p) and COMP (w.p. 1-p),
+            // so per-move contributions are normalised by the p that was
+            // actually in force; an arm that saw too little of the interval
+            // keeps its previous estimate rather than dividing by ~0.
+            let dmoves = (self.moves_done - p.base_moves).max(1) as f64;
+            let p_used = p.base_pmix;
+            let net_mix =
+                (mix_now[2] - p.base_mix[2]) as f64 - (mix_now[3] - p.base_mix[3]) as f64;
+            let net_cmp =
+                (cmp_now[3] - p.base_cmp[3]) as f64 - (cmp_now[2] - p.base_cmp[2]) as f64;
+            if p_used > 0.05 {
+                let g_new = net_mix / (dmoves * p_used);
                 p.ghat = if p.ghat == 0.0 { g_new } else { (1.0 - ew) * p.ghat + ew * g_new };
             }
-            let cmp_rounds = (cmp_now[0] + cmp_now[1]) - (p.base_cmp[0] + p.base_cmp[1]);
-            if cmp_rounds >= 200 {
-                let net = (cmp_now[3] - p.base_cmp[3]) as f64 - (cmp_now[2] - p.base_cmp[2]) as f64;
-                let s_new = net / cmp_rounds as f64;
+            if p_used < 0.95 {
+                let s_new = net_cmp / (dmoves * (1.0 - p_used));
                 p.shat = if p.shat == 0.0 { s_new } else { (1.0 - ew) * p.shat + ew * s_new };
             }
+            // The DISTURBANCE: observed total drift minus what the DB move
+            // accounts for. Twists live here (they add gates at a rate the
+            // controller never models), along with expansion moves and
+            // thermostat contractions. Estimating it is what lets a profile
+            // run at any twist rate.
+            let v_obs = (s - p.base_size) / dmoves;
+            let v_db = (net_mix - net_cmp) / dmoves;
+            let d_new = v_obs - v_db;
+            p.dhat = if p.dhat == 0.0 { d_new } else { (1.0 - ew) * p.dhat + ew * d_new };
             // Phase machine (best-effort: eff marks OR size arrival).
             let old_phase = p.phase;
             match p.phase {
@@ -2746,18 +2790,42 @@ impl Mixer {
                     old_phase, p.phase, p.eff, s as usize
                 );
             }
+            // Feasibility diagnosis for the compression leg. With the lever
+            // fully down the best available drift is dhat - shat; when the
+            // disturbance (twists, chiefly) exceeds what COMP can remove, the
+            // circuit grows no matter what the controller does. Say so once,
+            // in those terms, instead of leaving a silent saturation.
+            if p.phase == 3 && p.dhat > p.shat && p.sat == 4 {
+                eprintln!(
+                    "[fmix] profile: COMPRESSION INFEASIBLE — disturbance {:+.4} gates/move (twists et al.) exceeds max COMP removal {:.4}; the lever is pinned at 0 and the circuit still grows. Lower the twist rate or relax R2.",
+                    p.dhat, p.shat
+                );
+            }
             let s_star = prof_target(n, r, p.s_in, p.eff);
             let s_star_next = prof_target(n, r, p.s_in, p.eff + cad);
             let err = (s - s_star) / s_star.max(1.0);
             if err.abs() >= dead {
                 p.integ = (p.integ - ki * err).clamp(-0.3, 0.3);
-                let dmoves = (cad * s).max(1.0);
-                let v_star = (s_star_next - s) / dmoves; // gates per move
+                // Feed-forward: solve p*ghat - (1-p)*shat + dhat = v_star for
+                // p, where v_star is the slope that lands on the setpoint one
+                // cadence ahead. The disturbance enters as a constant offset,
+                // so a twist-heavy run simply gets a lower p_mix.
+                let horizon = (cad * s).max(1.0);
+                let v_star = (s_star_next - s) / horizon;
                 let denom = p.ghat + p.shat;
-                let mut want =
-                    if denom.abs() > 1e-9 { (v_star + p.shat) / denom } else { p.pmix };
+                let mut want = if denom.abs() > 1e-9 {
+                    (v_star - p.dhat + p.shat) / denom
+                } else {
+                    p.pmix
+                };
                 want += p.integ;
-                let dp = (want - p.pmix).clamp(-dp_max, dp_max);
+                // Rate limit, with an escape hatch: far from the profile the
+                // lever may move freely (a 0.1/step crawl cannot catch a ramp
+                // that is 6 eff units long), near it the limit binds and the
+                // loop stays gentle.
+                let far = err.abs() > 4.0 * dead.max(1e-6);
+                let lim = if far { 1.0 } else { dp_max };
+                let dp = (want - p.pmix).clamp(-lim, lim);
                 p.pmix = (p.pmix + dp).clamp(0.0, 1.0);
             }
             // Saturation: pinned lever while clearly behind the profile.
@@ -2869,6 +2937,10 @@ impl Mixer {
             // armed, is the binding choice; the thermostat is untouched).
             if self.prof.is_some() {
                 self.prof_tick();
+                if self.prof.as_ref().is_some_and(|p| p.phase == 4) {
+                    self.report();
+                    return MixStop::ProfileDone;
+                }
             } else {
                 self.apply_size_brake();
                 self.apply_mode_overlay();
@@ -5799,7 +5871,7 @@ impl Mixer {
             let s_star =
                 prof_target(self.params.prof_n, self.params.prof_r, p.s_in, p.eff);
             println!(
-                "[fmix] profile: phase={} eff={:.2} size={} S*={:.0} pmix={:.3} ghat={:+.3} shat={:+.3} integ={:+.3} sat={}",
+                "[fmix] profile: phase={} eff={:.2} size={} S*={:.0} pmix={:.3} ghat={:+.4} shat={:+.4} dhat={:+.4} integ={:+.3} sat={}",
                 p.phase,
                 p.eff,
                 self.arena.len(),
@@ -5807,6 +5879,7 @@ impl Mixer {
                 p.pmix,
                 p.ghat,
                 p.shat,
+                p.dhat,
                 p.integ,
                 p.sat
             );
@@ -6015,14 +6088,18 @@ mod mix_tests {
         // against a null plant: it must still advance phases on the eff marks
         // and never panic / never leave p_mix out of [0,1].
         let mut mx = Mixer::new_with_db(gates, 16, params, FrozenDb::empty());
-        mx.run();
+        let stop = mx.run();
         let p = mx.prof.as_ref().expect("profile armed");
-        assert_eq!(p.phase, 4, "phase machine must reach compress-done on the eff marks");
+        assert_eq!(p.phase, 4, "phase machine must reach compress-done");
         assert!(p.pmix >= 0.0 && p.pmix <= 1.0, "lever stayed in range");
-        assert!(p.eff >= 34.0, "ran past the final eff mark");
-        // With a null plant the controller saturates trying to grow — that is
-        // the correct best-effort behavior, and it must be flagged, not hidden.
-        assert!(p.sat > 0 || (s_in - mx.arena.len() as f64).abs() < s_in, "saturation tracked");
+        assert!(matches!(stop, MixStop::ProfileDone), "a finished profile ends the run");
+        // A null plant cannot grow, so the expansion leg saturates (flagged,
+        // not hidden) and the compression leg is trivially already-arrived:
+        // size <= R2 * input the moment phase 3 opens, which is exactly when
+        // the contract says that leg is done.
+        assert!(p.sat > 0, "saturation must be tracked when the lever cannot move size");
+        assert!(mx.arena.len() as f64 <= 2.0 * s_in, "ended at or under the R2 setpoint");
+        assert!(p.eff >= 18.0, "ran through the hold phase before finishing");
         mx.global_check();
     }
 
