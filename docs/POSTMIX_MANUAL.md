@@ -227,6 +227,39 @@ final write are each verified. A failure panics immediately.
 
 Production convention: `--report-every 1000000 --verify-every 100000`.
 
+### 2.1.1 The curated store (`--curated`, bounded DB contract)
+
+With `--curated` (and `FROZEN_CURATED_DIR` set), DB **expansion** probes the
+curated store FIRST, forward key only, and applies the mode's own size rule
+within the curated answer — Mix: random among no-larger spellings, else
+random among the minimal ones. Only a complete curated miss falls back to
+the regular store (both keys, same rule). **Compression always ignores
+curated.** The bounded curated DB (2026-07-30: ≤20 candidates/key, ≤512
+decoded value bytes) requires the per-store value conventions in the
+environment — a fresh process must set:
+
+```
+FROZEN_DB_DIR=…            FROZEN_CURATED_DIR=…
+FROZEN_REGULAR_VALUE_CONVENTION=native
+FROZEN_CURATED_VALUE_CONVENTION=legacy-swapped-controls
+```
+
+and its startup log must show `[frozen] curated=… opened … (filter on|off)`
+and `[frozen] value conventions: regular=native,
+curated=legacy-swapped-controls`. A warn-once tripwire fires if a curated
+value exceeds the bounded contract (wrong DB / stale data / bad parser).
+Readouts: `cur=hits/rejected` (rejected must stay 0 under the correct
+convention) and the `splice sizes (curated) out->in:` histogram line
+(curated-only; total minus curated = regular). Measured comparison vs the
+regular-only regime: `docs/CURATED_DB_COMPARISON.pdf` — smaller circuits,
+more transport, at every scale tested.
+
+**`--db-advance` should be ON in every run unless an A/B explicitly needs it
+off** (directive 2026-07-30): without it, DB splice products carry a
+direction nothing ever reads; measured at the curated operating point it
+adds ~+50–63% ancestry transport and widens the curated advantage. The CLI
+default is still off — set it in every launch script.
+
 ### 2.2 Environment flags: pause-free control
 
 Checked at every report point (so responsiveness = `--report-every`):

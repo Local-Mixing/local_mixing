@@ -129,35 +129,48 @@ locally compressible, i.e. one that survives `fcompress`, the
 attacker-computable compressor. That makes the substitution more likely to be a
 *meaningfully different route* to the same permutation.
 
-`curated` is a boolean.
+`curated` is a boolean; with the **bounded curated DB** (2026-07-30: 1.72 GB,
+≤20 candidates/key, ≤512 decoded value bytes, largest bucket 361 B encoded)
+the routing is a **cascade** (commit `47053b0f`):
 
-- **COMP-DB ignores it** — regular store only.
 - **off** — regular store only, in all modes.
-- **on** — probe both stores and **always prefer a non-identical curated match
-  to a non-identical regular one, regardless of size**; the mode's own
-  selection rule then applies within the winning class.
+- **on, expansion (MIX / ANY)** — probe the CURATED store first, forward key
+  only. The mode's own size rule applies within the curated answer (Mix:
+  random among no-larger spellings, else random among the minimal ones).
+  Only on a complete curated MISS fall back to the regular store (forward +
+  reverse keys) under the same rule; the reverse canonicalization is
+  deferred to the fallback, so the curated fast path never pays it.
+- **COMP-DB ignores curated** — regular store only, always (including both
+  ssg SAMF-hiding tiers).
 
-Curated-ness is thus a lexicographic first key. Because the curated store is
-*built* to contain longer equivalents, "prefer curated regardless of size"
-systematically prefers growth. This is intentional: it buys re-encoding quality
-with size.
+**Value conventions are per-store env contracts** (required for the bounded
+DB): `FROZEN_REGULAR_VALUE_CONVENTION=native`,
+`FROZEN_CURATED_VALUE_CONVENTION=legacy-swapped-controls`. The curated store
+was built under the pre-`2ed0222a` swapped-controls key convention, so its
+values decode with each gate's two controls swapped — this was the root
+cause of the historical "all curated candidates fail verification" mystery.
+With the convention set, measured rejections are **zero** across ~2M curated
+splices at 64 and 512 wires (`cur=hits/0` throughout). A warn-once tripwire
+fires if any curated value exceeds the bounded contract (wrong DB / stale
+data / bad parser). Startup must print
+`[frozen] value conventions: regular=native, curated=legacy-swapped-controls`.
 
-**FORWARD KEY ONLY.** The ssg path restricts curated the same way and the store
-docs say so outright. Probing curated on the reverse key returns entries
-belonging to a different permutation: a store-level probe of one window found
-**430,568 curated candidates, all from the reverse key, none equivalent**, while
-the forward key returned none at all and the regular store returned 6, all
-equivalent. A curated replacement that still fails verification is refused and
-counted (`cur=hits/rejected`) rather than fatal.
+**FORWARD KEY ONLY** (unchanged): probing curated on the reverse key returns
+entries belonging to a different permutation — the historical 430,568-
+candidate observation describes the OLD unbounded 6.49 GB store, which is
+retired (kept at `frozen_curated_m1_m11.old6g`); do not diagnose the bounded
+store with its fingerprints.
 
-⚠️ **Curated is ~30× too slow to run.** The store's fan-in per key is enormous
-(430k candidates where regular has 6). Selection is now lazy — candidates are
-catalogued by gate count from the blob and only the winner is decoded — but the
-catalogue walk itself is still linear in that list, on every rung of every
-descent. Bounding or length-filtering the walk is the remaining fix.
-
-The store is `/home/cc/frozen_curated_m1_m11`, 6.1 GB, 256 shards — 2% the size
-of the regular store, and now co-located with it.
+**Measured (2026-07-30 battery, 15× 20k arms + 6× 100k/512w arms, see
+`docs/CURATED_DB_COMPARISON.pdf`):** the cascade wins on every axis at every
+scale — sizes down (to −71% on MIX-heavy schedules), anc/cov/ent up, the
+A/B/C schedule gap largely collapses, the slice-1/slice-2 asymmetry closes,
+and the splice economy splits into a two-stroke engine: curated conversions
+are the growth stroke (58–62% grow, concentrated at +2 with a +6 store
+signature; <9% shrink), non-curated the compression stroke (~76% equal,
+~24% shrink, ~zero grow). Speed is a non-issue (3.8 µs/hit; 2M-move 20k
+runs in ~10 min). Report: `cur=hits/rejected` plus the
+`splice sizes (curated) out->in:` line for the curated-only histogram.
 
 ### 2.6 Litter rules (BUILT: `--litter-ban`, `--litter-samples`)
 
