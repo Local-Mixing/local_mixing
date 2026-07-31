@@ -126,6 +126,38 @@ struct Args {
     /// Minimum twist window length (max is the current circuit size)
     #[arg(long, default_value_t = 64)]
     twist_min_len: usize,
+    /// LAYER-2 phase-A preset: sets the phase-A default block (--twist-g57
+    /// --p-twist 0.0005 --db-advance --p-convex 0.5 --p-mingen 0.6 --curated
+    /// --mix-pay-random, COMP p_mingen 0) unless individually overridden.
+    #[arg(long, default_value_t = false)]
+    phase_a: bool,
+    /// Pay-random MIX selection: when only larger spellings exist, pick a
+    /// uniformly random one instead of a minimal one (layer-2 phase A).
+    #[arg(long, default_value_t = false)]
+    mix_pay_random: bool,
+    /// LAYER-2 size profile "N0,N1,N2,R1,R2": three-phase best-effort size
+    /// schedule in effective-work (moves/gate) units — expand to R1*input by
+    /// N0, hold to N1, compress toward R2*input by N2. The controller reads
+    /// the live monitors and steers --p-mix; it is then the ONLY size
+    /// authority, so passing any of --target-size/--size-hi/--size-lo
+    /// alongside --profile is an error. Empty = off.
+    #[arg(long, default_value = "")]
+    profile: String,
+    /// Profile controller: control cadence in effective-work units.
+    #[arg(long, default_value_t = 0.5)]
+    prof_cadence_eff: f64,
+    /// Profile controller: relative size deadband (no lever change within).
+    #[arg(long, default_value_t = 0.02)]
+    prof_deadband: f64,
+    /// Profile controller: max |Δp_mix| per update (rate limit).
+    #[arg(long, default_value_t = 0.1)]
+    prof_dp_max: f64,
+    /// Profile controller: EWMA weight for fresh plant (ghat/shat) estimates.
+    #[arg(long, default_value_t = 0.3)]
+    prof_ewma: f64,
+    /// Profile controller: integral gain on the size tracking error.
+    #[arg(long, default_value_t = 0.05)]
+    prof_ki: f64,
     /// Spell twist brackets as all-g57 words sited adaptively so they absorb
     /// neighborhood gates (hidden-SAMF style), instead of 3-CNOT packets.
     /// Pure swap only (twist_neg_p is ignored on this path); every inserted
@@ -430,7 +462,49 @@ struct Args {
 }
 
 fn main() {
-    let args = Args::parse();
+    let mut args = Args::parse();
+
+    // LAYER-2 phase-A preset: fill the phase-A default block for any knob the
+    // user left at its own default. Explicit flags always win.
+    if args.phase_a {
+        if !args.twist_g57 {
+            args.twist_g57 = true;
+        }
+        if args.p_twist == 0.0 {
+            args.p_twist = 0.0005;
+        }
+        if !args.db_advance {
+            args.db_advance = true;
+        }
+        if !args.curated {
+            args.curated = true;
+        }
+        if !args.mix_pay_random {
+            args.mix_pay_random = true;
+        }
+        // p_convex 0.5 and p_mingen 0.6 are already the shipped defaults;
+        // COMP p_mingen 0 is set via the profile controller's COMP branch
+        // (p_mingen_comp default -1 already means "0 in COMP" when p_mingen
+        // drives MIX only — see the overlay). Nothing to force here.
+        println!("[fmix] phase-A preset ON: twist-g57 p_twist=0.0005 db-advance curated mix-pay-random p_convex=0.5 p_mingen=0.6");
+    }
+
+    // Parse the size profile and enforce single size authority.
+    let profile: Option<([f64; 3], [f64; 2])> = if args.profile.is_empty() {
+        None
+    } else {
+        let v: Vec<f64> = args.profile.split(',').map(|x| x.trim().parse().expect("--profile wants N0,N1,N2,R1,R2 reals")).collect();
+        assert_eq!(v.len(), 5, "--profile wants exactly 5 comma-separated values N0,N1,N2,R1,R2");
+        let (n, r) = ([v[0], v[1], v[2]], [v[3], v[4]]);
+        assert!(n[0] > 0.0 && n[1] >= n[0] && n[2] >= n[1], "--profile needs 0 < N0 <= N1 <= N2");
+        assert!(r[0] > 1.0 && r[1] >= 1.0 && r[0] >= r[1], "--profile needs R1 > 1 and R1 >= R2 >= 1");
+        assert!(
+            args.target_size.is_none() && args.size_hi == 0 && args.size_lo == 0,
+            "--profile is the sole size authority: remove --target-size / --size-hi / --size-lo (make up your mind)"
+        );
+        assert!(args.p_mix < 0.0, "--profile drives p_mix; do not also pass --p-mix");
+        Some((n, r))
+    };
 
     // A resume carries its own circuit, so there is nothing to read here.
     let (gates, file_wires): (Vec<XGate>, usize) = match (&args.resume, &args.input) {
@@ -565,6 +639,14 @@ fn main() {
         dir_p: args.dir_p,
         dir_q: args.dir_q,
         target_size: target,
+        mix_pay_random: args.mix_pay_random,
+        prof_n: profile.map(|(n, _)| n).unwrap_or([0.0; 3]),
+        prof_r: profile.map(|(_, r)| r).unwrap_or([0.0; 2]),
+        prof_cadence_eff: args.prof_cadence_eff,
+        prof_deadband: args.prof_deadband,
+        prof_dp_max: args.prof_dp_max,
+        prof_ewma: args.prof_ewma,
+        prof_ki: args.prof_ki,
         temp: args.temp.unwrap_or(0.0),
         moves: args.moves,
         merge_reach: args.merge_reach,

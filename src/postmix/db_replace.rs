@@ -411,9 +411,10 @@ pub fn db_replace(
     mode: DbMode,
     guard: DegreeGuard,
     curated: bool,
+    pay_random: bool,
     rng: &mut impl Rng,
 ) -> DbResult {
-    db_replace_with(window, num_wires, budget, mode, guard, curated, rng, |key, want_curated| {
+    db_replace_with(window, num_wires, budget, mode, guard, curated, pay_random, rng, |key, want_curated| {
         if want_curated {
             if curated { db.get_curated(key) } else { None }
         } else {
@@ -436,6 +437,7 @@ pub fn db_replace_with<F>(
     mode: DbMode,
     guard: DegreeGuard,
     curated_armed: bool,
+    pay_random: bool,
     rng: &mut impl Rng,
     mut lookup: F,
 ) -> DbResult
@@ -586,7 +588,7 @@ where
     let mut chosen: Option<Vec<XGate>> = None;
     let mut chosen_curated = false;
     while !refs.is_empty() {
-        let Some(pick) = choose_ref(&refs, window_len, mode, rng) else { break };
+        let Some(pick) = choose_ref(&refs, window_len, mode, pay_random, rng) else { break };
         let r = refs.swap_remove(pick);
         let (rev, canonical) = &directions[r.dir_ix];
         let friend = CircuitSeq::from_blob(&values[r.vi][r.off..r.off + r.nbytes]);
@@ -627,7 +629,13 @@ where
 /// identities, so it holds LONGER equivalents -- preferring it therefore prefers
 /// growth, deliberately, to buy a route whose pieces are not locally
 /// compressible. Compressing mode is exempt: its job is to shrink.
-fn choose_ref<R>(refs: &[R], window_len: usize, mode: DbMode, rng: &mut impl Rng) -> Option<usize>
+fn choose_ref<R>(
+    refs: &[R],
+    window_len: usize,
+    mode: DbMode,
+    pay_random: bool,
+    rng: &mut impl Rng,
+) -> Option<usize>
 where
     R: CandLen,
 {
@@ -652,13 +660,18 @@ where
             let min = pool.iter().map(|&i| len_of(i)).min()?;
             pool.into_iter().filter(|&i| len_of(i) == min).collect()
         }
-        // Free if any free spelling exists, else the cheapest paid one.
+        // Free if any free spelling exists; else pay — the cheapest one, or
+        // (pay_random, the layer-2 phase-A rule) a uniformly random one.
         DbMode::Mix => {
             let free: Vec<usize> =
                 pool.iter().copied().filter(|&i| len_of(i) <= window_len).collect();
             if free.is_empty() {
-                let min = pool.iter().map(|&i| len_of(i)).min()?;
-                pool.into_iter().filter(|&i| len_of(i) == min).collect()
+                if pay_random {
+                    pool
+                } else {
+                    let min = pool.iter().map(|&i| len_of(i)).min()?;
+                    pool.into_iter().filter(|&i| len_of(i) == min).collect()
+                }
             } else {
                 free
             }
@@ -739,6 +752,7 @@ mod tests {
             DbMode::Compressing,
             DegreeGuard::OFF,
             false,
+            false,
             &mut rng,
             |k, cur| if cur { None } else { store.get(k).cloned() },
         );
@@ -761,6 +775,7 @@ mod tests {
             XPolyBudget::default(),
             DbMode::SizeAgnostic,
             DegreeGuard::OFF,
+            false,
             false,
             &mut rng,
             |_, _| None,
@@ -787,6 +802,7 @@ mod tests {
             DbMode::Mix,
             DegreeGuard::OFF,
             true,
+            false,
             &mut rng,
             |_, cur| {
                 probes.push(cur);
@@ -805,6 +821,7 @@ mod tests {
             DbMode::Mix,
             DegreeGuard::OFF,
             true,
+            false,
             &mut rng,
             |_, cur| {
                 probes.push(cur);
@@ -825,6 +842,7 @@ mod tests {
             DbMode::Compressing,
             DegreeGuard::OFF,
             true,
+            false,
             &mut rng,
             |_, cur| {
                 probes.push(cur);
@@ -853,6 +871,7 @@ mod tests {
             DbMode::SizeAgnostic,
             guard,
             false,
+            false,
             &mut rng,
             |_, _| {
                 lookups += 1;
@@ -871,6 +890,7 @@ mod tests {
             XPolyBudget::default(),
             DbMode::SizeAgnostic,
             guard,
+            false,
             false,
             &mut rng,
             |_, _| None,
@@ -896,13 +916,13 @@ mod tests {
 
         // Compressing: the only friend (3 gates) grows the 1-gate window -> reject.
         let mut rng = StdRng::seed_from_u64(3);
-        let comp = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::Compressing, DegreeGuard::OFF, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
+        let comp = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::Compressing, DegreeGuard::OFF, false, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         assert_eq!(comp.match_count, 1);
         assert!(comp.chosen.is_none(), "compressing must reject a growing friend");
 
         // Size-agnostic: accept the longer equivalent.
         let mut rng = StdRng::seed_from_u64(3);
-        let agn = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::SizeAgnostic, DegreeGuard::OFF, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
+        let agn = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::SizeAgnostic, DegreeGuard::OFF, false, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         assert_eq!(agn.match_count, 1);
         let repl = agn.chosen.expect("size-agnostic accepts any length");
         assert!(repl.len() > window.len(), "this friend grows the window");
@@ -912,7 +932,7 @@ mod tests {
         // MinGrow: also accepts it — the shortest spelling that exists is the
         // paid channel's whole point when nothing non-growing is available.
         let mut rng = StdRng::seed_from_u64(3);
-        let mg = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::MinGrow, DegreeGuard::OFF, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
+        let mg = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::MinGrow, DegreeGuard::OFF, false, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         let repl = mg.chosen.expect("min-grow accepts the shortest growing friend");
         assert_eq!(repl.len(), 3);
         assert!(exhaustively_equal(&window, &repl, 8));

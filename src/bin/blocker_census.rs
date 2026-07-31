@@ -167,6 +167,7 @@ fn main() {
                     DbMode::SizeAgnostic,
                     guard,
                     false,
+                    false,
                     &mut rng,
                     |key, _curated| {
                         if db.get_regular(key).is_some() {

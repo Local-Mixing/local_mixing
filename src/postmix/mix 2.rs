@@ -10,12 +10,8 @@
 // ssg, XGate-native: bracket a window with a wire negation or a 3-CNOT wire
 // swap and conjugate its interior — see twist_move). Contraction move: a
 // pairwise merge from the closed-form catalogue (see merge_result). Every move
-// is exhaustively verified on its support. The split/merge chain never emits
-// comp=1 gates, so with the DB and g57 twists off the comp count is a monotone
-// "fossil" count of surviving original g57s; DB splices (p_db > 0) and
-// --twist-g57 brackets both emit g57-form material (real origins and
-// ORIGIN_SYNTH respectively), so under either the comp/shaped censuses read
-// population form, not fossils — tg_emitted is the twist-side odometer.
+// is exhaustively verified on its support; the chain never emits comp=1 gates,
+// so the comp count is a monotone "fossil" count of surviving original g57s.
 //
 // Provenance: every gate carries (origin, event) — the original-gate index its
 // material descends from, and the split event that created it. A merge whose
@@ -24,7 +20,6 @@
 use super::arena::{Arena, Dir, NIL};
 use super::db_replace::{db_replace, DbMode, DegreeGuard};
 use super::rules::{self, BlockReason, Outcome, Role, RuleKind};
-use super::swap_words;
 use super::xgate::{Lits, XGate};
 use super::xpoly::XPolyBudget;
 use crate::replace::frozen::FrozenDb;
@@ -112,62 +107,6 @@ impl DbSample {
             "mixed" => Some(DbSample::Mixed),
             _ => None,
         }
-    }
-}
-
-// ---- --twist-g57 placer tuning ----
-// The two v2 placement features default ON; the env vars are kill-switches
-// for factorial A/Bs (mirrors the SAMF_HIDE_PAIRS pattern in ssg).
-/// How far a bracket may slide outward looking for an attachment gate.
-pub const TG_SLIDE_CAP: usize = 512;
-/// Attachment candidates actually solved per slide (first improving <= +4 wins).
-pub const TG_SLIDE_TRIES: usize = 3;
-/// Window redraws before settling for the best plan seen.
-pub const TG_RETRIES: usize = 4;
-/// A window is accepted outright when both seams total at most this net —
-/// either both sides found homes (<= +4 each) or one side's match is good
-/// enough (<= +2) to be worth the other staying bare.
-pub const TG_ACCEPT_NET: i64 = 8;
-
-fn tg_slide_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("TWIST_G57_NO_SLIDE").is_none())
-}
-
-fn tg_retry_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("TWIST_G57_NO_RETRY").is_none())
-}
-
-/// One planned bracket seam: the window boundary node it ends up at (possibly
-/// slid outward from the drawn boundary), the context gates it consumes, and
-/// the word that replaces context-plus-bracket.
-struct TgSeam {
-    edge: u32,
-    ids: Vec<u32>,
-    repl: Vec<XGate>,
-}
-
-impl TgSeam {
-    fn net(&self) -> i64 {
-        self.repl.len() as i64 - self.ids.len() as i64
-    }
-}
-
-/// A fully-evaluated candidate twist: wires, final window, both seams.
-struct TgPlan {
-    a: u16,
-    b: u16,
-    l: TgSeam,
-    r: TgSeam,
-    slides: u64,
-}
-
-impl TgPlan {
-    fn score(&self) -> (i64, i64) {
-        // (total net, -consumed): cheapest first, more absorption on ties.
-        let consumed = (self.l.ids.len() + self.r.ids.len()) as i64;
-        (self.l.net() + self.r.net(), -consumed)
     }
 }
 
@@ -403,12 +342,12 @@ fn conj_by_cnot(g: &XGate, a: u16, b: u16) -> CnotConj {
     }
 }
 
-// The twist menu is a single SWAP FAMILY (see `twist_move`): a wire swap,
-// optionally composed with a negation of one or both swapped wires. The
-// variant is chosen by two independent fair coins (alpha, beta) at move time,
-// so there is no longer a kind enum -- swap 1/4, swap+negate-one 1/2,
-// swap+negate-both 1/4. Each operator is realised as three single-control
-// gates (a 3-CNOT swap network with control polarities carrying the negations).
+#[derive(Clone, Copy, PartialEq)]
+enum TwistKind {
+    Neg,
+    Swap,
+    Cnot,
+}
 
 #[derive(Clone)]
 pub struct MixParams {
@@ -464,19 +403,6 @@ pub struct MixParams {
     // a-readers (count x2, width +1, K-cap enforced). Windows are capped at
     // the mid scale by the need for an unwritten b wire.
     pub w_twist_cnot: f64,
-    /// Probability each of the two swapped wires is NEGATED, independent per
-    /// wire. 0.5 = the swap-family default (swap 1/4, negate-one 1/2,
-    /// negate-both 1/4); 0.0 = pure positive swaps only (no polarity flips,
-    /// though the 3-CNOT swap brackets are still inserted).
-    pub twist_neg_p: f64,
-    // twist_g57: spell twist brackets as all-g57 words instead of 3-CNOT
-    // packets, siting each bracket adaptively so it absorbs neighborhood
-    // gates (the hidden-SAMF mechanism, XGate-native). Pure swap only: the
-    // negation arms keep the legacy packet until their word tables exist.
-    // Every gate the move inserts takes the ballistic birth-advance
-    // unconditionally (the db_advance treatment; legacy brackets sit tight).
-    // See twist_move_g57 and swap_words.rs.
-    pub twist_g57: bool,
     // Twist window lengths are log-uniform over [twist_min_len, circuit size]:
     // the all-scales dial that decorrelates computational progress at every
     // window scale, the structured analog of ssg's long-range shooting.
@@ -518,38 +444,6 @@ pub struct MixParams {
     // slot-0 rules, and the manual size brake (COMP arrests growth while still
     // stamping generations, so it slows the dose rather than stopping it).
     pub db_mode: DbMode,
-    // Layer-2 mode overlay (slot 0). When p_mix >= 0, each round's slot-2 DB
-    // move picks its mode by coin -- MIX-DB with probability p_mix, else
-    // COMP-DB -- overriding the fixed db_mode, and reads that mode's own knobs.
-    // The *_comp values are the COMP-mode overrides; each falls back to its base
-    // value when unset (s_db_comp == 0, p_convex_comp < 0, p_mingen_comp < 0).
-    // p_mix < 0 disables the overlay (single db_mode, exactly as before).
-    pub p_mix: f64,
-    // Pay-random MIX selection (layer 2 / phase A): when the MIX pool holds
-    // only larger spellings, pick uniformly among ALL of them instead of
-    // among the minimal ones — more growth and diversity per paid splice,
-    // and a stronger up-lever for the profile controller.
-    pub mix_pay_random: bool,
-    // Layer-2 phase-A size profile (docs/POSTMIX_MANUAL §2.1.2): effective-
-    // work marks [n0, n1, n2] and size ratios [r1, r2] vs the input size.
-    // n2 == 0 -> no profile. While a profile is active the controller is the
-    // ONLY size authority: it owns target_size (the thermostat pulls toward
-    // the moving setpoint), the size brake is inert, and p_mix is driven by
-    // the controller (best-effort contract; saturation is logged, never
-    // fought).
-    pub prof_n: [f64; 3],
-    pub prof_r: [f64; 2],
-    // Controller knobs: control cadence in eff units, relative deadband on
-    // |S - S*|, max |Δp_mix| per update, EWMA weight for fresh per-round
-    // drift estimates, integral gain.
-    pub prof_cadence_eff: f64,
-    pub prof_deadband: f64,
-    pub prof_dp_max: f64,
-    pub prof_ewma: f64,
-    pub prof_ki: f64,
-    pub s_db_comp: usize,
-    pub p_convex_comp: f64,
-    pub p_mingen_comp: f64,
     // Two eligibility thresholds, not one. w_window governs what may sit INSIDE
     // a window; w_pool governs what may SEED one and count toward the dose.
     // They want different values: width-3 gates match in context often enough
@@ -622,18 +516,6 @@ pub struct MixParams {
     // made of. Cost is |litters| x |input| bits, so this is a small-input
     // instrument: it refuses to arm above `ANC_MAX_INPUT` gates.
     pub ancestors: bool,
-    /// SAMPLED ancestry: instead of the full ancestor set per litter (which
-    /// costs |input| bits and caps the instrument at 20k input gates), track
-    /// only `anc_samples` randomly chosen input gates -- "tracers" -- and for
-    /// each one the set of current gates descended from it. Cost is a fixed
-    /// K bits per litter regardless of input size, so this scales to production
-    /// circuits. 0 = off; takes precedence over `ancestors` when both are set.
-    pub anc_samples: usize,
-    /// Tracer-selection seed. Default 0 means the tracer set is a function of
-    /// (input size, K) alone, so it is identical across runs and across a
-    /// resume -- which makes schedules comparable and makes a resumed run track
-    /// the same input gates. Vary it for independent replicates.
-    pub anc_sample_seed: u64,
     // p_comp_g57: probability that a COMP-DB attempt restricts itself to PURE
     // g57 material and starts its descent at s_db_g57 instead of the usual
     // window. Pure-g57 windows are the only ones that survive length: the
@@ -793,8 +675,6 @@ impl Default for MixParams {
             w_twist_neg: 0.0,
             w_twist_swap: 0.0,
             w_twist_cnot: 0.0,
-            twist_neg_p: 0.5,
-            twist_g57: false,
             twist_min_len: 64,
             // Store-free by default: MixParams::default() is the test/base
             // value, and any positive DB rate here would make every construction
@@ -806,18 +686,6 @@ impl Default for MixParams {
             s_db: 5,
             p_convex: 0.5,
             db_mode: DbMode::Mix,
-            p_mix: -1.0,
-            mix_pay_random: false,
-            prof_n: [0.0; 3],
-            prof_r: [0.0; 2],
-            prof_cadence_eff: 0.5,
-            prof_deadband: 0.02,
-            prof_dp_max: 0.1,
-            prof_ewma: 0.3,
-            prof_ki: 0.05,
-            s_db_comp: 0,
-            p_convex_comp: -1.0,
-            p_mingen_comp: -1.0,
             w_window: 4,
             w_pool: 3,
             db_convex_p: 0.75,
@@ -832,8 +700,6 @@ impl Default for MixParams {
             db_advance: false,
             curated: false,
             ancestors: false,
-            anc_samples: 0,
-            anc_sample_seed: 0,
             // 0.98 is the historical value: its 2% expansion floor above
             // target is a structural growth source, but it is ALSO what keeps
             // crossings running when the walk sits at target -- and crossings
@@ -867,47 +733,6 @@ impl Default for MixParams {
             local_verify: true,
             seed: 0,
         }
-    }
-}
-
-/// The width-2 `comp = 1` population, split by control polarity.
-///
-/// `shaped == same_pol + opp_pol` by construction. The split separates two
-/// things the single `g57=` field used to conflate:
-///
-/// - **`shaped`** is the DB-effectiveness reading. The store emits g57 circuits
-///   and nothing else, so every gate the DB has ever spliced in has this shape,
-///   and `1 - shaped/size` is the material the DB did not produce. Measured:
-///   with twists off, `opp_pol/comp` holds at 1.000 for a whole run.
-/// - **`same_pol`** is a twist odometer, not a structural fact. A negation
-///   twist conjugates a window by NOT on one wire, flipping the polarity of
-///   every literal on it (`conj_by_not`). A g57's two controls sit on distinct
-///   wires, so a twist touches at most one, and touching one flips the pair
-///   from opposite to same: same gate, same width, same `comp`, only the
-///   polarity relation moves. It random-walks toward 1/2 under twist pressure
-///   while DB splices inject fresh opposite-polarity material and pull it back.
-///
-/// Swap twists carry polarity with the wire and leave the split alone. A/B at
-/// equal twist count, 400k moves: `opp_pol/comp` = 1.000 (no twists), 0.704
-/// (neg), 1.000 (swap, at 2.6x the relabel count).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct G57Census {
-    /// `comp = 1` with exactly two controls, polarity ignored: the shape the
-    /// store can spell, hence the shape of everything it emits.
-    pub shaped: usize,
-    /// Of `shaped`, both controls the SAME polarity -- not a storable g57.
-    pub same_pol: usize,
-    /// Of `shaped`, OPPOSITE polarity (`a ^= b OR !c`) -- a true g57.
-    pub opp_pol: usize,
-}
-
-impl G57Census {
-    /// Fraction of the shaped population twists have flipped out of g57 form.
-    /// 0 = untwisted, 1/2 = fully scrambled. Bounded and size-independent, so
-    /// unlike `cov` -- whose denominator is the growing circuit -- it cannot
-    /// fall while twists keep firing.
-    pub fn pol_flipped(&self) -> f64 {
-        if self.shaped == 0 { 0.0 } else { self.same_pol as f64 / self.shaped as f64 }
     }
 }
 
@@ -964,9 +789,6 @@ pub struct MixCounters {
     // and add= totals cannot show -- a channel that swaps 3 gates for 3 and one
     // that alternates 2->5 and 5->2 report identically.
     pub splice_sizes: Vec<Vec<u64>>,
-    // Same joint histogram, curated-store splices only (splice_sizes minus
-    // this = regular). A shape: not carried across resumes.
-    pub splice_sizes_curated: Vec<Vec<u64>>,
     // Litter census (observation only — nothing bans or prefers on these yet;
     // see docs/FMIX_MENU.md 2.6). `litter_windows`/`litter_distinct_sum` give
     // the mean distinct litters per sampled DB window, i.e. how fast churn
@@ -1000,14 +822,6 @@ pub struct MixCounters {
     pub db_agn_misses: u64,    // size-agnostic: sampled window, no equivalent found
     pub db_gates_removed: u64, // gates removed by accepted DB replacements
     pub db_gates_added: u64,   // gates added by accepted (growing) DB replacements
-    // Per-mode split of the same deltas (Compressing vs the rest), the
-    // profile controller's plant observables: ghat = (mix_added -
-    // mix_removed)/mix rounds, shat = (comp_removed - comp_added)/comp
-    // rounds. Session-local (zero after a resume, like the histograms).
-    pub db_mix_added: u64,
-    pub db_mix_removed: u64,
-    pub db_cmp_added: u64,
-    pub db_cmp_removed: u64,
     pub db_wide_skip: u64,     // support > 24 wires with db_verify on: not verifiable, skipped
     pub db_attempts: u64,      // total DB lookups attempted (both modes)
     pub db_degree_skips: u64,  // attempts skipped by the degree guard (no lookup)
@@ -1027,22 +841,6 @@ pub struct MixCounters {
     pub twist_case_splits: u64,
     pub twist_span: u64,
     pub twist_skips: u64,
-    // --twist-g57 seam economics: context gates the brackets consumed, g57
-    // word gates they emitted (net growth = emitted - consumed vs a flat +6
-    // for the legacy packets), and total MITM solve time (the online-cost
-    // answer, session-local).
-    pub tg_consumed: u64,
-    pub tg_emitted: u64,
-    pub tg_solves: u64,
-    pub tg_solve_ns: u64,
-    // v2 placement gauges (session-local): seams that found their home by
-    // sliding the window edge, and extra window redraws the joint-acceptance
-    // rule spent.
-    pub tg_slides: u64,
-    pub tg_retries: u64,
-    // Histogram of per-seam net cost (word len - context consumed), 0..=7.
-    // A shape, so like splice_sizes it is not carried across resumes.
-    pub tg_net_hist: [u64; 8],
     pub blocked_width: u64,
     pub blocked_deadlock: u64,
     pub declined: u64,
@@ -1132,45 +930,6 @@ struct UndoEntry {
     misses: u8, // failed gather attempts; entry dropped after a few
 }
 
-/// Layer-2 profile-controller state (slot 0). While active it is the ONE
-/// size authority: it owns `target_size` (the thermostat pulls toward the
-/// moving setpoint), the static size brake is inert, and the per-round
-/// MIX/COMP coin is driven by `pmix`. Best-effort contract: on saturation it
-/// logs and holds the pinned lever rather than fighting the profile.
-pub struct ProfState {
-    pub phase: u8, // 1 expand, 2 hold, 3 compress, 4 done (hold at r2)
-    pub pmix: f64,
-    pub integ: f64,
-    pub ghat: f64, // EWMA net gates per MIX-family round (may be negative)
-    pub shat: f64, // EWMA net gates REMOVED per COMP round (positive)
-    pub eff: f64,
-    pub next_eff: f64,
-    pub sat: u32,
-    pub s_in: f64,
-    base_moves: u64,
-    base_mix: [u64; 4], // agn_hits, agn_misses, db_mix_added, db_mix_removed
-    base_cmp: [u64; 4], // comp_hits, comp_misses, db_cmp_added, db_cmp_removed
-}
-
-/// The profile's target size at effective work `eff`: linear ramp to
-/// r1*s_in over [0, n0], hold to n1, linear ramp to r2*s_in over [n1, n2],
-/// r2*s_in thereafter.
-pub fn prof_target(n: [f64; 3], r: [f64; 2], s_in: f64, eff: f64) -> f64 {
-    let (n0, n1, n2) = (n[0], n[1], n[2]);
-    let (r1, r2) = (r[0], r[1]);
-    if eff <= 0.0 {
-        s_in
-    } else if eff < n0 {
-        s_in * (1.0 + (r1 - 1.0) * (eff / n0))
-    } else if eff < n1 {
-        s_in * r1
-    } else if eff < n2 {
-        s_in * (r1 + (r2 - r1) * ((eff - n1) / (n2 - n1)))
-    } else {
-        s_in * r2
-    }
-}
-
 pub struct Mixer {
     pub arena: Arena,
     pub params: MixParams,
@@ -1191,11 +950,6 @@ pub struct Mixer {
     anc: HashMap<u64, Vec<u64>>,
     anc_words: usize,
     anc_m: usize,
-    // Sampled mode: the bitset universe is the K tracers rather than all
-    // `anc_m` input gates, and `anc_tracers[t]` is the input-gate index that
-    // bit `t` stands for (sorted). Empty in exact mode.
-    anc_sampled: bool,
-    anc_tracers: Vec<u32>,
     original: Vec<XGate>,
     num_wires: usize,
     pub moves_done: u64,
@@ -1240,8 +994,6 @@ pub struct Mixer {
     brake_mark_size: usize,
     // Next move at which the pool is rebuilt.
     pool_scan_due: u64,
-    // Layer-2 profile controller (params.prof_n[2] > 0); see ProfState.
-    prof: Option<ProfState>,
     // The generation pool (see MixParams::pool_k).
     pool: Vec<u32>,
     // Whether the current attempt's seed genuinely came from the pool, and
@@ -1349,11 +1101,7 @@ impl MixCounters {
             self.float_steps,
             self.scatters,
             self.scatter_steps,
-            self.dropped_neverfire,
-            // Trailing fields are parsed with a zero default so pre-existing
-            // .state files stay loadable; append here, never insert.
-            self.tg_consumed,
-            self.tg_emitted,
+            self.dropped_neverfire
         ];
         vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" ")
     }
@@ -1443,22 +1191,8 @@ impl MixCounters {
             scatters: next_u64(&mut it)?,
             scatter_steps: next_u64(&mut it)?,
             dropped_neverfire: next_u64(&mut it)?,
-            // Appended after the twist-g57 work landed: absent in older state
-            // files, so they default to zero rather than failing the resume.
-            tg_consumed: next_u64(&mut it).unwrap_or(0),
-            tg_emitted: next_u64(&mut it).unwrap_or(0),
-            tg_solves: 0,
-            tg_solve_ns: 0,
-            tg_slides: 0,
-            tg_retries: 0,
-            db_mix_added: 0,
-            db_mix_removed: 0,
-            db_cmp_added: 0,
-            db_cmp_removed: 0,
             splice_sizes: Vec::new(),
-            splice_sizes_curated: Vec::new(),
             width_hist: [0u64; 16],
-            tg_net_hist: [0u64; 8],
         })
     }
 }
@@ -1775,21 +1509,9 @@ impl Mixer {
         // input gates and their width comes from the state file. A resumed 1.4M
         // gate circuit whose input was 20k would trip a guard meant for the
         // input. Restore the real setting and the recorded widths below.
-        // Same reasoning applies to --anc-samples: tracers index the ORIGINAL
-        // input gates, but new_with_db would draw them against the RESUMED gate
-        // count. Construct with sampling off and regenerate below from the
-        // restored anc_m.
         let ancestors_wanted = params.ancestors;
-        let anc_samples_wanted = params.anc_samples;
-        let anc_sample_seed = params.anc_sample_seed;
-        let mut mx = Mixer::new_with_db(
-            gates,
-            num_wires,
-            MixParams { ancestors: false, anc_samples: 0, ..params },
-            db,
-        );
+        let mut mx = Mixer::new_with_db(gates, num_wires, MixParams { ancestors: false, ..params }, db);
         mx.params.ancestors = ancestors_wanted;
-        mx.params.anc_samples = anc_samples_wanted;
         mx.original = original;
         mx.moves_done = moves_done;
         mx.counters = MixCounters::from_line(&counters_line).ok_or_else(|| bad("counters"))?;
@@ -1817,24 +1539,6 @@ impl Mixer {
         mx.anc = anc;
         mx.anc_words = anc_hdr[0].parse().unwrap_or(0);
         mx.anc_m = anc_hdr[1].parse().unwrap_or(0);
-        // The tracer set is NOT serialised -- it is a pure function of
-        // (anc_m, K, anc_sample_seed), all of which survive a resume, so it
-        // regenerates identically without touching the state format. The
-        // assertion catches a resume that changed K (or the seed, when that
-        // changes K's rounding): the stored masks would otherwise be read
-        // against a different tracer-to-input mapping, silently.
-        if anc_samples_wanted > 0 && mx.anc_m > 0 {
-            let k = anc_samples_wanted.min(mx.anc_m);
-            assert_eq!(
-                mx.anc_words,
-                k.div_ceil(64),
-                "resume changed --anc-samples ({k} tracers now, {} words stored): the recorded \
-                 masks index the ORIGINAL tracer set and cannot be reinterpreted",
-                mx.anc_words
-            );
-            mx.anc_sampled = true;
-            mx.anc_tracers = Self::pick_tracers(mx.anc_m, k, anc_sample_seed);
-        }
         for (i, m) in metas.into_iter().enumerate() {
             mx.set_meta(i as u32, m);
         }
@@ -1954,30 +1658,15 @@ impl Mixer {
             })
             .collect();
         let db_mode0 = params.db_mode;
-        // Ancestry universe: SAMPLED (K tracer input gates, fixed cost, scales)
-        // takes precedence over EXACT (all input gates, |input| bits/litter).
-        let (anc_words0, anc_m0, anc_sampled0, anc_tracers0) = if params.anc_samples > 0 {
-            let k = params.anc_samples.min(n);
-            (k.div_ceil(64), n, true, Self::pick_tracers(n, k, params.anc_sample_seed))
-        } else if params.ancestors {
+        let (anc_words0, anc_m0) = if params.ancestors {
             assert!(
                 n <= 20_000,
-                "--ancestors stores |input| bits per litter; {n} input gates is past                  the small-input envelope this instrument is for (use --anc-samples for large inputs)"
+                "--ancestors stores |input| bits per litter; {n} input gates is past                  the small-input envelope this instrument is for"
             );
-            (n.div_ceil(64), n, false, Vec::new())
+            (n.div_ceil(64), n)
         } else {
-            (0, 0, false, Vec::new())
+            (0, 0)
         };
-        // In sampled mode the tracers' own singleton sets are stored EXPLICITLY
-        // (K entries), which is what lets `anc_or_into` drop the implicit
-        // singleton rule: a non-tracer input gate then contributes nothing, so
-        // untracked lineage costs no memory at all.
-        let mut anc0: HashMap<u64, Vec<u64>> = HashMap::new();
-        for (t, &gi) in anc_tracers0.iter().enumerate() {
-            let mut bits = vec![0u64; anc_words0];
-            bits[t / 64] |= 1u64 << (t % 64);
-            anc0.insert(gi as u64, bits);
-        }
         let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
         for (i, g) in gates.iter().enumerate() {
             index.entry(key_of(g)).or_default().push(i as u32);
@@ -2003,11 +1692,9 @@ impl Mixer {
             tabu: VecDeque::new(),
             next_event: 1,
             next_litter: n as u64,
-            anc: anc0,
+            anc: HashMap::new(),
             anc_words: anc_words0,
             anc_m: anc_m0,
-            anc_sampled: anc_sampled0,
-            anc_tracers: anc_tracers0,
             original: gates,
             num_wires,
             moves_done: 0,
@@ -2035,7 +1722,6 @@ impl Mixer {
             canary: VecDeque::new(),
             canary_failures: 0,
             pool_scan_due: 0,
-            prof: None,
         }
     }
 
@@ -2113,31 +1799,9 @@ impl Mixer {
             for (o, x) in out.iter_mut().zip(v.iter()) {
                 *o |= *x;
             }
-        } else if !self.anc_sampled && (l as usize) < self.anc_m {
-            // Exact mode only: bit `l` IS input gate `l`. In sampled mode the
-            // bit space is the tracer set, tracer singletons are stored
-            // explicitly, and a missing entry means "descends from no tracer".
+        } else if (l as usize) < self.anc_m {
             out[l as usize / 64] |= 1u64 << (l as usize % 64);
         }
-    }
-
-    /// Choose `k` distinct input-gate indices to trace, uniformly without
-    /// replacement, from a DEDICATED rng: tracer choice must not perturb the
-    /// mixing trajectory, so an exact-mode and a sampled-mode run with the same
-    /// `--seed` follow the identical chain and can be compared gate for gate.
-    /// Rejection sampling is O(k) expected for k << n and needs no O(n) buffer,
-    /// which matters at production input sizes.
-    fn pick_tracers(n: usize, k: usize, sample_seed: u64) -> Vec<u32> {
-        let mut rng = StdRng::seed_from_u64(
-            sample_seed ^ 0x7ACE_5EED_0000_0000 ^ ((n as u64) << 17) ^ ((k as u64) << 3),
-        );
-        let mut set: std::collections::HashSet<u32> = std::collections::HashSet::with_capacity(k);
-        while set.len() < k {
-            set.insert(rng.random_range(0..n) as u32);
-        }
-        let mut v: Vec<u32> = set.into_iter().collect();
-        v.sort_unstable();
-        v
     }
 
     /// Union the ancestor sets of `srcs`' litters and record it under a fresh
@@ -2152,14 +1816,7 @@ impl Mixer {
         for &src in srcs {
             self.anc_or_into(src, &mut bits);
         }
-        // An all-zero union needs no entry: fresh litter ids are always >= anc_m
-        // (next_litter starts at the input count), so a missing entry can never
-        // alias an implicit singleton and reads back as empty either way. In
-        // sampled mode this is the main memory win -- only litters that actually
-        // carry a tracer are stored, and most carry none.
-        if bits.iter().any(|&w| w != 0) {
-            self.anc.insert(l, bits);
-        }
+        self.anc.insert(l, bits);
         l
     }
 
@@ -2169,11 +1826,7 @@ impl Mixer {
     /// material travelled to meet". Both are immune to the ORIGIN_SYNTH erosion
     /// that makes odiff/oadj unreadable (see osyn=).
     fn anc_stats(&self) -> (f64, f64) {
-        // Sampled mode reports through `tracer_report` instead: a sampled
-        // popcount is not `anc` and a sampled index range is a biased `span`,
-        // so leaving anc=/ancspan= at zero keeps those fields from silently
-        // changing meaning (the mistake the g57=/shaped= split had to undo).
-        if self.anc_words == 0 || self.anc_sampled {
+        if self.anc_words == 0 {
             return (0.0, 0.0);
         }
         let (mut card_sum, mut span_sum, mut n) = (0f64, 0f64, 0u64);
@@ -2245,9 +1898,6 @@ impl Mixer {
         if self.anc_words == 0 {
             return String::new();
         }
-        if self.anc_sampled {
-            return self.tracer_report();
-        }
         let mut cards: Vec<u64> = Vec::new();
         let mut spans: Vec<u64> = Vec::new();
         let mut fanout = vec![0u64; self.anc_m];
@@ -2289,245 +1939,6 @@ impl Mixer {
             mean(&fanout),
             Self::log_hist(&fanout)
         )
-    }
-
-    /// Total gate x input-gate incidence: the sum over live gates of how many
-    /// original gates each descends from. This is the one transport quantity
-    /// both modes can report on the same footing -- exactly in exact mode, and
-    /// in sampled mode as the Horvitz-Thompson estimate (every input has
-    /// inclusion probability K/m, so the sampled sum scaled by m/K is unbiased).
-    /// It is also the schedule-invariant measure: `anc` per gate is this divided
-    /// by the gate count, which compression inflates.
-    pub fn anc_incidence(&self) -> f64 {
-        if self.anc_words == 0 {
-            return 0.0;
-        }
-        let mut sum = 0u64;
-        let mut bits = vec![0u64; self.anc_words];
-        let mut cur = self.arena.head();
-        while cur != NIL {
-            bits.iter_mut().for_each(|w| *w = 0);
-            self.anc_or_into(self.meta_of(cur).litter, &mut bits);
-            sum += bits.iter().map(|w| w.count_ones() as u64).sum::<u64>();
-            cur = self.arena.neighbor(cur, Dir::R);
-        }
-        if self.anc_sampled {
-            sum as f64 * self.anc_m as f64 / self.anc_tracers.len().max(1) as f64
-        } else {
-            sum as f64
-        }
-    }
-
-    /// Sampled-ancestry readout: for each traced input gate, the set of current
-    /// gates descended from it, summarised three ways.
-    ///
-    /// - **`desc`** -- how many current gates descend from one input gate. This
-    ///   is the per-input FANOUT, measured exactly for the traced gates, so its
-    ///   mean over tracers is an unbiased estimate of the mean fanout over all
-    ///   input gates (each input has inclusion probability K/m). Everything else
-    ///   global follows from it: `incid = desc x m` is the total gate x input
-    ///   incidence, and `anc = incid / size` is the mean ancestors per gate --
-    ///   the exact-mode `anc`, estimated without storing |input| bits anywhere.
-    /// - **`cov`** -- of `POS_BUCKETS` equal slices of the CURRENT circuit, the
-    ///   fraction that hold at least one descendant. 1.0 means one input gate's
-    ///   influence is present everywhere in the mixed circuit.
-    /// - **`ent`** -- normalised entropy of the descendant positions over those
-    ///   buckets. `cov` says how far the influence reaches, `ent` says how
-    ///   evenly: cov can be 1.0 while the mass sits in one slice.
-    ///
-    /// `cov`/`ent` are the security-facing quantities and have no exact-mode
-    /// analogue -- they ask directly whether an adversary can localise which
-    /// part of the mixed circuit a given original gate went to. They are also
-    /// natively samplable, unlike `span`, which a column sample can only
-    /// underestimate.
-    pub fn tracer_report(&self) -> String {
-        const POS_BUCKETS: usize = 64;
-        let k = self.anc_tracers.len();
-        if k == 0 {
-            return String::new();
-        }
-        let size = self.arena.len().max(1);
-        let mut cnt = vec![0u64; k];
-        let (mut lo, mut hi) = (vec![usize::MAX; k], vec![0usize; k]);
-        let mut buckets = vec![0u32; k * POS_BUCKETS];
-        let mut sampled_card_sum = 0u64;
-        let mut carriers = 0u64;
-        let mut bits = vec![0u64; self.anc_words];
-        let mut cur = self.arena.head();
-        let mut pos = 0usize;
-        while cur != NIL {
-            bits.iter_mut().for_each(|w| *w = 0);
-            self.anc_or_into(self.meta_of(cur).litter, &mut bits);
-            let b = (pos * POS_BUCKETS / size).min(POS_BUCKETS - 1);
-            let mut card = 0u64;
-            for (wi, &w) in bits.iter().enumerate() {
-                let mut x = w;
-                while x != 0 {
-                    let t = wi * 64 + x.trailing_zeros() as usize;
-                    if t < k {
-                        cnt[t] += 1;
-                        lo[t] = lo[t].min(pos);
-                        hi[t] = hi[t].max(pos);
-                        buckets[t * POS_BUCKETS + b] += 1;
-                        card += 1;
-                    }
-                    x &= x - 1;
-                }
-            }
-            if card > 0 {
-                carriers += 1;
-                sampled_card_sum += card;
-            }
-            pos += 1;
-            cur = self.arena.neighbor(cur, Dir::R);
-        }
-        let (mut reach, mut cov, mut ent) = (Vec::new(), Vec::new(), Vec::new());
-        for t in 0..k {
-            if cnt[t] == 0 {
-                reach.push(0.0);
-                cov.push(0.0);
-                ent.push(0.0);
-                continue;
-            }
-            reach.push((hi[t] - lo[t] + 1) as f64 / size as f64);
-            let row = &buckets[t * POS_BUCKETS..(t + 1) * POS_BUCKETS];
-            cov.push(row.iter().filter(|&&c| c > 0).count() as f64 / POS_BUCKETS as f64);
-            let n_t = cnt[t] as f64;
-            let h: f64 = row
-                .iter()
-                .filter(|&&c| c > 0)
-                .map(|&c| {
-                    let q = c as f64 / n_t;
-                    -q * q.log2()
-                })
-                .sum();
-            ent.push(h / (POS_BUCKETS as f64).log2());
-        }
-        let meanf = |v: &[f64]| if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 };
-        // desc: exact per-tracer fanout, so its mean estimates mean fanout/input.
-        let desc = cnt.iter().sum::<u64>() as f64 / k as f64;
-        let incid = desc * self.anc_m as f64;
-        let anc_all = incid / size as f64;
-        // Reported for honesty about the sample's resolution: gates whose
-        // ancestry misses every tracer look empty, and at small K most do.
-        let hit = carriers as f64 / size as f64;
-        format!(
-            "[fmix] tracers: K={} of m={} | desc mean={:.0} [{}] | cov mean={:.3} ent mean={:.3} reach mean={:.3} | est anc={:.1} incid={:.3e} | carriers={:.3} sampled_card={:.2}",
-            k,
-            self.anc_m,
-            desc,
-            Self::log_hist(&cnt),
-            meanf(&cov),
-            meanf(&ent),
-            meanf(&reach),
-            anc_all,
-            incid,
-            hit,
-            if carriers > 0 { sampled_card_sum as f64 / carriers as f64 } else { 0.0 },
-        )
-    }
-
-    /// JOINT census of re-encoding depth against ancestry: for each generation
-    /// band, how many gates are in it and what their mean ancestor count and
-    /// mean ancestor span are.
-    ///
-    /// `anc` and `dgen` have only ever been reported as separate marginals, which
-    /// cannot answer the question that matters: does depth BUY ancestry? A
-    /// protocol where anc rises steeply with generation is compounding -- each
-    /// re-encoding folds in genuinely new lineage. One where anc is flat across
-    /// generations is re-spelling the same material over and over, and its depth
-    /// counter is measuring effort rather than mixing. Different mode schedules
-    /// can produce the same mean anc with very different shapes here.
-    ///
-    /// `r` is the Pearson correlation of (dgen, anc) over gates with a real
-    /// generation. GEN_FRESH is a sentinel (born-random material: twist
-    /// brackets, insert pairs), not a large number, so it is excluded from `r`
-    /// and reported as its own band. In sampled mode the per-gate ancestor count
-    /// is scaled by m/K, so the bands are comparable to exact mode; `span` is
-    /// omitted there (a column sample can only underestimate it).
-    pub fn gen_anc_report(&self) -> String {
-        if self.anc_words == 0 {
-            return String::new();
-        }
-        // Upper bound of each band; the last band is GEN_FRESH alone.
-        const EDGES: [u32; 9] = [0, 1, 2, 4, 8, 16, 32, 64, u32::MAX - 1];
-        const NAMES: [&str; 9] =
-            ["g0", "g1", "g2", "g3-4", "g5-8", "g9-16", "g17-32", "g33-64", "g65+"];
-        let nb = EDGES.len();
-        let mut n = vec![0u64; nb + 1];
-        let mut anc_sum = vec![0f64; nb + 1];
-        let mut span_sum = vec![0f64; nb + 1];
-        // Pearson accumulators over real-generation gates.
-        let (mut cn, mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0f64, 0f64, 0f64, 0f64, 0f64, 0f64);
-        let scale = if self.anc_sampled {
-            self.anc_m as f64 / self.anc_tracers.len().max(1) as f64
-        } else {
-            1.0
-        };
-        let mut bits = vec![0u64; self.anc_words];
-        let mut cur = self.arena.head();
-        while cur != NIL {
-            bits.iter_mut().for_each(|w| *w = 0);
-            self.anc_or_into(self.meta_of(cur).litter, &mut bits);
-            let mut card = 0u64;
-            let (mut lo, mut hi) = (usize::MAX, 0usize);
-            for (wi, &w) in bits.iter().enumerate() {
-                let mut x = w;
-                while x != 0 {
-                    let idx = wi * 64 + x.trailing_zeros() as usize;
-                    card += 1;
-                    lo = lo.min(idx);
-                    hi = hi.max(idx);
-                    x &= x - 1;
-                }
-            }
-            let g = self.meta_of(cur).dgen;
-            let bi = if g == GEN_FRESH {
-                nb // the born-random band
-            } else {
-                EDGES.iter().position(|&e| g <= e).unwrap_or(nb - 1)
-            };
-            let a = card as f64 * scale;
-            n[bi] += 1;
-            anc_sum[bi] += a;
-            if !self.anc_sampled && card > 0 {
-                span_sum[bi] += (hi - lo) as f64;
-            }
-            if g != GEN_FRESH {
-                let (x, y) = (g as f64, a);
-                cn += 1.0;
-                sx += x;
-                sy += y;
-                sxx += x * x;
-                syy += y * y;
-                sxy += x * y;
-            }
-            cur = self.arena.neighbor(cur, Dir::R);
-        }
-        let r = {
-            let num = cn * sxy - sx * sy;
-            let den = ((cn * sxx - sx * sx) * (cn * syy - sy * sy)).sqrt();
-            if den > 0.0 { num / den } else { 0.0 }
-        };
-        let mut parts: Vec<String> = Vec::new();
-        for bi in 0..=nb {
-            if n[bi] == 0 {
-                continue;
-            }
-            let label = if bi == nb { "FRESH" } else { NAMES[bi] };
-            let cnt = n[bi] as f64;
-            if self.anc_sampled {
-                parts.push(format!("{label}:n={} anc={:.1}", n[bi], anc_sum[bi] / cnt));
-            } else {
-                parts.push(format!(
-                    "{label}:n={} anc={:.1} span={:.0}",
-                    n[bi],
-                    anc_sum[bi] / cnt,
-                    span_sum[bi] / cnt
-                ));
-            }
-        }
-        format!("[fmix] gen-anc: r={r:.3} (n={:.0} real-gen gates) | {}", cn, parts.join(" | "))
     }
 
     /// Drop ancestor sets for litters with no live gates. Without this the map
@@ -2596,199 +2007,28 @@ impl Mixer {
     // ---- the chain ----
 
 
-    // Layer-2 overlay: the DB knobs for the round's LIVE mode. With the mode
-    // overlay off, db_mode_cur is fixed and these return the base params, so a
-    // single-mode run behaves exactly as before. Only COMP-mode reads the
-    // overrides, and only when they are set.
-    fn active_s_db(&self) -> usize {
-        if self.db_mode_cur == DbMode::Compressing && self.params.s_db_comp > 0 {
-            self.params.s_db_comp
-        } else {
-            self.params.s_db
-        }
-    }
-    fn active_p_convex(&self) -> f64 {
-        if self.db_mode_cur == DbMode::Compressing && self.params.p_convex_comp >= 0.0 {
-            self.params.p_convex_comp
-        } else {
-            self.params.p_convex
-        }
-    }
-    fn active_p_mingen(&self) -> f64 {
-        if self.db_mode_cur == DbMode::Compressing && self.params.p_mingen_comp >= 0.0 {
-            self.params.p_mingen_comp
-        } else {
-            self.params.p_mingen
-        }
-    }
-
-    // Layer-2 mode overlay (slot 0): pick this round's DB mode by coin when
-    // armed (p_mix >= 0) -- MIX-DB with probability p_mix, else COMP-DB. This is
-    // the "set parameter" rule of the slot-0 condition engine, independent of
-    // the size brake and the thermostat. Off (p_mix < 0) leaves db_mode_cur as
-    // the fixed db_mode (possibly steered by the size brake).
-    fn apply_mode_overlay(&mut self) {
-        if self.params.p_mix < 0.0 {
-            return;
-        }
-        self.db_mode_cur = if self.rng.random_bool(self.params.p_mix.clamp(0.0, 1.0)) {
-            DbMode::Mix
-        } else {
-            DbMode::Compressing
-        };
-    }
-
-    fn prof_init(&mut self) {
-        let s_in = self.original.len() as f64;
-        // Phase priors until the first plant estimates arrive: full MIX for
-        // the expansion leg (matching pay-random's strong up-lever).
-        self.prof = Some(ProfState {
-            phase: 1,
-            pmix: 1.0,
-            integ: 0.0,
-            ghat: 0.0,
-            shat: 0.0,
-            eff: 0.0,
-            next_eff: self.params.prof_cadence_eff.max(0.05),
-            sat: 0,
-            s_in,
-            base_moves: self.moves_done,
-            base_mix: [0; 4],
-            base_cmp: [0; 4],
-        });
-        self.prof_snapshot();
-        eprintln!(
-            "[fmix] profile ON: n={:?} r={:?} s_in={} cadence_eff={} deadband={} dp_max={}",
-            self.params.prof_n,
-            self.params.prof_r,
-            s_in,
-            self.params.prof_cadence_eff,
-            self.params.prof_deadband,
-            self.params.prof_dp_max
-        );
-    }
-
-    fn prof_snapshot(&mut self) {
-        let c = &self.counters;
-        let mix = [c.db_agn_hits, c.db_agn_misses, c.db_mix_added, c.db_mix_removed];
-        let cmp = [c.db_comp_hits, c.db_comp_misses, c.db_cmp_added, c.db_cmp_removed];
-        if let Some(p) = self.prof.as_mut() {
-            p.base_moves = self.moves_done;
-            p.base_mix = mix;
-            p.base_cmp = cmp;
-        }
-    }
-
-    /// Per-round profile bookkeeping: accumulate effective work, run the
-    /// controller at its cadence, and flip the MIX/COMP coin at the
-    /// controller's current lever.
-    fn prof_tick(&mut self) {
-        let size = self.arena.len().max(1) as f64;
-        let (due, pmix) = {
-            let p = self.prof.as_mut().expect("prof_tick with prof off");
-            p.eff += 1.0 / size;
-            (p.eff >= p.next_eff, p.pmix)
-        };
-        if due {
-            self.prof_update();
-        }
-        let pm = if due { self.prof.as_ref().unwrap().pmix } else { pmix };
-        self.db_mode_cur =
-            if self.rng.random_bool(pm.clamp(0.0, 1.0)) { DbMode::Mix } else { DbMode::Compressing };
-    }
-
-    /// One controller update (every prof_cadence_eff of effective work):
-    /// refresh the plant estimates from the interval's per-mode counters,
-    /// advance the phase, retarget the thermostat, and move the lever by
-    /// feed-forward inversion plus a small integral correction — deadbanded,
-    /// rate-limited, clamped, with saturation logged (best-effort contract).
-    fn prof_update(&mut self) {
-        let s = self.arena.len().max(1) as f64;
-        let c = &self.counters;
-        let mix_now = [c.db_agn_hits, c.db_agn_misses, c.db_mix_added, c.db_mix_removed];
-        let cmp_now = [c.db_comp_hits, c.db_comp_misses, c.db_cmp_added, c.db_cmp_removed];
-        let n = self.params.prof_n;
-        let r = self.params.prof_r;
-        let (cad, dead, dp_max, ew, ki) = (
-            self.params.prof_cadence_eff.max(0.05),
-            self.params.prof_deadband,
-            self.params.prof_dp_max,
-            self.params.prof_ewma,
-            self.params.prof_ki,
-        );
-        if let Some(p) = self.prof.as_mut() {
-            // Plant estimates from the interval, EWMA'd when well-sampled.
-            let mix_rounds = (mix_now[0] + mix_now[1]) - (p.base_mix[0] + p.base_mix[1]);
-            if mix_rounds >= 200 {
-                let net = (mix_now[2] - p.base_mix[2]) as f64 - (mix_now[3] - p.base_mix[3]) as f64;
-                let g_new = net / mix_rounds as f64;
-                p.ghat = if p.ghat == 0.0 { g_new } else { (1.0 - ew) * p.ghat + ew * g_new };
-            }
-            let cmp_rounds = (cmp_now[0] + cmp_now[1]) - (p.base_cmp[0] + p.base_cmp[1]);
-            if cmp_rounds >= 200 {
-                let net = (cmp_now[3] - p.base_cmp[3]) as f64 - (cmp_now[2] - p.base_cmp[2]) as f64;
-                let s_new = net / cmp_rounds as f64;
-                p.shat = if p.shat == 0.0 { s_new } else { (1.0 - ew) * p.shat + ew * s_new };
-            }
-            // Phase machine (best-effort: eff marks OR size arrival).
-            let old_phase = p.phase;
-            match p.phase {
-                1 if p.eff >= n[0] || s >= 0.99 * r[0] * p.s_in => p.phase = 2,
-                2 if p.eff >= n[1] => p.phase = 3,
-                3 if p.eff >= n[2] || s <= 1.01 * r[1] * p.s_in => p.phase = 4,
-                _ => {}
-            }
-            if p.phase != old_phase {
-                p.integ = 0.0;
-                p.sat = 0;
-                eprintln!(
-                    "[fmix] profile: phase {} -> {} at eff={:.2} size={}",
-                    old_phase, p.phase, p.eff, s as usize
-                );
-            }
-            let s_star = prof_target(n, r, p.s_in, p.eff);
-            let s_star_next = prof_target(n, r, p.s_in, p.eff + cad);
-            let err = (s - s_star) / s_star.max(1.0);
-            if err.abs() >= dead {
-                p.integ = (p.integ - ki * err).clamp(-0.3, 0.3);
-                let dmoves = (cad * s).max(1.0);
-                let v_star = (s_star_next - s) / dmoves; // gates per move
-                let denom = p.ghat + p.shat;
-                let mut want =
-                    if denom.abs() > 1e-9 { (v_star + p.shat) / denom } else { p.pmix };
-                want += p.integ;
-                let dp = (want - p.pmix).clamp(-dp_max, dp_max);
-                p.pmix = (p.pmix + dp).clamp(0.0, 1.0);
-            }
-            // Saturation: pinned lever while clearly behind the profile.
-            if (p.pmix >= 0.999 && err < -0.10) || (p.pmix <= 0.001 && err > 0.10) {
-                p.sat += 1;
-                if p.sat == 5 {
-                    eprintln!(
-                        "[fmix] profile: SATURATED (phase {} pmix={:.3} size={} S*={:.0}) — best-effort, continuing pinned",
-                        p.phase, p.pmix, s as usize, s_star
-                    );
-                }
-            } else {
-                p.sat = 0;
-            }
-            p.next_eff += cad;
-            // The thermostat is conscripted: pull toward the moving setpoint.
-            self.params.target_size = s_star.max(2.0) as usize;
-        }
-        self.prof_snapshot();
-    }
-
-    // One first-class twist round. The twist is always from the swap family;
-    // `twist_move` rolls the (alpha, beta) negation coins internally, giving
-    // swap 1/4, swap+negate-one 1/2, swap+negate-both 1/4. The legacy
-    // w_twist_* weights are retired (accepted-but-ignored on the CLI).
+    // One first-class twist round: type drawn from the w_twist_* weights as
+    // ratios, neg/swap 50/50 when all are zero.
     fn twist_round(&mut self) {
-        if self.params.twist_g57 {
-            self.twist_move_g57();
+        let (wn, ws, wc) = (
+            self.params.w_twist_neg.max(0.0),
+            self.params.w_twist_swap.max(0.0),
+            self.params.w_twist_cnot.max(0.0),
+        );
+        let total = wn + ws + wc;
+        let kind = if total <= 0.0 {
+            if self.rng.random_bool(0.5) { TwistKind::Neg } else { TwistKind::Swap }
         } else {
-            self.twist_move();
-        }
+            let r = self.rng.random_range(0.0..total);
+            if r < wn {
+                TwistKind::Neg
+            } else if r < wn + ws {
+                TwistKind::Swap
+            } else {
+                TwistKind::Cnot
+            }
+        };
+        self.twist_move(kind);
     }
 
     /// The size brake. Growth past `size_hi` forces slot 2 into COMP; it is
@@ -2842,18 +2082,6 @@ impl Mixer {
     }
 
     pub fn run(&mut self) -> MixStop {
-        if self.params.prof_n[2] > 0.0 && self.prof.is_none() {
-            if self.moves_done > 0 {
-                // v1: the profile's effective-work clock is not serialised, so
-                // a resumed profile would restart phase 1 from eff=0. Profiles
-                // are whole-run single invocations; warn rather than mis-steer.
-                eprintln!(
-                    "[fmix] WARNING: --profile on a RESUME (moves_done={}) restarts the profile clock at eff=0 — run a profile as a single invocation",
-                    self.moves_done
-                );
-            }
-            self.prof_init();
-        }
         while self.moves_done < self.params.moves {
             // Generation targeting: refresh the laggard list on its cadence
             // (an O(size) scan; entries invalidated between scans are pruned
@@ -2862,17 +2090,8 @@ impl Mixer {
                 self.rebuild_pool();
                 self.pool_scan_due = self.moves_done + self.params.gen_rescan.max(1);
             }
-            // Slot 0 continued. With a PROFILE active the controller is the
-            // one size authority: it owns target_size, keeps the brake
-            // inert, and drives the MIX/COMP coin. Otherwise: the size
-            // brake, then the p_mix overlay (whose per-round coin, when
-            // armed, is the binding choice; the thermostat is untouched).
-            if self.prof.is_some() {
-                self.prof_tick();
-            } else {
-                self.apply_size_brake();
-                self.apply_mode_overlay();
-            }
+            // Slot 0 continued: the size brake.
+            self.apply_size_brake();
             // Slot 1: one twist, at a FIXED rate the rest of the machinery
             // balances around.
             let took_twist = self.params.p_twist > 0.0
@@ -3402,41 +2621,38 @@ impl Mixer {
         None
     }
 
-    // One conjugation twist from the swap family. The twist operator T acts on
-    // two wires (a, b): a wire SWAP, optionally composed with a negation of one
-    // or both wires. `alpha` negates wire a, `beta` wire b, each an independent
-    // fair coin -- so the menu is
-    //   swap                (0,0)  p = 1/4
-    //   swap + negate one   (1,0) or (0,1)  p = 1/2
-    //   swap + negate both  (1,1)  p = 1/4
-    // Each T is realised as THREE single-control gates (a 3-CNOT swap network
-    // with control polarities chosen so the outer CNOTs carry the negations):
-    //   G1: b ^= (a | !a)   ctrl a -> tgt b, negative control iff alpha
-    //   G2: a ^= b          ctrl b -> tgt a, always positive
-    //   G3: b ^= (a | !a)   ctrl a -> tgt b, negative control iff beta
-    // which realises T(a,b) = (b ^ alpha, a ^ beta). T is an involution iff
-    // alpha == beta, so the closing bracket is P^-1 (the reversed packet), which
-    // differs from the opening P exactly in the negate-one case. Interior gates
-    // are relabelled by conj_by_swap then conj_by_not on each negated wire -- a
-    // pure 1->1 relabel (no case-splits, no width change), so the whole family
-    // is function-preserving by commutation, verified per gate under
-    // local_verify (P^-1 . g . P == g').
-    fn twist_move(&mut self) {
+    fn twist_move(&mut self, kind: TwistKind) {
         let n = self.arena.len();
         if n < 2 {
             return;
         }
-        let cap = n;
+        // Transvection windows are capped at the mid scale: b must be a wire
+        // the window never writes, and a window of L random-target gates
+        // leaves ~nw*exp(-L/nw) wires unwritten — beyond ~nw*ln(nw) gates the
+        // pool is empty and the move could only skip. Neg/swap own the global
+        // octaves; cnot frames compose across overlapping mid-scale windows.
+        let cap = match kind {
+            TwistKind::Cnot => {
+                let nw = self.num_wires as f64;
+                ((nw * nw.ln()).ceil() as usize).clamp(2, n)
+            }
+            _ => n,
+        };
         let lmin = (self.params.twist_min_len.max(2).min(cap)) as f64;
         let len = (self.rng.random_range(lmin.ln()..=(cap as f64).ln()).exp().round() as usize)
             .clamp(2, cap);
         // Symmetric truncation: the window's virtual start is uniform over
-        // [-(len-1), n-1] and clamped to the circuit, so left-overshooting draws
-        // pile their opening packets at the head exactly as right-overshoots
-        // pile closings at the tail. `find_twist_site` may bias the start toward
-        // an absorbing neighbourhood; its preferred wire is unused by the swap
-        // family (the swap picks its own wires below).
+        // [-(len-1), n-1] and the window is clamped to the circuit, so
+        // left-overshooting draws pile their opening packets at the head
+        // exactly as right-overshoots pile closings at the tail. Uniform
+        // start with right-only truncation starves the head of straddling
+        // frames (measured 100x head/tail decorrelation asymmetry, fx1tw).
+        // Placement: prefer a position where a bracket can be absorbed, and
+        // fall back to the symmetric random draw when none is found within the
+        // try budget. `prefer_wire` is the absorbing gate's target, offered to
+        // the P draw below.
         let site = self.find_twist_site();
+        let prefer_wire = site.map(|(_, w)| w);
         if self.params.twist_place_tries > 0 {
             if site.is_some() {
                 self.counters.twist_placed += 1;
@@ -3456,21 +2672,30 @@ impl Mixer {
             }
         };
 
-        // Pass 1: locate the window end (truncated at the tail) and collect the
-        // wires it touches, so `a` can be a wire the window actually uses (a T
-        // acting on none of them is a no-op twist).
+        // Pass 1: locate the window end (truncated at the tail) and collect
+        // the wires it reads / writes / touches, so P can be drawn from wires
+        // the window actually uses (a P acting on none of them is a no-op
+        // twist) and, for cnot, b from wires it never writes.
+        let mut read_seen = vec![false; self.num_wires];
+        let mut write_seen = vec![false; self.num_wires];
         let mut touch_seen = vec![false; self.num_wires];
+        let mut reads: Vec<u16> = Vec::new();
         let mut touches: Vec<u16> = Vec::new();
         let mut end = start;
         let mut span = 0usize;
         let mut cur = start;
         while cur != NIL && span < len {
             let g = self.arena.gate(cur);
+            write_seen[g.target as usize] = true;
             if !touch_seen[g.target as usize] {
                 touch_seen[g.target as usize] = true;
                 touches.push(g.target);
             }
             for &(w, _) in &g.ctrls {
+                if !read_seen[w as usize] {
+                    read_seen[w as usize] = true;
+                    reads.push(w);
+                }
                 if !touch_seen[w as usize] {
                     touch_seen[w as usize] = true;
                     touches.push(w);
@@ -3481,113 +2706,201 @@ impl Mixer {
             cur = self.arena.neighbor(cur, Dir::R);
         }
 
-        // Wire pair: `a` from a wire the window touches, `b` any other wire
-        // (routing the window's material through a fresh physical wire is a
-        // legitimate and strong relabeling).
-        if touches.is_empty() {
-            self.counters.twist_skips += 1;
-            return;
-        }
-        let a = touches[self.rng.random_range(0..touches.len())];
-        let mut b = a;
-        for _ in 0..16 {
-            let c = self.rng.random_range(0..self.num_wires) as u16;
-            if c != a {
-                b = c;
-                break;
+        // The involution P as a gate packet. P == P^-1, so the same packet
+        // brackets both sides. Negation needs a wire the window READS (gates
+        // targeting w are invariant); a swap needs one touched wire, the other
+        // may be any wire — routing the window's material through a fresh
+        // physical wire is a legitimate (and strong) relabeling; a cnot
+        // transvection needs a read wire a and a wire b the window never
+        // WRITES (see conj_by_cnot).
+        let cnot = |t: u16, c: u16| XGate::conj(t, [(c, true)]).expect("cnot literal");
+        let (pa, pb, packet): (u16, u16, Vec<XGate>) = match kind {
+            TwistKind::Swap => {
+                if touches.is_empty() {
+                    self.counters.twist_skips += 1;
+                    return;
+                }
+                let a = touches[self.rng.random_range(0..touches.len())];
+                let mut b = a;
+                for _ in 0..16 {
+                    let c = self.rng.random_range(0..self.num_wires) as u16;
+                    if c != a {
+                        b = c;
+                        break;
+                    }
+                }
+                if b == a {
+                    self.counters.twist_skips += 1;
+                    return;
+                }
+                (a, b, vec![cnot(b, a), cnot(a, b), cnot(b, a)])
             }
-        }
-        if b == a {
-            self.counters.twist_skips += 1;
-            return;
-        }
-
-        // The negation pattern: each wire negated independently with
-        // probability twist_neg_p (0.5 = the 1/4:1/2:1/4 family; 0 = pure swap,
-        // no polarity flips).
-        let q = self.params.twist_neg_p.clamp(0.0, 1.0);
-        let alpha = self.rng.random_bool(q);
-        let beta = self.rng.random_bool(q);
-
-        // The packet P (three single-control gates) and its inverse P^-1
-        // (reverse order; each polarised single-control XOR is its own inverse).
-        // A negative control (polarity false) is `target ^= !wire`, i.e. it
-        // folds the wire negation into the CNOT -- so no extra NOT gate is
-        // needed and the packet stays exactly three gates.
-        let pol_cnot = |t: u16, c: u16, neg: bool| {
-            XGate::conj(t, [(c, !neg)]).expect("single-control cnot literal")
+            TwistKind::Neg => {
+                if reads.is_empty() {
+                    self.counters.twist_skips += 1;
+                    return;
+                }
+                // Take the pattern's preferred wire when the window actually
+                // reads it: that is the absorbing gate's target, so the bracket
+                // this twist emits can be swallowed rather than paid for.
+                let w = match prefer_wire {
+                    Some(pw) if reads.contains(&pw) => pw,
+                    _ => reads[self.rng.random_range(0..reads.len())],
+                };
+                (w, w, vec![XGate::x_gate(w)])
+            }
+            TwistKind::Cnot => {
+                if reads.is_empty() {
+                    self.counters.twist_skips += 1;
+                    return;
+                }
+                let a = reads[self.rng.random_range(0..reads.len())];
+                let pool: Vec<u16> = (0..self.num_wires as u16)
+                    .filter(|&w| !write_seen[w as usize] && w != a)
+                    .collect();
+                if pool.is_empty() {
+                    self.counters.twist_skips += 1;
+                    return;
+                }
+                let b = pool[self.rng.random_range(0..pool.len())];
+                (a, b, vec![cnot(a, b)])
+            }
         };
-        let packet: Vec<XGate> =
-            vec![pol_cnot(b, a, alpha), pol_cnot(a, b, false), pol_cnot(b, a, beta)];
-        let packet_inv: Vec<XGate> = packet.iter().rev().cloned().collect();
-
         if self.params.local_verify {
-            // P then P^-1 is the identity.
-            let round: Vec<XGate> = packet.iter().chain(packet_inv.iter()).cloned().collect();
+            let double: Vec<XGate> = packet.iter().chain(packet.iter()).cloned().collect();
             assert!(
-                rules::verify_rewrite(&round, &[]),
-                "twist packet is not invertible by its reverse: {packet:?}"
+                rules::verify_rewrite(&double, &[]),
+                "twist packet is not an involution: {packet:?}"
             );
         }
 
-        // Pass 2: conjugate every interior gate. g' = conj_by_swap(g) then
-        // conj_by_not on a (if alpha) and on b (if beta). The swap family never
-        // case-splits, so every gate is rewritten strictly in place -- nodes,
-        // positions and provenance survive.
+        // Cnot feasibility: every interior a-reader must be rewritable — a
+        // comp gate without a b-literal cannot case-split (Blocked), and a
+        // split must respect the K-cap. Checked BEFORE any mutation so a
+        // twist either applies whole or not at all.
+        if kind == TwistKind::Cnot {
+            let mut cur = start;
+            loop {
+                match conj_by_cnot(self.arena.gate(cur), pa, pb) {
+                    CnotConj::Blocked => {
+                        self.counters.twist_skips += 1;
+                        return;
+                    }
+                    CnotConj::Split(g0, _) if g0.width() > self.params.k_max => {
+                        self.counters.twist_skips += 1;
+                        return;
+                    }
+                    _ => {}
+                }
+                if cur == end {
+                    break;
+                }
+                cur = self.arena.neighbor(cur, Dir::R);
+            }
+        }
+
+        // Pass 2: conjugate every interior gate P acts on. Each per-gate
+        // identity P g P == g' (or the split pair) is exhaustively verified;
+        // the segment identity then telescopes (P g1 P P g2 P ... = P W P), so
+        // together with the bracket packets the window computes exactly W
+        // again. Neg/swap rewrite strictly in place (nodes, positions and
+        // provenance survive); cnot case-splits replace one node by two at the
+        // same position — material still does not move, and the pieces inherit
+        // their parent's origin and share a fresh tabu event like any split.
+        enum Out {
+            Keep,
+            One(XGate),
+            Two(XGate, XGate),
+        }
         let mut relabeled = 0u64;
+        let mut case_splits = 0u64;
+        let (mut w_start, mut w_end) = (start, end);
+        let mut first = true;
         let mut cur = start;
         loop {
             let is_last = cur == end;
             let next = self.arena.neighbor(cur, Dir::R);
             let g = self.arena.gate(cur).clone();
-            let relabeled_gate = match conj_by_swap(&g, a, b) {
-                None => None, // touches neither wire: invariant (the negation is too)
-                Some(gs) => {
-                    let mut out = gs;
-                    if alpha {
-                        if let Some(x) = conj_by_not(&out, a) {
-                            out = x;
-                        }
+            let out = match kind {
+                TwistKind::Neg => conj_by_not(&g, pa).map_or(Out::Keep, Out::One),
+                TwistKind::Swap => conj_by_swap(&g, pa, pb).map_or(Out::Keep, Out::One),
+                TwistKind::Cnot => match conj_by_cnot(&g, pa, pb) {
+                    CnotConj::Invariant => Out::Keep,
+                    CnotConj::Flip(x) => Out::One(x),
+                    CnotConj::Split(x, y) => Out::Two(x, y),
+                    CnotConj::Blocked => unreachable!("feasibility scan admits no Blocked gate"),
+                },
+            };
+            let (head, tail) = match out {
+                Out::Keep => (cur, cur),
+                Out::One(g2) => {
+                    if self.params.local_verify {
+                        let mut seq = packet.clone();
+                        seq.push(g.clone());
+                        seq.extend(packet.iter().cloned());
+                        assert!(
+                            rules::verify_rewrite(&seq, std::slice::from_ref(&g2)),
+                            "twist conjugation failed: {g:?} under {packet:?}"
+                        );
                     }
-                    if beta {
-                        if let Some(x) = conj_by_not(&out, b) {
-                            out = x;
-                        }
+                    self.index_remove(cur);
+                    self.arena.replace_gate(cur, g2);
+                    self.index_add(cur);
+                    relabeled += 1;
+                    (cur, cur)
+                }
+                Out::Two(g0, g1) => {
+                    // The two halves fire on disjoint b-slices, so they
+                    // commute: emit in random order.
+                    let pieces =
+                        if self.rng.random_bool(0.5) { vec![g0, g1] } else { vec![g1, g0] };
+                    if self.params.local_verify {
+                        let mut seq = packet.clone();
+                        seq.push(g.clone());
+                        seq.extend(packet.iter().cloned());
+                        assert!(
+                            rules::verify_rewrite(&seq, &pieces),
+                            "twist case-split failed: {g:?} under {packet:?}"
+                        );
                     }
-                    Some(out)
+                    let m = self.meta_of(cur);
+                    let ev = self.fresh_event();
+                    for x in &pieces {
+                        self.counters.width_hist[x.width().min(15)] += 1;
+                    }
+                    let ids = self.splice_replace_one(cur, pieces);
+                    for &pid in &ids {
+                        // Twist material does not move: pieces keep the
+                        // conjugated gate's direction exactly.
+                        self.set_meta(
+                            pid,
+                            Meta { origin: m.origin, event: ev, dir: m.dir, dgen: self.child_gen(m.dgen), litter: m.litter, litter_size: m.litter_size },
+                        );
+                    }
+                    relabeled += 1;
+                    case_splits += 1;
+                    (ids[0], ids[1])
                 }
             };
-            if let Some(g2) = relabeled_gate {
-                if self.params.local_verify {
-                    // The per-gate identity: opening P, closing P^-1, so the
-                    // interior gate is P^-1 . g . P.
-                    let mut seq = packet_inv.clone();
-                    seq.push(g.clone());
-                    seq.extend(packet.iter().cloned());
-                    assert!(
-                        rules::verify_rewrite(&seq, std::slice::from_ref(&g2)),
-                        "twist conjugation failed: {g:?} a={a} b={b} alpha={alpha} beta={beta}"
-                    );
-                }
-                self.index_remove(cur);
-                self.arena.replace_gate(cur, g2);
-                self.index_add(cur);
-                relabeled += 1;
+            if first {
+                w_start = head;
+                first = false;
             }
             if is_last {
+                w_end = tail;
                 break;
             }
             cur = next;
         }
 
-        // Bracket the window: opening packet P before `start`, closing packet
-        // P^-1 after `end`. Packet gates are fresh synthetic material (no
-        // origin) sharing one event, so the trivial bracket-cancel is tabu like
-        // any fresh sibling pair. They are NOT scattered -- they sit tight on
-        // the window edges; later churn is free to float or merge them (every
-        // such move is independently function-preserving).
+        // Bracket the window: P before start, P after end. Packet gates are
+        // fresh synthetic material (no origin) sharing one event, so the
+        // trivial bracket-cancel is tabu like any fresh sibling pair. They are
+        // NOT scattered — they must sit tight on the window edges; later churn
+        // is free to float or merge them (every such move is independently
+        // function-preserving).
         let ev = self.fresh_event();
-        let mut anchor = self.arena.neighbor(start, Dir::L);
+        let mut anchor = self.arena.neighbor(w_start, Dir::L);
         for g in &packet {
             self.counters.width_hist[g.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, g.clone());
@@ -3596,8 +2909,8 @@ impl Mixer {
             let lit = self.fresh_litter();
             self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d, dgen: GEN_FRESH, litter: lit, litter_size: 1 });
         }
-        let mut anchor = end;
-        for g in &packet_inv {
+        let mut anchor = w_end;
+        for g in &packet {
             self.counters.width_hist[g.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, g.clone());
             self.index_add(anchor);
@@ -3606,446 +2919,14 @@ impl Mixer {
             self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: d, dgen: GEN_FRESH, litter: lit, litter_size: 1 });
         }
 
-        // Counters. Field names are retained for .state compatibility, meaning
-        // repurposed: twist_swaps = pure swap, twist_negs = negate one wire,
-        // twist_cnots = negate both. (Reported as tsw / tn1 / tn2.)
-        match (alpha, beta) {
-            (false, false) => self.counters.twist_swaps += 1,
-            (true, true) => self.counters.twist_cnots += 1,
-            _ => self.counters.twist_negs += 1,
+        match kind {
+            TwistKind::Neg => self.counters.twist_negs += 1,
+            TwistKind::Swap => self.counters.twist_swaps += 1,
+            TwistKind::Cnot => self.counters.twist_cnots += 1,
         }
         self.counters.twist_span += span as u64;
         self.counters.twist_relabels += relabeled;
-    }
-
-    /// One seam of a --twist-g57 bracket: gather up to 3 neighborhood gates
-    /// outward from `edge` (support capped at 4 wires including a, b), then
-    /// for every context depth k ask the swap-word engine for the shortest
-    /// all-g57 word realizing [ctx . S] (left seam) or [S . ctx] (right
-    /// seam), and keep the cheapest by net cost (word len - k), deeper
-    /// context on ties. k = 0 always solves (dist(S_ab) = 6), so a bracket
-    /// always exists. Returns (consumed ids nearest-first, replacement gates
-    /// in circuit order).
-    fn solve_seam(&mut self, edge: u32, dir: Dir, a: u16, b: u16) -> (Vec<u32>, Vec<XGate>) {
-        let eng = swap_words::engine();
-        // Context gather: a gate joins while the combined support (with a, b)
-        // still fits the engine's 4 abstract wires.
-        let mut ids: Vec<u32> = Vec::new();
-        let mut sup: Vec<u16> = vec![a, b];
-        let mut cur = self.arena.neighbor(edge, dir);
-        while ids.len() < 3 && cur != NIL {
-            let g = self.arena.gate(cur);
-            let mut s2 = sup.clone();
-            for w in std::iter::once(g.target).chain(g.ctrls.iter().map(|&(w, _)| w)) {
-                if !s2.contains(&w) {
-                    s2.push(w);
-                }
-            }
-            if s2.len() > 4 {
-                break;
-            }
-            sup = s2;
-            ids.push(cur);
-            cur = self.arena.neighbor(cur, dir);
-        }
-        // Bind the abstract wires: 0 = a, 1 = b, then the context's own
-        // wires, padded with fresh random wires (the engine may route
-        // through a helper the context never touched).
-        let mut wires: [u16; 4] = [a, b, a, a];
-        for i in 2..4 {
-            if let Some(&w) = sup.get(i) {
-                wires[i] = w;
-            } else {
-                // Random start, deterministic scan: with num_wires >= 4 a
-                // free wire always exists, so this cannot fail.
-                let off = self.rng.random_range(0..self.num_wires);
-                for d in 0..self.num_wires {
-                    let w = ((off + d) % self.num_wires) as u16;
-                    if !wires[..i].contains(&w) {
-                        wires[i] = w;
-                        break;
-                    }
-                }
-            }
-        }
-        let abs_of = |w: u16| wires.iter().position(|&x| x == w).unwrap() as u8;
-        let perms: Vec<u64> = ids
-            .iter()
-            .map(|&id| {
-                let g = self.arena.gate(id);
-                let ctrls: Vec<(u8, bool)> =
-                    g.ctrls.iter().map(|&(w, p)| (abs_of(w), p)).collect();
-                swap_words::xgate_perm(abs_of(g.target), &ctrls, g.comp)
-            })
-            .collect();
-        // k = 0 is the precomputed bare spelling of S_ab — no scan needed.
-        let mut best: Option<(usize, Vec<u8>)> = Some((0, eng.bare_word().to_vec()));
-        let t0 = std::time::Instant::now();
-        for k in 1..=perms.len() {
-            // Segment perm in circuit (= apply) order. Context ids are
-            // nearest-first, so the left seam's circuit order is h_k..h_1
-            // then the bracket; the right seam is the bracket then h_1..h_k.
-            let mut t = match dir {
-                Dir::L => {
-                    let mut t = swap_words::IDENT;
-                    for i in (0..k).rev() {
-                        t = swap_words::compose(t, perms[i]);
-                    }
-                    swap_words::compose(t, eng.s_ab)
-                }
-                Dir::R => eng.s_ab,
-            };
-            if dir == Dir::R {
-                for p in perms.iter().take(k) {
-                    t = swap_words::compose(t, *p);
-                }
-            }
-            self.counters.tg_solves += 1;
-            if let Some(w) = eng.solve(t, swap_words::MAX_WORD) {
-                let better = match &best {
-                    None => true,
-                    Some((bk, bw)) => {
-                        // Signed: non-g57 context gates are worth several
-                        // g57s each, so a seam can solve BELOW its consumed
-                        // count (net < 0 — a twist that shrinks the circuit).
-                        let net = w.len() as i64 - k as i64;
-                        let bnet = bw.len() as i64 - *bk as i64;
-                        net < bnet || (net == bnet && k > *bk)
-                    }
-                };
-                if better {
-                    best = Some((k, w));
-                }
-            }
-        }
-        self.counters.tg_solve_ns += t0.elapsed().as_nanos() as u64;
-        let (k, word) = best.expect("k = 0 always solves: dist(S_ab) = 6");
-        (ids[..k].to_vec(), eng.decode(&word, &wires))
-    }
-
-    /// Bracket positions further out than `from` whose next-outward gate is a
-    /// g57 pinning both twist wires — the only shape a k=1 attachment can
-    /// cancel against. Sliding a bracket outward just extends the conjugated
-    /// window over the gates stepped past, which is free (window length was a
-    /// random draw, and a relabel costs far less than the word the slide
-    /// saves), so the scan may roam TG_SLIDE_CAP gates.
-    fn slide_candidates(&self, from: u32, dir: Dir, a: u16, b: u16) -> Vec<u32> {
-        let mut out = Vec::new();
-        let mut e = from;
-        for _ in 0..TG_SLIDE_CAP {
-            let nxt = self.arena.neighbor(e, dir);
-            if nxt == NIL {
-                break;
-            }
-            e = nxt;
-            let h = self.arena.neighbor(e, dir);
-            if h == NIL {
-                break;
-            }
-            let g = self.arena.gate(h);
-            if g.comp && g.ctrls.len() == 2 {
-                let pins = [g.target, g.ctrls[0].0, g.ctrls[1].0];
-                if pins.contains(&a) && pins.contains(&b) {
-                    out.push(e);
-                    if out.len() >= TG_SLIDE_TRIES {
-                        break;
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    /// Solve one seam at its drawn boundary and, when that stays bare and
-    /// sliding is enabled, retry at up to TG_SLIDE_TRIES attachment positions
-    /// further out. First position reaching +4 wins (a k=1 cancel cannot be
-    /// beaten by another single attachment; deeper context can, and is kept
-    /// when found). Returns the seam and how many slides were adopted.
-    fn eval_seam(&mut self, edge: u32, dir: Dir, a: u16, b: u16) -> (TgSeam, u64) {
-        let (ids, repl) = self.solve_seam(edge, dir, a, b);
-        let mut seam = TgSeam { edge, ids, repl };
-        let mut slid = 0u64;
-        if tg_slide_on() && seam.net() >= 6 {
-            for e in self.slide_candidates(edge, dir, a, b) {
-                let (ids2, repl2) = self.solve_seam(e, dir, a, b);
-                let cand = TgSeam { edge: e, ids: ids2, repl: repl2 };
-                if cand.net() < seam.net() {
-                    let good = cand.net() <= 4;
-                    seam = cand;
-                    slid = 1;
-                    if good {
-                        break;
-                    }
-                }
-            }
-        }
-        (seam, slid)
-    }
-
-    /// The --twist-g57 realization of a pure-swap conjugation twist: same
-    /// window draw and interior relabel as twist_move, but each bracket is an
-    /// all-g57 word sited by solve_seam so it absorbs neighborhood gates —
-    /// the ssg hidden-SAMF mechanism, XGate-native. The left seam spells
-    /// [ctx . S] as one word (consuming ctx), the right spells [S . ctx]:
-    /// the segment becomes R . W' . R' = ctx_l . S . W' . S . ctx_r, which is
-    /// the original since W' is the swap-conjugated interior. All inserted
-    /// gates take the ballistic birth-advance unconditionally, aimed outward.
-    ///
-    /// v2 placement: seams that stay bare may SLIDE outward to an attachment
-    /// gate (extending the conjugated window), and the two ends are chosen
-    /// TOGETHER — a window whose best plan still totals worse than
-    /// TG_ACCEPT_NET is redrawn (up to TG_RETRIES), so a side is left bare
-    /// only when its partner's match pays for it or every redraw failed.
-    fn twist_move_g57(&mut self) {
-        if self.arena.len() < 2 || self.num_wires < 4 {
-            self.counters.twist_skips += 1;
-            return;
-        }
-
-        // Draw-and-evaluate loop: each attempt draws a window, seeds wire
-        // pairs from its boundary gates, solves both seams (with slides for
-        // whichever side stays bare), and the round commits the first plan
-        // reaching TG_ACCEPT_NET — else the best plan any attempt produced.
-        // Evaluation is read-only, so plans stay valid across attempts.
-        let mut best: Option<TgPlan> = None;
-        let mut draws = 0u64;
-        let attempts = if tg_retry_on() { TG_RETRIES } else { 1 };
-        for _ in 0..attempts {
-            draws += 1;
-            let n = self.arena.len();
-            let cap = n;
-            let lmin = (self.params.twist_min_len.max(2).min(cap)) as f64;
-            let len = (self.rng.random_range(lmin.ln()..=(cap as f64).ln()).exp().round()
-                as usize)
-                .clamp(2, cap);
-            // Symmetric truncation, exactly as in twist_move.
-            let draw = self.rng.random_range(0..n + len - 1);
-            let (start, len) = if draw < len - 1 {
-                (self.arena.head(), draw + 1)
-            } else {
-                (self.arena.random_linked(&mut self.rng), len)
-            };
-
-            // Pass 1: window end + touched wires (a must touch the window or
-            // the conjugation is a no-op).
-            let mut touch_seen = vec![false; self.num_wires];
-            let mut touches: Vec<u16> = Vec::new();
-            let mut end = start;
-            let mut span = 0usize;
-            let mut cur = start;
-            while cur != NIL && span < len {
-                let g = self.arena.gate(cur);
-                for w in std::iter::once(g.target).chain(g.ctrls.iter().map(|&(w, _)| w)) {
-                    if !touch_seen[w as usize] {
-                        touch_seen[w as usize] = true;
-                        touches.push(w);
-                    }
-                }
-                end = cur;
-                span += 1;
-                cur = self.arena.neighbor(cur, Dir::R);
-            }
-            if touches.is_empty() {
-                continue;
-            }
-            // Candidate wire pairs, anchor-first: a pair drawn from a
-            // boundary gate's own pins makes that gate consumable at its
-            // seam (a uniform random b almost never lands inside the 4-wire
-            // support). The uniform pair keeps fresh-wire routing on the
-            // menu; it wins whenever no boundary pair beats its net.
-            let mut cands: Vec<(u16, u16)> = Vec::new();
-            for edge in [self.arena.neighbor(start, Dir::L), self.arena.neighbor(end, Dir::R)] {
-                if edge == NIL {
-                    continue;
-                }
-                let g = self.arena.gate(edge);
-                let pins: Vec<u16> =
-                    std::iter::once(g.target).chain(g.ctrls.iter().map(|&(w, _)| w)).collect();
-                for &pa in &pins {
-                    if !touch_seen[pa as usize] {
-                        continue; // `a` must touch the window
-                    }
-                    for &pb in &pins {
-                        if pb != pa && !cands.contains(&(pa, pb)) {
-                            cands.push((pa, pb));
-                        }
-                    }
-                }
-            }
-            cands.truncate(6);
-            let a0 = touches[self.rng.random_range(0..touches.len())];
-            for _ in 0..16 {
-                let c = self.rng.random_range(0..self.num_wires) as u16;
-                if c != a0 {
-                    if !cands.contains(&(a0, c)) {
-                        cands.push((a0, c));
-                    }
-                    break;
-                }
-            }
-            if cands.is_empty() {
-                continue;
-            }
-
-            // Both seams for every pair, no slides yet; cheapest total wins.
-            let mut pair_best: Option<TgPlan> = None;
-            for &(a, b) in &cands {
-                let (l_ids, l_repl) = self.solve_seam(start, Dir::L, a, b);
-                let (r_ids, r_repl) = self.solve_seam(end, Dir::R, a, b);
-                let plan = TgPlan {
-                    a,
-                    b,
-                    l: TgSeam { edge: start, ids: l_ids, repl: l_repl },
-                    r: TgSeam { edge: end, ids: r_ids, repl: r_repl },
-                    slides: 0,
-                };
-                if pair_best.as_ref().map_or(true, |p| plan.score() < p.score()) {
-                    pair_best = Some(plan);
-                }
-            }
-            let mut plan = pair_best.expect("cands is non-empty");
-            // Slides, for whichever side of the winning pair stayed bare.
-            if plan.l.net() >= 6 {
-                let (seam, s) = self.eval_seam(start, Dir::L, plan.a, plan.b);
-                if seam.net() < plan.l.net() {
-                    plan.l = seam;
-                    plan.slides += s;
-                }
-            }
-            if plan.r.net() >= 6 {
-                let (seam, s) = self.eval_seam(end, Dir::R, plan.a, plan.b);
-                if seam.net() < plan.r.net() {
-                    plan.r = seam;
-                    plan.slides += s;
-                }
-            }
-            if best.as_ref().map_or(true, |p| plan.score() < p.score()) {
-                best = Some(plan);
-            }
-            if best.as_ref().expect("just set").score().0 <= TG_ACCEPT_NET {
-                break;
-            }
-        }
-        let Some(plan) = best else {
-            self.counters.twist_skips += 1;
-            return;
-        };
-        self.counters.tg_retries += draws - 1;
-        self.counters.tg_slides += plan.slides;
-        let (a, b) = (plan.a, plan.b);
-        // Negative nets (shrinking seams) fold into bucket 0.
-        self.counters.tg_net_hist[plan.l.net().clamp(0, 7) as usize] += 1;
-        self.counters.tg_net_hist[plan.r.net().clamp(0, 7) as usize] += 1;
-
-        // The reference bracket for verification: the known-correct 3-CNOT
-        // swap packet (a palindrome, so it is its own inverse).
-        let packet3 = vec![
-            XGate::cnot(b, a),
-            XGate::cnot(a, b),
-            XGate::cnot(b, a),
-        ];
-
-        // Pass 2: conjugate the interior by the swap — a pure 1->1 relabel.
-        // Slid seams extended the window, so the walk runs between the PLAN's
-        // edges (l.edge <= drawn start, r.edge >= drawn end, both real nodes).
-        let mut relabeled = 0u64;
-        let mut span_walked = 0u64;
-        let mut cur = plan.l.edge;
-        loop {
-            let is_last = cur == plan.r.edge;
-            span_walked += 1;
-            let next = self.arena.neighbor(cur, Dir::R);
-            let g = self.arena.gate(cur).clone();
-            if let Some(g2) = conj_by_swap(&g, a, b) {
-                if self.params.local_verify {
-                    let mut seq = packet3.clone();
-                    seq.push(g.clone());
-                    seq.extend(packet3.iter().cloned());
-                    assert!(
-                        rules::verify_rewrite(&seq, std::slice::from_ref(&g2)),
-                        "g57-twist conjugation failed: {g:?} a={a} b={b}"
-                    );
-                }
-                self.index_remove(cur);
-                self.arena.replace_gate(cur, g2);
-                self.index_add(cur);
-                relabeled += 1;
-            }
-            if is_last {
-                break;
-            }
-            cur = next;
-        }
-
-        // Splice the seams. Consumed ids are nearest-first, so the left run's
-        // circuit order is ids reversed; anchors are read before unlinking.
-        if self.params.local_verify {
-            let mut old: Vec<XGate> =
-                plan.l.ids.iter().rev().map(|&id| self.arena.gate(id).clone()).collect();
-            old.extend(packet3.iter().cloned());
-            assert!(
-                rules::verify_rewrite(&old, &plan.l.repl),
-                "g57-twist left seam failed: a={a} b={b}"
-            );
-            let mut old: Vec<XGate> = packet3.clone();
-            old.extend(plan.r.ids.iter().map(|&id| self.arena.gate(id).clone()));
-            assert!(
-                rules::verify_rewrite(&old, &plan.r.repl),
-                "g57-twist right seam failed: a={a} b={b}"
-            );
-        }
-        let ev = self.fresh_event();
-        let mut inserted: Vec<u32> =
-            Vec::with_capacity(plan.l.repl.len() + plan.r.repl.len());
-        let l_anchor = match plan.l.ids.last() {
-            Some(&far) => self.arena.neighbor(far, Dir::L),
-            None => self.arena.neighbor(plan.l.edge, Dir::L),
-        };
-        // Consumed context carried real lineage: union its litters' ancestor
-        // sets into the replacement's litter, exactly as a DB splice would —
-        // v1 dropped them, which silently deflated anc under consumption.
-        let mut l_srcs: Vec<u64> =
-            plan.l.ids.iter().map(|&id| self.meta_of(id).litter).collect();
-        l_srcs.sort_unstable();
-        l_srcs.dedup();
-        let mut r_srcs: Vec<u64> =
-            plan.r.ids.iter().map(|&id| self.meta_of(id).litter).collect();
-        r_srcs.sort_unstable();
-        r_srcs.dedup();
-        for &id in plan.l.ids.iter().chain(plan.r.ids.iter()) {
-            self.index_remove(id);
-            self.arena.unlink(id);
-        }
-        let l_lit = self.anc_union_litter(&l_srcs);
-        let r_lit = self.anc_union_litter(&r_srcs);
-        let mut anchor = l_anchor;
-        for g in &plan.l.repl {
-            self.counters.width_hist[g.width().min(15)] += 1;
-            anchor = self.arena.insert_after(anchor, g.clone());
-            self.index_add(anchor);
-            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: Dir::L, dgen: GEN_FRESH, litter: l_lit, litter_size: plan.l.repl.len() as u16 });
-            inserted.push(anchor);
-        }
-        let mut anchor = plan.r.edge;
-        for g in &plan.r.repl {
-            self.counters.width_hist[g.width().min(15)] += 1;
-            anchor = self.arena.insert_after(anchor, g.clone());
-            self.index_add(anchor);
-            self.set_meta(anchor, Meta { origin: ORIGIN_SYNTH, event: ev, dir: Dir::R, dgen: GEN_FRESH, litter: r_lit, litter_size: plan.r.repl.len() as u16 });
-            inserted.push(anchor);
-        }
-
-        // Part (b): every inserted gate rides its (outward) direction, the
-        // db_advance treatment applied unconditionally. Same-support g57s
-        // mostly collide pairwise, so the packet spreads caterpillar-style —
-        // outer gates travel, inner ones stop at their siblings.
-        self.advance_births(&inserted);
-
-        self.counters.twist_swaps += 1;
-        self.counters.twist_span += span_walked;
-        self.counters.twist_relabels += relabeled;
-        self.counters.tg_consumed += (plan.l.ids.len() + plan.r.ids.len()) as u64;
-        self.counters.tg_emitted += inserted.len() as u64;
+        self.counters.twist_case_splits += case_splits;
     }
 
     // ---- the contraction moves ----
@@ -4445,7 +3326,7 @@ impl Mixer {
     fn db_attempt_inner(&mut self, mode: DbMode) -> bool {
         let n = self.arena.len();
         let wmin = 1usize;
-        let wmax = self.active_s_db().max(1);
+        let wmax = self.params.s_db.max(1);
         if n < wmin {
             return false;
         }
@@ -4536,7 +3417,6 @@ impl Mixer {
                     mode,
                     guard,
                     self.params.curated,
-                    self.params.mix_pay_random,
                     &mut self.rng,
                 );
                 self.counters.db_identity_skips += res.identity_skipped as u64;
@@ -4614,7 +3494,6 @@ impl Mixer {
             mode,
             guard,
             self.params.curated,
-            self.params.mix_pay_random,
             &mut self.rng,
         );
         self.counters.db_identity_skips += res.identity_skipped as u64;
@@ -4731,18 +3610,8 @@ impl Mixer {
         let new = replacement.len();
         if new <= old {
             self.counters.db_gates_removed += (old - new) as u64;
-            if mode == DbMode::Compressing {
-                self.counters.db_cmp_removed += (old - new) as u64;
-            } else {
-                self.counters.db_mix_removed += (old - new) as u64;
-            }
         } else {
             self.counters.db_gates_added += (new - old) as u64;
-            if mode == DbMode::Compressing {
-                self.counters.db_cmp_added += (new - old) as u64;
-            } else {
-                self.counters.db_mix_added += (new - old) as u64;
-            }
         }
         self.count_db_hit(mode);
 
@@ -4803,13 +3672,6 @@ impl Mixer {
                     vec![vec![0u64; SPLICE_HIST_MAX + 1]; SPLICE_HIST_MAX + 1];
             }
             self.counters.splice_sizes[o][i] += 1;
-            if from_curated {
-                if self.counters.splice_sizes_curated.is_empty() {
-                    self.counters.splice_sizes_curated =
-                        vec![vec![0u64; SPLICE_HIST_MAX + 1]; SPLICE_HIST_MAX + 1];
-                }
-                self.counters.splice_sizes_curated[o][i] += 1;
-            }
         }
         let mut c = cursor;
         let mut placed: Vec<u32> = Vec::with_capacity(m);
@@ -5085,7 +3947,7 @@ impl Mixer {
     }
 
     fn sample_window(&mut self, w: usize) -> Option<(Vec<u32>, Dir, DbSample)> {
-        match if self.rng.random_bool(self.active_p_convex().clamp(0.0, 1.0)) {
+        match if self.rng.random_bool(self.params.p_convex.clamp(0.0, 1.0)) {
             DbSample::Convex
         } else {
             DbSample::Contiguous
@@ -5238,8 +4100,8 @@ impl Mixer {
         self.seed_from_pool = false;
         self.seed_fell_through = false;
         if self.params.gen_target > 0
-            && self.active_p_mingen() > 0.0
-            && self.rng.random_bool(self.active_p_mingen().clamp(0.0, 1.0))
+            && self.params.p_mingen > 0.0
+            && self.rng.random_bool(self.params.p_mingen.clamp(0.0, 1.0))
         {
             if let Some(id) = self.draw_pool() {
                 self.seed_from_pool = true;
@@ -5513,32 +4375,21 @@ impl Mixer {
         }
     }
 
-    /// One arena pass for all three counts. Folded rather than split into
-    /// separate walks: `report` already makes ten full pointer-chases over the
-    /// circuit, and the gate is dereferenced here anyway.
-    pub fn g57_census(&self) -> G57Census {
-        let mut out = G57Census::default();
-        let mut cur = self.arena.head();
-        while cur != NIL {
-            let g = self.arena.gate(cur);
-            if g.comp && g.ctrls.len() == 2 {
-                out.shaped += 1;
-                if g.ctrls[0].1 == g.ctrls[1].1 {
-                    out.same_pol += 1;
-                } else {
-                    out.opp_pol += 1;
-                }
-            }
-            cur = self.arena.neighbor(cur, Dir::R);
-        }
-        out
-    }
-
     /// True g57 shape: `comp = 1` with exactly two controls of OPPOSITE
     /// polarity (`a ^= b OR !c`). Distinct from `remaining_g57`, which counts
     /// every `comp = 1` gate regardless of width -- the report's `comp=` field.
+    /// The DB stores g57 circuits, so this is the population it can spell.
     pub fn true_g57(&self) -> usize {
-        self.g57_census().opp_pol
+        let mut cur = self.arena.head();
+        let mut n = 0usize;
+        while cur != NIL {
+            let g = self.arena.gate(cur);
+            if g.comp && g.ctrls.len() == 2 && g.ctrls[0].1 != g.ctrls[1].1 {
+                n += 1;
+            }
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        n
     }
 
     pub fn remaining_g57(&self) -> usize {
@@ -5618,18 +4469,6 @@ impl Mixer {
     }
 
     /// Non-zero cells of the splice size histogram, as `out->in:count`.
-    pub fn splice_size_line_curated(&self) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        for (o, row) in self.counters.splice_sizes_curated.iter().enumerate() {
-            for (i, &c) in row.iter().enumerate() {
-                if c > 0 {
-                    parts.push(format!("{o}->{i}:{c}"));
-                }
-            }
-        }
-        parts.join(" ")
-    }
-
     pub fn splice_size_line(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         for (o, row) in self.counters.splice_sizes.iter().enumerate() {
@@ -5672,20 +4511,17 @@ impl Mixer {
         let gs = self.gen_stats();
         let gmin = if gs.min == GEN_FRESH { "F".to_string() } else { gs.min.to_string() };
         let cov = self.twist_coverage();
-        let g57c = self.g57_census();
         let c = &self.counters;
         let hist: Vec<String> = (0..=self.params.k_max.min(15))
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3}",
+            "[fmix] mv={} size={} target={} comp={} g57={} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
             self.remaining_g57(),
-            g57c.opp_pol,
-            g57c.shaped,
-            g57c.pol_flipped(),
+            self.true_g57(),
             c.merges_cancel,
             c.merges_xfuse,
             c.merges_drop,
@@ -5783,52 +4619,9 @@ impl Mixer {
         if !anc.is_empty() {
             println!("{anc}");
         }
-        let ga = self.gen_anc_report();
-        if !ga.is_empty() {
-            println!("{ga}");
-        }
         let sizes = self.splice_size_line();
         if !sizes.is_empty() {
             println!("[fmix] splice sizes out->in: {sizes}");
-        }
-        let csizes = self.splice_size_line_curated();
-        if !csizes.is_empty() {
-            println!("[fmix] splice sizes (curated) out->in: {csizes}");
-        }
-        if let Some(p) = &self.prof {
-            let s_star =
-                prof_target(self.params.prof_n, self.params.prof_r, p.s_in, p.eff);
-            println!(
-                "[fmix] profile: phase={} eff={:.2} size={} S*={:.0} pmix={:.3} ghat={:+.3} shat={:+.3} integ={:+.3} sat={}",
-                p.phase,
-                p.eff,
-                self.arena.len(),
-                s_star,
-                p.pmix,
-                p.ghat,
-                p.shat,
-                p.integ,
-                p.sat
-            );
-        }
-        if self.params.twist_g57 {
-            let c = &self.counters;
-            let us = if c.tg_solves > 0 {
-                c.tg_solve_ns as f64 / 1000.0 / c.tg_solves as f64
-            } else {
-                0.0
-            };
-            let hist: Vec<String> = c.tg_net_hist.iter().map(|v| v.to_string()).collect();
-            println!(
-                "[fmix] twist-g57: consumed={} emitted={} net/seam[{}] solves={} avg_us={:.1} slides={} retries={}",
-                c.tg_consumed,
-                c.tg_emitted,
-                hist.join(","),
-                c.tg_solves,
-                us,
-                c.tg_slides,
-                c.tg_retries
-            );
         }
     }
 
@@ -5964,67 +4757,6 @@ impl Mixer {
 mod mix_tests {
     use super::super::xgate::XGate;
     use super::*;
-
-    #[test]
-    fn prof_target_traces_the_three_phases() {
-        let n = [5.0, 20.0, 40.0];
-        let r = [4.0, 2.0];
-        let s = 1000.0;
-        assert!((prof_target(n, r, s, 0.0) - 1000.0).abs() < 1e-9); // start = input
-        assert!((prof_target(n, r, s, 2.5) - 2500.0).abs() < 1e-6); // mid-ramp1
-        assert!((prof_target(n, r, s, 5.0) - 4000.0).abs() < 1e-6); // top of expand
-        assert!((prof_target(n, r, s, 12.0) - 4000.0).abs() < 1e-6); // hold
-        assert!((prof_target(n, r, s, 20.0) - 4000.0).abs() < 1e-6); // hold end
-        assert!((prof_target(n, r, s, 30.0) - 3000.0).abs() < 1e-6); // mid-ramp3
-        assert!((prof_target(n, r, s, 40.0) - 2000.0).abs() < 1e-6); // bottom
-        assert!((prof_target(n, r, s, 99.0) - 2000.0).abs() < 1e-6); // after
-        // monotone non-decreasing over [0,n0], flat over hold, non-increasing after n1
-        let up = (0..=50).map(|i| prof_target(n, r, s, i as f64 * 0.1)).collect::<Vec<_>>();
-        assert!(up.windows(2).all(|w| w[1] >= w[0] - 1e-9));
-    }
-
-    // The controller must actually track a moderate, feasible profile on a
-    // real circuit: expand to ~4x, hold, compress toward ~2x. Asserts the
-    // phase peaks/troughs land near the targets (best-effort tolerance) and
-    // that the phase machine advances all the way to phase 4.
-    #[test]
-    fn profile_controller_tracks_a_feasible_ramp() {
-        let gates = random_mixed_circuit(41, 16, 400);
-        let s_in = gates.len() as f64;
-        let params = MixParams {
-            k_max: 6,
-            moves: 4_000_000,
-            temp: 20.0,
-            p_db: 1.0,
-            p_comp: 1.0,
-            p_any: 0.1,
-            s_db: 5,
-            p_convex: 0.5,
-            mix_pay_random: true,
-            prof_n: [6.0, 18.0, 34.0],
-            prof_r: [4.0, 2.0],
-            prof_cadence_eff: 0.5,
-            report_every: u64::MAX,
-            verify_every: 200_000,
-            seed: 3,
-            ..MixParams::default()
-        };
-        // No FROZEN_DB_DIR in tests -> empty store, every DB lookup misses, so
-        // the plant has ZERO authority and the controller cannot move size.
-        // This test therefore exercises the controller MATH and phase machine
-        // against a null plant: it must still advance phases on the eff marks
-        // and never panic / never leave p_mix out of [0,1].
-        let mut mx = Mixer::new_with_db(gates, 16, params, FrozenDb::empty());
-        mx.run();
-        let p = mx.prof.as_ref().expect("profile armed");
-        assert_eq!(p.phase, 4, "phase machine must reach compress-done on the eff marks");
-        assert!(p.pmix >= 0.0 && p.pmix <= 1.0, "lever stayed in range");
-        assert!(p.eff >= 34.0, "ran past the final eff mark");
-        // With a null plant the controller saturates trying to grow — that is
-        // the correct best-effort behavior, and it must be flagged, not hidden.
-        assert!(p.sat > 0 || (s_in - mx.arena.len() as f64).abs() < s_in, "saturation tracked");
-        mx.global_check();
-    }
 
     fn rand_gate(rng: &mut StdRng, wires: u16, max_w: usize, allow_comp: bool) -> XGate {
         loop {
@@ -6401,69 +5133,12 @@ mod mix_tests {
         // out (brackets are wall-blocked by their own window), so at these
         // weights the thermostat pegs near-full contraction and expansions
         // run at ~2% of moves — expect twist counts near 50, not hundreds.
-        let twists = mx.counters.twist_swaps + mx.counters.twist_negs + mx.counters.twist_cnots;
-        assert!(twists > 30, "swap-family twists barely ran: {twists}");
+        assert!(mx.counters.twist_negs > 30, "negation twists barely ran: {}", mx.counters.twist_negs);
+        assert!(mx.counters.twist_swaps > 30, "swap twists barely ran: {}", mx.counters.twist_swaps);
         assert!(mx.counters.twist_relabels > 0, "twists never relabeled a gate");
         assert!(mx.remaining_g57() <= comp0, "fossil count increased");
         assert!(mx.counters.merges() > 0, "no merges alongside twists");
         mx.global_check();
-    }
-
-    // The g57 census partitions the width-2 comp population, and the two halves
-    // measure different things: `shaped` is structure (what the store can
-    // spell) and `same_pol` is a twist odometer. The regression this guards is
-    // the one that made the old single `g57=` field misleading -- a NEGATION
-    // twist flips one control's polarity and moves a gate from opp_pol to
-    // same_pol WITHOUT changing its comp, width or count, while a SWAP twist
-    // carries polarity with the wire and moves nothing.
-    #[test]
-    fn g57_census_splits_structure_from_twist_polarity() {
-        // The swap family flips control polarity only through its negation coins
-        // (3/4 of twists carry a negation), so same_pol is a twist odometer:
-        // twists ON drive it up, OFF leaves it at zero, while shaped (structure)
-        // partitions correctly in both. p_db = 0 here, so nothing injects fresh
-        // opposite-polarity material -- the only mover is the twist.
-        let base = |p_twist: f64| MixParams {
-            k_max: 5,
-            moves: 20_000,
-            target_size: 600,
-            temp: 20.0,
-            p_twist,
-            twist_min_len: 4,
-            verify_every: 1_000,
-            report_every: u64::MAX,
-            seed: 5,
-            ..MixParams::default()
-        };
-        let run = |p_twist| {
-            let mut mx = Mixer::new(random_g57_circuit(17, 16, 400), 16, base(p_twist));
-            mx.run();
-            let cen = mx.g57_census();
-            // The partition identity, and agreement with the old accessor.
-            assert_eq!(cen.shaped, cen.same_pol + cen.opp_pol, "census does not partition");
-            assert_eq!(cen.opp_pol, mx.true_g57(), "true_g57 diverged from the census");
-            assert!(cen.shaped <= mx.remaining_g57(), "shaped exceeds the comp population");
-            (cen, mx.counters.twist_relabels)
-        };
-
-        let (off, off_rel) = run(0.0);
-        let (on, on_rel) = run(0.2);
-        assert_eq!(off_rel, 0, "twists-off relabeled a gate: {off_rel}");
-        assert!(on_rel > 0, "twists-on never relabeled a gate: {on_rel}");
-
-        // Twists off: no polarity flips and no fresh material, so every shaped
-        // gate stays a true g57. This is the load-bearing half -- it proves
-        // same_pol tracks the twist, not mixing in general.
-        assert_eq!(off.same_pol, 0, "twists-off flipped polarity: {off:?}");
-        assert_eq!(off.pol_flipped(), 0.0);
-
-        // Twists on: the negation coins flip it, on the same circuit. No upper
-        // bound -- with p_db = 0 the small width-2 population can saturate at
-        // 1.0; the sub-1/2 equilibrium seen in production comes from DB splices
-        // this test deliberately does not have.
-        assert!(on.shaped > 0 && off.shaped > 0, "no width-2 population: {on:?} {off:?}");
-        assert!(on.same_pol > 0, "swap-family twists flipped no polarity: {on:?}");
-        assert!(on.pol_flipped() > off.pol_flipped(), "{on:?} vs {off:?}");
     }
 
     // The directional walk at its defaults (undo live, birth advance +
@@ -6583,99 +5258,6 @@ mod mix_tests {
         }
     }
 
-    // The tg_* counter fields are APPENDED to the state line and parsed with
-    // a zero default, so a .state written before they existed must still
-    // load. Simulated here by stripping the trailing tokens.
-    #[test]
-    fn counters_line_tolerates_missing_trailing_fields() {
-        let mut c = MixCounters::default();
-        c.moves = 7;
-        c.tg_consumed = 3;
-        c.tg_emitted = 9;
-        let line = c.to_line();
-        let full = MixCounters::from_line(&line).expect("roundtrip");
-        assert_eq!((full.tg_consumed, full.tg_emitted), (3, 9));
-        let old: Vec<&str> = line.split_whitespace().collect();
-        let truncated = old[..old.len() - 2].join(" ");
-        let parsed = MixCounters::from_line(&truncated).expect("pre-tg state must load");
-        assert_eq!(parsed.moves, 7);
-        assert_eq!((parsed.tg_consumed, parsed.tg_emitted), (0, 0));
-    }
-
-    // --twist-g57: brackets become adaptive all-g57 words solved online per
-    // seam. Thousands of twists under local_verify (every seam splice checked
-    // exhaustively against the reference 3-CNOT packet) plus periodic full
-    // verification and a final global_check. The seams must also actually
-    // absorb neighborhood material — a run where tg_consumed stays 0 means
-    // the placer degenerated to bare words and the mechanism is dead.
-    #[test]
-    fn mixer_g57_twists_preserve_function_and_absorb() {
-        let gates = random_mixed_circuit(29, 16, 300);
-        let params = MixParams {
-            k_max: 6,
-            moves: 20_000,
-            target_size: 600,
-            temp: 20.0,
-            p_twist: 0.3,
-            twist_min_len: 4,
-            twist_g57: true,
-            local_verify: true,
-            verify_every: 1_000,
-            report_every: u64::MAX,
-            seed: 7,
-            ..MixParams::default()
-        };
-        let mut mx = Mixer::new(gates, 16, params);
-        mx.run();
-        assert!(mx.counters.twist_swaps > 100, "g57 twists barely ran: {}", mx.counters.twist_swaps);
-        assert!(mx.counters.tg_emitted > 0, "brackets emitted nothing");
-        assert!(
-            mx.counters.tg_consumed > 0,
-            "no seam ever absorbed a neighbor -- the adaptive placement is dead"
-        );
-        // The solver minimizes NET (word len minus context consumed), so a
-        // seam may emit up to 7 gates while consuming 3; what can never
-        // happen is a twist NET above the 12-gate bare spelling, since k=0
-        // always offers the 6-word per seam.
-        let net = (mx.counters.tg_emitted as i64 - mx.counters.tg_consumed as i64) as f64
-            / mx.counters.twist_swaps as f64;
-        assert!(net <= 12.0 + 1e-9, "twist net cost exceeded the bare-word bound: {net}");
-        mx.global_check();
-    }
-
-    // v2 seam consumption must PROPAGATE ancestry: a bracket word that
-    // consumed real context takes the union of the consumed litters' ancestor
-    // sets (DB-splice semantics). v1 dropped them, silently deflating anc.
-    #[test]
-    fn g57_twist_consumption_inherits_ancestry() {
-        let gates = random_mixed_circuit(31, 16, 300);
-        let params = MixParams {
-            k_max: 6,
-            moves: 20_000,
-            target_size: 600,
-            temp: 20.0,
-            p_twist: 0.3,
-            twist_min_len: 4,
-            twist_g57: true,
-            local_verify: true,
-            ancestors: true,
-            verify_every: 1_000,
-            report_every: u64::MAX,
-            seed: 9,
-            ..MixParams::default()
-        };
-        let mut mx = Mixer::new(gates, 16, params);
-        mx.run();
-        assert!(mx.counters.tg_consumed > 0, "no consumption to test");
-        let inherited = mx.arena.ids_in_order().iter().any(|&id| {
-            let m = mx.meta_of(id);
-            m.origin == ORIGIN_SYNTH
-                && mx.anc.get(&m.litter).is_some_and(|bits| bits.iter().any(|&w| w != 0))
-        });
-        assert!(inherited, "no synthetic gate carries inherited ancestry");
-        mx.global_check();
-    }
-
     // Symmetric truncation: with twist_min_len at circuit scale every draw is
     // near-full-length, so ~half the windows left-truncate (virtual start < 0)
     // and their opening packets land at the head. Function preservation +
@@ -6701,18 +5283,22 @@ mod mix_tests {
         };
         let mut mx = Mixer::new(gates, 16, params);
         mx.run();
-        let twists = mx.counters.twist_swaps + mx.counters.twist_negs + mx.counters.twist_cnots;
-        assert!(twists > 50, "twists barely ran: {twists}");
+        assert!(
+            mx.counters.twist_negs + mx.counters.twist_swaps > 50,
+            "twists barely ran: {}+{}",
+            mx.counters.twist_negs,
+            mx.counters.twist_swaps
+        );
         mx.global_check();
     }
 
-    // The negate-both variant is a genuine involution (T^2 = id) like the pure
-    // swap, whereas negate-one is not (T^2 = negate-both); this test drives the
-    // family hard so all three variants -- and the non-involutive closing
-    // bracket P^-1 -- get exercised, keeps the function through thousands of
-    // twists, and never grows fossils. All three variant counters must fire.
+    // The chain with ONLY the transvection twist enabled keeps the function,
+    // case-splits interior a-readers (the affine cost), never grows fossils,
+    // and interoperates with the journal/merge machinery. Windows holding a
+    // fossil that reads a (without a b-literal) must skip whole — on a mixed
+    // circuit both outcomes occur.
     #[test]
-    fn mixer_swap_family_twists_preserve_function() {
+    fn mixer_cnot_twists_preserve_function() {
         let gates = random_mixed_circuit(19, 16, 300);
         let comp0 = gates.iter().filter(|g| g.comp).count();
         let params = MixParams {
@@ -6720,7 +5306,8 @@ mod mix_tests {
             moves: 20_000,
             target_size: 600,
             temp: 20.0,
-            p_twist: 0.3,
+            p_twist: 0.3, // slot 1 owns twists now
+            w_twist_cnot: 0.50,
             twist_min_len: 4,
             verify_every: 1_000,
             report_every: u64::MAX,
@@ -6729,166 +5316,10 @@ mod mix_tests {
         };
         let mut mx = Mixer::new(gates, 16, params);
         mx.run();
-        // The (alpha, beta) coins are 1/4 : 1/2 : 1/4, so at this rate all three
-        // variants fire many times.
-        assert!(mx.counters.twist_swaps > 5, "pure swaps barely ran: {}", mx.counters.twist_swaps);
-        assert!(mx.counters.twist_negs > 5, "negate-one twists barely ran: {}", mx.counters.twist_negs);
-        assert!(mx.counters.twist_cnots > 5, "negate-both twists barely ran: {}", mx.counters.twist_cnots);
-        assert!(mx.counters.twist_relabels > 0, "twists never relabeled a gate");
+        assert!(mx.counters.twist_cnots > 20, "cnot twists barely ran: {}", mx.counters.twist_cnots);
+        assert!(mx.counters.twist_case_splits > 0, "no interior case-split ever happened");
         assert!(mx.remaining_g57() <= comp0, "fossil count increased");
-        assert!(mx.counters.merges() > 0, "no merges alongside twists");
-        mx.global_check();
-    }
-
-    // Sampled ancestry must agree with exact ancestry on the quantity they both
-    // measure. Tracer choice comes from a dedicated rng, so the two runs follow
-    // the IDENTICAL chain (asserted gate-for-gate) and the only difference is
-    // the instrument -- which makes this a real calibration rather than two
-    // independent samples that happen to be close.
-    #[test]
-    fn sampled_ancestry_calibrates_to_exact() {
-        let gates = random_mixed_circuit(31, 16, 400);
-        let base = MixParams {
-            k_max: 5,
-            moves: 20_000,
-            target_size: 600,
-            temp: 20.0,
-            p_twist: 0.05,
-            verify_every: 5_000,
-            report_every: u64::MAX,
-            seed: 9,
-            ..MixParams::default()
-        };
-        let mut ex = Mixer::new(gates.clone(), 16, MixParams { ancestors: true, ..base.clone() });
-        ex.run();
-        let mut sa =
-            Mixer::new(gates.clone(), 16, MixParams { anc_samples: 128, ..base.clone() });
-        sa.run();
-
-        // Same chain: the instrument may not perturb the walk.
-        assert_eq!(ex.arena.to_vec(), sa.arena.to_vec(), "tracer selection changed the trajectory");
-
-        // Exact mode still reports anc/span; sampled mode deliberately does not.
-        assert!(ex.anc_stats().0 > 0.0, "exact mode lost its anc reading");
-        assert_eq!(sa.anc_stats(), (0.0, 0.0), "sampled mode must not fill anc=/ancspan=");
-        assert!(sa.tracer_report().contains("tracers: K=128"), "{}", sa.tracer_report());
-
-        let exact = ex.anc_incidence();
-        let est = sa.anc_incidence();
-        assert!(exact > 0.0, "no incidence to compare");
-        let rel = (est - exact).abs() / exact;
-        assert!(rel < 0.25, "sampled incidence off by {rel:.3} (exact {exact:.0}, est {est:.0})");
-    }
-
-    // The joint gen x anc census must partition the circuit exactly (every gate
-    // lands in exactly one band, including the GEN_FRESH sentinel band) and must
-    // work in BOTH ancestry modes.
-    #[test]
-    fn gen_anc_census_partitions_the_circuit() {
-        let gates = random_mixed_circuit(23, 16, 400);
-        let base = MixParams {
-            k_max: 5,
-            moves: 20_000,
-            target_size: 600,
-            temp: 20.0,
-            p_twist: 0.1, // mint some GEN_FRESH bracket material
-            gen_target: 5,
-            verify_every: 5_000,
-            report_every: u64::MAX,
-            seed: 4,
-            ..MixParams::default()
-        };
-        for (label, p) in [
-            ("exact", MixParams { ancestors: true, ..base.clone() }),
-            ("sampled", MixParams { anc_samples: 64, ..base.clone() }),
-        ] {
-            let mut mx = Mixer::new(gates.clone(), 16, p);
-            mx.run();
-            let line = mx.gen_anc_report();
-            assert!(line.starts_with("[fmix] gen-anc: r="), "{label}: {line}");
-            // Band counts must sum to the circuit size.
-            let total: usize = line
-                .split('|')
-                .filter_map(|s| s.split("n=").nth(1))
-                .filter_map(|s| s.split_whitespace().next())
-                .filter_map(|s| s.parse::<usize>().ok())
-                .sum();
-            // The first "n=" is the real-gen count in the header, so subtract it.
-            let hdr: usize = line
-                .split("(n=")
-                .nth(1)
-                .and_then(|s| s.split_whitespace().next())
-                .and_then(|s| s.parse::<f64>().ok())
-                .map(|f| f as usize)
-                .expect("header count");
-            assert_eq!(total - hdr, mx.arena.len(), "{label} bands do not partition: {line}");
-            assert!(hdr <= mx.arena.len(), "{label}: more real-gen gates than gates");
-            // Exact mode reports span per band, sampled mode must not.
-            assert_eq!(line.contains("span="), label == "exact", "{label}: {line}");
-        }
-    }
-
-    // The whole point of sampling: it runs on inputs the exact instrument
-    // refuses (it asserts n <= 20_000). Cost is K bits per litter regardless of
-    // input size, so the ancestor map stays far smaller than the circuit.
-    #[test]
-    fn sampled_ancestry_runs_past_the_exact_cap() {
-        let n = 25_000;
-        let gates = random_mixed_circuit(5, 24, n);
-        let params = MixParams {
-            k_max: 5,
-            moves: 3_000,
-            target_size: n + 200,
-            temp: 50.0,
-            anc_samples: 64,
-            verify_every: 1_500,
-            report_every: u64::MAX,
-            seed: 3,
-            ..MixParams::default()
-        };
-        let mut mx = Mixer::new(gates, 24, params);
-        mx.run();
-        assert!(mx.anc_incidence() > 0.0, "sampled ancestry recorded nothing");
-        let rep = mx.tracer_report();
-        assert!(rep.contains("K=64 of m=25000"), "{rep}");
-        // Only litters that actually carry a tracer are stored, so the map is a
-        // small fraction of the circuit -- this is what makes it scale.
-        assert!(
-            mx.anc.len() < mx.arena.len(),
-            "ancestor map ({}) is not smaller than the circuit ({})",
-            mx.anc.len(),
-            mx.arena.len()
-        );
-        mx.global_check();
-    }
-
-    // twist_neg_p = 0 gives PURE positive swaps: no wire is ever negated, so no
-    // interior polarity flips (same_pol stays 0) and only the pure-swap counter
-    // moves -- yet the 3-CNOT brackets are still inserted (comp=0 material
-    // present). This is the control that separates "foreign CNOTs" from
-    // "polarity scrambling".
-    #[test]
-    fn twist_neg_p_zero_is_pure_swap() {
-        let params = MixParams {
-            k_max: 5,
-            moves: 20_000,
-            target_size: 600,
-            temp: 20.0,
-            p_twist: 0.3,
-            twist_neg_p: 0.0,
-            twist_min_len: 4,
-            verify_every: 1_000,
-            report_every: u64::MAX,
-            seed: 7,
-            ..MixParams::default()
-        };
-        let mut mx = Mixer::new(random_g57_circuit(17, 16, 400), 16, params);
-        mx.run();
-        assert!(mx.counters.twist_swaps > 20, "no pure swaps ran: {}", mx.counters.twist_swaps);
-        assert_eq!(mx.counters.twist_negs, 0, "negate-one fired at twist_neg_p=0");
-        assert_eq!(mx.counters.twist_cnots, 0, "negate-both fired at twist_neg_p=0");
-        assert_eq!(mx.g57_census().same_pol, 0, "pure swap flipped polarity");
-        assert!(mx.counters.twist_relabels > 0, "pure swap never relabeled");
+        assert!(mx.counters.merges() > 0, "no merges alongside cnot twists");
         mx.global_check();
     }
 
