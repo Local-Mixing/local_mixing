@@ -99,6 +99,9 @@ def main():
     ap.add_argument("--band-frac", type=float, default=0.06)
     ap.add_argument("--smooth-win", type=int, default=13)
     ap.add_argument("--dpi", type=int, default=145)
+    ap.add_argument("--no-ridge", action="store_true",
+                    help="render the raw H field only: no per-row dots, no traced ridge "
+                         "(the measured statistics are still computed and printed)")
     a = ap.parse_args()
 
     titles = a.titles.split(";") if a.titles else [s.rsplit("/", 1)[-1] for s in a.stems]
@@ -125,11 +128,12 @@ def main():
         im = ax.imshow(H, origin="upper", extent=[0, 1, 1, 0], aspect="auto",
                        cmap="RdYlBu", vmin=vmin, vmax=vmax, interpolation="nearest")
         xf = jj / jj[-1]; yf = ii / ii[-1]
-        dep = d["depth_arr"]; dn = (dep - dep.min()) / (np.ptp(dep) + 1e-12)
-        ax.scatter(xf[d["a"]], yf, s=6 + 70 * dn, c="k", alpha=0.30, linewidths=0, zorder=3)
-        jh = np.clip(d["jhat"].round().astype(int), 0, c - 1)
-        ax.plot(xf[jh], yf, "-", color="black", lw=2.2, zorder=4)
-        ax.plot(xf[jh], yf, "-", color="white", lw=0.9, zorder=5)
+        if not a.no_ridge:
+            dep = d["depth_arr"]; dn = (dep - dep.min()) / (np.ptp(dep) + 1e-12)
+            ax.scatter(xf[d["a"]], yf, s=6 + 70 * dn, c="k", alpha=0.30, linewidths=0, zorder=3)
+            jh = np.clip(d["jhat"].round().astype(int), 0, c - 1)
+            ax.plot(xf[jh], yf, "-", color="black", lw=2.2, zorder=4)
+            ax.plot(xf[jh], yf, "-", color="white", lw=0.9, zorder=5)
         ax.set_title(title, fontsize=11)
         ax.set_xlabel("G prefix  (fraction of mixed circuit)")
         ax.set_ylabel("C prefix  (fraction of original)")
@@ -138,7 +142,10 @@ def main():
         ax.text(0.03, 0.045, txt, transform=ax.transAxes, fontsize=9.5, va="bottom",
                 bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.5", alpha=0.85))
     fig.colorbar(im, ax=axes, location="right", shrink=0.8, label="H  (0 = leak,  0.5 = hidden)")
-    fig.suptitle("hmap ridge:  dots = per-row argmin (size=depth),  line = depth-weighted ridge", fontsize=11)
+    fig.suptitle(
+        "hmap: raw H field (no ridge overlay)" if a.no_ridge
+        else "hmap ridge:  dots = per-row argmin (size=depth),  line = depth-weighted ridge",
+        fontsize=11)
     fig.savefig(a.out, dpi=a.dpi)
     print("wrote", a.out)
 
