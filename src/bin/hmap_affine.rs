@@ -95,6 +95,19 @@ struct Args {
     train_batches: usize,
     #[arg(long, default_value_t = 12345)]
     seed: u64,
+    /// Restrict the C-prefix (row) range to [c_from, c_to] gate indices;
+    /// 0/0 = the whole circuit. With a small --c-step this gives a dense
+    /// LOCAL plate instead of a coarse global one, which is what resolving a
+    /// narrow feature needs.
+    #[arg(long, default_value_t = 0)]
+    c_from: usize,
+    #[arg(long, default_value_t = 0)]
+    c_to: usize,
+    /// Same for the G-prefix (column) range.
+    #[arg(long, default_value_t = 0)]
+    g_from: usize,
+    #[arg(long, default_value_t = 0)]
+    g_to: usize,
     /// Dump the SUPPORT of the fitted relation for the N leakiest interior
     /// cells: how many wires the reconstruction actually uses, and which. A
     /// leak is only interpretable once you know what it reads — e.g. whether
@@ -266,8 +279,16 @@ fn main() {
         }
     };
 
-    let i_idx = indices(c.len(), args.c_step.max(1));
-    let j_idx = indices(g.len(), args.g_step.max(1));
+    let clip = |v: Vec<usize>, from: usize, to: usize| -> Vec<usize> {
+        if from == 0 && to == 0 {
+            return v;
+        }
+        let hi = if to == 0 { usize::MAX } else { to };
+        v.into_iter().filter(|&x| x >= from && x <= hi).collect()
+    };
+    let i_idx = clip(indices(c.len(), args.c_step.max(1)), args.c_from, args.c_to);
+    let j_idx = clip(indices(g.len(), args.g_step.max(1)), args.g_from, args.g_to);
+    assert!(!i_idx.is_empty() && !j_idx.is_empty(), "empty plate after --c-from/--c-to/--g-from/--g-to clip");
     let (rows, cols) = (i_idx.len(), j_idx.len());
     println!(
         "[hmap_affine] c={} gates ({}w), g={} gates ({}w), n={}; degree={} regressors={}; rows={} cols={}, samples={} (train {})",
