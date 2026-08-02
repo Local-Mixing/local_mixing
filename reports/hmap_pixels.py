@@ -25,7 +25,6 @@ import sys
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.cm as cm
 from PIL import Image
 
 
@@ -46,6 +45,12 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--scale", type=int, default=1,
                     help="integer pixel replication (default 1 = true 1:1)")
+    ap.add_argument("--scale-x", type=int, default=0,
+                    help="per-axis replication; overrides --scale for columns")
+    ap.add_argument("--scale-y", type=int, default=0,
+                    help="per-axis replication; overrides --scale for rows. "
+                         "Anisotropic plates (very wide, few rows) need this to "
+                         "be legible without resampling.")
     ap.add_argument("--rows", default="")
     ap.add_argument("--cols", default="")
     ap.add_argument("--gates", default="", help="column crop by G-gate index, A:B")
@@ -70,9 +75,13 @@ def main():
     vmin = a.vmin if a.vmin is not None else float(S.min())
     vmax = a.vmax if a.vmax is not None else float(S.max())
     norm = np.clip((S - vmin) / max(vmax - vmin, 1e-12), 0, 1)
-    rgb = (cm.get_cmap(a.cmap)(norm)[:, :, :3] * 255).astype(np.uint8)
-    if a.scale > 1:
-        rgb = np.repeat(np.repeat(rgb, a.scale, axis=0), a.scale, axis=1)
+    rgb = (matplotlib.colormaps[a.cmap](norm)[:, :, :3] * 255).astype(np.uint8)
+    sy = a.scale_y or a.scale
+    sx = a.scale_x or a.scale
+    if sy > 1:
+        rgb = np.repeat(rgb, sy, axis=0)
+    if sx > 1:
+        rgb = np.repeat(rgb, sx, axis=1)
     Image.fromarray(rgb).save(a.out)
 
     print(f"{a.stem}: crop rows {r0}:{r1} cols {c0}:{c1} "

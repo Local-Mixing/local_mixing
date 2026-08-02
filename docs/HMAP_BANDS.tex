@@ -229,4 +229,99 @@ without the traced overlay, while still computing and printing the ridge
 statistics.
 \end{itemize}
 
+\appendix
+\clearpage
+\section{The plates}
+
+Every image below is rendered by \code{hmap\_pixels.py}: one image pixel per
+matrix cell, integer replication only, no interpolation and no resampling.
+Colour is fixed across the whole appendix --- $H = 0.10$ (red, leaking) to
+$H = 0.45$ (blue, hidden) --- so panels are directly comparable. In every
+plate rows are $C$ prefixes (top = start of the source computation) and
+columns are $G$ prefixes (left = start of the mixed circuit).
+
+\subsection{A resolution ladder on one circuit}
+
+All five panels show the same object --- \code{nR30}, 225{,}014 gates
+against a 100{,}000-gate source --- sampled at five resolutions. The point
+of the ladder is that what a plate \emph{says} depends on how finely it is
+cut: a coarse plate shows a clean diagonal and a handful of suspicious
+columns; a fine one shows those columns are structured bands with
+shoulders; a local one shows the diagonal itself has width and texture.
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.72\textwidth]{../reports/ancestry_20260728/plates/lad1_coarse.png}
+\caption{\textbf{Rung 1 --- global, coarse.} $101 \times 121$ cells;
+$C$ step 1000, $G$ step 1876 gates. This is the plate the sweep was read
+from. The diagonal is unmistakable; the pale columns are visible but
+unresolved, each one cell wide.}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.9\textwidth]{../reports/ancestry_20260728/plates/lad2_tall.png}
+\caption{\textbf{Rung 2 --- global, dense in $C$.} $501 \times 641$ cells;
+$C$ step 200, $G$ step 352 gates, one pixel per cell at true 1:1. This is
+the plate the hidden-computation search ran on: dense enough in $C$ that a
+forward jump of a few hundred gates would be visible, over the whole
+circuit rather than a window.}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=\textwidth]{../reports/ancestry_20260728/plates/lad3_fine.png}
+\caption{\textbf{Rung 3 --- fine in $G$, coarse in $C$.} $26 \times 1127$
+cells; $G$ step 200 gates, $C$ step 4000, stretched $14\times$ vertically
+(pixel replication, not interpolation). This is the cut that resolved the
+band widths: the pale features are 200--2200 gates across with smooth
+shoulders, not knife edges.}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.8\textwidth]{../reports/ancestry_20260728/plates/lad4_band.png}
+\caption{\textbf{Rung 4 --- local, dense in both.} $101 \times 135$ cells;
+$C$ step 60, $G$ step 100 gates, over $C \in [39\text{k}, 45\text{k}]$,
+$G \in [90.9\text{k}, 104.3\text{k}]$. At this scale the diagonal is a
+textured structure of finite width rather than a line.}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.8\textwidth]{../reports/ancestry_20260728/plates/lad5_z2B.png}
+\caption{\textbf{Rung 5 --- local, aspect-matched.} $100 \times 136$ cells
+over $C$ 6000 gates $\times$ $G$ 13{,}500 gates, i.e.\ a window whose sides
+are in the circuit's own $2.25$ size ratio, so the ridge runs corner to
+corner instead of sweeping out of frame. Compare with rung 4: the same
+material, framed correctly.}
+\end{figure}
+
+\clearpage
+\subsection{One band from each profile arm}
+
+Each panel is that arm's own strongest band, in a window aspect-matched to
+that arm's own size ratio, at $C$ step 60 gates. Same colour scale
+throughout ($0.10$--$0.35$ here, since these local windows never reach the
+global extremes). The bands look alike across very different runs --- the
+$6.4\times$-expanded twist-heavy circuit included --- which is the visual
+counterpart of the finding that no profile parameter changes the plate.
+
+\begin{figure}[h]\centering
+\begin{tabular}{cc}
+\includegraphics[width=0.44\textwidth]{../reports/ancestry_20260728/plates/app_band_notwist.png} &
+\includegraphics[width=0.44\textwidth]{../reports/ancestry_20260728/plates/app_band_nR15.png} \\
+{\small no twist (130k gates, ratio 1.30)} & {\small R1=1.5 (149k, 1.49)} \\[4pt]
+\includegraphics[width=0.44\textwidth]{../reports/ancestry_20260728/plates/app_band_nR20.png} &
+\includegraphics[width=0.44\textwidth]{../reports/ancestry_20260728/plates/app_band_nR25.png} \\
+{\small R1=2.0 (179k, 1.79)} & {\small R1=2.5 (199k, 1.99)} \\
+\end{tabular}
+\end{figure}
+
+\begin{figure}[h]\centering
+\begin{tabular}{cc}
+\includegraphics[width=0.44\textwidth]{../reports/ancestry_20260728/plates/app_band_nR30.png} &
+\includegraphics[width=0.44\textwidth]{../reports/ancestry_20260728/plates/app_band_nR20_fast.png} \\
+{\small R1=3.0 (225k, 2.25)} & {\small short hold (162k, 1.62)} \\[4pt]
+\includegraphics[width=0.44\textwidth]{../reports/ancestry_20260728/plates/app_band_nR20_slow.png} &
+\includegraphics[width=0.44\textwidth]{../reports/ancestry_20260728/plates/app_band_nR20_tw5.png} \\
+{\small long hold (198k, 1.98)} & {\small 10$\times$ twist (642k, 6.42)} \\
+\end{tabular}
+\end{figure}
+
 \end{document}
