@@ -762,12 +762,17 @@ different value, the measured recommendation is in the last column.
 | `db_mode` | `mix` | slot-2 admission rule (`mix`\|`comp`\|`any`); settable by rules | — |
 | `p_comp` | 1.0 | probability a contraction tries COMP-DB first | — |
 | `p_any` | 0.1 | probability an expansion is ANY-DB rather than a cross | — |
-| `s_db` | 5 | window length the descent starts from | **8–9 for MIX, ≥12 for COMP** (§14) |
-| `p_convex` | 0.5 | probability the sampler is convex | never separated from contiguous |
+| `s_db` | 9 (MIX; was 5 until 2026-08-03) | window length the descent starts from | **8–9 for MIX, ≥12 for COMP** (§14) — now the shipped defaults |
+| `s_db_comp` | 12 (was: fall back to `s_db`) | COMP-mode descent start; 0 = use `s_db` | ≥12 for COMP (§14) |
+| `p_convex` | 0.4 (MIX; was 0.5 until 2026-08-03) | probability the sampler is convex (contiguous 60% / convex 40%) | never separated from contiguous |
+| `p_convex_comp` | 0.1 (was: fall back to `p_convex`) | COMP-mode convex probability (contiguous 90% / convex 10%); <0 = use `p_convex` | — |
+| `db_prefixes` | **on** (was off until 2026-08-03) | largest-first prefix descent (the size-reduction cascade); `--no-db-prefixes` disables | — |
+| `curated_exhaust` | **on** (was off until 2026-08-03) | two-pass routing: the whole descent runs curated-only first, regular only on a full miss; `--no-curated-exhaust` disables | 3.4× bits/splice (lower bound) |
+| `curated_in_comp` | **on** (was off until 2026-08-03) | COMP probes curated too (size rule keeps strictly-shorter spellings); `--no-curated-in-comp` disables | — |
 | `db_convex_p` | 0.75 | within convex growth, direction coin | — |
 | `w_window` | 4 | a gate this wide or wider may not sit in a window | — |
 | `w_pool` | 3 | a gate this wide or wider may not seed one or count toward the dose | — |
-| `curated` | off | prefer curated matches (§2.5) | **~30× slower; forward-key only** |
+| `curated` | **on** (was off until 2026-08-03; degrades to regular-only WITH A WARNING when `FROZEN_CURATED_DIR` is unset, unless `--curated` was passed explicitly — then it is a hard error). `--no-curated` disables | prefer curated matches (§2.5) | **~30× slower; forward-key only** |
 | `twist_db_mode` | *not built* | acceptance rule for twist-packet DB absorption | — |
 | `twist_place_tries` | 0 | candidate positions the twist placer samples (§3.3) | table has one entry |
 | `p_mingen` | 0.8 | probability a seed comes from the generation pool | untested in COMP; 0.3 under test |

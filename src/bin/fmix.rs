@@ -127,8 +127,10 @@ struct Args {
     #[arg(long, default_value_t = 64)]
     twist_min_len: usize,
     /// LAYER-2 phase-A preset: sets the phase-A default block (--twist-g57
-    /// --p-twist 0.0005 --db-advance --p-convex 0.5 --p-mingen 0.6 --curated
-    /// --mix-pay-random, COMP p_mingen 0) unless individually overridden.
+    /// --p-twist 0.0005 --db-advance --p-mingen 0.6 --mix-pay-random, COMP
+    /// p_mingen 0) unless individually overridden. curated and p_convex are
+    /// no longer set here: the 2026-08-03 shipped defaults (curated ON,
+    /// p_convex 0.4) already cover them.
     #[arg(long, default_value_t = false)]
     phase_a: bool,
     /// Pay-random MIX selection: when only larger spellings exist, pick a
@@ -191,12 +193,53 @@ struct Args {
     /// move ~= p-twist x mean-window-span / size.
     #[arg(long, default_value_t = 0.0)]
     p_twist: f64,
-    /// Window length the descent STARTS from. The descent visits every shorter
-    /// length down to 1, so there is no separate minimum.
-    #[arg(long, default_value_t = 5)]
+    /// GLOBAL re-randomisation rate, in units of ONE whole-circuit reshuffle
+    /// per this many circuit-sizes of rounds. The per-round probability is
+    /// shuffle-rate / |circuit|, so the default 2.0 means "expect two full
+    /// reshuffles every |circuit| rounds" at any size, and the expected work
+    /// per round stays O(mean commutation slack) as the circuit grows. The
+    /// move walks every gate in order and re-places it uniformly inside its
+    /// own commutation bounds (the same placement rule as the terminal
+    /// float), so it is semantics- and size-preserving: it only moves gates.
+    /// Set 0 to disable.
+    #[arg(long, default_value_t = 2.0)]
+    shuffle_rate: f64,
+    /// Two-pass store routing, ON BY DEFAULT (2026-08-03): the descent runs
+    /// curated-only over every window length first, and consults the regular
+    /// store only if that whole pass came up empty. (The old one-pass cascade
+    /// probed curated then regular at EACH length before shortening, so a
+    /// regular hit at length p beat a curated hit at length p-1.) Needs
+    /// --curated; applies to compression too while --curated-in-comp is on
+    /// (also the default). Disable with --no-curated-exhaust.
+    #[arg(long, default_value_t = true)]
+    curated_exhaust: bool,
+    /// Turn --curated-exhaust off (single-pass curated-then-regular at each
+    /// window length).
+    #[arg(long, default_value_t = false)]
+    no_curated_exhaust: bool,
+    /// Arm the curated store for COMPRESSION as well, ON BY DEFAULT
+    /// (2026-08-03): COMP first walks the whole cascade against curated, then
+    /// against regular, same as MIX. The old off-by-contract rationale: an
+    /// uneven split of a minimal identity gives two functionally inverse
+    /// circuits of unequal length, so the store holds longer-than-minimal
+    /// spellings, and curated's lexicographic priority in the selection rule
+    /// compounds the bias toward growth. Under compression the size rule keeps
+    /// only the spellings strictly shorter than the window -- the shorter
+    /// halves. Needs --curated. Disable with --no-curated-in-comp.
+    #[arg(long, default_value_t = true)]
+    curated_in_comp: bool,
+    /// Turn --curated-in-comp off (compression goes regular-only, the old
+    /// contract).
+    #[arg(long, default_value_t = false)]
+    no_curated_in_comp: bool,
+    /// Window length the descent STARTS from, in MIX mode (COMP has its own,
+    /// --s-db-comp). The descent visits every shorter length down to 1, so
+    /// there is no separate minimum.
+    #[arg(long, default_value_t = 9)]
     s_db: usize,
-    /// Probability the window sampler is convex rather than contiguous.
-    #[arg(long, default_value_t = 0.5)]
+    /// Probability the window sampler is convex rather than contiguous, in MIX
+    /// mode (COMP: --p-convex-comp). Default 0.4 = contiguous 60% / convex 40%.
+    #[arg(long, default_value_t = 0.4)]
     p_convex: f64,
     /// A gate with this many controls or more may not sit INSIDE a window.
     #[arg(long, default_value_t = 4)]
@@ -255,12 +298,18 @@ struct Args {
     /// 0 = default 2^20.
     #[arg(long, default_value_t = 0)]
     db_total_terms: usize,
-    /// Largest-first prefix descent: try the full sampled window, then its
-    /// len-1 prefix, etc. down to --db-min-window, splicing the LONGEST
-    /// matching prefix (live) or recording every prefix (with --db-dry-run).
-    /// Span/verify declines keep descending — shorter prefixes may still fit.
-    #[arg(long, default_value_t = false)]
+    /// Largest-first prefix descent (the size-reduction cascade), ON BY
+    /// DEFAULT (2026-08-03): try the full sampled window, then its len-1
+    /// prefix, etc. down to length 1, splicing the LONGEST matching prefix
+    /// (live) or recording every prefix (with --db-dry-run). Span/verify
+    /// declines keep descending — shorter prefixes may still fit. Disable
+    /// with --no-db-prefixes.
+    #[arg(long, default_value_t = true)]
     db_prefixes: bool,
+    /// Turn --db-prefixes off (one attempt at a uniformly sampled length, no
+    /// descent).
+    #[arg(long, default_value_t = false)]
+    no_db_prefixes: bool,
     /// Give DB splice products the ballistic birth-advance that split pieces
     /// get: each product floats floor(dir_q * slack) along its own direction.
     /// Without this a splice assigns directions nothing acts on, so a
@@ -277,11 +326,13 @@ struct Args {
     /// pair with --p-db 1.0 for a pure per-round MIX/COMP schedule.
     #[arg(long, default_value_t = -1.0)]
     p_mix: f64,
-    /// COMP-mode window length under --p-mix (0 = use --s-db).
-    #[arg(long, default_value_t = 0)]
+    /// COMP-mode window length (0 = use --s-db). Default 12: COMP starts its
+    /// descent higher than MIX's 9.
+    #[arg(long, default_value_t = 12)]
     s_db_comp: usize,
-    /// COMP-mode convex probability under --p-mix (< 0 = use --p-convex).
-    #[arg(long, default_value_t = -1.0)]
+    /// COMP-mode convex probability (< 0 = use --p-convex). Default 0.1 =
+    /// contiguous 90% / convex 10%.
+    #[arg(long, default_value_t = 0.1)]
     p_convex_comp: f64,
     /// COMP-mode pool-seed probability under --p-mix (< 0 = use --p-mingen).
     #[arg(long, default_value_t = -1.0)]
@@ -291,10 +342,17 @@ struct Args {
     /// curated store holds circuits every strict subcircuit of which is
     /// shortest, so its replacements are routes fcompress cannot partially
     /// undo -- but it is built from splits of minimal identities and so holds
-    /// LONGER equivalents, meaning this deliberately prefers growth.
-    /// Compressing mode ignores it. Requires FROZEN_CURATED_DIR.
-    #[arg(long, default_value_t = false)]
+    /// the longer halves of uneven identity splits, and curated's lexicographic priority compounds it.
+    /// Compression probes it too while --curated-in-comp is on (the default).
+    /// ON BY DEFAULT (2026-08-03). If FROZEN_CURATED_DIR is unset the default
+    /// degrades to regular-only WITH A WARNING; passing --curated explicitly
+    /// makes the missing store a hard error instead. Disable with
+    /// --no-curated.
+    #[arg(long, default_value_t = true)]
     curated: bool,
+    /// Turn --curated off (regular store only, both modes).
+    #[arg(long, default_value_t = false)]
+    no_curated: bool,
     /// Track, per litter, the SET of original input gates that contributed to
     /// it (the union of the sets its outgoing window drew on). Reports anc=
     /// (mean set size: what a mixed gate is made of) and ancspan= (mean
@@ -472,8 +530,27 @@ fn main() {
     let mut args =
         <Args as clap::FromArgMatches>::from_arg_matches(&matches).expect("parse args");
 
+    // Off switches for the default-on DB knobs (2026-08-03 defaults). Applied
+    // first, so everything below -- the phase-A preset included -- reads the
+    // settled values.
+    if args.no_db_prefixes {
+        args.db_prefixes = false;
+    }
+    if args.no_curated {
+        args.curated = false;
+    }
+    if args.no_curated_exhaust {
+        args.curated_exhaust = false;
+    }
+    if args.no_curated_in_comp {
+        args.curated_in_comp = false;
+    }
+
     // LAYER-2 phase-A preset: fill the phase-A default block for any knob the
-    // user did not pass explicitly. Explicit flags always win.
+    // user did not pass explicitly. Explicit flags always win. (curated and
+    // p_convex used to be set here; both are covered by the 2026-08-03
+    // shipped defaults -- curated ON, p_convex 0.4 -- so phase A now just
+    // inherits them.)
     if args.phase_a {
         if !given("twist_g57") {
             args.twist_g57 = true;
@@ -484,18 +561,11 @@ fn main() {
         if !given("db_advance") {
             args.db_advance = true;
         }
-        if !given("curated") {
-            args.curated = true;
-        }
         if !given("mix_pay_random") {
             args.mix_pay_random = true;
         }
-        // p_convex 0.5 IS the shipped default; p_mingen is NOT (it ships at
-        // 0.8), so phase A has to set it. COMP's 0 comes from
-        // --p-mingen-comp, which callers pass explicitly.
-        if !given("p_convex") {
-            args.p_convex = 0.5;
-        }
+        // p_mingen ships at 0.8, so phase A has to set it. COMP's 0 comes
+        // from --p-mingen-comp, which callers pass explicitly.
         if !given("p_mingen") {
             args.p_mingen = 0.6;
         }
@@ -506,6 +576,37 @@ fn main() {
             "[fmix] phase-A preset ON: twist-g57={} p_twist={} db-advance={} curated={} mix-pay-random={} p_convex={} p_mingen={} (explicit flags win)",
             args.twist_g57, args.p_twist, args.db_advance, args.curated,
             args.mix_pay_random, args.p_convex, args.p_mingen
+        );
+    }
+
+    // Resolve the curated store BEFORE any banner mentions it, so the
+    // printouts below describe what will actually run.
+    if let Some(d) = &args.frozen_db_dir {
+        unsafe { std::env::set_var("FROZEN_DB_DIR", d) };
+    }
+    if let Some(d) = &args.frozen_curated_dir {
+        unsafe { std::env::set_var("FROZEN_CURATED_DIR", d) };
+    }
+    if args.curated && std::env::var("FROZEN_CURATED_DIR").is_err() {
+        assert!(
+            !given("curated"),
+            "--curated needs FROZEN_CURATED_DIR; refusing to run, because \
+             degrading silently to regular-only would look like a measurement"
+        );
+        // curated is only a DEFAULT here, so degrade -- but say so loudly.
+        println!(
+            "[fmix] WARNING: curated-first is the shipped default but FROZEN_CURATED_DIR is \
+             unset -> curated OFF for this run (regular store only). Export FROZEN_CURATED_DIR \
+             (or pass --frozen-curated-dir); pass --curated explicitly to make this an error."
+        );
+        args.curated = false;
+    }
+    if args.curated {
+        assert!(
+            !args.no_db_verify,
+            "--curated with --no-db-verify is refused: the curated store has already been \
+             observed returning a non-equivalent replacement (forward/reverse key confusion), \
+             and the per-splice check is what caught it"
         );
     }
 
@@ -580,6 +681,29 @@ fn main() {
             args.p_twist
         );
     }
+    if args.curated && args.curated_in_comp {
+        println!(
+            "[fmix] curated-in-comp ON: COMPRESSION probes the curated store too (the size rule keeps only curated spellings shorter than the window, i.e. the shorter halves of identity splits)"
+        );
+    }
+    if args.curated_exhaust {
+        if args.curated {
+            println!(
+                "[fmix] curated-exhaust ON: the prefix descent runs CURATED-ONLY over every window length, and falls back to the regular store only if that whole pass missed ({})",
+                if args.curated_in_comp { "MIX and COMP alike" } else { "expansion only; compression stays regular-only" }
+            );
+        } else if given("curated_exhaust") {
+            println!("[fmix] WARNING: --curated-exhaust without a curated store -- it has no effect");
+        }
+    }
+    if args.shuffle_rate > 0.0 {
+        println!(
+            "[fmix] global re-randomisation ON: shuffle_rate={} (per-round p = {}/|circuit|, i.e. one expected whole-circuit reshuffle per |circuit|/{} rounds; semantics- and size-preserving)",
+            args.shuffle_rate, args.shuffle_rate, args.shuffle_rate
+        );
+    } else {
+        println!("[fmix] global re-randomisation OFF (--shuffle-rate 0)");
+    }
     if args.p_twist > 0.0 {
         println!(
             "[fmix] twists ON (swap family): p_twist={} twist_min_len={} twist_neg_p={} -- each swapped wire negated w.p. twist_neg_p (0.5 => swap 1/4, negate-one 1/2, negate-both 1/4; 0 => pure swap, no polarity flips) (w_twist_* retired/ignored)",
@@ -609,9 +733,9 @@ fn main() {
     }
     if args.p_comp > 0.0 || args.p_db > 0.0 || args.p_any > 0.0 {
         println!(
-            "[fmix] DB ON: p_db(slot2)={} db_mode={} p_comp(contract)={} p_any(expand)={} s_db={} p_convex={} w_window={} w_pool={} verify={} curated={} (FROZEN_DB_DIR required)",
+            "[fmix] DB ON: p_db(slot2)={} db_mode={} p_comp(contract)={} p_any(expand)={} s_db={} p_convex={} prefixes={} w_window={} w_pool={} verify={} curated={} (FROZEN_DB_DIR required)",
             args.p_db, args.db_mode, args.p_comp, args.p_any, args.s_db, args.p_convex,
-            args.w_window, args.w_pool, !args.no_db_verify, args.curated
+            args.db_prefixes, args.w_window, args.w_pool, !args.no_db_verify, args.curated
         );
         if args.p_comp_g57 > 0.0 {
             println!(
@@ -620,23 +744,11 @@ fn main() {
             );
         }
     }
-    if let Some(d) = &args.frozen_db_dir {
-        unsafe { std::env::set_var("FROZEN_DB_DIR", d) };
-    }
-    if let Some(d) = &args.frozen_curated_dir {
-        unsafe { std::env::set_var("FROZEN_CURATED_DIR", d) };
-    }
     if args.curated {
-        assert!(
-            std::env::var("FROZEN_CURATED_DIR").is_ok(),
-            "--curated needs FROZEN_CURATED_DIR; refusing to run, because \
-             degrading silently to regular-only would look like a measurement"
+        println!(
+            "[fmix] curated ON: ordinary expansion probes the CURATED store only (forward key, any size); compression {}",
+            if args.curated_in_comp { "probes it too (--curated-in-comp)" } else { "stays regular-only" }
         );
-        assert!(
-            !args.no_db_verify,
-            "--curated with --no-db-verify is refused: the curated store has already been              observed returning a non-equivalent replacement (forward/reverse key confusion),              and the per-splice check is what caught it"
-        );
-        println!("[fmix] curated ON: ordinary expansion probes the CURATED store only (forward key, any size); compression stays regular-only");
     }
     if args.db_advance {
         println!(
@@ -702,6 +814,9 @@ fn main() {
             .unwrap_or_else(|| panic!("unknown --db-mode {} (mix|comp|any)", args.db_mode)),
         p_db: args.p_db,
         p_twist: args.p_twist,
+        shuffle_rate: args.shuffle_rate,
+        curated_exhaust: args.curated_exhaust,
+        curated_in_comp: args.curated_in_comp,
         s_db: args.s_db,
         w_window: args.w_window,
         w_pool: args.w_pool,

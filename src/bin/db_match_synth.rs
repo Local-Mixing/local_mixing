@@ -114,6 +114,9 @@ fn main() {
                             DbMode::SizeAgnostic,
                             guard,
                             false,
+                            false,
+                            true,
+                            false,
                             &mut rng,
                         );
                         if res.degree_skipped {

@@ -16,7 +16,10 @@
 //! functional equivalence before splicing (optional; see the mixer's db_move).
 
 use super::xgate::XGate;
-use super::xpoly::{CanonicalXPolys, XPolyBudget, canonicalize_xgates_single, xgate_used_wires};
+use super::xpoly::{
+    CanonicalXPolys, XPolyBudget, XPolyError, canonicalize_xgates_single,
+    canonicalize_xgates_single_capped, xgate_used_wires,
+};
 use crate::circuit::circuit::{CircuitSeq, Permutation, polys_repr_blob};
 use crate::replace::frozen::FrozenDb;
 use rand::Rng;
@@ -419,10 +422,13 @@ pub fn db_replace(
     mode: DbMode,
     guard: DegreeGuard,
     curated: bool,
+    curated_in_comp: bool,
+    regular_fallback: bool,
     pay_random: bool,
     rng: &mut impl Rng,
 ) -> DbResult {
-    db_replace_with(window, num_wires, budget, mode, guard, curated, pay_random, rng, |key, want_curated| {
+    let armed = curated_armed_for(curated, mode, curated_in_comp);
+    db_replace_with(window, num_wires, budget, mode, guard, armed, regular_fallback, pay_random, rng, |key, want_curated| {
         if want_curated {
             if curated { db.get_curated(key) } else { None }
         } else {
@@ -431,12 +437,55 @@ pub fn db_replace(
     })
 }
 
+/// THE ROUTING RULE, and its override. Compression does not probe the curated
+/// store by default.
+///
+/// WHY THE CURATED STORE EXISTS. Not length -- difference. A conversion is
+/// only worth its cost if the incoming circuit is MEANINGFULLY different from
+/// the outgoing one, and the curated store is built to raise the probability
+/// that it is. Split a minimal identity `C = A.B`: then `perm(A) =
+/// perm(B)^-1`, so B^-1 is an alternative spelling of A's function -- and
+/// because C is a MINIMAL identity, A and B^-1 cannot be closely related by
+/// local rewriting, or C would have reduced. Every portion of a minimal
+/// identity is meaningfully different from its complement, so swapping one for
+/// the other is a good conversion by construction.
+///
+/// Two consequences worth keeping straight:
+///
+/// (a) Size is a side effect, not the point. An uneven split gives halves of
+///     unequal length, so the store holds longer-than-minimal spellings, and
+///     `choose_ref` compounds that by giving curated lexicographic priority --
+///     a free (non-growing) regular candidate is discarded unseen whenever
+///     curated answers. Growth is the price of difference, not a goal.
+///
+/// (b) `bits/splice` UNDER-STATES this store. That measure is the entropy of
+///     the eligible set, which treats a trivial respelling and a
+///     minimal-identity complement as equally good alternatives. Curated
+///     candidates are different by construction; regular ones need not be. The
+///     measured 3.4x on curated-exhaust is therefore a lower bound on what the
+///     store buys.
+///
+/// (Tempting but false: "every split piece is minimal, else a shorter piece
+/// would give a shorter identity". The shorter piece can be B^-1 itself, and
+/// B^-1.B is a trivial identity, so nothing is contradicted.)
+///
+/// `curated_in_comp` arms curated for compression, where the size rule keeps
+/// only the spellings strictly shorter than the window -- the shorter halves.
+///
+/// This lives in the policy wrapper, not in `db_replace_with`: the mechanism
+/// takes `curated_armed` to mean "probe curated for THIS call", full stop, so
+/// the rule is stated once and can be overridden without threading a mode
+/// exception through the lookup path.
+pub fn curated_armed_for(curated: bool, mode: DbMode, curated_in_comp: bool) -> bool {
+    curated && (mode != DbMode::Compressing || curated_in_comp)
+}
+
 /// Testable core: `lookup` stands in for the frozen store. `curated_armed`
-/// drives the routing contract of the bounded curated DB (2026-07-30):
-/// ordinary expansion (Mix / MinGrow / SizeAgnostic) probes the CURATED
-/// store only when it is armed — no regular fallback — and every
-/// Compressing lookup probes the REGULAR store only. Unarmed processes use
-/// regular for everything, as before.
+/// means "probe curated for THIS call", regardless of mode — the caller owns
+/// the mode rule (`curated_armed_for`: expansion always, Compressing only
+/// when `curated_in_comp` arms it). An armed call probes the CURATED store
+/// first (forward key only) and consults regular only per
+/// `regular_fallback`; unarmed calls use regular for everything.
 #[allow(clippy::too_many_arguments)]
 pub fn db_replace_with<F>(
     window: &[XGate],
@@ -445,6 +494,7 @@ pub fn db_replace_with<F>(
     mode: DbMode,
     guard: DegreeGuard,
     curated_armed: bool,
+    regular_fallback: bool,
     pay_random: bool,
     rng: &mut impl Rng,
     mut lookup: F,
@@ -460,7 +510,9 @@ where
     // minimal ones. Compression (and unarmed processes) go straight to
     // regular. Reverse canonicalization is computed only if the regular
     // stage runs, so the curated fast path never pays for it.
-    let curated_first = curated_armed && mode != DbMode::Compressing;
+    // The caller owns the mode rule (see `db_replace`): `curated_armed` means
+    // "probe curated for THIS call", full stop.
+    let curated_first = curated_armed;
     let miss = |degree_skipped| DbResult {
         match_count: 0,
         chosen: None,
@@ -476,24 +528,22 @@ where
         return miss(false);
     }
 
-    // Degree pre-filter: a direction certified over-degree cannot match any
-    // stored circuit, so skip its (expensive) canonicalization entirely.
-    let fwd_over = guard.max_degree > 0
-        && xgate_degree_exceeds(window, false, guard.max_degree, guard.probes, rng);
-    let rev_over = guard.max_degree > 0
-        && xgate_degree_exceeds(window, true, guard.max_degree, guard.probes, rng);
-    if fwd_over && rev_over {
-        return miss(true); // both directions certain misses — no lookup at all
-    }
+    // Degree filter: a direction whose ANF degree exceeds the store's maximum
+    // cannot match any stored circuit, so its (expensive) canonicalization is
+    // skipped. The check now sits INSIDE canonicalization, between composing
+    // the polynomial and canonicalizing it -- exact, and free, because that
+    // polynomial is needed regardless. It replaces a randomized subspace probe
+    // that cost 17x the polynomial it guarded and never fired in production.
+    let mut degree_skipped = false;
 
     // Canonicalize the forward direction now; the reverse (regular-only, a
     // window shorter under its inverse still keys the way the builder
     // recorded it) is deferred to the regular stage below.
     let mut directions: Vec<(bool, CanonicalXPolys)> = Vec::with_capacity(2);
-    if !fwd_over {
-        if let Ok(c) = canonicalize_xgates_single(window, false, budget) {
-            directions.push((false, c));
-        }
+    match canonicalize_xgates_single_capped(window, false, budget, guard.max_degree) {
+        Ok(c) => directions.push((false, c)),
+        Err(XPolyError::DegreeExceeded { .. }) => degree_skipped = true,
+        Err(_) => {}
     }
 
     // Every placeable equivalent circuit across both distinct keys, ANY length,
@@ -568,11 +618,18 @@ where
 
     // Stage B: the regular store (both keys), on a complete curated miss or
     // whenever the cascade does not apply (compression, unarmed).
-    if refs.is_empty() {
-        if !rev_over {
-            if let Ok(c) = canonicalize_xgates_single(window, true, budget) {
-                directions.push((true, c));
-            }
+    //
+    // `regular_fallback = false` SUPPRESSES this stage while the cascade is
+    // live, turning the call into a curated-only probe. That is what the
+    // two-pass policy needs: exhaust curated over every window length before
+    // the regular store is consulted at any length. It can never suppress
+    // the regular store when the cascade does not apply -- with no curated
+    // stage to fall back FROM, stage B is the only stage there is.
+    if refs.is_empty() && (regular_fallback || !curated_first) {
+        match canonicalize_xgates_single_capped(window, true, budget, guard.max_degree) {
+            Ok(c) => directions.push((true, c)),
+            Err(XPolyError::DegreeExceeded { .. }) => degree_skipped = true,
+            Err(_) => {}
         }
         let mut seen_keys = std::collections::HashSet::new();
         for (dir_ix, (reversed, canonical)) in directions.iter().enumerate() {
@@ -626,7 +683,7 @@ where
     DbResult {
         match_count,
         chosen,
-        degree_skipped: false,
+        degree_skipped,
         identity_skipped,
         curated_matches,
         chosen_curated,
@@ -639,10 +696,12 @@ where
 ///
 /// Curated-ness is a lexicographic FIRST key: when any curated candidate
 /// survived, the mode's size rule is applied within the curated class only,
-/// regardless of size. The curated store is built from splits of minimal
-/// identities, so it holds LONGER equivalents -- preferring it therefore prefers
-/// growth, deliberately, to buy a route whose pieces are not locally
-/// compressible. Compressing mode is exempt: its job is to shrink.
+/// regardless of size. That is deliberate, and it prefers growth two ways: the
+/// store holds the longer halves of uneven identity splits, and a free
+/// (non-growing) regular candidate is discarded unseen whenever curated
+/// answers at all. What it buys is a route whose pieces are not locally
+/// compressible by the REGULAR store. Compressing mode is exempt: its job is
+/// to shrink.
 fn choose_ref<R>(
     refs: &[R],
     window_len: usize,
@@ -769,6 +828,7 @@ mod tests {
             DbMode::Compressing,
             DegreeGuard::OFF,
             false,
+            true,
             false,
             &mut rng,
             |k, cur| if cur { None } else { store.get(k).cloned() },
@@ -779,6 +839,180 @@ mod tests {
         assert!(
             exhaustively_equal(&window, &repl, 8),
             "returned replacement must compute the window's function"
+        );
+    }
+
+    // regular_fallback=false must SUPPRESS the regular stage while the
+    // curated cascade is live -- that is the primitive the two-pass
+    // (--curated-exhaust) descent is built on. Same window, same store, the
+    // only difference is the flag.
+    // The degree filter is now EXACT, read off the ANF, not a randomized probe
+    // over affine subspaces. The property that buys: it cannot flake. The old
+    // probe was one-sided -- it could certify "over" but silently miss it on an
+    // unlucky draw -- so the same window could be skipped or not depending on
+    // the rng. Run one over-degree window across many seeds and demand the same
+    // answer every time.
+    #[test]
+    fn degree_filter_is_exact_and_seed_independent() {
+        // Two chained g57s on shared wires: degree climbs above a cap of 2.
+        let window = vec![
+            db_g57_to_xgate([0, 1, 2]),
+            db_g57_to_xgate([2, 3, 4]),
+            db_g57_to_xgate([4, 5, 6]),
+        ];
+        let guard = DegreeGuard { max_degree: 2, probes: 6 };
+        let mut skipped = 0;
+        let mut looked_up = 0;
+        for seed in 0..64u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let res = db_replace_with(
+                &window,
+                16,
+                XPolyBudget::default(),
+                DbMode::SizeAgnostic,
+                guard,
+                false,
+                true,
+                false,
+                &mut rng,
+                |_, _| {
+                    looked_up += 1;
+                    None
+                },
+            );
+            if res.degree_skipped {
+                skipped += 1;
+            }
+        }
+        assert!(
+            skipped == 0 || skipped == 64,
+            "degree verdict flipped with the seed: skipped on {skipped}/64 -- the filter is not exact"
+        );
+        assert_eq!(skipped, 64, "this window is above the cap and must always be skipped");
+        // The FORWARD direction is over the cap, but a permutation's inverse
+        // can be lower-degree, and this window's reverse is: stage B rightly
+        // canonicalizes and probes it. The old probe behaved the same way --
+        // it only short-circuited when BOTH directions were certified over --
+        // so at most one key per run may reach the store, never two.
+        assert!(
+            looked_up <= 64,
+            "more than one key per run reached the store: {looked_up} over 64 runs"
+        );
+
+        // And the same window under a cap that admits it must never be skipped.
+        let guard_ok = DegreeGuard { max_degree: 9, probes: 6 };
+        for seed in 0..16u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let res = db_replace_with(
+                &window,
+                16,
+                XPolyBudget::default(),
+                DbMode::SizeAgnostic,
+                guard_ok,
+                false,
+                true,
+                false,
+                &mut rng,
+                |_, _| None,
+            );
+            assert!(!res.degree_skipped, "in-range window skipped at seed {seed}");
+        }
+    }
+
+    #[test]
+    fn regular_fallback_false_suppresses_the_regular_stage() {
+        let g = db_g57_to_xgate([0, 1, 2]);
+        let pad = XGate::conj(0, [(1, true), (2, false)]).unwrap();
+        let window = vec![pad.clone(), pad, g];
+
+        let legacy = CircuitSeq { gates: vec![[0, 1, 2]] };
+        let (key, value) = store_friend(&legacy);
+        // REGULAR store holds the friend; curated holds nothing.
+        let store = HashMap::from([(key, value)]);
+        let lookup = |k: &[u8; 16], cur: bool| if cur { None } else { store.get(k).cloned() };
+
+        // Cascade armed, fallback ALLOWED: curated misses, regular answers.
+        let mut rng = StdRng::seed_from_u64(1);
+        let with_fb = db_replace_with(
+            &window,
+            8,
+            XPolyBudget::default(),
+            DbMode::Mix,
+            DegreeGuard::OFF,
+            true,
+            true,
+            false,
+            &mut rng,
+            lookup,
+        );
+        assert_eq!(with_fb.match_count, 1, "regular stage should have answered");
+
+        // Cascade armed, fallback SUPPRESSED: curated misses and nothing else runs.
+        let mut rng = StdRng::seed_from_u64(1);
+        let no_fb = db_replace_with(
+            &window,
+            8,
+            XPolyBudget::default(),
+            DbMode::Mix,
+            DegreeGuard::OFF,
+            true,
+            false,
+            false,
+            &mut rng,
+            lookup,
+        );
+        assert_eq!(no_fb.match_count, 0, "regular stage must be suppressed");
+        assert!(no_fb.chosen.is_none());
+
+        // UNARMED: there is no curated stage to fall back FROM, so the flag
+        // must not be able to switch the regular store off.
+        let mut rng = StdRng::seed_from_u64(1);
+        let unarmed = db_replace_with(
+            &window,
+            8,
+            XPolyBudget::default(),
+            DbMode::Mix,
+            DegreeGuard::OFF,
+            false,
+            false,
+            false,
+            &mut rng,
+            lookup,
+        );
+        assert_eq!(unarmed.match_count, 1, "unarmed processes must still reach regular");
+
+        // COMPRESSION is regular-only by contract; the flag must not touch it.
+        let mut rng = StdRng::seed_from_u64(1);
+        let comp = db_replace_with(
+            &window,
+            8,
+            XPolyBudget::default(),
+            DbMode::Compressing,
+            DegreeGuard::OFF,
+            // The mode rule now lives in `db_replace`; apply it as that caller
+            // would. Its own contract is asserted directly below.
+            curated_armed_for(true, DbMode::Compressing, false),
+            false,
+            false,
+            &mut rng,
+            lookup,
+        );
+        assert_eq!(comp.match_count, 1, "compression must stay regular-only regardless");
+        assert!(
+            !curated_armed_for(true, DbMode::Compressing, false),
+            "COMP must not arm curated by default"
+        );
+        assert!(
+            curated_armed_for(true, DbMode::Compressing, true),
+            "--curated-in-comp must be able to arm it"
+        );
+        assert!(
+            curated_armed_for(true, DbMode::Mix, false),
+            "expansion arms curated without any override"
+        );
+        assert!(
+            !curated_armed_for(false, DbMode::Mix, true),
+            "the override must not arm curated when curated itself is off"
         );
     }
 
@@ -793,6 +1027,7 @@ mod tests {
             DbMode::SizeAgnostic,
             DegreeGuard::OFF,
             false,
+            true,
             false,
             &mut rng,
             |_, _| None,
@@ -819,6 +1054,7 @@ mod tests {
             DbMode::Mix,
             DegreeGuard::OFF,
             true,
+            true,
             false,
             &mut rng,
             |_, cur| {
@@ -838,6 +1074,7 @@ mod tests {
             DbMode::Mix,
             DegreeGuard::OFF,
             true,
+            true,
             false,
             &mut rng,
             |_, cur| {
@@ -849,7 +1086,9 @@ mod tests {
         assert!(probes.iter().skip(1).all(|&c| !c), "fallback probes are regular");
         assert!(probes.len() >= 2, "regular fallback must actually fire");
 
-        // Compression: never curated, even when armed.
+        // Compression: never curated. The rule lives in `db_replace` now, so
+        // apply it the way that caller does rather than expecting the
+        // mechanism to second-guess its argument.
         let mut probes: Vec<bool> = Vec::new();
         let mut rng = StdRng::seed_from_u64(7);
         let _ = db_replace_with(
@@ -858,6 +1097,7 @@ mod tests {
             XPolyBudget::default(),
             DbMode::Compressing,
             DegreeGuard::OFF,
+            curated_armed_for(true, DbMode::Compressing, false),
             true,
             false,
             &mut rng,
@@ -888,6 +1128,7 @@ mod tests {
             DbMode::SizeAgnostic,
             guard,
             false,
+            true,
             false,
             &mut rng,
             |_, _| {
@@ -908,6 +1149,7 @@ mod tests {
             DbMode::SizeAgnostic,
             guard,
             false,
+            true,
             false,
             &mut rng,
             |_, _| None,
@@ -933,13 +1175,13 @@ mod tests {
 
         // Compressing: the only friend (3 gates) grows the 1-gate window -> reject.
         let mut rng = StdRng::seed_from_u64(3);
-        let comp = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::Compressing, DegreeGuard::OFF, false, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
+        let comp = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::Compressing, DegreeGuard::OFF, false, true, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         assert_eq!(comp.match_count, 1);
         assert!(comp.chosen.is_none(), "compressing must reject a growing friend");
 
         // Size-agnostic: accept the longer equivalent.
         let mut rng = StdRng::seed_from_u64(3);
-        let agn = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::SizeAgnostic, DegreeGuard::OFF, false, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
+        let agn = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::SizeAgnostic, DegreeGuard::OFF, false, true, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         assert_eq!(agn.match_count, 1);
         let repl = agn.chosen.expect("size-agnostic accepts any length");
         assert!(repl.len() > window.len(), "this friend grows the window");
@@ -949,7 +1191,7 @@ mod tests {
         // MinGrow: also accepts it — the shortest spelling that exists is the
         // paid channel's whole point when nothing non-growing is available.
         let mut rng = StdRng::seed_from_u64(3);
-        let mg = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::MinGrow, DegreeGuard::OFF, false, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
+        let mg = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::MinGrow, DegreeGuard::OFF, false, true, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         let repl = mg.chosen.expect("min-grow accepts the shortest growing friend");
         assert_eq!(repl.len(), 3);
         assert!(exhaustively_equal(&window, &repl, 8));

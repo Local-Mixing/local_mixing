@@ -167,6 +167,7 @@ fn main() {
                     DbMode::SizeAgnostic,
                     guard,
                     false,
+                    true,
                     false,
                     &mut rng,
                     |key, _curated| {

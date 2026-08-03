@@ -229,12 +229,35 @@ Production convention: `--report-every 1000000 --verify-every 100000`.
 
 ### 2.1.1 The curated store (`--curated`, bounded DB contract)
 
+**Shipped DB defaults (2026-08-03).** The DB move now defaults to the
+curated-first cascade in BOTH modes:
+
+| knob | MIX-DB | COMP-DB | off switch |
+|---|---|---|---|
+| size-reduction cascade (`--db-prefixes`) | on | on | `--no-db-prefixes` |
+| descent start | `--s-db 9` | `--s-db-comp 12` | — |
+| store routing | curated over the whole cascade first, then regular (`--curated --curated-exhaust`) | same (`--curated-in-comp`) | `--no-curated`, `--no-curated-exhaust`, `--no-curated-in-comp` |
+| sampler | contiguous 60% / convex 40% (`--p-convex 0.4`) | contiguous 90% / convex 10% (`--p-convex-comp 0.1`) | — |
+
+If `FROZEN_CURATED_DIR` is unset, the curated default degrades to
+regular-only **with a startup warning**; passing `--curated` explicitly
+makes the missing store a hard error instead (measurement runs should do
+that). A **resume** builds its params from the command line, so a resumed
+pre-2026-08-03 run picks up these defaults unless the old flags are
+repeated explicitly.
+
 With `--curated` (and `FROZEN_CURATED_DIR` set), DB **expansion** probes the
 curated store FIRST, forward key only, and applies the mode's own size rule
 within the curated answer — Mix: random among no-larger spellings, else
 random among the minimal ones. Only a complete curated miss falls back to
-the regular store (both keys, same rule). **Compression always ignores
-curated.** The bounded curated DB (2026-07-30: ≤20 candidates/key, ≤512
+the regular store (both keys, same rule). Under `--curated-exhaust` (the
+default) "first" means the ENTIRE prefix descent runs curated-only before
+the regular store sees any length, so curated material at any length beats
+regular material at a longer one. **Compression follows the same
+curated-first routing while `--curated-in-comp` is on (the default); its
+size rule keeps only the spellings strictly shorter than the window. With
+`--no-curated-in-comp` it reverts to regular-only, the pre-2026-08-03
+contract.** The bounded curated DB (2026-07-30: ≤20 candidates/key, ≤512
 decoded value bytes) requires the per-store value conventions in the
 environment — a fresh process must set:
 
@@ -263,9 +286,10 @@ default is still off — set it in every launch script.
 ### 2.1.2 LAYER 2: the phase-A preset and the size profile
 
 **`--phase-a`** sets the phase-A default block: `--twist-g57` with
-`--p-twist 0.0005`, `--db-advance`, `--curated`, `--mix-pay-random`,
-`--p-convex 0.5` (equal parts convex and contiguous), `--p-mingen 0.6` for
-MIX with `--p-mingen-comp 0` for COMP. A knob you pass **explicitly on the
+`--p-twist 0.0005`, `--db-advance`, `--mix-pay-random`, `--p-mingen 0.6` for
+MIX with `--p-mingen-comp 0` for COMP. (It no longer sets `--curated` or
+`--p-convex` — the 2026-08-03 shipped defaults, curated ON and `p_convex`
+0.4, already cover them; see §2.1.1.) A knob you pass **explicitly on the
 command line** always wins — the preset keys on whether the flag was given,
 not on whether its value differs from the default, so `--phase-a
 --p-twist 0` really does mean no twists (it did not, before 2026-07-31:

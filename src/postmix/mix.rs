@@ -280,7 +280,7 @@ pub fn merge_result(g: &XGate, h: &XGate) -> Option<Merge> {
     if si.peek().is_some() {
         return None;
     }
-    let (w, p) = extra?;
+    let (w, _p) = extra?;
     let lits = big.ctrls.iter().map(|&(cw, cp)| if cw == w { (cw, !cp) } else { (cw, cp) });
     Some(Merge::Subsume(XGate::conj(big.target, lits).expect("subsume merge")))
 }
@@ -469,6 +469,27 @@ pub struct MixParams {
     /// negate-both 1/4); 0.0 = pure positive swaps only (no polarity flips,
     /// though the 3-CNOT swap brackets are still inserted).
     pub twist_neg_p: f64,
+    /// GLOBAL RE-RANDOMISATION rate. Each round, with probability
+    /// `shuffle_rate / |circuit|`, every gate is floated to a uniformly random
+    /// position inside its own commutation bounds. Rate 1.0 (the default) is
+    /// therefore "expected one whole-circuit reshuffle per |circuit| rounds".
+    /// 0 disables the move. Unlike a splice this changes only WHERE gates sit,
+    /// never what they are, so it is function-preserving by construction --
+    /// every step is a commutation.
+    pub shuffle_rate: f64,
+    /// Two-pass store routing: exhaust the curated store over EVERY window
+    /// length before the regular store is consulted at any length. Only
+    /// affects the prefix descent (there is no "every length" without one)
+    /// and only while curated is armed for the mode -- expansion always,
+    /// compression when `curated_in_comp` arms it too.
+    pub curated_exhaust: bool,
+    /// Arm the curated store for COMPRESSION too. Off by contract: uneven
+    /// splits of a minimal identity give unequal halves, so the store holds
+    /// longer-than-minimal spellings, and curated's lexicographic priority in
+    /// `choose_ref` compounds that. On, curated joins the compression pool and
+    /// the size rule keeps only what is strictly shorter than the window --
+    /// the shorter halves, which are the ones worth having here.
+    pub curated_in_comp: bool,
     // twist_g57: spell twist brackets as all-g57 words instead of 3-CNOT
     // packets, siting each bracket adaptively so it absorbs neighborhood
     // gates (the hidden-SAMF mechanism, XGate-native). Pure swap only: the
@@ -794,12 +815,19 @@ impl Default for MixParams {
             w_twist_swap: 0.0,
             w_twist_cnot: 0.0,
             twist_neg_p: 0.5,
+            shuffle_rate: 2.0,
+            curated_exhaust: false,
+            curated_in_comp: false,
             twist_g57: false,
             twist_min_len: 64,
             // Store-free by default: MixParams::default() is the test/base
             // value, and any positive DB rate here would make every construction
-            // demand FROZEN_DB_DIR. The SPEC defaults (p_comp 1.0, p_any 0.1)
-            // live on the CLI, where a run that wants the store asks for it.
+            // demand FROZEN_DB_DIR. The PRODUCTION defaults live on the fmix
+            // CLI, where a run that wants the store asks for it -- as of
+            // 2026-08-03 that means s_db 9, p_convex 0.4, s_db_comp 12,
+            // p_convex_comp 0.1, db_prefixes/curated/curated_exhaust/
+            // curated_in_comp all ON. The values below stay the store-free
+            // test baseline on purpose; do not "sync" them to the CLI.
             p_comp: 0.0,
             p_any: 0.0,
             p_db: 0.0,
@@ -1011,6 +1039,13 @@ pub struct MixCounters {
     // report both "how often was there a choice", "how many on average" and
     // the actual entropy those choices injected through WHICH gates were
     // spliced -- as opposed to where.
+    pub shuffles: u64,
+    pub shuffle_moved: u64,
+    pub shuffle_steps: u64,
+    /// Wall nanoseconds spent inside global_shuffle. The move's cost was
+    /// being INFERRED from displacement counters and a separate final-float
+    /// timing; this measures it.
+    pub shuffle_ns: u64,
     pub choice_splices: u64,
     pub choice_multi: u64,
     pub choice_sum: u64,
@@ -1478,6 +1513,10 @@ impl MixCounters {
             tg_solve_ns: 0,
             tg_slides: 0,
             tg_retries: 0,
+            shuffles: 0,
+            shuffle_moved: 0,
+            shuffle_steps: 0,
+            shuffle_ns: 0,
             choice_splices: 0,
             choice_multi: 0,
             choice_sum: 0,
@@ -2383,6 +2422,26 @@ impl Mixer {
         let mut buckets = vec![0u32; k * POS_BUCKETS];
         let mut sampled_card_sum = 0u64;
         let mut carriers = 0u64;
+        // BACKWARD direction: for each gate in the CURRENT circuit, how spread
+        // out are its ancestors in the INPUT circuit? The forward measures
+        // (reach/cov/ent) answer the mirror question -- where a given input
+        // gate's descendants ended up -- and say nothing about whether an
+        // output gate draws on a narrow band of the original or on all of it.
+        //
+        // A min/max RANGE cannot be sampled: with K of m tracers the sample's
+        // extremes sit strictly inside the true ones, and the bias grows as the
+        // ancestor count shrinks, so the statistic would mean different things
+        // at different points in a run (which is why ancspan= is switched off
+        // in sampled mode). Bucket occupancy and entropy degrade gracefully
+        // instead, and the sample standard deviation is outright unbiased for
+        // the population one. All three are capped by the ancestor count, so
+        // they are only readable next to sampled_card.
+        let mut aspan_cov = 0f64;
+        let mut aspan_ent = 0f64;
+        let mut aspan_sd = 0f64;
+        let mut aspan_sd_n = 0u64;
+        let m_in = self.anc_m.max(1);
+        let mut in_buckets = [0u32; POS_BUCKETS];
         let mut bits = vec![0u64; self.anc_words];
         let mut cur = self.arena.head();
         let mut pos = 0usize;
@@ -2390,6 +2449,8 @@ impl Mixer {
             bits.iter_mut().for_each(|w| *w = 0);
             self.anc_or_into(self.meta_of(cur).litter, &mut bits);
             let b = (pos * POS_BUCKETS / size).min(POS_BUCKETS - 1);
+            in_buckets.iter_mut().for_each(|c| *c = 0);
+            let (mut ppos_sum, mut ppos_sq) = (0f64, 0f64);
             let mut card = 0u64;
             for (wi, &w) in bits.iter().enumerate() {
                 let mut x = w;
@@ -2400,6 +2461,11 @@ impl Mixer {
                         lo[t] = lo[t].min(pos);
                         hi[t] = hi[t].max(pos);
                         buckets[t * POS_BUCKETS + b] += 1;
+                        // This ancestor's home in the INPUT circuit.
+                        let gp = self.anc_tracers[t] as usize;
+                        in_buckets[(gp * POS_BUCKETS / m_in).min(POS_BUCKETS - 1)] += 1;
+                        ppos_sum += gp as f64;
+                        ppos_sq += (gp as f64) * (gp as f64);
                         card += 1;
                     }
                     x &= x - 1;
@@ -2408,6 +2474,27 @@ impl Mixer {
             if card > 0 {
                 carriers += 1;
                 sampled_card_sum += card;
+                let c = card as f64;
+                aspan_cov +=
+                    in_buckets.iter().filter(|&&x| x > 0).count() as f64 / POS_BUCKETS as f64;
+                let h: f64 = in_buckets
+                    .iter()
+                    .filter(|&&x| x > 0)
+                    .map(|&x| {
+                        let q = x as f64 / c;
+                        -q * q.log2()
+                    })
+                    .sum();
+                aspan_ent += h / (POS_BUCKETS as f64).log2();
+                if card >= 2 {
+                    let mean = ppos_sum / c;
+                    // Unbiased sample variance: with tracers drawn uniformly
+                    // from the input, this estimates the spread of the gate's
+                    // TRUE ancestor set, not just of the sampled part.
+                    let var = (ppos_sq / c - mean * mean) * c / (c - 1.0);
+                    aspan_sd += var.max(0.0).sqrt() / m_in as f64;
+                    aspan_sd_n += 1;
+                }
             }
             pos += 1;
             cur = self.arena.neighbor(cur, Dir::R);
@@ -2443,7 +2530,7 @@ impl Mixer {
         // ancestry misses every tracer look empty, and at small K most do.
         let hit = carriers as f64 / size as f64;
         format!(
-            "[fmix] tracers: K={} of m={} | desc mean={:.0} [{}] | cov mean={:.3} ent mean={:.3} reach mean={:.3} | est anc={:.1} incid={:.3e} | carriers={:.3} sampled_card={:.2}",
+            "[fmix] tracers: K={} of m={} | desc mean={:.0} [{}] | cov mean={:.3} ent mean={:.3} reach mean={:.3} | est anc={:.1} incid={:.3e} | carriers={:.3} sampled_card={:.2} | ancspan cov={:.3} ent={:.3} sd={:.3}",
             k,
             self.anc_m,
             desc,
@@ -2455,6 +2542,9 @@ impl Mixer {
             incid,
             hit,
             if carriers > 0 { sampled_card_sum as f64 / carriers as f64 } else { 0.0 },
+            if carriers > 0 { aspan_cov / carriers as f64 } else { 0.0 },
+            if carriers > 0 { aspan_ent / carriers as f64 } else { 0.0 },
+            if aspan_sd_n > 0 { aspan_sd / aspan_sd_n as f64 } else { 0.0 },
         )
     }
 
@@ -2978,11 +3068,28 @@ impl Mixer {
             let took_twist = self.params.p_twist > 0.0
                 && self.rng.random_bool(self.params.p_twist.clamp(0.0, 1.0))
                 && { self.twist_round(); true };
+            // Slot 1b: GLOBAL re-randomisation, sitting after the twist and
+            // before the DB move. Rate is scaled by the circuit size, so the
+            // DEFAULT probability is exactly 1/|circuit| -- an expected one
+            // whole-circuit reshuffle per |circuit| rounds, and O(mean slack)
+            // expected work per round however large the circuit gets.
+            let took_shuffle = !took_twist
+                && self.params.shuffle_rate > 0.0
+                && self.arena.len() >= 2
+                && {
+                    let p = (self.params.shuffle_rate / self.arena.len() as f64).clamp(0.0, 1.0);
+                    self.rng.random_bool(p)
+                }
+                && {
+                    self.global_shuffle();
+                    true
+                };
             // Slot 2: ONE DB move, under the live db_mode. A round whose
             // descent finds nothing is SPENT -- there is no fallthrough -- so
             // the thermostat receives exactly (1 - p_twist)(1 - p_db) of rounds
             // no matter how hard the material is.
             let took_db = !took_twist
+                && !took_shuffle
                 && self.params.p_db > 0.0
                 && self.arena.len() >= 1
                 && self.rng.random_bool(self.params.p_db.clamp(0.0, 1.0))
@@ -2999,7 +3106,7 @@ impl Mixer {
                     true
                 };
             // Slot 3: the thermostat.
-            if !took_twist && !took_db {
+            if !took_twist && !took_shuffle && !took_db {
                 let excess = self.arena.len() as f64 - self.params.target_size as f64;
                 // In steer mode the 0.98 ceiling is the binding constraint on
                 // holding size: its 2% expansion floor is a structural growth
@@ -4596,6 +4703,28 @@ impl Mixer {
             // grows outward in both directions around it.
             let seed = self.db_seed_home.map(|(id, _)| id);
             let k = seed.and_then(|sd| ids.iter().position(|&x| x == sd)).unwrap_or(0);
+            // Store-routing schedule for this descent.
+            //
+            // ONE-PASS CASCADE: at each window length, probe curated, then
+            // fall back to regular before shortening. So a regular hit at
+            // length p wins over a curated hit at length p-1 -- the descent
+            // can never see the shorter curated rung.
+            //
+            // --curated-exhaust (two passes): pass 0 walks EVERY length against
+            // curated alone; only a descent that came up completely empty runs
+            // pass 1 against the regular store. Curated material is preferred
+            // at any length over regular material at a longer one. The price is
+            // that a full curated miss re-canonicalizes the whole descent, and
+            // db_attempts counts both passes -- both are real costs of the
+            // policy, so neither is hidden from the counters.
+            let cur_ok = self.params.curated
+                && (mode != DbMode::Compressing || self.params.curated_in_comp);
+            let passes: &[(bool, bool)] = if self.params.curated_exhaust && cur_ok {
+                &[(true, false), (false, true)]
+            } else {
+                &[(cur_ok, true)]
+            };
+            for &(cur_armed, reg_fb) in passes {
             let (mut lo, mut hi) = (0usize, window.len() - 1);
             loop {
                 let p = hi - lo + 1;
@@ -4626,6 +4755,19 @@ impl Mixer {
                     self.counters.db_span_skips += 1;
                     self.record_db_attempt(prefix, 0, None);
                     self.count_db_miss(mode);
+                    // The descent must SHRINK on every exit path. Falling
+                    // through to `continue` without moving lo/hi respins the
+                    // identical prefix forever -- and since a store miss is
+                    // the common case, that hangs the run before it completes
+                    // a single move.
+                    if p == wmin {
+                        break;
+                    }
+                    if k.saturating_sub(lo) >= hi.saturating_sub(k) {
+                        lo += 1;
+                    } else {
+                        hi -= 1;
+                    }
                     continue;
                 }
                 let res = db_replace(
@@ -4635,7 +4777,9 @@ impl Mixer {
                     self.db_budget,
                     mode,
                     guard,
-                    self.params.curated,
+                    cur_armed,
+                    self.params.curated_in_comp,
+                    reg_fb,
                     self.params.mix_pay_random,
                     &mut self.rng,
                 );
@@ -4658,11 +4802,37 @@ impl Mixer {
                 let Some(replacement) = res.chosen else {
                     self.record_db_attempt(prefix, res.match_count, None);
                     self.count_db_miss(mode);
+                    // The descent must SHRINK on every exit path. Falling
+                    // through to `continue` without moving lo/hi respins the
+                    // identical prefix forever -- and since a store miss is
+                    // the common case, that hangs the run before it completes
+                    // a single move.
+                    if p == wmin {
+                        break;
+                    }
+                    if k.saturating_sub(lo) >= hi.saturating_sub(k) {
+                        lo += 1;
+                    } else {
+                        hi -= 1;
+                    }
                     continue;
                 };
                 if self.params.db_dry_run {
                     self.record_db_attempt(prefix, res.match_count, None);
                     self.count_db_hit(mode);
+                    // The descent must SHRINK on every exit path. Falling
+                    // through to `continue` without moving lo/hi respins the
+                    // identical prefix forever -- and since a store miss is
+                    // the common case, that hangs the run before it completes
+                    // a single move.
+                    if p == wmin {
+                        break;
+                    }
+                    if k.saturating_sub(lo) >= hi.saturating_sub(k) {
+                        lo += 1;
+                    } else {
+                        hi -= 1;
+                    }
                     continue;
                 }
                 if self.try_db_splice_curated(
@@ -4684,6 +4854,7 @@ impl Mixer {
                 } else {
                     hi -= 1;
                 }
+            }
             }
             return false;
         }
@@ -4717,6 +4888,8 @@ impl Mixer {
             mode,
             guard,
             self.params.curated,
+            self.params.curated_in_comp,
+            true,
             self.params.mix_pay_random,
             &mut self.rng,
         );
@@ -4809,7 +4982,13 @@ impl Mixer {
                 self.count_db_miss(mode);
                 return false;
             }
-            if !rules::verify_rewrite(window, &replacement) {
+            let _vt = std::time::Instant::now();
+            let _vok = rules::verify_rewrite(window, &replacement);
+            super::xpoly::VERIFY_NS.fetch_add(
+                _vt.elapsed().as_nanos() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            if !_vok {
                 // A CURATED replacement that fails verification is refused and
                 // counted, not fatal. Curated entries are halves of split
                 // minimal identities, and a half need not restore the helper
@@ -5513,6 +5692,39 @@ impl Mixer {
         }
     }
 
+    /// GLOBAL RE-RANDOMISATION: float every gate to a uniformly random position
+    /// inside its own commutation bounds.
+    ///
+    /// This is the whole-circuit analogue of the per-splice birth advance. Where
+    /// `--db-advance` scatters one litter at birth, this re-draws the position of
+    /// every gate at once, so positional structure inherited from the input --
+    /// which the ancestry instruments show is what survives DB mixing -- is
+    /// attacked directly rather than incidentally.
+    ///
+    /// Function preservation is free: each step is a float past non-colliding
+    /// gates, i.e. a commutation, so no verification is needed. `float_uniform`
+    /// picks the offset over the gate's full [left, right] slack, so a gate with
+    /// no slack simply stays put.
+    ///
+    /// Cost is O(sum of per-gate slack), which is why the round rate is scaled
+    /// as 1/|circuit|: the expected work per round stays O(mean slack) no matter
+    /// how large the circuit grows.
+    // GLOBAL re-randomisation: re-place EVERY gate uniformly inside its own
+    // commutation bounds. This is exactly the terminal float applied mid-run,
+    // so it is semantics-preserving (float_distance never crosses a
+    // non-commuting neighbour) and size-preserving -- it moves gates and
+    // nothing else. The walk is sequential, so a gate's bounds already
+    // reflect the earlier gates' new positions; that is the same law
+    // final_float has always used.
+    fn global_shuffle(&mut self) {
+        let t0 = std::time::Instant::now();
+        let (moved, disp) = self.final_float();
+        self.counters.shuffle_ns += t0.elapsed().as_nanos() as u64;
+        self.counters.shuffles += 1;
+        self.counters.shuffle_moved += moved;
+        self.counters.shuffle_steps += disp;
+    }
+
     pub fn final_float(&mut self) -> (u64, u64) {
         let ids = self.arena.ids_in_order();
         let (mut moved, mut disp) = (0u64, 0u64);
@@ -5784,7 +5996,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
+            "[fmix] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -5839,6 +6051,10 @@ impl Mixer {
             c.twist_case_splits,
             c.twist_span,
             c.twist_skips,
+            c.shuffles,
+            c.shuffle_moved,
+            c.shuffle_steps,
+            c.shuffle_ns / 1_000_000,
             c.declined,
             c.blocked_width,
             c.blocked_deadlock,
@@ -5888,6 +6104,12 @@ impl Mixer {
             // store held any non-identical equivalent. Without it a moving
             // dmin cannot be told from a moving sample.
             c.dmin_windows,
+            super::xpoly::POLY_NS.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000,
+            super::xpoly::CANON_NS.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000,
+            super::xpoly::CANON_CALLS.load(std::sync::atomic::Ordering::Relaxed),
+            super::xpoly::VERIFY_NS.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000,
+            super::xpoly::DEGREE_NS.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000,
+            super::xpoly::DEGREE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
             // Selection entropy: how often a successful splice had a real
             // choice, how wide that choice was, and the bits it injected.
             c.choice_splices,
@@ -6307,6 +6529,13 @@ mod mix_tests {
             moves: 40_000,
             target_size: 300,
             temp: 20.0,
+            // The global reshuffle dilutes every other menu slot by exactly
+            // shuffle_rate/|circuit|. At production size that is ~2e-5 and
+            // invisible; on this 300-gate circuit it is ~0.4% of rounds taken
+            // from the thermostat, which is enough to push the drift band.
+            // This test is the thermostat's contract, so hold the new slot
+            // out of it -- the move has its own test.
+            shuffle_rate: 0.0,
             verify_every: 2_000,
             report_every: u64::MAX,
             seed: 5,
@@ -6698,6 +6927,48 @@ mod mix_tests {
         }
     }
 
+    // The backward ancestor-span statistic must be populated under SAMPLED
+    // ancestry (where the old min/max ancspan= is switched off) and must stay
+    // inside its definitional bounds. It is bucket occupancy / entropy over
+    // the INPUT circuit, so all three live in [0,1].
+    #[test]
+    fn sampled_ancestor_span_is_populated_and_bounded() {
+        let gates = random_mixed_circuit(53, 16, 400);
+        let params = MixParams {
+            k_max: 6,
+            moves: 4_000,
+            target_size: 400,
+            temp: 20.0,
+            anc_samples: 64,
+            p_twist: 0.0,
+            shuffle_rate: 0.0,
+            report_every: u64::MAX,
+            seed: 17,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new_with_db(gates, 16, params, FrozenDb::empty());
+        mx.run();
+        let line = mx.tracer_report();
+        assert!(line.contains("ancspan cov="), "ancspan block missing: {line}");
+        let grab = |k: &str| -> f64 {
+            let i = line.find(k).unwrap_or_else(|| panic!("no {k} in {line}")) + k.len();
+            line[i..]
+                .split(|c: char| c == ' ' || c == '|')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        let (cov, ent, sd) = (grab("ancspan cov="), grab("ent=")
+            , grab("sd="));
+        for (n, v) in [("cov", cov), ("ent", ent), ("sd", sd)] {
+            assert!((0.0..=1.0).contains(&v), "ancspan {n}={v} out of [0,1]");
+        }
+        // The old min/max form stays OFF under sampling -- this replaces it in
+        // the tracers line, it does not resurrect it in the mv= line.
+        assert_eq!(mx.anc_stats(), (0.0, 0.0), "sampled mode must still leave anc=/ancspan= at 0");
+    }
+
     #[test]
     fn contiguous_uses_gate_direction_and_spills_at_boundary() {
         // A 4-gate circuit on disjoint wires (all commute); a window of 4 from any
@@ -6719,6 +6990,45 @@ mod mix_tests {
     // The tg_* counter fields are APPENDED to the state line and parsed with
     // a zero default, so a .state written before they existed must still
     // load. Simulated here by stripping the trailing tokens.
+    // The prefix descent must TERMINATE. Every exit path inside it has to
+    // shrink the window before looping; a `continue` that leaves lo/hi alone
+    // respins the identical prefix forever. Store misses are the common case,
+    // so before this was fixed a --db-prefixes run hung before completing a
+    // single move. With no DB attached every lookup misses, which is exactly
+    // the path that used to spin -- if this test ever hangs, the descent has
+    // regressed.
+    #[test]
+    fn prefix_descent_terminates_when_every_lookup_misses() {
+        let gates = random_mixed_circuit(43, 16, 300);
+        let params = MixParams {
+            k_max: 6,
+            moves: 5_000,
+            target_size: 300,
+            temp: 20.0,
+            p_db: 1.0,
+            db_prefixes: true,
+            s_db: 9,
+            db_max_span: 4, // deliberately tight: forces the span-skip path too
+            p_twist: 0.0,
+            shuffle_rate: 0.0,
+            report_every: u64::MAX,
+            seed: 13,
+            ..MixParams::default()
+        };
+        // FrozenDb::empty() -> every lookup misses, which IS the path that used
+        // to spin. No store needed to prove termination.
+        let mut mx = Mixer::new_with_db(gates, 16, params, FrozenDb::empty());
+        mx.run();
+        assert_eq!(mx.counters.moves, 5_000, "the run did not consume its move budget");
+        assert!(
+            mx.counters.db_attempts > 5_000,
+            "the descent should make several attempts per round, got {}",
+            mx.counters.db_attempts
+        );
+        assert!(mx.counters.db_span_skips > 0, "the tight span cap should have skipped windows");
+        mx.global_check();
+    }
+
     #[test]
     fn counters_line_tolerates_missing_trailing_fields() {
         let mut c = MixCounters::default();
@@ -6741,6 +7051,53 @@ mod mix_tests {
     // verification and a final global_check. The seams must also actually
     // absorb neighborhood material — a run where tg_consumed stays 0 means
     // the placer degenerated to bare words and the mechanism is dead.
+    // The global re-randomisation move must MOVE gates and change NOTHING
+    // else: same function, same size, same multiset of gates. It is scheduled
+    // at 1/|circuit| per round, so the rate is pushed hard here to make it
+    // fire often enough to be worth asserting on.
+    #[test]
+    fn global_shuffle_moves_gates_but_preserves_function_and_size() {
+        let gates = random_mixed_circuit(37, 16, 300);
+        let before = gates.clone();
+        let params = MixParams {
+            k_max: 6,
+            moves: 20_000,
+            target_size: 300,
+            temp: 20.0,
+            // 300 * the size, so the per-round p is ~1: a reshuffle nearly
+            // every round.
+            shuffle_rate: 300.0,
+            p_twist: 0.0,
+            p_db: 0.0,
+            local_verify: true,
+            verify_every: 500,
+            report_every: u64::MAX,
+            seed: 11,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        assert!(mx.counters.shuffles > 1_000, "shuffle never fired: {}", mx.counters.shuffles);
+        assert!(
+            mx.counters.shuffle_moved > 0,
+            "shuffles ran but no gate ever changed position"
+        );
+        let after: Vec<XGate> =
+            mx.arena.ids_in_order().iter().map(|&id| mx.arena.gate(id).clone()).collect();
+        assert_eq!(after.len(), before.len(), "shuffle changed the circuit SIZE");
+        let mut a: Vec<_> = after.iter().map(|g| format!("{g:?}")).collect();
+        let mut b: Vec<_> = before.iter().map(|g| format!("{g:?}")).collect();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b, "shuffle changed the gate MULTISET, not just the order");
+        assert_ne!(
+            after.iter().map(|g| format!("{g:?}")).collect::<Vec<_>>(),
+            before.iter().map(|g| format!("{g:?}")).collect::<Vec<_>>(),
+            "shuffle left the order untouched"
+        );
+        mx.global_check();
+    }
+
     #[test]
     fn mixer_g57_twists_preserve_function_and_absorb() {
         let gates = random_mixed_circuit(29, 16, 300);

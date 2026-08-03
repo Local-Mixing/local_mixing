@@ -14,6 +14,7 @@
 //! window to a dense space.  Consequently its output is byte-compatible with
 //! the canonical polynomial keys produced by the legacy g57 path.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use super::xgate::XGate;
 use crate::circuit::circuit::{
     Monomial, Permutation, Polynomial, canonicalize_polys_4, polynomial_from_terms,
@@ -68,6 +69,14 @@ pub enum XPolyError {
         limit: usize,
     },
     CanonicalizationFailed,
+    /// The window's exact ANF degree exceeds the store's maximum, so no stored
+    /// circuit can compute this function. Read off the polynomial rather than
+    /// probed: exact, and free, because canonicalization needs that polynomial
+    /// anyway.
+    DegreeExceeded {
+        degree: usize,
+        limit: usize,
+    },
 }
 
 /// Canonical polynomials and the maps needed to return a frozen-store friend
@@ -276,10 +285,55 @@ fn dense_remap(gates: &[XGate], used: &[u16]) -> Vec<XGate> {
 /// satisfying their invariant (the target is absent from the controls) are
 /// involutions, so this is the inverse-circuit direction used by the legacy
 /// compressor.
+/// Stage timers for the canonicalization path (see the note inside
+/// `canonicalize_xgates_single`). Relaxed atomics: this is instrumentation,
+/// so a lost update is cheaper than a fence on the hot path.
+pub static POLY_NS: AtomicU64 = AtomicU64::new(0);
+pub static CANON_NS: AtomicU64 = AtomicU64::new(0);
+pub static CANON_CALLS: AtomicU64 = AtomicU64::new(0);
+/// Wall nanoseconds inside the DB splice's verification gate.
+pub static VERIFY_NS: AtomicU64 = AtomicU64::new(0);
+/// Wall nanoseconds inside the randomized degree PROBE (xgate_degree_exceeds).
+/// Measured to decide whether the probe earns its place against simply
+/// reading the exact degree off the polynomial canonicalization needs anyway.
+pub static DEGREE_NS: AtomicU64 = AtomicU64::new(0);
+pub static DEGREE_CALLS: AtomicU64 = AtomicU64::new(0);
+
+/// Exact max ANF degree over a polynomial set: the largest number of variables
+/// in any monomial. Monomials are `u64` variable masks, so this is a popcount.
+pub fn polys_max_degree(polys: &[Polynomial]) -> usize {
+    polys
+        .iter()
+        .flat_map(|p| p.iter().map(|m| m.count_ones() as usize))
+        .max()
+        .unwrap_or(0)
+}
+
 pub fn canonicalize_xgates_single(
     gates: &[XGate],
     reversed: bool,
     budget: XPolyBudget,
+) -> Result<CanonicalXPolys, XPolyError> {
+    canonicalize_xgates_single_capped(gates, reversed, budget, 0)
+}
+
+/// As [`canonicalize_xgates_single`], but with `max_degree > 0` the exact ANF
+/// degree is checked BETWEEN the two stages: after composing the polynomial
+/// (2.5us, measured) and before canonicalizing it (1.16ms, measured). A window
+/// above the store's maximum degree cannot match anything, so canonicalizing it
+/// is pure waste.
+///
+/// This replaces a randomized probe over `probes` affine subspaces of dimension
+/// `max_degree + 1`. That probe cost 43us per call -- 17x the polynomial it was
+/// protecting -- rebuilt a window-independent axis table on every call, was
+/// one-sided (it could certify "over" but silently miss it), and threw away
+/// work canonicalization then redid. It never once fired in production
+/// (`dsk=0` across every run). `max_degree = 0` disables the check.
+pub fn canonicalize_xgates_single_capped(
+    gates: &[XGate],
+    reversed: bool,
+    budget: XPolyBudget,
+    max_degree: usize,
 ) -> Result<CanonicalXPolys, XPolyError> {
     let used_wires = xgate_used_wires(gates);
     if used_wires.len() > 64 {
@@ -299,9 +353,34 @@ pub fn canonicalize_xgates_single(
     if reversed {
         dense.reverse();
     }
-    let polys = xgates_to_polynomial(&dense, used_wires.len(), budget)?;
-    let (polys, order) =
-        canonicalize_polys_4(polys, true).map_err(|_| XPolyError::CanonicalizationFailed)?;
+    // Stage split, measured. The descent recomputes BOTH stages from scratch
+    // at every rung even though consecutive rungs differ by one gate at one
+    // end. Composition is peelable (one gate touches <=3 wires); the canonical
+    // wire ORDER is a global property of the whole polynomial set and is not.
+    // Which stage dominates decides whether peeling is worth building.
+    // Time both stages INCLUDING failures. A window that blows the monomial
+    // budget does most of the work before erroring, and an early `?` would
+    // have hidden exactly the expensive cases.
+    let t0 = std::time::Instant::now();
+    let poly_res = xgates_to_polynomial(&dense, used_wires.len(), budget);
+    let t1 = std::time::Instant::now();
+    POLY_NS.fetch_add((t1 - t0).as_nanos() as u64, Ordering::Relaxed);
+    CANON_CALLS.fetch_add(1, Ordering::Relaxed);
+    let polys = poly_res?;
+    if max_degree > 0 {
+        let deg = polys_max_degree(&polys);
+        if deg > max_degree {
+            return Err(XPolyError::DegreeExceeded {
+                degree: deg,
+                limit: max_degree,
+            });
+        }
+    }
+    let t2 = std::time::Instant::now();
+    let canon_res = canonicalize_polys_4(polys, true);
+    let t3 = std::time::Instant::now();
+    CANON_NS.fetch_add((t3 - t2).as_nanos() as u64, Ordering::Relaxed);
+    let (polys, order) = canon_res.map_err(|_| XPolyError::CanonicalizationFailed)?;
     Ok(CanonicalXPolys {
         polys,
         order,
