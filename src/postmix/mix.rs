@@ -87,7 +87,13 @@ pub static TWIST_PATTERNS: &[TwistPattern] = &[TwistPattern {
 
 /// Largest window/replacement length tracked in the splice size histogram;
 /// anything longer is folded into the top bucket.
-pub const SPLICE_HIST_MAX: usize = 16;
+pub const SPLICE_HIST_MAX: usize = 24;
+
+/// Largest window length tracked in the per-outgoing-length DB breakdown.
+/// Sized past any plausible `s_db` so a sweep never silently folds its widest
+/// windows into the top bucket -- the point of the breakdown is exactly the
+/// behaviour of the widest ones.
+pub const LEN_HIST_MAX: usize = 32;
 
 /// How a DB move samples its outgoing window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1058,6 +1064,17 @@ pub struct MixCounters {
     // Wide windows (> 24 wires) verified by ANF comparison instead of the
     // exhaustive evaluator. Session-local.
     pub db_wide_poly: u64,
+    // PER-OUTGOING-LENGTH breakdown of the DB move, indexed by the sampled
+    // window's gate count (0..=LEN_HIST_MAX). Without it every rate the run
+    // reports is an average over a random length draw, which conflates "this
+    // width works" with "this width was sampled often". Session-local shapes,
+    // like splice_sizes.
+    pub len_attempts: Vec<u64>,
+    pub len_hits: Vec<u64>,
+    pub len_removed: Vec<u64>,
+    pub len_added: Vec<u64>,
+    pub len_span_skip: Vec<u64>,
+    pub len_deg_skip: Vec<u64>,
     pub db_attempts: u64,      // total DB lookups attempted (both modes)
     pub db_degree_skips: u64,  // attempts skipped by the degree guard (no lookup)
     pub db_span_skips: u64,    // attempts skipped by the span guard (no lookup)
@@ -1285,6 +1302,9 @@ pub struct Mixer {
     // Which geometry built the window of the CURRENT db_attempt (see
     // sample_window); stamped into --db-record attempt lines.
     db_last_sampler: DbSample,
+    // Gate count of the window the current DB attempt sampled, for the
+    // per-length breakdown.
+    db_last_len: usize,
     // (seed id, its left neighbour when drawn). Window building floats gates,
     // so a FAILED attempt would otherwise leave the seed displaced -- and under
     // pool targeting the same stubborn gate is drawn repeatedly, which would
@@ -1525,6 +1545,12 @@ impl MixCounters {
             choice_sum: 0,
             choice_bits_milli: 0,
             db_wide_poly: 0,
+            len_attempts: Vec::new(),
+            len_hits: Vec::new(),
+            len_removed: Vec::new(),
+            len_added: Vec::new(),
+            len_span_skip: Vec::new(),
+            len_deg_skip: Vec::new(),
             db_mix_added: 0,
             db_mix_removed: 0,
             db_cmp_added: 0,
@@ -2097,6 +2123,7 @@ impl Mixer {
             db_budget,
             db_record: None,
             db_last_sampler: DbSample::Contiguous,
+            db_last_len: 0,
             db_seed_home: None,
             db_g57_only: false,
             db_mode_cur: db_mode0,
@@ -4678,6 +4705,8 @@ impl Mixer {
         // Stamped into every --db-record attempt line (smp=ctg|cvx) so stats
         // can split hits by sampler geometry, esp. under --db-sample mixed.
         self.db_last_sampler = smp;
+        self.db_last_len = ids.len();
+        Self::bump_len(&mut self.counters.len_attempts, ids.len(), 1);
         // Litter fragmentation census over the sampled window (observation only).
         let (distinct, _) = self.litter_census(&ids);
         self.counters.litter_windows += 1;
@@ -4802,6 +4831,8 @@ impl Mixer {
                 }
                 if res.degree_skipped {
                     self.counters.db_degree_skips += 1;
+                    let k = self.db_last_len;
+                    Self::bump_len(&mut self.counters.len_deg_skip, k, 1);
                 }
                 let Some(replacement) = res.chosen else {
                     self.record_db_attempt(prefix, res.match_count, None);
@@ -4872,6 +4903,8 @@ impl Mixer {
             && super::xpoly::xgate_used_wires(&window).len() > self.params.db_max_span
         {
             self.counters.db_span_skips += 1;
+            let k = self.db_last_len;
+            Self::bump_len(&mut self.counters.len_span_skip, k, 1);
             self.record_db_attempt(&window, 0, None);
             match mode {
                 DbMode::Compressing => self.counters.db_comp_misses += 1,
@@ -4941,11 +4974,22 @@ impl Mixer {
         self.try_db_splice_curated(curated_pick, &ids, g1dir, &window, replacement, match_count, mode)
     }
 
+    /// Bump one per-length bucket, growing the vector on demand.
+    fn bump_len(v: &mut Vec<u64>, k: usize, by: u64) {
+        let k = k.min(LEN_HIST_MAX);
+        if v.len() <= LEN_HIST_MAX {
+            v.resize(LEN_HIST_MAX + 1, 0);
+        }
+        v[k] += by;
+    }
+
     fn count_db_hit(&mut self, mode: DbMode) {
         match mode {
             DbMode::Compressing => self.counters.db_comp_hits += 1,
             DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => self.counters.db_agn_hits += 1,
         }
+        let k = self.db_last_len;
+        Self::bump_len(&mut self.counters.len_hits, k, 1);
     }
 
     fn count_db_miss(&mut self, mode: DbMode) {
@@ -5036,6 +5080,7 @@ impl Mixer {
         let old = window.len();
         let new = replacement.len();
         if new <= old {
+            Self::bump_len(&mut self.counters.len_removed, old, (old - new) as u64);
             self.counters.db_gates_removed += (old - new) as u64;
             if mode == DbMode::Compressing {
                 self.counters.db_cmp_removed += (old - new) as u64;
@@ -5043,6 +5088,7 @@ impl Mixer {
                 self.counters.db_mix_removed += (old - new) as u64;
             }
         } else {
+            Self::bump_len(&mut self.counters.len_added, old, (new - old) as u64);
             self.counters.db_gates_added += (new - old) as u64;
             if mode == DbMode::Compressing {
                 self.counters.db_cmp_added += (new - old) as u64;
@@ -6183,6 +6229,36 @@ impl Mixer {
                 p.integ,
                 p.sat
             );
+        }
+        {
+            // PER-OUTGOING-LENGTH breakdown: the rates the headline line
+            // reports are averages over a uniform length draw in 1..s_db, so
+            // they conflate "this width works" with "this width was sampled".
+            // This says what each width actually did.
+            let c = &self.counters;
+            let n = c.len_attempts.len();
+            if n > 0 && c.len_attempts.iter().sum::<u64>() > 0 {
+                println!(
+                    "[fmix] per-length: len attempts hits hit% removed added net span_skip deg_skip"
+                );
+                let g = |v: &Vec<u64>, k: usize| v.get(k).copied().unwrap_or(0);
+                for k in 1..n {
+                    let a = c.len_attempts[k];
+                    if a == 0 {
+                        continue;
+                    }
+                    let h = g(&c.len_hits, k);
+                    let rm = g(&c.len_removed, k);
+                    let ad = g(&c.len_added, k);
+                    println!(
+                        "[fmix] len {k:>3} {a:>9} {h:>8} {:>6.2} {rm:>8} {ad:>6} {:>+6} {:>10} {:>9}",
+                        100.0 * h as f64 / a as f64,
+                        rm as i64 - ad as i64,
+                        g(&c.len_span_skip, k),
+                        g(&c.len_deg_skip, k)
+                    );
+                }
+            }
         }
         if self.params.twist_g57 {
             let c = &self.counters;
