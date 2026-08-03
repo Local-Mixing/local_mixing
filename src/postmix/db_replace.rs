@@ -18,7 +18,7 @@
 use super::xgate::XGate;
 use super::xpoly::{
     CanonicalXPolys, XPolyBudget, XPolyError, canonicalize_xgates_single,
-    canonicalize_xgates_single_capped, xgate_used_wires,
+    canonicalize_xgates_single_capped, xgate_used_wires, xgates_to_polynomial,
 };
 use crate::circuit::circuit::{CircuitSeq, Permutation, polys_repr_blob};
 use crate::replace::frozen::FrozenDb;
@@ -148,6 +148,50 @@ pub fn xgate_degree_exceeds(
         }
     }
     false
+}
+
+/// EXACT equivalence by ANF comparison, for windows too wide to verify
+/// exhaustively.
+///
+/// `rules::verify_rewrite` evaluates both sides on every assignment, so its
+/// cost is `2^support` and it is capped at 24 wires -- past that a replacement
+/// cannot be checked and has to be declined. But two gate sequences compute the
+/// same function exactly when their per-wire output polynomials are equal, and
+/// the polynomial machinery is already on the lookup path (it builds the store
+/// key). So a wide window can be verified by composing both sides over their
+/// combined support and comparing: the cost is bounded by the polynomial TERM
+/// count, not by the support size. Measured on the production store, entries
+/// spanning >= 24 wires carry at most 99 terms per wire and 233 in total -- a
+/// comparison, against 16.7M evaluations at the exhaustive cap.
+///
+/// This is a proof, not a probabilistic check: the ANF *is* the function.
+///
+/// Returns `None` when the support exceeds the 64-wire polynomial variable
+/// limit or the budget is hit -- undecided, so the caller must decline rather
+/// than assume.
+pub fn polys_equivalent(
+    a: &[XGate],
+    b: &[XGate],
+    budget: XPolyBudget,
+) -> Option<bool> {
+    let mut used: Vec<u16> = a
+        .iter()
+        .chain(b.iter())
+        .flat_map(|g| std::iter::once(g.target).chain(g.ctrls.iter().map(|&(w, _)| w)))
+        .collect();
+    used.sort_unstable();
+    used.dedup();
+    if used.len() > 64 {
+        return None;
+    }
+    let nw = used.len();
+    let da = dense_remap_window(a, &used, false);
+    let db = dense_remap_window(b, &used, false);
+    let pa = xgates_to_polynomial(&da, nw, budget).ok()?;
+    let pb = xgates_to_polynomial(&db, nw, budget).ok()?;
+    // Polynomials are normalised (sorted, XOR-cancelled) by construction, so
+    // structural equality is functional equality.
+    Some(pa == pb)
 }
 
 /// Dense-remap a window's XGates onto `[0, used.len())` (used sorted), reversing
@@ -1107,6 +1151,69 @@ mod tests {
             },
         );
         assert!(!probes.is_empty() && probes.iter().all(|&c| !c), "COMP is regular-only");
+    }
+
+    // The polynomial verifier must agree with the exhaustive one wherever the
+    // exhaustive one can run. That agreement is the whole warrant for using it
+    // ABOVE the 24-wire ceiling, where nothing can cross-check it.
+    #[test]
+    fn poly_verifier_agrees_with_the_exhaustive_one() {
+        let mut rng = StdRng::seed_from_u64(31);
+        let budget = XPolyBudget::default();
+        let (mut same, mut diff) = (0, 0);
+        for _ in 0..400 {
+            let n = 6;
+            let k = rng.random_range(1..=4);
+            let mk = |rng: &mut StdRng| -> Vec<XGate> {
+                (0..k)
+                    .map(|_| {
+                        let t = rng.random_range(0..n) as u16;
+                        let mut c: Vec<(u16, bool)> = Vec::new();
+                        for w in 0..n as u16 {
+                            if w != t && rng.random_bool(0.35) {
+                                c.push((w, rng.random_bool(0.5)));
+                            }
+                        }
+                        XGate { target: t, comp: rng.random_bool(0.5), ctrls: c.into() }
+                    })
+                    .collect()
+            };
+            let a = mk(&mut rng);
+            // Half the trials compare a sequence with itself (must be equal),
+            // half with an independent one (usually unequal).
+            let b = if rng.random_bool(0.5) { a.clone() } else { mk(&mut rng) };
+            let exhaustive = crate::postmix::rules::verify_rewrite(&a, &b);
+            let poly = polys_equivalent(&a, &b, budget).expect("6 wires is decidable");
+            assert_eq!(
+                exhaustive, poly,
+                "verifiers disagree on {a:?} vs {b:?}: exhaustive={exhaustive} poly={poly}"
+            );
+            if exhaustive { same += 1 } else { diff += 1 }
+        }
+        assert!(same > 20 && diff > 20, "trial mix was degenerate: {same} equal, {diff} unequal");
+    }
+
+    // A window far past the exhaustive ceiling still verifies, and still
+    // distinguishes: the point of the whole exercise.
+    #[test]
+    fn poly_verifier_handles_windows_past_the_exhaustive_cap() {
+        // 30 wires: 2^30 evaluations is out of reach for verify_rewrite, which
+        // refuses above 24.
+        let gates: Vec<XGate> = (0..10)
+            .map(|i| {
+                XGate::conj(i as u16, [((i + 10) as u16, true), ((i + 20) as u16, false)])
+                    .expect("distinct pins")
+            })
+            .collect();
+        let budget = XPolyBudget::default();
+        assert_eq!(polys_equivalent(&gates, &gates, budget), Some(true));
+        let mut changed = gates.clone();
+        changed[3].comp = !changed[3].comp;
+        assert_eq!(polys_equivalent(&gates, &changed, budget), Some(false));
+        // Reordering two gates that share no wires is function-preserving.
+        let mut swapped = gates.clone();
+        swapped.swap(0, 1);
+        assert_eq!(polys_equivalent(&gates, &swapped, budget), Some(true));
     }
 
     #[test]

@@ -42,6 +42,14 @@ fn main() {
     let mut hist: BTreeMap<(usize, usize), u64> = BTreeMap::new();
     // (first-friend gate count, canonical wire span) -> entries
     let mut span_hist: BTreeMap<(usize, usize), u64> = BTreeMap::new();
+    // JOINT span x degree, and the term census restricted to the WIDE slice:
+    // the question these answer is whether the entries a 24-wire verify cap
+    // excludes are also high-degree (expensive to verify another way) or in
+    // fact low-degree (cheap by a polynomial identity check).
+    let mut joint: BTreeMap<(usize, usize), u64> = BTreeMap::new();
+    let mut wide_terms_max = 0usize;
+    let mut wide_total_max = 0usize;
+    let mut wide_n = 0u64;
     // Poly size census: worst per-wire and per-entry term counts in the store.
     let mut max_wire_terms = 0usize;
     let mut max_total_terms = 0usize;
@@ -115,11 +123,17 @@ fn main() {
                         .max()
                         .unwrap_or(0);
                     *hist.entry((gates.len(), deg)).or_insert(0) += 1;
+                    *joint.entry((min_span, deg)).or_insert(0) += 1;
                     let wire_terms = polys.iter().map(|p| p.len()).max().unwrap_or(0);
                     let total_terms: usize = polys.iter().map(|p| p.len()).sum();
                     max_wire_terms = max_wire_terms.max(wire_terms);
                     max_total_terms = max_total_terms.max(total_terms);
                     *terms_hist.entry(wire_terms.next_power_of_two()).or_insert(0) += 1;
+                    if min_span >= 24 {
+                        wide_n += 1;
+                        wide_terms_max = wide_terms_max.max(wire_terms);
+                        wide_total_max = wide_total_max.max(total_terms);
+                    }
                 }
                 Err(_) => budget_fail += 1,
             }
@@ -131,6 +145,39 @@ fn main() {
     }
 
     println!("entries analyzed: {kept} (budget_fail {budget_fail}, parse_fail {parse_fail})");
+    {
+        // The wide slice, which a 24-wire exhaustive verifier cannot touch.
+        let jdmax = joint.keys().map(|&(_, d)| d).max().unwrap_or(0);
+        println!("\n=== JOINT span x degree (span >= 20 only) ===");
+        print!("{:>6}", "span");
+        for d in 0..=jdmax {
+            print!(" {:>8}", format!("deg{d}"));
+        }
+        println!("{:>10}", "total");
+        let smax = joint.keys().map(|&(s, _)| s).max().unwrap_or(0);
+        for sp in 20..=smax {
+            let row: Vec<u64> = (0..=jdmax).map(|d| *joint.get(&(sp, d)).unwrap_or(&0)).collect();
+            let tot: u64 = row.iter().sum();
+            if tot == 0 {
+                continue;
+            }
+            print!("{sp:>6}");
+            for v in &row {
+                print!(" {v:>8}");
+            }
+            println!("{tot:>10}");
+        }
+        let wide: Vec<(usize, u64)> = (0..=jdmax)
+            .map(|d| (d, joint.iter().filter(|(k, _)| k.0 >= 24 && k.1 == d).map(|(_, v)| *v).sum::<u64>()))
+            .filter(|&(_, v)| v > 0)
+            .collect();
+        let wtot: u64 = wide.iter().map(|(_, v)| v).sum();
+        println!("\nspan >= 24: {wtot} entries; degree histogram:");
+        for (d, v) in &wide {
+            println!("   deg {d}: {v}  ({:.1}%)", 100.0 * *v as f64 / wtot.max(1) as f64);
+        }
+        println!("span >= 24 worst poly size: max per-wire terms {wide_terms_max}, max total terms {wide_total_max} (n={wide_n})");
+    }
     let gmax = hist.keys().map(|&(g, _)| g).max().unwrap_or(0);
     let dmax = hist.keys().map(|&(_, d)| d).max().unwrap_or(0);
     println!("max ANF degree seen: {dmax}");

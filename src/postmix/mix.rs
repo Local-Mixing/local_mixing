@@ -1054,7 +1054,10 @@ pub struct MixCounters {
     pub db_mix_removed: u64,
     pub db_cmp_added: u64,
     pub db_cmp_removed: u64,
-    pub db_wide_skip: u64,     // support > 24 wires with db_verify on: not verifiable, skipped
+    pub db_wide_skip: u64,     // support > 64 wires or budget hit: UNDECIDABLE, skipped
+    // Wide windows (> 24 wires) verified by ANF comparison instead of the
+    // exhaustive evaluator. Session-local.
+    pub db_wide_poly: u64,
     pub db_attempts: u64,      // total DB lookups attempted (both modes)
     pub db_degree_skips: u64,  // attempts skipped by the degree guard (no lookup)
     pub db_span_skips: u64,    // attempts skipped by the span guard (no lookup)
@@ -1521,6 +1524,7 @@ impl MixCounters {
             choice_multi: 0,
             choice_sum: 0,
             choice_bits_milli: 0,
+            db_wide_poly: 0,
             db_mix_added: 0,
             db_mix_removed: 0,
             db_cmp_added: 0,
@@ -4976,14 +4980,31 @@ impl Mixer {
                 .collect();
             support.sort_unstable();
             support.dedup();
-            if support.len() > 24 {
-                self.counters.db_wide_skip += 1;
-                self.record_db_attempt(window, match_count, None);
-                self.count_db_miss(mode);
-                return false;
-            }
             let _vt = std::time::Instant::now();
-            let _vok = rules::verify_rewrite(window, &replacement);
+            // Past verify_rewrite's 24-wire exhaustive ceiling, verify by ANF
+            // instead of by evaluation: cost is bounded by the polynomial term
+            // count rather than 2^support, and it is still a proof. Measured
+            // on the production store, the >= 24-wire slice is 1.3% of entries
+            // (all 10-11 gates), max degree 7, and carries at most 233 terms --
+            // so this is a comparison where the exhaustive check would have
+            // been 16.7M evaluations. Only an UNDECIDED result (support > 64
+            // wires, or a budget hit) still declines.
+            let _vok = if support.len() > 24 {
+                match super::db_replace::polys_equivalent(window, &replacement, self.db_budget) {
+                    Some(ok) => {
+                        self.counters.db_wide_poly += 1;
+                        ok
+                    }
+                    None => {
+                        self.counters.db_wide_skip += 1;
+                        self.record_db_attempt(window, match_count, None);
+                        self.count_db_miss(mode);
+                        return false;
+                    }
+                }
+            } else {
+                rules::verify_rewrite(window, &replacement)
+            };
             super::xpoly::VERIFY_NS.fetch_add(
                 _vt.elapsed().as_nanos() as u64,
                 std::sync::atomic::Ordering::Relaxed,
@@ -5996,7 +6017,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
+            "[fmix] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} wpoly={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -6029,6 +6050,7 @@ impl Mixer {
             c.db_gates_removed,
             c.db_gates_added,
             c.db_wide_skip,
+            c.db_wide_poly,
             c.db_degree_skips,
             c.db_span_skips,
             c.db_build_aborts,
