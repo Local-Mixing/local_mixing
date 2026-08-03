@@ -1,7 +1,5 @@
-//! Focused `[2,2,3,3]` nonlinear TDP4n constructor.
-//!
-//! This binary exists for controlled research comparisons. It deliberately
-//! does not change the production `[3,3]` preset used by `sss`.
+//! Build the sole production nonlinear TDP construction:
+//! [2,2,2,3], single carrier, Gray fold, and a 1:1 product band.
 
 use std::path::Path;
 
@@ -9,14 +7,12 @@ use clap::Parser;
 use local_mixing::{
     circuit::CircuitSeq,
     postmix::format,
-    replace::gadgets::{
-        ProdConfig, packed_bit, tdp4n_nonlinear_with_slice_zero_random_cnot_with_config,
-    },
+    replace::gadgets::{packed_bit, tdp4n_nonlinear_with_slice_zero_random_cnot},
 };
 use rand::{SeedableRng, rngs::StdRng};
 
 #[derive(Debug, Parser)]
-#[command(name = "gen_tdp4n_nonlinear_2233")]
+#[command(name = "gen_tdp4n_nonlinear_2223")]
 struct Args {
     #[arg(long)]
     input: String,
@@ -62,10 +58,6 @@ fn main() {
 
     let source = std::fs::read_to_string(&args.input).expect("read G57 input");
     let original = CircuitSeq::from_string(&source);
-    let source_repr_xxh3_128 = format!(
-        "{:032x}",
-        xxhash_rust::xxh3::xxh3_128(original.repr().as_bytes())
-    );
     assert!(
         original
             .gates
@@ -74,29 +66,28 @@ fn main() {
             .all(|&wire| (wire as usize) < args.n),
         "input circuit uses a wire outside 0..n"
     );
-
-    let config = ProdConfig::research_2233();
-    assert_eq!(
-        (config.k, config.deg, config.k_hi, config.deg_hi),
-        (2, 2, 2, 3)
+    let source_repr_xxh3_128 = format!(
+        "{:032x}",
+        xxhash_rust::xxh3::xxh3_128(original.repr().as_bytes())
     );
+
     let mut rng = StdRng::seed_from_u64(args.seed);
-    let constructed = tdp4n_nonlinear_with_slice_zero_random_cnot_with_config(
+    let constructed = tdp4n_nonlinear_with_slice_zero_random_cnot(
         &original,
         args.n,
         args.rg_draws,
         args.slice_gates,
-        &config,
         &mut rng,
     );
 
-    let expected_band = (((4 * (2 * args.n) * 4) as f64).sqrt().ceil() as usize)
-        .max(6)
-        .max(6);
-    let expected_wires = 4 * args.n + expected_band;
+    // Two n-wire carrier blocks, two reserved n-wire helper blocks, then a
+    // 2n-wire product band: 6n total.
+    let band_width = 2 * args.n;
+    let four_n = 4 * args.n;
+    let expected_wires = four_n + band_width;
     assert_eq!(
         constructed.circuit.num_wires, expected_wires,
-        "unexpected [2,2,3,3] TDP wire count"
+        "unexpected [2,2,2,3] Gray TDP wire count"
     );
 
     format::write_mpmct(
@@ -108,23 +99,15 @@ fn main() {
 
     let y = packed_words_to_hex(&constructed.public_y, args.n);
     let z = packed_words_to_hex(&constructed.public_z, args.n);
-    let three_n = 3 * args.n;
-    let four_n = 4 * args.n;
     let metadata = format!(
         "mode=slice_zero_random\n\
          representation=mpmct1\n\
-         layout=tdp4n_two_share\n\
-         nonlinear_plan=2,2,3,3\n\
-         nonlinear_k={}\n\
-         nonlinear_deg={}\n\
-         nonlinear_k_hi={}\n\
-         nonlinear_deg_hi={}\n\
-         nonlinear_band_config={}\n\
-         nonlinear_band_size={}\n\
-         nonlinear_rsrc={}\n\
-         nonlinear_max_width={}\n\
-         nonlinear_fill_nl={}\n\
-         nonlinear_roll={}\n\
+         layout=tdp4n_single_carrier_2223_gray_padded\n\
+         nonlinear_config_version=2223-gray-v1\n\
+         nonlinear_plan=2,2,2,3\n\
+         nonlinear_fold=gray\n\
+         nonlinear_single_carrier=true\n\
+         nonlinear_band_size={band_width}\n\
          n={}\n\
          total_wires={}\n\
          gates={}\n\
@@ -133,28 +116,15 @@ fn main() {
          rg_draws={}\n\
          source_gates={}\n\
          source_repr_xxh3_128={}\n\
-         y_hex={}\n\
-         z_hex={}\n\
-         x_wires=0..{}\n\
-         y_wires={}..{}\n\
-         z_wires={}..{}\n\
-         w_wires={}..{}\n\
-         sat_helper_wires={}..{}\n\
-         extra_helper_wires={}..{}\n\
-         degree2_band_wires={}..{}\n\
+         y_hex={y}\n\
+         z_hex={z}\n\
+         x_carrier_wires=0..{}\n\
+         y_carrier_wires={}..{}\n\
+         reserved_aux_wires={}..{four_n}\n\
+         product_band_wires={four_n}..{}\n\
          middle_output_wires={}..{}\n\
          fixed_input_blocks=y,z\n\
          bit_order=bit i is wire n+i for y and wire 2n+i for z\n",
-        config.k,
-        config.deg,
-        config.k_hi,
-        config.deg_hi,
-        config.band,
-        expected_band,
-        config.rsrc,
-        config.max_width,
-        config.fill_nl,
-        config.roll,
         args.n,
         constructed.circuit.num_wires,
         constructed.circuit.gates.len(),
@@ -163,20 +133,10 @@ fn main() {
         args.rg_draws,
         original.gates.len(),
         source_repr_xxh3_128,
-        y,
-        z,
         args.n,
         args.n,
         2 * args.n,
         2 * args.n,
-        three_n,
-        three_n,
-        four_n,
-        three_n,
-        constructed.circuit.num_wires,
-        four_n,
-        constructed.circuit.num_wires,
-        four_n,
         constructed.circuit.num_wires,
         args.n,
         2 * args.n,
@@ -185,12 +145,13 @@ fn main() {
     std::fs::write(&metadata_path, metadata).expect("write slice metadata");
 
     println!(
-        "[tdp4n-2233] input_gates={} output_gates={} wires={} carrier_wires={} band_wires={} seed={} Y={} Z={} output={} metadata={}",
+        "[tdp4n-2223-gray] input_gates={} output_gates={} wires={} carriers={} reserved={} band={} seed={} Y={} Z={} output={} metadata={}",
         original.gates.len(),
         constructed.circuit.gates.len(),
         constructed.circuit.num_wires,
-        four_n,
-        expected_band,
+        2 * args.n,
+        2 * args.n,
+        band_width,
         args.seed,
         y,
         z,

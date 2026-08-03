@@ -110,7 +110,7 @@ fn nonlinear_tdp4n_rounds_never_emit_complemented_empty_identities() {
     for artifact in &artifacts {
         let (gates, wires) =
             read_mpmct(artifact.to_str().expect("UTF-8 artifact path")).expect("read artifact");
-        assert_eq!(wires, 19, "unexpected namespace in {}", artifact.display());
+        assert_eq!(wires, 18, "unexpected namespace in {}", artifact.display());
         assert!(
             gates.iter().all(|gate| !gate.is_noop()),
             "complemented empty identity escaped into {}",
@@ -134,6 +134,15 @@ fn nonlinear_tdp4n_rounds_never_emit_complemented_empty_identities() {
         assert_eq!(metadata_value(&artifact_metadata, "construction_seed"), "7");
         assert_eq!(metadata_value(&artifact_metadata, "rg_frequency"), "1");
         assert_eq!(metadata_value(&artifact_metadata, "source_gates"), "2");
+        assert_eq!(
+            metadata_value(&artifact_metadata, "nonlinear_plan"),
+            "2,2,2,3"
+        );
+        assert_eq!(metadata_value(&artifact_metadata, "nonlinear_fold"), "gray");
+        assert_eq!(
+            metadata_value(&artifact_metadata, "nonlinear_single_carrier"),
+            "true"
+        );
         assert_eq!(metadata_value(&artifact_metadata, "y_hex"), fixed_y);
         assert_eq!(metadata_value(&artifact_metadata, "z_hex"), fixed_z);
 

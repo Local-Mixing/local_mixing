@@ -2,12 +2,6 @@
 
 use crate::replace::frozen::FrozenDb;
 use crate::replace::mixing::split_into_random_chunk_ranges;
-use crate::replace::sat_score::{
-    compression_selection_score, expansion_selection_score, sat_bcp_enabled,
-    sat_bcp_min_resistance, sat_compress_preserve_delta, sat_compress_protect_enabled,
-    sat_cone_aware_enabled, sat_cone_min_fraction, sat_expand_loop_candidates,
-    sat_expand_min_delta, sat_score_seed, sat_score_slack, sat_scoring_enabled, score_subcircuit,
-};
 use crate::{
     circuit::circuit::{CircuitSeq, Permutation},
     random::random_data::{
@@ -88,14 +82,13 @@ pub static FORCED_COLLISIONS: AtomicUsize = AtomicUsize::new(0);
 pub static MAX_FANOUT: AtomicUsize = AtomicUsize::new(50);
 pub static MIN_MEDIAN_LEEWAY: AtomicUsize = AtomicUsize::new(10);
 pub static SAMF_TARGET: AtomicUsize = AtomicUsize::new(0);
-pub static INCOMING_RANK_MODE: AtomicUsize = AtomicUsize::new(IncomingRankMode::Sat as usize);
+pub static INCOMING_RANK_MODE: AtomicUsize = AtomicUsize::new(IncomingRankMode::Random as usize);
 
 #[repr(usize)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IncomingRankMode {
-    Sat = 0,
+    Random = 0,
     Fanout = 1,
-    Hybrid = 2,
 }
 
 // Running per-wire touch counts of picked replacements, used to steer ancilla assignment
@@ -295,8 +288,7 @@ pub fn outgoing_gen_mode() -> bool {
 pub fn incoming_rank_mode() -> IncomingRankMode {
     match INCOMING_RANK_MODE.load(Ordering::Relaxed) {
         1 => IncomingRankMode::Fanout,
-        2 => IncomingRankMode::Hybrid,
-        _ => IncomingRankMode::Sat,
+        _ => IncomingRankMode::Random,
     }
 }
 
@@ -1218,109 +1210,6 @@ fn expand_to_gate_factor_once(
     (expanded, passes, stalled)
 }
 
-pub fn expand_once_scored(
-    circuit: &CircuitSeq,
-    n: usize,
-    db: &FrozenDb,
-    pair_mode: &ExpandPairMode,
-) -> CircuitSeq {
-    expand_once_scored_with_gate_cap(circuit, n, db, pair_mode, None)
-}
-
-pub fn expand_once_scored_bounded(
-    circuit: &CircuitSeq,
-    n: usize,
-    db: &FrozenDb,
-    pair_mode: &ExpandPairMode,
-    gate_cap: usize,
-) -> CircuitSeq {
-    expand_once_scored_with_gate_cap(circuit, n, db, pair_mode, Some(gate_cap))
-}
-
-fn expand_once_scored_with_gate_cap(
-    circuit: &CircuitSeq,
-    n: usize,
-    db: &FrozenDb,
-    pair_mode: &ExpandPairMode,
-    gate_cap: Option<usize>,
-) -> CircuitSeq {
-    if !sat_scoring_enabled() {
-        return match gate_cap {
-            Some(cap) => expand_once_bounded(circuit, n, db, pair_mode, cap),
-            None => expand_once(circuit, n, db, pair_mode),
-        };
-    }
-
-    let seed = sat_score_seed();
-    let base_score = expansion_selection_score(&score_subcircuit(
-        &circuit.gates,
-        n,
-        seed ^ 0xA11C_E570_5EED,
-    ));
-    let required_score = base_score + sat_expand_min_delta();
-    let attempts = sat_expand_loop_candidates();
-    let mut best: Option<(f64, CircuitSeq, usize, bool)> = None;
-
-    for attempt in 0..attempts {
-        let candidate = match gate_cap {
-            Some(cap) => expand_once_bounded(circuit, n, db, pair_mode, cap),
-            None => expand_once(circuit, n, db, pair_mode),
-        };
-        let passes = 1usize;
-        let stalled = candidate.gates.len() <= circuit.gates.len();
-        if candidate.gates.len() <= circuit.gates.len() {
-            continue;
-        }
-        let sat_score = score_subcircuit(
-            &candidate.gates,
-            n,
-            seed ^ 0xE870_10AD ^ ((attempt as u64) << 16),
-        );
-        if sat_cone_aware_enabled() && sat_score.output_cone_fraction < sat_cone_min_fraction() {
-            continue;
-        }
-        if sat_bcp_enabled() && sat_score.bcp_resistance < sat_bcp_min_resistance() {
-            continue;
-        }
-
-        let score = expansion_selection_score(&sat_score);
-        if score <= required_score {
-            continue;
-        }
-        let replace_best = best
-            .as_ref()
-            .map(|(best_score, ..)| score > *best_score)
-            .unwrap_or(true);
-        if replace_best {
-            best = Some((score, candidate, passes, stalled));
-        }
-    }
-
-    match best {
-        Some((score, expanded, passes, stalled)) => {
-            println!(
-                "  Scored expand pass: {} -> {} gates (passes {}, stalled {})",
-                circuit.gates.len(),
-                expanded.gates.len(),
-                passes,
-                stalled
-            );
-            println!(
-                "  Scored expand pass score: {:.3} (base {:.3}, required {:.3}, attempts {})",
-                score, base_score, required_score, attempts
-            );
-            expanded
-        }
-        None => {
-            println!(
-                "  Scored expand pass skipped: no candidate exceeded score {:.3} after {} attempts",
-                required_score, attempts
-            );
-            circuit.clone()
-        }
-    }
-}
-
 fn print_expand_loop_summary(
     start_len: usize,
     expanded_len: usize,
@@ -1447,52 +1336,15 @@ pub fn expand_frozen(
             continue;
         }
 
-        let best: Vec<CircuitSeq> = if sat_scoring_enabled() {
-            let seed = sat_score_seed();
-            let base_n = sub.max_wire() + 1;
-            let base_score = expansion_selection_score(&score_subcircuit(
-                &sub.gates,
-                base_n,
-                seed ^ 0xE4A5_10AD,
-            ));
-            let required_score = base_score + sat_expand_min_delta();
-            let scored: Vec<(f64, CircuitSeq)> = candidates
-                .into_iter()
-                .enumerate()
-                .filter_map(|(idx, candidate)| {
-                    let score_n = candidate.max_wire() + 1;
-                    let sat_score = score_subcircuit(&candidate.gates, score_n, seed ^ idx as u64);
-                    if sat_cone_aware_enabled()
-                        && sat_score.output_cone_fraction < sat_cone_min_fraction()
-                    {
-                        return None;
-                    }
-                    if sat_bcp_enabled() && sat_score.bcp_resistance < sat_bcp_min_resistance() {
-                        return None;
-                    }
-                    Some((expansion_selection_score(&sat_score), candidate))
-                })
-                .filter(|(score, _)| *score > required_score)
-                .collect();
-            if scored.is_empty() {
-                continue;
-            }
-            let max_score = scored
-                .iter()
-                .map(|(score, _)| *score)
-                .fold(f64::NEG_INFINITY, f64::max);
-            scored
-                .into_iter()
-                .filter(|(score, _)| (*score - max_score).abs() <= 1e-9)
-                .map(|(_, candidate)| candidate)
-                .collect()
-        } else {
-            let max_gates = candidates.iter().map(|c| c.gates.len()).max().unwrap();
-            candidates
-                .into_iter()
-                .filter(|c| c.gates.len() == max_gates)
-                .collect()
-        };
+        let max_gates = candidates
+            .iter()
+            .map(|candidate| candidate.gates.len())
+            .max()
+            .unwrap();
+        let best: Vec<CircuitSeq> = candidates
+            .into_iter()
+            .filter(|candidate| candidate.gates.len() == max_gates)
+            .collect();
         let t_rewire = Instant::now();
         let mut mapped: Vec<CircuitSeq> = best
             .into_iter()
@@ -1504,10 +1356,7 @@ pub fn expand_frozen(
 
         // Rank in circuit wire space against the real surrounding gates, so leeway/fanout
         // features are measured on the wires the replacement will actually sit between.
-        let idx = if matches!(
-            incoming_rank_mode(),
-            IncomingRankMode::Fanout | IncomingRankMode::Hybrid
-        ) {
+        let idx = if incoming_rank_mode() == IncomingRankMode::Fanout {
             fanout_pick_index(&mapped, &expanded.gates[..start], &expanded.gates[end..])
         } else {
             rng.random_range(0..mapped.len())
@@ -1745,60 +1594,10 @@ pub fn compress_frozen(
 
         let min_gates = candidates.iter().map(|c| c.gates.len()).min().unwrap();
         let incoming_mode = incoming_rank_mode();
-        let best: Vec<CircuitSeq> = if sat_scoring_enabled()
-            && incoming_mode != IncomingRankMode::Fanout
-        {
-            let max_len = min_gates
-                .saturating_add(sat_score_slack())
-                .min(sub.gates.len() - 1);
-            let seed = sat_score_seed();
-            let base_score = compression_selection_score(&score_subcircuit(
-                &sub.gates,
-                sub.max_wire() + 1,
-                seed ^ 0xc0de_5678,
-            ));
-            let scored: Vec<(f64, CircuitSeq)> = candidates
-                .into_iter()
-                .filter(|c| c.gates.len() <= max_len)
-                .enumerate()
-                .filter_map(|(idx, candidate)| {
-                    let score_n = candidate.max_wire() + 1;
-                    let sat_score = score_subcircuit(&candidate.gates, score_n, seed ^ idx as u64);
-                    if sat_cone_aware_enabled()
-                        && sat_score.output_cone_fraction < sat_cone_min_fraction()
-                    {
-                        return None;
-                    }
-                    if sat_bcp_enabled() && sat_score.bcp_resistance < sat_bcp_min_resistance() {
-                        return None;
-                    }
-                    let candidate_score = compression_selection_score(&sat_score);
-                    if sat_compress_protect_enabled()
-                        && candidate_score + sat_compress_preserve_delta() < base_score
-                    {
-                        return None;
-                    }
-                    Some((candidate_score, candidate))
-                })
-                .collect();
-            if scored.is_empty() {
-                continue;
-            }
-            let max_score = scored
-                .iter()
-                .map(|(score, _)| *score)
-                .fold(f64::NEG_INFINITY, f64::max);
-            scored
-                .into_iter()
-                .filter(|(score, _)| (*score - max_score).abs() <= 1e-9)
-                .map(|(_, candidate)| candidate)
-                .collect()
-        } else {
-            candidates
-                .into_iter()
-                .filter(|c| c.gates.len() == min_gates)
-                .collect()
-        };
+        let best: Vec<CircuitSeq> = candidates
+            .into_iter()
+            .filter(|candidate| candidate.gates.len() == min_gates)
+            .collect();
         let t_rewire = Instant::now();
         let mut mapped: Vec<CircuitSeq> = best
             .into_iter()
@@ -1810,10 +1609,7 @@ pub fn compress_frozen(
 
         // Rank in circuit wire space: previously canonical-space candidate labels were
         // compared against circuit-space context, making cross-boundary features garbage.
-        let pick = if matches!(
-            incoming_mode,
-            IncomingRankMode::Fanout | IncomingRankMode::Hybrid
-        ) {
+        let pick = if incoming_mode == IncomingRankMode::Fanout {
             fanout_pick_index(
                 &mapped,
                 &compressed.gates[..start],

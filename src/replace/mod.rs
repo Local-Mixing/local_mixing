@@ -9,5 +9,4 @@ pub mod nonlinear_handles;
 pub mod pairs;
 pub mod ranking;
 pub mod replace;
-pub mod sat_score;
 pub mod transpositions;

@@ -64,7 +64,7 @@ fn command() -> Command {
                     Arg::new("nonlinear_gadgetize")
                         .long("nonlinear_gadgetize")
                         .visible_alias("nonlinear-gadgetize")
-                        .help("Apply the production [3,3] nonlinear product-share gadget through the heterogeneous backend: nonlinear band fill, roll-1 band relocation, and an all-zero aux+band slice preblock (implies --cnot). With --tdp4n, use the local [3,3]+rolling 4n+band extension; explicit TDP slice modes retain their own slice contract")
+                        .help("Apply the sole production nonlinear gadget: a [2,2,2,3] mask plan with one carrier per value, Gray folding, nonlinear band fill, roll-1 band relocation, and a zero-slice preblock (implies --cnot). With --tdp4n, X/Y remain the carriers, Z/W stay reserved helpers, and the product band is appended after 4n")
                         .required(false)
                         .conflicts_with_all([
                             "gadgetize",
@@ -285,9 +285,9 @@ fn command() -> Command {
                     Arg::new("incoming_rank")
                         .long("incoming-rank")
                         .required(false)
-                        .default_value("sat")
-                        .value_parser(["sat", "fanout", "hybrid"])
-                        .help("Incoming replacement ranker: sat, fanout, or hybrid"),
+                        .default_value("random")
+                        .value_parser(["random", "fanout"])
+                        .help("Incoming replacement ranker: random or fanout"),
                 )
                 .arg(
                     Arg::new("max_fanout")
@@ -295,7 +295,7 @@ fn command() -> Command {
                         .required(false)
                         .default_value("50")
                         .value_parser(clap::value_parser!(usize))
-                        .help("Fanout cap used by fanout/hybrid incoming ranking"),
+                        .help("Fanout cap used by incoming fanout ranking"),
                 )
                 .arg(
                     Arg::new("min_median_leeway")
@@ -303,7 +303,7 @@ fn command() -> Command {
                         .required(false)
                         .default_value("10")
                         .value_parser(clap::value_parser!(usize))
-                        .help("Low-leeway threshold used by fanout/hybrid ranking"),
+                        .help("Low-leeway threshold used by incoming fanout ranking"),
                 )
                 .arg(
                     Arg::new("samf_target")
@@ -773,9 +773,26 @@ mod cli_tests {
     }
 
     #[test]
-    fn nonlinear_shortcut_satisfies_the_tdp_backend_requirement() {
+    fn incoming_rank_defaults_to_random() {
+        let matches = parse_sss(&[]).unwrap();
+        let (_, sss) = matches.subcommand().unwrap();
+
+        assert_eq!(
+            sss.get_one::<String>("incoming_rank").map(String::as_str),
+            Some("random")
+        );
+        assert!(parse_sss(&["--incoming-rank", "sat"]).is_err());
+        assert!(parse_sss(&["--incoming-rank", "hybrid"]).is_err());
+    }
+
+    #[test]
+    fn nonlinear_shortcut_has_one_configuration_and_supports_tdp() {
         assert!(parse_sss(&["--nonlinear_gadgetize"]).is_ok());
         assert!(parse_sss(&["--nonlinear_gadgetize", "--tdp4n"]).is_ok());
+        assert!(
+            parse_sss(&["--nonlinear_gadgetize", "--nonlinear-preset", "33"]).is_err(),
+            "the production CLI must not expose an alternate nonlinear preset"
+        );
         assert!(parse_sss(&["--tdp4n"]).is_err());
         assert!(parse_sss(&["--cnot", "--tdp4n"]).is_ok());
     }

@@ -4,12 +4,6 @@ use serde::{Deserialize, Serialize};
 use crate::{
     circuit::circuit::CircuitSeq,
     random::random_data::random_circuit,
-    replace::sat_score::{
-        compression_selection_score, expansion_selection_score, sat_bcp_enabled,
-        sat_bcp_min_resistance, sat_compress_preserve_delta, sat_compress_protect_enabled,
-        sat_cone_aware_enabled, sat_cone_min_fraction, sat_expand_min_delta, sat_score_seed,
-        sat_score_slack, sat_scoring_enabled, score_subcircuit,
-    },
     replace::{
         frozen::FrozenDb,
         replace::{note_wire_use, shuffled_unused_wires},
@@ -208,58 +202,18 @@ pub fn expand_curated_frozen_neg(
         return None;
     }
 
-    let mut best: Vec<CircuitSeq> = if sat_scoring_enabled() {
-        let seed = sat_score_seed();
-        let base_n = sub.max_wire() + 1;
-        let base_score =
-            expansion_selection_score(&score_subcircuit(&sub.gates, base_n, seed ^ 0xBAD5_EED));
-        let required_score = base_score + sat_expand_min_delta();
-        let scored: Vec<(f64, CircuitSeq)> = candidates
-            .into_iter()
-            .enumerate()
-            .filter_map(|(idx, candidate)| {
-                let score_n = candidate.max_wire() + 1;
-                let sat_score = score_subcircuit(&candidate.gates, score_n, seed ^ idx as u64);
-                if sat_cone_aware_enabled()
-                    && sat_score.output_cone_fraction < sat_cone_min_fraction()
-                {
-                    return None;
-                }
-                if sat_bcp_enabled() && sat_score.bcp_resistance < sat_bcp_min_resistance() {
-                    return None;
-                }
-                Some((expansion_selection_score(&sat_score), candidate))
-            })
-            .filter(|(score, _)| *score > required_score)
-            .collect();
-        if scored.is_empty() {
-            return None;
-        }
-        let max_score = scored
-            .iter()
-            .map(|(score, _)| *score)
-            .fold(f64::NEG_INFINITY, f64::max);
-        scored
-            .into_iter()
-            .filter(|(score, _)| (*score - max_score).abs() <= 1e-9)
-            .map(|(_, candidate)| candidate)
-            .collect()
-    } else {
-        // Favor expansions that are both LONG (many gates) and WIDE (many distinct wires),
-        // not solely the largest gate count. Score each candidate by gates + wires and keep
-        // the top-scoring set, breaking ties at random.
-        let score = |c: &CircuitSeq| c.gates.len() + c.used_wires().len();
-        let max_score = candidates.iter().map(|c| score(c)).max().unwrap();
-        candidates
-            .into_iter()
-            .filter(|c| score(c) == max_score)
-            .collect()
-    };
-    let idx = if matches!(
-        crate::replace::replace::incoming_rank_mode(),
-        crate::replace::replace::IncomingRankMode::Fanout
-            | crate::replace::replace::IncomingRankMode::Hybrid
-    ) {
+    // Favor expansions that are both LONG (many gates) and WIDE (many distinct wires),
+    // not solely the largest gate count. Score each candidate by gates + wires and keep
+    // the top-scoring set, breaking ties at random.
+    let score = |c: &CircuitSeq| c.gates.len() + c.used_wires().len();
+    let max_score = candidates.iter().map(score).max().unwrap();
+    let mut best: Vec<CircuitSeq> = candidates
+        .into_iter()
+        .filter(|candidate| score(candidate) == max_score)
+        .collect();
+    let idx = if crate::replace::replace::incoming_rank_mode()
+        == crate::replace::replace::IncomingRankMode::Fanout
+    {
         let features: Vec<_> = best
             .iter()
             .map(|candidate| crate::replace::replace::cand_features(&candidate.gates, &[], &[]))
@@ -345,57 +299,11 @@ pub fn compress_curated_frozen(
     }
 
     let min_gates = candidates.iter().map(|c| c.gates.len()).min().unwrap();
-    let mut best: Vec<CircuitSeq> = if sat_scoring_enabled() {
-        let max_len = min_gates.saturating_add(sat_score_slack()).min(gates.len());
-        let seed = sat_score_seed();
-        let base_score = compression_selection_score(&score_subcircuit(
-            &sub.gates,
-            sub.max_wire() + 1,
-            seed ^ 0xc0de_1234,
-        ));
-        let scored: Vec<(f64, CircuitSeq)> = candidates
-            .into_iter()
-            .filter(|c| c.gates.len() <= max_len)
-            .enumerate()
-            .filter_map(|(idx, candidate)| {
-                let score_n = candidate.max_wire() + 1;
-                let sat_score = score_subcircuit(&candidate.gates, score_n, seed ^ idx as u64);
-                if sat_cone_aware_enabled()
-                    && sat_score.output_cone_fraction < sat_cone_min_fraction()
-                {
-                    return None;
-                }
-                if sat_bcp_enabled() && sat_score.bcp_resistance < sat_bcp_min_resistance() {
-                    return None;
-                }
-                let candidate_score = compression_selection_score(&sat_score);
-                if sat_compress_protect_enabled()
-                    && candidate_score + sat_compress_preserve_delta() < base_score
-                {
-                    return None;
-                }
-                Some((candidate_score, candidate))
-            })
-            .collect();
-        if scored.is_empty() {
-            return None;
-        }
-        let max_score = scored
-            .iter()
-            .map(|(score, _)| *score)
-            .fold(f64::NEG_INFINITY, f64::max);
-        scored
-            .into_iter()
-            .filter(|(score, _)| (*score - max_score).abs() <= 1e-9)
-            .map(|(_, candidate)| candidate)
-            .collect()
-    } else {
-        // Pick minimum-gate replacement for maximum compression.
-        candidates
-            .into_iter()
-            .filter(|c| c.gates.len() == min_gates)
-            .collect()
-    };
+    // Pick minimum-gate replacement for maximum compression.
+    let mut best: Vec<CircuitSeq> = candidates
+        .into_iter()
+        .filter(|candidate| candidate.gates.len() == min_gates)
+        .collect();
 
     // Equal-length replacement only counts if there are multiple friends (alternatives).
     // A single equal-length option adds no obfuscation value.
@@ -403,11 +311,9 @@ pub fn compress_curated_frozen(
         return None;
     }
 
-    let idx = if matches!(
-        crate::replace::replace::incoming_rank_mode(),
-        crate::replace::replace::IncomingRankMode::Fanout
-            | crate::replace::replace::IncomingRankMode::Hybrid
-    ) {
+    let idx = if crate::replace::replace::incoming_rank_mode()
+        == crate::replace::replace::IncomingRankMode::Fanout
+    {
         let features: Vec<_> = best
             .iter()
             .map(|candidate| crate::replace::replace::cand_features(&candidate.gates, &[], &[]))

@@ -16,7 +16,7 @@ use crate::{
         format,
         mix::{MixParams, Mixer},
         samf::insert_masked_swap_samfs,
-        xgate::{XGate, eval_u1024},
+        xgate::{XGate, eval_lanes},
     },
     replace::gadgets::{
         CnotCircuit, ProdConfig, feistalize_cnot, feistalize_with_slice_zero_cnot,
@@ -130,7 +130,15 @@ fn write_slice_metadata(
                 total_wires >= 4 * n,
                 "4n TDP metadata needs at least 4n wires"
             );
-            ("tdp4n_two_share", format!("{}..{}", three_n, 4 * n), 4 * n)
+            (
+                if nonlinear_config.is_some() {
+                    "tdp4n_single_carrier_2223_gray_padded"
+                } else {
+                    "tdp4n_two_share"
+                },
+                format!("{}..{}", three_n, 4 * n),
+                4 * n,
+            )
         }
     };
     let nonlinear_metadata = if let Some(config) = nonlinear_config {
@@ -154,7 +162,10 @@ fn write_slice_metadata(
             .join(",");
         format!(
             "nonlinear_enabled=true\n\
+             nonlinear_config_version=2223-gray-v1\n\
              nonlinear_plan={plan}\n\
+             nonlinear_fold=gray\n\
+             nonlinear_single_carrier=true\n\
              nonlinear_k={}\n\
              nonlinear_deg={}\n\
              nonlinear_k_hi={}\n\
@@ -225,6 +236,10 @@ fn write_zero_nondata_metadata(path: &str, n: usize, total_wires: usize, slice_e
     let contents = format!(
         "mode=slice_zero_ccnot\n\
          representation=mpmct1\n\
+         nonlinear_config_version=2223-gray-v1\n\
+         nonlinear_plan=2,2,2,3\n\
+         nonlinear_fold=gray\n\
+         nonlinear_single_carrier=true\n\
          n={n}\n\
          total_wires={total_wires}\n\
          data_wires=0..{n}\n\
@@ -241,6 +256,46 @@ fn random_u1024(rng: &mut impl RngCore) -> U1024 {
     let mut bytes = [0u8; 128];
     rng.fill_bytes(&mut bytes);
     U1024::from_little_endian(&bytes)
+}
+
+const VERIFY_LANES: usize = u64::BITS as usize;
+const VERIFY_WIRES: usize = 1024;
+
+/// Transpose up to 64 ordinary 1024-bit states into the bit-sliced layout used
+/// by `eval_lanes`: `state[wire]` contains that wire's value in every sample.
+fn pack_verify_lanes(inputs: &[U1024]) -> Vec<u64> {
+    debug_assert!(inputs.len() <= VERIFY_LANES);
+    let mut state = vec![0u64; VERIFY_WIRES];
+    for (lane, input) in inputs.iter().enumerate() {
+        let lane_mask = 1u64 << lane;
+        for (word_index, &word) in input.0.iter().enumerate() {
+            let mut remaining = word;
+            while remaining != 0 {
+                let bit = remaining.trailing_zeros() as usize;
+                state[word_index * u64::BITS as usize + bit] |= lane_mask;
+                remaining &= remaining - 1;
+            }
+        }
+    }
+    state
+}
+
+#[inline]
+fn eval_circuit_lanes(circuit: &CircuitSeq, state: &mut [u64]) {
+    for &[target, positive, negative] in &circuit.gates {
+        let fires = state[positive as usize] | !state[negative as usize];
+        state[target as usize] ^= fires;
+    }
+}
+
+#[inline]
+fn valid_lane_mask(lanes: usize) -> u64 {
+    debug_assert!((1..=VERIFY_LANES).contains(&lanes));
+    if lanes == VERIFY_LANES {
+        u64::MAX
+    } else {
+        (1u64 << lanes) - 1
+    }
 }
 
 fn functionality_check(
@@ -265,42 +320,70 @@ fn functionality_check(
     } else {
         samples
     };
-    for index in 0..count {
-        let mut input = if exhaustive {
-            U1024::from(index)
-        } else {
-            random_u1024(&mut rng) & mask(total_wires)
-        };
-        if let FunctionView::GadgetLowZeroNonData { slice_end } = view {
-            let fixed_mask = mask(slice_end) ^ low_mask;
-            input &= !fixed_mask;
-        }
-        if matches!(
-            view,
-            FunctionView::FeistalMiddle | FunctionView::Tdp4nMiddle
-        ) {
-            if let Some((public_y, public_z)) = fixed_slice {
-                let fixed_mask = (low_mask << n) | (low_mask << (2 * n));
+    let total_mask = mask(total_wires);
+    for batch_start in (0..count).step_by(VERIFY_LANES) {
+        let batch_len = (count - batch_start).min(VERIFY_LANES);
+        let mut inputs = Vec::with_capacity(batch_len);
+        for index in batch_start..batch_start + batch_len {
+            let mut input = if exhaustive {
+                U1024::from(index)
+            } else {
+                random_u1024(&mut rng) & total_mask
+            };
+            if let FunctionView::GadgetLowZeroNonData { slice_end } = view {
+                let fixed_mask = mask(slice_end) ^ low_mask;
                 input &= !fixed_mask;
-                input |= public_y << n;
-                input |= public_z << (2 * n);
             }
+            if matches!(
+                view,
+                FunctionView::FeistalMiddle | FunctionView::Tdp4nMiddle
+            ) {
+                if let Some((public_y, public_z)) = fixed_slice {
+                    let fixed_mask = (low_mask << n) | (low_mask << (2 * n));
+                    input &= !fixed_mask;
+                    input |= public_y << n;
+                    input |= public_z << (2 * n);
+                }
+            }
+            inputs.push(input);
         }
 
-        let logical_x = input & low_mask;
-        let original_output = original.evaluate_1024(logical_x) & low_mask;
-        let actual = eval_u1024(transformed, input);
-        let matches = match view {
-            FunctionView::Whole => actual == original.evaluate_1024(input),
+        let input_state = pack_verify_lanes(&inputs);
+        let mut actual_state = input_state.clone();
+        eval_lanes(transformed, &mut actual_state);
+
+        let mut original_state = if view == FunctionView::Whole {
+            input_state.clone()
+        } else {
+            let mut state = vec![0u64; VERIFY_WIRES];
+            state[..n].copy_from_slice(&input_state[..n]);
+            state
+        };
+        eval_circuit_lanes(original, &mut original_state);
+
+        let mut mismatched_lanes = 0u64;
+        match view {
+            FunctionView::Whole => {
+                for wire in 0..VERIFY_WIRES {
+                    mismatched_lanes |= actual_state[wire] ^ original_state[wire];
+                }
+            }
             FunctionView::GadgetLow | FunctionView::GadgetLowZeroNonData { .. } => {
-                actual & low_mask == original_output
+                for wire in 0..n {
+                    mismatched_lanes |= actual_state[wire] ^ original_state[wire];
+                }
             }
             FunctionView::FeistalMiddle | FunctionView::Tdp4nMiddle => {
-                let y = (input >> n) & low_mask;
-                ((actual >> n) & low_mask) == (y ^ original_output)
+                for wire in 0..n {
+                    mismatched_lanes |=
+                        actual_state[n + wire] ^ input_state[n + wire] ^ original_state[wire];
+                }
             }
-        };
-        if !matches {
+        }
+        mismatched_lanes &= valid_lane_mask(batch_len);
+        if mismatched_lanes != 0 {
+            let lane = mismatched_lanes.trailing_zeros() as usize;
+            let input = inputs[lane];
             return Err(format!(
                 "functionality mismatch in {:?} view at sampled input 0x{:x}",
                 view, input
@@ -324,13 +407,32 @@ fn full_equivalence_check(
     } else {
         samples
     };
-    for index in 0..count {
-        let input = if exhaustive {
-            U1024::from(index)
-        } else {
-            random_u1024(&mut rng) & mask(total_wires)
-        };
-        if eval_u1024(before, input) != eval_u1024(after, input) {
+    let total_mask = mask(total_wires);
+    for batch_start in (0..count).step_by(VERIFY_LANES) {
+        let batch_len = (count - batch_start).min(VERIFY_LANES);
+        let mut inputs = Vec::with_capacity(batch_len);
+        for index in batch_start..batch_start + batch_len {
+            inputs.push(if exhaustive {
+                U1024::from(index)
+            } else {
+                random_u1024(&mut rng) & total_mask
+            });
+        }
+
+        let input_state = pack_verify_lanes(&inputs);
+        let mut before_state = input_state.clone();
+        let mut after_state = input_state;
+        eval_lanes(before, &mut before_state);
+        eval_lanes(after, &mut after_state);
+
+        let mut mismatched_lanes = 0u64;
+        for wire in 0..VERIFY_WIRES {
+            mismatched_lanes |= before_state[wire] ^ after_state[wire];
+        }
+        mismatched_lanes &= valid_lane_mask(batch_len);
+        if mismatched_lanes != 0 {
+            let lane = mismatched_lanes.trailing_zeros() as usize;
+            let input = inputs[lane];
             return Err(format!(
                 "heterogeneous rewrite mismatch at input 0x{input:x}"
             ));
@@ -515,7 +617,7 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
                 output.circuit,
                 FunctionView::Tdp4nMiddle,
                 if p.do_nonlinear_gadgetize {
-                    "slice-zero-random nonlinear 4n+band TDP"
+                    "slice-zero-random [2,2,2,3] single-carrier Gray-fold TDP"
                 } else {
                     "slice-zero-random 4n TDP"
                 },
@@ -529,7 +631,7 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
                 },
                 FunctionView::Tdp4nMiddle,
                 if p.do_nonlinear_gadgetize {
-                    "nonlinear 4n+band TDP"
+                    "[2,2,2,3] single-carrier Gray-fold TDP"
                 } else {
                     "4n TDP"
                 },
@@ -541,7 +643,7 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         (
             output,
             FunctionView::GadgetLowZeroNonData { slice_end },
-            "slice-zero production nonlinear product-share gadgetized",
+            "slice-zero [2,2,2,3] single-carrier Gray-fold gadgetized",
         )
     } else if p.do_feistalize {
         if p.slice_zero_random {
@@ -899,6 +1001,235 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::postmix::xgate::eval_u1024;
+
+    fn scalar_functionality_check(
+        original: &CircuitSeq,
+        transformed: &[XGate],
+        view: FunctionView,
+        n: usize,
+        total_wires: usize,
+        fixed_slice: Option<(U1024, U1024)>,
+        samples: usize,
+        seed: u64,
+    ) -> Result<(), String> {
+        let low_mask = mask(n);
+        let mut rng = StdRng::seed_from_u64(seed);
+        let exhaustive = total_wires <= 12;
+        let count = if exhaustive {
+            1usize << total_wires
+        } else {
+            samples
+        };
+        for index in 0..count {
+            let mut input = if exhaustive {
+                U1024::from(index)
+            } else {
+                random_u1024(&mut rng) & mask(total_wires)
+            };
+            if let FunctionView::GadgetLowZeroNonData { slice_end } = view {
+                let fixed_mask = mask(slice_end) ^ low_mask;
+                input &= !fixed_mask;
+            }
+            if matches!(
+                view,
+                FunctionView::FeistalMiddle | FunctionView::Tdp4nMiddle
+            ) {
+                if let Some((public_y, public_z)) = fixed_slice {
+                    let fixed_mask = (low_mask << n) | (low_mask << (2 * n));
+                    input &= !fixed_mask;
+                    input |= public_y << n;
+                    input |= public_z << (2 * n);
+                }
+            }
+
+            let logical_x = input & low_mask;
+            let original_output = original.evaluate_1024(logical_x) & low_mask;
+            let actual = eval_u1024(transformed, input);
+            let matches = match view {
+                FunctionView::Whole => actual == original.evaluate_1024(input),
+                FunctionView::GadgetLow | FunctionView::GadgetLowZeroNonData { .. } => {
+                    actual & low_mask == original_output
+                }
+                FunctionView::FeistalMiddle | FunctionView::Tdp4nMiddle => {
+                    let y = (input >> n) & low_mask;
+                    ((actual >> n) & low_mask) == (y ^ original_output)
+                }
+            };
+            if !matches {
+                return Err(format!(
+                    "functionality mismatch in {:?} view at sampled input 0x{:x}",
+                    view, input
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn scalar_full_equivalence_check(
+        before: &[XGate],
+        after: &[XGate],
+        total_wires: usize,
+        samples: usize,
+        seed: u64,
+    ) -> Result<(), String> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let exhaustive = total_wires <= 12;
+        let count = if exhaustive {
+            1usize << total_wires
+        } else {
+            samples
+        };
+        for index in 0..count {
+            let input = if exhaustive {
+                U1024::from(index)
+            } else {
+                random_u1024(&mut rng) & mask(total_wires)
+            };
+            if eval_u1024(before, input) != eval_u1024(after, input) {
+                return Err(format!(
+                    "heterogeneous rewrite mismatch at input 0x{input:x}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn source_xgates(source: &CircuitSeq) -> Vec<XGate> {
+        source.gates.iter().copied().map(XGate::from_g57).collect()
+    }
+
+    fn xor_single_source_gate_into_middle(source: &CircuitSeq, n: usize) -> Vec<XGate> {
+        assert_eq!(source.gates.len(), 1, "test helper assumes one source gate");
+        let mut gates = (0..n)
+            .map(|wire| XGate::cnot((n + wire) as u16, wire as u16))
+            .collect::<Vec<_>>();
+        let mut source_delta = XGate::from_g57(source.gates[0]);
+        source_delta.target += n as u16;
+        gates.push(source_delta);
+        gates
+    }
+
+    #[test]
+    fn lane_functionality_matches_scalar_for_every_view_and_first_error() {
+        let source = CircuitSeq {
+            gates: vec![[0, 1, 2]],
+        };
+        let reference = source_xgates(&source);
+        let mut zero_nondata = reference.clone();
+        // This extra CNOT is inert only because the production zero-slice view
+        // fixes wire n through slice_end to zero.
+        zero_nondata.push(XGate::cnot(0, 5));
+        let cases = [
+            (FunctionView::Whole, 3, 6, None, reference.clone(), 0),
+            (FunctionView::GadgetLow, 7, 14, None, reference.clone(), 0),
+            (
+                FunctionView::GadgetLowZeroNonData { slice_end: 11 },
+                5,
+                14,
+                None,
+                zero_nondata,
+                0,
+            ),
+            (
+                FunctionView::FeistalMiddle,
+                5,
+                15,
+                Some((U1024::from(0x15u64), U1024::from(0x0bu64))),
+                xor_single_source_gate_into_middle(&source, 5),
+                5,
+            ),
+            (
+                FunctionView::Tdp4nMiddle,
+                4,
+                16,
+                Some((U1024::from(0x09u64), U1024::from(0x06u64))),
+                xor_single_source_gate_into_middle(&source, 4),
+                4,
+            ),
+        ];
+
+        for (view, n, total_wires, fixed_slice, transformed, corrupted_wire) in cases {
+            let scalar = scalar_functionality_check(
+                &source,
+                &transformed,
+                view,
+                n,
+                total_wires,
+                fixed_slice,
+                130,
+                0x5eed_1234,
+            );
+            let lanes = functionality_check(
+                &source,
+                &transformed,
+                view,
+                n,
+                total_wires,
+                fixed_slice,
+                130,
+                0x5eed_1234,
+            );
+            assert!(scalar.is_ok(), "valid {view:?} fixture failed: {scalar:?}");
+            assert_eq!(lanes, scalar, "valid {view:?} fixture differed");
+
+            let mut corrupted = transformed;
+            corrupted.push(XGate::x_gate(corrupted_wire));
+            let scalar = scalar_functionality_check(
+                &source,
+                &corrupted,
+                view,
+                n,
+                total_wires,
+                fixed_slice,
+                130,
+                0x5eed_1234,
+            );
+            let lanes = functionality_check(
+                &source,
+                &corrupted,
+                view,
+                n,
+                total_wires,
+                fixed_slice,
+                130,
+                0x5eed_1234,
+            );
+            assert!(
+                scalar.is_err(),
+                "corrupt {view:?} fixture unexpectedly passed"
+            );
+            assert_eq!(lanes, scalar, "corrupt {view:?} first error differed");
+        }
+    }
+
+    #[test]
+    fn lane_full_equivalence_matches_scalar_and_first_error() {
+        let before = vec![XGate::from_g57([0, 1, 2]), XGate::cnot(8, 3)];
+        for (total_wires, samples) in [(6, 7), (17, 130)] {
+            let scalar =
+                scalar_full_equivalence_check(&before, &before, total_wires, samples, 0xe9a1_5eed);
+            let lanes = full_equivalence_check(&before, &before, total_wires, samples, 0xe9a1_5eed);
+            assert!(scalar.is_ok());
+            assert_eq!(lanes, scalar);
+
+            let mut corrupted = before.clone();
+            // Full equivalence historically compares all 1024 state bits, not
+            // just the declared input width. Keep that behavior covered.
+            corrupted.push(XGate::x_gate(999));
+            let scalar = scalar_full_equivalence_check(
+                &before,
+                &corrupted,
+                total_wires,
+                samples,
+                0xe9a1_5eed,
+            );
+            let lanes =
+                full_equivalence_check(&before, &corrupted, total_wires, samples, 0xe9a1_5eed);
+            assert!(scalar.is_err());
+            assert_eq!(lanes, scalar, "first mismatch input or error text differed");
+        }
+    }
 
     #[test]
     fn zero_slice_metadata_leaves_later_samf_helpers_independent() {
@@ -924,10 +1255,10 @@ mod tests {
         };
         for (gadgetize, nonlinear_gadgetize, feistalize, tdp4n, expected_wires) in [
             (true, false, false, false, 6),
-            (false, true, false, false, 12),
+            (false, true, false, false, 9),
             (false, false, true, false, 9),
             (false, false, false, true, 12),
-            (false, true, false, true, 19),
+            (false, true, false, true, 18),
         ] {
             let dir = std::env::temp_dir().join(format!(
                 "local_mixing_cnot_driver_{}_{}_{}_{}_{}",
@@ -963,7 +1294,7 @@ mod tests {
                 collision_rounds: 1,
                 stable_compressions: 1,
                 expansion_game: false,
-                equality_check: true,
+                equality_check: false,
                 rg_freq: 2,
             };
             main_shuffle_shoot_shuffle_cnot(&source, &params);
@@ -976,8 +1307,11 @@ mod tests {
                     output.to_str().unwrap()
                 ))
                 .unwrap();
-                assert!(metadata.contains("fixed_input_wires=3..12\n"));
-                assert!(metadata.contains("independent_helper_wires=12..12\n"));
+                assert!(metadata.contains("fixed_input_wires=3..9\n"));
+                assert!(metadata.contains("independent_helper_wires=9..9\n"));
+                assert!(metadata.contains("nonlinear_plan=2,2,2,3\n"));
+                assert!(metadata.contains("nonlinear_fold=gray\n"));
+                assert!(metadata.contains("nonlinear_single_carrier=true\n"));
                 assert!(metadata.contains("band_is_in_fixed_slice=true\n"));
             }
             std::fs::remove_dir_all(dir).unwrap();
@@ -998,7 +1332,7 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        for (nonlinear, expected_wires) in [(false, 12), (true, 19)] {
+        for (nonlinear, expected_wires) in [(false, 12), (true, 18)] {
             let output = dir.join(format!("out_{}.mpmct1", nonlinear as u8));
             let gadget = dir.join(format!("gadget_{}.mpmct1", nonlinear as u8));
             let params = CnotSssParams {
@@ -1024,7 +1358,7 @@ mod tests {
                 collision_rounds: 1,
                 stable_compressions: 1,
                 expansion_game: false,
-                equality_check: true,
+                equality_check: false,
                 rg_freq: 2,
             };
             main_shuffle_shoot_shuffle_cnot(&source, &params);
@@ -1033,7 +1367,12 @@ mod tests {
                 std::fs::read_to_string(format!("{}.slice_zero_random", output.to_str().unwrap()))
                     .unwrap();
             let (artifact_gates, _) = format::read_mpmct(output.to_str().unwrap()).unwrap();
-            assert!(metadata.contains("layout=tdp4n_two_share\n"));
+            let expected_layout = if nonlinear {
+                "layout=tdp4n_single_carrier_2223_gray_padded\n"
+            } else {
+                "layout=tdp4n_two_share\n"
+            };
+            assert!(metadata.contains(expected_layout));
             assert!(metadata.contains(&format!("total_wires={expected_wires}\n")));
             assert!(metadata.contains(&format!("gates={}\n", artifact_gates.len())));
             assert!(metadata.contains("slice_preblock_gates=96\n"));
@@ -1050,14 +1389,17 @@ mod tests {
             if nonlinear {
                 for expected in [
                     "nonlinear_enabled=true\n",
-                    "nonlinear_plan=3,3\n",
-                    "nonlinear_k=0\n",
+                    "nonlinear_config_version=2223-gray-v1\n",
+                    "nonlinear_plan=2,2,2,3\n",
+                    "nonlinear_fold=gray\n",
+                    "nonlinear_single_carrier=true\n",
+                    "nonlinear_k=3\n",
                     "nonlinear_deg=2\n",
-                    "nonlinear_k_hi=2\n",
+                    "nonlinear_k_hi=1\n",
                     "nonlinear_deg_hi=3\n",
                     "nonlinear_band_config=0\n",
-                    "nonlinear_band_size=7\n",
-                    "nonlinear_band_wires=12..19\n",
+                    "nonlinear_band_size=6\n",
+                    "nonlinear_band_wires=12..18\n",
                     "nonlinear_rsrc=1\n",
                     "nonlinear_max_width=0\n",
                     "nonlinear_fill_nl=2\n",

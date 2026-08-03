@@ -122,7 +122,10 @@ pub fn run(sub: &clap::ArgMatches) {
             "--record is not available for the heterogeneous --cnot replacement engine"
         );
         assert!(
-            !generation_tags && min_gen == 0 && outgoing_mode == "legacy" && incoming_rank == "sat",
+            !generation_tags
+                && min_gen == 0
+                && outgoing_mode == "legacy"
+                && incoming_rank == "random",
             "generation-tag/Stage-B options are not available with --cnot"
         );
         assert!(
@@ -185,11 +188,8 @@ pub fn run(sub: &clap::ArgMatches) {
     if record_replacements {
         record_init(&format!("{}.replacements", d));
     }
-    let gen_tags_enabled = generation_tags
-        || min_gen > 0
-        || outgoing_mode == "gen"
-        || incoming_rank == "fanout"
-        || incoming_rank == "hybrid";
+    let gen_tags_enabled =
+        generation_tags || min_gen > 0 || outgoing_mode == "gen" || incoming_rank == "fanout";
     GEN_MODE.store(gen_tags_enabled, Ordering::Relaxed);
     TRACK_SURVIVORS.store(gen_tags_enabled, Ordering::Relaxed);
     OUTGOING_GEN_MODE.store(outgoing_mode == "gen", Ordering::Relaxed);
@@ -199,8 +199,7 @@ pub fn run(sub: &clap::ArgMatches) {
     INCOMING_RANK_MODE.store(
         match incoming_rank {
             "fanout" => IncomingRankMode::Fanout as usize,
-            "hybrid" => IncomingRankMode::Hybrid as usize,
-            _ => IncomingRankMode::Sat as usize,
+            _ => IncomingRankMode::Random as usize,
         },
         Ordering::Relaxed,
     );
