@@ -237,7 +237,20 @@ curated-first cascade in BOTH modes:
 | size-reduction cascade (`--db-prefixes`) | on | on | `--no-db-prefixes` |
 | descent start | `--s-db 9` | `--s-db-comp 12` | — |
 | store routing | curated over the whole cascade first, then regular (`--curated --curated-exhaust`) | same (`--curated-in-comp`) | `--no-curated`, `--no-curated-exhaust`, `--no-curated-in-comp` |
-| sampler | contiguous 60% / convex 40% (`--p-convex 0.4`) | contiguous 90% / convex 10% (`--p-convex-comp 0.1`) | — |
+| sampler | contiguous 60% / convex 40% (`--p-convex 0.4`) | convex 90% / contiguous 10% (`--p-convex-comp 0.9`) | — |
+
+The COMP sampler shipped inverted (0.1) from the 2026-08-03 defaults commit
+until 2026-08-04. The 32-arm COMP factorial measured the two geometries
+head-to-head on `pre2_100k` at 500k moves: convex removes **16×** more gates
+(8,748 vs 552 mean), transports **7×** more ancestry (est_anc 43.9 vs 6.0),
+and does it in **1/31** the wall time (156s vs 4,805s). Contiguous's only
+edge, per-splice selection entropy (0.766 vs 0.355 bits), does not survive
+aggregation — convex delivers more *total* entropy in all 8 matched pairs
+because it lands 2.4× more successful splices. The cost asymmetry is window
+width, not the span cap: contiguous skips only 0.5–3.6% of attempts at the
+cap but pays ~30× per canonicalization on the wide windows that pass it.
+Runs that took the COMP default before 2026-08-04 spent ~90% of their COMP
+DB budget on the losing geometry.
 
 If `FROZEN_CURATED_DIR` is unset, the curated default degrades to
 regular-only **with a startup warning**; passing `--curated` explicitly

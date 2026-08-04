@@ -831,7 +831,7 @@ impl Default for MixParams {
             // demand FROZEN_DB_DIR. The PRODUCTION defaults live on the fmix
             // CLI, where a run that wants the store asks for it -- as of
             // 2026-08-03 that means s_db 9, p_convex 0.4, s_db_comp 12,
-            // p_convex_comp 0.1, db_prefixes/curated/curated_exhaust/
+            // p_convex_comp 0.9, db_prefixes/curated/curated_exhaust/
             // curated_in_comp all ON. The values below stay the store-free
             // test baseline on purpose; do not "sync" them to the CLI.
             p_comp: 0.0,

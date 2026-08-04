@@ -765,7 +765,7 @@ different value, the measured recommendation is in the last column.
 | `s_db` | 9 (MIX; was 5 until 2026-08-03) | window length the descent starts from | **8–9 for MIX, ≥12 for COMP** (§14) — now the shipped defaults |
 | `s_db_comp` | 12 (was: fall back to `s_db`) | COMP-mode descent start; 0 = use `s_db` | ≥12 for COMP (§14) |
 | `p_convex` | 0.4 (MIX; was 0.5 until 2026-08-03) | probability the sampler is convex (contiguous 60% / convex 40%) | never separated from contiguous |
-| `p_convex_comp` | 0.1 (was: fall back to `p_convex`) | COMP-mode convex probability (contiguous 90% / convex 10%); <0 = use `p_convex` | — |
+| `p_convex_comp` | 0.9 (was: fall back to `p_convex`) | COMP-mode convex probability (convex 90% / contiguous 10%); <0 = use `p_convex` | — |
 | `db_prefixes` | **on** (was off until 2026-08-03) | largest-first prefix descent (the size-reduction cascade); `--no-db-prefixes` disables | — |
 | `curated_exhaust` | **on** (was off until 2026-08-03) | two-pass routing: the whole descent runs curated-only first, regular only on a full miss; `--no-curated-exhaust` disables | 3.4× bits/splice (lower bound) |
 | `curated_in_comp` | **on** (was off until 2026-08-03) | COMP probes curated too (size rule keeps strictly-shorter spellings); `--no-curated-in-comp` disables | — |

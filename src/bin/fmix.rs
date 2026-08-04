@@ -344,9 +344,12 @@ struct Args {
     /// descent higher than MIX's 9.
     #[arg(long, default_value_t = 12)]
     s_db_comp: usize,
-    /// COMP-mode convex probability (< 0 = use --p-convex). Default 0.1 =
-    /// contiguous 90% / convex 10%.
-    #[arg(long, default_value_t = 0.1)]
+    /// COMP-mode convex probability (< 0 = use --p-convex). Default 0.9 =
+    /// convex 90% / contiguous 10%. Convex wins compression on every axis
+    /// measured (16x gates removed, 7x ancestry transport, 31x less CPU --
+    /// wide contiguous windows cost ~30x per canonicalization even when they
+    /// pass the span cap), so COMP leans hard convex.
+    #[arg(long, default_value_t = 0.9)]
     p_convex_comp: f64,
     /// COMP-mode pool-seed probability under --p-mix (< 0 = use --p-mingen).
     #[arg(long, default_value_t = -1.0)]
