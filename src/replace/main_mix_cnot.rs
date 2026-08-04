@@ -69,6 +69,19 @@ pub struct CnotSssParams<'a> {
     pub rg_freq: usize,
 }
 
+/// Below this width `functionality_check` enumerates EVERY input instead of
+/// sampling, turning the check from evidence into a proof.
+///
+/// 18, not 12: the production nonlinear TDP is 6n wires and `n >= 3` is
+/// asserted upstream, so its MINIMUM width is 18. At 12 the exhaustive path
+/// was structurally unreachable for exactly the construction that most needs
+/// a proof. 2^18 inputs across 64 lanes is ~4k batches — milliseconds.
+///
+/// The scalar reference checker in the tests reads the same constant; if the
+/// two ever disagree the lane/scalar equivalence test finds different
+/// first-error inputs and fails confusingly rather than usefully.
+const EXHAUSTIVE_WIRE_LIMIT: usize = 18;
+
 fn mask(bits: usize) -> U1024 {
     if bits == 1024 {
         U1024::MAX
@@ -314,7 +327,7 @@ fn functionality_check(
     );
     let low_mask = mask(n);
     let mut rng = StdRng::seed_from_u64(seed);
-    let exhaustive = total_wires <= 12;
+    let exhaustive = total_wires <= EXHAUSTIVE_WIRE_LIMIT;
     let count = if exhaustive {
         1usize << total_wires
     } else {
@@ -401,7 +414,7 @@ fn full_equivalence_check(
     seed: u64,
 ) -> Result<(), String> {
     let mut rng = StdRng::seed_from_u64(seed);
-    let exhaustive = total_wires <= 12;
+    let exhaustive = total_wires <= EXHAUSTIVE_WIRE_LIMIT;
     let count = if exhaustive {
         1usize << total_wires
     } else {
@@ -514,9 +527,19 @@ fn assert_tdp_namespace(
     }
     let base_wires = n.checked_mul(4).expect("4n TDP wire count overflow");
     if nonlinear {
-        assert!(
-            total_wires > base_wires,
-            "nonlinear TDP must append a source band after 4n wires {stage}"
+        // Pin the exact width, not just "more than 4n". The production
+        // single-carrier layout is 4n carriers + band_size(2n) = 2n band = 6n
+        // (ProdConfig::production has band: 0, so band_size(w) = max(w, 6),
+        // and n >= 3 is asserted upstream). A band-size regression — e.g.
+        // someone reinstating the retired band: 56 preset — would sail past a
+        // `> 4n` check while silently moving every band offset the sidecar and
+        // downstream verifiers depend on.
+        let expected = base_wires
+            .checked_add(n.checked_mul(2).expect("band wire count overflow"))
+            .expect("6n TDP wire count overflow");
+        assert_eq!(
+            total_wires, expected,
+            "nonlinear TDP wire-count invariant failed {stage}: expected 6n={expected}, got {total_wires}"
         );
     } else {
         assert_eq!(
@@ -743,7 +766,12 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
         total_wires,
         fixed_slice,
         if p.equality_check { 10_000 } else { 256 },
-        0xc001_c0de,
+        // Derive from the construction seed rather than a fixed literal: with
+        // a constant here every run of every circuit was validated against the
+        // SAME sample vectors, so a defect those vectors happen to miss is
+        // missed identically forever. The per-round checks already vary their
+        // seeds; this one was the outlier.
+        construction_seed ^ 0xc001_c0de,
     )
     .expect("CNOT transformation changed required functionality");
 
@@ -1015,7 +1043,7 @@ mod tests {
     ) -> Result<(), String> {
         let low_mask = mask(n);
         let mut rng = StdRng::seed_from_u64(seed);
-        let exhaustive = total_wires <= 12;
+        let exhaustive = total_wires <= EXHAUSTIVE_WIRE_LIMIT;
         let count = if exhaustive {
             1usize << total_wires
         } else {
@@ -1074,7 +1102,7 @@ mod tests {
         seed: u64,
     ) -> Result<(), String> {
         let mut rng = StdRng::seed_from_u64(seed);
-        let exhaustive = total_wires <= 12;
+        let exhaustive = total_wires <= EXHAUSTIVE_WIRE_LIMIT;
         let count = if exhaustive {
             1usize << total_wires
         } else {
@@ -1468,5 +1496,261 @@ mod tests {
     fn strict_tdp4n_guard_rejects_out_of_range_gate_wires() {
         let gate = XGate::cnot(0, 12);
         assert_tdp_namespace(true, false, &[gate], 12, 3, "in test");
+    }
+
+    /// The production TDP circuit ([2,2,2,3] product-share + Gray fold +
+    /// single carrier) end to end: the real constructor, the real driver
+    /// check, EXHAUSTIVELY over all 2^18 inputs.
+    ///
+    /// Pins three things that were previously only asserted in prose:
+    ///  * the width is exactly 6n — 4n carriers plus a band_size(2n) = 2n band
+    ///    — not "a bit over 4n" (that figure belongs to the retired [2,3,3]
+    ///    band-56 preset);
+    ///  * C's functionality lands on wires n..2n in ACCUMULATE form,
+    ///    out[n+i] ^ in[n+i] == C(in)[i], with the X, W and band blocks left
+    ///    free — so the check must pass with those wires driven randomly;
+    ///  * a corruption inside the checked band is caught.
+    #[test]
+    fn production_tdp_is_6n_and_exhaustively_verified_on_the_middle_band() {
+        let n = 3;
+        let source = CircuitSeq {
+            gates: vec![[0, 1, 2], [1, 2, 0], [2, 0, 1]],
+        };
+        let mut rng = StdRng::seed_from_u64(0x7d9_0001);
+        let built = crate::replace::gadgets::tdp4n_nonlinear_cnot(&source, n, 1, &mut rng);
+        let total_wires = built.num_wires;
+
+        assert_eq!(
+            total_wires,
+            6 * n,
+            "production nonlinear TDP must be 6n wires (4n carriers + 2n band)"
+        );
+        // The driver's own namespace guard must agree.
+        assert_tdp_namespace(true, true, &built.gates, total_wires, n, "in test");
+        // 6n = 18 at n = 3, so this is at the exhaustive threshold: the check
+        // below enumerates every input rather than sampling.
+        assert!(total_wires <= 18, "n=3 TDP must be exhaustively verifiable");
+
+        functionality_check(
+            &source,
+            &built.gates,
+            FunctionView::Tdp4nMiddle,
+            n,
+            total_wires,
+            None,
+            0, // ignored: exhaustive mode enumerates 2^18 inputs
+            0x7d9_0002,
+        )
+        .expect("production TDP failed its own middle-band contract");
+
+        // Negative control: a corruption INSIDE the checked block must fail.
+        // (Wire n = the first middle-band carrier.)
+        let mut corrupted = built.gates.clone();
+        corrupted.push(XGate::x_gate(n as u16));
+        assert!(
+            functionality_check(
+                &source,
+                &corrupted,
+                FunctionView::Tdp4nMiddle,
+                n,
+                total_wires,
+                None,
+                0,
+                0x7d9_0002,
+            )
+            .is_err(),
+            "a corrupted middle band must be rejected"
+        );
+
+        // Documented blind spot, pinned so it cannot regress silently into a
+        // false sense of coverage: the middle-band view examines n of 6n
+        // wires, so a gate touching only the free blocks (X = D(C(x)), the
+        // dead W block, or the product band) passes. That is BY DESIGN — those
+        // wires carry no contract — but it means this check alone does not
+        // establish that the artifact leaks nothing. See
+        // verify_sliced_sandwich_zero_slice / slice_check_4n for the
+        // whole-artifact checks.
+        let mut off_band = built.gates.clone();
+        off_band.push(XGate::x_gate((4 * n) as u16)); // first band wire
+        assert!(
+            functionality_check(
+                &source,
+                &off_band,
+                FunctionView::Tdp4nMiddle,
+                n,
+                total_wires,
+                None,
+                0,
+                0x7d9_0002,
+            )
+            .is_ok(),
+            "band wires are outside the middle-band contract by construction"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tdp_semantics {
+    use super::*;
+    use crate::postmix::xgate::eval_u1024;
+
+    fn m(bits: usize) -> U1024 {
+        (U1024::one() << bits) - U1024::one()
+    }
+    fn blk(v: U1024, lo: usize, hi: usize) -> U1024 {
+        (v >> lo) & m(hi - lo)
+    }
+
+    /// The measured input-to-output contract of the production TDP, pinned.
+    ///
+    /// On input (x, y, z, w, b0, b1) the 6n-wire artifact computes
+    ///   X -> f(x)            junk-looking, but a function of x ALONE
+    ///   Y -> y XOR C(x)      the payload
+    ///   Z -> z               identity
+    ///   W -> w               identity
+    ///   band -> g(x, y, band)  dirty workspace; DOES carry x/y information
+    ///
+    /// Nothing here is random: a circuit is deterministic, so "random" in
+    /// discussion means "junk-looking", not unpredictable. The dependency
+    /// structure is the security-relevant part and is asserted below.
+    #[test]
+    fn tdp_semantics_dependency_map() {
+        let n = 3;
+        let source = CircuitSeq {
+            gates: vec![[0, 1, 2], [1, 2, 0], [2, 0, 1]],
+        };
+        let mut rng = StdRng::seed_from_u64(0x7d9_0001);
+        let built = crate::replace::gadgets::tdp4n_nonlinear_cnot(&source, n, 1, &mut rng);
+        let tw = built.num_wires;
+        // Blocks, in wire order.
+        let names = [
+            "X(0..n)",
+            "Y(n..2n)",
+            "Z(2n..3n)",
+            "W(3n..4n)",
+            "B0(4n..5n)",
+            "B1(5n..6n)",
+        ];
+        let bounds: Vec<(usize, usize)> = (0..6).map(|i| (i * n, (i + 1) * n)).collect();
+
+        // For each (out_block, in_block): does varying ONLY in_block ever move out_block?
+        let mut probe = StdRng::seed_from_u64(1234);
+        let mut depends = vec![vec![false; 6]; 6];
+        for _ in 0..200 {
+            let mut base = U1024::zero();
+            for b in 0..tw {
+                if probe.next_u32() & 1 == 1 {
+                    base |= U1024::one() << b;
+                }
+            }
+            let base_out = eval_u1024(&built.gates, base);
+            for (bi, &(lo, hi)) in bounds.iter().enumerate() {
+                // flip one random bit inside this input block
+                let bit = lo + (probe.next_u32() as usize % (hi - lo));
+                let alt = base ^ (U1024::one() << bit);
+                let alt_out = eval_u1024(&built.gates, alt);
+                for (oi, &(olo, ohi)) in bounds.iter().enumerate() {
+                    if blk(base_out, olo, ohi) != blk(alt_out, olo, ohi) {
+                        depends[oi][bi] = true;
+                    }
+                }
+            }
+        }
+        println!("\n=== OUTPUT block depends on INPUT block? (rows=out, cols=in) ===");
+        println!(
+            "{:>10} {}",
+            "",
+            names.map(|s| format!("{:>10}", s)).join("")
+        );
+        for (oi, name) in names.iter().enumerate() {
+            let row: String = (0..6)
+                .map(|bi| format!("{:>10}", if depends[oi][bi] { "YES" } else { "." }))
+                .collect();
+            println!("{name:>10} {row}");
+        }
+
+        // The headline claim: out[Y] == in[Y] XOR C(in[X]) for all inputs.
+        let mut y_ok = true;
+        let mut w_id = true;
+        for _ in 0..500 {
+            let mut input = U1024::zero();
+            for b in 0..tw {
+                if probe.next_u32() & 1 == 1 {
+                    input |= U1024::one() << b;
+                }
+            }
+            let out = eval_u1024(&built.gates, input);
+            // C evaluated on x alone, everything else zero
+            let mut cs = vec![0u64; 64];
+            for i in 0..n {
+                cs[i] = if (blk(input, 0, n) >> i) & U1024::one() == U1024::one() {
+                    u64::MAX
+                } else {
+                    0
+                };
+            }
+            let mut c_out = U1024::zero();
+            let cx = source.evaluate_1024(blk(input, 0, n));
+            for i in 0..n {
+                if (cx >> i) & U1024::one() == U1024::one() {
+                    c_out |= U1024::one() << i;
+                }
+            }
+            if blk(out, n, 2 * n) != (blk(input, n, 2 * n) ^ c_out) {
+                y_ok = false;
+            }
+            if blk(out, 3 * n, 4 * n) != blk(input, 3 * n, 4 * n) {
+                w_id = false;
+            }
+        }
+        // Is Z identity as well, and does the band carry x/y information?
+        let mut z_id = true;
+        let mut band_moves_with_x = false;
+        for _ in 0..300 {
+            let mut input = U1024::zero();
+            for b in 0..tw {
+                if probe.next_u32() & 1 == 1 {
+                    input |= U1024::one() << b;
+                }
+            }
+            let out = eval_u1024(&built.gates, input);
+            if blk(out, 2 * n, 3 * n) != blk(input, 2 * n, 3 * n) {
+                z_id = false;
+            }
+            let alt_out = eval_u1024(&built.gates, input ^ U1024::one());
+            if blk(out, 4 * n, tw) != blk(alt_out, 4 * n, tw) {
+                band_moves_with_x = true;
+            }
+        }
+        println!("\nout[Y] == in[Y] XOR C(in[X]) for all sampled inputs : {y_ok}");
+        println!("out[W] == in[W] (identity)                          : {w_id}");
+        println!("out[Z] == in[Z] (identity)                          : {z_id}");
+        println!("band output moves when one bit of x flips           : {band_moves_with_x}");
+        assert!(y_ok, "the TDP middle-band contract must hold exactly");
+        assert!(w_id, "W must be pass-through");
+        assert!(z_id, "Z must be pass-through");
+        assert!(
+            band_moves_with_x,
+            "the band is expected to carry x information"
+        );
+
+        // The dependency structure itself, pinned. A change here means the
+        // construction leaks somewhere new (or stopped leaking somewhere).
+        let expect = [
+            //  X      Y      Z      W     B0     B1
+            [true, false, false, false, false, false], // out X
+            [true, true, false, false, false, false],  // out Y
+            [false, false, true, false, false, false], // out Z
+            [false, false, false, true, false, false], // out W
+            [true, true, false, false, true, true],    // out B0
+            [true, true, false, false, true, true],    // out B1
+        ];
+        for oi in 0..6 {
+            assert_eq!(
+                depends[oi], expect[oi],
+                "dependency row for output block {} changed",
+                names[oi]
+            );
+        }
     }
 }

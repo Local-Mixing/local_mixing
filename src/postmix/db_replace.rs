@@ -17,7 +17,9 @@
 //! functional equivalence before splicing (optional; see the mixer's db_move).
 
 use super::xgate::XGate;
-use super::xpoly::{CanonicalXPolys, XPolyBudget, canonicalize_xgates_single, xgate_used_wires};
+use super::xpoly::{
+    CanonicalXPolys, XPolyBudget, XPolyError, canonicalize_xgates_single_capped, xgate_used_wires,
+};
 use crate::circuit::circuit::{CircuitSeq, Permutation, polys_repr_blob};
 use crate::replace::frozen::FrozenDb;
 use rand::Rng;
@@ -174,23 +176,6 @@ fn dense_remap_window(window: &[XGate], used: &[u16], reversed: bool) -> Vec<XGa
     dense
 }
 
-/// Parse the frozen value's `[byte_len][three-byte g57 blob]` entries without
-/// panicking on a truncated/damaged value.
-fn decode_value(value: &[u8]) -> Vec<CircuitSeq> {
-    let mut out = Vec::new();
-    let mut pos = 0usize;
-    while pos < value.len() {
-        let len = value[pos] as usize;
-        pos += 1;
-        if len % 3 != 0 || pos.checked_add(len).is_none_or(|end| end > value.len()) {
-            break;
-        }
-        out.push(CircuitSeq::from_blob(&value[pos..pos + len]));
-        pos += len;
-    }
-    out
-}
-
 /// Map a canonical g57 friend back into global XGate wire space, mirroring the
 /// legacy `candidate_to_circuit_space`: undo canonicalization (`order`) and the
 /// dense window remap (`used_wires`), drawing fresh scratch wires when the
@@ -297,6 +282,21 @@ pub enum DbMode {
     /// window that has no non-growing spelling. The paid channel of the
     /// ingest-then-pay generation policy.
     MinGrow,
+    /// Re-encode without growth when possible; otherwise pay for a spelling.
+    /// When `pay_random` is false the paid spelling is shortest, otherwise it
+    /// is drawn from all growing candidates.
+    Mix,
+}
+
+impl DbMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "mix" => Some(Self::Mix),
+            "comp" => Some(Self::Compressing),
+            "any" => Some(Self::SizeAgnostic),
+            _ => None,
+        }
+    }
 }
 
 /// Outcome of a store lookup for one window.
@@ -307,8 +307,18 @@ pub struct DbResult {
     pub match_count: usize,
     /// The replacement selected per [`DbMode`], if any qualified.
     pub chosen: Option<Vec<XGate>>,
-    /// True when BOTH directions were skipped by the degree guard (a certain
-    /// miss reached without any canonicalization or store lookup).
+    /// Candidates decoded to the exact outgoing window and discarded.
+    pub identity_skipped: usize,
+    /// Number of catalogued candidates supplied by the curated store.
+    pub curated_matches: usize,
+    /// Whether the selected candidate came from the curated store.
+    pub chosen_curated: bool,
+    /// Size of the eligible set from which the successful winner was drawn.
+    pub choice_count: usize,
+    /// Shortest non-decoded candidate length returned by the selected store.
+    pub min_match_len: Option<usize>,
+    /// True when at least one lookup direction was skipped because its exact
+    /// ANF degree exceeds the frozen store's maximum represented degree.
     pub degree_skipped: bool,
 }
 
@@ -319,8 +329,9 @@ pub struct DegreeGuard {
     /// direction exceeds this cannot match, so that direction is skipped before
     /// canonicalization. 0 disables the guard (every direction canonicalizes).
     pub max_degree: usize,
-    /// Random subcubes probed per direction (more = fewer missed high-degree
-    /// windows, at proportional cost).
+    /// Retained for CLI/config compatibility with the former randomized
+    /// pre-filter. Runtime lookups now use an exact degree cap while composing
+    /// the canonical polynomial and do not consume these probes.
     pub probes: usize,
 }
 
@@ -329,21 +340,6 @@ impl DegreeGuard {
         max_degree: 0,
         probes: 0,
     };
-}
-
-/// Route one key lookup according to the move's growth policy.
-///
-/// Explicit compression stays on the regular store. Modes that may grow try
-/// curated first and consult regular only when curated has no entry for the key.
-fn lookup_stores_for_mode<T>(
-    mode: DbMode,
-    curated: impl FnOnce() -> Option<T>,
-    regular: impl FnOnce() -> Option<T>,
-) -> Option<T> {
-    match mode {
-        DbMode::Compressing => regular(),
-        DbMode::SizeAgnostic | DbMode::MinGrow => curated().or_else(regular),
-    }
 }
 
 /// Look up `window` in the frozen store and select a replacement per `mode`.
@@ -359,29 +355,66 @@ pub fn db_replace(
     budget: XPolyBudget,
     mode: DbMode,
     guard: DegreeGuard,
+    curated: bool,
+    curated_in_comp: bool,
+    regular_fallback: bool,
+    pay_random: bool,
     rng: &mut impl Rng,
 ) -> DbResult {
-    db_replace_with(window, num_wires, budget, mode, guard, rng, |key| {
-        lookup_stores_for_mode(mode, || db.get_curated(key), || db.get_regular(key))
-    })
+    let curated_armed = curated_armed_for(curated, mode, curated_in_comp);
+    db_replace_with(
+        window,
+        num_wires,
+        budget,
+        mode,
+        guard,
+        curated_armed,
+        regular_fallback,
+        pay_random,
+        rng,
+        |key, want_curated| {
+            if want_curated && curated {
+                db.get_curated(key)
+            } else if want_curated {
+                None
+            } else {
+                db.get_regular(key)
+            }
+        },
+    )
+}
+
+/// Compression normally avoids curated alternatives; the explicit override
+/// lets layer-2 runs apply curated-first routing there as well.
+pub fn curated_armed_for(curated: bool, mode: DbMode, curated_in_comp: bool) -> bool {
+    curated && (mode != DbMode::Compressing || curated_in_comp)
 }
 
 /// Testable core: `lookup` stands in for the frozen store.
+#[allow(clippy::too_many_arguments)]
 pub fn db_replace_with<F>(
     window: &[XGate],
     num_wires: usize,
     budget: XPolyBudget,
     mode: DbMode,
     guard: DegreeGuard,
+    curated_armed: bool,
+    regular_fallback: bool,
+    pay_random: bool,
     rng: &mut impl Rng,
     mut lookup: F,
 ) -> DbResult
 where
-    F: FnMut(&[u8; 16]) -> Option<Vec<u8>>,
+    F: FnMut(&[u8; 16], bool) -> Option<Vec<u8>>,
 {
     let miss = |degree_skipped| DbResult {
         match_count: 0,
         chosen: None,
+        identity_skipped: 0,
+        curated_matches: 0,
+        chosen_curated: false,
+        choice_count: 0,
+        min_match_len: None,
         degree_skipped,
     };
     let window_len = window.len();
@@ -389,101 +422,210 @@ where
         return miss(false);
     }
 
-    // Degree pre-filter: a direction certified over-degree cannot match any
-    // stored circuit, so skip its (expensive) canonicalization entirely.
-    let fwd_over = guard.max_degree > 0
-        && xgate_degree_exceeds(window, false, guard.max_degree, guard.probes, rng);
-    let rev_over = guard.max_degree > 0
-        && xgate_degree_exceeds(window, true, guard.max_degree, guard.probes, rng);
-    if fwd_over && rev_over {
-        return miss(true); // both directions certain misses — no lookup at all
-    }
-
-    // Canonicalize each not-over-degree direction; a window shorter under its
-    // inverse still keys into the store the way the builder recorded it.
+    // Compose and degree-check forward first. Curated is forward-only; reverse
+    // is deferred until the regular cascade stage. Exact degree rejection
+    // happens before canonical wire ordering, the expensive part of a miss.
+    let mut degree_skipped = false;
     let mut directions: Vec<(bool, CanonicalXPolys)> = Vec::with_capacity(2);
-    if !fwd_over {
-        if let Ok(c) = canonicalize_xgates_single(window, false, budget) {
-            directions.push((false, c));
-        }
-    }
-    if !rev_over {
-        if let Ok(c) = canonicalize_xgates_single(window, true, budget) {
-            directions.push((true, c));
-        }
-    }
-    if directions.is_empty() {
-        return miss(false);
+    match canonicalize_xgates_single_capped(window, false, budget, guard.max_degree) {
+        Ok(canonical) => directions.push((false, canonical)),
+        Err(XPolyError::DegreeExceeded { .. }) => degree_skipped = true,
+        Err(_) => {}
     }
 
-    // Every placeable equivalent circuit across both distinct keys, ANY length.
-    let mut seen_keys = std::collections::HashSet::new();
-    let mut matches: Vec<Vec<XGate>> = Vec::new();
-    for (reversed, canonical) in &directions {
-        let key = key_of(canonical);
-        if !seen_keys.insert(key) {
-            continue;
+    struct CandidateRef {
+        value_index: usize,
+        offset: usize,
+        byte_len: usize,
+        gates: usize,
+        curated: bool,
+        direction_index: usize,
+    }
+    impl CandidateLen for CandidateRef {
+        fn gate_count(&self) -> usize {
+            self.gates
         }
-        let Some(value) = lookup(&key) else { continue };
-        for friend in decode_value(&value) {
-            if let Some(gates) = friend_to_xgates(
-                friend,
-                *reversed,
-                &canonical.order,
-                &canonical.used_wires,
-                num_wires,
-                rng,
-            ) {
-                matches.push(gates);
+    }
+    fn catalogue(
+        value: Vec<u8>,
+        curated: bool,
+        direction_index: usize,
+        values: &mut Vec<Vec<u8>>,
+        candidates: &mut Vec<CandidateRef>,
+    ) {
+        let value_index = values.len();
+        let mut pos = 0usize;
+        while pos < value.len() {
+            let byte_len = value[pos] as usize;
+            pos += 1;
+            if byte_len % 3 != 0
+                || pos
+                    .checked_add(byte_len)
+                    .is_none_or(|end| end > value.len())
+            {
+                break;
+            }
+            candidates.push(CandidateRef {
+                value_index,
+                offset: pos,
+                byte_len,
+                gates: byte_len / 3,
+                curated,
+                direction_index,
+            });
+            pos += byte_len;
+        }
+        values.push(value);
+    }
+
+    let mut values = Vec::new();
+    let mut candidates = Vec::new();
+
+    // Stage A: curated, using the forward canonical key only. A failed or
+    // over-degree forward composition simply makes this stage a miss.
+    if curated_armed {
+        if let Some((direction_index, (_, canonical))) = directions
+            .iter()
+            .enumerate()
+            .find(|(_, (reversed, _))| !reversed)
+        {
+            let key = key_of(canonical);
+            if let Some(value) = lookup(&key, true) {
+                catalogue(value, true, direction_index, &mut values, &mut candidates);
             }
         }
     }
 
-    let match_count = matches.len();
-    let chosen = choose(&mut matches, window_len, mode, rng);
+    // Stage B: regular forward and reverse, only after a complete curated miss
+    // (or unconditionally when curated is not armed). `regular_fallback=false`
+    // creates the curated-only primitive used by prefix-exhaustion.
+    if candidates.is_empty() && (regular_fallback || !curated_armed) {
+        match canonicalize_xgates_single_capped(window, true, budget, guard.max_degree) {
+            Ok(canonical) => directions.push((true, canonical)),
+            Err(XPolyError::DegreeExceeded { .. }) => degree_skipped = true,
+            Err(_) => {}
+        }
+        let mut seen_keys = std::collections::HashSet::new();
+        for direction_index in 0..directions.len() {
+            let key = key_of(&directions[direction_index].1);
+            if !seen_keys.insert(key) {
+                continue;
+            }
+            if let Some(value) = lookup(&key, false) {
+                catalogue(value, false, direction_index, &mut values, &mut candidates);
+            }
+        }
+    }
+
+    let match_count = candidates.len();
+    let curated_matches = candidates
+        .iter()
+        .filter(|candidate| candidate.curated)
+        .count();
+    let min_match_len = candidates.iter().map(|candidate| candidate.gates).min();
+    let mut chosen = None;
+    let mut chosen_curated = false;
+    let mut identity_skipped = 0usize;
+    let mut choice_count = 0usize;
+    while !candidates.is_empty() {
+        let Some((pick, eligible)) = choose_ref(&candidates, window_len, mode, pay_random, rng)
+        else {
+            break;
+        };
+        let candidate = candidates.swap_remove(pick);
+        let (reversed, canonical) = &directions[candidate.direction_index];
+        let friend = CircuitSeq::from_blob(
+            &values[candidate.value_index][candidate.offset..candidate.offset + candidate.byte_len],
+        );
+        let Some(gates) = friend_to_xgates(
+            friend,
+            *reversed,
+            &canonical.order,
+            &canonical.used_wires,
+            num_wires,
+            rng,
+        ) else {
+            continue;
+        };
+        if gates == window {
+            identity_skipped += 1;
+            continue;
+        }
+        chosen_curated = candidate.curated;
+        choice_count = eligible;
+        chosen = Some(gates);
+        break;
+    }
+
     DbResult {
         match_count,
         chosen,
-        degree_skipped: false,
+        degree_skipped,
+        identity_skipped,
+        curated_matches,
+        chosen_curated,
+        choice_count,
+        min_match_len,
     }
 }
 
-/// Select one replacement from `matches` per `mode` (consumes the pick).
-fn choose(
-    matches: &mut Vec<Vec<XGate>>,
+trait CandidateLen {
+    fn gate_count(&self) -> usize;
+}
+
+/// Select a candidate by length without decoding it. Returns both its index
+/// and the branching factor of the eligible set.
+fn choose_ref<T: CandidateLen>(
+    candidates: &[T],
     window_len: usize,
     mode: DbMode,
+    pay_random: bool,
     rng: &mut impl Rng,
-) -> Option<Vec<XGate>> {
+) -> Option<(usize, usize)> {
+    let len_of = |index: usize| candidates[index].gate_count();
     let eligible: Vec<usize> = match mode {
-        // Non-growing only, then narrow to the shortest.
         DbMode::Compressing => {
-            let min = matches
-                .iter()
-                .map(|g| g.len())
+            let min = (0..candidates.len())
+                .map(len_of)
                 .filter(|&l| l <= window_len)
                 .min()?;
-            (0..matches.len())
-                .filter(|&i| matches[i].len() == min)
+            (0..candidates.len())
+                .filter(|&i| len_of(i) == min)
                 .collect()
         }
-        // Anything the store returned.
         DbMode::SizeAgnostic => {
-            if matches.is_empty() {
+            if candidates.is_empty() {
                 return None;
             }
-            (0..matches.len()).collect()
+            (0..candidates.len()).collect()
         }
-        // The shortest spelling that exists, growing or not.
         DbMode::MinGrow => {
-            let min = matches.iter().map(|g| g.len()).min()?;
-            (0..matches.len())
-                .filter(|&i| matches[i].len() == min)
+            let min = (0..candidates.len()).map(len_of).min()?;
+            (0..candidates.len())
+                .filter(|&i| len_of(i) == min)
                 .collect()
         }
+        DbMode::Mix => {
+            let free: Vec<usize> = (0..candidates.len())
+                .filter(|&i| len_of(i) <= window_len)
+                .collect();
+            if !free.is_empty() {
+                free
+            } else if pay_random {
+                (0..candidates.len()).collect()
+            } else {
+                let min = (0..candidates.len()).map(len_of).min()?;
+                (0..candidates.len())
+                    .filter(|&i| len_of(i) == min)
+                    .collect()
+            }
+        }
     };
+    if eligible.is_empty() {
+        return None;
+    }
     let pick = eligible[rng.random_range(0..eligible.len())];
-    Some(matches.swap_remove(pick))
+    Some((pick, eligible.len()))
 }
 
 #[cfg(test)]
@@ -492,7 +634,6 @@ mod tests {
     use crate::postmix::xgate::eval_lanes;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
-    use std::cell::RefCell;
     use std::collections::HashMap;
 
     fn exhaustively_equal(a: &[XGate], b: &[XGate], n: usize) -> bool {
@@ -531,53 +672,75 @@ mod tests {
     }
 
     #[test]
-    fn store_routing_tracks_growth_policy_and_fallback() {
-        let calls = RefCell::new(Vec::new());
-        let hit = lookup_stores_for_mode(
-            DbMode::Compressing,
-            || {
-                calls.borrow_mut().push("curated");
-                Some(1)
-            },
-            || {
-                calls.borrow_mut().push("regular");
-                Some(2)
+    fn curated_routing_rule_respects_compression_override() {
+        assert!(curated_armed_for(true, DbMode::Mix, false));
+        assert!(curated_armed_for(true, DbMode::SizeAgnostic, false));
+        assert!(!curated_armed_for(true, DbMode::Compressing, false));
+        assert!(curated_armed_for(true, DbMode::Compressing, true));
+        assert!(!curated_armed_for(false, DbMode::Mix, true));
+    }
+
+    #[test]
+    fn curated_only_suppresses_regular_fallback() {
+        let window = vec![db_g57_to_xgate([0, 1, 2])];
+        let mut rng = StdRng::seed_from_u64(77);
+        let mut calls = Vec::new();
+        let result = db_replace_with(
+            &window,
+            8,
+            XPolyBudget::default(),
+            DbMode::Mix,
+            DegreeGuard::OFF,
+            true,
+            false,
+            false,
+            &mut rng,
+            |_, curated| {
+                calls.push(curated);
+                None
             },
         );
-        assert_eq!(hit, Some(2));
-        assert_eq!(*calls.borrow(), ["regular"]);
+        assert!(result.chosen.is_none());
+        assert_eq!(calls, [true]);
+    }
 
-        for mode in [DbMode::SizeAgnostic, DbMode::MinGrow] {
-            let calls = RefCell::new(Vec::new());
-            let hit = lookup_stores_for_mode(
-                mode,
-                || {
-                    calls.borrow_mut().push("curated");
-                    Some(1)
-                },
-                || {
-                    calls.borrow_mut().push("regular");
-                    Some(2)
-                },
-            );
-            assert_eq!(hit, Some(1));
-            assert_eq!(*calls.borrow(), ["curated"]);
-
-            let calls = RefCell::new(Vec::new());
-            let fallback = lookup_stores_for_mode(
-                mode,
-                || {
-                    calls.borrow_mut().push("curated");
-                    None
-                },
-                || {
-                    calls.borrow_mut().push("regular");
-                    Some(2)
-                },
-            );
-            assert_eq!(fallback, Some(2));
-            assert_eq!(*calls.borrow(), ["curated", "regular"]);
+    #[test]
+    fn mix_selection_reports_eligible_entropy_and_pay_random_pool() {
+        struct Length(usize);
+        impl CandidateLen for Length {
+            fn gate_count(&self) -> usize {
+                self.0
+            }
         }
+        let mut rng = StdRng::seed_from_u64(8);
+        let (_, free_choices) = choose_ref(
+            &[Length(1), Length(2), Length(4)],
+            2,
+            DbMode::Mix,
+            false,
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(free_choices, 2);
+
+        let (_, cheapest_choices) = choose_ref(
+            &[Length(3), Length(4), Length(4)],
+            2,
+            DbMode::Mix,
+            false,
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(cheapest_choices, 1);
+        let (_, random_paid_choices) = choose_ref(
+            &[Length(3), Length(4), Length(4)],
+            2,
+            DbMode::Mix,
+            true,
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(random_paid_choices, 3);
     }
 
     // A 3-gate window (one real g57 plus a cancelling involution pad) that a
@@ -601,8 +764,11 @@ mod tests {
             XPolyBudget::default(),
             DbMode::Compressing,
             DegreeGuard::OFF,
+            false,
+            true,
+            false,
             &mut rng,
-            |k| store.get(k).cloned(),
+            |k, curated| (!curated).then(|| store.get(k).cloned()).flatten(),
         );
         assert_eq!(res.match_count, 1);
         let repl = res.chosen.expect("a shorter friend exists");
@@ -623,8 +789,11 @@ mod tests {
             XPolyBudget::default(),
             DbMode::SizeAgnostic,
             DegreeGuard::OFF,
+            false,
+            true,
+            false,
             &mut rng,
-            |_| None,
+            |_, _| None,
         );
         assert_eq!(res.match_count, 0);
         assert!(res.chosen.is_none());
@@ -655,8 +824,11 @@ mod tests {
             XPolyBudget::default(),
             DbMode::SizeAgnostic,
             guard,
+            false,
+            true,
+            false,
             &mut rng,
-            |_| {
+            |_, _| {
                 lookups += 1;
                 None
             },
@@ -679,8 +851,11 @@ mod tests {
             XPolyBudget::default(),
             DbMode::SizeAgnostic,
             guard,
+            false,
+            true,
+            false,
             &mut rng,
-            |_| None,
+            |_, _| None,
         );
         assert!(
             !res.degree_skipped,
@@ -720,8 +895,11 @@ mod tests {
             XPolyBudget::default(),
             DbMode::Compressing,
             DegreeGuard::OFF,
+            false,
+            true,
+            false,
             &mut rng,
-            |k| store.get(k).cloned(),
+            |k, curated| (!curated).then(|| store.get(k).cloned()).flatten(),
         );
         assert_eq!(comp.match_count, 1);
         assert!(
@@ -737,8 +915,11 @@ mod tests {
             XPolyBudget::default(),
             DbMode::SizeAgnostic,
             DegreeGuard::OFF,
+            false,
+            true,
+            false,
             &mut rng,
-            |k| store.get(k).cloned(),
+            |k, curated| (!curated).then(|| store.get(k).cloned()).flatten(),
         );
         assert_eq!(agn.match_count, 1);
         let repl = agn.chosen.expect("size-agnostic accepts any length");
@@ -755,8 +936,11 @@ mod tests {
             XPolyBudget::default(),
             DbMode::MinGrow,
             DegreeGuard::OFF,
+            false,
+            true,
+            false,
             &mut rng,
-            |k| store.get(k).cloned(),
+            |k, curated| (!curated).then(|| store.get(k).cloned()).flatten(),
         );
         let repl = mg
             .chosen

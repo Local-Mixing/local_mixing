@@ -2,13 +2,11 @@ use clap::{Arg, ArgGroup, Command};
 
 mod commands;
 
-fn command() -> Command {
-    Command::new("local_mixing")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
-        .subcommand(
-            Command::new("sss")
-                .about("Shuffle-shoot-shuffle obfuscation + compression game")
+// Common circuit, transform, shooting, and output arguments for NH SSS and R
+// SSG. Each command hides controls owned exclusively by the other engine and
+// supplies its own defaults below.
+fn add_shoot_args(c: Command) -> Command {
+    c
                 .group(
                     ArgGroup::new("fixed_slice_transform")
                         .args(["feistalize", "tdp4n"])
@@ -261,6 +259,7 @@ fn command() -> Command {
                     Arg::new("record_replacements")
                         .long("record")
                         .alias("record_replacements")
+                        .visible_alias("rc")
                         .help("Record expansion/compression replacements to <destination>.replacements")
                         .required(false)
                         .action(clap::ArgAction::SetTrue),
@@ -370,6 +369,29 @@ fn command() -> Command {
                         .help("SSS/SSG hybrid cadence: absolute per-stage shooting cap and held final size; overrides --grow-threshold and stops only on the min-generation condition"),
                 )
                 .arg(
+                    Arg::new("light_compression")
+                        .long("light-compression")
+                        .visible_alias("lc")
+                        .short('l')
+                        .required(false)
+                        .action(clap::ArgAction::SetTrue)
+                        .help("R SSG fixed-round mode: stop an intermediate compression after reaching half the post-shooting size"),
+                )
+                .arg(
+                    Arg::new("outgoing_rank_script")
+                        .long("outgoing-rank-script")
+                        .required(false)
+                        .value_parser(clap::value_parser!(String))
+                        .help("R SSG: Rhai rank(cands) script for outgoing window selection"),
+                )
+                .arg(
+                    Arg::new("incoming_rank_script")
+                        .long("incoming-rank-script")
+                        .required(false)
+                        .value_parser(clap::value_parser!(String))
+                        .help("R SSG: Rhai rank(cands) script for incoming replacement selection"),
+                )
+                .arg(
                     Arg::new("nonlinear_handles")
                         .long("nonlinear-handles")
                         .required(false)
@@ -433,8 +455,74 @@ fn command() -> Command {
                         .default_value("0")
                         .value_parser(clap::value_parser!(usize))
                         .help("Restrict handle controls to wires [0,L); 0 uses the original input width, keeping handles active on fixed auxiliary slices"),
-                ),
-        )
+                )
+}
+
+fn add_nh_sss_args(c: Command) -> Command {
+    // These controls drive only the isolated R generation scheduler. Keeping
+    // them registered in the common builder lets R retain the authoritative
+    // spellings without making NH silently accept ignored options.
+    [
+        "light_compression",
+        "outgoing_rank_script",
+        "incoming_rank_script",
+    ]
+    .into_iter()
+    .fold(add_shoot_args(c), |command, id| {
+        command.mut_arg(id, |arg| arg.hide(true))
+    })
+}
+
+fn add_r_ssg_args(c: Command) -> Command {
+    // R SSG shares the common circuit/shooting surface with NH SSS, but its
+    // generation ledger and script rankers replace these NH-only controls.
+    const NH_ONLY_ARGS: &[&str] = &[
+        "nonlinear_gadgetize",
+        "cnot",
+        "tdp4n",
+        "collision_rounds",
+        "stable_compressions",
+        "generation_tags",
+        "outgoing_mode",
+        "incoming_rank",
+        "nonlinear_handles",
+        "nonlinear_handle_min_span",
+        "nonlinear_handle_max_span",
+        "nonlinear_handle_candidates",
+        "nonlinear_handle_max_gates",
+        "nonlinear_handle_seed",
+        "nonlinear_handle_target_wires",
+        "nonlinear_handle_control_wires",
+    ];
+
+    NH_ONLY_ARGS
+        .iter()
+        .copied()
+        .fold(add_shoot_args(c), |command, id| {
+            command.mut_arg(id, |arg| arg.hide(true))
+        })
+        .mut_arg("outgoing_mode", |a| a.default_value("gen"))
+        .mut_arg("incoming_rank", |a| a.default_value("fanout"))
+        .mut_arg("rg_frequency", |a| {
+            a.help("Source gates between R SSG randomizing-gadget draws (default 2)")
+        })
+        .mut_arg("min_gen", |a| a.default_value("1"))
+}
+
+fn command() -> Command {
+    Command::new("local_mixing")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(add_nh_sss_args(
+            Command::new("nh-sss")
+                .visible_alias("sss")
+                .about("NH SSS: shuffle-shoot-shuffle engine on the shuffletests runtime"),
+        ))
+        .subcommand(add_r_ssg_args(
+            Command::new("r-ssg")
+                .visible_alias("ssg")
+                .about("R SSG: isolated generation mixer with segmented Stage B/C SAMF ledger"),
+        ))
         .subcommand(
             Command::new("compress")
                 .about("Run compression trials on a circuit file")
@@ -732,7 +820,8 @@ fn command() -> Command {
 fn main() {
     let matches = command().get_matches();
     match matches.subcommand() {
-        Some(("sss", sub)) => commands::sss::run(sub),
+        Some(("nh-sss" | "sss", sub)) => commands::sss::run(sub),
+        Some(("r-ssg" | "ssg", sub)) => commands::r_ssg::run(sub),
         Some(("compress", sub)) => commands::compress::run(sub),
         Some(("genran", sub)) => commands::genran::run(sub),
         Some(("shuffle", sub)) => commands::shuffle::run(sub),
@@ -770,6 +859,110 @@ mod cli_tests {
         ];
         argv.extend_from_slice(extra);
         command().try_get_matches_from(argv)
+    }
+
+    fn parse_r_ssg(extra: &[&str]) -> Result<clap::ArgMatches, clap::Error> {
+        let mut argv = vec![
+            "local_mixing",
+            "r-ssg",
+            "-n",
+            "3",
+            "-m",
+            "1",
+            "-x",
+            "2",
+            "-s",
+            "source.txt",
+            "-r",
+            "0",
+            "-d",
+            "out.txt",
+        ];
+        argv.extend_from_slice(extra);
+        command().try_get_matches_from(argv)
+    }
+
+    #[test]
+    fn r_ssg_is_a_distinct_command_with_generation_defaults() {
+        let m = parse_r_ssg(&[]).unwrap();
+        let (name, ssg) = m.subcommand().unwrap();
+        assert_eq!(name, "r-ssg");
+        assert_eq!(
+            ssg.get_one::<String>("outgoing_mode").map(String::as_str),
+            Some("gen")
+        );
+        assert_eq!(
+            ssg.get_one::<String>("incoming_rank").map(String::as_str),
+            Some("fanout")
+        );
+        assert_eq!(ssg.get_one::<usize>("min_gen").copied(), Some(1));
+
+        assert!(
+            ssg.get_one::<String>("outgoing_rank_script").is_none(),
+            "script option is registered but optional"
+        );
+        assert!(
+            ssg.get_one::<String>("incoming_rank_script").is_none(),
+            "script option is registered but optional"
+        );
+    }
+
+    #[test]
+    fn legacy_command_aliases_resolve() {
+        assert!(parse_sss(&[]).is_ok());
+        let argv = vec![
+            "local_mixing",
+            "ssg",
+            "-n",
+            "3",
+            "-m",
+            "1",
+            "-x",
+            "2",
+            "-s",
+            "source.txt",
+            "-r",
+            "0",
+            "-d",
+            "out.txt",
+        ];
+        assert!(command().try_get_matches_from(argv).is_ok());
+        assert!(parse_r_ssg(&["-l", "--rc"]).is_ok());
+    }
+
+    #[test]
+    fn nh_help_hides_r_only_controls() {
+        let mut nh_sss = command().find_subcommand("nh-sss").unwrap().clone();
+        let mut rendered = Vec::new();
+        nh_sss.write_long_help(&mut rendered).unwrap();
+        let rendered = String::from_utf8(rendered).unwrap();
+
+        for r_only in [
+            "--light-compression",
+            "--outgoing-rank-script",
+            "--incoming-rank-script",
+        ] {
+            assert!(!rendered.contains(r_only), "NH help leaked {r_only}");
+        }
+    }
+
+    #[test]
+    fn r_ssg_help_exposes_only_its_generation_controls() {
+        let mut r_ssg = command().find_subcommand("r-ssg").unwrap().clone();
+        let mut rendered = Vec::new();
+        r_ssg.write_long_help(&mut rendered).unwrap();
+        let rendered = String::from_utf8(rendered).unwrap();
+
+        assert!(rendered.contains("--outgoing-rank-script"));
+        assert!(rendered.contains("--incoming-rank-script"));
+        for nh_only in [
+            "--cnot",
+            "--nonlinear_gadgetize",
+            "--tdp4n",
+            "--nonlinear-handles",
+        ] {
+            assert!(!rendered.contains(nh_only), "R help leaked {nh_only}");
+        }
     }
 
     #[test]

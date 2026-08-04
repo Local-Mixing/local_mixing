@@ -26,6 +26,7 @@ pub mod rainbow_table {
         unavailable()
     }
 }
+pub mod r_ssg;
 pub mod shoot;
 pub mod shuffle;
 pub mod sss;

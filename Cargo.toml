@@ -109,6 +109,10 @@ name = "frozen_pilot"
 path = "src/rainbow_table/bin/frozen_pilot.rs"
 
 [[bin]]
+name = "frozen_reencode"
+path = "src/rainbow_table/bin/frozen_reencode.rs"
+
+[[bin]]
 name = "frozen_filter_persist"
 path = "src/rainbow_table/bin/frozen_filter_persist.rs"
 
@@ -179,6 +183,8 @@ num_cpus = { version = "1.17.0", optional = true }
 # Frozen-table read path (src/replace/frozen.rs).
 xorf = { version = "0.12", features = ["serde", "bincode"] }
 bincode2 = { package = "bincode", version = "2" }
+# Runtime-pluggable outgoing/incoming rankers for the isolated R-SSG stack.
+rhai = { version = "1.21", features = ["sync"] }
 # Needed by the challenge binaries (block_cipher, poly_canon).
 rng-entropy = "0.5.0"
 cryptography = { package = "cryptography-rs", version = "0.5.0" }

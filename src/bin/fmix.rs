@@ -20,6 +20,7 @@
 //     --target-size 3000000 --moves 50000000 --output mixed_fmix.txt
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser, ValueEnum};
+use local_mixing::postmix::db_replace::DbMode;
 use local_mixing::postmix::format;
 use local_mixing::postmix::g57_pairs::{G57PairRegion, G57PairSeedConfig};
 use local_mixing::postmix::mix::{
@@ -30,12 +31,29 @@ use local_mixing::postmix::xgate::{XGate, max_wire};
 #[derive(Parser, Debug)]
 #[command(name = "fmix")]
 struct Args {
-    /// Input circuit file
-    #[arg(long)]
-    input: String,
+    /// Input circuit file (not needed with --resume: the state file carries
+    /// both the circuit and the true original).
+    #[arg(long, required_unless_present = "resume")]
+    input: Option<String>,
     /// Input format: mpmct1 | g57
     #[arg(long, default_value = "mpmct1")]
     input_format: String,
+    /// Resume from a state file written by --state-out or a move snapshot.
+    /// Rates, targets, brake and mode come from THIS command line — a paused
+    /// run is meant to be steerable — but the circuit, metadata, journal,
+    /// pool, canary, brake state and profile clock all continue.
+    #[arg(long)]
+    resume: Option<String>,
+    /// Write a resumable state file at the end of the run (any stop reason).
+    #[arg(long)]
+    state_out: Option<String>,
+    /// Write circuit+gens+state snapshots at each multiple of this many
+    /// moves (0 = off).
+    #[arg(long, default_value_t = 0)]
+    snap_every_moves: u64,
+    /// Filename prefix for move snapshots.
+    #[arg(long, default_value = "")]
+    snap_base: String,
     /// Output file (mpmct1 format)
     #[arg(long)]
     output: Option<String>,
@@ -133,6 +151,10 @@ struct Args {
     /// caps these windows at the mid scale (~n*ln n gates).
     #[arg(long, default_value_t = 0.0)]
     w_twist_cnot: f64,
+    /// Probability each swapped wire is negated by a first-class swap-family
+    /// twist (0.5 gives swap/negate-one/negate-both at 1/4,1/2,1/4).
+    #[arg(long, default_value_t = 0.5)]
+    twist_neg_p: f64,
     /// Persistent nonlinear-frame weight. A frame opens a reversible packet
     /// of nonlinear controlled-X gates, shoots/conjugates it through a window,
     /// and closes with its inverse. Zero preserves the historical trajectory.
@@ -159,6 +181,28 @@ struct Args {
     /// Minimum twist window length (max is the current circuit size)
     #[arg(long, default_value_t = 64)]
     twist_min_len: usize,
+    /// Layer-2 phase-A defaults. Explicit command-line values take precedence.
+    #[arg(long, default_value_t = false)]
+    phase_a: bool,
+    /// Use adaptive all-G57 words for pure-swap twist brackets.
+    #[arg(long, default_value_t = false)]
+    twist_g57: bool,
+    /// When MIX must grow, select uniformly from all growing spellings.
+    #[arg(long, default_value_t = false)]
+    mix_pay_random: bool,
+    /// Size profile N0,N1,N2,R1,R2 in effective-work units.
+    #[arg(long, default_value = "")]
+    profile: String,
+    #[arg(long, default_value_t = 0.5)]
+    prof_cadence_eff: f64,
+    #[arg(long, default_value_t = 0.02)]
+    prof_deadband: f64,
+    #[arg(long, default_value_t = 0.1)]
+    prof_dp_max: f64,
+    #[arg(long, default_value_t = 0.3)]
+    prof_ewma: f64,
+    #[arg(long, default_value_t = 0.05)]
+    prof_ki: f64,
     /// Compressing DB move: probability that a contraction attempt first
     /// samples a window and replaces it with a non-growing equivalent.
     #[arg(long, default_value_t = 0.0)]
@@ -166,17 +210,45 @@ struct Args {
     /// Size-agnostic DB replacement probability per top-level round.
     #[arg(long, default_value_t = 0.0)]
     p_db: f64,
+    /// Fixed slot-2 DB mode when --p-mix is disabled: mix | comp | any.
+    #[arg(long, default_value = "mix")]
+    db_mode: String,
+    /// Per-round probability of MIX versus COMP. Negative disables overlay.
+    #[arg(long, default_value_t = -1.0)]
+    p_mix: f64,
+    /// MIX-mode prefix-descent start length.
+    #[arg(long, default_value_t = 9)]
+    s_db: usize,
+    /// MIX-mode probability of convex rather than contiguous sampling.
+    #[arg(long, default_value_t = 0.4)]
+    p_convex: f64,
+    /// COMP-mode descent start and convex probability.
+    #[arg(long, default_value_t = 12)]
+    s_db_comp: usize,
+    #[arg(long, default_value_t = 0.1)]
+    p_convex_comp: f64,
+    /// Generation-pool seed probability, with a COMP-specific override.
+    #[arg(long, default_value_t = 0.8)]
+    p_mingen: f64,
+    #[arg(long, default_value_t = -1.0)]
+    p_mingen_comp: f64,
     /// Fixed top-level conjugation-twist probability per round. Twist kind is
     /// selected using the --w-twist-* values as relative weights.
     #[arg(long, default_value_t = 0.0)]
     p_twist: f64,
-    /// Anneal --p-db linearly to this probability over the move budget.
-    /// Negative disables annealing.
-    #[arg(long, default_value_t = -1.0)]
-    p_db_final: f64,
-    /// Multiply the current --p-db by a below-target sigmoid.
+    /// Upper clamp on the thermostat contraction probability. The old 0.98
+    /// left a 2% expansion floor that is a structural growth source.
+    #[arg(long, default_value_t = 0.98)]
+    contract_ceiling: f64,
+    /// Refuse DB windows that are exactly one complete litter (the unit an
+    /// earlier replacement emitted, where the store can hand the outgoing
+    /// spelling straight back).
     #[arg(long, default_value_t = false)]
-    p_db_steer: bool,
+    litter_ban: bool,
+    /// Candidate windows drawn per DB round; the most litter-diverse wins.
+    /// 1 disables the preference.
+    #[arg(long, default_value_t = 1)]
+    litter_samples: usize,
     /// Minimum DB-replacement window length.
     #[arg(long, default_value_t = 2)]
     db_min_window: usize,
@@ -186,9 +258,20 @@ struct Args {
     /// DB window sampler: contiguous | convex | mixed.
     #[arg(long, default_value = "contiguous")]
     db_sample: String,
-    /// Maximum controls on a DB-window gate. Zero disables this guard.
-    #[arg(long, default_value_t = 0)]
-    db_ctrl_cap: usize,
+    /// Width bound for gates INSIDE a DB window (strict: width < w_window).
+    /// Zero disables. Replaces --db-ctrl-cap: `--db-ctrl-cap N` ≙ `--w-window N+1`.
+    #[arg(long, default_value_t = 4)]
+    w_window: usize,
+    /// Width bound for pool membership (strict: width < w_pool). Stricter
+    /// than w_window: an ineligible gate can never be re-encoded, so an
+    /// unfiltered pool converges on exactly that set and stays there.
+    #[arg(long, default_value_t = 3)]
+    w_pool: usize,
+    /// Generation-pool capacity: the K lowest-generation eligible gates.
+    /// A count, not a fraction — K must exceed the draws taken between
+    /// rebuilds or the biased coin silently degrades to uniform.
+    #[arg(long, default_value_t = 20_000)]
+    pool_k: usize,
     /// Convex sampler's probability of growing in the seed gate's direction.
     #[arg(long, default_value_t = 0.75)]
     db_convex_p: f64,
@@ -218,32 +301,65 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     db_total_terms: usize,
     /// Try sampled-window prefixes largest first down to --db-min-window.
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = true)]
     db_prefixes: bool,
+    /// Disable the default prefix descent.
+    #[arg(long, default_value_t = false)]
+    no_db_prefixes: bool,
+    /// Give DB splice products ballistic birth advance.
+    #[arg(long, default_value_t = false)]
+    db_advance: bool,
+    /// Curated-first routing defaults; explicit no-* switches restore regular-only.
+    #[arg(long, default_value_t = true)]
+    curated: bool,
+    #[arg(long, default_value_t = false)]
+    no_curated: bool,
+    #[arg(long, default_value_t = true)]
+    curated_exhaust: bool,
+    #[arg(long, default_value_t = false)]
+    no_curated_exhaust: bool,
+    #[arg(long, default_value_t = true)]
+    curated_in_comp: bool,
+    #[arg(long, default_value_t = false)]
+    no_curated_in_comp: bool,
+    /// Optional frozen-store paths (override environment variables).
+    #[arg(long)]
+    frozen_db_dir: Option<String>,
+    #[arg(long)]
+    frozen_curated_dir: Option<String>,
     /// Drive eligible gates through at least this many DB re-encodings.
     /// Zero disables generation targeting.
     #[arg(long, default_value_t = 0)]
     gen_target: u32,
-    /// Probability of selecting a below-target generation laggard as DB seed.
-    #[arg(long, default_value_t = 0.9)]
-    gen_bias: f64,
-    /// Laggard-list rebuild cadence in moves.
+    /// Pool rebuild cadence in moves.
     #[arg(long, default_value_t = 10_000)]
     gen_rescan: u64,
-    /// Cheap ingest channel probability: non-growing DB replacement seeded
-    /// from below-target cheap-tier gates.
+    /// Canary stop threshold: fire when the failure fraction over the last
+    /// --canary-window pool-seeded growth rounds strictly exceeds this.
+    /// Asleep while the size brake holds COMP (those rounds don't qualify).
+    /// Zero disables.
     #[arg(long, default_value_t = 0.0)]
-    p_db_ingest: f64,
-    /// Paid hard channel probability: minimum-growth DB replacement seeded
-    /// from hard-tier gates.
-    #[arg(long, default_value_t = 0.0)]
-    p_db_hard: f64,
-    /// Seed misses before a laggard graduates from cheap to hard tier.
-    #[arg(long, default_value_t = 6)]
-    gen_miss_budget: u16,
-    /// Seed misses before a laggard is marked unreachable. Zero means never.
+    canary_theta: f64,
+    /// Qualifying-round window the canary is denominated over.
+    #[arg(long, default_value_t = 2000)]
+    canary_window: usize,
+    /// Size-brake upper bound: growth to this size forces slot 2 into COMP.
+    /// Zero disables the brake.
     #[arg(long, default_value_t = 0)]
-    gen_giveup: u16,
+    size_hi: usize,
+    /// Size-brake release bound (hysteresis): COMP is released back to
+    /// --db-mode at this size, or earlier when COMP stops paying.
+    #[arg(long, default_value_t = 0)]
+    size_lo: usize,
+    /// Productivity release: let the brake go when COMP's shed rate over the
+    /// trailing window falls below this many gates per round. This is what
+    /// makes a WIDE band safe — the risk was never the width, it was sitting
+    /// in COMP past its usefulness.
+    #[arg(long, default_value_t = 0.0)]
+    comp_release_eps: f64,
+    /// Trailing window (moves) the shed rate is measured over.
+    #[arg(long, default_value_t = 250_000)]
+    comp_release_window: u64,
     /// Have split children inherit the parent generation instead of +1.
     #[arg(long, default_value_t = false)]
     gen_split_inherit: bool,
@@ -585,19 +701,73 @@ impl Args {
         if matches!(self.g57_pairs_per_wire, Some(0)) {
             return Err("--g57-pairs-per-wire must be positive".into());
         }
+        // Two-phase schedules keep their phase state in fmix, not the Mixer,
+        // so moves_done alone cannot reconstruct which phase a resume landed
+        // in. A stated, checkable limitation beats silent wrongness.
+        if self.resume.is_some()
+            && (self.grow_moves.is_some() || self.churn_moves.is_some() || self.dose_then_churn)
+        {
+            return Err(
+                "--resume supports the legacy one-phase schedule; re-issue the churn phase \
+                 explicitly instead of --grow-moves/--churn-moves/--dose-then-churn"
+                    .into(),
+            );
+        }
+        if self.snap_every_moves > 0 && self.snap_base.is_empty() {
+            return Err("--snap-every-moves requires --snap-base".into());
+        }
         for (name, probability) in [
             ("--w-db", self.w_db),
             ("--p-db", self.p_db),
             ("--p-twist", self.p_twist),
+            ("--twist-neg-p", self.twist_neg_p),
             ("--db-convex-p", self.db_convex_p),
-            ("--gen-bias", self.gen_bias),
-            ("--p-db-ingest", self.p_db_ingest),
-            ("--p-db-hard", self.p_db_hard),
         ] {
             validate_probability(name, probability)?;
         }
-        if !self.p_db_final.is_finite() || self.p_db_final > 1.0 {
-            return Err("--p-db-final must be finite and either negative or in [0, 1]".into());
+        for (name, probability) in [
+            ("--p-convex", self.p_convex),
+            ("--p-convex-comp", self.p_convex_comp),
+            ("--p-mingen", self.p_mingen),
+            ("--p-mingen-comp", self.p_mingen_comp),
+        ] {
+            if probability >= 0.0 {
+                validate_probability(name, probability)?;
+            } else if !probability.is_finite() {
+                return Err(format!("{name} must be finite"));
+            }
+        }
+        if !self.p_mix.is_finite() || self.p_mix > 1.0 {
+            return Err("--p-mix must be finite and either negative or in [0, 1]".into());
+        }
+        if DbMode::parse(&self.db_mode).is_none() {
+            return Err(format!(
+                "unknown --db-mode {} (expected mix|comp|any)",
+                self.db_mode
+            ));
+        }
+        if self.s_db == 0 {
+            return Err("--s-db must be positive".into());
+        }
+        for (name, value) in [
+            ("--prof-cadence-eff", self.prof_cadence_eff),
+            ("--prof-deadband", self.prof_deadband),
+            ("--prof-dp-max", self.prof_dp_max),
+            ("--prof-ewma", self.prof_ewma),
+            ("--prof-ki", self.prof_ki),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(format!("{name} must be finite and nonnegative"));
+            }
+        }
+        if self.prof_cadence_eff == 0.0 {
+            return Err("--prof-cadence-eff must be positive".into());
+        }
+        if self.prof_ewma > 1.0 {
+            return Err("--prof-ewma must be in [0, 1]".into());
+        }
+        if !self.contract_ceiling.is_finite() || !(0.02..=1.0).contains(&self.contract_ceiling) {
+            return Err("--contract-ceiling must be in [0.02, 1]".into());
         }
         if self.db_min_window < 2 {
             return Err("--db-min-window must be at least 2".into());
@@ -625,9 +795,6 @@ impl Args {
         }
         if self.gen_target > 0 && self.gen_rescan == 0 {
             return Err("--gen-rescan must be positive when generation targeting is on".into());
-        }
-        if (self.p_db_ingest > 0.0 || self.p_db_hard > 0.0) && self.gen_target == 0 {
-            return Err("--p-db-ingest/--p-db-hard require --gen-target > 0".into());
         }
         if !self.gen_stop_frac.is_finite() || self.gen_stop_frac > 1.0 {
             return Err("--gen-stop-frac must be finite and either negative or in [0, 1]".into());
@@ -674,11 +841,7 @@ impl Args {
     }
 
     fn db_requested(&self) -> bool {
-        self.w_db > 0.0
-            || self.p_db > 0.0
-            || self.p_db_final > 0.0
-            || self.p_db_ingest > 0.0
-            || self.p_db_hard > 0.0
+        self.w_db > 0.0 || self.p_db > 0.0
     }
 
     fn validate_wire_capacity(&self, num_wires: usize) -> Result<(), String> {
@@ -817,7 +980,7 @@ fn report_dose_census(label: &str, mixer: &Mixer, args: &Args) -> DoseCensus {
     let stats = mixer.generation_dose_stats();
     let describe = |scope: &str, census: local_mixing::postmix::mix::GenStats| {
         format!(
-            "{scope} G={} Gall={} tgtbl={} alag={}/{} afrac={:.6} lag={}/{} frac={:.6} cheap={} hard={} unreach={} width_lag={} eligible={} fresh={}",
+            "{scope} G={} Gall={} tgtbl={} alag={}/{} afrac={:.6} lag={}/{} frac={:.6} width_lag={} eligible={} fresh={}",
             census.g_circ,
             census.g_all,
             census.targetable,
@@ -827,9 +990,6 @@ fn report_dose_census(label: &str, mixer: &Mixer, args: &Args) -> DoseCensus {
             census.lag,
             census.targetable,
             census_fraction(census.lag, census.targetable),
-            census.cheap,
-            census.hard,
-            census.unreach,
             census.wlag,
             census.elig,
             census.fresh,
@@ -931,14 +1091,12 @@ fn transition_to_dose_churn(
     let start_move = mixer.counters.moves;
     mixer.params.gen_stop_frac = -1.0;
     mixer.params.twist_cov_stop = 0.0;
-    mixer.params.p_db_ingest = 0.0;
-    mixer.params.p_db_hard = 0.0;
     // Phase A uses p_twist as a first-class long-range dose. Phase B follows
     // the established grow/churn schedule, where the much smaller
     // churn-w-twist-* values are ordinary expansion weights.
     mixer.params.p_twist = 0.0;
     println!(
-        "[fmix] new-SSS phase transition: boundary={boundary} mv={start_move}; dose stop, DB ingest/hard, and first-class p_twist disabled; generation metadata retained; scheduling exactly {churn_moves} churn moves"
+        "[fmix] new-SSS phase transition: boundary={boundary} mv={start_move}; dose stop and first-class p_twist disabled; generation metadata retained; scheduling exactly {churn_moves} churn moves"
     );
     run_churn_phase(mixer, args, start_move, churn_moves)
 }
@@ -949,6 +1107,8 @@ fn require_complete_dose_churn(stop_reason: &MixStop, args: &Args) {
             MixStop::MovesBudget => "moves-budget",
             MixStop::StopFlag => "stop-flag",
             MixStop::DoseReached => "unconsumed-dose-reached",
+            MixStop::ProfileDone => "profile-done",
+            MixStop::CanaryFired => "canary-fired",
         };
         panic!(
             "[fmix] new-SSS composite did not complete its certified dose transition and exact post-dose churn budget ({terminal}); refusing final float/output"
@@ -1195,37 +1355,182 @@ fn validate_hard_cap_admission(
     Ok(())
 }
 
+fn argument_was_given(matches: &clap::ArgMatches, name: &str) -> bool {
+    matches.value_source(name) == Some(clap::parser::ValueSource::CommandLine)
+}
+
+/// Settle default-on switches, legacy compatibility, and the layer-2 preset.
+/// This is separate from `main` so explicit-precedence behavior is unit tested.
+fn apply_layer_argument_policy(args: &mut Args, matches: &clap::ArgMatches) {
+    let given = |name: &str| argument_was_given(matches, name);
+    if args.no_db_prefixes {
+        args.db_prefixes = false;
+    }
+    if args.no_curated {
+        args.curated = false;
+    }
+    if args.no_curated_exhaust {
+        args.curated_exhaust = false;
+    }
+    if args.no_curated_in_comp {
+        args.curated_in_comp = false;
+    }
+    if given("db_max_window") && !given("s_db") {
+        args.s_db = args.db_max_window;
+    }
+    if given("db_sample") && !given("p_convex") {
+        args.p_convex = -1.0;
+    }
+    if args.phase_a {
+        if !given("twist_g57") {
+            args.twist_g57 = true;
+        }
+        if !given("p_twist") {
+            args.p_twist = 0.0005;
+        }
+        if !given("db_advance") {
+            args.db_advance = true;
+        }
+        if !given("mix_pay_random") {
+            args.mix_pay_random = true;
+        }
+        if !given("p_mingen") {
+            args.p_mingen = 0.6;
+        }
+        if !given("p_mingen_comp") {
+            args.p_mingen_comp = 0.0;
+        }
+    }
+}
+
+fn parse_profile_spec(spec: &str) -> Result<Option<([f64; 3], [f64; 2])>, String> {
+    if spec.is_empty() {
+        return Ok(None);
+    }
+    let values = spec
+        .split(',')
+        .map(|part| part.trim().parse::<f64>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "--profile expects N0,N1,N2,R1,R2 real numbers".to_string())?;
+    if values.len() != 5 || values.iter().any(|value| !value.is_finite()) {
+        return Err("--profile expects exactly five finite values N0,N1,N2,R1,R2".into());
+    }
+    let mut n = [values[0], values[1], values[2]];
+    if n[2] < n[1] {
+        n[2] += n[1];
+    }
+    let r = [values[3], values[4]];
+    if !(n[0] > 0.0 && n[1] >= n[0] && n[2] > n[1]) || !(r[0] > 1.0 && r[1] >= 1.0 && r[0] >= r[1])
+    {
+        return Err("--profile needs 0<N0<=N1<N2 and R1>1, R1>=R2>=1".into());
+    }
+    Ok(Some((n, r)))
+}
+
 fn main() {
-    let args = Args::parse();
+    // Retain clap's value sources so a preset never overwrites an explicit
+    // command-line value (notably `--p-twist 0`).
+    let matches = Args::command().get_matches();
+    let given = |name: &str| argument_was_given(&matches, name);
+    let mut args =
+        <Args as clap::FromArgMatches>::from_arg_matches(&matches).expect("clap parsed arguments");
+    apply_layer_argument_policy(&mut args, &matches);
+    if args.phase_a {
+        println!(
+            "[fmix] phase-A preset: twist_g57={} p_twist={} db_advance={} mix_pay_random={} p_mingen={} p_mingen_comp={} (explicit flags win)",
+            args.twist_g57,
+            args.p_twist,
+            args.db_advance,
+            args.mix_pay_random,
+            args.p_mingen,
+            args.p_mingen_comp
+        );
+    }
+
+    if let Some(directory) = &args.frozen_db_dir {
+        unsafe { std::env::set_var("FROZEN_DB_DIR", directory) };
+    }
+    if let Some(directory) = &args.frozen_curated_dir {
+        unsafe { std::env::set_var("FROZEN_CURATED_DIR", directory) };
+    }
+    if args.db_requested() && args.curated && std::env::var_os("FROZEN_CURATED_DIR").is_none() {
+        if given("curated") {
+            Args::command()
+                .error(
+                    ErrorKind::ValueValidation,
+                    "--curated requires FROZEN_CURATED_DIR or --frozen-curated-dir",
+                )
+                .exit();
+        }
+        eprintln!(
+            "[fmix] WARNING: curated-first is the default but no curated store is configured; using regular-only routing"
+        );
+        args.curated = false;
+    }
+
+    let profile = parse_profile_spec(&args.profile).unwrap_or_else(|error| {
+        Args::command()
+            .error(ErrorKind::ValueValidation, error)
+            .exit()
+    });
+    if profile.is_some() {
+        if args.target_size.is_some()
+            || args.hard_size_cap > 0
+            || args.size_hi > 0
+            || args.size_lo > 0
+            || args.grow_moves.is_some()
+            || args.churn_moves.is_some()
+            || args.dose_then_churn
+            || given("p_mix")
+        {
+            Args::command()
+                .error(
+                    ErrorKind::ArgumentConflict,
+                    "--profile is the sole size/schedule authority; remove --target-size, --hard-size-cap, --size-hi/--size-lo, --grow-moves/--churn-moves, --dose-then-churn, and --p-mix",
+                )
+                .exit();
+        }
+    }
     let schedule = RunSchedule::from_args(&args)
         .unwrap_or_else(|e| Args::command().error(ErrorKind::ValueValidation, e).exit());
     if let Err(e) = args.validate() {
         Args::command().error(ErrorKind::ValueValidation, e).exit();
     }
 
-    let (gates, file_wires): (Vec<XGate>, usize) = match args.input_format.as_str() {
-        "mpmct1" => format::read_mpmct(&args.input).expect("read mpmct1 circuit"),
-        "g57" => {
-            let g = format::read_g57_file(&args.input).expect("read g57 circuit");
-            let w = max_wire(&g) as usize + 1;
-            (g, w)
+    let resuming = args.resume.is_some();
+    let (gates, file_wires): (Vec<XGate>, usize) = if resuming {
+        // Placeholders: the state file carries the circuit; the true values
+        // are rebound from the resumed mixer below.
+        (Vec::new(), 1)
+    } else {
+        let input = args.input.as_deref().expect("clap requires --input");
+        match args.input_format.as_str() {
+            "mpmct1" => format::read_mpmct(input).expect("read mpmct1 circuit"),
+            "g57" => {
+                let g = format::read_g57_file(input).expect("read g57 circuit");
+                let w = max_wire(&g) as usize + 1;
+                (g, w)
+            }
+            other => panic!("unknown --input-format {other}"),
         }
-        other => panic!("unknown --input-format {other}"),
     };
     let identity_noops = gates.iter().filter(|gate| gate.is_noop()).count();
     if identity_noops > 0 {
         println!("[fmix] canonicalized away {identity_noops} complemented empty identity gates");
     }
     let canonical_input_len = gates.len() - identity_noops;
-    if canonical_input_len == 0 {
+    if canonical_input_len == 0 && !resuming {
         println!("[fmix] canonical input is the empty identity circuit");
     }
     let num_wires = file_wires.max(max_wire(&gates) as usize + 1);
-    if let Err(e) = args.validate_wire_capacity(num_wires) {
-        Args::command().error(ErrorKind::ValueValidation, e).exit();
+    if !resuming {
+        if let Err(e) = args.validate_wire_capacity(num_wires) {
+            Args::command().error(ErrorKind::ValueValidation, e).exit();
+        }
     }
     if let Some(config) = args.g57_pair_config(num_wires)
         && let Err(e) = config.validate()
+        && !resuming
     {
         Args::command().error(ErrorKind::ValueValidation, e).exit();
     }
@@ -1235,7 +1540,9 @@ fn main() {
         .filter(|gate| gate.comp && !gate.is_noop())
         .count();
     let target = args.target_size.unwrap_or(input_len);
-    if let Err(error) = validate_hard_cap_admission(input_len, target, args.hard_size_cap) {
+    if !resuming
+        && let Err(error) = validate_hard_cap_admission(input_len, target, args.hard_size_cap)
+    {
         Args::command()
             .error(ErrorKind::ValueValidation, error)
             .exit();
@@ -1283,8 +1590,8 @@ fn main() {
     }
     if args.p_twist > 0.0 {
         println!(
-            "[fmix] first-class twist rounds ON: p_twist={} (w-twist-* select kind)",
-            args.p_twist
+            "[fmix] first-class swap-family twists ON: p_twist={} twist_neg_p={} twist_g57={}",
+            args.p_twist, args.twist_neg_p, args.twist_g57
         );
     }
     if args.w_twist_neg > 0.0
@@ -1308,25 +1615,33 @@ fn main() {
     }
     if args.db_requested() {
         println!(
-            "[fmix] DB replacement ON: w_db={} p_db={} p_db_final={} p_db_ingest={} p_db_hard={} steer={} window=[{},{}] sample={} verify={} (FROZEN_DB_DIR required)",
+            "[fmix] DB replacement ON: w_db={} p_db={} mode={} p_mix={} s_db={}/{} p_convex={}/{} prefixes={} curated={}/{}/comp={} verify={} (FROZEN_DB_DIR required)",
             args.w_db,
             args.p_db,
-            args.p_db_final,
-            args.p_db_ingest,
-            args.p_db_hard,
-            args.p_db_steer,
-            args.db_min_window,
-            args.db_max_window,
-            args.db_sample,
+            args.db_mode,
+            args.p_mix,
+            args.s_db,
+            args.s_db_comp,
+            args.p_convex,
+            args.p_convex_comp,
+            args.db_prefixes,
+            args.curated,
+            args.curated_exhaust,
+            args.curated_in_comp,
             !args.no_db_verify,
         );
     }
+    if let Some((n, r)) = profile {
+        println!("[fmix] profile ON: n={n:?} r={r:?} (sole size authority)");
+    }
     if args.gen_target > 0 {
         println!(
-            "[fmix] generation targeting ON: target={} bias={} rescan={} stop_frac={} dose_scope={} twist_cov_stop={} miss_budget={} giveup={} split={} median={}",
+            "[fmix] generation targeting ON: target={} rescan={} pool_k={} w_pool={} w_window={} stop_frac={} dose_scope={} twist_cov_stop={} split={} median={}",
             args.gen_target,
-            args.gen_bias,
             args.gen_rescan,
+            args.pool_k,
+            args.w_pool,
+            args.w_window,
             args.gen_stop_frac,
             if args.gen_dose_exclude_g57_pair_frames {
                 "non-pair"
@@ -1334,8 +1649,6 @@ fn main() {
                 "all"
             },
             args.twist_cov_stop,
-            args.gen_miss_budget,
-            args.gen_giveup,
             if args.gen_split_inherit {
                 "inherit"
             } else {
@@ -1348,7 +1661,14 @@ fn main() {
             },
         );
     }
+    if args.canary_theta > 0.0 {
+        println!(
+            "[fmix] canary ON: theta={} window={} (asleep while the brake holds COMP)",
+            args.canary_theta, args.canary_window
+        );
+    }
 
+    let (prof_n, prof_r) = profile.unwrap_or(([0.0; 3], [0.0; 2]));
     let params = MixParams {
         k_max: args.k_max,
         split_damp: args.split_damp,
@@ -1370,6 +1690,8 @@ fn main() {
         w_twist_neg: args.w_twist_neg,
         w_twist_swap: args.w_twist_swap,
         w_twist_cnot: args.w_twist_cnot,
+        twist_neg_p: args.twist_neg_p,
+        twist_g57: args.twist_g57,
         w_nl_frame: args.w_nl_frame,
         nl_frame_min_width: args.nl_frame_min_width,
         nl_frame_max_width: args.nl_frame_max_width,
@@ -1380,12 +1702,14 @@ fn main() {
         p_twist: args.p_twist,
         w_db: args.w_db,
         p_db: args.p_db,
-        p_db_final: args.p_db_final,
-        p_db_steer: args.p_db_steer,
+        contract_ceiling: args.contract_ceiling,
+        litter_ban: args.litter_ban,
+        litter_samples: args.litter_samples,
         db_min_window: args.db_min_window,
         db_max_window: args.db_max_window,
         db_sample: DbSample::parse(&args.db_sample).expect("validated --db-sample"),
-        db_ctrl_cap: args.db_ctrl_cap,
+        w_window: args.w_window,
+        w_pool: args.w_pool,
         db_convex_p: args.db_convex_p,
         db_verify: !args.no_db_verify,
         db_dry_run: args.db_dry_run,
@@ -1395,13 +1719,35 @@ fn main() {
         db_wire_terms: args.db_wire_terms,
         db_total_terms: args.db_total_terms,
         db_prefixes: args.db_prefixes,
+        db_mode: DbMode::parse(&args.db_mode).expect("validated --db-mode"),
+        p_mix: args.p_mix,
+        mix_pay_random: args.mix_pay_random,
+        s_db: args.s_db,
+        p_convex: args.p_convex,
+        s_db_comp: args.s_db_comp,
+        p_convex_comp: args.p_convex_comp,
+        p_mingen: args.p_mingen,
+        p_mingen_comp: args.p_mingen_comp,
+        pool_k: args.pool_k,
+        canary_theta: args.canary_theta,
+        canary_window: args.canary_window,
+        size_hi: args.size_hi,
+        size_lo: args.size_lo,
+        comp_release_eps: args.comp_release_eps,
+        comp_release_window: args.comp_release_window,
+        curated: args.curated,
+        curated_exhaust: args.curated_exhaust,
+        curated_in_comp: args.curated_in_comp,
+        db_advance: args.db_advance,
+        prof_n,
+        prof_r,
+        prof_cadence_eff: args.prof_cadence_eff,
+        prof_deadband: args.prof_deadband,
+        prof_dp_max: args.prof_dp_max,
+        prof_ewma: args.prof_ewma,
+        prof_ki: args.prof_ki,
         gen_target: args.gen_target,
-        gen_bias: args.gen_bias,
         gen_rescan: args.gen_rescan,
-        p_db_ingest: args.p_db_ingest,
-        p_db_hard: args.p_db_hard,
-        gen_miss_budget: args.gen_miss_budget,
-        gen_giveup: args.gen_giveup,
         gen_split_inherit: args.gen_split_inherit,
         gen_median_low: args.gen_median_low,
         gen_stop_frac: args.gen_stop_frac,
@@ -1411,13 +1757,51 @@ fn main() {
         report_every: args.report_every,
         local_verify: !args.no_local_verify,
         seed: args.seed,
+        snap_every_moves: args.snap_every_moves,
+        snap_base: args.snap_base.clone(),
     };
-    let mut mixer = Mixer::new(gates, num_wires, params);
+    let mut mixer = match &args.resume {
+        Some(state_path) => {
+            // The resume arm opens the store itself with the same predicate
+            // Mixer::new uses; the saved db_mode is diagnostic only.
+            let db = args
+                .db_requested()
+                .then(local_mixing::replace::frozen::FrozenDb::from_env);
+            let mx = Mixer::resume_state(state_path, params, db).unwrap_or_else(|e| {
+                Args::command()
+                    .error(ErrorKind::ValueValidation, format!("--resume: {e}"))
+                    .exit()
+            });
+            if let Err(e) = args.validate_wire_capacity(mx.num_wires()) {
+                Args::command().error(ErrorKind::ValueValidation, e).exit();
+            }
+            println!(
+                "[fmix] RESUME: {} gates on {} wires at mv={} from {state_path}",
+                mx.arena.len(),
+                mx.num_wires(),
+                mx.counters.moves
+            );
+            mx
+        }
+        None => Mixer::new(gates, num_wires, params),
+    };
+    let num_wires = mixer.num_wires();
+    let (input_len, comp0) = if resuming {
+        let original = mixer.original();
+        (
+            original.iter().filter(|g| !g.is_noop()).count(),
+            original.iter().filter(|g| g.comp && !g.is_noop()).count(),
+        )
+    } else {
+        (input_len, comp0)
+    };
     if let Some(path) = &args.db_record {
         mixer.enable_db_record(path);
         println!("[fmix] recording DB attempts to {path}");
     }
-    if args.g57_pair_stage == Some(G57PairStage::Pre) {
+    // A resumed circuit already carries its pairs; re-seeding would corrupt
+    // the experiment the checkpoint was preserving.
+    if args.g57_pair_stage == Some(G57PairStage::Pre) && !resuming {
         run_g57_pair_hook(
             &mut mixer,
             args.g57_pair_config(num_wires)
@@ -1466,6 +1850,8 @@ fn main() {
             );
             match mixer.run() {
                 MixStop::StopFlag => MixStop::StopFlag,
+                MixStop::ProfileDone => MixStop::ProfileDone,
+                MixStop::CanaryFired => MixStop::CanaryFired,
                 MixStop::DoseReached => {
                     if args.dose_then_churn {
                         transition_to_dose_churn(
@@ -1544,6 +1930,8 @@ fn main() {
             MixStop::MovesBudget => "moves budget spent",
             MixStop::StopFlag => "stop flag",
             MixStop::DoseReached => "dose reached (generation + twist coverage targets met)",
+            MixStop::ProfileDone => "size profile completed",
+            MixStop::CanaryFired => "canary fired (pool is unspellable by the store)",
         },
         input_len,
         mixer.arena.len(),
@@ -1574,6 +1962,20 @@ fn main() {
     }
 
     emit_final_g57_pair_census(&mixer, &args, num_wires);
+
+    // Every stop reason — flag, canary, dose, budget — leaves a resumable
+    // pause when asked; temp + rename so an interrupted write never leaves a
+    // half-file that looks resumable.
+    if let Some(path) = &args.state_out {
+        let tmp = format!("{path}.tmp");
+        match mixer.save_state(&tmp) {
+            Ok(()) => match std::fs::rename(&tmp, path) {
+                Ok(()) => println!("[fmix] wrote resumable state to {path}"),
+                Err(e) => eprintln!("[fmix] state rename failed: {e}"),
+            },
+            Err(e) => eprintln!("[fmix] state write failed: {e}"),
+        }
+    }
 
     if let Some(out) = &args.output {
         let final_gates = mixer.arena.to_vec();
@@ -1612,6 +2014,77 @@ mod cli_tests {
         let mut argv = vec!["fmix", "--input", "unused.mpmct1"];
         argv.extend_from_slice(extra);
         Args::try_parse_from(argv)
+    }
+
+    fn parse_resolved(extra: &[&str]) -> Result<Args, clap::Error> {
+        let mut argv = vec!["fmix", "--input", "unused.mpmct1"];
+        argv.extend_from_slice(extra);
+        let matches = Args::command().try_get_matches_from(argv)?;
+        let mut args = <Args as clap::FromArgMatches>::from_arg_matches(&matches)?;
+        apply_layer_argument_policy(&mut args, &matches);
+        Ok(args)
+    }
+
+    #[test]
+    fn phase_a_preset_respects_explicit_values() {
+        let preset = parse_resolved(&["--phase-a"]).unwrap();
+        assert!(preset.twist_g57);
+        assert_eq!(preset.p_twist, 0.0005);
+        assert!(preset.db_advance);
+        assert!(preset.mix_pay_random);
+        assert_eq!(preset.p_mingen, 0.6);
+        assert_eq!(preset.p_mingen_comp, 0.0);
+
+        let explicit = parse_resolved(&[
+            "--phase-a",
+            "--p-twist",
+            "0",
+            "--p-mingen",
+            "0.17",
+            "--p-mingen-comp",
+            "0.23",
+        ])
+        .unwrap();
+        assert_eq!(explicit.p_twist, 0.0);
+        assert_eq!(explicit.p_mingen, 0.17);
+        assert_eq!(explicit.p_mingen_comp, 0.23);
+    }
+
+    #[test]
+    fn layer_two_cli_defaults_match_shipped_routing_policy() {
+        let args = parse_resolved(&[]).unwrap();
+        assert_eq!(args.db_mode, "mix");
+        assert_eq!(args.s_db, 9);
+        assert_eq!(args.p_convex, 0.4);
+        assert_eq!(args.s_db_comp, 12);
+        assert_eq!(args.p_convex_comp, 0.1);
+        assert!(args.db_prefixes);
+        assert!(args.curated);
+        assert!(args.curated_exhaust);
+        assert!(args.curated_in_comp);
+
+        let off = parse_resolved(&[
+            "--no-db-prefixes",
+            "--no-curated",
+            "--no-curated-exhaust",
+            "--no-curated-in-comp",
+        ])
+        .unwrap();
+        assert!(!off.db_prefixes);
+        assert!(!off.curated);
+        assert!(!off.curated_exhaust);
+        assert!(!off.curated_in_comp);
+    }
+
+    #[test]
+    fn profile_parser_normalizes_compression_budget() {
+        let (n, r) = parse_profile_spec("2,5,3,2.0,1.1")
+            .unwrap()
+            .expect("profile enabled");
+        assert_eq!(n, [2.0, 5.0, 8.0]);
+        assert_eq!(r, [2.0, 1.1]);
+        assert!(parse_profile_spec("2,1,3,2,1").is_err());
+        assert!(parse_profile_spec("2,5,3,0.9,1").is_err());
     }
 
     #[test]
@@ -1902,17 +2375,23 @@ mod cli_tests {
             "0.3",
             "--p-twist",
             "0.01",
-            "--p-db-final",
-            "0.1",
-            "--p-db-steer",
+            "--contract-ceiling",
+            "0.95",
+            "--litter-ban",
+            "--litter-samples",
+            "3",
             "--db-min-window",
             "2",
             "--db-max-window",
             "5",
             "--db-sample",
             "mixed",
-            "--db-ctrl-cap",
+            "--w-window",
+            "3",
+            "--w-pool",
             "2",
+            "--pool-k",
+            "500",
             "--db-convex-p",
             "0.75",
             "--no-db-verify",
@@ -1932,18 +2411,8 @@ mod cli_tests {
             "--db-prefixes",
             "--gen-target",
             "100",
-            "--gen-bias",
-            "0.98",
             "--gen-rescan",
             "50",
-            "--p-db-ingest",
-            "0.5",
-            "--p-db-hard",
-            "0.05",
-            "--gen-miss-budget",
-            "6",
-            "--gen-giveup",
-            "128",
             "--gen-split-inherit",
             "--gen-median-low",
             "--gen-stop-frac",
@@ -1960,14 +2429,15 @@ mod cli_tests {
         assert_eq!(args.w_db, 0.2);
         assert_eq!(args.p_db, 0.3);
         assert_eq!(args.p_twist, 0.01);
-        assert_eq!(args.p_db_final, 0.1);
-        assert!(args.p_db_steer);
+        assert_eq!(args.contract_ceiling, 0.95);
+        assert!(args.litter_ban);
+        assert_eq!(args.litter_samples, 3);
         assert_eq!(DbSample::parse(&args.db_sample), Some(DbSample::Mixed));
-        assert_eq!(args.db_ctrl_cap, 2);
+        assert_eq!(args.w_window, 3);
+        assert_eq!(args.w_pool, 2);
+        assert_eq!(args.pool_k, 500);
         assert!(args.no_db_verify);
         assert_eq!(args.gen_target, 100);
-        assert_eq!(args.p_db_ingest, 0.5);
-        assert_eq!(args.p_db_hard, 0.05);
         assert_eq!(args.gen_stop_frac, 0.02);
         assert_eq!(args.twist_cov_stop, 600.0);
         assert_eq!(args.gens_out.as_deref(), Some("final.gens"));
@@ -1984,23 +2454,10 @@ mod cli_tests {
         assert_eq!(args.w_db, defaults.w_db);
         assert_eq!(args.p_db, defaults.p_db);
         assert_eq!(args.p_twist, defaults.p_twist);
-        assert_eq!(args.p_db_final, defaults.p_db_final);
-        assert_eq!(args.p_db_ingest, defaults.p_db_ingest);
-        assert_eq!(args.p_db_hard, defaults.p_db_hard);
+        assert_eq!(args.contract_ceiling, defaults.contract_ceiling);
         assert_eq!(args.gen_target, defaults.gen_target);
         assert_eq!(DbSample::parse(&args.db_sample), Some(defaults.db_sample));
         assert!(!args.db_requested());
-    }
-
-    #[test]
-    fn ingest_and_paid_channels_count_as_db_activation() {
-        let ingest = parse(&["--gen-target", "1", "--p-db-ingest", "0.5"]).unwrap();
-        ingest.validate().unwrap();
-        assert!(ingest.db_requested());
-
-        let hard = parse(&["--gen-target", "1", "--p-db-hard", "0.05"]).unwrap();
-        hard.validate().unwrap();
-        assert!(hard.db_requested());
     }
 
     #[test]
@@ -2016,16 +2473,14 @@ mod cli_tests {
         assert_invalid(&["--w-db", "1.01"]);
         assert_invalid(&["--p-db", "NaN"]);
         assert_invalid(&["--p-twist", "1.01"]);
-        assert_invalid(&["--p-db-final", "1.01"]);
+        assert_invalid(&["--contract-ceiling", "1.01"]);
         assert_invalid(&["--db-min-window", "1"]);
         assert_invalid(&["--db-min-window", "5", "--db-max-window", "4"]);
         assert_invalid(&["--db-sample", "diagonal"]);
         assert_invalid(&["--db-convex-p", "1.01"]);
         assert_invalid(&["--db-max-degree", "12"]);
         assert_invalid(&["--db-max-degree", "9", "--db-degree-probes", "0"]);
-        assert_invalid(&["--gen-bias", "1.01"]);
-        assert_invalid(&["--p-db-ingest", "0.1"]);
-        assert_invalid(&["--p-db-hard", "0.1"]);
+        assert_invalid(&["--p-mingen", "1.01"]);
         assert_invalid(&["--gen-target", "1", "--gen-rescan", "0"]);
         assert_invalid(&["--gen-stop-frac", "0.02"]);
         assert_invalid(&["--gen-target", "1", "--gen-stop-frac", "1.01"]);
@@ -2152,8 +2607,6 @@ mod cli_tests {
         assert_eq!(mixer.advance_all_generations_after_global_pass(), 1);
         // Demonstrate that the transition, rather than core construction,
         // retires these phase-A-only channels.
-        mixer.params.p_db_ingest = 0.5;
-        mixer.params.p_db_hard = 0.05;
         mixer.params.p_twist = 0.0016;
 
         let reason = transition_to_dose_churn(&mut mixer, &args, 3, "unit-test dose boundary");
@@ -2161,8 +2614,6 @@ mod cli_tests {
         assert_eq!(mixer.counters.moves, 3);
         assert_eq!(mixer.params.moves, 3);
         assert_eq!(mixer.params.gen_stop_frac, -1.0);
-        assert_eq!(mixer.params.p_db_ingest, 0.0);
-        assert_eq!(mixer.params.p_db_hard, 0.0);
         assert_eq!(mixer.params.p_twist, 0.0);
     }
 

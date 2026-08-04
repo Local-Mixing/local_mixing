@@ -778,11 +778,11 @@ pub fn simple_find_convex_subcircuit<R: RngCore>(
 // drains the interval. If a full sweep makes no progress while interior
 // non-members remain (should not happen for a convex set), we return None
 // rather than a bogus range so callers can skip cleanly.
-pub fn contiguous_convex(
+pub fn contiguous_convex_tagged<T>(
     circuit: &mut CircuitSeq,
     ordered_convex_gates: &mut Vec<usize>,
     num_wires: usize,
-    tags: &mut Vec<u32>,
+    tags: &mut Vec<T>,
 ) -> Option<(usize, usize)> {
     let track = !tags.is_empty();
     // This should never run
@@ -866,6 +866,16 @@ pub fn contiguous_convex(
     *ordered_convex_gates = (start..=end).collect();
 
     Some((start, end))
+}
+
+/// NH compatibility wrapper retaining the original `u32` tag API.
+pub fn contiguous_convex(
+    circuit: &mut CircuitSeq,
+    ordered_convex_gates: &mut Vec<usize>,
+    num_wires: usize,
+    tags: &mut Vec<u32>,
+) -> Option<(usize, usize)> {
+    contiguous_convex_tagged(circuit, ordered_convex_gates, num_wires, tags)
 }
 
 /// Shoot random gates left or right without crossing collisions, consuming

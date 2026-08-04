@@ -18,9 +18,10 @@
 // partners share an event is a sibling re-merge (the undo of one split);
 // recent events are tabu to keep freshly split pairs from instantly rejoining.
 use super::arena::{Arena, Dir, NIL};
-use super::db_replace::{DbMode, DegreeGuard, db_replace};
+use super::db_replace::{DbMode, DbResult, DegreeGuard, db_replace};
 use super::g57_pairs::{G57PairPlan, G57PairSeedConfig, G57PairSpec, G57ShotStop};
 use super::rules::{self, BlockReason, Outcome, Role, RuleKind};
+use super::swap_words;
 use super::xgate::{Lits, XGate};
 use super::xpoly::XPolyBudget;
 use crate::replace::frozen::FrozenDb;
@@ -56,6 +57,76 @@ impl DbSample {
             "convex" => Some(Self::Convex),
             "mixed" => Some(Self::Mixed),
             _ => None,
+        }
+    }
+}
+
+const TG_CONTEXT: usize = 3;
+/// Maximum distance an all-G57 bracket may slide outward looking for an
+/// attachment gate that pins both twist wires.
+pub const TG_SLIDE_CAP: usize = 512;
+/// Improving attachment positions solved per seam slide.
+pub const TG_SLIDE_TRIES: usize = 3;
+/// Candidate windows considered by joint two-seam acceptance.
+pub const TG_RETRIES: usize = 4;
+/// Accept a candidate immediately once the combined two-seam net reaches this
+/// bound. This admits two +4 attached seams, or one bare +6 seam paid for by a
+/// partner at +2 or better.
+pub const TG_ACCEPT_NET: isize = 8;
+
+fn tg_slide_on() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("TWIST_G57_NO_SLIDE").is_none())
+}
+
+fn tg_retry_on() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("TWIST_G57_NO_RETRY").is_none())
+}
+
+struct TgSeam {
+    /// Final interior window edge. Sliding moves this outward from the drawn
+    /// boundary and the newly covered gates join the conjugated window.
+    edge: u32,
+    ids: Vec<u32>,
+    replacement: Vec<XGate>,
+}
+
+impl TgSeam {
+    fn net_growth(&self) -> isize {
+        self.replacement.len() as isize - self.ids.len() as isize
+    }
+}
+
+struct TgPlan {
+    a: u16,
+    b: u16,
+    left: TgSeam,
+    right: TgSeam,
+    slides: u64,
+}
+
+impl TgPlan {
+    fn score(&self) -> (isize, isize) {
+        let consumed = (self.left.ids.len() + self.right.ids.len()) as isize;
+        (self.left.net_growth() + self.right.net_growth(), -consumed)
+    }
+}
+
+/// The width-two complemented population split by control-polarity shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct G57Census {
+    pub shaped: usize,
+    pub same_pol: usize,
+    pub opp_pol: usize,
+}
+
+impl G57Census {
+    pub fn pol_flipped(&self) -> f64 {
+        if self.shaped == 0 {
+            0.0
+        } else {
+            self.same_pol as f64 / self.shaped as f64
         }
     }
 }
@@ -276,7 +347,7 @@ pub fn merge_result(g: &XGate, h: &XGate) -> Option<Merge> {
     if si.peek().is_some() {
         return None;
     }
-    let (w, p) = extra?;
+    let (w, _) = extra?;
     let lits = big
         .ctrls
         .iter()
@@ -474,6 +545,11 @@ pub struct MixParams {
     // a-readers (count x2, width +1, K-cap enforced). Windows are capped at
     // the mid scale by the need for an unwritten b wire.
     pub w_twist_cnot: f64,
+    /// Layer-1 swap-family polarity coin. Each swapped wire is independently
+    /// negated with this probability by first-class (`p_twist`) twists.
+    pub twist_neg_p: f64,
+    /// Spell first-class pure-swap brackets as adaptive all-G57 words.
+    pub twist_g57: bool,
     // Persistent nonlinear frame. A move builds a reversible packet P from
     // width-2/3 controlled-X (Toffoli-class) gates over a random carrier set,
     // inserts P . P^-1, then transports tagged material in opposite directions
@@ -503,12 +579,23 @@ pub struct MixParams {
     // store unopened and preserves the pre-DB RNG trajectory.
     pub w_db: f64,
     pub p_db: f64,
-    pub p_db_final: f64,
-    pub p_db_steer: bool,
+    // Upper clamp on the contraction probability. The old 0.98 left a 2%
+    // expansion floor that is a structural growth source (measured +0.007
+    // gates/move); it used to be tightened only under p_db_steer, which is
+    // gone, so it is a parameter now rather than a side effect of a retired
+    // flag.
+    pub contract_ceiling: f64,
     pub db_min_window: usize,
     pub db_max_window: usize,
     pub db_sample: DbSample,
-    pub db_ctrl_cap: usize,
+    // Two eligibility thresholds, not one. w_window governs what may sit INSIDE
+    // a window; w_pool governs what may SEED one and count toward the dose.
+    // They want different values: width-3 gates match in context often enough
+    // to be worth admitting to windows, but their end-to-end per-gate re-encode
+    // rate is 0.41% against 98.98% for width <= 2, so at a shared threshold they
+    // pile up at the bottom of the pool with nothing to eject them.
+    pub w_window: usize,
+    pub w_pool: usize,
     pub db_convex_p: f64,
     pub db_verify: bool,
     pub db_dry_run: bool,
@@ -518,14 +605,92 @@ pub struct MixParams {
     pub db_wire_terms: usize,
     pub db_total_terms: usize,
     pub db_prefixes: bool,
-    // Generation-biased ingest/paid scheduler.
+    /// Fixed slot-2 mode when the layer-2 overlay is disabled.
+    pub db_mode: DbMode,
+    /// Per-round probability of MIX rather than COMP. Negative disables the
+    /// overlay and preserves the historical fixed-mode trajectory.
+    pub p_mix: f64,
+    /// When MIX has to grow, choose from every growing spelling rather than
+    /// only the shortest spellings.
+    pub mix_pay_random: bool,
+    /// Layer-2 start length. Zero falls back to `db_max_window`.
+    pub s_db: usize,
+    /// Layer-2 convex-sampler probability. Negative falls back to `db_sample`.
+    pub p_convex: f64,
+    /// COMP-specific overrides; zero/negative mean use the base value.
+    pub s_db_comp: usize,
+    pub p_convex_comp: f64,
+    // p_mingen: probability a DB seed is drawn from the generation POOL rather
+    // than uniformly -- what stops the process being a coupon collector, where
+    // the last few percent of gates soak up most of the moves.
+    pub p_mingen: f64,
+    pub p_mingen_comp: f64,
+    // pool_k: the pool is the K lowest-generation gates among those that are
+    // pool-eligible AND still below the goal. Both filters are load-bearing. An
+    // ineligible gate can never be re-encoded, so its generation is pinned
+    // forever and an unfiltered pool converges on exactly that set; and without
+    // the below-goal filter a late-run pool is padded with ordinary
+    // low-but-finished gates that re-encode fine, so the canary could never
+    // fire. A COUNT, not a fraction: the drain rate is set by the move economy
+    // (gen_rescan x p_db x p_mingen) and is independent of circuit size, so a
+    // percentage over-provisions as the circuit grows and under-provisions on
+    // small ones. K must exceed the draws taken between rebuilds, or the pool
+    // empties and the biased coin silently degrades to uniform.
+    pub pool_k: usize,
+    // Canary: fire when the failure fraction over the last canary_window
+    // QUALIFYING rounds exceeds canary_theta. Healthy failure rates sit well
+    // under 0.2 (five rungs against ~99% per-window hit rates on width-<=2
+    // material) while the pathological case drives toward 1.0, so 0.9 sits in a
+    // wide gap. 0 = off.
+    pub canary_theta: f64,
+    pub canary_window: usize,
+    // Size brake (hysteresis). Growth to size_hi arms COMP; the mode is
+    // released back to db_mode at size_lo OR when COMP stops paying, whichever
+    // comes first. The productivity release is what makes a WIDE band safe: the
+    // risk was never the width, it was sitting in COMP past its usefulness,
+    // where it starves (declines rise as the circuit approaches local
+    // minimality) and spends re-encoding diversity (COMP draws only from
+    // minimum-size spellings, pulling toward the form fcompress would reach).
+    // 0 = brake off.
+    pub size_hi: usize,
+    pub size_lo: usize,
+    // Release COMP when its shed rate over the trailing window falls below this
+    // many gates per round.
+    pub comp_release_eps: f64,
+    pub comp_release_window: u64,
+    // litter_ban: refuse a window that is exactly one COMPLETE litter -- the
+    // unit some earlier replacement emitted, and therefore precisely where the
+    // store can hand the outgoing spelling straight back (A -> B -> A).
+    // Singleton litters are exempt by construction: an input gate has no
+    // earlier spelling to be returned to, and banning it would also refuse the
+    // descent's length-1 rung, the one rung that always makes progress.
+    pub litter_ban: bool,
+    // Move-cadence snapshots: at each multiple, write circuit+gens+state.
+    // 0 = off. snap_base is the filename prefix.
+    pub snap_every_moves: u64,
+    pub snap_base: String,
+    // litter_samples: draw this many candidate windows and keep the one
+    // spanning the MOST distinct litters. 1 = off. Discarded candidates may
+    // leave ctrl-cap evasion floats behind; those are function-preserving and
+    // the walk floats constantly, so the cost is arena churn, not correctness.
+    pub litter_samples: usize,
+    /// Curated-first routing and the two-pass prefix-descent policy.
+    pub curated: bool,
+    pub curated_exhaust: bool,
+    pub curated_in_comp: bool,
+    /// Give DB products the existing ballistic birth advance.
+    pub db_advance: bool,
+    /// Layer-2 size profile. `prof_n[2] == 0` disables it.
+    pub prof_n: [f64; 3],
+    pub prof_r: [f64; 2],
+    pub prof_cadence_eff: f64,
+    pub prof_deadband: f64,
+    pub prof_dp_max: f64,
+    pub prof_ewma: f64,
+    pub prof_ki: f64,
+    // Generation goal: the pool targets gates whose dgen sits below this.
     pub gen_target: u32,
-    pub gen_bias: f64,
     pub gen_rescan: u64,
-    pub p_db_ingest: f64,
-    pub p_db_hard: f64,
-    pub gen_miss_budget: u16,
-    pub gen_giveup: u16,
     pub gen_split_inherit: bool,
     pub gen_median_low: bool,
     /// Dose stop threshold over targetable gates: cap-eligible gates that
@@ -572,6 +737,8 @@ impl Default for MixParams {
             w_twist_neg: 0.0,
             w_twist_swap: 0.0,
             w_twist_cnot: 0.0,
+            twist_neg_p: 0.5,
+            twist_g57: false,
             w_nl_frame: 0.0,
             nl_frame_min_width: 2,
             nl_frame_max_width: 3,
@@ -582,12 +749,12 @@ impl Default for MixParams {
             p_twist: 0.0,
             w_db: 0.0,
             p_db: 0.0,
-            p_db_final: -1.0,
-            p_db_steer: false,
+            contract_ceiling: 0.98,
             db_min_window: 2,
             db_max_window: 12,
             db_sample: DbSample::Contiguous,
-            db_ctrl_cap: 0,
+            w_window: 4,
+            w_pool: 3,
             db_convex_p: 0.75,
             db_verify: true,
             db_dry_run: false,
@@ -597,13 +764,39 @@ impl Default for MixParams {
             db_wire_terms: 0,
             db_total_terms: 0,
             db_prefixes: false,
+            db_mode: DbMode::SizeAgnostic,
+            p_mix: -1.0,
+            mix_pay_random: false,
+            s_db: 0,
+            p_convex: -1.0,
+            s_db_comp: 0,
+            p_convex_comp: -1.0,
+            p_mingen: 0.8,
+            p_mingen_comp: -1.0,
+            pool_k: 20_000,
+            canary_theta: 0.0,
+            canary_window: 2000,
+            size_hi: 0,
+            size_lo: 0,
+            comp_release_eps: 0.0,
+            comp_release_window: 250_000,
+            litter_ban: false,
+            snap_every_moves: 0,
+            snap_base: String::new(),
+            litter_samples: 1,
+            curated: false,
+            curated_exhaust: false,
+            curated_in_comp: false,
+            db_advance: false,
+            prof_n: [0.0; 3],
+            prof_r: [0.0; 2],
+            prof_cadence_eff: 0.5,
+            prof_deadband: 0.02,
+            prof_dp_max: 0.1,
+            prof_ewma: 0.3,
+            prof_ki: 0.05,
             gen_target: 0,
-            gen_bias: 0.9,
             gen_rescan: 10_000,
-            p_db_ingest: 0.0,
-            p_db_hard: 0.0,
-            gen_miss_budget: 6,
-            gen_giveup: 0,
             gen_split_inherit: false,
             gen_median_low: false,
             gen_stop_frac: -1.0,
@@ -620,12 +813,29 @@ impl Default for MixParams {
 #[derive(Default)]
 pub struct MixCounters {
     pub moves: u64,
-    pub db_ing_hits: u64,
-    pub db_ing_rounds: u64,
-    pub db_hard_hits: u64,
-    pub db_hard_rounds: u64,
-    pub db_hard_added: u64,
-    pub gen_misses: u64,
+    pub db_slot2_rounds: u64,
+    pub db_slot2_hits: u64,
+    pub db_slot2_added: u64,
+    /// Heads coins that found the pool drained.
+    pub canary_fallthrough: u64,
+    pub brake_engagements: u64,
+    pub brake_rounds: u64,
+    pub litter_banned: u64,
+    pub litter_full_spliced: u64,
+    pub litter_windows: u64,
+    pub litter_distinct_sum: u64,
+    pub db_identity_skips: u64,
+    pub db_curated_hits: u64,
+    pub dmin_windows: u64,
+    pub dmin_shorter: u64,
+    pub choice_splices: u64,
+    pub choice_multi: u64,
+    pub choice_sum: u64,
+    pub choice_bits_milli: u64,
+    pub db_mix_added: u64,
+    pub db_mix_removed: u64,
+    pub db_cmp_added: u64,
+    pub db_cmp_removed: u64,
     pub db_comp_hits: u64,
     pub db_comp_misses: u64,
     pub db_agn_hits: u64,
@@ -670,6 +880,15 @@ pub struct MixCounters {
     pub twist_case_splits: u64,
     pub twist_span: u64,
     pub twist_skips: u64,
+    pub tg_consumed: u64,
+    pub tg_emitted: u64,
+    pub tg_solves: u64,
+    pub tg_solve_ns: u64,
+    pub tg_slides: u64,
+    pub tg_retries: u64,
+    /// Per-seam net growth, with shrinking seams folded into bucket zero and
+    /// values above seven saturated into the last bucket.
+    pub tg_net_hist: [u64; 8],
     pub nl_frame_attempts: u64,
     pub nl_frames: u64,
     pub nl_frame_skips: u64,
@@ -744,16 +963,19 @@ pub struct GenerationStats {
     pub max: u32,
 }
 
-/// Generation-target census compatible with the generation-biased XGate DB
-/// mixer. This richer view separates currently DB-eligible laggards from wide
-/// gates and from gates whose miss budget has been exhausted.
+/// Generation-target census over the pool predicate: dose accounting and pool
+/// targeting share one eligibility test (`pool_eligible`). Nothing is written
+/// off any more — with the descent reaching length 1, which cannot decline for
+/// free, an eligible gate the store knows at all advances; the residue that
+/// truly cannot is what the canary is for, rather than a per-gate miss counter.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GenStats {
+    /// Pool-eligible gates still below gen_target — the dose-stop numerator.
     pub lag: u64,
-    pub cheap: u64,
-    pub hard: u64,
-    pub unreach: u64,
+    /// Pool-eligible gates in total.
     pub elig: u64,
+    /// Wide (pool-ineligible) gates below gen_target: invisible to the DB
+    /// channel until some other move narrows or splits them.
     pub wlag: u64,
     pub min: u32,
     pub all_lag: u64,
@@ -764,7 +986,7 @@ pub struct GenStats {
     pub g_circ: u32,
     /// Legacy 5th-percentile generation over every gate in this scope.
     pub g_all: u32,
-    /// Cap-eligible gates not retired by `gen_giveup`; the population used by
+    /// Gates the DB channel can actually move; the denominator behind
     /// `g_circ` and the generation-dose stop.
     pub targetable: u64,
 }
@@ -830,7 +1052,7 @@ fn median_floor_u32(values: &mut [u32]) -> u32 {
     values[(values.len() - 1) / 2]
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Meta {
     origin: u32,
     event: u64, // 0 = not a split product
@@ -843,23 +1065,20 @@ struct Meta {
     // diffusing while its trivial inverse remains unavailable.
     frame: u64,
     protected_until: u64,
+    // Replacement-event provenance. Input gates and born-random material are
+    // singleton litters; a DB splice stamps all products with one fresh id;
+    // splits and merges propagate. litter_size is size at creation and is
+    // deliberately NOT maintained under splits, so the complete-litter test
+    // is conservative under churn. A NEW FIELD BESIDE `frame`, never
+    // overloaded into it: try_db_splice folds/inherits frames while a litter
+    // is minted fresh per splice — opposite lifecycles.
+    litter: u64,
+    litter_size: u16,
     // Rewrite generation (new-SSS/fmix semantics). Input gates start at zero;
     // a split child gets parent+1, a merge keeps the minimum parent
     // generation, and born-random identity material gets GEN_FRESH. Pure
     // transport/reordering leaves the stamp unchanged.
     dgen: u32,
-    // Reserved for the generation-biased DB ingest/paid tiers. Keeping the
-    // miss counter beside dgen makes this metadata layout compatible with the
-    // tested db_replace integration while remaining inert when DB moves are
-    // disabled.
-    miss: u16,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SeedPool {
-    Biased,
-    Cheap,
-    Hard,
 }
 
 struct CrossTrace {
@@ -905,9 +1124,47 @@ struct UndoEntry {
     event: u64,
     origins: [u32; 2], // origin of before[0], before[1]
     frames: [u64; 2],
+    litters: [u64; 2],
+    litter_sizes: [u16; 2],
     protected_until: [u64; 2],
     gens: [u32; 2],
     misses: u8, // failed gather attempts; entry dropped after a few
+}
+
+/// Layer-2 profile-controller state. Rates are gates per move at full lever;
+/// `dhat` captures size drift not attributed to the DB channel.
+#[derive(Clone, Debug)]
+pub struct ProfState {
+    pub phase: u8,
+    pub pmix: f64,
+    pub integ: f64,
+    pub ghat: f64,
+    pub shat: f64,
+    pub dhat: f64,
+    pub eff: f64,
+    pub next_eff: f64,
+    pub sat: u32,
+    pub s_in: f64,
+    base_moves: u64,
+    base_size: f64,
+    base_pmix: f64,
+    base_mix: [u64; 4],
+    base_comp: [u64; 4],
+}
+
+/// Three-leg size target: expand, hold, then compress.
+pub fn prof_target(n: [f64; 3], r: [f64; 2], input_size: f64, eff: f64) -> f64 {
+    if eff <= 0.0 {
+        input_size
+    } else if eff < n[0] {
+        input_size * (1.0 + (r[0] - 1.0) * eff / n[0])
+    } else if eff < n[1] {
+        input_size * r[0]
+    } else if eff < n[2] {
+        input_size * (r[0] + (r[1] - r[0]) * (eff - n[1]) / (n[2] - n[1]))
+    } else {
+        input_size * r[1]
+    }
 }
 
 pub struct Mixer {
@@ -943,26 +1200,43 @@ pub struct Mixer {
     db_budget: XPolyBudget,
     db_record: Option<std::io::BufWriter<std::fs::File>>,
     db_last_sampler: DbSample,
-    lag_cheap: Vec<u32>,
-    lag_hard: Vec<u32>,
-    laggards_scan_due: u64,
-    seed_pool: SeedPool,
-    last_seed: Option<(u32, u32)>,
+    // The pool: below-target, pool-eligible gates, rebuilt on the gen_rescan
+    // cadence; drawn lazily with stale-entry pruning.
+    pool: Vec<u32>,
+    pool_scan_due: u64,
+    seed_from_pool: bool,
+    seed_fell_through: bool,
+    // (seed id, left neighbour at draw). A failed attempt walks the seed home
+    // so repeated pool draws of a stubborn gate leave no displacement.
+    db_seed_home: Option<(u32, u32)>,
+    // Canary ring: outcome of the last canary_window pool-seeded non-COMP
+    // rounds (true = the store had no spelling at any rung).
+    canary: VecDeque<bool>,
+    canary_failures: usize,
+    // Size-brake hysteresis state.
+    next_litter: u64,
+    brake_on: bool,
+    brake_mark_move: u64,
+    brake_mark_size: usize,
+    db_mode_cur: DbMode,
+    prof: Option<ProfState>,
 }
 
 pub enum MixStop {
     MovesBudget,
     StopFlag,
     DoseReached,
+    ProfileDone,
+    /// The canary fired: over the last `canary_window` pool-seeded growth
+    /// rounds, the store failed to spell more than `canary_theta` of them at
+    /// every rung. The pool's residue is unspellable — more moves cannot
+    /// advance it, so stopping loses nothing.
+    CanaryFired,
 }
 
 impl Mixer {
     pub fn new(gates: Vec<XGate>, num_wires: usize, params: MixParams) -> Mixer {
-        let db_enabled = params.w_db > 0.0
-            || params.p_db > 0.0
-            || params.p_db_final > 0.0
-            || params.p_db_ingest > 0.0
-            || params.p_db_hard > 0.0;
+        let db_enabled = params.w_db > 0.0 || params.p_db > 0.0;
         let db = db_enabled.then(FrozenDb::from_env);
         Self::new_with_optional_db(gates, num_wires, params, db)
     }
@@ -1016,6 +1290,20 @@ impl Mixer {
         if params.temp <= 0.0 {
             params.temp = (params.target_size as f64 / 100.0).max(64.0);
         }
+        if params.prof_n[2] > 0.0 {
+            assert!(
+                params.prof_n[0] > 0.0
+                    && params.prof_n[1] >= params.prof_n[0]
+                    && params.prof_n[2] > params.prof_n[1],
+                "invalid profile effective-work marks"
+            );
+            assert!(
+                params.prof_r[0] > 1.0
+                    && params.prof_r[1] >= 1.0
+                    && params.prof_r[0] >= params.prof_r[1],
+                "invalid profile size ratios"
+            );
+        }
         let num_wires = num_wires.max(super::xgate::max_wire(&gates) as usize + 1);
         if params.w_nl_frame > 0.0 {
             assert!(
@@ -1041,18 +1329,22 @@ impl Mixer {
         }
         let mut rng = StdRng::seed_from_u64(params.seed);
         let metrics_rng = StdRng::seed_from_u64(params.seed ^ 0x5EED_517A75);
-        let meta = input_origins
+        let meta: Vec<Meta> = input_origins
             .into_iter()
-            .map(|origin| Meta {
+            .enumerate()
+            .map(|(i, origin)| Meta {
                 origin,
                 event: 0,
                 dir: if rng.random_bool(0.5) { Dir::L } else { Dir::R },
                 frame: 0,
                 protected_until: 0,
+                // Every input gate is its own singleton litter.
+                litter: i as u64,
+                litter_size: 1,
                 dgen: 0,
-                miss: 0,
             })
             .collect();
+        let next_litter = meta.len() as u64;
         let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
         for (i, g) in gates.iter().enumerate() {
             index.entry(key_of(g)).or_default().push(i as u32);
@@ -1067,6 +1359,7 @@ impl Mixer {
             }
             budget
         };
+        let db_mode_cur = params.db_mode;
         Mixer {
             arena: Arena::from_gates(gates.clone()),
             params,
@@ -1077,6 +1370,7 @@ impl Mixer {
             journal: VecDeque::new(),
             tabu: VecDeque::new(),
             next_event: 1,
+            next_litter,
             original: gates,
             num_wires,
             moves_done: 0,
@@ -1090,11 +1384,18 @@ impl Mixer {
             db_budget,
             db_record: None,
             db_last_sampler: DbSample::Contiguous,
-            lag_cheap: Vec::new(),
-            lag_hard: Vec::new(),
-            laggards_scan_due: 0,
-            seed_pool: SeedPool::Biased,
-            last_seed: None,
+            pool: Vec::new(),
+            pool_scan_due: 0,
+            seed_from_pool: false,
+            seed_fell_through: false,
+            db_seed_home: None,
+            canary: VecDeque::new(),
+            canary_failures: 0,
+            brake_on: false,
+            brake_mark_move: 0,
+            brake_mark_size: 0,
+            db_mode_cur,
+            prof: None,
         }
     }
 
@@ -1126,16 +1427,6 @@ impl Mixer {
     /// draft.
     pub fn generations_in_order(&self) -> Vec<u32> {
         self.gens_in_order()
-    }
-
-    /// Per-gate DB-targeting miss counters in circuit order. These remain zero
-    /// until the optional generation-biased DB channels are installed.
-    pub fn generation_misses_in_order(&self) -> Vec<u16> {
-        self.arena
-            .ids_in_order()
-            .into_iter()
-            .map(|id| self.meta_of(id).miss)
-            .collect()
     }
 
     pub fn generation_histogram(&self) -> BTreeMap<u32, usize> {
@@ -1183,43 +1474,19 @@ impl Mixer {
         }
     }
 
-    /// DB-targeting census using the established new-SSS tier semantics.
-    ///
-    /// `control_cap == 0` makes every gate eligible. A nonzero
-    /// `giveup_misses` moves exhausted laggards into `unreach`; they remain in
-    /// the legacy all-gate census but leave the targetable generation/dose
-    /// population.
-    pub fn gen_stats_for(
-        &self,
-        target: u32,
-        control_cap: usize,
-        hard_after_misses: u16,
-        giveup_misses: u16,
-    ) -> GenStats {
-        self.gen_stats_for_scope(target, control_cap, hard_after_misses, giveup_misses, false)
+    /// DB-targeting census over the pool predicate.
+    pub fn gen_stats_for(&self, target: u32) -> GenStats {
+        self.gen_stats_for_scope(target, false)
     }
 
     /// Generation-target census excluding live descendants of seeded G57
     /// identity pairs. Exclusion is metadata based: if a later rewrite erases
     /// an incompatible frame tag, that gate re-enters the non-pair census.
-    pub fn gen_stats_for_non_pair(
-        &self,
-        target: u32,
-        control_cap: usize,
-        hard_after_misses: u16,
-        giveup_misses: u16,
-    ) -> GenStats {
-        self.gen_stats_for_scope(target, control_cap, hard_after_misses, giveup_misses, true)
+    pub fn gen_stats_for_non_pair(&self, target: u32) -> GenStats {
+        self.gen_stats_for_scope(target, true)
     }
 
-    fn gen_stats_for_scope(
-        &self,
-        target: u32,
-        control_cap: usize,
-        hard_after_misses: u16,
-        giveup_misses: u16,
-        exclude_g57_pair_frames: bool,
-    ) -> GenStats {
+    fn gen_stats_for_scope(&self, target: u32, exclude_g57_pair_frames: bool) -> GenStats {
         let ids = self.arena.ids_in_order();
         let mut stats = GenStats {
             min: GEN_FRESH,
@@ -1233,7 +1500,7 @@ impl Mixer {
                 continue;
             }
             stats.total += 1;
-            let eligible = control_cap == 0 || self.arena.gate(id).width() <= control_cap;
+            let eligible = self.pool_eligible(id);
             stats.min = stats.min.min(meta.dgen);
             all_generations.push(meta.dgen);
             stats.fresh += u64::from(meta.dgen == GEN_FRESH);
@@ -1249,17 +1516,11 @@ impl Mixer {
             stats.all_lag += 1;
             if !eligible {
                 stats.wlag += 1;
-            } else if giveup_misses > 0 && meta.miss >= giveup_misses {
-                stats.unreach += 1;
-            } else if meta.miss >= hard_after_misses {
-                stats.hard += 1;
-                targetable_generations.push(meta.dgen);
             } else {
-                stats.cheap += 1;
+                stats.lag += 1;
                 targetable_generations.push(meta.dgen);
             }
         }
-        stats.lag = stats.cheap + stats.hard;
         stats.targetable = targetable_generations.len() as u64;
         let percentile = |generations: &mut Vec<u32>| {
             if generations.is_empty() {
@@ -1279,21 +1540,11 @@ impl Mixer {
     }
 
     pub fn gen_stats(&self) -> GenStats {
-        self.gen_stats_for(
-            self.params.gen_target,
-            self.params.db_ctrl_cap,
-            self.params.gen_miss_budget,
-            self.params.gen_giveup,
-        )
+        self.gen_stats_for(self.params.gen_target)
     }
 
     pub fn gen_stats_non_pair(&self) -> GenStats {
-        self.gen_stats_for_non_pair(
-            self.params.gen_target,
-            self.params.db_ctrl_cap,
-            self.params.gen_miss_budget,
-            self.params.gen_giveup,
-        )
+        self.gen_stats_for_non_pair(self.params.gen_target)
     }
 
     pub fn generation_dose_stats(&self) -> GenerationDoseStats {
@@ -1351,7 +1602,6 @@ impl Mixer {
         for id in ids {
             let mut meta = self.meta_of(id);
             meta.dgen = generation;
-            meta.miss = 0;
             self.set_meta(id, meta);
         }
         generation
@@ -1574,6 +1824,10 @@ impl Mixer {
                 let right = self.arena.insert_after(left, gate);
                 self.index_add(right);
                 let event = self.fresh_event();
+                // Singleton litters: a singleton can never trip the ban, and
+                // sharing one id would make the pair a complete litter.
+                let left_litter = self.fresh_litter();
+                let right_litter = self.fresh_litter();
                 self.set_meta(
                     left,
                     Meta {
@@ -1582,8 +1836,9 @@ impl Mixer {
                         dir: Dir::L,
                         frame: g57_pair_frame(pair_index, 0),
                         protected_until: 0,
+                        litter: left_litter,
+                        litter_size: 1,
                         dgen: GEN_FRESH,
-                        miss: 0,
                     },
                 );
                 self.set_meta(
@@ -1594,8 +1849,9 @@ impl Mixer {
                         dir: Dir::R,
                         frame: g57_pair_frame(pair_index, 1),
                         protected_until: 0,
+                        litter: right_litter,
+                        litter_size: 1,
                         dgen: GEN_FRESH,
-                        miss: 0,
                     },
                 );
                 self.counters.width_hist[2] += 2;
@@ -1747,8 +2003,9 @@ impl Mixer {
                     dir: Dir::R,
                     frame: 0,
                     protected_until: 0,
+                    litter: 0,
+                    litter_size: 1,
                     dgen: GEN_FRESH,
-                    miss: 0,
                 },
             );
         }
@@ -1762,8 +2019,9 @@ impl Mixer {
             dir: Dir::R,
             frame: 0,
             protected_until: 0,
+            litter: 0,
+            litter_size: 1,
             dgen: GEN_FRESH,
-            miss: 0,
         })
     }
 
@@ -1808,6 +2066,54 @@ impl Mixer {
             .copied()
             .unwrap_or(GEN_FRESH)
             .saturating_add(1)
+    }
+
+    /// Litter ids come from one counter, never reused; input gates own
+    /// 0..n-1, so fresh ids start at the input count.
+    fn fresh_litter(&mut self) -> u64 {
+        let l = self.next_litter;
+        self.next_litter += 1;
+        l
+    }
+
+    // Litter census of a window: (distinct litters, is-exactly-one-complete-
+    // litter). "Complete" requires every gate to share one id AND the count to
+    // still equal the size recorded when that litter was emitted — so a litter
+    // that has since been split or partly merged reads as incomplete, making
+    // the test conservative under churn.
+    //
+    // Singleton litters are excluded by construction: input gates and
+    // born-random material carry no earlier spelling to be returned to, and a
+    // ban on them would also refuse the descent's length-1 rung, which is the
+    // one rung that always makes progress.
+    fn litter_census(&self, ids: &[u32]) -> (usize, bool) {
+        if ids.is_empty() {
+            return (0, false);
+        }
+        // Runs once per DB round (and once per rung under the ban), so it is
+        // alloc-free for every real window: DB windows are <= db_max_window
+        // (12-13) gates, which fits the stack buffer; anything larger spills
+        // to the heap and stays correct.
+        let mut buf = [0u64; 16];
+        let mut n = 0usize;
+        let mut distinct = 0usize;
+        let mut spill: Option<Vec<u64>> = None;
+        for &id in ids {
+            let l = self.meta_of(id).litter;
+            let seen = buf[..n].contains(&l) || spill.as_ref().is_some_and(|v| v.contains(&l));
+            if !seen {
+                distinct += 1;
+                if n < buf.len() {
+                    buf[n] = l;
+                    n += 1;
+                } else {
+                    spill.get_or_insert_with(Vec::new).push(l);
+                }
+            }
+        }
+        let size = self.meta_of(ids[0]).litter_size;
+        let full = distinct == 1 && size >= 2 && ids.len() == size as usize;
+        (distinct, full)
     }
 
     fn fresh_event(&mut self) -> u64 {
@@ -1856,41 +2162,283 @@ impl Mixer {
 
     // ---- the chain ----
 
-    pub fn p_db_eff(&self) -> f64 {
-        let mut probability = self.params.p_db;
-        if self.params.p_db_final >= 0.0 {
-            let progress = self.moves_done as f64 / self.params.moves.max(1) as f64;
-            probability += (self.params.p_db_final - probability) * progress;
+    fn active_s_db(&self) -> usize {
+        if self.db_mode_cur == DbMode::Compressing && self.params.s_db_comp > 0 {
+            self.params.s_db_comp
+        } else if self.params.s_db > 0 {
+            self.params.s_db
+        } else {
+            self.params.db_max_window
         }
-        if self.params.p_db_steer {
-            let excess = self.arena.len() as f64 - self.params.target_size as f64;
-            probability *= 1.0 / (1.0 + (excess / self.params.temp).exp());
+    }
+
+    fn active_db_minimum(&self) -> usize {
+        if self.params.s_db > 0 {
+            1
+        } else {
+            self.params.db_min_window.max(2)
         }
-        probability.clamp(0.0, 1.0)
+    }
+
+    fn active_p_convex(&self) -> f64 {
+        if self.db_mode_cur == DbMode::Compressing && self.params.p_convex_comp >= 0.0 {
+            self.params.p_convex_comp
+        } else {
+            self.params.p_convex
+        }
+    }
+
+    fn active_p_mingen(&self) -> f64 {
+        if self.db_mode_cur == DbMode::Compressing && self.params.p_mingen_comp >= 0.0 {
+            self.params.p_mingen_comp
+        } else {
+            self.params.p_mingen
+        }
+    }
+
+    // Layer-2 mode overlay (slot 0): pick this round's DB mode by coin when
+    // armed (p_mix >= 0) -- MIX-DB with probability p_mix, else COMP-DB. This is
+    // the "set parameter" rule of the slot-0 condition engine, independent of
+    // the size brake and the thermostat. Off (p_mix < 0) leaves db_mode_cur as
+    // the fixed db_mode (possibly steered by the size brake); resetting it here
+    // would clobber the brake every round.
+    fn apply_mode_overlay(&mut self) {
+        if self.params.p_mix < 0.0 {
+            return;
+        }
+        self.db_mode_cur = if self.rng.random_bool(self.params.p_mix.clamp(0.0, 1.0)) {
+            DbMode::Mix
+        } else {
+            DbMode::Compressing
+        };
+    }
+
+    /// The size brake. Growth past `size_hi` forces slot 2 into COMP; it is
+    /// released back to `params.db_mode` at `size_lo`, OR earlier when COMP has
+    /// stopped paying.
+    ///
+    /// The productivity release is what makes a WIDE band safe, and a wide band
+    /// is what the transport argument wants: growth legs are where material
+    /// actually moves. The danger was never the width but sitting in COMP past
+    /// its usefulness, where it starves -- declines climb as the circuit nears
+    /// local minimality -- and spends re-encoding diversity, since COMP draws
+    /// only from minimum-size spellings and so pulls the circuit toward exactly
+    /// the form `fcompress` would compute anyway. Guarding that directly means
+    /// a too-wide band costs nothing: the brake lets go on its own.
+    fn apply_size_brake(&mut self) {
+        if self.params.size_hi == 0 {
+            return;
+        }
+        let size = self.arena.len();
+        if !self.brake_on {
+            if size >= self.params.size_hi {
+                self.brake_on = true;
+                self.db_mode_cur = DbMode::Compressing;
+                self.brake_mark_move = self.moves_done;
+                self.brake_mark_size = size;
+                self.counters.brake_engagements += 1;
+            }
+            return;
+        }
+        self.counters.brake_rounds += 1;
+        if size <= self.params.size_lo {
+            self.brake_on = false;
+            self.db_mode_cur = self.params.db_mode;
+            return;
+        }
+        // Productivity release: COMP stops growth immediately but shrinks only
+        // slowly (about 13% of its hits strictly shrink), so the shed rate is
+        // the honest signal that the leg is still worth running.
+        let window = self.params.comp_release_window.max(1);
+        if self.moves_done.saturating_sub(self.brake_mark_move) >= window {
+            let shed = self.brake_mark_size.saturating_sub(size) as f64;
+            let rate = shed / window as f64;
+            if rate < self.params.comp_release_eps {
+                self.brake_on = false;
+                self.db_mode_cur = self.params.db_mode;
+                return;
+            }
+            self.brake_mark_move = self.moves_done;
+            self.brake_mark_size = size;
+        }
+    }
+
+    fn note_choice(&mut self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        self.counters.choice_splices += 1;
+        self.counters.choice_sum += count as u64;
+        if count > 1 {
+            self.counters.choice_multi += 1;
+            self.counters.choice_bits_milli += ((count as f64).log2() * 1000.0).round() as u64;
+        }
+    }
+
+    fn prof_init(&mut self) {
+        let input_size = self.original.len().max(1) as f64;
+        self.prof = Some(ProfState {
+            phase: 1,
+            pmix: 0.5,
+            integ: 0.0,
+            ghat: 0.0,
+            shat: 0.0,
+            dhat: 0.0,
+            eff: 0.0,
+            next_eff: self.params.prof_cadence_eff.max(0.05) * 0.25,
+            sat: 0,
+            s_in: input_size,
+            base_moves: self.moves_done,
+            base_size: input_size,
+            base_pmix: 0.5,
+            base_mix: [0; 4],
+            base_comp: [0; 4],
+        });
+        self.prof_snapshot();
+    }
+
+    fn prof_snapshot(&mut self) {
+        let mix = [
+            self.counters.db_agn_hits,
+            self.counters.db_agn_misses,
+            self.counters.db_mix_added,
+            self.counters.db_mix_removed,
+        ];
+        let comp = [
+            self.counters.db_comp_hits,
+            self.counters.db_comp_misses,
+            self.counters.db_cmp_added,
+            self.counters.db_cmp_removed,
+        ];
+        if let Some(profile) = self.prof.as_mut() {
+            profile.base_moves = self.moves_done;
+            profile.base_size = self.arena.len() as f64;
+            profile.base_pmix = profile.pmix;
+            profile.base_mix = mix;
+            profile.base_comp = comp;
+        }
+    }
+
+    fn prof_tick(&mut self) {
+        let size = self.arena.len().max(1) as f64;
+        let due = {
+            let profile = self.prof.as_mut().expect("profile tick while disabled");
+            profile.eff += 1.0 / size;
+            profile.eff >= profile.next_eff
+        };
+        if due {
+            self.prof_update();
+        }
+        let pmix = self.prof.as_ref().expect("profile disappeared").pmix;
+        self.db_mode_cur = if self.rng.random_bool(pmix.clamp(0.0, 1.0)) {
+            DbMode::Mix
+        } else {
+            DbMode::Compressing
+        };
+    }
+
+    fn prof_update(&mut self) {
+        let size = self.arena.len().max(1) as f64;
+        let mix_now = [
+            self.counters.db_agn_hits,
+            self.counters.db_agn_misses,
+            self.counters.db_mix_added,
+            self.counters.db_mix_removed,
+        ];
+        let comp_now = [
+            self.counters.db_comp_hits,
+            self.counters.db_comp_misses,
+            self.counters.db_cmp_added,
+            self.counters.db_cmp_removed,
+        ];
+        let cadence = self.params.prof_cadence_eff.max(0.05);
+        let deadband = self.params.prof_deadband.max(0.0);
+        let dp_max = self.params.prof_dp_max.max(0.0);
+        let ewma = self.params.prof_ewma.clamp(0.0, 1.0);
+        let ki = self.params.prof_ki.max(0.0);
+        let n = self.params.prof_n;
+        let r = self.params.prof_r;
+        if let Some(profile) = self.prof.as_mut() {
+            let moves = self.moves_done.saturating_sub(profile.base_moves).max(1) as f64;
+            let used = profile.base_pmix;
+            let net_mix = (mix_now[2] - profile.base_mix[2]) as f64
+                - (mix_now[3] - profile.base_mix[3]) as f64;
+            let net_comp = (comp_now[3] - profile.base_comp[3]) as f64
+                - (comp_now[2] - profile.base_comp[2]) as f64;
+            if used > 0.05 {
+                let fresh = net_mix / (moves * used);
+                profile.ghat = if profile.ghat == 0.0 {
+                    fresh
+                } else {
+                    (1.0 - ewma) * profile.ghat + ewma * fresh
+                };
+            }
+            if used < 0.95 {
+                let fresh = net_comp / (moves * (1.0 - used));
+                profile.shat = if profile.shat == 0.0 {
+                    fresh
+                } else {
+                    (1.0 - ewma) * profile.shat + ewma * fresh
+                };
+            }
+            let observed = (size - profile.base_size) / moves;
+            let disturbance = observed - (net_mix - net_comp) / moves;
+            profile.dhat = if profile.dhat == 0.0 {
+                disturbance
+            } else {
+                (1.0 - ewma) * profile.dhat + ewma * disturbance
+            };
+
+            let old_phase = profile.phase;
+            match profile.phase {
+                1 if profile.eff >= n[0] || size >= 0.99 * r[0] * profile.s_in => profile.phase = 2,
+                2 if profile.eff >= n[1] => profile.phase = 3,
+                3 if profile.eff >= n[2] || size <= 1.01 * r[1] * profile.s_in => profile.phase = 4,
+                _ => {}
+            }
+            if profile.phase != old_phase {
+                profile.integ = 0.0;
+                profile.sat = 0;
+            }
+
+            let target = prof_target(n, r, profile.s_in, profile.eff);
+            let next_target = prof_target(n, r, profile.s_in, profile.eff + cadence);
+            let error = (size - target) / target.max(1.0);
+            if error.abs() >= deadband {
+                profile.integ = (profile.integ - ki * error).clamp(-0.3, 0.3);
+                let wanted_velocity = (next_target - size) / (cadence * size).max(1.0);
+                let denominator = profile.ghat + profile.shat;
+                let mut wanted = if denominator.abs() > 1e-9 {
+                    (wanted_velocity - profile.dhat + profile.shat) / denominator
+                } else {
+                    profile.pmix
+                };
+                wanted += profile.integ;
+                let limit = if error.abs() > 4.0 * deadband.max(1e-6) {
+                    1.0
+                } else {
+                    dp_max
+                };
+                profile.pmix =
+                    (profile.pmix + (wanted - profile.pmix).clamp(-limit, limit)).clamp(0.0, 1.0);
+            }
+            if (profile.pmix >= 0.999 && error < -0.10) || (profile.pmix <= 0.001 && error > 0.10) {
+                profile.sat += 1;
+            } else {
+                profile.sat = 0;
+            }
+            profile.next_eff += cadence;
+            self.params.target_size = target.max(2.0) as usize;
+        }
+        self.prof_snapshot();
     }
 
     fn twist_round(&mut self) {
-        let neg = self.params.w_twist_neg.max(0.0);
-        let swap = self.params.w_twist_swap.max(0.0);
-        let cnot = self.params.w_twist_cnot.max(0.0);
-        let total = neg + swap + cnot;
-        let kind = if total <= 0.0 {
-            if self.rng.random_bool(0.5) {
-                TwistKind::Neg
-            } else {
-                TwistKind::Swap
-            }
+        if self.params.twist_g57 {
+            self.twist_move_g57();
         } else {
-            let draw = self.rng.random_range(0.0..total);
-            if draw < neg {
-                TwistKind::Neg
-            } else if draw < neg + swap {
-                TwistKind::Swap
-            } else {
-                TwistKind::Cnot
-            }
-        };
-        self.twist_move(kind);
+            self.twist_swap_family_move();
+        }
     }
 
     pub fn run(&mut self) -> MixStop {
@@ -1903,83 +2451,62 @@ impl Mixer {
             self.global_check();
             return MixStop::MovesBudget;
         }
+        if self.params.prof_n[2] > 0.0 && self.prof.is_none() {
+            self.prof_init();
+        }
         while self.moves_done < self.params.moves {
-            if self.params.gen_target > 0 && self.moves_done >= self.laggards_scan_due {
-                self.rebuild_laggards();
-                self.laggards_scan_due = self
+            if self.params.gen_target > 0 && self.moves_done >= self.pool_scan_due {
+                self.rebuild_pool();
+                self.pool_scan_due = self
                     .moves_done
                     .saturating_add(self.params.gen_rescan.max(1));
             }
 
+            if self.prof.is_some() {
+                self.prof_tick();
+                if self.prof.as_ref().is_some_and(|profile| profile.phase == 4) {
+                    self.global_check();
+                    return MixStop::ProfileDone;
+                }
+            } else {
+                // One size authority: while a profile is active it owns
+                // target_size and the brake is inert (this branch never runs).
+                self.apply_size_brake();
+                self.apply_mode_overlay();
+            }
+
+            // ORIG parity gap: origin's slot 1b (`global_shuffle`/`shuffle_rate`,
+            // ORIG mix.rs:3071-3086) is deliberately not ported — it is a
+            // separate move type outside the five layer-1 pieces and would
+            // confound the canary calibration.
             let took_twist = self.params.p_twist > 0.0
                 && self.rng.random_bool(self.params.p_twist.clamp(0.0, 1.0))
                 && {
                     self.twist_round();
                     true
                 };
-            let minimum_window = self.params.db_min_window.max(2);
-            let generation_targeting = self.params.gen_target > 0;
-            let took_ingest = !took_twist
-                && generation_targeting
-                && self.params.p_db_ingest > 0.0
-                && !self.lag_cheap.is_empty()
-                && self.arena.len() >= minimum_window
-                && self
-                    .rng
-                    .random_bool(self.params.p_db_ingest.clamp(0.0, 1.0))
-                && {
-                    self.seed_pool = SeedPool::Cheap;
-                    let hit = self.db_attempt(DbMode::Compressing);
-                    self.seed_pool = SeedPool::Biased;
-                    self.counters.db_ing_rounds += 1;
-                    if hit {
-                        self.counters.db_ing_hits += 1;
-                    }
-                    true
-                };
-            let took_hard = !took_twist
-                && !took_ingest
-                && generation_targeting
-                && self.params.p_db_hard > 0.0
-                && !self.lag_hard.is_empty()
-                && self.arena.len() >= minimum_window
-                && self.rng.random_bool(self.params.p_db_hard.clamp(0.0, 1.0))
-                && {
-                    self.seed_pool = SeedPool::Hard;
-                    let before = self.arena.len();
-                    let hit = self.db_attempt(DbMode::MinGrow);
-                    self.seed_pool = SeedPool::Biased;
-                    self.counters.db_hard_rounds += 1;
-                    if hit {
-                        self.counters.db_hard_hits += 1;
-                        self.counters.db_hard_added +=
-                            self.arena.len().saturating_sub(before) as u64;
-                    }
-                    true
-                };
-            let p_db_now = if self.params.p_db > 0.0 || self.params.p_db_final > 0.0 {
-                self.p_db_eff()
-            } else {
-                0.0
-            };
-            let took_agnostic = !took_twist
-                && !took_ingest
-                && !took_hard
+            let minimum_window = self.active_db_minimum();
+            let p_db_now = self.params.p_db.clamp(0.0, 1.0);
+            // Slot 2: the one DB round. One pool, one probability — the
+            // ingest/paid tier machinery is gone (ORIG d92e1e0b).
+            let took_db = !took_twist
                 && p_db_now > 0.0
                 && self.arena.len() >= minimum_window
                 && self.rng.random_bool(p_db_now)
                 && {
-                    self.db_attempt(DbMode::SizeAgnostic);
+                    self.counters.db_slot2_rounds += 1;
+                    let before = self.arena.len();
+                    if self.db_attempt(self.db_mode_cur) {
+                        self.counters.db_slot2_hits += 1;
+                        self.counters.db_slot2_added +=
+                            self.arena.len().saturating_sub(before) as u64;
+                    }
                     true
                 };
 
-            if !took_twist && !took_ingest && !took_hard && !took_agnostic {
+            if !took_twist && !took_db {
                 let excess = self.arena.len() as f64 - self.params.target_size as f64;
-                let high = if self.params.p_db_steer && excess > 0.0 {
-                    0.9995
-                } else {
-                    0.98
-                };
+                let high = self.params.contract_ceiling;
                 let p_contract =
                     (1.0 / (1.0 + (-excess / self.params.temp).exp())).clamp(0.02, high);
                 if self.arena.len() > 0 && self.rng.random_bool(p_contract) {
@@ -2007,9 +2534,20 @@ impl Mixer {
             if self.params.report_every > 0 && self.moves_done % self.params.report_every == 0 {
                 self.report();
                 self.check_flags();
+                self.check_move_snap();
                 if self.stop_requested {
                     self.global_check();
                     return MixStop::StopFlag;
+                }
+                if self.canary_fired() {
+                    println!(
+                        "[fmix] CANARY fired: frac={:.3} over {} pool-seeded rounds (theta={}) — the pool is unspellable by the store",
+                        self.canary_frac(),
+                        self.canary.len(),
+                        self.params.canary_theta
+                    );
+                    self.global_check();
+                    return MixStop::CanaryFired;
                 }
                 if self.dose_reached() {
                     self.global_check();
@@ -2246,8 +2784,9 @@ impl Mixer {
                     dir: parent.dir,
                     frame: parent.frame,
                     protected_until: parent.protected_until,
+                    litter: parent.litter,
+                    litter_size: parent.litter_size,
                     dgen: self.child_gen(parent.dgen),
-                    miss: 0,
                 },
             );
         }
@@ -2292,8 +2831,9 @@ impl Mixer {
                     dir: direction,
                     frame: source_meta.frame,
                     protected_until: source_meta.protected_until,
+                    litter: source_meta.litter,
+                    litter_size: source_meta.litter_size,
                     dgen: self.child_gen(source_meta.dgen),
-                    miss: 0,
                 },
             );
         }
@@ -2505,8 +3045,9 @@ impl Mixer {
                                     dir: d,
                                     frame: g_meta.frame,
                                     protected_until: g_meta.protected_until,
+                                    litter: g_meta.litter,
+                                    litter_size: g_meta.litter_size,
                                     dgen: self.child_gen(g_meta.dgen),
-                                    miss: 0,
                                 },
                             );
                             fresh.push(pid);
@@ -2524,8 +3065,9 @@ impl Mixer {
                                     dir: d,
                                     frame: h_meta.frame,
                                     protected_until: h_meta.protected_until,
+                                    litter: h_meta.litter,
+                                    litter_size: h_meta.litter_size,
                                     dgen: self.child_gen(h_meta.dgen),
-                                    miss: 0,
                                 },
                             );
                             fresh.push(pid);
@@ -2546,22 +3088,27 @@ impl Mixer {
                         .or_else(|| placed.iter().find(|(_, r)| *r == Role::ShotPiece))
                         .map(|&(i, _)| i)
                         .expect("rewrite emitted no pivot");
-                    let (before, origins, frames, protected_until, gens) = match dir {
-                        Dir::R => (
-                            [g.clone(), h.clone()],
-                            [g_meta.origin, h_meta.origin],
-                            [g_meta.frame, h_meta.frame],
-                            [g_meta.protected_until, h_meta.protected_until],
-                            [g_meta.dgen, h_meta.dgen],
-                        ),
-                        Dir::L => (
-                            [h.clone(), g.clone()],
-                            [h_meta.origin, g_meta.origin],
-                            [h_meta.frame, g_meta.frame],
-                            [h_meta.protected_until, g_meta.protected_until],
-                            [h_meta.dgen, g_meta.dgen],
-                        ),
-                    };
+                    let (before, origins, frames, litters, litter_sizes, protected_until, gens) =
+                        match dir {
+                            Dir::R => (
+                                [g.clone(), h.clone()],
+                                [g_meta.origin, h_meta.origin],
+                                [g_meta.frame, h_meta.frame],
+                                [g_meta.litter, h_meta.litter],
+                                [g_meta.litter_size, h_meta.litter_size],
+                                [g_meta.protected_until, h_meta.protected_until],
+                                [g_meta.dgen, h_meta.dgen],
+                            ),
+                            Dir::L => (
+                                [h.clone(), g.clone()],
+                                [h_meta.origin, g_meta.origin],
+                                [h_meta.frame, g_meta.frame],
+                                [h_meta.litter, g_meta.litter],
+                                [h_meta.litter_size, g_meta.litter_size],
+                                [h_meta.protected_until, g_meta.protected_until],
+                                [h_meta.dgen, g_meta.dgen],
+                            ),
+                        };
                     let after: Vec<(u32, u32)> = placed
                         .iter()
                         .map(|&(i, _)| (i, self.arena.stamp(i)))
@@ -2577,6 +3124,8 @@ impl Mixer {
                         event: ev,
                         origins,
                         frames,
+                        litters,
+                        litter_sizes,
                         protected_until,
                         gens,
                         misses: 0,
@@ -2647,8 +3196,9 @@ impl Mixer {
                     dir: d,
                     frame: m.frame,
                     protected_until: m.protected_until,
+                    litter: m.litter,
+                    litter_size: m.litter_size,
                     dgen: self.child_gen(m.dgen),
-                    miss: 0,
                 },
             );
         }
@@ -2710,8 +3260,9 @@ impl Mixer {
                     dir: d,
                     frame: m.frame,
                     protected_until: m.protected_until,
+                    litter: m.litter,
+                    litter_size: m.litter_size,
                     dgen: self.child_gen(m.dgen),
-                    miss: 0,
                 },
             );
         }
@@ -2762,6 +3313,7 @@ impl Mixer {
         self.index_add(b);
         let ev = self.fresh_event();
         let da = self.rand_dir();
+        let minted_litter = self.fresh_litter();
         self.set_meta(
             a,
             Meta {
@@ -2770,10 +3322,13 @@ impl Mixer {
                 dir: da,
                 frame: 0,
                 protected_until: 0,
+                // Born-random material: a fresh singleton litter per gate.
+                litter: minted_litter,
+                litter_size: 1,
                 dgen: GEN_FRESH,
-                miss: 0,
             },
         );
+        let minted_litter = self.fresh_litter();
         self.set_meta(
             b,
             Meta {
@@ -2782,8 +3337,10 @@ impl Mixer {
                 dir: da.opposite(),
                 frame: 0,
                 protected_until: 0,
+                // Born-random material: a fresh singleton litter per gate.
+                litter: minted_litter,
+                litter_size: 1,
                 dgen: GEN_FRESH,
-                miss: 0,
             },
         );
         self.counters.width_hist[self.arena.gate(a).width().min(15)] += 2;
@@ -2867,6 +3424,7 @@ impl Mixer {
             self.counters.width_hist[gate.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, gate.clone());
             self.index_add(anchor);
+            let minted_litter = self.fresh_litter();
             self.set_meta(
                 anchor,
                 Meta {
@@ -2875,8 +3433,10 @@ impl Mixer {
                     dir: Dir::L,
                     frame,
                     protected_until,
+                    // Born-random material: a fresh singleton litter per gate.
+                    litter: minted_litter,
+                    litter_size: 1,
                     dgen: GEN_FRESH,
-                    miss: 0,
                 },
             );
             left_frontier.push(anchor);
@@ -2886,6 +3446,7 @@ impl Mixer {
             self.counters.width_hist[gate.width().min(15)] += 1;
             anchor = self.arena.insert_after(anchor, gate.clone());
             self.index_add(anchor);
+            let minted_litter = self.fresh_litter();
             self.set_meta(
                 anchor,
                 Meta {
@@ -2894,8 +3455,10 @@ impl Mixer {
                     dir: Dir::R,
                     frame,
                     protected_until,
+                    // Born-random material: a fresh singleton litter per gate.
+                    litter: minted_litter,
+                    litter_size: 1,
                     dgen: GEN_FRESH,
-                    miss: 0,
                 },
             );
             right_frontier.push(anchor);
@@ -3011,6 +3574,606 @@ impl Mixer {
     // rewrite bumps arena stamps, so undo-journal entries over relabeled
     // pieces correctly die. Window lengths are log-uniform over
     // [twist_min_len, circuit size] to decorrelate progress at all scales.
+    fn solve_g57_seam(&mut self, edge: u32, direction: Dir, a: u16, b: u16) -> TgSeam {
+        let engine = swap_words::engine();
+        let mut ids = Vec::new();
+        let mut support = vec![a, b];
+        let mut current = self.arena.neighbor(edge, direction);
+        while ids.len() < TG_CONTEXT && current != NIL {
+            // Preserve the newer frame/protection contracts: adaptive seam
+            // absorption never consumes tagged or protected material.
+            if self.is_protected(current) || self.meta_of(current).frame != 0 {
+                break;
+            }
+            let gate = self.arena.gate(current);
+            let mut next_support = support.clone();
+            for wire in std::iter::once(gate.target).chain(gate.ctrls.iter().map(|&(wire, _)| wire))
+            {
+                if !next_support.contains(&wire) {
+                    next_support.push(wire);
+                }
+            }
+            if next_support.len() > swap_words::ABS_WIRES {
+                break;
+            }
+            support = next_support;
+            ids.push(current);
+            current = self.arena.neighbor(current, direction);
+        }
+
+        let mut wires = [a, b, a, a];
+        for index in 2..swap_words::ABS_WIRES {
+            if let Some(&wire) = support.get(index) {
+                wires[index] = wire;
+            } else {
+                let offset = self.rng.random_range(0..self.num_wires);
+                for delta in 0..self.num_wires {
+                    let wire = ((offset + delta) % self.num_wires) as u16;
+                    if !wires[..index].contains(&wire) {
+                        wires[index] = wire;
+                        break;
+                    }
+                }
+            }
+        }
+        let abstract_wire = |wire: u16| {
+            wires
+                .iter()
+                .position(|&candidate| candidate == wire)
+                .expect("seam support was bound") as u8
+        };
+        let permutations: Vec<u64> = ids
+            .iter()
+            .map(|&id| {
+                let gate = self.arena.gate(id);
+                let controls: Vec<(u8, bool)> = gate
+                    .ctrls
+                    .iter()
+                    .map(|&(wire, polarity)| (abstract_wire(wire), polarity))
+                    .collect();
+                swap_words::xgate_perm(abstract_wire(gate.target), &controls, gate.comp)
+            })
+            .collect();
+        let mut best = (0usize, engine.bare_word().to_vec());
+        let started = std::time::Instant::now();
+        for count in 1..=permutations.len() {
+            let mut target = match direction {
+                Dir::L => {
+                    let mut context = swap_words::IDENT;
+                    for index in (0..count).rev() {
+                        context = swap_words::compose(context, permutations[index]);
+                    }
+                    swap_words::compose(context, engine.s_ab)
+                }
+                Dir::R => engine.s_ab,
+            };
+            if direction == Dir::R {
+                for permutation in permutations.iter().take(count) {
+                    target = swap_words::compose(target, *permutation);
+                }
+            }
+            self.counters.tg_solves += 1;
+            if let Some(word) = engine.solve(target, swap_words::MAX_WORD) {
+                let net = word.len() as isize - count as isize;
+                let best_net = best.1.len() as isize - best.0 as isize;
+                if net < best_net || (net == best_net && count > best.0) {
+                    best = (count, word);
+                }
+            }
+        }
+        self.counters.tg_solve_ns += started.elapsed().as_nanos() as u64;
+        TgSeam {
+            edge,
+            ids: ids[..best.0].to_vec(),
+            replacement: engine.decode(&best.1, &wires),
+        }
+    }
+
+    /// Interior edge positions farther out whose next gate is a width-two
+    /// complemented gate pinning both twist wires. Sliding to one merely
+    /// extends the conjugated window over the traversed gates, while giving
+    /// the all-G57 bracket a high-probability one-gate attachment target.
+    fn g57_slide_candidates(&self, from: u32, direction: Dir, a: u16, b: u16) -> Vec<u32> {
+        let mut candidates = Vec::new();
+        let mut edge = from;
+        for _ in 0..TG_SLIDE_CAP {
+            edge = self.arena.neighbor(edge, direction);
+            if edge == NIL {
+                break;
+            }
+            let outside = self.arena.neighbor(edge, direction);
+            if outside == NIL {
+                break;
+            }
+            // Never propose an attachment that solve_g57_seam is forbidden to
+            // consume under the current frame/protection contracts.
+            if self.is_protected(outside) || self.meta_of(outside).frame != 0 {
+                continue;
+            }
+            let gate = self.arena.gate(outside);
+            if gate.comp && gate.ctrls.len() == 2 {
+                let pins = [gate.target, gate.ctrls[0].0, gate.ctrls[1].0];
+                if pins.contains(&a) && pins.contains(&b) {
+                    candidates.push(edge);
+                    if candidates.len() >= TG_SLIDE_TRIES {
+                        break;
+                    }
+                }
+            }
+        }
+        candidates
+    }
+
+    /// Evaluate a seam at its drawn edge and, if it remains the bare six-gate
+    /// word, retry at a few promising outward slide positions. The first +4
+    /// attachment is already optimal for a one-gate context, while a deeper
+    /// context may improve further and remains eligible.
+    fn eval_g57_seam(&mut self, edge: u32, direction: Dir, a: u16, b: u16) -> (TgSeam, u64) {
+        let mut best = self.solve_g57_seam(edge, direction, a, b);
+        let mut slides = 0u64;
+        if tg_slide_on() && best.net_growth() >= 6 {
+            for candidate_edge in self.g57_slide_candidates(edge, direction, a, b) {
+                let candidate = self.solve_g57_seam(candidate_edge, direction, a, b);
+                if candidate.net_growth() < best.net_growth() {
+                    let attached = candidate.net_growth() <= 4;
+                    best = candidate;
+                    slides = 1;
+                    if attached {
+                        break;
+                    }
+                }
+            }
+        }
+        (best, slides)
+    }
+
+    /// Adaptive all-G57 realization of a pure-swap conjugation bracket. Bare
+    /// seams may slide outward to an attachment gate, and both ends are scored
+    /// jointly across several candidate windows before any edit is committed.
+    fn twist_move_g57(&mut self) {
+        if self.arena.len() < 2 || self.num_wires < swap_words::ABS_WIRES {
+            self.counters.twist_skips += 1;
+            return;
+        }
+
+        // Evaluate complete two-seam plans without changing the arena. The
+        // first plan at the joint acceptance threshold wins; otherwise commit
+        // the cheapest plan seen over all redraws.
+        let attempts = if tg_retry_on() { TG_RETRIES } else { 1 };
+        let mut draws = 0u64;
+        let mut best: Option<TgPlan> = None;
+        for _ in 0..attempts {
+            draws += 1;
+            let n = self.arena.len();
+            let minimum = self.params.twist_min_len.max(2).min(n) as f64;
+            let len = (self
+                .rng
+                .random_range(minimum.ln()..=(n as f64).ln())
+                .exp()
+                .round() as usize)
+                .clamp(2, n);
+            let draw = self.rng.random_range(0..n + len - 1);
+            let (start, len) = if draw < len - 1 {
+                (self.arena.head(), draw + 1)
+            } else {
+                (self.arena.random_linked(&mut self.rng), len)
+            };
+            let mut touched = Vec::new();
+            let mut seen = vec![false; self.num_wires];
+            let mut end = start;
+            let mut span = 0usize;
+            let mut current = start;
+            while current != NIL && span < len {
+                let gate = self.arena.gate(current);
+                for wire in
+                    std::iter::once(gate.target).chain(gate.ctrls.iter().map(|&(wire, _)| wire))
+                {
+                    if !seen[wire as usize] {
+                        seen[wire as usize] = true;
+                        touched.push(wire);
+                    }
+                }
+                end = current;
+                span += 1;
+                current = self.arena.neighbor(current, Dir::R);
+            }
+            if touched.is_empty() {
+                continue;
+            }
+
+            // Boundary-supported pairs are much likelier to absorb a real
+            // neighbor than a uniformly random second wire. Keep one uniform
+            // pair so fresh-wire routing remains available.
+            let mut pairs = Vec::new();
+            for outside in [
+                self.arena.neighbor(start, Dir::L),
+                self.arena.neighbor(end, Dir::R),
+            ] {
+                if outside == NIL {
+                    continue;
+                }
+                let gate = self.arena.gate(outside);
+                let pins: Vec<u16> = std::iter::once(gate.target)
+                    .chain(gate.ctrls.iter().map(|&(wire, _)| wire))
+                    .collect();
+                for &a in &pins {
+                    if !seen[a as usize] {
+                        continue;
+                    }
+                    for &b in &pins {
+                        if a != b && !pairs.contains(&(a, b)) {
+                            pairs.push((a, b));
+                        }
+                    }
+                }
+            }
+            pairs.truncate(6);
+            let a = touched[self.rng.random_range(0..touched.len())];
+            for _ in 0..16 {
+                let b = self.rng.random_range(0..self.num_wires) as u16;
+                if a != b {
+                    if !pairs.contains(&(a, b)) {
+                        pairs.push((a, b));
+                    }
+                    break;
+                }
+            }
+            if pairs.is_empty() {
+                continue;
+            }
+
+            let mut pair_best: Option<TgPlan> = None;
+            for (a, b) in pairs {
+                let plan = TgPlan {
+                    a,
+                    b,
+                    left: self.solve_g57_seam(start, Dir::L, a, b),
+                    right: self.solve_g57_seam(end, Dir::R, a, b),
+                    slides: 0,
+                };
+                if pair_best
+                    .as_ref()
+                    .is_none_or(|previous| plan.score() < previous.score())
+                {
+                    pair_best = Some(plan);
+                }
+            }
+            let mut plan = pair_best.expect("at least one wire pair");
+            if plan.left.net_growth() >= 6 {
+                let (candidate, slid) = self.eval_g57_seam(start, Dir::L, plan.a, plan.b);
+                if candidate.net_growth() < plan.left.net_growth() {
+                    plan.left = candidate;
+                    plan.slides += slid;
+                }
+            }
+            if plan.right.net_growth() >= 6 {
+                let (candidate, slid) = self.eval_g57_seam(end, Dir::R, plan.a, plan.b);
+                if candidate.net_growth() < plan.right.net_growth() {
+                    plan.right = candidate;
+                    plan.slides += slid;
+                }
+            }
+            if best
+                .as_ref()
+                .is_none_or(|previous| plan.score() < previous.score())
+            {
+                best = Some(plan);
+            }
+            if best.as_ref().expect("a plan was evaluated").score().0 <= TG_ACCEPT_NET {
+                break;
+            }
+        }
+        let Some(plan) = best else {
+            self.counters.twist_skips += 1;
+            return;
+        };
+        self.counters.tg_retries += draws.saturating_sub(1);
+        self.counters.tg_slides += plan.slides;
+        let bucket = |net: isize| net.clamp(0, 7) as usize;
+        self.counters.tg_net_hist[bucket(plan.left.net_growth())] += 1;
+        self.counters.tg_net_hist[bucket(plan.right.net_growth())] += 1;
+
+        let removed = plan.left.ids.len() + plan.right.ids.len();
+        let added = plan.left.replacement.len() + plan.right.replacement.len();
+        if !self.admits_rewrite_size(removed, added) {
+            self.counters.blocked_size_cap += 1;
+            self.counters.twist_skips += 1;
+            return;
+        }
+
+        let (a, b) = (plan.a, plan.b);
+        let swap_packet = vec![XGate::cnot(b, a), XGate::cnot(a, b), XGate::cnot(b, a)];
+        let mut relabeled = 0u64;
+        let mut span_walked = 0u64;
+        let mut current = plan.left.edge;
+        loop {
+            let is_last = current == plan.right.edge;
+            span_walked += 1;
+            let next = self.arena.neighbor(current, Dir::R);
+            let gate = self.arena.gate(current).clone();
+            if let Some(replacement) = conj_by_swap(&gate, a, b) {
+                if self.params.local_verify {
+                    let lhs: Vec<XGate> = swap_packet
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(gate))
+                        .chain(swap_packet.iter().cloned())
+                        .collect();
+                    assert!(rules::verify_rewrite(
+                        &lhs,
+                        std::slice::from_ref(&replacement)
+                    ));
+                }
+                let mut meta = self.meta_of(current);
+                self.index_remove(current);
+                self.arena.replace_gate(current, replacement);
+                self.index_add(current);
+                meta.dgen = self.child_gen(meta.dgen);
+                self.set_meta(current, meta);
+                relabeled += 1;
+            }
+            if is_last {
+                break;
+            }
+            current = next;
+        }
+        if self.params.local_verify {
+            let mut old_left: Vec<XGate> = plan
+                .left
+                .ids
+                .iter()
+                .rev()
+                .map(|&id| self.arena.gate(id).clone())
+                .collect();
+            old_left.extend(swap_packet.iter().cloned());
+            assert!(rules::verify_rewrite(&old_left, &plan.left.replacement));
+            let mut old_right = swap_packet.clone();
+            old_right.extend(plan.right.ids.iter().map(|&id| self.arena.gate(id).clone()));
+            assert!(rules::verify_rewrite(&old_right, &plan.right.replacement));
+        }
+
+        let left_anchor = plan.left.ids.last().map_or_else(
+            || self.arena.neighbor(plan.left.edge, Dir::L),
+            |&far| self.arena.neighbor(far, Dir::L),
+        );
+        for &id in plan.left.ids.iter().chain(&plan.right.ids) {
+            self.index_remove(id);
+            self.arena.unlink(id);
+            self.arena.free_node(id);
+        }
+        let event = self.fresh_event();
+        let mut inserted = Vec::with_capacity(added);
+        let mut anchor = left_anchor;
+        // Seam consumption mints one fresh litter PER SIDE, exactly as a DB
+        // splice would (ORIG:4226-4242).
+        let left_litter = self.fresh_litter();
+        let left_size = plan.left.replacement.len().min(u16::MAX as usize) as u16;
+        for gate in &plan.left.replacement {
+            self.counters.width_hist[gate.width().min(15)] += 1;
+            anchor = self.arena.insert_after(anchor, gate.clone());
+            self.index_add(anchor);
+            self.set_meta(
+                anchor,
+                Meta {
+                    origin: ORIGIN_SYNTH,
+                    event,
+                    dir: Dir::L,
+                    frame: 0,
+                    protected_until: 0,
+                    litter: left_litter,
+                    litter_size: left_size,
+                    dgen: GEN_FRESH,
+                },
+            );
+            inserted.push(anchor);
+        }
+        let mut anchor = plan.right.edge;
+        let right_litter = self.fresh_litter();
+        let right_size = plan.right.replacement.len().min(u16::MAX as usize) as u16;
+        for gate in &plan.right.replacement {
+            self.counters.width_hist[gate.width().min(15)] += 1;
+            anchor = self.arena.insert_after(anchor, gate.clone());
+            self.index_add(anchor);
+            self.set_meta(
+                anchor,
+                Meta {
+                    origin: ORIGIN_SYNTH,
+                    event,
+                    dir: Dir::R,
+                    frame: 0,
+                    protected_until: 0,
+                    litter: right_litter,
+                    litter_size: right_size,
+                    dgen: GEN_FRESH,
+                },
+            );
+            inserted.push(anchor);
+        }
+        self.advance_births(&inserted);
+        self.counters.twist_swaps += 1;
+        self.counters.twist_span += span_walked;
+        self.counters.twist_relabels += relabeled;
+        self.counters.tg_consumed += removed as u64;
+        self.counters.tg_emitted += added as u64;
+    }
+
+    /// Layer-1 first-class twist: swap two wires and independently negate the
+    /// two outputs. The polarized three-CNOT packet implements
+    /// `(a,b) -> (b ^ alpha, a ^ beta)`; reversing it is the exact inverse.
+    fn twist_swap_family_move(&mut self) {
+        let n = self.arena.len();
+        if n < 2 || self.num_wires < 2 {
+            self.counters.twist_skips += 1;
+            return;
+        }
+        if !self.admits_rewrite_size(0, 6) {
+            self.counters.blocked_size_cap += 1;
+            self.counters.twist_skips += 1;
+            return;
+        }
+        let minimum = self.params.twist_min_len.max(2).min(n) as f64;
+        let len = (self
+            .rng
+            .random_range(minimum.ln()..=(n as f64).ln())
+            .exp()
+            .round() as usize)
+            .clamp(2, n);
+        let draw = self.rng.random_range(0..n + len - 1);
+        let (start, len) = if draw < len - 1 {
+            (self.arena.head(), draw + 1)
+        } else {
+            (self.arena.random_linked(&mut self.rng), len)
+        };
+
+        let mut seen = vec![false; self.num_wires];
+        let mut touched = Vec::new();
+        let mut end = start;
+        let mut span = 0usize;
+        let mut current = start;
+        while current != NIL && span < len {
+            let gate = self.arena.gate(current);
+            for wire in std::iter::once(gate.target).chain(gate.ctrls.iter().map(|&(wire, _)| wire))
+            {
+                if !seen[wire as usize] {
+                    seen[wire as usize] = true;
+                    touched.push(wire);
+                }
+            }
+            end = current;
+            span += 1;
+            current = self.arena.neighbor(current, Dir::R);
+        }
+        if touched.is_empty() {
+            self.counters.twist_skips += 1;
+            return;
+        }
+        let a = touched[self.rng.random_range(0..touched.len())];
+        let mut b = a;
+        for _ in 0..16 {
+            let candidate = self.rng.random_range(0..self.num_wires) as u16;
+            if candidate != a {
+                b = candidate;
+                break;
+            }
+        }
+        if a == b {
+            self.counters.twist_skips += 1;
+            return;
+        }
+        let q = self.params.twist_neg_p.clamp(0.0, 1.0);
+        let alpha = self.rng.random_bool(q);
+        let beta = self.rng.random_bool(q);
+        let polarized = |target: u16, control: u16, negate: bool| {
+            XGate::conj(target, [(control, !negate)]).expect("distinct swap-family wires")
+        };
+        let packet = vec![
+            polarized(b, a, alpha),
+            polarized(a, b, false),
+            polarized(b, a, beta),
+        ];
+        let inverse: Vec<XGate> = packet.iter().rev().cloned().collect();
+        if self.params.local_verify {
+            let identity: Vec<XGate> = packet.iter().chain(&inverse).cloned().collect();
+            assert!(rules::verify_rewrite(&identity, &[]));
+        }
+
+        let mut relabeled = 0u64;
+        let mut current = start;
+        loop {
+            let is_last = current == end;
+            let next = self.arena.neighbor(current, Dir::R);
+            let gate = self.arena.gate(current).clone();
+            if let Some(mut replacement) = conj_by_swap(&gate, a, b) {
+                if alpha {
+                    if let Some(changed) = conj_by_not(&replacement, a) {
+                        replacement = changed;
+                    }
+                }
+                if beta {
+                    if let Some(changed) = conj_by_not(&replacement, b) {
+                        replacement = changed;
+                    }
+                }
+                if self.params.local_verify {
+                    let lhs: Vec<XGate> = inverse
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(gate.clone()))
+                        .chain(packet.iter().cloned())
+                        .collect();
+                    assert!(
+                        rules::verify_rewrite(&lhs, std::slice::from_ref(&replacement)),
+                        "swap-family conjugation failed"
+                    );
+                }
+                let mut meta = self.meta_of(current);
+                self.index_remove(current);
+                self.arena.replace_gate(current, replacement);
+                self.index_add(current);
+                meta.dgen = self.child_gen(meta.dgen);
+                self.set_meta(current, meta);
+                relabeled += 1;
+            }
+            if is_last {
+                break;
+            }
+            current = next;
+        }
+
+        let event = self.fresh_event();
+        let mut anchor = self.arena.neighbor(start, Dir::L);
+        for gate in &packet {
+            self.counters.width_hist[gate.width().min(15)] += 1;
+            anchor = self.arena.insert_after(anchor, gate.clone());
+            self.index_add(anchor);
+            let direction = self.rand_dir();
+            let minted_litter = self.fresh_litter();
+            self.set_meta(
+                anchor,
+                Meta {
+                    origin: ORIGIN_SYNTH,
+                    event,
+                    dir: direction,
+                    frame: 0,
+                    protected_until: 0,
+                    // Born-random material: a fresh singleton litter per gate.
+                    litter: minted_litter,
+                    litter_size: 1,
+                    dgen: GEN_FRESH,
+                },
+            );
+        }
+        let mut anchor = end;
+        for gate in &inverse {
+            self.counters.width_hist[gate.width().min(15)] += 1;
+            anchor = self.arena.insert_after(anchor, gate.clone());
+            self.index_add(anchor);
+            let direction = self.rand_dir();
+            let minted_litter = self.fresh_litter();
+            self.set_meta(
+                anchor,
+                Meta {
+                    origin: ORIGIN_SYNTH,
+                    event,
+                    dir: direction,
+                    frame: 0,
+                    protected_until: 0,
+                    // Born-random material: a fresh singleton litter per gate.
+                    litter: minted_litter,
+                    litter_size: 1,
+                    dgen: GEN_FRESH,
+                },
+            );
+        }
+        match (alpha, beta) {
+            (false, false) => self.counters.twist_swaps += 1,
+            (true, true) => self.counters.twist_cnots += 1,
+            _ => self.counters.twist_negs += 1,
+        }
+        self.counters.twist_span += span as u64;
+        self.counters.twist_relabels += relabeled;
+    }
+
     fn twist_move(&mut self, kind: TwistKind) {
         let n = self.arena.len();
         if n < 2 {
@@ -3205,10 +4368,10 @@ impl Mixer {
         }
         let mut relabeled = 0u64;
         let mut case_splits = 0u64;
-        let (mut w_start, mut w_end) = (start, end);
+        let mut w_start = start;
         let mut first = true;
         let mut cur = start;
-        loop {
+        let w_end = loop {
             let is_last = cur == end;
             let next = self.arena.neighbor(cur, Dir::R);
             let g = self.arena.gate(cur).clone();
@@ -3239,7 +4402,6 @@ impl Mixer {
                     self.arena.replace_gate(cur, g2);
                     self.index_add(cur);
                     m.dgen = self.child_gen(m.dgen);
-                    m.miss = 0;
                     self.set_meta(cur, m);
                     relabeled += 1;
                     (cur, cur)
@@ -3278,8 +4440,9 @@ impl Mixer {
                                 dir: m.dir,
                                 frame: m.frame,
                                 protected_until: m.protected_until,
+                                litter: m.litter,
+                                litter_size: m.litter_size,
                                 dgen: self.child_gen(m.dgen),
-                                miss: 0,
                             },
                         );
                     }
@@ -3293,11 +4456,10 @@ impl Mixer {
                 first = false;
             }
             if is_last {
-                w_end = tail;
-                break;
+                break tail;
             }
             cur = next;
-        }
+        };
 
         // Bracket the window: P before start, P after end. Packet gates are
         // fresh synthetic material (no origin) sharing one event, so the
@@ -3312,6 +4474,7 @@ impl Mixer {
             anchor = self.arena.insert_after(anchor, g.clone());
             self.index_add(anchor);
             let d = self.rand_dir();
+            let minted_litter = self.fresh_litter();
             self.set_meta(
                 anchor,
                 Meta {
@@ -3320,8 +4483,10 @@ impl Mixer {
                     dir: d,
                     frame: 0,
                     protected_until: 0,
+                    // Born-random material: a fresh singleton litter per gate.
+                    litter: minted_litter,
+                    litter_size: 1,
                     dgen: GEN_FRESH,
-                    miss: 0,
                 },
             );
         }
@@ -3331,6 +4496,7 @@ impl Mixer {
             anchor = self.arena.insert_after(anchor, g.clone());
             self.index_add(anchor);
             let d = self.rand_dir();
+            let minted_litter = self.fresh_litter();
             self.set_meta(
                 anchor,
                 Meta {
@@ -3339,8 +4505,10 @@ impl Mixer {
                     dir: d,
                     frame: 0,
                     protected_until: 0,
+                    // Born-random material: a fresh singleton litter per gate.
+                    litter: minted_litter,
+                    litter_size: 1,
                     dgen: GEN_FRESH,
-                    miss: 0,
                 },
             );
         }
@@ -3506,8 +4674,10 @@ impl Mixer {
                     dir: d,
                     frame: e.frames[j],
                     protected_until: e.protected_until[j],
+                    // Reversing a crossing also reverses its provenance.
+                    litter: e.litters[j],
+                    litter_size: e.litter_sizes[j],
                     dgen: e.gens[j],
-                    miss: 0,
                 },
             );
             new_ids.push(c);
@@ -3523,7 +4693,7 @@ impl Mixer {
     fn merge_candidates(&self, g_id: u32) -> Vec<u32> {
         let g = self.arena.gate(g_id);
         let mut out: Vec<u32> = Vec::new();
-        let mut consider = |ids: &[u32], out: &mut Vec<u32>| {
+        let consider = |ids: &[u32], out: &mut Vec<u32>| {
             for &c in ids {
                 if c != g_id && merge_result(g, self.arena.gate(c)).is_some() {
                     out.push(c);
@@ -3667,6 +4837,12 @@ impl Mixer {
         };
         let protected_until = mg.protected_until.max(mh.protected_until);
         let dgen = mg.dgen.min(mh.dgen);
+        // The litter follows the same parent the generation does.
+        let (litter, litter_size) = if mg.dgen <= mh.dgen {
+            (mg.litter, mg.litter_size)
+        } else {
+            (mh.litter, mh.litter_size)
+        };
         for &nid in &new_ids {
             // Merged output stays in place (scatter is suspended) and keeps
             // shooting the way the initiating parent was headed, per dir_p.
@@ -3679,8 +4855,9 @@ impl Mixer {
                     dir: d,
                     frame,
                     protected_until,
+                    litter,
+                    litter_size,
                     dgen,
-                    miss: 0,
                 },
             );
         }
@@ -3698,15 +4875,71 @@ impl Mixer {
 
     // ---- DB replacement moves ----
 
-    fn db_attempt(&mut self, mode: DbMode) -> bool {
-        self.last_seed = None;
-        let spliced = self.db_attempt_inner(mode);
-        if let Some((id, stamp)) = self.last_seed.take() {
-            if self.arena.is_linked(id) && self.arena.stamp(id) == stamp {
-                self.bump_miss(id);
+    fn note_db_result(&mut self, result: &DbResult, outgoing_len: usize) {
+        self.counters.db_identity_skips += result.identity_skipped as u64;
+        if result.chosen.is_some() {
+            self.note_choice(result.choice_count);
+            if result.chosen_curated {
+                self.counters.db_curated_hits += 1;
             }
         }
+        if let Some(minimum) = result.min_match_len {
+            self.counters.dmin_windows += 1;
+            if minimum < outgoing_len {
+                self.counters.dmin_shorter += 1;
+            }
+        }
+    }
+
+    fn db_attempt(&mut self, mode: DbMode) -> bool {
+        let previous_mode = self.db_mode_cur;
+        self.db_mode_cur = mode;
+        self.db_seed_home = None;
+        self.seed_from_pool = false;
+        self.seed_fell_through = false;
+        let spliced = self.db_attempt_inner(mode);
+        // Fall-through is a REBUILD-RATE signal, not a stop signal: a heads
+        // coin that found the pool drained says the rescan cadence is too
+        // slow, not that the material is unspellable.
+        if self.seed_fell_through {
+            self.counters.canary_fallthrough += 1;
+        }
+        // The canary counts only rounds that genuinely came from the pool,
+        // and SLEEPS under the brake: COMP declines far more often by
+        // construction, so Compressing rounds are excluded.
+        if self.seed_from_pool && mode != DbMode::Compressing {
+            let w = self.params.canary_window.max(1);
+            if self.canary.len() == w {
+                if self.canary.pop_front() == Some(true) {
+                    self.canary_failures -= 1;
+                }
+            }
+            self.canary.push_back(!spliced);
+            if !spliced {
+                self.canary_failures += 1;
+            }
+        }
+        if !spliced {
+            self.restore_seed();
+        }
+        self.db_mode_cur = previous_mode;
         spliced
+    }
+
+    /// Fires iff armed (`canary_theta > 0`), the ring holds a full window
+    /// (the minimum-sample guard), and the failure fraction strictly exceeds
+    /// theta. Denominated in qualifying rounds, not moves.
+    fn canary_fired(&self) -> bool {
+        self.params.canary_theta > 0.0
+            && self.canary.len() >= self.params.canary_window.max(1)
+            && self.canary_frac() > self.params.canary_theta
+    }
+
+    fn canary_frac(&self) -> f64 {
+        if self.canary.is_empty() {
+            return 0.0;
+        }
+        self.canary_failures as f64 / self.canary.len() as f64
     }
 
     fn db_attempt_inner(&mut self, mode: DbMode) -> bool {
@@ -3714,8 +4947,8 @@ impl Mixer {
             return false;
         }
         let count = self.arena.len();
-        let minimum = self.params.db_min_window.max(2);
-        let maximum = self.params.db_max_window.max(minimum);
+        let minimum = self.active_db_minimum();
+        let maximum = self.active_s_db().max(minimum);
         if count < minimum {
             return false;
         }
@@ -3724,9 +4957,11 @@ impl Mixer {
         } else {
             self.rng.random_range(minimum..=maximum.min(count))
         };
-        let Some((ids, first_direction, sampler)) = self.sample_window(len) else {
+        let Some((ids, first_direction, sampler)) = self.sample_best_window(len) else {
             return false;
         };
+        self.counters.litter_windows += 1;
+        self.counters.litter_distinct_sum += self.litter_census(&ids).0 as u64;
         self.db_last_sampler = sampler;
         let window: Vec<XGate> = ids.iter().map(|&id| self.arena.gate(id).clone()).collect();
         let guard = DegreeGuard {
@@ -3735,60 +4970,120 @@ impl Mixer {
         };
 
         if self.params.db_prefixes {
-            for prefix_len in (minimum..=window.len()).rev() {
-                let prefix_ids = &ids[..prefix_len];
-                let prefix = &window[..prefix_len];
-                self.counters.db_attempts += 1;
-                if prefix_ids.iter().any(|&id| self.is_protected(id)) {
-                    self.counters.db_protected_skips += 1;
-                    self.record_db_attempt(prefix, 0, None);
-                    self.count_db_miss(mode);
-                    continue;
-                }
-                if self.params.db_max_span > 0
-                    && super::xpoly::xgate_used_wires(prefix).len() > self.params.db_max_span
-                {
-                    self.counters.db_span_skips += 1;
-                    self.record_db_attempt(prefix, 0, None);
-                    self.count_db_miss(mode);
-                    continue;
-                }
-                let result = db_replace(
-                    prefix,
-                    self.num_wires,
-                    self.db.as_ref().expect("DB checked above"),
-                    self.db_budget,
-                    mode,
-                    guard,
-                    &mut self.rng,
-                );
-                if result.degree_skipped {
-                    self.counters.db_degree_skips += 1;
-                }
-                let Some(replacement) = result.chosen else {
-                    self.record_db_attempt(prefix, result.match_count, None);
-                    self.count_db_miss(mode);
-                    continue;
-                };
-                if self.params.db_dry_run {
-                    self.record_db_attempt(prefix, result.match_count, None);
-                    self.count_db_hit(mode);
-                    continue;
-                }
-                if self.try_db_splice(
-                    prefix_ids,
-                    first_direction,
-                    prefix,
-                    replacement,
-                    result.match_count,
-                    mode,
-                ) {
-                    return true;
+            let curated_armed =
+                self.params.curated && (mode != DbMode::Compressing || self.params.curated_in_comp);
+            let passes: &[(bool, bool)] = if curated_armed && self.params.curated_exhaust {
+                &[(true, false), (false, true)]
+            } else if curated_armed {
+                &[(true, true)]
+            } else {
+                &[(false, true)]
+            };
+            // Seed-preserving descent (ORIG mix.rs:4697-4860): shrink from
+            // whichever end is farther from the seed so a pool-drawn gate
+            // survives to the final rung — a fixed-end descent abandons the
+            // seed on about half of contiguous windows and on every convex
+            // one. Every exit path of the loop body MUST shrink lo or hi;
+            // anything else respins the identical rung forever and hangs the
+            // run before it completes a single move.
+            let k = self
+                .db_seed_home
+                .and_then(|(seed, _)| ids.iter().position(|&id| id == seed))
+                .unwrap_or(0);
+            for &(curated, regular_fallback) in passes {
+                let (mut lo, mut hi) = (0usize, window.len());
+                while hi - lo >= minimum {
+                    // Shrink from the end farther from the seed (hi is
+                    // exclusive, so the right end sits at hi - 1).
+                    macro_rules! shrink {
+                        () => {
+                            if k.saturating_sub(lo) >= (hi - 1).saturating_sub(k) {
+                                lo += 1;
+                            } else {
+                                hi -= 1;
+                            }
+                        };
+                    }
+                    let prefix_ids = &ids[lo..hi];
+                    let prefix = &window[lo..hi];
+                    if self.params.litter_ban && self.litter_census(prefix_ids).1 {
+                        self.counters.litter_banned += 1;
+                        // Descending past it is free — a shorter rung is no
+                        // longer a complete litter.
+                        shrink!();
+                        continue;
+                    }
+                    self.counters.db_attempts += 1;
+                    if prefix_ids.iter().any(|&id| self.is_protected(id)) {
+                        self.counters.db_protected_skips += 1;
+                        self.record_db_attempt(prefix, 0, None);
+                        self.count_db_miss(mode);
+                        shrink!();
+                        continue;
+                    }
+                    if self.params.db_max_span > 0
+                        && super::xpoly::xgate_used_wires(prefix).len() > self.params.db_max_span
+                    {
+                        self.counters.db_span_skips += 1;
+                        self.record_db_attempt(prefix, 0, None);
+                        self.count_db_miss(mode);
+                        shrink!();
+                        continue;
+                    }
+                    let result = db_replace(
+                        prefix,
+                        self.num_wires,
+                        self.db.as_ref().expect("DB checked above"),
+                        self.db_budget,
+                        mode,
+                        guard,
+                        curated,
+                        true,
+                        regular_fallback,
+                        self.params.mix_pay_random,
+                        &mut self.rng,
+                    );
+                    self.note_db_result(&result, prefix.len());
+                    if result.degree_skipped {
+                        self.counters.db_degree_skips += 1;
+                    }
+                    let Some(replacement) = result.chosen else {
+                        self.record_db_attempt(prefix, result.match_count, None);
+                        self.count_db_miss(mode);
+                        shrink!();
+                        continue;
+                    };
+                    if self.params.db_dry_run {
+                        self.record_db_attempt(prefix, result.match_count, None);
+                        self.count_db_hit(mode);
+                        shrink!();
+                        continue;
+                    }
+                    if self.try_db_splice(
+                        prefix_ids,
+                        first_direction,
+                        prefix,
+                        replacement,
+                        result.match_count,
+                        mode,
+                    ) {
+                        return true;
+                    }
+                    // Fifth shrink site: a refused splice (frame conflict,
+                    // hard-cap refusal, wide-verify skip, stale window) must
+                    // also shrink, or the refusal is deterministic and the
+                    // loop never exits.
+                    shrink!();
                 }
             }
             return false;
         }
 
+        // Non-prefix path: no rung to descend to, so the ban refuses outright.
+        if self.params.litter_ban && self.litter_census(&ids).1 {
+            self.counters.litter_banned += 1;
+            return false;
+        }
         self.counters.db_attempts += 1;
         if ids.iter().any(|&id| self.is_protected(id)) {
             self.counters.db_protected_skips += 1;
@@ -3811,8 +5106,13 @@ impl Mixer {
             self.db_budget,
             mode,
             guard,
+            self.params.curated,
+            self.params.curated_in_comp,
+            true,
+            self.params.mix_pay_random,
             &mut self.rng,
         );
+        self.note_db_result(&result, window.len());
         if result.degree_skipped {
             self.counters.db_degree_skips += 1;
         }
@@ -3843,14 +5143,16 @@ impl Mixer {
     fn count_db_hit(&mut self, mode: DbMode) {
         match mode {
             DbMode::Compressing => self.counters.db_comp_hits += 1,
-            DbMode::SizeAgnostic | DbMode::MinGrow => self.counters.db_agn_hits += 1,
+            DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => self.counters.db_agn_hits += 1,
         }
     }
 
     fn count_db_miss(&mut self, mode: DbMode) {
         match mode {
             DbMode::Compressing => self.counters.db_comp_misses += 1,
-            DbMode::SizeAgnostic | DbMode::MinGrow => self.counters.db_agn_misses += 1,
+            DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => {
+                self.counters.db_agn_misses += 1
+            }
         }
     }
 
@@ -3958,6 +5260,16 @@ impl Mixer {
         } else {
             self.counters.db_gates_added += (new - old) as u64;
         }
+        match mode {
+            DbMode::Compressing => {
+                self.counters.db_cmp_removed += old.saturating_sub(new) as u64;
+                self.counters.db_cmp_added += new.saturating_sub(old) as u64;
+            }
+            DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => {
+                self.counters.db_mix_removed += old.saturating_sub(new) as u64;
+                self.counters.db_mix_added += new.saturating_sub(old) as u64;
+            }
+        }
         self.count_db_hit(mode);
 
         let cursor = self.arena.neighbor(ids[0], Dir::L);
@@ -3971,6 +5283,12 @@ impl Mixer {
             ORIGIN_SYNTH
         };
         let dgen = self.db_replacement_generation(ids, self.params.gen_median_low);
+        // The splice is the litter-creating event: every product carries one
+        // fresh id, with the litter size fixed at creation.
+        if self.litter_census(ids).1 {
+            self.counters.litter_full_spliced += 1;
+        }
+        let litter = self.fresh_litter();
 
         for &id in ids {
             self.index_remove(id);
@@ -3978,15 +5296,18 @@ impl Mixer {
             self.arena.free_node(id);
         }
         let incoming = replacement.len();
+        let litter_size = incoming.min(u16::MAX as usize) as u16;
         let pivot = if first_direction == Dir::L {
             (2 * incoming) / 3
         } else {
             incoming / 3
         };
         let mut anchor = cursor;
+        let mut inserted = Vec::with_capacity(replacement.len());
         for (index, gate) in replacement.into_iter().enumerate() {
             anchor = self.arena.insert_after(anchor, gate);
             self.index_add(anchor);
+            inserted.push(anchor);
             self.set_meta(
                 anchor,
                 Meta {
@@ -3995,10 +5316,14 @@ impl Mixer {
                     dir: if index <= pivot { Dir::L } else { Dir::R },
                     frame,
                     protected_until,
+                    litter,
+                    litter_size,
                     dgen,
-                    miss: 0,
                 },
             );
+        }
+        if self.params.db_advance {
+            self.advance_births(&inserted);
         }
         true
     }
@@ -4245,8 +5570,42 @@ impl Mixer {
         ids
     }
 
+    /// Draw `litter_samples` candidate windows and keep the one spanning the
+    /// most distinct litters. Diversity is the point: a window drawn from many
+    /// replacement events is one no single earlier splice can undo, which is
+    /// the same property the full-litter ban enforces at the other end.
+    fn sample_best_window(&mut self, w: usize) -> Option<(Vec<u32>, Dir, DbSample)> {
+        let n = self.params.litter_samples.max(1);
+        let mut best: Option<(Vec<u32>, Dir, DbSample)> = None;
+        let mut best_distinct = 0usize;
+        for _ in 0..n {
+            let Some(cand) = self.sample_window(w) else {
+                continue;
+            };
+            let d = self.litter_census(&cand.0).0;
+            if best.is_none() || d > best_distinct {
+                best_distinct = d;
+                best = Some(cand);
+            }
+            if best_distinct >= w {
+                break; // already maximal; more draws cannot improve it
+            }
+        }
+        best
+    }
+
     fn sample_window(&mut self, width: usize) -> Option<(Vec<u32>, Dir, DbSample)> {
-        match self.params.db_sample {
+        let convex_probability = self.active_p_convex();
+        let sampler = if convex_probability >= 0.0 {
+            if self.rng.random_bool(convex_probability.clamp(0.0, 1.0)) {
+                DbSample::Convex
+            } else {
+                DbSample::Contiguous
+            }
+        } else {
+            self.params.db_sample
+        };
+        match sampler {
             DbSample::Contiguous => self
                 .collect_contiguous(width)
                 .map(|(ids, direction)| (ids, direction, DbSample::Contiguous)),
@@ -4265,108 +5624,155 @@ impl Mixer {
         }
     }
 
-    fn rebuild_laggards(&mut self) {
+    /// Rebuild the generation pool: the `pool_k` lowest-generation gates among
+    /// those that are pool-eligible AND still below the goal. An O(size) scan,
+    /// so it runs on the `gen_rescan` cadence rather than every round.
+    fn rebuild_pool(&mut self) {
         let target = self.params.gen_target;
-        let cap = self.params.db_ctrl_cap;
-        let budget = self.params.gen_miss_budget;
-        let giveup = self.params.gen_giveup;
-        self.lag_cheap.clear();
-        self.lag_hard.clear();
+        self.pool.clear();
+        let mut cands: Vec<(u32, u32)> = Vec::new();
         for id in self.arena.ids_in_order() {
-            let meta = self.meta_of(id);
-            if meta.dgen >= target || self.is_protected(id) || (cap > 0 && self.width_of(id) > cap)
-            {
+            let m = self.meta_of(id);
+            if m.dgen >= target || !self.pool_eligible(id) {
                 continue;
             }
-            if meta.miss < budget {
-                self.lag_cheap.push(id);
-            } else if giveup == 0 || meta.miss < giveup {
-                self.lag_hard.push(id);
-            }
+            cands.push((m.dgen, id));
         }
+        let k = self.params.pool_k.max(1);
+        if cands.len() > k {
+            cands.select_nth_unstable(k - 1);
+            cands.truncate(k);
+        }
+        self.pool.extend(cands.into_iter().map(|(_, id)| id));
     }
 
-    fn draw_laggard(&mut self, cheap: bool) -> Option<u32> {
+    /// Draw from the pool, pruning entries that went stale since the rebuild
+    /// (freed, re-encoded past the goal, or now too wide to seed).
+    fn draw_pool(&mut self) -> Option<u32> {
         let target = self.params.gen_target;
-        let cap = self.params.db_ctrl_cap;
-        let budget = self.params.gen_miss_budget;
-        let giveup = self.params.gen_giveup;
         for _ in 0..8 {
-            let list = if cheap {
-                &self.lag_cheap
-            } else {
-                &self.lag_hard
-            };
-            if list.is_empty() {
+            if self.pool.is_empty() {
                 return None;
             }
-            let index = self.rng.random_range(0..list.len());
-            let id = list[index];
-            let meta = self.meta_of(id);
-            let in_tier = if cheap {
-                meta.miss < budget
-            } else {
-                meta.miss >= budget && (giveup == 0 || meta.miss < giveup)
-            };
-            if !self.arena.is_linked(id) || self.is_protected(id) || meta.dgen >= target || !in_tier
-            {
-                let list = if cheap {
-                    &mut self.lag_cheap
-                } else {
-                    &mut self.lag_hard
-                };
-                list.swap_remove(index);
+            let i = self.rng.random_range(0..self.pool.len());
+            let id = self.pool[i];
+            let m = self.meta_of(id);
+            if !self.arena.is_linked(id) || m.dgen >= target || !self.pool_eligible(id) {
+                self.pool.swap_remove(i);
                 continue;
             }
-            if cap == 0 || self.width_of(id) <= cap {
-                self.last_seed = Some((id, self.arena.stamp(id)));
-                return Some(id);
-            }
-            return None;
+            return Some(id);
         }
         None
+    }
+
+    /// May this gate sit inside the window currently being built? WT addition
+    /// to ORIG:5458-5461: framed/protected material is never window-targetable
+    /// (the G57 pair census depends on it surviving).
+    fn window_eligible(&self, id: u32) -> bool {
+        if self.is_protected(id) {
+            return false;
+        }
+        let cap = self.params.w_window;
+        cap == 0 || self.width_of(id) < cap
+    }
+
+    /// May this gate seed a window and count toward the dose? Stricter than
+    /// `window_eligible`: an ineligible gate can never be re-encoded, so its
+    /// generation is pinned forever and an unfiltered pool converges on exactly
+    /// that set and stays there.
+    fn pool_eligible(&self, id: u32) -> bool {
+        if self.is_protected(id) {
+            return false;
+        }
+        let cap = self.params.w_pool;
+        cap == 0 || self.width_of(id) < cap
     }
 
     fn pick_seed(&mut self) -> Option<u32> {
-        let cap = self.params.db_ctrl_cap;
-        match self.seed_pool {
-            SeedPool::Hard => return self.draw_laggard(false),
-            SeedPool::Cheap => {
-                if let Some(id) = self.draw_laggard(true) {
-                    return Some(id);
+        let g = self.pick_seed_inner();
+        self.db_seed_home = g.map(|id| (id, self.arena.neighbor(id, Dir::L)));
+        g
+    }
+
+    /// Put the seed back where it was drawn from. Retracing a float path the
+    /// gate already passed through, exactly as `retreat` does for a declined
+    /// cross -- the intervening gates commute with it by construction.
+    fn restore_seed(&mut self) {
+        let Some((id, home)) = self.db_seed_home.take() else {
+            return;
+        };
+        if !self.arena.is_linked(id) || self.arena.neighbor(id, Dir::L) == home {
+            return;
+        }
+        if home != NIL && !self.arena.is_linked(home) {
+            return; // its anchor was consumed; leave it where it is
+        }
+        // Hop back toward home ONE gate at a time, and only over neighbours the
+        // seed commutes with. An unchecked relink is wrong here even though the
+        // seed floated in along this path: `retreat` may reverse a float
+        // immediately, with nothing intervening, but a window build moves OTHER
+        // gates too -- ctrl-cap evasion parks a collider out of the way, and an
+        // evaded collider is by definition one that does NOT commute. Teleport
+        // the seed across that and the circuit's function changes.
+        for dir in [Dir::L, Dir::R] {
+            for _ in 0..Self::RESTORE_HOPS {
+                if self.arena.neighbor(id, Dir::L) == home {
+                    return;
                 }
-            }
-            SeedPool::Biased => {
-                if self.params.gen_target > 0
-                    && !self.lag_cheap.is_empty()
-                    && self.rng.random_bool(self.params.gen_bias.clamp(0.0, 1.0))
-                {
-                    if let Some(id) = self.draw_laggard(true) {
-                        return Some(id);
-                    }
+                let nb = self.arena.neighbor(id, dir);
+                if nb == NIL {
+                    break;
+                }
+                if XGate::collides(self.arena.gate(id), self.arena.gate(nb)) {
+                    break; // blocked: leave it here rather than jump the gate
+                }
+                self.arena.unlink(id);
+                match dir {
+                    Dir::R => self.arena.link_after(id, nb),
+                    Dir::L => self.arena.link_before(id, nb),
                 }
             }
         }
-        for _ in 0..8 {
-            let id = self.arena.random_linked(&mut self.rng);
-            if cap == 0 || self.width_of(id) <= cap {
+    }
+
+    /// Bound on the checked walk home. A seed that cannot get back within this
+    /// many hops stays where it is: a partly-restored seed is still correct,
+    /// only less tidy.
+    const RESTORE_HOPS: usize = 512;
+
+    /// One coin, one pool. Heads (probability `p_mingen`) draws from the
+    /// generation pool; tails draws uniformly. `seed_from_pool` records which,
+    /// because the canary must count only rounds that genuinely came from the
+    /// pool -- a heads round that fell through because the pool had drained is
+    /// a DIFFERENT failure (rebuild too slow) with the opposite remedy, and
+    /// conflating them would let the brake or a slow rescan look like
+    /// unreachable material.
+    fn pick_seed_inner(&mut self) -> Option<u32> {
+        self.seed_from_pool = false;
+        self.seed_fell_through = false;
+        if self.params.gen_target > 0
+            && self.active_p_mingen() > 0.0
+            && self.rng.random_bool(self.active_p_mingen().clamp(0.0, 1.0))
+        {
+            if let Some(id) = self.draw_pool() {
+                self.seed_from_pool = true;
                 return Some(id);
+            }
+            self.seed_fell_through = true;
+        }
+        for _ in 0..8 {
+            let g = self.arena.random_linked(&mut self.rng);
+            if self.window_eligible(g) {
+                return Some(g);
             }
         }
         None
-    }
-
-    fn bump_miss(&mut self, id: u32) {
-        if let Some(meta) = self.meta.get_mut(id as usize) {
-            meta.miss = meta.miss.saturating_add(1);
-            self.counters.gen_misses += 1;
-        }
     }
 
     const EVADE_BUDGET: usize = 128;
 
     fn collect_contiguous(&mut self, width: usize) -> Option<(Vec<u32>, Dir)> {
-        let cap = self.params.db_ctrl_cap;
         let first = self.pick_seed()?;
         let first_direction = self.meta_of(first).dir;
         let (mut lo, mut hi) = (first, first);
@@ -4385,7 +5791,10 @@ impl Mixer {
                 }
                 break;
             }
-            if cap > 0 && self.width_of(candidate) > cap {
+            // Evade anything window-ineligible (too wide, or protected framed
+            // material) by floating it aside — function-preserving, per
+            // ORIG:5582. `< w_window` semantics replace the old `<= ctrl_cap`.
+            if !self.window_eligible(candidate) {
                 if evade_budget == 0 {
                     self.counters.db_build_aborts += 1;
                     return None;
@@ -4409,11 +5818,10 @@ impl Mixer {
             count += 1;
         }
         let ids = self.span_ids(lo, hi);
-        (ids.len() >= self.params.db_min_window.max(2)).then_some((ids, first_direction))
+        (ids.len() >= self.active_db_minimum()).then_some((ids, first_direction))
     }
 
     fn collect_convex(&mut self, width: usize) -> Option<(Vec<u32>, Dir)> {
-        let cap = self.params.db_ctrl_cap;
         let direction_probability = self.params.db_convex_p;
         let first = self.pick_seed()?;
         let first_direction = self.meta_of(first).dir;
@@ -4435,7 +5843,7 @@ impl Mixer {
                     break;
                 }
             }
-            if cap > 0 && self.width_of(candidate) > cap {
+            if !self.window_eligible(candidate) {
                 if evade_budget == 0 {
                     self.counters.db_build_aborts += 1;
                     return None;
@@ -4445,7 +5853,7 @@ impl Mixer {
                     continue;
                 }
                 (candidate, direction) = self.float_block_to_collider(lo, hi, direction.opposite());
-                if candidate == NIL || (cap > 0 && self.width_of(candidate) > cap) {
+                if candidate == NIL || !self.window_eligible(candidate) {
                     return None;
                 }
             }
@@ -4457,7 +5865,7 @@ impl Mixer {
             count += 1;
         }
         let ids = self.span_ids(lo, hi);
-        (ids.len() >= self.params.db_min_window.max(2)).then_some((ids, first_direction))
+        (ids.len() >= self.active_db_minimum()).then_some((ids, first_direction))
     }
 
     fn float_block_to_collider(&mut self, lo: u32, hi: u32, direction: Dir) -> (u32, Dir) {
@@ -4596,6 +6004,28 @@ impl Mixer {
             cur = self.arena.neighbor(cur, Dir::R);
         }
         n
+    }
+
+    pub fn g57_census(&self) -> G57Census {
+        let mut census = G57Census::default();
+        let mut current = self.arena.head();
+        while current != NIL {
+            let gate = self.arena.gate(current);
+            if gate.comp && gate.ctrls.len() == 2 {
+                census.shaped += 1;
+                if gate.ctrls[0].1 == gate.ctrls[1].1 {
+                    census.same_pol += 1;
+                } else {
+                    census.opp_pol += 1;
+                }
+            }
+            current = self.arena.neighbor(current, Dir::R);
+        }
+        census
+    }
+
+    pub fn true_g57(&self) -> usize {
+        self.g57_census().opp_pol
     }
 
     // Mean |current position fraction - original position fraction| over gates
@@ -4795,13 +6225,13 @@ impl Mixer {
         let (nl_protected, nl_protected_gates, nl_protected_coverage) =
             self.protected_nonlinear_frame_stats();
         let generation = self.gen_stats();
-        let db_probability = self.p_db_eff();
+        let db_probability = self.params.p_db.clamp(0.0, 1.0);
         let c = &self.counters;
         let hist: Vec<String> = (0..=self.params.k_max.min(15))
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db p={:.3} comp={}/{} agn={}/{} rm={} add={} attempts={} degree={} span={} wide={} build={} protected={} frame={} cap={} ingest={}/{} hard={}/{} paid={} | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} elig={} cheap={} hard={} unreach={} wlag={} min={} cov={:.1} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | nl try={} ok={} skip={} packet={} shots={} crossed={} prep={} blocked={} span={} nodes={} protect-blocks={} live={}/{} cover={:.3} protected={}/{} pcover={:.3} | declined={} blockw={} blockcap={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
+            "[fmix] mv={} size={} target={} comp={} | merges c={} x={} d={} s={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db p={:.3} comp={}/{} agn={}/{} rm={} add={} attempts={} degree={} span={} wide={} build={} protected={} frame={} cap={} slot2={}/{} add={} brake={}/{} | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} elig={} wlag={} min={} cov={:.1} canary={:.2} fallthru={} | litter distinct={:.2} full={} ban={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} twn={} tws={} twc={} twrel={} twsplit={} twspan={} twskip={} | nl try={} ok={} skip={} packet={} shots={} crossed={} prep={} blocked={} span={} nodes={} protect-blocks={} live={}/{} cover={:.3} protected={}/{} pcover={:.3} | declined={} blockw={} blockcap={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} width[{}]",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -4837,11 +6267,11 @@ impl Mixer {
             c.db_protected_skips,
             c.db_frame_skips,
             c.db_cap_skips,
-            c.db_ing_hits,
-            c.db_ing_rounds,
-            c.db_hard_hits,
-            c.db_hard_rounds,
-            c.db_hard_added,
+            c.db_slot2_hits,
+            c.db_slot2_rounds,
+            c.db_slot2_added,
+            c.brake_engagements,
+            c.brake_rounds,
             self.params.gen_target,
             generation.g_circ,
             generation.g_all,
@@ -4851,12 +6281,18 @@ impl Mixer {
             generation.lag,
             generation.targetable,
             generation.elig,
-            generation.cheap,
-            generation.hard,
-            generation.unreach,
             generation.wlag,
             generation.min,
             self.twist_coverage(),
+            self.canary_frac(),
+            c.canary_fallthrough,
+            if c.litter_windows > 0 {
+                c.litter_distinct_sum as f64 / c.litter_windows as f64
+            } else {
+                0.0
+            },
+            c.litter_full_spliced,
+            c.litter_banned,
             c.cross_r1,
             c.cross_r2,
             c.cross_r3,
@@ -4905,6 +6341,61 @@ impl Mixer {
             oadj,
             hist.join(" ")
         );
+        let census = self.g57_census();
+        let mean_choice = if c.choice_splices == 0 {
+            0.0
+        } else {
+            c.choice_sum as f64 / c.choice_splices as f64
+        };
+        let bits_per_splice = if c.choice_splices == 0 {
+            0.0
+        } else {
+            c.choice_bits_milli as f64 / (1000.0 * c.choice_splices as f64)
+        };
+        let dmin = if c.dmin_windows == 0 {
+            0.0
+        } else {
+            c.dmin_shorter as f64 / c.dmin_windows as f64
+        };
+        let tg_net = c
+            .tg_net_hist
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "[fmix-layer] mode={:?} p_mix={:.3} shaped={} g57={} polf={:.3} curated={} idskip={} dmin={:.3} choice_splices={} multi={} mean={:.2} bits/splice={:.3} tg={}/{} net=[{}] solves={} solve_ms={:.1} slides={} retries={}{}",
+            self.db_mode_cur,
+            self.params.p_mix,
+            census.shaped,
+            census.opp_pol,
+            census.pol_flipped(),
+            c.db_curated_hits,
+            c.db_identity_skips,
+            dmin,
+            c.choice_splices,
+            c.choice_multi,
+            mean_choice,
+            bits_per_splice,
+            c.tg_consumed,
+            c.tg_emitted,
+            tg_net,
+            c.tg_solves,
+            c.tg_solve_ns as f64 / 1_000_000.0,
+            c.tg_slides,
+            c.tg_retries,
+            self.prof
+                .as_ref()
+                .map_or_else(String::new, |profile| format!(
+                    " profile=phase{} eff={:.3} pmix={:.3} ghat={:+.4} shat={:+.4} dhat={:+.4}",
+                    profile.phase,
+                    profile.eff,
+                    profile.pmix,
+                    profile.ghat,
+                    profile.shat,
+                    profile.dhat
+                ))
+        );
     }
 
     pub fn origins_in_order(&self) -> Vec<u32> {
@@ -4913,6 +6404,670 @@ impl Mixer {
             .iter()
             .map(|&id| self.meta_of(id).origin)
             .collect()
+    }
+
+    /// The true input circuit the periodic `global_check` verifies against —
+    /// on a resumed run, the original from the state file, not the resume
+    /// point.
+    pub fn original(&self) -> &[XGate] {
+        &self.original
+    }
+
+    pub fn num_wires(&self) -> usize {
+        self.num_wires
+    }
+}
+
+/// Version stamp for the resume file. The parameter set has changed repeatedly,
+/// and silently reinterpreting fields would be worse than refusing to load.
+/// Version 2: this tree's layout (frame/protected_until in gate meta and
+/// journal, a prof section, no ancestry) — origin's v1 files refuse cleanly.
+pub const STATE_VERSION: u32 = 2;
+
+/// The persistent-counter roster: the single authority both checkpoint
+/// serializers use, so a field added here is checkpointed everywhere at once.
+/// Histograms (`width_hist`, `tg_net_hist`) and session-local timing
+/// (`tg_solves`, `tg_solve_ns`) are shapes, not totals — deliberately excluded.
+macro_rules! with_counter_fields {
+    ($m:ident) => {
+        $m!(
+            moves,
+            db_slot2_rounds,
+            db_slot2_hits,
+            db_slot2_added,
+            canary_fallthrough,
+            brake_engagements,
+            brake_rounds,
+            litter_banned,
+            litter_full_spliced,
+            litter_windows,
+            litter_distinct_sum,
+            db_identity_skips,
+            db_curated_hits,
+            dmin_windows,
+            dmin_shorter,
+            choice_splices,
+            choice_multi,
+            choice_sum,
+            choice_bits_milli,
+            db_mix_added,
+            db_mix_removed,
+            db_cmp_added,
+            db_cmp_removed,
+            db_comp_hits,
+            db_comp_misses,
+            db_agn_hits,
+            db_agn_misses,
+            db_gates_removed,
+            db_gates_added,
+            db_wide_skip,
+            db_attempts,
+            db_degree_skips,
+            db_span_skips,
+            db_build_aborts,
+            db_protected_skips,
+            db_frame_skips,
+            db_cap_skips,
+            blocked_size_cap,
+            merges_cancel,
+            merges_xfuse,
+            merges_drop,
+            merges_subsume,
+            merges_sibling,
+            merges_cross_origin,
+            tabu_blocked,
+            merge_no_partner,
+            merge_wall_blocked,
+            merge_too_far,
+            merge_not_adjacent,
+            undos,
+            undo_dead,
+            undo_tabu,
+            undo_gather_miss,
+            cross_r1,
+            cross_r2,
+            cross_r3,
+            presplits,
+            fresh_splits,
+            unsubs,
+            inserts,
+            twist_negs,
+            twist_swaps,
+            twist_cnots,
+            twist_relabels,
+            twist_case_splits,
+            twist_span,
+            twist_skips,
+            tg_consumed,
+            tg_emitted,
+            tg_slides,
+            tg_retries,
+            nl_frame_attempts,
+            nl_frames,
+            nl_frame_skips,
+            nl_frame_packet_gates,
+            nl_frame_shot_attempts,
+            nl_frame_crossings,
+            nl_frame_preparatory_rewrites,
+            nl_frame_blocked,
+            nl_frame_span,
+            nl_frame_nodes,
+            nl_frame_protected_blocks,
+            g57_pairs_seeded,
+            g57_seed_gates,
+            g57_seed_shots,
+            g57_seed_fragments,
+            g57_seed_r_crossings,
+            blocked_width,
+            blocked_deadlock,
+            declined,
+            boundary,
+            floats,
+            float_steps,
+            scatters,
+            scatter_steps,
+            dropped_neverfire
+        )
+    };
+}
+
+impl MixCounters {
+    /// Checkpoint form: `name=value` pairs on one line. Self-describing, so a
+    /// counter added later reads as zero from an older v2 file and unknown
+    /// names in a newer file are ignored — no positional fragility.
+    pub fn to_line(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        macro_rules! emit {
+            ($($n:ident),* $(,)?) => { $(
+                {
+                    if !out.is_empty() {
+                        out.push(' ');
+                    }
+                    let _ = write!(out, "{}={}", stringify!($n), self.$n);
+                }
+            )* }
+        }
+        with_counter_fields!(emit);
+        out
+    }
+
+    pub fn from_line(line: &str) -> Option<MixCounters> {
+        let mut map: HashMap<&str, u64> = HashMap::new();
+        for pair in line.split_whitespace() {
+            let (name, value) = pair.split_once('=')?;
+            map.insert(name, value.parse().ok()?);
+        }
+        let mut counters = MixCounters::default();
+        macro_rules! load {
+            ($($n:ident),* $(,)?) => { $(
+                counters.$n = map.get(stringify!($n)).copied().unwrap_or(0);
+            )* }
+        }
+        with_counter_fields!(load);
+        Some(counters)
+    }
+}
+
+impl Mixer {
+    /// Write everything a resumed run needs and the circuit file does not
+    /// carry. A run is hours long and every measurement depends on it, so a
+    /// stop — flag, canary, dose or budget — should be a PAUSE, not a loss.
+    ///
+    /// Three things make this more than a gate dump:
+    ///
+    /// - Per-gate `dir` is load-bearing and has no sidecar. Directions are
+    ///   drawn at load and the whole directional walk rides on them, so a
+    ///   resume that redrew them would restart transport rather than continue
+    ///   it. Same for `dgen`, `litter`, `frame`, `protected_until` and `event`.
+    /// - The undo journal references arena IDs, so the checkpoint RENUMBERS to
+    ///   0..n-1 in arena order — exactly what `Arena::from_gates` reproduces —
+    ///   and remaps the entries. Entries with any dead piece are dropped; they
+    ///   were already unusable.
+    /// - The ORIGINAL circuit is what `global_check` compares against. A
+    ///   resumed run verifying against its own resume point would verify
+    ///   nothing about fidelity to the true input.
+    ///
+    /// `StdRng` is not serialisable, so a fresh `u64` is drawn from each
+    /// generator and stored: a clean continuation, not a bit-identical replay.
+    pub fn save_state(&mut self, path: &str) -> std::io::Result<()> {
+        use std::fmt::Write as _;
+        let ids = self.arena.ids_in_order();
+        let mut newid: HashMap<u32, u32> = HashMap::with_capacity(ids.len());
+        for (i, &id) in ids.iter().enumerate() {
+            newid.insert(id, i as u32);
+        }
+        let gate_line = |o: &mut String, g: &XGate| {
+            let _ = write!(o, "{} {} {}", g.target, g.comp as u8, g.ctrls.len());
+            for &(w, p) in &g.ctrls {
+                let _ = write!(o, " {} {}", w, p as u8);
+            }
+        };
+        let mut o = String::with_capacity(ids.len() * 56);
+        let _ = writeln!(o, "fmix-state {STATE_VERSION}");
+        let _ = writeln!(o, "wires {}", self.num_wires);
+        let _ = writeln!(o, "moves {}", self.moves_done);
+        let _ = writeln!(o, "next_event {}", self.next_event);
+        let _ = writeln!(o, "next_litter {}", self.next_litter);
+        let _ = writeln!(o, "rng {}", self.rng.random::<u64>());
+        let _ = writeln!(o, "metrics_rng {}", self.metrics_rng.random::<u64>());
+        let _ = writeln!(
+            o,
+            "db_mode {}",
+            match self.db_mode_cur {
+                DbMode::Mix => "mix",
+                DbMode::Compressing => "comp",
+                DbMode::SizeAgnostic => "any",
+                DbMode::MinGrow => "mingrow",
+            }
+        );
+        let _ = writeln!(
+            o,
+            "brake {} {} {}",
+            self.brake_on as u8, self.brake_mark_move, self.brake_mark_size
+        );
+        let _ = writeln!(o, "pool_scan_due {}", self.pool_scan_due);
+        let _ = writeln!(o, "canary_failures {}", self.canary_failures);
+        let _ = writeln!(o, "counters {}", self.counters.to_line());
+
+        let _ = writeln!(o, "gates {}", ids.len());
+        for &id in &ids {
+            let m = self.meta_of(id);
+            let g = self.arena.gate(id).clone();
+            gate_line(&mut o, &g);
+            let _ = writeln!(
+                o,
+                " | {} {} {} {} {} {} {} {}",
+                m.origin,
+                m.event,
+                (m.dir == Dir::R) as u8,
+                m.dgen,
+                m.litter,
+                m.litter_size,
+                m.frame,
+                m.protected_until
+            );
+        }
+        let _ = writeln!(o, "original {}", self.original.len());
+        for g in self.original.clone().iter() {
+            gate_line(&mut o, g);
+            o.push('\n');
+        }
+        let _ = writeln!(o, "tabu {}", self.tabu.len());
+        for &(e, mv) in self.tabu.iter() {
+            let _ = writeln!(o, "{e} {mv}");
+        }
+        let pool: Vec<u32> = self
+            .pool
+            .iter()
+            .filter_map(|id| newid.get(id).copied())
+            .collect();
+        let _ = writeln!(o, "pool {}", pool.len());
+        for id in &pool {
+            let _ = writeln!(o, "{id}");
+        }
+        let _ = writeln!(o, "canary {}", self.canary.len());
+        for b in self.canary.iter() {
+            let _ = writeln!(o, "{}", *b as u8);
+        }
+        // Layer 2 is the primary run mode here, so ProfState IS serialized
+        // (unlike origin's v1 punt): a resume that restarted the profile clock
+        // at eff = 0 would make checkpointing useless for exactly the runs
+        // that need it.
+        match &self.prof {
+            None => {
+                let _ = writeln!(o, "prof 0");
+            }
+            Some(p) => {
+                let _ = write!(
+                    o,
+                    "prof 1 {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                    p.phase,
+                    p.pmix,
+                    p.integ,
+                    p.ghat,
+                    p.shat,
+                    p.dhat,
+                    p.eff,
+                    p.next_eff,
+                    p.sat,
+                    p.s_in,
+                    p.base_moves,
+                    p.base_size,
+                    p.base_pmix
+                );
+                for v in p.base_mix.iter().chain(p.base_comp.iter()) {
+                    let _ = write!(o, " {v}");
+                }
+                o.push('\n');
+            }
+        }
+        // Journal: keep only entries every piece of which is still live, then
+        // remap. Stamps are NOT stored — the rebuilt arena assigns its own, and
+        // resume reads them back from it.
+        let keep: Vec<&UndoEntry> = self
+            .journal
+            .iter()
+            .filter(|e| {
+                e.after.iter().all(|&(id, st)| {
+                    self.arena.is_linked(id)
+                        && self.arena.stamp(id) == st
+                        && newid.contains_key(&id)
+                })
+            })
+            .collect();
+        let _ = writeln!(o, "journal {}", keep.len());
+        for e in keep {
+            gate_line(&mut o, &e.before[0]);
+            o.push(' ');
+            gate_line(&mut o, &e.before[1]);
+            let _ = write!(
+                o,
+                " | {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                (e.dir == Dir::R) as u8,
+                newid[&e.pivot],
+                e.event,
+                e.origins[0],
+                e.origins[1],
+                e.gens[0],
+                e.gens[1],
+                e.litters[0],
+                e.litters[1],
+                e.litter_sizes[0],
+                e.litter_sizes[1],
+                e.frames[0],
+                e.frames[1],
+                e.protected_until[0],
+                e.protected_until[1]
+            );
+            let _ = write!(o, " | {}", e.after.len());
+            for &(id, _) in &e.after {
+                let _ = write!(o, " {}", newid[&id]);
+            }
+            let _ = writeln!(o, " {}", e.misses);
+        }
+        std::fs::write(path, o)
+    }
+
+    /// Rebuild a mixer from a state file. `params` come from the CLI as usual:
+    /// a resume is free to change rates, targets, the brake or the mode, which
+    /// is the point — a paused run should be steerable. What it must NOT
+    /// change is the version, since the field meanings would drift silently.
+    pub fn resume_state(
+        path: &str,
+        params: MixParams,
+        db: Option<FrozenDb>,
+    ) -> std::io::Result<Mixer> {
+        let text = std::fs::read_to_string(path)?;
+        let mut lines = text.lines();
+        let bad = |m: &str| std::io::Error::other(m.to_string());
+        let mut hdr = lines
+            .next()
+            .ok_or_else(|| bad("empty state file"))?
+            .split_whitespace();
+        if hdr.next() != Some("fmix-state") {
+            return Err(bad("missing fmix-state header"));
+        }
+        let v: u32 = hdr
+            .next()
+            .and_then(|x| x.parse().ok())
+            .ok_or_else(|| bad("bad version"))?;
+        if v != STATE_VERSION {
+            return Err(bad(&format!(
+                "state file version {v} != {STATE_VERSION}; refusing to reinterpret its fields"
+            )));
+        }
+        fn scalar(lines: &mut std::str::Lines<'_>, want: &str) -> std::io::Result<Vec<String>> {
+            let l = lines
+                .next()
+                .ok_or_else(|| std::io::Error::other(format!("missing {want}")))?;
+            let mut it = l.split_whitespace();
+            if it.next() != Some(want) {
+                return Err(std::io::Error::other(format!(
+                    "expected {want} in state file"
+                )));
+            }
+            Ok(it.map(|x| x.to_string()).collect())
+        }
+        let num_wires: usize = scalar(&mut lines, "wires")?[0]
+            .parse()
+            .map_err(|_| bad("wires"))?;
+        let moves_done: u64 = scalar(&mut lines, "moves")?[0]
+            .parse()
+            .map_err(|_| bad("moves"))?;
+        let next_event: u64 = scalar(&mut lines, "next_event")?[0]
+            .parse()
+            .map_err(|_| bad("next_event"))?;
+        let next_litter: u64 = scalar(&mut lines, "next_litter")?[0]
+            .parse()
+            .map_err(|_| bad("next_litter"))?;
+        let rng_seed: u64 = scalar(&mut lines, "rng")?[0]
+            .parse()
+            .map_err(|_| bad("rng"))?;
+        let mrng_seed: u64 = scalar(&mut lines, "metrics_rng")?[0]
+            .parse()
+            .map_err(|_| bad("metrics_rng"))?;
+        let mode_s = scalar(&mut lines, "db_mode")?[0].clone();
+        let brake = scalar(&mut lines, "brake")?;
+        if brake.len() != 3 {
+            return Err(bad("brake shape"));
+        }
+        let pool_scan_due: u64 = scalar(&mut lines, "pool_scan_due")?[0]
+            .parse()
+            .map_err(|_| bad("scan"))?;
+        let canary_failures: usize = scalar(&mut lines, "canary_failures")?[0]
+            .parse()
+            .map_err(|_| bad("cf"))?;
+        let counters_line = scalar(&mut lines, "counters")?.join(" ");
+
+        fn section(lines: &mut std::str::Lines<'_>, want: &str) -> std::io::Result<usize> {
+            let l = lines
+                .next()
+                .ok_or_else(|| std::io::Error::other(format!("missing {want}")))?;
+            let mut it = l.split_whitespace();
+            if it.next() != Some(want) {
+                return Err(std::io::Error::other(format!("expected section {want}")));
+            }
+            it.next()
+                .and_then(|x| x.parse().ok())
+                .ok_or_else(|| std::io::Error::other(format!("{want} count")))
+        }
+        let parse_gate = |it: &mut std::str::SplitWhitespace| -> Option<XGate> {
+            let target: u16 = it.next()?.parse().ok()?;
+            let comp: u8 = it.next()?.parse().ok()?;
+            let k: usize = it.next()?.parse().ok()?;
+            let mut ctrls: Lits = Lits::new();
+            for _ in 0..k {
+                let w: u16 = it.next()?.parse().ok()?;
+                let p: u8 = it.next()?.parse().ok()?;
+                ctrls.push((w, p != 0));
+            }
+            ctrls.sort_unstable();
+            Some(XGate {
+                target,
+                comp: comp != 0,
+                ctrls,
+            })
+        };
+
+        let ng = section(&mut lines, "gates")?;
+        let mut gates = Vec::with_capacity(ng);
+        let mut metas = Vec::with_capacity(ng);
+        for _ in 0..ng {
+            let l = lines.next().ok_or_else(|| bad("short gates section"))?;
+            let (gp, mp) = l
+                .split_once(" | ")
+                .ok_or_else(|| bad("gate line missing meta"))?;
+            let g = parse_gate(&mut gp.split_whitespace()).ok_or_else(|| bad("bad gate"))?;
+            let m: Vec<&str> = mp.split_whitespace().collect();
+            if m.len() != 8 {
+                return Err(bad("gate meta must have 8 fields"));
+            }
+            let p =
+                |i: usize| -> std::io::Result<u64> { m[i].parse().map_err(|_| bad("meta field")) };
+            metas.push(Meta {
+                origin: p(0)? as u32,
+                event: p(1)?,
+                dir: if p(2)? != 0 { Dir::R } else { Dir::L },
+                dgen: p(3)? as u32,
+                litter: p(4)?,
+                litter_size: p(5)? as u16,
+                frame: p(6)?,
+                protected_until: p(7)?,
+            });
+            gates.push(g);
+        }
+        let no = section(&mut lines, "original")?;
+        let mut original = Vec::with_capacity(no);
+        for _ in 0..no {
+            let l = lines.next().ok_or_else(|| bad("short original section"))?;
+            original.push(parse_gate(&mut l.split_whitespace()).ok_or_else(|| bad("bad orig"))?);
+        }
+        let nt = section(&mut lines, "tabu")?;
+        let mut tabu: VecDeque<(u64, u64)> = VecDeque::with_capacity(nt);
+        for _ in 0..nt {
+            let l = lines.next().ok_or_else(|| bad("short tabu"))?;
+            let mut it = l.split_whitespace();
+            let e: u64 = it
+                .next()
+                .and_then(|x| x.parse().ok())
+                .ok_or_else(|| bad("tabu"))?;
+            let mv: u64 = it
+                .next()
+                .and_then(|x| x.parse().ok())
+                .ok_or_else(|| bad("tabu"))?;
+            tabu.push_back((e, mv));
+        }
+        let np = section(&mut lines, "pool")?;
+        let mut pool = Vec::with_capacity(np);
+        for _ in 0..np {
+            let l = lines.next().ok_or_else(|| bad("short pool"))?;
+            pool.push(l.trim().parse::<u32>().map_err(|_| bad("pool id"))?);
+        }
+        let nc = section(&mut lines, "canary")?;
+        let mut canary: VecDeque<bool> = VecDeque::with_capacity(nc);
+        for _ in 0..nc {
+            let l = lines.next().ok_or_else(|| bad("short canary"))?;
+            canary.push_back(l.trim() != "0");
+        }
+        let prof_line = scalar(&mut lines, "prof")?;
+        let prof = if prof_line.first().map(String::as_str) == Some("1") {
+            if prof_line.len() != 1 + 13 + 8 {
+                return Err(bad("prof shape"));
+            }
+            let pf = |i: usize| -> f64 { prof_line[i].parse().unwrap_or(0.0) };
+            let pu = |i: usize| -> u64 { prof_line[i].parse().unwrap_or(0) };
+            let mut base_mix = [0u64; 4];
+            let mut base_comp = [0u64; 4];
+            for i in 0..4 {
+                base_mix[i] = pu(14 + i);
+                base_comp[i] = pu(18 + i);
+            }
+            Some(ProfState {
+                phase: pu(1) as u8,
+                pmix: pf(2),
+                integ: pf(3),
+                ghat: pf(4),
+                shat: pf(5),
+                dhat: pf(6),
+                eff: pf(7),
+                next_eff: pf(8),
+                sat: pu(9) as u32,
+                s_in: pf(10),
+                base_moves: pu(11),
+                base_size: pf(12),
+                base_pmix: pf(13),
+                base_mix,
+                base_comp,
+            })
+        } else {
+            None
+        };
+        let nj = section(&mut lines, "journal")?;
+        let mut journal_raw = Vec::with_capacity(nj);
+        for _ in 0..nj {
+            let l = lines.next().ok_or_else(|| bad("short journal"))?;
+            let parts: Vec<&str> = l.split(" | ").collect();
+            if parts.len() != 3 {
+                return Err(bad("journal line shape"));
+            }
+            let mut gi = parts[0].split_whitespace();
+            let b0 = parse_gate(&mut gi).ok_or_else(|| bad("journal before0"))?;
+            let b1 = parse_gate(&mut gi).ok_or_else(|| bad("journal before1"))?;
+            let f: Vec<u64> = parts[1]
+                .split_whitespace()
+                .map(|x| x.parse().unwrap_or(0))
+                .collect();
+            if f.len() != 15 {
+                return Err(bad("journal meta shape"));
+            }
+            let mut ai = parts[2].split_whitespace();
+            let n: usize = ai
+                .next()
+                .and_then(|x| x.parse().ok())
+                .ok_or_else(|| bad("after n"))?;
+            let after: Vec<u32> = (0..n)
+                .filter_map(|_| ai.next().and_then(|x| x.parse().ok()))
+                .collect();
+            let misses: u8 = ai.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+            journal_raw.push((b0, b1, f, after, misses));
+        }
+
+        // Build the mixer on the SAME id assignment the checkpoint renumbered
+        // to: Arena::from_gates hands out 0..n-1 in order, which is what
+        // save_state mapped the journal and pool onto.
+        let mut mx = Mixer::new_with_optional_db(gates, num_wires, params, db);
+        mx.original = original;
+        mx.moves_done = moves_done;
+        mx.counters = MixCounters::from_line(&counters_line).ok_or_else(|| bad("counters"))?;
+        mx.counters.moves = moves_done;
+        mx.next_event = next_event;
+        mx.next_litter = next_litter;
+        mx.rng = StdRng::seed_from_u64(rng_seed);
+        mx.metrics_rng = StdRng::seed_from_u64(mrng_seed);
+        // The LIVE mode comes from the command line, not the file. A resume is
+        // meant to be re-steerable — changing --db-mode is the whole point of a
+        // manual breathing cycle — and letting the saved value win silently
+        // ignores the flag. The saved mode is kept for diagnostics only. If
+        // the brake was engaged it re-engages on the next round anyway, since
+        // apply_size_brake runs in slot 0.
+        let _saved_mode = DbMode::parse(&mode_s);
+        mx.db_mode_cur = mx.params.db_mode;
+        mx.brake_on = brake[0] != "0";
+        mx.brake_mark_move = brake[1].parse().unwrap_or(0);
+        mx.brake_mark_size = brake[2].parse().unwrap_or(0);
+        mx.pool_scan_due = pool_scan_due;
+        mx.canary = canary;
+        mx.canary_failures = canary_failures;
+        mx.pool = pool;
+        mx.prof = prof;
+        for (i, m) in metas.into_iter().enumerate() {
+            mx.set_meta(i as u32, m);
+        }
+        // Stamps come from the freshly built arena; the checkpoint kept only
+        // entries whose pieces were all live, so every id here is linked.
+        mx.journal = journal_raw
+            .into_iter()
+            .map(|(b0, b1, f, after, misses)| UndoEntry {
+                before: [b0, b1],
+                dir: if f[0] != 0 { Dir::R } else { Dir::L },
+                pivot: f[1] as u32,
+                after: after.iter().map(|&id| (id, mx.arena.stamp(id))).collect(),
+                event: f[2],
+                origins: [f[3] as u32, f[4] as u32],
+                gens: [f[5] as u32, f[6] as u32],
+                litters: [f[7], f[8]],
+                litter_sizes: [f[9] as u16, f[10] as u16],
+                frames: [f[11], f[12]],
+                protected_until: [f[13], f[14]],
+                misses,
+            })
+            .collect();
+        mx.tabu = tabu;
+        Ok(mx)
+    }
+
+    /// Move-cadence snapshots: at each multiple of `snap_every_moves`, write
+    /// `<base>.mv<m>.mpmct1` + `.gens` + `.state`. The state goes through a
+    /// temp path + rename so an interrupted write never leaves a half-file
+    /// that looks resumable.
+    fn check_move_snap(&mut self) {
+        if self.params.snap_every_moves == 0
+            || self.params.snap_base.is_empty()
+            || self.moves_done == 0
+            || self.moves_done % self.params.snap_every_moves != 0
+        {
+            return;
+        }
+        let base = format!("{}.mv{}", self.params.snap_base, self.moves_done);
+        let gates = self.arena.to_vec();
+        if let Err(e) =
+            super::format::write_mpmct(&format!("{base}.mpmct1"), &gates, self.num_wires)
+        {
+            eprintln!("[fmix] snap circuit write failed: {e}");
+            return;
+        }
+        let mut generations = String::with_capacity(gates.len() * 4);
+        for generation in self.gens_in_order() {
+            generations.push_str(&format!("{generation}\n"));
+        }
+        if let Err(e) = std::fs::write(format!("{base}.gens"), generations) {
+            eprintln!("[fmix] snap gens write failed: {e}");
+        }
+        let tmp = format!("{base}.state.tmp");
+        match self.save_state(&tmp) {
+            Ok(()) => {
+                if let Err(e) = std::fs::rename(&tmp, format!("{base}.state")) {
+                    eprintln!("[fmix] snap state rename failed: {e}");
+                }
+            }
+            Err(e) => eprintln!("[fmix] snap state write failed: {e}"),
+        }
+        println!(
+            "[fmix] SNAP: mv={} size={} -> {base}.{{mpmct1,gens,state}}",
+            self.moves_done,
+            gates.len()
+        );
     }
 }
 
@@ -5029,8 +7184,9 @@ mod mix_tests {
                 dir: Dir::R,
                 frame: 0,
                 protected_until: 0,
+                litter: 0,
+                litter_size: 1,
                 dgen: 0,
-                miss: 0,
             },
         );
 
@@ -5876,6 +8032,27 @@ mod mix_tests {
         inert_geometry.nl_frame_packet_gates = 37;
         inert_geometry.nl_frame_shots = 999;
         inert_geometry.nl_frame_tenure = 7;
+        // Every layer-1/2 geometry/routing knob may vary freely while its
+        // admission controls remain disabled. None may consume move RNG.
+        inert_geometry.twist_neg_p = 0.93;
+        inert_geometry.twist_g57 = true;
+        inert_geometry.db_mode = DbMode::Mix;
+        inert_geometry.s_db = 19;
+        inert_geometry.s_db_comp = 23;
+        inert_geometry.p_convex = 0.81;
+        inert_geometry.p_convex_comp = 0.07;
+        inert_geometry.p_mingen = 0.42;
+        inert_geometry.p_mingen_comp = 0.12;
+        inert_geometry.mix_pay_random = true;
+        inert_geometry.curated = true;
+        inert_geometry.curated_exhaust = true;
+        inert_geometry.curated_in_comp = true;
+        inert_geometry.db_advance = true;
+        inert_geometry.prof_cadence_eff = 7.0;
+        inert_geometry.prof_deadband = 0.9;
+        inert_geometry.prof_dp_max = 0.7;
+        inert_geometry.prof_ewma = 0.01;
+        inert_geometry.prof_ki = 0.6;
         let mut a = Mixer::new(gates.clone(), 16, params);
         let mut b = Mixer::new(gates, 16, inert_geometry);
         a.run();
@@ -5932,6 +8109,109 @@ mod mix_tests {
     }
 
     #[test]
+    fn swap_family_twists_preserve_function_and_zero_q_is_pure_swap() {
+        let gates = random_mixed_circuit(0x51_57, 8, 80);
+        let mut mixer = Mixer::new(
+            gates,
+            8,
+            MixParams {
+                twist_neg_p: 0.0,
+                twist_min_len: 3,
+                hard_size_cap: 1_000,
+                report_every: u64::MAX,
+                seed: 91,
+                ..MixParams::default()
+            },
+        );
+        for _ in 0..12 {
+            mixer.twist_swap_family_move();
+        }
+        assert!(mixer.counters.twist_swaps > 0);
+        assert_eq!(mixer.counters.twist_negs, 0);
+        assert_eq!(mixer.counters.twist_cnots, 0);
+        assert!(mixer.counters.twist_relabels > 0);
+        mixer.global_check();
+    }
+
+    #[test]
+    fn g57_v2_slide_scan_finds_a_supported_attachment() {
+        let gates = vec![
+            XGate::x_gate(0),
+            XGate::x_gate(3),
+            XGate::from_g57([2, 0, 1]),
+        ];
+        let mixer = Mixer::new(gates, 4, MixParams::default());
+        let ids = mixer.arena.ids_in_order();
+        assert_eq!(
+            mixer.g57_slide_candidates(ids[0], Dir::R, 0, 1),
+            vec![ids[1]]
+        );
+    }
+
+    #[test]
+    fn g57_v2_joint_plans_preserve_function_and_report_seams() {
+        let gates = random_mixed_circuit(0x83ae_0d11, 8, 80);
+        let mut mixer = Mixer::new(
+            gates,
+            8,
+            MixParams {
+                twist_g57: true,
+                twist_min_len: 3,
+                hard_size_cap: 1_000,
+                local_verify: true,
+                report_every: u64::MAX,
+                seed: 83,
+                ..MixParams::default()
+            },
+        );
+        for _ in 0..8 {
+            mixer.twist_move_g57();
+        }
+        let applied = mixer.counters.twist_swaps;
+        assert!(applied > 0);
+        assert!(mixer.counters.tg_solves > 0);
+        assert_eq!(
+            mixer.counters.tg_net_hist.iter().sum::<u64>(),
+            applied * 2,
+            "each committed twist contributes two seam shapes"
+        );
+        assert!(mixer.counters.tg_slides <= applied * 2);
+        assert!(mixer.counters.tg_retries <= applied * (TG_RETRIES as u64 - 1));
+        mixer.global_check();
+    }
+
+    #[test]
+    fn profile_target_and_controller_complete_all_three_legs() {
+        let n = [0.02, 0.04, 0.06];
+        let r = [1.2, 1.0];
+        assert_eq!(prof_target(n, r, 100.0, 0.0), 100.0);
+        assert!((prof_target(n, r, 100.0, 0.02) - 120.0).abs() < 1e-9);
+        assert!((prof_target(n, r, 100.0, 0.04) - 120.0).abs() < 1e-9);
+        assert!((prof_target(n, r, 100.0, 0.06) - 100.0).abs() < 1e-9);
+
+        let gates = random_mixed_circuit(44, 8, 64);
+        let mut mixer = Mixer::new(
+            gates,
+            8,
+            MixParams {
+                moves: 1_000,
+                prof_n: n,
+                prof_r: r,
+                prof_cadence_eff: 0.01,
+                report_every: u64::MAX,
+                verify_every: 100,
+                seed: 4,
+                ..MixParams::default()
+            },
+        );
+        assert!(matches!(mixer.run(), MixStop::ProfileDone));
+        let profile = mixer.prof.as_ref().expect("profile state retained");
+        assert_eq!(profile.phase, 4);
+        assert!((0.0..=1.0).contains(&profile.pmix));
+        mixer.global_check();
+    }
+
+    #[test]
     fn generation_census_and_global_pass_retag_are_exact() {
         let gates = vec![
             XGate::conj(0, [(1, true)]).unwrap(),
@@ -5940,15 +8220,11 @@ mod mix_tests {
         ];
         let mut mx = Mixer::new(gates, 8, MixParams::default());
         assert_eq!(mx.gens_in_order(), vec![0, 0, 0]);
-        assert_eq!(mx.generation_misses_in_order(), vec![0, 0, 0]);
         assert_eq!(mx.generation_histogram(), BTreeMap::from([(0, 3)]));
         assert_eq!(
-            mx.gen_stats_for(1, 0, 6, 0),
+            mx.gen_stats_for(1),
             GenStats {
                 lag: 3,
-                cheap: 3,
-                hard: 0,
-                unreach: 0,
                 elig: 3,
                 wlag: 0,
                 min: 0,
@@ -5977,7 +8253,7 @@ mod mix_tests {
             (2, 2, 2, 2)
         );
         assert!(mx.generation_goal_met(target));
-        assert_eq!(mx.gen_stats_for(2, 0, 6, 0).g_circ, 2);
+        assert_eq!(mx.gen_stats_for(2).g_circ, 2);
     }
 
     #[test]
@@ -5999,7 +8275,8 @@ mod mix_tests {
         let params = MixParams {
             gen_target: 100,
             gen_stop_frac: 0.02,
-            db_ctrl_cap: 2,
+            // Old `db_ctrl_cap: 2` (width <= 2) becomes `w_pool: 3` (width < 3).
+            w_pool: 3,
             report_every: u64::MAX,
             ..MixParams::default()
         };
@@ -6037,18 +8314,17 @@ mod mix_tests {
         let params = MixParams {
             gen_target: 10,
             gen_stop_frac: 1.0,
-            gen_giveup: 1,
+            // With the miss/give-up tiers gone, an empty targetable
+            // population is built by width: w_pool = 1 makes every gate
+            // (width >= 2) pool-ineligible.
+            w_pool: 1,
             report_every: u64::MAX,
             ..MixParams::default()
         };
-        let mut mixer = Mixer::new(gates, 4, params);
-        for id in mixer.arena.ids_in_order() {
-            let meta = mixer.meta_of(id);
-            mixer.set_meta(id, Meta { miss: 1, ..meta });
-        }
+        let mixer = Mixer::new(gates, 4, params);
 
         let stats = mixer.gen_stats();
-        assert_eq!(stats.unreach, 2);
+        assert_eq!(stats.wlag, 2);
         assert_eq!(stats.targetable, 0);
         assert_eq!(
             stats.g_circ, stats.g_all,
@@ -6159,10 +8435,170 @@ mod mix_tests {
         assert_eq!(meta.frame, frame);
         assert_eq!(meta.protected_until, 10);
         assert_eq!(meta.dgen, 4, "median(1,3,7)+1");
-        assert_eq!(meta.miss, 0);
         assert_eq!(mx.counters.db_comp_hits, 1);
         assert_eq!(mx.counters.db_gates_removed, 2);
         mx.global_check();
+    }
+
+    /// The coexistence contract: a splice preserves the folded frame AND mints
+    /// one fresh litter for every product — opposite lifecycles in separate
+    /// fields, never overloaded into each other.
+    #[test]
+    fn litters_coexist_with_frames_and_the_ban_refuses_full_litters() {
+        let payload = XGate::from_g57([0, 1, 2]);
+        let tail = XGate::from_g57([3, 4, 5]);
+        let pad = XGate::conj(6, [(7, true)]).unwrap();
+        // pad·pad cancels, so the window is exactly [payload, tail].
+        let window = vec![pad.clone(), pad.clone(), payload.clone(), tail.clone()];
+        let mut mx = Mixer::new(window.clone(), 8, MixParams::default());
+        let input_count = 4u64;
+        let ids = mx.arena.ids_in_order();
+        let frame = g57_pair_frame(4, 0);
+        for &id in &ids {
+            let mut meta = mx.meta_of(id);
+            meta.frame = frame;
+            mx.set_meta(id, meta);
+        }
+        let input_litters: Vec<u64> = ids.iter().map(|&id| mx.meta_of(id).litter).collect();
+        assert_eq!(
+            input_litters,
+            vec![0, 1, 2, 3],
+            "inputs are singleton litters"
+        );
+
+        let replacement = vec![payload.clone(), tail.clone()];
+        assert!(mx.try_db_splice(&ids, Dir::R, &window, replacement, 1, DbMode::Compressing,));
+        let out = mx.arena.ids_in_order();
+        assert_eq!(out.len(), 2);
+        let m0 = mx.meta_of(out[0]);
+        let m1 = mx.meta_of(out[1]);
+        assert_eq!(m0.frame, frame, "frame preserved through the splice");
+        assert_eq!(m1.frame, frame);
+        assert_eq!(m0.litter, m1.litter, "one litter per splice");
+        assert!(
+            m0.litter >= input_count,
+            "the splice litter is fresh, not an input's"
+        );
+        assert_eq!(m0.litter_size, 2, "size fixed at creation");
+
+        // The census the ban reads: the products form exactly one complete
+        // litter, and any strict sub-window reads incomplete — descending past
+        // a banned rung is free.
+        assert_eq!(mx.litter_census(&out), (1, true));
+        assert_eq!(mx.litter_census(&out[..1]), (1, false));
+        mx.global_check();
+    }
+
+    #[test]
+    fn checkpoint_round_trip_preserves_chain_state() {
+        let gates = random_mixed_circuit(0xc4e0, 10, 120);
+        let params = MixParams {
+            moves: 400,
+            k_max: 5,
+            gen_target: 50,
+            p_mingen: 0.7,
+            canary_theta: 0.9,
+            canary_window: 8,
+            size_hi: 4000,
+            size_lo: 100,
+            prof_n: [2.0, 3.0, 4.0],
+            prof_r: [1.3, 1.0],
+            report_every: u64::MAX,
+            verify_every: u64::MAX,
+            seed: 77,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 10, params.clone());
+        mx.run();
+        // Decorate with state every subsystem owns: frames, protection,
+        // a part-filled canary ring, an armed brake, a live profile clock.
+        let ids = mx.arena.ids_in_order();
+        let mut meta = mx.meta_of(ids[0]);
+        meta.frame = g57_pair_frame(3, 1);
+        meta.protected_until = u64::MAX;
+        mx.set_meta(ids[0], meta);
+        mx.canary.push_back(true);
+        mx.canary.push_back(false);
+        mx.canary_failures = 1;
+        mx.brake_on = true;
+        mx.brake_mark_move = 123;
+        mx.brake_mark_size = 456;
+        mx.rebuild_pool();
+        mx.prof_init();
+
+        let dir = std::env::temp_dir().join(format!("fmix_ckpt_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p1 = dir.join("a.state");
+        let p1s = p1.to_str().unwrap().to_string();
+        mx.save_state(&p1s).unwrap();
+
+        let mut back = Mixer::resume_state(&p1s, params, None).unwrap();
+        assert_eq!(back.arena.to_vec(), mx.arena.to_vec(), "gates in order");
+        assert_eq!(back.original().to_vec(), mx.original().to_vec());
+        assert_eq!(back.moves_done, mx.moves_done);
+        assert_eq!(back.counters.moves, mx.counters.moves);
+        assert_eq!(back.next_event, mx.next_event);
+        assert_eq!(back.next_litter, mx.next_litter);
+        assert_eq!(back.pool_scan_due, mx.pool_scan_due);
+        assert_eq!(back.canary, mx.canary);
+        assert_eq!(back.canary_failures, mx.canary_failures);
+        assert!(back.brake_on);
+        assert_eq!(back.brake_mark_move, 123);
+        assert_eq!(back.brake_mark_size, 456);
+        assert_eq!(back.tabu, mx.tabu);
+        assert_eq!(back.counters.to_line(), mx.counters.to_line());
+        // Metadata: every field of every gate, including the two frame fields
+        // and litters.
+        let old_ids = mx.arena.ids_in_order();
+        let new_ids = back.arena.ids_in_order();
+        for (&o, &n) in old_ids.iter().zip(new_ids.iter()) {
+            assert_eq!(mx.meta_of(o), back.meta_of(n), "meta preserved");
+        }
+        // The pool survives (remapped): same gates by position.
+        let old_pos: HashMap<u32, usize> =
+            old_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        let new_pos: HashMap<u32, usize> =
+            new_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        let mut old_pool: Vec<usize> = mx.pool.iter().map(|id| old_pos[id]).collect();
+        let mut new_pool: Vec<usize> = back.pool.iter().map(|id| new_pos[id]).collect();
+        old_pool.sort_unstable();
+        new_pool.sort_unstable();
+        assert_eq!(old_pool, new_pool, "pool survives the renumbering");
+        // Profile clock continues rather than restarting at eff = 0.
+        let (a, b) = (mx.prof.as_ref().unwrap(), back.prof.as_ref().unwrap());
+        assert_eq!(a.phase, b.phase);
+        assert!((a.eff - b.eff).abs() < 1e-12);
+        assert!((a.pmix - b.pmix).abs() < 1e-12);
+        assert!((a.s_in - b.s_in).abs() < 1e-12);
+        back.global_check();
+
+        // A second save differs only in the two rng lines.
+        let p2 = dir.join("b.state");
+        let p2s = p2.to_str().unwrap().to_string();
+        back.save_state(&p2s).unwrap();
+        let t1 = std::fs::read_to_string(&p1s).unwrap();
+        let t2 = std::fs::read_to_string(&p2s).unwrap();
+        let differing: Vec<(&str, &str)> =
+            t1.lines().zip(t2.lines()).filter(|(x, y)| x != y).collect();
+        // rng lines redraw by design; db_mode is diagnostic-only and the
+        // resumed value comes from the CLI (params.db_mode), not the file.
+        assert!(
+            differing.len() <= 3,
+            "only rng and db_mode may differ: {differing:?}"
+        );
+        assert!(differing.iter().all(|(x, _)| x.starts_with("rng")
+            || x.starts_with("metrics_rng")
+            || x.starts_with("db_mode")));
+
+        // A v1 (origin-format) file refuses cleanly.
+        let p3 = dir.join("v1.state");
+        std::fs::write(&p3, "fmix-state 1\nwires 4\n").unwrap();
+        let err = match Mixer::resume_state(p3.to_str().unwrap(), MixParams::default(), None) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a v1 state file must refuse to load"),
+        };
+        assert!(err.contains("refusing to reinterpret"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -6240,7 +8676,7 @@ mod mix_tests {
     }
 
     #[test]
-    fn generation_laggard_tiers_and_dose_stop_are_live_without_a_db() {
+    fn generation_pool_and_dose_stop_are_live_without_a_db() {
         let gates = vec![
             XGate::conj(0, [(1, true)]).unwrap(),
             XGate::conj(2, [(3, true)]).unwrap(),
@@ -6250,8 +8686,6 @@ mod mix_tests {
             4,
             MixParams {
                 gen_target: 2,
-                gen_miss_budget: 1,
-                gen_giveup: 3,
                 gen_stop_frac: 1.0,
                 moves: 10,
                 report_every: 1,
@@ -6259,16 +8693,203 @@ mod mix_tests {
                 ..MixParams::default()
             },
         );
-        mx.rebuild_laggards();
-        assert_eq!(mx.lag_cheap.len(), 2);
-        assert!(mx.lag_hard.is_empty());
+        mx.rebuild_pool();
+        assert_eq!(mx.pool.len(), 2);
+        // A gate re-encoded past the target leaves the pool on rebuild.
         let first = mx.arena.ids_in_order()[0];
-        mx.bump_miss(first);
-        mx.rebuild_laggards();
-        assert_eq!(mx.lag_cheap.len(), 1);
-        assert_eq!(mx.lag_hard, vec![first]);
+        let meta = mx.meta_of(first);
+        mx.set_meta(first, Meta { dgen: 2, ..meta });
+        mx.rebuild_pool();
+        assert_eq!(mx.pool.len(), 1);
         assert!(matches!(mx.run(), MixStop::DoseReached));
         assert_eq!(mx.counters.moves, 1);
+    }
+
+    #[test]
+    fn pool_keeps_only_k_lowest_generations() {
+        let gates: Vec<XGate> = (0..6)
+            .map(|i| XGate::conj(2 * i, [(2 * i + 1, true)]).unwrap())
+            .collect();
+        let mut mx = Mixer::new(
+            gates,
+            12,
+            MixParams {
+                gen_target: 100,
+                pool_k: 3,
+                ..MixParams::default()
+            },
+        );
+        for (rank, id) in mx.arena.ids_in_order().into_iter().enumerate() {
+            let meta = mx.meta_of(id);
+            mx.set_meta(
+                id,
+                Meta {
+                    dgen: rank as u32,
+                    ..meta
+                },
+            );
+        }
+        mx.rebuild_pool();
+        assert_eq!(mx.pool.len(), 3);
+        let mut gens: Vec<u32> = mx.pool.iter().map(|&id| mx.meta_of(id).dgen).collect();
+        gens.sort_unstable();
+        assert_eq!(gens, vec![0, 1, 2], "exactly the k lowest generations");
+    }
+
+    #[test]
+    fn pick_seed_targets_pool_and_prunes_stale() {
+        let gates = vec![
+            XGate::conj(0, [(1, true)]).unwrap(),
+            XGate::conj(2, [(3, true)]).unwrap(),
+        ];
+        let mut mx = Mixer::new(
+            gates,
+            4,
+            MixParams {
+                gen_target: 5,
+                p_mingen: 1.0,
+                ..MixParams::default()
+            },
+        );
+        mx.rebuild_pool();
+        assert_eq!(mx.pool.len(), 2);
+        // Unlink one pooled gate; the draw must prune it rather than seed it.
+        let stale = mx.pool[0];
+        mx.arena.unlink(stale);
+        for _ in 0..16 {
+            if let Some(seed) = mx.pick_seed() {
+                assert_ne!(seed, stale, "stale entries must be pruned, not drawn");
+                assert!(mx.seed_from_pool, "p_mingen=1.0 must draw from the pool");
+            }
+        }
+        assert!(!mx.pool.contains(&stale), "stale entry pruned lazily");
+    }
+
+    /// Guards Decision D forever: protected (framed) and wide gates never
+    /// enter the pool, so pool seeding cannot target the G57 pair census.
+    #[test]
+    fn pool_excludes_protected_and_wide_gates() {
+        let narrow = XGate::conj(0, [(1, true)]).unwrap();
+        let protected = XGate::conj(2, [(3, true)]).unwrap();
+        let wide = XGate::conj(4, [(5, true), (6, false), (7, true)]).unwrap();
+        let mut mx = Mixer::new(
+            vec![narrow, protected, wide],
+            10,
+            MixParams {
+                gen_target: 100,
+                w_pool: 3,
+                ..MixParams::default()
+            },
+        );
+        let ids = mx.arena.ids_in_order();
+        let meta = mx.meta_of(ids[1]);
+        mx.set_meta(
+            ids[1],
+            Meta {
+                protected_until: u64::MAX,
+                ..meta
+            },
+        );
+        mx.rebuild_pool();
+        assert_eq!(mx.pool, vec![ids[0]], "only the narrow unprotected gate");
+    }
+
+    #[test]
+    fn canary_fires_when_the_pool_is_unspellable() {
+        let gates: Vec<XGate> = (0..4)
+            .map(|i| XGate::conj(2 * i, [(2 * i + 1, true)]).unwrap())
+            .collect();
+        let mut mx = Mixer::new_with_optional_db(
+            gates,
+            8,
+            MixParams {
+                gen_target: 100,
+                p_mingen: 1.0,
+                canary_theta: 0.5,
+                canary_window: 4,
+                db_min_window: 2,
+                db_prefixes: true,
+                report_every: u64::MAX,
+                ..MixParams::default()
+            },
+            Some(FrozenDb::empty()),
+        );
+        mx.rebuild_pool();
+        assert!(!mx.pool.is_empty());
+        // The empty store misses every rung, so each pool-seeded Mix attempt
+        // is a canary failure.
+        for _ in 0..4 {
+            assert!(!mx.db_attempt(DbMode::Mix));
+        }
+        assert_eq!(mx.canary.len(), 4, "four qualifying rounds recorded");
+        assert_eq!(mx.canary_failures, 4);
+        assert!(mx.canary_fired());
+        // The sleep contract: Compressing rounds do not qualify.
+        let ring_before = mx.canary.len();
+        mx.db_attempt(DbMode::Compressing);
+        assert_eq!(mx.canary.len(), ring_before);
+        // Theta is the master switch.
+        mx.params.canary_theta = 0.0;
+        assert!(!mx.canary_fired());
+        mx.global_check();
+    }
+
+    #[test]
+    fn size_brake_engages_and_releases() {
+        let gates: Vec<XGate> = (0..6)
+            .map(|i| XGate::conj(2 * i, [(2 * i + 1, true)]).unwrap())
+            .collect();
+        let mut mx = Mixer::new(
+            gates,
+            12,
+            MixParams {
+                size_hi: 4,
+                size_lo: 2,
+                // The release condition is strict (`rate < eps`), so eps must
+                // be positive for a zero shed rate to release.
+                comp_release_eps: 0.001,
+                comp_release_window: 100,
+                db_mode: DbMode::SizeAgnostic,
+                ..MixParams::default()
+            },
+        );
+        assert_eq!(mx.db_mode_cur, DbMode::SizeAgnostic);
+
+        // Engage: 6 gates >= size_hi = 4.
+        mx.apply_size_brake();
+        assert!(mx.brake_on);
+        assert_eq!(mx.db_mode_cur, DbMode::Compressing);
+        assert_eq!(mx.counters.brake_engagements, 1);
+
+        // The 3c trap, pinned forever: an off overlay must NOT clobber the
+        // brake's steer.
+        mx.params.p_mix = -1.0;
+        mx.apply_mode_overlay();
+        assert_eq!(mx.db_mode_cur, DbMode::Compressing);
+
+        // Productivity release: a full window with zero shed lets go.
+        mx.moves_done += 100;
+        mx.apply_size_brake();
+        assert!(!mx.brake_on, "zero shed rate must release");
+        assert_eq!(mx.db_mode_cur, DbMode::SizeAgnostic);
+
+        // Re-engage, then hysteresis release at size_lo.
+        mx.apply_size_brake();
+        assert!(mx.brake_on);
+        let ids = mx.arena.ids_in_order();
+        for &id in &ids[2..] {
+            mx.arena.unlink(id);
+        }
+        mx.apply_size_brake();
+        assert!(!mx.brake_on, "size_lo hysteresis must release");
+        assert_eq!(mx.db_mode_cur, DbMode::SizeAgnostic);
+
+        // size_hi == 0 is the off switch.
+        mx.params.size_hi = 0;
+        let mode_before = mx.db_mode_cur;
+        mx.apply_size_brake();
+        assert_eq!(mx.db_mode_cur, mode_before);
+        assert!(!mx.brake_on);
     }
 
     #[test]
@@ -6288,7 +8909,9 @@ mod mix_tests {
         inert_db.db_min_window = 7;
         inert_db.db_max_window = 31;
         inert_db.db_sample = DbSample::Mixed;
-        inert_db.db_ctrl_cap = 3;
+        inert_db.w_window = 4;
+        inert_db.w_pool = 3;
+        inert_db.pool_k = 7;
         inert_db.db_convex_p = 0.11;
         inert_db.db_verify = false;
         inert_db.db_dry_run = true;
@@ -6296,10 +8919,7 @@ mod mix_tests {
         inert_db.db_degree_probes = 17;
         inert_db.db_max_span = 13;
         inert_db.db_prefixes = true;
-        inert_db.gen_bias = 0.13;
         inert_db.gen_rescan = 3;
-        inert_db.gen_miss_budget = 2;
-        inert_db.gen_giveup = 8;
 
         let mut baseline = Mixer::new(gates.clone(), 12, base);
         let mut instrumented = Mixer::new(gates, 12, inert_db);

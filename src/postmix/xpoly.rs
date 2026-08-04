@@ -68,6 +68,11 @@ pub enum XPolyError {
         limit: usize,
     },
     CanonicalizationFailed,
+    /// Exact ANF degree exceeds the maximum represented by the store.
+    DegreeExceeded {
+        degree: usize,
+        limit: usize,
+    },
 }
 
 /// Canonical polynomials and the maps needed to return a frozen-store friend
@@ -281,6 +286,31 @@ pub fn canonicalize_xgates_single(
     reversed: bool,
     budget: XPolyBudget,
 ) -> Result<CanonicalXPolys, XPolyError> {
+    canonicalize_xgates_single_capped(gates, reversed, budget, 0)
+}
+
+/// Exact maximum ANF degree over a polynomial set.
+pub fn polys_max_degree(polys: &[Polynomial]) -> usize {
+    polys
+        .iter()
+        .flat_map(|polynomial| {
+            polynomial
+                .iter()
+                .map(|monomial| monomial.count_ones() as usize)
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Canonicalize while rejecting over-degree functions after polynomial
+/// composition but before the much more expensive canonical wire ordering.
+/// A zero cap preserves the historical behavior.
+pub fn canonicalize_xgates_single_capped(
+    gates: &[XGate],
+    reversed: bool,
+    budget: XPolyBudget,
+    max_degree: usize,
+) -> Result<CanonicalXPolys, XPolyError> {
     let used_wires = xgate_used_wires(gates);
     if used_wires.len() > 64 {
         return Err(XPolyError::TooManyWires {
@@ -300,6 +330,15 @@ pub fn canonicalize_xgates_single(
         dense.reverse();
     }
     let polys = xgates_to_polynomial(&dense, used_wires.len(), budget)?;
+    if max_degree > 0 {
+        let degree = polys_max_degree(&polys);
+        if degree > max_degree {
+            return Err(XPolyError::DegreeExceeded {
+                degree,
+                limit: max_degree,
+            });
+        }
+    }
     let (polys, order) =
         canonicalize_polys_4(polys, true).map_err(|_| XPolyError::CanonicalizationFailed)?;
     Ok(CanonicalXPolys {
@@ -390,6 +429,21 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn exact_degree_cap_rejects_high_degree_and_keeps_low_degree() {
+        let high = vec![XGate::conj(0, [(1, true), (2, true), (3, true), (4, true)]).unwrap()];
+        assert!(matches!(
+            canonicalize_xgates_single_capped(&high, false, XPolyBudget::default(), 3),
+            Err(XPolyError::DegreeExceeded {
+                degree: 4,
+                limit: 3
+            })
+        ));
+
+        let low = vec![XGate::from_g57([0, 1, 2])];
+        assert!(canonicalize_xgates_single_capped(&low, false, XPolyBudget::default(), 2).is_ok());
     }
 
     #[test]

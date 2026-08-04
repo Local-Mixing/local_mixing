@@ -165,7 +165,16 @@ fn load_tables(path: &str) -> Tables {
     Tables { header, gates }
 }
 
-fn decode_value(t: &Tables, r: &mut BitReader, out: &mut Vec<u8>) {
+/// Maximum number of candidates materialized by one curated lookup.  Every
+/// circuit stored under a key is equivalent, so bounding redundant choice is
+/// safe and avoids decoding multi-megabyte legacy values.
+const CURATED_CAP: usize = 256;
+
+/// Decode a stored value into `out` as a chain of length-prefixed circuits.
+/// `max_circuits` stops only at circuit boundaries; `usize::MAX` preserves the
+/// original unbounded behavior used by the regular store.
+fn decode_value(t: &Tables, r: &mut BitReader, out: &mut Vec<u8>, max_circuits: usize) {
+    let mut circuits = 0usize;
     loop {
         let hs = t.header.decode(r);
         let (g, w, chain);
@@ -173,8 +182,20 @@ fn decode_value(t: &Tables, r: &mut BitReader, out: &mut Vec<u8>) {
             let ge = r.get(8) as u32;
             if ge == 121 {
                 let len = r.get(16) as usize;
-                for _ in 0..len {
-                    out.push(r.get(8) as u8);
+                let mut read = 0usize;
+                while read < len {
+                    let l = r.get(8) as u8;
+                    read += 1;
+                    out.push(l);
+                    let take = (l as usize).min(len - read);
+                    for _ in 0..take {
+                        out.push(r.get(8) as u8);
+                        read += 1;
+                    }
+                    circuits += 1;
+                    if circuits >= max_circuits {
+                        return;
+                    }
                 }
                 return;
             }
@@ -206,6 +227,10 @@ fn decode_value(t: &Tables, r: &mut BitReader, out: &mut Vec<u8>) {
                 out.push(((sym >> 5) & 0x1f) as u8);
                 out.push((sym & 0x1f) as u8);
             }
+        }
+        circuits += 1;
+        if circuits >= max_circuits {
+            return;
         }
         if chain == 0 {
             return;
@@ -247,6 +272,34 @@ struct Frozen {
     shards: Vec<FrozenShard>,
     tables: Tables,
     filters: Option<Vec<BinaryFuse8>>,
+    swap_ctrls: bool,
+}
+
+/// Per-store convention for decoded values.  Some legacy curated databases
+/// were built with the two controls in each gate triple swapped.
+fn value_convention(var: &str) -> (&'static str, bool) {
+    match std::env::var(var).as_deref() {
+        Err(_) | Ok("native") => ("native", false),
+        Ok("legacy-swapped-controls") => ("legacy-swapped-controls", true),
+        Ok(other) => {
+            panic!("{var}={other}: unknown value convention (native | legacy-swapped-controls)")
+        }
+    }
+}
+
+fn swap_value_controls(value: &mut [u8]) {
+    let mut pos = 0usize;
+    while pos < value.len() {
+        let len = value[pos] as usize;
+        pos += 1;
+        debug_assert_eq!(len % 3, 0, "frozen: value chunk not gate-aligned");
+        let end = (pos + len).min(value.len());
+        while pos + 3 <= end {
+            value.swap(pos + 1, pos + 2);
+            pos += 3;
+        }
+        pos = end;
+    }
 }
 
 #[derive(bincode2::Decode)]
@@ -258,7 +311,7 @@ struct FiltersFile {
 }
 
 impl Frozen {
-    fn open(dir: &str) -> Frozen {
+    fn open(dir: &str, swap_ctrls: bool) -> Frozen {
         let tables = load_tables(&format!("{dir}/tables.bin"));
         let head_len = 24usize + (BUCKETS + 1) * 5;
         let mut shards = Vec::with_capacity(256);
@@ -312,12 +365,20 @@ impl Frozen {
             shards,
             tables,
             filters,
+            swap_ctrls,
         }
     }
 
     /// Exact point lookup; returns legacy value bytes, byte-identical to the
     /// source replacement value for this key.
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.get_capped(key, usize::MAX)
+    }
+
+    /// Like `get`, but materializes at most `cap` circuits of the target
+    /// value.  Predecessors in the bucket are decoded fully to advance the
+    /// bitstream.
+    fn get_capped(&self, key: &[u8], cap: usize) -> Option<Vec<u8>> {
         debug_assert_eq!(key.len(), 16);
         let (shard, bucket, tail) = split_key(key);
         if let Some(filters) = &self.filters {
@@ -355,8 +416,12 @@ impl Frozen {
         let mut out = Vec::new();
         for i in 0..=idx {
             out.clear();
-            decode_value(&self.tables, &mut r, &mut out);
+            let max_circuits = if i == idx { cap } else { usize::MAX };
+            decode_value(&self.tables, &mut r, &mut out, max_circuits);
             if i == idx {
+                if self.swap_ctrls {
+                    swap_value_controls(&mut out);
+                }
                 return Some(out);
             }
         }
@@ -369,16 +434,31 @@ impl Frozen {
 /// The regular store is mandatory. The curated store is optional so commands
 /// that only compress against the regular table do not need to open it.
 pub struct FrozenDb {
-    regular: Frozen,
+    regular: Option<Frozen>,
     curated: Option<Frozen>,
 }
 
 impl FrozenDb {
     /// Open stores from explicit directories.
     pub fn open(regular_dir: &str, curated_dir: Option<&str>) -> Self {
-        let regular = Self::open_store("regular", regular_dir);
-        let curated = curated_dir.map(|dir| Self::open_store("curated", dir));
+        let (regular_name, regular_swap) = value_convention("FROZEN_REGULAR_VALUE_CONVENTION");
+        let (curated_name, curated_swap) = value_convention("FROZEN_CURATED_VALUE_CONVENTION");
+        let regular = Some(Self::open_store("regular", regular_dir, regular_swap));
+        let curated = curated_dir.map(|dir| Self::open_store("curated", dir, curated_swap));
+        eprintln!(
+            "[frozen] value conventions: regular={regular_name}, curated={}",
+            if curated.is_some() { curated_name } else { "-" }
+        );
         Self { regular, curated }
+    }
+
+    /// A store handle whose lookups all miss. Useful for callers that retain a
+    /// DB parameter while deliberately running a store-free mode.
+    pub fn empty() -> Self {
+        Self {
+            regular: None,
+            curated: None,
+        }
     }
 
     /// Open stores from `FROZEN_DB_DIR` and optional `FROZEN_CURATED_DIR`.
@@ -390,9 +470,9 @@ impl FrozenDb {
         Self::open(&regular, curated.as_deref())
     }
 
-    fn open_store(label: &str, dir: &str) -> Frozen {
+    fn open_store(label: &str, dir: &str, swap_ctrls: bool) -> Frozen {
         let t0 = std::time::Instant::now();
-        let store = Frozen::open(dir);
+        let store = Frozen::open(dir, swap_ctrls);
         eprintln!(
             "[frozen] {label}={dir} opened in {:.1}s (filter {})",
             t0.elapsed().as_secs_f64(),
@@ -403,12 +483,30 @@ impl FrozenDb {
 
     #[inline]
     pub fn get_regular(&self, key: &[u8; 16]) -> Option<Vec<u8>> {
-        self.regular.get(key)
+        self.regular.as_ref()?.get(key)
     }
 
     #[inline]
     pub fn get_curated(&self, key: &[u8; 16]) -> Option<Vec<u8>> {
-        self.curated.as_ref()?.get(key)
+        let value = self.curated.as_ref()?.get_capped(key, CURATED_CAP)?;
+        let mut candidates = 0usize;
+        let mut pos = 0usize;
+        while pos < value.len() {
+            candidates += 1;
+            pos += 1 + value[pos] as usize;
+        }
+        if candidates > 20 || value.len() > 512 {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                eprintln!(
+                    "[frozen] WARNING: curated value with {candidates} candidates / {} bytes \
+                     exceeds the bounded-DB contract (<=20 / <=512); check the installed DB",
+                    value.len()
+                );
+            }
+        }
+        Some(value)
     }
 
     pub fn has_curated(&self) -> bool {
@@ -438,5 +536,26 @@ mod tests {
     fn runtime_handle_is_thread_shareable() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<FrozenDb>();
+    }
+
+    #[test]
+    fn swap_value_controls_swaps_per_gate_within_chunks() {
+        let mut value = vec![6, 10, 1, 2, 20, 3, 4, 3, 30, 5, 6];
+        swap_value_controls(&mut value);
+        assert_eq!(value, vec![6, 10, 2, 1, 20, 4, 3, 3, 30, 6, 5]);
+    }
+
+    #[test]
+    fn bounded_raw_decode_stops_on_a_circuit_boundary() {
+        let tables = Tables {
+            header: rebuild_canonical(vec![(ESC, 1)]),
+            gates: Vec::new(),
+        };
+        // Raw marker, eight bytes, then two one-gate circuit chunks.
+        let encoded = [121, 8, 0, 3, 10, 1, 2, 3, 20, 3, 4];
+        let mut reader = BitReader::new(&encoded);
+        let mut output = Vec::new();
+        decode_value(&tables, &mut reader, &mut output, 1);
+        assert_eq!(output, [3, 10, 1, 2]);
     }
 }

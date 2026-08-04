@@ -22,6 +22,50 @@ pub static CANON4_RULE_L_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CANON4_RULE_L_CALLS: AtomicU64 = AtomicU64::new(0);
 pub static CANON4_RULE_L_BRANCHES: AtomicU64 = AtomicU64::new(0);
 
+/// Canonicalization-for-lookup calls skipped because a window touches more
+/// than 64 distinct wires. `Monomial` is a `u64`, so such a window cannot be
+/// represented without aliasing variables and potentially producing a false
+/// database hit.
+pub static OVERSIZED_CANON_SKIPS: AtomicU64 = AtomicU64::new(0);
+
+/// Windows skipped while constructing polynomials because
+/// `CANON_MONOMIAL_CAP` was exceeded.
+pub static CANON_CAP_SKIPS: AtomicU64 = AtomicU64::new(0);
+
+/// Windows skipped because Rule-L backtracking exceeded
+/// `CANON_RULE_L_BRANCH_CAP`.
+pub static CANON_RULE_L_SKIPS: AtomicU64 = AtomicU64::new(0);
+
+/// Optional deterministic bound on the total Rule-L candidate budget across
+/// one complete recursive canonicalization tree. Unset means unbounded.
+pub fn canon_rule_l_branch_cap() -> Option<u64> {
+    static CAP: OnceLock<Option<u64>> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("CANON_RULE_L_BRANCH_CAP")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|&cap| cap > 0)
+    })
+}
+
+thread_local! {
+    // Reset at each canonicalize_polys_4 entry, then shared by every
+    // recursive canon4_run call in that top-level canonicalization.
+    static RULE_L_BRANCHES_USED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Optional deterministic bound on the number of monomials retained per wire
+/// while constructing a lookup window. Unset means unbounded.
+pub fn canon_monomial_cap() -> Option<usize> {
+    static CAP: OnceLock<Option<usize>> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("CANON_MONOMIAL_CAP")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|&cap| cap > 0)
+    })
+}
+
 fn bench_canon_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var("BENCH_CANON").is_ok())
@@ -785,6 +829,40 @@ impl CircuitSeq {
         polys
     }
 
+    /// Like `to_polynomial`, but returns `None` when polynomial growth exceeds
+    /// `cap`. The early product guard avoids allocating an intermediate AND
+    /// whose raw cross product is already far beyond the useful limit.
+    pub fn to_polynomial_capped(
+        &self,
+        n: usize,
+        start: usize,
+        end: usize,
+        cap: usize,
+    ) -> Option<Vec<Polynomial>> {
+        let gates = &self.gates[start..end];
+        let mut polys: Vec<Polynomial> = (0..n).map(|i| vec![1u64 << i]).collect();
+
+        for &[a, b, c] in gates {
+            if polys[b as usize]
+                .len()
+                .saturating_mul(polys[c as usize].len())
+                > cap.saturating_mul(16)
+            {
+                return None;
+            }
+
+            // Keep the executor's g57 convention: a += NOT(b)*c + 1.
+            let term = poly_and_not(&polys[c as usize], &polys[b as usize]);
+            poly_xor_assign(&mut polys[a as usize], term);
+            toggle_monomial(&mut polys[a as usize], 0u64);
+            if polys[a as usize].len() > cap {
+                return None;
+            }
+        }
+
+        Some(polys)
+    }
+
     // Returns (canonical_polys, canonical_circuit, reversed)
     // where reversed=true means the reversed circuit produced the canonical form.
     pub fn canonicalize_polys(
@@ -856,6 +934,13 @@ impl CircuitSeq {
         reversed: bool,
     ) -> (Vec<Polynomial>, Permutation, Vec<u16>) {
         let used = self.used_wires();
+        // A u64 monomial cannot distinguish x_64 from lower variables. Treat
+        // oversized lookup windows as clean misses rather than constructing an
+        // overflow-aliased key.
+        if used.len() > 64 {
+            OVERSIZED_CANON_SKIPS.fetch_add(1, Ordering::Relaxed);
+            return (Vec::new(), Permutation { data: Vec::new() }, used);
+        }
         let wire_map = dense_wire_map(&used);
         let mut c = CircuitSeq {
             gates: self
@@ -903,7 +988,16 @@ impl CircuitSeq {
         }
 
         let n = c.max_wire() as usize + 1;
-        let polys = c.to_polynomial(n, 0, c.gates.len());
+        let polys = match canon_monomial_cap() {
+            Some(cap) => match c.to_polynomial_capped(n, 0, c.gates.len(), cap) {
+                Some(polys) => polys,
+                None => {
+                    CANON_CAP_SKIPS.fetch_add(1, Ordering::Relaxed);
+                    return (Vec::new(), Permutation { data: Vec::new() }, used);
+                }
+            },
+            None => c.to_polynomial(n, 0, c.gates.len()),
+        };
 
         let bench_polys = if bench_canon_enabled() {
             Some(polys.clone())
@@ -912,7 +1006,13 @@ impl CircuitSeq {
         };
 
         let t4 = Instant::now();
-        let canon = canonicalize_polys_4(polys, true).unwrap();
+        let canon = match canonicalize_polys_4(polys, true) {
+            Ok(canon) => canon,
+            Err(()) => {
+                CANON_RULE_L_SKIPS.fetch_add(1, Ordering::Relaxed);
+                return (Vec::new(), Permutation { data: Vec::new() }, used);
+            }
+        };
         let canon_elapsed = t4.elapsed();
         CANON4_CORE_TIME.fetch_add(canon_elapsed.as_nanos() as u64, Ordering::Relaxed);
         if compression_trace_enabled()
@@ -935,6 +1035,8 @@ impl CircuitSeq {
             CANON_BENCH_CALLS.fetch_add(1, Ordering::Relaxed);
         }
 
+        // All cap exits return above, so the exact cache can contain only
+        // complete, valid canonical keys—never a clean-miss sentinel.
         if let (Some(cache), Some(key)) = (cache, cache_key) {
             let entry_bytes = (96
                 + key.len() * 2
@@ -969,6 +1071,7 @@ impl CircuitSeq {
     ) -> (Vec<Polynomial>, Permutation, Vec<u16>) {
         let used = self.used_wires();
         if used.len() > 64 {
+            OVERSIZED_CANON_SKIPS.fetch_add(1, Ordering::Relaxed);
             return (Vec::new(), Permutation { data: Vec::new() }, used);
         }
         let wire_map = dense_wire_map(&used);
@@ -987,7 +1090,16 @@ impl CircuitSeq {
         };
         c.canonicalize();
         let n = c.max_wire() as usize + 1;
-        let mut polys = c.to_polynomial(n, 0, c.gates.len());
+        let mut polys = match canon_monomial_cap() {
+            Some(cap) => match c.to_polynomial_capped(n, 0, c.gates.len(), cap) {
+                Some(polys) => polys,
+                None => {
+                    CANON_CAP_SKIPS.fetch_add(1, Ordering::Relaxed);
+                    return (Vec::new(), Permutation { data: Vec::new() }, used);
+                }
+            },
+            None => c.to_polynomial(n, 0, c.gates.len()),
+        };
         for &w in negated_inputs {
             let mapped = match wire_map.get(w as usize) {
                 Some(&m) if m != u16::MAX => m as usize,
@@ -1001,7 +1113,13 @@ impl CircuitSeq {
             }
         }
 
-        let canon = canonicalize_polys_4(polys, true).unwrap();
+        let canon = match canonicalize_polys_4(polys, true) {
+            Ok(canon) => canon,
+            Err(()) => {
+                CANON_RULE_L_SKIPS.fetch_add(1, Ordering::Relaxed);
+                return (Vec::new(), Permutation { data: Vec::new() }, used);
+            }
+        };
         (canon.0, canon.1, used)
     }
 }
@@ -2656,6 +2774,19 @@ fn canon4_run(
                 return Err(());
             }
             let candidates: Vec<usize> = (0..n).filter(|&v| vr[v] == tr).collect();
+            // Charge the full tied-group candidate budget at every recursive
+            // node. The thread-local accumulator is reset once per top-level
+            // canonicalization, so the cap covers the entire Rule-L tree.
+            if let Some(cap) = canon_rule_l_branch_cap() {
+                let used = RULE_L_BRANCHES_USED.with(|branches| {
+                    let used = branches.get().saturating_add(candidates.len() as u64);
+                    branches.set(used);
+                    used
+                });
+                if used > cap {
+                    return Err(());
+                }
+            }
             let rule_l_start = Instant::now();
             CANON4_RULE_L_CALLS.fetch_add(1, Ordering::Relaxed);
             CANON4_RULE_L_BRANCHES.fetch_add(candidates.len() as u64, Ordering::Relaxed);
@@ -2757,6 +2888,11 @@ pub fn canonicalize_polys_4(
     let n = polynomials.len();
     if n == 0 {
         return Ok((vec![], Permutation { data: vec![] }));
+    }
+    // Each direction gets an independent budget, while every recursive
+    // canon4_run invocation in this call shares the same accumulator.
+    if canon_rule_l_branch_cap().is_some() {
+        RULE_L_BRANCHES_USED.with(|branches| branches.set(0));
     }
     for poly in &mut polynomials {
         normalize_polynomial(poly);
@@ -3305,6 +3441,45 @@ mod tests {
                 old_hashset_style_to_polynomial(&circuit, n)
             );
         }
+    }
+
+    #[test]
+    fn to_polynomial_capped_matches_unbounded_and_bails_cleanly() {
+        let circuit = CircuitSeq {
+            gates: vec![[0, 1, 2]],
+        };
+        let expected = circuit.to_polynomial(3, 0, circuit.gates.len());
+
+        assert_eq!(
+            circuit.to_polynomial_capped(3, 0, circuit.gates.len(), 4),
+            Some(expected)
+        );
+        assert_eq!(
+            circuit.to_polynomial_capped(3, 0, circuit.gates.len(), 3),
+            None
+        );
+    }
+
+    #[test]
+    fn canonicalize_skips_window_over_64_distinct_wires() {
+        // 22 disjoint triples touch 66 distinct wires. Building u64
+        // monomials for this window would alias variables above bit 63.
+        let gates: Vec<[u16; 3]> = (0..22u16)
+            .map(|gate| [3 * gate, 3 * gate + 1, 3 * gate + 2])
+            .collect();
+        let circuit = CircuitSeq { gates };
+        assert_eq!(circuit.used_wires().len(), 66);
+
+        let skips_before = OVERSIZED_CANON_SKIPS.load(Ordering::Relaxed);
+        assert!(circuit.canonicalize_polys_single(false).0.is_empty());
+        assert!(circuit.canonicalize_polys_single(true).0.is_empty());
+        assert!(circuit.canonicalize_polys_single_neg(&[]).0.is_empty());
+        assert!(OVERSIZED_CANON_SKIPS.load(Ordering::Relaxed) >= skips_before.saturating_add(3));
+
+        let small = CircuitSeq {
+            gates: vec![[0, 1, 2], [1, 2, 0]],
+        };
+        assert!(!small.canonicalize_polys_single(false).0.is_empty());
     }
 
     fn eval_poly(poly: &Polynomial, input: usize) -> usize {

@@ -19,6 +19,7 @@ pub mod rules;
 pub mod samf;
 pub mod source;
 pub mod stats;
+pub mod swap_words;
 pub mod xgate;
 pub mod xpoly;
 

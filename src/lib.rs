@@ -1,6 +1,7 @@
 pub mod bench_support;
 pub mod circuit;
 pub mod postmix;
+pub mod r_ssg;
 pub mod rainbow;
 #[cfg(feature = "legacy-db-tools")]
 pub mod rainbow_table;
