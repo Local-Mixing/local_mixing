@@ -1565,6 +1565,23 @@ impl MixCounters {
 
 /// Version stamp for the resume file. The parameter set has changed repeatedly,
 /// and silently reinterpreting fields would be worse than refusing to load.
+/// A parsed per-gate ancestry sidecar (see `write_anc_sidecar`): the ancestry
+/// universe plus one ancestor set per gate, in circuit order. This is the
+/// cross-RUN transport format — unlike the state file, which continues the
+/// same run, a sidecar lets a NEW run inherit ancestor lists via --anc-in, so
+/// a phase boundary stops resetting the ancestry clock.
+pub struct AncSidecar {
+    pub sampled: bool,
+    /// Universe size: the ORIGINAL input-gate count the set bits index (exact
+    /// mode), kept for span normalisation in sampled mode too.
+    pub m: usize,
+    pub words: usize,
+    /// Sampled mode: the original-input index each bit stands for (sorted).
+    pub tracers: Vec<u32>,
+    /// One set per gate, `words` u64s each.
+    pub sets: Vec<Vec<u64>>,
+}
+
 pub const STATE_VERSION: u32 = 1;
 
 impl Mixer {
@@ -1704,6 +1721,20 @@ impl Mixer {
             let _ = write!(o, "{l}");
             for w in bits {
                 let _ = write!(o, " {w}");
+            }
+            o.push('\n');
+        }
+        // Optional trailing section (2026-08-03): the sampled tracer list,
+        // serialized explicitly. An IMPORTED tracer set (--anc-in) is not a
+        // function of (anc_m, K, anc_sample_seed), so the regeneration the
+        // resume path used to rely on would silently remap the mask bits.
+        // Old states lack the section (the reader falls back to
+        // regeneration) and old binaries never read this far, so the version
+        // deliberately stays 1.
+        if self.anc_sampled {
+            let _ = write!(o, "anctracers {}", self.anc_tracers.len());
+            for t in &self.anc_tracers {
+                let _ = write!(o, " {t}");
             }
             o.push('\n');
         }
@@ -1866,6 +1897,22 @@ impl Mixer {
             let key: u64 = it.next().and_then(|x| x.parse().ok()).ok_or_else(|| bad("anc key"))?;
             anc.insert(key, it.filter_map(|x| x.parse().ok()).collect());
         }
+        // Optional trailing section: explicitly serialized tracers (states
+        // written since 2026-08-03). Absent in older states, which regenerate
+        // below instead.
+        let stored_tracers: Option<Vec<u32>> = match lines.next() {
+            Some(l) if l.starts_with("anctracers ") => {
+                let mut it = l["anctracers ".len()..].split_whitespace();
+                let k: usize =
+                    it.next().and_then(|x| x.parse().ok()).ok_or_else(|| bad("anctracers count"))?;
+                let v: Vec<u32> = it.filter_map(|x| x.parse().ok()).collect();
+                if v.len() != k {
+                    return Err(bad("anctracers list length mismatch"));
+                }
+                Some(v)
+            }
+            _ => None,
+        };
 
         // Build the mixer on the SAME id assignment the checkpoint renumbered
         // to: Arena::from_gates hands out 0..n-1 in order, which is what
@@ -1917,13 +1964,35 @@ impl Mixer {
         mx.anc = anc;
         mx.anc_words = anc_hdr[0].parse().unwrap_or(0);
         mx.anc_m = anc_hdr[1].parse().unwrap_or(0);
-        // The tracer set is NOT serialised -- it is a pure function of
-        // (anc_m, K, anc_sample_seed), all of which survive a resume, so it
-        // regenerates identically without touching the state format. The
-        // assertion catches a resume that changed K (or the seed, when that
-        // changes K's rounding): the stored masks would otherwise be read
-        // against a different tracer-to-input mapping, silently.
-        if anc_samples_wanted > 0 && mx.anc_m > 0 {
+        // Tracer restoration. States since 2026-08-03 carry the list
+        // explicitly (required for --anc-in imports, whose tracers are not a
+        // function of anything this run knows); older states regenerate it
+        // from (anc_m, K, anc_sample_seed) exactly as before. The assertions
+        // catch a resume that changed K (or the seed, when that changes K's
+        // rounding): the stored masks index the ORIGINAL tracer set and
+        // cannot be reinterpreted.
+        if let Some(tr) = stored_tracers {
+            assert_eq!(
+                mx.anc_words,
+                tr.len().div_ceil(64),
+                "state file anctracers/ancsets width mismatch ({} tracers, {} words)",
+                tr.len(),
+                mx.anc_words
+            );
+            if anc_samples_wanted > 0 {
+                assert_eq!(
+                    anc_samples_wanted.min(mx.anc_m),
+                    tr.len(),
+                    "resume changed --anc-samples ({} wanted, {} stored): the recorded masks \
+                     index the ORIGINAL tracer set and cannot be reinterpreted",
+                    anc_samples_wanted.min(mx.anc_m),
+                    tr.len()
+                );
+            }
+            mx.params.anc_samples = tr.len();
+            mx.anc_sampled = true;
+            mx.anc_tracers = tr;
+        } else if anc_samples_wanted > 0 && mx.anc_m > 0 {
             let k = anc_samples_wanted.min(mx.anc_m);
             assert_eq!(
                 mx.anc_words,
@@ -1957,6 +2026,156 @@ impl Mixer {
             .collect();
         mx.tabu = tabu;
         Ok(mx)
+    }
+
+    /// Write the per-gate ancestry sidecar: a header naming the universe, the
+    /// tracer list in sampled mode, then one line per gate (current arena
+    /// order — call after the final float so the order matches the written
+    /// circuit) holding the gate's ancestor set as `anc_words` decimal u64s.
+    /// Exact-mode implicit singletons are materialised, so the file is
+    /// self-contained.
+    pub fn write_anc_sidecar(&self, path: &str) -> std::io::Result<()> {
+        use std::fmt::Write as _;
+        assert!(
+            self.anc_words > 0,
+            "--anc-out needs ancestry armed (--ancestors, --anc-samples or --anc-in)"
+        );
+        let mut o = String::with_capacity(self.arena.len() * self.anc_words * 8);
+        let _ = writeln!(
+            o,
+            "fmix-anc 1 {} m={} words={} gates={}",
+            if self.anc_sampled { "sampled" } else { "exact" },
+            self.anc_m,
+            self.anc_words,
+            self.arena.len()
+        );
+        if self.anc_sampled {
+            let _ = write!(o, "tracers {}", self.anc_tracers.len());
+            for t in &self.anc_tracers {
+                let _ = write!(o, " {t}");
+            }
+            o.push('\n');
+        }
+        let mut bits = vec![0u64; self.anc_words];
+        let mut cur = self.arena.head();
+        while cur != NIL {
+            bits.iter_mut().for_each(|w| *w = 0);
+            self.anc_or_into(self.meta_of(cur).litter, &mut bits);
+            let mut first = true;
+            for w in &bits {
+                if !first {
+                    o.push(' ');
+                }
+                let _ = write!(o, "{w}");
+                first = false;
+            }
+            o.push('\n');
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        std::fs::write(path, o)
+    }
+
+    /// Parse a sidecar written by `write_anc_sidecar`.
+    pub fn read_anc_sidecar(path: &str) -> std::io::Result<AncSidecar> {
+        let bad = |m: &str| std::io::Error::other(m.to_string());
+        let text = std::fs::read_to_string(path)?;
+        let mut lines = text.lines();
+        let hdr = lines.next().ok_or_else(|| bad("empty ancestry sidecar"))?;
+        let f: Vec<&str> = hdr.split_whitespace().collect();
+        if f.len() != 6 || f[0] != "fmix-anc" || f[1] != "1" {
+            return Err(bad("ancestry sidecar header: want `fmix-anc 1 <mode> m= words= gates=`"));
+        }
+        let sampled = match f[2] {
+            "sampled" => true,
+            "exact" => false,
+            _ => return Err(bad("ancestry sidecar mode: want exact|sampled")),
+        };
+        let num = |s: &str, pre: &str| -> std::io::Result<usize> {
+            s.strip_prefix(pre)
+                .and_then(|x| x.parse().ok())
+                .ok_or_else(|| bad(&format!("ancestry sidecar field {pre}")))
+        };
+        let m = num(f[3], "m=")?;
+        let words = num(f[4], "words=")?;
+        let gates = num(f[5], "gates=")?;
+        let tracers: Vec<u32> = if sampled {
+            let tl = lines.next().ok_or_else(|| bad("missing tracers line"))?;
+            let mut it = tl.split_whitespace();
+            if it.next() != Some("tracers") {
+                return Err(bad("want `tracers K t0 t1 ...`"));
+            }
+            let k: usize =
+                it.next().and_then(|x| x.parse().ok()).ok_or_else(|| bad("tracer count"))?;
+            let v: Vec<u32> = it.filter_map(|x| x.parse().ok()).collect();
+            if v.len() != k {
+                return Err(bad("tracer list length mismatch"));
+            }
+            v
+        } else {
+            Vec::new()
+        };
+        let want_words = if sampled { tracers.len().div_ceil(64) } else { m.div_ceil(64) };
+        if words != want_words {
+            return Err(bad("ancestry sidecar words= inconsistent with its universe"));
+        }
+        let mut sets: Vec<Vec<u64>> = Vec::with_capacity(gates);
+        for l in lines {
+            let row: Vec<u64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            if row.len() != words {
+                return Err(bad("ancestry sidecar row width mismatch"));
+            }
+            sets.push(row);
+        }
+        if sets.len() != gates {
+            return Err(bad("ancestry sidecar gate count mismatch"));
+        }
+        Ok(AncSidecar { sampled, m, words, tracers, sets })
+    }
+
+    /// Install imported ancestor lists as this run's INITIAL ancestry. Fresh
+    /// runs only: the mixer must have been constructed with ancestry OFF
+    /// (ancestors false, anc_samples 0), so input gates already sit on their
+    /// singleton litters 0..n; this replaces the universe and attaches one
+    /// imported set per input litter.
+    pub fn import_ancestry(&mut self, sc: AncSidecar) {
+        assert_eq!(
+            sc.sets.len(),
+            self.arena.len(),
+            "--anc-in: sidecar has {} sets but the input circuit has {} gates",
+            sc.sets.len(),
+            self.arena.len()
+        );
+        assert!(
+            self.anc_words == 0,
+            "--anc-in replaces the ancestry universe; construct with --ancestors/--anc-samples off"
+        );
+        assert!(
+            sc.sampled || sc.m <= 20_000,
+            "--anc-in exact mode stores m={} bits per litter, past the small-input envelope \
+             (re-run the producing chain with --anc-samples)",
+            sc.m
+        );
+        self.anc_sampled = sc.sampled;
+        self.anc_m = sc.m;
+        self.anc_words = sc.words;
+        self.anc_tracers = sc.tracers;
+        self.anc.clear();
+        for (i, bits) in sc.sets.into_iter().enumerate() {
+            // Exact mode stores EVERY row, an all-zero one included: the
+            // implicit-singleton rule reads a missing id < anc_m as {id}, and
+            // after an import gate index i is unrelated to original-input
+            // index i. Sampled mode keeps the missing-means-empty convention.
+            if !self.anc_sampled || bits.iter().any(|&w| w != 0) {
+                self.anc.insert(i as u64, bits);
+            }
+        }
+        // Fresh litter ids must clear the exact-mode implicit-singleton range
+        // [0, anc_m): a circuit smaller than the ORIGINAL input would
+        // otherwise mint union ids that alias it.
+        self.next_litter = self.next_litter.max(self.anc_m as u64);
+        // Reporting reads these fields, not the universe params.
+        self.params.ancestors = !self.anc_sampled;
+        self.params.anc_samples = self.anc_tracers.len();
     }
 }
 
@@ -2684,7 +2903,7 @@ impl Mixer {
 
     /// Drop ancestor sets for litters with no live gates. Without this the map
     /// grows with every splice for the whole run; with it, it is bounded by the
-    /// live litter count.
+    /// live litter count (plus the litters restorable journal entries hold).
     fn anc_prune(&mut self) {
         if self.anc_words == 0 {
             return;
@@ -2694,6 +2913,21 @@ impl Mixer {
         while cur != NIL {
             live.insert(self.meta_of(cur).litter);
             cur = self.arena.neighbor(cur, Dir::R);
+        }
+        // A restorable journal entry will put its parents' litters back, and
+        // since a cross relabels ALL of its outputs to the union litter, those
+        // pre-cross litters may have no live gate left. Dropping their sets
+        // would make an undo restore ancestry-less litters silently. Dead
+        // entries (any piece touched) can never be restored, so they hold
+        // nothing.
+        for e in self.journal.iter() {
+            if e.after
+                .iter()
+                .all(|&(id, st)| self.arena.is_linked(id) && self.arena.stamp(id) == st)
+            {
+                live.insert(e.litters[0]);
+                live.insert(e.litters[1]);
+            }
         }
         self.anc.retain(|k, _| live.contains(k));
     }
@@ -3535,26 +3769,59 @@ impl Mixer {
                 let (g_origin, h_origin) = (gm.origin, hm.origin);
                 let ev = self.fresh_event();
                 let placed = self.splice_pair(id, h_id, dir, seq);
+                // Ancestry treats a cross as a DB splice over the window
+                // {g, h}: EVERY output — the intact pivot included — carries
+                // the union of both parents' ancestor sets, because the
+                // rewrite re-encodes the pair jointly even when one gate's
+                // spelling survives it. The journal entry below records the
+                // PRE-cross litters, so an undo reverses this too. Litter
+                // inheritance is unchanged when ancestry is off, matching
+                // the merge-union precedent.
+                let union_litter = if self.anc_words > 0 && gm.litter != hm.litter {
+                    let l = self.anc_union_litter(&[gm.litter, hm.litter]);
+                    Some((l, placed.len().min(u16::MAX as usize) as u16))
+                } else {
+                    None
+                };
                 let mut fresh: Vec<u32> = Vec::new();
                 for &(pid, role) in &placed {
                     match role {
                         Role::ShotPiece | Role::Core => {
                             let d = self.child_dir(dir);
+                            let (litter, litter_size) =
+                                union_litter.unwrap_or((gm.litter, gm.litter_size));
                             self.set_meta(
                                 pid,
-                                Meta { origin: g_origin, event: ev, dir: d, dgen: self.child_gen(gm.dgen), litter: gm.litter, litter_size: gm.litter_size },
+                                Meta { origin: g_origin, event: ev, dir: d, dgen: self.child_gen(gm.dgen), litter, litter_size },
                             );
                             fresh.push(pid);
                         }
                         Role::CollidingPiece => {
                             let d = self.child_dir(dir);
+                            let (litter, litter_size) =
+                                union_litter.unwrap_or((hm.litter, hm.litter_size));
                             self.set_meta(
                                 pid,
-                                Meta { origin: h_origin, event: ev, dir: d, dgen: self.child_gen(hm.dgen), litter: hm.litter, litter_size: hm.litter_size },
+                                Meta { origin: h_origin, event: ev, dir: d, dgen: self.child_gen(hm.dgen), litter, litter_size },
                             );
                             fresh.push(pid);
                         }
-                        Role::CollidingIntact => {} // node reused, meta intact
+                        Role::CollidingIntact => {
+                            // Node reused; only the ancestry-bearing fields
+                            // move. Origin, event, dir and dgen stay intact so
+                            // trajectories and tabu semantics are unchanged.
+                            // The stamp bump makes absorption count as
+                            // "further processing": any OLDER journal entry
+                            // holding this node dies, since undoing it would
+                            // wipe the ancestors absorbed here. This cross's
+                            // own entry records the post-bump stamp below and
+                            // stays undoable.
+                            if let Some((l, ls)) = union_litter {
+                                let m = self.meta_of(pid);
+                                self.set_meta(pid, Meta { litter: l, litter_size: ls, ..m });
+                                self.arena.touch(pid);
+                            }
+                        }
                     }
                 }
                 self.advance_births(&fresh);
@@ -7950,5 +8217,230 @@ mod mix_tests {
             mx.dose_reached(),
             "and the dose stop fires instead of burning the whole move budget"
         );
+    }
+
+    // Ancestry treats a cross as a DB splice over the window {g, h}: every
+    // output of a crossing — the intact pivot included — carries the UNION of
+    // both parents' ancestor sets. Verified through the journal, which
+    // records the pre-cross litters: every piece of a live entry must read
+    // exactly union(set(litters[0]), set(litters[1])).
+    #[test]
+    fn cross_outputs_carry_union_ancestry() {
+        let gates = random_mixed_circuit(43, 16, 200);
+        let n = gates.len();
+        let params = MixParams {
+            k_max: 6,
+            moves: 6_000,
+            target_size: 4 * n,
+            temp: 20.0,
+            ancestors: true,
+            report_every: u64::MAX,
+            seed: 5,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        let mut checked = 0usize;
+        let mut expected = vec![0u64; mx.anc_words];
+        let mut got = vec![0u64; mx.anc_words];
+        for e in mx.journal.iter() {
+            let live = e
+                .after
+                .iter()
+                .all(|&(id, st)| mx.arena.is_linked(id) && mx.arena.stamp(id) == st);
+            if !live {
+                continue;
+            }
+            expected.iter_mut().for_each(|w| *w = 0);
+            mx.anc_or_into(e.litters[0], &mut expected);
+            mx.anc_or_into(e.litters[1], &mut expected);
+            for &(id, _) in &e.after {
+                got.iter_mut().for_each(|w| *w = 0);
+                mx.anc_or_into(mx.meta_of(id).litter, &mut got);
+                assert_eq!(
+                    got, expected,
+                    "a cross output (intact pivot included) must carry the parents' union"
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked > 0, "the run must leave live journal entries to check");
+        mx.global_check();
+    }
+
+    // The pre-cross litters a live journal entry will restore must survive
+    // anc_prune: the cross relabels EVERY output to the union litter, so the
+    // parents' litters can go extinct among live gates, and pruning their
+    // sets would make a later undo restore ancestry-less litters silently.
+    #[test]
+    fn anc_prune_keeps_litters_live_journal_entries_restore() {
+        let gates = random_mixed_circuit(47, 16, 200);
+        let n = gates.len();
+        let params = MixParams {
+            k_max: 6,
+            moves: 6_000,
+            target_size: 4 * n,
+            temp: 20.0,
+            ancestors: true,
+            report_every: u64::MAX,
+            seed: 6,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        let live_entries: Vec<[u64; 2]> = mx
+            .journal
+            .iter()
+            .filter(|e| {
+                e.after
+                    .iter()
+                    .all(|&(id, st)| mx.arena.is_linked(id) && mx.arena.stamp(id) == st)
+            })
+            .map(|e| e.litters)
+            .collect();
+        assert!(!live_entries.is_empty(), "need live journal entries to make the test bite");
+        let resolve = |mx: &Mixer, l: u64| {
+            let mut bits = vec![0u64; mx.anc_words];
+            mx.anc_or_into(l, &mut bits);
+            bits
+        };
+        let before: Vec<[Vec<u64>; 2]> = live_entries
+            .iter()
+            .map(|ls| [resolve(&mx, ls[0]), resolve(&mx, ls[1])])
+            .collect();
+        mx.anc_prune();
+        for (ls, want) in live_entries.iter().zip(before.iter()) {
+            assert_eq!(resolve(&mx, ls[0]), want[0], "prune dropped a restorable litter's set");
+            assert_eq!(resolve(&mx, ls[1]), want[1], "prune dropped a restorable litter's set");
+        }
+    }
+
+    // Sidecar round trip in both universes: write -> read must reproduce the
+    // per-gate resolved sets verbatim, and importing into a FRESH mixer over
+    // the same circuit must resolve identically (the phase-boundary use).
+    #[test]
+    fn anc_sidecar_round_trips_exact_and_sampled() {
+        for sampled in [false, true] {
+            let gates = random_mixed_circuit(51, 16, 150);
+            let params = MixParams {
+                k_max: 6,
+                moves: 4_000,
+                target_size: 3 * gates.len(),
+                temp: 20.0,
+                ancestors: !sampled,
+                anc_samples: if sampled { 32 } else { 0 },
+                report_every: u64::MAX,
+                seed: 7,
+                ..MixParams::default()
+            };
+            let mut mx = Mixer::new(gates, 16, params);
+            mx.run();
+            let path = std::env::temp_dir().join(format!("fmix_anc_test_{sampled}.anc"));
+            let path = path.to_str().unwrap().to_string();
+            mx.write_anc_sidecar(&path).expect("write sidecar");
+            let sc = Mixer::read_anc_sidecar(&path).expect("read sidecar");
+            assert_eq!(sc.sampled, sampled);
+            assert_eq!(sc.m, mx.anc_m, "universe size must survive");
+            assert_eq!(sc.tracers, mx.anc_tracers, "tracer list must survive");
+            let resolved: Vec<Vec<u64>> = {
+                let mut v = Vec::new();
+                let mut bits = vec![0u64; mx.anc_words];
+                let mut cur = mx.arena.head();
+                while cur != NIL {
+                    bits.iter_mut().for_each(|w| *w = 0);
+                    mx.anc_or_into(mx.meta_of(cur).litter, &mut bits);
+                    v.push(bits.clone());
+                    cur = mx.arena.neighbor(cur, Dir::R);
+                }
+                v
+            };
+            assert_eq!(sc.sets, resolved, "sidecar rows must equal the resolved per-gate sets");
+
+            // Import into a fresh run over the SAME circuit (ancestry off at
+            // construction; the sidecar defines the universe).
+            let out_gates = mx.arena.to_vec();
+            let params2 = MixParams {
+                k_max: 6,
+                moves: 2_000,
+                temp: 20.0,
+                report_every: u64::MAX,
+                seed: 8,
+                ..MixParams::default()
+            };
+            let mut mx2 = Mixer::new(out_gates, 16, params2);
+            let sc2 = Mixer::read_anc_sidecar(&path).expect("re-read sidecar");
+            mx2.import_ancestry(sc2);
+            assert_eq!(mx2.anc_m, mx.anc_m, "imported universe must be the ORIGINAL m");
+            assert_eq!(mx2.anc_tracers, mx.anc_tracers);
+            let resolved2: Vec<Vec<u64>> = {
+                let mut v = Vec::new();
+                let mut bits = vec![0u64; mx2.anc_words];
+                let mut cur = mx2.arena.head();
+                while cur != NIL {
+                    bits.iter_mut().for_each(|w| *w = 0);
+                    mx2.anc_or_into(mx2.meta_of(cur).litter, &mut bits);
+                    v.push(bits.clone());
+                    cur = mx2.arena.neighbor(cur, Dir::R);
+                }
+                v
+            };
+            assert_eq!(resolved2, resolved, "imported ancestry must resolve identically");
+            // The imported run must keep walking and unioning without issue.
+            mx2.run();
+            mx2.global_check();
+            assert_eq!(mx2.anc_m, mx.anc_m, "the universe must not drift during the run");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    // A state file written by an ancestry-IMPORTED run must restore the
+    // imported tracer set verbatim: it is not a function of (anc_m, K, seed),
+    // so only the explicit anctracers section can reproduce it.
+    #[test]
+    fn state_round_trips_imported_tracers() {
+        let gates = random_mixed_circuit(53, 16, 150);
+        let params = MixParams {
+            k_max: 6,
+            moves: 3_000,
+            target_size: 3 * gates.len(),
+            temp: 20.0,
+            anc_samples: 24,
+            report_every: u64::MAX,
+            seed: 9,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 16, params);
+        mx.run();
+        let anc_path = std::env::temp_dir().join("fmix_anc_state_test.anc");
+        let anc_path = anc_path.to_str().unwrap().to_string();
+        mx.write_anc_sidecar(&anc_path).expect("write sidecar");
+
+        // Fresh run over the output, universe imported: its tracer indices
+        // point into the ORIGINAL input, which this run has never seen.
+        let out_gates = mx.arena.to_vec();
+        let params2 = MixParams {
+            k_max: 6,
+            moves: 2_000,
+            temp: 20.0,
+            report_every: u64::MAX,
+            seed: 10,
+            ..MixParams::default()
+        };
+        let mut mx2 = Mixer::new(out_gates, 16, params2.clone());
+        mx2.import_ancestry(Mixer::read_anc_sidecar(&anc_path).expect("read sidecar"));
+        mx2.run();
+        let want_tracers = mx2.anc_tracers.clone();
+        let want_m = mx2.anc_m;
+
+        let st_path = std::env::temp_dir().join("fmix_anc_state_test.state");
+        let st_path = st_path.to_str().unwrap().to_string();
+        mx2.save_state(&st_path).expect("save state");
+        // Resume without any ancestry flags: the stored section must arm it.
+        let rs = Mixer::resume_state(&st_path, params2, FrozenDb::empty()).expect("resume");
+        assert!(rs.anc_sampled, "stored anctracers must re-arm sampled mode");
+        assert_eq!(rs.anc_tracers, want_tracers, "imported tracers must survive the state file");
+        assert_eq!(rs.anc_m, want_m);
+        let _ = std::fs::remove_file(&anc_path);
+        let _ = std::fs::remove_file(&st_path);
     }
 }

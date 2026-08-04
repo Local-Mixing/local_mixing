@@ -123,6 +123,19 @@ struct Args {
     /// gates; vary for independent replicates.
     #[arg(long, default_value_t = 0)]
     anc_sample_seed: u64,
+    /// Write a per-gate ancestry sidecar (final order, matching --output): a
+    /// header naming the universe (exact m / sampled K + tracer list), then
+    /// one ancestor-set line per gate. The cross-RUN counterpart of the state
+    /// file: a later run imports it with --anc-in, so a phase boundary stops
+    /// resetting the ancestry clock. Needs ancestry armed.
+    #[arg(long)]
+    anc_out: Option<String>,
+    /// Import per-gate ancestor lists from a sidecar written by --anc-out and
+    /// use them as this run's INITIAL ancestry (fresh runs only; the gate
+    /// count must match the input circuit). The file defines the universe, so
+    /// --ancestors / --anc-samples must not also be given.
+    #[arg(long)]
+    anc_in: Option<String>,
     /// Minimum twist window length (max is the current circuit size)
     #[arg(long, default_value_t = 64)]
     twist_min_len: usize,
@@ -195,14 +208,15 @@ struct Args {
     p_twist: f64,
     /// GLOBAL re-randomisation rate, in units of ONE whole-circuit reshuffle
     /// per this many circuit-sizes of rounds. The per-round probability is
-    /// shuffle-rate / |circuit|, so the default 2.0 means "expect two full
+    /// shuffle-rate / |circuit|, so e.g. 2.0 means "expect two full
     /// reshuffles every |circuit| rounds" at any size, and the expected work
     /// per round stays O(mean commutation slack) as the circuit grows. The
     /// move walks every gate in order and re-places it uniformly inside its
     /// own commutation bounds (the same placement rule as the terminal
     /// float), so it is semantics- and size-preserving: it only moves gates.
-    /// Set 0 to disable.
-    #[arg(long, default_value_t = 2.0)]
+    /// OFF by default since 2026-08-03 (was 2.0); note 0 vs >0 reshapes the
+    /// walk-RNG stream at equal seed, so it is an A/B arm, not a live toggle.
+    #[arg(long, default_value_t = 0.0)]
     shuffle_rate: f64,
     /// Two-pass store routing, ON BY DEFAULT (2026-08-03): the descent runs
     /// curated-only over every window length first, and consults the regular
@@ -866,6 +880,23 @@ fn main() {
         local_verify: !args.no_local_verify,
         seed: args.seed,
     };
+    assert!(
+        args.anc_in.is_none() || args.resume.is_none(),
+        "--anc-in seeds a FRESH run's ancestry; a --resume carries its own (drop one)"
+    );
+    assert!(
+        args.anc_in.is_none() || (args.anc_samples == 0 && !args.ancestors),
+        "--anc-in defines the ancestry universe; drop --ancestors / --anc-samples"
+    );
+    assert!(
+        args.anc_out.is_none()
+            || args.ancestors
+            || args.anc_samples > 0
+            || args.anc_in.is_some()
+            || args.resume.is_some(),
+        "--anc-out needs ancestry armed (--ancestors, --anc-samples or --anc-in): refusing now \
+         rather than at the end of the run"
+    );
     let mut mixer = match &args.resume {
         Some(path) => {
             let db = if params.p_comp > 0.0 || params.p_db > 0.0 || params.p_any > 0.0 {
@@ -881,7 +912,31 @@ fn main() {
             );
             mx
         }
-        None => Mixer::new(gates, num_wires, params),
+        None => match &args.anc_in {
+            Some(p) => {
+                let sc = Mixer::read_anc_sidecar(p).expect("read ancestry sidecar");
+                let (mode_s, sc_m, sc_k, sc_n) = (
+                    if sc.sampled { "sampled" } else { "exact" },
+                    sc.m,
+                    sc.tracers.len(),
+                    sc.sets.len(),
+                );
+                // Construct with ancestry OFF: the sidecar defines the
+                // universe, and the constructor would otherwise pick its own
+                // tracers against the wrong input population.
+                let mut mx = Mixer::new(
+                    gates,
+                    num_wires,
+                    MixParams { ancestors: false, anc_samples: 0, ..params },
+                );
+                mx.import_ancestry(sc);
+                println!(
+                    "[fmix] ancestry IMPORTED from {p}: {mode_s} mode, universe m={sc_m}, K={sc_k}, {sc_n} per-gate sets; anc meters continue the PRODUCING run's clock"
+                );
+                mx
+            }
+            None => Mixer::new(gates, num_wires, params),
+        },
     };
     // A resumed run has no input file, so the summary's "before" figures must
     // come from the resumed circuit or it reports 0 -> N and reads as if the
@@ -1001,5 +1056,14 @@ fn main() {
         }
         std::fs::write(path, s).expect("write gens");
         println!("[fmix] wrote gens sidecar to {path} (born-random = {GEN_FRESH})");
+    }
+
+    if let Some(path) = &args.anc_out {
+        // After the final float, so line i is gate i of the written circuit.
+        mixer.write_anc_sidecar(path).expect("write ancestry sidecar");
+        println!(
+            "[fmix] wrote ancestry sidecar to {path} ({} per-gate sets; import with --anc-in)",
+            mixer.arena.len()
+        );
     }
 }
