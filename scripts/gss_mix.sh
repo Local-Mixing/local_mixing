@@ -27,11 +27,12 @@ usage: gss_mix.sh -n N -o RUNDIR [options]
   -s SEED        master seed (default 1; stages derive their own from it)
   --expand R     phase-A max expansion factor R1          [2]
   --hold E       phase-A hold duration in effs            [30]
-  --xr R         stage-5 crossing target factor           [2    — TBD by X-panel]
-  --xb B         stage-5 width-damper base                [1.5  — TBD]
-  --xc C         stage-5 width-damper threshold           [3    — TBD]
-  --xtdiv D      stage-5 temperature = target/D           [25   — TBD]
-  --xmoves M     stage-5 move budget (default 12 x target)
+  --xr R         stage-5 crossing target factor           [2; 2.5 = max-spread point]
+  --xb B         stage-5 width-damper base                [3   — X-panel calibrated]
+  --xc C         stage-5 width-damper threshold           [1   — X-panel calibrated]
+  --xtdiv D      stage-5 temperature = target/D           [25]
+  --xmoves M     stage-5 move budget (default 6 x target: STOP AT ARRIVAL —
+                 median spread peaks there and the hold erodes it)
   --stop-after K stop after stage K (2, 3, 4, 5 or 6)
   --force-from K rebuild from stage K even if artifacts exist
 env:
@@ -43,7 +44,7 @@ EOF
 }
 
 N=""; RUN=""; SEED=1; EXPAND=2; HOLD=30
-XR=2; XB=1.5; XC=3; XTDIV=25; XMOVES=""
+XR=2; XB=3; XC=1; XTDIV=25; XMOVES=""
 STOP_AFTER=6; FORCE_FROM=99
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -173,7 +174,11 @@ import sys
 g, xr, tdiv, xmoves, done = int(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
 tgt = round(g * xr)
 temp = max(64, round(tgt / tdiv))
-budget = xmoves if xmoves > 0 else 12 * tgt
+# STOP AT ARRIVAL (X-panel 2026-08-05): median descendants AND median span
+# peak when size reaches its damped equilibrium (~2-5 moves/target gate)
+# and the hold then ERODES them; 6x covers arrival across r with only mild
+# post-peak decay.
+budget = xmoves if xmoves > 0 else 6 * tgt
 print(tgt, temp, done + budget)   # --moves is ABSOLUTE on a resume
 EOF
 )"

@@ -74,16 +74,37 @@ into `gss_mix.log`.
 
 **5 — the crossing walk** (phase B part 2). Resumes `splitB.state` — the
 split form's per-gate directions and litters carry over — and runs the pure
-crossing economy (no twists, no DB) under the thermostat. Parameters, all
-**PROVISIONAL until the X-panel pins them** (they are the panel's axes):
+crossing economy (no twists, no DB) under the thermostat. Parameters
+**calibrated by the 2026-08-05 X-panel** (`reports/split_trials_20260805`):
 
-| knob | flag | provisional default |
-|---|---|---|
-| target factor over the split size | `--xr` | 2 |
-| width-damper base B | `--xb` | 1.5 |
-| width-damper threshold c | `--xc` | 3 |
-| temperature (target/D) | `--xtdiv` | 25 |
-| move budget | `--xmoves` | 12 × target |
+| knob | flag | default | why |
+|---|---|---|---|
+| target factor over the split size | `--xr` | 2 | see the frontier below |
+| width-damper base B | `--xb` | 3 | heavy damping equalizes: median descendants up, tail down |
+| width-damper threshold c | `--xc` | 1 | (with b=3: a width-w split passes w.p. 3^-(w-1)) |
+| temperature (target/D) | `--xtdiv` | 25 | second-order |
+| move budget | `--xmoves` | 6 × target | **STOP AT ARRIVAL** — see below |
+
+Panel findings that set these: (i) spread must be judged by MEDIAN absolute
+descendants/span — the Yule tail makes means dishonest; (ii) both medians
+PEAK when size reaches its damped equilibrium and the hold then ERODES them
+(frac(≥3): 0.555 at arrival → 0.498 after 20M more moves; the tail keeps
+its reach — the hold moves spread from the median to the tail), so budgets
+stop at arrival; (iii) knobs b/c/temp are second-order for spread except
+heavy damping's equalization; (iv) the spread-vs-size frontier under
+b=3/c=1, at the arrival peak (sizes = realized, over the split form):
+
+| target r | realized | peak frac(≥3 desc) | peak median span |
+|---|---|---|---|
+| 1.75 | 1.63× | 0.49 | 360 |
+| 2.0 | 1.84× | 0.56 | 464 |
+| 2.25 | 2.01× | 0.60 | 552 |
+| 2.5 | 2.25× | 0.62 | 649 |
+
+`--xr 2` is the smallest point clearing median ≥ 3 with margin; `--xr 2.5`
+is the measured max-spread point; gains decelerate above it, and a 2/3
+frac(≥3) bar is out of reach of expansion alone — the next lever there is
+biasing cross-shot selection toward never-crossed (min-dgen) gates.
 
 `--moves` is ABSOLUTE on a resume; the driver reads the state's move
 counter and adds the budget — do not pass raw fmix moves yourself.
