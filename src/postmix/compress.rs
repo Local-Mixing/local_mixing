@@ -82,6 +82,22 @@ pub fn lits_of(gates: &[XGate]) -> u64 {
 // Exact dead-cone elimination: keep a gate iff its target is live at its
 // position; kept gates make their controls live. Returns dropped count.
 pub fn liveness_prune(gates: Vec<XGate>, live_out: &[bool]) -> (Vec<XGate>, usize) {
+    let (out, _, dropped) = liveness_prune_anc(gates, None, live_out);
+    (out, dropped)
+}
+
+// Per-gate ancestor set, in the fmix sidecar's word layout. Threaded through
+// compression so the compressed circuit keeps a meaningful sidecar: gathering
+// is a permutation (sets follow gates), a reduced multi-member group stamps
+// every survivor with the UNION of its members' sets (each emitted cube
+// derives from the whole gathered ESOP), and pruned gates just drop out.
+pub type AncBits = Vec<u64>;
+
+fn liveness_prune_anc(
+    gates: Vec<XGate>,
+    anc: Option<Vec<AncBits>>,
+    live_out: &[bool],
+) -> (Vec<XGate>, Option<Vec<AncBits>>, usize) {
     let n = gates.len();
     let mut live = live_out.to_vec();
     let mut keep = vec![false; n];
@@ -94,16 +110,13 @@ pub fn liveness_prune(gates: Vec<XGate>, live_out: &[bool]) -> (Vec<XGate>, usiz
             }
         }
     }
-    let mut out = Vec::with_capacity(n);
-    let mut dropped = 0usize;
-    for (i, g) in gates.into_iter().enumerate() {
-        if keep[i] {
-            out.push(g);
-        } else {
-            dropped += 1;
-        }
-    }
-    (out, dropped)
+    let dropped = keep.iter().filter(|&&k| !k).count();
+    let out: Vec<XGate> =
+        gates.into_iter().zip(keep.iter()).filter(|(_, k)| **k).map(|(g, _)| g).collect();
+    let anc_out = anc.map(|a| {
+        a.into_iter().zip(keep.iter()).filter(|(_, k)| **k).map(|(s, _)| s).collect()
+    });
+    (out, anc_out, dropped)
 }
 
 // XOR of the gathered control functions as (parity, cubes): comp gates
@@ -323,17 +336,24 @@ struct Group {
     union: Vec<u16>, // sorted control-wire union across members
     last: usize,     // index of the last member in the input order
     open: bool,
+    // OR of the members' ancestor sets (empty when ancestry is not threaded).
+    // Every emitted survivor of the group carries this union: each cube of
+    // the reduced ESOP derives from the whole gathered run.
+    anc: AncBits,
 }
 
-// One forward gather-and-reduce sweep.
+// One forward gather-and-reduce sweep. `anc` (when present) is aligned with
+// `gates`; the returned tags are aligned with the returned gates.
 fn gather_reduce_pass(
     gates: &[XGate],
+    anc: Option<&[AncBits]>,
     wires: usize,
     p: &CompressParams,
     rng: &mut StdRng,
     rep: &mut CompressReport,
-) -> Vec<XGate> {
+) -> (Vec<XGate>, Option<Vec<AncBits>>) {
     let mut out: Vec<XGate> = Vec::with_capacity(gates.len());
+    let mut out_anc: Option<Vec<AncBits>> = anc.map(|_| Vec::with_capacity(gates.len()));
     let mut slots: Vec<Group> = Vec::new();
     let mut open_at: Vec<Option<usize>> = vec![None; wires]; // target wire -> slot
     let mut union_of: Vec<Vec<usize>> = vec![Vec::new(); wires]; // wire -> slots (stale ok)
@@ -345,6 +365,7 @@ fn gather_reduce_pass(
                  open_at: &mut Vec<Option<usize>>,
                  union_of: &mut Vec<Vec<usize>>,
                  out: &mut Vec<XGate>,
+                 out_anc: &mut Option<Vec<AncBits>>,
                  rng: &mut StdRng,
                  rep: &mut CompressReport| {
         let mut set: Vec<usize> = Vec::new();
@@ -375,7 +396,21 @@ fn gather_reduce_pass(
                 open_at[g.target as usize] = None;
             }
             let cubes = reduce_group(g.target, &slots[s].members, p, rng, rep);
+            if let Some(oa) = out_anc.as_mut() {
+                for _ in 0..cubes.len() {
+                    oa.push(slots[s].anc.clone());
+                }
+            }
             out.extend(cubes);
+        }
+    };
+
+    let or_into = |dst: &mut AncBits, src: &AncBits| {
+        if dst.len() < src.len() {
+            dst.resize(src.len(), 0);
+        }
+        for (d, s) in dst.iter_mut().zip(src.iter()) {
+            *d |= *s;
         }
     };
 
@@ -395,8 +430,9 @@ fn gather_reduce_pass(
         }
         union_of[g.target as usize].retain(|&s| slots[s].open);
         if !seed.is_empty() {
-            close(seed, &mut slots, &mut open_at, &mut union_of, &mut out, rng, rep);
+            close(seed, &mut slots, &mut open_at, &mut union_of, &mut out, &mut out_anc, rng, rep);
         }
+        let g_anc = anc.map(|a| a[i].clone()).unwrap_or_default();
         // Join or open the group for this target.
         match open_at[g.target as usize] {
             Some(s) => {
@@ -409,9 +445,10 @@ fn gather_reduce_pass(
                     }
                 }
                 grp.members.push(g.clone());
+                or_into(&mut grp.anc, &g_anc);
                 grp.last = i;
                 if grp.members.len() >= p.group_cap {
-                    close(vec![s], &mut slots, &mut open_at, &mut union_of, &mut out, rng, rep);
+                    close(vec![s], &mut slots, &mut open_at, &mut union_of, &mut out, &mut out_anc, rng, rep);
                 }
             }
             None => {
@@ -422,32 +459,60 @@ fn gather_reduce_pass(
                 for &w in &union {
                     union_of[w as usize].push(s);
                 }
-                slots.push(Group { target: g.target, members: vec![g.clone()], union, last: i, open: true });
+                slots.push(Group {
+                    target: g.target,
+                    members: vec![g.clone()],
+                    union,
+                    last: i,
+                    open: true,
+                    anc: g_anc,
+                });
                 open_at[g.target as usize] = Some(s);
             }
         }
     }
     let remaining: Vec<usize> = (0..slots.len()).filter(|&s| slots[s].open).collect();
-    close(remaining, &mut slots, &mut open_at, &mut union_of, &mut out, rng, rep);
-    out
+    close(remaining, &mut slots, &mut open_at, &mut union_of, &mut out, &mut out_anc, rng, rep);
+    (out, out_anc)
 }
 
 // Full pass: [liveness] -> gather+reduce, iterated to a gate-count fixed
 // point. Prints one [fcompress] line per iteration.
 pub fn compress(gates: Vec<XGate>, wires: usize, p: &CompressParams) -> (Vec<XGate>, CompressReport) {
+    let (out, _, rep) = compress_anc(gates, None, wires, p);
+    (out, rep)
+}
+
+// Same pass with per-gate ancestor sets threaded through: sets follow gates
+// under gathering, group survivors carry the member union, pruned gates drop.
+// `anc` must be aligned with `gates`; the returned tags align with the output.
+pub fn compress_anc(
+    gates: Vec<XGate>,
+    anc: Option<Vec<AncBits>>,
+    wires: usize,
+    p: &CompressParams,
+) -> (Vec<XGate>, Option<Vec<AncBits>>, CompressReport) {
+    if let Some(a) = &anc {
+        assert_eq!(a.len(), gates.len(), "ancestry tags must align with the input gates");
+    }
     let mut rng = StdRng::seed_from_u64(p.seed);
     let mut rep = CompressReport::default();
     rep.gates_in = gates.len();
     rep.lits_in = lits_of(&gates);
     let mut cur = gates;
+    let mut cur_anc = anc;
     for iter in 1..=p.max_iters {
         let before = cur.len();
         if let Some(lv) = &p.live_out {
-            let (kept, dropped) = liveness_prune(cur, lv);
+            let (kept, kept_anc, dropped) = liveness_prune_anc(cur, cur_anc, lv);
             cur = kept;
+            cur_anc = kept_anc;
             rep.liveness_dropped += dropped;
         }
-        cur = gather_reduce_pass(&cur, wires, p, &mut rng, &mut rep);
+        let (next, next_anc) =
+            gather_reduce_pass(&cur, cur_anc.as_deref(), wires, p, &mut rng, &mut rep);
+        cur = next;
+        cur_anc = next_anc;
         rep.iters = iter;
         println!(
             "[fcompress] iter={} gates {} -> {} | groups={} multi={} max={} | catalogue={} anf_wins={} live_dropped={}",
@@ -460,7 +525,7 @@ pub fn compress(gates: Vec<XGate>, wires: usize, p: &CompressParams) -> (Vec<XGa
     }
     rep.gates_out = cur.len();
     rep.lits_out = lits_of(&cur);
-    (cur, rep)
+    (cur, cur_anc, rep)
 }
 
 #[cfg(test)]
@@ -556,6 +621,35 @@ mod compress_tests {
         let (out2, _) = compress(gates2.clone(), 4, &CompressParams::default());
         assert!(equal_on(&gates2, &out2, 4, None));
         assert!(out2.len() <= 4);
+    }
+
+    #[test]
+    fn ancestry_threads_through_compression() {
+        // Two same-target gates that DropLit into one (t0 ^= x1  ⊕  t0 ^= ¬x1
+        // → t0 ^= 1), carrying disjoint ancestor sets: the survivor must hold
+        // the union. A bystander gate keeps its own set untouched.
+        let g1 = conj(0, &[(1, true)]);
+        let g2 = conj(0, &[(1, false)]);
+        let by = conj(2, &[(3, true)]);
+        let gates = vec![g1, g2, by];
+        let anc = vec![vec![0b01u64], vec![0b10u64], vec![0b100u64]];
+        let p = CompressParams::default();
+        let (out, out_anc, rep) = compress_anc(gates.clone(), Some(anc), 4, &p);
+        let out_anc = out_anc.expect("tags threaded");
+        assert_eq!(out.len(), out_anc.len(), "tags must align with output gates");
+        assert!(rep.catalogue_merges >= 1, "the pair must merge");
+        let mut found_union = false;
+        for (g, a) in out.iter().zip(out_anc.iter()) {
+            if g.target == 0 {
+                assert_eq!(a, &vec![0b11u64], "survivor carries the members' union");
+                found_union = true;
+            } else {
+                assert_eq!(a, &vec![0b100u64], "bystander keeps its own set");
+            }
+        }
+        assert!(found_union, "a target-0 survivor must exist (parity X gate)");
+        // Function must be preserved with tags threaded (same pass, same rng).
+        assert!(equal_on(&gates, &out, 4, None));
     }
 
     #[test]

@@ -12,8 +12,9 @@
 //   fcompress --input mixed_fmix.txt --output mixed_fcmp.txt
 //   fcompress --input gadget.txt --output gadget_fcmp.txt --live-wires upper-half
 use clap::Parser;
-use local_mixing::postmix::compress::{CompressParams, compress, lits_of};
+use local_mixing::postmix::compress::{CompressParams, compress_anc, lits_of};
 use local_mixing::postmix::format;
+use local_mixing::postmix::mix::Mixer;
 use local_mixing::postmix::xgate::{XGate, eval_lanes, max_wire};
 use rand::Rng;
 use rand::SeedableRng;
@@ -49,6 +50,16 @@ struct Args {
     no_local_verify: bool,
     #[arg(long, default_value_t = 0)]
     seed: u64,
+    /// Per-gate ancestry sidecar for the INPUT circuit (written by fmix
+    /// --anc-out; gate count must match). Sets are threaded through
+    /// compression: gathering permutes them, every survivor of a reduced
+    /// group carries the members' UNION, pruned gates drop out.
+    #[arg(long)]
+    anc_in: Option<String>,
+    /// Write the compressed circuit's ancestry sidecar (same universe header
+    /// as the input sidecar). Requires --anc-in. Works in dry-run mode too.
+    #[arg(long)]
+    anc_out: Option<String>,
 }
 
 fn parse_live(spec: &str, wires: usize) -> Option<Vec<bool>> {
@@ -115,9 +126,31 @@ fn main() {
         local_verify: !args.no_local_verify,
         seed: args.seed,
     };
+    assert!(
+        args.anc_out.is_none() || args.anc_in.is_some(),
+        "--anc-out needs --anc-in: there is no ancestry to thread otherwise"
+    );
+    let sidecar = args.anc_in.as_ref().map(|p| {
+        let sc = Mixer::read_anc_sidecar(p).expect("read ancestry sidecar");
+        assert_eq!(
+            sc.sets.len(),
+            gates.len(),
+            "--anc-in: sidecar has {} sets but the input circuit has {} gates",
+            sc.sets.len(),
+            gates.len()
+        );
+        println!(
+            "[fcompress] ancestry threaded: {} mode, universe m={}, K={}",
+            if sc.sampled { "sampled" } else { "exact" },
+            sc.m,
+            sc.tracers.len()
+        );
+        sc
+    });
     let original = gates.clone();
     let t0 = std::time::Instant::now();
-    let (out, rep) = compress(gates, wires, &params);
+    let anc_sets = sidecar.as_ref().map(|sc| sc.sets.clone());
+    let (out, out_anc, rep) = compress_anc(gates, anc_sets, wires, &params);
     let secs = t0.elapsed().as_secs_f64();
 
     // Sampled global check against the untouched input, on live wires only.
@@ -155,5 +188,41 @@ fn main() {
         println!("[fcompress] wrote {} gates to {}", out.len(), path);
     } else {
         println!("[fcompress] no --output given; result discarded after verification");
+    }
+
+    if let Some(path) = &args.anc_out {
+        use std::fmt::Write as _;
+        let sc = sidecar.expect("asserted above");
+        let tags = out_anc.expect("threaded when anc_in is given");
+        let words = sc.words;
+        let mut o = String::with_capacity(tags.len() * words * 8);
+        let _ = writeln!(
+            o,
+            "fmix-anc 1 {} m={} words={} gates={}",
+            if sc.sampled { "sampled" } else { "exact" },
+            sc.m,
+            words,
+            out.len()
+        );
+        if sc.sampled {
+            let _ = write!(o, "tracers {}", sc.tracers.len());
+            for t in &sc.tracers {
+                let _ = write!(o, " {t}");
+            }
+            o.push('\n');
+        }
+        for row in &tags {
+            let mut first = true;
+            for wi in 0..words {
+                if !first {
+                    o.push(' ');
+                }
+                let _ = write!(o, "{}", row.get(wi).copied().unwrap_or(0));
+                first = false;
+            }
+            o.push('\n');
+        }
+        std::fs::write(path, o).expect("write ancestry sidecar");
+        println!("[fcompress] wrote compressed ancestry sidecar to {path} ({} sets)", tags.len());
     }
 }
