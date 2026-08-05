@@ -119,7 +119,7 @@ crossings under the thermostat; the 2026-08-05 X-panel set every knob:
 \toprule
 knob & value & rationale \\
 \midrule
-damping & $b=3$, $c=1$ & heavy damping EQUALIZES: median descendants up, tail down --- the only knob that lifts the median (judge spread by MEDIAN absolute descendants/span; the Yule tail makes means dishonest); $b>3$ under test \\
+damping & $b=3$, $c=1$ & heavy damping EQUALIZES: median descendants up, tail down --- the only knob that lifts the median (judge spread by MEDIAN absolute descendants/span; the Yule tail makes means dishonest); $b>3$ probed: plateau by $b\approx3.5$ (single-seed deltas $\le0.006$); $b=3$ kept \\
 temperature & target/25 & second-order; medium keeps arrival clean \\
 target \texttt{--xr} & 2 (2.5 = max-spread) & frontier at the arrival peak: realized $1.63/1.84/2.01/2.25\times$ $\rightarrow$ frac($\ge$3 desc) $0.49/0.56/0.60/0.62$, median span $360/464/552/649$ --- decelerating; 2 clears median $\ge 3$ with margin \\
 budget & $6\times$ target; \textbf{stop at arrival} & both median metrics PEAK at the damped equilibrium and the constant-size hold ERODES them (frac$\ge$3: $0.555\to0.498$ over $+20$M moves) --- the hold moves spread from the median to the tail; no moves-for-size trade exists past arrival \\
@@ -152,7 +152,7 @@ II & \texttt{--expand} & 2 & more peak size for more re-encoding room \\
 II & \texttt{--hold} & 30 effs & more/less generation dose \\
 III.1 & (none exposed) & shipped defaults & --- \\
 III.2 & \texttt{--xr} & 2 & 2.5 for max median spread; decelerates above \\
-III.2 & \texttt{--xb/--xc/--xtdiv} & 3 / 1 / 25 & X-panel-calibrated; $b>3$ probe pending \\
+III.2 & \texttt{--xb/--xc/--xtdiv} & 3 / 1 / 25 & X-panel-calibrated; damping plateaus by $b\approx3.5$ \\
 III.2 & \texttt{--xmoves} & $6\times$ target & never linger --- arrival is the peak \\
 \bottomrule
 \end{tabular}

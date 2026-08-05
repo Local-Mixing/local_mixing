@@ -94,7 +94,7 @@ under the thermostat. The 2026-08-05 X-panel set every knob:
 
 | knob | value | rationale |
 |---|---|---|
-| damping | b=3, c=1 | heavy damping EQUALIZES: median descendants up, tail down — the only knob that lifts the median (spread must be judged by MEDIAN absolute descendants/span; the Yule tail makes means dishonest). b>3 under test |
+| damping | b=3, c=1 | heavy damping EQUALIZES: median descendants up, tail down — the only knob that lifts the median (spread must be judged by MEDIAN absolute descendants/span; the Yule tail makes means dishonest). b>3 probed: plateau by b≈3.5 (single-seed deltas ≤0.006); b=3 kept |
 | temperature | target/25 | second-order; medium keeps arrival clean |
 | target `--xr` | 2 (2.5 = max-spread) | frontier at the arrival peak: realized 1.63/1.84/2.01/2.25× → frac(≥3 desc) 0.49/0.56/0.60/0.62, median span 360/464/552/649 — decelerating; xr 2 clears median ≥ 3 with margin |
 | budget | 6 × target, **stop at arrival** | both median metrics PEAK when size reaches equilibrium and the constant-size hold ERODES them (frac≥3 0.555→0.498 over +20M moves) — the hold moves spread from the median to the tail. There is no moves-for-size trade past arrival |
@@ -125,7 +125,7 @@ the tool defaults; nothing here is tuned per run.
 | II | `--hold` | 30 effs | more/less generation dose |
 | III.1 | (none exposed) | shipped split-stage defaults | — |
 | III.2 | `--xr` | 2 | 2.5 for max median spread; frontier decelerates above |
-| III.2 | `--xb/--xc/--xtdiv` | 3 / 1 / 25 | X-panel-calibrated; b>3 probe pending |
+| III.2 | `--xb/--xc/--xtdiv` | 3 / 1 / 25 | X-panel-calibrated; damping plateaus by b≈3.5 |
 | III.2 | `--xmoves` | 6×target | never linger — arrival is the peak |
 
 Ops: run production sizes on the server; export the store env vars in the
