@@ -1,0 +1,313 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.95in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[T1]{fontenc}
+\newcommand{\code}[1]{\texttt{#1}}
+\title{How \code{fmix} Decides a Parameter's Value\\
+\large The layered-knob model, as of \code{e3cf2b54}}
+\author{local\_mixing working notes}
+\date{2026-08-05}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+A DB knob in \code{fmix} exists at up to three levels of \emph{specificity}
+(base, mode, mode$+$geometry) and can be set from three \emph{sources}
+(explicit command line, a named profile, the shipped defaults). Until
+2026-08-05 those two dimensions were conflated and encoded in sentinel
+values, with the result that a shipped default could silently outrank an
+explicit flag --- \code{-{}-db-mode comp -{}-s-db 20} ran at 12. This note
+states the replacement rule, shows where each step happens, and gives eleven
+worked examples taken verbatim from the binary. Everything here is DB-move
+knobs; the twist, thermostat and profile knobs are unchanged.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{The two dimensions}
+
+\paragraph{Specificity} --- how narrowly a knob is scoped.
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+level & example & applies to \\
+\midrule
+base & \code{-{}-s-db} & every round \\
+mode & \code{-{}-s-db-comp} & COMP rounds \\
+mode $+$ geometry & \code{-{}-s-db-comp-ctg} & COMP rounds that drew a contiguous window \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Source} --- where a value came from.
+
+\begin{center}\small
+\begin{tabular}{ll}
+\toprule
+source & example \\
+\midrule
+explicit CLI & the user typed \code{-{}-s-db 20} \\
+preset & \code{-{}-gss} (over \code{-{}-phase-a}) \\
+shipped default & what \code{fmix} does when told nothing \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The old scheme had no representation for \emph{source}. Overrides were
+sentinel-encoded --- \code{0} meant ``unset'' for a \code{usize}, negative for
+an \code{f64} --- so ``the user asked for 12'' and ``12 is merely the
+default'' were the same bit pattern. That works only while the shipped default
+\emph{is} the sentinel. Commit \code{e45311ab} gave \code{s\_db\_comp} a
+default of 12 and \code{p\_convex\_comp} a default of 0.9, at which point both
+fired unconditionally, and any explicit \code{-{}-s-db} / \code{-{}-p-convex}
+was silently discarded in COMP rounds. Two arms of the measurement campaign
+were mis-run this way before it was noticed.
+
+A second, quieter casualty: \code{0} is a \emph{legitimate} value for some of
+these knobs. \code{-{}-p-mingen-comp 0} is exactly what the GSS profile wants,
+and under a sentinel scheme it was inexpressible.
+
+\section{The rule}
+
+Sources are ranked, highest first:
+
+\begin{center}
+\fbox{\parbox{0.9\textwidth}{\centering
+explicit CLI \quad$>$\quad preset (\code{-{}-gss} over \code{-{}-phase-a})
+\quad$>$\quad shipped default}}
+\end{center}
+
+Within a source, the more specific level wins at use time (mode$+$geometry
+$\rightarrow$ mode $\rightarrow$ base). And one exception, which is the entire
+reason the change exists:
+
+\begin{center}
+\fbox{\parbox{0.9\textwidth}{\centering \textbf{A shipped MODE-level default
+is withheld when the corresponding BASE knob is given explicitly.}}}
+\end{center}
+
+So \code{-{}-db-mode comp -{}-s-db 20} now runs COMP at 20. The justification
+is that a shipped default is not a statement about \emph{this} run, and must
+not outrank one that is.
+
+\subsection{Presets are deliberately not withheld the same way}
+
+\code{-{}-gss -{}-s-db 15} moves MIX to 15 and leaves COMP at the profile's
+12/6. A named profile is a coherent unit whose mode-level choices are
+intentional --- unlike a shipped default, it \emph{is} a statement about this
+run. To move COMP as well, say \code{-{}-s-db-comp}. This asymmetry is a
+judgement call and is reversible in two lines
+(\code{DbLayer::shipped}'s \code{base\_given} treatment applied to the preset
+layer as well).
+
+\section{Where each step happens}
+
+Deciding \emph{which source} a value came from is the CLI's job, because only
+there does clap's \code{ValueSource} distinguish a typed flag from a default.
+Deciding \emph{which specificity level} applies is the mixer's job, because
+only there is the live mode and the drawn geometry known.
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+step & where & what \\
+\midrule
+1 & \code{fmix.rs}, \code{DbLayer} & compose sources into one layer \\
+2 & \code{fmix.rs}, validation & reject knobs that cannot fire \\
+3 & \code{fmix.rs}, banner & print the settled table \\
+4 & \code{mix.rs}, \code{MixParams::db\_knobs} & resolve specificity, per round \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Step 1 --- composing sources}
+
+\code{DbLayer} is eleven \code{Option} fields, one per knob. \code{None} means
+``this layer has no opinion''. Composition is \code{a.over(b)}: \code{a} wins
+wherever it has an opinion, \code{b} fills the rest. The whole resolution is
+one line:
+
+\begin{center}
+\code{let db = cli.over(preset).over(DbLayer::shipped(base\_given));}
+\end{center}
+
+\code{cli} maps a typed flag to \code{Some}. For the four base knobs that
+still carry a \code{default\_value\_t} this uses \code{given(name)}; for the
+seven overrides the CLI type is itself \code{Option}, so \code{Some} already
+means ``the user asked''.
+
+\code{-{}-no-db-prefixes} folds in here as \emph{explicitly false} rather than
+surviving as a parallel mechanism.
+
+Presets contribute a layer rather than mutating \code{args}. That matters:
+under the old in-place mutation nothing downstream could tell ``the user asked
+for 12'' from ``\code{-{}-gss} set 12''.
+
+\subsection{Step 4 --- resolving specificity}
+
+\code{MixParams::db\_knobs(mode)} returns the five settled values for a mode.
+The four \code{Mixer::active\_*} accessors are thin wrappers over it, so there
+is exactly one implementation of the fall-through.
+
+One asymmetry worth knowing: \textbf{COMP contiguous falls back to COMP
+convex, not straight to the base.} A run that said \code{-{}-s-db-comp 7} meant
+it for both geometries; only \code{-{}-s-db-comp-ctg} separates them.
+
+\section{What the layers contain}
+
+\begin{table}[h]\centering\small
+\begin{tabular}{lrrr}
+\toprule
+knob & shipped & \code{-{}-phase-a} & \code{-{}-gss} \\
+\midrule
+\code{s\_db} (base) & 9 & --- & 6 \\
+\code{p\_convex} (base) & 0.4 & --- & 0.5 \\
+\code{p\_mingen} (base) & 0.8 & 0.6 & 0.5 \\
+\code{db\_prefixes} (base) & on & --- & --- \\
+\code{s\_db\_comp} & 12$^\dagger$ & --- & 12 \\
+\code{s\_db\_comp\_ctg} & --- & --- & 6 \\
+\code{p\_convex\_comp} & 0.9$^\dagger$ & --- & 0.95 \\
+\code{p\_mingen\_comp} & --- & 0 & 0 \\
+\code{db\_prefixes\_mix} & --- & --- & off \\
+\code{db\_prefixes\_comp} & --- & --- & on \\
+\code{s\_db\_ctg} & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+\caption{$^\dagger$ withheld when \code{-{}-s-db} / \code{-{}-p-convex} is
+given explicitly. A dash means the layer has no opinion.}
+\end{table}
+
+\code{-{}-gss} is deliberately silent on \code{p\_mix}: the MIX/COMP balance is
+layer 2's lever, and the profile is meant to be the right per-mode setting at
+every \code{p\_mix}.
+
+\subsection{What is NOT layered}
+
+The presets also set three booleans, and these still use the older
+\code{given()}-guarded assignment rather than \code{DbLayer}:
+\code{curated}, \code{curated\_in\_comp} (both \code{-{}-gss}) and
+\code{db\_advance} (both presets). They are not part of the specificity
+lattice --- there is no ``curated for COMP only'' --- so folding them in would
+have bought nothing. \code{-{}-no-curated} and friends still apply first, so
+the preset blocks read settled values.
+
+Twist knobs, the thermostat, and the \code{-{}-profile} controller are
+untouched by this change.
+
+\section{Worked examples}
+
+Taken verbatim from the \code{DB effective per mode} banner of
+\code{e3cf2b54}. \code{pcv} $=$ \code{p\_convex}, \code{pmg} $=$
+\code{p\_mingen}, \code{dsc} $=$ descent.
+
+\begin{table}[h]\centering\footnotesize
+\begin{tabular}{lll}
+\toprule
+command line & MIX & COMP \\
+\midrule
+(bare defaults) & pcv 0.4, 9/9, pmg 0.8, dsc on & pcv 0.9, 12/12, pmg 0.8, dsc on \\
+\code{-{}-db-mode comp -{}-s-db 20} & pcv 0.4, \textbf{20/20}, pmg 0.8, dsc on & pcv 0.9, \textbf{20/20}, pmg 0.8, dsc on \\
+\code{-{}-p-convex 1.0} & \textbf{pcv 1.0}, 9/9, pmg 0.8, dsc on & \textbf{pcv 1.0}, 12/12, pmg 0.8, dsc on \\
+\code{\dots -{}-s-db 20 -{}-s-db-comp 7} & pcv 0.4, 20/20, pmg 0.8, dsc on & pcv 0.9, \textbf{7/7}, pmg 0.8, dsc on \\
+\code{-{}-gss} & pcv 0.5, 6/6, pmg 0.5, \textbf{dsc off} & pcv 0.95, \textbf{12/6}, pmg 0, dsc on \\
+\code{-{}-gss -{}-s-db 15} & pcv 0.5, \textbf{15/15}, pmg 0.5, dsc off & pcv 0.95, \textbf{12/6}, pmg 0, dsc on \\
+\code{-{}-gss -{}-s-db-comp 20} & pcv 0.5, 6/6, pmg 0.5, dsc off & pcv 0.95, \textbf{20/6}, pmg 0, dsc on \\
+\code{-{}-phase-a} & pcv 0.4, 9/9, \textbf{pmg 0.6}, dsc on & pcv 0.9, 12/12, \textbf{pmg 0}, dsc on \\
+\code{-{}-phase-a -{}-gss} & pcv 0.5, 6/6, pmg 0.5, dsc off & pcv 0.95, 12/6, pmg 0, dsc on \\
+\code{-{}-no-db-prefixes} & pcv 0.4, 9/9, pmg 0.8, \textbf{dsc off} & pcv 0.9, 12/12, pmg 0.8, \textbf{dsc off} \\
+\code{-{}-p-mingen-comp 0} & pcv 0.4, 9/9, pmg 0.8, dsc on & pcv 0.9, 12/12, \textbf{pmg 0}, dsc on \\
+\bottomrule
+\end{tabular}
+\caption{$s_{db}$ shown as convex/contiguous.}
+\end{table}
+
+Five of these repay a second look.
+
+\textbf{Row 2} is the bug that motivated the change: COMP now honours the
+explicit \code{-{}-s-db 20} instead of its own defaulted 12. \textbf{Row 3} is
+the same story for \code{p\_convex}.
+
+\textbf{Row 4} shows the exception is narrow --- an explicit mode knob still
+wins over an explicit base knob, because that is a specificity contest within
+one source, not a source contest.
+
+\textbf{Row 6} shows the preset asymmetry: \code{-{}-s-db 15} moves MIX but
+leaves the GSS profile's COMP block intact.
+
+\textbf{Row 7} is the COMP-contiguous fallback in action: overriding
+\code{-{}-s-db-comp} moves COMP convex to 20, while contiguous stays at the
+profile's explicit 6 --- because \code{s\_db\_comp\_ctg} is set by the preset
+and is more specific.
+
+\textbf{Row 9} shows GSS sits above phase A where they overlap
+(\code{p\_mingen} 0.5 not 0.6), and that phase A's non-DB block still applies.
+
+\section{Reading a run}
+
+Every DB run prints one line:
+
+\begin{center}\footnotesize
+\code{[fmix] DB effective per mode: MIX p\_convex=0.5 s\_db(cvx)=6 s\_db(ctg)=6 p\_mingen=0.5 descent=false | COMP \dots}
+\end{center}
+
+This is produced by calling \code{MixParams::db\_knobs} --- the same function
+the mixer calls --- so it is what runs, by construction. The previous banner
+echoed the base flags and separately re-derived the fall-through, which made it
+a second copy of the rules, free to drift. \textbf{When auditing a run, read
+this line, not the flags in the launch script.}
+
+\section{Errors}
+
+A knob that cannot possibly fire is now a hard error rather than a silent
+no-op. With the overlay off (\code{p\_mix < 0}) only one mode ever runs, so
+the other mode's overrides can never be read:
+
+\begin{center}\footnotesize
+\code{[fmix] ERROR: -{}-s-db-comp can never take effect: -{}-db-mode mix with no -{}-p-mix overlay}\\
+\code{means COMP-DB rounds never happen. Drop the flag, or arm the overlay with -{}-p-mix.}
+\end{center}
+
+The message names only the flags actually typed --- it reads the \code{cli}
+layer, not the settled values, since after composition every override holds
+something. Silently-inert flags are precisely how the shadowing bug survived
+two days.
+
+\section{Compatibility}
+
+\textbf{This changes what some existing command lines do}, deliberately.
+
+\begin{itemize}
+\item A script passing \code{-{}-s-db N} with \code{-{}-db-mode comp} used to
+get 12 and now gets \code{N}. Likewise \code{-{}-p-convex} used to get 0.9 and
+now gets what it says.
+\item Scripts that passed both the base and the mode knob explicitly are
+unaffected.
+\item \textbf{Any calibration performed before 2026-08-05 that relied on a
+base knob in COMP mode was measuring something other than what its command
+line said.} Re-check before trusting it.
+\item A \emph{resume} rebuilds its parameters from the command line, so a
+resumed run picks up the new rule. The banner makes this auditable.
+\end{itemize}
+
+\section{Where to look}
+
+\begin{center}\small
+\begin{tabular}{ll}
+\toprule
+\code{src/bin/fmix.rs} & \code{DbLayer}, \code{DbLayer::shipped/gss/phase\_a}, the \code{cli.over(\dots)} line, \\
+ & the inert-knob check, the effective-per-mode banner \\
+\code{src/postmix/mix.rs} & \code{MixParams::db\_knobs}, \code{ResolvedDbKnobs}, the \code{active\_*} accessors \\
+\code{docs/POSTMIX\_MANUAL.md} & \S2.1.2 (per-geometry, per-mode), \S2.1.3 (the GSS profile) \\
+tests & \code{db\_knobs\_layering\_rules}, \code{s\_db\_resolves\_by\_mode\_and\_geometry}, \\
+ & \code{prefix\_descent\_resolves\_per\_mode} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}
