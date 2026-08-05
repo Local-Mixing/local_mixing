@@ -1,0 +1,636 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.9in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[T1]{fontenc}
+\newcommand{\code}[1]{\texttt{#1}}
+\title{The DB Move, Measured End to End\\
+\large Geometry, Descent, Window Length, Curation --- and the GSS Profile}
+\author{local\_mixing working notes}
+\date{2026-08-05}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note reports a campaign of roughly seventy fmix runs that measured the
+frozen-store DB move along four axes --- window \emph{geometry} (convex vs
+contiguous), \emph{prefix descent}, \emph{window length} $s_{db}$, and
+\emph{curation} --- in both COMP and MIX modes, on material ranging from
+fresh gadget output to near-minimal circuits. Four results dominate.
+(1)~Convex beats contiguous on every axis in COMP: $16\times$ the gates
+removed, $7\times$ the ancestry transport, in $1/31$ the wall time; the
+shipped default was inverted and has been fixed. (2)~Prefix descent is not a
+size lever but a \emph{transport} lever, worth $600\times$ on ancestry while
+being $6\times$ \emph{worse} on size per CPU-second. (3)~The MIX-DB move is a
+mean-reversion operator on window length with a fixed point near~5: short
+windows expand, long windows compress, and $s_{db}$ is therefore a
+net-growth-rate knob rather than a search-width knob. (4)~The curated store
+is a \emph{wide-window} store --- worthless at length~1 and worth $19\times$
+at length~20. We close with the GSS profile, the settings for running fmix on
+a gadgetized sliced sandwich, and with a section on the measurement traps
+this campaign walked into, which we think is the most reusable part.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{What was measured, and on what}
+
+All runs use the frozen store \code{frozen\_m1\_m11} with the curated store
+\code{frozen\_curated\_m1\_m11} under the \code{legacy-swapped-controls} value
+convention, \code{--db-advance} on throughout, span cap 30, degree cap 9.
+
+\begin{table}[h]\centering\small
+\begin{tabular}{llrl}
+\toprule
+tag & description & gates & character \\
+\midrule
+\code{pre2\_100k} & fresh gadget output & 100{,}000 & 52\% g57 fossils \\
+\code{nR20\_mixed} & profile-run output, near-minimal & 179{,}132 & 99.3\% g57, $d_{\min}\approx0.002$ \\
+\code{cs\_p20\_mixed} & p\_mix 0.20 growth run, never compressed & 202{,}674 & MIX-grown fat \\
+\code{cs\_p35\_mixed} & p\_mix 0.35 growth run, never compressed & 317{,}813 & more fat \\
+\bottomrule
+\end{tabular}
+\caption{Input circuits. The last two were produced by a parallel session's
+p\_mix sweep and are used as ``lots of easily compressible fat''.}
+\end{table}
+
+\section{Part I: the 32-arm COMP factorial}
+
+\subsection{Design}
+
+A full $2^5$ factorial on \code{pre2\_100k}: $s_{db}\in\{12,13\}$ $\times$
+descent on/off $\times$ convex/contiguous $\times$ reshuffle on/off $\times$
+curated on/off. 500k moves, seed 909, \code{--db-mode comp --p-comp 1.0
+--p-any 0.0}, \code{--anc-samples 256}. All 16 convex arms and all 8
+no-descent contiguous arms completed; the 8 descent$\times$contiguous arms are
+$\sim$30$\times$ slower and are reported separately.
+
+\subsection{Convex half: main effects}
+
+\begin{table}[h]\centering\small
+\begin{tabular}{lrrrr}
+\toprule
+factor (mean of 8) & gates removed & DB attempts & gates/hit & bits/splice \\
+\midrule
+descent on / off & 15{,}290 / 8{,}748 & 4{,}853{,}272 / 469{,}074 & 0.060 / 0.286 & 0.232 / 0.355 \\
+$s_{db}$ 13 / 12 & 11{,}906 / 12{,}133 & 2{,}785{,}496 / 2{,}536{,}850 & 0.177 / 0.169 & 0.295 / 0.293 \\
+reshuffle on / off & 12{,}284 / 11{,}754 & 2{,}641{,}481 / 2{,}680{,}865 & 0.172 / 0.173 & 0.288 / 0.299 \\
+curated on / off & 12{,}077 / 11{,}961 & 2{,}629{,}091 / 2{,}693{,}255 & 0.159 / 0.187 & \textbf{0.562 / 0.025} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The effects are additive with no sign reversals, and the best single cell is
+also the composite of all four: \code{s\_db 12, convex, descent, reshuffle,
+curated} produced the smallest circuit of all sixteen (84{,}321 from 100{,}000)
+\emph{and} the second-highest ancestry.
+
+\subsection{The mixing channel: descent is worth $600\times$}
+
+\begin{table}[h]\centering\small
+\begin{tabular}{lrrrrrr}
+\toprule
+factor (mean of 8) & est\_anc & cov & ent & reach & carriers & gen\_r \\
+\midrule
+descent on / off & \textbf{26{,}820 / 44} & 0.456 / 0.037 & 0.668 / 0.085 & 0.448 / 0.025 & 0.807 / 0.093 & 0.859 / 0.331 \\
+$s_{db}$ 13 / 12 & 13{,}371 / 13{,}492 & 0.245 / 0.248 & 0.373 / 0.381 & 0.236 / 0.237 & 0.445 / 0.455 & 0.591 / 0.599 \\
+reshuffle on / off & 13{,}972 / 12{,}892 & 0.251 / 0.242 & 0.383 / 0.371 & 0.240 / 0.233 & 0.457 / 0.443 & 0.603 / 0.588 \\
+curated on / off & 13{,}955 / 12{,}909 & 0.255 / 0.238 & 0.383 / 0.371 & 0.244 / 0.229 & 0.459 / 0.441 & 0.609 / 0.582 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Here \code{est\_anc} is the mean number of distinct \emph{input} gates each
+current gate descends from (computed as $\text{desc\_mean}\times m/\text{size}$
+over $K{=}256$ tracers). So the descent arms have every gate carrying lineage
+from $\sim$28\% of the 100k input, while the no-descent arms carry lineage
+from $\sim$44 gates --- essentially nothing. \textbf{Without descent, COMP is
+a size-only pass.}
+
+\subsection{Descent is a transport lever, not a size lever}
+
+The two axes point in opposite directions per unit CPU:
+
+\begin{center}\small
+\begin{tabular}{lrr}
+\toprule
+ & size & ancestry \\
+\midrule
+descent & 9.6 gates/s & 17.9 anc/s \\
+no descent & \textbf{58 gates/s} & 0.29 anc/s \\
+ratio & $6\times$ worse & $60\times$ better \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The size trajectories explain it. Descent front-loads and exhausts; no-descent
+decays gently and \emph{overtakes it on marginal rate} by move 500k:
+
+\begin{center}\small
+\begin{tabular}{rrrrr}
+\toprule
+moves & descent removed & $\Delta$/50k & no-descent removed & $\Delta$/50k \\
+\midrule
+50k & 5{,}159 & 5{,}159 & 1{,}771 & 1{,}771 \\
+100k & 8{,}101 & 2{,}942 & 3{,}012 & 1{,}241 \\
+200k & 11{,}325 & 1{,}257 & 5{,}314 & 974 \\
+300k & 13{,}238 & 913 & 7{,}033 & 728 \\
+400k & 14{,}687 & 614 & 8{,}319 & 578 \\
+500k & \textbf{15{,}679} & \textbf{427} & 9{,}350 & \textbf{533} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Consequence: for \emph{compression at all costs} under a CPU budget, drop
+descent and spend the savings on moves. For compression \emph{without
+compromising mixing}, descent is not optional.
+
+\subsection{Curated in COMP: the contract holds on size, fails on entropy}
+
+Curated is worth $+1.0\%$ on size --- confirming the ``COMP is regular-only''
+contract on that axis --- but it also uses \emph{2.4\% fewer} attempts (it
+hits earlier in the cascade), gives $+8.1\%$ ancestry in all four matched
+descent pairs, and multiplies selection entropy by $22\times$. Its extra hits
+are size-neutral re-encodings, visible in gates/hit ($0.159$ with vs $0.187$
+without). It supplies 38--41\% of successful splices under descent and
+61--62\% without. \textbf{Recommendation: reverse the contract} --- the
+original was written on the size axis alone.
+
+\subsection{Contiguous: 8 matched no-descent pairs}
+
+\begin{table}[h]\centering\footnotesize
+\begin{tabular}{llrrrrrrrrr}
+\toprule
+cell & geom & final & rm & hit\% & g/hit & bits & est\_anc & carr & gen\_r & wall \\
+\midrule
+s12 noshuf nocur & ctg & 99{,}586 & 414 & 2.56 & 0.033 & 0.004 & 3.5 & 0.009 & 0.142 & 3{,}852s \\
+                 & cvx & 91{,}520 & 8{,}480 & 5.86 & 0.306 & 0.035 & 37.0 & 0.079 & 0.318 & 152s \\
+s12 noshuf cur & ctg & 99{,}578 & 422 & 1.91 & 0.045 & 1.585 & 3.2 & 0.008 & 0.155 & 3{,}968s \\
+               & cvx & 91{,}395 & 8{,}605 & 7.30 & 0.253 & 0.677 & 49.4 & 0.105 & 0.350 & 149s \\
+s12 shuf nocur & ctg & 99{,}273 & 727 & 3.65 & 0.041 & 0.003 & 10.0 & 0.024 & 0.212 & 4{,}993s \\
+               & cvx & 90{,}790 & 9{,}210 & 6.63 & 0.296 & 0.034 & 42.4 & 0.093 & 0.312 & 113s \\
+s12 shuf cur & ctg & 99{,}291 & 709 & 2.74 & 0.053 & 1.467 & 8.9 & 0.021 & 0.228 & 5{,}033s \\
+             & cvx & 90{,}650 & 9{,}350 & 8.03 & 0.252 & 0.671 & 69.1 & 0.133 & 0.378 & 160s \\
+s13 noshuf nocur & ctg & 99{,}580 & 420 & 2.35 & 0.037 & 0.004 & 2.6 & 0.007 & 0.100 & 4{,}634s \\
+                 & cvx & 91{,}877 & 8{,}123 & 5.35 & 0.320 & 0.034 & 25.3 & 0.057 & 0.287 & 172s \\
+s13 noshuf cur & ctg & 99{,}568 & 432 & 1.84 & 0.048 & 1.595 & 2.7 & 0.007 & 0.111 & 4{,}690s \\
+               & cvx & 91{,}693 & 8{,}307 & 6.64 & 0.267 & 0.684 & 41.5 & 0.089 & 0.334 & 172s \\
+s13 shuf nocur & ctg & 99{,}414 & 586 & 3.31 & 0.037 & 0.003 & 9.2 & 0.022 & 0.218 & 5{,}540s \\
+               & cvx & 91{,}132 & 8{,}868 & 5.87 & 0.320 & 0.036 & 34.1 & 0.079 & 0.308 & 141s \\
+s13 shuf cur & ctg & 99{,}295 & 705 & 2.46 & 0.059 & 1.465 & 8.0 & 0.019 & 0.218 & 5{,}728s \\
+             & cvx & 90{,}956 & 9{,}044 & 7.10 & 0.273 & 0.668 & 52.7 & 0.111 & 0.360 & 185s \\
+\midrule
+\textbf{mean} & \textbf{ctg} & & \textbf{552} & 2.60 & 0.044 & 0.766 & \textbf{6.0} & 0.015 & 0.173 & \textbf{4{,}805s} \\
+              & \textbf{cvx} & & \textbf{8{,}748} & 6.60 & 0.286 & 0.355 & \textbf{43.9} & 0.093 & 0.331 & \textbf{156s} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three points. First, convex wins size by $16\times$ and transport by $7\times$
+in \emph{every} pair. Second, contiguous costs $31\times$ the wall time at
+essentially identical attempt counts (487k vs 470k), so the per-attempt
+canonicalization is $\sim$30$\times$ dearer --- \textbf{the damage is window
+width, not the span cap}, since contiguous skips only 0.5--3.6\% of attempts
+at the cap. Third, contiguous's one apparent win --- per-splice entropy
+($0.766$ vs $0.355$) --- \textbf{does not survive aggregation}: convex lands
+$2.4\times$ more splices, so it delivers more \emph{total} entropy in all 8
+pairs (e.g.\ 23{,}021 vs 14{,}881 bits at s12/noshuf/cur).
+
+\subsection{Contiguous with descent}
+
+\begin{center}\small
+\begin{tabular}{lrrrr}
+\toprule
+arm & final & removed & est\_anc & carriers \\
+\midrule
+s12 noshuf cur & 98{,}959 & 1{,}041 & 195.0 & 0.228 \\
+s12 noshuf nocur & 99{,}027 & 973 & 221.7 & 0.248 \\
+s12 shuf cur & 97{,}372 & 2{,}628 & 4{,}269.9 & 0.585 \\
+s12 shuf nocur & 97{,}325 & 2{,}675 & \textbf{6{,}372.7} & 0.606 \\
+s13 noshuf cur & 98{,}997 & 1{,}003 & 190.2 & 0.221 \\
+s13 noshuf nocur & 99{,}030 & 970 & 235.5 & 0.247 \\
+s13 shuf cur$^\ast$ & 97{,}687 & 2{,}313 & 2{,}686.6 & 0.557 \\
+s13 shuf nocur$^\ast$ & 97{,}748 & 2{,}252 & 3{,}650.3 & 0.576 \\
+\bottomrule
+\end{tabular}
+\end{center}
+{\small $^\ast$ stopped at 450k of 500k moves.}
+
+Descent lifts contiguous a lot in relative terms (removals $2.7$--$3.7\times$,
+ancestry up to $640\times$) but it remains far behind convex-with-descent
+(14{,}948--15{,}679 removed, est\_anc 23{,}704--29{,}487). Two notes worth
+carrying: reshuffle is contiguous's \emph{dominant} lever (est\_anc
+$222\rightarrow6{,}373$, a $29\times$ swing), and \textbf{curated \emph{hurts}
+ancestry in contiguous} --- negative in all four pairs --- the exact opposite
+of its $+8\%$ in convex.
+
+\subsection{A bug: the shipped COMP sampler was inverted}
+
+\code{--p-convex-comp} shipped at \textbf{0.1} from the 2026-08-03 defaults
+commit, i.e.\ 90\% contiguous, when the intent was the reverse. Every run
+taking the COMP default before 2026-08-04 spent $\sim$90\% of its COMP DB
+budget on the geometry that loses on every axis above. Fixed to 0.9 in
+\code{46350179}. MIX's \code{--p-convex 0.4} was left alone: no MIX run had
+ever varied geometry, so there was no measurement behind it either way.
+
+\section{Part II: per-length structure}
+
+\subsection{Method}
+
+With \code{--no-db-prefixes} the window length is drawn \emph{uniformly} from
+$1..s_{db}$, so ``hit rate at length $k$'' is a genuine per-length conversion
+rate. With descent on, the same counter would be conditional on every longer
+length having already failed. Every table in this part uses the uniform draw,
+$s_{db}=20$, 600k moves --- about 30k independent attempts per length.
+
+\subsection{COMP, convex, four circuits: fat changes amplitude, not width}
+
+\begin{table}[h]\centering\small
+\begin{tabular}{lrrrr}
+\toprule
+len & base (100k fresh) & nR20 (179k minimal) & fat200 (203k) & fat318 (318k) \\
+\midrule
+3 & 336 & 20 & 1{,}348 & 2{,}912 \\
+4 & 541 & 49 & 1{,}917 & 4{,}027 \\
+5 & 960 & 93 & 4{,}163 & 8{,}846 \\
+6 & 1{,}274 & 235 & 5{,}438 & 11{,}105 \\
+7 & \textbf{1{,}686} & 362 & 7{,}689 & 15{,}304 \\
+8 & 1{,}398 & \textbf{433} & \textbf{8{,}769} & \textbf{17{,}522} \\
+9 & 812 & 178 & 6{,}573 & 15{,}403 \\
+10 & 347 & 88 & 4{,}620 & 12{,}353 \\
+12 & 52 & 42 & 2{,}125 & 6{,}883 \\
+14 & 12 & 38 & 873 & 3{,}642 \\
+16 & 0 & 40 & 348 & 1{,}851 \\
+18 & 0 & 12 & 158 & 1{,}049 \\
+20 & 0 & 26 & 102 & 367 \\
+\midrule
+total & 7{,}638 & 1{,}731 & 50{,}029 & 122{,}324 \\
+\% of circuit & 7.6\% & \textbf{1.0\%} & 24.7\% & \textbf{38.5\%} \\
+peak length & 7 & 8 & 8 & 8 \\
+50\% of mass by & 7 & 8 & 8 & 9 \\
+share from len $>$14 & 0.0\% & 5.4\% & 3.3\% & 6.9\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The compressible-fat hypothesis is confirmed on \emph{volume}: MIX-grown
+material is 25--38\% compressible, near-minimal material 1.0\%, a $38\times$
+spread. But the \emph{useful-width profile barely moves}: across that range
+the peak shifts by one gate and the median by two. This refuted our prior
+expectation that the fresh-material peak at 7 was an artifact of picked-over
+material. What fat buys is amplitude, plus a modest long tail (lengths 13--20
+give 14.5\% of \code{fat318}'s removals versus 0.5\% of \code{base}'s).
+
+Weighting by draw cost, the efficiency-optimal $s_{db}$ is \textbf{8 for lean
+material and 10--12 for fat} --- landing on the factorial's $s_{db}=12$ winner
+and confirming it was not an artifact of one input.
+
+\subsection{COMP, contiguous, same four circuits}
+
+\begin{table}[h]\centering\small
+\begin{tabular}{lrrrrrr}
+\toprule
+circuit & in & cvx out & cvx removed & ctg out & ctg removed & cvx/ctg \\
+\midrule
+base & 100{,}000 & 92{,}362 & 7{,}638 (7.6\%) & 99{,}612 & 388 (0.4\%) & \textbf{19.7$\times$} \\
+nR20 & 179{,}132 & 177{,}401 & 1{,}731 (1.0\%) & 178{,}773 & 359 (0.2\%) & 4.8$\times$ \\
+fat200 & 202{,}674 & 152{,}645 & 50{,}029 (24.7\%) & 186{,}706 & 15{,}968 (7.9\%) & 3.1$\times$ \\
+fat318 & 317{,}813 & 195{,}489 & 122{,}324 (38.5\%) & 290{,}553 & 27{,}260 (8.6\%) & 4.5$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Convex wins everywhere, but the gap \emph{narrows sharply with fat}: 19.7$\times$
+on lean fresh material, 3--4.5$\times$ on MIX-grown circuits. Contiguous does
+find real compression when obvious fat exists; it collapses on picked-over
+material. Two structural differences from the convex ladder: contiguous
+\emph{is} span-crushed above $\sim$11 at this $s_{db}$ (skips exceed 50\% by
+length 13--14 and reach 94--99\% at 20, against convex's 7.45\% maximum), and
+its useful width \emph{does} move with the material (peak at 3, 9, 11, 10
+across the four circuits, against convex's steady 7, 8, 8, 8). Contiguous
+wall times were 4{,}973--8{,}648s.
+
+\subsection{MIX: the DB move is a mean-reversion operator}
+
+\begin{table}[h]\centering\small
+\begin{tabular}{lrr|lrr}
+\toprule
+len & hit\% & net (\,$-$ = growth) & len & hit\% & net \\
+\midrule
+1 & 99.78 & $-261{,}276$ & 11 & 15.80 & $+21{,}964$ \\
+2 & 99.02 & $-182{,}797$ & 12 & 12.62 & $+21{,}237$ \\
+3 & 97.53 & $-79{,}246$ & 13 & 10.33 & $+20{,}719$ \\
+4 & 91.15 & $-27{,}073$ & 15 & 6.60 & $+17{,}047$ \\
+5 & 75.21 & $\mathbf{+175}$ & 18 & 2.98 & $+10{,}279$ \\
+6 & 67.09 & $+8{,}477$ & 20 & 1.72 & $+6{,}949$ \\
+\bottomrule
+\end{tabular}
+\caption{MIX, convex, curated, $s_{db}=20$, 600k moves. The fixed point is at
+window length $\approx5$.}
+\end{table}
+
+Short windows almost always find a longer spelling and expand; long windows
+almost always find a shorter one and compress. Over the run, lengths 1--4
+added 556k gates and lengths 5--20 clawed back 250k, net $+313$k. So
+\textbf{$s_{db}$ in MIX is a net-growth-rate knob}, not a search-width knob:
+raising it dilutes expansion with self-compression. This is a second lever on
+growth alongside \code{p\_mix}, which the layer-2 controller does not
+currently know about.
+
+Each geometry has its own fixed point: convex$+$curated $\approx5$,
+convex$-$curated $\approx5.5$, contiguous$+$curated $\approx6.5$. That is why
+contiguous grew \emph{more} (483{,}839 vs 412{,}797 final) despite adding about
+the same at lengths 1--2: it compresses less above the crossover.
+
+At $s_{db}=20$ specifically, lengths 7--20 added \textbf{exactly zero} gates
+across all fourteen of them while removing 31{,}372; 98.6\% of all expansion
+came from lengths 1--4 on 20\% of the draws, and 77\% from lengths 1--2 alone.
+
+\subsection{Hit rate by length, all four measured cells}
+
+\begin{table}[h]\centering\small
+\begin{tabular}{lrrrr}
+\toprule
+len & MIX cvx $+$cur & MIX cvx $-$cur & MIX ctg $+$cur & COMP cvx $+$cur \\
+\midrule
+1 & 99.78 & 99.75 & 99.79 & 0.00 \\
+2 & 99.02 & 98.83 & 98.23 & 0.00 \\
+3 & 97.53 & 96.79 & 91.45 & 13.87 \\
+4 & 91.15 & 85.47 & 79.22 & 19.59 \\
+5 & 75.21 & 70.10 & 64.23 & 16.64 \\
+6 & 67.09 & 62.43 & 54.75 & 17.15 \\
+7 & 45.50 & 39.42 & 42.89 & 8.39 \\
+8 & 35.49 & 23.57 & 32.89 & 2.94 \\
+9 & 25.52 & 15.06 & 24.36 & 1.17 \\
+10 & 20.14 & 9.72 & 15.82 & 0.36 \\
+11 & 15.80 & 6.58 & 11.77 & 0.16 \\
+12 & 12.62 & 3.85 & 7.56 & 0.04 \\
+13 & 10.33 & 2.44 & 6.33 & 0.02 \\
+14 & 8.10 & 1.55 & 4.64 & 0.01 \\
+15 & 6.60 & 0.95 & 3.81 & 0.00 \\
+16 & 4.76 & 0.60 & 2.77 & 0.00 \\
+17 & 3.87 & 0.45 & 2.27 & 0.00 \\
+18 & 2.98 & 0.21 & 1.45 & 0.00 \\
+19 & 2.15 & 0.18 & 1.20 & 0.00 \\
+20 & 1.72 & 0.09 & 0.84 & 0.00 \\
+\midrule
+overall & \textbf{36.27} & 30.82 & 32.33 & \textbf{4.02} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+MIX converts $\sim$9$\times$ more often than COMP, which is just the acceptance
+rule (MIX takes any spelling, COMP requires strictly shorter; COMP's 0.00\% at
+lengths 1--2 is structural). \textbf{Curation's entire value is at the wide
+end}: nothing at length~1 (99.78 vs 99.75), $3.3\times$ at length~12,
+$19\times$ at length~20. The curated store is a wide-window store.
+
+Half of all successful splices come from lengths $\le4$ in every MIX arm
+($\le5$ in COMP), on 20--25\% of the draws. Above length~7 the decay is close
+to geometric, $\times0.75$ per gate with curation and $\times0.6$ without.
+
+\section{Part III: MIX $s_{db}\times$ geometry at matched size}
+
+\subsection{Design}
+
+Arms are compared at \emph{matched final size}, not matched moves: MIX with
+pay-random grows, and net growth per unit work falls monotonically with
+$s_{db}$, so a fixed move budget would leave every arm at a different size and
+a low-$s_{db}$ arm would ``win'' transport merely by being bigger. Each arm's
+move budget was calibrated from a measured growth pass so it lands at
+$\approx2\times$ the 100k input.
+
+\subsection{Results}
+
+\begin{table}[h]\centering\footnotesize
+\begin{tabular}{llrrrrrrrrr}
+\toprule
+geo & $s_{db}$ & moves & size & wall & added & removed & mv/kgate & bits/spl & tot bits & bits/kmv \\
+\midrule
+cvx & 3 & \textbf{19{,}000} & 201{,}432 & \textbf{1s} & 101{,}766 & 334 & \textbf{187} & \textbf{3.789} & 70{,}157 & \textbf{3{,}692} \\
+cvx & 5 & 30{,}000 & 202{,}095 & 2s & 103{,}501 & 1{,}406 & 294 & 3.100 & 80{,}364 & 2{,}679 \\
+cvx & 7 & 44{,}000 & 204{,}755 & 3s & 109{,}719 & 4{,}964 & 420 & 2.845 & 91{,}029 & 2{,}069 \\
+cvx & 9 & 60{,}000 & 205{,}961 & 6s & 116{,}686 & 10{,}725 & 566 & 2.752 & 100{,}330 & 1{,}672 \\
+cvx & 12 & 86{,}000 & 205{,}515 & 12s & 126{,}403 & 20{,}888 & 815 & 2.690 & 111{,}562 & 1{,}297 \\
+cvx & 20 & 157{,}000 & 204{,}028 & 71s & 138{,}910 & 34{,}882 & 1{,}509 & 2.632 & \textbf{123{,}075} & 784 \\
+\midrule
+ctg & 3 & 21{,}000 & 199{,}925 & 1s & 100{,}011 & 86 & 210 & 3.774 & 71{,}664 & 3{,}413 \\
+ctg & 5 & 34{,}000 & 203{,}909 & 7s & 104{,}259 & 350 & 327 & 3.055 & 75{,}846 & 2{,}231 \\
+ctg & 7 & 48{,}000 & 205{,}271 & 42s & 106{,}370 & 1{,}099 & 456 & 2.795 & 77{,}508 & 1{,}615 \\
+ctg & 9 & 65{,}000 & 211{,}802 & 165s & 114{,}305 & 2{,}503 & 581 & 2.676 & 83{,}563 & 1{,}286 \\
+ctg & 12 & 93{,}000 & 217{,}039 & 559s & 122{,}293 & 5{,}254 & 795 & 2.610 & 89{,}810 & 966 \\
+ctg & 20 & 171{,}000 & 224{,}427 & 1{,}039s & 135{,}165 & 10{,}738 & 1{,}374 & 2.550 & 99{,}570 & 582 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{The contiguous cost curve is non-monotone}
+
+\begin{center}\small
+\begin{tabular}{lrrrrrr}
+\toprule
+$s_{db}$ & 3 & 5 & 7 & 9 & 12 & 20 \\
+\midrule
+ctg/cvx wall & $1.1\times$ & $3.6\times$ & $12.6\times$ & $29.9\times$ & $\mathbf{47.8\times}$ & $14.7\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The penalty peaks at $s_{db}=12$ and then \emph{falls}, because by $s_{db}=20$
+the span cap rejects $\sim$70\% of contiguous windows \emph{before}
+canonicalization --- the cap acts as a cheap early-out. The expensive regime is
+exactly $s_{db}$ 9--12, which is where the shipped MIX default sat.
+
+\subsection{Verdict, and one thing this cannot answer}
+
+Convex at every $s_{db}$ (cheaper and more total entropy); low $s_{db}$ for
+expansion efficiency (187 vs 1{,}509 moves per 1{,}000 gates grown).
+
+But \textbf{est\_anc stays 1--10 in all twelve arms} --- pure MIX expansion to
+$2\times$ transports essentially no ancestry at any setting. The braiding seen
+in long p\_mix runs (est\_anc 12k--44k, carriers 0.98) comes from sustained
+churn over millions of moves, not from the expansion leg. So this sweep
+answers ``which $s_{db}$ expands best'' and \emph{not} ``which braids best at
+held size''; the latter needs long runs with size pinned.
+
+Under the phase-B reframe, where spread is judged in \emph{absolute} gates,
+reach of $0.001$--$0.004$ on a 205k circuit is 200--820 positions, which is the
+same order as the $\sim$850 that reframe calls meaningful. So these arms are
+not as inert as the fractional numbers suggest.
+
+\section{Part IV: re-reading the p\_mix dose-response}
+
+Eight runs at 2M moves, single DB configuration, only \code{p\_mix} varying:
+
+\begin{table}[h]\centering\small
+\begin{tabular}{lrrrrrrr}
+\toprule
+p\_mix & size & est\_anc & cov & reach & carriers & card & anc $\div$ (mv/gate) \\
+\midrule
+0.05 & 128{,}355 & 44{,}302 & 0.519 & 0.510 & 0.984 & 115.2 & 2{,}840 \\
+0.10 & 150{,}699 & 38{,}844 & 0.461 & 0.446 & 0.988 & 100.6 & 2{,}921 \\
+0.15 & 176{,}429 & 32{,}181 & 0.381 & 0.369 & 0.991 & 83.1 & 2{,}848 \\
+0.20 & 202{,}674 & 26{,}141 & 0.313 & 0.300 & 0.993 & 67.4 & 2{,}649 \\
+0.25 & 235{,}577 & 22{,}119 & 0.268 & 0.254 & 0.994 & 57.0 & 2{,}605 \\
+0.30 & 277{,}404 & 17{,}719 & 0.218 & 0.204 & 0.995 & 45.6 & 2{,}458 \\
+0.35 & 317{,}813 & 14{,}896 & 0.187 & 0.172 & 0.996 & 38.3 & 2{,}368 \\
+0.40 & 369{,}987 & 12{,}220 & 0.158 & 0.141 & 0.997 & 31.4 & 2{,}259 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Read raw, this looks like a $3.6\times$ collapse in transport as p\_mix rises ---
+a strong argument for keeping it low. \textbf{It mostly isn't.} All eight got
+2M moves at different final sizes, so moves-per-gate falls $15.6\rightarrow5.4$,
+a $2.9\times$ dilution that nearly accounts for the whole effect. Normalised
+(last column), the decline is \textbf{26\% across the entire range}. The one
+unambiguous result: carriers saturates at $\ge0.984$ everywhere, so all the
+differentiation is in depth, none in breadth.
+
+\section{Part V: the GSS profile}
+
+\subsection{Specification}
+
+The DB settings for running fmix on a gadgetized sliced sandwich. Exposed as
+\code{--gss}; explicit flags win; composes with \code{--phase-a}.
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+ & COMP-DB & MIX-DB \\
+\midrule
+curated & on & on \\
+descent & \textbf{on} & \textbf{off} \\
+\code{p\_mingen} & 0 & 0.5 \\
+geometry & convex 95\% / contiguous 5\% & convex 50\% / contiguous 50\% \\
+$s_{db}$ convex & 12 & 6 \\
+$s_{db}$ contiguous & 6 & 6 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\code{--gss} deliberately does \emph{not} set \code{p\_mix}: the MIX/COMP
+balance is the layer-2 controller's lever, and the profile is intended to be
+the right per-mode setting at every p\_mix.
+
+\subsection{Evidence for each setting}
+
+COMP convex $s_{db}=12$ with descent is exactly the factorial's best cell, and
+$s_{db}=12$ matches the measured productive band on GSS-like material
+(\code{nR20\_mixed}: peak at 8, lengths $>$14 worth 5.4\%). Capping contiguous
+at $s_{db}=6$ keeps it inside both the affordable regime (the ctg/cvx cost
+ratio is 3.6$\times$ at 5 but 47.8$\times$ at 12) and the span-safe one (skips
+begin around length 10); at 5\% weight it buys geometric diversity cheaply, and
+on all-g57 material it still converts at 52--96\% for lengths 3--9. MIX at
+$s_{db}=6$ without descent converts on $\approx$88\% of draws (99/99/97/91/75/67\%
+across lengths 1--6) at the cheapest width.
+
+\subsection{The profile is g57-preserving, by design}
+
+\begin{center}\small
+\begin{tabular}{lrrrr}
+\toprule
+arm & comp= & g57= & shaped= & polf= \\
+\midrule
+M20\_cvx\_cur (MIX) & 398{,}904 & 398{,}904 & 398{,}904 & \textbf{0.000} \\
+MS\_cvx\_s12 (MIX) & 175{,}555 & 175{,}555 & 175{,}555 & \textbf{0.000} \\
+LB\_base (COMP) & 61{,}691 & 61{,}691 & 61{,}691 & \textbf{0.000} \\
+LB\_nR20 (COMP) & 176{,}118 & 176{,}118 & 176{,}118 & \textbf{0.000} \\
+f32\_12\_desc\_cvx\_shuf\_cur (COMP) & 69{,}340 & 69{,}340 & 69{,}340 & \textbf{0.000} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$\code{comp}=\code{g57}=\code{shaped}$ holds exactly in every DB-only run, and
+\code{polf} --- the structure-breakdown meter --- is identically zero. The store
+emits g57-form words, so every DB splice re-spells a g57 word as another g57
+word. This is intentional: the profile's job is re-spelling, and breaking g57
+form is a separate concern requiring the twist family, not the store.
+
+\subsection{Implementation}
+
+Two mechanisms had to be added.
+
+\emph{Geometry is now drawn once per round, before the length.} It used to be
+drawn inside \code{sample\_window} \emph{after} the length was fixed, which
+made a geometry-conditional length inexpressible and let the
+best-of-\code{litter\_samples} selection compare windows drawn under different
+geometries. New flags \code{--s-db-ctg} and \code{--s-db-comp-ctg}; resolution
+is most-specific-first (mode$+$geometry $\rightarrow$ mode $\rightarrow$ base),
+with 0 falling through rather than clamping.
+
+\emph{Descent is now per-mode}, via \code{--db-prefixes-mix} and
+\code{--db-prefixes-comp} (unset inherits the global \code{--db-prefixes}),
+because the \code{--p-mix} overlay runs both modes in one process and they want
+opposite settings.
+
+Cleanup in the same change: \code{DbSample::Mixed} and \code{DbSample::parse}
+were removed (nothing constructed or called them since the sampler knobs were
+split per mode), and the DB banner now prints the \emph{effective} per-mode
+settings rather than the base knobs.
+
+\section{Part VI: measurement traps}
+
+We think this is the most reusable section. Every one of these cost real runs.
+
+\paragraph{Shipped defaults move under a rebuild.} \code{--db-prefixes} and
+\code{--curated} both flipped ON between two builds of the same binary. A
+launch script copied forward therefore silently changed the measurement. This
+is fatal for per-length work: uniform draw gives a per-length conversion rate,
+descent gives a quantity conditional on longer lengths failing. \emph{Always
+pin every knob a measurement depends on.} Sanity check without reading the
+banner: under a uniform draw a 600k-move run gives $\approx600\text{k}/s_{db}$
+attempts per length; descent gives $\approx$600k at $s_{db}$ alone.
+
+\paragraph{The COMP overrides shadow the base knobs.} \code{s\_db\_comp} (12)
+and \code{p\_convex\_comp} (0.9) ship as concrete values, and
+\code{active\_s\_db}/\code{active\_p\_convex} prefer them whenever the live mode
+is COMP --- despite doc comments promising sentinel fall-through. A run passing
+\code{--db-mode comp --s-db 20} silently gets 12. Detected because the COMP
+per-length tables stopped at length 12 while the MIX ones reached 20.
+
+\paragraph{\code{--target-size} does not cap DB-driven growth.} With
+\code{--p-db 1.0} the DB move fires every round and the size brake does not
+gate it. A MIX sweep intended to stop at 200k ran $s_{db}=3$ to 3{,}726{,}036
+gates and OOM-killed six sibling jobs. Match sizes by \emph{budgeting moves}
+from a measured growth calibration instead.
+
+\paragraph{Hit rate is not a compression proxy.} \code{nR20\_mixed} has the
+highest hit rates anywhere (47--77\% at lengths 3--6) and almost no removals;
+\code{pre2\_100k} has the lowest (14--19\%) and removes far more. Hit rate
+tracks \emph{g57-form fraction} (what the store can match); removal tracks
+\emph{compressible fat}. Reading one for the other ranks these two circuits
+exactly backwards.
+
+\paragraph{Per-splice entropy inverts under aggregation.} Contiguous wins
+bits/splice by $2.2\times$ and loses total entropy in all 8 matched pairs,
+because it lands $2.4\times$ fewer splices. Always report both.
+
+\paragraph{Budgeting by moves flatters whichever arm is slower per move.}
+Descent ``wins'' size by 75\% at matched moves and loses by $6\times$ at matched
+CPU. State the budget axis explicitly.
+
+\section{Open questions}
+
+\begin{enumerate}
+\item \textbf{Matched-work no-descent} ($\approx$5M moves, $\approx$25 min).
+The trajectories predict no-descent overtakes descent on size at equal CPU;
+whether its ancestry percolates is unknown and would settle the COMP
+configuration.
+\item \textbf{$s_{db}$ 9/10 with descent in COMP.} The factorial is monotone
+decreasing (12 beats 13) and 92\% of convex removals come from lengths $\le9$,
+so the optimum may be lower than 12.
+\item \textbf{MIX braiding at held size.} Part III measures expansion, not
+transport. Long runs with size pinned would say which $s_{db}$ braids best.
+\item \textbf{Layer 2 and $s_{db}$.} MIX $s_{db}$ is a second growth lever the
+controller does not model.
+\item \textbf{The remaining 2$\times$2$\times$2 cells.} MIX ctg $-$cur and COMP
+ctg $-$cur were still running at the time of writing.
+\end{enumerate}
+
+\end{document}

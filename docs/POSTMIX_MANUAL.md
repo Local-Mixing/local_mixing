@@ -259,6 +259,84 @@ that). A **resume** builds its params from the command line, so a resumed
 pre-2026-08-03 run picks up these defaults unless the old flags are
 repeated explicitly.
 
+> ⚠️ **`--s-db` and `--p-convex` are shadowed in COMP rounds.** `s_db_comp`
+> (12) and `p_convex_comp` (0.9) ship as concrete values, and
+> `active_s_db`/`active_p_convex` prefer them whenever the live mode is COMP.
+> Their doc comments promise sentinel fall-through ("0 = use `--s-db`"), but
+> the sentinel is never the shipped default, so a run passing
+> `--db-mode comp --s-db 20` silently gets 12. Pass `--s-db-comp` /
+> `--p-convex-comp` to mean it. This cost one round of measurement runs on
+> 2026-08-05.
+
+### 2.1.2 Per-geometry window length and per-mode descent
+
+Two axes were split on 2026-08-05 so the GSS profile below could be
+expressed at all.
+
+**Geometry is now drawn once per round, before the length.** It used to be
+drawn inside `sample_window`, after the length was already fixed, which made
+a geometry-conditional length impossible and let the
+best-of-`litter_samples` selection compare windows drawn under *different*
+geometries. Now `db_attempt_inner` flips the `p_convex` coin first, resolves
+the length from it, and passes the geometry down. `DbSample::Mixed` and
+`DbSample::parse` were removed in the same change — nothing had constructed
+or called them since the sampler knobs were split per mode.
+
+| flag | meaning | fall-through |
+|---|---|---|
+| `--s-db-ctg N` | MIX window length when the round drew CONTIGUOUS | `0` = use `--s-db` |
+| `--s-db-comp-ctg N` | COMP window length when the round drew CONTIGUOUS | `0` = use `--s-db-comp` |
+| `--db-prefixes-mix <bool>` | prefix descent in MIX rounds only | unset = use `--db-prefixes` |
+| `--db-prefixes-comp <bool>` | prefix descent in COMP rounds only | unset = use `--db-prefixes` |
+
+Resolution is most-specific-first: mode+geometry → mode → base. A `0` (or an
+unset `Option`) falls through; it never clamps the window to nothing.
+
+Per-geometry length exists because the two samplers have very different cost
+curves. Measured on `pre2_100k`, MIX mode, matched final size, the
+contiguous/convex wall-clock ratio is 1.1× at s_db 3, 3.6× at 5, 12.6× at 7,
+29.9× at 9, **47.8× at 12**, then back to 14.7× at 20 — the fall at the top
+is the span cap rejecting ~70% of wide contiguous windows before
+canonicalization. So a contiguous probe is cheap only while it stays narrow.
+
+Per-mode descent exists because the `--p-mix` overlay runs both modes in one
+process and they want opposite settings: COMP descends (worth ~600× on
+ancestry transport in the 32-arm factorial), MIX does not (its expansion band
+is only lengths 1..~5, so descent there re-probes lengths that cannot expand).
+
+### 2.1.3 The GSS profile (`--gss`)
+
+The DB settings for running fmix on a **gadgetized sliced sandwich** input.
+Explicit flags always win, and it composes with `--phase-a` (which supplies
+the twist / db-advance / pay-random block).
+
+| | COMP-DB | MIX-DB |
+|---|---|---|
+| curated | on (`--curated --curated-in-comp`) | on |
+| descent | **on** | **off** |
+| `p_mingen` | 0 | 0.5 |
+| geometry | convex 95% / contiguous 5% | convex 50% / contiguous 50% |
+| `s_db`, convex | 12 | 6 |
+| `s_db`, contiguous | 6 | 6 |
+
+**`--gss` deliberately does not set `--p-mix`.** The MIX/COMP balance is the
+layer-2 controller's lever; this profile is meant to be the right per-mode
+setting at *every* p_mix.
+
+Two things to keep in mind when reading it:
+
+*The two `s_db` numbers are not on the same scale.* COMP's 12 is a descent
+**start** — every round walks 12, 11, … 1. MIX's 6 is the top of a **uniform
+draw** — one length per round. COMP is not "looking twice as wide"; it
+touches every length ≤12 per round while MIX touches exactly one ≤6.
+
+*The profile is g57-preserving by design, and this is intentional.* Every DB
+splice re-spells a g57 word as another g57 word, so `polf` stays exactly
+0.000 — measured across every DB-only run to date (MIX and COMP, convex and
+contiguous, curated and not, fresh and near-minimal material), with
+`comp = g57 = shaped` holding exactly. Breaking g57 form is a separate
+concern from this profile's job; it needs the twist family, not the store.
+
 With `--curated` (and `FROZEN_CURATED_DIR` set), DB **expansion** probes the
 curated store FIRST, forward key only, and applies the mode's own size rule
 within the curated answer — Mix: random among no-larger spellings, else

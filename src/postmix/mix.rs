@@ -95,7 +95,14 @@ pub const SPLICE_HIST_MAX: usize = 24;
 /// behaviour of the widest ones.
 pub const LEN_HIST_MAX: usize = 32;
 
-/// How a DB move samples its outgoing window.
+/// How a DB move samples its outgoing window. Drawn ONCE per round, at the top
+/// of `db_attempt_inner`, because the window length now depends on it: the GSS
+/// profile wants a wide convex probe and a narrow contiguous one in the same
+/// mode (`--s-db-ctg` / `--s-db-comp-ctg`).
+///
+/// The old `Mixed` variant and `DbSample::parse` are gone: geometry has been a
+/// per-round `p_convex` coin since the sampler knobs were split per mode, so
+/// nothing constructed `Mixed` and nothing called `parse`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DbSample {
     /// Pick a gate g, take it plus its w-1 neighbors in g's own direction,
@@ -106,19 +113,6 @@ pub enum DbSample {
     /// direction w.p. p, else the opposite — to the next non-commuting gate and
     /// absorb it, until w gates are collected.
     Convex,
-    /// Flip a fair coin per attempt between Contiguous and Convex.
-    Mixed,
-}
-
-impl DbSample {
-    pub fn parse(s: &str) -> Option<DbSample> {
-        match s {
-            "contiguous" => Some(DbSample::Contiguous),
-            "convex" => Some(DbSample::Convex),
-            "mixed" => Some(DbSample::Mixed),
-            _ => None,
-        }
-    }
 }
 
 // ---- --twist-g57 placer tuning ----
@@ -577,6 +571,22 @@ pub struct MixParams {
     pub s_db_comp: usize,
     pub p_convex_comp: f64,
     pub p_mingen_comp: f64,
+    // Per-GEOMETRY window length, on top of the per-MODE split above. The two
+    // samplers have very different cost curves -- a contiguous window of the
+    // same gate count spans far more wires, and its canonicalization cost runs
+    // 3.6x convex at length 5, 12.6x at 7 and 47.8x at 12 -- so a profile that
+    // wants a wide convex probe usually wants a much narrower contiguous one.
+    // 0 = fall back to the mode's s_db (i.e. both geometries share a length,
+    // the pre-2026-08-05 behaviour).
+    pub s_db_ctg: usize,
+    pub s_db_comp_ctg: usize,
+    // Per-MODE prefix descent. The mode overlay (--p-mix) runs MIX and COMP in
+    // one process, and they want opposite settings: COMP descends (it is the
+    // compression lever, worth ~600x on transport), while MIX draws one uniform
+    // length (descent there just re-probes lengths whose expansion band is only
+    // 1..~5). None = fall back to `db_prefixes`.
+    pub db_prefixes_mix: Option<bool>,
+    pub db_prefixes_comp: Option<bool>,
     // Two eligibility thresholds, not one. w_window governs what may sit INSIDE
     // a window; w_pool governs what may SEED one and count toward the dose.
     // They want different values: width-3 gates match in context often enough
@@ -852,6 +862,10 @@ impl Default for MixParams {
             s_db_comp: 0,
             p_convex_comp: -1.0,
             p_mingen_comp: -1.0,
+            s_db_ctg: 0,
+            s_db_comp_ctg: 0,
+            db_prefixes_mix: None,
+            db_prefixes_comp: None,
             w_window: 4,
             w_pool: 3,
             db_convex_p: 0.75,
@@ -2986,12 +3000,34 @@ impl Mixer {
     // overlay off, db_mode_cur is fixed and these return the base params, so a
     // single-mode run behaves exactly as before. Only COMP-mode reads the
     // overrides, and only when they are set.
-    fn active_s_db(&self) -> usize {
-        if self.db_mode_cur == DbMode::Compressing && self.params.s_db_comp > 0 {
+    /// Window length for the round's live mode AND the geometry just drawn.
+    /// Precedence, most specific first: mode+geometry (`s_db_comp_ctg` /
+    /// `s_db_ctg`) -> mode (`s_db_comp`) -> base (`s_db`). A 0 anywhere means
+    /// "not set, fall through".
+    fn active_s_db(&self, geo: DbSample) -> usize {
+        let comp = self.db_mode_cur == DbMode::Compressing;
+        if geo == DbSample::Contiguous {
+            let ctg = if comp { self.params.s_db_comp_ctg } else { self.params.s_db_ctg };
+            if ctg > 0 {
+                return ctg;
+            }
+        }
+        if comp && self.params.s_db_comp > 0 {
             self.params.s_db_comp
         } else {
             self.params.s_db
         }
+    }
+
+    /// Prefix descent for the round's live mode. Per-mode override first, then
+    /// the global `--db-prefixes`.
+    fn active_prefixes(&self) -> bool {
+        let per_mode = if self.db_mode_cur == DbMode::Compressing {
+            self.params.db_prefixes_comp
+        } else {
+            self.params.db_prefixes_mix
+        };
+        per_mode.unwrap_or(self.params.db_prefixes)
     }
     fn active_p_convex(&self) -> f64 {
         if self.db_mode_cur == DbMode::Compressing && self.params.p_convex_comp >= 0.0 {
@@ -4950,23 +4986,35 @@ impl Mixer {
     fn db_attempt_inner(&mut self, mode: DbMode) -> bool {
         let n = self.arena.len();
         let wmin = 1usize;
-        let wmax = self.active_s_db().max(1);
         if n < wmin {
             return false;
         }
+        // GEOMETRY FIRST, then length. The order used to be the other way
+        // round -- the length was drawn here and each candidate window re-flipped
+        // its own convex/contiguous coin inside `sample_window`. That made a
+        // geometry-conditional length impossible to express, and it also let the
+        // best-of-`litter_samples` selection compare windows drawn under
+        // different geometries. One coin per round fixes both.
+        let geo = if self.rng.random_bool(self.active_p_convex().clamp(0.0, 1.0)) {
+            DbSample::Convex
+        } else {
+            DbSample::Contiguous
+        };
+        let wmax = self.active_s_db(geo).max(1);
         // Prefix descent always starts at the top of the range — the descent
         // itself visits every shorter length, so sampling a shorter start
         // would only duplicate coverage.
         let wmax = if self.db_g57_only { self.params.s_db_g57.max(wmin) } else { wmax };
-        let len = if self.params.db_prefixes || wmin == wmax {
+        let descend = self.active_prefixes();
+        let len = if descend || wmin == wmax {
             wmax.min(n)
         } else {
             self.rng.random_range(wmin..=wmax.min(n))
         };
 
-        // Sample the window (contiguous or convex); g1dir drives the incoming
-        // direction pivot below.
-        let Some((ids, g1dir, smp)) = self.sample_best_window(len) else {
+        // Sample the window under the geometry drawn above; g1dir drives the
+        // incoming direction pivot below.
+        let Some((ids, g1dir, smp)) = self.sample_best_window(len, geo) else {
             return false;
         };
         // Stamped into every --db-record attempt line (smp=ctg|cvx) so stats
@@ -4988,7 +5036,7 @@ impl Mixer {
         // live, the first hit splices and ends the round. A span-cap or
         // wide-verify decline keeps descending — shorter prefixes span fewer
         // wires and may still match.
-        if self.params.db_prefixes {
+        if descend {
             let wmin = 1usize;
             let guard = DegreeGuard {
                 max_degree: self.params.db_max_degree,
@@ -5685,12 +5733,12 @@ impl Mixer {
     /// most distinct litters. Diversity is the point: a window drawn from many
     /// replacement events is one no single earlier splice can undo, which is
     /// the same property the full-litter ban enforces at the other end.
-    fn sample_best_window(&mut self, w: usize) -> Option<(Vec<u32>, Dir, DbSample)> {
+    fn sample_best_window(&mut self, w: usize, geo: DbSample) -> Option<(Vec<u32>, Dir, DbSample)> {
         let n = self.params.litter_samples.max(1);
         let mut best: Option<(Vec<u32>, Dir, DbSample)> = None;
         let mut best_distinct = 0usize;
         for _ in 0..n {
-            let Some(cand) = self.sample_window(w) else { continue };
+            let Some(cand) = self.sample_window(w, geo) else { continue };
             let d = self.litter_census(&cand.0).0;
             if best.is_none() || d > best_distinct {
                 best_distinct = d;
@@ -5703,24 +5751,15 @@ impl Mixer {
         best
     }
 
-    fn sample_window(&mut self, w: usize) -> Option<(Vec<u32>, Dir, DbSample)> {
-        match if self.rng.random_bool(self.active_p_convex().clamp(0.0, 1.0)) {
-            DbSample::Convex
-        } else {
-            DbSample::Contiguous
-        } {
+    /// Collect one candidate window under an ALREADY-CHOSEN geometry. The coin
+    /// lives in `db_attempt_inner` now (see `DbSample`).
+    fn sample_window(&mut self, w: usize, geo: DbSample) -> Option<(Vec<u32>, Dir, DbSample)> {
+        match geo {
             DbSample::Contiguous => {
                 self.collect_contiguous(w).map(|(ids, d)| (ids, d, DbSample::Contiguous))
             }
             DbSample::Convex => {
                 self.collect_convex(w).map(|(ids, d)| (ids, d, DbSample::Convex))
-            }
-            DbSample::Mixed => {
-                if self.rng.random_bool(0.5) {
-                    self.collect_contiguous(w).map(|(ids, d)| (ids, d, DbSample::Contiguous))
-                } else {
-                    self.collect_convex(w).map(|(ids, d)| (ids, d, DbSample::Convex))
-                }
             }
         }
     }
@@ -7263,7 +7302,9 @@ mod mix_tests {
             let mut got = 0usize;
             for w in 0..4000 {
                 let win = (w % 5) + 2; // window sizes 2..=6
-                if let Some((ids, _dir, _smp)) = mx.sample_window(win) {
+                // Geometry is a parameter now, not an internal coin; the test
+                // already knows which one it is exercising.
+                if let Some((ids, _dir, _smp)) = mx.sample_window(win, sample) {
                     got += 1;
                     // contiguous in link order
                     for pair in ids.windows(2) {
@@ -7869,6 +7910,107 @@ mod mix_tests {
     // Even without DB moves the walk lifts generations: split children get
     // parent + 1, so heavy churn mints intermediate generations strictly
     // between 0 and GEN_FRESH, while fresh material stays at GEN_FRESH.
+    #[test]
+    // The GSS profile needs the window length to depend on BOTH the live mode
+    // and the geometry drawn for that round -- COMP convex 12 / COMP
+    // contiguous 6 / MIX 6 for either. Precedence is most-specific-first, and
+    // a 0 must fall through rather than clamp the window to nothing.
+    #[test]
+    fn s_db_resolves_by_mode_and_geometry() {
+        let gates = random_mixed_circuit(11, 8, 40);
+        let params = MixParams {
+            s_db: 6,
+            s_db_comp: 12,
+            s_db_comp_ctg: 6,
+            s_db_ctg: 0, // MIX shares one length across both geometries
+            moves: 0,
+            report_every: u64::MAX,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 8, params);
+
+        mx.db_mode_cur = DbMode::Compressing;
+        assert_eq!(mx.active_s_db(DbSample::Convex), 12, "COMP convex takes s_db_comp");
+        assert_eq!(mx.active_s_db(DbSample::Contiguous), 6, "COMP contiguous takes s_db_comp_ctg");
+
+        mx.db_mode_cur = DbMode::Mix;
+        assert_eq!(mx.active_s_db(DbSample::Convex), 6, "MIX takes the base s_db");
+        assert_eq!(
+            mx.active_s_db(DbSample::Contiguous),
+            6,
+            "s_db_ctg=0 falls through to the base s_db, it does not zero the window"
+        );
+
+        // A geometry override only applies to its own mode.
+        mx.params.s_db_ctg = 3;
+        assert_eq!(mx.active_s_db(DbSample::Contiguous), 3, "MIX contiguous now overridden");
+        mx.db_mode_cur = DbMode::Compressing;
+        assert_eq!(
+            mx.active_s_db(DbSample::Contiguous),
+            6,
+            "COMP contiguous still reads s_db_comp_ctg, not the MIX override"
+        );
+    }
+
+    // Descent is per-mode: the overlay runs MIX and COMP in one process and
+    // GSS wants it on in COMP and off in MIX. None must fall back to the
+    // global flag so single-mode runs behave exactly as before.
+    #[test]
+    fn prefix_descent_resolves_per_mode() {
+        let gates = random_mixed_circuit(11, 8, 40);
+        let params = MixParams {
+            db_prefixes: true,
+            db_prefixes_comp: Some(true),
+            db_prefixes_mix: Some(false),
+            moves: 0,
+            report_every: u64::MAX,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new(gates, 8, params);
+        mx.db_mode_cur = DbMode::Compressing;
+        assert!(mx.active_prefixes(), "COMP descends");
+        mx.db_mode_cur = DbMode::Mix;
+        assert!(!mx.active_prefixes(), "MIX does not, even though db_prefixes is true");
+
+        // Unset per-mode overrides inherit the global flag, both ways.
+        mx.params.db_prefixes_mix = None;
+        mx.params.db_prefixes_comp = None;
+        assert!(mx.active_prefixes(), "None inherits db_prefixes=true");
+        mx.params.db_prefixes = false;
+        assert!(!mx.active_prefixes(), "None inherits db_prefixes=false");
+    }
+
+    // Geometry is now drawn ONCE per round, before the length. A run pinned to
+    // one geometry must therefore only ever report that geometry, and the
+    // per-length histogram must respect that geometry's own s_db ceiling.
+    #[test]
+    fn geometry_is_drawn_before_the_length_and_bounds_it() {
+        let gates = random_mixed_circuit(31, 16, 400);
+        let base = MixParams {
+            moves: 4_000,
+            target_size: 400,
+            temp: 20.0,
+            p_db: 0.0, // store-free: exercise the sampler, not the store
+            s_db: 9,
+            s_db_ctg: 3,
+            verify_every: u64::MAX,
+            report_every: u64::MAX,
+            seed: 7,
+            ..MixParams::default()
+        };
+        // All-contiguous: every window must obey s_db_ctg=3, not s_db=9.
+        let mut ctg = Mixer::new(gates.clone(), 16, MixParams { p_convex: 0.0, ..base.clone() });
+        ctg.db_mode_cur = DbMode::Mix;
+        for _ in 0..200 {
+            let w = ctg.active_s_db(DbSample::Contiguous);
+            assert!(w <= 3, "contiguous window ceiling leaked: {w}");
+        }
+        // All-convex: the contiguous override must not apply.
+        let mut cvx = Mixer::new(gates, 16, MixParams { p_convex: 1.0, ..base });
+        cvx.db_mode_cur = DbMode::Mix;
+        assert_eq!(cvx.active_s_db(DbSample::Convex), 9);
+    }
+
     #[test]
     fn walk_splits_lift_generations() {
         let gates = random_mixed_circuit(29, 16, 300);

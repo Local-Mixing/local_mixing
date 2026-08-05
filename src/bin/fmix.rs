@@ -354,6 +354,37 @@ struct Args {
     /// COMP-mode pool-seed probability under --p-mix (< 0 = use --p-mingen).
     #[arg(long, default_value_t = -1.0)]
     p_mingen_comp: f64,
+    /// MIX-mode window length when the round draws a CONTIGUOUS window
+    /// (0 = use --s-db for both geometries). A contiguous window of the same
+    /// gate count spans far more wires than a convex one and costs 3.6x its
+    /// canonicalization at length 5, 12.6x at 7, 47.8x at 12 -- so a profile
+    /// that wants a wide convex probe usually wants a narrow contiguous one.
+    #[arg(long, default_value_t = 0)]
+    s_db_ctg: usize,
+    /// COMP-mode window length when the round draws a CONTIGUOUS window
+    /// (0 = use --s-db-comp).
+    #[arg(long, default_value_t = 0)]
+    s_db_comp_ctg: usize,
+    /// Prefix descent in MIX rounds only (unset = use --db-prefixes). Under the
+    /// --p-mix overlay both modes run in one process and want opposite
+    /// settings, so this splits the global flag per mode.
+    #[arg(long)]
+    db_prefixes_mix: Option<bool>,
+    /// Prefix descent in COMP rounds only (unset = use --db-prefixes).
+    #[arg(long)]
+    db_prefixes_comp: Option<bool>,
+    /// GSS profile: the DB settings for running fmix on a gadgetized sliced
+    /// sandwich. Curated on; COMP = descent on, p_mingen 0, convex 95% at
+    /// s_db 12 / contiguous 5% at s_db 6; MIX = descent off, p_mingen 0.5,
+    /// convex 50% / contiguous 50%, s_db 6 for both. Explicit flags win.
+    ///
+    /// Deliberately does NOT set --p-mix: the MIX/COMP balance is the layer-2
+    /// controller's lever, and this profile is meant to be the right setting
+    /// at every p_mix. Also deliberately g57-PRESERVING -- every DB splice
+    /// re-spells a g57 word as another g57 word (polf stays 0), because
+    /// breaking g57 form is a separate concern from this profile's job.
+    #[arg(long, default_value_t = false)]
+    gss: bool,
     /// Also probe the curated store (FROZEN_CURATED_DIR) and prefer a
     /// non-identical curated match over a regular one REGARDLESS OF SIZE. The
     /// curated store holds circuits every strict subcircuit of which is
@@ -596,6 +627,65 @@ fn main() {
         );
     }
 
+    // GSS profile: the DB settings for a gadgetized-sliced-sandwich input.
+    // Same precedence rule as --phase-a -- explicit flags win -- and the two
+    // compose: --phase-a supplies the twist/advance/pay-random block, --gss
+    // supplies the DB block, and they touch p_mingen from opposite sides so
+    // whichever is asked for last on the command line does NOT silently win
+    // (both consult `given`, not each other).
+    if args.gss {
+        if !given("curated") {
+            args.curated = true;
+        }
+        if !given("curated_in_comp") {
+            args.curated_in_comp = true;
+        }
+        if !given("db_advance") {
+            args.db_advance = true;
+        }
+        // COMP: descend from a wide convex window, or a narrow contiguous one.
+        if !given("db_prefixes_comp") {
+            args.db_prefixes_comp = Some(true);
+        }
+        if !given("p_mingen_comp") {
+            args.p_mingen_comp = 0.0;
+        }
+        if !given("p_convex_comp") {
+            args.p_convex_comp = 0.95;
+        }
+        if !given("s_db_comp") {
+            args.s_db_comp = 12;
+        }
+        if !given("s_db_comp_ctg") {
+            args.s_db_comp_ctg = 6;
+        }
+        // MIX: one uniform draw, no descent, both geometries equally likely
+        // and equally narrow -- the expansion band is only lengths 1..~5, so
+        // a wider window spends its work undoing itself.
+        if !given("db_prefixes_mix") {
+            args.db_prefixes_mix = Some(false);
+        }
+        if !given("p_mingen") {
+            args.p_mingen = 0.5;
+        }
+        if !given("p_convex") {
+            args.p_convex = 0.5;
+        }
+        if !given("s_db") {
+            args.s_db = 6;
+        }
+        if !given("s_db_ctg") {
+            args.s_db_ctg = 0; // MIX shares one length across both geometries
+        }
+        println!(
+            "[fmix] GSS profile ON: curated={} db-advance={} | COMP descent={:?} p_mingen={} p_convex={} s_db={} s_db_ctg={} | MIX descent={:?} p_mingen={} p_convex={} s_db={} | p_mix NOT set (layer-2 owns it) (explicit flags win)",
+            args.curated, args.db_advance,
+            args.db_prefixes_comp, args.p_mingen_comp, args.p_convex_comp,
+            args.s_db_comp, args.s_db_comp_ctg,
+            args.db_prefixes_mix, args.p_mingen, args.p_convex, args.s_db
+        );
+    }
+
     // Resolve the curated store BEFORE any banner mentions it, so the
     // printouts below describe what will actually run.
     if let Some(d) = &args.frozen_db_dir {
@@ -750,9 +840,28 @@ fn main() {
     }
     if args.p_comp > 0.0 || args.p_db > 0.0 || args.p_any > 0.0 {
         println!(
-            "[fmix] DB ON: p_db(slot2)={} db_mode={} p_comp(contract)={} p_any(expand)={} s_db={} p_convex={} prefixes={} w_window={} w_pool={} verify={} curated={} (FROZEN_DB_DIR required)",
-            args.p_db, args.db_mode, args.p_comp, args.p_any, args.s_db, args.p_convex,
-            args.db_prefixes, args.w_window, args.w_pool, !args.no_db_verify, args.curated
+            "[fmix] DB ON: p_db(slot2)={} db_mode={} p_comp(contract)={} p_any(expand)={} w_window={} w_pool={} verify={} curated={} (FROZEN_DB_DIR required)",
+            args.p_db, args.db_mode, args.p_comp, args.p_any,
+            args.w_window, args.w_pool, !args.no_db_verify, args.curated
+        );
+        // Print what each mode will ACTUALLY use, not the base knobs. The
+        // COMP overrides ship at concrete values and shadow --s-db/--p-convex
+        // whenever the live mode is COMP, so a banner echoing only the base
+        // flags reports settings the run never uses -- that misreading cost a
+        // full round of measurement runs on 2026-08-05.
+        let eff = |base: usize, mode: usize, ctg: usize| -> (usize, usize) {
+            let cvx = if mode > 0 { mode } else { base };
+            (cvx, if ctg > 0 { ctg } else { cvx })
+        };
+        let (mix_cvx, mix_ctg) = eff(args.s_db, 0, args.s_db_ctg);
+        let (cmp_cvx, cmp_ctg) = eff(args.s_db, args.s_db_comp, args.s_db_comp_ctg);
+        let cmp_pcv = if args.p_convex_comp >= 0.0 { args.p_convex_comp } else { args.p_convex };
+        println!(
+            "[fmix] DB effective per mode: MIX p_convex={} s_db(cvx)={} s_db(ctg)={} descent={} | COMP p_convex={} s_db(cvx)={} s_db(ctg)={} descent={}",
+            args.p_convex, mix_cvx, mix_ctg,
+            args.db_prefixes_mix.unwrap_or(args.db_prefixes),
+            cmp_pcv, cmp_cvx, cmp_ctg,
+            args.db_prefixes_comp.unwrap_or(args.db_prefixes)
         );
         if args.p_comp_g57 > 0.0 {
             println!(
@@ -851,6 +960,10 @@ fn main() {
         p_mix: args.p_mix,
         s_db_comp: args.s_db_comp,
         p_convex_comp: args.p_convex_comp,
+        s_db_ctg: args.s_db_ctg,
+        s_db_comp_ctg: args.s_db_comp_ctg,
+        db_prefixes_mix: args.db_prefixes_mix,
+        db_prefixes_comp: args.db_prefixes_comp,
         p_mingen_comp: args.p_mingen_comp,
         curated: args.curated,
         ancestors: args.ancestors,

@@ -766,7 +766,12 @@ different value, the measured recommendation is in the last column.
 | `s_db_comp` | 12 (was: fall back to `s_db`) | COMP-mode descent start; 0 = use `s_db` | ≥12 for COMP (§14) |
 | `p_convex` | 0.4 (MIX; was 0.5 until 2026-08-03) | probability the sampler is convex (contiguous 60% / convex 40%) | never separated from contiguous |
 | `p_convex_comp` | 0.9 (was: fall back to `p_convex`) | COMP-mode convex probability (convex 90% / contiguous 10%); <0 = use `p_convex` | — |
+| `s_db_ctg` | 0 (2026-08-05) | MIX window length when the round drew CONTIGUOUS; 0 = use `s_db` | narrow — contiguous costs 12.6× convex at length 7, 47.8× at 12 |
+| `s_db_comp_ctg` | 0 (2026-08-05) | COMP window length when the round drew CONTIGUOUS; 0 = use `s_db_comp` | 6 in the GSS profile |
 | `db_prefixes` | **on** (was off until 2026-08-03) | largest-first prefix descent (the size-reduction cascade); `--no-db-prefixes` disables | — |
+| `db_prefixes_mix` | unset (2026-08-05) | descent in MIX rounds only; unset = use `db_prefixes` | **off** — MIX's expansion band is lengths 1..~5 |
+| `db_prefixes_comp` | unset (2026-08-05) | descent in COMP rounds only; unset = use `db_prefixes` | **on** — worth ~600× on ancestry transport |
+| `gss` | off (2026-08-05) | GSS profile preset: COMP descent/0/95%-cvx/12/6, MIX no-descent/0.5/50%/6. Does not set `p_mix`. | the profile for a gadgetized-sliced-sandwich input |
 | `curated_exhaust` | **on** (was off until 2026-08-03) | two-pass routing: the whole descent runs curated-only first, regular only on a full miss; `--no-curated-exhaust` disables | 3.4× bits/splice (lower bound) |
 | `curated_in_comp` | **on** (was off until 2026-08-03) | COMP probes curated too (size rule keeps strictly-shorter spellings); `--no-curated-in-comp` disables | — |
 | `db_convex_p` | 0.75 | within convex growth, direction coin | — |
