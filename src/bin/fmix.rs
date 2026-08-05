@@ -22,6 +22,7 @@
 //     --target-size 3000000 --moves 50000000 --output mixed_fmix.txt
 use clap::Parser;
 use local_mixing::postmix::format;
+use local_mixing::postmix::db_replace::DbMode;
 use local_mixing::postmix::mix::{MixParams, MixStop, Mixer, GEN_FRESH, ORIGIN_SYNTH};
 use local_mixing::postmix::xgate::{XGate, max_wire};
 
@@ -340,31 +341,39 @@ struct Args {
     /// pair with --p-db 1.0 for a pure per-round MIX/COMP schedule.
     #[arg(long, default_value_t = -1.0)]
     p_mix: f64,
-    /// COMP-mode window length (0 = use --s-db). Default 12: COMP starts its
-    /// descent higher than MIX's 9.
-    #[arg(long, default_value_t = 12)]
-    s_db_comp: usize,
-    /// COMP-mode convex probability (< 0 = use --p-convex). Default 0.9 =
-    /// convex 90% / contiguous 10%. Convex wins compression on every axis
-    /// measured (16x gates removed, 7x ancestry transport, 31x less CPU --
-    /// wide contiguous windows cost ~30x per canonicalization even when they
-    /// pass the span cap), so COMP leans hard convex.
-    #[arg(long, default_value_t = 0.9)]
-    p_convex_comp: f64,
-    /// COMP-mode pool-seed probability under --p-mix (< 0 = use --p-mingen).
-    #[arg(long, default_value_t = -1.0)]
-    p_mingen_comp: f64,
-    /// MIX-mode window length when the round draws a CONTIGUOUS window
-    /// (0 = use --s-db for both geometries). A contiguous window of the same
-    /// gate count spans far more wires than a convex one and costs 3.6x its
-    /// canonicalization at length 5, 12.6x at 7, 47.8x at 12 -- so a profile
-    /// that wants a wide convex probe usually wants a narrow contiguous one.
-    #[arg(long, default_value_t = 0)]
-    s_db_ctg: usize,
-    /// COMP-mode window length when the round draws a CONTIGUOUS window
-    /// (0 = use --s-db-comp).
-    #[arg(long, default_value_t = 0)]
-    s_db_comp_ctg: usize,
+    // The five knobs below are Option ON PURPOSE and carry no clap default.
+    // They are OVERRIDES, and clap's `Option` is what records "the user asked
+    // for this" -- which is exactly the distinction a sentinel default cannot
+    // make. Their shipped values live in `DbLayer::shipped()`, one layer down,
+    // so an explicit --s-db now beats a merely-defaulted --s-db-comp instead of
+    // being silently shadowed by it. See §2.1.2 of the manual.
+    //
+    /// COMP-mode window length. Shipped default 12: COMP starts its descent
+    /// higher than MIX's 9.
+    #[arg(long)]
+    s_db_comp: Option<usize>,
+    /// COMP-mode convex probability. Shipped default 0.9 = convex 90% /
+    /// contiguous 10%. Convex wins compression on every axis measured (16x
+    /// gates removed, 7x ancestry transport, 31x less CPU -- wide contiguous
+    /// windows cost ~30x per canonicalization even when they pass the span
+    /// cap), so COMP leans hard convex.
+    #[arg(long)]
+    p_convex_comp: Option<f64>,
+    /// COMP-mode pool-seed probability under --p-mix. Unset = use --p-mingen.
+    #[arg(long)]
+    p_mingen_comp: Option<f64>,
+    /// MIX-mode window length when the round draws a CONTIGUOUS window.
+    /// Unset = share --s-db across both geometries. A contiguous window of the
+    /// same gate count spans far more wires than a convex one and costs 3.6x
+    /// its canonicalization at length 5, 12.6x at 7, 47.8x at 12 -- so a
+    /// profile that wants a wide convex probe usually wants a narrow
+    /// contiguous one.
+    #[arg(long)]
+    s_db_ctg: Option<usize>,
+    /// COMP-mode window length when the round draws a CONTIGUOUS window.
+    /// Unset = use --s-db-comp.
+    #[arg(long)]
+    s_db_comp_ctg: Option<usize>,
     /// Prefix descent in MIX rounds only (unset = use --db-prefixes). Under the
     /// --p-mix overlay both modes run in one process and want opposite
     /// settings, so this splits the global flag per mode.
@@ -567,6 +576,104 @@ struct Args {
     resume: Option<String>,
 }
 
+/// One layer of DB-knob opinions. `None` = "this layer says nothing here".
+///
+/// The point of making layers explicit is that a preset used to *mutate* the
+/// args struct, after which nothing downstream could tell "the user asked for
+/// 12" from "--gss set 12" -- so precedence was decided by mutation order and
+/// was invisible in the code. Here it is data: `cli.over(preset).over(shipped)`
+/// reads in precedence order, and the banner prints what came out.
+/// Which BASE knobs the user typed. Used only to withhold shipped
+/// mode-level defaults that would otherwise outrank them on specificity.
+#[derive(Default, Clone, Copy)]
+struct BaseGiven {
+    s_db: bool,
+    p_convex: bool,
+}
+
+#[derive(Default, Clone, Copy)]
+struct DbLayer {
+    s_db: Option<usize>,
+    s_db_ctg: Option<usize>,
+    s_db_comp: Option<usize>,
+    s_db_comp_ctg: Option<usize>,
+    p_convex: Option<f64>,
+    p_convex_comp: Option<f64>,
+    p_mingen: Option<f64>,
+    p_mingen_comp: Option<f64>,
+    prefixes: Option<bool>,
+    prefixes_mix: Option<bool>,
+    prefixes_comp: Option<bool>,
+}
+
+impl DbLayer {
+    /// `self` wins wherever it has an opinion; `under` fills the rest.
+    fn over(self, under: DbLayer) -> DbLayer {
+        DbLayer {
+            s_db: self.s_db.or(under.s_db),
+            s_db_ctg: self.s_db_ctg.or(under.s_db_ctg),
+            s_db_comp: self.s_db_comp.or(under.s_db_comp),
+            s_db_comp_ctg: self.s_db_comp_ctg.or(under.s_db_comp_ctg),
+            p_convex: self.p_convex.or(under.p_convex),
+            p_convex_comp: self.p_convex_comp.or(under.p_convex_comp),
+            p_mingen: self.p_mingen.or(under.p_mingen),
+            p_mingen_comp: self.p_mingen_comp.or(under.p_mingen_comp),
+            prefixes: self.prefixes.or(under.prefixes),
+            prefixes_mix: self.prefixes_mix.or(under.prefixes_mix),
+            prefixes_comp: self.prefixes_comp.or(under.prefixes_comp),
+        }
+    }
+
+    /// Bottom layer: what fmix ships when the user says nothing at all. These
+    /// are the values that used to sit in `default_value_t`.
+    ///
+    /// `base_given` names the base knobs the user passed explicitly, and this
+    /// layer WITHHOLDS its mode-level opinion for each of them. That single
+    /// rule is the whole bug fix: `--db-mode comp --s-db 20` used to run at 12
+    /// because a defaulted `s_db_comp` outranked an explicit `--s-db` on
+    /// specificity. A shipped default is not a statement about *this* run, so
+    /// it must not outrank one.
+    ///
+    /// Note the asymmetry with presets, which is deliberate: `--gss` DOES keep
+    /// its COMP settings when you also pass `--s-db`. A named profile is a
+    /// coherent unit and its mode-level choices are intentional; if you mean
+    /// to move COMP too, say `--s-db-comp`.
+    fn shipped(base_given: BaseGiven) -> DbLayer {
+        DbLayer {
+            s_db: Some(9),
+            p_convex: Some(0.4),
+            p_mingen: Some(0.8),
+            prefixes: Some(true),
+            s_db_comp: (!base_given.s_db).then_some(12),
+            p_convex_comp: (!base_given.p_convex).then_some(0.9),
+            ..DbLayer::default()
+        }
+    }
+
+    /// The GSS profile: the DB block for a gadgetized-sliced-sandwich input.
+    /// Deliberately silent on p_mix -- that is layer 2's lever.
+    fn gss() -> DbLayer {
+        DbLayer {
+            prefixes_comp: Some(true),
+            p_mingen_comp: Some(0.0),
+            p_convex_comp: Some(0.95),
+            s_db_comp: Some(12),
+            s_db_comp_ctg: Some(6),
+            prefixes_mix: Some(false),
+            p_mingen: Some(0.5),
+            p_convex: Some(0.5),
+            s_db: Some(6),
+            ..DbLayer::default()
+        }
+    }
+
+    /// Phase A's DB opinions (the twist/advance block stays in the preset
+    /// below; only DB knobs belong here).
+    fn phase_a() -> DbLayer {
+        DbLayer { p_mingen: Some(0.6), p_mingen_comp: Some(0.0), ..DbLayer::default() }
+    }
+}
+
 fn main() {
     // Keep the raw matches so the preset below can tell "the user asked for
     // this value" from "the user said nothing" — `--p-twist 0` is a real
@@ -612,27 +719,16 @@ fn main() {
         if !given("mix_pay_random") {
             args.mix_pay_random = true;
         }
-        // p_mingen ships at 0.8, so phase A has to set it. COMP's 0 comes
-        // from --p-mingen-comp, which callers pass explicitly.
-        if !given("p_mingen") {
-            args.p_mingen = 0.6;
-        }
-        if !given("p_mingen_comp") {
-            args.p_mingen_comp = 0.0;
-        }
+        // Its DB opinions (p_mingen 0.6 / p_mingen_comp 0) live in
+        // DbLayer::phase_a(), applied with the rest of the stack below.
         println!(
-            "[fmix] phase-A preset ON: twist-g57={} p_twist={} db-advance={} curated={} mix-pay-random={} p_convex={} p_mingen={} (explicit flags win)",
+            "[fmix] phase-A preset ON: twist-g57={} p_twist={} db-advance={} curated={} mix-pay-random={} (DB knobs settled below)",
             args.twist_g57, args.p_twist, args.db_advance, args.curated,
-            args.mix_pay_random, args.p_convex, args.p_mingen
+            args.mix_pay_random
         );
     }
 
-    // GSS profile: the DB settings for a gadgetized-sliced-sandwich input.
-    // Same precedence rule as --phase-a -- explicit flags win -- and the two
-    // compose: --phase-a supplies the twist/advance/pay-random block, --gss
-    // supplies the DB block, and they touch p_mingen from opposite sides so
-    // whichever is asked for last on the command line does NOT silently win
-    // (both consult `given`, not each other).
+    // GSS profile: the non-DB half (its DB block is DbLayer::gss()).
     if args.gss {
         if !given("curated") {
             args.curated = true;
@@ -643,47 +739,102 @@ fn main() {
         if !given("db_advance") {
             args.db_advance = true;
         }
-        // COMP: descend from a wide convex window, or a narrow contiguous one.
-        if !given("db_prefixes_comp") {
-            args.db_prefixes_comp = Some(true);
-        }
-        if !given("p_mingen_comp") {
-            args.p_mingen_comp = 0.0;
-        }
-        if !given("p_convex_comp") {
-            args.p_convex_comp = 0.95;
-        }
-        if !given("s_db_comp") {
-            args.s_db_comp = 12;
-        }
-        if !given("s_db_comp_ctg") {
-            args.s_db_comp_ctg = 6;
-        }
-        // MIX: one uniform draw, no descent, both geometries equally likely
-        // and equally narrow -- the expansion band is only lengths 1..~5, so
-        // a wider window spends its work undoing itself.
-        if !given("db_prefixes_mix") {
-            args.db_prefixes_mix = Some(false);
-        }
-        if !given("p_mingen") {
-            args.p_mingen = 0.5;
-        }
-        if !given("p_convex") {
-            args.p_convex = 0.5;
-        }
-        if !given("s_db") {
-            args.s_db = 6;
-        }
-        if !given("s_db_ctg") {
-            args.s_db_ctg = 0; // MIX shares one length across both geometries
-        }
         println!(
-            "[fmix] GSS profile ON: curated={} db-advance={} | COMP descent={:?} p_mingen={} p_convex={} s_db={} s_db_ctg={} | MIX descent={:?} p_mingen={} p_convex={} s_db={} | p_mix NOT set (layer-2 owns it) (explicit flags win)",
-            args.curated, args.db_advance,
-            args.db_prefixes_comp, args.p_mingen_comp, args.p_convex_comp,
-            args.s_db_comp, args.s_db_comp_ctg,
-            args.db_prefixes_mix, args.p_mingen, args.p_convex, args.s_db
+            "[fmix] GSS profile ON: curated={} db-advance={} | p_mix NOT set (layer-2 owns it) | DB knobs settled below",
+            args.curated, args.db_advance
         );
+    }
+
+    // ---- DB knob precedence, in one place ----
+    //
+    //   explicit CLI  >  preset (--gss over --phase-a)  >  shipped defaults
+    //
+    // and within each layer, most specific wins at USE time (mode+geometry ->
+    // mode -> base, in Mixer::active_*). The rule that matters, and that this
+    // replaced: an EXPLICIT base knob now beats a merely-DEFAULTED mode knob.
+    // Before, `--db-mode comp --s-db 20` silently ran at 12 because
+    // `s_db_comp`'s default of 12 was indistinguishable from a real request.
+    let cli = DbLayer {
+        s_db: given("s_db").then_some(args.s_db),
+        p_convex: given("p_convex").then_some(args.p_convex),
+        p_mingen: given("p_mingen").then_some(args.p_mingen),
+        // `--no-db-prefixes` is just "explicitly false" -- folding it in here
+        // retires it as a separate mechanism.
+        prefixes: if args.no_db_prefixes {
+            Some(false)
+        } else {
+            given("db_prefixes").then_some(args.db_prefixes)
+        },
+        // These are Option at the CLI, so Some IS "the user asked".
+        s_db_ctg: args.s_db_ctg,
+        s_db_comp: args.s_db_comp,
+        s_db_comp_ctg: args.s_db_comp_ctg,
+        p_convex_comp: args.p_convex_comp,
+        p_mingen_comp: args.p_mingen_comp,
+        prefixes_mix: args.db_prefixes_mix,
+        prefixes_comp: args.db_prefixes_comp,
+    };
+    let mut preset = DbLayer::default();
+    if args.phase_a {
+        preset = preset.over(DbLayer::phase_a());
+    }
+    if args.gss {
+        // GSS is the more specific profile, so it sits above phase A.
+        preset = DbLayer::gss().over(preset);
+    }
+    let base_given = BaseGiven { s_db: given("s_db"), p_convex: given("p_convex") };
+    let db = cli.over(preset).over(DbLayer::shipped(base_given));
+    // Settle the args once, so every consumer below reads the same values.
+    let must = |o: Option<f64>| o.expect("DbLayer::shipped() sets every base knob");
+    args.s_db = db.s_db.expect("shipped sets s_db");
+    args.p_convex = must(db.p_convex);
+    args.p_mingen = must(db.p_mingen);
+    args.db_prefixes = db.prefixes.expect("shipped sets prefixes");
+    args.s_db_ctg = db.s_db_ctg;
+    args.s_db_comp = db.s_db_comp;
+    args.s_db_comp_ctg = db.s_db_comp_ctg;
+    args.p_convex_comp = db.p_convex_comp;
+    args.p_mingen_comp = db.p_mingen_comp;
+    args.db_prefixes_mix = db.prefixes_mix;
+    args.db_prefixes_comp = db.prefixes_comp;
+
+    // A knob that cannot possibly fire is a bug in the command line, not a
+    // no-op to shrug at -- silently-inert flags are exactly how the shadowing
+    // bug hid for two days. With the overlay off (p_mix < 0) only one mode
+    // ever runs, so the other mode's overrides can never be read.
+    if args.p_db > 0.0 && args.p_mix < 0.0 {
+        let comp_only = args.db_mode == "comp";
+        // Read `cli`, NOT the settled args: after the layers are applied every
+        // override holds a value, so blaming `args` would name flags the user
+        // never typed.
+        let inert: Vec<&str> = if comp_only {
+            [("--s-db-ctg", cli.s_db_ctg.is_some()), ("--db-prefixes-mix", cli.prefixes_mix.is_some())]
+                .iter()
+                .filter(|(_, set)| *set)
+                .map(|(n, _)| *n)
+                .collect()
+        } else {
+            [
+                ("--s-db-comp", cli.s_db_comp.is_some()),
+                ("--s-db-comp-ctg", cli.s_db_comp_ctg.is_some()),
+                ("--p-convex-comp", cli.p_convex_comp.is_some()),
+                ("--p-mingen-comp", cli.p_mingen_comp.is_some()),
+                ("--db-prefixes-comp", cli.prefixes_comp.is_some()),
+            ]
+            .iter()
+            .filter(|(_, set)| *set)
+            .map(|(n, _)| *n)
+            .collect()
+        };
+        if !inert.is_empty() {
+            eprintln!(
+                "[fmix] ERROR: {} can never take effect: --db-mode {} with no --p-mix overlay means {}-DB rounds never happen. Drop the flag, or arm the overlay with --p-mix.",
+                inert.join(", "),
+                args.db_mode,
+                if comp_only { "MIX" } else { "COMP" }
+            );
+            std::process::exit(2);
+        }
     }
 
     // Resolve the curated store BEFORE any banner mentions it, so the
@@ -834,8 +985,8 @@ fn main() {
     }
     if args.p_mix >= 0.0 {
         println!(
-            "[fmix] mode overlay ON (slot 0): p_mix={} -> MIX-DB w.p. p_mix else COMP-DB, per round; COMP knobs s_db_comp={} p_convex_comp={} p_mingen_comp={} (0/<0 => fall back to base)",
-            args.p_mix, args.s_db_comp, args.p_convex_comp, args.p_mingen_comp
+            "[fmix] mode overlay ON (slot 0): p_mix={} -> MIX-DB w.p. p_mix else COMP-DB, per round (each mode's settled knobs are on the 'DB effective per mode' line below)",
+            args.p_mix
         );
     }
     if args.p_comp > 0.0 || args.p_db > 0.0 || args.p_any > 0.0 {
@@ -844,24 +995,30 @@ fn main() {
             args.p_db, args.db_mode, args.p_comp, args.p_any,
             args.w_window, args.w_pool, !args.no_db_verify, args.curated
         );
-        // Print what each mode will ACTUALLY use, not the base knobs. The
-        // COMP overrides ship at concrete values and shadow --s-db/--p-convex
-        // whenever the live mode is COMP, so a banner echoing only the base
-        // flags reports settings the run never uses -- that misreading cost a
-        // full round of measurement runs on 2026-08-05.
-        let eff = |base: usize, mode: usize, ctg: usize| -> (usize, usize) {
-            let cvx = if mode > 0 { mode } else { base };
-            (cvx, if ctg > 0 { ctg } else { cvx })
+        // Print what each mode will ACTUALLY use, resolved by the SAME code the
+        // mixer runs (MixParams::db_knobs) rather than a second copy of the
+        // fall-through rules -- the old banner re-derived them itself and could
+        // therefore drift from reality, which is how the COMP shadowing hid.
+        let probe = MixParams {
+            s_db: args.s_db,
+            s_db_ctg: args.s_db_ctg,
+            s_db_comp: args.s_db_comp,
+            s_db_comp_ctg: args.s_db_comp_ctg,
+            p_convex: args.p_convex,
+            p_convex_comp: args.p_convex_comp,
+            p_mingen: args.p_mingen,
+            p_mingen_comp: args.p_mingen_comp,
+            db_prefixes: args.db_prefixes,
+            db_prefixes_mix: args.db_prefixes_mix,
+            db_prefixes_comp: args.db_prefixes_comp,
+            ..MixParams::default()
         };
-        let (mix_cvx, mix_ctg) = eff(args.s_db, 0, args.s_db_ctg);
-        let (cmp_cvx, cmp_ctg) = eff(args.s_db, args.s_db_comp, args.s_db_comp_ctg);
-        let cmp_pcv = if args.p_convex_comp >= 0.0 { args.p_convex_comp } else { args.p_convex };
+        let km = probe.db_knobs(DbMode::Mix);
+        let kc = probe.db_knobs(DbMode::Compressing);
         println!(
-            "[fmix] DB effective per mode: MIX p_convex={} s_db(cvx)={} s_db(ctg)={} descent={} | COMP p_convex={} s_db(cvx)={} s_db(ctg)={} descent={}",
-            args.p_convex, mix_cvx, mix_ctg,
-            args.db_prefixes_mix.unwrap_or(args.db_prefixes),
-            cmp_pcv, cmp_cvx, cmp_ctg,
-            args.db_prefixes_comp.unwrap_or(args.db_prefixes)
+            "[fmix] DB effective per mode: MIX p_convex={} s_db(cvx)={} s_db(ctg)={} p_mingen={} descent={} | COMP p_convex={} s_db(cvx)={} s_db(ctg)={} p_mingen={} descent={}",
+            km.p_convex, km.s_db_cvx, km.s_db_ctg, km.p_mingen, km.prefixes,
+            kc.p_convex, kc.s_db_cvx, kc.s_db_ctg, kc.p_mingen, kc.prefixes
         );
         if args.p_comp_g57 > 0.0 {
             println!(

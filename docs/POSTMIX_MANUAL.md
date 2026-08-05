@@ -259,14 +259,51 @@ that). A **resume** builds its params from the command line, so a resumed
 pre-2026-08-03 run picks up these defaults unless the old flags are
 repeated explicitly.
 
-> ⚠️ **`--s-db` and `--p-convex` are shadowed in COMP rounds.** `s_db_comp`
-> (12) and `p_convex_comp` (0.9) ship as concrete values, and
-> `active_s_db`/`active_p_convex` prefer them whenever the live mode is COMP.
-> Their doc comments promise sentinel fall-through ("0 = use `--s-db`"), but
-> the sentinel is never the shipped default, so a run passing
-> `--db-mode comp --s-db 20` silently gets 12. Pass `--s-db-comp` /
-> `--p-convex-comp` to mean it. This cost one round of measurement runs on
-> 2026-08-05.
+### 2.1.1a How a DB knob gets its value
+
+Every DB knob exists at up to three levels of specificity — base
+(`--s-db`), mode (`--s-db-comp`), and mode+geometry (`--s-db-comp-ctg`) —
+and is supplied by up to three sources. The rule, highest first:
+
+1. **explicit CLI**, most specific level first
+2. **preset** (`--gss`, then `--phase-a`), most specific level first
+3. **shipped default**, most specific level first
+
+with one exception that is the whole point of the scheme:
+
+> **A shipped mode-level default is withheld when you set the base knob
+> explicitly.** `--db-mode comp --s-db 20` gives COMP 20, not 12. A shipped
+> default is not a statement about *your* run, so it must not outrank one.
+>
+> Presets are deliberately *not* withheld this way: `--gss --s-db 15` moves
+> MIX to 15 and leaves COMP at the profile's 12/6. A named profile is a
+> coherent unit whose mode-level choices are intentional — to move COMP as
+> well, say `--s-db-comp`.
+
+Two consequences worth knowing:
+
+*`0` and `false` mean themselves.* Overrides are `Option`, so
+`--p-mingen-comp 0` is a real request. Until 2026-08-05 they were
+sentinel-encoded (`0` for `usize`, `< 0` for `f64`) and a legitimate zero —
+exactly what GSS wants — was indistinguishable from "unset".
+
+*A knob that cannot fire is an error, not a no-op.* Passing a COMP override
+with `--db-mode mix` and no `--p-mix` overlay exits with a message naming
+the flags, because COMP rounds never happen. Silently-inert flags are how
+the shadowing bug survived two days.
+
+The resolution lives in exactly one function, `MixParams::db_knobs`, which
+the mixer and the startup banner both call — so the `DB effective per mode`
+line is by construction what the run will do. The previous banner re-derived
+the rules itself and could drift.
+
+> **Historical note.** Before 2026-08-05, `s_db_comp` (12) and
+> `p_convex_comp` (0.9) shipped as `default_value_t` and therefore always
+> outranked an explicit `--s-db` / `--p-convex` in COMP rounds. Runs launched
+> with `--db-mode comp --s-db 20 --p-convex 1.0` silently executed at
+> `s_db 12, p_convex 0.9`. If you are comparing against measurements taken
+> before that date, check the `DB effective per mode` line (added the same
+> day) rather than the command line.
 
 ### 2.1.2 Per-geometry window length and per-mode descent
 

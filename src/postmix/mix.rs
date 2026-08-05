@@ -95,6 +95,18 @@ pub const SPLICE_HIST_MAX: usize = 24;
 /// behaviour of the widest ones.
 pub const LEN_HIST_MAX: usize = 32;
 
+/// One mode's DB knobs after the base -> mode -> mode+geometry layering has
+/// been applied. Produced by `Mixer::resolved_db_knobs`; the single source of
+/// truth for what a mode will actually do.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedDbKnobs {
+    pub s_db_cvx: usize,
+    pub s_db_ctg: usize,
+    pub p_convex: f64,
+    pub p_mingen: f64,
+    pub prefixes: bool,
+}
+
 /// How a DB move samples its outgoing window. Drawn ONCE per round, at the top
 /// of `db_attempt_inner`, because the window length now depends on it: the GSS
 /// profile wants a wide convex probe and a narrow contiguous one in the same
@@ -568,23 +580,37 @@ pub struct MixParams {
     pub prof_dp_max: f64,
     pub prof_ewma: f64,
     pub prof_ki: f64,
-    pub s_db_comp: usize,
-    pub p_convex_comp: f64,
-    pub p_mingen_comp: f64,
-    // Per-GEOMETRY window length, on top of the per-MODE split above. The two
+    // ---- Layered DB knobs: base -> mode -> mode+geometry ----
+    //
+    // Every override is `Option`, and `None` is the ONLY way to say "not set at
+    // this level, fall through". This is deliberate and was a bug fix: these
+    // used to be sentinel-encoded (0 for usize, < 0 for f64), which works only
+    // while the shipped default IS the sentinel. It stopped being one --
+    // `s_db_comp` ships at 12 and `p_convex_comp` at 0.9 -- so both fired
+    // unconditionally and silently shadowed an explicit `--s-db` / `--p-convex`
+    // in COMP rounds. Worse, 0 is a LEGITIMATE value here: `p_mingen_comp = 0`
+    // is what the GSS profile wants, and a sentinel scheme cannot tell it from
+    // "unset".
+    //
+    // Resolution is by specificity and lives entirely in the `active_*` methods
+    // below. Deciding WHICH level the user actually asked for is the CLI's job
+    // (fmix.rs), because only there can clap's ValueSource distinguish "the
+    // user passed this value" from "this is merely the default".
+    pub s_db_comp: Option<usize>,
+    pub p_convex_comp: Option<f64>,
+    pub p_mingen_comp: Option<f64>,
+    // Per-GEOMETRY window length, on top of the per-MODE split. The two
     // samplers have very different cost curves -- a contiguous window of the
     // same gate count spans far more wires, and its canonicalization cost runs
     // 3.6x convex at length 5, 12.6x at 7 and 47.8x at 12 -- so a profile that
     // wants a wide convex probe usually wants a much narrower contiguous one.
-    // 0 = fall back to the mode's s_db (i.e. both geometries share a length,
-    // the pre-2026-08-05 behaviour).
-    pub s_db_ctg: usize,
-    pub s_db_comp_ctg: usize,
+    pub s_db_ctg: Option<usize>,
+    pub s_db_comp_ctg: Option<usize>,
     // Per-MODE prefix descent. The mode overlay (--p-mix) runs MIX and COMP in
     // one process, and they want opposite settings: COMP descends (it is the
     // compression lever, worth ~600x on transport), while MIX draws one uniform
     // length (descent there just re-probes lengths whose expansion band is only
-    // 1..~5). None = fall back to `db_prefixes`.
+    // 1..~5).
     pub db_prefixes_mix: Option<bool>,
     pub db_prefixes_comp: Option<bool>,
     // Two eligibility thresholds, not one. w_window governs what may sit INSIDE
@@ -801,6 +827,35 @@ pub struct MixParams {
     pub seed: u64,
 }
 
+impl MixParams {
+    /// Settle the layered DB knobs for one mode: base -> mode -> mode+geometry,
+    /// most specific wins, `None` meaning "this level says nothing".
+    ///
+    /// THE single source of these rules. The CLI banner calls it too, so what a
+    /// run prints is by construction what the mixer will do -- the old banner
+    /// re-derived the fall-through itself and could drift, which is how the
+    /// COMP-shadowing bug stayed invisible.
+    pub fn db_knobs(&self, mode: DbMode) -> ResolvedDbKnobs {
+        let comp = mode == DbMode::Compressing;
+        let opt = |o: Option<f64>| if comp { o } else { None };
+        ResolvedDbKnobs {
+            s_db_cvx: if comp { self.s_db_comp } else { None }.unwrap_or(self.s_db),
+            // COMP contiguous falls back to COMP convex, not straight to the
+            // base: a run that set --s-db-comp meant it for both geometries.
+            s_db_ctg: if comp {
+                self.s_db_comp_ctg.or(self.s_db_comp)
+            } else {
+                self.s_db_ctg
+            }
+            .unwrap_or(self.s_db),
+            p_convex: opt(self.p_convex_comp).unwrap_or(self.p_convex),
+            p_mingen: opt(self.p_mingen_comp).unwrap_or(self.p_mingen),
+            prefixes: if comp { self.db_prefixes_comp } else { self.db_prefixes_mix }
+                .unwrap_or(self.db_prefixes),
+        }
+    }
+}
+
 impl Default for MixParams {
     fn default() -> MixParams {
         MixParams {
@@ -859,11 +914,11 @@ impl Default for MixParams {
             prof_dp_max: 0.1,
             prof_ewma: 0.3,
             prof_ki: 0.05,
-            s_db_comp: 0,
-            p_convex_comp: -1.0,
-            p_mingen_comp: -1.0,
-            s_db_ctg: 0,
-            s_db_comp_ctg: 0,
+            s_db_comp: None,
+            p_convex_comp: None,
+            p_mingen_comp: None,
+            s_db_ctg: None,
+            s_db_comp_ctg: None,
             db_prefixes_mix: None,
             db_prefixes_comp: None,
             w_window: 4,
@@ -3004,44 +3059,25 @@ impl Mixer {
     /// Precedence, most specific first: mode+geometry (`s_db_comp_ctg` /
     /// `s_db_ctg`) -> mode (`s_db_comp`) -> base (`s_db`). A 0 anywhere means
     /// "not set, fall through".
+    // Every one of these delegates to MixParams::db_knobs, so the resolution
+    // rules exist in exactly ONE place. They are called per DB round, but the
+    // work is a handful of Option::or on Copy types -- nothing next to the
+    // milliseconds a canonicalization costs.
     fn active_s_db(&self, geo: DbSample) -> usize {
-        let comp = self.db_mode_cur == DbMode::Compressing;
-        if geo == DbSample::Contiguous {
-            let ctg = if comp { self.params.s_db_comp_ctg } else { self.params.s_db_ctg };
-            if ctg > 0 {
-                return ctg;
-            }
-        }
-        if comp && self.params.s_db_comp > 0 {
-            self.params.s_db_comp
-        } else {
-            self.params.s_db
+        let k = self.params.db_knobs(self.db_mode_cur);
+        match geo {
+            DbSample::Convex => k.s_db_cvx,
+            DbSample::Contiguous => k.s_db_ctg,
         }
     }
-
-    /// Prefix descent for the round's live mode. Per-mode override first, then
-    /// the global `--db-prefixes`.
     fn active_prefixes(&self) -> bool {
-        let per_mode = if self.db_mode_cur == DbMode::Compressing {
-            self.params.db_prefixes_comp
-        } else {
-            self.params.db_prefixes_mix
-        };
-        per_mode.unwrap_or(self.params.db_prefixes)
+        self.params.db_knobs(self.db_mode_cur).prefixes
     }
     fn active_p_convex(&self) -> f64 {
-        if self.db_mode_cur == DbMode::Compressing && self.params.p_convex_comp >= 0.0 {
-            self.params.p_convex_comp
-        } else {
-            self.params.p_convex
-        }
+        self.params.db_knobs(self.db_mode_cur).p_convex
     }
     fn active_p_mingen(&self) -> f64 {
-        if self.db_mode_cur == DbMode::Compressing && self.params.p_mingen_comp >= 0.0 {
-            self.params.p_mingen_comp
-        } else {
-            self.params.p_mingen
-        }
+        self.params.db_knobs(self.db_mode_cur).p_mingen
     }
 
     // Layer-2 mode overlay (slot 0): pick this round's DB mode by coin when
@@ -7907,22 +7943,18 @@ mod mix_tests {
         assert_eq!(mx.gens_in_order()[0], GEN_FRESH, "fresh window must stay fresh");
     }
 
-    // Even without DB moves the walk lifts generations: split children get
-    // parent + 1, so heavy churn mints intermediate generations strictly
-    // between 0 and GEN_FRESH, while fresh material stays at GEN_FRESH.
-    #[test]
     // The GSS profile needs the window length to depend on BOTH the live mode
     // and the geometry drawn for that round -- COMP convex 12 / COMP
     // contiguous 6 / MIX 6 for either. Precedence is most-specific-first, and
-    // a 0 must fall through rather than clamp the window to nothing.
+    // an unset level must fall through rather than clamp the window to nothing.
     #[test]
     fn s_db_resolves_by_mode_and_geometry() {
         let gates = random_mixed_circuit(11, 8, 40);
         let params = MixParams {
             s_db: 6,
-            s_db_comp: 12,
-            s_db_comp_ctg: 6,
-            s_db_ctg: 0, // MIX shares one length across both geometries
+            s_db_comp: Some(12),
+            s_db_comp_ctg: Some(6),
+            s_db_ctg: None, // MIX shares one length across both geometries
             moves: 0,
             report_every: u64::MAX,
             ..MixParams::default()
@@ -7942,7 +7974,7 @@ mod mix_tests {
         );
 
         // A geometry override only applies to its own mode.
-        mx.params.s_db_ctg = 3;
+        mx.params.s_db_ctg = Some(3);
         assert_eq!(mx.active_s_db(DbSample::Contiguous), 3, "MIX contiguous now overridden");
         mx.db_mode_cur = DbMode::Compressing;
         assert_eq!(
@@ -7992,7 +8024,7 @@ mod mix_tests {
             temp: 20.0,
             p_db: 0.0, // store-free: exercise the sampler, not the store
             s_db: 9,
-            s_db_ctg: 3,
+            s_db_ctg: Some(3),
             verify_every: u64::MAX,
             report_every: u64::MAX,
             seed: 7,
@@ -8011,6 +8043,65 @@ mod mix_tests {
         assert_eq!(cvx.active_s_db(DbSample::Convex), 9);
     }
 
+    // Every layering rule in one place, asserted against MixParams::db_knobs --
+    // the function both the mixer and the CLI banner go through.
+    #[test]
+    fn db_knobs_layering_rules() {
+        let base = MixParams { s_db: 9, p_convex: 0.4, p_mingen: 0.8, db_prefixes: true,
+            ..MixParams::default() };
+
+        // Nothing overridden: both modes see the base.
+        let k = base.db_knobs(DbMode::Mix);
+        let c = base.db_knobs(DbMode::Compressing);
+        assert_eq!((k.s_db_cvx, k.s_db_ctg, k.p_convex), (9, 9, 0.4));
+        assert_eq!((c.s_db_cvx, c.s_db_ctg, c.p_convex), (9, 9, 0.4));
+
+        // A mode override moves only that mode, and reaches BOTH its geometries.
+        let p = MixParams { s_db_comp: Some(12), ..base.clone() };
+        assert_eq!(p.db_knobs(DbMode::Mix).s_db_cvx, 9);
+        assert_eq!(p.db_knobs(DbMode::Compressing).s_db_cvx, 12);
+        assert_eq!(
+            p.db_knobs(DbMode::Compressing).s_db_ctg,
+            12,
+            "COMP contiguous inherits COMP convex, not the base"
+        );
+
+        // A geometry override is narrower still.
+        let p = MixParams { s_db_comp: Some(12), s_db_comp_ctg: Some(6), ..base.clone() };
+        let c = p.db_knobs(DbMode::Compressing);
+        assert_eq!((c.s_db_cvx, c.s_db_ctg), (12, 6));
+        assert_eq!(p.db_knobs(DbMode::Mix).s_db_ctg, 9, "MIX untouched by COMP overrides");
+
+        // ZERO AND FALSE MEAN THEMSELVES. This is the whole reason these are
+        // Option: under the old sentinel encoding a legitimate 0 -- which is
+        // exactly what GSS wants for p_mingen_comp -- was indistinguishable
+        // from "unset", so it silently fell through to the base.
+        let p = MixParams { p_mingen: 0.8, p_mingen_comp: Some(0.0), ..base.clone() };
+        assert_eq!(p.db_knobs(DbMode::Compressing).p_mingen, 0.0);
+        assert_eq!(p.db_knobs(DbMode::Mix).p_mingen, 0.8);
+        let p = MixParams { db_prefixes: true, db_prefixes_mix: Some(false), ..base.clone() };
+        assert!(!p.db_knobs(DbMode::Mix).prefixes);
+        assert!(p.db_knobs(DbMode::Compressing).prefixes);
+
+        // The GSS profile, end to end.
+        let gss = MixParams {
+            s_db: 6, p_convex: 0.5, p_mingen: 0.5, db_prefixes: true,
+            db_prefixes_mix: Some(false), db_prefixes_comp: Some(true),
+            p_mingen_comp: Some(0.0), p_convex_comp: Some(0.95),
+            s_db_comp: Some(12), s_db_comp_ctg: Some(6),
+            ..MixParams::default()
+        };
+        let m = gss.db_knobs(DbMode::Mix);
+        let c = gss.db_knobs(DbMode::Compressing);
+        assert_eq!((m.s_db_cvx, m.s_db_ctg, m.p_convex, m.p_mingen, m.prefixes),
+                   (6, 6, 0.5, 0.5, false));
+        assert_eq!((c.s_db_cvx, c.s_db_ctg, c.p_convex, c.p_mingen, c.prefixes),
+                   (12, 6, 0.95, 0.0, true));
+    }
+
+    // Even without DB moves the walk lifts generations: split children get
+    // parent + 1, so heavy churn mints intermediate generations strictly
+    // between 0 and GEN_FRESH, while fresh material stays at GEN_FRESH.
     #[test]
     fn walk_splits_lift_generations() {
         let gates = random_mixed_circuit(29, 16, 300);
