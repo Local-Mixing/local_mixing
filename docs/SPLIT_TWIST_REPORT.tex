@@ -250,11 +250,25 @@ short side \emph{and} the coin to pick it (squared suppression). The 0--5\%
 mass collapses to 2.9\%, the mean lands at 0.57 (above the na\"ive $4/9$
 because edge-clustered survivors are sent sweeping across the circuit),
 midpoint crossing settles at an honest 71\%, failures essentially vanish, and
-the canary deciles show the best edge coverage of the three arms
-(3.4\,\ldots\,9.4\,\ldots\,3.4). The knob \texttt{--split-reach-k} remains
+the canaries confirm the coverage read (Figure~\ref{fig:armcanaries}): the
+shipped draw has the highest mean coverage (6.4 flips/canary) and the best
+edge coverage of the three arms. The knob \texttt{--split-reach-k} remains
 the length-bias dial ($1$ = uniform on the drawn side, $2 \approx \tfrac23$
 of the run, $3 \approx \tfrac34$; $0$ = the legacy cascade, kept as an A/B
 arm).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{../reports/split_trials_20260805/canary_flips_by_arm_nR20.png}
+\caption{The Figure~1 instrument applied to the three bracket-draw arms of
+Figure~\ref{fig:spans} (same input, same seed): flips per canary by original
+position --- decile mean, $\pm1$ std band, individual canaries. Colors match
+Figure~\ref{fig:spans}. The own-direction arm's short spans depress coverage
+everywhere (mean 4.2); the cascade recovers the mid-hump (5.9) but at
+near-full-circuit spans; the shipped proportional draw dominates both (6.4)
+with the strongest coverage in every decile while keeping spans balanced.}
+\label{fig:armcanaries}
+\end{figure}
 
 \section{Shipped parameters and launch recipe}
 

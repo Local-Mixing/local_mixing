@@ -16,11 +16,31 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-RUNS = [
-    ("nR20_mixed  (179k g, 99.3% g57)", "nR20.log", "#4269d0"),
-    ("g57A phaseA  (1.66M g, 83.5% comp)", "g57A.log", "#3ca951"),
-    ("cg1_phaseA5  (65k g, 73.5% comp)", "pA5.log", "#efb118"),
-]
+# Default: the three p_join=1 phase-A runs. "arms" mode: the three
+# bracket-draw arms of the span comparison, all on nR20_mixed, colors
+# matching the span figure so the arm identity carries across figures.
+MODES = {
+    "phaseA": (
+        [
+            ("nR20_mixed  (179k g, 99.3% g57)", "nR20.log", "#4269d0"),
+            ("g57A phaseA  (1.66M g, 83.5% comp)", "g57A.log", "#3ca951"),
+            ("cg1_phaseA5  (65k g, 73.5% comp)", "pA5.log", "#efb118"),
+        ],
+        "Split-stage NOT-twist coverage: canary flips by original wire-segment position",
+        "canary_flips_by_position.png",
+    ),
+    "arms": (
+        [
+            ("original cascade (other-half first)", "nR20_legacy.log", "#9498a0"),
+            ("directional max-of-2, own direction", "nR20_k2.log", "#efb118"),
+            ("directional max-of-2, side ∝ remaining length (shipped)", "nR20_k2p.log", "#4269d0"),
+        ],
+        "Canary flips by original position, per bracket-draw design (nR20_mixed, p_join = 1, seed 76)",
+        "canary_flips_by_arm_nR20.png",
+    ),
+}
+MODE = sys.argv[1] if len(sys.argv) > 1 else "phaseA"
+RUNS, TITLE, OUT = MODES[MODE]
 LINE = re.compile(r"canary wire=(\d+) orig=(\d+) now=(-?\d+) flips=(\d+)")
 
 def load(path):
@@ -60,10 +80,9 @@ for ax, (title, pts, color) in zip(axes, runs):
 
 axes[-1].set_xlabel("original position in circuit (%)", fontsize=9)
 axes[-1].set_xticks(edges)
-fig.suptitle("Split-stage NOT-twist coverage: canary flips by original wire-segment position\n"
-             "(line = decile mean, band = ±1 std, dots = individual canaries)",
+fig.suptitle(TITLE + "\n(line = decile mean, band = ±1 std, dots = individual canaries)",
              fontsize=10, y=0.995)
 fig.tight_layout(rect=(0, 0, 1, 0.965))
-out = "reports/split_trials_20260805/canary_flips_by_position.png"
+out = f"reports/split_trials_20260805/{OUT}"
 fig.savefig(out, dpi=160)
 print("wrote", out)
