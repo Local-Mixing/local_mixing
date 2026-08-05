@@ -351,48 +351,85 @@ At $s_{db}=20$ specifically, lengths 7--20 added \textbf{exactly zero} gates
 across all fourteen of them while removing 31{,}372; 98.6\% of all expansion
 came from lengths 1--4 on 20\% of the draws, and 77\% from lengths 1--2 alone.
 
-\subsection{Hit rate by length, all four measured cells}
+\subsection{Hit rate by length: the full mode $\times$ geometry $\times$ curation cube}
+
+All eight cells, same circuit (\code{pre2\_100k}), same budget, uniform draw
+over $1..20$, $\approx$30k attempts per length.
+
+\begin{table}[h]\centering\footnotesize
+\begin{tabular}{lrrrrrrrr}
+\toprule
+& \multicolumn{4}{c}{MIX} & \multicolumn{4}{c}{COMP} \\
+\cmidrule(lr){2-5}\cmidrule(lr){6-9}
+len & cvx $+$cur & cvx $-$cur & ctg $+$cur & ctg $-$cur & cvx $+$cur & cvx $-$cur & ctg $+$cur & ctg $-$cur \\
+\midrule
+1 & 99.78 & 99.75 & 99.79 & 99.70 & 0.00 & 0.00 & 0.00 & 0.00 \\
+2 & 99.02 & 98.83 & 98.23 & 97.95 & 0.00 & 0.00 & 1.60 & \textbf{11.95} \\
+3 & 97.53 & 96.79 & 91.45 & 83.91 & 13.87 & 6.71 & 12.33 & 9.83 \\
+4 & 91.15 & 85.47 & 79.22 & 76.71 & 19.59 & 13.64 & 5.66 & 5.37 \\
+5 & 75.21 & 70.10 & 64.23 & 61.73 & 16.64 & 16.64 & 2.62 & 2.71 \\
+6 & 67.09 & 62.43 & 54.75 & 49.87 & 17.15 & 17.32 & 1.01 & 1.03 \\
+7 & 45.50 & 39.42 & 42.89 & 39.72 & 8.39 & 8.78 & 0.52 & 0.50 \\
+8 & 35.49 & 23.57 & 32.89 & 31.47 & 2.94 & 2.87 & 0.34 & 0.25 \\
+9 & 25.52 & 15.06 & 24.36 & 24.53 & 1.17 & 1.16 & 0.12 & 0.10 \\
+10 & 20.14 & 9.72 & 15.82 & 14.24 & 0.36 & 0.39 & 0.04 & 0.05 \\
+11 & 15.80 & 6.58 & 11.77 & 8.60 & 0.16 & 0.18 & 0.01 & 0.01 \\
+12 & 12.62 & 3.85 & 7.56 & 2.42 & 0.04 & 0.03 & 0.00 & 0.00 \\
+13 & 10.33 & 2.44 & 6.33 & 1.70 & 0.02 & 0.01 & 0.00 & 0.00 \\
+14 & 8.10 & 1.55 & 4.64 & 0.75 & 0.01 & 0.00 & 0.00 & 0.00 \\
+15 & 6.60 & 0.95 & 3.81 & 0.37 & 0.00 & 0.00 & 0.00 & 0.00 \\
+16 & 4.76 & 0.60 & 2.77 & 0.13 & 0.00 & 0.00 & 0.00 & 0.00 \\
+17 & 3.87 & 0.45 & 2.27 & 0.10 & 0.00 & 0.00 & 0.00 & 0.00 \\
+18 & 2.98 & 0.21 & 1.45 & 0.07 & 0.00 & 0.00 & 0.00 & 0.00 \\
+19 & 2.15 & 0.18 & 1.20 & 0.02 & 0.00 & 0.00 & 0.00 & 0.00 \\
+20 & \textbf{1.72} & \textbf{0.09} & 0.84 & 0.01 & 0.00 & 0.00 & 0.00 & 0.00 \\
+\midrule
+overall & \textbf{36.27} & 30.82 & 32.33 & 29.72 & \textbf{4.02} & 3.39 & 1.22 & 1.59 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \begin{table}[h]\centering\small
 \begin{tabular}{lrrrr}
 \toprule
-len & MIX cvx $+$cur & MIX cvx $-$cur & MIX ctg $+$cur & COMP cvx $+$cur \\
+cell & added & removed & net & max span-skip \\
 \midrule
-1 & 99.78 & 99.75 & 99.79 & 0.00 \\
-2 & 99.02 & 98.83 & 98.23 & 0.00 \\
-3 & 97.53 & 96.79 & 91.45 & 13.87 \\
-4 & 91.15 & 85.47 & 79.22 & 19.59 \\
-5 & 75.21 & 70.10 & 64.23 & 16.64 \\
-6 & 67.09 & 62.43 & 54.75 & 17.15 \\
-7 & 45.50 & 39.42 & 42.89 & 8.39 \\
-8 & 35.49 & 23.57 & 32.89 & 2.94 \\
-9 & 25.52 & 15.06 & 24.36 & 1.17 \\
-10 & 20.14 & 9.72 & 15.82 & 0.36 \\
-11 & 15.80 & 6.58 & 11.77 & 0.16 \\
-12 & 12.62 & 3.85 & 7.56 & 0.04 \\
-13 & 10.33 & 2.44 & 6.33 & 0.02 \\
-14 & 8.10 & 1.55 & 4.64 & 0.01 \\
-15 & 6.60 & 0.95 & 3.81 & 0.00 \\
-16 & 4.76 & 0.60 & 2.77 & 0.00 \\
-17 & 3.87 & 0.45 & 2.27 & 0.00 \\
-18 & 2.98 & 0.21 & 1.45 & 0.00 \\
-19 & 2.15 & 0.18 & 1.20 & 0.00 \\
-20 & 1.72 & 0.09 & 0.84 & 0.00 \\
-\midrule
-overall & \textbf{36.27} & 30.82 & 32.33 & \textbf{4.02} \\
+MIX cvx $+$cur & 562{,}415 & 249{,}618 & $+312{,}797$ & 0.9\% \\
+MIX cvx $-$cur & 324{,}931 & 94{,}309 & $+230{,}622$ & 1.9\% \\
+MIX ctg $+$cur & 493{,}073 & 109{,}234 & $+383{,}839$ & \textbf{70.4\%} \\
+MIX ctg $-$cur & 263{,}530 & 21{,}097 & $+242{,}433$ & \textbf{94.2\%} \\
+COMP cvx $+$cur & 0 & 7{,}638 & $-7{,}638$ & 2.3\% \\
+COMP cvx $-$cur & 0 & 7{,}454 & $-7{,}454$ & 2.2\% \\
+COMP ctg $+$cur & 0 & 388 & $-388$ & \textbf{99.3\%} \\
+COMP ctg $-$cur & 0 & 390 & $-390$ & \textbf{99.4\%} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 MIX converts $\sim$9$\times$ more often than COMP, which is just the acceptance
 rule (MIX takes any spelling, COMP requires strictly shorter; COMP's 0.00\% at
-lengths 1--2 is structural). \textbf{Curation's entire value is at the wide
-end}: nothing at length~1 (99.78 vs 99.75), $3.3\times$ at length~12,
-$19\times$ at length~20. The curated store is a wide-window store.
+lengths 1--2 is structural). Half of all successful splices come from lengths
+$\le4$ in every MIX arm ($\le5$ in COMP), on 20--25\% of the draws; above
+length~7 the decay is close to geometric, $\times0.75$ per gate with curation
+and $\times0.6$ without.
 
-Half of all successful splices come from lengths $\le4$ in every MIX arm
-($\le5$ in COMP), on 20--25\% of the draws. Above length~7 the decay is close
-to geometric, $\times0.75$ per gate with curation and $\times0.6$ without.
+\textbf{Curation's value is entirely at the wide end, in both geometries.}
+Nothing at length~1 (99.78 vs 99.75). In convex, $3.3\times$ at length~12 and
+$19\times$ at length~20; in contiguous the ratio is \emph{larger} still ---
+$3.1\times$ at 12 and \textbf{84$\times$} at 20 (0.84 vs 0.01). The curated
+store is a wide-window store.
+
+\textbf{But curation is net-negative for COMP contiguous} --- 1.22\% against
+1.59\% overall, the only cell where it lowers the aggregate hit rate. It is
+driven entirely by length~2, where curation costs $11.95\% \rightarrow 1.60\%$.
+Removals are unchanged (388 vs 390), so this is substitution of equals rather
+than lost compression --- but it is the same displacement effect that cost
+ancestry in the descent$\times$contiguous arms of Part~I, now visible on a
+third independent measure. Curation should be read as a convex-mode asset.
+
+Finally, the span-skip column isolates what stops contiguous at high $s_{db}$:
+70--94\% of MIX contiguous attempts and \emph{99\%} of COMP contiguous
+attempts are rejected at the cap, against $\le2.3\%$ for every convex cell.
 
 \section{Part III: MIX $s_{db}\times$ geometry at matched size}
 
@@ -629,8 +666,12 @@ so the optimum may be lower than 12.
 transport. Long runs with size pinned would say which $s_{db}$ braids best.
 \item \textbf{Layer 2 and $s_{db}$.} MIX $s_{db}$ is a second growth lever the
 controller does not model.
-\item \textbf{The remaining 2$\times$2$\times$2 cells.} MIX ctg $-$cur and COMP
-ctg $-$cur were still running at the time of writing.
+\item \textbf{Why does curation cost COMP contiguous its length-2 hits?}
+$11.95\% \rightarrow 1.60\%$ is too large to be noise and has no analogue in
+convex. The cascade prefers a curated match when one exists; at length~2 in
+contiguous that appears to displace a regular match that would have been taken.
+Removals are unaffected, so nothing is lost on size --- but the mechanism is
+not understood, and it is the third measure on which curated hurts contiguous.
 \end{enumerate}
 
 \end{document}
