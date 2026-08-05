@@ -1,0 +1,166 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\usepackage{parskip}
+\usepackage{float}
+\newcommand{\g}{\textsf{g57}}
+\newcommand{\doc}[1]{\texttt{#1}}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\title{The GSS Mixing Pipeline:\\ \large components, parameter choices, and their rationales}
+\author{local-mixing project}
+\date{2026-08-05}
+
+\begin{document}
+\maketitle
+
+\noindent\emph{For readers familiar with the modules who want to understand
+what the knobs are and why they are set the way they are. Deep dives are
+referenced by filename (all in \doc{docs/} unless noted). The runnable
+packaging of everything here is \doc{scripts/gss\_mix.sh}; see
+\doc{GSS\_MIX.md}. The Markdown twin of this document is
+\doc{PIPELINE\_OVERVIEW.md}.}
+
+\begin{center}
+$n \rightarrow$ \textbf{I.~construction} $\rightarrow$ GSS ($4n$ wires)
+$\rightarrow$ \textbf{II.~phase A} $\rightarrow$ \textbf{III.~phase B}
+$\rightarrow$ \textbf{IV.~fcompress} $\rightarrow$ deliverable
+\end{center}
+
+The pipeline's one free input is $n$, the wire count of the secret
+computation $C$. Everything else is a library convention (a function of
+$n$), a validated preset, or a measured calibration --- this document says
+which, and why.
+
+\section{Construction: sliced sandwich + gadgetization}
+
+Sample a fresh random \g\ circuit $C$ on $n$ wires; build the sliced
+sandwich $A$ on $2n$ wires (random $D$, keyed slice interleave, N-column
+float) with $A(x,0)=(\mathrm{junk}, C(x))$ on the zero slice; gadgetize to
+$4n$ wires behind a zero-slice preblock with the diversified CG menu,
+nonlinear RGs, the product-share mask encoding, and a final commuting
+shuffle (\doc{SLICED\_SANDWICH.md}, \doc{NEW\_GADGETIZE.md},
+\doc{NONLINEAR\_RG\_CG\_MENU.md}).
+
+\begin{table}[H]\small
+\begin{tabular}{L{3.2cm} L{3.2cm} L{8.2cm}}
+\toprule
+knob & value & rationale \\
+\midrule
+$|C|=|D|$ & $\mathrm{round}(n\log_2^2 n)$ & library convention; $D$ sized like $C$ so neither sandwich side is thin \\
+slicing budget $s$ & $\mathrm{round}(n\log_2 n)$ & enough keyed slice mixing to decorrelate block boundaries \\
+slice gates & $20n$ & zero-slice preblock size, tool default \\
+mask plan & $[2,2,2,3]$ + Gray fold & measured: leak is LINEAR in the piling-up product $\varepsilon$ ($R^2=0.996$); this plan cuts $\varepsilon$ $3\times$ vs $[2,3,3]$ at $-14\%$ gates; disjoint deg-2 piling-up is proved optimal for sparse-ANF masks (\doc{CORRELATING\_TWO\_COMPUTATIONS.md}, \doc{TWISE\_INDEPENDENT\_MASKS.md}, \doc{GRAY\_FOLD\_CG.md}) \\
+Gray fold & on (default) & fold gates $\le 2$ controls $\Rightarrow$ DB reachability $31.6\%\to95.6\%$; judge digestibility by reachability, never match rate \\
+carrier decode & single-carrier & the old $[3,3]$ was really $[1,1,3,3]$: a second linear carrier free to an affine adversary (\doc{SINGLE\_CARRIER\_CONSTRUCTION.md}, \doc{SINGLE\_CARRIER\_DECODE.md}) \\
+band & rolling, nonlinear fill, retire-refill epochs & band-in-slice exact disturbance theorem; rolling $+12\%$; fill must be jointly uniform; band \emph{lifetime}, not width, is the recovery channel (\doc{BAND\_HARDENING.md}, \doc{BAND\_INDEPENDENCE.md}) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+No \texttt{PROD\_*} overrides: the production preset IS the default, per
+\doc{PRODUCT\_SHARE\_ENCODING.md} and \doc{PRODUCT\_SHARE\_UPDATE.md}. The
+gadget sample-verifies low-$2n \equiv A$ on the zero slice at build time.
+
+\section{Phase A: the DB re-encoding mix}
+
+\texttt{fmix --gss --phase-a --profile}: a move walk whose DB moves
+re-spell windows against the frozen store (MIX grows-if-needed, COMP
+strictly shrinks) under a layer-2 size profile; \g-word twists supply
+state-frame rotation. Phase A is deliberately \emph{\g-preserving}: its
+job is re-encoding depth and spelling diversity, not structure breaking
+(\doc{POSTMIX\_MANUAL.md} \S2, \doc{FMIX\_PHASE\_A.md},
+\doc{FMIX\_LAYER1.md}, \doc{FMIX\_LAYER2.md}).
+
+\begin{table}[H]\small
+\begin{tabular}{L{3.2cm} L{4.2cm} L{7.2cm}}
+\toprule
+knob & value & rationale \\
+\midrule
+size profile & $3,\,3{+}H,\,3{+}H{+}20,\,R,\,1{+}\frac{R-1}{2}$ (default $3,33,53,2,1.5$) & expansion fixed at 3 effs (transport happens during growth --- short, steep ramp); hold $H{=}30$ at $R{=}2$ is the re-encoding workhorse; compression fixed at 20 effs, ending halfway back ($1.5\times$) to keep spelling diversity a full return would spend (\doc{FMIX\_LAYER2.md}) \\
+exposed knobs & \texttt{--expand}, \texttt{--hold} & the only two: peak size and dose \\
+DB knobs & the \texttt{--gss} profile & COMP descends from $s_{db}$ 12 (a start: walks $12\ldots1$), MIX draws uniformly $\le 6$; curated-first ON both modes; precedence in \doc{FMIX\_PARAM\_PRECEDENCE.md}; calibrated by the mode$\times$geometry$\times$curation cube (\doc{DB\_CAMPAIGN\_20260805.md}, \doc{CURATED\_DB\_COMPARISON.md}) \\
+twists & \texttt{--phase-a}: twist-\g\ at $p=0.0005$ & brackets are adaptive all-\g\ words absorbing neighborhood gates (\doc{G57\_TWIST\_BRACKETS.md}); rate tiny --- one twist rewrites $O(\mathrm{window})$ gates \\
+store guards & degree 9, span 30, terms 1024/2048 & the store's max ANF degree; canonicalization cost caps \\
+env & \texttt{FROZEN\_DB\_DIR}, \texttt{FROZEN\_CURATED\_DIR} & frozen-store-only runtime; read at startup, never from rc files \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Phase B: structure breaking}
+
+Phase B's reframed job (2026-08-04) is \textbf{anti-inversion}: break the
+\g\ structure with absolute spread --- not state mixing (fmix alone hides
+nothing; hiding is sandwich-borne). No DB, no swap-family twists.
+
+\textbf{Part 1 --- the split stage} (\texttt{--split}, shipped defaults).
+One move to \g\ exhaustion: presplit a random \g\ into (CNOT/NCNOT,
+2-control AND); with $p_{\mathrm{join}}=0.8$ wrap an \emph{absorbed}
+pure-NOT twist on its target wire --- both brackets flip a control
+polarity (zero synthetic gates), the segment's $w$-reading pins flip,
+segment \g s force-split --- then one cross from the AND piece. Bracket
+side drawn $\propto$ remaining circuit length (kills the short-span spike;
+squared suppression); bracket = farthest of $k{=}2$ samples. Growth
+$= 1+$ comp-fraction (measured $\times1.7$--$2.0$); output is dead-even
+CNOT/NCNOT + $1{:}2{:}1$ ANDs, zero comp; coverage canary-verified
+absolute. Spec \doc{FMIX\_SPLIT\_TWIST.md}; measurements and the
+bracket-draw A/B in \doc{SPLIT\_TWIST\_REPORT.pdf} and
+\doc{reports/split\_trials\_20260805/RESULTS.md}.
+
+\textbf{Part 2 --- the crossing walk} (resumes the split state). Pure
+crossings under the thermostat; the 2026-08-05 X-panel set every knob:
+
+\begin{table}[H]\small
+\begin{tabular}{L{3.0cm} L{3.4cm} L{8.2cm}}
+\toprule
+knob & value & rationale \\
+\midrule
+damping & $b=3$, $c=1$ & heavy damping EQUALIZES: median descendants up, tail down --- the only knob that lifts the median (judge spread by MEDIAN absolute descendants/span; the Yule tail makes means dishonest); $b>3$ under test \\
+temperature & target/25 & second-order; medium keeps arrival clean \\
+target \texttt{--xr} & 2 (2.5 = max-spread) & frontier at the arrival peak: realized $1.63/1.84/2.01/2.25\times$ $\rightarrow$ frac($\ge$3 desc) $0.49/0.56/0.60/0.62$, median span $360/464/552/649$ --- decelerating; 2 clears median $\ge 3$ with margin \\
+budget & $6\times$ target; \textbf{stop at arrival} & both median metrics PEAK at the damped equilibrium and the constant-size hold ERODES them (frac$\ge$3: $0.555\to0.498$ over $+20$M moves) --- the hold moves spread from the median to the tail; no moves-for-size trade exists past arrival \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The $2/3$ bar on frac($\ge$3) is out of expansion's reach; the next lever
+is the min-dgen cross-shot bias (planned), not more growth.
+
+\section{fcompress: the final pass and honesty check}
+
+The attacker-computable greedy compressor, run whole-function
+(\texttt{--live-wires all}), as both the final size pass and the honesty
+metric: the residual is incompressibility \emph{earned} by mixing ---
+healthy mixed material lands $\gtrsim 90\%$, vs $83\%$ for raw split
+artifacts (\doc{POSTMIX\_MANUAL.md} \S3). Tool defaults; nothing tuned
+per run.
+
+\section{Quick reference}
+
+\begin{table}[H]\small
+\begin{tabular}{llL{2.6cm}L{6.6cm}}
+\toprule
+stage & knob & default & change when\ldots \\
+\midrule
+all & \texttt{-n} & (required) & it's the problem size \\
+all & \texttt{-s} seed & 1 & independent replicate wanted \\
+II & \texttt{--expand} & 2 & more peak size for more re-encoding room \\
+II & \texttt{--hold} & 30 effs & more/less generation dose \\
+III.1 & (none exposed) & shipped defaults & --- \\
+III.2 & \texttt{--xr} & 2 & 2.5 for max median spread; decelerates above \\
+III.2 & \texttt{--xb/--xc/--xtdiv} & 3 / 1 / 25 & X-panel-calibrated; $b>3$ probe pending \\
+III.2 & \texttt{--xmoves} & $6\times$ target & never linger --- arrival is the peak \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Ops: production sizes on the server; store env vars exported in the launch
+environment; every fmix launch exports
+\texttt{FMIX\_STOP\_FLAG}/\texttt{FMIX\_DUMP\_FLAG}; outputs promoted to
+\doc{circuits/} need a \doc{CIRCUIT\_GENERATION\_INFO} entry.
+
+\end{document}
