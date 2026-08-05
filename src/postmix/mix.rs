@@ -318,6 +318,20 @@ fn key_of(g: &XGate) -> u64 {
 // wire flipped on both sides, which is exactly a polarity flip of its
 // w-literal; a gate TARGETING w is invariant (the two flips cancel through the
 // XOR: !(!a ^ f) = a ^ f). Width and comp are preserved. None = g is invariant.
+// Split-stage rank restamp cadence, in moves (docs/FMIX_SPLIT_TWIST.md §5).
+const RANK_EVERY: u64 = 8192;
+
+// Flip the polarity of the literal on `w`, if the gate carries one. The
+// in-place sibling of `conj_by_not`: exact for comp gates too (the flip
+// happens inside the complemented conjunction).
+fn flip_wire_literal(g: &mut XGate, w: u16) {
+    for l in g.ctrls.iter_mut() {
+        if l.0 == w {
+            l.1 = !l.1;
+        }
+    }
+}
+
 fn conj_by_not(g: &XGate, w: u16) -> Option<XGate> {
     if !g.reads(w) {
         return None;
@@ -821,6 +835,29 @@ pub struct MixParams {
     // regimes where the generation census is not meaningful (e.g. pure-split
     // phase B, p_db = 0). Choose a multiple of report_every. 0 = off.
     pub snap_every_moves: u64,
+    // ---- the split stage (docs/FMIX_SPLIT_TWIST.md) ----
+    // split: arm the split stage. While it is live the split twist is the ONLY
+    // move running (the round's other slots are withheld); the stage ends on
+    // g57 exhaustion or split_fail_limit consecutive bracket failures, after
+    // which the round runs under the parameters below as usual.
+    pub split: bool,
+    // split_stop: end the RUN at the stage boundary (MixStop::SplitDone)
+    // instead of continuing into part 2 — the trial mode.
+    pub split_stop: bool,
+    // p_split_twist: layer-1 dispatch weight for split twists inside the twist
+    // slot OUTSIDE the split stage (the stage itself forces 1.0).
+    pub p_split_twist: f64,
+    // p_join: probability a split carries the absorbed NOT twist + cross
+    // (step 3 of the move); 1 - p_join of splits end after the split alone.
+    pub p_join: f64,
+    // Consecutive step-4e bracket failures that end the stage (exit B).
+    pub split_fail_limit: u32,
+    // Wire canaries planted at stage start (0 = off): flip monitors riding the
+    // material, reported by ORIGINAL position at stage end.
+    pub split_canaries: usize,
+    // Length bias of the bracket draw: k candidates sampled on the picked
+    // g57's own side, farthest wins. 1 = uniform, larger = longer spans.
+    pub split_reach_k: usize,
     pub verify_every: u64,
     pub report_every: u64,
     pub local_verify: bool,
@@ -965,6 +1002,13 @@ impl Default for MixParams {
             twist_cov_stop: 0.0,
             gen_snap_every: 0,
             snap_every_moves: 0,
+            split: false,
+            split_stop: false,
+            p_split_twist: 0.0,
+            p_join: 0.8,
+            split_fail_limit: 100,
+            split_canaries: 256,
+            split_reach_k: 2,
             verify_every: 10_000,
             report_every: 50_000,
             local_verify: true,
@@ -1187,6 +1231,24 @@ pub struct MixCounters {
     pub scatters: u64,
     pub scatter_steps: u64,
     pub dropped_neverfire: u64,
+    // ---- split stage (docs/FMIX_SPLIT_TWIST.md) ----
+    // Splits of the picked g57 (step 2), of the bracket g57 (4a/4c), and the
+    // forced segment splits (5a); twist successes, step-4e failures, and
+    // successes whose brackets sat in different circuit halves.
+    pub split_prims: u64,
+    pub split_hsplits: u64,
+    pub split_segs: u64,
+    pub split_joins: u64,
+    pub split_fails: u64,
+    pub split_xmid: u64,
+    // Total canary flips (each = a twist span complementing the value carried
+    // at a canary's position on its wire).
+    pub tap_flips: u64,
+    // Sum of twist span lengths (gates strictly between the brackets), and
+    // the span-as-fraction-of-circuit histogram in 5% buckets (a SHAPE, not
+    // carried across resumes, like width_hist).
+    pub split_span_sum: u64,
+    pub split_span_hist: [u64; 20],
     pub width_hist: [u64; 16],
 }
 
@@ -1400,6 +1462,50 @@ pub struct Mixer {
     // rung), with a running failure count so the fraction is O(1).
     canary: VecDeque<bool>,
     canary_failures: usize,
+    // ---- split stage (docs/FMIX_SPLIT_TWIST.md) ----
+    // Live stage flag (params.split arms it; exits clear it), the
+    // consecutive-4e-failure streak, and a one-move latch run() reads to stop
+    // at the boundary under split_stop.
+    split_on: bool,
+    split_fail_streak: u32,
+    split_ended: bool,
+    // The stage ran to its boundary at some point in this run's history
+    // (persisted): distinguishes "ended" from "never armed" on resume, and
+    // zeroes the live split-twist dispatch for part 2 of a --split run.
+    split_done: bool,
+    // O(1)-samplable population indexes, maintained by index_add/index_remove:
+    // every comp gate, and per target wire the bracket-eligible gates (comp,
+    // or non-comp with exactly one control). pos vectors map id -> slot in its
+    // list (NIL = absent) for O(1) swap-removal.
+    comp_ids: Vec<u32>,
+    comp_pos: Vec<u32>,
+    wt_buckets: Vec<Vec<u32>>,
+    wt_pos: Vec<u32>,
+    // Wire canaries: flip monitors riding the material. A tap sits on `wire`
+    // immediately right of `anchor`; taps re-anchor to the live left neighbor
+    // when their anchor dies (evict_taps at every node-death site).
+    taps: Vec<Tap>,
+    tap_at: HashMap<u32, Vec<u32>>,
+    taps_planted: bool,
+    taps_reported: bool,
+    // Approximate position ranks (id -> ordinal at last stamp; NIL = unknown),
+    // restamped every RANK_EVERY moves. Heuristic only: half classification,
+    // the midpoint-crossing counter and canary positions read it; correctness
+    // never does.
+    rank: Vec<u32>,
+    rank_n: usize,
+    rank_due: u64,
+}
+
+/// One wire canary (docs/FMIX_SPLIT_TWIST.md §5): counts how many twist spans
+/// complemented the value carried on `wire` at its position. `orig_permille`
+/// is the plant position as n/1000 of the circuit, the axis the stage report
+/// buckets by.
+struct Tap {
+    anchor: u32,
+    wire: u16,
+    orig_permille: u16,
+    flips: u64,
 }
 
 pub enum MixStop {
@@ -1419,6 +1525,9 @@ pub enum MixStop {
     // at a twist rate whose growth the lever cannot offset, would actively
     // undo the compression leg.
     ProfileDone,
+    // The split stage ended (g57 exhaustion or the failure limit) under
+    // --split-stop: the run stops at the stage boundary (trial mode).
+    SplitDone,
 }
 
 impl MixCounters {
@@ -1508,6 +1617,15 @@ impl MixCounters {
             // .state files stay loadable; append here, never insert.
             self.tg_consumed,
             self.tg_emitted,
+            // Split stage (2026-08-05).
+            self.split_prims,
+            self.split_hsplits,
+            self.split_segs,
+            self.split_joins,
+            self.split_fails,
+            self.split_xmid,
+            self.tap_flips,
+            self.split_span_sum,
         ];
         vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" ")
     }
@@ -1601,6 +1719,15 @@ impl MixCounters {
             // files, so they default to zero rather than failing the resume.
             tg_consumed: next_u64(&mut it).unwrap_or(0),
             tg_emitted: next_u64(&mut it).unwrap_or(0),
+            split_prims: next_u64(&mut it).unwrap_or(0),
+            split_hsplits: next_u64(&mut it).unwrap_or(0),
+            split_segs: next_u64(&mut it).unwrap_or(0),
+            split_joins: next_u64(&mut it).unwrap_or(0),
+            split_fails: next_u64(&mut it).unwrap_or(0),
+            split_xmid: next_u64(&mut it).unwrap_or(0),
+            tap_flips: next_u64(&mut it).unwrap_or(0),
+            split_span_sum: next_u64(&mut it).unwrap_or(0),
+            split_span_hist: [0u64; 20],
             tg_solves: 0,
             tg_solve_ns: 0,
             tg_slides: 0,
@@ -1651,7 +1778,9 @@ pub struct AncSidecar {
     pub sets: Vec<Vec<u64>>,
 }
 
-pub const STATE_VERSION: u32 = 1;
+// v2 (2026-08-05): the split-stage scalar line and the staps (canary) section
+// (docs/FMIX_SPLIT_TWIST.md §7). The reader still accepts v1, defaulting both.
+pub const STATE_VERSION: u32 = 2;
 
 impl Mixer {
     /// Write everything a resumed run needs and the circuit file does not
@@ -1712,6 +1841,15 @@ impl Mixer {
         );
         let _ = writeln!(o, "pool_scan_due {}", self.pool_scan_due);
         let _ = writeln!(o, "canary_failures {}", self.canary_failures);
+        // Tri-state phase (0 = never armed, 1 = live, 2 = ended) so a resume
+        // can tell "stage already ran" from "stage never requested", plus the
+        // canary-report latch.
+        let split_phase: u8 = if self.split_on { 1 } else if self.split_done { 2 } else { 0 };
+        let _ = writeln!(
+            o,
+            "split {} {} {}",
+            split_phase, self.split_fail_streak, self.taps_reported as u8
+        );
         let _ = writeln!(o, "anc {} {}", self.anc_words, self.anc_m);
         let _ = writeln!(o, "counters {}", self.counters.to_line());
 
@@ -1807,6 +1945,17 @@ impl Mixer {
             }
             o.push('\n');
         }
+        // Wire canaries: anchors are serialized as POSITIONS (the checkpoint
+        // renumbers ids), re-anchored by ordinal at load.
+        let _ = writeln!(o, "staps {}", self.taps.len());
+        if !self.taps.is_empty() {
+            let pos: HashMap<u32, usize> =
+                ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+            for t in &self.taps {
+                let p = pos.get(&t.anchor).copied().unwrap_or(0);
+                let _ = writeln!(o, "{} {} {} {}", t.wire, t.orig_permille, t.flips, p);
+            }
+        }
         std::fs::write(path, o)
     }
 
@@ -1823,7 +1972,9 @@ impl Mixer {
             return Err(bad("missing fmix-state header"));
         }
         let v: u32 = hdr.next().and_then(|x| x.parse().ok()).ok_or_else(|| bad("bad version"))?;
-        if v != STATE_VERSION {
+        // v1 is a strict prefix of v2 (split line and staps section absent),
+        // so old states load with the split stage off and no canaries.
+        if v != 1 && v != STATE_VERSION {
             return Err(bad(&format!(
                 "state file version {v} != {STATE_VERSION}; refusing to reinterpret its fields"
             )));
@@ -1852,6 +2003,17 @@ impl Mixer {
         let brake = scalar(&mut lines, "brake")?;
         let pool_scan_due: u64 = scalar(&mut lines, "pool_scan_due")?[0].parse().map_err(|_| bad("scan"))?;
         let canary_failures: usize = scalar(&mut lines, "canary_failures")?[0].parse().map_err(|_| bad("cf"))?;
+        let split_state: Option<(u8, u32, bool)> = if v >= 2 {
+            let s = scalar(&mut lines, "split")?;
+            let phase: u8 =
+                s.first().and_then(|x| x.parse().ok()).ok_or_else(|| bad("split"))?;
+            let streak = s.get(1).and_then(|x| x.parse().ok()).ok_or_else(|| bad("split streak"))?;
+            // Third field absent in the earliest v2 files: default unreported.
+            let reported = s.get(2).and_then(|x| x.parse::<u8>().ok()).unwrap_or(0) != 0;
+            Some((phase, streak, reported))
+        } else {
+            None
+        };
         let anc_hdr = scalar(&mut lines, "anc")?;
         let counters_line = scalar(&mut lines, "counters")?.join(" ");
 
@@ -1968,20 +2130,43 @@ impl Mixer {
         }
         // Optional trailing section: explicitly serialized tracers (states
         // written since 2026-08-03). Absent in older states, which regenerate
-        // below instead.
-        let stored_tracers: Option<Vec<u32>> = match lines.next() {
+        // below instead. Read with one line of lookahead, since the v2 staps
+        // section may follow (or replace) it.
+        let mut pending = lines.next();
+        let stored_tracers: Option<Vec<u32>> = match pending {
             Some(l) if l.starts_with("anctracers ") => {
                 let mut it = l["anctracers ".len()..].split_whitespace();
                 let k: usize =
                     it.next().and_then(|x| x.parse().ok()).ok_or_else(|| bad("anctracers count"))?;
-                let v: Vec<u32> = it.filter_map(|x| x.parse().ok()).collect();
-                if v.len() != k {
+                let tr: Vec<u32> = it.filter_map(|x| x.parse().ok()).collect();
+                if tr.len() != k {
                     return Err(bad("anctracers list length mismatch"));
                 }
-                Some(v)
+                pending = lines.next();
+                Some(tr)
             }
             _ => None,
         };
+        // v2 canaries: (wire, orig_permille, flips, position at save).
+        let mut staps_raw: Vec<(u16, u16, u64, usize)> = Vec::new();
+        if let Some(l) = pending {
+            if let Some(rest) = l.strip_prefix("staps ") {
+                let k: usize = rest.trim().parse().map_err(|_| bad("staps count"))?;
+                for _ in 0..k {
+                    let tl = lines.next().ok_or_else(|| bad("short staps section"))?;
+                    let f: Vec<&str> = tl.split_whitespace().collect();
+                    if f.len() != 4 {
+                        return Err(bad("staps line shape"));
+                    }
+                    staps_raw.push((
+                        f[0].parse().map_err(|_| bad("stap wire"))?,
+                        f[1].parse().map_err(|_| bad("stap orig"))?,
+                        f[2].parse().map_err(|_| bad("stap flips"))?,
+                        f[3].parse().map_err(|_| bad("stap pos"))?,
+                    ));
+                }
+            }
+        }
 
         // Build the mixer on the SAME id assignment the checkpoint renumbered
         // to: Arena::from_gates hands out 0..n-1 in order, which is what
@@ -2030,6 +2215,42 @@ impl Mixer {
         mx.canary = canary;
         mx.canary_failures = canary_failures;
         mx.pool = pool;
+        // Split stage, by recorded phase. 1 (live) continues the stage —
+        // which still needs --split on the resume line per the repeat-your-
+        // flags rule (warn loudly if it is missing, that is almost always a
+        // mistake). 2 (ended) never re-arms: --split on the resume just means
+        // "this is a split pipeline", part 2 continues. 0 (never armed) lets
+        // an explicit --split start the stage fresh on the resumed circuit.
+        // v1 states have no phase and take the constructor's arming.
+        if let Some((phase, streak, reported)) = split_state {
+            match phase {
+                1 => {
+                    mx.split_on = mx.params.split;
+                    if !mx.params.split {
+                        eprintln!(
+                            "[fmix] WARNING: state file has a LIVE split stage but --split was not \
+                             given — the stage stays OFF and part-2 moves run on unsplit material"
+                        );
+                    }
+                }
+                2 => {
+                    mx.split_on = false;
+                    mx.split_done = true;
+                }
+                _ => mx.split_on = mx.params.split,
+            }
+            mx.split_fail_streak = streak;
+            mx.taps_reported = reported;
+        }
+        if !staps_raw.is_empty() {
+            let ids = mx.arena.ids_in_order();
+            for (wire, orig, flips, pos) in staps_raw {
+                let anchor = ids[pos.min(ids.len() - 1)];
+                mx.tap_at.entry(anchor).or_default().push(mx.taps.len() as u32);
+                mx.taps.push(Tap { anchor, wire, orig_permille: orig, flips });
+            }
+            mx.taps_planted = true;
+        }
         mx.anc = anc;
         mx.anc_words = anc_hdr[0].parse().unwrap_or(0);
         mx.anc_m = anc_hdr[1].parse().unwrap_or(0);
@@ -2380,7 +2601,8 @@ impl Mixer {
             }
             b
         };
-        Mixer {
+        let split_on0 = params.split;
+        let mut mx = Mixer {
             arena: Arena::from_gates(gates.clone()),
             params,
             counters: MixCounters::default(),
@@ -2425,7 +2647,24 @@ impl Mixer {
             canary_failures: 0,
             pool_scan_due: 0,
             prof: None,
-        }
+            split_on: split_on0,
+            split_fail_streak: 0,
+            split_ended: false,
+            split_done: false,
+            comp_ids: Vec::new(),
+            comp_pos: Vec::new(),
+            wt_buckets: Vec::new(),
+            wt_pos: Vec::new(),
+            taps: Vec::new(),
+            tap_at: HashMap::new(),
+            taps_planted: false,
+            taps_reported: false,
+            rank: Vec::new(),
+            rank_n: 0,
+            rank_due: 0,
+        };
+        mx.rebuild_side_index();
+        mx
     }
 
     /// Enable per-DB-attempt recording to `path` (see [`MixCounters`] db_*).
@@ -3035,6 +3274,7 @@ impl Mixer {
         let k = key_of(self.arena.gate(id));
         self.index.entry(k).or_default().push(id);
         self.indexed_count += 1;
+        self.side_add(id);
     }
 
     fn index_remove(&mut self, id: u32) {
@@ -3046,6 +3286,70 @@ impl Mixer {
             self.index.remove(&k);
         }
         self.indexed_count -= 1;
+        self.side_remove(id);
+    }
+
+    // ---- split-stage population indexes ----
+    //
+    // Piggyback on the merge-index hooks, which every splice and in-place
+    // rewrite already calls in remove-old / add-new order, so both lists stay
+    // exact without new call sites. comp_ids: every comp gate (step-1
+    // sampling and the exhaustion exit). wt_buckets[w]: bracket-eligible
+    // gates targeting w — comp of any width (split on selection) or non-comp
+    // with exactly one control (absorbs directly). pos vectors give O(1)
+    // swap-removal; NIL = absent.
+
+    fn side_add(&mut self, id: u32) {
+        let idu = id as usize;
+        if self.comp_pos.len() <= idu {
+            self.comp_pos.resize(idu + 1, NIL);
+            self.wt_pos.resize(idu + 1, NIL);
+        }
+        let g = self.arena.gate(id);
+        let (comp, elig, t) = (g.comp, g.comp || g.ctrls.len() == 1, g.target as usize);
+        if comp {
+            self.comp_pos[idu] = self.comp_ids.len() as u32;
+            self.comp_ids.push(id);
+        }
+        if elig {
+            let b = &mut self.wt_buckets[t];
+            self.wt_pos[idu] = b.len() as u32;
+            b.push(id);
+        }
+    }
+
+    fn side_remove(&mut self, id: u32) {
+        let idu = id as usize;
+        let p = self.comp_pos[idu];
+        if p != NIL {
+            self.comp_ids.swap_remove(p as usize);
+            if let Some(&moved) = self.comp_ids.get(p as usize) {
+                self.comp_pos[moved as usize] = p;
+            }
+            self.comp_pos[idu] = NIL;
+        }
+        let q = self.wt_pos[idu];
+        if q != NIL {
+            let t = self.arena.gate(id).target as usize;
+            let b = &mut self.wt_buckets[t];
+            b.swap_remove(q as usize);
+            if let Some(&moved) = b.get(q as usize) {
+                self.wt_pos[moved as usize] = q;
+            }
+            self.wt_pos[idu] = NIL;
+        }
+    }
+
+    // Bulk (re)build: construction and resume, where the merge index is built
+    // without going through index_add.
+    fn rebuild_side_index(&mut self) {
+        self.comp_ids.clear();
+        self.comp_pos = vec![NIL; self.arena.capacity()];
+        self.wt_buckets = vec![Vec::new(); self.num_wires];
+        self.wt_pos = vec![NIL; self.arena.capacity()];
+        for id in self.arena.ids_in_order() {
+            self.side_add(id);
+        }
     }
 
     // ---- the chain ----
@@ -3307,11 +3611,549 @@ impl Mixer {
     // swap 1/4, swap+negate-one 1/2, swap+negate-both 1/4. The legacy
     // w_twist_* weights are retired (accepted-but-ignored on the CLI).
     fn twist_round(&mut self) {
+        // Layer-1 dispatch: the split twist first (forced while the stage is
+        // live), then the existing g57/swap-family choice. After a --split
+        // run's boundary the live dispatch is ZERO (docs §3) — part 2 runs no
+        // further split twists even if --p-split-twist was set; the CLI value
+        // is the standalone (no --split) layer-1 mode.
+        let p_st = if self.params.split && self.split_on {
+            1.0
+        } else if self.params.split && self.split_done {
+            0.0
+        } else {
+            self.params.p_split_twist
+        };
+        if p_st > 0.0 && self.rng.random_bool(p_st.clamp(0.0, 1.0)) {
+            self.split_twist_move();
+            return;
+        }
         if self.params.twist_g57 {
             self.twist_move_g57();
         } else {
             self.twist_move();
         }
+    }
+
+    // ---- the split twist (docs/FMIX_SPLIT_TWIST.md) ----
+    //
+    // One move: split a random g57 into its presplit pair, then with
+    // probability p_join wrap an ABSORBED pure-NOT twist on the g57's target
+    // wire between the split's 1-control piece and a bracket found across the
+    // circuit (splitting the bracket too when it is a g57, and force-splitting
+    // every g57 the segment conjugates), and finish with one ordinary cross
+    // shot from the 2-control piece. Every sub-rewrite is function-preserving
+    // on its own: presplit is exact, and the twist is the identity
+    //   g1' . S' . h1' = g1 . X(w) . S' . X(w) . h1 = g1 . S . h1
+    // where ' flips a bracket's control polarity (the absorbed X: a gate
+    // targeting w commutes with X(w) and composes into a single gate) and S'
+    // flips every w-READING pin in the open segment (gates targeting w are
+    // invariant).
+
+    fn split_twist_move(&mut self) {
+        // Ranks drive the bracket draw, so refresh them on growth too: the
+        // stage roughly doubles the circuit in a few thousand moves, far
+        // inside the move cadence.
+        if self.moves_done >= self.rank_due || self.arena.len() > self.rank_n + self.rank_n / 4 {
+            self.restamp_ranks();
+        }
+        if !self.taps_planted {
+            self.plant_taps();
+        }
+        // 1. A uniformly random g57; none anywhere = exit A. Outside a live
+        // stage (standalone --p-split-twist dispatch) an empty pool is just a
+        // spent round — there is no stage to end.
+        if self.comp_ids.is_empty() {
+            if self.split_on {
+                self.end_split_stage("g57 pool exhausted");
+            } else {
+                self.counters.twist_skips += 1;
+            }
+            return;
+        }
+        let g_id = self.comp_ids[self.rng.random_range(0..self.comp_ids.len())];
+        let w = self.arena.gate(g_id).target;
+        // Twist direction (v3, 2026-08-05): drawn with probability
+        // proportional to the circuit length REMAINING on each side of g, so
+        // a side is picked exactly as rarely as it is short — the fix for
+        // the 0-5% span spike that the own-stored-direction rule produced on
+        // edge-adjacent primaries (a tiny span now needs a short side AND
+        // the proportional coin to pick it: squared suppression). Stored
+        // direction is only the fallback for an unstamped primary.
+        let g_rank = self.rank_of(g_id);
+        let g_dir = if g_rank != NIL && self.rank_n > 0 {
+            let p_right = (self.rank_n as f64 - g_rank as f64) / self.rank_n as f64;
+            if self.rng.random_bool(p_right.clamp(0.0, 1.0)) { Dir::R } else { Dir::L }
+        } else {
+            self.meta_of(g_id).dir
+        };
+        // 2. Split it. g1 = the 1-control rung, g2 = the widest.
+        let (g1, g2) = self.split_g57(g_id);
+        self.counters.split_prims += 1;
+        // 3. The join coin: tails ends the move after the bare split.
+        if self.rng.random_bool(1.0 - self.params.p_join.clamp(0.0, 1.0)) {
+            self.split_report_line(None);
+            return;
+        }
+        // 4. The bracket draw (directional length-biased; reach_k = 0 keeps
+        // the original cascade as the A/B arm), then the twist.
+        let mut span = None;
+        let picked = if self.params.split_reach_k == 0 {
+            self.pick_bracket_cascade(w, g1, g_rank)
+        } else {
+            self.pick_bracket(w, g1, g_rank, g_dir)
+        };
+        match picked {
+            None => {
+                self.counters.split_fails += 1;
+                self.split_fail_streak += 1;
+                if self.split_on && self.split_fail_streak >= self.params.split_fail_limit {
+                    self.end_split_stage("failure limit");
+                }
+            }
+            Some((h_id, h_comp, crossed)) => {
+                let h1 = if h_comp {
+                    self.counters.split_hsplits += 1;
+                    self.split_g57(h_id).0
+                } else {
+                    h_id
+                };
+                let s = self.apply_not_twist(g1, h1, w);
+                self.counters.split_joins += 1;
+                self.counters.split_span_sum += s as u64;
+                let frac20 = (s * 20) / self.arena.len().max(1);
+                self.counters.split_span_hist[frac20.min(19)] += 1;
+                span = Some(s);
+                if crossed {
+                    self.counters.split_xmid += 1;
+                }
+                self.split_fail_streak = 0;
+            }
+        }
+        // 6. One ordinary cross shot from g2, twist outcome notwithstanding.
+        if self.arena.is_linked(g2) {
+            self.cross_move_on(g2);
+        }
+        self.split_report_line(span);
+    }
+
+    /// Split a g57 in place by the randomized first-failing-literal presplit
+    /// (the literal shuffle IS the design's `r` bit). Pieces stay put — no
+    /// birth transport: the 1-control piece must sit where the bracket forms,
+    /// and the widest piece's transport is the move's cross. First piece
+    /// draws a fair direction, the rest alternate (the sibling convention).
+    /// Returns (first piece, last piece).
+    fn split_g57(&mut self, id: u32) -> (u32, u32) {
+        let g = self.arena.gate(id).clone();
+        debug_assert!(g.comp, "split_g57 on a non-comp gate");
+        let pieces = rules::presplit(&g, &mut self.rng);
+        if self.params.local_verify {
+            assert!(
+                rules::verify_rewrite(std::slice::from_ref(&g), &pieces),
+                "split-twist presplit verification failed: {g:?} -> {pieces:?}"
+            );
+        }
+        let pm = self.meta_of(id);
+        let ev = self.fresh_event();
+        for p in &pieces {
+            self.counters.width_hist[p.width().min(15)] += 1;
+        }
+        let d0 = self.rand_dir();
+        let ids = self.splice_replace_one(id, pieces);
+        for (i, &pid) in ids.iter().enumerate() {
+            let d = if i % 2 == 0 { d0 } else { d0.opposite() };
+            self.set_meta(pid, Meta { origin: pm.origin, event: ev, dir: d, dgen: self.child_gen(pm.dgen), litter: pm.litter, litter_size: pm.litter_size });
+        }
+        (ids[0], *ids.last().expect("presplit emitted no pieces"))
+    }
+
+    /// The bracket draw on wire `w` (docs §2.4, v2 2026-08-05): DIRECTIONAL
+    /// and length-biased, replacing the halves cascade (whose other-half
+    /// preference made midpoint crossing a constant 100% — an overshoot).
+    /// Candidates are the bracket-eligible gates targeting w on the picked
+    /// g57's OWN side (its stored direction, the cross convention); comp and
+    /// 1-control candidates compete equally. Among split_reach_k uniform
+    /// samples the FARTHEST (rank distance) wins: k=1 uniform, larger k
+    /// prefers longer runs. Candidates born since the last rank stamp are
+    /// invisible until the next stamp (growth-triggered, so the blind window
+    /// is <=25% of the circuit's life). No candidate on that side = the
+    /// twist fails. Returns (id, is_comp, crossed_midpoint).
+    fn pick_bracket(&mut self, w: u16, g1: u32, g_rank: u32, d: Dir) -> Option<(u32, bool, bool)> {
+        if g_rank == NIL {
+            return None;
+        }
+        let mut cands: Vec<(u32, u32)> = Vec::new();
+        for &id in &self.wt_buckets[w as usize] {
+            if id == g1 {
+                continue;
+            }
+            let r = self.rank_of(id);
+            if r == NIL {
+                continue;
+            }
+            let on_side = match d {
+                Dir::R => r > g_rank,
+                Dir::L => r < g_rank,
+            };
+            if on_side {
+                cands.push((id, r.abs_diff(g_rank)));
+            }
+        }
+        if cands.is_empty() {
+            return None;
+        }
+        let k = self.params.split_reach_k.max(1);
+        let mut best = cands[self.rng.random_range(0..cands.len())];
+        for _ in 1..k {
+            let c = cands[self.rng.random_range(0..cands.len())];
+            if c.1 > best.1 {
+                best = c;
+            }
+        }
+        let id = best.0;
+        let comp = self.arena.gate(id).comp;
+        let mid = (self.rank_n / 2) as u32;
+        let crossed = (g_rank < mid) != (self.rank_of(id) < mid);
+        Some((id, comp, crossed))
+    }
+
+    /// The ORIGINAL v1 bracket cascade, kept as the A/B comparison arm
+    /// (split_reach_k = 0): other-half g57 > other-half CNOT/NCNOT >
+    /// same-half g57 > same-half CNOT/NCNOT, uniform within the first
+    /// non-empty class. Its hard other-half preference makes midpoint
+    /// crossing ~always true.
+    fn pick_bracket_cascade(&mut self, w: u16, g1: u32, g_rank: u32) -> Option<(u32, bool, bool)> {
+        let g_half = if g_rank == NIL || self.rank_n == 0 {
+            None
+        } else {
+            Some((g_rank as usize) >= self.rank_n / 2)
+        };
+        let mut groups: [Vec<u32>; 4] = Default::default();
+        for &id in &self.wt_buckets[w as usize] {
+            if id == g1 {
+                continue;
+            }
+            let comp = self.arena.gate(id).comp;
+            let r = self.rank_of(id);
+            let other = match (g_half, r) {
+                (Some(gh), r) if r != NIL => gh != ((r as usize) >= self.rank_n / 2),
+                _ => false,
+            };
+            let k = match (comp, other) {
+                (true, true) => 0,
+                (false, true) => 1,
+                (true, false) => 2,
+                (false, false) => 3,
+            };
+            groups[k].push(id);
+        }
+        for (k, grp) in groups.iter().enumerate() {
+            if !grp.is_empty() {
+                let id = grp[self.rng.random_range(0..grp.len())];
+                return Some((id, k == 0 || k == 2, k < 2));
+            }
+        }
+        None
+    }
+
+    /// The absorbed pure-NOT twist on wire `w` between brackets `g1` and `h1`
+    /// (both 1-control gates targeting w). Locates h1 by an alternating
+    /// bidirectional walk from g1 (cost <= 2x the segment the flip pass walks
+    /// anyway), flips both brackets' control polarity, and conjugates the open
+    /// segment: g57s reading w are force-split (5a, keeping the g57+X-series
+    /// closure), every w-reading pin flips, gates targeting w are invariant.
+    /// Canaries on w anchored in [left, right) count one flip. Returns the
+    /// span: gates strictly between the brackets.
+    fn apply_not_twist(&mut self, g1: u32, h1: u32, w: u16) -> usize {
+        let (left, right) = {
+            let (mut l, mut r) = (g1, g1);
+            loop {
+                if r != NIL {
+                    r = self.arena.neighbor(r, Dir::R);
+                    if r == h1 {
+                        break (g1, h1);
+                    }
+                }
+                if l != NIL {
+                    l = self.arena.neighbor(l, Dir::L);
+                    if l == h1 {
+                        break (h1, g1);
+                    }
+                }
+                assert!(l != NIL || r != NIL, "split-twist bracket not reachable from g1");
+            }
+        };
+        self.absorb_flip(g1);
+        self.absorb_flip(h1);
+        self.bump_taps_at(left, w);
+        let mut span = 0usize;
+        let mut cur = self.arena.neighbor(left, Dir::R);
+        while cur != right {
+            span += 1;
+            debug_assert!(cur != NIL, "segment walk ran off the circuit");
+            let next = self.arena.neighbor(cur, Dir::R);
+            // Bump before mutating: a 5a splice evicts this node's taps to an
+            // already-visited neighbor, and the count rides the tap, not the
+            // anchor.
+            self.bump_taps_at(cur, w);
+            let g = self.arena.gate(cur);
+            if g.reads(w) {
+                if g.comp {
+                    // 5a: force-split, then flip the pieces' w-pins. Exact:
+                    // conjugation commutes with the exact presplit.
+                    let gc = g.clone();
+                    let mut pieces = rules::presplit(&gc, &mut self.rng);
+                    for p in pieces.iter_mut() {
+                        flip_wire_literal(p, w);
+                    }
+                    // Exhaustive verify only inside verify_rewrite's support
+                    // envelope; wide gates get the identical X-conjugation and
+                    // stay covered by global_check.
+                    if self.params.local_verify && gc.width() < 16 {
+                        let x = XGate::x_gate(w);
+                        let before = vec![x.clone(), gc.clone(), x];
+                        assert!(
+                            rules::verify_rewrite(&before, &pieces),
+                            "split-twist 5a verification failed: {gc:?} on wire {w}"
+                        );
+                    }
+                    let pm = self.meta_of(cur);
+                    let ev = self.fresh_event();
+                    for p in &pieces {
+                        self.counters.width_hist[p.width().min(15)] += 1;
+                    }
+                    let d0 = self.rand_dir();
+                    let ids = self.splice_replace_one(cur, pieces);
+                    for (i, &pid) in ids.iter().enumerate() {
+                        let d = if i % 2 == 0 { d0 } else { d0.opposite() };
+                        self.set_meta(pid, Meta { origin: pm.origin, event: ev, dir: d, dgen: self.child_gen(pm.dgen), litter: pm.litter, litter_size: pm.litter_size });
+                    }
+                    self.counters.split_segs += 1;
+                } else {
+                    let mut ng = g.clone();
+                    flip_wire_literal(&mut ng, w);
+                    if self.params.local_verify && ng.width() < 16 {
+                        let x = XGate::x_gate(w);
+                        let before = vec![x.clone(), g.clone(), x];
+                        assert!(
+                            rules::verify_rewrite(&before, std::slice::from_ref(&ng)),
+                            "split-twist pin flip verification failed on wire {w}"
+                        );
+                    }
+                    self.index_remove(cur);
+                    self.arena.replace_gate(cur, ng);
+                    self.index_add(cur);
+                }
+            }
+            cur = next;
+        }
+        span
+    }
+
+    /// Absorb one X(w) into a 1-control gate targeting w: flip its control's
+    /// polarity (CNOT <-> NCNOT). The single-gate composition identity — the
+    /// reason the twist pays zero synthetic gates.
+    fn absorb_flip(&mut self, id: u32) {
+        let g = self.arena.gate(id).clone();
+        debug_assert!(!g.comp && g.ctrls.len() == 1, "bracket must be a 1-control conjunction");
+        let mut ng = g.clone();
+        ng.ctrls[0].1 = !ng.ctrls[0].1;
+        if self.params.local_verify {
+            let before = vec![XGate::x_gate(g.target), g.clone()];
+            assert!(
+                rules::verify_rewrite(&before, std::slice::from_ref(&ng)),
+                "split-twist absorption verification failed: {g:?}"
+            );
+        }
+        self.index_remove(id);
+        self.arena.replace_gate(id, ng);
+        self.index_add(id);
+    }
+
+    // ---- split-stage instrumentation ----
+
+    /// Restamp approximate position ranks (an O(n) walk). Heuristic
+    /// consumers only; see the field comment.
+    fn restamp_ranks(&mut self) {
+        self.rank.clear();
+        self.rank.resize(self.arena.capacity(), NIL);
+        for (i, id) in self.arena.ids_in_order().into_iter().enumerate() {
+            self.rank[id as usize] = i as u32;
+        }
+        self.rank_n = self.arena.len();
+        self.rank_due = self.moves_done + RANK_EVERY;
+    }
+
+    /// Ordinal at the last stamp; NIL = born since it.
+    fn rank_of(&self, id: u32) -> u32 {
+        self.rank.get(id as usize).copied().unwrap_or(NIL)
+    }
+
+    /// Plant the wire canaries: uniform anchors, wire drawn from the anchor's
+    /// touched wires. Uses metrics_rng so arming canaries never perturbs the
+    /// walk trajectory of a seed.
+    fn plant_taps(&mut self) {
+        self.taps_planted = true;
+        if self.params.split_canaries == 0 {
+            return;
+        }
+        self.restamp_ranks();
+        let ids = self.arena.ids_in_order();
+        let n = ids.len();
+        for _ in 0..self.params.split_canaries {
+            let i = self.metrics_rng.random_range(0..n);
+            let id = ids[i];
+            let g = self.arena.gate(id);
+            let mut wires: Vec<u16> = vec![g.target];
+            wires.extend(g.ctrls.iter().map(|&(w, _)| w));
+            let w = wires[self.metrics_rng.random_range(0..wires.len())];
+            self.tap_at.entry(id).or_default().push(self.taps.len() as u32);
+            self.taps.push(Tap {
+                anchor: id,
+                wire: w,
+                orig_permille: ((i * 1000) / n.max(1)) as u16,
+                flips: 0,
+            });
+        }
+        println!("[fmix] split: planted {} canaries", self.taps.len());
+    }
+
+    /// Count a twist flip for every canary on `w` anchored at `id`.
+    fn bump_taps_at(&mut self, id: u32, w: u16) {
+        if let Some(list) = self.tap_at.get(&id) {
+            for &t in list {
+                let tp = &mut self.taps[t as usize];
+                if tp.wire == w {
+                    tp.flips += 1;
+                    self.counters.tap_flips += 1;
+                }
+            }
+        }
+    }
+
+    /// Re-anchor canaries off a node about to die (call while it is still
+    /// linked): to the live left neighbor, right at the head, dropped only on
+    /// a single-gate circuit.
+    fn evict_taps(&mut self, id: u32) {
+        if self.taps.is_empty() {
+            return;
+        }
+        let Some(list) = self.tap_at.remove(&id) else { return };
+        let mut to = self.arena.neighbor(id, Dir::L);
+        if to == NIL {
+            to = self.arena.neighbor(id, Dir::R);
+        }
+        if to == NIL {
+            return;
+        }
+        for &t in &list {
+            self.taps[t as usize].anchor = to;
+        }
+        self.tap_at.entry(to).or_default().extend(list);
+    }
+
+    fn split_report_line(&mut self, span: Option<usize>) {
+        let c = &self.counters;
+        println!(
+            "[fmix] split mv={} size={} comp={} prims={} hspl={} segs={} joins={} xmid={} fails={} streak={} tapf={} span={}",
+            self.moves_done,
+            self.arena.len(),
+            self.comp_ids.len(),
+            c.split_prims,
+            c.split_hsplits,
+            c.split_segs,
+            c.split_joins,
+            c.split_xmid,
+            c.split_fails,
+            self.split_fail_streak,
+            c.tap_flips,
+            span.map_or(-1i64, |s| s as i64),
+        );
+    }
+
+    /// Span distribution at the stage boundary: mean gates between the
+    /// brackets and the fraction-of-circuit histogram (5% buckets, span
+    /// normalized by the circuit size AT ITS MOVE).
+    fn split_span_summary(&self) {
+        let c = &self.counters;
+        if c.split_joins == 0 {
+            return;
+        }
+        let cells: Vec<String> =
+            c.split_span_hist.iter().map(|&v| v.to_string()).collect();
+        println!(
+            "[fmix] split spans: mean={:.0} gates over {} twists; frac-of-circuit hist (5% buckets 0-100): {}",
+            c.split_span_sum as f64 / c.split_joins as f64,
+            c.split_joins,
+            cells.join(" ")
+        );
+    }
+
+    /// Stage boundary (both exits): clear the live flag, latch split_ended for
+    /// run()'s split_stop check, and print the stage summary + canary report.
+    fn end_split_stage(&mut self, reason: &str) {
+        self.split_on = false;
+        self.split_ended = true;
+        self.split_done = true;
+        let c = &self.counters;
+        println!(
+            "[fmix] split stage ENDED at move {}: {reason} — prims={} hspl={} segs={} joins={} xmid={} fails={} size={} comp={}",
+            self.moves_done,
+            c.split_prims,
+            c.split_hsplits,
+            c.split_segs,
+            c.split_joins,
+            c.split_xmid,
+            c.split_fails,
+            self.arena.len(),
+            self.comp_ids.len(),
+        );
+        self.split_span_summary();
+        self.split_tap_summary();
+    }
+
+    /// Canary report: one line per canary plus mean flips by ORIGINAL-position
+    /// decile — the spread/reach read. Idempotent (prints once); public so a
+    /// run that stops before the stage boundary can still dump it.
+    pub fn split_tap_summary(&mut self) {
+        if self.taps.is_empty() || self.taps_reported {
+            return;
+        }
+        self.taps_reported = true;
+        self.restamp_ranks();
+        let n = self.rank_n.max(1);
+        let mut dec_flips = [0u64; 10];
+        let mut dec_n = [0u64; 10];
+        for t in &self.taps {
+            let now = self
+                .rank
+                .get(t.anchor as usize)
+                .copied()
+                .filter(|&r| r != NIL)
+                .map(|r| (r as usize * 1000) / n);
+            println!(
+                "[fmix] canary wire={} orig={} now={} flips={}",
+                t.wire,
+                t.orig_permille,
+                now.map_or(-1i64, |x| x as i64),
+                t.flips
+            );
+            let d = (t.orig_permille as usize / 100).min(9);
+            dec_flips[d] += t.flips;
+            dec_n[d] += 1;
+        }
+        let cells: Vec<String> = (0..10)
+            .map(|d| {
+                if dec_n[d] == 0 {
+                    "-".to_string()
+                } else {
+                    format!("{:.1}", dec_flips[d] as f64 / dec_n[d] as f64)
+                }
+            })
+            .collect();
+        println!(
+            "[fmix] canary deciles (mean flips by ORIGINAL position, left to right): {}",
+            cells.join(" ")
+        );
     }
 
     /// The size brake. Growth past `size_hi` forces slot 2 into COMP; it is
@@ -3385,12 +4227,31 @@ impl Mixer {
                 self.rebuild_pool();
                 self.pool_scan_due = self.moves_done + self.params.gen_rescan.max(1);
             }
+            // The split stage (docs/FMIX_SPLIT_TWIST.md): while live it owns
+            // the whole round — every other slot is withheld, and the stage
+            // boundary optionally ends the run (--split-stop).
+            let took_split = self.params.split && self.split_on && {
+                self.split_twist_move();
+                true
+            };
+            if took_split && self.split_ended {
+                self.split_ended = false;
+                if self.params.split_stop {
+                    self.moves_done += 1;
+                    self.counters.moves = self.moves_done;
+                    self.global_check();
+                    self.report();
+                    return MixStop::SplitDone;
+                }
+            }
             // Slot 0 continued. With a PROFILE active the controller is the
             // one size authority: it owns target_size, keeps the brake
             // inert, and drives the MIX/COMP coin. Otherwise: the size
             // brake, then the p_mix overlay (whose per-round coin, when
             // armed, is the binding choice; the thermostat is untouched).
-            if self.prof.is_some() {
+            if took_split {
+                // stage round: no slot-0 steering
+            } else if self.prof.is_some() {
                 self.prof_tick();
                 if self.prof.as_ref().is_some_and(|p| p.phase == 4) {
                     self.report();
@@ -3402,7 +4263,8 @@ impl Mixer {
             }
             // Slot 1: one twist, at a FIXED rate the rest of the machinery
             // balances around.
-            let took_twist = self.params.p_twist > 0.0
+            let took_twist = !took_split
+                && self.params.p_twist > 0.0
                 && self.rng.random_bool(self.params.p_twist.clamp(0.0, 1.0))
                 && { self.twist_round(); true };
             // Slot 1b: GLOBAL re-randomisation, sitting after the twist and
@@ -3410,7 +4272,8 @@ impl Mixer {
             // DEFAULT probability is exactly 1/|circuit| -- an expected one
             // whole-circuit reshuffle per |circuit| rounds, and O(mean slack)
             // expected work per round however large the circuit gets.
-            let took_shuffle = !took_twist
+            let took_shuffle = !took_split
+                && !took_twist
                 && self.params.shuffle_rate > 0.0
                 && self.arena.len() >= 2
                 && {
@@ -3425,7 +4288,8 @@ impl Mixer {
             // descent finds nothing is SPENT -- there is no fallthrough -- so
             // the thermostat receives exactly (1 - p_twist)(1 - p_db) of rounds
             // no matter how hard the material is.
-            let took_db = !took_twist
+            let took_db = !took_split
+                && !took_twist
                 && !took_shuffle
                 && self.params.p_db > 0.0
                 && self.arena.len() >= 1
@@ -3443,7 +4307,7 @@ impl Mixer {
                     true
                 };
             // Slot 3: the thermostat.
-            if !took_twist && !took_shuffle && !took_db {
+            if !took_split && !took_twist && !took_shuffle && !took_db {
                 let excess = self.arena.len() as f64 - self.params.target_size as f64;
                 // In steer mode the 0.98 ceiling is the binding constraint on
                 // holding size: its 2% expansion floor is a structural growth
@@ -3752,8 +4616,13 @@ impl Mixer {
                 self.counters.width_hist[p.width().min(15)] += 1;
             }
             let ids = self.splice_replace_one(id, pieces);
-            for &pid in &ids {
-                let d = self.child_dir(dir);
+            // Sibling convention (2026-08-05): pieces of one g57 split take
+            // ALTERNATING directions from a fair draw — never the old
+            // independent per-piece child_dir, under which siblings could
+            // agree.
+            let d0 = self.rand_dir();
+            for (i, &pid) in ids.iter().enumerate() {
+                let d = if i % 2 == 0 { d0 } else { d0.opposite() };
                 self.set_meta(pid, Meta { origin: pm.origin, event: ev, dir: d, dgen: self.child_gen(pm.dgen), litter: pm.litter, litter_size: pm.litter_size });
             }
             self.advance_births(&ids);
@@ -3792,10 +4661,12 @@ impl Mixer {
                     self.counters.width_hist[p.width().min(15)] += 1;
                 }
                 let ids = self.splice_replace_one(h_id, hp);
-                for &pid in &ids {
-                    // Colliding-gate fragments still inherit from the SHOT
-                    // gate's direction (per spec: regardless of parent).
-                    let d = self.child_dir(dir);
+                // Sibling convention (2026-08-05): alternating directions
+                // from a fair draw, replacing the old inherit-from-the-shot
+                // law for presplit fragments.
+                let d0 = self.rand_dir();
+                for (i, &pid) in ids.iter().enumerate() {
+                    let d = if i % 2 == 0 { d0 } else { d0.opposite() };
                     self.set_meta(pid, Meta { origin: hm.origin, event: ev, dir: d, dgen: self.child_gen(hm.dgen), litter: hm.litter, litter_size: hm.litter_size });
                 }
                 self.advance_births(&ids);
@@ -4590,6 +5461,7 @@ impl Mixer {
         r_srcs.sort_unstable();
         r_srcs.dedup();
         for &id in plan.l.ids.iter().chain(plan.r.ids.iter()) {
+            self.evict_taps(id);
             self.index_remove(id);
             self.arena.unlink(id);
         }
@@ -4743,6 +5615,7 @@ impl Mixer {
         }
         let cursor = self.arena.neighbor(edge_l, Dir::L);
         for &bid in &block {
+            self.evict_taps(bid);
             self.index_remove(bid);
             self.arena.unlink(bid);
             self.arena.free_node(bid);
@@ -4866,9 +5739,13 @@ impl Mixer {
         // Same-target gates commute, so their order is irrelevant.
         let left = if self.arena.neighbor(g_id, Dir::R) == h_id { g_id } else { h_id };
         let cursor = self.arena.neighbor(left, Dir::L);
+        // Evict-then-unlink per node: h's eviction runs after g's unlink so
+        // its target can never be the dying g (both partners die here).
+        self.evict_taps(g_id);
         self.index_remove(g_id);
-        self.index_remove(h_id);
         self.arena.unlink(g_id);
+        self.evict_taps(h_id);
+        self.index_remove(h_id);
         self.arena.unlink(h_id);
         self.arena.free_node(g_id);
         self.arena.free_node(h_id);
@@ -5479,6 +6356,7 @@ impl Mixer {
             self.counters.litter_full_spliced += 1;
         }
         for &id in ids {
+            self.evict_taps(id);
             self.index_remove(id);
             self.arena.unlink(id);
             self.arena.free_node(id);
@@ -6164,6 +7042,7 @@ impl Mixer {
 
     fn splice_replace_one(&mut self, id: u32, gates: Vec<XGate>) -> Vec<u32> {
         let mut cursor = self.arena.neighbor(id, Dir::L);
+        self.evict_taps(id);
         self.index_remove(id);
         self.arena.unlink(id);
         self.arena.free_node(id);
@@ -6182,8 +7061,19 @@ impl Mixer {
             Dir::L => h_id,
         };
         let mut cursor = self.arena.neighbor(first, Dir::L);
+        // Canary re-anchoring: evict g while it is linked, but evict h only
+        // AFTER g's unlink — with both still linked, h's left neighbor can BE
+        // the dying g (dir R, no CollidingIntact), which would strand h's
+        // taps on a freed slot. After the unlink the neighbor pointers are
+        // repaired, so the eviction target is always a survivor. h keeps its
+        // node (and taps) when the rewrite carries a CollidingIntact.
+        let h_stays = seq.iter().any(|&(_, r)| r == Role::CollidingIntact);
+        self.evict_taps(g_id);
         self.index_remove(g_id);
         self.arena.unlink(g_id);
+        if !h_stays {
+            self.evict_taps(h_id);
+        }
         self.arena.unlink(h_id);
         let emitted: Vec<(XGate, Role)> = match dir {
             Dir::R => seq,
@@ -7477,14 +8367,111 @@ mod mix_tests {
         c.moves = 7;
         c.tg_consumed = 3;
         c.tg_emitted = 9;
+        c.split_prims = 11;
+        c.tap_flips = 13;
         let line = c.to_line();
         let full = MixCounters::from_line(&line).expect("roundtrip");
         assert_eq!((full.tg_consumed, full.tg_emitted), (3, 9));
+        assert_eq!((full.split_prims, full.tap_flips), (11, 13));
         let old: Vec<&str> = line.split_whitespace().collect();
-        let truncated = old[..old.len() - 2].join(" ");
+        // A pre-split-stage line (drop the 7 split fields): split counters
+        // default to zero, the tg pair survives.
+        let truncated = old[..old.len() - 7].join(" ");
+        let parsed = MixCounters::from_line(&truncated).expect("pre-split state must load");
+        assert_eq!(parsed.moves, 7);
+        assert_eq!((parsed.tg_consumed, parsed.tg_emitted), (3, 9));
+        assert_eq!((parsed.split_prims, parsed.tap_flips), (0, 0));
+        // A pre-tg line (drop those too): everything appended defaults.
+        let truncated = old[..old.len() - 9].join(" ");
         let parsed = MixCounters::from_line(&truncated).expect("pre-tg state must load");
         assert_eq!(parsed.moves, 7);
         assert_eq!((parsed.tg_consumed, parsed.tg_emitted), (0, 0));
+        assert_eq!((parsed.split_prims, parsed.tap_flips), (0, 0));
+    }
+
+    // ---- the split stage (docs/FMIX_SPLIT_TWIST.md) ----
+
+    // The whole stage on a mixed circuit, every sub-rewrite locally verified
+    // (presplits, absorptions, segment conjugations), ending by g57
+    // exhaustion: the run stops at the boundary under split_stop, no comp
+    // gate survives, twists actually landed, and the circuit still computes
+    // the input.
+    #[test]
+    fn split_stage_runs_to_exhaustion_and_preserves_function() {
+        let gates = random_mixed_circuit(11, 16, 400);
+        let comp0 = gates.iter().filter(|g| g.comp).count();
+        assert!(comp0 > 10, "test input must carry g57s, got {comp0}");
+        let params = MixParams {
+            k_max: 8,
+            moves: 200_000,
+            split: true,
+            split_stop: true,
+            split_canaries: 32,
+            report_every: u64::MAX,
+            verify_every: 1_000,
+            seed: 5,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new_with_db(gates, 16, params, FrozenDb::empty());
+        let stop = mx.run();
+        assert!(matches!(stop, MixStop::SplitDone), "stage must end the run under split_stop");
+        assert_eq!(mx.remaining_g57(), 0, "exit A means no comp gate survives");
+        let splits =
+            (mx.counters.split_prims + mx.counters.split_hsplits + mx.counters.split_segs) as usize;
+        assert!(splits >= comp0, "every input g57 splits through SOME channel: {splits} < {comp0}");
+        assert!(mx.counters.split_joins > 0, "p_join 0.8 must land twists");
+        mx.global_check();
+    }
+
+    // Sibling convention (2026-08-05): the two pieces of a g57 split take
+    // opposite directions.
+    #[test]
+    fn split_g57_pieces_take_opposite_directions() {
+        for seed in 0..16 {
+            let gates =
+                vec![XGate::from_g57([0, 1, 2]), XGate::conj(3, [(1u16, true)]).unwrap()];
+            let params =
+                MixParams { seed, moves: 0, report_every: u64::MAX, ..MixParams::default() };
+            let mut mx = Mixer::new_with_db(gates, 4, params, FrozenDb::empty());
+            let (g1, g2) = mx.split_g57(0);
+            assert_ne!(mx.meta_of(g1).dir, mx.meta_of(g2).dir, "siblings must oppose");
+            mx.global_check();
+        }
+    }
+
+    // v2 state roundtrip mid-stage: the live flag, the failure streak and the
+    // canaries all ride the checkpoint; the resumed run finishes the stage
+    // and still verifies.
+    #[test]
+    fn split_stage_state_roundtrip() {
+        let gates = random_mixed_circuit(13, 16, 300);
+        let params = MixParams {
+            k_max: 8,
+            moves: 4,
+            split: true,
+            split_canaries: 16,
+            report_every: u64::MAX,
+            verify_every: u64::MAX,
+            seed: 9,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new_with_db(gates, 16, params.clone(), FrozenDb::empty());
+        let stop = mx.run();
+        assert!(matches!(stop, MixStop::MovesBudget));
+        let taps0 = mx.taps.len();
+        assert!(taps0 > 0, "canaries plant on the first stage move");
+        let path = std::env::temp_dir().join("fmix_split_state_roundtrip.txt");
+        let path = path.to_str().unwrap().to_string();
+        mx.save_state(&path).expect("save state");
+        let params2 = MixParams { moves: 200_000, split_stop: true, ..params };
+        let mut mx2 = Mixer::resume_state(&path, params2, FrozenDb::empty()).expect("resume");
+        assert!(mx2.split_on, "live stage flag must survive the checkpoint");
+        assert_eq!(mx2.taps.len(), taps0, "canaries must survive the checkpoint");
+        let stop = mx2.run();
+        assert!(matches!(stop, MixStop::SplitDone), "resumed stage must finish");
+        assert_eq!(mx2.remaining_g57(), 0);
+        mx2.global_check();
+        let _ = std::fs::remove_file(&path);
     }
 
     // --twist-g57: brackets become adaptive all-g57 words solved online per

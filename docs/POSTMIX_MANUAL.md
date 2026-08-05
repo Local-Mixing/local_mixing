@@ -596,6 +596,30 @@ faster fossil erosion at equal moves.
 
 ---
 
+### The split stage (`--split`) — phase B part 1
+
+Full spec: `docs/FMIX_SPLIT_TWIST.md`; measurements:
+`reports/split_trials_20260805/` + `docs/SPLIT_TWIST_REPORT.pdf`. One move
+owns the whole round while the stage is live: split a random g57 by the
+randomized presplit; with `--p-join` wrap an **absorbed pure-NOT twist** on
+the g57's target wire — the bracket side is drawn ∝ the circuit length
+remaining on each side, the bracket is the farthest of `--split-reach-k`
+samples there (`0` = the retired other-half-first cascade, kept as an A/B
+arm), both brackets absorb the X by flipping their control polarity (zero
+synthetic gates), the segment's w-reading pins flip, and segment g57s
+reading w are force-split — then one cross shot from the 2-control piece.
+The stage ends on g57 exhaustion (the exit that fires in practice) or
+`--split-fail-limit` consecutive bracket failures, then the round belongs to
+the rest of the command line (`--split-stop` ends the run at the boundary
+instead). Growth ≈ 1 + comp-fraction (measured ×1.7–2.0); the output is
+CNOT/NCNOT ≈ 50/50 plus 2-control ANDs at 1:2:1 polarity — no comp gate
+survives. Instruments: `--split-canaries` wire canaries (flips by original
+position), per-move `span=`, span histogram + canary deciles at the
+boundary. State files are v2 (tri-state stage phase; v1 loads, old binaries
+refuse v2). NOTE: since 2026-08-05 ALL presplit siblings take alternating
+directions from a fair draw — pre-existing walks do not replay under the new
+binary.
+
 ## 3. `fcompress` — what it does
 
 The deterministic final compression pass, and the honest **effective-size

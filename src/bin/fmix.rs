@@ -207,6 +207,38 @@ struct Args {
     /// move ~= p-twist x mean-window-span / size.
     #[arg(long, default_value_t = 0.0)]
     p_twist: f64,
+    /// Arm the SPLIT STAGE (docs/FMIX_SPLIT_TWIST.md): split twists — a g57
+    /// split plus an absorbed long-range pure-NOT twist plus one cross — are
+    /// the ONLY move until the stage exits (g57 exhaustion, or
+    /// --split-fail-limit consecutive bracket failures), then the round runs
+    /// under the rest of this command line as usual.
+    #[arg(long, default_value_t = false)]
+    split: bool,
+    /// End the RUN at the split-stage boundary (trial mode) instead of
+    /// continuing into part 2.
+    #[arg(long, default_value_t = false)]
+    split_stop: bool,
+    /// Probability a split carries the absorbed NOT twist + cross; the rest
+    /// end after the bare split.
+    #[arg(long, default_value_t = 0.8)]
+    p_join: f64,
+    /// Consecutive bracket-search failures (step 4e) that end the stage.
+    #[arg(long, default_value_t = 100)]
+    split_fail_limit: u32,
+    /// Wire canaries planted at split-stage start (0 = off): per-position flip
+    /// monitors, reported by ORIGINAL position at the stage boundary.
+    #[arg(long, default_value_t = 256)]
+    split_canaries: usize,
+    /// Length bias of the bracket draw: k candidates sampled on the picked
+    /// g57's own side (its stored direction), farthest wins. 1 = uniform,
+    /// 2 ~ 2/3 of the available run, 3 ~ 3/4; larger = longer spans.
+    /// 0 = the ORIGINAL other-half-first cascade (A/B comparison arm).
+    #[arg(long, default_value_t = 2)]
+    split_reach_k: usize,
+    /// Layer-1 dispatch weight for split twists inside the twist slot OUTSIDE
+    /// the split stage (the stage itself forces 1.0).
+    #[arg(long, default_value_t = 0.0)]
+    p_split_twist: f64,
     /// GLOBAL re-randomisation rate, in units of ONE whole-circuit reshuffle
     /// per this many circuit-sizes of rounds. The per-round probability is
     /// shuffle-rate / |circuit|, so e.g. 2.0 means "expect two full
@@ -868,6 +900,10 @@ fn main() {
         );
     }
 
+    assert!(
+        !(args.split && !args.profile.is_empty()),
+        "--split and --profile both steer the round; run the split stage as its own invocation"
+    );
     // Parse the size profile and enforce single size authority.
     let profile: Option<([f64; 3], [f64; 2])> = if args.profile.is_empty() {
         None
@@ -1148,6 +1184,13 @@ fn main() {
         twist_cov_stop: args.twist_cov_stop,
         gen_snap_every: args.gen_snap_every,
         snap_every_moves: args.snap_every_moves,
+        split: args.split,
+        split_stop: args.split_stop,
+        p_split_twist: args.p_split_twist,
+        p_join: args.p_join,
+        split_fail_limit: args.split_fail_limit,
+        split_canaries: args.split_canaries,
+        split_reach_k: args.split_reach_k,
         verify_every: args.verify_every,
         report_every: args.report_every,
         local_verify: !args.no_local_verify,
@@ -1261,6 +1304,9 @@ fn main() {
     let stop_reason = mixer.run();
     let secs = t0.elapsed().as_secs_f64();
     mixer.report();
+    // Canary dump for runs that stopped BEFORE the stage boundary (budget,
+    // stop flag); a no-op when the boundary already reported them.
+    mixer.split_tap_summary();
     {
         use std::sync::atomic::Ordering;
         let rl = local_mixing::circuit::circuit::CANON_RULE_L_SKIPS.load(Ordering::Relaxed);
@@ -1280,6 +1326,7 @@ fn main() {
             MixStop::DoseReached => "dose reached (gen + twist coverage targets met)",
             MixStop::CanaryFired => "canary fired (pool is unspellable by the store)",
             MixStop::ProfileDone => "profile complete (size schedule finished)",
+            MixStop::SplitDone => "split stage complete (stopped at the stage boundary)",
         },
         input_len,
         mixer.arena.len(),

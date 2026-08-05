@@ -56,6 +56,11 @@ impl Arena {
         self.len
     }
 
+    // Allocated slot count (linked or not): the id-indexed vectors' size.
+    pub fn capacity(&self) -> usize {
+        self.gates.len()
+    }
+
     pub fn head(&self) -> u32 {
         self.head
     }
