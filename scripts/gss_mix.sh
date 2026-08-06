@@ -25,6 +25,7 @@ usage: gss_mix.sh -n N -o RUNDIR [options]
   -n N           wires of the source computation C (required)
   -o DIR         run directory (created; all artifacts + logs land here)
   -s SEED        master seed (default 1; stages derive their own from it)
+  --mcd M        override |C| = |D| gate count            [0 = round(n(log2 n)^2)]
   --expand R     phase-A max expansion factor R1          [2]
   --hold E       phase-A hold duration in effs            [30]
   --xr R         stage-5 crossing target factor           [2; 2.5 = max-spread point]
@@ -43,7 +44,7 @@ EOF
   exit 1
 }
 
-N=""; RUN=""; SEED=1; EXPAND=2; HOLD=30
+N=""; RUN=""; SEED=1; EXPAND=2; HOLD=30; MCD=0
 XR=2; XB=3; XC=1; XTDIV=25; XMOVES=""
 STOP_AFTER=6; FORCE_FROM=99
 while [ $# -gt 0 ]; do
@@ -51,6 +52,7 @@ while [ $# -gt 0 ]; do
     -n) N=$2; shift 2 ;;
     -o) RUN=$2; shift 2 ;;
     -s) SEED=$2; shift 2 ;;
+    --mcd) MCD=$2; shift 2 ;;
     --expand) EXPAND=$2; shift 2 ;;
     --hold) HOLD=$2; shift 2 ;;
     --xr) XR=$2; shift 2 ;;
@@ -76,11 +78,11 @@ note() { echo "[gss-mix] $*" | tee -a "$LOGALL"; }
 # Derived sizes (the library conventions, computed here so they are pinned in
 # the log): |C| = |D| = round(n (log2 n)^2), s = round(n log2 n),
 # slice_gates = 10 * 2n, rg_freq = 1.
-read -r M_CD S_SL SLICE_G <<< "$(python3 - "$N" <<'EOF'
+read -r M_CD S_SL SLICE_G <<< "$(python3 - "$N" "$MCD" <<'EOF'
 import math, sys
-n = int(sys.argv[1])
+n, mcd = int(sys.argv[1]), int(sys.argv[2])
 l = math.log2(n)
-print(round(n * l * l), max(n, round(n * l)), 10 * 2 * n)
+print(mcd if mcd > 0 else round(n * l * l), max(n, round(n * l)), 10 * 2 * n)
 EOF
 )"
 gates_of() { python3 -c "import sys; print(sum(1 for _ in open(sys.argv[1])) - 1)" "$1"; }
