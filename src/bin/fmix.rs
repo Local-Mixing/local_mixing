@@ -239,6 +239,19 @@ struct Args {
     /// the split stage (the stage itself forces 1.0).
     #[arg(long, default_value_t = 0.0)]
     p_split_twist: f64,
+    /// Min-dgen cross-shot bias: probability a cross shot is drawn from the
+    /// pool of the K least-split lineages instead of uniformly (the uniform
+    /// draw is rich-get-richer; this points expansion at untouched
+    /// families). 0 = off, and off draws no RNG — trajectories identical.
+    #[arg(long, default_value_t = 0.0)]
+    p_mincross: f64,
+    /// Min-dgen pool size (a COUNT): must exceed the biased draws taken
+    /// between rebuilds or the coin silently degrades to uniform.
+    #[arg(long, default_value_t = 20_000)]
+    cross_pool_k: usize,
+    /// Min-dgen pool rebuild cadence in moves (O(size) scan each).
+    #[arg(long, default_value_t = 10_000)]
+    cross_rescan: u64,
     /// GLOBAL re-randomisation rate, in units of ONE whole-circuit reshuffle
     /// per this many circuit-sizes of rounds. The per-round probability is
     /// shuffle-rate / |circuit|, so e.g. 2.0 means "expect two full
@@ -1191,6 +1204,9 @@ fn main() {
         split_fail_limit: args.split_fail_limit,
         split_canaries: args.split_canaries,
         split_reach_k: args.split_reach_k,
+        p_mincross: args.p_mincross,
+        cross_pool_k: args.cross_pool_k,
+        cross_rescan: args.cross_rescan,
         verify_every: args.verify_every,
         report_every: args.report_every,
         local_verify: !args.no_local_verify,

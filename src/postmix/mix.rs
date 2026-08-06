@@ -858,6 +858,21 @@ pub struct MixParams {
     // Length bias of the bracket draw: k candidates sampled on the picked
     // g57's own side, farthest wins. 1 = uniform, larger = longer spans.
     pub split_reach_k: usize,
+    // ---- min-dgen cross-shot bias (docs/FMIX_SPLIT_TWIST.md addendum) ----
+    // p_mincross: probability a cross shot is drawn from the min-dgen pool
+    // (the K least-split lineages) instead of uniformly. The uniform draw is
+    // a rich-get-richer sampler — families that already split carry more
+    // gates and soak up proportionally more shots — so the median family
+    // stays untouched while the tail grows; this coin points expansion work
+    // at exactly the untouched families. 0 = off, and OFF DRAWS NO RNG: the
+    // walk is move-for-move identical to the unbiased chain at equal seed.
+    pub p_mincross: f64,
+    // Pool size (a COUNT, like pool_k): must exceed the biased draws taken
+    // between rebuilds (~ p_mincross x cross_rescan x share of cross rounds)
+    // or the pool drains and the coin silently degrades to uniform.
+    pub cross_pool_k: usize,
+    // Pool rebuild cadence in moves (an O(size) scan + O(size) select each).
+    pub cross_rescan: u64,
     pub verify_every: u64,
     pub report_every: u64,
     pub local_verify: bool,
@@ -1009,6 +1024,9 @@ impl Default for MixParams {
             split_fail_limit: 100,
             split_canaries: 256,
             split_reach_k: 2,
+            p_mincross: 0.0,
+            cross_pool_k: 20_000,
+            cross_rescan: 10_000,
             verify_every: 10_000,
             report_every: 50_000,
             local_verify: true,
@@ -1249,6 +1267,8 @@ pub struct MixCounters {
     // carried across resumes, like width_hist).
     pub split_span_sum: u64,
     pub split_span_hist: [u64; 20],
+    // Cross shots drawn from the min-dgen pool (vs uniform).
+    pub cross_pool_shots: u64,
     pub width_hist: [u64; 16],
 }
 
@@ -1495,6 +1515,10 @@ pub struct Mixer {
     rank: Vec<u32>,
     rank_n: usize,
     rank_due: u64,
+    // Min-dgen cross-shot pool (p_mincross): the K least-split lineages at
+    // the last rebuild, consumed on draw so no single laggard is hammered.
+    cross_pool: Vec<u32>,
+    cross_pool_due: u64,
 }
 
 /// One wire canary (docs/FMIX_SPLIT_TWIST.md §5): counts how many twist spans
@@ -1626,6 +1650,7 @@ impl MixCounters {
             self.split_xmid,
             self.tap_flips,
             self.split_span_sum,
+            self.cross_pool_shots,
         ];
         vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" ")
     }
@@ -1727,6 +1752,7 @@ impl MixCounters {
             split_xmid: next_u64(&mut it).unwrap_or(0),
             tap_flips: next_u64(&mut it).unwrap_or(0),
             split_span_sum: next_u64(&mut it).unwrap_or(0),
+            cross_pool_shots: next_u64(&mut it).unwrap_or(0),
             split_span_hist: [0u64; 20],
             tg_solves: 0,
             tg_solve_ns: 0,
@@ -2662,6 +2688,8 @@ impl Mixer {
             rank: Vec::new(),
             rank_n: 0,
             rank_due: 0,
+            cross_pool: Vec::new(),
+            cross_pool_due: 0,
         };
         mx.rebuild_side_index();
         mx
@@ -4581,8 +4609,59 @@ impl Mixer {
     }
 
     fn cross_move(&mut self) {
-        let id = self.arena.random_linked(&mut self.rng);
+        let id = self.pick_cross_shot();
         self.cross_move_on(id);
+    }
+
+    /// Shot selection for the cross. With p_mincross off (the default) this
+    /// is exactly the historical uniform draw and consumes no extra RNG.
+    /// Armed, a coin sends the shot to the min-dgen pool: the K least-split
+    /// lineages at the last cadenced rebuild, each entry consumed on draw
+    /// (dead entries pruned lazily). The pool draining before the next
+    /// rebuild silently degrades to uniform — size cross_pool_k above the
+    /// expected biased draws per cadence.
+    fn pick_cross_shot(&mut self) -> u32 {
+        if self.params.p_mincross > 0.0 {
+            if self.moves_done >= self.cross_pool_due {
+                self.rebuild_cross_pool();
+            }
+            if !self.cross_pool.is_empty()
+                && self.rng.random_bool(self.params.p_mincross.clamp(0.0, 1.0))
+            {
+                for _ in 0..8 {
+                    if self.cross_pool.is_empty() {
+                        break;
+                    }
+                    let i = self.rng.random_range(0..self.cross_pool.len());
+                    let id = self.cross_pool.swap_remove(i);
+                    if self.arena.is_linked(id) {
+                        self.counters.cross_pool_shots += 1;
+                        return id;
+                    }
+                }
+            }
+        }
+        self.arena.random_linked(&mut self.rng)
+    }
+
+    /// O(n) scan + O(n) select of the K lowest-dgen linked gates. dgen is
+    /// the split-generation stamp — during a DB-free walk it counts the
+    /// split events in a gate's lineage, so low dgen IS "family the walk
+    /// has not touched".
+    fn rebuild_cross_pool(&mut self) {
+        let mut cand: Vec<(u32, u32)> = self
+            .arena
+            .ids_in_order()
+            .into_iter()
+            .map(|id| (self.meta_of(id).dgen, id))
+            .collect();
+        let k = self.params.cross_pool_k.min(cand.len());
+        if k > 0 && k < cand.len() {
+            cand.select_nth_unstable(k - 1);
+        }
+        cand.truncate(k);
+        self.cross_pool = cand.into_iter().map(|(_, id)| id).collect();
+        self.cross_pool_due = self.moves_done + self.params.cross_rescan.max(1);
     }
 
     fn cross_move_on(&mut self, id: u32) {
@@ -8472,6 +8551,50 @@ mod mix_tests {
         assert_eq!(mx2.remaining_g57(), 0);
         mx2.global_check();
         let _ = std::fs::remove_file(&path);
+    }
+
+    // Min-dgen cross-shot bias: armed, the walk still preserves function and
+    // the pool actually supplies shots; off, the constructor path draws no
+    // extra RNG so the trajectory is byte-identical to the historical chain.
+    #[test]
+    fn mincross_pool_supplies_shots_and_preserves_function() {
+        let gates = random_mixed_circuit(17, 16, 400);
+        let params = MixParams {
+            k_max: 8,
+            moves: 60_000,
+            p_mincross: 0.9,
+            cross_pool_k: 500,
+            cross_rescan: 2_000,
+            report_every: u64::MAX,
+            verify_every: 10_000,
+            seed: 21,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new_with_db(gates.clone(), 16, params, FrozenDb::empty());
+        mx.run();
+        assert!(mx.counters.cross_pool_shots > 1_000, "the pool must actually supply shots");
+        mx.global_check();
+
+        // Off = identical trajectory: same seed, with and without the (inert)
+        // pool knobs, ends in the same circuit.
+        let base = MixParams {
+            k_max: 8,
+            moves: 30_000,
+            report_every: u64::MAX,
+            verify_every: u64::MAX,
+            seed: 22,
+            ..MixParams::default()
+        };
+        let mut a = Mixer::new_with_db(gates.clone(), 16, base.clone(), FrozenDb::empty());
+        let mut b = Mixer::new_with_db(
+            gates,
+            16,
+            MixParams { cross_pool_k: 7, cross_rescan: 55, ..base },
+            FrozenDb::empty(),
+        );
+        a.run();
+        b.run();
+        assert_eq!(a.arena.to_vec(), b.arena.to_vec(), "p_mincross 0 must not perturb the walk");
     }
 
     // --twist-g57: brackets become adaptive all-g57 words solved online per
