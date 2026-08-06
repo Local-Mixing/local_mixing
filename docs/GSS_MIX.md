@@ -131,10 +131,15 @@ launch environment (they are read at startup, not from any rc file).
 
 ## Notes and contracts
 
-- **Determinism**: one master seed derives every stage's seed; stages 1+2
-  regenerate bit-identically from `(n, seed)`, so `source_c.g57` recovers a
-  past run's C. fmix stages are deterministic per (input, flags, seed) at
-  fixed binary.
+- **Seeds — the seed IS the secret.** Stages 1+2 regenerate bit-identically
+  from `(n, seed)`, so anyone holding the seed reconstructs C and the whole
+  gadget: **always run with the default random seed** (a fresh CSPRNG draw,
+  written to `<run>/SEED` mode 600 and never echoed into the shared log).
+  Never a constant or a counter. The seed of a deliverable is secret — keep
+  it out of chat, reports, and `CIRCUIT_GENERATION_INFO`. Explicit `-s N` is
+  for CALIBRATION arms that must share an input (paired knob comparisons);
+  anything produced that way is calibration material, never a deliverable.
+  fmix stages are deterministic per (input, flags, seed) at fixed binary.
 - **State v2**: stages 4–5 write resume states; stage 5's resume of the
   ended split stage never re-arms it (the tri-state contract).
 - **Provenance**: a pipeline output promoted into `circuits/` or the

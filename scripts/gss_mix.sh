@@ -24,7 +24,11 @@ usage() {
 usage: gss_mix.sh -n N -o RUNDIR [options]
   -n N           wires of the source computation C (required)
   -o DIR         run directory (created; all artifacts + logs land here)
-  -s SEED        master seed (default 1; stages derive their own from it)
+  -s SEED        master seed. DEFAULT: a fresh CSPRNG draw — the seed
+                 regenerates the secret C, so a predictable seed (1, 2, a
+                 counter) makes the output reconstructible and worthless as
+                 a deliverable. Pass -s only for CALIBRATION arms that must
+                 share an input; label such outputs calibration-only.
   --mcd M        override |C| = |D| gate count            [0 = round(n(log2 n)^2)]
   --expand R     phase-A max expansion factor R1          [2]
   --hold E       phase-A hold duration in effs            [30]
@@ -44,7 +48,7 @@ EOF
   exit 1
 }
 
-N=""; RUN=""; SEED=1; EXPAND=2; HOLD=30; MCD=0
+N=""; RUN=""; SEED=""; EXPAND=2; HOLD=30; MCD=0
 XR=2; XB=3; XC=1; XTDIV=25; XMOVES=""
 STOP_AFTER=6; FORCE_FROM=99
 while [ $# -gt 0 ]; do
@@ -66,6 +70,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$N" ] && [ -n "$RUN" ] || usage
+# The seed regenerates the secret C: default to the OS CSPRNG, never a
+# constant or a counter (docs/GSS_MIX.md, "seeds"). An explicit -s is for
+# calibration arms only.
+SEED_SRC="RANDOM (CSPRNG)"
+if [ -z "$SEED" ]; then
+  SEED=$(od -An -N8 -tu8 < /dev/urandom | tr -d ' \n')
+else
+  SEED_SRC="EXPLICIT — calibration only, NOT a deliverable"
+fi
 
 BIN=$(cd "$(dirname "$0")/.." && pwd)/target/release
 for b in gen_sandwich_gadget fmix fcompress; do
@@ -88,7 +101,11 @@ EOF
 gates_of() { python3 -c "import sys; print(sum(1 for _ in open(sys.argv[1])) - 1)" "$1"; }
 state_moves() { awk '$1=="moves"{print $2; exit}' "$1"; }
 
-note "run=$RUN n=$N seed=$SEED |C|=|D|=$M_CD s=$S_SL slice_gates=$SLICE_G expand=$EXPAND hold=${HOLD}effs x=(r=$XR b=$XB c=$XC tdiv=$XTDIV)"
+note "run=$RUN n=$N |C|=|D|=$M_CD s=$S_SL slice_gates=$SLICE_G expand=$EXPAND hold=${HOLD}effs x=(r=$XR b=$XB c=$XC tdiv=$XTDIV)"
+# The seed goes to the run dir, NOT to the shared narrative log: it is the
+# secret that regenerates C.
+note "seed source: $SEED_SRC (value in $RUN/SEED)"
+umask 077; printf '%s\n' "$SEED" > "$RUN/SEED"
 
 GADGET=$RUN/gss.mpmct1
 PHASEA=$RUN/phaseA.mpmct1
