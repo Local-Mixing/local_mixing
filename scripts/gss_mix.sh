@@ -70,15 +70,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$N" ] && [ -n "$RUN" ] || usage
-# The seed regenerates the secret C: default to the OS CSPRNG, never a
-# constant or a counter (docs/GSS_MIX.md, "seeds"). An explicit -s is for
-# calibration arms only.
-SEED_SRC="RANDOM (CSPRNG)"
-if [ -z "$SEED" ]; then
-  SEED=$(od -An -N8 -tu8 < /dev/urandom | tr -d ' \n')
-else
-  SEED_SRC="EXPLICIT — calibration only, NOT a deliverable"
-fi
 
 BIN=$(cd "$(dirname "$0")/.." && pwd)/target/release
 for b in gen_sandwich_gadget fmix fcompress; do
@@ -87,6 +78,24 @@ done
 mkdir -p "$RUN"; RUN=$(cd "$RUN" && pwd)
 LOGALL=$RUN/gss_mix.log
 note() { echo "[gss-mix] $*" | tee -a "$LOGALL"; }
+
+# The seed regenerates the secret C: default to the OS CSPRNG, never a
+# constant or a counter (docs/GSS_MIX.md, "seeds"). An explicit -s is for
+# calibration arms only.
+SEED_SRC="RANDOM (CSPRNG)"
+if [ -n "$SEED" ]; then
+  SEED_SRC="EXPLICIT — calibration only, NOT a deliverable"
+elif [ -s "$RUN/SEED" ]; then
+  # A rerun of an existing run dir MUST keep the seed that built the
+  # artifacts on disk, or <run>/SEED would stop describing them.
+  SEED=$(cat "$RUN/SEED")
+  SEED_SRC="RESUMED from $RUN/SEED"
+else
+  # 63-bit draw: the stage seeds are SEED+k, and a full 64-bit value
+  # overflows bash's signed arithmetic into a negative number that fmix
+  # parses as a flag ("unexpected argument '-8...'").
+  SEED=$(python3 -c "import secrets; print(secrets.randbelow(2**63 - 16))")
+fi
 
 # Derived sizes (the library conventions, computed here so they are pinned in
 # the log): |C| = |D| = round(n (log2 n)^2), s = round(n log2 n),
