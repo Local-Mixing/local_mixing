@@ -8448,20 +8448,24 @@ mod mix_tests {
         c.tg_emitted = 9;
         c.split_prims = 11;
         c.tap_flips = 13;
+        c.split_span_sum = 17;
+        c.cross_pool_shots = 19;
         let line = c.to_line();
         let full = MixCounters::from_line(&line).expect("roundtrip");
         assert_eq!((full.tg_consumed, full.tg_emitted), (3, 9));
         assert_eq!((full.split_prims, full.tap_flips), (11, 13));
+        assert_eq!((full.split_span_sum, full.cross_pool_shots), (17, 19));
         let old: Vec<&str> = line.split_whitespace().collect();
-        // A pre-split-stage line (drop the 7 split fields): split counters
-        // default to zero, the tg pair survives.
-        let truncated = old[..old.len() - 7].join(" ");
+        // A pre-split-stage line (drop the NINE fields appended since: the 7
+        // split counters + span sum + pool shots): they default to zero, the
+        // tg pair survives.
+        let truncated = old[..old.len() - 9].join(" ");
         let parsed = MixCounters::from_line(&truncated).expect("pre-split state must load");
         assert_eq!(parsed.moves, 7);
         assert_eq!((parsed.tg_consumed, parsed.tg_emitted), (3, 9));
-        assert_eq!((parsed.split_prims, parsed.tap_flips), (0, 0));
+        assert_eq!((parsed.split_prims, parsed.cross_pool_shots), (0, 0));
         // A pre-tg line (drop those too): everything appended defaults.
-        let truncated = old[..old.len() - 9].join(" ");
+        let truncated = old[..old.len() - 11].join(" ");
         let parsed = MixCounters::from_line(&truncated).expect("pre-tg state must load");
         assert_eq!(parsed.moves, 7);
         assert_eq!((parsed.tg_consumed, parsed.tg_emitted), (0, 0));
