@@ -43,7 +43,13 @@ name = "frozen_from_lmdb"
 path = "src/bin/frozen_from_lmdb.rs"
 
 [profile.release]
-overflow-checks = true
+overflow-checks = false
+lto = "thin"
+codegen-units = 1
+
+[profile.profiling]
+inherits = "release"
+debug = true
 
 [dependencies]
 rand = "0.9.0"

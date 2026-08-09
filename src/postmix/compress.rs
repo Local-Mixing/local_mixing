@@ -69,6 +69,7 @@ pub struct CompressReport {
     pub max_group: usize,
     pub catalogue_merges: u64,
     pub anf_wins: u64,
+    pub verifies_skipped: u64,
     pub gates_in: usize,
     pub gates_out: usize,
     pub lits_in: u64,
@@ -117,16 +118,6 @@ fn liveness_prune_anc(
         a.into_iter().zip(keep.iter()).filter(|(_, k)| **k).map(|(s, _)| s).collect()
     });
     (out, anc_out, dropped)
-}
-
-// XOR of the gathered control functions as (parity, cubes): comp gates
-// contribute 1 XOR cube. Evaluate one assignment (support-indexed bools).
-fn eval_cubes(parity: bool, cubes: &[Lits], val: &dyn Fn(u16) -> bool) -> bool {
-    let mut acc = parity;
-    for c in cubes {
-        acc ^= c.iter().all(|&(w, p)| val(w) == p);
-    }
-    acc
 }
 
 // ANF rewrite of a cube set over its support: expand mixed-polarity cubes
@@ -241,8 +232,10 @@ fn reduce_group(
     // Pairwise catalogue (cancel / drop-literal / subsume) to a fixed point.
     'outer: loop {
         for i in 0..cubes.len() {
+            // `a` depends only on `i`; every merge restarts the scan from the
+            // outer loop, so it can never go stale inside the `j` sweep.
+            let a = XGate { target, comp: false, ctrls: cubes[i].clone() };
             for j in i + 1..cubes.len() {
-                let a = XGate { target, comp: false, ctrls: cubes[i].clone() };
                 let b = XGate { target, comp: false, ctrls: cubes[j].clone() };
                 if let Some(m) = merge_result(&a, &b) {
                     rep.catalogue_merges += 1;
@@ -291,9 +284,74 @@ fn reduce_group(
         out.push(XGate::x_gate(target));
     }
     if p.local_verify {
-        verify_group(members, &out, rng);
+        // An identity reduction (output == input gate-for-gate) is functionally
+        // equal by construction; verifying it exhaustively is pure waste and
+        // ~95% of multi-group reductions are identities. The verify rng feeds
+        // nothing but the assertion, so skipping its draws cannot reach the
+        // output bytes.
+        if out == members {
+            rep.verifies_skipped += 1;
+        } else {
+            verify_group(members, &out, rng);
+        }
     }
     out
+}
+
+// Per-gate bitmask compilation over the indexed sorted support: each cube is
+// flattened at `words` u64s per gate as (positive-literal, negative-literal)
+// masks plus its comp bit.  Bit `i` of an assignment corresponds to
+// `support[i]`.
+fn cube_masks(gates: &[XGate], support: &[u16], words: usize) -> (Vec<bool>, Vec<u64>, Vec<u64>) {
+    let mut comps = Vec::with_capacity(gates.len());
+    let mut pos = vec![0u64; gates.len() * words];
+    let mut neg = vec![0u64; gates.len() * words];
+    for (i, g) in gates.iter().enumerate() {
+        comps.push(g.comp);
+        for &(w, p) in &g.ctrls {
+            let bit = support
+                .binary_search(&w)
+                .expect("verify support must contain every cube wire");
+            let slot = i * words + bit / 64;
+            let mask = 1u64 << (bit % 64);
+            if p {
+                pos[slot] |= mask;
+            } else {
+                neg[slot] |= mask;
+            }
+        }
+    }
+    (comps, pos, neg)
+}
+
+// XOR of the compiled cubes on one assignment bitset: a cube fires iff every
+// positive bit is set and every negative bit is clear.
+fn masked_parity(comps: &[bool], pos: &[u64], neg: &[u64], words: usize, assign: &[u64]) -> bool {
+    let mut acc = false;
+    for (i, &comp) in comps.iter().enumerate() {
+        let base = i * words;
+        let mut fires = true;
+        for word in 0..words {
+            let a = assign[word];
+            if a & pos[base + word] != pos[base + word] || a & neg[base + word] != 0 {
+                fires = false;
+                break;
+            }
+        }
+        acc ^= comp ^ fires;
+    }
+    acc
+}
+
+/// Original dyn-Fn cube evaluation, retained as the equivalence reference for
+/// `opt_equiv_masked_parity_matches_reference`.
+#[cfg(test)]
+fn parity_of_reference(gates: &[XGate], val: &dyn Fn(u16) -> bool) -> bool {
+    let mut acc = false;
+    for g in gates {
+        acc ^= g.comp ^ g.ctrls.iter().all(|&(w, p)| val(w) == p);
+    }
+    acc
 }
 
 fn verify_group(before: &[XGate], after: &[XGate], rng: &mut StdRng) {
@@ -301,31 +359,32 @@ fn verify_group(before: &[XGate], after: &[XGate], rng: &mut StdRng) {
         before.iter().chain(after).flat_map(|g| g.ctrls.iter().map(|&(w, _)| w)).collect();
     support.sort_unstable();
     support.dedup();
-    let parity_of = |gates: &[XGate], val: &dyn Fn(u16) -> bool| -> bool {
-        let mut acc = false;
-        for g in gates {
-            acc ^= g.comp ^ g.ctrls.iter().all(|&(w, p)| val(w) == p);
-        }
-        acc
-    };
-    let check = |val: &dyn Fn(u16) -> bool| {
+    let words = support.len().div_ceil(64).max(1);
+    let (before_comps, before_pos, before_neg) = cube_masks(before, &support, words);
+    let (after_comps, after_pos, after_neg) = cube_masks(after, &support, words);
+    let check = |assign: &[u64]| {
         assert_eq!(
-            parity_of(before, val),
-            parity_of(after, val),
+            masked_parity(&before_comps, &before_pos, &before_neg, words, assign),
+            masked_parity(&after_comps, &after_pos, &after_neg, words, assign),
             "fcompress group reduction changed the function"
         );
     };
     if support.len() <= 16 {
-        let pos: HashMap<u16, usize> =
-            support.iter().enumerate().map(|(i, &w)| (w, i)).collect();
         for a in 0u32..(1u32 << support.len()) {
-            check(&|w| a >> pos[&w] & 1 == 1);
+            check(&[a as u64]);
         }
     } else {
+        let mut assign = vec![0u64; words];
         for _ in 0..512 {
-            let assign: HashMap<u16, bool> =
-                support.iter().map(|&w| (w, rng.random_bool(0.5))).collect();
-            check(&|w| assign[&w]);
+            assign.fill(0);
+            // One draw per support wire in ascending wire order: the exact
+            // sequence the HashMap-based sampler drew.
+            for bit in 0..support.len() {
+                if rng.random_bool(0.5) {
+                    assign[bit / 64] |= 1u64 << (bit % 64);
+                }
+            }
+            check(&assign);
         }
     }
 }
@@ -515,9 +574,9 @@ pub fn compress_anc(
         cur_anc = next_anc;
         rep.iters = iter;
         println!(
-            "[fcompress] iter={} gates {} -> {} | groups={} multi={} max={} | catalogue={} anf_wins={} live_dropped={}",
+            "[fcompress] iter={} gates {} -> {} | groups={} multi={} max={} | catalogue={} anf_wins={} live_dropped={} vskip={}",
             iter, before, cur.len(), rep.groups, rep.multi_groups, rep.max_group,
-            rep.catalogue_merges, rep.anf_wins, rep.liveness_dropped
+            rep.catalogue_merges, rep.anf_wins, rep.liveness_dropped, rep.verifies_skipped
         );
         if cur.len() >= before {
             break;
@@ -551,6 +610,76 @@ mod compress_tests {
             }
         }
         true
+    }
+
+    #[test]
+    fn opt_equiv_masked_parity_matches_reference() {
+        let mut rng = StdRng::seed_from_u64(0x5EED_CAFE);
+        for case in 0..240usize {
+            // Wire pools spanning verify_group's exhaustive (<=16 support) and
+            // sampled (>16) branches; the largest also forces the multi-word
+            // mask path (support > 64 bits).
+            let pool: u16 = [6, 20, 80][case % 3];
+            let n_gates = rng.random_range(1..=10usize);
+            let mut gates: Vec<XGate> = Vec::new();
+            for _ in 0..n_gates {
+                let width = rng.random_range(0..=6usize);
+                let mut lits: Vec<(u16, bool)> = Vec::with_capacity(width);
+                while lits.len() < width {
+                    let w = rng.random_range(0..pool);
+                    if lits.iter().all(|&(seen, _)| seen != w) {
+                        lits.push((w, rng.random_bool(0.5)));
+                    }
+                }
+                let mut g = XGate::conj(pool, lits).expect("distinct literals");
+                g.comp = rng.random_bool(0.5);
+                gates.push(g);
+            }
+            if pool > 64 {
+                // Singletons on every pool wire guarantee a two-word support.
+                for w in 0..pool {
+                    let mut g = XGate::conj(pool, [(w, rng.random_bool(0.5))]).unwrap();
+                    g.comp = rng.random_bool(0.5);
+                    gates.push(g);
+                }
+            }
+            let mut support: Vec<u16> = gates
+                .iter()
+                .flat_map(|g| g.ctrls.iter().map(|&(w, _)| w))
+                .collect();
+            support.sort_unstable();
+            support.dedup();
+            let words = support.len().div_ceil(64).max(1);
+            let (comps, pos, neg) = cube_masks(&gates, &support, words);
+            let compare = |bits: &[bool]| {
+                let mut assign = vec![0u64; words];
+                for (i, &b) in bits.iter().enumerate() {
+                    if b {
+                        assign[i / 64] |= 1u64 << (i % 64);
+                    }
+                }
+                let reference = parity_of_reference(&gates, &|w| {
+                    bits[support.binary_search(&w).expect("wire in support")]
+                });
+                assert_eq!(
+                    masked_parity(&comps, &pos, &neg, words, &assign),
+                    reference,
+                    "case={case} bits={bits:?}"
+                );
+            };
+            if support.len() <= 12 {
+                for a in 0u32..(1u32 << support.len()) {
+                    let bits: Vec<bool> =
+                        (0..support.len()).map(|i| a >> i & 1 == 1).collect();
+                    compare(&bits);
+                }
+            }
+            for _ in 0..64 {
+                let bits: Vec<bool> =
+                    (0..support.len()).map(|_| rng.random_bool(0.5)).collect();
+                compare(&bits);
+            }
+        }
     }
 
     #[test]

@@ -21,6 +21,60 @@ impl Dir {
     }
 }
 
+/// Words in a collision mask: 2 covers wires 0..=127 (production runs at 128
+/// wires). A gate touching any wire >= 64 * MASK_WORDS has no mask and poisons
+/// the arena's fast path (`masks_ok` = false), falling back to
+/// `XGate::collides` — same predicate, just slower.
+pub const MASK_WORDS: usize = 2;
+
+/// Per-node collision mask mirroring the node's gate, kept in sync by every
+/// arena mutator that writes a gate (`from_gates`, `alloc`, `replace_gate`).
+/// `mask_collides` computes exactly the `XGate::collides` predicate with three
+/// mask operations instead of literal-list walks.
+///
+/// read: bit w set iff the gate has a control literal on wire w.
+/// pol:  bit w set iff that literal is POSITIVE (meaningful only where read is set).
+/// tgt:  the target wire; comp: complemented conjunction.
+#[derive(Clone, Copy)]
+pub struct GateMask {
+    pub read: [u64; MASK_WORDS],
+    pub pol: [u64; MASK_WORDS],
+    pub tgt: u16,
+    pub comp: bool,
+}
+
+impl GateMask {
+    #[inline]
+    pub fn of(g: &XGate) -> Option<GateMask> {
+        const LIM: u16 = (64 * MASK_WORDS) as u16;
+        if g.target >= LIM {
+            return None;
+        }
+        let mut read = [0u64; MASK_WORDS];
+        let mut pol = [0u64; MASK_WORDS];
+        for &(w, p) in &g.ctrls {
+            if w >= LIM {
+                return None;
+            }
+            read[(w >> 6) as usize] |= 1u64 << (w & 63);
+            if p {
+                pol[(w >> 6) as usize] |= 1u64 << (w & 63);
+            }
+        }
+        Some(GateMask { read, pol, tgt: g.target, comp: g.comp })
+    }
+
+    #[inline]
+    fn zero() -> GateMask {
+        GateMask { read: [0; MASK_WORDS], pol: [0; MASK_WORDS], tgt: 0, comp: false }
+    }
+
+    #[inline]
+    fn reads(&self, w: u16) -> bool {
+        (self.read[(w >> 6) as usize] >> (w & 63)) & 1 != 0
+    }
+}
+
 pub struct Arena {
     gates: Vec<XGate>,
     prev: Vec<u32>,
@@ -31,12 +85,29 @@ pub struct Arena {
     tail: u32,
     len: usize,
     free: Vec<u32>,
+    // Parallel collision-mask array (see GateMask). masks_ok = false disables
+    // the fast path (some wire >= 64 * MASK_WORDS appeared); collides_ids then
+    // falls back to XGate::collides. With the Mixer's num_wires <= 64 *
+    // MASK_WORDS — checked at Mixer construction — the fallback never engages.
+    masks: Vec<GateMask>,
+    masks_ok: bool,
 }
 
 impl Arena {
     pub fn from_gates(gs: Vec<XGate>) -> Arena {
         let n = gs.len();
         assert!(n > 0, "empty circuit");
+        let mut masks: Vec<GateMask> = Vec::with_capacity(n);
+        let mut masks_ok = true;
+        for g in &gs {
+            match GateMask::of(g) {
+                Some(m) => masks.push(m),
+                None => {
+                    masks_ok = false;
+                    masks.push(GateMask::zero());
+                }
+            }
+        }
         let mut a = Arena {
             gates: gs,
             prev: (0..n).map(|i| if i == 0 { NIL } else { (i - 1) as u32 }).collect(),
@@ -47,9 +118,44 @@ impl Arena {
             tail: (n - 1) as u32,
             len: n,
             free: Vec::new(),
+            masks,
+            masks_ok,
         };
         a.stamp.shrink_to_fit();
         a
+    }
+
+    /// Fast collides on node ids: mask algebra when every wire fits the mask
+    /// words — the exact same predicate as XGate::collides (see the proof
+    /// there) — else fallback.
+    #[inline]
+    pub fn collides_ids(&self, a: u32, b: u32) -> bool {
+        if !self.masks_ok {
+            return XGate::collides(self.gate(a), self.gate(b));
+        }
+        Self::mask_collides(&self.masks[a as usize], &self.masks[b as usize])
+    }
+
+    #[inline]
+    pub fn mask_collides(ma: &GateMask, mb: &GateMask) -> bool {
+        // Neither reads the other's target => commute.
+        if !ma.reads(mb.tgt) && !mb.reads(ma.tgt) {
+            return false;
+        }
+        if ma.comp || mb.comp {
+            return true;
+        }
+        // Separation exemption: a shared control wire with opposite polarity.
+        let mut sep = 0u64;
+        for w in 0..MASK_WORDS {
+            sep |= (ma.read[w] & mb.read[w]) & (ma.pol[w] ^ mb.pol[w]);
+        }
+        sep == 0
+    }
+
+    #[inline]
+    pub fn masks_ok(&self) -> bool {
+        self.masks_ok
     }
 
     pub fn len(&self) -> usize {
@@ -130,12 +236,18 @@ impl Arena {
 
     // Allocate a fresh node (unlinked) for `gate`.
     fn alloc(&mut self, gate: XGate) -> u32 {
+        let m = GateMask::of(&gate).unwrap_or_else(|| {
+            self.masks_ok = false;
+            GateMask::zero()
+        });
         if let Some(id) = self.free.pop() {
             self.gates[id as usize] = gate;
+            self.masks[id as usize] = m;
             self.stamp[id as usize] = self.stamp[id as usize].wrapping_add(1);
             id
         } else {
             self.gates.push(gate);
+            self.masks.push(m);
             self.prev.push(NIL);
             self.next.push(NIL);
             self.stamp.push(0);
@@ -155,6 +267,10 @@ impl Arena {
     // sees the node as touched.
     pub fn replace_gate(&mut self, id: u32, gate: XGate) {
         debug_assert!(self.linked[id as usize]);
+        self.masks[id as usize] = GateMask::of(&gate).unwrap_or_else(|| {
+            self.masks_ok = false;
+            GateMask::zero()
+        });
         self.gates[id as usize] = gate;
         self.stamp[id as usize] = self.stamp[id as usize].wrapping_add(1);
     }

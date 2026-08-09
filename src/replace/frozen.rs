@@ -41,6 +41,19 @@ impl<'a> BitReader<'a> {
     }
     #[inline]
     fn get(&mut self, bits: u32) -> u64 {
+        let v = self.peek(bits);
+        self.consume(bits);
+        v
+    }
+    #[inline]
+    fn get1(&mut self) -> u64 {
+        self.get(1)
+    }
+    /// Refill so at least `bits` are buffered and return them without
+    /// consuming. Reads past the end of the buffer yield zero bits, exactly
+    /// like `get` always has.
+    #[inline]
+    fn peek(&mut self, bits: u32) -> u64 {
         while self.nbits < bits {
             let b = if self.pos < self.buf.len() {
                 self.buf[self.pos]
@@ -51,18 +64,34 @@ impl<'a> BitReader<'a> {
             self.pos += 1;
             self.nbits += 8;
         }
-        let v = self.acc & ((1u64 << bits) - 1);
+        self.acc & ((1u64 << bits) - 1)
+    }
+    /// Drop `bits` already buffered by a preceding `peek`.
+    #[inline]
+    fn consume(&mut self, bits: u32) {
+        debug_assert!(self.nbits >= bits);
         self.acc >>= bits;
         self.nbits -= bits;
-        v
     }
-    #[inline]
-    fn get1(&mut self) -> u64 {
-        self.get(1)
+    /// Advance the stream by `bits` without materializing values.
+    fn skip(&mut self, mut bits: u64) {
+        let take = bits.min(self.nbits as u64) as u32;
+        self.consume(take);
+        bits -= take as u64;
+        self.pos += (bits / 8) as usize;
+        let rem = (bits % 8) as u32;
+        if rem > 0 {
+            let _ = self.get(rem);
+        }
     }
 }
 
 // ------------------------------------------------------ canonical Huffman
+/// First-level decode LUT width: one `peek` of this many stream bits resolves
+/// every code of length <= LUT_BITS in a single table hit; longer codes fall
+/// back to the canonical per-length walk.
+const LUT_BITS: u32 = 12;
+
 #[derive(Default)]
 struct HuffTable {
     syms: Vec<u32>,
@@ -70,6 +99,11 @@ struct HuffTable {
     first_idx: Vec<usize>,
     count: Vec<usize>,
     single: bool,
+    // lut[peek] = (symbol << 8) | code_len for codes of length <= LUT_BITS,
+    // where `peek` holds the next LUT_BITS stream bits LSB-first (bit i of
+    // `peek` is the i-th bit read; codes accumulate MSB-first, so bit i of the
+    // code is stream bit code_len-1-i). Zero entry = no short code matches.
+    lut: Vec<u64>,
 }
 
 fn rebuild_canonical(mut sym_lens: Vec<(u32, u32)>) -> HuffTable {
@@ -89,6 +123,7 @@ fn rebuild_canonical(mut sym_lens: Vec<(u32, u32)>) -> HuffTable {
     let mut code = 0u64;
     let mut prev_len = sym_lens[0].1;
     let mut started = vec![false; MAXLEN + 1];
+    t.lut = vec![0u64; 1 << LUT_BITS];
     for (idx, &(s, l)) in sym_lens.iter().enumerate() {
         if l > prev_len {
             code <<= l - prev_len;
@@ -102,6 +137,19 @@ fn rebuild_canonical(mut sym_lens: Vec<(u32, u32)>) -> HuffTable {
         }
         t.count[li] += 1;
         t.syms.push(s);
+        if l <= LUT_BITS {
+            // Stream-order index: bit i of the peek is code bit l-1-i.
+            let mut base = 0u64;
+            for i in 0..l {
+                base |= ((code >> (l - 1 - i)) & 1) << i;
+            }
+            let entry = ((s as u64) << 8) | l as u64;
+            let mut fill = 0u64;
+            while fill < (1u64 << (LUT_BITS - l)) {
+                t.lut[(base | (fill << l)) as usize] = entry;
+                fill += 1;
+            }
+        }
         code += 1;
     }
     t
@@ -113,8 +161,20 @@ impl HuffTable {
         if self.single {
             return self.syms[0];
         }
+        let peek = r.peek(LUT_BITS);
+        let entry = self.lut[peek as usize];
+        if entry != 0 {
+            r.consume((entry & 0xFF) as u32);
+            return (entry >> 8) as u32;
+        }
+        // No code of length <= LUT_BITS matches these bits (the LUT covers all
+        // extensions), so replay them into the canonical walk and continue.
         let mut code = 0u64;
-        for len in 1..=MAXLEN {
+        for i in 0..LUT_BITS {
+            code = (code << 1) | ((peek >> i) & 1);
+        }
+        r.consume(LUT_BITS);
+        for len in (LUT_BITS as usize + 1)..=MAXLEN {
             code = (code << 1) | r.get1();
             if self.count[len] > 0 {
                 let fc = self.first_code[len];
@@ -247,6 +307,45 @@ fn decode_value(t: &Tables, r: &mut BitReader, out: &mut Vec<u8>, max_circuits: 
     }
 }
 
+/// Advance the reader past one stored value without materializing bytes.
+/// Consumes exactly the bits `decode_value(.., usize::MAX)` would: predecessor
+/// values in a bucket are decoded only to reach the target's bit offset.
+fn skip_value(t: &Tables, r: &mut BitReader) {
+    loop {
+        let hs = t.header.decode(r);
+        let (g, w, chain);
+        if hs == ESC {
+            let ge = r.get(8) as u32;
+            if ge == 121 {
+                let len = r.get(16) as u64;
+                r.skip(len * 8);
+                return;
+            }
+            g = ge;
+            w = r.get(8) as u32;
+            chain = r.get(1) as u32;
+        } else {
+            g = hs >> 7;
+            w = (hs >> 1) & 0x3f;
+            chain = hs & 1;
+        }
+        for gi in 0..g {
+            let tab = &t.gates[ctx_of(w, gi)];
+            let sym = tab.decode(r);
+            if sym == ESC {
+                if r.get1() == 1 {
+                    r.skip(24);
+                } else {
+                    r.skip(15);
+                }
+            }
+        }
+        if chain == 0 {
+            return;
+        }
+    }
+}
+
 // --------------------------------------------------------------- key math
 #[inline]
 fn split_key(k: &[u8]) -> (usize, u32, u64) {
@@ -273,8 +372,20 @@ fn mix76(shard: usize, bucket: u32, tail: u64) -> u64 {
 // ---------------------------------------------------------------- store
 struct FrozenShard {
     file: std::fs::File,
-    offs: Vec<u64>,
+    // Raw on-disk u40 bucket offsets (5 bytes LE each), padded with 3 zero
+    // bytes so any entry is one unaligned 8-byte load. Keeping them packed
+    // saves ~3 MB resident per shard (~0.8 GB per store) versus Vec<u64> —
+    // RAM that goes back to the page cache serving bucket preads.
+    offs_raw: Vec<u8>,
     data_base: u64,
+}
+
+impl FrozenShard {
+    #[inline]
+    fn off(&self, i: usize) -> u64 {
+        let p = i * 5;
+        u64::from_le_bytes(self.offs_raw[p..p + 8].try_into().unwrap()) & 0xFF_FFFF_FFFF
+    }
 }
 
 struct Frozen {
@@ -341,15 +452,11 @@ impl Frozen {
             file.read_exact_at(&mut head, 0)
                 .expect("frozen: shard header");
             assert_eq!(&head[0..8], b"FRZTBL01", "frozen: bad magic in {path}");
-            let mut offs = Vec::with_capacity(BUCKETS + 1);
-            for i in 0..=BUCKETS {
-                let mut b = [0u8; 8];
-                b[0..5].copy_from_slice(&head[24 + i * 5..24 + i * 5 + 5]);
-                offs.push(u64::from_le_bytes(b));
-            }
+            let mut offs_raw = head.split_off(24);
+            offs_raw.extend_from_slice(&[0u8; 3]);
             shards.push(FrozenShard {
                 file,
-                offs,
+                offs_raw,
                 data_base: head_len as u64,
             });
         }
@@ -409,47 +516,76 @@ impl Frozen {
             }
         }
         let sh = &self.shards[shard];
-        let o0 = sh.offs[bucket as usize];
-        let o1 = sh.offs[bucket as usize + 1];
+        let o0 = sh.off(bucket as usize);
+        let o1 = sh.off(bucket as usize + 1);
         if o0 == o1 {
             return None;
         }
-        let mut buf = vec![0u8; (o1 - o0) as usize];
-        sh.file.read_exact_at(&mut buf, sh.data_base + o0).ok()?;
-        let mut r = BitReader::new(&buf);
-        let n = r.get(16) as usize;
-        let l = r.get(6) as u32;
-        let mut uppers = Vec::with_capacity(n);
-        let mut up = 0u64;
-        for _ in 0..n {
-            while r.get1() == 0 {
-                up += 1;
-            }
-            uppers.push(up);
+        // Reuse a per-thread bucket buffer: probes are frequent and buckets
+        // average ~1 KB, so a fresh allocation per probe is pure churn.
+        thread_local! {
+            static BUCKET_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
         }
-        let mut idx: Option<usize> = None;
-        for i in 0..n {
-            let low = if l > 0 { r.get(l) } else { 0 };
-            if ((uppers[i] << l) | low) == tail && idx.is_none() {
-                idx = Some(i);
-            }
-        }
-        let idx = idx?;
-        let mut out = Vec::new();
-        for i in 0..=idx {
-            out.clear();
-            let m = if i == idx { cap } else { usize::MAX };
-            decode_value(&self.tables, &mut r, &mut out, m);
-            if i == idx {
-                // Store-side convention fix-up at the single choke point:
-                // covers all four emission paths (incl. verbatim raw blocks).
-                if self.swap_ctrls {
-                    swap_value_controls(&mut out);
+        BUCKET_BUF.with(|cell| {
+            let mut buf = cell.borrow_mut();
+            buf.clear();
+            buf.resize((o1 - o0) as usize, 0);
+            sh.file.read_exact_at(&mut buf, sh.data_base + o0).ok()?;
+            let mut r = BitReader::new(&buf);
+            let n = r.get(16) as usize;
+            let l = r.get(6) as u32;
+            // Elias-Fano scan without materializing all uppers: the uppers are
+            // nondecreasing, so entries matching the target's upper bits form
+            // one contiguous index range [first, last].
+            let target_up = tail >> l;
+            let low_mask = if l == 0 { 0 } else { (1u64 << l) - 1 };
+            let target_low = tail & low_mask;
+            let mut first: Option<usize> = None;
+            let mut last = 0usize;
+            let mut up = 0u64;
+            for i in 0..n {
+                while r.get1() == 0 {
+                    up += 1;
                 }
-                return Some(out);
+                if up == target_up {
+                    if first.is_none() {
+                        first = Some(i);
+                    }
+                    last = i;
+                }
             }
-        }
-        unreachable!()
+            let first = first?;
+            // Lows are fixed-width: jump straight to the candidate range and
+            // compare only those entries. The first match wins, as before.
+            let mut idx: Option<usize> = None;
+            if l == 0 {
+                idx = Some(first);
+            } else {
+                r.skip(first as u64 * l as u64);
+                for i in first..=last {
+                    let low = r.get(l);
+                    if low == target_low {
+                        idx = Some(i);
+                        break;
+                    }
+                }
+                let idx = idx?;
+                // Position the reader at the values region (after all n lows).
+                r.skip((n - 1 - idx) as u64 * l as u64);
+            }
+            let idx = idx?;
+            for _ in 0..idx {
+                skip_value(&self.tables, &mut r);
+            }
+            let mut out = Vec::new();
+            decode_value(&self.tables, &mut r, &mut out, cap);
+            // Store-side convention fix-up at the single choke point:
+            // covers all four emission paths (incl. verbatim raw blocks).
+            if self.swap_ctrls {
+                swap_value_controls(&mut out);
+            }
+            Some(out)
+        })
     }
 }
 
@@ -634,5 +770,128 @@ mod tests {
         ];
         swap_value_controls(&mut v);
         assert_eq!(v, vec![6, 10, 2, 1, 20, 4, 3, 3, 30, 6, 5]);
+    }
+
+    // Reference implementation of the pre-LUT canonical walk; the LUT fast
+    // path must decode identical symbols and consume identical bit counts.
+    fn reference_decode(t: &HuffTable, r: &mut BitReader) -> u32 {
+        if t.single {
+            return t.syms[0];
+        }
+        let mut code = 0u64;
+        for len in 1..=MAXLEN {
+            code = (code << 1) | r.get1();
+            if t.count[len] > 0 {
+                let fc = t.first_code[len];
+                if code >= fc && code < fc + t.count[len] as u64 {
+                    return t.syms[t.first_idx[len] + (code - fc) as usize];
+                }
+            }
+        }
+        panic!("corrupt reference stream");
+    }
+
+    struct BitWriter {
+        bytes: Vec<u8>,
+        acc: u64,
+        nbits: u32,
+    }
+    impl BitWriter {
+        fn new() -> Self {
+            BitWriter {
+                bytes: Vec::new(),
+                acc: 0,
+                nbits: 0,
+            }
+        }
+        fn push_bit(&mut self, b: u64) {
+            self.acc |= (b & 1) << self.nbits;
+            self.nbits += 1;
+            if self.nbits == 8 {
+                self.bytes.push(self.acc as u8);
+                self.acc = 0;
+                self.nbits = 0;
+            }
+        }
+        fn finish(mut self) -> Vec<u8> {
+            if self.nbits > 0 {
+                self.bytes.push(self.acc as u8);
+            }
+            self.bytes
+        }
+    }
+
+    #[test]
+    fn opt_equiv_lut_decode_matches_reference_walk() {
+        // Complete canonical codes, including lengths beyond LUT_BITS so the
+        // fallback path is exercised.
+        let mut deep: Vec<(u32, u32)> = (0..12u32).map(|i| (100 + i, i + 1)).collect();
+        deep.push((900, 13));
+        deep.push((901, 13));
+        let alphabets: Vec<Vec<(u32, u32)>> = vec![
+            vec![(7, 1), (8, 2), (9, 3), (10, 3)],
+            vec![(1, 2), (2, 2), (3, 2), (4, 2)],
+            deep,
+        ];
+        for sym_lens in alphabets {
+            let table = rebuild_canonical(sym_lens.clone());
+            // Recompute (code, len) per symbol exactly as rebuild_canonical does.
+            let mut sorted = sym_lens.clone();
+            sorted.sort_by_key(|&(s, l)| (l, s));
+            let mut codes = Vec::new();
+            let mut code = 0u64;
+            let mut prev_len = sorted[0].1;
+            for &(s, l) in &sorted {
+                if l > prev_len {
+                    code <<= l - prev_len;
+                    prev_len = l;
+                }
+                codes.push((s, code, l));
+                code += 1;
+            }
+            // Deterministic pseudo-random symbol sequence.
+            let mut state = 0x1234_5678_9abc_def0u64;
+            let mut seq = Vec::new();
+            for _ in 0..500 {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                seq.push(codes[(state >> 33) as usize % codes.len()]);
+            }
+            let mut w = BitWriter::new();
+            for &(_, c, l) in &seq {
+                for i in (0..l).rev() {
+                    w.push_bit((c >> i) & 1);
+                }
+            }
+            let stream = w.finish();
+            let mut fast = BitReader::new(&stream);
+            let mut refr = BitReader::new(&stream);
+            for &(s, _, _) in &seq {
+                assert_eq!(table.decode(&mut fast), s);
+                assert_eq!(reference_decode(&table, &mut refr), s);
+                // peek refills eagerly, so raw (pos, nbits) may differ while
+                // the logical bit offset must not.
+                assert_eq!(
+                    fast.pos * 8 - fast.nbits as usize,
+                    refr.pos * 8 - refr.nbits as usize,
+                    "bit positions diverged"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_raw_decode_stops_on_a_circuit_boundary() {
+        let tables = Tables {
+            header: rebuild_canonical(vec![(ESC, 1)]),
+            gates: Vec::new(),
+        };
+        // Raw marker, eight bytes, then two one-gate circuit chunks.
+        let encoded = [121, 8, 0, 3, 10, 1, 2, 3, 20, 3, 4];
+        let mut reader = BitReader::new(&encoded);
+        let mut output = Vec::new();
+        decode_value(&tables, &mut reader, &mut output, 1);
+        assert_eq!(output, [3, 10, 1, 2]);
     }
 }

@@ -31,6 +31,7 @@ use crate::replace::frozen::FrozenDb;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+use rustc_hash::FxHashMap;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 
@@ -302,7 +303,9 @@ pub fn merge_result(g: &XGate, h: &XGate) -> Option<Merge> {
 // only in a polarity, and subsume partners are found by looking up the key
 // with one wire removed). Hash collisions are harmless: merge_result rechecks.
 fn merge_key(target: u16, wires: impl Iterator<Item = u16>) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    // FxHasher: the key is internal-only (never serialized) and collisions are
+    // rechecked (above), so the hash function choice is unobservable.
+    let mut h = rustc_hash::FxHasher::default();
     target.hash(&mut h);
     for w in wires {
         w.hash(&mut h);
@@ -1406,8 +1409,17 @@ pub struct Mixer {
     // merge-key -> linked node ids with that (target, wire-set). Kept exact by
     // the index_add/index_remove hooks in every splice; validated at verify
     // points via indexed_count.
-    index: HashMap<u64, Vec<u32>>,
+    // FxHashMap: accessed by key only (never iterated), so the hasher choice
+    // cannot leak into behavior.
+    index: FxHashMap<u64, Vec<u32>>,
     indexed_count: usize,
+    // Twist-g57 seam-solve memo: eng.solve(t, MAX_WORD) is a pure function of
+    // the target perm `t`, and each twist round re-solves the same handful of
+    // targets (both seams x wire-pair candidates x k-contexts x slides x
+    // retries). Pure cache — deliberately NOT serialized by save_state and not
+    // restored by load_state; a resumed run just starts cold. SmallVec: word
+    // length is <= swap_words::MAX_WORD = 7, so hits never allocate.
+    solve_memo: FxHashMap<u64, Option<smallvec::SmallVec<[u8; 7]>>>,
     journal: VecDeque<UndoEntry>,
     tabu: VecDeque<(u64, u64)>, // (event, move at creation)
     next_event: u64,
@@ -1832,7 +1844,8 @@ impl Mixer {
     pub fn save_state(&mut self, path: &str) -> std::io::Result<()> {
         use std::fmt::Write as _;
         let ids = self.arena.ids_in_order();
-        let mut newid: HashMap<u32, u32> = HashMap::with_capacity(ids.len());
+        let mut newid: FxHashMap<u32, u32> =
+            FxHashMap::with_capacity_and_hasher(ids.len(), Default::default());
         for (i, &id) in ids.iter().enumerate() {
             newid.insert(id, i as u32);
         }
@@ -1882,8 +1895,7 @@ impl Mixer {
         let _ = writeln!(o, "gates {}", ids.len());
         for &id in &ids {
             let m = self.meta_of(id);
-            let g = self.arena.gate(id).clone();
-            gate_line(&mut o, &g);
+            gate_line(&mut o, self.arena.gate(id));
             let _ = writeln!(
                 o,
                 " | {} {} {} {} {} {}",
@@ -1896,7 +1908,7 @@ impl Mixer {
             );
         }
         let _ = writeln!(o, "original {}", self.original.len());
-        for g in self.original.clone().iter() {
+        for g in &self.original {
             gate_line(&mut o, g);
             o.push('\n');
         }
@@ -2613,7 +2625,7 @@ impl Mixer {
             bits[t / 64] |= 1u64 << (t % 64);
             anc0.insert(gi as u64, bits);
         }
-        let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
+        let mut index: FxHashMap<u64, Vec<u32>> = FxHashMap::default();
         for (i, g) in gates.iter().enumerate() {
             index.entry(key_of(g)).or_default().push(i as u32);
         }
@@ -2635,6 +2647,7 @@ impl Mixer {
             meta,
             index,
             indexed_count: n,
+            solve_memo: FxHashMap::default(),
             journal: VecDeque::new(),
             tabu: VecDeque::new(),
             next_event: 1,
@@ -2692,6 +2705,14 @@ impl Mixer {
             cross_pool_due: 0,
         };
         mx.rebuild_side_index();
+        // Collision-mask fast path (arena.rs): every wire a run touches stays
+        // below num_wires, so num_wires <= 64 * MASK_WORDS (production: 128
+        // wires = 2 words) means the mask side-array is authoritative for the
+        // whole run and collides_ids never falls back to XGate::collides.
+        debug_assert!(
+            num_wires > 64 * super::arena::MASK_WORDS || mx.arena.masks_ok(),
+            "collision masks poisoned despite num_wires = {num_wires}"
+        );
         mx
     }
 
@@ -3289,11 +3310,14 @@ impl Mixer {
     }
 
     fn is_tabu(&self, event: u64) -> bool {
+        // `tabu` is only push_back'd with strictly increasing events
+        // (fresh_event) and popped from the front, so it stays sorted by event:
+        // a binary search finds the only possible match.
         event != 0
             && self
                 .tabu
-                .iter()
-                .any(|&(ev, mv)| ev == event && mv + self.params.tabu_moves > self.moves_done)
+                .binary_search_by_key(&event, |&(ev, _)| ev)
+                .is_ok_and(|i| self.tabu[i].1 + self.params.tabu_moves > self.moves_done)
     }
 
     // ---- merge-partner index maintenance ----
@@ -5206,7 +5230,8 @@ impl Mixer {
             })
             .collect();
         // k = 0 is the precomputed bare spelling of S_ab — no scan needed.
-        let mut best: Option<(usize, Vec<u8>)> = Some((0, eng.bare_word().to_vec()));
+        let mut best: Option<(usize, smallvec::SmallVec<[u8; 7]>)> =
+            Some((0, smallvec::SmallVec::from_slice(eng.bare_word())));
         let t0 = std::time::Instant::now();
         for k in 1..=perms.len() {
             // Segment perm in circuit (= apply) order. Context ids are
@@ -5228,7 +5253,16 @@ impl Mixer {
                 }
             }
             self.counters.tg_solves += 1;
-            if let Some(w) = eng.solve(t, swap_words::MAX_WORD) {
+            // Memoized solve: byte-neutral because solve() is a pure function
+            // of (t, MAX_WORD) — the memo only skips recomputing it.
+            let solved = self
+                .solve_memo
+                .entry(t)
+                .or_insert_with(|| {
+                    eng.solve(t, swap_words::MAX_WORD).map(smallvec::SmallVec::from_vec)
+                })
+                .clone();
+            if let Some(w) = solved {
                 let better = match &best {
                     None => true,
                     Some((bk, bw)) => {
@@ -5627,27 +5661,30 @@ impl Mixer {
             // Locate the piece relative to the current block, then float it
             // onto the block's edge. Pieces pairwise commute (same target, no
             // reads of it), so ungathered siblings never block the float.
+            // Scan the piece's own (persistent) Meta direction first: pieces
+            // are advanced in their meta dir at birth, so the hint is usually
+            // right and the full-reach wrong-side miss is skipped. The piece's
+            // LOCATION determines side/found, not the scan order, so the
+            // outcome is bit-identical.
+            let hint = self.meta_of(id).dir;
             let mut side = None;
-            let mut cur = self.arena.neighbor(edge_r, Dir::R);
-            let mut steps = 0usize;
-            while cur != NIL && steps < self.params.merge_reach {
-                if cur == id {
-                    side = Some(Dir::R);
-                    break;
-                }
-                cur = self.arena.neighbor(cur, Dir::R);
-                steps += 1;
-            }
-            if side.is_none() {
-                let mut cur = self.arena.neighbor(edge_l, Dir::L);
+            for d in [hint, hint.opposite()] {
+                let edge = match d {
+                    Dir::R => edge_r,
+                    Dir::L => edge_l,
+                };
+                let mut cur = self.arena.neighbor(edge, d);
                 let mut steps = 0usize;
                 while cur != NIL && steps < self.params.merge_reach {
                     if cur == id {
-                        side = Some(Dir::L);
+                        side = Some(d);
                         break;
                     }
-                    cur = self.arena.neighbor(cur, Dir::L);
+                    cur = self.arena.neighbor(cur, d);
                     steps += 1;
+                }
+                if side.is_some() {
+                    break;
                 }
             }
             let Some(side) = side else {
@@ -5761,8 +5798,8 @@ impl Mixer {
         // almost surely collides with both), so scan outward from the
         // initiator and take the NEAREST reachable candidate, tracking the
         // initiator's colliders incrementally for the wall check.
-        let cand_set: std::collections::HashSet<u32> = cands.into_iter().collect();
-        let g = self.arena.gate(g_id).clone();
+        let mut cand_set: smallvec::SmallVec<[u32; 8]> = smallvec::SmallVec::from_vec(cands);
+        cand_set.sort_unstable();
         let mut chosen: Option<(u32, Dir, usize)> = None;
         for dir in [Dir::R, Dir::L] {
             let mut g_colliders: Vec<u32> = Vec::new();
@@ -5772,10 +5809,9 @@ impl Mixer {
                 if chosen.is_some_and(|(_, _, d)| steps >= d) {
                     break; // the other direction already found a nearer one
                 }
-                if cand_set.contains(&cur) {
-                    let hg = self.arena.gate(cur);
+                if cand_set.binary_search(&cur).is_ok() {
                     let wall =
-                        g_colliders.iter().any(|&b| XGate::collides(self.arena.gate(b), hg));
+                        g_colliders.iter().any(|&b| self.arena.collides_ids(b, cur));
                     if wall {
                         self.counters.merge_wall_blocked += 1;
                     } else {
@@ -5783,7 +5819,7 @@ impl Mixer {
                         break;
                     }
                 }
-                if XGate::collides(&g, self.arena.gate(cur)) {
+                if self.arena.collides_ids(g_id, cur) {
                     g_colliders.push(cur);
                 }
                 cur = self.arena.neighbor(cur, dir);
@@ -6528,10 +6564,9 @@ impl Mixer {
     // ---- floating (same semantics as the fsplit engine) ----
 
     fn float_distance(&self, id: u32, dir: Dir, cap: usize) -> usize {
-        let g = self.arena.gate(id);
         let mut cur = self.arena.neighbor(id, dir);
         let mut d = 0usize;
-        while cur != NIL && d < cap && !XGate::collides(g, self.arena.gate(cur)) {
+        while cur != NIL && d < cap && !self.arena.collides_ids(id, cur) {
             d += 1;
             cur = self.arena.neighbor(cur, dir);
         }
@@ -6546,15 +6581,18 @@ impl Mixer {
     // `stop`. Needed for merges: merge partners never collide (same target), so
     // an unbounded float would sail straight past the partner.
     fn float_until(&mut self, id: u32, dir: Dir, stop: u32) -> usize {
-        let g = self.arena.gate(id).clone();
-        let mut last = NIL;
-        let mut cur = self.arena.neighbor(id, dir);
-        let mut steps = 0usize;
-        while cur != NIL && cur != stop && !XGate::collides(&g, self.arena.gate(cur)) {
-            last = cur;
-            steps += 1;
-            cur = self.arena.neighbor(cur, dir);
-        }
+        // Scan with borrows only (no gate clone); mutate after the scan scope.
+        let (last, steps) = {
+            let mut last = NIL;
+            let mut cur = self.arena.neighbor(id, dir);
+            let mut steps = 0usize;
+            while cur != NIL && cur != stop && !self.arena.collides_ids(id, cur) {
+                last = cur;
+                steps += 1;
+                cur = self.arena.neighbor(cur, dir);
+            }
+            (last, steps)
+        };
         if steps > 0 {
             self.arena.unlink(id);
             match dir {
@@ -6682,10 +6720,9 @@ impl Mixer {
     // Does any gate of the contiguous span [lo..hi] collide with (not commute
     // with) gate `x`?
     fn span_collides(&self, lo: u32, hi: u32, x: u32) -> bool {
-        let xg = self.arena.gate(x);
         let mut cur = lo;
         loop {
-            if XGate::collides(self.arena.gate(cur), xg) {
+            if self.arena.collides_ids(cur, x) {
                 return true;
             }
             if cur == hi {
@@ -6764,12 +6801,15 @@ impl Mixer {
         let target = self.params.gen_target;
         self.pool.clear();
         let mut cands: Vec<(u32, u32)> = Vec::new();
-        for id in self.arena.ids_in_order() {
+        // Walk the linked list directly (same order as ids_in_order) without
+        // materializing the O(size) id vector.
+        let mut id = self.arena.head();
+        while id != NIL {
             let m = self.meta_of(id);
-            if m.dgen >= target || !self.pool_eligible(id) {
-                continue;
+            if m.dgen < target && self.pool_eligible(id) {
+                cands.push((m.dgen, id));
             }
-            cands.push((m.dgen, id));
+            id = self.arena.neighbor(id, Dir::R);
         }
         let k = self.params.pool_k.max(1);
         if cands.len() > k {
@@ -7805,6 +7845,48 @@ mod mix_tests {
                 return g;
             }
         }
+    }
+
+    // The mask-algebra collides predicate (arena.rs GateMask/mask_collides,
+    // behind Arena::collides_ids) must equal XGate::collides on every pair.
+    // Wire universes rotate through dense-low (shared control wires and the
+    // opposite-polarity separation exemption fire constantly), mid, one-word
+    // boundary, and > 64 (exercises the second mask word). g57s (comp = true)
+    // come from rand_gate's allow_comp draw.
+    #[test]
+    fn mask_collides_matches_xgate_collides() {
+        use super::super::arena::{Arena, GateMask, MASK_WORDS};
+        let mut rng = StdRng::seed_from_u64(0x2026_0809);
+        let mut collided = 0usize;
+        let mut separated = 0usize;
+        for i in 0..1_000_000usize {
+            let wires: u16 = match i % 4 {
+                0 => 5,
+                1 => 16,
+                2 => 64,
+                _ => 127,
+            };
+            let g = rand_gate(&mut rng, wires, 4, true);
+            let h = rand_gate(&mut rng, wires, 4, true);
+            let mg = GateMask::of(&g).expect("wire < 64 * MASK_WORDS has a mask");
+            let mh = GateMask::of(&h).expect("wire < 64 * MASK_WORDS has a mask");
+            let want = XGate::collides(&g, &h);
+            assert_eq!(Arena::mask_collides(&mg, &mh), want, "mask mismatch: {g:?} vs {h:?}");
+            if want {
+                collided += 1;
+            } else if g.reads(h.target) || h.reads(g.target) {
+                separated += 1; // commuted only via the polarity exemption
+            }
+        }
+        // The draw must actually exercise both hard branches.
+        assert!(collided > 10_000, "too few colliding pairs: {collided}");
+        assert!(separated > 1_000, "too few exemption-separated pairs: {separated}");
+        // Out-of-range wires have no mask: collides_ids falls back to
+        // XGate::collides (arena poisons masks_ok on such an alloc).
+        let lim = (64 * MASK_WORDS) as u16;
+        assert!(GateMask::of(&XGate::cnot(0, lim)).is_none());
+        assert!(GateMask::of(&XGate::cnot(lim, 0)).is_none());
+        assert!(GateMask::of(&XGate::cnot(0, lim - 1)).is_some());
     }
 
     // Every merge the catalogue accepts is a verified identity with comp=0

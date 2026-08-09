@@ -1,5 +1,6 @@
 use std::{fs::File, io::Write};
 
+use primitive_types::{U256, U512};
 use rand::{Rng, RngCore};
 
 use crate::{
@@ -24,6 +25,83 @@ use crate::{
 // FrozenDb at command startup and thread it through; both stores serve the
 // same 16-byte canonical-polynomial keys and legacy value blobs as before.
 
+// Truncating conversions from the U1024 the inputs/masks are built in to the narrower
+// evaluation kernels. Callers guarantee the converted value fits the target width.
+#[inline]
+fn u1024_low_u128(v: U1024) -> u128 {
+    (v.0[0] as u128) | ((v.0[1] as u128) << 64)
+}
+
+#[inline]
+fn u1024_low_u256(v: U1024) -> U256 {
+    U256([v.0[0], v.0[1], v.0[2], v.0[3]])
+}
+
+#[inline]
+fn u1024_low_u512(v: U1024) -> U512 {
+    U512([
+        v.0[0], v.0[1], v.0[2], v.0[3], v.0[4], v.0[5], v.0[6], v.0[7],
+    ])
+}
+
+// One feistal-middle equality probe. The evaluation is width-dispatched by the widest wire
+// either circuit touches (mirroring CircuitSeq::probably_equal's kernel dispatch); the
+// x/y/input values are produced by the exact same U1024 arithmetic as before and merely
+// truncated for the narrower kernels, so the result is bit-identical to the U1024 path
+// (`feistal_middle_matches_once_1024`, the else branch, is the original computation).
+fn feistal_middle_matches_once(
+    original: &CircuitSeq,
+    transformed: &CircuitSeq,
+    original_n: usize,
+    eval_wires: usize,
+    x: U1024,
+    y: U1024,
+    input: U1024,
+    mask: U1024,
+) -> bool {
+    if eval_wires <= 128 {
+        let mask = u1024_low_u128(mask);
+        let original_output = Gate::evaluate_index_list_128(u1024_low_u128(x), &original.gates) & mask;
+        let transformed_output =
+            Gate::evaluate_index_list_128(u1024_low_u128(input), &transformed.gates);
+        let middle = (transformed_output >> original_n) & mask;
+        middle == (u1024_low_u128(y) ^ original_output)
+    } else if eval_wires <= 256 {
+        let mask = u1024_low_u256(mask);
+        let original_output = Gate::evaluate_index_list_256(u1024_low_u256(x), &original.gates) & mask;
+        let transformed_output =
+            Gate::evaluate_index_list_256(u1024_low_u256(input), &transformed.gates);
+        let middle = (transformed_output >> original_n) & mask;
+        middle == (u1024_low_u256(y) ^ original_output)
+    } else if eval_wires <= 512 {
+        let mask = u1024_low_u512(mask);
+        let original_output = Gate::evaluate_index_list_512(u1024_low_u512(x), &original.gates) & mask;
+        let transformed_output =
+            Gate::evaluate_index_list_512(u1024_low_u512(input), &transformed.gates);
+        let middle = (transformed_output >> original_n) & mask;
+        middle == (u1024_low_u512(y) ^ original_output)
+    } else {
+        feistal_middle_matches_once_1024(original, transformed, original_n, x, y, input, mask)
+    }
+}
+
+// The original (pre-dispatch) U1024 evaluation, kept as the reference the narrow kernels are
+// tested against and as the >512-wire fallback.
+fn feistal_middle_matches_once_1024(
+    original: &CircuitSeq,
+    transformed: &CircuitSeq,
+    original_n: usize,
+    x: U1024,
+    y: U1024,
+    input: U1024,
+    mask: U1024,
+) -> bool {
+    let original_output = Gate::evaluate_index_list_1024(x, &original.gates) & mask;
+    let transformed_output = Gate::evaluate_index_list_1024(input, &transformed.gates);
+    let middle = (transformed_output >> original_n) & mask;
+    middle == (y ^ original_output)
+}
+
 fn feistal_middle_matches_original(
     original: &CircuitSeq,
     transformed: &CircuitSeq,
@@ -41,6 +119,10 @@ fn feistal_middle_matches_original(
     } else {
         U1024::MAX
     };
+    // Width of the evaluation kernel: every wire the input covers or either circuit touches.
+    let eval_wires = total_wires
+        .max(original.max_wire() + 1)
+        .max(transformed.max_wire() + 1);
     for _ in 0..num_inputs {
         let mut bytes = [0u8; 128];
         rand::rng().fill_bytes(&mut bytes);
@@ -61,10 +143,9 @@ fn feistal_middle_matches_original(
             U1024::zero()
         };
         let input = x | (y << original_n) | (z << (2 * original_n)) | (extra << (3 * original_n));
-        let original_output = Gate::evaluate_index_list_1024(x, &original.gates) & mask;
-        let transformed_output = Gate::evaluate_index_list_1024(input, &transformed.gates);
-        let middle = (transformed_output >> original_n) & mask;
-        if middle != (y ^ original_output) {
+        if !feistal_middle_matches_once(
+            original, transformed, original_n, eval_wires, x, y, input, mask,
+        ) {
             let scope = if fixed_slice.is_some() {
                 " on the fixed (y,z) slice"
             } else {
@@ -905,21 +986,10 @@ pub fn main_shuffle_shoot_shuffle(
         if count > 2 {
             break;
         }
-        let mut j = 0;
-        while j < circuit.gates.len().saturating_sub(1) {
-            if circuit.gates[j] == circuit.gates[j + 1] {
-                // remove elements at i and i+1
-                circuit.gates.drain(j..=j + 1);
-                if track {
-                    survivor_tags.drain(j..=j + 1);
-                }
-
-                // step back up to 2 indices, but not below 0
-                j = j.saturating_sub(2);
-            } else {
-                j += 1;
-            }
-        }
+        crate::circuit::circuit::cancel_adjacent_duplicates(
+            &mut circuit.gates,
+            track.then(|| &mut survivor_tags),
+        );
         if track {
             // Per-round survivor count (after this round's shooting + compression).
             let gen_m = crate::replace::replace::gen_mode();
@@ -1276,5 +1346,83 @@ pub fn main_shuffle_shoot_shuffle(
     }
     if let Some((public_y, public_z)) = &slice_zero_random_public {
         print_slice_zero_random_public_slice(original_n, public_y, public_z);
+    }
+}
+
+#[cfg(test)]
+mod opt_equiv_tests {
+    use super::*;
+    use rand::{RngCore as _, SeedableRng, rngs::StdRng};
+
+    fn random_circuit(num_wires: u16, num_gates: usize, rng: &mut StdRng) -> CircuitSeq {
+        let mut gates = Vec::with_capacity(num_gates);
+        while gates.len() < num_gates {
+            let a = rng.random_range(0..num_wires);
+            let b = rng.random_range(0..num_wires);
+            let c = rng.random_range(0..num_wires);
+            if a != b && a != c && b != c {
+                gates.push([a, b, c]);
+            }
+        }
+        CircuitSeq { gates }
+    }
+
+    // The width-dispatched middle-block probe must be bit-identical to the original U1024
+    // computation for every kernel width (128/256/512/1024), including the all-zero input.
+    #[test]
+    fn opt_equiv_feistal_middle_dispatch_matches_1024() {
+        let mut rng = StdRng::seed_from_u64(0xfe15_7a1d);
+        for &total_wires in &[24usize, 120, 240, 450, 1020] {
+            let original_n = total_wires / 3;
+            let original = random_circuit(original_n as u16, 40, &mut rng);
+            let transformed = random_circuit(total_wires as u16, 150, &mut rng);
+            let mask = (U1024::one() << original_n) - U1024::one();
+            let eval_wires = total_wires
+                .max(original.max_wire() + 1)
+                .max(transformed.max_wire() + 1);
+            for probe in 0..40 {
+                let mut bytes = [0u8; 128];
+                if probe > 0 {
+                    rng.fill_bytes(&mut bytes);
+                }
+                let random = U1024::from_little_endian(&bytes);
+                let x = random & mask;
+                let y = (random >> original_n) & mask;
+                let z = (random >> (2 * original_n)) & mask;
+                let extra = if total_wires > 3 * original_n {
+                    let extra_mask =
+                        (U1024::one() << (total_wires - 3 * original_n)) - U1024::one();
+                    (random >> (3 * original_n)) & extra_mask
+                } else {
+                    U1024::zero()
+                };
+                let input =
+                    x | (y << original_n) | (z << (2 * original_n)) | (extra << (3 * original_n));
+                assert_eq!(
+                    feistal_middle_matches_once(
+                        &original,
+                        &transformed,
+                        original_n,
+                        eval_wires,
+                        x,
+                        y,
+                        input,
+                        mask,
+                    ),
+                    feistal_middle_matches_once_1024(
+                        &original,
+                        &transformed,
+                        original_n,
+                        x,
+                        y,
+                        input,
+                        mask,
+                    ),
+                    "width {} probe {}",
+                    total_wires,
+                    probe
+                );
+            }
+        }
     }
 }

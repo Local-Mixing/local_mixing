@@ -473,10 +473,18 @@ pub fn db_replace(
 ) -> DbResult {
     let armed = curated_armed_for(curated, mode, curated_in_comp);
     db_replace_with(window, num_wires, budget, mode, guard, armed, regular_fallback, pay_random, rng, |key, want_curated| {
+        // Every probe goes through the exact process-wide lookup cache
+        // (see src/replace/replace.rs): the store is immutable, so cached
+        // hits AND misses are byte-identical to raw probes.
+        use crate::replace::replace::{LOOKUP_NS_CURATED, LOOKUP_NS_SHARD, cached_db_get};
         if want_curated {
-            if curated { db.get_curated(key) } else { None }
+            if curated {
+                cached_db_get(db, LOOKUP_NS_CURATED, key).map(|v| v.to_vec())
+            } else {
+                None
+            }
         } else {
-            db.get_regular(key)
+            cached_db_get(db, LOOKUP_NS_SHARD, key).map(|v| v.to_vec())
         }
     })
 }
@@ -675,14 +683,61 @@ where
             Err(XPolyError::DegreeExceeded { .. }) => degree_skipped = true,
             Err(_) => {}
         }
-        let mut seen_keys = std::collections::HashSet::new();
-        for (dir_ix, (reversed, canonical)) in directions.iter().enumerate() {
-            let key = key_of(canonical);
-            if !seen_keys.insert(key) {
-                continue;
+        // The regular store is keyed by min(canon_fwd, canon_rev) (see the
+        // MIN_DIR_LOOKUP note in src/replace/replace.rs): when both directions
+        // composed, the default Min mode probes only the min direction — the
+        // non-min key can only exist if it equals the min key, so the candidate
+        // set is unchanged. Legacy restores the historical probe-both cascade;
+        // Validate probes the other direction on a miss and counts violations.
+        use crate::replace::replace::{
+            MIN_DIR_VALIDATE_PROBES, MIN_DIR_VIOLATIONS, MinDirLookup, min_dir_lookup_mode,
+        };
+        use std::sync::atomic::Ordering;
+        let fwd_idx = directions.iter().position(|(reversed, _)| !reversed);
+        let rev_idx = directions.iter().position(|(reversed, _)| *reversed);
+        let min_mode = match (fwd_idx, rev_idx) {
+            (Some(_), Some(_)) => min_dir_lookup_mode(),
+            _ => MinDirLookup::Legacy,
+        };
+        match min_mode {
+            MinDirLookup::Legacy => {
+                // At most two directions exist; dedup the second key against the first.
+                let mut first_key: Option<[u8; 16]> = None;
+                for (dir_ix, (reversed, canonical)) in directions.iter().enumerate() {
+                    let key = key_of(canonical);
+                    if first_key == Some(key) {
+                        continue;
+                    }
+                    if first_key.is_none() {
+                        first_key = Some(key);
+                    }
+                    if let Some(value) = lookup(&key, false) {
+                        catalogue(value, false, *reversed, dir_ix, &mut values, &mut refs);
+                    }
+                }
             }
-            if let Some(value) = lookup(&key, false) {
-                catalogue(value, false, *reversed, dir_ix, &mut values, &mut refs);
+            mode => {
+                let fi = fwd_idx.expect("min mode requires both directions");
+                let ri = rev_idx.expect("min mode requires both directions");
+                let rev_is_min = directions[ri].1.polys < directions[fi].1.polys;
+                let (min_idx, alt_idx) = if rev_is_min { (ri, fi) } else { (fi, ri) };
+                let min_key = key_of(&directions[min_idx].1);
+                if let Some(value) = lookup(&min_key, false) {
+                    catalogue(value, false, directions[min_idx].0, min_idx, &mut values, &mut refs);
+                } else if mode == MinDirLookup::Validate {
+                    let alt_key = key_of(&directions[alt_idx].1);
+                    if alt_key != min_key {
+                        MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
+                        if let Some(value) = lookup(&alt_key, false) {
+                            MIN_DIR_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+                            eprintln!(
+                                "[min-dir-violation] fmix db_replace: non-min canonical key present while min key absent (window={})",
+                                window.len()
+                            );
+                            catalogue(value, false, directions[alt_idx].0, alt_idx, &mut values, &mut refs);
+                        }
+                    }
+                }
             }
         }
     }

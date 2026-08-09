@@ -80,7 +80,7 @@ impl XGate {
     }
 
     // Literal set minus the literal on wire `w`.
-    pub fn ctrls_without(&self, w: u16) -> Vec<(u16, bool)> {
+    pub fn ctrls_without(&self, w: u16) -> Lits {
         self.ctrls.iter().copied().filter(|&(cw, _)| cw != w).collect()
     }
 

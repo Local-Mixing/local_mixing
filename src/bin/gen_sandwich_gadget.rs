@@ -21,7 +21,6 @@
 
 use local_mixing::circuit::circuit::U1024;
 use local_mixing::postmix::format::write_mpmct;
-use local_mixing::postmix::xgate::eval_u1024;
 use local_mixing::random::random_data::random_circuit;
 use local_mixing::replace::gadgets::{
     gadgetize_xgates_with_slice_zero_ccnot, gadgetize_xgates_with_slice_zero_ccnot_single,
@@ -167,25 +166,42 @@ fn main() {
     );
 
     // Sample-verify the gadget's low-2n output equals the sandwich, on the
-    // gadget zero slice (upper 2n wires pinned to 0). Requires 4n <= 1024.
-    if gadget.num_wires <= 1024 {
-        let low = mask_bits(sandwich_n);
-        let mut vrng = StdRng::seed_from_u64(seed ^ 0xA11CE);
-        let mut bytes = [0u8; 128];
-        for i in 0..200 {
-            use rand::RngCore;
-            vrng.fill_bytes(&mut bytes);
-            let input = U1024::from_little_endian(&bytes) & low;
-            let got = eval_u1024(&gadget.gates, input) & low;
-            let want = eval_u1024(&sandwich.gates, input) & low;
-            assert_eq!(got, want, "gadget-low != sandwich on sample {i}");
+    // gadget zero slice (upper 2n wires pinned to 0). Bit-sliced: each u64
+    // lane-word carries 64 independent samples, so 4 passes = 256 samples at
+    // per-gate u64 cost instead of 256 full U1024 bignum evaluations. The
+    // verify rng is dedicated (seed ^ 0xA11CE) and the artifact bytes never
+    // depend on it.
+    {
+        // state[w] = lane word for wire w; bit L = wire w's value in sample L.
+        fn eval_lanes(gates: &[local_mixing::postmix::xgate::XGate], state: &mut [u64]) {
+            for g in gates {
+                let mut acc = !0u64;
+                for &(w, pol) in &g.ctrls {
+                    let v = state[w as usize];
+                    acc &= if pol { v } else { !v };
+                }
+                state[g.target as usize] ^= if g.comp { !acc } else { acc };
+            }
         }
-        println!("[gen] verify PASSED (200 samples, low {sandwich_n} wires)");
-    } else {
-        println!(
-            "[gen] skipped u1024 verify ({} wires > 1024)",
-            gadget.num_wires
-        );
+        let mut vrng = StdRng::seed_from_u64(seed ^ 0xA11CE);
+        let total_wires = gadget.num_wires.max(sandwich.num_wires);
+        for round in 0..4 {
+            use rand::RngCore;
+            let mut ga = vec![0u64; total_wires];
+            for w in 0..sandwich_n {
+                ga[w] = vrng.next_u64(); // upper wires stay pinned to 0
+            }
+            let mut sa = ga.clone();
+            eval_lanes(&gadget.gates, &mut ga);
+            eval_lanes(&sandwich.gates, &mut sa);
+            for w in 0..sandwich_n {
+                assert_eq!(
+                    ga[w], sa[w],
+                    "gadget-low != sandwich on wire {w}, round {round}"
+                );
+            }
+        }
+        println!("[gen] verify PASSED (256 bit-sliced samples, low {sandwich_n} wires)");
     }
 
     write_mpmct(&out, &gadget.gates, gadget.num_wires).expect("write mpmct1");

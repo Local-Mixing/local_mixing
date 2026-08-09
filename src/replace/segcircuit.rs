@@ -151,6 +151,10 @@ impl Chunk {
 pub struct SegCircuit {
     chunks: Vec<Chunk>,
     total: usize,
+    // Cumulative chunk-start offsets: offsets[i] = global index of chunks[i]'s first gate.
+    // Rebuilt (O(#chunks)) after any chunk-length mutation — i.e. at every splice exit and on
+    // construction — so `locate` is O(log #chunks) via partition_point instead of a linear scan.
+    offsets: Vec<usize>,
 }
 
 impl SegCircuit {
@@ -164,9 +168,23 @@ impl SegCircuit {
             chunks.push(Chunk::new(gates[i..end].to_vec(), tags[i..end].to_vec()));
             i = end;
         }
-        SegCircuit {
+        let mut out = SegCircuit {
             chunks,
             total: gates.len(),
+            offsets: Vec::new(),
+        };
+        out.rebuild_offsets();
+        out
+    }
+
+    /// Recompute the cumulative chunk-start offsets after any chunk-length mutation.
+    fn rebuild_offsets(&mut self) {
+        self.offsets.clear();
+        self.offsets.reserve(self.chunks.len());
+        let mut acc = 0usize;
+        for c in &self.chunks {
+            self.offsets.push(acc);
+            acc += c.len();
         }
     }
 
@@ -190,7 +208,20 @@ impl SegCircuit {
     }
 
     /// Locate a global index: returns (chunk index, offset within chunk). Panics if out of range.
+    /// O(log #chunks) binary search over the cumulative chunk-start offsets.
     fn locate(&self, index: usize) -> (usize, usize) {
+        if index < self.total {
+            // First chunk whose start is > index, minus one; safe because offsets[0] == 0.
+            let ci = self.offsets.partition_point(|&start| start <= index) - 1;
+            debug_assert!(index - self.offsets[ci] < self.chunks[ci].len());
+            return (ci, index - self.offsets[ci]);
+        }
+        panic!("index {index} out of range (len {})", self.total);
+    }
+
+    /// Original linear-scan locate, kept as the test oracle for the offsets-based version.
+    #[cfg(test)]
+    fn locate_reference(&self, index: usize) -> (usize, usize) {
         let mut acc = 0;
         for (ci, c) in self.chunks.iter().enumerate() {
             if index < acc + c.len() {
@@ -425,6 +456,7 @@ impl SegCircuit {
             self.chunks
                 .push(Chunk::new(new_gates.to_vec(), new_tags.to_vec()));
             self.total = new_gates.len();
+            self.rebuild_offsets();
             return;
         }
         let (start_ci, start_off) = self.locate(index);
@@ -465,6 +497,7 @@ impl SegCircuit {
         // Update total and rebalance the (possibly) oversized/empty edited chunk.
         self.total = self.total - remove_len + new_gates.len();
         self.rebalance_around(start_ci);
+        self.rebuild_offsets();
     }
 
     /// Split an oversized chunk into target-sized pieces; drop an empty chunk.
