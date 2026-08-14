@@ -79,7 +79,12 @@ Binary: `target/release/local_mixing_bin ssg ...`
 
 | Flag | Effect |
 |------|--------|
-| `--gadgetize` | Gadgetize at start; input grows to **2n** wires. |
+| `--gadgetize` | Gadgetize at start. The default representation uses **2n** wires including its auto-sized product band; the selected representation controls the exact width. |
+| `--five-carrier` | With `--cnot --gadgetize`, switch from the default single-carrier product-share gadgetizer to the five-carrier nonlinear decode. Width is **5n + band** (**6n** with the production auto band). Mutually exclusive with an explicit `--prod-single`. |
+| `--strong-five-carrier` | Experimental cubic five-carrier sibling. It moves exact endpoint recovery from degree 2 to degree 3 and lowers the first weight-3 detector from 75% to 62.5% agreement, but retains an affine/frozen-tail structural distinguisher. Same width as `--five-carrier`. |
+| `--six-carrier` | With `--cnot --gadgetize`, use the stronger six-carrier nonlinear decode. Its endpoint trace has zero parity correlation through weight 3 and no exact degree-2 recovery. Width is **6n + band** (**7n** with the production auto band). Mutually exclusive with `--five-carrier` and an explicit `--prod-single`. |
+| `--strong-six-carrier` | Experimental structural six-carrier sibling. It keeps the cubic degree-3 and first weight-4 boundaries, but replaces the compact update's frozen lanes with a full-affine-rank update in which every lane moves. Higher-weight Walsh coefficients are worse, so this is a trade rather than a strict security dominance. Same width as `--six-carrier`. |
+| `--seven-carrier` | The retained strong-seven/Pareto mode. Its endpoint trace has zero parity correlation through weight 3, the first leakage is at weight 4, and exact firing-bit recovery first appears at degree 4. Lower-bias candidates regressed to degree 3, so no separate strong alias was added. Width is **7n + band** (**8n** with the production auto band). |
 | `--feistalize` | Feistalize at start; input grows to **3n** wires (the production mode for the n=128 runs). |
 | `--interleave` | Use interleaving. |
 | `--slice-zero` | Before feistalization, insert M preserving the `(y,z)=0` slice and randomizing x off it. |

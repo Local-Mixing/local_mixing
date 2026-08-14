@@ -225,19 +225,12 @@ fn load_tables(path: &str) -> Tables {
     Tables { header, gates }
 }
 
-/// How many curated candidates a single lookup materialises. Every candidate
-/// under a key is equivalent, so this bounds only redundant choice, never
-/// correctness -- and it turns the curated store from unusable (0.6s+/lookup,
-/// reconstructing the whole complete-coverage list) into sub-millisecond.
-const CURATED_CAP: usize = 256;
-
 // Decode a stored value into `out` as a chain of length-prefixed circuits
 // ([len][len bytes]...). Each loop iteration emits exactly one circuit, so
 // `max_circuits` bounds the decode: usize::MAX reconstructs the whole value
-// (the original behaviour), a small cap stops after that many circuits on a
-// clean boundary. The cap is what makes the curated store usable -- its values
-// are the huge complete-coverage candidate lists, and every candidate under a
-// key is equivalent, so decoding all of them (0.6s+/lookup) is pure waste.
+// and a finite cap stops after that many circuits on a clean boundary. Normal
+// runtime lookups are deliberately unbounded; finite caps remain useful to
+// diagnostic callers and focused decoder tests.
 fn decode_value(t: &Tables, r: &mut BitReader, out: &mut Vec<u8>, max_circuits: usize) {
     let mut circuits = 0usize;
     loop {
@@ -500,13 +493,12 @@ impl Frozen {
         self.get_capped(key, usize::MAX)
     }
 
-    /// Like `get`, but decodes at most `cap` circuits of the TARGET value.
+    /// Like `get`, but decodes at most `cap` circuits of the target value.
     /// Predecessor values in the same bucket are still decoded in full -- that
     /// is how the bit-reader advances to the target -- but the 20-bit bucket
     /// index makes buckets sparse (idx is almost always 0), so in practice only
-    /// the target is decoded. Regular lookups pass usize::MAX (values are tiny);
-    /// curated lookups pass a small cap so a single lookup no longer
-    /// reconstructs a multi-megabyte candidate list.
+    /// the target is decoded. Production lookups pass `usize::MAX`; this helper
+    /// is retained for diagnostics that intentionally inspect only a prefix.
     fn get_capped(&self, key: &[u8], cap: usize) -> Option<Vec<u8>> {
         debug_assert_eq!(key.len(), 16);
         let (shard, bucket, tail) = split_key(key);
@@ -703,32 +695,7 @@ impl FrozenDb {
 
     #[inline]
     pub fn get_curated(&self, key: &[u8; 16]) -> Option<Vec<u8>> {
-        // CURATED_CAP predates the bounded rebuild (max 20 candidates / 512
-        // decoded bytes per key, largest bucket 361 encoded bytes); against
-        // that store it never binds, and it stays as a backstop against a
-        // stale unbounded install. The guardrail below is the tripwire: a
-        // value that exceeds the bounded contract means the process is
-        // pointed at the wrong DB, stale data, or a broken parser.
-        let v = self.curated.as_ref()?.get_capped(key, CURATED_CAP)?;
-        let mut candidates = 0usize;
-        let mut pos = 0usize;
-        while pos < v.len() {
-            candidates += 1;
-            pos += 1 + v[pos] as usize;
-        }
-        if candidates > 20 || v.len() > 512 {
-            use std::sync::atomic::{AtomicBool, Ordering};
-            static WARNED: AtomicBool = AtomicBool::new(false);
-            if !WARNED.swap(true, Ordering::Relaxed) {
-                eprintln!(
-                    "[frozen] WARNING: curated value with {candidates} candidates / {} bytes \
-                     exceeds the bounded-DB contract (<=20 / <=512) — wrong DB, stale data, \
-                     or bad parser? (warning once)",
-                    v.len()
-                );
-            }
-        }
-        Some(v)
+        self.curated.as_ref()?.get(key)
     }
 
     pub fn has_curated(&self) -> bool {
@@ -893,5 +860,27 @@ mod tests {
         let mut output = Vec::new();
         decode_value(&tables, &mut reader, &mut output, 1);
         assert_eq!(output, [3, 10, 1, 2]);
+    }
+
+    #[test]
+    fn unbounded_raw_decode_returns_more_than_the_old_curated_cap() {
+        let tables = Tables {
+            header: rebuild_canonical(vec![(ESC, 1)]),
+            gates: Vec::new(),
+        };
+        let mut value = Vec::new();
+        for i in 0..300u16 {
+            value.extend_from_slice(&[3, (i & 0xff) as u8, 1, 2]);
+        }
+        let mut encoded = Vec::with_capacity(value.len() + 3);
+        encoded.push(121);
+        encoded.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        encoded.extend_from_slice(&value);
+
+        let mut reader = BitReader::new(&encoded);
+        let mut output = Vec::new();
+        decode_value(&tables, &mut reader, &mut output, usize::MAX);
+        assert_eq!(output, value);
+        assert_eq!(output.chunks_exact(4).len(), 300);
     }
 }

@@ -61,12 +61,22 @@ impl GateMask {
                 pol[(w >> 6) as usize] |= 1u64 << (w & 63);
             }
         }
-        Some(GateMask { read, pol, tgt: g.target, comp: g.comp })
+        Some(GateMask {
+            read,
+            pol,
+            tgt: g.target,
+            comp: g.comp,
+        })
     }
 
     #[inline]
     fn zero() -> GateMask {
-        GateMask { read: [0; MASK_WORDS], pol: [0; MASK_WORDS], tgt: 0, comp: false }
+        GateMask {
+            read: [0; MASK_WORDS],
+            pol: [0; MASK_WORDS],
+            tgt: 0,
+            comp: false,
+        }
     }
 
     #[inline]
@@ -110,8 +120,12 @@ impl Arena {
         }
         let mut a = Arena {
             gates: gs,
-            prev: (0..n).map(|i| if i == 0 { NIL } else { (i - 1) as u32 }).collect(),
-            next: (0..n).map(|i| if i + 1 == n { NIL } else { (i + 1) as u32 }).collect(),
+            prev: (0..n)
+                .map(|i| if i == 0 { NIL } else { (i - 1) as u32 })
+                .collect(),
+            next: (0..n)
+                .map(|i| if i + 1 == n { NIL } else { (i + 1) as u32 })
+                .collect(),
             stamp: vec![0; n],
             linked: vec![true; n],
             head: 0,
@@ -212,7 +226,11 @@ impl Arena {
     // Relink an allocated-but-unlinked node after `after` (NIL = at head).
     pub fn link_after(&mut self, id: u32, after: u32) {
         debug_assert!(!self.linked[id as usize]);
-        let next = if after == NIL { self.head } else { self.next[after as usize] };
+        let next = if after == NIL {
+            self.head
+        } else {
+            self.next[after as usize]
+        };
         self.prev[id as usize] = after;
         self.next[id as usize] = next;
         if after == NIL {
@@ -230,7 +248,11 @@ impl Arena {
     }
 
     pub fn link_before(&mut self, id: u32, before: u32) {
-        let after = if before == NIL { self.tail } else { self.prev[before as usize] };
+        let after = if before == NIL {
+            self.tail
+        } else {
+            self.prev[before as usize]
+        };
         self.link_after(id, after);
     }
 

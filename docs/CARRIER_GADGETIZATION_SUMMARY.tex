@@ -1,0 +1,501 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{xurl}
+\usepackage[colorlinks=true,linkcolor=black,urlcolor=blue]{hyperref}
+\usepackage{parskip}
+\newcommand{\xor}{\oplus}
+\newcommand{\code}[1]{\texttt{#1}}
+\title{Nonlinear Carrier Gadgetizations and Product-Fold Study}
+\author{}
+\date{2026-08-13}
+\begin{document}
+\emergencystretch=3em
+\maketitle
+
+\section{Scope and bottom line}
+
+This note consolidates the historical linear and current single-carrier
+baselines, the implemented supplied/strong five-, six-, and seven-carrier
+value representations, and the aggregate-Gray, no-Gray, micro-Gray,
+sentinel-Gray, and post-layout fragmentation spellings of a product fold.  All
+constructions are exact reversible circuits and preserve arbitrary incoming
+junk on borrowed wires.  The statistical statements below are exhaustive
+properties of the small public carrier transition or measurements on one
+matched $n=16$ Phase-A fixture.  They are not a cryptographic reduction.
+
+The exact local endpoint-recovery ladder is
+
+\[
+\underbrace{1}_{\text{XOR pair and product-share single carrier}}
+\longrightarrow
+\underbrace{2}_{\text{supplied five}}
+\longrightarrow
+\underbrace{3}_{\text{strong five and both sixes}}
+\longrightarrow
+\underbrace{4}_{\text{seven}} .
+\]
+
+This is the algebraic degree needed to recover a target gate's firing bit from
+its identified before/after carrier tuple.  It is \emph{not} the degree of the
+external product mask: the production single-carrier snapshot already has
+quadratic and cubic mask terms.  Those time-invariant terms cancel across one
+local target update, which is why that older endpoint witness remains affine.
+
+The default remains aggregate Gray because it is compact and Phase-A friendly.
+It has, however, an exact affine space--time witness: in single-carrier mode,
+subtracting one dirty accumulator before and after the complete gather gives
+the complete mask sum; in the representation-aware five/six/seven folds it
+gives the complete operand directly.  Thus aggregate Gray collapses internal
+trace recovery back to degree one regardless of the carrier endpoint degree.
+Four-share micro-Gray removes that one-interval witness and had the best
+measured Phase-A rates, but its matched circuit was $4.56\times$ larger.
+No-Gray avoids intentional aggregation.  Native post-fragmentation restores
+most frozen-store reachability, but still starts $3.74\times$ larger than Gray.
+Sentinel Gray is compact and keeps the maximum-degree atom out of every
+accumulator, but exposes the lower-degree sum with a very strong sparse
+predictor and performed poorly against this frozen store.  None is ``safe
+against all practical attacks'' merely by choosing a carrier count or fold.
+
+A new whole-trace audit also finds the high-degree cancellation seen in FIRE:
+even no-Gray seven has an exact weight-54 XOR of degree-5--11 states of one
+carrier wire that recovers a degree-three source firing, plus a weight-36 XOR
+of degree-10/11 states that recovers a degree-ten firing.  Seven therefore
+raises the local endpoint tensor boundary but is not a defense against a
+size-100 Gaussian search over time-indexed raw wire values.
+
+\section{Three different meanings of degree}
+
+The word ``degree'' was used for several different attack models in the earlier
+reports.  They must be kept separate.
+
+Let $x,y\in\{0,1\}^k$ be a target's carrier tuple immediately before and after
+one local class update.  Let $F$ be the logical target flip and let
+$\delta_\kappa=\kappa^-\xor\kappa^+$ be the public ledger change.  The external
+mask $M(B)$ is unchanged across that update, so
+
+\begin{equation}
+  F=v^-\xor v^+
+   =D(x)\xor D(y)\xor\delta_\kappa .
+  \label{eq:endpoint-recovery}
+\end{equation}
+
+The known constant $\delta_\kappa$ does not change algebraic degree.  ``Exact
+endpoint degree $d$'' below means that $F$ is outside the span of every
+square-free monomial of degree below $d$ in the $2k$ endpoint coordinates, and
+enters that span at degree $d$.  These claims assume that the attacker has
+already identified the tuple and the before/after boundary.
+
+\begin{center}
+\begin{tabular}{@{}p{0.25\linewidth}rrp{0.31\linewidth}@{}}
+\toprule
+representation & $\deg D$ & full snapshot $\deg(D\xor M)$ & exact local endpoint recovery \\
+\midrule
+historical XOR pair & 1 & 1 & degree 1: $F=c_0^-+c_1^-+c_0^++c_1^++\delta_\kappa$; normally only one carrier has net change \\
+production single carrier, $[2,2,2,3]$ mask & 1 & 3 & degree 1: $F=c^-+c^++\delta_\kappa$ \\
+supplied five & 2 & 3 & degree 2 \\
+strong cubic five & 3 & 3 & degree 3 \\
+compact or structural-strong six & 3 & 3 & degree 3 \\
+retained seven & 4 & 4 & degree 4 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Thus the earlier degree-one weakness was \emph{not} that the production
+product mask had degree one.  A single-carrier snapshot is
+
+\[
+v=c\xor q_1(B)\xor q_2(B)\xor q_3(B)\xor h(B)\xor\kappa,
+\qquad \deg q_i=2,\quad\deg h=3,
+\]
+
+and is degree three in the current physical carrier/band coordinates.  The
+problem is that the same $q_i,h$ occur on both sides of a recognized update and
+cancel, leaving $F=c^-\xor c^+\xor\delta_\kappa$.  Supplied five replaces that
+affine endpoint relation by a quadratic one; strong five and both six-carrier
+maps make it cubic; seven makes it quartic.
+
+The implementation pins these boundaries by exhaustive GF(2) feature-rank
+tests, not only by inspecting the displayed ANFs.  Appending $F$ raises rank
+when it is outside the tested feature span and leaves rank unchanged when it is
+recoverable.  Supplied five changes $11\to12$ at degree one and stays 42 at
+degree two; strong five changes $22\to23$ at degree two and stays 42 at degree
+three.  Compact six changes $29\to30$ at degree two and admits $F$ at degree
+three; structural-strong six changes $53\to54$ at degree two and stays 103 at
+degree three.  Seven changes $160\to161$ through degree three and stays 226 at
+degree four.
+
+This endpoint degree is also different from \emph{parity-detector weight}.  An
+XOR of 20 observed coordinates is still a degree-one polynomial, while an exact
+degree-two recovery can be an XOR of many pairwise products.  Consequently the
+supplied five map can have zero correlation with every weight-one and
+weight-two endpoint parity and still admit the exact quadratic recovery
+$F=D_5(x)\xor D_5(y)$.  Likewise, an inexact parity correlation and an exact
+tensor-lift recovery answer different questions.
+
+Finally, the old reconstruction heatmaps were global, single-prefix searches
+for a progress-aligned state.  A flat degree-one heatmap does not contradict an
+exact local relation once a carrier tuple, update boundary, or two internal
+prefixes have been aligned.  The next section's degree-one Gray witness is in
+this time-unrolled coordinate space, not in the original input variables.
+
+\section{Carrier representations}
+
+Every logical value is $v=D(c_0,\ldots,c_{k-1})\xor M(B)\xor\kappa$.
+The external production mask plan is $[2,2,2,3]$ in every current row.  In the
+multi-carrier rows, a gate first applies a public class-preserving permutation
+$U_0$ to the target tuple and then conditionally flips $c_0$;
+$U_1=U_0\xor e_0$.  Both $U_0$ and $U_1$ are fixed-point-free and have the
+required decode transition.  The production single-carrier row instead
+updates its one carrier directly.
+
+\begin{longtable}{@{}p{0.08\linewidth}p{0.25\linewidth}p{0.14\linewidth}p{0.17\linewidth}p{0.22\linewidth}@{}}
+\toprule
+$k$ & decode/update & physical width & raw endpoint parity & exact endpoint algebra \\
+\midrule
+1 (production single) & $D_1=c_0$; external $[2,2,2,3]$ product mask & $n+b$; auto $2n$ & perfect weight-2 relation $c^-+c^+$, up to the known ledger change & degree 1 exactly; the degree-2/3 masks cancel across the update \\
+5 (supplied) & $D_5=c_0+c_1c_2+c_1c_3+c_2c_3+c_1c_4$; exact 40-gate signed $U_0$ & $5n+b$; auto $6n$ & zero through weight 2; first weight 3 has $|\rho|=.5$ (75\% agreement) & degree 2 exactly: $f=D_5(x)+D_5(y)$.  It is \emph{not} immune to the second tensor. \\
+5 (strong cubic) & $D=c_0+c_2+c_2c_3+c_1c_2c_3+c_1c_2c_4+c_3c_4$; six-gate $U_0$ & $5n+b$; auto $6n$ & zero through weight 2; two weight-3 detectors have $|\rho|=.25$ (62.5\% agreement) & outside degree 2, exact at degree 3.  The compact affine tail leaves $c_1,c_2$ fixed, a structural distinguisher. \\
+6 & $D_6$ has maximum degree 3; compact 10-gate $U_0$ & $6n+b$; auto $7n$ & zero through weight 3; first weight 4 has $|\rho|=.25$ (62.5\%) & outside degree 2, exact at degree 3.  Two lanes are frozen by the compact update, a structural distinguisher. \\
+6 (strong structural) & same cubic $D_6$; nonlinear 21-gate $U_0$ & $6n+b$; auto $7n$ & zero through weight 3; first weight 4 remains $|\rho|=.25$ (62.5\%) & outside degree 2, exact at degree 3; full affine endpoint rank and every lane moves. Some higher-weight coefficients reach $|\rho|=.5$, versus $.25$ for the compact map. \\
+7 (best) & $D_7=c_0+c_1+c_2+c_3c_4+c_5c_6+c_3c_4c_5c_6$; nonlinear 26-gate $U_0$ & $7n+b$; auto $8n$ & zero through weight 3; first weight 4 has $|\rho|=.25$ (62.5\%), 21 detectors, three at the maximum & outside degrees 1--3, exact at degree 4; full affine endpoint rank (no perfect affine graph relation). \\
+\bottomrule
+\end{longtable}
+
+Thus nonlinear carriers repair the single-carrier's affine local endpoint
+witness without changing the external mask plan.  The strong cubic five
+reaches the supplied six's algebraic degree with
+fewer wires, but not its weight-3 parity immunity and with stronger affine-tail
+structure.  Strong six removes the compact six's frozen/equal-lane affine
+relations without changing its first sparse-parity or exact-degree boundary;
+it costs 11 extra update gates and is not a higher-weight Walsh dominance.
+Six-to-seven raises the exact degree from 3 to 4 but does not improve
+the first raw parity's weight or bias.  If an attacker identifies the local
+$2k$ before/after tuple, all three tables are tiny; the global-width tensor
+count is meaningful only if tuple and update boundaries remain hidden.
+
+A bounded strong-seven search did not produce an honest replacement.  Every
+candidate found with lower first weight-four bias ($|\rho|=.125$) admitted an
+exact degree-three endpoint recovery.  Among 1,404 completed degree-four
+candidates, none improved the shipped map's 21 nonzero weight-four supports
+and spectrum energy; the retained alternatives had at least 23.  A 19-gate
+candidate was smaller but statistically worse.  The existing
+\code{seven-carrier} mode is therefore the strong/Pareto implementation under
+the chosen priority, rather than adding a ``strong'' alias for a weaker trade.
+
+\section{High-weight cancellation among high-degree trace features}
+
+There is a fourth attack model beyond raw endpoint parity, bounded-degree
+endpoint monomials, and the explicit Gray accumulator witness.  Give every
+physical wire state at every gate boundary its own column
+$\phi_j:\{0,1\}^n\to\{0,1\}$.  Ordinary Gaussian elimination asks whether an
+underlying source value $T$ is in
+
+\[
+  T=a_0+\sum_{j\in J}\phi_j .
+\]
+
+The input ANF degree of a column is irrelevant to this elimination.  Fifty
+degree-eleven columns can cancel exactly to a degree-three target.  This is
+not a degree-two input-monomial attack and it is not contradicted by the local
+degree-four endpoint result.  It is an affine attack in the much larger
+\emph{time-unrolled trace-feature space}.
+
+The supplied-five update already has an isolated example.  If
+$c_i^{(t)}$ is carrier coordinate $i$ after $t$ applications of its public
+$U_0$, then
+
+\begin{align*}
+D_5={}&c_1^{(0)}+c_2^{(1)}+c_0^{(2)}+c_1^{(2)}+c_3^{(2)}
+       +c_1^{(3)}+c_2^{(3)}\\
+    &+c_0^{(4)}+c_1^{(4)}+c_4^{(4)}+c_0^{(5)} .
+\end{align*}
+
+Ten selected trace coordinates have ANF degree four and one has degree one,
+yet their weight-eleven XOR is the quadratic decode.  Meet-in-the-middle
+enumeration proves weight eleven is minimum within these first six time
+slices.  The full fixed-$U_0$ orbit comparison is:
+
+\begin{center}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+map & orbit period & coordinate columns & trace rank & $D$ in span? \\
+\midrule
+supplied five & 624 & 3,120 & $30/32$ & yes; weight-11 upper bound \\
+strong five & 4 & 20 & $8/32$ & no; augmented rank 9 \\
+compact six & 2 & 12 & $8/64$ & no; augmented rank 9 \\
+strong six & 28 & 168 & $31/64$ & no; augmented rank 32 \\
+seven & 41,860 & 293,020 & $56/128$ & no; augmented rank 57 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Thus strong five, both sixes, and seven exactly defeat this \emph{isolated
+repeated-$U_0$} cancellation even when their complete orbit is offered.  That
+is a real improvement over supplied five, but it does not extend to the full
+gadget.  Source-dependent updates, rolls, refills, interactions among values,
+and the port machinery add trace columns and new cancellation paths.
+
+An exact matched full-gadget experiment used $n=11$, 132 source gates,
+$2^{11}=2048$ exhaustively enumerated honest-slice inputs, and the same source,
+sandwich, and seeds for every mode.  Candidate columns were the affine
+constant, initial wire states, and physical target deltas; every selected delta
+was expanded and telescoped to raw before/after wire checkpoints.  The table
+counts exact witnesses of raw support at most 100 for the 96 source firings
+whose target ANF degree is at least ten.  ``Carrier'' means that every selected
+checkpoint lies in the physical home carrier region; rolling can change its
+semantic role during the trace.
+
+\begin{center}
+\begin{tabular}{@{}lrr rr@{}}
+\toprule
+& \multicolumn{2}{c}{no Gray} & \multicolumn{2}{c}{aggregate Gray} \\
+map & found (carrier) & best weight & found (carrier) & best weight \\
+\midrule
+single & $9\ (4)$ & 6 & $7\ (0)$ & 63 \\
+supplied five & $0\ (0)$ & --- & $19\ (7)$ & 4 \\
+strong five & $2\ (2)$ & 40 & $71\ (22)$ & 2 \\
+compact six & $6\ (6)$ & 38 & $65\ (17)$ & 2 \\
+strong six & $8\ (6)$ & 42 & $74\ (27)$ & 2 \\
+seven & $8\ (6)$ & 36 & $66\ (29)$ & 2 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+These are exact equalities, not statistical fits.  In particular, no-Gray
+seven has
+
+\[
+  F_{53}=1+\bigoplus_{g\in L_{36}}w_{59}^{(g)},
+\]
+
+where $F_{53}$ is a degree-ten source firing and the 36 terms are snapshots of
+one fixed physical carrier location.  Sixteen selected functions have degree
+ten and twenty have degree eleven.  More directly analogous to the observed
+degree-three reconstruction, the same no-Gray seven artifact has
+
+\[
+  F_{3}=1+\bigoplus_{g\in L_{54}}w_{4}^{(g)} .
+\]
+
+$F_3$ has degree three; all 54 selected terms are states of the same physical
+carrier wire, and their degrees are
+
+\[
+  2\times5, 1\times6, 1\times7, 7\times9,
+  15\times10, 28\times11.
+\]
+
+Both identities were replayed over all 2,048 inputs.  They are the same
+mechanism as a weight-81 XOR of degree-15/16 carrier states: high-degree time
+evolution telescopes to an underlying source quantity.  Consequently seven
+carriers do \emph{not} thwart size-100 raw-time Gaussian attacks in the current
+full circuit.  Seven improves the isolated update and often raises observed
+support, but carrier count is not monotonic under this attack.
+
+Adding an eighth or ninth carrier is therefore not a justified response by
+itself.  In this matched no-Gray fixture the best observed high-degree firing
+weights for strong five, compact six, strong six, and seven were respectively
+40, 38, 42, and 36.  Extra lanes raise the local endpoint degree only if the
+decode is redesigned, while simultaneously adding observable columns and
+physical update gates.  Public rolling and public per-occurrence relabeling
+preserve the trace span; they can change witness sparsity but add no hidden
+entropy.  A larger $k$ should be accepted only after the \emph{compiled whole
+trace}, not merely $D/U_0$, shows increasing minimum dependency support over
+several $n$ and seeds.  The higher-priority redesign is to avoid aggregate
+gathers, vary the class-switching lane and update map across occurrences, use
+a family whose every member passes the complete-orbit test, and synthesize
+against whole-trace dependency support.  Even public diversification is a
+sparsity optimization rather than a proof; fresh unobserved runtime remasking
+would be a qualitatively different defense.
+
+Aggregate Gray is materially worse.  For the strong multi-carrier maps, most
+degree-ten firings acquire a found weight-at-most-100 relation, and some
+weight-two relations are simply one physical target delta.  Among 98
+degree-at-least-ten changed-source-target prefix states, the chronological
+basis found no weight-at-most-100 witness for any no-Gray multi-carrier map,
+but aggregate Gray found 18, 60, 56, 57, and 61 for supplied five through
+seven.  A zero here is not a nonexistence proof; it only says this basis did not
+produce such a witness.
+
+The tensor-lift view is also important.  Once an update tuple and its boundary
+are known, $F=D(x)+D(y)$ has explicit monomial-column support at most 10, 6,
+11, 13, and 12 for supplied five, strong five, compact six, strong six, and
+seven respectively.  Seven raises the required feature degree to four, but it
+does not make the relation high-support after degree-four columns have been
+materialized.
+
+The support search is syndrome decoding: ordinary elimination returns one
+basis-dependent witness and does not prove minimum Hamming weight.  The table
+therefore supplies definitive attacks where a witness was found, but no
+security claim where it reports zero.  Exact witnesses have correlation one;
+the separate problem of finding the best imperfect correlation under a
+support cap was not solved for the zero cells.  The reusable exhaustive tool is
+\code{tools/trace\_xor\_support.py}; it retains provenance, expands deltas to
+raw checkpoints, reports target and feature ANF degrees, searches alternate
+bases, and replay-validates every emitted equality.
+
+\section{Fold constructions and temporal disclosure}
+
+For the production single-carrier operand write
+$S=c+q_1+q_2+q_3+h$, where the $q_i$ are quadratic and $h$ is cubic.
+
+Endpoint degree and time-unrolled trace degree are not interchangeable.  With
+wire-at-prefix observations treated as separate variables, the exact known
+relations are:
+
+\begin{center}
+\begin{tabular}{@{}p{0.28\linewidth}p{0.43\linewidth}p{0.21\linewidth}@{}}
+\toprule
+fold & exact time-unrolled relation & consequence \\
+\midrule
+no Gray & no complete operand is deliberately accumulated & no collapse of the endpoint degree is introduced; no whole-trace theorem \\
+aggregate Gray, single carrier & $M=u^-\xor u^+$, hence $S=c\xor u^-\xor u^+\xor\kappa$ & exact degree 1 in three physical-time coordinates \\
+aggregate Gray, 5/6/7 carriers & the adjusted fold gathers complete $S=D+M+\kappa$, so $S=u^-\xor u^+$ & exact degree 1 in two internal-time coordinates \\
+four-share micro-Gray & $S=\bigoplus_{j=1}^{4}(u_j^-\xor u_j^+)$ & still exact degree 1, but eight coordinates must be identified and recombined \\
+sentinel Gray & $Q=u^-\xor u^+$; maximum-degree $H$ is not gathered & no complete one-interval operand; strong partial predictor \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The micro row is therefore a higher-support affine witness, not an increase in
+algebraic degree.  This is
+why a nonlinear carrier and a non-aggregating fold solve different layers of
+the problem.
+
+\begin{description}
+\item[Aggregate Gray (mode 1, default).]
+One dirty accumulator gathers $M=q_1+q_2+q_3+h$.  The exact witness is
+$M=u_{\rm before}+u_{\rm after}$ and $S=c+M+\kappa$, using three
+physical-time coordinates.  This is why the old independent-prefix audit was
+insufficient.  In each representation-aware five/six/seven implementation the
+adjusted gather instead includes all atoms of $D$, every external mask atom,
+and the ledger constant.  Its before/after XOR is the complete $S$ directly.
+Consequently the degree-3/4 carrier endpoint result does not survive an attacker
+who can recognize and bracket this internal aggregate.
+
+\item[Expanded/no-Gray (mode 0).]
+The product is expanded atom by atom; the Phase-A preset ladders only widths
+through four.  No full operand is intentionally gathered.  The known carrier
+predictor has $\rho=(1/2)^3(3/4)=.09375$, but the public ladders still expose
+partial products and no whole-trace hardness theorem is claimed.
+
+\item[Four-share micro-Gray (mode 2).]
+Partition each formal operand into four nonempty shares.  For every one of the
+16 share rectangles, dirty $u,z$ execute
+\[P;\ u\mathrel{\xor}=q;\ P;\ z\mathrel{\xor}=r;\ P;
+  \ u\mathrel{\xor}=q;\ P;\ z\mathrel{\xor}=r,\qquad P:t\mathrel{\xor}=uz .\]
+The rectangle contributes exactly $qr$ and restores every borrowed wire.
+Quartics use two arbitrary-dirty helpers and eight width-two primitives.
+There is no complete single-interval gather, but the four public share deltas
+XOR to the operand (eight time coordinates).  That recombination is still an
+exact affine equation; a structure-aware attacker can locate and combine the
+shares.  This is support-widening hardening, not a higher-degree proof.
+
+\item[Maximum-degree sentinel Gray (mode 3).]
+Partition $S=L+Q+H$, with $L$ the nonempty linear atoms, $H$ every
+maximum-degree atom, and $Q$ the intermediate degrees.  Constants are absorbed
+into a live linear polarity, never an empty atom.  The four-phase identity
+gathers only $Q$, while $H$ remains in explicit cross tails.  Cross-tail
+ladders of total width at most four force rung zero to contain one blind/cross
+factor and one $H$ literal; wider tails remain fossils.  Four borrows are drawn
+from four distinct unrelated logical carrier groups.  Exhaustive tests cover
+signed constants and dirty-junk five/six/seven folds.  The isolated accumulator
+trace has no one-interval $H$ or full-$S$ gather, but $Q$ is intentionally
+visible.  In the measured default single-carrier fixture, $c+Q$ predicts the
+production operand at 87.5\% ($\rho=.75$).  The generic expression is $L+Q$;
+the quoted bias is not automatically a five/six/seven measurement.  This is a
+performance-oriented compromise, not LPN-safe.
+
+\item[Post-layout fragmentation.]
+After the commuting shuffle, replace each remaining gate wider than two
+by a contiguous cap-two arbitrary-dirty double sweep.  \code{exact} uses plain
+conjunctions.  \code{native-deep} keeps rung zero exact and spells target reads
+and deeper rungs in g57/CNOT form.  Deeper spelling residuals cancel in the
+sweep; an inexact first rung would leave a real error, so that invariant is
+tested over widths 3--8, both complement values, mixed polarities, and dirty
+helpers.  This improves vocabulary, not temporal security relative to no-Gray.
+\end{description}
+
+I also audited, but did not implement, a two-tile four-dimensional hypercube
+Gray schedule.  It splits the four nonlinear atoms into balanced tiles
+$\{q,q\}$ and $\{q,h\}$, traverses a balanced 16-state Gray cycle, and emits
+each tile-pair product on its two-dimensional subcube.  Exhaustive abstract
+enumeration confirms exactness for arbitrary dirty baselines.  Its first exact
+operand witness has weight 5 (carrier plus both two-snapshot tile deltas); the
+best weight-3 predictor has $|\rho|=.375$ (68.75\% agreement).  Estimated
+canonical cost is 141 primitives per generic production fold, between sentinel
+and four-share micro.  It is a promising next A/B arm, but remains structurally
+recombinable and has no frozen-store measurement, so mode 4 was deliberately
+deferred rather than shipping another unaudited preset.
+
+\section{Matched Phase-A measurement}
+
+Fixture: $n=16$, $|C|=|D|=256$, $s=64$, slice budget 320, source seed 1,
+gadget seed 2, sandwich seed 1.  Every arm has the identical sandwich SHA-256
+\code{17609cdc...c48e7a}.  Frozen stores are the identical Aug-10 regular and
+curated m1--m11 stores.  Samplers use seed 7707 and 20,000 rounds.
+All rows in this table use the default \emph{single-carrier} representation;
+only the fold/fragment spelling changes.  These hit rates were not independently
+remeasured for five-, six-, or seven-carrier artifacts.
+
+``Reach'' is existential regular-store reachability of a gate through any
+contiguous window of length 2--5 under control cap 2.  ``Dry MIX'' is raw
+catalogue coverage and does not prove a usable committed splice. ``Dry COMP''
+is prefix hits divided by prefix hits plus misses, not a per-round percentage.
+``Live'' is the new reliable counter: a nonidentity candidate was decoded,
+placed, exhaustively verified, and actually spliced in a slot-2 round.
+
+\begin{center}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+arm & gates/Gray & reach & dry MIX & dry COMP & live MIX & live COMP \\
+\midrule
+aggregate Gray & 1.000 & 97.74\% & 61.29\% & 9.13\% & 9.52\% & 34.18\% \\
+no-Gray cap 4 & 2.529 & 90.59\% & 45.26\% & 3.56\% & 7.91\% & 11.36\% \\
+post exact & 3.343 & 92.93\% & 40.92\% & 2.23\% & 9.02\% & 6.29\% \\
+post native-deep & 3.735 & 96.16\% & 49.95\% & 4.74\% & 8.41\% & 12.96\% \\
+four-share micro & 4.556 & 99.50\% & 68.00\% & 9.20\% & 12.15\% & 39.07\% \\
+sentinel & 0.989 & 79.37\% & 34.18\% & 1.08\% & 9.67\% & 4.46\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Micro-Gray wins every hit-rate column and removed 8,109 gates during its live
+COMP run, but begins with 269,126 gates versus Gray's 59,066.  Native-deep
+post-fragmentation raises no-Gray reach from 90.59\% to 96.16\%, yet does not
+beat Gray's live rate and starts with 220,583 gates.  Sentinel is nearly Gray's
+size and has a slightly higher live MIX rate, but frozen-store reach and COMP
+are poor; its many plain conjunctions do not match this store well.  These
+single-seed $n=16$ numbers select follow-up arms, not production conclusions.
+Confirm any winner at $n=128$ over multiple gadget and Phase-A seeds.
+
+Machine-readable numbers, exact counts, and net gate changes are in
+\url{experiments/gray_fold_study_20260813/results.tsv}.
+
+\section{Interfaces and server audit}
+
+\code{--strong-five-carrier}/\code{PROD\_PRESET=strong-five-carrier} select
+the cubic five sibling, while
+\code{--strong-six-carrier}/\code{PROD\_PRESET=strong-six-carrier} select
+the full-affine-rank six sibling; the original
+\code{--five-carrier} remains the screenshot-supplied quadratic map for
+reproducibility.  \code{--prod-gray-fold} and \code{PROD\_GRAY\_FOLD} accept 0--3 as above.
+Fold-study presets are \code{micro-gray} and \code{sentinel-gray}.
+Post-fragment presets are \code{no-gray-post-exact} and
+\code{no-gray-post-native}.  The variable
+\code{PROD\_POST\_FRAGMENT} with value \code{off}, \code{exact}, or
+\code{native-deep} overrides the post pass.
+The separate \code{fragment\_wide} binary applies it to an existing MPMCT1
+artifact.  Production remains mode 1 unless explicitly changed.
+
+The 2026-08-13 fleet audit found only \code{n64tests} and \code{testpieces}
+idle and suitable for benchmarks.  \code{llmtest} and \code{sattesting-nh}
+are busy; \code{nho}, \code{sattest2}, \code{sattest3}, and
+\code{localtest} are unreachable/lost and were pruned from the usable list.
+The exact inventory, resources, store fingerprints, and recommendations are in
+\url{experiments/gss_sat_scaling_20260810/fleet/inventory_20260813.tsv}.
+
+\end{document}

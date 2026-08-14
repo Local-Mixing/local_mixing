@@ -112,10 +112,18 @@ fn liveness_prune_anc(
         }
     }
     let dropped = keep.iter().filter(|&&k| !k).count();
-    let out: Vec<XGate> =
-        gates.into_iter().zip(keep.iter()).filter(|(_, k)| **k).map(|(g, _)| g).collect();
+    let out: Vec<XGate> = gates
+        .into_iter()
+        .zip(keep.iter())
+        .filter(|(_, k)| **k)
+        .map(|(g, _)| g)
+        .collect();
     let anc_out = anc.map(|a| {
-        a.into_iter().zip(keep.iter()).filter(|(_, k)| **k).map(|(s, _)| s).collect()
+        a.into_iter()
+            .zip(keep.iter())
+            .filter(|(_, k)| **k)
+            .map(|(s, _)| s)
+            .collect()
     });
     (out, anc_out, dropped)
 }
@@ -126,14 +134,20 @@ fn liveness_prune_anc(
 // cubes. Returns (cubes, parity_delta) or None when the support or the
 // expansion would be too large.
 fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits>, bool)> {
-    let mut support: Vec<u16> = cubes.iter().flat_map(|c| c.iter().map(|&(w, _)| w)).collect();
+    let mut support: Vec<u16> = cubes
+        .iter()
+        .flat_map(|c| c.iter().map(|&(w, _)| w))
+        .collect();
     support.sort_unstable();
     support.dedup();
     if support.len() > support_cap.min(31) {
         return None;
     }
-    let idx_of: HashMap<u16, u32> =
-        support.iter().enumerate().map(|(i, &w)| (w, i as u32)).collect();
+    let idx_of: HashMap<u16, u32> = support
+        .iter()
+        .enumerate()
+        .map(|(i, &w)| (w, i as u32))
+        .collect();
     let mut budget = 1u64 << 17;
     let mut anf: HashMap<u32, bool> = HashMap::new();
     for c in cubes {
@@ -158,7 +172,11 @@ fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits>, bool)> {
             sub = (sub - 1) & neg;
         }
     }
-    let mut monos: Vec<u32> = anf.into_iter().filter(|&(_, on)| on).map(|(m, _)| m).collect();
+    let mut monos: Vec<u32> = anf
+        .into_iter()
+        .filter(|&(_, on)| on)
+        .map(|(m, _)| m)
+        .collect();
     let parity_delta = monos.iter().any(|&m| m == 0);
     monos.retain(|&m| m != 0);
     monos.sort_unstable_by_key(|&m| std::cmp::Reverse((m.count_ones(), m)));
@@ -234,9 +252,17 @@ fn reduce_group(
         for i in 0..cubes.len() {
             // `a` depends only on `i`; every merge restarts the scan from the
             // outer loop, so it can never go stale inside the `j` sweep.
-            let a = XGate { target, comp: false, ctrls: cubes[i].clone() };
+            let a = XGate {
+                target,
+                comp: false,
+                ctrls: cubes[i].clone(),
+            };
             for j in i + 1..cubes.len() {
-                let b = XGate { target, comp: false, ctrls: cubes[j].clone() };
+                let b = XGate {
+                    target,
+                    comp: false,
+                    ctrls: cubes[j].clone(),
+                };
                 if let Some(m) = merge_result(&a, &b) {
                     rep.catalogue_merges += 1;
                     let repl = match m {
@@ -267,8 +293,10 @@ fn reduce_group(
     // ANF alternative: canonical cancellation, kept when strictly smaller.
     if cubes.len() >= 3 {
         if let Some((alt, delta)) = anf_reduce(&cubes, p.anf_support_cap) {
-            let (alt_l, cur_l) = (alt.iter().map(|c| c.len()).sum::<usize>(),
-                                  cubes.iter().map(|c| c.len()).sum::<usize>());
+            let (alt_l, cur_l) = (
+                alt.iter().map(|c| c.len()).sum::<usize>(),
+                cubes.iter().map(|c| c.len()).sum::<usize>(),
+            );
             if (alt.len(), alt_l) < (cubes.len(), cur_l) {
                 rep.anf_wins += 1;
                 cubes = alt;
@@ -278,7 +306,11 @@ fn reduce_group(
     }
     let mut out: Vec<XGate> = Vec::with_capacity(cubes.len().max(1));
     for (k, c) in cubes.into_iter().enumerate() {
-        out.push(XGate { target, comp: parity && k == 0, ctrls: c });
+        out.push(XGate {
+            target,
+            comp: parity && k == 0,
+            ctrls: c,
+        });
     }
     if out.is_empty() && parity {
         out.push(XGate::x_gate(target));
@@ -355,8 +387,11 @@ fn parity_of_reference(gates: &[XGate], val: &dyn Fn(u16) -> bool) -> bool {
 }
 
 fn verify_group(before: &[XGate], after: &[XGate], rng: &mut StdRng) {
-    let mut support: Vec<u16> =
-        before.iter().chain(after).flat_map(|g| g.ctrls.iter().map(|&(w, _)| w)).collect();
+    let mut support: Vec<u16> = before
+        .iter()
+        .chain(after)
+        .flat_map(|g| g.ctrls.iter().map(|&(w, _)| w))
+        .collect();
     support.sort_unstable();
     support.dedup();
     let words = support.len().div_ceil(64).max(1);
@@ -489,7 +524,16 @@ fn gather_reduce_pass(
         }
         union_of[g.target as usize].retain(|&s| slots[s].open);
         if !seed.is_empty() {
-            close(seed, &mut slots, &mut open_at, &mut union_of, &mut out, &mut out_anc, rng, rep);
+            close(
+                seed,
+                &mut slots,
+                &mut open_at,
+                &mut union_of,
+                &mut out,
+                &mut out_anc,
+                rng,
+                rep,
+            );
         }
         let g_anc = anc.map(|a| a[i].clone()).unwrap_or_default();
         // Join or open the group for this target.
@@ -507,7 +551,16 @@ fn gather_reduce_pass(
                 or_into(&mut grp.anc, &g_anc);
                 grp.last = i;
                 if grp.members.len() >= p.group_cap {
-                    close(vec![s], &mut slots, &mut open_at, &mut union_of, &mut out, &mut out_anc, rng, rep);
+                    close(
+                        vec![s],
+                        &mut slots,
+                        &mut open_at,
+                        &mut union_of,
+                        &mut out,
+                        &mut out_anc,
+                        rng,
+                        rep,
+                    );
                 }
             }
             None => {
@@ -531,13 +584,26 @@ fn gather_reduce_pass(
         }
     }
     let remaining: Vec<usize> = (0..slots.len()).filter(|&s| slots[s].open).collect();
-    close(remaining, &mut slots, &mut open_at, &mut union_of, &mut out, &mut out_anc, rng, rep);
+    close(
+        remaining,
+        &mut slots,
+        &mut open_at,
+        &mut union_of,
+        &mut out,
+        &mut out_anc,
+        rng,
+        rep,
+    );
     (out, out_anc)
 }
 
 // Full pass: [liveness] -> gather+reduce, iterated to a gate-count fixed
 // point. Prints one [fcompress] line per iteration.
-pub fn compress(gates: Vec<XGate>, wires: usize, p: &CompressParams) -> (Vec<XGate>, CompressReport) {
+pub fn compress(
+    gates: Vec<XGate>,
+    wires: usize,
+    p: &CompressParams,
+) -> (Vec<XGate>, CompressReport) {
     let (out, _, rep) = compress_anc(gates, None, wires, p);
     (out, rep)
 }
@@ -552,7 +618,11 @@ pub fn compress_anc(
     p: &CompressParams,
 ) -> (Vec<XGate>, Option<Vec<AncBits>>, CompressReport) {
     if let Some(a) = &anc {
-        assert_eq!(a.len(), gates.len(), "ancestry tags must align with the input gates");
+        assert_eq!(
+            a.len(),
+            gates.len(),
+            "ancestry tags must align with the input gates"
+        );
     }
     let mut rng = StdRng::seed_from_u64(p.seed);
     let mut rep = CompressReport::default();
@@ -575,8 +645,16 @@ pub fn compress_anc(
         rep.iters = iter;
         println!(
             "[fcompress] iter={} gates {} -> {} | groups={} multi={} max={} | catalogue={} anf_wins={} live_dropped={} vskip={}",
-            iter, before, cur.len(), rep.groups, rep.multi_groups, rep.max_group,
-            rep.catalogue_merges, rep.anf_wins, rep.liveness_dropped, rep.verifies_skipped
+            iter,
+            before,
+            cur.len(),
+            rep.groups,
+            rep.multi_groups,
+            rep.max_group,
+            rep.catalogue_merges,
+            rep.anf_wins,
+            rep.liveness_dropped,
+            rep.verifies_skipped
         );
         if cur.len() >= before {
             break;
@@ -669,14 +747,12 @@ mod compress_tests {
             };
             if support.len() <= 12 {
                 for a in 0u32..(1u32 << support.len()) {
-                    let bits: Vec<bool> =
-                        (0..support.len()).map(|i| a >> i & 1 == 1).collect();
+                    let bits: Vec<bool> = (0..support.len()).map(|i| a >> i & 1 == 1).collect();
                     compare(&bits);
                 }
             }
             for _ in 0..64 {
-                let bits: Vec<bool> =
-                    (0..support.len()).map(|_| rng.random_bool(0.5)).collect();
+                let bits: Vec<bool> = (0..support.len()).map(|_| rng.random_bool(0.5)).collect();
                 compare(&bits);
             }
         }
@@ -765,7 +841,11 @@ mod compress_tests {
         let p = CompressParams::default();
         let (out, out_anc, rep) = compress_anc(gates.clone(), Some(anc), 4, &p);
         let out_anc = out_anc.expect("tags threaded");
-        assert_eq!(out.len(), out_anc.len(), "tags must align with output gates");
+        assert_eq!(
+            out.len(),
+            out_anc.len(),
+            "tags must align with output gates"
+        );
         assert!(rep.catalogue_merges >= 1, "the pair must merge");
         let mut found_union = false;
         for (g, a) in out.iter().zip(out_anc.iter()) {
@@ -776,7 +856,10 @@ mod compress_tests {
                 assert_eq!(a, &vec![0b100u64], "bystander keeps its own set");
             }
         }
-        assert!(found_union, "a target-0 survivor must exist (parity X gate)");
+        assert!(
+            found_union,
+            "a target-0 survivor must exist (parity X gate)"
+        );
         // Function must be preserved with tags threaded (same pass, same rng).
         assert!(equal_on(&gates, &out, 4, None));
     }
@@ -786,12 +869,15 @@ mod compress_tests {
         // Wire 0 live, wire 1 dead. Last write to 1 is deletable; the earlier
         // write to 1 feeds the live gate through 1 and must stay.
         let gates = vec![
-            conj(1, &[(2, true)]),          // stays: 1 read below by live gate
-            conj(0, &[(1, true)]),          // live
-            conj(1, &[(0, true)]),          // dead: nothing live reads 1 after
+            conj(1, &[(2, true)]), // stays: 1 read below by live gate
+            conj(0, &[(1, true)]), // live
+            conj(1, &[(0, true)]), // dead: nothing live reads 1 after
         ];
         let live = vec![true, false, true];
-        let p = CompressParams { live_out: Some(live.clone()), ..Default::default() };
+        let p = CompressParams {
+            live_out: Some(live.clone()),
+            ..Default::default()
+        };
         let (out, rep) = compress(gates.clone(), 3, &p);
         assert_eq!(rep.liveness_dropped, 1);
         assert!(equal_on(&gates, &out, 3, Some(&live)));
@@ -824,6 +910,9 @@ mod compress_tests {
         assert!(rep.iters >= 1);
         assert!(equal_on(&gates, &out, wires as usize, None));
         // On a dense 8-wire circuit real reduction should happen.
-        assert!(out.len() < gates.len(), "expected some compression on dense circuit");
+        assert!(
+            out.len() < gates.len(),
+            "expected some compression on dense circuit"
+        );
     }
 }

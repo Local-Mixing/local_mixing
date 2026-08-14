@@ -41,8 +41,74 @@ fn add_shoot_args(c: Command) -> Command {
                 .arg(
                     Arg::new("gadgetize")
                         .long("gadgetize")
-                        .help("Gadgetize the circuit at the start (input becomes 2n wires)")
+                        .help("Gadgetize the circuit at the start (wire count depends on the selected representation)")
                         .required(false)
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("five_carrier")
+                        .long("five-carrier")
+                        .alias("five_carrier")
+                        .help("(--cnot --gadgetize) Use the five-carrier nonlinear product-share representation instead of the default single-carrier representation; output has 5n carrier wires plus the product band")
+                        .required(false)
+                        .requires("gadgetize")
+                        .requires("cnot")
+                        .conflicts_with("prod_single")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("strong_five_carrier")
+                        .long("strong-five-carrier")
+                        .alias("strong_five_carrier")
+                        .help("(--cnot --gadgetize) Use the experimental cubic five-carrier representation: zero endpoint parity correlation through weight two and no exact degree-two recovery; output has 5n carrier wires plus the product band")
+                        .required(false)
+                        .requires("gadgetize")
+                        .requires("cnot")
+                        .conflicts_with("five_carrier")
+                        .conflicts_with("prod_single")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("six_carrier")
+                        .long("six-carrier")
+                        .alias("six_carrier")
+                        .help("(--cnot --gadgetize) Use the six-carrier nonlinear product-share representation; its endpoint trace has zero parity correlation through weight three and no exact degree-two recovery; output has 6n carrier wires plus the product band")
+                        .required(false)
+                        .requires("gadgetize")
+                        .requires("cnot")
+                        .conflicts_with("five_carrier")
+                        .conflicts_with("strong_five_carrier")
+                        .conflicts_with("prod_single")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("strong_six_carrier")
+                        .long("strong-six-carrier")
+                        .alias("strong_six_carrier")
+                        .help("(--cnot --gadgetize) Use the experimental structural six-carrier representation: the cubic decode and endpoint spectrum are retained, while the update has full affine graph rank and no frozen carrier lane; output has 6n carrier wires plus the product band")
+                        .required(false)
+                        .requires("gadgetize")
+                        .requires("cnot")
+                        .conflicts_with("five_carrier")
+                        .conflicts_with("strong_five_carrier")
+                        .conflicts_with("six_carrier")
+                        .conflicts_with("seven_carrier")
+                        .conflicts_with("prod_single")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("seven_carrier")
+                        .long("seven-carrier")
+                        .alias("seven_carrier")
+                        .help("(--cnot --gadgetize) Use the seven-carrier nonlinear product-share representation; its endpoint trace has zero parity correlation through weight three and no exact degree-three recovery; output has 7n carrier wires plus the product band")
+                        .required(false)
+                        .requires("gadgetize")
+                        .requires("cnot")
+                        .conflicts_with("five_carrier")
+                        .conflicts_with("strong_five_carrier")
+                        .conflicts_with("six_carrier")
+                        .conflicts_with("strong_six_carrier")
+                        .conflicts_with("prod_single")
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
@@ -104,7 +170,7 @@ fn add_shoot_args(c: Command) -> Command {
                     Arg::new("slice_zero_ccnot")
                         .long("slice-zero-ccnot")
                         .alias("slice_zero_ccnot")
-                        .help("(--cnot) Before gadgetization, insert an M of positive CNOT/CCNOTs (targets on data wires, every gate reading >=1 NON-DATA wire — aux AND the product-share band) that preserves the all-zero non-data slice and provably disturbs x on every other slice (pinned target/control split, rank-checked over the linear rows); three-control gates make the off-slice disturbance quadratic in x rather than affine")
+                        .help("(--cnot) Before gadgetization, insert an M of positive CNOT/CCNOTs (targets on data wires, every gate reading >=1 NON-DATA wire — auxiliary carriers AND the product-share band) that preserves the all-zero non-data slice and provably disturbs x on every other slice (pinned target/control split, rank-checked over the linear rows); three-control gates make the off-slice disturbance quadratic in x rather than affine")
                         .required(false)
                         .requires("gadgetize")
                         .requires("cnot")
@@ -116,7 +182,7 @@ fn add_shoot_args(c: Command) -> Command {
                         .alias("slice_zero_ccnot_gates")
                         .required(false)
                         .value_parser(clap::value_parser!(usize))
-                        .help("Number of M gates for --slice-zero-ccnot (default: 10n; ~1/3 CNOTs and ~2/3 CCNOTs in one uniformly random order). Must be at least n+band: every non-data wire gets a pin gate, which is what makes the disturbance exact"),
+                        .help("Number of M gates for --slice-zero-ccnot (default: 10n; ~1/3 CNOTs and ~2/3 CCNOTs in one uniformly random order). The effective block covers every non-data wire: band in single-carrier mode, n+band in paired mode, 4n+band with either five-carrier mode, 5n+band with either six-carrier mode, or 6n+band with --seven-carrier; smaller requests are raised to that minimum"),
                 )
                 .arg(
                     Arg::new("sliced_sandwich")
@@ -249,7 +315,7 @@ fn add_shoot_args(c: Command) -> Command {
                         .alias("prod_k")
                         .required(false)
                         .value_parser(clap::value_parser!(usize))
-                        .help("(--cnot gadgetize) Product-share encoding: permanent multiplicative mask terms per value, sourced on a band (0 = off). ALL --prod-* FLAGS DEFAULT TO ProdConfig::production_single(), the validated production setting -- [1,2,3,3] single-carrier, band = value count, nonlinear fill, rolling, g57-form narrow fragments, ladder cap 3, 50% block jitter, epoch 5 -- and passing a flag overrides just that field. Pass --prod-k 0 for no encoding at all. Degree-1 readout error floor: k=1 -> 0.25, k=2 -> 0.375, k=3 -> 0.4375. Replaces the CG menu with the share-native ANF fold (no operand reconstruction). Mutually exclusive with --mask-cov"),
+                        .help("(--cnot gadgetize) Product-share encoding: permanent multiplicative mask terms per value, sourced on a band (0 = off). The --prod-* flags inherit the selected representation's coherent production preset (single-carrier by default, nonlinear under a five/six/seven-carrier flag), and an explicitly passed flag overrides just that field. Pass --prod-k 0 and --prod-k-hi 0 for no product masks in the legacy representations; nonlinear carrier modes require a nonempty mask plan. Replaces the CG menu with a share-native fold (no operand reconstruction). Mutually exclusive with --mask-cov"),
                 )
                 .arg(
                     Arg::new("prod_deg")
@@ -297,7 +363,7 @@ fn add_shoot_args(c: Command) -> Command {
                         .alias("prod_max_width")
                         .required(false)
                         .value_parser(clap::value_parser!(usize))
-                        .help("(--cnot gadgetize) Cap the encoding's emitted control width by laddering wider conjunctions over dedicated zero scratch wires (0 = legacy wide fragments; 2 = full narrow mode, every emitted gate a g57/CNOT — the phase-A DB vocabulary). Narrow mode is exact on the pinned zero-aux slice"),
+                        .help("(--cnot gadgetize) Cap legacy product-fold conjunction width by laddering wider conjunctions over dedicated zero scratch wires (0 = legacy wide fragments; 2 = full narrow mode, every legacy fold gate a g57/CNOT — the phase-A DB vocabulary). The nonlinear carrier decodes have their own exact update, port, and fallback gates and do not currently honor this legacy fold cap. Narrow mode is exact on the pinned zero-aux slice"),
                 )
                 .arg(
                     Arg::new("prod_fill_nl")
@@ -329,7 +395,7 @@ fn add_shoot_args(c: Command) -> Command {
                         .alias("prod_gray_fold")
                         .required(false)
                         .value_parser(clap::value_parser!(usize))
-                        .help("(--cnot gadgetize) Gray-code CG fold: gather each operand's mask sum ONCE onto a dirty borrowed accumulator and read it back four times, instead of expanding the cartesian product into fragments of width up to arity*max_deg. Every emitted gate is then <=2 controls with NOTHING laddered -- the fold stops producing the width-3..6 material the frozen store cannot digest (0.41% hit at width 3, absent above) -- at ~3x the block's fragment count against full narrow mode's ~6.2x, because the mask products are derived once per block rather than once per fragment. The accumulators must stay DIRTY: `carrier + masks` IS the operand value, so a clean accumulator would re-expose it, and the audit confirms a clean variant recovers the operand at correlation 1.0. MEASURED exactly over all 46 prefixes of a [1,2,3,3] block: the best affine predictor of a, b, c or a' peaks at 0.28125 = (1/2)(3/4)^2, which is the encoding's own steady-state bound, and no secret enters the span of the wires and their pairwise products at any prefix"),
+                        .help("(--cnot gadgetize) Product-fold mode: 0=expanded/no aggregate; 1=aggregate Gray (default and smallest, but one accumulator before/after gather reveals the complete operand mask); 2=four-share micro Gray (16 restored rectangles, removes the single-interval witness but the four public share deltas recombine); 3=max-degree-sentinel Gray (gathers only lower-degree Q and keeps maximum-degree H out of every accumulator; experimental). Modes 2/3 trade substantially more gates for a higher-order temporal witness. All modes preserve arbitrary dirty helpers; these are measured hardening options, not cryptographic proofs"),
                 )
                 .arg(
                     Arg::new("prod_g57_narrow")
@@ -785,5 +851,172 @@ fn main() {
         Some(("equal", sub)) => commands::equal::run(sub),
         Some(("evaluate", sub)) => commands::evaluate::run(sub),
         _ => unreachable!("subcommand_required guarantees a match"),
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    fn parse_shoot_args(extra: &[&str]) -> Result<clap::ArgMatches, clap::Error> {
+        let mut args = vec![
+            "sss",
+            "--n",
+            "3",
+            "--m",
+            "1",
+            "--x",
+            "1",
+            "--source",
+            "source.g57",
+            "--rounds",
+            "0",
+            "--destination",
+            "out.mpmct1",
+        ];
+        args.extend_from_slice(extra);
+        add_shoot_args(Command::new("sss")).try_get_matches_from(args)
+    }
+
+    #[test]
+    fn five_carrier_flag_parses_for_the_cnot_gadgetizer() {
+        let matches = parse_shoot_args(&["--cnot", "--gadgetize", "--five-carrier"]).unwrap();
+        assert!(matches.get_flag("five_carrier"));
+    }
+
+    #[test]
+    fn five_carrier_flag_requires_cnot_and_gadgetize() {
+        assert!(parse_shoot_args(&["--gadgetize", "--five-carrier"]).is_err());
+        assert!(parse_shoot_args(&["--cnot", "--five-carrier"]).is_err());
+    }
+
+    #[test]
+    fn five_carrier_flag_rejects_the_single_carrier_override() {
+        assert!(
+            parse_shoot_args(&[
+                "--cnot",
+                "--gadgetize",
+                "--five-carrier",
+                "--prod-single",
+                "1",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn strong_five_carrier_flag_parses_and_conflicts_with_legacy_five() {
+        let matches = parse_shoot_args(&[
+            "--cnot",
+            "--gadgetize",
+            "--strong-five-carrier",
+        ])
+        .unwrap();
+        assert!(matches.get_flag("strong_five_carrier"));
+        assert!(
+            parse_shoot_args(&[
+                "--cnot",
+                "--gadgetize",
+                "--five-carrier",
+                "--strong-five-carrier",
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_shoot_args(&[
+                "--cnot",
+                "--gadgetize",
+                "--strong-five-carrier",
+                "--prod-single",
+                "1",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn six_carrier_flag_parses_for_the_cnot_gadgetizer() {
+        let matches = parse_shoot_args(&["--cnot", "--gadgetize", "--six-carrier"]).unwrap();
+        assert!(matches.get_flag("six_carrier"));
+    }
+
+    #[test]
+    fn six_carrier_flag_requires_cnot_and_gadgetize() {
+        assert!(parse_shoot_args(&["--gadgetize", "--six-carrier"]).is_err());
+        assert!(parse_shoot_args(&["--cnot", "--six-carrier"]).is_err());
+    }
+
+    #[test]
+    fn strong_six_carrier_flag_parses_and_conflicts_with_legacy_six() {
+        let matches =
+            parse_shoot_args(&["--cnot", "--gadgetize", "--strong-six-carrier"]).unwrap();
+        assert!(matches.get_flag("strong_six_carrier"));
+        assert!(
+            parse_shoot_args(&[
+                "--cnot",
+                "--gadgetize",
+                "--six-carrier",
+                "--strong-six-carrier",
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_shoot_args(&[
+                "--cnot",
+                "--gadgetize",
+                "--strong-six-carrier",
+                "--prod-single",
+                "1",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn seven_carrier_flag_parses_for_the_cnot_gadgetizer() {
+        let matches = parse_shoot_args(&["--cnot", "--gadgetize", "--seven-carrier"]).unwrap();
+        assert!(matches.get_flag("seven_carrier"));
+    }
+
+    #[test]
+    fn seven_carrier_flag_requires_cnot_and_gadgetize() {
+        assert!(parse_shoot_args(&["--gadgetize", "--seven-carrier"]).is_err());
+        assert!(parse_shoot_args(&["--cnot", "--seven-carrier"]).is_err());
+    }
+
+    #[test]
+    fn nonlinear_carrier_flags_are_mutually_exclusive() {
+        assert!(
+            parse_shoot_args(&["--cnot", "--gadgetize", "--five-carrier", "--six-carrier",])
+                .is_err()
+        );
+        assert!(
+            parse_shoot_args(&[
+                "--cnot",
+                "--gadgetize",
+                "--six-carrier",
+                "--prod-single",
+                "1",
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_shoot_args(&["--cnot", "--gadgetize", "--six-carrier", "--seven-carrier",])
+                .is_err()
+        );
+        assert!(
+            parse_shoot_args(&["--cnot", "--gadgetize", "--five-carrier", "--seven-carrier",])
+                .is_err()
+        );
+        assert!(
+            parse_shoot_args(&[
+                "--cnot",
+                "--gadgetize",
+                "--seven-carrier",
+                "--prod-single",
+                "1",
+            ])
+            .is_err()
+        );
     }
 }

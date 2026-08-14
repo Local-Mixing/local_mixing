@@ -10,6 +10,7 @@ pub mod compress;
 pub mod db_replace;
 pub mod engine;
 pub mod format;
+pub mod fragment;
 pub mod mix;
 pub mod rules;
 pub mod samf;

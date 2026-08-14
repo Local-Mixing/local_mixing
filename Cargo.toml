@@ -42,6 +42,17 @@ path = "src/bench/bench_polycanon.rs"
 name = "frozen_from_lmdb"
 path = "src/bin/frozen_from_lmdb.rs"
 
+[[bin]]
+name = "build_curated_full"
+path = "src/rainbow_table/bin/build_curated_full.rs"
+required-features = ["legacy-db-tools"]
+
+[features]
+default = []
+# Offline import/regeneration tools for the historical replacement databases.
+# Runtime lookup does not pull in RocksDB.
+legacy-db-tools = ["dep:num_cpus", "dep:rocksdb"]
+
 [profile.release]
 overflow-checks = false
 lto = "thin"
@@ -73,6 +84,10 @@ primitive-types = "0.14.0"
 uint = "0.10.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rustc-hash = "2"
+# Curated database build/import pipeline. These are optional because RocksDB
+# is not part of the frozen-store runtime.
+rocksdb = { version = "0.24.0", optional = true }
+num_cpus = { version = "1.17.0", optional = true }
 # Frozen-table read path (src/replace/frozen.rs): xorf provides the optional
 # in-RAM BinaryFuse8 miss filter, bincode2 decodes the persisted filters.bin.
 xorf = { version = "0.12", features = ["serde", "bincode"] }

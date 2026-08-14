@@ -4,6 +4,17 @@
 
 > Markdown rendering of `docs/NONLINEAR_GADGETIZATION.tex`. The PDF is authoritative for figures, diagrams and display math.
 
+> **Superseded in part (2026-08-13).** This document records the July
+> product-mask design. Current production uses a single carrier with external
+> mask plan `[2,2,2,3]` and aggregate Gray; opt-in nonlinear five-, six-, and
+> seven-carrier modes are summarized in
+> `docs/CARRIER_GADGETIZATION_SUMMARY.tex`. Keep three results distinct: the
+> historical XOR-pair snapshot is degree one; the current single-carrier masked
+> snapshot is degree three but its recognized before/after firing witness is
+> still degree one; and aggregate Gray has a separate degree-one internal
+> space-time witness. Supplied five raises the endpoint boundary to degree two,
+> strong five and both sixes to degree three, and seven to degree four.
+
 *Written for a reader who knows the linear (XOR-pair) gadgetizer
 and nothing else about this line of work. Covers the design of 2026-07-23 and
 the revisions of 2026-07-24 as one piece. Option reference in §9.*

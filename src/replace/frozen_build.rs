@@ -430,6 +430,10 @@ fn split_key(k: &[u8]) -> (usize, u32, u64) {
 // encode one bucket (tails + values) into bytes
 fn encode_bucket(t: &Tables, tails: &[u64], vals: &[Vec<u8>]) -> Vec<u8> {
     let n = tails.len();
+    assert!(
+        n <= u16::MAX as usize,
+        "frozen bucket has {n} keys, beyond the 16-bit format limit"
+    );
     let mut bw = BitWriter::new();
     let bits_n = 64 - (n as u64).leading_zeros();
     let l = TAIL_BITS.saturating_sub(bits_n);
@@ -474,6 +478,25 @@ pub fn open_shards(env: &lmdb::Environment, prefix: &str) -> Vec<lmdb::Database>
                 .unwrap_or_else(|e| panic!("open shard db {name}: {e:?}"))
         })
         .collect()
+}
+
+/// A full curated materialization writes this marker only after every shard
+/// transaction is committed and synced. Frozen conversion refuses a missing
+/// marker so an interrupted LMDB cannot be mistaken for a complete input.
+pub fn require_curated_full_manifest(lmdb_dir: &str) {
+    let env = open_env(lmdb_dir);
+    let db = env
+        .open_db(Some("curated_full_meta"))
+        .expect("curated LMDB has no curated_full_meta database; build may be partial or legacy");
+    let txn = env.begin_ro_txn().expect("curated metadata transaction");
+    let value = txn
+        .get(db, &b"composite-v1")
+        .expect("curated LMDB has no completion manifest; build may be partial");
+    assert_eq!(
+        value.len(),
+        32,
+        "curated LMDB completion manifest has invalid length"
+    );
 }
 
 // ---------------------------------------------------------------- stages
@@ -601,6 +624,10 @@ pub fn stage_write(lmdb_dir: &str, prefix: &str, out_dir: &str) {
                 flush_to!(bucket);
                 cur_bucket = bucket;
             }
+            assert!(
+                tails.last().is_none_or(|&previous| previous < tail),
+                "frozen format cannot distinguish full LMDB keys in shard {shard:02x}, bucket {bucket:05x}, tail {tail:012x}"
+            );
             tails.push(tail);
             vals.push(v.to_vec());
             count += 1;
@@ -610,6 +637,10 @@ pub fn stage_write(lmdb_dir: &str, prefix: &str, out_dir: &str) {
         drop(out);
 
         // backpatch header + offsets
+        assert!(
+            data_len < (1u64 << 40),
+            "frozen shard {shard:02x} has {data_len} encoded bytes, beyond the 40-bit offset limit"
+        );
         let mut head: Vec<u8> = Vec::with_capacity(head_len);
         head.extend(b"FRZTBL01");
         head.extend(count.to_le_bytes());
@@ -752,4 +783,3 @@ pub fn stage_validate(lmdb_dir: &str, prefix: &str, out_dir: &str) {
         std::process::exit(1);
     }
 }
-

@@ -10,7 +10,7 @@ file and log left in the run directory. Companion docs:
 
 ```
 n ──1─▶ sliced sandwich S ──2─▶ GSS gadget ──3─▶ phase A ──4─▶ split stage ──5─▶ crossing walk ──6─▶ fcompress
-        (2n wires)              (4n wires)      (DB mixing)   (g57 → pairs)     (pure growth)      (final)
+        (2n wires)              (4n default)    (DB mixing)   (g57 → pairs)     (pure growth)      (final)
 ```
 
 ## Quick start
@@ -21,6 +21,137 @@ export FROZEN_DB_DIR=...        # the frozen replacement store (stage 3)
 export FROZEN_CURATED_DIR=...   # recommended: curated-first cascade
 scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_s1 -s 1
 ```
+
+If the aggregate Gray fold is outside the threat model, select the measured
+no-Gray Phase-A preset at generation time:
+
+```bash
+export PROD_PRESET=no-gray-phase-a
+scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_safe_s1 -s 1
+```
+
+It expands each source product atom-by-atom and selectively narrows fragments
+through width four before Phase A. It never gathers an operand's complete mask
+sum onto one dirty accumulator. Do not pre-compress this stage: in the paired
+n=16 frozen-store experiment, `fcompress` reduced regular-store reach from
+92.22% to 77.96% even though the control-width profile remained narrow. This is
+a security/throughput alternative, not the default; it is larger and its GSS
+MIX dry-run hit rate was 48.0% versus 61.2% for aggregate Gray.
+
+Three additional study arms are available without changing the production
+default:
+
+```bash
+export PROD_PRESET=micro-gray             # four shares, 16 restored rectangles
+export PROD_PRESET=sentinel-gray          # gather lower degrees, not max degree
+export PROD_PRESET=no-gray-post-native    # no aggregate; native dirty ladder
+```
+
+`micro-gray` removes the single before/after accumulator interval that exposes
+the aggregate operand, but its four public share deltas still XOR back to that
+operand. `sentinel-gray` keeps every maximum-degree atom out of the aggregate;
+it is experimental and intentionally leaves the widest high--high products as
+fossils. `no-gray-post-native` performs the no-Gray cap-four construction and
+then fragments every remaining wide gate after the final shuffle, keeping rung
+zero exact and spelling deeper dirty-ladder rungs in the frozen-store-native
+g57/CNOT vocabulary. The equivalent explicit override is
+`PROD_POST_FRAGMENT=native-deep`; `exact` selects all-plain rungs and `off`
+disables the post pass. All helpers are arbitrary dirty values and are restored.
+
+The paired n=16 results and metric definitions are in
+`docs/CARRIER_GADGETIZATION_SUMMARY.tex`. In brief, verified live Phase-A MIX
+splice rates were 9.52% aggregate Gray, 7.91% no-Gray cap four, 8.41% native
+post-fragmentation, and 12.15% four-share micro-Gray. Micro-Gray started at
+4.56 times the Gray circuit size, so the higher splice rate is not free.
+
+To generate the five-carrier nonlinear representation instead, select its
+standalone-generator preset:
+
+```bash
+export PROD_PRESET=five-carrier
+scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_five_s1 -s 1
+```
+
+This is the `gen_sandwich_gadget` counterpart of
+`sss --cnot --gadgetize --five-carrier`. Each of the sandwich's `2n` logical
+values uses five carrier wires plus the existing auto band, so the stage-2
+artifact is `12n` wires (`1536` at source `n=128`) rather than the default
+`4n`. The single-carrier production preset remains the default when
+`PROD_PRESET` is unset.
+
+Here “endpoint degree” means exact recovery of the local target-flip bit from
+an identified before/after carrier tuple. The production single-carrier
+snapshot is already degree three because its unchanged external mask plan is
+`[2,2,2,3]`; nevertheless its endpoint flip is degree one because those masks
+cancel, leaving `carrier_before XOR carrier_after` (up to a known ledger
+constant). The supplied five raises this boundary to degree two, strong five
+and either six raise it to degree three, and seven raises it to degree four.
+This endpoint ladder is separate from aggregate Gray's internal degree-one
+space-time witness.
+
+The experimental cubic five-carrier sibling is selected with
+`PROD_PRESET=strong-five-carrier`, or through
+`sss --cnot --gadgetize --strong-five-carrier`. It keeps the same wire count,
+but moves exact endpoint recovery from supplied five's degree two to degree
+three (versus degree one for production single-carrier) and lowers
+the first weight-three correlation from 75% to 62.5% agreement. Its compact
+six-gate update leaves two carrier-tail lanes fixed, so it is an explicit
+algebraic experiment rather than a silent replacement for the supplied map.
+
+The stronger six-carrier variant is selected analogously:
+
+```bash
+export PROD_PRESET=six-carrier
+scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_six_s1 -s 1
+```
+
+An experimental structural sibling is selected with
+`PROD_PRESET=strong-six-carrier`, or through
+`sss --cnot --gadgetize --strong-six-carrier`. It retains the same cubic
+decode, exact degree-three endpoint boundary, and zero raw endpoint parity
+through weight three. Its 21-gate update has full affine graph rank and moves
+every carrier lane; the compact ten-gate six-carrier update has frozen lanes.
+This is a structural trade, not a blanket statistical dominance: the first
+weight-four bias is unchanged, and some higher-weight coefficients are larger.
+
+Its endpoint trace has exactly zero Walsh correlation with every parity of up
+to three before/after carrier wires, and its gate-firing bit is outside the
+span of every degree-two endpoint monomial (degree three is the first exact
+recovery). It uses `6*(2n) + 2n = 14n` wires with the auto band (`1792` at
+source `n=128`). The Gray fold is representation-aware: it gathers the full
+six-carrier decode, including both cubic atoms, and restores all three dirty
+borrowed carriers. As in five-carrier mode, this endpoint claim does not
+remove the stronger space-time witness obtained by observing a Gray
+accumulator immediately before and after a complete gather.
+The compact exact U0 also leaves carrier lanes c4 and c5 unchanged and has an
+affine non-c0 update. That is a structural distinguisher; the guarantees above
+are specifically about static low-weight decode leakage and recovery of the
+gate-firing bit, not general S-box nonlinearity.
+
+The seven-carrier variant is selected with:
+
+```bash
+export PROD_PRESET=seven-carrier
+scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_seven_s1 -s 1
+```
+
+This is also the retained strong-seven/Pareto preset. A bounded search found
+lower-bias updates (56.25% rather than 62.5% first-detector agreement), but
+every such candidate regressed exact recovery from degree four to degree
+three. No degree-four candidate improved the shipped map's weight-four
+multiplicity or higher spectrum, so no misleading `strong-seven-carrier`
+alias was added.
+
+Its selected update is a fixed-point-free nonlinear permutation within each
+decode class. The endpoint firing trace has exactly zero Walsh correlation
+with every parity detector of weight at most three; the first nonzero detector
+has weight four. There is no perfect affine before/after trace relation, and
+the firing bit is outside the degree-three endpoint span (the decode identity
+recovers it at degree four). The Gray fold gathers the full seven-carrier
+decode, including its quartic atom, using a restored dirty helper. With the
+auto band this mode uses `7*(2n) + 2n = 16n` wires (`2048` at source `n=128`).
+As with the other nonlinear representations, the endpoint guarantees do not
+claim to hide an accumulator observed in the middle of a complete Gray gather.
 
 Artifacts land in the run dir: `gss.mpmct1` (+ `.sandwich.mpmct1`,
 `.source_c.g57`), `phaseA.mpmct1`(+`.state`), `splitB.mpmct1`(+`.state`),
@@ -40,9 +171,15 @@ is the library convention, computed and logged by the driver:
 `slice_gates = 20n`, `rg_freq = 1`. The gadgetization runs the **production
 preset** (mask plan [2,2,2,3] + Gray fold, single-carrier decode, nonlinear
 band fill, band roll, retire-refill epochs) — it is the tool's default; no
-`PROD_*` variables are set. The sandwich S (2n wires) and the source C are
-dumped beside the gadget (4n wires) for later reconstruction checks. The
-tool sample-verifies gadget-low ≡ S on the zero slice (200 samples).
+`PROD_*` variables are set unless an alternate `PROD_PRESET` is selected
+(`no-gray-phase-a`, a fold/fragmentation study arm, `five-carrier`,
+`strong-five-carrier`, `six-carrier`, `strong-six-carrier`, or
+`seven-carrier`).
+The sandwich S (2n wires) and the source C are
+dumped beside the gadget (4n wires by default, 12n under either five-carrier
+mode, 14n under either six-carrier mode, or 16n under `seven-carrier`) for
+later reconstruction checks. The tool
+sample-verifies gadget-low ≡ S on the zero slice (256 bit-sliced samples).
 Seeds: C and the sandwich use the master seed, the gadgetization
 `seed+1` — vary `-s` for a fully fresh pipeline.
 

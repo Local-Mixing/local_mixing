@@ -1308,6 +1308,16 @@ pub(crate) fn cached_db_get(
         return entry.clone();
     }
     let result: Option<std::sync::Arc<[u8]>> = raw_db_get(db, namespace, key);
+    // A complete curated value can contain hundreds of thousands of
+    // candidates and occupy many megabytes (the historical worst case was
+    // multi-megabyte, and one historical shard exceeded a gigabyte). Keep exact
+    // curated misses in the cache, but do not pin a positive full value there:
+    // callers already hold it during selection, and retaining it would let a
+    // few hot full-coverage keys evict the regular working set or exhaust the
+    // process. Regular positives remain cached; their friend lists are small.
+    if namespace == LOOKUP_NS_CURATED && result.is_some() {
+        return result;
+    }
     let entry_bytes = 17 + 64 + result.as_ref().map_or(0, |v| v.len()) as u64;
     if LOOKUP_CACHE_BYTES.fetch_add(entry_bytes, Ordering::Relaxed) + entry_bytes
         > lookup_cache_cap_bytes()

@@ -1051,9 +1051,7 @@ impl CircuitSeq {
                 },
                 used,
             ),
-            CanonSingleInner::Fresh(polys, order, _) => {
-                (polys, Permutation { data: order }, used)
-            }
+            CanonSingleInner::Fresh(polys, order, _) => (polys, Permutation { data: order }, used),
         }
     }
 
@@ -1186,8 +1184,7 @@ impl CircuitSeq {
         // All cap exits return above, so the exact cache can contain only
         // complete, valid canonical keys—never a clean-miss sentinel.
         if let (Some(cache), Some(key)) = (cache, cache_key) {
-            let polys_key =
-                xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&canon.0)).to_le_bytes();
+            let polys_key = xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&canon.0)).to_le_bytes();
             let entry_bytes = (96
                 + key.len() * 2
                 + canon.0.iter().map(|p| 24 + p.len() * 8).sum::<usize>()
@@ -1317,8 +1314,7 @@ impl CircuitSeq {
         // Only complete successes are inserted, mirroring the plain path: a
         // hit therefore always replays a deterministic success.
         if let (Some(cache), Some(key)) = (cache, cache_key) {
-            let polys_key =
-                xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&canon.0)).to_le_bytes();
+            let polys_key = xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&canon.0)).to_le_bytes();
             let entry_bytes = (96
                 + key.len() * 2
                 + canon.0.iter().map(|p| 24 + p.len() * 8).sum::<usize>()
@@ -3712,9 +3708,10 @@ pub fn canonicalize_polys_4(
     // zero, i.e. every monomial degree <= MONOMIAL_RANK_PREFIX_LEN_4 (16).
     // Class polys and D-class polys reuse these same monomials, so one
     // top-level check covers every scan in the recursion.
-    let compact_ok = !polynomials
-        .iter()
-        .any(|p| p.iter().any(|m| m.count_ones() > MONOMIAL_RANK_PREFIX_LEN_4 as u32));
+    let compact_ok = !polynomials.iter().any(|p| {
+        p.iter()
+            .any(|m| m.count_ones() > MONOMIAL_RANK_PREFIX_LEN_4 as u32)
+    });
     // Each direction gets an independent budget, while every recursive
     // canon4_run invocation in this call shares the same accumulator.
     if canon_rule_l_branch_cap().is_some() {
@@ -4870,66 +4867,66 @@ mod tests {
     #[test]
     fn canonical_form_golden() {
         const GOLDEN: &[(&str, &str)] = &[
-        ("G0", "6fa0209f74c6aca5a629ea4de7b882dd"),
-        ("H0", "f8decf2b941d92e0016521e783bea5a8"),
-        ("G1", "541946580565039aca15fdbd19755175"),
-        ("H1", "25fb31deb42fd599dc90d9dea6fba89d"),
-        ("G2", "5d551f5eba5474d33a871ecb0a8e46b7"),
-        ("H2", "36a43931107c7d80f1fffbc5527c313a"),
-        ("G3", "fd20b272d990c65207f9ffa0b3582b31"),
-        ("H3", "1502ecfb3f88e59418564f2185548dce"),
-        ("G4", "b6d47169d8e88efc8d965ff190d6c21f"),
-        ("H4", "56986adc1dfa776e9de5480a80e9ab46"),
-        ("G5", "fdf065eb905e344adb801bf88319a929"),
-        ("H5", "e924c80a183b499d7b576bde07129131"),
-        ("G6", "fbda8128fafdf7924880c95813641b7a"),
-        ("H6", "245dd8d448f23884fbbac2b87aacaa86"),
-        ("G7", "f7594dc87bdccb66a5e77d816b05b06a"),
-        ("H7", "e015d3a5ec42bab54220110ad22f2612"),
-        ("G8", "c29cd6d9be717edd6850b647f5370c0c"),
-        ("H8", "602c1fad413f6816a32e4d299d096879"),
-        ("G9", "e36265eba0672f79bbd54ed94c388564"),
-        ("H9", "3fd134840c7913907227cf9205bdac9e"),
-        ("G10", "d19251954f40b19ccb15c700f246276b"),
-        ("H10", "59e94f3dedd110d92c1dae1e0a74cade"),
-        ("G11", "b3cb06c6bb4c1f8f3f8e612e2622f2bf"),
-        ("H11", "5168e7504437bd05203e558be87d7a5a"),
-        ("G12", "3a2eebdc712c2cb9f8896f11169e4026"),
-        ("H12", "c6ad8d964f866af06894dae44cad7911"),
-        ("G13", "586eb625594255c9621e813a91669339"),
-        ("H13", "2bfc4e6ff9208214514c899ffc57bb62"),
-        ("G14", "1192d8249e2773dd389c2e8611bf256c"),
-        ("H14", "d28943f055eb4a63aa4e4f4c4670ba13"),
-        ("G15", "bca4629cf33574b8bd9eec6527e0c95f"),
-        ("H15", "3523ee73c966859cabd1a5e626cdc51f"),
-        ("G16", "2f0196c07918909d574b35e423bc60c7"),
-        ("H16", "b76ea7f0d46c738a83d5ccdfacec678c"),
-        ("G17", "1f0f68761b56f660f88c9ebdc2177bb7"),
-        ("H17", "bd6e51d525fbeab79ec34b154ee398b4"),
-        ("G18", "1d12417189ed645c0d68e74c85c3e4bd"),
-        ("H18", "360c53cc42d3591e7c3558384e5d7a7f"),
-        ("G19", "ac596d2604e6963258e9de7746f1efd7"),
-        ("H19", "c24ea23211b28ac22faac1480c51289b"),
-        ("G20", "e020d8c2d1dd740c9ef7e71d0ae52ac9"),
-        ("H20", "a5b37a68dddb773429da7672d6c4870d"),
-        ("G21", "39b636d94d180700abfe4e0b299e62c8"),
-        ("H21", "c7b6d35f0b75ee1a3a23910657d13935"),
-        ("G22", "b0a48bb2e87a13245269b1e309380d07"),
-        ("H22", "53c37dd76b64c030b4c50b3ffd68a2c9"),
-        ("G23", "631171335b8ff30b1a4406c1913cfed8"),
-        ("H23", "acf0954bed92446336cd7dd618c46a22"),
-        ("G24", "6d1677f347a24adaddd438be1758575f"),
-        ("H24", "227c2822c97ec6a2add6ef947e57557b"),
-        ("G25", "00c835f56a23564e21bc44105f1169b2"),
-        ("H25", "5fd407309e7f74231d8cc0890f7d63f6"),
-        ("G26", "783cd181e4f96d3bf9656d5aa0737b98"),
-        ("H26", "d8dc7d0de786e49c90e97f77cebc19bf"),
-        ("G27", "5d739004d2e1c3232660d923c341950f"),
-        ("H27", "e854979b9d3fe892e12223aa67f261a1"),
-        ("G28", "bcceaba13911caa90caddbd5c9090af3"),
-        ("H28", "7a70480cb8f8a667167669f7a1128d14"),
-        ("G29", "39c9d5702ff15e41a0504d0e6cbefe39"),
-        ("H29", "ece8b5e185ca0c4cb818fc3fea4cf033")
+            ("G0", "6fa0209f74c6aca5a629ea4de7b882dd"),
+            ("H0", "f8decf2b941d92e0016521e783bea5a8"),
+            ("G1", "541946580565039aca15fdbd19755175"),
+            ("H1", "25fb31deb42fd599dc90d9dea6fba89d"),
+            ("G2", "5d551f5eba5474d33a871ecb0a8e46b7"),
+            ("H2", "36a43931107c7d80f1fffbc5527c313a"),
+            ("G3", "fd20b272d990c65207f9ffa0b3582b31"),
+            ("H3", "1502ecfb3f88e59418564f2185548dce"),
+            ("G4", "b6d47169d8e88efc8d965ff190d6c21f"),
+            ("H4", "56986adc1dfa776e9de5480a80e9ab46"),
+            ("G5", "fdf065eb905e344adb801bf88319a929"),
+            ("H5", "e924c80a183b499d7b576bde07129131"),
+            ("G6", "fbda8128fafdf7924880c95813641b7a"),
+            ("H6", "245dd8d448f23884fbbac2b87aacaa86"),
+            ("G7", "f7594dc87bdccb66a5e77d816b05b06a"),
+            ("H7", "e015d3a5ec42bab54220110ad22f2612"),
+            ("G8", "c29cd6d9be717edd6850b647f5370c0c"),
+            ("H8", "602c1fad413f6816a32e4d299d096879"),
+            ("G9", "e36265eba0672f79bbd54ed94c388564"),
+            ("H9", "3fd134840c7913907227cf9205bdac9e"),
+            ("G10", "d19251954f40b19ccb15c700f246276b"),
+            ("H10", "59e94f3dedd110d92c1dae1e0a74cade"),
+            ("G11", "b3cb06c6bb4c1f8f3f8e612e2622f2bf"),
+            ("H11", "5168e7504437bd05203e558be87d7a5a"),
+            ("G12", "3a2eebdc712c2cb9f8896f11169e4026"),
+            ("H12", "c6ad8d964f866af06894dae44cad7911"),
+            ("G13", "586eb625594255c9621e813a91669339"),
+            ("H13", "2bfc4e6ff9208214514c899ffc57bb62"),
+            ("G14", "1192d8249e2773dd389c2e8611bf256c"),
+            ("H14", "d28943f055eb4a63aa4e4f4c4670ba13"),
+            ("G15", "bca4629cf33574b8bd9eec6527e0c95f"),
+            ("H15", "3523ee73c966859cabd1a5e626cdc51f"),
+            ("G16", "2f0196c07918909d574b35e423bc60c7"),
+            ("H16", "b76ea7f0d46c738a83d5ccdfacec678c"),
+            ("G17", "1f0f68761b56f660f88c9ebdc2177bb7"),
+            ("H17", "bd6e51d525fbeab79ec34b154ee398b4"),
+            ("G18", "1d12417189ed645c0d68e74c85c3e4bd"),
+            ("H18", "360c53cc42d3591e7c3558384e5d7a7f"),
+            ("G19", "ac596d2604e6963258e9de7746f1efd7"),
+            ("H19", "c24ea23211b28ac22faac1480c51289b"),
+            ("G20", "e020d8c2d1dd740c9ef7e71d0ae52ac9"),
+            ("H20", "a5b37a68dddb773429da7672d6c4870d"),
+            ("G21", "39b636d94d180700abfe4e0b299e62c8"),
+            ("H21", "c7b6d35f0b75ee1a3a23910657d13935"),
+            ("G22", "b0a48bb2e87a13245269b1e309380d07"),
+            ("H22", "53c37dd76b64c030b4c50b3ffd68a2c9"),
+            ("G23", "631171335b8ff30b1a4406c1913cfed8"),
+            ("H23", "acf0954bed92446336cd7dd618c46a22"),
+            ("G24", "6d1677f347a24adaddd438be1758575f"),
+            ("H24", "227c2822c97ec6a2add6ef947e57557b"),
+            ("G25", "00c835f56a23564e21bc44105f1169b2"),
+            ("H25", "5fd407309e7f74231d8cc0890f7d63f6"),
+            ("G26", "783cd181e4f96d3bf9656d5aa0737b98"),
+            ("H26", "d8dc7d0de786e49c90e97f77cebc19bf"),
+            ("G27", "5d739004d2e1c3232660d923c341950f"),
+            ("H27", "e854979b9d3fe892e12223aa67f261a1"),
+            ("G28", "bcceaba13911caa90caddbd5c9090af3"),
+            ("H28", "7a70480cb8f8a667167669f7a1128d14"),
+            ("G29", "39c9d5702ff15e41a0504d0e6cbefe39"),
+            ("H29", "ece8b5e185ca0c4cb818fc3fea4cf033"),
         ];
         for (tag, want) in GOLDEN {
             let (series, seed_s) = tag.split_at(1);
@@ -4938,7 +4935,12 @@ mod tests {
                 "G" => canon_hash(seed, 10, 8),
                 _ => canon_hash(seed.wrapping_mul(0x9e37), 14, 12),
             };
-            assert_eq!(format!("{:032x}", got), *want, "canonical form changed for {}", tag);
+            assert_eq!(
+                format!("{:032x}", got),
+                *want,
+                "canonical form changed for {}",
+                tag
+            );
         }
     }
 
@@ -5024,15 +5026,7 @@ mod tests {
             tied_groups_4(&vr0, n, &mut groups_meta, &mut groups_members);
             let groups = Some((groups_meta.as_slice(), groups_members.as_slice()));
 
-            let scratch = || {
-                (
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                )
-            };
+            let scratch = || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
             let (mut le, mut f, mut t, mut s, mut sr) = scratch();
             let mut vr_legacy = vr0.clone();
             let res_legacy = scan_class_poly_levels_4(
@@ -5070,16 +5064,7 @@ mod tests {
                 let (_, mut f, mut t, mut s, mut sr) = scratch();
                 let mut vr_c = vr0.clone();
                 let res_c = scan_class_poly_levels_c(
-                    &cp,
-                    &mut vr_c,
-                    n,
-                    tied_mask,
-                    &mut ec,
-                    &mut f,
-                    &mut t,
-                    &mut s,
-                    &mut sr,
-                    groups,
+                    &cp, &mut vr_c, n, tied_mask, &mut ec, &mut f, &mut t, &mut s, &mut sr, groups,
                 );
                 assert_eq!(res_legacy, res_c, "compact trial={trial} n={n}");
                 assert_eq!(vr_legacy, vr_c, "compact trial={trial} n={n}");
@@ -5186,7 +5171,10 @@ mod tests {
                     .collect();
             }
             let (canon_b, _) = canonicalize_polys_4(relabeled, true).unwrap();
-            assert_eq!(canon_a, canon_b, "relabeling trial={trial} n={n} sigma={sigma:?}");
+            assert_eq!(
+                canon_a, canon_b,
+                "relabeling trial={trial} n={n} sigma={sigma:?}"
+            );
         }
     }
 }

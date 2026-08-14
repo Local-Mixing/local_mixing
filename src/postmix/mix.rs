@@ -7414,7 +7414,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} wpoly={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
+            "[fmix] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} slot2={}/{} sadd={} comp={}/{} agn={}/{} rm={} add={} wide={} wpoly={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -7440,6 +7440,9 @@ impl Mixer {
             c.undo_gather_miss,
             self.journal.len(),
             self.params.p_db,
+            c.db_slot2_hits,
+            c.db_slot2_rounds,
+            c.db_slot2_added,
             c.db_comp_hits,
             c.db_comp_misses,
             c.db_agn_hits,

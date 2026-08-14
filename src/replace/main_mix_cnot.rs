@@ -19,11 +19,16 @@ use crate::{
         xgate::{XGate, eval_u1024},
     },
     replace::gadgets::{
-        CnotCircuit, feistalize_cnot, feistalize_with_slice_zero_cnot,
+        CnotCircuit, MaskConfig, ProdConfig, feistalize_cnot, feistalize_with_slice_zero_cnot,
         feistalize_with_slice_zero_hardcoded_cnot, feistalize_with_slice_zero_random_cnot,
-        MaskConfig, ProdConfig, gadgetize_cnot, gadgetize_cnot_single,
-        gadgetize_with_slice_zero_ccnot, packed_bit,
-        sliced_sandwich_cnot,
+        gadgetize_cnot, gadgetize_cnot_five_carrier, gadgetize_cnot_seven_carrier,
+        gadgetize_cnot_single, gadgetize_cnot_six_carrier,
+        gadgetize_cnot_strong_five_carrier, gadgetize_cnot_strong_six_carrier,
+        gadgetize_with_slice_zero_ccnot,
+        gadgetize_with_slice_zero_ccnot_five_carrier,
+        gadgetize_with_slice_zero_ccnot_seven_carrier, gadgetize_with_slice_zero_ccnot_six_carrier,
+        gadgetize_with_slice_zero_ccnot_strong_five_carrier,
+        gadgetize_with_slice_zero_ccnot_strong_six_carrier, packed_bit, sliced_sandwich_cnot,
     },
 };
 
@@ -45,6 +50,11 @@ pub struct CnotSssParams<'a> {
     pub save: &'a str,
     pub source: &'a str,
     pub do_gadgetize: bool,
+    pub five_carrier: bool,
+    pub strong_five_carrier: bool,
+    pub six_carrier: bool,
+    pub strong_six_carrier: bool,
+    pub seven_carrier: bool,
     pub do_feistalize: bool,
     pub slice_zero: bool,
     pub slice_zero_random: bool,
@@ -168,8 +178,9 @@ fn functionality_check(
                     input |= public_y << n;
                     input |= public_z << (2 * n);
                 }
-                // The gadget path has a single n-bit slice on the second
-                // half, carried in the pair's first element; pin it.
+                // Gadget slice width is representation-specific (band only,
+                // paired aux+band, or four extra carrier lanes+band). Pinning
+                // everything above the logical low n wires covers all modes.
                 FunctionView::GadgetLow => {
                     input &= low_mask;
                     input |= public_y << n;
@@ -302,9 +313,92 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
     assert!(p.n > 0, "--n must be nonzero");
     assert!(p.rg_freq > 0, "--rg-frequency must be nonzero");
     assert!(
+        !p.five_carrier || p.do_gadgetize,
+        "--five-carrier requires --gadgetize"
+    );
+    assert!(
+        !p.strong_five_carrier || p.do_gadgetize,
+        "--strong-five-carrier requires --gadgetize"
+    );
+    assert!(
+        !p.six_carrier || p.do_gadgetize,
+        "--six-carrier requires --gadgetize"
+    );
+    assert!(
+        !p.strong_six_carrier || p.do_gadgetize,
+        "--strong-six-carrier requires --gadgetize"
+    );
+    assert!(
+        !p.seven_carrier || p.do_gadgetize,
+        "--seven-carrier requires --gadgetize"
+    );
+    assert!(
+        (p.five_carrier as u8)
+            + (p.strong_five_carrier as u8)
+            + (p.six_carrier as u8)
+            + (p.strong_six_carrier as u8)
+            + (p.seven_carrier as u8)
+            <= 1,
+        "nonlinear carrier representation flags are mutually exclusive"
+    );
+    assert!(
         (p.do_gadgetize as u8) + (p.do_feistalize as u8) + (p.sliced_sandwich as u8) <= 1,
         "--gadgetize, --feistalize and --sliced-sandwich are mutually exclusive"
     );
+    if p.five_carrier || p.strong_five_carrier {
+        assert!(
+            p.prod.enabled(),
+            "five-carrier modes require a nonempty product-mask plan"
+        );
+        assert!(
+            !p.prod.dist(),
+            "five-carrier modes do not support distributed product-mask sourcing"
+        );
+        let expected_wires =
+            p.n.checked_mul(5)
+                .and_then(|carriers| carriers.checked_add(p.prod.band_size(p.n)))
+                .expect("five-carrier wire count overflow");
+        assert!(
+            expected_wires <= 1024,
+            "the selected five-carrier mode produces {expected_wires} wires (5n carriers plus band), but the --cnot driver supports at most 1024"
+        );
+    }
+    if p.six_carrier || p.strong_six_carrier {
+        assert!(
+            p.prod.enabled(),
+            "six-carrier modes require a nonempty product-mask plan"
+        );
+        assert!(
+            !p.prod.dist(),
+            "six-carrier modes do not support distributed product-mask sourcing"
+        );
+        let expected_wires =
+            p.n.checked_mul(6)
+                .and_then(|carriers| carriers.checked_add(p.prod.band_size(p.n)))
+                .expect("six-carrier wire count overflow");
+        assert!(
+            expected_wires <= 1024,
+            "the selected six-carrier mode produces {expected_wires} wires (6n carriers plus band), but the --cnot driver supports at most 1024"
+        );
+    }
+    if p.seven_carrier {
+        assert!(
+            p.prod.enabled(),
+            "--seven-carrier requires a nonempty product-mask plan"
+        );
+        assert!(
+            !p.prod.dist(),
+            "--seven-carrier does not support distributed product-mask sourcing"
+        );
+        let expected_wires =
+            p.n.checked_mul(7)
+                .and_then(|carriers| carriers.checked_add(p.prod.band_size(p.n)))
+                .expect("seven-carrier wire count overflow");
+        assert!(
+            expected_wires <= 1024,
+            "--seven-carrier produces {expected_wires} wires (7n carriers plus band), but the --cnot driver supports at most 1024"
+        );
+    }
     println!(
         "[sss:cnot] XGate-native backend selected: G57 ingress, heterogeneous mpmct1 thereafter"
     );
@@ -365,7 +459,116 @@ pub fn main_shuffle_shoot_shuffle_cnot(original: &CircuitSeq, p: &CnotSssParams<
             )
         }
     } else if p.do_gadgetize {
-        if p.slice_zero_ccnot {
+        if p.seven_carrier && p.slice_zero_ccnot {
+            fixed_slice = Some((U1024::zero(), U1024::zero()));
+            (
+                gadgetize_with_slice_zero_ccnot_seven_carrier(
+                    original,
+                    p.n,
+                    p.rg_freq,
+                    p.slice_zero_ccnot_gates,
+                    &p.masks,
+                    &p.prod,
+                    &mut rng,
+                ),
+                FunctionView::GadgetLow,
+                "slice-zero-ccnot gadgetized (seven-carrier decode)",
+            )
+        } else if p.seven_carrier {
+            (
+                gadgetize_cnot_seven_carrier(original, p.n, p.rg_freq, &p.prod, &mut rng),
+                FunctionView::GadgetLow,
+                "gadgetized (seven-carrier decode)",
+            )
+        } else if p.strong_six_carrier && p.slice_zero_ccnot {
+            fixed_slice = Some((U1024::zero(), U1024::zero()));
+            (
+                gadgetize_with_slice_zero_ccnot_strong_six_carrier(
+                    original,
+                    p.n,
+                    p.rg_freq,
+                    p.slice_zero_ccnot_gates,
+                    &p.masks,
+                    &p.prod,
+                    &mut rng,
+                ),
+                FunctionView::GadgetLow,
+                "slice-zero-ccnot gadgetized (strong structural six-carrier decode)",
+            )
+        } else if p.strong_six_carrier {
+            (
+                gadgetize_cnot_strong_six_carrier(
+                    original, p.n, p.rg_freq, &p.prod, &mut rng,
+                ),
+                FunctionView::GadgetLow,
+                "gadgetized (strong structural six-carrier decode)",
+            )
+        } else if p.six_carrier && p.slice_zero_ccnot {
+            fixed_slice = Some((U1024::zero(), U1024::zero()));
+            (
+                gadgetize_with_slice_zero_ccnot_six_carrier(
+                    original,
+                    p.n,
+                    p.rg_freq,
+                    p.slice_zero_ccnot_gates,
+                    &p.masks,
+                    &p.prod,
+                    &mut rng,
+                ),
+                FunctionView::GadgetLow,
+                "slice-zero-ccnot gadgetized (six-carrier decode)",
+            )
+        } else if p.six_carrier {
+            (
+                gadgetize_cnot_six_carrier(original, p.n, p.rg_freq, &p.prod, &mut rng),
+                FunctionView::GadgetLow,
+                "gadgetized (six-carrier decode)",
+            )
+        } else if p.strong_five_carrier && p.slice_zero_ccnot {
+            fixed_slice = Some((U1024::zero(), U1024::zero()));
+            (
+                gadgetize_with_slice_zero_ccnot_strong_five_carrier(
+                    original,
+                    p.n,
+                    p.rg_freq,
+                    p.slice_zero_ccnot_gates,
+                    &p.masks,
+                    &p.prod,
+                    &mut rng,
+                ),
+                FunctionView::GadgetLow,
+                "slice-zero-ccnot gadgetized (strong cubic five-carrier decode)",
+            )
+        } else if p.strong_five_carrier {
+            (
+                gadgetize_cnot_strong_five_carrier(
+                    original, p.n, p.rg_freq, &p.prod, &mut rng,
+                ),
+                FunctionView::GadgetLow,
+                "gadgetized (strong cubic five-carrier decode)",
+            )
+        } else if p.five_carrier && p.slice_zero_ccnot {
+            fixed_slice = Some((U1024::zero(), U1024::zero()));
+            (
+                gadgetize_with_slice_zero_ccnot_five_carrier(
+                    original,
+                    p.n,
+                    p.rg_freq,
+                    p.slice_zero_ccnot_gates,
+                    &p.masks,
+                    &p.prod,
+                    &mut rng,
+                ),
+                FunctionView::GadgetLow,
+                "slice-zero-ccnot gadgetized (five-carrier decode)",
+            )
+        } else if p.five_carrier {
+            (
+                gadgetize_cnot_five_carrier(original, p.n, p.rg_freq, &p.prod, &mut rng),
+                FunctionView::GadgetLow,
+                "gadgetized (five-carrier decode)",
+            )
+        } else if p.slice_zero_ccnot {
             fixed_slice = Some((U1024::zero(), U1024::zero()));
             (
                 gadgetize_with_slice_zero_ccnot(
@@ -610,21 +813,65 @@ mod tests {
         let source = CircuitSeq {
             gates: vec![[0, 1, 2], [2, 0, 1]],
         };
-        for (gadgetize, feistalize, slice_ccnot) in [
-            (true, false, false),
-            (false, true, false),
-            (true, false, true),
+        for (
+            gadgetize,
+            feistalize,
+            slice_ccnot,
+            five_carrier,
+            strong_five_carrier,
+            six_carrier,
+            strong_six_carrier,
+            seven_carrier,
+        ) in [
+            (true, false, false, false, false, false, false, false),
+            (false, true, false, false, false, false, false, false),
+            (true, false, true, false, false, false, false, false),
+            (true, false, false, true, false, false, false, false),
+            (true, false, true, true, false, false, false, false),
+            (true, false, false, false, true, false, false, false),
+            (true, false, true, false, true, false, false, false),
+            (true, false, false, false, false, true, false, false),
+            (true, false, true, false, false, true, false, false),
+            (true, false, false, false, false, false, true, false),
+            (true, false, true, false, false, false, true, false),
+            (true, false, false, false, false, false, false, true),
+            (true, false, true, false, false, false, false, true),
         ] {
             let dir = std::env::temp_dir().join(format!(
-                "local_mixing_cnot_driver_{}_{}_{}_{}",
+                "local_mixing_cnot_driver_{}_{}_{}_{}_{}_{}_{}_{}_{}",
                 std::process::id(),
                 gadgetize as u8,
                 feistalize as u8,
-                slice_ccnot as u8
+                slice_ccnot as u8,
+                five_carrier as u8,
+                strong_five_carrier as u8,
+                six_carrier as u8,
+                strong_six_carrier as u8,
+                seven_carrier as u8
             ));
             std::fs::create_dir_all(&dir).unwrap();
             let output = dir.join("out.txt");
             let gadget = dir.join("gadget.txt");
+            let prod = if seven_carrier {
+                ProdConfig::production_seven_carrier()
+            } else if six_carrier || strong_six_carrier {
+                ProdConfig::production_six_carrier()
+            } else if five_carrier || strong_five_carrier {
+                ProdConfig::production_five_carrier()
+            } else {
+                ProdConfig::off()
+            };
+            let expected_wires = if feistalize {
+                9
+            } else if seven_carrier {
+                7 * 3 + prod.band_size(3)
+            } else if six_carrier || strong_six_carrier {
+                6 * 3 + prod.band_size(3)
+            } else if five_carrier || strong_five_carrier {
+                5 * 3 + prod.band_size(3)
+            } else {
+                6
+            };
             let params = CnotSssParams {
                 rounds: 0,
                 n: 3,
@@ -633,6 +880,11 @@ mod tests {
                 save: output.to_str().unwrap(),
                 source: "source.txt",
                 do_gadgetize: gadgetize,
+                five_carrier,
+                strong_five_carrier,
+                six_carrier,
+                strong_six_carrier,
+                seven_carrier,
                 do_feistalize: feistalize,
                 slice_zero: false,
                 slice_zero_random: false,
@@ -640,7 +892,15 @@ mod tests {
                 slice_zero_hardcoded: false,
                 slice_zero_hardcoded_rounds: 1,
                 slice_zero_ccnot: slice_ccnot,
-                slice_zero_ccnot_gates: 18,
+                slice_zero_ccnot_gates: if seven_carrier {
+                    72
+                } else if six_carrier || strong_six_carrier {
+                    63
+                } else if five_carrier || strong_five_carrier {
+                    54
+                } else {
+                    18
+                },
                 sliced_sandwich: false,
                 sandwich_m: 12,
                 sandwich_s: 6,
@@ -654,11 +914,11 @@ mod tests {
                 equality_check: true,
                 rg_freq: 2,
                 masks: MaskConfig::off(),
-                prod: ProdConfig::off(),
+                prod,
             };
             main_shuffle_shoot_shuffle_cnot(&source, &params);
             let (written, wires) = format::read_mpmct(output.to_str().unwrap()).unwrap();
-            assert_eq!(wires, if feistalize { 9 } else { 6 });
+            assert_eq!(wires, expected_wires);
             assert!(!written.is_empty());
             std::fs::remove_dir_all(dir).unwrap();
         }
