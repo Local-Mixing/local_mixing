@@ -43,6 +43,13 @@ usage: gss_mix.sh -n N -o RUNDIR [options]
 env:
   FROZEN_DB_DIR       required for stage 3 (the frozen replacement store)
   FROZEN_CURATED_DIR  recommended for stage 3 (curated-first cascade)
+  PROD_PRESET         generation mode: production (default), no-gray-phase-a,
+                      micro-gray, sentinel-gray, no-gray-post-exact,
+                      no-gray-post-native, five-carrier,
+                      strong-five-carrier, six-carrier, strong-six-carrier,
+                      or seven-carrier
+  PROD_POST_FRAGMENT  optional post-layout wide-gate pass: off, exact, or
+                      native-deep (overrides the named post preset)
   GSS_MIX_ALLOW_EMPTY_STORE=1  testing only: run stage 3 with no store
 EOF
   exit 1
@@ -124,7 +131,7 @@ FINAL=$RUN/final.mpmct1
 
 # ---- stages 1+2: sandwich + Gray-fold gadgetization ----
 if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
-  note "stage 1+2: gen_sandwich_gadget (production preset, Gray fold default)"
+  note "stage 1+2: gen_sandwich_gadget (PROD_PRESET=${PROD_PRESET:-production}, PROD_POST_FRAGMENT=${PROD_POST_FRAGMENT:-preset/off})"
   "$BIN/gen_sandwich_gadget" "$GADGET" "$N" "$M_CD" "$M_CD" "$S_SL" 1 "$SLICE_G" \
       "$SEED" "$((SEED + 1))" "$SEED" > "$RUN/stage12.log" 2>&1
   note "stage 1+2 done: GSS $(gates_of "$GADGET") gates (S: $(gates_of "$GADGET.sandwich.mpmct1"))"
@@ -153,6 +160,23 @@ EOF
   note "stage 3: fmix phase A --gss --phase-a --profile $PROFILE (moves ceiling $A_MOVES)"
   export CANON_RULE_L_BRANCH_CAP=${CANON_RULE_L_BRANCH_CAP:-512}
   export CANON_MONOMIAL_CAP=${CANON_MONOMIAL_CAP:-200000}
+  # Lookup-cache headroom for long runs (512MB default never overflows at 200k
+  # moves but 1M+ move runs would epoch-reset; 2GB is <1% of a server's RAM).
+  export LOOKUP_CACHE_MB=${LOOKUP_CACHE_MB:-2048}
+  # FROZEN_FILTER (measured on .32, 2026-08-09): on PRODUCTION runs (fresh
+  # seed, filters.bin page-cached) the in-RAM miss filter cuts phase-A wall
+  # ~33% at 200k moves and the win grows ~0.30s/1k moves, against a fixed
+  # ~13s cached load. Same-seed reruns (+19%) and fully-cold caches (+41%)
+  # lose — hence the RAM gate and the background prewarm below.
+  if [ -z "${FROZEN_FILTER:-}" ] && [ -n "${FROZEN_DB_DIR:-}" ] \
+     && [ "$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo)" -ge 60 ]; then
+    export FROZEN_FILTER=1
+    # Warm the filter files while gen/stage-2 artifacts are checked; a cached
+    # load is ~13s vs ~107s cold.
+    { cat "$FROZEN_DB_DIR/filters.bin" "${FROZEN_CURATED_DIR:+$FROZEN_CURATED_DIR/filters.bin}" \
+        > /dev/null 2>&1 & } 2>/dev/null
+    note "FROZEN_FILTER=1 (auto: >=60GB available; prewarming filters.bin in background)"
+  fi
   export FMIX_STOP_FLAG=$RUN/stage3.stop FMIX_DUMP_FLAG=$RUN/stage3.dump
   rm -f "$FMIX_STOP_FLAG"
   # Plumbing-test mode: fmix hard-requires the store whenever any DB channel
