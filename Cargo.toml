@@ -47,6 +47,16 @@ name = "build_curated_full"
 path = "src/rainbow_table/bin/build_curated_full.rs"
 required-features = ["legacy-db-tools"]
 
+[[bin]]
+name = "curated_size_census"
+path = "src/rainbow_table/bin/curated_size_census.rs"
+required-features = ["legacy-db-tools"]
+
+[[bin]]
+name = "curated_recanon_probe"
+path = "src/rainbow_table/bin/curated_recanon_probe.rs"
+required-features = ["legacy-db-tools"]
+
 [features]
 default = []
 # Offline import/regeneration tools for the historical replacement databases.

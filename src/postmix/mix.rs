@@ -126,6 +126,123 @@ pub enum DbSample {
     /// direction w.p. p, else the opposite — to the next non-commuting gate and
     /// absorb it, until w gates are collected.
     Convex,
+    /// Fuse the seed with a far COMMUTING partner: scan the seed's commutation
+    /// box (the gates it could float past, capped at pair_scan_cap), pick one
+    /// — the farthest eligible, or uniform under pair_pick_uniform — float the
+    /// seed adjacent to it, and hand back the fused 2-gate window. The other
+    /// samplers cannot build this window: Convex only absorbs colliders (a
+    /// commuting gate is hopped past), and Contiguous pairs commuting gates
+    /// only at physical distance 1. See docs/NONLOCAL_PHASE_A.md.
+    Pair,
+    /// Not a sampler: the tag stamped on the two endpoint splices of a bridge
+    /// round (`bridge_round`), which fuses two gates that commutation CANNOT
+    /// bring together by conjugating the interior through a carrier and
+    /// re-spelling both carrier-adjacent windows. Never drawn by the geometry
+    /// coin.
+    Bridge,
+}
+
+/// One planned bridge round (docs/NONLOCAL_PHASE_A.md): the two target gates,
+/// the carrier, and the exact conjugation wake for every interior collider.
+struct BridgePlan {
+    g1: u32,
+    g2: u32,
+    g1g: XGate,
+    g2g: XGate,
+    u: XGate,
+    /// (interior collider id, its correction gates): the conjugate u·h·u is
+    /// [h, corrections], verified exhaustively per collider before commit.
+    wake: Vec<(u32, Vec<XGate>)>,
+    interior_len: usize,
+}
+
+/// Outcome of merging a correction gate's literal list.
+enum MergedConj {
+    Gate(XGate),
+    /// Contradictory literals: the correction never fires — the conjugate is
+    /// the original gate unchanged.
+    Never,
+    /// Unbuildable (target among controls, or wider than the K-cap).
+    Invalid,
+}
+
+fn merged_conj(target: u16, lits: &[(u16, bool)], k_max: usize) -> MergedConj {
+    let mut merged: Vec<(u16, bool)> = Vec::with_capacity(lits.len());
+    for &(w, p) in lits {
+        if w == target {
+            return MergedConj::Invalid;
+        }
+        match merged.iter().find(|&&(mw, _)| mw == w) {
+            Some(&(_, mp)) if mp != p => return MergedConj::Never,
+            Some(_) => {}
+            None => merged.push((w, p)),
+        }
+    }
+    if merged.len() > k_max {
+        return MergedConj::Invalid;
+    }
+    match XGate::conj(target, merged) {
+        Some(g) => MergedConj::Gate(g),
+        None => MergedConj::Never,
+    }
+}
+
+/// The exact conjugate u·h·u of one interior gate by the (comp = 0, single
+/// monomial m) carrier u, expressed as [h, corrections] — the "adjust the
+/// rest of the gates" half of a bridge round. Returns the corrections alone:
+/// empty when h commutes with u or every correction is contradictory (the
+/// conjugate is h unchanged), None when the pair is refused (mutual
+/// collision, or a correction wider than k_max).
+///
+/// Modes (u fires on m = its control monomial; u's target is t_u):
+/// - h READS t_u, literal λ there, other literals L (h's comp bit rides on
+///   the kept copy): (λ⊕m)·L = λL ⊕ m∧L  →  corr = (t_h; m∧L).
+/// - h WRITES one of m's wires, other u-literal ρ: the net t_u delta is
+///   f_h∧ρ  →  corr = (t_h→t_u; c_h∧ρ); a comp-1 h has f_h = 1⊕mon, so two
+///   corrections: (t_u; ρ) and (t_u; mon∧ρ).
+/// - Both at once: None (the expansions interact; rare, skip the round).
+fn conj_wake(u: &XGate, h: &XGate, k_max: usize) -> Option<Vec<XGate>> {
+    debug_assert!(!u.comp && u.ctrls.len() == 2, "carrier is a 2-control conjunction");
+    let tu = u.target;
+    let reads_tu = h.reads(tu);
+    let writes_m = u.reads(h.target);
+    if !reads_tu && !writes_m {
+        return Some(Vec::new()); // commuting (equal targets included)
+    }
+    if reads_tu && writes_m {
+        return None;
+    }
+    let mut corrs: Vec<XGate> = Vec::new();
+    if reads_tu {
+        let lits: Vec<(u16, bool)> = u
+            .ctrls
+            .iter()
+            .copied()
+            .chain(h.ctrls.iter().copied().filter(|&(w, _)| w != tu))
+            .collect();
+        match merged_conj(h.target, &lits, k_max) {
+            MergedConj::Gate(c) => corrs.push(c),
+            MergedConj::Never => {}
+            MergedConj::Invalid => return None,
+        }
+    } else {
+        let rho = u.ctrls.iter().copied().find(|&(w, _)| w != h.target).expect("distinct wires");
+        if h.comp {
+            match merged_conj(tu, &[rho], k_max) {
+                MergedConj::Gate(c) => corrs.push(c),
+                MergedConj::Never => {}
+                MergedConj::Invalid => return None,
+            }
+        }
+        let lits: Vec<(u16, bool)> =
+            h.ctrls.iter().copied().chain(std::iter::once(rho)).collect();
+        match merged_conj(tu, &lits, k_max) {
+            MergedConj::Gate(c) => corrs.push(c),
+            MergedConj::Never => {}
+            MergedConj::Invalid => return None,
+        }
+    }
+    Some(corrs)
 }
 
 // ---- --twist-g57 placer tuning ----
@@ -687,6 +804,34 @@ pub struct MixParams {
     // does not fight the store. Off by default: it changes trajectories, so the
     // A/B is one flag.
     pub db_advance: bool,
+    // ---- pair geometry (docs/NONLOCAL_PHASE_A.md) ----
+    // p_pair: probability a non-COMP DB round samples its window with the PAIR
+    // geometry: the seed plus one far COMMUTING partner, floated adjacent and
+    // fused into a 2-gate window. The phase-A transport move — the fused
+    // splice unions litters across the seed's whole commutation box instead
+    // of one window span. 0 disables and DRAWS NO RNG: the walk is
+    // move-for-move identical to the pair-less chain at equal seed.
+    pub p_pair: f64,
+    // Cap on the pair box scan (gates examined past the seed before giving up).
+    pub pair_scan_cap: usize,
+    // Partner policy: false = farthest eligible gate in the box (max transport
+    // per move), true = uniform over the eligible box.
+    pub pair_pick_uniform: bool,
+    // ---- bridge fusion (docs/NONLOCAL_PHASE_A.md) ----
+    // p_bridge: per-round probability of one bridge round — jointly re-encode
+    // two gates commutation cannot bring together, by conjugating the interior
+    // through a carrier (wake corrections on interior colliders) and
+    // re-spelling both carrier-adjacent windows through the store. 0 disables
+    // and DRAWS NO RNG. Corrections are non-g57 conjunctions: this move
+    // trades polf for reach, like the legacy twist packets.
+    pub p_bridge: f64,
+    // Interior length draw is log-uniform in [bridge_min_span,
+    // bridge_max_span].
+    pub bridge_min_span: usize,
+    pub bridge_max_span: usize,
+    // Refuse a round whose interior holds more colliders than this (each
+    // collider costs one or two correction gates).
+    pub bridge_max_colliders: usize,
     // curated: also probe the curated store (FROZEN_CURATED_DIR) and prefer a
     // non-identical curated match over a regular one regardless of size. The
     // curated store holds circuits every strict subcircuit of which is
@@ -988,6 +1133,13 @@ impl Default for MixParams {
             db_total_terms: 0,
             db_prefixes: false,
             db_advance: false,
+            p_pair: 0.0,
+            pair_scan_cap: 4096,
+            pair_pick_uniform: false,
+            p_bridge: 0.0,
+            bridge_min_span: 16,
+            bridge_max_span: 512,
+            bridge_max_colliders: 8,
             curated: false,
             ancestors: false,
             anc_samples: 0,
@@ -1272,6 +1424,38 @@ pub struct MixCounters {
     pub split_span_hist: [u64; 20],
     // Cross shots drawn from the min-dgen pool (vs uniform).
     pub cross_pool_shots: u64,
+    // ---- pair geometry (docs/NONLOCAL_PHASE_A.md; session-local) ----
+    // Rounds that drew the pair geometry, scans with no eligible partner,
+    // scans cut by pair_scan_cap, fused windows and their splices, box-size
+    // and fused-transport-distance tallies (sum/max over fused windows), and
+    // candidates refused by the reorder ban.
+    pub pair_rounds: u64,
+    pub pair_boxes_empty: u64,
+    pub pair_scan_truncs: u64,
+    pub pair_fused: u64,
+    pub pair_splices: u64,
+    pub pair_box_sum: u64,
+    pub pair_box_max: u64,
+    pub pair_dist_sum: u64,
+    pub pair_dist_max: u64,
+    pub pair_perm_skips: u64,
+    // ---- bridge fusion (docs/NONLOCAL_PHASE_A.md; session-local) ----
+    // Rounds, walks clipped at the circuit tail, plans refused (carrier
+    // unbuildable / mode-c collider / collider budget), pre-insert store
+    // misses, far-splice rollbacks, half commits (near window missed after
+    // the far one spliced), full commits, interior-length and collider
+    // tallies, and wake correction gates inserted.
+    pub bridge_rounds: u64,
+    pub bridge_short: u64,
+    pub bridge_refused: u64,
+    pub bridge_probe_miss: u64,
+    pub bridge_rollbacks: u64,
+    pub bridge_half: u64,
+    pub bridge_committed: u64,
+    pub bridge_span_sum: u64,
+    pub bridge_span_max: u64,
+    pub bridge_colliders_sum: u64,
+    pub bridge_wake_sum: u64,
     pub width_hist: [u64; 16],
 }
 
@@ -1475,6 +1659,9 @@ pub struct Mixer {
     db_seed_home: Option<(u32, u32)>,
     // Set for the duration of one COMP attempt drawn as g57-only.
     db_g57_only: bool,
+    // Whether the CURRENT db_attempt drew the pair geometry: arms the
+    // candidate reorder ban and the pair splice counter.
+    db_pair_round: bool,
     // The LIVE slot-2 mode. params.db_mode is what the brake returns to.
     db_mode_cur: DbMode,
     brake_on: bool,
@@ -1791,6 +1978,27 @@ impl MixCounters {
             db_cmp_removed: 0,
             splice_sizes: Vec::new(),
             splice_sizes_curated: Vec::new(),
+            pair_rounds: 0,
+            pair_boxes_empty: 0,
+            pair_scan_truncs: 0,
+            pair_fused: 0,
+            pair_splices: 0,
+            pair_box_sum: 0,
+            pair_box_max: 0,
+            pair_dist_sum: 0,
+            pair_dist_max: 0,
+            pair_perm_skips: 0,
+            bridge_rounds: 0,
+            bridge_short: 0,
+            bridge_refused: 0,
+            bridge_probe_miss: 0,
+            bridge_rollbacks: 0,
+            bridge_half: 0,
+            bridge_committed: 0,
+            bridge_span_sum: 0,
+            bridge_span_max: 0,
+            bridge_colliders_sum: 0,
+            bridge_wake_sum: 0,
             width_hist: [0u64; 16],
             tg_net_hist: [0u64; 8],
         })
@@ -2561,6 +2769,10 @@ impl Mixer {
         // result; they are gone now, but the invariant remains.
         let db = if params.p_comp > 0.0
             || params.p_db > 0.0
+            // Bridge is its own slot and reaches the store independently of
+            // p_db; p_pair is subordinate to p_db (it only picks the geometry
+            // inside a slot-2 round) so it needs no entry here.
+            || params.p_bridge > 0.0
         {
             FrozenDb::from_env()
         } else {
@@ -2675,6 +2887,7 @@ impl Mixer {
             db_last_len: 0,
             db_seed_home: None,
             db_g57_only: false,
+            db_pair_round: false,
             db_mode_cur: db_mode0,
             brake_on: false,
             brake_mark_move: 0,
@@ -3424,6 +3637,11 @@ impl Mixer {
         match geo {
             DbSample::Convex => k.s_db_cvx,
             DbSample::Contiguous => k.s_db_ctg,
+            // A pair window is exactly the seed plus its partner; the length
+            // knobs do not apply. Bridge windows are likewise always 2 (and
+            // never drawn by the geometry coin — the tag only reaches here
+            // through record paths).
+            DbSample::Pair | DbSample::Bridge => 2,
         }
     }
     fn active_prefixes(&self) -> bool {
@@ -4336,6 +4554,18 @@ impl Mixer {
                     self.global_shuffle();
                     true
                 };
+            // Slot 1c: one bridge fusion (docs/NONLOCAL_PHASE_A.md), at a
+            // fixed rate like the twist. p_bridge == 0 draws no RNG.
+            let took_bridge = !took_split
+                && !took_twist
+                && !took_shuffle
+                && self.params.p_bridge > 0.0
+                && self.arena.len() >= 4
+                && self.rng.random_bool(self.params.p_bridge.clamp(0.0, 1.0))
+                && {
+                    self.bridge_round();
+                    true
+                };
             // Slot 2: ONE DB move, under the live db_mode. A round whose
             // descent finds nothing is SPENT -- there is no fallthrough -- so
             // the thermostat receives exactly (1 - p_twist)(1 - p_db) of rounds
@@ -4343,6 +4573,7 @@ impl Mixer {
             let took_db = !took_split
                 && !took_twist
                 && !took_shuffle
+                && !took_bridge
                 && self.params.p_db > 0.0
                 && self.arena.len() >= 1
                 && self.rng.random_bool(self.params.p_db.clamp(0.0, 1.0))
@@ -4359,7 +4590,7 @@ impl Mixer {
                     true
                 };
             // Slot 3: the thermostat.
-            if !took_split && !took_twist && !took_shuffle && !took_db {
+            if !took_split && !took_twist && !took_shuffle && !took_bridge && !took_db {
                 let excess = self.arena.len() as f64 - self.params.target_size as f64;
                 // In steer mode the 0.98 ceiling is the binding constraint on
                 // holding size: its 2% expansion floor is a structural growth
@@ -5952,7 +6183,11 @@ impl Mixer {
         self.db_seed_home = None;
         self.seed_from_pool = false;
         self.seed_fell_through = false;
+        self.db_pair_round = false;
         let spliced = self.db_attempt_inner(mode);
+        if spliced && self.db_pair_round {
+            self.counters.pair_splices += 1;
+        }
         // Canary accounting. A round QUALIFIES only when the seed genuinely
         // came from the pool; a heads coin that fell through because the pool
         // had drained is counted separately, because it means the rebuild is
@@ -6023,18 +6258,36 @@ impl Mixer {
         // geometry-conditional length impossible to express, and it also let the
         // best-of-`litter_samples` selection compare windows drawn under
         // different geometries. One coin per round fixes both.
-        let geo = if self.rng.random_bool(self.active_p_convex().clamp(0.0, 1.0)) {
+        // Pair coin first (docs/NONLOCAL_PHASE_A.md), and only for non-COMP
+        // rounds: COMP admits only non-growing spellings, and with both bans
+        // armed a commuting pair has no admissible same-length spelling, so a
+        // COMP pair round could never splice. p_pair == 0 draws no RNG — the
+        // stream is bit-identical to the pair-less chain.
+        let geo = if mode != DbMode::Compressing
+            && self.params.p_pair > 0.0
+            && self.rng.random_bool(self.params.p_pair.clamp(0.0, 1.0))
+        {
+            DbSample::Pair
+        } else if self.rng.random_bool(self.active_p_convex().clamp(0.0, 1.0)) {
             DbSample::Convex
         } else {
             DbSample::Contiguous
         };
+        self.db_pair_round = geo == DbSample::Pair;
+        if self.db_pair_round {
+            self.counters.pair_rounds += 1;
+        }
         let wmax = self.active_s_db(geo).max(1);
         // Prefix descent always starts at the top of the range — the descent
         // itself visits every shorter length, so sampling a shorter start
         // would only duplicate coverage.
         let wmax = if self.db_g57_only { self.params.s_db_g57.max(wmin) } else { wmax };
         let descend = self.active_prefixes();
-        let len = if descend || wmin == wmax {
+        let len = if geo == DbSample::Pair {
+            // A pair window is always the seed plus its partner; drawing a
+            // shorter length would degenerate to a plain 1-gate re-spelling.
+            wmax.min(n)
+        } else if descend || wmin == wmax {
             wmax.min(n)
         } else {
             self.rng.random_range(wmin..=wmax.min(n))
@@ -6157,9 +6410,11 @@ impl Mixer {
                     self.params.curated_in_comp,
                     reg_fb,
                     self.params.mix_pay_random,
+                    self.db_pair_round,
                     &mut self.rng,
                 );
                 self.counters.db_identity_skips += res.identity_skipped as u64;
+                self.counters.pair_perm_skips += res.permutation_skipped as u64;
                 if res.chosen.is_some() && res.chosen_curated {
                     self.counters.db_curated_hits += 1;
                 }
@@ -6271,9 +6526,11 @@ impl Mixer {
             self.params.curated_in_comp,
             true,
             self.params.mix_pay_random,
+            self.db_pair_round,
             &mut self.rng,
         );
         self.counters.db_identity_skips += res.identity_skipped as u64;
+        self.counters.pair_perm_skips += res.permutation_skipped as u64;
         if res.chosen.is_some() {
             self.note_choice(res.choice_count);
         }
@@ -6533,6 +6790,8 @@ impl Mixer {
         use std::io::Write;
         let smp = match self.db_last_sampler {
             DbSample::Convex => "cvx",
+            DbSample::Pair => "pair",
+            DbSample::Bridge => "brg",
             _ => "ctg",
         };
         let Some(w) = self.db_record.as_mut() else { return };
@@ -6791,6 +7050,12 @@ impl Mixer {
             DbSample::Convex => {
                 self.collect_convex(w).map(|(ids, d)| (ids, d, DbSample::Convex))
             }
+            DbSample::Pair => {
+                self.collect_pair().map(|(ids, d)| (ids, d, DbSample::Pair))
+            }
+            // Bridge is not a sampler: its two endpoint windows are built by
+            // bridge_round directly. The geometry coin never draws it.
+            DbSample::Bridge => None,
         }
     }
 
@@ -7079,6 +7344,391 @@ impl Mixer {
             return None;
         }
         Some((ids, dir1))
+    }
+
+    // Pair: fuse the seed with a far COMMUTING partner (docs/NONLOCAL_PHASE_A.md).
+    // Scan the seed's commutation box — the gates it could float past in its
+    // own direction, out to the first collider or pair_scan_cap — then float
+    // the seed adjacent to the chosen partner and return the fused 2-gate
+    // window. Every crossed gate commutes with the seed (that is what the scan
+    // checked), so the relocation is function-preserving like every other
+    // float, and a later miss is walked home by db_attempt's usual
+    // restore_seed. The other samplers cannot produce this window: Convex
+    // absorbs only COLLIDERS (commuting gates are hopped past), and Contiguous
+    // pairs commuting gates only when they already sit at distance 1.
+    fn collect_pair(&mut self) -> Option<(Vec<u32>, Dir)> {
+        let g1 = self.pick_seed()?;
+        let dir1 = self.meta_of(g1).dir;
+        let cap = self.params.pair_scan_cap.max(1);
+        // Read-only box scan: partner candidates are window-eligible gates the
+        // seed commutes with, recorded with their hop distance (gates crossed
+        // to reach them).
+        let mut cands: Vec<(u32, u64)> = Vec::new();
+        let mut cur = self.arena.neighbor(g1, dir1);
+        let mut hops = 0u64;
+        while cur != NIL && (hops as usize) < cap && !self.arena.collides_ids(g1, cur) {
+            if self.window_eligible(cur) {
+                cands.push((cur, hops));
+            }
+            hops += 1;
+            cur = self.arena.neighbor(cur, dir1);
+        }
+        if cur != NIL && hops as usize >= cap {
+            self.counters.pair_scan_truncs += 1;
+        }
+        if cands.is_empty() {
+            self.counters.pair_boxes_empty += 1;
+            return None;
+        }
+        let (g2, dist) = if self.params.pair_pick_uniform {
+            cands[self.rng.random_range(0..cands.len())]
+        } else {
+            *cands.last().unwrap()
+        };
+        // Fuse: float the seed adjacent to the partner. The scan cleared the
+        // path, so float_until stops with the partner as the next neighbor.
+        self.float_until(g1, dir1, g2);
+        if self.arena.neighbor(g1, dir1) != g2 {
+            // Unreachable while the scan and float_until agree on collides();
+            // decline defensively rather than fuse a wrong window.
+            self.counters.pair_boxes_empty += 1;
+            return None;
+        }
+        self.counters.pair_fused += 1;
+        self.counters.pair_box_sum += hops;
+        self.counters.pair_box_max = self.counters.pair_box_max.max(hops);
+        self.counters.pair_dist_sum += dist;
+        self.counters.pair_dist_max = self.counters.pair_dist_max.max(dist);
+        // Window ids in link order, leftmost first.
+        let ids = match dir1 {
+            Dir::R => vec![g1, g2],
+            Dir::L => vec![g2, g1],
+        };
+        Some((ids, dir1))
+    }
+
+    // ---- bridge fusion (docs/NONLOCAL_PHASE_A.md) ----
+    //
+    // Jointly re-encode two gates that commutation CANNOT bring together.
+    // Any correct two-site rewrite is X = g1·P at the left site and
+    // conj_M(P⁻¹)·g2 at the right (M the interior); this move takes P = one
+    // 2-control conjunction carrier u and realises the conjugation by
+    // ADJUSTING the interior — every interior collider h becomes its exact
+    // conjugate u·h·u = [h, correction(s)] (see conj_wake) — while the two
+    // carrier copies land adjacent to g1 and g2 and the store re-spells both
+    // fused windows. Telescoping makes the whole move exact:
+    //   g1·u·(u·M·u)·u·g2 = g1·M·g2.
+    // The carrier collides with both endpoints by construction (u reads t_g1;
+    // g2 reads t_u), so the two respelled sites are correlated through u —
+    // one joint replacement whose halves only compose to the original
+    // through the shared carrier. Corrections are conjunction gates outside
+    // strict g57 form (the polf trade the legacy twist packets already make);
+    // their count is bounded by bridge_max_colliders and metered.
+    fn bridge_plan(&mut self) -> Option<BridgePlan> {
+        let min_span = self.params.bridge_min_span.max(1);
+        let max_span = self.params.bridge_max_span.max(min_span);
+        if self.arena.len() < min_span + 2 {
+            return None;
+        }
+        let mut g1 = NIL;
+        for _ in 0..8 {
+            let g = self.arena.random_linked(&mut self.rng);
+            if self.window_eligible(g) {
+                g1 = g;
+                break;
+            }
+        }
+        if g1 == NIL {
+            return None;
+        }
+        // Log-uniform interior length: the all-scales dial, like the twist.
+        let span = {
+            let lo = min_span as f64;
+            let hi = max_span as f64;
+            (lo * (hi / lo).powf(self.rng.random::<f64>())).round() as usize
+        }
+        .clamp(min_span, max_span);
+        // Walk the interior, counting per-wire readers and writers so the
+        // carrier can be sited where it collides least.
+        let nw = self.num_wires;
+        let mut rd = vec![0u32; nw];
+        let mut wr = vec![0u32; nw];
+        let mut interior: Vec<u32> = Vec::with_capacity(span);
+        let mut cur = self.arena.neighbor(g1, Dir::R);
+        while cur != NIL && interior.len() < span {
+            let g = self.arena.gate(cur);
+            wr[g.target as usize] += 1;
+            for &(w, _) in &g.ctrls {
+                rd[w as usize] += 1;
+            }
+            interior.push(cur);
+            cur = self.arena.neighbor(cur, Dir::R);
+        }
+        if cur == NIL {
+            self.counters.bridge_short += 1;
+            return None;
+        }
+        let g2 = cur;
+        if !self.window_eligible(g2) {
+            self.counters.bridge_short += 1;
+            return None;
+        }
+        let g1g = self.arena.gate(g1).clone();
+        let g2g = self.arena.gate(g2).clone();
+        // Carrier u = (t_u; x ∧ y): x on t_g1 (u reads g1's target — window 1
+        // is dependency-connected), t_u = g2's least-read control wire (g2
+        // reads t_u — window 2 is connected), y = a least-written other wire
+        // (fewest interior colliders). Polarities random.
+        let xw = g1g.target;
+        let Some(tu) = g2g
+            .ctrls
+            .iter()
+            .map(|&(w, _)| w)
+            .filter(|&w| w != xw)
+            .min_by_key(|&w| rd[w as usize])
+        else {
+            self.counters.bridge_refused += 1;
+            return None;
+        };
+        let mut yw: Option<u16> = None;
+        for w in 0..nw as u16 {
+            if w == xw || w == tu {
+                continue;
+            }
+            if yw.is_none_or(|b| wr[w as usize] < wr[b as usize]) {
+                yw = Some(w);
+            }
+        }
+        let Some(yw) = yw else {
+            self.counters.bridge_refused += 1;
+            return None;
+        };
+        let xp = self.rng.random_bool(0.5);
+        let yp = self.rng.random_bool(0.5);
+        let Some(u) = XGate::conj(tu, [(xw, xp), (yw, yp)]) else {
+            self.counters.bridge_refused += 1;
+            return None;
+        };
+        // The wake: exact conjugates for every interior collider, each one
+        // verified exhaustively over its own support before anything mutates.
+        let mut wake: Vec<(u32, Vec<XGate>)> = Vec::new();
+        let mut colliders = 0usize;
+        for &hid in &interior {
+            let h = self.arena.gate(hid).clone();
+            let Some(corrs) = conj_wake(&u, &h, self.params.k_max) else {
+                self.counters.bridge_refused += 1;
+                return None;
+            };
+            if XGate::collides(&u, &h) {
+                colliders += 1;
+                if colliders > self.params.bridge_max_colliders {
+                    self.counters.bridge_refused += 1;
+                    return None;
+                }
+                let mut after = vec![h.clone()];
+                after.extend(corrs.iter().cloned());
+                if !rules::verify_rewrite(&[u.clone(), h.clone(), u.clone()], &after) {
+                    debug_assert!(false, "conj_wake produced a wrong conjugate: {u:?} x {h:?}");
+                    self.counters.bridge_refused += 1;
+                    return None;
+                }
+            }
+            if !corrs.is_empty() {
+                wake.push((hid, corrs));
+            }
+        }
+        Some(BridgePlan { g1, g2, g1g, g2g, u, wake, interior_len: interior.len() })
+    }
+
+    /// Commit the insertions of a bridge plan: the wake corrections (each
+    /// immediately after its collider, which it commutes with) and the two
+    /// carrier copies (after g1, before g2). Function-preserving by the
+    /// telescoping identity; every inserted gate is returned so a declined
+    /// far-window splice can roll the circuit back exactly.
+    fn bridge_insert(&mut self, plan: &BridgePlan) -> (u32, u32, Vec<u32>) {
+        let ev = self.fresh_event();
+        let mut inserted: Vec<u32> = Vec::new();
+        let mut stamp = |mx: &mut Self, id: u32| {
+            mx.index_add(id);
+            let d = mx.rand_dir();
+            let lit = mx.fresh_litter();
+            mx.set_meta(
+                id,
+                Meta {
+                    origin: ORIGIN_SYNTH,
+                    event: ev,
+                    dir: d,
+                    dgen: GEN_FRESH,
+                    litter: lit,
+                    litter_size: 1,
+                },
+            );
+        };
+        // Counters (width_hist, bridge_wake_sum) are NOT bumped here: the wake
+        // is only permanent once the far window splices. bridge_round tallies
+        // them after ok2, so a rolled-back insertion leaves no metering trace.
+        for (hid, corrs) in &plan.wake {
+            for c in corrs {
+                let id = self.arena.insert_after(*hid, c.clone());
+                stamp(self, id);
+                inserted.push(id);
+            }
+        }
+        let u2 = self.arena.insert_after(self.arena.neighbor(plan.g2, Dir::L), plan.u.clone());
+        stamp(self, u2);
+        inserted.push(u2);
+        let u1 = self.arena.insert_after(plan.g1, plan.u.clone());
+        stamp(self, u1);
+        inserted.push(u1);
+        (u1, u2, inserted)
+    }
+
+    fn bridge_round(&mut self) {
+        self.counters.bridge_rounds += 1;
+        let Some(plan) = self.bridge_plan() else {
+            return;
+        };
+        // Probe BOTH endpoint windows before anything mutates: a store miss
+        // leaves no trace at all. The reorder ban is armed so a carrier that
+        // happens to commute with an endpoint cannot splice trivially.
+        let guard = DegreeGuard {
+            max_degree: self.params.db_max_degree,
+            probes: self.params.db_degree_probes,
+        };
+        let w1 = [plan.g1g.clone(), plan.u.clone()];
+        let w2 = [plan.u.clone(), plan.g2g.clone()];
+        self.counters.db_attempts += 2;
+        let p1 = db_replace(
+            &w1,
+            self.num_wires,
+            &self.db,
+            self.db_budget,
+            DbMode::Mix,
+            guard,
+            self.params.curated,
+            self.params.curated_in_comp,
+            true,
+            self.params.mix_pay_random,
+            true,
+            &mut self.rng,
+        );
+        if p1.chosen.is_none() {
+            self.counters.bridge_probe_miss += 1;
+            return;
+        }
+        let p2 = db_replace(
+            &w2,
+            self.num_wires,
+            &self.db,
+            self.db_budget,
+            DbMode::Mix,
+            guard,
+            self.params.curated,
+            self.params.curated_in_comp,
+            true,
+            self.params.mix_pay_random,
+            true,
+            &mut self.rng,
+        );
+        if p2.chosen.is_none() {
+            self.counters.bridge_probe_miss += 1;
+            return;
+        }
+        let (u1, u2, inserted) = self.bridge_insert(&plan);
+        // Far window first: a decline there rolls back to the exact
+        // pre-insert circuit (every inserted gate is still bare).
+        self.db_last_sampler = DbSample::Bridge;
+        self.db_last_len = 2;
+        let w2v = vec![plan.u.clone(), plan.g2g.clone()];
+        self.counters.db_attempts += 1;
+        let d2 = self.meta_of(u2).dir;
+        let r2 = db_replace(
+            &w2v,
+            self.num_wires,
+            &self.db,
+            self.db_budget,
+            DbMode::Mix,
+            guard,
+            self.params.curated,
+            self.params.curated_in_comp,
+            true,
+            self.params.mix_pay_random,
+            true,
+            &mut self.rng,
+        );
+        let ok2 = match r2.chosen {
+            Some(rep) => self.try_db_splice_curated(
+                r2.chosen_curated,
+                &[u2, plan.g2],
+                d2,
+                &w2v,
+                rep,
+                r2.match_count,
+                DbMode::Mix,
+            ),
+            None => false,
+        };
+        if !ok2 {
+            for &id in inserted.iter().rev() {
+                self.index_remove(id);
+                self.arena.unlink(id);
+                self.arena.free_node(id);
+            }
+            self.counters.bridge_rollbacks += 1;
+            return;
+        }
+        // The far window committed, so the wake is now permanent — tally it
+        // here (not in bridge_insert) so a rolled-back insertion never leaves
+        // a metering trace, matching bridge_span_sum / bridge_colliders_sum.
+        for (_hid, corrs) in &plan.wake {
+            for c in corrs {
+                self.counters.width_hist[c.width().min(15)] += 1;
+                self.counters.bridge_wake_sum += 1;
+            }
+        }
+        // Near window. On the rare post-insert miss the bare carrier stays —
+        // it is load-bearing now (site 2 already computes u·g2) and the
+        // circuit is still exact.
+        self.db_last_sampler = DbSample::Bridge;
+        self.db_last_len = 2;
+        let w1v = vec![plan.g1g.clone(), plan.u.clone()];
+        self.counters.db_attempts += 1;
+        let d1 = self.meta_of(plan.g1).dir;
+        let r1 = db_replace(
+            &w1v,
+            self.num_wires,
+            &self.db,
+            self.db_budget,
+            DbMode::Mix,
+            guard,
+            self.params.curated,
+            self.params.curated_in_comp,
+            true,
+            self.params.mix_pay_random,
+            true,
+            &mut self.rng,
+        );
+        let ok1 = match r1.chosen {
+            Some(rep) => self.try_db_splice_curated(
+                r1.chosen_curated,
+                &[plan.g1, u1],
+                d1,
+                &w1v,
+                rep,
+                r1.match_count,
+                DbMode::Mix,
+            ),
+            None => false,
+        };
+        if ok1 {
+            self.counters.bridge_committed += 1;
+        } else {
+            self.counters.bridge_half += 1;
+        }
+        self.counters.bridge_span_sum += plan.interior_len as u64;
+        self.counters.bridge_span_max =
+            self.counters.bridge_span_max.max(plan.interior_len as u64);
+        self.counters.bridge_colliders_sum += plan.wake.len() as u64;
     }
 
     // Float the contiguous span [lo..hi] toward `dir` past commuting neighbors,
@@ -7551,6 +8201,41 @@ impl Mixer {
                 0.0
             }
         );
+        // Pair-geometry meters (docs/NONLOCAL_PHASE_A.md), only when armed.
+        if self.params.p_pair > 0.0 {
+            let fused = c.pair_fused.max(1) as f64;
+            println!(
+                "[fmix] pair rounds={} fused={} splices={} permskip={} empty={} trunc={} box avg={:.1} max={} dist avg={:.1} max={}",
+                c.pair_rounds,
+                c.pair_fused,
+                c.pair_splices,
+                c.pair_perm_skips,
+                c.pair_boxes_empty,
+                c.pair_scan_truncs,
+                c.pair_box_sum as f64 / fused,
+                c.pair_box_max,
+                c.pair_dist_sum as f64 / fused,
+                c.pair_dist_max,
+            );
+        }
+        // Bridge-fusion meters (docs/NONLOCAL_PHASE_A.md), only when armed.
+        if self.params.p_bridge > 0.0 {
+            let commits = (c.bridge_committed + c.bridge_half).max(1) as f64;
+            println!(
+                "[fmix] bridge rounds={} committed={} half={} rollback={} probemiss={} refused={} short={} span avg={:.1} max={} colliders avg={:.2} wake={}",
+                c.bridge_rounds,
+                c.bridge_committed,
+                c.bridge_half,
+                c.bridge_rollbacks,
+                c.bridge_probe_miss,
+                c.bridge_refused,
+                c.bridge_short,
+                c.bridge_span_sum as f64 / commits,
+                c.bridge_span_max,
+                c.bridge_colliders_sum as f64 / commits,
+                c.bridge_wake_sum,
+            );
+        }
         let anc = self.anc_report();
         if !anc.is_empty() {
             println!("{anc}");
@@ -9874,5 +10559,194 @@ mod mix_tests {
         assert_eq!(rs.anc_m, want_m);
         let _ = std::fs::remove_file(&anc_path);
         let _ = std::fs::remove_file(&st_path);
+    }
+
+    // Pair geometry (docs/NONLOCAL_PHASE_A.md): with an empty store every
+    // attempt misses, so a pair round reduces to scan + fuse-float + the
+    // restore walk — all commutations. The function must survive, and the
+    // geometry must actually fire.
+    #[test]
+    fn pair_geometry_preserves_function_on_misses() {
+        let gates = random_mixed_circuit(7, 16, 300);
+        let params = MixParams {
+            p_db: 1.0,
+            p_pair: 1.0,
+            s_db: 5,
+            moves: 30_000,
+            temp: 20.0,
+            report_every: u64::MAX,
+            verify_every: 5_000,
+            seed: 11,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new_with_db(gates, 16, params, FrozenDb::empty());
+        mx.run();
+        assert!(mx.counters.pair_rounds > 0, "pair geometry never fired");
+        assert!(mx.counters.pair_fused > 0, "no pair was ever fused");
+        assert_eq!(mx.counters.pair_splices, 0, "empty store cannot splice");
+        mx.global_check();
+    }
+
+    // collect_pair's window contract: two physically adjacent gates in link
+    // order that COMMUTE — the window shape the convex and contiguous
+    // samplers cannot produce — and the fusing floats must preserve the
+    // function.
+    #[test]
+    fn collect_pair_fuses_an_adjacent_commuting_pair() {
+        let gates = random_mixed_circuit(13, 16, 200);
+        let params = MixParams {
+            p_pair: 1.0,
+            report_every: u64::MAX,
+            seed: 5,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new_with_db(gates, 16, params, FrozenDb::empty());
+        let mut fused = 0usize;
+        for _ in 0..200 {
+            if let Some((ids, _dir)) = mx.collect_pair() {
+                assert_eq!(ids.len(), 2, "a pair window is exactly two gates");
+                assert_eq!(
+                    mx.arena.neighbor(ids[0], Dir::R),
+                    ids[1],
+                    "fused pair must be physically adjacent, leftmost first"
+                );
+                assert!(
+                    !mx.arena.collides_ids(ids[0], ids[1]),
+                    "a pair window is a COMMUTING pair by construction"
+                );
+                fused += 1;
+            }
+        }
+        assert!(fused > 0, "no pair fused in 200 attempts");
+        assert_eq!(fused as u64, mx.counters.pair_fused);
+        mx.global_check();
+    }
+
+    // The bridge wake algebra: for random carrier/interior-gate pairs, the
+    // claimed conjugate u·h·u = [h, corrections] must hold exactly — checked
+    // against exhaustive evaluation, with coverage over both collision modes
+    // (h reads the carrier's target / h writes a carrier control wire) and
+    // the commuting and contradictory (correction-vanishes) cases.
+    #[test]
+    fn conj_wake_is_the_exact_conjugate() {
+        let n: u16 = 8;
+        let mut rng = StdRng::seed_from_u64(0xb41d6e);
+        let mut seen = [0usize; 3]; // commuting/vanished, mode-a, mode-b
+        let mut refused = 0usize;
+        for i in 0..6000 {
+            let tu = rng.random_range(0..n);
+            let mut xw = rng.random_range(0..n);
+            let mut yw = rng.random_range(0..n);
+            while xw == tu {
+                xw = rng.random_range(0..n);
+            }
+            while yw == tu || yw == xw {
+                yw = rng.random_range(0..n);
+            }
+            let u = XGate::conj(tu, [(xw, rng.random_bool(0.5)), (yw, rng.random_bool(0.5))])
+                .unwrap();
+            // Alternate g57 and conjunction interiors.
+            let h = if i % 2 == 0 {
+                let t = rng.random_range(0..n);
+                let mut a = rng.random_range(0..n);
+                let mut b = rng.random_range(0..n);
+                while a == t {
+                    a = rng.random_range(0..n);
+                }
+                while b == t || b == a {
+                    b = rng.random_range(0..n);
+                }
+                XGate::from_g57([t, a, b])
+            } else {
+                let t = rng.random_range(0..n);
+                let w = rng.random_range(1..=3);
+                let mut wires: Vec<u16> = (0..n).filter(|&x| x != t).collect();
+                for k in 0..wires.len() {
+                    let j = rng.random_range(k..wires.len());
+                    wires.swap(k, j);
+                }
+                XGate::conj(t, wires[..w].iter().map(|&x| (x, rng.random_bool(0.5)))).unwrap()
+            };
+            let Some(corrs) = conj_wake(&u, &h, 12) else {
+                // Mode c (mutual collision) — must really be mutual.
+                assert!(h.reads(tu) && u.reads(h.target), "spurious refusal: {u:?} x {h:?}");
+                refused += 1;
+                continue;
+            };
+            let mut after = vec![h.clone()];
+            after.extend(corrs.iter().cloned());
+            assert!(
+                rules::verify_rewrite(&[u.clone(), h.clone(), u.clone()], &after),
+                "conjugate wrong: {u:?} x {h:?} -> {after:?}"
+            );
+            if corrs.is_empty() {
+                seen[0] += 1;
+            } else if h.reads(tu) {
+                seen[1] += 1;
+            } else {
+                seen[2] += 1;
+            }
+        }
+        assert!(
+            seen.iter().all(|&c| c > 100) && refused > 0,
+            "coverage too thin: {seen:?} refused={refused}"
+        );
+    }
+
+    // Bridge insertion exactness without any store: plan a bridge on a real
+    // random circuit, apply the insertions (wake corrections + the two
+    // carrier copies), and demand exact global functional equality — the
+    // telescoping identity g1·u·(u·M·u)·u·g2 = g1·M·g2, on material where
+    // the interior genuinely collides with the carrier.
+    #[test]
+    fn bridge_insertion_preserves_function() {
+        let mut planned = 0usize;
+        let mut with_wake = 0usize;
+        for seed in 0..20u64 {
+            let gates = random_mixed_circuit(100 + seed, 12, 160);
+            let params = MixParams {
+                bridge_min_span: 8,
+                bridge_max_span: 64,
+                bridge_max_colliders: 12,
+                report_every: u64::MAX,
+                seed: 40 + seed,
+                ..MixParams::default()
+            };
+            let mut mx = Mixer::new_with_db(gates, 12, params, FrozenDb::empty());
+            for _ in 0..40 {
+                let Some(plan) = mx.bridge_plan() else { continue };
+                planned += 1;
+                if !plan.wake.is_empty() {
+                    with_wake += 1;
+                }
+                mx.bridge_insert(&plan);
+                mx.global_check();
+            }
+        }
+        assert!(planned > 20, "too few plans succeeded: {planned}");
+        assert!(with_wake > 5, "no plan ever needed a wake: colliders untested");
+    }
+
+    // A bridge round against the empty store must leave literally no trace:
+    // both endpoint probes run before anything mutates.
+    #[test]
+    fn bridge_round_empty_store_leaves_no_trace() {
+        let gates = random_mixed_circuit(23, 16, 200);
+        let params = MixParams {
+            bridge_min_span: 8,
+            bridge_max_span: 64,
+            report_every: u64::MAX,
+            seed: 9,
+            ..MixParams::default()
+        };
+        let mut mx = Mixer::new_with_db(gates.clone(), 16, params, FrozenDb::empty());
+        let before = mx.arena.to_vec();
+        for _ in 0..100 {
+            mx.bridge_round();
+        }
+        assert_eq!(mx.counters.bridge_rounds, 100);
+        assert_eq!(mx.counters.bridge_committed, 0, "empty store cannot commit");
+        assert_eq!(mx.counters.bridge_rollbacks, 0, "probe precedes every insertion");
+        assert_eq!(mx.arena.to_vec(), before, "a probe miss must leave no trace");
     }
 }

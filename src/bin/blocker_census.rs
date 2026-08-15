@@ -169,6 +169,7 @@ fn main() {
                     false,
                     true,
                     false,
+                    false,
                     &mut rng,
                     |key, _curated| {
                         if db.get_regular(key).is_some() {

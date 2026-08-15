@@ -32,6 +32,12 @@ use local_mixing::replace::gadgets::{
     MaskConfig, ProdConfig, gadgetize_xgates_with_slice_zero_ccnot,
     gadgetize_xgates_with_slice_zero_ccnot_five_carrier,
     gadgetize_xgates_with_slice_zero_ccnot_seven_carrier,
+    gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed,
+    gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor1024_live_prefix,
+    gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor1024_live_prefix_unshuffled,
+    gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_live_prefix,
+    gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_live_prefix_unshuffled,
+    gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_unshuffled,
     gadgetize_xgates_with_slice_zero_ccnot_single,
     gadgetize_xgates_with_slice_zero_ccnot_six_carrier,
     gadgetize_xgates_with_slice_zero_ccnot_strong_five_carrier,
@@ -57,6 +63,12 @@ enum CarrierMode {
     Six,
     StrongSix,
     Seven,
+    SevenDistributed,
+    SevenDistributedUnshuffled,
+    SevenDistributedPartitioned,
+    SevenDistributedPartitionedUnshuffled,
+    SevenDistributedPartitionedFloor1024,
+    SevenDistributedPartitionedFloor1024Unshuffled,
 }
 
 fn production_preset(name: Option<&str>) -> (ProdConfig, CarrierMode) {
@@ -76,6 +88,37 @@ fn production_preset(name: Option<&str>) -> (ProdConfig, CarrierMode) {
             (ProdConfig::production_six_carrier(), CarrierMode::StrongSix)
         }
         Some("seven-carrier") => (ProdConfig::production_seven_carrier(), CarrierMode::Seven),
+        Some("seven-carrier-shear") => (
+            ProdConfig::production_seven_carrier(),
+            CarrierMode::SevenDistributed,
+        ),
+        Some("seven-carrier-shear-unshuffled") => (
+            ProdConfig::production_seven_carrier(),
+            CarrierMode::SevenDistributedUnshuffled,
+        ),
+        Some("seven-carrier-partitioned") => {
+            let mut config = ProdConfig::production_seven_carrier();
+            config.gray_fold = 0;
+            (config, CarrierMode::SevenDistributedPartitioned)
+        }
+        Some("seven-carrier-partitioned-unshuffled") => {
+            let mut config = ProdConfig::production_seven_carrier();
+            config.gray_fold = 0;
+            (config, CarrierMode::SevenDistributedPartitionedUnshuffled)
+        }
+        Some("seven-carrier-partitioned-floor1024") => {
+            let mut config = ProdConfig::production_seven_carrier();
+            config.gray_fold = 0;
+            (config, CarrierMode::SevenDistributedPartitionedFloor1024)
+        }
+        Some("seven-carrier-partitioned-floor1024-unshuffled") => {
+            let mut config = ProdConfig::production_seven_carrier();
+            config.gray_fold = 0;
+            (
+                config,
+                CarrierMode::SevenDistributedPartitionedFloor1024Unshuffled,
+            )
+        }
         Some("no-gray-phase-a") => (
             ProdConfig::production_single_no_gray_phase_a(),
             CarrierMode::Single,
@@ -88,7 +131,7 @@ fn production_preset(name: Option<&str>) -> (ProdConfig, CarrierMode) {
         ),
         Some("production") | None => (ProdConfig::production_single(), CarrierMode::Single),
         Some(other) => panic!(
-            "unknown PROD_PRESET={other:?}; expected production, no-gray-phase-a, micro-gray, sentinel-gray, no-gray-post-exact, no-gray-post-native, five-carrier, strong-five-carrier, six-carrier, strong-six-carrier, or seven-carrier"
+            "unknown PROD_PRESET={other:?}; expected production, no-gray-phase-a, micro-gray, sentinel-gray, no-gray-post-exact, no-gray-post-native, five-carrier, strong-five-carrier, six-carrier, strong-six-carrier, seven-carrier, seven-carrier-shear, seven-carrier-shear-unshuffled, seven-carrier-partitioned[-unshuffled], or seven-carrier-partitioned-floor1024[-unshuffled]"
         ),
     }
 }
@@ -228,6 +271,20 @@ fn main() {
                 CarrierMode::Six => "six-carrier",
                 CarrierMode::StrongSix => "strong-six-carrier",
                 CarrierMode::Seven => "seven-carrier",
+                CarrierMode::SevenDistributed => "seven-carrier-shear",
+                CarrierMode::SevenDistributedUnshuffled => {
+                    "seven-carrier-shear-unshuffled"
+                }
+                CarrierMode::SevenDistributedPartitioned => "seven-carrier-partitioned",
+                CarrierMode::SevenDistributedPartitionedUnshuffled => {
+                    "seven-carrier-partitioned-unshuffled"
+                }
+                CarrierMode::SevenDistributedPartitionedFloor1024 => {
+                    "seven-carrier-partitioned-floor1024"
+                }
+                CarrierMode::SevenDistributedPartitionedFloor1024Unshuffled => {
+                    "seven-carrier-partitioned-floor1024-unshuffled"
+                }
             },
             prod.k,
             prod.deg,
@@ -241,7 +298,65 @@ fn main() {
             prod.roll
         );
     }
-    let mut gadget = if carrier_mode == CarrierMode::Seven {
+    let mut gadget = if carrier_mode == CarrierMode::SevenDistributedPartitionedFloor1024 {
+        gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor1024_live_prefix(
+            &sandwich.gates,
+            sandwich_n,
+            n,
+            rg_freq,
+            slice_gates,
+            &prod,
+            &mut rng,
+        )
+    } else if carrier_mode == CarrierMode::SevenDistributedPartitionedFloor1024Unshuffled {
+        gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor1024_live_prefix_unshuffled(
+            &sandwich.gates,
+            sandwich_n,
+            n,
+            rg_freq,
+            slice_gates,
+            &prod,
+            &mut rng,
+        )
+    } else if carrier_mode == CarrierMode::SevenDistributedPartitioned {
+        gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_live_prefix(
+            &sandwich.gates,
+            sandwich_n,
+            n,
+            rg_freq,
+            slice_gates,
+            &prod,
+            &mut rng,
+        )
+    } else if carrier_mode == CarrierMode::SevenDistributedPartitionedUnshuffled {
+        gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_live_prefix_unshuffled(
+            &sandwich.gates,
+            sandwich_n,
+            n,
+            rg_freq,
+            slice_gates,
+            &prod,
+            &mut rng,
+        )
+    } else if carrier_mode == CarrierMode::SevenDistributed {
+        gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed(
+            &sandwich.gates,
+            sandwich_n,
+            rg_freq,
+            slice_gates,
+            &prod,
+            &mut rng,
+        )
+    } else if carrier_mode == CarrierMode::SevenDistributedUnshuffled {
+        gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_unshuffled(
+            &sandwich.gates,
+            sandwich_n,
+            rg_freq,
+            slice_gates,
+            &prod,
+            &mut rng,
+        )
+    } else if carrier_mode == CarrierMode::Seven {
         gadgetize_xgates_with_slice_zero_ccnot_seven_carrier(
             &sandwich.gates,
             sandwich_n,

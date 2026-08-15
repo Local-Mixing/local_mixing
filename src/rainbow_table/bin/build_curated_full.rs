@@ -675,6 +675,9 @@ fn audit_db(database: &DB) -> AnyResult<AuditStats> {
     let mut previous_key = None;
     let mut current_candidates = 0u64;
     let mut current_value_bytes = 0u64;
+    let mut current_min_blob: Option<Vec<u8>> = None;
+    let mut max_candidate_key = None;
+    let mut max_candidate_min_blob = None;
     let mut digest = Xxh3::new();
     for item in database.iterator(IteratorMode::Start) {
         let (record, _) = item?;
@@ -686,22 +689,37 @@ fn audit_db(database: &DB) -> AnyResult<AuditStats> {
         digest.update(&record);
         let (key, blob) = split_composite_key(&record)?;
         if previous_key != Some(key) {
-            if previous_key.is_some() {
-                max_candidates = max_candidates.max(current_candidates);
+            if let Some(previous) = previous_key {
+                if current_candidates > max_candidates {
+                    max_candidates = current_candidates;
+                    max_candidate_key = Some(previous);
+                    max_candidate_min_blob = current_min_blob.take();
+                }
                 max_value_bytes = max_value_bytes.max(current_value_bytes);
             }
             keys += 1;
             current_candidates = 0;
             current_value_bytes = 0;
+            current_min_blob = None;
             previous_key = Some(key);
         }
         candidates += 1;
         current_candidates += 1;
         current_value_bytes += (blob.len() + 1) as u64;
+        if current_min_blob
+            .as_ref()
+            .is_none_or(|minimum| blob.len() < minimum.len())
+        {
+            current_min_blob = Some(blob.to_vec());
+        }
         max_blob_bytes = max_blob_bytes.max(blob.len());
     }
-    if previous_key.is_some() {
-        max_candidates = max_candidates.max(current_candidates);
+    if let Some(previous) = previous_key {
+        if current_candidates > max_candidates {
+            max_candidates = current_candidates;
+            max_candidate_key = Some(previous);
+            max_candidate_min_blob = current_min_blob;
+        }
         max_value_bytes = max_value_bytes.max(current_value_bytes);
     }
     let stats = AuditStats {
@@ -721,6 +739,18 @@ fn audit_db(database: &DB) -> AnyResult<AuditStats> {
         stats.max_value_bytes,
         stats.max_blob_bytes
     );
+    if let (Some(key), Some(blob)) = (max_candidate_key, max_candidate_min_blob) {
+        eprintln!(
+            "[audit] max-candidate-key={} min-candidate-gates={} min-candidate-blob={}",
+            key.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            blob.len() / 3,
+            blob.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+    }
     Ok(stats)
 }
 

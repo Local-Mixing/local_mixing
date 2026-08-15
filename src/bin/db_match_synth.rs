@@ -117,6 +117,7 @@ fn main() {
                             false,
                             true,
                             false,
+                            false,
                             &mut rng,
                         );
                         if res.degree_skipped {

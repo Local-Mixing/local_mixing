@@ -93,6 +93,17 @@ struct Args {
     wire_catalog: WireCatalog,
     #[arg(long, value_enum, default_value_t = BasisFamily::Global)]
     basis_family: BasisFamily,
+    /// Offer checkpoint features to the elimination basis in reverse circuit
+    /// order.  This is an independent search order for falsifying a
+    /// chronological-basis non-finding; it is currently checkpoint-only.
+    #[arg(long, default_value_t = false)]
+    reverse_offer: bool,
+    /// Offer checkpoint features in cyclic circuit order beginning at this
+    /// gate. This provides an independent middle-of-trace basis order without
+    /// retaining all checkpoint signatures in memory. It is checkpoint-only
+    /// and mutually exclusive with --reverse-offer.
+    #[arg(long)]
+    offer_start_gate: Option<usize>,
     /// Number of carrier lanes for source-home/carrier-region catalogs.
     #[arg(long, default_value_t = 7)]
     carrier_lanes: usize,
@@ -425,33 +436,13 @@ fn discover(
     let mut scratch = vec![0u64; args.fit_batches];
     let mut direct_witnesses: HashMap<usize, Witness> = HashMap::new();
     let mut eligible = 0usize;
-    for (gate_index, gate) in g.iter().enumerate() {
-        let target = gate.target as usize;
-        firing_into(gate, &state, &mut scratch);
-        xor_into(&mut state[target], &scratch);
-        let after = Coordinate {
-            gate_index,
-            wire: target,
-        };
-        let kind = match args.feature_mode {
-            FeatureMode::Checkpoint => Some(LabelKind::Checkpoint(after)),
-            FeatureMode::GateDelta => previous[target].map(|before| LabelKind::Delta {
-                before: Coordinate {
-                    gate_index: before,
-                    wire: target,
-                },
-                after,
-            }),
-        };
-        // Filter before offering/deduplicating: every raw representative is
-        // internal, never an initial checkpoint or the last checkpoint on a wire.
-        let safe = included_wire(args, target) && last[target] != Some(gate_index);
-        if safe && let Some(kind) = kind {
+    let mut offer_checkpoint =
+        |gate_index: usize, target: usize, signature: &[u64], kind: LabelKind| {
+            let safe = included_wire(args, target) && last[target] != Some(gate_index);
+            if !safe {
+                return;
+            }
             eligible += 1;
-            let signature: &[u64] = match args.feature_mode {
-                FeatureMode::Checkpoint => &state[target],
-                FeatureMode::GateDelta => &scratch,
-            };
             if let Some(matches) = direct.get(signature) {
                 let raw_selection = [Label { kind: kind.clone() }];
                 let (_, coordinates) = expand_labels(&raw_selection, &[0]);
@@ -483,8 +474,112 @@ fn discover(
                     }
                 }
             }
+        };
+
+    if args.reverse_offer {
+        assert_eq!(
+            args.feature_mode,
+            FeatureMode::Checkpoint,
+            "--reverse-offer currently supports checkpoint features only"
+        );
+        // Reach the public output, then undo the self-inverse MPMCT gates.
+        // Immediately before undoing gate i, state[target] is exactly the raw
+        // checkpoint immediately after gate i, so no trace signatures need to
+        // be retained in memory.
+        for gate in g {
+            let target = gate.target as usize;
+            firing_into(gate, &state, &mut scratch);
+            xor_into(&mut state[target], &scratch);
         }
-        previous[target] = Some(gate_index);
+        for (gate_index, gate) in g.iter().enumerate().rev() {
+            let target = gate.target as usize;
+            let after = Coordinate {
+                gate_index,
+                wire: target,
+            };
+            offer_checkpoint(
+                gate_index,
+                target,
+                &state[target],
+                LabelKind::Checkpoint(after),
+            );
+            firing_into(gate, &state, &mut scratch);
+            xor_into(&mut state[target], &scratch);
+        }
+    } else if let Some(start) = args.offer_start_gate {
+        assert_eq!(
+            args.feature_mode,
+            FeatureMode::Checkpoint,
+            "--offer-start-gate currently supports checkpoint features only"
+        );
+        assert!(start < g.len(), "--offer-start-gate is outside the circuit");
+
+        // First advance without offering through the cut, then offer the tail.
+        // Reset and replay the prefix to complete the cyclic ordering. Every
+        // eligible checkpoint is still offered exactly once.
+        for gate in &g[..start] {
+            let target = gate.target as usize;
+            firing_into(gate, &state, &mut scratch);
+            xor_into(&mut state[target], &scratch);
+        }
+        for (relative, gate) in g[start..].iter().enumerate() {
+            let gate_index = start + relative;
+            let target = gate.target as usize;
+            firing_into(gate, &state, &mut scratch);
+            xor_into(&mut state[target], &scratch);
+            offer_checkpoint(
+                gate_index,
+                target,
+                &state[target],
+                LabelKind::Checkpoint(Coordinate {
+                    gate_index,
+                    wire: target,
+                }),
+            );
+        }
+        state = initial_state(nw_g, args.n, &inputs);
+        for (gate_index, gate) in g[..start].iter().enumerate() {
+            let target = gate.target as usize;
+            firing_into(gate, &state, &mut scratch);
+            xor_into(&mut state[target], &scratch);
+            offer_checkpoint(
+                gate_index,
+                target,
+                &state[target],
+                LabelKind::Checkpoint(Coordinate {
+                    gate_index,
+                    wire: target,
+                }),
+            );
+        }
+    } else {
+        for (gate_index, gate) in g.iter().enumerate() {
+            let target = gate.target as usize;
+            firing_into(gate, &state, &mut scratch);
+            xor_into(&mut state[target], &scratch);
+            let after = Coordinate {
+                gate_index,
+                wire: target,
+            };
+            let kind = match args.feature_mode {
+                FeatureMode::Checkpoint => Some(LabelKind::Checkpoint(after)),
+                FeatureMode::GateDelta => previous[target].map(|before| LabelKind::Delta {
+                    before: Coordinate {
+                        gate_index: before,
+                        wire: target,
+                    },
+                    after,
+                }),
+            };
+            if let Some(kind) = kind {
+                let signature: &[u64] = match args.feature_mode {
+                    FeatureMode::Checkpoint => &state[target],
+                    FeatureMode::GateDelta => &scratch,
+                };
+                offer_checkpoint(gate_index, target, signature, kind);
+            }
+            previous[target] = Some(gate_index);
+        }
     }
 
     let mut best: Vec<Option<Witness>> = (0..targets.len())
@@ -660,14 +755,25 @@ fn main() {
     assert!(args.test_batches > 0, "--test-batches must be positive");
     assert!(args.support_cap > 0, "--support-cap must be positive");
     assert!(args.carrier_lanes > 0 && args.carrier_stride >= args.n);
+    assert!(
+        !(args.reverse_offer && args.offer_start_gate.is_some()),
+        "--reverse-offer and --offer-start-gate are mutually exclusive"
+    );
 
     let c = read_g57_file(&args.c).unwrap_or_else(|error| panic!("read {}: {error}", args.c));
     let (g, declared_g) =
         read_mpmct(&args.g).unwrap_or_else(|error| panic!("read {}: {error}", args.g));
     let nw_c = (max_wire(&c) as usize + 1).max(args.n);
     let nw_g = declared_g.max(max_wire(&g) as usize + 1).max(args.n);
+    let basis_offer_order = if args.reverse_offer {
+        "reverse".to_string()
+    } else if let Some(start) = args.offer_start_gate {
+        format!("cyclic@{start}")
+    } else {
+        "forward".to_string()
+    };
     eprintln!(
-        "[sampled_trace_support] C={}/{} G={}/{} mode={} catalog={} basis={} fit/validation/test={}/{}/{}",
+        "[sampled_trace_support] C={}/{} G={}/{} mode={} catalog={} basis={} order={} fit/validation/test={}/{}/{}",
         c.len(),
         nw_c,
         g.len(),
@@ -675,6 +781,7 @@ fn main() {
         args.feature_mode.name(),
         args.wire_catalog.name(),
         args.basis_family.name(),
+        basis_offer_order,
         args.fit_batches * 64,
         args.validation_batches * 64,
         args.test_batches * 64,
@@ -762,7 +869,7 @@ fn main() {
             "  \"source\": {},\n  \"source_xxh3_64\": \"{:016x}\",\n",
             "  \"g\": {},\n  \"g_xxh3_64\": \"{:016x}\",\n",
             "  \"n\": {},\n  \"source_gates\": {},\n  \"g_gates\": {},\n  \"g_wires\": {},\n",
-            "  \"feature_mode\": \"{}\",\n  \"wire_catalog\": \"{}\",\n  \"basis_family\": \"{}\",\n",
+            "  \"feature_mode\": \"{}\",\n  \"wire_catalog\": \"{}\",\n  \"basis_family\": \"{}\",\n  \"basis_offer_order\": \"{}\",\n",
             "  \"carrier_lanes\": {},\n  \"carrier_stride\": {},\n  \"seed\": {},\n",
             "  \"endpoint_policy\": \"exclude initial coordinates and every wire's final coordinate before offering a feature\",\n",
             "  \"fit_samples\": {},\n  \"validation_samples\": {},\n  \"locked_test_samples\": {},\n",
@@ -785,6 +892,7 @@ fn main() {
         args.feature_mode.name(),
         args.wire_catalog.name(),
         args.basis_family.name(),
+        basis_offer_order,
         args.carrier_lanes,
         args.carrier_stride,
         args.seed,
