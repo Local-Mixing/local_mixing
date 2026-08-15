@@ -32,7 +32,6 @@ import sys
 import numpy as np
 
 import gate_gadget_v2 as G
-sys.modules["gate_gadget"] = G   # big_gate_gadget imports `gate_gadget`; give it v2
 import big_gate_gadget as BIG
 
 

@@ -65,7 +65,7 @@ measured full cost per source gate):
 | `none` | no gadget (control — must fail the battery) | 1 | — |
 | `secretshare14` | the paper's paired secret-share `w = s ⊕ r`: one SG from a 7-variant menu ({5,5,4,6,6,6,4} gates) + 2 refresh gadgets (RG1/2/3 = {6,6,2}); expected cost 36/7 + 2·14/3 = 14.48 | ~14.5 (randomized) | `SSG_README.md`, `docs/NONLINEAR_RG_CG_MENU.md` |
 | `bandproduct92` | the paper's product-share band `V = C ⊕ M(B) ⊕ κ`, Gray fold, mask plan [2,2,2,3]; randomized gathers/rolls/top-ups | ~92 (randomized) | `docs/PRODUCT_SHARE_ENCODING.md`, `docs/GRAY_FOLD_CG.md`, `docs/BAND_HARDENING.md` |
-| `nonlinear193` | folded single-gate gadget: T-conjunction tree with band-pool masks `r·B(s)`, fresh 5-wire re-share R per gate | 193 (exact) | `README_gate_gadget.md` |
+| `nonlinear193` | folded single-gate gadget: T-conjunction tree with band-pool masks `r·B(s)`, fresh 5-wire re-share R per gate | 193 (exact) | `README_gate_gadget_v2.md` |
 | `nonlinear939` | full cascade: same mask structure **and** a re-share gadget whose own 23 mask gates are recursively masked | 939 (exact) | `README_gate_gadget_v2.md` |
 
 Plus `_band0` / `_band16` variants of the last two, where borrow wires

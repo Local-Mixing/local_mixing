@@ -20,7 +20,7 @@ relabeling.  Each sub-gadget consumes one `extras` tuple (R5, out3, scr, scr2, c
 fresh-random / clean wires supplied by the caller (strict upfront layout).
 """
 import numpy as np
-import gate_gadget as G
+import gate_gadget_v2 as G
 
 # (tag, vtype, a-share suffix, b-share suffix, target-share suffix); None = no a operand.
 SG_RECIPE = [

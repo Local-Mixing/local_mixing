@@ -59,8 +59,7 @@ Reports: `reports/mx/REPORT.md`.
 | `docs/PIPELINE_OVERVIEW.md` | production pipeline: every parameter and why |
 | `docs/Mixing_Pieces_Documentation.md` | reference for all mixing pieces/moves |
 | `docs/NONLINEAR_GADGETIZATION.md` | why linear sharing leaks; product-share design |
-| `README_gate_gadget.md` | the 193-gate folded gadget (v1) |
-| `README_gate_gadget_v2.md` | the 939-gate full-cascade gadget (v2) |
+| `README_gate_gadget_v2.md` | the folded 193-gate gadget and the 939-gate six-gadget cascade |
 | `SSG_README.md` | the paper's paired secret-share gadgetizer |
 | `docs/PRODUCT_SHARE_ENCODING.md` | the band/product-share encoding |
 | `src/` | Rust engine (gadgetizers, mixer, attack binaries) |
