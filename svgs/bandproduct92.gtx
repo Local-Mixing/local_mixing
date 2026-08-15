@@ -1,0 +1,124 @@
+@title bandproduct92 — one source gate c ^= a | !b through the product-share Gray fold
+@subtitle The replicated per-gate body only: Gray fold V = C ⊕ M(B) ⊕ κ, 2 value relocations (rg_freq), mask re-source, band roll.  Cost is a seeded draw ≈ 92 on average — the '92' in the name; seed 10 was chosen so this instance draws the average (92 at n=8).  The one-time mask injection (cleartext→encoded input) and the final strip/route-home (decoding) are fixed infrastructure and are NOT shown — injection is still run so the fold draws against a stocked ledger.
+@equation c' = c ⊕ (a ∨ ¬b)  via  V = C ⊕ M(B) ⊕ κ  (Gray fold)
+@wire a v
+@wire b v
+@wire c v
+@wire v3 v
+@wire v4 v
+@wire v5 v
+@wire v6 v
+@wire v7 v
+@wire band0 band
+@wire band1 band
+@wire band2 band
+@wire band3 band
+@wire band4 band
+@wire band5 band
+@wire band6 band
+@wire band7 band
+@wire band8 band
+@wire band9 band
+@wire band10 band
+@wire band11 band
+@wire band12 band
+@wire band13 band
+@wire band14 band
+@wire band15 band
+@note band band pool wires (avalanche-filled, rolled)
+# Gray fold: V = C ^ M(B) ^ kappa
+c <--- v4
+c <--- v4 | !v5
+v4 <--- band11 | !band10
+v4 <--- band2 | !band3
+v4 <--- band5 | !band4
+v4 <--- v3 | !band7
+v4 <--- v3
+v3 <--- band6
+v3 <--- band6 | !band14
+v4 <--- v3
+v4 <--- v3 | !band7
+v3 <--- band6 | !band14
+v3 <--- band6
+v4 <--- band7
+v4 <--- band13 | !band12
+c <--- b | !a
+c <--- b
+c <--- v5
+c <--- v5 | !a
+c <--- v5 | !v4
+c <--- v5
+c <--- v5
+v5 <--- band6 | !band4
+v5 <--- band9
+v5 <--- band10 | !band9
+v5 <--- band2 | !band8
+v5 <--- band15 | !v3
+v5 <--- band15
+v3 <--- band0 | !band7
+v3 <--- band0
+v5 <--- band15
+v5 <--- band15 | !v3
+v3 <--- band7
+v3 <--- band7 | !band0
+v5 <--- band15
+v5 <--- band3 | !band5
+c <--- b | !v4
+c <--- b
+c <--- v4 | !v5
+c <--- v4
+c <--- v5
+c <--- a | !v5
+c <--- a
+v4 <--- band11 | !band10
+v4 <--- band2 | !band3
+v4 <--- band5 | !band4
+v4 <--- band7 | !v3
+v4 <--- band7
+v3 <--- band14
+v3 <--- band14 | !band6
+v4 <--- band7
+v4 <--- band7 | !v3
+v3 <--- band14 | !band6
+v3 <--- band14
+v4 <--- band7
+v4 <--- band13 | !band12
+c <--- b
+c <--- v4
+c <--- v4 | !b
+c <--- v5
+c <--- v5 | !v4
+v5 <--- band6 | !band4
+v5 <--- band9 | !band10
+v5 <--- band10
+v5 <--- band2 | !band8
+v5 <--- v3
+v5 <--- v3 | !band15
+v3 <--- band7 | !band0
+v3 <--- band7
+v5 <--- v3 | !band15
+v5 <--- v3
+v3 <--- band0
+v3 <--- band0 | !band7
+v5 <--- band15
+v5 <--- band3 | !band5
+# value relocation x2 (rg_freq)
+b <--- a
+a <--- b
+b <--- a
+v6 <--- v4
+v4 <--- v6
+v6 <--- v4
+# mask re-source x1
+v3 <--- band2 | !band10
+v3 <--- band10
+v3 <--- band13 | !band6
+v3 <--- band6
+# band roll x1
+band0 <--- b
+b <--- band0 | !band13
+b <--- band0
+b <--- band0 | !band13
+band0 <--- b | !band8
+band0 <--- b
+band0 <--- b | !band8
