@@ -551,6 +551,9 @@ pub struct MixParams {
     // shorter length down to 1, so there is no separate minimum: one parameter
     // sets the ambition and the descent handles reality.
     pub s_db: usize,
+    /// Minimum DB window length (0 = no floor). With the prefix descent off,
+    /// restricts drawn windows to db_min_window..=s_db exactly.
+    pub db_min_window: usize,
     // p_convex: probability the window sampler is convex rather than contiguous.
     // Replaces the three-valued DbSample: contiguous is 0, convex is 1, and the
     // old `mixed` is 0.5.
@@ -955,6 +958,7 @@ impl Default for MixParams {
             p_any: 0.0,
             p_db: 0.0,
             s_db: 5,
+            db_min_window: 0,
             p_convex: 0.5,
             db_mode: DbMode::Mix,
             p_mix: -1.0,
@@ -1398,6 +1402,20 @@ pub fn prof_target(n: [f64; 3], r: [f64; 2], s_in: f64, eff: f64) -> f64 {
     }
 }
 
+/// Read-only reference store for class attribution (FROZEN_REF_DIR): opened
+/// once, queried as a REGULAR store — only spelling LENGTHS are read, and
+/// those are convention-independent.
+fn reference_db() -> Option<&'static crate::replace::frozen::FrozenDb> {
+    static REF: std::sync::OnceLock<Option<crate::replace::frozen::FrozenDb>> =
+        std::sync::OnceLock::new();
+    REF.get_or_init(|| {
+        let dir = std::env::var("FROZEN_REF_DIR").ok()?;
+        println!("[fmix] class-attribution reference store: {dir}");
+        Some(crate::replace::frozen::FrozenDb::open(&dir, None))
+    })
+    .as_ref()
+}
+
 pub struct Mixer {
     pub arena: Arena,
     pub params: MixParams,
@@ -1465,6 +1483,34 @@ pub struct Mixer {
     db_g57_only: bool,
     // The LIVE slot-2 mode. params.db_mode is what the brake returns to.
     db_mode_cur: DbMode,
+    // stable-ledger flow accounting (gates added/removed by Stable/StableGrow
+    // splices). Deliberately NOT in MixCounters/state: a resume restarts the
+    // ledger at zero, which just re-grants the slack once.
+    stable_led_added: u64,
+    stable_led_removed: u64,
+    // per-success histogram of the store-minimal spelling length (the
+    // converted permutation's operational complexity), index = gates (cap 31)
+    dmin_success_hist: [u64; 32],
+    // TRUE complexity class of each big-pool (M1/M2/M3...) conversion, read
+    // from the REFERENCE store named by FROZEN_REF_DIR — the pool swap
+    // replaced the small spellings in the live store, so the class is only
+    // recoverable by re-querying the same key against the original.
+    m123_class_hist: [u64; 32],
+    // successful curated splices whose candidate list exceeded the bounded
+    // contract (>20) — by construction exactly the M1/M2/M3 big-pool hits.
+    bigpool_hits: u64,
+    // SIZE LEDGER for --db-mode band-ledger: signed net gates this channel
+    // has added. The size choice is skewed corrective whenever |ledger|
+    // exceeds the slack, so the band's size variability is kept per splice
+    // while the total is conserved in expectation.
+    band_led: i64,
+    // true for the current round when the effective mode came from BandLedger
+    band_led_round: bool,
+    // DB attempts / successful splices split by window GEOMETRY
+    // ([0] = contiguous i.e. sequential, [1] = convex). Plain Mixer fields,
+    // deliberately not in MixCounters: adding there breaks the .state format.
+    geo_attempts: [u64; 2],
+    geo_hits: [u64; 2],
     brake_on: bool,
     brake_mark_move: u64,
     brake_mark_size: usize,
@@ -1858,6 +1904,13 @@ impl Mixer {
                 DbMode::Compressing => "comp",
                 DbMode::SizeAgnostic => "any",
                 DbMode::MinGrow => "mingrow",
+                DbMode::Stable => "stable",
+                DbMode::StableGrow => "stable-grow",
+                DbMode::StableLedger => "stable-ledger",
+                DbMode::Same => "same",
+                DbMode::BandLedger => "band-ledger",
+                DbMode::BandShrink => "band-shrink",
+                DbMode::BandGrow => "band-grow",
             }
         );
         let _ = writeln!(
@@ -2663,6 +2716,15 @@ impl Mixer {
             db_seed_home: None,
             db_g57_only: false,
             db_mode_cur: db_mode0,
+            stable_led_added: 0,
+            stable_led_removed: 0,
+            dmin_success_hist: [0; 32],
+            m123_class_hist: [0; 32],
+            bigpool_hits: 0,
+            band_led: 0,
+            band_led_round: false,
+            geo_attempts: [0; 2],
+            geo_hits: [0; 2],
             brake_on: false,
             brake_mark_move: 0,
             brake_mark_size: 0,
@@ -3421,8 +3483,14 @@ impl Mixer {
         if self.params.p_mix < 0.0 {
             return;
         }
+        // Same rule as prof_tick: the MIX side is the configured re-encode
+        // mode, so an explicit --db-mode survives the overlay.
+        let mix_side = match self.params.db_mode {
+            DbMode::Compressing => DbMode::Mix,
+            m => m,
+        };
         self.db_mode_cur = if self.rng.random_bool(self.params.p_mix.clamp(0.0, 1.0)) {
-            DbMode::Mix
+            mix_side
         } else {
             DbMode::Compressing
         };
@@ -3509,8 +3577,17 @@ impl Mixer {
             self.prof_update();
         }
         let pm = if due { self.prof.as_ref().unwrap().pmix } else { pmix };
+        // The MIX side of the coin is the CONFIGURED re-encode mode, not a
+        // hardcoded Mix: --db-mode stable/stable-grow/stable-ledger must
+        // survive the profile overlay (it used to be stomped here every
+        // round, silently running plain Mix). Runs without an explicit
+        // --db-mode are unchanged (their configured mode IS Mix).
+        let mix_side = match self.params.db_mode {
+            DbMode::Compressing => DbMode::Mix,
+            m => m,
+        };
         self.db_mode_cur =
-            if self.rng.random_bool(pm.clamp(0.0, 1.0)) { DbMode::Mix } else { DbMode::Compressing };
+            if self.rng.random_bool(pm.clamp(0.0, 1.0)) { mix_side } else { DbMode::Compressing };
     }
 
     /// One controller update (every prof_cadence_eff of effective work):
@@ -3576,6 +3653,23 @@ impl Mixer {
                     "[fmix] profile: phase {} -> {} at eff={:.2} size={}",
                     old_phase, p.phase, p.eff, s as usize
                 );
+                // Exact-point recovery: FMIX_STOP_AT_PHASE=<k> finishes the
+                // run cleanly the moment the schedule enters phase k. A
+                // deterministic replay (same seed/input/flags) stopped this
+                // way recovers the ORIGINAL run's circuit at the leg boundary
+                // with zero overshoot — the transition is detected at the
+                // same controller update in both runs.
+                static STOP_AT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+                let target = STOP_AT.get_or_init(|| {
+                    std::env::var("FMIX_STOP_AT_PHASE").ok().and_then(|v| v.parse().ok())
+                });
+                if *target == Some(p.phase as u32) {
+                    println!(
+                        "[fmix] FMIX_STOP_AT_PHASE={}: stopping cleanly at the phase boundary (eff={:.2} size={})",
+                        p.phase, p.eff, s as usize
+                    );
+                    self.stop_requested = true;
+                }
             }
             // Feasibility diagnosis for the compression leg. With the lever
             // fully down the best available drift is dhat - shat; when the
@@ -4371,6 +4465,14 @@ impl Mixer {
             }
             self.moves_done += 1;
             self.counters.moves = self.moves_done;
+            // Checked every move (a plain bool — no RNG, no trajectory
+            // effect) so FMIX_STOP_AT_PHASE stops at the transition move
+            // rather than up to report_every moves later. The stop-FLAG
+            // file poll stays at report cadence below.
+            if self.stop_requested {
+                self.global_check();
+                return MixStop::StopFlag;
+            }
             if self.moves_done % self.params.verify_every == 0 {
                 self.global_check();
             }
@@ -5913,6 +6015,36 @@ impl Mixer {
     }
 
     fn db_attempt(&mut self, mode: DbMode) -> bool {
+        // stable-ledger: pick between the two stable selections by the flow
+        // ledger — ±1 while shrink budget remains (removed < added + slack),
+        // w/w+1 once exhausted. Bounds net DB drift below by -slack at any
+        // size, without wasting hits on post-draw declines.
+        const STABLE_LEDGER_SLACK: u64 = 64;
+        let mode = if mode == DbMode::StableLedger {
+            if self.stable_led_removed < self.stable_led_added + STABLE_LEDGER_SLACK {
+                DbMode::Stable
+            } else {
+                DbMode::StableGrow
+            }
+        } else {
+            mode
+        };
+        // band-ledger: full band while the size ledger is inside the slack,
+        // corrective size skew once it drifts. Slack is proportional to the
+        // circuit (0.2%, floor 64) so the correction scales with the run.
+        self.band_led_round = mode == DbMode::BandLedger;
+        let mode = if mode == DbMode::BandLedger {
+            let slack = ((self.arena.len() as i64) / 500).max(64);
+            if self.band_led > slack {
+                DbMode::BandShrink
+            } else if self.band_led < -slack {
+                DbMode::BandGrow
+            } else {
+                DbMode::SizeAgnostic
+            }
+        } else {
+            mode
+        };
         self.db_seed_home = None;
         self.seed_from_pool = false;
         self.seed_fell_through = false;
@@ -5977,7 +6109,7 @@ impl Mixer {
 
     fn db_attempt_inner(&mut self, mode: DbMode) -> bool {
         let n = self.arena.len();
-        let wmin = 1usize;
+        let wmin = self.params.db_min_window.max(1);
         if n < wmin {
             return false;
         }
@@ -6012,12 +6144,22 @@ impl Mixer {
         // Stamped into every --db-record attempt line (smp=ctg|cvx) so stats
         // can split hits by sampler geometry, esp. under --db-sample mixed.
         self.db_last_sampler = smp;
+        self.geo_attempts[matches!(smp, DbSample::Convex) as usize] += 1;
         self.db_last_len = ids.len();
         Self::bump_len(&mut self.counters.len_attempts, ids.len(), 1);
         // Litter fragmentation census over the sampled window (observation only).
-        let (distinct, _) = self.litter_census(&ids);
+        let (distinct, full_litter) = self.litter_census(&ids);
         self.counters.litter_windows += 1;
         self.counters.litter_distinct_sum += distinct as u64;
+        // Full-litter ban on the MAIN (no-descent) window path — the descent
+        // path enforces it per rung and descends past banned rungs instead: a
+        // window that is exactly one complete litter is where the store is
+        // most likely to hand back the spelling that made it — refuse it.
+        if self.params.litter_ban && full_litter && !descend {
+            self.counters.litter_banned += 1;
+            self.count_db_miss(mode);
+            return false;
+        }
         let window: Vec<XGate> = ids.iter().map(|&id| self.arena.gate(id).clone()).collect();
 
         // Prefix descent, largest first: try the full k-gate window, then the
@@ -6215,7 +6357,7 @@ impl Mixer {
             self.record_db_attempt(&window, 0, None);
             match mode {
                 DbMode::Compressing => self.counters.db_comp_misses += 1,
-                DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => self.counters.db_agn_misses += 1,
+                DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix | DbMode::Stable | DbMode::StableGrow | DbMode::StableLedger | DbMode::Same | DbMode::BandLedger | DbMode::BandShrink | DbMode::BandGrow => self.counters.db_agn_misses += 1,
             }
             return false;
         }
@@ -6261,24 +6403,57 @@ impl Mixer {
             if match_count > 0 {
                 match mode {
                     DbMode::Compressing => self.counters.db_comp_hits += 1,
-                    DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => self.counters.db_agn_hits += 1,
+                    DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix | DbMode::Stable | DbMode::StableGrow | DbMode::StableLedger | DbMode::Same | DbMode::BandLedger | DbMode::BandShrink | DbMode::BandGrow => self.counters.db_agn_hits += 1,
                 }
             } else {
                 match mode {
                     DbMode::Compressing => self.counters.db_comp_misses += 1,
-                    DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => self.counters.db_agn_misses += 1,
+                    DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix | DbMode::Stable | DbMode::StableGrow | DbMode::StableLedger | DbMode::Same | DbMode::BandLedger | DbMode::BandShrink | DbMode::BandGrow => self.counters.db_agn_misses += 1,
                 }
             }
             return false;
         }
 
         let curated_pick = res.chosen_curated;
+        let mlen = res.min_match_len;
+        let res_fwd_key = res.fwd_key;
         let Some(replacement) = res.chosen else {
             self.record_db_attempt(&window, match_count, None);
             self.count_db_miss(mode);
             return false;
         };
-        self.try_db_splice_curated(curated_pick, &ids, g1dir, &window, replacement, match_count, mode)
+        let fwd_key = res_fwd_key;
+        let hit = self.try_db_splice_curated(curated_pick, &ids, g1dir, &window, replacement, match_count, mode);
+        if hit {
+            self.geo_hits[matches!(self.db_last_sampler, DbSample::Convex) as usize] += 1;
+            // True class of a big-pool conversion, via the reference store.
+            if curated_pick && match_count > 20 {
+                if let (Some(db), Some(k)) = (reference_db(), fwd_key) {
+                    if let Some(v) = db.get_regular(&k) {
+                        let mut mn = usize::MAX;
+                        let mut pos = 0usize;
+                        while pos < v.len() {
+                            let l = v[pos] as usize;
+                            if l == 0 || l % 3 != 0 || pos + 1 + l > v.len() {
+                                break;
+                            }
+                            mn = mn.min(l / 3);
+                            pos += 1 + l;
+                        }
+                        if mn != usize::MAX {
+                            self.m123_class_hist[mn.min(31)] += 1;
+                        }
+                    }
+                }
+            }
+            // Complexity of the converted permutation: the store's minimal
+            // matching spelling for this window (the operational "smallest
+            // number of gates that computes it").
+            if let Some(ml) = mlen {
+                self.dmin_success_hist[ml.min(31)] += 1;
+            }
+        }
+        hit
     }
 
     /// Bump one per-length bucket, growing the vector on demand.
@@ -6293,7 +6468,7 @@ impl Mixer {
     fn count_db_hit(&mut self, mode: DbMode) {
         match mode {
             DbMode::Compressing => self.counters.db_comp_hits += 1,
-            DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => self.counters.db_agn_hits += 1,
+            DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix | DbMode::Stable | DbMode::StableGrow | DbMode::StableLedger | DbMode::Same | DbMode::BandLedger | DbMode::BandShrink | DbMode::BandGrow => self.counters.db_agn_hits += 1,
         }
         let k = self.db_last_len;
         Self::bump_len(&mut self.counters.len_hits, k, 1);
@@ -6302,7 +6477,7 @@ impl Mixer {
     fn count_db_miss(&mut self, mode: DbMode) {
         match mode {
             DbMode::Compressing => self.counters.db_comp_misses += 1,
-            DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix => self.counters.db_agn_misses += 1,
+            DbMode::SizeAgnostic | DbMode::MinGrow | DbMode::Mix | DbMode::Stable | DbMode::StableGrow | DbMode::StableLedger | DbMode::Same | DbMode::BandLedger | DbMode::BandShrink | DbMode::BandGrow => self.counters.db_agn_misses += 1,
         }
     }
 
@@ -6386,6 +6561,23 @@ impl Mixer {
         // Size accounting (replacement may be shorter, equal, or longer).
         let old = window.len();
         let new = replacement.len();
+        // Ledger flows for the stable family (only ±1 by construction).
+        if matches!(mode, DbMode::Stable | DbMode::StableGrow) {
+            if new > old {
+                self.stable_led_added += (new - old) as u64;
+            } else if new < old {
+                self.stable_led_removed += (old - new) as u64;
+            }
+        }
+        // band-ledger drift accounting (signed, over every band conversion).
+        if self.band_led_round {
+            self.band_led += new as i64 - old as i64;
+        }
+        // Big-pool (M1/M2/M3) usage: only the swapped pools carry more than
+        // the bounded contract's 20 candidates, so this count is exact.
+        if from_curated && match_count > 20 {
+            self.bigpool_hits += 1;
+        }
         if new <= old {
             Self::bump_len(&mut self.counters.len_removed, old, (old - new) as u64);
             self.counters.db_gates_removed += (old - new) as u64;
@@ -7374,7 +7566,7 @@ impl Mixer {
             .map(|w| format!("{}:{}", w, c.width_hist[w]))
             .collect();
         println!(
-            "[fmix] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} wpoly={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
+            "[fmix] mv={} size={} target={} comp={} g57={} shaped={} polf={:.3} | merges c={} x={} d={} s={} a={} sib={} xorig={} tabu={} nopart={} wall={} far={} noadj={} | undo ok={} dead={} tabu={} miss={} live={} | db pdb={:.3} comp={}/{} agn={}/{} rm={} add={} wide={} wpoly={} dsk={} ssk={} bab={} idsk={} cur={}/{} g57only={}/{} sled={}/{} m123={} bled={} | expand r1={} r2={} r3={} pre={} fresh={} unsub={} ins={} tn1={} tsw={} tn2={} twrel={} twsplit={} twspan={} twskip={} shuf={} shufmv={} shufst={} shufms={} | declined={} blockw={} dl={} bnd={} | floats={}/{} scat={}/{} | disp={:.4} owin={:.1} fan0={:.3} leew={:.0} odiff={:.4} oadj={:.4} osyn={:.3} anc={:.1} ancspan={:.3} width[{}] | gen tgt={} G={} Gall={} tgtbl={} alag={}/{} lag={}/{} wlag={} min={} cov={:.1} canary={:.3} cft={} | litter distinct={:.2} full={} ban={} tplace={}/{} dmin={:.3} dminw={} canon[poly={}ms canon={}ms calls={}] verify={}ms degprobe={}ms/{} | choice n={} multi={:.3} mean={:.2} bits/splice={:.3}",
             c.moves,
             self.arena.len(),
             self.params.target_size,
@@ -7416,6 +7608,10 @@ impl Mixer {
             c.db_curated_rejected,
             c.db_g57_hits,
             c.db_g57_rounds,
+            self.stable_led_added,
+            self.stable_led_removed,
+            self.bigpool_hits,
+            self.band_led,
             c.cross_r1,
             c.cross_r2,
             c.cross_r3,
@@ -7508,6 +7704,37 @@ impl Mixer {
                 0.0
             }
         );
+        // Per-success complexity histogram (store-minimal spelling length of
+        // each converted permutation); printed whenever any conversions exist.
+        let hs: Vec<String> = self
+            .dmin_success_hist
+            .iter()
+            .enumerate()
+            .filter(|&(_, &c)| c > 0)
+            .map(|(l, &c)| format!("{l}:{c}"))
+            .collect();
+        if !hs.is_empty() {
+            println!("[fmix] dminh mv={} {}", self.moves_done, hs.join(" "));
+        }
+        let ms: Vec<String> = self
+            .m123_class_hist
+            .iter()
+            .enumerate()
+            .filter(|&(_, &c)| c > 0)
+            .map(|(l, &c)| format!("M{l}:{c}"))
+            .collect();
+        if !ms.is_empty() {
+            println!("[fmix] m123class mv={} {}", self.moves_done, ms.join(" "));
+        }
+        if self.geo_attempts[0] + self.geo_attempts[1] > 0 {
+            let rate = |h: u64, a: u64| if a > 0 { 100.0 * h as f64 / a as f64 } else { 0.0 };
+            println!(
+                "[fmix] geo mv={} ctg={}/{} ({:.2}%) cvx={}/{} ({:.2}%)",
+                self.moves_done,
+                self.geo_hits[0], self.geo_attempts[0], rate(self.geo_hits[0], self.geo_attempts[0]),
+                self.geo_hits[1], self.geo_attempts[1], rate(self.geo_hits[1], self.geo_attempts[1]),
+            );
+        }
         let anc = self.anc_report();
         if !anc.is_empty() {
             println!("{anc}");
@@ -7590,6 +7817,32 @@ impl Mixer {
                 c.tg_retries
             );
         }
+    }
+
+    /// Install per-gate litter ids (circuit order) from an external stage —
+    /// e.g. the SGDB substitution, where each replaced gate's block becomes
+    /// one litter. litter_size is recomputed per id; next_litter continues
+    /// above the max.
+    pub fn load_litters(&mut self, ids: &[u64]) {
+        let order = self.arena.ids_in_order();
+        assert_eq!(order.len(), ids.len(), "litter sidecar length != gate count");
+        let mut sizes: std::collections::HashMap<u64, u16> = std::collections::HashMap::new();
+        for &l in ids {
+            *sizes.entry(l).or_insert(0) += 1;
+        }
+        for (&id, &l) in order.iter().zip(ids.iter()) {
+            let mut m = self.meta_of(id);
+            m.litter = l;
+            m.litter_size = sizes[&l];
+            self.set_meta(id, m);
+        }
+        self.next_litter = ids.iter().copied().max().unwrap_or(0) + 1;
+        println!(
+            "[fmix] litters loaded: {} gates, {} litters, largest {}",
+            ids.len(),
+            sizes.len(),
+            sizes.values().max().copied().unwrap_or(0)
+        );
     }
 
     pub fn origins_in_order(&self) -> Vec<u32> {
@@ -7741,6 +7994,16 @@ mod mix_tests {
         // monotone non-decreasing over [0,n0], flat over hold, non-increasing after n1
         let up = (0..=50).map(|i| prof_target(n, r, s, i as f64 * 0.1)).collect::<Vec<_>>();
         assert!(up.windows(2).all(|w| w[1] >= w[0] - 1e-9));
+
+        // R1 = 1 (pure hold) with a sub-x1 compression end: flat at the input
+        // through N1, then linear down to half size.
+        let n = [1.0, 30.0, 35.0];
+        let r = [1.0, 0.5];
+        assert!((prof_target(n, r, s, 0.5) - 1000.0).abs() < 1e-9);
+        assert!((prof_target(n, r, s, 15.0) - 1000.0).abs() < 1e-9);
+        assert!((prof_target(n, r, s, 32.5) - 750.0).abs() < 1e-6);
+        assert!((prof_target(n, r, s, 35.0) - 500.0).abs() < 1e-9);
+        assert!((prof_target(n, r, s, 99.0) - 500.0).abs() < 1e-9);
     }
 
     // The controller must actually track a moderate, feasible profile on a
@@ -7759,6 +8022,7 @@ mod mix_tests {
             p_comp: 1.0,
             p_any: 0.1,
             s_db: 5,
+            db_min_window: 0,
             p_convex: 0.5,
             mix_pay_random: true,
             prof_n: [6.0, 18.0, 34.0],
@@ -8419,6 +8683,7 @@ mod mix_tests {
             p_db: 1.0,
             db_prefixes: true,
             s_db: 9,
+            db_min_window: 0,
             db_max_span: 4, // deliberately tight: forces the span-skip path too
             p_twist: 0.0,
             shuffle_rate: 0.0,
@@ -9138,6 +9403,7 @@ mod mix_tests {
             temp: 20.0,
             p_db: 0.0, // store-free: exercise the sampler, not the store
             s_db: 9,
+            db_min_window: 0,
             s_db_ctg: Some(3),
             verify_every: u64::MAX,
             report_every: u64::MAX,
@@ -9373,6 +9639,7 @@ mod mix_tests {
             w_window: 2,        // width >= 2 is evaded: evasion on almost every build
             w_pool: 0,
             s_db: 5,
+            db_min_window: 0,
             verify_every: 1_000, // global_check catches any functional drift
             report_every: u64::MAX,
             seed: 5,

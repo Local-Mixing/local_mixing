@@ -169,7 +169,19 @@ fn load_tables(path: &str) -> Tables {
 /// under a key is equivalent, so this bounds only redundant choice, never
 /// correctness -- and it turns the curated store from unusable (0.6s+/lookup,
 /// reconstructing the whole complete-coverage list) into sub-millisecond.
+/// `FROZEN_CURATED_CAP` overrides it (read once): the big-pool rebuilds carry
+/// 1000-10000 equivalents per M1-M3 key, which the default would truncate.
 const CURATED_CAP: usize = 256;
+
+fn curated_cap() -> usize {
+    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("FROZEN_CURATED_CAP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(CURATED_CAP)
+    })
+}
 
 // Decode a stored value into `out` as a chain of length-prefixed circuits
 // ([len][len bytes]...). Each loop iteration emits exactly one circuit, so
@@ -281,6 +293,13 @@ struct Frozen {
     shards: Vec<FrozenShard>,
     tables: Tables,
     filters: Option<Vec<BinaryFuse8>>,
+    // Decoded-value cache for BIG-POOL keys (values with > 20 candidates —
+    // only the M1/M2/M3 pool-swap entries qualify). Those ~1.7K hot keys are
+    // hit constantly and their Huffman decode dominates lookup cost
+    // (~40ms/move measured against ~7ms with the bounded store); caching the
+    // decoded bytes once per key removes it. Bounded, never evicts (the
+    // qualifying key population is small by construction).
+    big_cache: std::sync::Mutex<std::collections::HashMap<[u8; 16], std::sync::Arc<Vec<u8>>>>,
     // Value convention: when true, every decoded gate triple [t, c1, c2] has
     // its two controls swapped (bytes 1 and 2) before the value is returned.
     // The curated store was BUILT under the legacy swapped-controls
@@ -384,6 +403,7 @@ impl Frozen {
             tables,
             filters,
             swap_ctrls,
+            big_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -402,6 +422,10 @@ impl Frozen {
     /// reconstructs a multi-megabyte candidate list.
     fn get_capped(&self, key: &[u8], cap: usize) -> Option<Vec<u8>> {
         debug_assert_eq!(key.len(), 16);
+        let key16: [u8; 16] = key.try_into().ok()?;
+        if let Some(v) = self.big_cache.lock().unwrap().get(&key16) {
+            return Some((**v).clone());
+        }
         let (shard, bucket, tail) = split_key(key);
         if let Some(filters) = &self.filters {
             if !filters[shard].contains(&mix76(shard, bucket, tail)) {
@@ -445,6 +469,19 @@ impl Frozen {
                 // covers all four emission paths (incl. verbatim raw blocks).
                 if self.swap_ctrls {
                     swap_value_controls(&mut out);
+                }
+                // Cache big-pool values (candidate count > 20) post-convention.
+                let mut cands = 0usize;
+                let mut pos = 0usize;
+                while pos < out.len() && cands <= 20 {
+                    cands += 1;
+                    pos += 1 + out[pos] as usize;
+                }
+                if cands > 20 {
+                    let mut c = self.big_cache.lock().unwrap();
+                    if c.len() < 4096 {
+                        c.insert(key16, std::sync::Arc::new(out.clone()));
+                    }
                 }
                 return Some(out);
             }
@@ -573,14 +610,14 @@ impl FrozenDb {
         // stale unbounded install. The guardrail below is the tripwire: a
         // value that exceeds the bounded contract means the process is
         // pointed at the wrong DB, stale data, or a broken parser.
-        let v = self.curated.as_ref()?.get_capped(key, CURATED_CAP)?;
+        let v = self.curated.as_ref()?.get_capped(key, curated_cap())?;
         let mut candidates = 0usize;
         let mut pos = 0usize;
         while pos < v.len() {
             candidates += 1;
             pos += 1 + v[pos] as usize;
         }
-        if candidates > 20 || v.len() > 512 {
+        if (candidates > 20 || v.len() > 512) && curated_cap() == CURATED_CAP {
             use std::sync::atomic::{AtomicBool, Ordering};
             static WARNED: AtomicBool = AtomicBool::new(false);
             if !WARNED.swap(true, Ordering::Relaxed) {

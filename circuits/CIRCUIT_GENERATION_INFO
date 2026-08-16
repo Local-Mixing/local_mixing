@@ -531,3 +531,208 @@ Verification:
   Source C + sandwich + gadget + phase-A intermediate + all move snapshots
   kept SERVER-SIDE only (~/tds/prod33_20260726/); only this final circuit
   delivered to the Mac.
+----------------------------------------------------------------
+2026-08-12 circuits/newmix_20260812/noA_phaseB_crossB.mpmct1  (auto-landed by tmp/watch_newmix_20260812.sh)
+  Source: .242 server, ~/tds/gssmix128_noA_phaseB_20260812/run/ (driver ~/tds/newmix*_20260812.sh; artifact crossB.mpmct1)
+  Chain: GSS gadget (n=128, |C|=|D|=3000) -> fmix phase B BOTH PARTS (split + crossing walk, pipeline defaults), NO phase A, no fcompress. 512 wires; zero-slice: x on 0..127, C(x) on 128..255.
+  Gates: 1928156, wires: 512. NOTE: the crossing stage writes "mpmct1 1 N"
+  (wires field bogus, a generic fmix stage-5 writer quirk — the 20260806
+  campaign's crossB files share it); the header of THIS COPY was patched to
+  the true count (512, verified as max wire index + 1 over all gates). The
+  server original keeps the quirky header.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states and logs stay server-side. Verification: gate count
+  matches both the mpmct1 header and the server copy after transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-12 circuits/newmix_20260812/sandwich_AB_crossB.mpmct1  (auto-landed by tmp/watch_newmix_20260812.sh)
+  Source: .242 server, ~/tds/ssmix128_sandwich_AB_20260812/run/ (driver ~/tds/newmix*_20260812.sh; artifact crossB.mpmct1)
+  Chain: NON-gadgetized sliced sandwich (n=128, |C|=|D|=3000, 256 wires) -> fmix phase A (no --gss) --profile 5,55,75,2,1.5 (x2 in 5 effs, hold 50 effs, compress to x1.5 in 20 effs) -> phase B both parts (defaults), no fcompress. Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 61364, wires: 256. NOTE: header patched from the crossing stage's
+  bogus "mpmct1 1 N" to the true count (256 = max wire index + 1); see the
+  entry above. Server original unpatched.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states and logs stay server-side. Verification: gate count
+  matches both the mpmct1 header and the server copy after transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-12 circuits/newmix_20260812/noA_phaseB_fc_final.mpmct1  (auto-landed by tmp/watch_newmix_20260812.sh)
+  Source: .242 server, ~/tds/gssmix128_noA_phaseB_fc_20260812/run/ (driver ~/tds/newmix*_20260812.sh; artifact final.mpmct1)
+  Chain: GSS gadget (n=128, |C|=|D|=3000) -> fmix phase B both parts (defaults), NO phase A -> fcompress. 512 wires; zero-slice: x on 0..127, C(x) on 128..255.
+  Gates: 1740816, wires: 512. Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states and logs stay server-side. Verification: gate count
+  matches both the mpmct1 header and the server copy after transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-12 circuits/newmix_20260812/sandwich_AB_fc_final.mpmct1  (auto-landed by tmp/watch_newmix_20260812.sh)
+  Source: .242 server, ~/tds/ssmix128_sandwich_AB_fc_20260812/run/ (driver ~/tds/newmix*_20260812.sh; artifact final.mpmct1)
+  Chain: NON-gadgetized sliced sandwich (n=128, |C|=|D|=3000, 256 wires) -> fmix phase A (no --gss) --profile 5,55,75,2,1.5 -> phase B both parts (defaults) -> fcompress. Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 58198, wires: 256. Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states and logs stay server-side. Verification: gate count
+  matches both the mpmct1 header and the server copy after transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-12 circuits/newmix_20260812/sandwich_AB_fc_c6000_final.mpmct1  (auto-landed by tmp/watch_newmix_20260812.sh)
+  Source: .242 server, ~/tds/ssmix128_sandwich_AB_fc_c6000_20260812/run/ (driver ~/tds/newmix*_20260812.sh; artifact final.mpmct1)
+  Chain: NON-gadgetized sliced sandwich (n=128, |C|=|D|=6000, 256 wires) -> fmix phase A (no --gss) --profile 5,55,75,2,1.5 -> phase B both parts (defaults) -> fcompress. Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 96193, wires: 256. Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states and logs stay server-side. Verification: gate count
+  matches both the mpmct1 header and the server copy after transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-12 circuits/newmix_20260812/sandwich_AB_c6000_p8x4_xr6_crossB.mpmct1  (auto-landed by tmp/watch_newmix2_20260812.sh)
+  Source: .242 server, ~/tds/ssmix128_sandwich_AB_c6000_p8x4_xr6_20260812/run/ (driver ~/tds/newmix_c6000_x8_20260812.sh; artifact crossB.mpmct1)
+  Chain: NON-gadgetized sliced sandwich (n=128, |C|=|D|=6000, 256 wires) -> fmix phase A (no --gss) --profile 10,40,50,8,4 (x8 in 10 effs, hold 30 effs, compress to x4 in 10 effs) -> phase B: split to exhaustion + crossing walk with target x6 of the split output (--xr 6), no fcompress. Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 271771, wires: 256 (header PATCHED from bogus "mpmct1 1" (crossing-stage writer quirk) to true count 256 = max wire index + 1; server original unpatched.)
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states and logs stay server-side. Verification: gate count
+  matches both the mpmct1 header and the server copy after transfer;
+  no zero-slice / ridge readout yet.
+  REALIZED EXPANSIONS FELL SHORT OF THE REQUEST (see the xr6ext entry when it
+  lands): phase A reached x2.69 (37,400 g), not the scheduled x8-peak/x4-end —
+  the walk's realized growth is ~3-5%/eff on this input and the controller
+  logged saturation; the crossing stopped at x3.52 of splitB (271,771 /
+  target 462,726) when its 6-moves/gate budget (an r=2 calibration) ran out
+  MID-CLIMB. This file is therefore a budget-stopped mid-walk snapshot; the
+  walk was resumed from crossB.state toward the x6 target (x6ext_20260812.sh)
+  and the arrival artifact supersedes this one as the deliverable.
+----------------------------------------------------------------
+2026-08-12 circuits/newmix_20260812/sandwich_AB_c6000_p8x4_xr6ext_crossB2.mpmct1  (auto-landed by tmp/watch_newmix3_20260812.sh)
+  Source: .242 server, ~/tds/ssmix128_sandwich_AB_c6000_p8x4_xr6_20260812/run/ (driver ~/tds/x6ext_20260812.sh; artifact crossB2.mpmct1; server status: [x6ext] done: 341586 gates (target 462726))
+  Chain: Continuation of sandwich_AB_c6000_p8x4_xr6_crossB.mpmct1 (which see): the crossing walk resumed from crossB.state toward its x6 target (462726 gates) with an absolute 15M-move ceiling (~32 mv/target-gate vs the 6 mv/g r=2 calibration that stopped the first leg mid-climb) and a stop-at-arrival babysitter (stop flag touched when a report reaches target). Same chain upstream: NON-gadgetized sliced sandwich (n=128, |C|=|D|=6000) -> phase A --profile 10,40,50,8,4 (realized x2.69, saturation-limited) -> split to exhaustion -> crossing. SUPERSEDES the first-leg file as the deliverable. Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 341586, wires: 256 (header PATCHED from bogus "mpmct1 1" to true count 256; server original unpatched.)
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states and logs stay server-side. Verification: gate count
+  matches both the mpmct1 header and the server copy after transfer.
+  x6 VERDICT: this file IS the standing deliverable at x4.43 of splitB — the
+  x6 target (462,726) is UNREACHABLE at the calibrated crossing thermodynamics.
+  Evidence: (leg 1) 6 mv/g budget stopped mid-climb at 271,771; (leg 2, this
+  file) 32 mv/g plateaued at ~342k, size flat +/-0.2% over the last 2.5M moves
+  = damped equilibrium at temp=target/25; (leg 3, crossB3.mpmct1, SERVER-SIDE
+  only) resumed hotter at temp=target/10 for 12M more moves and equilibrated
+  LOWER (~334k) — temperature loosens target-adherence, it does not grow the
+  walk. The equilibrium is set by the expansion-vs-merge balance under the
+  width damper (b=3, c=1); reaching x6 would need a relaxed damper (--xb/--xc,
+  uncalibrated for spread) or a second split+cross round.
+----------------------------------------------------------------
+2026-08-12 circuits/newmix_20260812/phaseA_e1.5_h10.mpmct1  (auto-landed by tmp/watch_newmix_20260812.sh)
+  Source: .242 server, ~/tds/gssmix128_phaseA_20260812/e1.5_h10/ (driver ~/tds/newmix*_20260812.sh; artifact phaseA.mpmct1)
+  Chain: GSS gadget (n=128, |C|=|D|=3000) -> fmix phase A --gss --profile 3,13,33,1.5,1.25; stopped at END OF PHASE A. 512 wires; zero-slice: x on 0..127, C(x) on 128..255.
+  Gates: 905997, wires: 512. Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states and logs stay server-side. Verification: gate count
+  matches both the mpmct1 header and the server copy after transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-12 circuits/newmix_20260812/phaseA_e2_h10.mpmct1  (auto-landed by tmp/watch_newmix_20260812.sh)
+  Source: .242 server, ~/tds/gssmix128_phaseA_20260812/e2_h10/ (driver ~/tds/newmix*_20260812.sh; artifact phaseA.mpmct1)
+  Chain: GSS gadget (n=128, |C|=|D|=3000) -> fmix phase A --gss --profile 3,13,33,2,1.5; stopped at END OF PHASE A. 512 wires; zero-slice: x on 0..127, C(x) on 128..255.
+  Gates: 1081809, wires: 512. Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states and logs stay server-side. Verification: gate count
+  matches both the mpmct1 header and the server copy after transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-12 circuits/newmix_20260812/phaseA_e1.5_h30.mpmct1  (auto-landed by tmp/watch_newmix_20260812.sh)
+  Source: .242 server, ~/tds/gssmix128_phaseA_20260812/e1.5_h30/ (driver ~/tds/newmix*_20260812.sh; artifact phaseA.mpmct1)
+  Chain: GSS gadget (n=128, |C|=|D|=3000) -> fmix phase A --gss --profile 3,33,53,1.5,1.25; stopped at END OF PHASE A. 512 wires; zero-slice: x on 0..127, C(x) on 128..255.
+  Gates: 981345, wires: 512. Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states and logs stay server-side. Verification: gate count
+  matches both the mpmct1 header and the server copy after transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-12 circuits/newmix_20260812/phaseA_e2_h30.mpmct1  (auto-landed by tmp/watch_newmix_20260812.sh)
+  Source: .242 server, ~/tds/gssmix128_phaseA_20260812/e2_h30/ (driver ~/tds/newmix*_20260812.sh; artifact phaseA.mpmct1)
+  Chain: GSS gadget (n=128, |C|=|D|=3000) -> fmix phase A --gss --profile 3,33,53,2,1.5; stopped at END OF PHASE A. 512 wires; zero-slice: x on 0..127, C(x) on 128..255.
+  Gates: 1169463, wires: 512. Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states and logs stay server-side. Verification: gate count
+  matches both the mpmct1 header and the server copy after transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-13 circuits/sgdbmix128_20260813/final.mpmct1  (auto-landed by tmp/watch_sgdbmix_20260813.sh)
+  Source: .242 server, ~/tds/sgdbmix128_20260813/run/ (driver ~/tds/sgdbmix_20260813.sh; artifact final.mpmct1)
+  Chain: SGDB-substituted sliced sandwich pipeline: full-length NON-gadgetized sliced sandwich (n=128, |C|=|D|=6272, 256 wires, fresh CSPRNG seed) -> sgdb_substitute (every g57 gate replaced by a random circuit from the 10K single-gate-permutation DB sgdb.sgdb1 [= work/sgdb_single_gate_20260813.sgdb1 on the Mac; built by sgdb_build from curated-store friend pairs: identity reverse(C7)++Cother, random gate removed, remainder ROTATED so it computes the removed gate exactly, wires canonicalized, every sample exhaustively verified], scratch wires mapped to random distinct host wires, commuting shuffle, 200-state functional verify PASS) -> fmix phase A (no --gss) --profile 5,25,35,3,2 (x3 in 5 effs, hold 20, compress to x2 in 10) -> phase B: split to exhaustion + crossing target x3 (--xr 3) -> fcompress. Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 205889, wires: 256.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states, logs and the SGDB stay server-side (SGDB also
+  mirrored to work/ on the Mac). Verification: 200-state functional check
+  at substitution; gate count matches header and server copy on transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-13 circuits/sgdbmix128_span7_20260813/final.mpmct1  (auto-landed by tmp/watch_sgdbmix_span7_20260813.sh)
+  Source: .242 server, ~/tds/sgdbmix128_span7_20260813/run/ (driver ~/tds/sgdbmix_span7_20260813.sh; artifact final.mpmct1)
+  Chain: SGDB-substituted sliced sandwich, revision 2 (SPAN>=7 SGDB + STABLE MIX MODE): full-length sandwich (n=128, |C|=|D|=6272, fresh CSPRNG seed) -> sgdb_substitute with sgdb_span7.sgdb1 (10K circuits ALL spanning >=7 wires; = work/sgdb_single_gate_span7_20260813.sgdb1), 200-state verify PASS -> fmix phase A with NEW --db-mode stable (uniform draw among size w-1/w/w+1 equivalents, miss otherwise), s_db=12, CASCADING lookups (prefixes+curated-first+exhaust ON; Stable exempt from the curated class restriction), profile 5,25,35,3,2 -> split + crossing x3 -> fcompress. Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 176021, wires: 256.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states, logs and the SGDB stay server-side (SGDB also
+  mirrored to work/ on the Mac). Verification: 200-state functional check
+  at substitution; gate count matches header and server copy on transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-14 circuits/sgdbmix128_span7st_20260814/final.mpmct1  (auto-landed by tmp/watch_sgdbmix_span7st_20260814.sh)
+  Source: .242 server, ~/tds/sgdbmix128_span7st_20260814/run/ (driver ~/tds/sgdbmix_span7st_20260814.sh; artifact final.mpmct1)
+  Chain: SGDB-substituted sliced sandwich, revision 2 (SPAN>=7 SGDB + STABLE MIX MODE): full-length sandwich (n=128, |C|=|D|=6272, fresh CSPRNG seed) -> sgdb_substitute with sgdb_span7.sgdb1 (10K circuits ALL spanning >=7 wires; = work/sgdb_single_gate_span7_20260813.sgdb1), 200-state verify PASS -> fmix phase A with NEW --db-mode stable (TRUE stable rerun of rev-2 — the first run with the mode actually engaged, after the phase-A overlay stomp bug was fixed; uniform ±1 draw, strict curated-first), profile 5,25,35,3,2, s_db=12, STRICT curated-first, cascade ON, profile 5,25,35,3,2 -> split + crossing x3 -> fcompress. Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 1120351, wires: 256.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states, logs and the SGDB stay server-side (SGDB also
+  mirrored to work/ on the Mac). Verification: 200-state functional check
+  at substitution; gate count matches header and server copy on transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-14 circuits/sgdbmix128_span7sg_20260814/final.mpmct1  (auto-landed by tmp/watch_sgdbmix_span7sg_20260814.sh)
+  Source: .242 server, ~/tds/sgdbmix128_span7sg_20260814/run/ (driver ~/tds/sgdbmix_span7sg_20260814.sh; artifact final.mpmct1)
+  Chain: SGDB-substituted sliced sandwich, revision 2 (SPAN>=7 SGDB + STABLE MIX MODE): full-length sandwich (n=128, |C|=|D|=6272, fresh CSPRNG seed) -> sgdb_substitute with sgdb_span7.sgdb1 (10K circuits ALL spanning >=7 wires; = work/sgdb_single_gate_span7_20260813.sgdb1), 200-state verify PASS -> fmix phase A with NEW --db-mode stable-grow (uniform draw among size w/w+1 equivalents ONLY — the shrink option removed, a replacement never loses a gate; miss otherwise), s_db=12, STRICT curated-first, cascade ON, profile 5,25,35,3,2 -> split + crossing x3 -> fcompress. Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 712557, wires: 256.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states, logs and the SGDB stay server-side (SGDB also
+  mirrored to work/ on the Mac). Verification: 200-state functional check
+  at substitution; gate count matches header and server copy on transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-14 circuits/sgdbmix128_span7sl_20260814/final.mpmct1  (auto-landed by tmp/watch_sgdbmix_span7sl_20260814.sh)
+  Source: .242 server, ~/tds/sgdbmix128_span7sl_20260814/run/ (driver ~/tds/sgdbmix_span7sl_20260814.sh; artifact final.mpmct1)
+  Chain: SGDB-substituted sliced sandwich, revision 2 (SPAN>=7 SGDB + STABLE MIX MODE): full-length sandwich (n=128, |C|=|D|=6272, fresh CSPRNG seed) -> sgdb_substitute with sgdb_span7.sgdb1 (10K circuits ALL spanning >=7 wires; = work/sgdb_single_gate_span7_20260813.sgdb1), 200-state verify PASS -> fmix phase A with NEW --db-mode stable-ledger (draw ±1 while the shrink ledger has budget [removed < added + 64-gate slack], w/w+1 once exhausted — net DB drift bounded below by -64 gates at any size), s_db=12, STRICT curated-first, cascade ON, profile 5,25,35,3,2 -> split + crossing x3 -> fcompress. Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 712451, wires: 256.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states, logs and the SGDB stay server-side (SGDB also
+  mirrored to work/ on the Mac). Verification: 200-state functional check
+  at substitution; gate count matches header and server copy on transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-15 circuits/sgdbmix128_span7slb_20260814/final.mpmct1  (auto-landed by tmp/watch_sgdbmix_span7slb_20260814.sh)
+  Source: .242 server, ~/tds/sgdbmix128_span7slb_20260814/run/ (driver ~/tds/sgdbmix_span7slb_20260814.sh; artifact final.mpmct1)
+  Chain: SGDB-substituted sliced sandwich, revision 2 (SPAN>=7 SGDB + STABLE MIX MODE): full-length sandwich (n=128, |C|=|D|=6272, fresh CSPRNG seed) -> sgdb_substitute with sgdb_span7.sgdb1 (10K circuits ALL spanning >=7 wires; = work/sgdb_single_gate_span7_20260813.sgdb1), 200-state verify PASS -> fmix phase A with NEW --db-mode stable-ledger (draw ±1 while the shrink ledger has budget [removed < added + 64-gate slack], w/w+1 once exhausted — net DB drift bounded below by -64 gates at any size), profile 10,20,35,2,0.5, and the BALANCED sgdb_substitute (scratch placed by power-of-8-choices on a running per-wire usage counter — low/high half slot ratio ~1.04 vs ~2.8 uniform), s_db=12, STRICT curated-first, cascade ON, profile 5,25,35,3,2 -> split + crossing x3 -> fcompress. Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 701451, wires: 256.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states, logs and the SGDB stay server-side (SGDB also
+  mirrored to work/ on the Mac). Verification: 200-state functional check
+  at substitution; gate count matches header and server copy on transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-15 circuits/sgdbmix128_span7sl_holdB_20260815/final.mpmct1  (auto-landed by tmp/watch_sgdbmix_span7sl_holdB_20260815.sh)
+  Source: .242 server, ~/tds/sgdbmix128_span7sl_holdB_20260815/run/ (driver ~/tds/sgdbmix_span7sl_holdB_20260815.sh; artifact final.mpmct1)
+  Chain: holdB partial rerun of rev-sl: exact deterministic replay of phase A stopped at the phase-2->3 boundary (FMIX_STOP_AT_PHASE=3 — end of hold leg, NO compress leg), then phase B as before (split + crossing x3 + fcompress, seeds SEED+3/+5 on the new input). Same SGDB/substrate/master seed as the 20260814 arm. Puts rev-3/4/5 on rev-2b footing (no phase-A compression). Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 956374, wires: 256.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states, logs and the SGDB stay server-side (SGDB also
+  mirrored to work/ on the Mac). Verification: 200-state functional check
+  at substitution; gate count matches header and server copy on transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-15 circuits/sgdbmix128_span7sg_holdB_20260815/final.mpmct1  (auto-landed by tmp/watch_sgdbmix_span7sg_holdB_20260815.sh)
+  Source: .242 server, ~/tds/sgdbmix128_span7sg_holdB_20260815/run/ (driver ~/tds/sgdbmix_span7sg_holdB_20260815.sh; artifact final.mpmct1)
+  Chain: holdB partial rerun of rev-sg: exact deterministic replay of phase A stopped at the phase-2->3 boundary (FMIX_STOP_AT_PHASE=3 — end of hold leg, NO compress leg), then phase B as before (split + crossing x3 + fcompress, seeds SEED+3/+5 on the new input). Same SGDB/substrate/master seed as the 20260814 arm. Puts rev-3/4/5 on rev-2b footing (no phase-A compression). Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 1589761, wires: 256.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states, logs and the SGDB stay server-side (SGDB also
+  mirrored to work/ on the Mac). Verification: 200-state functional check
+  at substitution; gate count matches header and server copy on transfer;
+  no zero-slice / ridge readout yet.
+----------------------------------------------------------------
+2026-08-15 circuits/sgdbmix128_span7slb_holdB_20260815/final.mpmct1  (auto-landed by tmp/watch_sgdbmix_span7slb_holdB_20260815.sh)
+  Source: .242 server, ~/tds/sgdbmix128_span7slb_holdB_20260815/run/ (driver ~/tds/sgdbmix_span7slb_holdB_20260815.sh; artifact final.mpmct1)
+  Chain: holdB partial rerun of rev-slb: exact deterministic replay of phase A stopped at the phase-2->3 boundary (FMIX_STOP_AT_PHASE=3 — end of hold leg, NO compress leg), then phase B as before (split + crossing x3 + fcompress, seeds SEED+3/+5 on the new input). Same SGDB/substrate/master seed as the 20260814 arm. Puts rev-3/4/5 on rev-2b footing (no phase-A compression). Zero-slice: x on 0..127, wires 128..255 zero -> C(x) on 128..255.
+  Gates: 966273, wires: 256.
+  Seed: fresh CSPRNG draw, SERVER-SIDE ONLY (<run>/SEED, never in chat).
+  Intermediates, states, logs and the SGDB stay server-side (SGDB also
+  mirrored to work/ on the Mac). Verification: 200-state functional check
+  at substitution; gate count matches header and server copy on transfer;
+  no zero-slice / ridge readout yet.

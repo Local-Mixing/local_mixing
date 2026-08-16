@@ -753,3 +753,226 @@ pub fn stage_validate(lmdb_dir: &str, prefix: &str, out_dir: &str) {
     }
 }
 
+
+// ------------------------------------------------- frozen -> frozen pool swap
+
+/// Decoded [t,p,n] triples -> raw stored bytes (legacy-swapped-controls
+/// layout: stored (t, c1, c2) decodes as (t, c2, c1), so write back (t, n, p)).
+fn circuits_to_value(circuits: &[Vec<[u16; 3]>]) -> Vec<u8> {
+    let mut v = Vec::new();
+    for c in circuits {
+        assert!(c.len() * 3 <= 255, "circuit too long for the value format");
+        v.push((c.len() * 3) as u8);
+        for &[t, p, n] in c {
+            assert!(t < 256 && p < 256 && n < 256);
+            v.push(t as u8);
+            v.push(n as u8);
+            v.push(p as u8);
+        }
+    }
+    v
+}
+
+fn parse_sgdb_file(path: &str) -> Vec<Vec<[u16; 3]>> {
+    let s = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let mut lines = s.lines();
+    let header = lines.next().expect("empty sgdb file");
+    assert!(header.starts_with("sgdb1 "), "bad sgdb header in {path}");
+    lines
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            l.split(';')
+                .map(|t| {
+                    let v: Vec<u16> = t.split(',').map(|x| x.parse().expect("bad triple")).collect();
+                    [v[0], v[1], v[2]]
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The deterministic reference spelling of a raw value: decode friends under
+/// the swapped convention, take the lexicographically-least among the
+/// minimal-size ones — the SAME rule mgdb_build used for its MANIFEST.
+fn min_reference(v: &[u8]) -> Option<(usize, String)> {
+    let blobs = parse_value(v)?;
+    let mn = blobs.iter().map(|b| b.len() / 3).min()?;
+    let mut best: Option<Vec<[u16; 3]>> = None;
+    for b in blobs.iter().filter(|b| b.len() / 3 == mn) {
+        let dec: Vec<[u16; 3]> = b
+            .chunks(3)
+            .map(|c| [c[0] as u16, c[2] as u16, c[1] as u16])
+            .collect();
+        if best.as_ref().is_none_or(|cur| dec < *cur) {
+            best = Some(dec);
+        }
+    }
+    let best = best?;
+    let txt: Vec<String> = best.iter().map(|&[t, p, n]| format!("{t},{p},{n}")).collect();
+    Some((mn, txt.join(";")))
+}
+
+/// Rebuild a curated frozen store with the M1/M2/M3 pools swapped in:
+/// entries whose minimal retained friend has 1 gate get the SGDB pool
+/// (`m1_pool` file), 2..=3 gates get their per-permutation pool from
+/// `mgdb_dir` (MANIFEST.tsv maps minimal spelling -> file). Everything else
+/// copies BYTE-IDENTICALLY (source tables are reused, untouched buckets are
+/// copied without re-encoding). filters.bin and tables.bin are copied.
+pub fn pool_swap(src_dir: &str, out_dir: &str, m1_pool: &str, mgdb_dir: &str) {
+    pool_swap_upto(src_dir, out_dir, Some(m1_pool), mgdb_dir, 3)
+}
+
+/// Generalized pool swap: entries whose minimal retained friend has
+/// 1..=max_min gates get their pool from `mgdb_dir`'s manifest (keyed by
+/// minimal spelling); `m1_pool` (when Some) overrides the mn==1 entry with a
+/// dedicated file. Layerable: running against an ALREADY-SWAPPED store is a
+/// no-op for previously swapped entries (their minimal friend is now a big
+/// pool circuit, above max_min), so an M4 layer can be applied on top of an
+/// M1-M3 store without touching it.
+pub fn pool_swap_upto(
+    src_dir: &str,
+    out_dir: &str,
+    m1_pool: Option<&str>,
+    mgdb_dir: &str,
+    max_min: usize,
+) {
+    let tables = std::sync::Arc::new(load_tables(&format!("{src_dir}/tables.bin")));
+    std::fs::create_dir_all(out_dir).unwrap();
+    std::fs::copy(format!("{src_dir}/tables.bin"), format!("{out_dir}/tables.bin")).unwrap();
+    if std::path::Path::new(&format!("{src_dir}/filters.bin")).exists() {
+        std::fs::copy(format!("{src_dir}/filters.bin"), format!("{out_dir}/filters.bin")).unwrap();
+    }
+
+    // Pools: minimal-spelling text -> encoded raw value bytes.
+    let m1_value =
+        std::sync::Arc::new(m1_pool.map(|p| circuits_to_value(&parse_sgdb_file(p))));
+    let mut pools: HashMap<String, Vec<u8>> = HashMap::new();
+    let manifest = std::fs::read_to_string(format!("{mgdb_dir}/MANIFEST.tsv")).expect("MANIFEST");
+    for line in manifest.lines().skip(1) {
+        let f: Vec<&str> = line.split('\t').collect();
+        assert_eq!(f.len(), 5, "bad manifest line: {line}");
+        let file = f[0];
+        let minimal = f[4].to_string();
+        let val = circuits_to_value(&parse_sgdb_file(&format!("{mgdb_dir}/{file}")));
+        assert!(pools.insert(minimal, val).is_none(), "duplicate minimal spelling in manifest");
+    }
+    let pools = std::sync::Arc::new(pools);
+    println!(
+        "[pool-swap] pools loaded: m1 override {} bytes, {} manifest pools, max_min {max_min}",
+        m1_value.as_ref().as_ref().map_or(0, |v| v.len()),
+        pools.len()
+    );
+
+    let head_len = 24usize + (BUCKETS + 1) * 5;
+    let swapped = AtomicU64::new(0);
+    let swapped_m1 = AtomicU64::new(0);
+    let missing = AtomicU64::new(0);
+    let entries = AtomicU64::new(0);
+
+    (0..256usize).into_par_iter().for_each(|shard| {
+        let t = &*tables;
+        let src_path = format!("{src_dir}/shard_{shard:02x}.frz");
+        let file = std::fs::File::open(&src_path).unwrap();
+        let mut head = vec![0u8; head_len];
+        file.read_exact_at(&mut head, 0).unwrap();
+        assert_eq!(&head[0..8], b"FRZTBL01");
+        let count = u64::from_le_bytes(head[8..16].try_into().unwrap());
+        let read_off = |i: usize| -> u64 {
+            let mut b = [0u8; 8];
+            b[0..5].copy_from_slice(&head[24 + i * 5..24 + i * 5 + 5]);
+            u64::from_le_bytes(b)
+        };
+
+        let out_path = format!("{out_dir}/shard_{shard:02x}.frz");
+        let mut ofile = std::fs::File::create(&out_path).unwrap();
+        ofile.seek(SeekFrom::Start(head_len as u64)).unwrap();
+        let mut out = std::io::BufWriter::with_capacity(4 << 20, &mut ofile);
+        let mut offsets: Vec<u64> = Vec::with_capacity(BUCKETS + 1);
+        offsets.push(0);
+        let mut data_len = 0u64;
+
+        for bkt in 0..BUCKETS {
+            let (o0, o1) = (read_off(bkt), read_off(bkt + 1));
+            if o0 == o1 {
+                offsets.push(data_len);
+                continue;
+            }
+            let mut buf = vec![0u8; (o1 - o0) as usize];
+            file.read_exact_at(&mut buf, head_len as u64 + o0).unwrap();
+            // decode the bucket: tails + values
+            let mut r = BitReader::new(&buf);
+            let n = r.get(16) as usize;
+            let l = r.get(6) as u32;
+            let mut tails: Vec<u64> = Vec::with_capacity(n);
+            let mut up = 0u64;
+            for _ in 0..n {
+                while r.get1() == 0 {
+                    up += 1;
+                }
+                tails.push(up << l);
+            }
+            if l > 0 {
+                for tl in tails.iter_mut() {
+                    *tl |= r.get(l);
+                }
+            }
+            let mut vals: Vec<Vec<u8>> = Vec::with_capacity(n);
+            for _ in 0..n {
+                let mut v = Vec::new();
+                decode_value(t, &mut r, &mut v);
+                vals.push(v);
+            }
+            entries.fetch_add(n as u64, Ordering::Relaxed);
+            // swap target values
+            let mut touched = false;
+            for v in vals.iter_mut() {
+                if let Some((mn, minimal)) = min_reference(v) {
+                    if mn == 1 && m1_value.as_ref().is_some() {
+                        *v = m1_value.as_ref().as_ref().unwrap().clone();
+                        touched = true;
+                        swapped_m1.fetch_add(1, Ordering::Relaxed);
+                    } else if mn <= max_min {
+                        match pools.get(&minimal) {
+                            Some(nv) => {
+                                *v = nv.clone();
+                                touched = true;
+                                swapped.fetch_add(1, Ordering::Relaxed);
+                            }
+                            None => {
+                                missing.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
+            }
+            let bytes = if touched {
+                encode_bucket(t, &tails, &vals)
+            } else {
+                buf // byte-identical copy
+            };
+            out.write_all(&bytes).unwrap();
+            data_len += bytes.len() as u64;
+            offsets.push(data_len);
+        }
+        out.flush().unwrap();
+        drop(out);
+        let mut newhead: Vec<u8> = Vec::with_capacity(head_len);
+        newhead.extend(b"FRZTBL01");
+        newhead.extend(count.to_le_bytes());
+        newhead.extend(data_len.to_le_bytes());
+        for &o in &offsets {
+            newhead.extend(&o.to_le_bytes()[0..5]);
+        }
+        assert_eq!(newhead.len(), head_len);
+        ofile.write_at(&newhead, 0).unwrap();
+        ofile.sync_all().unwrap();
+    });
+    println!(
+        "[pool-swap] done: {} entries walked, {} m2/m3 values swapped, {} m1 swapped, {} MISSING pools",
+        entries.load(Ordering::Relaxed),
+        swapped.load(Ordering::Relaxed),
+        swapped_m1.load(Ordering::Relaxed),
+        missing.load(Ordering::Relaxed)
+    );
+    assert_eq!(missing.load(Ordering::Relaxed), 0, "some M2/M3 entries had no pool");
+}

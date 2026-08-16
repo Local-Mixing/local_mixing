@@ -384,6 +384,42 @@ pub enum DbMode {
     /// pool exactly when re-encoding is free and minimises cost only when it is
     /// not.
     Mix,
+    /// Stable re-encode: uniform over every equivalent within ONE gate of the
+    /// window (w-1, w, w+1); a window with no such spelling is a miss. The
+    /// point is maximum draw entropy subject to keeping the size where it is,
+    /// so that FUTURE windows keep re-encodable material to draw on — neither
+    /// the compressive drift of Mix's free branch (which prefers nothing and
+    /// so shrinks whenever shorter spellings exist) nor unpaid growth.
+    Stable,
+    /// Stable without the shrink option: uniform over equivalents of size w
+    /// or w+1 only. Never loses a gate by construction; the availability bias
+    /// that drove Stable downhill (the store thins above its 7-gate density
+    /// peak, so w-1 spellings outnumber w+1) becomes a slow upward ratchet
+    /// that stalls where windows run out of larger spellings.
+    StableGrow,
+    /// Flow-balanced stable: behaves as Stable while the walk's shrink ledger
+    /// has budget (gates added by +1 splices cover the gates removed, within
+    /// a small slack) and as StableGrow once it is exhausted. The walk maps
+    /// this to one of the two BEFORE selection (mix.rs db_attempt), so
+    /// choose_ref treats it like Stable if it ever sees it. Net DB drift is
+    /// bounded below by -slack at any size.
+    StableLedger,
+    /// Exact-size only: uniform over equivalents with len == window (the
+    /// same-size conversion probe); anything else is a miss.
+    Same,
+    /// SIZE-BALANCED band draw: the full band is offered while the walk's
+    /// size ledger is within slack, and the size choice is skewed corrective
+    /// once it drifts — so size VARIABILITY per splice is preserved while the
+    /// total is conserved in expectation. Mapped to BandShrink/BandGrow/
+    /// SizeAgnostic by the walk before selection (mix.rs db_attempt); if it
+    /// reaches choose_ref untranslated it reads as the unconstrained draw.
+    BandLedger,
+    /// Corrective arm: strictly SHORTER equivalents when any exist, else
+    /// same-size — never grows. (Still several sizes wide inside a band.)
+    BandShrink,
+    /// Corrective arm: strictly LONGER equivalents when any exist, else
+    /// same-size — never shrinks.
+    BandGrow,
 }
 
 impl DbMode {
@@ -392,6 +428,11 @@ impl DbMode {
             "mix" => Some(DbMode::Mix),
             "comp" => Some(DbMode::Compressing),
             "any" => Some(DbMode::SizeAgnostic),
+            "stable" => Some(DbMode::Stable),
+            "stable-grow" => Some(DbMode::StableGrow),
+            "stable-ledger" => Some(DbMode::StableLedger),
+            "same" => Some(DbMode::Same),
+            "band-ledger" => Some(DbMode::BandLedger),
             _ => None,
         }
     }
@@ -434,6 +475,11 @@ pub struct DbResult {
     /// True when BOTH directions were skipped by the degree guard (a certain
     /// miss reached without any canonicalization or store lookup).
     pub degree_skipped: bool,
+    /// The FORWARD canonical key of this window, when it was computed. Lets a
+    /// caller re-query another store for the same permutation — e.g. to read
+    /// the true complexity class of a big-pool hit from a reference store
+    /// whose small spellings the pool swap replaced.
+    pub fwd_key: Option<[u8; 16]>,
 }
 
 /// Degree pre-filter configuration for a DB lookup.
@@ -566,6 +612,7 @@ where
         chosen_curated: false,
         choice_count: 0,
         min_match_len: None,
+        fwd_key: None,
     };
     let window_len = window.len();
     if window_len == 0 {
@@ -643,6 +690,10 @@ where
     let mut values: Vec<Vec<u8>> = Vec::new();
     let mut refs: Vec<CandRef> = Vec::new();
     let mut identity_skipped = 0usize;
+    let mut fwd_key: Option<[u8; 16]> = directions
+        .iter()
+        .find(|(rev, _)| !rev)
+        .map(|(_, c)| key_of(c));
 
     // Stage A: the curated store, FORWARD KEY ONLY. The store docs say so
     // outright: "curated lookup itself uses the forward canonical form; the
@@ -678,6 +729,9 @@ where
         let mut seen_keys = std::collections::HashSet::new();
         for (dir_ix, (reversed, canonical)) in directions.iter().enumerate() {
             let key = key_of(canonical);
+            if !*reversed && fwd_key.is_none() {
+                fwd_key = Some(key);
+            }
             if !seen_keys.insert(key) {
                 continue;
             }
@@ -733,6 +787,7 @@ where
         chosen_curated,
         choice_count,
         min_match_len,
+        fwd_key,
     }
 }
 
@@ -745,7 +800,23 @@ where
 /// (non-growing) regular candidate is discarded unseen whenever curated
 /// answers at all. What it buys is a route whose pieces are not locally
 /// compressible by the REGULAR store. Compressing mode is exempt: its job is
-/// to shrink.
+/// to shrink. Stable is deliberately NOT exempt: the stable-mixing experiment
+/// tests whether staying WITHIN curated (highly inflated) material is stable,
+/// so a curated answer with no near-size member is a miss — the same-size
+/// regular spelling stays discarded unseen, by design.
+/// Optional ABSOLUTE incoming-length band, `FMIX_DB_LEN_BAND=lo,hi` (read
+/// once): candidates outside lo..=hi are dropped before any mode logic.
+/// Experiment knob — composes with every mode (e.g. `--db-mode any` +
+/// band = uniform draw over the banded lengths).
+fn len_band() -> Option<(usize, usize)> {
+    static B: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
+    *B.get_or_init(|| {
+        let v = std::env::var("FMIX_DB_LEN_BAND").ok()?;
+        let p: Vec<usize> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        (p.len() == 2 && p[0] <= p[1]).then(|| (p[0], p[1]))
+    })
+}
+
 fn choose_ref<R>(
     refs: &[R],
     window_len: usize,
@@ -757,9 +828,15 @@ where
     R: CandLen,
 {
     let restrict_curated = mode != DbMode::Compressing && refs.iter().any(|r| r.curated());
-    let pool: Vec<usize> = (0..refs.len())
+    let mut pool: Vec<usize> = (0..refs.len())
         .filter(|&i| !restrict_curated || refs[i].curated())
         .collect();
+    if let Some((blo, bhi)) = len_band() {
+        pool.retain(|&i| {
+            let l = refs[i].gate_count();
+            l >= blo && l <= bhi
+        });
+    }
     if pool.is_empty() {
         return None;
     }
@@ -793,6 +870,48 @@ where
                 free
             }
         }
+        // Everything within one gate of the window; no fallback — a window
+        // with no near-size spelling is a miss, not a shrink or a growth.
+        DbMode::Stable => pool
+            .into_iter()
+            .filter(|&i| len_of(i) + 1 >= window_len && len_of(i) <= window_len + 1)
+            .collect(),
+        // Same-size or one larger only: replacement never loses a gate.
+        DbMode::StableGrow => pool
+            .into_iter()
+            .filter(|&i| len_of(i) >= window_len && len_of(i) <= window_len + 1)
+            .collect(),
+        // Mapped to Stable/StableGrow by the walk before selection; if it
+        // reaches here untranslated, the safe reading is Stable's ±1.
+        DbMode::StableLedger => pool
+            .into_iter()
+            .filter(|&i| len_of(i) + 1 >= window_len && len_of(i) <= window_len + 1)
+            .collect(),
+        // Exact-size re-encode only: the probe mode for same-size conversion
+        // experiments.
+        DbMode::Same => pool.into_iter().filter(|&i| len_of(i) == window_len).collect(),
+        // Unmapped band-ledger: the unconstrained band draw.
+        DbMode::BandLedger => pool,
+        // Corrective arms: prefer the drift-correcting side, fall back to
+        // same-size so a correcting round is never wasted as a miss.
+        DbMode::BandShrink => {
+            let smaller: Vec<usize> =
+                pool.iter().copied().filter(|&i| len_of(i) < window_len).collect();
+            if smaller.is_empty() {
+                pool.into_iter().filter(|&i| len_of(i) == window_len).collect()
+            } else {
+                smaller
+            }
+        }
+        DbMode::BandGrow => {
+            let larger: Vec<usize> =
+                pool.iter().copied().filter(|&i| len_of(i) > window_len).collect();
+            if larger.is_empty() {
+                pool.into_iter().filter(|&i| len_of(i) == window_len).collect()
+            } else {
+                larger
+            }
+        }
     };
     if eligible.is_empty() {
         return None;
@@ -816,6 +935,71 @@ mod tests {
     use rand::SeedableRng;
     use rand::rngs::StdRng;
     use std::collections::HashMap;
+
+    struct FakeCand {
+        n: usize,
+        cur: bool,
+    }
+    impl CandLen for FakeCand {
+        fn gate_count(&self) -> usize {
+            self.n
+        }
+        fn curated(&self) -> bool {
+            self.cur
+        }
+    }
+
+    #[test]
+    fn stable_mode_picks_only_near_size() {
+        let mk = |ns: &[usize]| -> Vec<FakeCand> {
+            ns.iter().map(|&n| FakeCand { n, cur: false }).collect()
+        };
+        let refs = mk(&[3, 4, 5, 6, 7, 9]);
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let (i, pool) = choose_ref(&refs, 5, DbMode::Stable, false, &mut rng)
+                .expect("near-size spellings exist");
+            assert_eq!(pool, 3, "eligible set must be exactly {{4,5,6}}");
+            seen.insert(refs[i].n);
+        }
+        assert_eq!(seen, std::collections::HashSet::from([4, 5, 6]));
+
+        // No spelling within one gate of the window: a MISS, never a far pick.
+        let far = mk(&[2, 9]);
+        assert!(choose_ref(&far, 5, DbMode::Stable, false, &mut rng).is_none());
+
+        // Stable keeps the STRICT curated lexicographic-first rule (the
+        // stable-mixing experiment stays within curated material): a curated
+        // far-size candidate hides the regular same-size one — a MISS.
+        let curmix = vec![FakeCand { n: 5, cur: false }, FakeCand { n: 9, cur: true }];
+        assert!(choose_ref(&curmix, 5, DbMode::Stable, false, &mut rng).is_none());
+        // With a near-size CURATED candidate present, the draw is within the
+        // curated class only — the regular same-size spelling stays unseen.
+        let joint = vec![
+            FakeCand { n: 4, cur: true },
+            FakeCand { n: 5, cur: false },
+            FakeCand { n: 9, cur: true },
+        ];
+        for _ in 0..50 {
+            let (i, pool) = choose_ref(&joint, 5, DbMode::Stable, false, &mut rng).unwrap();
+            assert_eq!((joint[i].n, joint[i].cur, pool), (4, true, 1));
+        }
+
+        // StableGrow: the shrink class is excluded — only w and w+1 draw.
+        let refs = mk(&[3, 4, 5, 6, 7, 9]);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let (i, pool) =
+                choose_ref(&refs, 5, DbMode::StableGrow, false, &mut rng).unwrap();
+            assert_eq!(pool, 2, "eligible must be exactly {{5,6}}");
+            seen.insert(refs[i].n);
+        }
+        assert_eq!(seen, std::collections::HashSet::from([5, 6]));
+        // Only a smaller spelling available: MISS — a gate is never lost.
+        let only_shrink = mk(&[4]);
+        assert!(choose_ref(&only_shrink, 5, DbMode::StableGrow, false, &mut rng).is_none());
+    }
 
     fn exhaustively_equal(a: &[XGate], b: &[XGate], n: usize) -> bool {
         for input in 0..(1u64 << n) {

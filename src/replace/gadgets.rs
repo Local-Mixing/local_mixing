@@ -6229,9 +6229,16 @@ fn insertion_pass(order: &mut Vec<u32>, gates: &[XGate], rng: &mut impl Rng) {
 /// order of colliding pairs matters, so working on the reversed index list
 /// is sound).
 pub fn commuting_shuffle(gates: &mut Vec<XGate>, rng: &mut impl Rng) {
+    commuting_shuffle_order(gates, rng);
+}
+
+/// Like [`commuting_shuffle`], but returns the applied order (new position i
+/// held old index order[i]) so callers can permute per-gate sidecars (litter
+/// ids, origins) identically.
+pub fn commuting_shuffle_order(gates: &mut Vec<XGate>, rng: &mut impl Rng) -> Vec<u32> {
     let m = gates.len();
     if m < 2 {
-        return;
+        return (0..m as u32).collect();
     }
     let mut order: Vec<u32> = (0..m as u32).collect();
     const PASSES: usize = 3;
@@ -6247,6 +6254,7 @@ pub fn commuting_shuffle(gates: &mut Vec<XGate>, rng: &mut impl Rng) {
         reordered.push(gates[i as usize].clone());
     }
     *gates = reordered;
+    order
 }
 
 /// Two-share gadgetization with native CNOT linear bookends, a per-gate

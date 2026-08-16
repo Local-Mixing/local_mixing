@@ -297,6 +297,10 @@ struct Args {
     /// there is no separate minimum.
     #[arg(long, default_value_t = 9)]
     s_db: usize,
+    /// Minimum DB window length (0 = off). Use with --no-db-prefixes so the
+    /// descent does not visit shorter prefixes anyway.
+    #[arg(long, default_value_t = 0)]
+    db_min_window: usize,
     /// Probability the window sampler is convex rather than contiguous, in MIX
     /// mode (COMP: --p-convex-comp). Default 0.4 = contiguous 60% / convex 40%.
     #[arg(long, default_value_t = 0.4)]
@@ -614,6 +618,11 @@ struct Args {
     /// condition state (moves, twist coverage, canary ring, brake, pool).
     #[arg(long)]
     state_out: Option<String>,
+    /// Per-gate litter-id sidecar for the INPUT circuit (header "litter1 N",
+    /// one id per gate line) — e.g. written by sgdb_substitute so each
+    /// substituted block counts as a litter for --litter-ban.
+    #[arg(long)]
+    litter_in: Option<String>,
     /// Resume from a state file instead of --input. Parameters still come from
     /// the command line, so a paused run can be re-steered; only the state
     /// VERSION must match, since field meanings would otherwise drift silently.
@@ -938,7 +947,15 @@ fn main() {
         }
         let r = [v[3], v[4]];
         assert!(n[0] > 0.0 && n[1] >= n[0] && n[2] >= n[1], "--profile needs 0 < N0 <= N1 and a positive compression leg");
-        assert!(r[0] > 1.0 && r[1] >= 1.0 && r[0] >= r[1], "--profile needs R1 > 1 and R1 >= R2 >= 1");
+        // R1 = 1 (no expand leg, pure hold) and R2 < 1 (compress below the
+        // input size) are both valid schedules: prof_target is plain linear
+        // interpolation with no (R1-1) divisions, and the controller tracks
+        // err against S* symmetrically. The compress leg below x1 is only as
+        // feasible as the material allows — best-effort, same as any leg.
+        assert!(
+            r[0] >= 1.0 && r[1] > 0.0 && r[0] >= r[1],
+            "--profile needs R1 >= 1 and 0 < R2 <= R1"
+        );
         assert!(
             args.target_size.is_none() && args.size_hi == 0 && args.size_lo == 0,
             "--profile is the sole size authority: remove --target-size / --size-hi / --size-lo (make up your mind)"
@@ -1050,6 +1067,7 @@ fn main() {
         // therefore drift from reality, which is how the COMP shadowing hid.
         let probe = MixParams {
             s_db: args.s_db,
+            db_min_window: args.db_min_window,
             s_db_ctg: args.s_db_ctg,
             s_db_comp: args.s_db_comp,
             s_db_comp_ctg: args.s_db_comp_ctg,
@@ -1143,13 +1161,14 @@ fn main() {
         p_comp: args.p_comp,
         p_any: args.p_any,
         db_mode: local_mixing::postmix::db_replace::DbMode::parse(&args.db_mode)
-            .unwrap_or_else(|| panic!("unknown --db-mode {} (mix|comp|any)", args.db_mode)),
+            .unwrap_or_else(|| panic!("unknown --db-mode {} (mix|comp|any|stable|stable-grow|stable-ledger|same|band-ledger)", args.db_mode)),
         p_db: args.p_db,
         p_twist: args.p_twist,
         shuffle_rate: args.shuffle_rate,
         curated_exhaust: args.curated_exhaust,
         curated_in_comp: args.curated_in_comp,
         s_db: args.s_db,
+        db_min_window: args.db_min_window,
         w_window: args.w_window,
         w_pool: args.w_pool,
         p_convex: args.p_convex,
@@ -1270,6 +1289,19 @@ fn main() {
             None => Mixer::new(gates, num_wires, params),
         },
     };
+    // External litter assignment (e.g. the SGDB substitution's sidecar: every
+    // replaced gate's block is one litter, so --litter-ban covers the INITIAL
+    // replacements too, not only the walk's own splices).
+    if let Some(p) = &args.litter_in {
+        let ids: Vec<u64> = std::fs::read_to_string(p)
+            .unwrap_or_else(|e| panic!("read --litter-in {p}: {e}"))
+            .lines()
+            .skip(1) // header "litter1 N"
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.trim().parse().expect("bad litter id"))
+            .collect();
+        mixer.load_litters(&ids);
+    }
     // A resumed run has no input file, so the summary's "before" figures must
     // come from the resumed circuit or it reports 0 -> N and reads as if the
     // chain started from nothing.
