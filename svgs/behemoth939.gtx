@@ -1,4 +1,4 @@
-@title nonlinear939 — the behemoth: one SG-level gate W_c ^= W_a | !W_b as six folded gadgets
+@title behemoth939 — the behemoth: one SG-level gate W_c ^= W_a | !W_b as six folded gadgets
 @subtitle The replicated per-gate body: exactly 939 gates, deterministically. Each SG-level logical wire W = r ⊕ s, each of r,s a gadget-level 2-shared value (10 physical wires). Six max-size sub-gadgets G1..G6 (r57/nab/and/and/copy/copy), each with own fresh R, out3, scr, scr2, chaff. Encoding/decoding is fixed infrastructure, not shown.
 @equation W_c' = W_c ⊕ (W_a ∨ ¬W_b);  every sub-gadget ends with the 0-gate re-share relabeling
 @wire r0_0_0 r0

@@ -79,11 +79,17 @@ def sg_gate(circ, shares, a, b, t, g_name, extras6, checks=None, tag=""):
 
         if hasattr(circ, "mark"):
             circ.mark(f"{tag}{gtag} ({vt}): {t_nm} ^= {b_nm}" + (f" * {a_nm}" if a_nm else ""))
+        if hasattr(circ, "set_masks"):
+            # weight-2 path: classify exactly this sub-gadget's masks (a previous
+            # sub-gadget's R/out wires may have been relabeled into operand shares)
+            circ.set_masks({scr, scr2}, set(R) | set(chaff))
         a_blocks = () if a_nm is None else (tuple(shares[a_nm][0]), tuple(shares[a_nm][1]))
         b_blocks = (tuple(shares[b_nm][0]), tuple(shares[b_nm][1]))
         P1t, P2t = shares[t_nm]
         G.gadget_gate(circ, a_blocks, b_blocks, tuple(P1t), tuple(P2t),
                       R, out, scr, scr2, chaff, vtype=vt)
+        if hasattr(circ, "flush"):
+            circ.flush()                        # weight-2 path: restore cached mask prefixes
         shares[t_nm] = [list(R), [P2t[0], P2t[1]] + list(out)]     # the zero-gate relabel
         assert np.array_equal(share_val(circ, shares, t_nm), c_out), f"{tag}{gtag} incorrect"
     return expw

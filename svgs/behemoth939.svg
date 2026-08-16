@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="16958" height="2733" viewBox="0 0 16958 2733" font-family="ui-monospace, Menlo, Consolas, monospace">
-<title>nonlinear939 — the behemoth: one SG-level gate W_c ^= W_a | !W_b as six folded gadgets</title>
+<title>behemoth939 — the behemoth: one SG-level gate W_c ^= W_a | !W_b as six folded gadgets</title>
 <desc>The replicated per-gate body: exactly 939 gates, deterministically. Each SG-level logical wire W = r ⊕ s, each of r,s a gadget-level 2-shared value (10 physical wires). Six max-size sub-gadgets G1..G6 (r57/nab/and/and/copy/copy), each with own fresh R, out3, scr, scr2, chaff. Encoding/decoding is fixed infrastructure, not shown.</desc>
 <rect width="16958" height="2733" fill="#ffffff"/>
-<text x="8479" y="30" font-size="22" text-anchor="middle">nonlinear939 — the behemoth: one SG-level gate W_c ^= W_a | !W_b as six folded gadgets</text>
+<text x="8479" y="30" font-size="22" text-anchor="middle">behemoth939 — the behemoth: one SG-level gate W_c ^= W_a | !W_b as six folded gadgets</text>
 <text x="8479" y="50" font-size="12" fill="#555" text-anchor="middle">The replicated per-gate body: exactly 939 gates, deterministically. Each SG-level logical wire W = r ⊕ s, each of r,s a gadget-level 2-shared value (10</text>
 <text x="8479" y="65" font-size="12" fill="#555" text-anchor="middle">physical wires). Six max-size sub-gadgets G1..G6 (r57/nab/and/and/copy/copy), each with own fresh R, out3, scr, scr2, chaff. Encoding/decoding is fixed</text>
 <text x="8479" y="80" font-size="12" fill="#555" text-anchor="middle">infrastructure, not shown.</text>

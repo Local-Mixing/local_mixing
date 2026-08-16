@@ -37,10 +37,12 @@ applies the in-process trace-circuit mixer after gadgetization.
 
 Cell naming: `<gadget>_<aux>_<mix>` where gadget names embed the measured
 full per-gate cost — `none`, `secretshare14`, `bandproduct92`,
-`nonlinear193`, `nonlinear939`, plus `nonlinear{193,939}_band{0,16}`
-(band-pool arms, §5). Rust gadgetizers are addressed by `rust_gadget` in
-the arm table; the two Python builders (gg = 193, big = 939) are
-canonical.
+`nonlinear193`, `nonlinear291` (193 mask-first decomposed to fan-in ≤ 2,
+`gate_gadget_w2.py`), `behemoth939`, `behemoth1415` (939 over the weight-2
+decomposition), plus `_{ideal,band0,band16}`-style pool arms for the four
+Python gadgets (§5). Rust gadgetizers are addressed by `rust_gadget` in
+the arm table; the Python builders (gg = 193, gg2 = 291, big = 939,
+big2 = 1415) are canonical.
 
 ## 2. The six attacks
 
@@ -101,11 +103,14 @@ renders an empty grid titled "0 witnesses".
 | secretshare14 | 14.48 expected (randomized: SG menu 36/7 + 2× RG draw 14/3) | ~220 (Z-bookends + 7-CNOT share setups) |
 | bandproduct92 | 92.4 measured (randomized: fold menu, gathers, rolls, top-ups) | ~370 (band fill + injection) |
 | nonlinear193 | 193 exact | 0 |
-| nonlinear939 | 939 exact | 0 |
+| nonlinear291 | 291 exact (weight-2 decomposition: 2 dec + 24 cache + 1 temp wires) | 0 |
+| behemoth939 | 939 exact | 0 |
+| behemoth1415 | 1415 exact (291+288+291+291+127+127; weight-2 with exact per-sub-gadget mask classification) | 0 |
 
 At k=16: `none` F=41 trace features; `secretshare14` F=914;
 `bandproduct92` F=3890; `nonlinear193` F=6450 (32126 mixed);
-`nonlinear939` F=30378 (63730 mixed). Runtimes are dominated by
+`behemoth939` F=30378 (63730 mixed); `nonlinear291` F=9553;
+`behemoth1415` F=46971. Runtimes are dominated by
 `xrows`/`xtrace` Gaussian elimination (none ~4 s → big ~49 s at k=16,
 single-threaded); mixing inflates `bandproduct92` k=16 to ~1200 s.
 
@@ -153,7 +158,24 @@ flag/hit counts at k=1 and k=2 (including the two w1 flags at k=2, which
 are mixer artifacts), slightly *fewer* flags at k=16. Blind layers make
 no measurable difference for these gadgets. The w1/w2 demotion under
 mixing is a **mixer artifact** (merge rules don't respect cascade
-structure), not a pool artifact; `nonlinear939` is immune to both.
+structure), not a pool artifact; the behemoths are immune to the w3 leak
+itself (the cascade is recursively masked there).
+
+The weight-2 arms (`nonlinear291`, `behemoth1415`, measured k=1/2/16,
+mix on/off, ideal and band16 pools) behave exactly as their parents:
+`nonlinear291` reproduces `nonlinear193`'s profile (nomix: w3-only
+cascade flags with the same 0.75-signature witnesses; mix: demotion to
+w2/w1, reaching w1=30/80 targets at k=16 — the decomposition emits more
+mask-carrying coordinates for the mixer to merge, so the demotion goes
+further) with **no new leak class**: the mask-first decomposition never
+exposes a bare operand monomial (w1=w2=0 in every nomix cell).
+`behemoth1415` matches `behemoth939`: clean under mixing at every k
+(one noise-edge w2 excursion at k=2, cov 0.070 vs the 6σ = 0.066
+threshold); nomix shows only noise-edge w3 excursions at the 6σ
+threshold (max cov ≈ 0.095 vs the 0.19–0.75 range of real leaks),
+not replicating across seeds (a seed-555 rerun of the k=16 nomix cell
+flags 0). Results: `reports/mxw2/REPORT.md` (24 cells: the two new
+gadgets x k=1,2,16 x mix on/off x ideal/band16).
 
 ## 6. Implementation notes
 

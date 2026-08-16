@@ -66,17 +66,32 @@ measured full cost per source gate):
 | `secretshare14` | the paper's paired secret-share `w = s ⊕ r`: one SG from a 7-variant menu ({5,5,4,6,6,6,4} gates) + 2 refresh gadgets (RG1/2/3 = {6,6,2}); expected cost 36/7 + 2·14/3 = 14.48 | ~14.5 (randomized) | `SSG_README.md`, `docs/NONLINEAR_RG_CG_MENU.md` |
 | `bandproduct92` | the paper's product-share band `V = C ⊕ M(B) ⊕ κ`, Gray fold, mask plan [2,2,2,3]; randomized gathers/rolls/top-ups | ~92 (randomized) | `docs/PRODUCT_SHARE_ENCODING.md`, `docs/GRAY_FOLD_CG.md`, `docs/BAND_HARDENING.md` |
 | `nonlinear193` | folded single-gate gadget: T-conjunction tree with band-pool masks `r·B(s)`, fresh 5-wire re-share R per gate | 193 (exact) | `README_gate_gadget_v2.md` |
-| `nonlinear939` | full cascade: same mask structure **and** a re-share gadget whose own 23 mask gates are recursively masked | 939 (exact) | `README_gate_gadget_v2.md` |
+| `nonlinear291` | `nonlinear193` restricted to **fan-in ≤ 2 gates** (fits the mixing pipeline's gate model): every fan-in ≥ 3 gate mask-first decomposed into fan-in-2 Toffolis, with a persistent mask-prefix cache | 291 (exact) | `gate_gadget_w2.py` |
+| `behemoth939` | full cascade: same mask structure **and** a re-share gadget whose own 23 mask gates are recursively masked | 939 (exact) | `README_gate_gadget_v2.md` |
+| `behemoth1415` | `behemoth939` over the weight-2 decomposition with exact per-sub-gadget mask classification (`set_masks`): 291+288+291+291+127+127 | 1415 (exact) | `gate_gadget_w2.py` |
 
-Plus `_band0` / `_band16` variants of the last two, where borrow wires
+Plus `_band0` / `_band16` variants of the last four, where borrow wires
 are fed by the input-keyed band pool with 0 or 16 blind layers instead of
 ideal randomness (contract and verdict in `TESTING_PIPELINE.md` §5).
+
+The weight-2 decomposition (`gate_gadget_w2.Weight2Circuit`) folds the
+MASK controls of every wide gate into the accumulator first, so no bare
+operand-share monomial ever appears on a decomposition ancilla (a naive
+split would expose e.g. `a2_2·a2_4`, reviving the exact-linear attack);
+the prefix cache only reuses intermediates the plain decomposition
+already computes, so the added trace coordinates are a subset of the
+uncached ones. In chains/SGs the mask classification must be re-pointed
+to the *current* (sub-)gadget (`set_masks`): the 0-gate output relabeling
+turns a previous gadget's borrow wires into operand shares, and a stale
+union classification is still safe but over-conservative (the SG would
+cost 1455 instead of 1415 — the number in the name is the exact one).
 
 The 193-gate gadget passes properties 1–5 exactly and has a measured
 weight-3 residual (the mask-cascade leak: three mask flips XOR to
 `b·B(s)` with B 3/4-biased) that mixing can demote to weight 2 —
 documented in `README_gate_gadget_v2.md` §7 and fixed by construction in
-`nonlinear939`.
+`behemoth939` / `behemoth1415` (the six-sub-gadget cascade, whose
+re-share gadget recursively masks its own mask gates).
 
 Retired: the "nonlinear carrier" gadget (an in-repo design note,
 `nonlinear-carrier-gadget.md`; not from the paper, superseded by the
@@ -86,7 +101,7 @@ folded gadget) — code kept, out of the pipeline.
 
 - Python reference builders (canonical, with their own test suites):
   `gate_gadget.py` (v1, 193), `gate_gadget_v2.py` + `big_gate_gadget.py`
-  (v2, 939).
+  (v2, 939), `gate_gadget_w2.py` (weight-2 decomposition → 291 / 1415).
 - Rust production gadgetizers: `src/replace/gadgets.rs`
   (`gadgetize_xgates` = secret-share, `gadgetize_xgates_single` =
   band-product, `gadgetize_xgates_gg` = the folded gadget's Rust port).

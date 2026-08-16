@@ -64,4 +64,5 @@ Reports: `reports/mx/REPORT.md`.
 | `docs/PRODUCT_SHARE_ENCODING.md` | the band/product-share encoding |
 | `src/` | Rust engine (gadgetizers, mixer, attack binaries) |
 | `gate_gadget.py`, `gate_gadget_v2.py`, `big_gate_gadget.py` | Python gadget builders + their own test suites |
+| `gate_gadget_w2.py` | weight-2 (fan-in ≤ 2) decomposition of the folded gadget → nonlinear291 / behemoth1415 |
 | `gauntlet.py`, `gauntlet_build.py`, `gauntlet_heatmap.py` | testing orchestration |

@@ -1,6 +1,7 @@
 """
 gauntlet_build.py — build chained-gate obfuscated circuits with the Python
-gadgets (gg = canonical 193-gate folded gadget, big = 939-gate behemoth) and
+gadgets (gg = canonical 193-gate folded gadget, gg2 = nonlinear291 weight-2,
+big = 939-gate behemoth, big2 = behemoth1415 weight-2) and
 export them in the uniform gauntlet format so ONE Rust tracer/auditor handles
 every gadget:
 
@@ -25,6 +26,9 @@ Layouts (n logical wires, k chain gates):
   big: shares r{i},s{i} = [5-block,5-block] each (20 wires/logical); per gate a
        fresh mask share gA (10) + six extras tuples (R5,out3,scr,scr2,chaff4 =
        14 each).  nw = 20n + 94k, ng = 939k.
+  gg2/big2: the weight-2 (fan-in<=2) variants add 27 clean ancilla wires
+       (2 fallback decomp + 24 persistent mask-prefix cache + 1 temp);
+       ng = 291k / 1415k.
 """
 import argparse
 import sys
@@ -33,6 +37,12 @@ import numpy as np
 
 import gate_gadget_v2 as G
 import big_gate_gadget as BIG
+import gate_gadget_w2 as W2
+
+# weight-2 (fan-in<=2) variants: gate_gadget_w2 decomposes every fan-in>=3
+# gate of the canonical gadgets mask-first.  gg2 = nonlinear291, big2 = behemoth1455.
+W2_EXTRA = 27            # 2 fallback decomp ancillas + 24 mask-prefix cache + 1 temp
+EXPECTED = {"gg": 193, "big": 939, "gg2": 291, "big2": 1415}
 
 
 def parse_chain(path):
@@ -220,7 +230,8 @@ def E_of(src, blk):
 
 
 # ----------------------------------------------------------------------------
-def build_gg(n, gates, samples, rng, pool="ideal", blind_layers=0, n_key=120):
+def build_gg(n, gates, samples, rng, pool="ideal", blind_layers=0, n_key=120,
+             weight2=False):
     k = len(gates)
     P1 = {i: list(range(10 * i, 10 * i + 5)) for i in range(n)}
     P2 = {i: list(range(10 * i + 5, 10 * i + 10)) for i in range(n)}
@@ -231,7 +242,11 @@ def build_gg(n, gates, samples, rng, pool="ideal", blind_layers=0, n_key=120):
         chaff = list(range(p + 8, p + 12)); p += 12
         extras.append((R, out3, chaff))
     scr, scr2 = p, p + 1
-    nw = p + 2
+    p += 2
+    if weight2:
+        DEC = (p, p + 1); PERSIST = tuple(range(p + 2, p + 26)); TEMP = (p + 26,)
+        p += W2_EXTRA
+    nw = p
 
     wires = [rng.integers(0, 2, samples).astype(np.uint8) for _ in range(nw)]
     for (R, out3, chaff) in extras:
@@ -269,7 +284,15 @@ def build_gg(n, gates, samples, rng, pool="ideal", blind_layers=0, n_key=120):
     xh = list(range(nw, nw + n))
     holder_cols = [X[i].copy() for i in range(n)]
 
-    circ = G.Circuit(wires)
+    if weight2:
+        for w in DEC + PERSIST + TEMP:
+            wires[w] = np.zeros(samples, np.uint8)
+        core_mask = {scr, scr2}
+        aux_mask = {w for (R, _o, chaff) in extras for w in list(R) + list(chaff)}
+        circ = W2.Weight2Circuit(wires, DEC, core_mask, aux_mask,
+                                 persist=PERSIST, temp=TEMP)
+    else:
+        circ = G.Circuit(wires)
 
     def val(i):
         return (E_of(circ.s, P1[i]) ^ E_of(circ.s, P2[i])).astype(np.uint8)
@@ -278,8 +301,14 @@ def build_gg(n, gates, samples, rng, pool="ideal", blind_layers=0, n_key=120):
         bv, av, ci = val(b), val(a), val(t)
         co = (ci ^ (1 ^ bv ^ (av & bv))).astype(np.uint8)
         R, out3, chaff = extras[gi]
+        if weight2:
+            # classify exactly THIS gadget's masks: a previous gate's R/out wires
+            # are now operand share blocks (the 0-gate output relabeling)
+            circ.set_masks({scr, scr2}, set(R) | set(chaff))
         G.gadget_gate(circ, (tuple(P1[a]), tuple(P2[a])), (tuple(P1[b]), tuple(P2[b])),
                       tuple(P1[t]), tuple(P2[t]), R, out3, scr, scr2, chaff, vtype="r57")
+        if weight2:
+            circ.flush()
         P1[t] = list(R)
         P2[t] = [P2[t][0], P2[t][1]] + list(out3)
         assert np.array_equal(val(t), co), f"gg gate {gi} incorrect"
@@ -287,30 +316,44 @@ def build_gg(n, gates, samples, rng, pool="ideal", blind_layers=0, n_key=120):
     _, final = simulate_chain(n, gates, X)
     assert all(np.array_equal(val(t), final[t]) for t in range(n)), "gg e2e decode failed"
 
-    check_borrow_isolation(circ, borrows, k, 193)
+    if weight2:
+        assert max(len(ctrls) for (_t, _c, ctrls) in circ.gate_log) <= 2
+        for w in DEC + PERSIST + TEMP:
+            assert not circ.s[w].any(), "weight-2 ancillas not restored"
+    check_borrow_isolation(circ, borrows, k, EXPECTED["gg2" if weight2 else "gg"],
+                           tail_tolerance=W2_EXTRA if weight2 else 0)
     decode = {v: list(P1[v]) + list(P2[v]) for v in range(n)}   # final (relabeled) blocks
     if null_band is not None:
         holder_cols.append(null_band)
     return circ, wires, nw, decode, xh, holder_cols, borrows
 
 
-def check_borrow_isolation(circ, borrows, k, period):
+def check_borrow_isolation(circ, borrows, k, period, tail_tolerance=0):
     """STRICT borrow wires (chaff, and for big the gA mask share) may be read
     only by gates of their own context.  Transitory borrows (the R blocks) are
     exempt: the gadget relabels R as the new share block, so downstream gates
     read it as *data* (operand encoding), not as mask -- that mask<->operand
     statistical independence question is exactly what the band-mode battery
-    measures, so we do not forbid the data flow, we audit it."""
+    measures, so we do not forbid the data flow, we audit it.
+
+    tail_tolerance: the weight-2 decomposition's persistent mask-prefix cache
+    is drained by flush() AFTER the per-gate gate count is fixed, so on the w2
+    arms a strict borrow of gate gi may legitimately be read by cache-teardown
+    gates in the first positions of the next context; tolerate reads while
+    gi_gate < (owner+1)*period + tail_tolerance."""
     owner = {}
     for gi, (strict, _trans) in borrows.items():
         for w in strict:
             owner[w] = gi
     for gi_gate, (t, comp, ctrls) in enumerate(circ.gate_log):
-        ctx = gi_gate // period
         for (w, _pol) in ctrls:
             if w in owner:
-                assert owner[w] == ctx, \
-                    f"strict borrow wire {w} of gate {owner[w]} consumed in context {ctx}"
+                own = owner[w]
+                ok = (gi_gate // period == own) or \
+                     (tail_tolerance and gi_gate < (own + 1) * period + tail_tolerance
+                      and gi_gate >= (own + 1) * period)
+                assert ok, \
+                    f"strict borrow wire {w} of gate {own} consumed in context {gi_gate // period}"
 
 
 def args_seed_pool():
@@ -318,7 +361,8 @@ def args_seed_pool():
     return args_seed_pool.value
 
 
-def build_big(n, gates, samples, rng, pool="ideal", blind_layers=0, n_key=120):
+def build_big(n, gates, samples, rng, pool="ideal", blind_layers=0, n_key=120,
+              weight2=False):
     k = len(gates)
     p = 0
 
@@ -341,6 +385,9 @@ def build_big(n, gates, samples, rng, pool="ideal", blind_layers=0, n_key=120):
             p += 5; chaff = tuple(range(p, p + 4)); p += 4
             ex.append((R, out, scr, scr2, chaff))
         per_gate.append((gA, ex))
+    if weight2:
+        DEC = (p, p + 1); PERSIST = tuple(range(p + 2, p + 26)); TEMP = (p + 26,)
+        p += W2_EXTRA
     nw = p
 
     wires = [rng.integers(0, 2, samples).astype(np.uint8) for _ in range(nw)]
@@ -390,7 +437,18 @@ def build_big(n, gates, samples, rng, pool="ideal", blind_layers=0, n_key=120):
     xh = list(range(nw, nw + n))
     holder_cols = [X[i].copy() for i in range(n)]
 
-    circ = G.Circuit(wires)
+    if weight2:
+        for w in DEC + PERSIST + TEMP:
+            wires[w] = np.zeros(samples, np.uint8)
+        core_mask, aux_mask = set(), set()
+        for (_gA, ex) in per_gate:
+            for (R, out, scr, scr2, chaff) in ex:
+                core_mask |= {scr, scr2}
+                aux_mask |= set(R) | set(chaff)
+        circ = W2.Weight2Circuit(wires, DEC, core_mask, aux_mask,
+                                 persist=PERSIST, temp=TEMP)
+    else:
+        circ = G.Circuit(wires)
     for gi, (t, a, b) in enumerate(gates):
         gA, ex = per_gate[gi]
         BIG.sg_gate(circ, shares, a, b, t, gA, ex, tag=f"g{gi}:")   # asserts internally
@@ -399,7 +457,12 @@ def build_big(n, gates, samples, rng, pool="ideal", blind_layers=0, n_key=120):
     for t in range(n):
         assert np.array_equal(Wv(circ.s, t), final[t]), f"big e2e decode failed wire {t}"
 
-    check_borrow_isolation(circ, borrows, k, 939)
+    if weight2:
+        assert max(len(ctrls) for (_t, _c, ctrls) in circ.gate_log) <= 2
+        for w in DEC + PERSIST + TEMP:
+            assert not circ.s[w].any(), "weight-2 ancillas not restored"
+    check_borrow_isolation(circ, borrows, k, EXPECTED["big2" if weight2 else "big"],
+                           tail_tolerance=W2_EXTRA if weight2 else 0)
     decode = {v: (list(shares[f"r{v}"][0]) + list(shares[f"r{v}"][1])
                   + list(shares[f"s{v}"][0]) + list(shares[f"s{v}"][1])) for v in range(n)}
     if null_band is not None:
@@ -409,7 +472,7 @@ def build_big(n, gates, samples, rng, pool="ideal", blind_layers=0, n_key=120):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gadget", required=True, choices=["gg", "big"])
+    ap.add_argument("--gadget", required=True, choices=["gg", "big", "gg2", "big2"])
     ap.add_argument("--c-in", required=True)
     ap.add_argument("--out-prefix", required=True)
     ap.add_argument("--n", type=int, default=8)
@@ -434,15 +497,13 @@ def main():
     samples = (args.samples + 63) // 64 * 64
     rng = np.random.default_rng(args.seed)
 
-    if args.gadget == "gg":
-        circ, wires, nw, decode, xh, holders, borrows = build_gg(
-            n, gates, samples, rng, args.pool, args.blind_layers, args.pool_keys)
-    else:
-        circ, wires, nw, decode, xh, holders, borrows = build_big(
-            n, gates, samples, rng, args.pool, args.blind_layers, args.pool_keys)
+    build = build_gg if args.gadget in ("gg", "gg2") else build_big
+    circ, wires, nw, decode, xh, holders, borrows = build(
+        n, gates, samples, rng, args.pool, args.blind_layers, args.pool_keys,
+        weight2=args.gadget.endswith("2"))
 
     ng = len(circ.flips)
-    expect = 193 * k if args.gadget == "gg" else 939 * k
+    expect = EXPECTED[args.gadget] * k
     assert ng == expect, f"{ng} gates != {expect}"
 
     with open(f"{args.out_prefix}.mpmct1", "w") as fh:

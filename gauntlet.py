@@ -31,7 +31,9 @@ The gadget ladder:  none < ss < semi < nc/ncx < gg < big
   ncx   nc with NC_EXPAND=1 (monomial-expanded emission: the doc's fix for
         the whole-trace exact attack)
   gg    canonical folded gadget, 193 gates/gate (gate_gadget_v2)
+  gg2   nonlinear291: gg mask-first decomposed to fan-in<=2 (gate_gadget_w2)
   big   the behemoth, 939 gates/gate (big_gate_gadget: SG of six gg gadgets)
+  big2  behemoth1415: big over the weight-2 decomposition (1415 gates/gate)
 
 Mixing: --mix N runs their local-mixing walk in-process after gadgetization
 (same engine as fmix; twists on at 0.08).  With mixing on this reproduces the
@@ -56,7 +58,7 @@ N = 8
 MIX_MOVES = 20000
 # correlation tail by k (sigma ~= 1/sqrt): headline cells get extra power
 CORR = {1: 16384, 2: 8192, 16: 4096}
-CORR_OVERRIDE = {("nonlinear193", 16): 16384}
+CORR_OVERRIDE = {("nonlinear193", 16): 16384, ("nonlinear291", 16): 16384}
 # arms: name -> (kind, aux policies, extra)
 #   kind rust:  gauntlet_gen --gadget <name>
 #   kind file:  gauntlet_build.py --gadget <name> then gauntlet_gen --gadget file
@@ -75,7 +77,14 @@ CORR_OVERRIDE = {("nonlinear193", 16): 16384}
 #                      cost again randomized (fold menu + mask gathers + band
 #                      rolls + ledger top-ups): 4-seed measured mean 92.4
 #   nonlinear193    -- the user's folded 193-gate gadget (gate_gadget_v2.py)
-#   nonlinear939    -- the user's 939-gate six-fold gadget (big_gate_gadget.py)
+#   nonlinear291    -- gate_gadget_w2.py: nonlinear193 mask-first decomposed to
+#                      fan-in <= 2 per gate (persistent mask-prefix cache):
+#                      291 gates/gate, fits the mixing pipeline's <=2-control model
+#   behemoth939     -- the user's 939-gate six-fold gadget (big_gate_gadget.py)
+#   behemoth1415    -- behemoth939 over the weight-2 decomposition with exact
+#                      per-sub-gadget mask classification (set_masks): 291+288+
+#                      291+291+127+127 = 1415 gates/gate (the union-classified
+#                      variant would cost 1455)
 #   *_band0/_band16 -- borrow-wire pool-fed variants (band fill keyed by the
 #                      full pipeline input; suffix = U0 blind churn layers)
 ARMS = {
@@ -83,16 +92,26 @@ ARMS = {
     "secretshare14": ("rust", ["zero", "random"], {"rust_gadget": "ss"}),
     "bandproduct92": ("rust", ["zero", "random"], {"rust_gadget": "semi"}),
     "nonlinear193":  ("file", ["builder"], {"gadget": "gg"}),
-    "nonlinear939":  ("file", ["builder"], {"gadget": "big"}),
+    "nonlinear291":  ("file", ["builder"], {"gadget": "gg2"}),
+    "behemoth939":   ("file", ["builder"], {"gadget": "big"}),
+    "behemoth1415":  ("file", ["builder"], {"gadget": "big2"}),
     "nonlinear193_band0":  ("file", ["builder"], {"gadget": "gg", "pool": "band", "blind": 0}),
     "nonlinear193_band16": ("file", ["builder"], {"gadget": "gg", "pool": "band", "blind": 16}),
-    "nonlinear939_band0":  ("file", ["builder"], {"gadget": "big", "pool": "band", "blind": 0}),
-    "nonlinear939_band16": ("file", ["builder"], {"gadget": "big", "pool": "band", "blind": 16}),
+    "nonlinear291_band0":  ("file", ["builder"], {"gadget": "gg2", "pool": "band", "blind": 0}),
+    "nonlinear291_band16": ("file", ["builder"], {"gadget": "gg2", "pool": "band", "blind": 16}),
+    "behemoth939_band0":   ("file", ["builder"], {"gadget": "big", "pool": "band", "blind": 0}),
+    "behemoth939_band16":  ("file", ["builder"], {"gadget": "big", "pool": "band", "blind": 16}),
+    "behemoth1415_band0":  ("file", ["builder"], {"gadget": "big2", "pool": "band", "blind": 0}),
+    "behemoth1415_band16": ("file", ["builder"], {"gadget": "big2", "pool": "band", "blind": 16}),
 }
 # analytic gate/wire counts for Python-built gadgets (deterministic)
 def file_layout(gadget, k):
     if gadget == "gg":
         return 10 * N + 12 * k + 2, 193 * k
+    if gadget == "gg2":
+        return 10 * N + 12 * k + 2 + 27, 291 * k
+    if gadget == "big2":
+        return 20 * N + 94 * k + 27, 1415 * k
     return 20 * N + 94 * k, 939 * k
 
 
@@ -292,7 +311,7 @@ def build_report(outdir, results, ks, arms, mix_modes):
         return d
     L = []
     L.append("# Unified gauntlet report\n")
-    L.append("Ladder: none < secretshare14 < bandproduct92 < nonlinear193 < nonlinear939 "
+    L.append("Ladder: none < secretshare14 < bandproduct92 < nonlinear193 < nonlinear291 < behemoth939 < behemoth1415 "
              "(name = descriptor + marginal gates per source gate; _bandN = pool-fed "
              "variant with N U0 blind layers).  "
              "Attacks: a1 (direct), xrows (row-bounded exact), xtrace (global exact), "

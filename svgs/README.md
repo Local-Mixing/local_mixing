@@ -45,7 +45,9 @@ exactly the rounded average — most honest to show an average example.
 | `secretshare14.gtx/.svg` | secret sharing (`--gadget ss`) | SG variant 5 (6) + RG1 (6) + RG3 (2) = **14 gates**, seed 14 (average draw) |
 | `bandproduct92.gtx/.svg` | band-product (`--gadget semi`) | Gray fold `V = C ⊕ M(B) ⊕ κ` + 2 value relocations + mask re-source + band roll = **92 gates** at the gauntlet's chain width n=8, seed 10 (average draw); mask injection run but not shown |
 | `nonlinear193.gtx/.svg` | folded gadget (`gate_gadget_v2.py`) | both masked groups: build B / build scr2 / A_i + run → o_i / unbuild = **193 gates** exactly |
-| `nonlinear939.gtx/.svg` | behemoth (`big_gate_gadget.py`) | six max-size sub-gadgets G1–G6 (r57/nab/and/and/copy/copy), each a full 193-style section sequence = **939 gates** exactly |
+| `nonlinear291.gtx/.svg` | nonlinear193 at fan-in ≤ 2 (`gate_gadget_w2.py`) | mask-first decomposition + `mp*` mask-prefix cache lanes = **291 gates** exactly |
+| `behemoth939.gtx/.svg` | behemoth (`big_gate_gadget.py`) | six max-size sub-gadgets G1–G6 (r57/nab/and/and/copy/copy), each a full 193-style section sequence = **939 gates** exactly |
+| `behemoth1415.gtx/.svg` | behemoth at fan-in ≤ 2 | six sub-gadgets over the weight-2 decomposition: 291+288+291+291+127+127 = **1415 gates** exactly |
 
 ## Regenerating
 
@@ -61,7 +63,9 @@ are currently local-only tooling, not part of this repository; the committed
 # Python gadget builders — wiring is structurally deterministic; --seed only
 # re-seeds the dummy wire values used while recording the wiring
 python3 gadget_spec.py --gadget nonlinear193 [--seed N]    > svgs/nonlinear193.gtx
-python3 gadget_spec.py --gadget nonlinear939 [--seed N]    > svgs/nonlinear939.gtx
+python3 gadget_spec.py --gadget nonlinear291 [--seed N]    > svgs/nonlinear291.gtx
+python3 gadget_spec.py --gadget behemoth939  [--seed N]    > svgs/behemoth939.gtx
+python3 gadget_spec.py --gadget behemoth1415 [--seed N]    > svgs/behemoth1415.gtx
 
 # text → SVG
 python3 gadget_svg.py svgs/secretshare14.gtx -o svgs/secretshare14.svg
