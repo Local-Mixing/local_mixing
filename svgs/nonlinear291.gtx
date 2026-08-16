@@ -1,0 +1,378 @@
+@title nonlinear291 — the folded gadget mask-first decomposed to fan-in ≤ 2
+@subtitle The replicated per-gate body: exactly 291 gates, deterministically (the '291' in the name). Same gadget as nonlinear193 (gate_gadget_v2.gadget_gate) but every fan-in ≥ 3 gate is decomposed mask-first into fan-in ≤ 2 Toffolis (gate_gadget_w2.Weight2Circuit): mask controls fold into the accumulator FIRST so no bare operand monomial ever appears on an ancilla. mp* wires are the persistent mask-prefix cache (shared subexpressions like R0·scr), uncomputed by flush(); dec0/dec1 fallback ancillas; tmp unused here. Encoding setup / 0-gate relabel not shown.
+@equation c' = c ⊕ (a ∨ ¬b);   share1' = R,  share2' = (s2_0, s2_1, o0, o1, o2)  — the relabel costs 0 gates
+@wire s1_0 scratch
+@wire s1_1 scratch
+@wire s1_2 scratch
+@wire s1_3 scratch
+@wire s1_4 scratch
+@wire R0 R
+@wire R1 R
+@wire R2 R
+@wire R3 R
+@wire R4 R
+@wire a1_0 scratch
+@wire a1_1 scratch
+@wire a1_2 scratch
+@wire a1_3 scratch
+@wire a1_4 scratch
+@wire a2_0 scratch
+@wire a2_1 scratch
+@wire a2_2 scratch
+@wire a2_3 scratch
+@wire a2_4 scratch
+@wire b1_0 scratch
+@wire b1_1 scratch
+@wire b1_2 scratch
+@wire b1_3 scratch
+@wire b1_4 scratch
+@wire b2_0 scratch
+@wire b2_1 scratch
+@wire b2_2 scratch
+@wire b2_3 scratch
+@wire b2_4 scratch
+@wire s2_0 scratch
+@wire s2_1 scratch
+@wire s2_2 scratch
+@wire s2_3 scratch
+@wire s2_4 scratch
+@wire o0 out
+@wire o1 out
+@wire o2 out
+@wire scr scratch
+@wire scr2 scratch
+@wire ch0 chaff
+@wire ch1 chaff
+@wire ch2 chaff
+@wire ch3 chaff
+@wire dec0 decomp
+@wire dec1 decomp
+@wire mp0 mask-cache
+@wire mp1 mask-cache
+@wire mp2 mask-cache
+@wire mp3 mask-cache
+@wire mp4 mask-cache
+@wire mp5 mask-cache
+@wire mp6 mask-cache
+@wire mp7 mask-cache
+@wire mp8 mask-cache
+@wire mp9 mask-cache
+@wire mp10 mask-cache
+@wire mp11 mask-cache
+@wire mp12 mask-cache
+@wire mp13 mask-cache
+@wire mp14 mask-cache
+@wire mp15 mask-cache
+@wire mp16 mask-cache
+@wire mp17 mask-cache
+@wire mp18 mask-cache
+@wire mp19 mask-cache
+@wire mp20 mask-cache
+@wire mp21 mask-cache
+@wire mp22 mask-cache
+@wire mp23 mask-cache
+@wire tmp decomp
+@note R fresh re-share borrow (becomes share1' with zero gates)
+@note mp mask-prefix cache: built once per mask group, uncomputed by flush()
+# build B (group 0)
+scr <--- 1
+scr <--- s2_2
+scr <--- s2_3
+# build scr2 = (b^m0^m1)*B (group 0)
+scr2 <--- b1_0 & scr
+mp23 <--- scr & b1_2
+scr2 <--- mp23 & b1_3
+mp22 <--- scr & b1_3
+scr2 <--- mp22 & b1_4
+scr2 <--- R0 & scr
+mp21 <--- scr & b2_2
+scr2 <--- mp21 & b2_4
+scr2 <--- b2_0 & scr
+scr2 <--- mp21 & b2_3
+scr2 <--- R1 & scr
+scr2 <--- mp23 & b1_4
+mp20 <--- scr & b2_3
+scr2 <--- mp20 & b2_4
+scr2 <--- b1_1 & scr
+scr2 <--- b2_1 & scr
+# A0 + run -> o0 (group 0)
+o0 <--- s2_2
+o0 <--- scr
+o0 <--- a2_1 & scr2
+mp19 <--- scr2 & a1_2
+o0 <--- mp19 & a1_4
+o0 <--- s1_1 & scr
+mp18 <--- scr & s1_2
+o0 <--- mp18 & s1_3
+mp17 <--- scr2 & a2_2
+o0 <--- mp17 & a2_3
+o0 <--- a2_0 & scr2
+o0 <--- mp17 & a2_4
+o0 <--- ch0 & scr
+o0 <--- scr2
+mp16 <--- scr & R0
+o0 <--- mp16 & a1_0
+mp15 <--- mp16 & a2_2
+o0 <--- mp15 & a2_4
+mp14 <--- mp16 & a1_3
+o0 <--- mp14 & a1_4
+dec0 <--- scr & R2
+o0 <--- dec0 & R3
+dec0 <--- scr & R2
+o0 <--- mp16 & a1_1
+o0 <--- mp15 & a2_3
+o0 <--- ch1 & scr
+mp13 <--- mp16 & a2_3
+o0 <--- mp13 & a2_4
+o0 <--- mp16 & a2_0
+o0 <--- mp18 & s1_4
+mp12 <--- mp16 & a1_2
+o0 <--- mp12 & a1_3
+o0 <--- mp12 & a1_4
+o0 <--- mp16 & a2_1
+o0 <--- s1_0 & scr
+mp11 <--- scr & R1
+mp10 <--- mp11 & a2_3
+o0 <--- mp10 & a2_4
+o0 <--- mp11 & a1_1
+dec0 <--- scr & R3
+o0 <--- dec0 & R4
+dec0 <--- scr & R3
+mp9 <--- mp11 & a1_2
+o0 <--- mp9 & a1_3
+mp8 <--- mp11 & a1_3
+o0 <--- mp8 & a1_4
+o0 <--- mp11 & a2_1
+o0 <--- ch0 & scr
+o0 <--- mp11 & a2_0
+mp7 <--- mp11 & a2_2
+o0 <--- mp7 & a2_4
+mp6 <--- scr & s1_3
+o0 <--- mp6 & s1_4
+o0 <--- mp7 & a2_3
+o0 <--- mp11 & a1_0
+o0 <--- mp9 & a1_4
+o0 <--- ch1 & scr
+mp5 <--- scr2 & a2_3
+o0 <--- mp5 & a2_4
+o0 <--- a1_1 & scr2
+o0 <--- mp19 & a1_3
+dec0 <--- scr & R2
+o0 <--- dec0 & R4
+dec0 <--- scr & R2
+mp4 <--- scr2 & a1_3
+o0 <--- mp4 & a1_4
+o0 <--- a1_0 & scr2
+# A1 + run -> o1 (group 0)
+o1 <--- s2_3
+o1 <--- scr
+o1 <--- a2_1 & scr2
+o1 <--- mp19 & a1_4
+o1 <--- s1_1 & scr
+o1 <--- mp18 & s1_3
+o1 <--- mp17 & a2_3
+o1 <--- a2_0 & scr2
+o1 <--- mp17 & a2_4
+o1 <--- ch0 & scr
+o1 <--- scr2
+o1 <--- mp16 & a1_0
+o1 <--- mp15 & a2_4
+o1 <--- mp14 & a1_4
+dec0 <--- scr & R2
+o1 <--- dec0 & R3
+dec0 <--- scr & R2
+o1 <--- mp16 & a1_1
+o1 <--- mp15 & a2_3
+o1 <--- ch1 & scr
+o1 <--- mp13 & a2_4
+o1 <--- mp16 & a2_0
+o1 <--- mp18 & s1_4
+o1 <--- mp12 & a1_3
+o1 <--- mp12 & a1_4
+o1 <--- mp16 & a2_1
+o1 <--- s1_0 & scr
+o1 <--- mp10 & a2_4
+o1 <--- mp11 & a1_1
+dec0 <--- scr & R3
+o1 <--- dec0 & R4
+dec0 <--- scr & R3
+o1 <--- mp9 & a1_3
+o1 <--- mp8 & a1_4
+o1 <--- mp11 & a2_1
+o1 <--- ch0 & scr
+o1 <--- mp11 & a2_0
+o1 <--- mp7 & a2_4
+o1 <--- mp6 & s1_4
+o1 <--- mp7 & a2_3
+o1 <--- mp11 & a1_0
+o1 <--- mp9 & a1_4
+o1 <--- ch1 & scr
+o1 <--- mp5 & a2_4
+o1 <--- a1_1 & scr2
+o1 <--- mp19 & a1_3
+dec0 <--- scr & R2
+o1 <--- dec0 & R4
+dec0 <--- scr & R2
+o1 <--- mp4 & a1_4
+o1 <--- a1_0 & scr2
+# unbuild scr2, reverse (group 0)
+mp4 <--- scr2 & a1_3
+mp5 <--- scr2 & a2_3
+mp17 <--- scr2 & a2_2
+mp19 <--- scr2 & a1_2
+scr2 <--- b2_1 & scr
+scr2 <--- b1_1 & scr
+scr2 <--- mp20 & b2_4
+scr2 <--- mp23 & b1_4
+scr2 <--- R1 & scr
+scr2 <--- mp21 & b2_3
+scr2 <--- b2_0 & scr
+scr2 <--- mp21 & b2_4
+scr2 <--- R0 & scr
+scr2 <--- mp22 & b1_4
+scr2 <--- mp23 & b1_3
+scr2 <--- b1_0 & scr
+# unbuild B (group 0)
+mp6 <--- scr & s1_3
+mp7 <--- mp11 & a2_2
+mp8 <--- mp11 & a1_3
+mp9 <--- mp11 & a1_2
+mp10 <--- mp11 & a2_3
+mp11 <--- scr & R1
+mp12 <--- mp16 & a1_2
+mp13 <--- mp16 & a2_3
+mp14 <--- mp16 & a1_3
+mp15 <--- mp16 & a2_2
+mp16 <--- scr & R0
+mp18 <--- scr & s1_2
+mp20 <--- scr & b2_3
+mp21 <--- scr & b2_2
+mp22 <--- scr & b1_3
+mp23 <--- scr & b1_2
+scr <--- 1
+scr <--- s2_2
+scr <--- s2_3
+# build B (group 1)
+scr <--- 1
+scr <--- s2_2 & s2_3
+# build scr2 = (b^m0^m1)*B (group 1)
+scr2 <--- b1_1 & scr
+mp23 <--- scr & b1_2
+scr2 <--- mp23 & b1_3
+mp22 <--- scr & b1_3
+scr2 <--- mp22 & b1_4
+scr2 <--- R0 & scr
+mp21 <--- scr & b2_2
+scr2 <--- mp21 & b2_4
+scr2 <--- b1_0 & scr
+mp20 <--- scr & b2_3
+scr2 <--- mp20 & b2_4
+scr2 <--- R1 & scr
+scr2 <--- mp23 & b1_4
+scr2 <--- mp21 & b2_3
+scr2 <--- b2_0 & scr
+scr2 <--- b2_1 & scr
+# A2 + run -> o2 (group 1)
+o2 <--- s2_4
+o2 <--- scr
+mp18 <--- scr & R1
+mp16 <--- mp18 & a2_2
+o2 <--- mp16 & a2_4
+o2 <--- mp18 & a2_1
+mp15 <--- mp18 & a1_3
+o2 <--- mp15 & a1_4
+mp14 <--- scr & s1_3
+o2 <--- mp14 & s1_4
+mp13 <--- mp18 & a1_2
+o2 <--- mp13 & a1_3
+o2 <--- s1_1 & scr
+o2 <--- mp18 & a1_0
+o2 <--- ch0 & scr
+o2 <--- scr2
+mp12 <--- scr & s1_2
+o2 <--- mp12 & s1_3
+mp11 <--- scr2 & a1_2
+o2 <--- mp11 & a1_4
+o2 <--- a2_1 & scr2
+mp10 <--- scr2 & a1_3
+o2 <--- mp10 & a1_4
+mp9 <--- scr2 & a2_2
+o2 <--- mp9 & a2_3
+o2 <--- a1_1 & scr2
+o2 <--- ch1 & scr
+o2 <--- mp18 & a2_0
+o2 <--- mp13 & a1_4
+dec0 <--- scr & R2
+o2 <--- dec0 & R3
+dec0 <--- scr & R2
+o2 <--- mp16 & a2_3
+o2 <--- mp18 & a1_1
+mp8 <--- mp18 & a2_3
+o2 <--- mp8 & a2_4
+o2 <--- s1_0 & scr
+mp7 <--- scr & R0
+o2 <--- mp7 & a1_1
+mp6 <--- mp7 & a1_2
+o2 <--- mp6 & a1_4
+mp19 <--- mp7 & a2_2
+o2 <--- mp19 & a2_3
+dec0 <--- scr & R3
+o2 <--- dec0 & R4
+dec0 <--- scr & R3
+o2 <--- mp7 & a2_0
+o2 <--- mp6 & a1_3
+o2 <--- ch0 & scr
+o2 <--- a1_0 & scr2
+mp17 <--- scr2 & a2_3
+o2 <--- mp17 & a2_4
+o2 <--- mp12 & s1_4
+o2 <--- mp9 & a2_4
+o2 <--- a2_0 & scr2
+o2 <--- mp11 & a1_3
+o2 <--- ch1 & scr
+mp5 <--- mp7 & a1_3
+o2 <--- mp5 & a1_4
+dec0 <--- scr & R2
+o2 <--- dec0 & R4
+dec0 <--- scr & R2
+o2 <--- mp7 & a1_0
+mp4 <--- mp7 & a2_3
+o2 <--- mp4 & a2_4
+o2 <--- mp19 & a2_4
+o2 <--- mp7 & a2_1
+# unbuild scr2, reverse (group 1)
+mp17 <--- scr2 & a2_3
+mp9 <--- scr2 & a2_2
+mp10 <--- scr2 & a1_3
+mp11 <--- scr2 & a1_2
+scr2 <--- b2_1 & scr
+scr2 <--- b2_0 & scr
+scr2 <--- mp21 & b2_3
+scr2 <--- mp23 & b1_4
+scr2 <--- R1 & scr
+scr2 <--- mp20 & b2_4
+scr2 <--- b1_0 & scr
+scr2 <--- mp21 & b2_4
+scr2 <--- R0 & scr
+scr2 <--- mp22 & b1_4
+scr2 <--- mp23 & b1_3
+scr2 <--- b1_1 & scr
+# unbuild B (group 1)
+mp4 <--- mp7 & a2_3
+mp5 <--- mp7 & a1_3
+mp19 <--- mp7 & a2_2
+mp6 <--- mp7 & a1_2
+mp7 <--- scr & R0
+mp8 <--- mp18 & a2_3
+mp12 <--- scr & s1_2
+mp13 <--- mp18 & a1_2
+mp14 <--- scr & s1_3
+mp15 <--- mp18 & a1_3
+mp16 <--- mp18 & a2_2
+mp18 <--- scr & R1
+mp20 <--- scr & b2_3
+mp21 <--- scr & b2_2
+mp22 <--- scr & b1_3
+mp23 <--- scr & b1_2
+scr <--- 1
+scr <--- s2_2 & s2_3

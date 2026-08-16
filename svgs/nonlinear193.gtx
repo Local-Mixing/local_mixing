@@ -1,0 +1,253 @@
+@title nonlinear193 — the folded gadget: one r57 gate c ^= a | !b over nonlinear encodings
+@subtitle The replicated per-gate body: exactly 193 gates, deterministically (the '193' in the name). Every value 2-shared: v = E(v1) ⊕ E(v2), E(x0..x4) = x0⊕x1⊕maj(x2,x3,x4); ONE carrier (s2 majority) flipped by W = u⊕V, u = E(s1)⊕E(R) — the re-share is folded into the flip. Encoding setup and the 0-gate output relabeling are fixed infrastructure, not shown; borrows (R, ch) arrive on pool wires.
+@equation c' = c ⊕ (a ∨ ¬b);   share1' = R,  share2' = (s2_0, s2_1, o0, o1, o2)  — the relabel costs 0 gates
+@wire s1_0 scratch
+@wire s1_1 scratch
+@wire s1_2 scratch
+@wire s1_3 scratch
+@wire s1_4 scratch
+@wire R0 R
+@wire R1 R
+@wire R2 R
+@wire R3 R
+@wire R4 R
+@wire a1_0 scratch
+@wire a1_1 scratch
+@wire a1_2 scratch
+@wire a1_3 scratch
+@wire a1_4 scratch
+@wire a2_0 scratch
+@wire a2_1 scratch
+@wire a2_2 scratch
+@wire a2_3 scratch
+@wire a2_4 scratch
+@wire b1_0 scratch
+@wire b1_1 scratch
+@wire b1_2 scratch
+@wire b1_3 scratch
+@wire b1_4 scratch
+@wire b2_0 scratch
+@wire b2_1 scratch
+@wire b2_2 scratch
+@wire b2_3 scratch
+@wire b2_4 scratch
+@wire s2_0 scratch
+@wire s2_1 scratch
+@wire s2_2 scratch
+@wire s2_3 scratch
+@wire s2_4 scratch
+@wire o0 out
+@wire o1 out
+@wire o2 out
+@wire scr scratch
+@wire scr2 scratch
+@wire ch0 chaff
+@wire ch1 chaff
+@wire ch2 chaff
+@wire ch3 chaff
+@note R fresh re-share borrow (becomes share1' with zero gates)
+@note scr restored to clean; scr2 built and unbuilt per group
+# build B (group 0)
+scr <--- 1
+scr <--- s2_2
+scr <--- s2_3
+# build scr2 = (b^m0^m1)*B (group 0)
+scr2 <--- b1_0 & scr
+scr2 <--- b1_2 & b1_3 & scr
+scr2 <--- b1_3 & b1_4 & scr
+scr2 <--- R0 & scr
+scr2 <--- b2_2 & b2_4 & scr
+scr2 <--- b2_0 & scr
+scr2 <--- b2_2 & b2_3 & scr
+scr2 <--- R1 & scr
+scr2 <--- b1_2 & b1_4 & scr
+scr2 <--- b2_3 & b2_4 & scr
+scr2 <--- b1_1 & scr
+scr2 <--- b2_1 & scr
+# A0 + run -> o0 (group 0)
+o0 <--- s2_2
+o0 <--- scr
+o0 <--- a2_1 & scr2
+o0 <--- a1_2 & a1_4 & scr2
+o0 <--- s1_1 & scr
+o0 <--- s1_2 & s1_3 & scr
+o0 <--- a2_2 & a2_3 & scr2
+o0 <--- a2_0 & scr2
+o0 <--- a2_2 & a2_4 & scr2
+o0 <--- ch0 & scr
+o0 <--- scr2
+o0 <--- a1_0 & R0 & scr
+o0 <--- a2_2 & a2_4 & R0 & scr
+o0 <--- a1_3 & a1_4 & R0 & scr
+o0 <--- R2 & R3 & scr
+o0 <--- a1_1 & R0 & scr
+o0 <--- a2_2 & a2_3 & R0 & scr
+o0 <--- ch1 & scr
+o0 <--- a2_3 & a2_4 & R0 & scr
+o0 <--- a2_0 & R0 & scr
+o0 <--- s1_2 & s1_4 & scr
+o0 <--- a1_2 & a1_3 & R0 & scr
+o0 <--- a1_2 & a1_4 & R0 & scr
+o0 <--- a2_1 & R0 & scr
+o0 <--- s1_0 & scr
+o0 <--- a2_3 & a2_4 & R1 & scr
+o0 <--- a1_1 & R1 & scr
+o0 <--- R3 & R4 & scr
+o0 <--- a1_2 & a1_3 & R1 & scr
+o0 <--- a1_3 & a1_4 & R1 & scr
+o0 <--- a2_1 & R1 & scr
+o0 <--- ch0 & scr
+o0 <--- a2_0 & R1 & scr
+o0 <--- a2_2 & a2_4 & R1 & scr
+o0 <--- s1_3 & s1_4 & scr
+o0 <--- a2_2 & a2_3 & R1 & scr
+o0 <--- a1_0 & R1 & scr
+o0 <--- a1_2 & a1_4 & R1 & scr
+o0 <--- ch1 & scr
+o0 <--- a2_3 & a2_4 & scr2
+o0 <--- a1_1 & scr2
+o0 <--- a1_2 & a1_3 & scr2
+o0 <--- R2 & R4 & scr
+o0 <--- a1_3 & a1_4 & scr2
+o0 <--- a1_0 & scr2
+# A1 + run -> o1 (group 0)
+o1 <--- s2_3
+o1 <--- scr
+o1 <--- a2_1 & scr2
+o1 <--- a1_2 & a1_4 & scr2
+o1 <--- s1_1 & scr
+o1 <--- s1_2 & s1_3 & scr
+o1 <--- a2_2 & a2_3 & scr2
+o1 <--- a2_0 & scr2
+o1 <--- a2_2 & a2_4 & scr2
+o1 <--- ch0 & scr
+o1 <--- scr2
+o1 <--- a1_0 & R0 & scr
+o1 <--- a2_2 & a2_4 & R0 & scr
+o1 <--- a1_3 & a1_4 & R0 & scr
+o1 <--- R2 & R3 & scr
+o1 <--- a1_1 & R0 & scr
+o1 <--- a2_2 & a2_3 & R0 & scr
+o1 <--- ch1 & scr
+o1 <--- a2_3 & a2_4 & R0 & scr
+o1 <--- a2_0 & R0 & scr
+o1 <--- s1_2 & s1_4 & scr
+o1 <--- a1_2 & a1_3 & R0 & scr
+o1 <--- a1_2 & a1_4 & R0 & scr
+o1 <--- a2_1 & R0 & scr
+o1 <--- s1_0 & scr
+o1 <--- a2_3 & a2_4 & R1 & scr
+o1 <--- a1_1 & R1 & scr
+o1 <--- R3 & R4 & scr
+o1 <--- a1_2 & a1_3 & R1 & scr
+o1 <--- a1_3 & a1_4 & R1 & scr
+o1 <--- a2_1 & R1 & scr
+o1 <--- ch0 & scr
+o1 <--- a2_0 & R1 & scr
+o1 <--- a2_2 & a2_4 & R1 & scr
+o1 <--- s1_3 & s1_4 & scr
+o1 <--- a2_2 & a2_3 & R1 & scr
+o1 <--- a1_0 & R1 & scr
+o1 <--- a1_2 & a1_4 & R1 & scr
+o1 <--- ch1 & scr
+o1 <--- a2_3 & a2_4 & scr2
+o1 <--- a1_1 & scr2
+o1 <--- a1_2 & a1_3 & scr2
+o1 <--- R2 & R4 & scr
+o1 <--- a1_3 & a1_4 & scr2
+o1 <--- a1_0 & scr2
+# unbuild scr2, reverse (group 0)
+scr2 <--- b2_1 & scr
+scr2 <--- b1_1 & scr
+scr2 <--- b2_3 & b2_4 & scr
+scr2 <--- b1_2 & b1_4 & scr
+scr2 <--- R1 & scr
+scr2 <--- b2_2 & b2_3 & scr
+scr2 <--- b2_0 & scr
+scr2 <--- b2_2 & b2_4 & scr
+scr2 <--- R0 & scr
+scr2 <--- b1_3 & b1_4 & scr
+scr2 <--- b1_2 & b1_3 & scr
+scr2 <--- b1_0 & scr
+# unbuild B (group 0)
+scr <--- 1
+scr <--- s2_2
+scr <--- s2_3
+# build B (group 1)
+scr <--- 1
+scr <--- s2_2 & s2_3
+# build scr2 = (b^m0^m1)*B (group 1)
+scr2 <--- b1_1 & scr
+scr2 <--- b1_2 & b1_3 & scr
+scr2 <--- b1_3 & b1_4 & scr
+scr2 <--- R0 & scr
+scr2 <--- b2_2 & b2_4 & scr
+scr2 <--- b1_0 & scr
+scr2 <--- b2_3 & b2_4 & scr
+scr2 <--- R1 & scr
+scr2 <--- b1_2 & b1_4 & scr
+scr2 <--- b2_2 & b2_3 & scr
+scr2 <--- b2_0 & scr
+scr2 <--- b2_1 & scr
+# A2 + run -> o2 (group 1)
+o2 <--- s2_4
+o2 <--- scr
+o2 <--- a2_2 & a2_4 & R1 & scr
+o2 <--- a2_1 & R1 & scr
+o2 <--- a1_3 & a1_4 & R1 & scr
+o2 <--- s1_3 & s1_4 & scr
+o2 <--- a1_2 & a1_3 & R1 & scr
+o2 <--- s1_1 & scr
+o2 <--- a1_0 & R1 & scr
+o2 <--- ch0 & scr
+o2 <--- scr2
+o2 <--- s1_2 & s1_3 & scr
+o2 <--- a1_2 & a1_4 & scr2
+o2 <--- a2_1 & scr2
+o2 <--- a1_3 & a1_4 & scr2
+o2 <--- a2_2 & a2_3 & scr2
+o2 <--- a1_1 & scr2
+o2 <--- ch1 & scr
+o2 <--- a2_0 & R1 & scr
+o2 <--- a1_2 & a1_4 & R1 & scr
+o2 <--- R2 & R3 & scr
+o2 <--- a2_2 & a2_3 & R1 & scr
+o2 <--- a1_1 & R1 & scr
+o2 <--- a2_3 & a2_4 & R1 & scr
+o2 <--- s1_0 & scr
+o2 <--- a1_1 & R0 & scr
+o2 <--- a1_2 & a1_4 & R0 & scr
+o2 <--- a2_2 & a2_3 & R0 & scr
+o2 <--- R3 & R4 & scr
+o2 <--- a2_0 & R0 & scr
+o2 <--- a1_2 & a1_3 & R0 & scr
+o2 <--- ch0 & scr
+o2 <--- a1_0 & scr2
+o2 <--- a2_3 & a2_4 & scr2
+o2 <--- s1_2 & s1_4 & scr
+o2 <--- a2_2 & a2_4 & scr2
+o2 <--- a2_0 & scr2
+o2 <--- a1_2 & a1_3 & scr2
+o2 <--- ch1 & scr
+o2 <--- a1_3 & a1_4 & R0 & scr
+o2 <--- R2 & R4 & scr
+o2 <--- a1_0 & R0 & scr
+o2 <--- a2_3 & a2_4 & R0 & scr
+o2 <--- a2_2 & a2_4 & R0 & scr
+o2 <--- a2_1 & R0 & scr
+# unbuild scr2, reverse (group 1)
+scr2 <--- b2_1 & scr
+scr2 <--- b2_0 & scr
+scr2 <--- b2_2 & b2_3 & scr
+scr2 <--- b1_2 & b1_4 & scr
+scr2 <--- R1 & scr
+scr2 <--- b2_3 & b2_4 & scr
+scr2 <--- b1_0 & scr
+scr2 <--- b2_2 & b2_4 & scr
+scr2 <--- R0 & scr
+scr2 <--- b1_3 & b1_4 & scr
+scr2 <--- b1_2 & b1_3 & scr
+scr2 <--- b1_1 & scr
+# unbuild B (group 1)
+scr <--- 1
+scr <--- s2_2 & s2_3

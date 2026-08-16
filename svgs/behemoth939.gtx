@@ -1,0 +1,1160 @@
+@title behemoth939 — the behemoth: one SG-level gate W_c ^= W_a | !W_b as six folded gadgets
+@subtitle The replicated per-gate body: exactly 939 gates, deterministically. Each SG-level logical wire W = r ⊕ s, each of r,s a gadget-level 2-shared value (10 physical wires). Six max-size sub-gadgets G1..G6 (r57/nab/and/and/copy/copy), each with own fresh R, out3, scr, scr2, chaff. Encoding/decoding is fixed infrastructure, not shown.
+@equation W_c' = W_c ⊕ (W_a ∨ ¬W_b);  every sub-gadget ends with the 0-gate re-share relabeling
+@wire r0_0_0 r0
+@wire r0_0_1 r0
+@wire r0_0_2 r0
+@wire r0_0_3 r0
+@wire r0_0_4 r0
+@wire r0_1_0 r0
+@wire r0_1_1 r0
+@wire r0_1_2 r0
+@wire r0_1_3 r0
+@wire r0_1_4 r0
+@wire s0_0_0 s0
+@wire s0_0_1 s0
+@wire s0_0_2 s0
+@wire s0_0_3 s0
+@wire s0_0_4 s0
+@wire s0_1_0 s0
+@wire s0_1_1 s0
+@wire s0_1_2 s0
+@wire s0_1_3 s0
+@wire s0_1_4 s0
+@wire r1_0_0 r1
+@wire r1_0_1 r1
+@wire r1_0_2 r1
+@wire r1_0_3 r1
+@wire r1_0_4 r1
+@wire r1_1_0 r1
+@wire r1_1_1 r1
+@wire r1_1_2 r1
+@wire r1_1_3 r1
+@wire r1_1_4 r1
+@wire s1_0_0 s1
+@wire s1_0_1 s1
+@wire s1_0_2 s1
+@wire s1_0_3 s1
+@wire s1_0_4 s1
+@wire s1_1_0 s1
+@wire s1_1_1 s1
+@wire s1_1_2 s1
+@wire s1_1_3 s1
+@wire s1_1_4 s1
+@wire r2_0_0 r2
+@wire r2_0_1 r2
+@wire r2_0_2 r2
+@wire r2_0_3 r2
+@wire r2_0_4 r2
+@wire r2_1_0 r2
+@wire r2_1_1 r2
+@wire r2_1_2 r2
+@wire r2_1_3 r2
+@wire r2_1_4 r2
+@wire s2_0_0 s2
+@wire s2_0_1 s2
+@wire s2_0_2 s2
+@wire s2_0_3 s2
+@wire s2_0_4 s2
+@wire s2_1_0 s2
+@wire s2_1_1 s2
+@wire s2_1_2 s2
+@wire s2_1_3 s2
+@wire s2_1_4 s2
+@wire gA_0_0 gA
+@wire gA_0_1 gA
+@wire gA_0_2 gA
+@wire gA_0_3 gA
+@wire gA_0_4 gA
+@wire gA_1_0 gA
+@wire gA_1_1 gA
+@wire gA_1_2 gA
+@wire gA_1_3 gA
+@wire gA_1_4 gA
+@wire G1_R0 G1
+@wire G1_R1 G1
+@wire G1_R2 G1
+@wire G1_R3 G1
+@wire G1_R4 G1
+@wire G1_o0 G1
+@wire G1_o1 G1
+@wire G1_o2 G1
+@wire G1_scr G1
+@wire G1_scr2 G1
+@wire G1_ch0 G1
+@wire G1_ch1 G1
+@wire G1_ch2 G1
+@wire G1_ch3 G1
+@wire G2_R0 G2
+@wire G2_R1 G2
+@wire G2_R2 G2
+@wire G2_R3 G2
+@wire G2_R4 G2
+@wire G2_o0 G2
+@wire G2_o1 G2
+@wire G2_o2 G2
+@wire G2_scr G2
+@wire G2_scr2 G2
+@wire G2_ch0 G2
+@wire G2_ch1 G2
+@wire G2_ch2 G2
+@wire G2_ch3 G2
+@wire G3_R0 G3
+@wire G3_R1 G3
+@wire G3_R2 G3
+@wire G3_R3 G3
+@wire G3_R4 G3
+@wire G3_o0 G3
+@wire G3_o1 G3
+@wire G3_o2 G3
+@wire G3_scr G3
+@wire G3_scr2 G3
+@wire G3_ch0 G3
+@wire G3_ch1 G3
+@wire G3_ch2 G3
+@wire G3_ch3 G3
+@wire G4_R0 G4
+@wire G4_R1 G4
+@wire G4_R2 G4
+@wire G4_R3 G4
+@wire G4_R4 G4
+@wire G4_o0 G4
+@wire G4_o1 G4
+@wire G4_o2 G4
+@wire G4_scr G4
+@wire G4_scr2 G4
+@wire G4_ch0 G4
+@wire G4_ch1 G4
+@wire G4_ch2 G4
+@wire G4_ch3 G4
+@wire G5_R0 G5
+@wire G5_R1 G5
+@wire G5_R2 G5
+@wire G5_R3 G5
+@wire G5_R4 G5
+@wire G5_o0 G5
+@wire G5_o1 G5
+@wire G5_o2 G5
+@wire G5_scr G5
+@wire G5_scr2 G5
+@wire G5_ch0 G5
+@wire G5_ch1 G5
+@wire G5_ch2 G5
+@wire G5_ch3 G5
+@wire G6_R0 G6
+@wire G6_R1 G6
+@wire G6_R2 G6
+@wire G6_R3 G6
+@wire G6_R4 G6
+@wire G6_o0 G6
+@wire G6_o1 G6
+@wire G6_o2 G6
+@wire G6_scr G6
+@wire G6_scr2 G6
+@wire G6_ch0 G6
+@wire G6_ch1 G6
+@wire G6_ch2 G6
+@wire G6_ch3 G6
+# G1 (r57): r2 ^= r1 * r0
+# build B (group 0)
+G1_scr <--- 1
+G1_scr <--- r2_1_2
+G1_scr <--- r2_1_3
+# build scr2 = (b^m0^m1)*B (group 0)
+G1_scr2 <--- r1_0_0 & G1_scr
+G1_scr2 <--- r1_0_2 & r1_0_3 & G1_scr
+G1_scr2 <--- r1_0_3 & r1_0_4 & G1_scr
+G1_scr2 <--- G1_R0 & G1_scr
+G1_scr2 <--- r1_1_2 & r1_1_4 & G1_scr
+G1_scr2 <--- r1_1_0 & G1_scr
+G1_scr2 <--- r1_1_2 & r1_1_3 & G1_scr
+G1_scr2 <--- G1_R1 & G1_scr
+G1_scr2 <--- r1_0_2 & r1_0_4 & G1_scr
+G1_scr2 <--- r1_1_3 & r1_1_4 & G1_scr
+G1_scr2 <--- r1_0_1 & G1_scr
+G1_scr2 <--- r1_1_1 & G1_scr
+# A0 + run -> o0 (group 0)
+G1_o0 <--- r2_1_2
+G1_o0 <--- G1_scr
+G1_o0 <--- r0_1_1 & G1_scr2
+G1_o0 <--- r0_0_2 & r0_0_4 & G1_scr2
+G1_o0 <--- r2_0_1 & G1_scr
+G1_o0 <--- r2_0_2 & r2_0_3 & G1_scr
+G1_o0 <--- r0_1_2 & r0_1_3 & G1_scr2
+G1_o0 <--- r0_1_0 & G1_scr2
+G1_o0 <--- r0_1_2 & r0_1_4 & G1_scr2
+G1_o0 <--- G1_ch0 & G1_scr
+G1_o0 <--- G1_scr2
+G1_o0 <--- r0_0_0 & G1_R0 & G1_scr
+G1_o0 <--- r0_1_2 & r0_1_4 & G1_R0 & G1_scr
+G1_o0 <--- r0_0_3 & r0_0_4 & G1_R0 & G1_scr
+G1_o0 <--- G1_R2 & G1_R3 & G1_scr
+G1_o0 <--- r0_0_1 & G1_R0 & G1_scr
+G1_o0 <--- r0_1_2 & r0_1_3 & G1_R0 & G1_scr
+G1_o0 <--- G1_ch1 & G1_scr
+G1_o0 <--- r0_1_3 & r0_1_4 & G1_R0 & G1_scr
+G1_o0 <--- r0_1_0 & G1_R0 & G1_scr
+G1_o0 <--- r2_0_2 & r2_0_4 & G1_scr
+G1_o0 <--- r0_0_2 & r0_0_3 & G1_R0 & G1_scr
+G1_o0 <--- r0_0_2 & r0_0_4 & G1_R0 & G1_scr
+G1_o0 <--- r0_1_1 & G1_R0 & G1_scr
+G1_o0 <--- r2_0_0 & G1_scr
+G1_o0 <--- r0_1_3 & r0_1_4 & G1_R1 & G1_scr
+G1_o0 <--- r0_0_1 & G1_R1 & G1_scr
+G1_o0 <--- G1_R3 & G1_R4 & G1_scr
+G1_o0 <--- r0_0_2 & r0_0_3 & G1_R1 & G1_scr
+G1_o0 <--- r0_0_3 & r0_0_4 & G1_R1 & G1_scr
+G1_o0 <--- r0_1_1 & G1_R1 & G1_scr
+G1_o0 <--- G1_ch0 & G1_scr
+G1_o0 <--- r0_1_0 & G1_R1 & G1_scr
+G1_o0 <--- r0_1_2 & r0_1_4 & G1_R1 & G1_scr
+G1_o0 <--- r2_0_3 & r2_0_4 & G1_scr
+G1_o0 <--- r0_1_2 & r0_1_3 & G1_R1 & G1_scr
+G1_o0 <--- r0_0_0 & G1_R1 & G1_scr
+G1_o0 <--- r0_0_2 & r0_0_4 & G1_R1 & G1_scr
+G1_o0 <--- G1_ch1 & G1_scr
+G1_o0 <--- r0_1_3 & r0_1_4 & G1_scr2
+G1_o0 <--- r0_0_1 & G1_scr2
+G1_o0 <--- r0_0_2 & r0_0_3 & G1_scr2
+G1_o0 <--- G1_R2 & G1_R4 & G1_scr
+G1_o0 <--- r0_0_3 & r0_0_4 & G1_scr2
+G1_o0 <--- r0_0_0 & G1_scr2
+# A1 + run -> o1 (group 0)
+G1_o1 <--- r2_1_3
+G1_o1 <--- G1_scr
+G1_o1 <--- r0_1_1 & G1_scr2
+G1_o1 <--- r0_0_2 & r0_0_4 & G1_scr2
+G1_o1 <--- r2_0_1 & G1_scr
+G1_o1 <--- r2_0_2 & r2_0_3 & G1_scr
+G1_o1 <--- r0_1_2 & r0_1_3 & G1_scr2
+G1_o1 <--- r0_1_0 & G1_scr2
+G1_o1 <--- r0_1_2 & r0_1_4 & G1_scr2
+G1_o1 <--- G1_ch0 & G1_scr
+G1_o1 <--- G1_scr2
+G1_o1 <--- r0_0_0 & G1_R0 & G1_scr
+G1_o1 <--- r0_1_2 & r0_1_4 & G1_R0 & G1_scr
+G1_o1 <--- r0_0_3 & r0_0_4 & G1_R0 & G1_scr
+G1_o1 <--- G1_R2 & G1_R3 & G1_scr
+G1_o1 <--- r0_0_1 & G1_R0 & G1_scr
+G1_o1 <--- r0_1_2 & r0_1_3 & G1_R0 & G1_scr
+G1_o1 <--- G1_ch1 & G1_scr
+G1_o1 <--- r0_1_3 & r0_1_4 & G1_R0 & G1_scr
+G1_o1 <--- r0_1_0 & G1_R0 & G1_scr
+G1_o1 <--- r2_0_2 & r2_0_4 & G1_scr
+G1_o1 <--- r0_0_2 & r0_0_3 & G1_R0 & G1_scr
+G1_o1 <--- r0_0_2 & r0_0_4 & G1_R0 & G1_scr
+G1_o1 <--- r0_1_1 & G1_R0 & G1_scr
+G1_o1 <--- r2_0_0 & G1_scr
+G1_o1 <--- r0_1_3 & r0_1_4 & G1_R1 & G1_scr
+G1_o1 <--- r0_0_1 & G1_R1 & G1_scr
+G1_o1 <--- G1_R3 & G1_R4 & G1_scr
+G1_o1 <--- r0_0_2 & r0_0_3 & G1_R1 & G1_scr
+G1_o1 <--- r0_0_3 & r0_0_4 & G1_R1 & G1_scr
+G1_o1 <--- r0_1_1 & G1_R1 & G1_scr
+G1_o1 <--- G1_ch0 & G1_scr
+G1_o1 <--- r0_1_0 & G1_R1 & G1_scr
+G1_o1 <--- r0_1_2 & r0_1_4 & G1_R1 & G1_scr
+G1_o1 <--- r2_0_3 & r2_0_4 & G1_scr
+G1_o1 <--- r0_1_2 & r0_1_3 & G1_R1 & G1_scr
+G1_o1 <--- r0_0_0 & G1_R1 & G1_scr
+G1_o1 <--- r0_0_2 & r0_0_4 & G1_R1 & G1_scr
+G1_o1 <--- G1_ch1 & G1_scr
+G1_o1 <--- r0_1_3 & r0_1_4 & G1_scr2
+G1_o1 <--- r0_0_1 & G1_scr2
+G1_o1 <--- r0_0_2 & r0_0_3 & G1_scr2
+G1_o1 <--- G1_R2 & G1_R4 & G1_scr
+G1_o1 <--- r0_0_3 & r0_0_4 & G1_scr2
+G1_o1 <--- r0_0_0 & G1_scr2
+# unbuild scr2, reverse (group 0)
+G1_scr2 <--- r1_1_1 & G1_scr
+G1_scr2 <--- r1_0_1 & G1_scr
+G1_scr2 <--- r1_1_3 & r1_1_4 & G1_scr
+G1_scr2 <--- r1_0_2 & r1_0_4 & G1_scr
+G1_scr2 <--- G1_R1 & G1_scr
+G1_scr2 <--- r1_1_2 & r1_1_3 & G1_scr
+G1_scr2 <--- r1_1_0 & G1_scr
+G1_scr2 <--- r1_1_2 & r1_1_4 & G1_scr
+G1_scr2 <--- G1_R0 & G1_scr
+G1_scr2 <--- r1_0_3 & r1_0_4 & G1_scr
+G1_scr2 <--- r1_0_2 & r1_0_3 & G1_scr
+G1_scr2 <--- r1_0_0 & G1_scr
+# unbuild B (group 0)
+G1_scr <--- 1
+G1_scr <--- r2_1_2
+G1_scr <--- r2_1_3
+# build B (group 1)
+G1_scr <--- 1
+G1_scr <--- r2_1_2 & r2_1_3
+# build scr2 = (b^m0^m1)*B (group 1)
+G1_scr2 <--- r1_0_1 & G1_scr
+G1_scr2 <--- r1_0_2 & r1_0_3 & G1_scr
+G1_scr2 <--- r1_0_3 & r1_0_4 & G1_scr
+G1_scr2 <--- G1_R0 & G1_scr
+G1_scr2 <--- r1_1_2 & r1_1_4 & G1_scr
+G1_scr2 <--- r1_0_0 & G1_scr
+G1_scr2 <--- r1_1_3 & r1_1_4 & G1_scr
+G1_scr2 <--- G1_R1 & G1_scr
+G1_scr2 <--- r1_0_2 & r1_0_4 & G1_scr
+G1_scr2 <--- r1_1_2 & r1_1_3 & G1_scr
+G1_scr2 <--- r1_1_0 & G1_scr
+G1_scr2 <--- r1_1_1 & G1_scr
+# A2 + run -> o2 (group 1)
+G1_o2 <--- r2_1_4
+G1_o2 <--- G1_scr
+G1_o2 <--- r0_1_2 & r0_1_4 & G1_R1 & G1_scr
+G1_o2 <--- r0_1_1 & G1_R1 & G1_scr
+G1_o2 <--- r0_0_3 & r0_0_4 & G1_R1 & G1_scr
+G1_o2 <--- r2_0_3 & r2_0_4 & G1_scr
+G1_o2 <--- r0_0_2 & r0_0_3 & G1_R1 & G1_scr
+G1_o2 <--- r2_0_1 & G1_scr
+G1_o2 <--- r0_0_0 & G1_R1 & G1_scr
+G1_o2 <--- G1_ch0 & G1_scr
+G1_o2 <--- G1_scr2
+G1_o2 <--- r2_0_2 & r2_0_3 & G1_scr
+G1_o2 <--- r0_0_2 & r0_0_4 & G1_scr2
+G1_o2 <--- r0_1_1 & G1_scr2
+G1_o2 <--- r0_0_3 & r0_0_4 & G1_scr2
+G1_o2 <--- r0_1_2 & r0_1_3 & G1_scr2
+G1_o2 <--- r0_0_1 & G1_scr2
+G1_o2 <--- G1_ch1 & G1_scr
+G1_o2 <--- r0_1_0 & G1_R1 & G1_scr
+G1_o2 <--- r0_0_2 & r0_0_4 & G1_R1 & G1_scr
+G1_o2 <--- G1_R2 & G1_R3 & G1_scr
+G1_o2 <--- r0_1_2 & r0_1_3 & G1_R1 & G1_scr
+G1_o2 <--- r0_0_1 & G1_R1 & G1_scr
+G1_o2 <--- r0_1_3 & r0_1_4 & G1_R1 & G1_scr
+G1_o2 <--- r2_0_0 & G1_scr
+G1_o2 <--- r0_0_1 & G1_R0 & G1_scr
+G1_o2 <--- r0_0_2 & r0_0_4 & G1_R0 & G1_scr
+G1_o2 <--- r0_1_2 & r0_1_3 & G1_R0 & G1_scr
+G1_o2 <--- G1_R3 & G1_R4 & G1_scr
+G1_o2 <--- r0_1_0 & G1_R0 & G1_scr
+G1_o2 <--- r0_0_2 & r0_0_3 & G1_R0 & G1_scr
+G1_o2 <--- G1_ch0 & G1_scr
+G1_o2 <--- r0_0_0 & G1_scr2
+G1_o2 <--- r0_1_3 & r0_1_4 & G1_scr2
+G1_o2 <--- r2_0_2 & r2_0_4 & G1_scr
+G1_o2 <--- r0_1_2 & r0_1_4 & G1_scr2
+G1_o2 <--- r0_1_0 & G1_scr2
+G1_o2 <--- r0_0_2 & r0_0_3 & G1_scr2
+G1_o2 <--- G1_ch1 & G1_scr
+G1_o2 <--- r0_0_3 & r0_0_4 & G1_R0 & G1_scr
+G1_o2 <--- G1_R2 & G1_R4 & G1_scr
+G1_o2 <--- r0_0_0 & G1_R0 & G1_scr
+G1_o2 <--- r0_1_3 & r0_1_4 & G1_R0 & G1_scr
+G1_o2 <--- r0_1_2 & r0_1_4 & G1_R0 & G1_scr
+G1_o2 <--- r0_1_1 & G1_R0 & G1_scr
+# unbuild scr2, reverse (group 1)
+G1_scr2 <--- r1_1_1 & G1_scr
+G1_scr2 <--- r1_1_0 & G1_scr
+G1_scr2 <--- r1_1_2 & r1_1_3 & G1_scr
+G1_scr2 <--- r1_0_2 & r1_0_4 & G1_scr
+G1_scr2 <--- G1_R1 & G1_scr
+G1_scr2 <--- r1_1_3 & r1_1_4 & G1_scr
+G1_scr2 <--- r1_0_0 & G1_scr
+G1_scr2 <--- r1_1_2 & r1_1_4 & G1_scr
+G1_scr2 <--- G1_R0 & G1_scr
+G1_scr2 <--- r1_0_3 & r1_0_4 & G1_scr
+G1_scr2 <--- r1_0_2 & r1_0_3 & G1_scr
+G1_scr2 <--- r1_0_1 & G1_scr
+# unbuild B (group 1)
+G1_scr <--- 1
+G1_scr <--- r2_1_2 & r2_1_3
+# G2 (nab): r2 ^= s1 * r0
+# build B (group 0)
+G2_scr <--- 1
+G2_scr <--- G1_o0
+G2_scr <--- G1_o1
+# build scr2 = (b^m0^m1)*B (group 0)
+G2_scr2 <--- s1_0_0 & G2_scr
+G2_scr2 <--- s1_0_2 & s1_0_3 & G2_scr
+G2_scr2 <--- s1_0_3 & s1_0_4 & G2_scr
+G2_scr2 <--- G2_R0 & G2_scr
+G2_scr2 <--- s1_1_2 & s1_1_4 & G2_scr
+G2_scr2 <--- s1_1_0 & G2_scr
+G2_scr2 <--- s1_1_2 & s1_1_3 & G2_scr
+G2_scr2 <--- G2_R1 & G2_scr
+G2_scr2 <--- s1_0_2 & s1_0_4 & G2_scr
+G2_scr2 <--- s1_1_3 & s1_1_4 & G2_scr
+G2_scr2 <--- s1_0_1 & G2_scr
+G2_scr2 <--- s1_1_1 & G2_scr
+# A0 + run -> o0 (group 0)
+G2_o0 <--- G1_o0
+G2_o0 <--- r0_1_1 & G2_scr2
+G2_o0 <--- r0_0_2 & r0_0_4 & G2_scr2
+G2_o0 <--- r0_1_2 & r0_1_3 & G2_scr2
+G2_o0 <--- G1_R1 & G2_scr
+G2_o0 <--- G1_R2 & G1_R3 & G2_scr
+G2_o0 <--- r0_1_0 & G2_scr2
+G2_o0 <--- r0_1_2 & r0_1_4 & G2_scr2
+G2_o0 <--- G2_ch0 & G2_scr
+G2_o0 <--- G2_scr2
+G2_o0 <--- r0_0_0 & G2_R0 & G2_scr
+G2_o0 <--- r0_1_2 & r0_1_4 & G2_R0 & G2_scr
+G2_o0 <--- r0_0_3 & r0_0_4 & G2_R0 & G2_scr
+G2_o0 <--- G2_R2 & G2_R3 & G2_scr
+G2_o0 <--- r0_0_1 & G2_R0 & G2_scr
+G2_o0 <--- r0_1_2 & r0_1_3 & G2_R0 & G2_scr
+G2_o0 <--- G2_ch1 & G2_scr
+G2_o0 <--- r0_1_3 & r0_1_4 & G2_R0 & G2_scr
+G2_o0 <--- r0_1_0 & G2_R0 & G2_scr
+G2_o0 <--- G1_R2 & G1_R4 & G2_scr
+G2_o0 <--- r0_0_2 & r0_0_3 & G2_R0 & G2_scr
+G2_o0 <--- r0_0_2 & r0_0_4 & G2_R0 & G2_scr
+G2_o0 <--- r0_1_1 & G2_R0 & G2_scr
+G2_o0 <--- G1_R0 & G2_scr
+G2_o0 <--- r0_1_3 & r0_1_4 & G2_R1 & G2_scr
+G2_o0 <--- r0_0_1 & G2_R1 & G2_scr
+G2_o0 <--- G2_R3 & G2_R4 & G2_scr
+G2_o0 <--- r0_0_2 & r0_0_3 & G2_R1 & G2_scr
+G2_o0 <--- r0_0_3 & r0_0_4 & G2_R1 & G2_scr
+G2_o0 <--- r0_1_1 & G2_R1 & G2_scr
+G2_o0 <--- G2_ch0 & G2_scr
+G2_o0 <--- r0_1_0 & G2_R1 & G2_scr
+G2_o0 <--- r0_1_2 & r0_1_4 & G2_R1 & G2_scr
+G2_o0 <--- G1_R3 & G1_R4 & G2_scr
+G2_o0 <--- r0_1_2 & r0_1_3 & G2_R1 & G2_scr
+G2_o0 <--- r0_0_0 & G2_R1 & G2_scr
+G2_o0 <--- r0_0_2 & r0_0_4 & G2_R1 & G2_scr
+G2_o0 <--- G2_ch1 & G2_scr
+G2_o0 <--- r0_1_3 & r0_1_4 & G2_scr2
+G2_o0 <--- r0_0_1 & G2_scr2
+G2_o0 <--- r0_0_2 & r0_0_3 & G2_scr2
+G2_o0 <--- G2_R2 & G2_R4 & G2_scr
+G2_o0 <--- r0_0_3 & r0_0_4 & G2_scr2
+G2_o0 <--- r0_0_0 & G2_scr2
+# A1 + run -> o1 (group 0)
+G2_o1 <--- G1_o1
+G2_o1 <--- r0_1_1 & G2_scr2
+G2_o1 <--- r0_0_2 & r0_0_4 & G2_scr2
+G2_o1 <--- r0_1_2 & r0_1_3 & G2_scr2
+G2_o1 <--- G1_R1 & G2_scr
+G2_o1 <--- G1_R2 & G1_R3 & G2_scr
+G2_o1 <--- r0_1_0 & G2_scr2
+G2_o1 <--- r0_1_2 & r0_1_4 & G2_scr2
+G2_o1 <--- G2_ch0 & G2_scr
+G2_o1 <--- G2_scr2
+G2_o1 <--- r0_0_0 & G2_R0 & G2_scr
+G2_o1 <--- r0_1_2 & r0_1_4 & G2_R0 & G2_scr
+G2_o1 <--- r0_0_3 & r0_0_4 & G2_R0 & G2_scr
+G2_o1 <--- G2_R2 & G2_R3 & G2_scr
+G2_o1 <--- r0_0_1 & G2_R0 & G2_scr
+G2_o1 <--- r0_1_2 & r0_1_3 & G2_R0 & G2_scr
+G2_o1 <--- G2_ch1 & G2_scr
+G2_o1 <--- r0_1_3 & r0_1_4 & G2_R0 & G2_scr
+G2_o1 <--- r0_1_0 & G2_R0 & G2_scr
+G2_o1 <--- G1_R2 & G1_R4 & G2_scr
+G2_o1 <--- r0_0_2 & r0_0_3 & G2_R0 & G2_scr
+G2_o1 <--- r0_0_2 & r0_0_4 & G2_R0 & G2_scr
+G2_o1 <--- r0_1_1 & G2_R0 & G2_scr
+G2_o1 <--- G1_R0 & G2_scr
+G2_o1 <--- r0_1_3 & r0_1_4 & G2_R1 & G2_scr
+G2_o1 <--- r0_0_1 & G2_R1 & G2_scr
+G2_o1 <--- G2_R3 & G2_R4 & G2_scr
+G2_o1 <--- r0_0_2 & r0_0_3 & G2_R1 & G2_scr
+G2_o1 <--- r0_0_3 & r0_0_4 & G2_R1 & G2_scr
+G2_o1 <--- r0_1_1 & G2_R1 & G2_scr
+G2_o1 <--- G2_ch0 & G2_scr
+G2_o1 <--- r0_1_0 & G2_R1 & G2_scr
+G2_o1 <--- r0_1_2 & r0_1_4 & G2_R1 & G2_scr
+G2_o1 <--- G1_R3 & G1_R4 & G2_scr
+G2_o1 <--- r0_1_2 & r0_1_3 & G2_R1 & G2_scr
+G2_o1 <--- r0_0_0 & G2_R1 & G2_scr
+G2_o1 <--- r0_0_2 & r0_0_4 & G2_R1 & G2_scr
+G2_o1 <--- G2_ch1 & G2_scr
+G2_o1 <--- r0_1_3 & r0_1_4 & G2_scr2
+G2_o1 <--- r0_0_1 & G2_scr2
+G2_o1 <--- r0_0_2 & r0_0_3 & G2_scr2
+G2_o1 <--- G2_R2 & G2_R4 & G2_scr
+G2_o1 <--- r0_0_3 & r0_0_4 & G2_scr2
+G2_o1 <--- r0_0_0 & G2_scr2
+# unbuild scr2, reverse (group 0)
+G2_scr2 <--- s1_1_1 & G2_scr
+G2_scr2 <--- s1_0_1 & G2_scr
+G2_scr2 <--- s1_1_3 & s1_1_4 & G2_scr
+G2_scr2 <--- s1_0_2 & s1_0_4 & G2_scr
+G2_scr2 <--- G2_R1 & G2_scr
+G2_scr2 <--- s1_1_2 & s1_1_3 & G2_scr
+G2_scr2 <--- s1_1_0 & G2_scr
+G2_scr2 <--- s1_1_2 & s1_1_4 & G2_scr
+G2_scr2 <--- G2_R0 & G2_scr
+G2_scr2 <--- s1_0_3 & s1_0_4 & G2_scr
+G2_scr2 <--- s1_0_2 & s1_0_3 & G2_scr
+G2_scr2 <--- s1_0_0 & G2_scr
+# unbuild B (group 0)
+G2_scr <--- 1
+G2_scr <--- G1_o0
+G2_scr <--- G1_o1
+# build B (group 1)
+G2_scr <--- 1
+G2_scr <--- G1_o0 & G1_o1
+# build scr2 = (b^m0^m1)*B (group 1)
+G2_scr2 <--- s1_0_1 & G2_scr
+G2_scr2 <--- s1_0_2 & s1_0_3 & G2_scr
+G2_scr2 <--- s1_0_3 & s1_0_4 & G2_scr
+G2_scr2 <--- G2_R0 & G2_scr
+G2_scr2 <--- s1_1_2 & s1_1_4 & G2_scr
+G2_scr2 <--- s1_0_0 & G2_scr
+G2_scr2 <--- s1_1_3 & s1_1_4 & G2_scr
+G2_scr2 <--- G2_R1 & G2_scr
+G2_scr2 <--- s1_0_2 & s1_0_4 & G2_scr
+G2_scr2 <--- s1_1_2 & s1_1_3 & G2_scr
+G2_scr2 <--- s1_1_0 & G2_scr
+G2_scr2 <--- s1_1_1 & G2_scr
+# A2 + run -> o2 (group 1)
+G2_o2 <--- G1_o2
+G2_o2 <--- r0_1_2 & r0_1_4 & G2_R1 & G2_scr
+G2_o2 <--- r0_1_1 & G2_R1 & G2_scr
+G2_o2 <--- r0_0_3 & r0_0_4 & G2_R1 & G2_scr
+G2_o2 <--- r0_0_2 & r0_0_3 & G2_R1 & G2_scr
+G2_o2 <--- G1_R3 & G1_R4 & G2_scr
+G2_o2 <--- G1_R1 & G2_scr
+G2_o2 <--- r0_0_0 & G2_R1 & G2_scr
+G2_o2 <--- G2_ch0 & G2_scr
+G2_o2 <--- G2_scr2
+G2_o2 <--- G1_R2 & G1_R3 & G2_scr
+G2_o2 <--- r0_0_2 & r0_0_4 & G2_scr2
+G2_o2 <--- r0_1_1 & G2_scr2
+G2_o2 <--- r0_0_3 & r0_0_4 & G2_scr2
+G2_o2 <--- r0_1_2 & r0_1_3 & G2_scr2
+G2_o2 <--- r0_0_1 & G2_scr2
+G2_o2 <--- G2_ch1 & G2_scr
+G2_o2 <--- r0_1_0 & G2_R1 & G2_scr
+G2_o2 <--- r0_0_2 & r0_0_4 & G2_R1 & G2_scr
+G2_o2 <--- G2_R2 & G2_R3 & G2_scr
+G2_o2 <--- r0_1_2 & r0_1_3 & G2_R1 & G2_scr
+G2_o2 <--- r0_0_1 & G2_R1 & G2_scr
+G2_o2 <--- r0_1_3 & r0_1_4 & G2_R1 & G2_scr
+G2_o2 <--- G1_R0 & G2_scr
+G2_o2 <--- r0_0_1 & G2_R0 & G2_scr
+G2_o2 <--- r0_0_2 & r0_0_4 & G2_R0 & G2_scr
+G2_o2 <--- r0_1_2 & r0_1_3 & G2_R0 & G2_scr
+G2_o2 <--- G2_R3 & G2_R4 & G2_scr
+G2_o2 <--- r0_1_0 & G2_R0 & G2_scr
+G2_o2 <--- r0_0_2 & r0_0_3 & G2_R0 & G2_scr
+G2_o2 <--- G2_ch0 & G2_scr
+G2_o2 <--- r0_0_0 & G2_scr2
+G2_o2 <--- r0_1_3 & r0_1_4 & G2_scr2
+G2_o2 <--- G1_R2 & G1_R4 & G2_scr
+G2_o2 <--- r0_1_2 & r0_1_4 & G2_scr2
+G2_o2 <--- r0_1_0 & G2_scr2
+G2_o2 <--- r0_0_2 & r0_0_3 & G2_scr2
+G2_o2 <--- G2_ch1 & G2_scr
+G2_o2 <--- r0_0_3 & r0_0_4 & G2_R0 & G2_scr
+G2_o2 <--- G2_R2 & G2_R4 & G2_scr
+G2_o2 <--- r0_0_0 & G2_R0 & G2_scr
+G2_o2 <--- r0_1_3 & r0_1_4 & G2_R0 & G2_scr
+G2_o2 <--- r0_1_2 & r0_1_4 & G2_R0 & G2_scr
+G2_o2 <--- r0_1_1 & G2_R0 & G2_scr
+# unbuild scr2, reverse (group 1)
+G2_scr2 <--- s1_1_1 & G2_scr
+G2_scr2 <--- s1_1_0 & G2_scr
+G2_scr2 <--- s1_1_2 & s1_1_3 & G2_scr
+G2_scr2 <--- s1_0_2 & s1_0_4 & G2_scr
+G2_scr2 <--- G2_R1 & G2_scr
+G2_scr2 <--- s1_1_3 & s1_1_4 & G2_scr
+G2_scr2 <--- s1_0_0 & G2_scr
+G2_scr2 <--- s1_1_2 & s1_1_4 & G2_scr
+G2_scr2 <--- G2_R0 & G2_scr
+G2_scr2 <--- s1_0_3 & s1_0_4 & G2_scr
+G2_scr2 <--- s1_0_2 & s1_0_3 & G2_scr
+G2_scr2 <--- s1_0_1 & G2_scr
+# unbuild B (group 1)
+G2_scr <--- 1
+G2_scr <--- G1_o0 & G1_o1
+# G3 (and): r2 ^= r1 * s0
+# build B (group 0)
+G3_scr <--- 1
+G3_scr <--- G2_o0
+G3_scr <--- G2_o1
+# build scr2 = (b^m0^m1)*B (group 0)
+G3_scr2 <--- r1_0_0 & G3_scr
+G3_scr2 <--- r1_0_2 & r1_0_3 & G3_scr
+G3_scr2 <--- r1_0_3 & r1_0_4 & G3_scr
+G3_scr2 <--- G3_ch2 & G3_scr
+G3_scr2 <--- r1_1_2 & r1_1_4 & G3_scr
+G3_scr2 <--- r1_1_0 & G3_scr
+G3_scr2 <--- r1_1_2 & r1_1_3 & G3_scr
+G3_scr2 <--- G3_ch3 & G3_scr
+G3_scr2 <--- r1_0_2 & r1_0_4 & G3_scr
+G3_scr2 <--- r1_1_3 & r1_1_4 & G3_scr
+G3_scr2 <--- r1_0_1 & G3_scr
+G3_scr2 <--- r1_1_1 & G3_scr
+# A0 + run -> o0 (group 0)
+G3_o0 <--- G2_o0
+G3_o0 <--- s0_1_1 & G3_scr2
+G3_o0 <--- s0_0_2 & s0_0_4 & G3_scr2
+G3_o0 <--- G3_R3 & G3_R4 & G3_scr
+G3_o0 <--- G2_R2 & G2_R3 & G3_scr
+G3_o0 <--- s0_1_2 & s0_1_3 & G3_scr2
+G3_o0 <--- s0_1_0 & G3_scr2
+G3_o0 <--- s0_1_2 & s0_1_4 & G3_scr2
+G3_o0 <--- G3_ch0 & G3_scr
+G3_o0 <--- s0_0_0 & G3_ch2 & G3_scr
+G3_o0 <--- s0_1_2 & s0_1_4 & G3_ch2 & G3_scr
+G3_o0 <--- G3_R0 & G3_scr
+G3_o0 <--- s0_0_3 & s0_0_4 & G3_ch2 & G3_scr
+G3_o0 <--- G3_R2 & G3_R4 & G3_scr
+G3_o0 <--- s0_0_1 & G3_ch2 & G3_scr
+G3_o0 <--- s0_1_2 & s0_1_3 & G3_ch2 & G3_scr
+G3_o0 <--- G3_ch1 & G3_scr
+G3_o0 <--- s0_1_3 & s0_1_4 & G3_ch2 & G3_scr
+G3_o0 <--- s0_1_0 & G3_ch2 & G3_scr
+G3_o0 <--- G2_R2 & G2_R4 & G3_scr
+G3_o0 <--- G3_R1 & G3_scr
+G3_o0 <--- s0_0_2 & s0_0_3 & G3_ch2 & G3_scr
+G3_o0 <--- s0_0_2 & s0_0_4 & G3_ch2 & G3_scr
+G3_o0 <--- s0_1_1 & G3_ch2 & G3_scr
+G3_o0 <--- G2_R0 & G3_scr
+G3_o0 <--- s0_1_3 & s0_1_4 & G3_ch3 & G3_scr
+G3_o0 <--- s0_0_1 & G3_ch3 & G3_scr
+G3_o0 <--- s0_0_2 & s0_0_3 & G3_ch3 & G3_scr
+G3_o0 <--- G3_R2 & G3_R3 & G3_scr
+G3_o0 <--- s0_0_3 & s0_0_4 & G3_ch3 & G3_scr
+G3_o0 <--- s0_1_1 & G3_ch3 & G3_scr
+G3_o0 <--- G3_ch0 & G3_scr
+G3_o0 <--- s0_1_0 & G3_ch3 & G3_scr
+G3_o0 <--- s0_1_2 & s0_1_4 & G3_ch3 & G3_scr
+G3_o0 <--- s0_1_2 & s0_1_3 & G3_ch3 & G3_scr
+G3_o0 <--- G2_R1 & G3_scr
+G3_o0 <--- s0_0_0 & G3_ch3 & G3_scr
+G3_o0 <--- s0_0_2 & s0_0_4 & G3_ch3 & G3_scr
+G3_o0 <--- G3_ch1 & G3_scr
+G3_o0 <--- s0_1_3 & s0_1_4 & G3_scr2
+G3_o0 <--- s0_0_1 & G3_scr2
+G3_o0 <--- s0_0_2 & s0_0_3 & G3_scr2
+G3_o0 <--- s0_0_3 & s0_0_4 & G3_scr2
+G3_o0 <--- G2_R3 & G2_R4 & G3_scr
+G3_o0 <--- s0_0_0 & G3_scr2
+# A1 + run -> o1 (group 0)
+G3_o1 <--- G2_o1
+G3_o1 <--- s0_1_1 & G3_scr2
+G3_o1 <--- s0_0_2 & s0_0_4 & G3_scr2
+G3_o1 <--- G3_R3 & G3_R4 & G3_scr
+G3_o1 <--- G2_R2 & G2_R3 & G3_scr
+G3_o1 <--- s0_1_2 & s0_1_3 & G3_scr2
+G3_o1 <--- s0_1_0 & G3_scr2
+G3_o1 <--- s0_1_2 & s0_1_4 & G3_scr2
+G3_o1 <--- G3_ch0 & G3_scr
+G3_o1 <--- s0_0_0 & G3_ch2 & G3_scr
+G3_o1 <--- s0_1_2 & s0_1_4 & G3_ch2 & G3_scr
+G3_o1 <--- G3_R0 & G3_scr
+G3_o1 <--- s0_0_3 & s0_0_4 & G3_ch2 & G3_scr
+G3_o1 <--- G3_R2 & G3_R4 & G3_scr
+G3_o1 <--- s0_0_1 & G3_ch2 & G3_scr
+G3_o1 <--- s0_1_2 & s0_1_3 & G3_ch2 & G3_scr
+G3_o1 <--- G3_ch1 & G3_scr
+G3_o1 <--- s0_1_3 & s0_1_4 & G3_ch2 & G3_scr
+G3_o1 <--- s0_1_0 & G3_ch2 & G3_scr
+G3_o1 <--- G2_R2 & G2_R4 & G3_scr
+G3_o1 <--- G3_R1 & G3_scr
+G3_o1 <--- s0_0_2 & s0_0_3 & G3_ch2 & G3_scr
+G3_o1 <--- s0_0_2 & s0_0_4 & G3_ch2 & G3_scr
+G3_o1 <--- s0_1_1 & G3_ch2 & G3_scr
+G3_o1 <--- G2_R0 & G3_scr
+G3_o1 <--- s0_1_3 & s0_1_4 & G3_ch3 & G3_scr
+G3_o1 <--- s0_0_1 & G3_ch3 & G3_scr
+G3_o1 <--- s0_0_2 & s0_0_3 & G3_ch3 & G3_scr
+G3_o1 <--- G3_R2 & G3_R3 & G3_scr
+G3_o1 <--- s0_0_3 & s0_0_4 & G3_ch3 & G3_scr
+G3_o1 <--- s0_1_1 & G3_ch3 & G3_scr
+G3_o1 <--- G3_ch0 & G3_scr
+G3_o1 <--- s0_1_0 & G3_ch3 & G3_scr
+G3_o1 <--- s0_1_2 & s0_1_4 & G3_ch3 & G3_scr
+G3_o1 <--- s0_1_2 & s0_1_3 & G3_ch3 & G3_scr
+G3_o1 <--- G2_R1 & G3_scr
+G3_o1 <--- s0_0_0 & G3_ch3 & G3_scr
+G3_o1 <--- s0_0_2 & s0_0_4 & G3_ch3 & G3_scr
+G3_o1 <--- G3_ch1 & G3_scr
+G3_o1 <--- s0_1_3 & s0_1_4 & G3_scr2
+G3_o1 <--- s0_0_1 & G3_scr2
+G3_o1 <--- s0_0_2 & s0_0_3 & G3_scr2
+G3_o1 <--- s0_0_3 & s0_0_4 & G3_scr2
+G3_o1 <--- G2_R3 & G2_R4 & G3_scr
+G3_o1 <--- s0_0_0 & G3_scr2
+# unbuild scr2, reverse (group 0)
+G3_scr2 <--- r1_1_1 & G3_scr
+G3_scr2 <--- r1_0_1 & G3_scr
+G3_scr2 <--- r1_1_3 & r1_1_4 & G3_scr
+G3_scr2 <--- r1_0_2 & r1_0_4 & G3_scr
+G3_scr2 <--- G3_ch3 & G3_scr
+G3_scr2 <--- r1_1_2 & r1_1_3 & G3_scr
+G3_scr2 <--- r1_1_0 & G3_scr
+G3_scr2 <--- r1_1_2 & r1_1_4 & G3_scr
+G3_scr2 <--- G3_ch2 & G3_scr
+G3_scr2 <--- r1_0_3 & r1_0_4 & G3_scr
+G3_scr2 <--- r1_0_2 & r1_0_3 & G3_scr
+G3_scr2 <--- r1_0_0 & G3_scr
+# unbuild B (group 0)
+G3_scr <--- 1
+G3_scr <--- G2_o0
+G3_scr <--- G2_o1
+# build B (group 1)
+G3_scr <--- 1
+G3_scr <--- G2_o0 & G2_o1
+# build scr2 = (b^m0^m1)*B (group 1)
+G3_scr2 <--- r1_0_1 & G3_scr
+G3_scr2 <--- r1_0_2 & r1_0_3 & G3_scr
+G3_scr2 <--- r1_0_3 & r1_0_4 & G3_scr
+G3_scr2 <--- G3_ch2 & G3_scr
+G3_scr2 <--- r1_1_2 & r1_1_4 & G3_scr
+G3_scr2 <--- r1_0_0 & G3_scr
+G3_scr2 <--- r1_1_3 & r1_1_4 & G3_scr
+G3_scr2 <--- G3_ch3 & G3_scr
+G3_scr2 <--- r1_0_2 & r1_0_4 & G3_scr
+G3_scr2 <--- r1_1_2 & r1_1_3 & G3_scr
+G3_scr2 <--- r1_1_0 & G3_scr
+G3_scr2 <--- r1_1_1 & G3_scr
+# A2 + run -> o2 (group 1)
+G3_o2 <--- G2_o2
+G3_o2 <--- s0_1_2 & s0_1_4 & G3_ch3 & G3_scr
+G3_o2 <--- G2_R3 & G2_R4 & G3_scr
+G3_o2 <--- s0_1_1 & G3_ch3 & G3_scr
+G3_o2 <--- G2_R1 & G3_scr
+G3_o2 <--- s0_0_3 & s0_0_4 & G3_ch3 & G3_scr
+G3_o2 <--- s0_0_2 & s0_0_3 & G3_ch3 & G3_scr
+G3_o2 <--- s0_0_0 & G3_ch3 & G3_scr
+G3_o2 <--- G3_ch0 & G3_scr
+G3_o2 <--- s0_0_2 & s0_0_4 & G3_scr2
+G3_o2 <--- G3_R2 & G3_R3 & G3_scr
+G3_o2 <--- s0_1_1 & G3_scr2
+G3_o2 <--- G3_R2 & G3_R4 & G3_scr
+G3_o2 <--- s0_0_3 & s0_0_4 & G3_scr2
+G3_o2 <--- s0_1_2 & s0_1_3 & G3_scr2
+G3_o2 <--- s0_0_1 & G3_scr2
+G3_o2 <--- G3_ch1 & G3_scr
+G3_o2 <--- s0_1_0 & G3_ch3 & G3_scr
+G3_o2 <--- s0_0_2 & s0_0_4 & G3_ch3 & G3_scr
+G3_o2 <--- s0_1_2 & s0_1_3 & G3_ch3 & G3_scr
+G3_o2 <--- G2_R2 & G2_R3 & G3_scr
+G3_o2 <--- s0_0_1 & G3_ch3 & G3_scr
+G3_o2 <--- G3_R1 & G3_scr
+G3_o2 <--- s0_1_3 & s0_1_4 & G3_ch3 & G3_scr
+G3_o2 <--- G2_R0 & G3_scr
+G3_o2 <--- s0_0_1 & G3_ch2 & G3_scr
+G3_o2 <--- s0_0_2 & s0_0_4 & G3_ch2 & G3_scr
+G3_o2 <--- G3_R0 & G3_scr
+G3_o2 <--- s0_1_2 & s0_1_3 & G3_ch2 & G3_scr
+G3_o2 <--- s0_1_0 & G3_ch2 & G3_scr
+G3_o2 <--- s0_0_2 & s0_0_3 & G3_ch2 & G3_scr
+G3_o2 <--- G3_ch0 & G3_scr
+G3_o2 <--- s0_0_0 & G3_scr2
+G3_o2 <--- G2_R2 & G2_R4 & G3_scr
+G3_o2 <--- s0_1_3 & s0_1_4 & G3_scr2
+G3_o2 <--- s0_1_2 & s0_1_4 & G3_scr2
+G3_o2 <--- s0_1_0 & G3_scr2
+G3_o2 <--- s0_0_2 & s0_0_3 & G3_scr2
+G3_o2 <--- G3_ch1 & G3_scr
+G3_o2 <--- s0_0_3 & s0_0_4 & G3_ch2 & G3_scr
+G3_o2 <--- s0_0_0 & G3_ch2 & G3_scr
+G3_o2 <--- G3_R3 & G3_R4 & G3_scr
+G3_o2 <--- s0_1_3 & s0_1_4 & G3_ch2 & G3_scr
+G3_o2 <--- s0_1_2 & s0_1_4 & G3_ch2 & G3_scr
+G3_o2 <--- s0_1_1 & G3_ch2 & G3_scr
+# unbuild scr2, reverse (group 1)
+G3_scr2 <--- r1_1_1 & G3_scr
+G3_scr2 <--- r1_1_0 & G3_scr
+G3_scr2 <--- r1_1_2 & r1_1_3 & G3_scr
+G3_scr2 <--- r1_0_2 & r1_0_4 & G3_scr
+G3_scr2 <--- G3_ch3 & G3_scr
+G3_scr2 <--- r1_1_3 & r1_1_4 & G3_scr
+G3_scr2 <--- r1_0_0 & G3_scr
+G3_scr2 <--- r1_1_2 & r1_1_4 & G3_scr
+G3_scr2 <--- G3_ch2 & G3_scr
+G3_scr2 <--- r1_0_3 & r1_0_4 & G3_scr
+G3_scr2 <--- r1_0_2 & r1_0_3 & G3_scr
+G3_scr2 <--- r1_0_1 & G3_scr
+# unbuild B (group 1)
+G3_scr <--- 1
+G3_scr <--- G2_o0 & G2_o1
+# G4 (and): r2 ^= s1 * s0
+# build B (group 0)
+G4_scr <--- 1
+G4_scr <--- G3_o0
+G4_scr <--- G3_o1
+# build scr2 = (b^m0^m1)*B (group 0)
+G4_scr2 <--- s1_0_0 & G4_scr
+G4_scr2 <--- s1_0_2 & s1_0_3 & G4_scr
+G4_scr2 <--- s1_0_3 & s1_0_4 & G4_scr
+G4_scr2 <--- G4_ch2 & G4_scr
+G4_scr2 <--- s1_1_2 & s1_1_4 & G4_scr
+G4_scr2 <--- s1_1_0 & G4_scr
+G4_scr2 <--- s1_1_2 & s1_1_3 & G4_scr
+G4_scr2 <--- G4_ch3 & G4_scr
+G4_scr2 <--- s1_0_2 & s1_0_4 & G4_scr
+G4_scr2 <--- s1_1_3 & s1_1_4 & G4_scr
+G4_scr2 <--- s1_0_1 & G4_scr
+G4_scr2 <--- s1_1_1 & G4_scr
+# A0 + run -> o0 (group 0)
+G4_o0 <--- G3_o0
+G4_o0 <--- s0_1_1 & G4_scr2
+G4_o0 <--- s0_0_2 & s0_0_4 & G4_scr2
+G4_o0 <--- G4_R3 & G4_R4 & G4_scr
+G4_o0 <--- G3_R2 & G3_R3 & G4_scr
+G4_o0 <--- s0_1_2 & s0_1_3 & G4_scr2
+G4_o0 <--- s0_1_0 & G4_scr2
+G4_o0 <--- s0_1_2 & s0_1_4 & G4_scr2
+G4_o0 <--- G4_ch0 & G4_scr
+G4_o0 <--- s0_0_0 & G4_ch2 & G4_scr
+G4_o0 <--- s0_1_2 & s0_1_4 & G4_ch2 & G4_scr
+G4_o0 <--- G4_R0 & G4_scr
+G4_o0 <--- s0_0_3 & s0_0_4 & G4_ch2 & G4_scr
+G4_o0 <--- G4_R2 & G4_R4 & G4_scr
+G4_o0 <--- s0_0_1 & G4_ch2 & G4_scr
+G4_o0 <--- s0_1_2 & s0_1_3 & G4_ch2 & G4_scr
+G4_o0 <--- G4_ch1 & G4_scr
+G4_o0 <--- s0_1_3 & s0_1_4 & G4_ch2 & G4_scr
+G4_o0 <--- s0_1_0 & G4_ch2 & G4_scr
+G4_o0 <--- G3_R2 & G3_R4 & G4_scr
+G4_o0 <--- G4_R1 & G4_scr
+G4_o0 <--- s0_0_2 & s0_0_3 & G4_ch2 & G4_scr
+G4_o0 <--- s0_0_2 & s0_0_4 & G4_ch2 & G4_scr
+G4_o0 <--- s0_1_1 & G4_ch2 & G4_scr
+G4_o0 <--- G3_R0 & G4_scr
+G4_o0 <--- s0_1_3 & s0_1_4 & G4_ch3 & G4_scr
+G4_o0 <--- s0_0_1 & G4_ch3 & G4_scr
+G4_o0 <--- s0_0_2 & s0_0_3 & G4_ch3 & G4_scr
+G4_o0 <--- G4_R2 & G4_R3 & G4_scr
+G4_o0 <--- s0_0_3 & s0_0_4 & G4_ch3 & G4_scr
+G4_o0 <--- s0_1_1 & G4_ch3 & G4_scr
+G4_o0 <--- G4_ch0 & G4_scr
+G4_o0 <--- s0_1_0 & G4_ch3 & G4_scr
+G4_o0 <--- s0_1_2 & s0_1_4 & G4_ch3 & G4_scr
+G4_o0 <--- s0_1_2 & s0_1_3 & G4_ch3 & G4_scr
+G4_o0 <--- G3_R1 & G4_scr
+G4_o0 <--- s0_0_0 & G4_ch3 & G4_scr
+G4_o0 <--- s0_0_2 & s0_0_4 & G4_ch3 & G4_scr
+G4_o0 <--- G4_ch1 & G4_scr
+G4_o0 <--- s0_1_3 & s0_1_4 & G4_scr2
+G4_o0 <--- s0_0_1 & G4_scr2
+G4_o0 <--- s0_0_2 & s0_0_3 & G4_scr2
+G4_o0 <--- s0_0_3 & s0_0_4 & G4_scr2
+G4_o0 <--- G3_R3 & G3_R4 & G4_scr
+G4_o0 <--- s0_0_0 & G4_scr2
+# A1 + run -> o1 (group 0)
+G4_o1 <--- G3_o1
+G4_o1 <--- s0_1_1 & G4_scr2
+G4_o1 <--- s0_0_2 & s0_0_4 & G4_scr2
+G4_o1 <--- G4_R3 & G4_R4 & G4_scr
+G4_o1 <--- G3_R2 & G3_R3 & G4_scr
+G4_o1 <--- s0_1_2 & s0_1_3 & G4_scr2
+G4_o1 <--- s0_1_0 & G4_scr2
+G4_o1 <--- s0_1_2 & s0_1_4 & G4_scr2
+G4_o1 <--- G4_ch0 & G4_scr
+G4_o1 <--- s0_0_0 & G4_ch2 & G4_scr
+G4_o1 <--- s0_1_2 & s0_1_4 & G4_ch2 & G4_scr
+G4_o1 <--- G4_R0 & G4_scr
+G4_o1 <--- s0_0_3 & s0_0_4 & G4_ch2 & G4_scr
+G4_o1 <--- G4_R2 & G4_R4 & G4_scr
+G4_o1 <--- s0_0_1 & G4_ch2 & G4_scr
+G4_o1 <--- s0_1_2 & s0_1_3 & G4_ch2 & G4_scr
+G4_o1 <--- G4_ch1 & G4_scr
+G4_o1 <--- s0_1_3 & s0_1_4 & G4_ch2 & G4_scr
+G4_o1 <--- s0_1_0 & G4_ch2 & G4_scr
+G4_o1 <--- G3_R2 & G3_R4 & G4_scr
+G4_o1 <--- G4_R1 & G4_scr
+G4_o1 <--- s0_0_2 & s0_0_3 & G4_ch2 & G4_scr
+G4_o1 <--- s0_0_2 & s0_0_4 & G4_ch2 & G4_scr
+G4_o1 <--- s0_1_1 & G4_ch2 & G4_scr
+G4_o1 <--- G3_R0 & G4_scr
+G4_o1 <--- s0_1_3 & s0_1_4 & G4_ch3 & G4_scr
+G4_o1 <--- s0_0_1 & G4_ch3 & G4_scr
+G4_o1 <--- s0_0_2 & s0_0_3 & G4_ch3 & G4_scr
+G4_o1 <--- G4_R2 & G4_R3 & G4_scr
+G4_o1 <--- s0_0_3 & s0_0_4 & G4_ch3 & G4_scr
+G4_o1 <--- s0_1_1 & G4_ch3 & G4_scr
+G4_o1 <--- G4_ch0 & G4_scr
+G4_o1 <--- s0_1_0 & G4_ch3 & G4_scr
+G4_o1 <--- s0_1_2 & s0_1_4 & G4_ch3 & G4_scr
+G4_o1 <--- s0_1_2 & s0_1_3 & G4_ch3 & G4_scr
+G4_o1 <--- G3_R1 & G4_scr
+G4_o1 <--- s0_0_0 & G4_ch3 & G4_scr
+G4_o1 <--- s0_0_2 & s0_0_4 & G4_ch3 & G4_scr
+G4_o1 <--- G4_ch1 & G4_scr
+G4_o1 <--- s0_1_3 & s0_1_4 & G4_scr2
+G4_o1 <--- s0_0_1 & G4_scr2
+G4_o1 <--- s0_0_2 & s0_0_3 & G4_scr2
+G4_o1 <--- s0_0_3 & s0_0_4 & G4_scr2
+G4_o1 <--- G3_R3 & G3_R4 & G4_scr
+G4_o1 <--- s0_0_0 & G4_scr2
+# unbuild scr2, reverse (group 0)
+G4_scr2 <--- s1_1_1 & G4_scr
+G4_scr2 <--- s1_0_1 & G4_scr
+G4_scr2 <--- s1_1_3 & s1_1_4 & G4_scr
+G4_scr2 <--- s1_0_2 & s1_0_4 & G4_scr
+G4_scr2 <--- G4_ch3 & G4_scr
+G4_scr2 <--- s1_1_2 & s1_1_3 & G4_scr
+G4_scr2 <--- s1_1_0 & G4_scr
+G4_scr2 <--- s1_1_2 & s1_1_4 & G4_scr
+G4_scr2 <--- G4_ch2 & G4_scr
+G4_scr2 <--- s1_0_3 & s1_0_4 & G4_scr
+G4_scr2 <--- s1_0_2 & s1_0_3 & G4_scr
+G4_scr2 <--- s1_0_0 & G4_scr
+# unbuild B (group 0)
+G4_scr <--- 1
+G4_scr <--- G3_o0
+G4_scr <--- G3_o1
+# build B (group 1)
+G4_scr <--- 1
+G4_scr <--- G3_o0 & G3_o1
+# build scr2 = (b^m0^m1)*B (group 1)
+G4_scr2 <--- s1_0_1 & G4_scr
+G4_scr2 <--- s1_0_2 & s1_0_3 & G4_scr
+G4_scr2 <--- s1_0_3 & s1_0_4 & G4_scr
+G4_scr2 <--- G4_ch2 & G4_scr
+G4_scr2 <--- s1_1_2 & s1_1_4 & G4_scr
+G4_scr2 <--- s1_0_0 & G4_scr
+G4_scr2 <--- s1_1_3 & s1_1_4 & G4_scr
+G4_scr2 <--- G4_ch3 & G4_scr
+G4_scr2 <--- s1_0_2 & s1_0_4 & G4_scr
+G4_scr2 <--- s1_1_2 & s1_1_3 & G4_scr
+G4_scr2 <--- s1_1_0 & G4_scr
+G4_scr2 <--- s1_1_1 & G4_scr
+# A2 + run -> o2 (group 1)
+G4_o2 <--- G3_o2
+G4_o2 <--- s0_1_2 & s0_1_4 & G4_ch3 & G4_scr
+G4_o2 <--- G3_R3 & G3_R4 & G4_scr
+G4_o2 <--- s0_1_1 & G4_ch3 & G4_scr
+G4_o2 <--- G3_R1 & G4_scr
+G4_o2 <--- s0_0_3 & s0_0_4 & G4_ch3 & G4_scr
+G4_o2 <--- s0_0_2 & s0_0_3 & G4_ch3 & G4_scr
+G4_o2 <--- s0_0_0 & G4_ch3 & G4_scr
+G4_o2 <--- G4_ch0 & G4_scr
+G4_o2 <--- s0_0_2 & s0_0_4 & G4_scr2
+G4_o2 <--- G4_R2 & G4_R3 & G4_scr
+G4_o2 <--- s0_1_1 & G4_scr2
+G4_o2 <--- G4_R2 & G4_R4 & G4_scr
+G4_o2 <--- s0_0_3 & s0_0_4 & G4_scr2
+G4_o2 <--- s0_1_2 & s0_1_3 & G4_scr2
+G4_o2 <--- s0_0_1 & G4_scr2
+G4_o2 <--- G4_ch1 & G4_scr
+G4_o2 <--- s0_1_0 & G4_ch3 & G4_scr
+G4_o2 <--- s0_0_2 & s0_0_4 & G4_ch3 & G4_scr
+G4_o2 <--- s0_1_2 & s0_1_3 & G4_ch3 & G4_scr
+G4_o2 <--- G3_R2 & G3_R3 & G4_scr
+G4_o2 <--- s0_0_1 & G4_ch3 & G4_scr
+G4_o2 <--- G4_R1 & G4_scr
+G4_o2 <--- s0_1_3 & s0_1_4 & G4_ch3 & G4_scr
+G4_o2 <--- G3_R0 & G4_scr
+G4_o2 <--- s0_0_1 & G4_ch2 & G4_scr
+G4_o2 <--- s0_0_2 & s0_0_4 & G4_ch2 & G4_scr
+G4_o2 <--- G4_R0 & G4_scr
+G4_o2 <--- s0_1_2 & s0_1_3 & G4_ch2 & G4_scr
+G4_o2 <--- s0_1_0 & G4_ch2 & G4_scr
+G4_o2 <--- s0_0_2 & s0_0_3 & G4_ch2 & G4_scr
+G4_o2 <--- G4_ch0 & G4_scr
+G4_o2 <--- s0_0_0 & G4_scr2
+G4_o2 <--- G3_R2 & G3_R4 & G4_scr
+G4_o2 <--- s0_1_3 & s0_1_4 & G4_scr2
+G4_o2 <--- s0_1_2 & s0_1_4 & G4_scr2
+G4_o2 <--- s0_1_0 & G4_scr2
+G4_o2 <--- s0_0_2 & s0_0_3 & G4_scr2
+G4_o2 <--- G4_ch1 & G4_scr
+G4_o2 <--- s0_0_3 & s0_0_4 & G4_ch2 & G4_scr
+G4_o2 <--- s0_0_0 & G4_ch2 & G4_scr
+G4_o2 <--- G4_R3 & G4_R4 & G4_scr
+G4_o2 <--- s0_1_3 & s0_1_4 & G4_ch2 & G4_scr
+G4_o2 <--- s0_1_2 & s0_1_4 & G4_ch2 & G4_scr
+G4_o2 <--- s0_1_1 & G4_ch2 & G4_scr
+# unbuild scr2, reverse (group 1)
+G4_scr2 <--- s1_1_1 & G4_scr
+G4_scr2 <--- s1_1_0 & G4_scr
+G4_scr2 <--- s1_1_2 & s1_1_3 & G4_scr
+G4_scr2 <--- s1_0_2 & s1_0_4 & G4_scr
+G4_scr2 <--- G4_ch3 & G4_scr
+G4_scr2 <--- s1_1_3 & s1_1_4 & G4_scr
+G4_scr2 <--- s1_0_0 & G4_scr
+G4_scr2 <--- s1_1_2 & s1_1_4 & G4_scr
+G4_scr2 <--- G4_ch2 & G4_scr
+G4_scr2 <--- s1_0_3 & s1_0_4 & G4_scr
+G4_scr2 <--- s1_0_2 & s1_0_3 & G4_scr
+G4_scr2 <--- s1_0_1 & G4_scr
+# unbuild B (group 1)
+G4_scr <--- 1
+G4_scr <--- G3_o0 & G3_o1
+# G5 (copy): r2 ^= gA
+# build B (group 0)
+G5_scr <--- 1
+G5_scr <--- G4_o0
+G5_scr <--- G4_o1
+# A0 + run -> o0 (copy)
+G5_o0 <--- G4_o0
+G5_o0 <--- gA_0_0 & G5_scr
+G5_o0 <--- gA_0_2 & gA_0_3 & G5_scr
+G5_o0 <--- gA_0_3 & gA_0_4 & G5_scr
+G5_o0 <--- gA_1_0 & G5_scr
+G5_o0 <--- gA_1_2 & gA_1_4 & G5_scr
+G5_o0 <--- G5_ch0 & G5_scr
+G5_o0 <--- gA_1_2 & gA_1_3 & G5_scr
+G5_o0 <--- gA_0_1 & G5_scr
+G5_o0 <--- gA_0_2 & gA_0_4 & G5_scr
+G5_o0 <--- gA_1_3 & gA_1_4 & G5_scr
+G5_o0 <--- gA_1_1 & G5_scr
+G5_o0 <--- G5_ch1 & G5_scr
+G5_o0 <--- G5_R1 & G5_scr
+G5_o0 <--- G4_R2 & G4_R4 & G5_scr
+G5_o0 <--- G5_R2 & G5_R3 & G5_scr
+G5_o0 <--- G5_R0 & G5_scr
+G5_o0 <--- G5_R2 & G5_R4 & G5_scr
+G5_o0 <--- G5_ch0 & G5_scr
+G5_o0 <--- G5_R3 & G5_R4 & G5_scr
+G5_o0 <--- G4_R1 & G5_scr
+G5_o0 <--- G4_R2 & G4_R3 & G5_scr
+G5_o0 <--- G4_R3 & G4_R4 & G5_scr
+G5_o0 <--- G4_R0 & G5_scr
+G5_o0 <--- G5_ch1 & G5_scr
+# A1 + run -> o1 (copy)
+G5_o1 <--- G4_o1
+G5_o1 <--- gA_0_0 & G5_scr
+G5_o1 <--- gA_0_2 & gA_0_3 & G5_scr
+G5_o1 <--- gA_0_3 & gA_0_4 & G5_scr
+G5_o1 <--- gA_1_0 & G5_scr
+G5_o1 <--- gA_1_2 & gA_1_4 & G5_scr
+G5_o1 <--- G5_ch0 & G5_scr
+G5_o1 <--- gA_1_2 & gA_1_3 & G5_scr
+G5_o1 <--- gA_0_1 & G5_scr
+G5_o1 <--- gA_0_2 & gA_0_4 & G5_scr
+G5_o1 <--- gA_1_3 & gA_1_4 & G5_scr
+G5_o1 <--- gA_1_1 & G5_scr
+G5_o1 <--- G5_ch1 & G5_scr
+G5_o1 <--- G5_R1 & G5_scr
+G5_o1 <--- G4_R2 & G4_R4 & G5_scr
+G5_o1 <--- G5_R2 & G5_R3 & G5_scr
+G5_o1 <--- G5_R0 & G5_scr
+G5_o1 <--- G5_R2 & G5_R4 & G5_scr
+G5_o1 <--- G5_ch0 & G5_scr
+G5_o1 <--- G5_R3 & G5_R4 & G5_scr
+G5_o1 <--- G4_R1 & G5_scr
+G5_o1 <--- G4_R2 & G4_R3 & G5_scr
+G5_o1 <--- G4_R3 & G4_R4 & G5_scr
+G5_o1 <--- G4_R0 & G5_scr
+G5_o1 <--- G5_ch1 & G5_scr
+# unbuild B (group 0)
+G5_scr <--- 1
+G5_scr <--- G4_o0
+G5_scr <--- G4_o1
+# build B (group 1)
+G5_scr <--- 1
+G5_scr <--- G4_o0 & G4_o1
+# A2 + run -> o2 (copy)
+G5_o2 <--- G4_o2
+G5_o2 <--- gA_1_3 & gA_1_4 & G5_scr
+G5_o2 <--- gA_1_0 & G5_scr
+G5_o2 <--- gA_0_2 & gA_0_4 & G5_scr
+G5_o2 <--- gA_1_2 & gA_1_3 & G5_scr
+G5_o2 <--- gA_1_1 & G5_scr
+G5_o2 <--- G5_ch0 & G5_scr
+G5_o2 <--- G4_R0 & G5_scr
+G5_o2 <--- G5_R3 & G5_R4 & G5_scr
+G5_o2 <--- G5_R2 & G5_R4 & G5_scr
+G5_o2 <--- G5_R0 & G5_scr
+G5_o2 <--- G4_R2 & G4_R3 & G5_scr
+G5_o2 <--- G5_ch1 & G5_scr
+G5_o2 <--- gA_0_1 & G5_scr
+G5_o2 <--- gA_0_2 & gA_0_3 & G5_scr
+G5_o2 <--- gA_0_3 & gA_0_4 & G5_scr
+G5_o2 <--- gA_0_0 & G5_scr
+G5_o2 <--- gA_1_2 & gA_1_4 & G5_scr
+G5_o2 <--- G5_ch0 & G5_scr
+G5_o2 <--- G4_R2 & G4_R4 & G5_scr
+G5_o2 <--- G5_R1 & G5_scr
+G5_o2 <--- G4_R3 & G4_R4 & G5_scr
+G5_o2 <--- G5_R2 & G5_R3 & G5_scr
+G5_o2 <--- G4_R1 & G5_scr
+G5_o2 <--- G5_ch1 & G5_scr
+# unbuild B (group 1)
+G5_scr <--- 1
+G5_scr <--- G4_o0 & G4_o1
+# G6 (copy): s2 ^= gA
+# build B (group 0)
+G6_scr <--- 1
+G6_scr <--- s2_1_2
+G6_scr <--- s2_1_3
+# A0 + run -> o0 (copy)
+G6_o0 <--- s2_1_2
+G6_o0 <--- gA_0_0 & G6_scr
+G6_o0 <--- gA_0_2 & gA_0_3 & G6_scr
+G6_o0 <--- gA_0_3 & gA_0_4 & G6_scr
+G6_o0 <--- gA_1_0 & G6_scr
+G6_o0 <--- gA_1_2 & gA_1_4 & G6_scr
+G6_o0 <--- G6_ch0 & G6_scr
+G6_o0 <--- gA_1_2 & gA_1_3 & G6_scr
+G6_o0 <--- gA_0_1 & G6_scr
+G6_o0 <--- gA_0_2 & gA_0_4 & G6_scr
+G6_o0 <--- gA_1_3 & gA_1_4 & G6_scr
+G6_o0 <--- gA_1_1 & G6_scr
+G6_o0 <--- G6_ch1 & G6_scr
+G6_o0 <--- G6_R1 & G6_scr
+G6_o0 <--- s2_0_2 & s2_0_4 & G6_scr
+G6_o0 <--- G6_R2 & G6_R3 & G6_scr
+G6_o0 <--- G6_R0 & G6_scr
+G6_o0 <--- G6_R2 & G6_R4 & G6_scr
+G6_o0 <--- G6_ch0 & G6_scr
+G6_o0 <--- G6_R3 & G6_R4 & G6_scr
+G6_o0 <--- s2_0_1 & G6_scr
+G6_o0 <--- s2_0_2 & s2_0_3 & G6_scr
+G6_o0 <--- s2_0_3 & s2_0_4 & G6_scr
+G6_o0 <--- s2_0_0 & G6_scr
+G6_o0 <--- G6_ch1 & G6_scr
+# A1 + run -> o1 (copy)
+G6_o1 <--- s2_1_3
+G6_o1 <--- gA_0_0 & G6_scr
+G6_o1 <--- gA_0_2 & gA_0_3 & G6_scr
+G6_o1 <--- gA_0_3 & gA_0_4 & G6_scr
+G6_o1 <--- gA_1_0 & G6_scr
+G6_o1 <--- gA_1_2 & gA_1_4 & G6_scr
+G6_o1 <--- G6_ch0 & G6_scr
+G6_o1 <--- gA_1_2 & gA_1_3 & G6_scr
+G6_o1 <--- gA_0_1 & G6_scr
+G6_o1 <--- gA_0_2 & gA_0_4 & G6_scr
+G6_o1 <--- gA_1_3 & gA_1_4 & G6_scr
+G6_o1 <--- gA_1_1 & G6_scr
+G6_o1 <--- G6_ch1 & G6_scr
+G6_o1 <--- G6_R1 & G6_scr
+G6_o1 <--- s2_0_2 & s2_0_4 & G6_scr
+G6_o1 <--- G6_R2 & G6_R3 & G6_scr
+G6_o1 <--- G6_R0 & G6_scr
+G6_o1 <--- G6_R2 & G6_R4 & G6_scr
+G6_o1 <--- G6_ch0 & G6_scr
+G6_o1 <--- G6_R3 & G6_R4 & G6_scr
+G6_o1 <--- s2_0_1 & G6_scr
+G6_o1 <--- s2_0_2 & s2_0_3 & G6_scr
+G6_o1 <--- s2_0_3 & s2_0_4 & G6_scr
+G6_o1 <--- s2_0_0 & G6_scr
+G6_o1 <--- G6_ch1 & G6_scr
+# unbuild B (group 0)
+G6_scr <--- 1
+G6_scr <--- s2_1_2
+G6_scr <--- s2_1_3
+# build B (group 1)
+G6_scr <--- 1
+G6_scr <--- s2_1_2 & s2_1_3
+# A2 + run -> o2 (copy)
+G6_o2 <--- s2_1_4
+G6_o2 <--- gA_1_3 & gA_1_4 & G6_scr
+G6_o2 <--- gA_1_0 & G6_scr
+G6_o2 <--- gA_0_2 & gA_0_4 & G6_scr
+G6_o2 <--- gA_1_2 & gA_1_3 & G6_scr
+G6_o2 <--- gA_1_1 & G6_scr
+G6_o2 <--- G6_ch0 & G6_scr
+G6_o2 <--- s2_0_0 & G6_scr
+G6_o2 <--- G6_R3 & G6_R4 & G6_scr
+G6_o2 <--- G6_R2 & G6_R4 & G6_scr
+G6_o2 <--- G6_R0 & G6_scr
+G6_o2 <--- s2_0_2 & s2_0_3 & G6_scr
+G6_o2 <--- G6_ch1 & G6_scr
+G6_o2 <--- gA_0_1 & G6_scr
+G6_o2 <--- gA_0_2 & gA_0_3 & G6_scr
+G6_o2 <--- gA_0_3 & gA_0_4 & G6_scr
+G6_o2 <--- gA_0_0 & G6_scr
+G6_o2 <--- gA_1_2 & gA_1_4 & G6_scr
+G6_o2 <--- G6_ch0 & G6_scr
+G6_o2 <--- s2_0_2 & s2_0_4 & G6_scr
+G6_o2 <--- G6_R1 & G6_scr
+G6_o2 <--- s2_0_3 & s2_0_4 & G6_scr
+G6_o2 <--- G6_R2 & G6_R3 & G6_scr
+G6_o2 <--- s2_0_1 & G6_scr
+G6_o2 <--- G6_ch1 & G6_scr
+# unbuild B (group 1)
+G6_scr <--- 1
+G6_scr <--- s2_1_2 & s2_1_3

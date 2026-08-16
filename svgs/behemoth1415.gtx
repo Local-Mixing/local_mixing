@@ -1,0 +1,1663 @@
+@title behemoth1415 — the behemoth, weight-2: one SG-level gate W_c ^= W_a | !W_b as six fan-in ≤ 2 gadgets
+@subtitle The replicated per-gate body: exactly 1415 gates, deterministically (291+288+291+291+127+127 for G1..G6 = r57/nab/and/and/copy/copy). Same construction as behemoth939 with every fan-in ≥ 3 gate mask-first decomposed (gate_gadget_w2); mp* = persistent mask-prefix cache shared across sub-gadgets (per-sub-gadget mask classification via set_masks), restored by flush(). Encoding/decoding is fixed infrastructure, not shown.
+@equation W_c' = W_c ⊕ (W_a ∨ ¬W_b);  every sub-gadget ends with the 0-gate re-share relabeling
+@wire r0_0_0 r0
+@wire r0_0_1 r0
+@wire r0_0_2 r0
+@wire r0_0_3 r0
+@wire r0_0_4 r0
+@wire r0_1_0 r0
+@wire r0_1_1 r0
+@wire r0_1_2 r0
+@wire r0_1_3 r0
+@wire r0_1_4 r0
+@wire s0_0_0 s0
+@wire s0_0_1 s0
+@wire s0_0_2 s0
+@wire s0_0_3 s0
+@wire s0_0_4 s0
+@wire s0_1_0 s0
+@wire s0_1_1 s0
+@wire s0_1_2 s0
+@wire s0_1_3 s0
+@wire s0_1_4 s0
+@wire r1_0_0 r1
+@wire r1_0_1 r1
+@wire r1_0_2 r1
+@wire r1_0_3 r1
+@wire r1_0_4 r1
+@wire r1_1_0 r1
+@wire r1_1_1 r1
+@wire r1_1_2 r1
+@wire r1_1_3 r1
+@wire r1_1_4 r1
+@wire s1_0_0 s1
+@wire s1_0_1 s1
+@wire s1_0_2 s1
+@wire s1_0_3 s1
+@wire s1_0_4 s1
+@wire s1_1_0 s1
+@wire s1_1_1 s1
+@wire s1_1_2 s1
+@wire s1_1_3 s1
+@wire s1_1_4 s1
+@wire r2_0_0 r2
+@wire r2_0_1 r2
+@wire r2_0_2 r2
+@wire r2_0_3 r2
+@wire r2_0_4 r2
+@wire r2_1_0 r2
+@wire r2_1_1 r2
+@wire r2_1_2 r2
+@wire r2_1_3 r2
+@wire r2_1_4 r2
+@wire s2_0_0 s2
+@wire s2_0_1 s2
+@wire s2_0_2 s2
+@wire s2_0_3 s2
+@wire s2_0_4 s2
+@wire s2_1_0 s2
+@wire s2_1_1 s2
+@wire s2_1_2 s2
+@wire s2_1_3 s2
+@wire s2_1_4 s2
+@wire gA_0_0 gA
+@wire gA_0_1 gA
+@wire gA_0_2 gA
+@wire gA_0_3 gA
+@wire gA_0_4 gA
+@wire gA_1_0 gA
+@wire gA_1_1 gA
+@wire gA_1_2 gA
+@wire gA_1_3 gA
+@wire gA_1_4 gA
+@wire G1_R0 G1
+@wire G1_R1 G1
+@wire G1_R2 G1
+@wire G1_R3 G1
+@wire G1_R4 G1
+@wire G1_o0 G1
+@wire G1_o1 G1
+@wire G1_o2 G1
+@wire G1_scr G1
+@wire G1_scr2 G1
+@wire G1_ch0 G1
+@wire G1_ch1 G1
+@wire G1_ch2 G1
+@wire G1_ch3 G1
+@wire G2_R0 G2
+@wire G2_R1 G2
+@wire G2_R2 G2
+@wire G2_R3 G2
+@wire G2_R4 G2
+@wire G2_o0 G2
+@wire G2_o1 G2
+@wire G2_o2 G2
+@wire G2_scr G2
+@wire G2_scr2 G2
+@wire G2_ch0 G2
+@wire G2_ch1 G2
+@wire G2_ch2 G2
+@wire G2_ch3 G2
+@wire G3_R0 G3
+@wire G3_R1 G3
+@wire G3_R2 G3
+@wire G3_R3 G3
+@wire G3_R4 G3
+@wire G3_o0 G3
+@wire G3_o1 G3
+@wire G3_o2 G3
+@wire G3_scr G3
+@wire G3_scr2 G3
+@wire G3_ch0 G3
+@wire G3_ch1 G3
+@wire G3_ch2 G3
+@wire G3_ch3 G3
+@wire G4_R0 G4
+@wire G4_R1 G4
+@wire G4_R2 G4
+@wire G4_R3 G4
+@wire G4_R4 G4
+@wire G4_o0 G4
+@wire G4_o1 G4
+@wire G4_o2 G4
+@wire G4_scr G4
+@wire G4_scr2 G4
+@wire G4_ch0 G4
+@wire G4_ch1 G4
+@wire G4_ch2 G4
+@wire G4_ch3 G4
+@wire G5_R0 G5
+@wire G5_R1 G5
+@wire G5_R2 G5
+@wire G5_R3 G5
+@wire G5_R4 G5
+@wire G5_o0 G5
+@wire G5_o1 G5
+@wire G5_o2 G5
+@wire G5_scr G5
+@wire G5_scr2 G5
+@wire G5_ch0 G5
+@wire G5_ch1 G5
+@wire G5_ch2 G5
+@wire G5_ch3 G5
+@wire G6_R0 G6
+@wire G6_R1 G6
+@wire G6_R2 G6
+@wire G6_R3 G6
+@wire G6_R4 G6
+@wire G6_o0 G6
+@wire G6_o1 G6
+@wire G6_o2 G6
+@wire G6_scr G6
+@wire G6_scr2 G6
+@wire G6_ch0 G6
+@wire G6_ch1 G6
+@wire G6_ch2 G6
+@wire G6_ch3 G6
+@wire dec0 dec0
+@wire dec1 dec1
+@wire mp0 mp0
+@wire mp1 mp1
+@wire mp2 mp2
+@wire mp3 mp3
+@wire mp4 mp4
+@wire mp5 mp5
+@wire mp6 mp6
+@wire mp7 mp7
+@wire mp8 mp8
+@wire mp9 mp9
+@wire mp10 mp10
+@wire mp11 mp11
+@wire mp12 mp12
+@wire mp13 mp13
+@wire mp14 mp14
+@wire mp15 mp15
+@wire mp16 mp16
+@wire mp17 mp17
+@wire mp18 mp18
+@wire mp19 mp19
+@wire mp20 mp20
+@wire mp21 mp21
+@wire mp22 mp22
+@wire mp23 mp23
+@wire tmp tmp
+# G1 (r57): r2 ^= r1 * r0
+# build B (group 0)
+G1_scr <--- 1
+G1_scr <--- r2_1_2
+G1_scr <--- r2_1_3
+# build scr2 = (b^m0^m1)*B (group 0)
+G1_scr2 <--- r1_0_0 & G1_scr
+mp23 <--- G1_scr & r1_0_2
+G1_scr2 <--- mp23 & r1_0_3
+mp22 <--- G1_scr & r1_0_3
+G1_scr2 <--- mp22 & r1_0_4
+G1_scr2 <--- G1_R0 & G1_scr
+mp21 <--- G1_scr & r1_1_2
+G1_scr2 <--- mp21 & r1_1_4
+G1_scr2 <--- r1_1_0 & G1_scr
+G1_scr2 <--- mp21 & r1_1_3
+G1_scr2 <--- G1_R1 & G1_scr
+G1_scr2 <--- mp23 & r1_0_4
+mp20 <--- G1_scr & r1_1_3
+G1_scr2 <--- mp20 & r1_1_4
+G1_scr2 <--- r1_0_1 & G1_scr
+G1_scr2 <--- r1_1_1 & G1_scr
+# A0 + run -> o0 (group 0)
+G1_o0 <--- r2_1_2
+G1_o0 <--- G1_scr
+G1_o0 <--- r0_1_1 & G1_scr2
+mp19 <--- G1_scr2 & r0_0_2
+G1_o0 <--- mp19 & r0_0_4
+G1_o0 <--- r2_0_1 & G1_scr
+mp18 <--- G1_scr & r2_0_2
+G1_o0 <--- mp18 & r2_0_3
+mp17 <--- G1_scr2 & r0_1_2
+G1_o0 <--- mp17 & r0_1_3
+G1_o0 <--- r0_1_0 & G1_scr2
+G1_o0 <--- mp17 & r0_1_4
+G1_o0 <--- G1_ch0 & G1_scr
+G1_o0 <--- G1_scr2
+mp16 <--- G1_scr & G1_R0
+G1_o0 <--- mp16 & r0_0_0
+mp15 <--- mp16 & r0_1_2
+G1_o0 <--- mp15 & r0_1_4
+mp14 <--- mp16 & r0_0_3
+G1_o0 <--- mp14 & r0_0_4
+dec0 <--- G1_scr & G1_R2
+G1_o0 <--- dec0 & G1_R3
+dec0 <--- G1_scr & G1_R2
+G1_o0 <--- mp16 & r0_0_1
+G1_o0 <--- mp15 & r0_1_3
+G1_o0 <--- G1_ch1 & G1_scr
+mp13 <--- mp16 & r0_1_3
+G1_o0 <--- mp13 & r0_1_4
+G1_o0 <--- mp16 & r0_1_0
+G1_o0 <--- mp18 & r2_0_4
+mp12 <--- mp16 & r0_0_2
+G1_o0 <--- mp12 & r0_0_3
+G1_o0 <--- mp12 & r0_0_4
+G1_o0 <--- mp16 & r0_1_1
+G1_o0 <--- r2_0_0 & G1_scr
+mp11 <--- G1_scr & G1_R1
+mp10 <--- mp11 & r0_1_3
+G1_o0 <--- mp10 & r0_1_4
+G1_o0 <--- mp11 & r0_0_1
+dec0 <--- G1_scr & G1_R3
+G1_o0 <--- dec0 & G1_R4
+dec0 <--- G1_scr & G1_R3
+mp9 <--- mp11 & r0_0_2
+G1_o0 <--- mp9 & r0_0_3
+mp8 <--- mp11 & r0_0_3
+G1_o0 <--- mp8 & r0_0_4
+G1_o0 <--- mp11 & r0_1_1
+G1_o0 <--- G1_ch0 & G1_scr
+G1_o0 <--- mp11 & r0_1_0
+mp7 <--- mp11 & r0_1_2
+G1_o0 <--- mp7 & r0_1_4
+mp6 <--- G1_scr & r2_0_3
+G1_o0 <--- mp6 & r2_0_4
+G1_o0 <--- mp7 & r0_1_3
+G1_o0 <--- mp11 & r0_0_0
+G1_o0 <--- mp9 & r0_0_4
+G1_o0 <--- G1_ch1 & G1_scr
+mp5 <--- G1_scr2 & r0_1_3
+G1_o0 <--- mp5 & r0_1_4
+G1_o0 <--- r0_0_1 & G1_scr2
+G1_o0 <--- mp19 & r0_0_3
+dec0 <--- G1_scr & G1_R2
+G1_o0 <--- dec0 & G1_R4
+dec0 <--- G1_scr & G1_R2
+mp4 <--- G1_scr2 & r0_0_3
+G1_o0 <--- mp4 & r0_0_4
+G1_o0 <--- r0_0_0 & G1_scr2
+# A1 + run -> o1 (group 0)
+G1_o1 <--- r2_1_3
+G1_o1 <--- G1_scr
+G1_o1 <--- r0_1_1 & G1_scr2
+G1_o1 <--- mp19 & r0_0_4
+G1_o1 <--- r2_0_1 & G1_scr
+G1_o1 <--- mp18 & r2_0_3
+G1_o1 <--- mp17 & r0_1_3
+G1_o1 <--- r0_1_0 & G1_scr2
+G1_o1 <--- mp17 & r0_1_4
+G1_o1 <--- G1_ch0 & G1_scr
+G1_o1 <--- G1_scr2
+G1_o1 <--- mp16 & r0_0_0
+G1_o1 <--- mp15 & r0_1_4
+G1_o1 <--- mp14 & r0_0_4
+dec0 <--- G1_scr & G1_R2
+G1_o1 <--- dec0 & G1_R3
+dec0 <--- G1_scr & G1_R2
+G1_o1 <--- mp16 & r0_0_1
+G1_o1 <--- mp15 & r0_1_3
+G1_o1 <--- G1_ch1 & G1_scr
+G1_o1 <--- mp13 & r0_1_4
+G1_o1 <--- mp16 & r0_1_0
+G1_o1 <--- mp18 & r2_0_4
+G1_o1 <--- mp12 & r0_0_3
+G1_o1 <--- mp12 & r0_0_4
+G1_o1 <--- mp16 & r0_1_1
+G1_o1 <--- r2_0_0 & G1_scr
+G1_o1 <--- mp10 & r0_1_4
+G1_o1 <--- mp11 & r0_0_1
+dec0 <--- G1_scr & G1_R3
+G1_o1 <--- dec0 & G1_R4
+dec0 <--- G1_scr & G1_R3
+G1_o1 <--- mp9 & r0_0_3
+G1_o1 <--- mp8 & r0_0_4
+G1_o1 <--- mp11 & r0_1_1
+G1_o1 <--- G1_ch0 & G1_scr
+G1_o1 <--- mp11 & r0_1_0
+G1_o1 <--- mp7 & r0_1_4
+G1_o1 <--- mp6 & r2_0_4
+G1_o1 <--- mp7 & r0_1_3
+G1_o1 <--- mp11 & r0_0_0
+G1_o1 <--- mp9 & r0_0_4
+G1_o1 <--- G1_ch1 & G1_scr
+G1_o1 <--- mp5 & r0_1_4
+G1_o1 <--- r0_0_1 & G1_scr2
+G1_o1 <--- mp19 & r0_0_3
+dec0 <--- G1_scr & G1_R2
+G1_o1 <--- dec0 & G1_R4
+dec0 <--- G1_scr & G1_R2
+G1_o1 <--- mp4 & r0_0_4
+G1_o1 <--- r0_0_0 & G1_scr2
+# unbuild scr2, reverse (group 0)
+mp4 <--- G1_scr2 & r0_0_3
+mp5 <--- G1_scr2 & r0_1_3
+mp17 <--- G1_scr2 & r0_1_2
+mp19 <--- G1_scr2 & r0_0_2
+G1_scr2 <--- r1_1_1 & G1_scr
+G1_scr2 <--- r1_0_1 & G1_scr
+G1_scr2 <--- mp20 & r1_1_4
+G1_scr2 <--- mp23 & r1_0_4
+G1_scr2 <--- G1_R1 & G1_scr
+G1_scr2 <--- mp21 & r1_1_3
+G1_scr2 <--- r1_1_0 & G1_scr
+G1_scr2 <--- mp21 & r1_1_4
+G1_scr2 <--- G1_R0 & G1_scr
+G1_scr2 <--- mp22 & r1_0_4
+G1_scr2 <--- mp23 & r1_0_3
+G1_scr2 <--- r1_0_0 & G1_scr
+# unbuild B (group 0)
+mp6 <--- G1_scr & r2_0_3
+mp7 <--- mp11 & r0_1_2
+mp8 <--- mp11 & r0_0_3
+mp9 <--- mp11 & r0_0_2
+mp10 <--- mp11 & r0_1_3
+mp11 <--- G1_scr & G1_R1
+mp12 <--- mp16 & r0_0_2
+mp13 <--- mp16 & r0_1_3
+mp14 <--- mp16 & r0_0_3
+mp15 <--- mp16 & r0_1_2
+mp16 <--- G1_scr & G1_R0
+mp18 <--- G1_scr & r2_0_2
+mp20 <--- G1_scr & r1_1_3
+mp21 <--- G1_scr & r1_1_2
+mp22 <--- G1_scr & r1_0_3
+mp23 <--- G1_scr & r1_0_2
+G1_scr <--- 1
+G1_scr <--- r2_1_2
+G1_scr <--- r2_1_3
+# build B (group 1)
+G1_scr <--- 1
+G1_scr <--- r2_1_2 & r2_1_3
+# build scr2 = (b^m0^m1)*B (group 1)
+G1_scr2 <--- r1_0_1 & G1_scr
+mp23 <--- G1_scr & r1_0_2
+G1_scr2 <--- mp23 & r1_0_3
+mp22 <--- G1_scr & r1_0_3
+G1_scr2 <--- mp22 & r1_0_4
+G1_scr2 <--- G1_R0 & G1_scr
+mp21 <--- G1_scr & r1_1_2
+G1_scr2 <--- mp21 & r1_1_4
+G1_scr2 <--- r1_0_0 & G1_scr
+mp20 <--- G1_scr & r1_1_3
+G1_scr2 <--- mp20 & r1_1_4
+G1_scr2 <--- G1_R1 & G1_scr
+G1_scr2 <--- mp23 & r1_0_4
+G1_scr2 <--- mp21 & r1_1_3
+G1_scr2 <--- r1_1_0 & G1_scr
+G1_scr2 <--- r1_1_1 & G1_scr
+# A2 + run -> o2 (group 1)
+G1_o2 <--- r2_1_4
+G1_o2 <--- G1_scr
+mp18 <--- G1_scr & G1_R1
+mp16 <--- mp18 & r0_1_2
+G1_o2 <--- mp16 & r0_1_4
+G1_o2 <--- mp18 & r0_1_1
+mp15 <--- mp18 & r0_0_3
+G1_o2 <--- mp15 & r0_0_4
+mp14 <--- G1_scr & r2_0_3
+G1_o2 <--- mp14 & r2_0_4
+mp13 <--- mp18 & r0_0_2
+G1_o2 <--- mp13 & r0_0_3
+G1_o2 <--- r2_0_1 & G1_scr
+G1_o2 <--- mp18 & r0_0_0
+G1_o2 <--- G1_ch0 & G1_scr
+G1_o2 <--- G1_scr2
+mp12 <--- G1_scr & r2_0_2
+G1_o2 <--- mp12 & r2_0_3
+mp11 <--- G1_scr2 & r0_0_2
+G1_o2 <--- mp11 & r0_0_4
+G1_o2 <--- r0_1_1 & G1_scr2
+mp10 <--- G1_scr2 & r0_0_3
+G1_o2 <--- mp10 & r0_0_4
+mp9 <--- G1_scr2 & r0_1_2
+G1_o2 <--- mp9 & r0_1_3
+G1_o2 <--- r0_0_1 & G1_scr2
+G1_o2 <--- G1_ch1 & G1_scr
+G1_o2 <--- mp18 & r0_1_0
+G1_o2 <--- mp13 & r0_0_4
+dec0 <--- G1_scr & G1_R2
+G1_o2 <--- dec0 & G1_R3
+dec0 <--- G1_scr & G1_R2
+G1_o2 <--- mp16 & r0_1_3
+G1_o2 <--- mp18 & r0_0_1
+mp8 <--- mp18 & r0_1_3
+G1_o2 <--- mp8 & r0_1_4
+G1_o2 <--- r2_0_0 & G1_scr
+mp7 <--- G1_scr & G1_R0
+G1_o2 <--- mp7 & r0_0_1
+mp6 <--- mp7 & r0_0_2
+G1_o2 <--- mp6 & r0_0_4
+mp19 <--- mp7 & r0_1_2
+G1_o2 <--- mp19 & r0_1_3
+dec0 <--- G1_scr & G1_R3
+G1_o2 <--- dec0 & G1_R4
+dec0 <--- G1_scr & G1_R3
+G1_o2 <--- mp7 & r0_1_0
+G1_o2 <--- mp6 & r0_0_3
+G1_o2 <--- G1_ch0 & G1_scr
+G1_o2 <--- r0_0_0 & G1_scr2
+mp17 <--- G1_scr2 & r0_1_3
+G1_o2 <--- mp17 & r0_1_4
+G1_o2 <--- mp12 & r2_0_4
+G1_o2 <--- mp9 & r0_1_4
+G1_o2 <--- r0_1_0 & G1_scr2
+G1_o2 <--- mp11 & r0_0_3
+G1_o2 <--- G1_ch1 & G1_scr
+mp5 <--- mp7 & r0_0_3
+G1_o2 <--- mp5 & r0_0_4
+dec0 <--- G1_scr & G1_R2
+G1_o2 <--- dec0 & G1_R4
+dec0 <--- G1_scr & G1_R2
+G1_o2 <--- mp7 & r0_0_0
+mp4 <--- mp7 & r0_1_3
+G1_o2 <--- mp4 & r0_1_4
+G1_o2 <--- mp19 & r0_1_4
+G1_o2 <--- mp7 & r0_1_1
+# unbuild scr2, reverse (group 1)
+mp17 <--- G1_scr2 & r0_1_3
+mp9 <--- G1_scr2 & r0_1_2
+mp10 <--- G1_scr2 & r0_0_3
+mp11 <--- G1_scr2 & r0_0_2
+G1_scr2 <--- r1_1_1 & G1_scr
+G1_scr2 <--- r1_1_0 & G1_scr
+G1_scr2 <--- mp21 & r1_1_3
+G1_scr2 <--- mp23 & r1_0_4
+G1_scr2 <--- G1_R1 & G1_scr
+G1_scr2 <--- mp20 & r1_1_4
+G1_scr2 <--- r1_0_0 & G1_scr
+G1_scr2 <--- mp21 & r1_1_4
+G1_scr2 <--- G1_R0 & G1_scr
+G1_scr2 <--- mp22 & r1_0_4
+G1_scr2 <--- mp23 & r1_0_3
+G1_scr2 <--- r1_0_1 & G1_scr
+# unbuild B (group 1)
+mp4 <--- mp7 & r0_1_3
+mp5 <--- mp7 & r0_0_3
+mp19 <--- mp7 & r0_1_2
+mp6 <--- mp7 & r0_0_2
+mp7 <--- G1_scr & G1_R0
+mp8 <--- mp18 & r0_1_3
+mp12 <--- G1_scr & r2_0_2
+mp13 <--- mp18 & r0_0_2
+mp14 <--- G1_scr & r2_0_3
+mp15 <--- mp18 & r0_0_3
+mp16 <--- mp18 & r0_1_2
+mp18 <--- G1_scr & G1_R1
+mp20 <--- G1_scr & r1_1_3
+mp21 <--- G1_scr & r1_1_2
+mp22 <--- G1_scr & r1_0_3
+mp23 <--- G1_scr & r1_0_2
+G1_scr <--- 1
+G1_scr <--- r2_1_2 & r2_1_3
+# G2 (nab): r2 ^= s1 * r0
+# build B (group 0)
+G2_scr <--- 1
+G2_scr <--- G1_o0
+G2_scr <--- G1_o1
+# build scr2 = (b^m0^m1)*B (group 0)
+G2_scr2 <--- s1_0_0 & G2_scr
+mp23 <--- G2_scr & s1_0_2
+G2_scr2 <--- mp23 & s1_0_3
+mp22 <--- G2_scr & s1_0_3
+G2_scr2 <--- mp22 & s1_0_4
+G2_scr2 <--- G2_R0 & G2_scr
+mp21 <--- G2_scr & s1_1_2
+G2_scr2 <--- mp21 & s1_1_4
+G2_scr2 <--- s1_1_0 & G2_scr
+G2_scr2 <--- mp21 & s1_1_3
+G2_scr2 <--- G2_R1 & G2_scr
+G2_scr2 <--- mp23 & s1_0_4
+mp20 <--- G2_scr & s1_1_3
+G2_scr2 <--- mp20 & s1_1_4
+G2_scr2 <--- s1_0_1 & G2_scr
+G2_scr2 <--- s1_1_1 & G2_scr
+# A0 + run -> o0 (group 0)
+G2_o0 <--- G1_o0
+G2_o0 <--- r0_1_1 & G2_scr2
+mp18 <--- G2_scr2 & r0_0_2
+G2_o0 <--- mp18 & r0_0_4
+mp16 <--- G2_scr2 & r0_1_2
+G2_o0 <--- mp16 & r0_1_3
+G2_o0 <--- G1_R1 & G2_scr
+mp15 <--- G2_scr & G1_R2
+G2_o0 <--- mp15 & G1_R3
+G2_o0 <--- r0_1_0 & G2_scr2
+G2_o0 <--- mp16 & r0_1_4
+G2_o0 <--- G2_ch0 & G2_scr
+G2_o0 <--- G2_scr2
+mp14 <--- G2_scr & G2_R0
+G2_o0 <--- mp14 & r0_0_0
+mp13 <--- mp14 & r0_1_2
+G2_o0 <--- mp13 & r0_1_4
+mp12 <--- mp14 & r0_0_3
+G2_o0 <--- mp12 & r0_0_4
+dec0 <--- G2_scr & G2_R2
+G2_o0 <--- dec0 & G2_R3
+dec0 <--- G2_scr & G2_R2
+G2_o0 <--- mp14 & r0_0_1
+G2_o0 <--- mp13 & r0_1_3
+G2_o0 <--- G2_ch1 & G2_scr
+mp8 <--- mp14 & r0_1_3
+G2_o0 <--- mp8 & r0_1_4
+G2_o0 <--- mp14 & r0_1_0
+G2_o0 <--- mp15 & G1_R4
+mp7 <--- mp14 & r0_0_2
+G2_o0 <--- mp7 & r0_0_3
+G2_o0 <--- mp7 & r0_0_4
+G2_o0 <--- mp14 & r0_1_1
+G2_o0 <--- G1_R0 & G2_scr
+mp6 <--- G2_scr & G2_R1
+mp19 <--- mp6 & r0_1_3
+G2_o0 <--- mp19 & r0_1_4
+G2_o0 <--- mp6 & r0_0_1
+dec0 <--- G2_scr & G2_R3
+G2_o0 <--- dec0 & G2_R4
+dec0 <--- G2_scr & G2_R3
+mp5 <--- mp6 & r0_0_2
+G2_o0 <--- mp5 & r0_0_3
+mp4 <--- mp6 & r0_0_3
+G2_o0 <--- mp4 & r0_0_4
+G2_o0 <--- mp6 & r0_1_1
+G2_o0 <--- G2_ch0 & G2_scr
+G2_o0 <--- mp6 & r0_1_0
+mp11 <--- mp6 & r0_1_2
+G2_o0 <--- mp11 & r0_1_4
+mp10 <--- G2_scr & G1_R3
+G2_o0 <--- mp10 & G1_R4
+G2_o0 <--- mp11 & r0_1_3
+G2_o0 <--- mp6 & r0_0_0
+G2_o0 <--- mp5 & r0_0_4
+G2_o0 <--- G2_ch1 & G2_scr
+mp9 <--- G2_scr2 & r0_1_3
+G2_o0 <--- mp9 & r0_1_4
+G2_o0 <--- r0_0_1 & G2_scr2
+G2_o0 <--- mp18 & r0_0_3
+dec0 <--- G2_scr & G2_R2
+G2_o0 <--- dec0 & G2_R4
+dec0 <--- G2_scr & G2_R2
+mp17 <--- G2_scr2 & r0_0_3
+G2_o0 <--- mp17 & r0_0_4
+G2_o0 <--- r0_0_0 & G2_scr2
+# A1 + run -> o1 (group 0)
+G2_o1 <--- G1_o1
+G2_o1 <--- r0_1_1 & G2_scr2
+G2_o1 <--- mp18 & r0_0_4
+G2_o1 <--- mp16 & r0_1_3
+G2_o1 <--- G1_R1 & G2_scr
+G2_o1 <--- mp15 & G1_R3
+G2_o1 <--- r0_1_0 & G2_scr2
+G2_o1 <--- mp16 & r0_1_4
+G2_o1 <--- G2_ch0 & G2_scr
+G2_o1 <--- G2_scr2
+G2_o1 <--- mp14 & r0_0_0
+G2_o1 <--- mp13 & r0_1_4
+G2_o1 <--- mp12 & r0_0_4
+dec0 <--- G2_scr & G2_R2
+G2_o1 <--- dec0 & G2_R3
+dec0 <--- G2_scr & G2_R2
+G2_o1 <--- mp14 & r0_0_1
+G2_o1 <--- mp13 & r0_1_3
+G2_o1 <--- G2_ch1 & G2_scr
+G2_o1 <--- mp8 & r0_1_4
+G2_o1 <--- mp14 & r0_1_0
+G2_o1 <--- mp15 & G1_R4
+G2_o1 <--- mp7 & r0_0_3
+G2_o1 <--- mp7 & r0_0_4
+G2_o1 <--- mp14 & r0_1_1
+G2_o1 <--- G1_R0 & G2_scr
+G2_o1 <--- mp19 & r0_1_4
+G2_o1 <--- mp6 & r0_0_1
+dec0 <--- G2_scr & G2_R3
+G2_o1 <--- dec0 & G2_R4
+dec0 <--- G2_scr & G2_R3
+G2_o1 <--- mp5 & r0_0_3
+G2_o1 <--- mp4 & r0_0_4
+G2_o1 <--- mp6 & r0_1_1
+G2_o1 <--- G2_ch0 & G2_scr
+G2_o1 <--- mp6 & r0_1_0
+G2_o1 <--- mp11 & r0_1_4
+G2_o1 <--- mp10 & G1_R4
+G2_o1 <--- mp11 & r0_1_3
+G2_o1 <--- mp6 & r0_0_0
+G2_o1 <--- mp5 & r0_0_4
+G2_o1 <--- G2_ch1 & G2_scr
+G2_o1 <--- mp9 & r0_1_4
+G2_o1 <--- r0_0_1 & G2_scr2
+G2_o1 <--- mp18 & r0_0_3
+dec0 <--- G2_scr & G2_R2
+G2_o1 <--- dec0 & G2_R4
+dec0 <--- G2_scr & G2_R2
+G2_o1 <--- mp17 & r0_0_4
+G2_o1 <--- r0_0_0 & G2_scr2
+# unbuild scr2, reverse (group 0)
+mp17 <--- G2_scr2 & r0_0_3
+mp9 <--- G2_scr2 & r0_1_3
+mp16 <--- G2_scr2 & r0_1_2
+mp18 <--- G2_scr2 & r0_0_2
+G2_scr2 <--- s1_1_1 & G2_scr
+G2_scr2 <--- s1_0_1 & G2_scr
+G2_scr2 <--- mp20 & s1_1_4
+G2_scr2 <--- mp23 & s1_0_4
+G2_scr2 <--- G2_R1 & G2_scr
+G2_scr2 <--- mp21 & s1_1_3
+G2_scr2 <--- s1_1_0 & G2_scr
+G2_scr2 <--- mp21 & s1_1_4
+G2_scr2 <--- G2_R0 & G2_scr
+G2_scr2 <--- mp22 & s1_0_4
+G2_scr2 <--- mp23 & s1_0_3
+G2_scr2 <--- s1_0_0 & G2_scr
+# unbuild B (group 0)
+mp10 <--- G2_scr & G1_R3
+mp11 <--- mp6 & r0_1_2
+mp4 <--- mp6 & r0_0_3
+mp5 <--- mp6 & r0_0_2
+mp19 <--- mp6 & r0_1_3
+mp6 <--- G2_scr & G2_R1
+mp7 <--- mp14 & r0_0_2
+mp8 <--- mp14 & r0_1_3
+mp12 <--- mp14 & r0_0_3
+mp13 <--- mp14 & r0_1_2
+mp14 <--- G2_scr & G2_R0
+mp15 <--- G2_scr & G1_R2
+mp20 <--- G2_scr & s1_1_3
+mp21 <--- G2_scr & s1_1_2
+mp22 <--- G2_scr & s1_0_3
+mp23 <--- G2_scr & s1_0_2
+G2_scr <--- 1
+G2_scr <--- G1_o0
+G2_scr <--- G1_o1
+# build B (group 1)
+G2_scr <--- 1
+G2_scr <--- G1_o0 & G1_o1
+# build scr2 = (b^m0^m1)*B (group 1)
+G2_scr2 <--- s1_0_1 & G2_scr
+mp23 <--- G2_scr & s1_0_2
+G2_scr2 <--- mp23 & s1_0_3
+mp22 <--- G2_scr & s1_0_3
+G2_scr2 <--- mp22 & s1_0_4
+G2_scr2 <--- G2_R0 & G2_scr
+mp21 <--- G2_scr & s1_1_2
+G2_scr2 <--- mp21 & s1_1_4
+G2_scr2 <--- s1_0_0 & G2_scr
+mp20 <--- G2_scr & s1_1_3
+G2_scr2 <--- mp20 & s1_1_4
+G2_scr2 <--- G2_R1 & G2_scr
+G2_scr2 <--- mp23 & s1_0_4
+G2_scr2 <--- mp21 & s1_1_3
+G2_scr2 <--- s1_1_0 & G2_scr
+G2_scr2 <--- s1_1_1 & G2_scr
+# A2 + run -> o2 (group 1)
+G2_o2 <--- G1_o2
+mp15 <--- G2_scr & G2_R1
+mp14 <--- mp15 & r0_1_2
+G2_o2 <--- mp14 & r0_1_4
+G2_o2 <--- mp15 & r0_1_1
+mp13 <--- mp15 & r0_0_3
+G2_o2 <--- mp13 & r0_0_4
+mp12 <--- mp15 & r0_0_2
+G2_o2 <--- mp12 & r0_0_3
+mp8 <--- G2_scr & G1_R3
+G2_o2 <--- mp8 & G1_R4
+G2_o2 <--- G1_R1 & G2_scr
+G2_o2 <--- mp15 & r0_0_0
+G2_o2 <--- G2_ch0 & G2_scr
+G2_o2 <--- G2_scr2
+mp7 <--- G2_scr & G1_R2
+G2_o2 <--- mp7 & G1_R3
+mp6 <--- G2_scr2 & r0_0_2
+G2_o2 <--- mp6 & r0_0_4
+G2_o2 <--- r0_1_1 & G2_scr2
+mp19 <--- G2_scr2 & r0_0_3
+G2_o2 <--- mp19 & r0_0_4
+mp5 <--- G2_scr2 & r0_1_2
+G2_o2 <--- mp5 & r0_1_3
+G2_o2 <--- r0_0_1 & G2_scr2
+G2_o2 <--- G2_ch1 & G2_scr
+G2_o2 <--- mp15 & r0_1_0
+G2_o2 <--- mp12 & r0_0_4
+dec0 <--- G2_scr & G2_R2
+G2_o2 <--- dec0 & G2_R3
+dec0 <--- G2_scr & G2_R2
+G2_o2 <--- mp14 & r0_1_3
+G2_o2 <--- mp15 & r0_0_1
+mp4 <--- mp15 & r0_1_3
+G2_o2 <--- mp4 & r0_1_4
+G2_o2 <--- G1_R0 & G2_scr
+mp11 <--- G2_scr & G2_R0
+G2_o2 <--- mp11 & r0_0_1
+mp10 <--- mp11 & r0_0_2
+G2_o2 <--- mp10 & r0_0_4
+mp18 <--- mp11 & r0_1_2
+G2_o2 <--- mp18 & r0_1_3
+dec0 <--- G2_scr & G2_R3
+G2_o2 <--- dec0 & G2_R4
+dec0 <--- G2_scr & G2_R3
+G2_o2 <--- mp11 & r0_1_0
+G2_o2 <--- mp10 & r0_0_3
+G2_o2 <--- G2_ch0 & G2_scr
+G2_o2 <--- r0_0_0 & G2_scr2
+mp16 <--- G2_scr2 & r0_1_3
+G2_o2 <--- mp16 & r0_1_4
+G2_o2 <--- mp7 & G1_R4
+G2_o2 <--- mp5 & r0_1_4
+G2_o2 <--- r0_1_0 & G2_scr2
+G2_o2 <--- mp6 & r0_0_3
+G2_o2 <--- G2_ch1 & G2_scr
+mp9 <--- mp11 & r0_0_3
+G2_o2 <--- mp9 & r0_0_4
+dec0 <--- G2_scr & G2_R2
+G2_o2 <--- dec0 & G2_R4
+dec0 <--- G2_scr & G2_R2
+G2_o2 <--- mp11 & r0_0_0
+mp17 <--- mp11 & r0_1_3
+G2_o2 <--- mp17 & r0_1_4
+G2_o2 <--- mp18 & r0_1_4
+G2_o2 <--- mp11 & r0_1_1
+# unbuild scr2, reverse (group 1)
+mp16 <--- G2_scr2 & r0_1_3
+mp5 <--- G2_scr2 & r0_1_2
+mp19 <--- G2_scr2 & r0_0_3
+mp6 <--- G2_scr2 & r0_0_2
+G2_scr2 <--- s1_1_1 & G2_scr
+G2_scr2 <--- s1_1_0 & G2_scr
+G2_scr2 <--- mp21 & s1_1_3
+G2_scr2 <--- mp23 & s1_0_4
+G2_scr2 <--- G2_R1 & G2_scr
+G2_scr2 <--- mp20 & s1_1_4
+G2_scr2 <--- s1_0_0 & G2_scr
+G2_scr2 <--- mp21 & s1_1_4
+G2_scr2 <--- G2_R0 & G2_scr
+G2_scr2 <--- mp22 & s1_0_4
+G2_scr2 <--- mp23 & s1_0_3
+G2_scr2 <--- s1_0_1 & G2_scr
+# unbuild B (group 1)
+mp17 <--- mp11 & r0_1_3
+mp9 <--- mp11 & r0_0_3
+mp18 <--- mp11 & r0_1_2
+mp10 <--- mp11 & r0_0_2
+mp11 <--- G2_scr & G2_R0
+mp4 <--- mp15 & r0_1_3
+mp7 <--- G2_scr & G1_R2
+mp8 <--- G2_scr & G1_R3
+mp12 <--- mp15 & r0_0_2
+mp13 <--- mp15 & r0_0_3
+mp14 <--- mp15 & r0_1_2
+mp15 <--- G2_scr & G2_R1
+mp20 <--- G2_scr & s1_1_3
+mp21 <--- G2_scr & s1_1_2
+mp22 <--- G2_scr & s1_0_3
+mp23 <--- G2_scr & s1_0_2
+G2_scr <--- 1
+G2_scr <--- G1_o0 & G1_o1
+# G3 (and): r2 ^= r1 * s0
+# build B (group 0)
+G3_scr <--- 1
+G3_scr <--- G2_o0
+G3_scr <--- G2_o1
+# build scr2 = (b^m0^m1)*B (group 0)
+G3_scr2 <--- r1_0_0 & G3_scr
+mp23 <--- G3_scr & r1_0_2
+G3_scr2 <--- mp23 & r1_0_3
+mp22 <--- G3_scr & r1_0_3
+G3_scr2 <--- mp22 & r1_0_4
+G3_scr2 <--- G3_ch2 & G3_scr
+mp21 <--- G3_scr & r1_1_2
+G3_scr2 <--- mp21 & r1_1_4
+G3_scr2 <--- r1_1_0 & G3_scr
+G3_scr2 <--- mp21 & r1_1_3
+G3_scr2 <--- G3_ch3 & G3_scr
+G3_scr2 <--- mp23 & r1_0_4
+mp20 <--- G3_scr & r1_1_3
+G3_scr2 <--- mp20 & r1_1_4
+G3_scr2 <--- r1_0_1 & G3_scr
+G3_scr2 <--- r1_1_1 & G3_scr
+# A0 + run -> o0 (group 0)
+G3_o0 <--- G2_o0
+G3_o0 <--- s0_1_1 & G3_scr2
+mp15 <--- G3_scr2 & s0_0_2
+G3_o0 <--- mp15 & s0_0_4
+dec0 <--- G3_scr & G3_R3
+G3_o0 <--- dec0 & G3_R4
+dec0 <--- G3_scr & G3_R3
+mp14 <--- G3_scr & G2_R2
+G3_o0 <--- mp14 & G2_R3
+mp13 <--- G3_scr2 & s0_1_2
+G3_o0 <--- mp13 & s0_1_3
+G3_o0 <--- s0_1_0 & G3_scr2
+G3_o0 <--- mp13 & s0_1_4
+G3_o0 <--- G3_ch0 & G3_scr
+mp12 <--- G3_scr & G3_ch2
+G3_o0 <--- mp12 & s0_0_0
+mp8 <--- mp12 & s0_1_2
+G3_o0 <--- mp8 & s0_1_4
+G3_o0 <--- G3_R0 & G3_scr
+mp7 <--- mp12 & s0_0_3
+G3_o0 <--- mp7 & s0_0_4
+dec0 <--- G3_scr & G3_R2
+G3_o0 <--- dec0 & G3_R4
+dec0 <--- G3_scr & G3_R2
+G3_o0 <--- mp12 & s0_0_1
+G3_o0 <--- mp8 & s0_1_3
+G3_o0 <--- G3_ch1 & G3_scr
+mp4 <--- mp12 & s0_1_3
+G3_o0 <--- mp4 & s0_1_4
+G3_o0 <--- mp12 & s0_1_0
+G3_o0 <--- mp14 & G2_R4
+G3_o0 <--- G3_R1 & G3_scr
+mp11 <--- mp12 & s0_0_2
+G3_o0 <--- mp11 & s0_0_3
+G3_o0 <--- mp11 & s0_0_4
+G3_o0 <--- mp12 & s0_1_1
+G3_o0 <--- G2_R0 & G3_scr
+mp10 <--- G3_scr & G3_ch3
+mp18 <--- mp10 & s0_1_3
+G3_o0 <--- mp18 & s0_1_4
+G3_o0 <--- mp10 & s0_0_1
+mp9 <--- mp10 & s0_0_2
+G3_o0 <--- mp9 & s0_0_3
+dec0 <--- G3_scr & G3_R2
+G3_o0 <--- dec0 & G3_R3
+dec0 <--- G3_scr & G3_R2
+mp17 <--- mp10 & s0_0_3
+G3_o0 <--- mp17 & s0_0_4
+G3_o0 <--- mp10 & s0_1_1
+G3_o0 <--- G3_ch0 & G3_scr
+G3_o0 <--- mp10 & s0_1_0
+mp6 <--- mp10 & s0_1_2
+G3_o0 <--- mp6 & s0_1_4
+G3_o0 <--- mp6 & s0_1_3
+G3_o0 <--- G2_R1 & G3_scr
+G3_o0 <--- mp10 & s0_0_0
+G3_o0 <--- mp9 & s0_0_4
+G3_o0 <--- G3_ch1 & G3_scr
+mp19 <--- G3_scr2 & s0_1_3
+G3_o0 <--- mp19 & s0_1_4
+G3_o0 <--- s0_0_1 & G3_scr2
+G3_o0 <--- mp15 & s0_0_3
+mp5 <--- G3_scr2 & s0_0_3
+G3_o0 <--- mp5 & s0_0_4
+mp16 <--- G3_scr & G2_R3
+G3_o0 <--- mp16 & G2_R4
+G3_o0 <--- s0_0_0 & G3_scr2
+# A1 + run -> o1 (group 0)
+G3_o1 <--- G2_o1
+G3_o1 <--- s0_1_1 & G3_scr2
+G3_o1 <--- mp15 & s0_0_4
+dec0 <--- G3_scr & G3_R3
+G3_o1 <--- dec0 & G3_R4
+dec0 <--- G3_scr & G3_R3
+G3_o1 <--- mp14 & G2_R3
+G3_o1 <--- mp13 & s0_1_3
+G3_o1 <--- s0_1_0 & G3_scr2
+G3_o1 <--- mp13 & s0_1_4
+G3_o1 <--- G3_ch0 & G3_scr
+G3_o1 <--- mp12 & s0_0_0
+G3_o1 <--- mp8 & s0_1_4
+G3_o1 <--- G3_R0 & G3_scr
+G3_o1 <--- mp7 & s0_0_4
+dec0 <--- G3_scr & G3_R2
+G3_o1 <--- dec0 & G3_R4
+dec0 <--- G3_scr & G3_R2
+G3_o1 <--- mp12 & s0_0_1
+G3_o1 <--- mp8 & s0_1_3
+G3_o1 <--- G3_ch1 & G3_scr
+G3_o1 <--- mp4 & s0_1_4
+G3_o1 <--- mp12 & s0_1_0
+G3_o1 <--- mp14 & G2_R4
+G3_o1 <--- G3_R1 & G3_scr
+G3_o1 <--- mp11 & s0_0_3
+G3_o1 <--- mp11 & s0_0_4
+G3_o1 <--- mp12 & s0_1_1
+G3_o1 <--- G2_R0 & G3_scr
+G3_o1 <--- mp18 & s0_1_4
+G3_o1 <--- mp10 & s0_0_1
+G3_o1 <--- mp9 & s0_0_3
+dec0 <--- G3_scr & G3_R2
+G3_o1 <--- dec0 & G3_R3
+dec0 <--- G3_scr & G3_R2
+G3_o1 <--- mp17 & s0_0_4
+G3_o1 <--- mp10 & s0_1_1
+G3_o1 <--- G3_ch0 & G3_scr
+G3_o1 <--- mp10 & s0_1_0
+G3_o1 <--- mp6 & s0_1_4
+G3_o1 <--- mp6 & s0_1_3
+G3_o1 <--- G2_R1 & G3_scr
+G3_o1 <--- mp10 & s0_0_0
+G3_o1 <--- mp9 & s0_0_4
+G3_o1 <--- G3_ch1 & G3_scr
+G3_o1 <--- mp19 & s0_1_4
+G3_o1 <--- s0_0_1 & G3_scr2
+G3_o1 <--- mp15 & s0_0_3
+G3_o1 <--- mp5 & s0_0_4
+G3_o1 <--- mp16 & G2_R4
+G3_o1 <--- s0_0_0 & G3_scr2
+# unbuild scr2, reverse (group 0)
+mp5 <--- G3_scr2 & s0_0_3
+mp19 <--- G3_scr2 & s0_1_3
+mp13 <--- G3_scr2 & s0_1_2
+mp15 <--- G3_scr2 & s0_0_2
+G3_scr2 <--- r1_1_1 & G3_scr
+G3_scr2 <--- r1_0_1 & G3_scr
+G3_scr2 <--- mp20 & r1_1_4
+G3_scr2 <--- mp23 & r1_0_4
+G3_scr2 <--- G3_ch3 & G3_scr
+G3_scr2 <--- mp21 & r1_1_3
+G3_scr2 <--- r1_1_0 & G3_scr
+G3_scr2 <--- mp21 & r1_1_4
+G3_scr2 <--- G3_ch2 & G3_scr
+G3_scr2 <--- mp22 & r1_0_4
+G3_scr2 <--- mp23 & r1_0_3
+G3_scr2 <--- r1_0_0 & G3_scr
+# unbuild B (group 0)
+mp16 <--- G3_scr & G2_R3
+mp6 <--- mp10 & s0_1_2
+mp17 <--- mp10 & s0_0_3
+mp9 <--- mp10 & s0_0_2
+mp18 <--- mp10 & s0_1_3
+mp10 <--- G3_scr & G3_ch3
+mp11 <--- mp12 & s0_0_2
+mp4 <--- mp12 & s0_1_3
+mp7 <--- mp12 & s0_0_3
+mp8 <--- mp12 & s0_1_2
+mp12 <--- G3_scr & G3_ch2
+mp14 <--- G3_scr & G2_R2
+mp20 <--- G3_scr & r1_1_3
+mp21 <--- G3_scr & r1_1_2
+mp22 <--- G3_scr & r1_0_3
+mp23 <--- G3_scr & r1_0_2
+G3_scr <--- 1
+G3_scr <--- G2_o0
+G3_scr <--- G2_o1
+# build B (group 1)
+G3_scr <--- 1
+G3_scr <--- G2_o0 & G2_o1
+# build scr2 = (b^m0^m1)*B (group 1)
+G3_scr2 <--- r1_0_1 & G3_scr
+mp23 <--- G3_scr & r1_0_2
+G3_scr2 <--- mp23 & r1_0_3
+mp22 <--- G3_scr & r1_0_3
+G3_scr2 <--- mp22 & r1_0_4
+G3_scr2 <--- G3_ch2 & G3_scr
+mp21 <--- G3_scr & r1_1_2
+G3_scr2 <--- mp21 & r1_1_4
+G3_scr2 <--- r1_0_0 & G3_scr
+mp20 <--- G3_scr & r1_1_3
+G3_scr2 <--- mp20 & r1_1_4
+G3_scr2 <--- G3_ch3 & G3_scr
+G3_scr2 <--- mp23 & r1_0_4
+G3_scr2 <--- mp21 & r1_1_3
+G3_scr2 <--- r1_1_0 & G3_scr
+G3_scr2 <--- r1_1_1 & G3_scr
+# A2 + run -> o2 (group 1)
+G3_o2 <--- G2_o2
+mp14 <--- G3_scr & G3_ch3
+mp12 <--- mp14 & s0_1_2
+G3_o2 <--- mp12 & s0_1_4
+mp8 <--- G3_scr & G2_R3
+G3_o2 <--- mp8 & G2_R4
+G3_o2 <--- mp14 & s0_1_1
+G3_o2 <--- G2_R1 & G3_scr
+mp7 <--- mp14 & s0_0_3
+G3_o2 <--- mp7 & s0_0_4
+mp4 <--- mp14 & s0_0_2
+G3_o2 <--- mp4 & s0_0_3
+G3_o2 <--- mp14 & s0_0_0
+G3_o2 <--- G3_ch0 & G3_scr
+mp11 <--- G3_scr2 & s0_0_2
+G3_o2 <--- mp11 & s0_0_4
+dec0 <--- G3_scr & G3_R2
+G3_o2 <--- dec0 & G3_R3
+dec0 <--- G3_scr & G3_R2
+G3_o2 <--- s0_1_1 & G3_scr2
+dec0 <--- G3_scr & G3_R2
+G3_o2 <--- dec0 & G3_R4
+dec0 <--- G3_scr & G3_R2
+mp10 <--- G3_scr2 & s0_0_3
+G3_o2 <--- mp10 & s0_0_4
+mp18 <--- G3_scr2 & s0_1_2
+G3_o2 <--- mp18 & s0_1_3
+G3_o2 <--- s0_0_1 & G3_scr2
+G3_o2 <--- G3_ch1 & G3_scr
+G3_o2 <--- mp14 & s0_1_0
+G3_o2 <--- mp4 & s0_0_4
+G3_o2 <--- mp12 & s0_1_3
+mp9 <--- G3_scr & G2_R2
+G3_o2 <--- mp9 & G2_R3
+G3_o2 <--- mp14 & s0_0_1
+G3_o2 <--- G3_R1 & G3_scr
+mp17 <--- mp14 & s0_1_3
+G3_o2 <--- mp17 & s0_1_4
+G3_o2 <--- G2_R0 & G3_scr
+mp6 <--- G3_scr & G3_ch2
+G3_o2 <--- mp6 & s0_0_1
+mp16 <--- mp6 & s0_0_2
+G3_o2 <--- mp16 & s0_0_4
+G3_o2 <--- G3_R0 & G3_scr
+mp15 <--- mp6 & s0_1_2
+G3_o2 <--- mp15 & s0_1_3
+G3_o2 <--- mp6 & s0_1_0
+G3_o2 <--- mp16 & s0_0_3
+G3_o2 <--- G3_ch0 & G3_scr
+G3_o2 <--- s0_0_0 & G3_scr2
+G3_o2 <--- mp9 & G2_R4
+mp13 <--- G3_scr2 & s0_1_3
+G3_o2 <--- mp13 & s0_1_4
+G3_o2 <--- mp18 & s0_1_4
+G3_o2 <--- s0_1_0 & G3_scr2
+G3_o2 <--- mp11 & s0_0_3
+G3_o2 <--- G3_ch1 & G3_scr
+mp19 <--- mp6 & s0_0_3
+G3_o2 <--- mp19 & s0_0_4
+G3_o2 <--- mp6 & s0_0_0
+dec0 <--- G3_scr & G3_R3
+G3_o2 <--- dec0 & G3_R4
+dec0 <--- G3_scr & G3_R3
+mp5 <--- mp6 & s0_1_3
+G3_o2 <--- mp5 & s0_1_4
+G3_o2 <--- mp15 & s0_1_4
+G3_o2 <--- mp6 & s0_1_1
+# unbuild scr2, reverse (group 1)
+mp13 <--- G3_scr2 & s0_1_3
+mp18 <--- G3_scr2 & s0_1_2
+mp10 <--- G3_scr2 & s0_0_3
+mp11 <--- G3_scr2 & s0_0_2
+G3_scr2 <--- r1_1_1 & G3_scr
+G3_scr2 <--- r1_1_0 & G3_scr
+G3_scr2 <--- mp21 & r1_1_3
+G3_scr2 <--- mp23 & r1_0_4
+G3_scr2 <--- G3_ch3 & G3_scr
+G3_scr2 <--- mp20 & r1_1_4
+G3_scr2 <--- r1_0_0 & G3_scr
+G3_scr2 <--- mp21 & r1_1_4
+G3_scr2 <--- G3_ch2 & G3_scr
+G3_scr2 <--- mp22 & r1_0_4
+G3_scr2 <--- mp23 & r1_0_3
+G3_scr2 <--- r1_0_1 & G3_scr
+# unbuild B (group 1)
+mp5 <--- mp6 & s0_1_3
+mp19 <--- mp6 & s0_0_3
+mp15 <--- mp6 & s0_1_2
+mp16 <--- mp6 & s0_0_2
+mp6 <--- G3_scr & G3_ch2
+mp17 <--- mp14 & s0_1_3
+mp9 <--- G3_scr & G2_R2
+mp4 <--- mp14 & s0_0_2
+mp7 <--- mp14 & s0_0_3
+mp8 <--- G3_scr & G2_R3
+mp12 <--- mp14 & s0_1_2
+mp14 <--- G3_scr & G3_ch3
+mp20 <--- G3_scr & r1_1_3
+mp21 <--- G3_scr & r1_1_2
+mp22 <--- G3_scr & r1_0_3
+mp23 <--- G3_scr & r1_0_2
+G3_scr <--- 1
+G3_scr <--- G2_o0 & G2_o1
+# G4 (and): r2 ^= s1 * s0
+# build B (group 0)
+G4_scr <--- 1
+G4_scr <--- G3_o0
+G4_scr <--- G3_o1
+# build scr2 = (b^m0^m1)*B (group 0)
+G4_scr2 <--- s1_0_0 & G4_scr
+mp23 <--- G4_scr & s1_0_2
+G4_scr2 <--- mp23 & s1_0_3
+mp22 <--- G4_scr & s1_0_3
+G4_scr2 <--- mp22 & s1_0_4
+G4_scr2 <--- G4_ch2 & G4_scr
+mp21 <--- G4_scr & s1_1_2
+G4_scr2 <--- mp21 & s1_1_4
+G4_scr2 <--- s1_1_0 & G4_scr
+G4_scr2 <--- mp21 & s1_1_3
+G4_scr2 <--- G4_ch3 & G4_scr
+G4_scr2 <--- mp23 & s1_0_4
+mp20 <--- G4_scr & s1_1_3
+G4_scr2 <--- mp20 & s1_1_4
+G4_scr2 <--- s1_0_1 & G4_scr
+G4_scr2 <--- s1_1_1 & G4_scr
+# A0 + run -> o0 (group 0)
+G4_o0 <--- G3_o0
+G4_o0 <--- s0_1_1 & G4_scr2
+mp14 <--- G4_scr2 & s0_0_2
+G4_o0 <--- mp14 & s0_0_4
+dec0 <--- G4_scr & G4_R3
+G4_o0 <--- dec0 & G4_R4
+dec0 <--- G4_scr & G4_R3
+mp12 <--- G4_scr & G3_R2
+G4_o0 <--- mp12 & G3_R3
+mp8 <--- G4_scr2 & s0_1_2
+G4_o0 <--- mp8 & s0_1_3
+G4_o0 <--- s0_1_0 & G4_scr2
+G4_o0 <--- mp8 & s0_1_4
+G4_o0 <--- G4_ch0 & G4_scr
+mp7 <--- G4_scr & G4_ch2
+G4_o0 <--- mp7 & s0_0_0
+mp4 <--- mp7 & s0_1_2
+G4_o0 <--- mp4 & s0_1_4
+G4_o0 <--- G4_R0 & G4_scr
+mp9 <--- mp7 & s0_0_3
+G4_o0 <--- mp9 & s0_0_4
+dec0 <--- G4_scr & G4_R2
+G4_o0 <--- dec0 & G4_R4
+dec0 <--- G4_scr & G4_R2
+G4_o0 <--- mp7 & s0_0_1
+G4_o0 <--- mp4 & s0_1_3
+G4_o0 <--- G4_ch1 & G4_scr
+mp17 <--- mp7 & s0_1_3
+G4_o0 <--- mp17 & s0_1_4
+G4_o0 <--- mp7 & s0_1_0
+G4_o0 <--- mp12 & G3_R4
+G4_o0 <--- G4_R1 & G4_scr
+mp6 <--- mp7 & s0_0_2
+G4_o0 <--- mp6 & s0_0_3
+G4_o0 <--- mp6 & s0_0_4
+G4_o0 <--- mp7 & s0_1_1
+G4_o0 <--- G3_R0 & G4_scr
+mp16 <--- G4_scr & G4_ch3
+mp15 <--- mp16 & s0_1_3
+G4_o0 <--- mp15 & s0_1_4
+G4_o0 <--- mp16 & s0_0_1
+mp19 <--- mp16 & s0_0_2
+G4_o0 <--- mp19 & s0_0_3
+dec0 <--- G4_scr & G4_R2
+G4_o0 <--- dec0 & G4_R3
+dec0 <--- G4_scr & G4_R2
+mp5 <--- mp16 & s0_0_3
+G4_o0 <--- mp5 & s0_0_4
+G4_o0 <--- mp16 & s0_1_1
+G4_o0 <--- G4_ch0 & G4_scr
+G4_o0 <--- mp16 & s0_1_0
+mp11 <--- mp16 & s0_1_2
+G4_o0 <--- mp11 & s0_1_4
+G4_o0 <--- mp11 & s0_1_3
+G4_o0 <--- G3_R1 & G4_scr
+G4_o0 <--- mp16 & s0_0_0
+G4_o0 <--- mp19 & s0_0_4
+G4_o0 <--- G4_ch1 & G4_scr
+mp10 <--- G4_scr2 & s0_1_3
+G4_o0 <--- mp10 & s0_1_4
+G4_o0 <--- s0_0_1 & G4_scr2
+G4_o0 <--- mp14 & s0_0_3
+mp18 <--- G4_scr2 & s0_0_3
+G4_o0 <--- mp18 & s0_0_4
+mp13 <--- G4_scr & G3_R3
+G4_o0 <--- mp13 & G3_R4
+G4_o0 <--- s0_0_0 & G4_scr2
+# A1 + run -> o1 (group 0)
+G4_o1 <--- G3_o1
+G4_o1 <--- s0_1_1 & G4_scr2
+G4_o1 <--- mp14 & s0_0_4
+dec0 <--- G4_scr & G4_R3
+G4_o1 <--- dec0 & G4_R4
+dec0 <--- G4_scr & G4_R3
+G4_o1 <--- mp12 & G3_R3
+G4_o1 <--- mp8 & s0_1_3
+G4_o1 <--- s0_1_0 & G4_scr2
+G4_o1 <--- mp8 & s0_1_4
+G4_o1 <--- G4_ch0 & G4_scr
+G4_o1 <--- mp7 & s0_0_0
+G4_o1 <--- mp4 & s0_1_4
+G4_o1 <--- G4_R0 & G4_scr
+G4_o1 <--- mp9 & s0_0_4
+dec0 <--- G4_scr & G4_R2
+G4_o1 <--- dec0 & G4_R4
+dec0 <--- G4_scr & G4_R2
+G4_o1 <--- mp7 & s0_0_1
+G4_o1 <--- mp4 & s0_1_3
+G4_o1 <--- G4_ch1 & G4_scr
+G4_o1 <--- mp17 & s0_1_4
+G4_o1 <--- mp7 & s0_1_0
+G4_o1 <--- mp12 & G3_R4
+G4_o1 <--- G4_R1 & G4_scr
+G4_o1 <--- mp6 & s0_0_3
+G4_o1 <--- mp6 & s0_0_4
+G4_o1 <--- mp7 & s0_1_1
+G4_o1 <--- G3_R0 & G4_scr
+G4_o1 <--- mp15 & s0_1_4
+G4_o1 <--- mp16 & s0_0_1
+G4_o1 <--- mp19 & s0_0_3
+dec0 <--- G4_scr & G4_R2
+G4_o1 <--- dec0 & G4_R3
+dec0 <--- G4_scr & G4_R2
+G4_o1 <--- mp5 & s0_0_4
+G4_o1 <--- mp16 & s0_1_1
+G4_o1 <--- G4_ch0 & G4_scr
+G4_o1 <--- mp16 & s0_1_0
+G4_o1 <--- mp11 & s0_1_4
+G4_o1 <--- mp11 & s0_1_3
+G4_o1 <--- G3_R1 & G4_scr
+G4_o1 <--- mp16 & s0_0_0
+G4_o1 <--- mp19 & s0_0_4
+G4_o1 <--- G4_ch1 & G4_scr
+G4_o1 <--- mp10 & s0_1_4
+G4_o1 <--- s0_0_1 & G4_scr2
+G4_o1 <--- mp14 & s0_0_3
+G4_o1 <--- mp18 & s0_0_4
+G4_o1 <--- mp13 & G3_R4
+G4_o1 <--- s0_0_0 & G4_scr2
+# unbuild scr2, reverse (group 0)
+mp18 <--- G4_scr2 & s0_0_3
+mp10 <--- G4_scr2 & s0_1_3
+mp8 <--- G4_scr2 & s0_1_2
+mp14 <--- G4_scr2 & s0_0_2
+G4_scr2 <--- s1_1_1 & G4_scr
+G4_scr2 <--- s1_0_1 & G4_scr
+G4_scr2 <--- mp20 & s1_1_4
+G4_scr2 <--- mp23 & s1_0_4
+G4_scr2 <--- G4_ch3 & G4_scr
+G4_scr2 <--- mp21 & s1_1_3
+G4_scr2 <--- s1_1_0 & G4_scr
+G4_scr2 <--- mp21 & s1_1_4
+G4_scr2 <--- G4_ch2 & G4_scr
+G4_scr2 <--- mp22 & s1_0_4
+G4_scr2 <--- mp23 & s1_0_3
+G4_scr2 <--- s1_0_0 & G4_scr
+# unbuild B (group 0)
+mp13 <--- G4_scr & G3_R3
+mp11 <--- mp16 & s0_1_2
+mp5 <--- mp16 & s0_0_3
+mp19 <--- mp16 & s0_0_2
+mp15 <--- mp16 & s0_1_3
+mp16 <--- G4_scr & G4_ch3
+mp6 <--- mp7 & s0_0_2
+mp17 <--- mp7 & s0_1_3
+mp9 <--- mp7 & s0_0_3
+mp4 <--- mp7 & s0_1_2
+mp7 <--- G4_scr & G4_ch2
+mp12 <--- G4_scr & G3_R2
+mp20 <--- G4_scr & s1_1_3
+mp21 <--- G4_scr & s1_1_2
+mp22 <--- G4_scr & s1_0_3
+mp23 <--- G4_scr & s1_0_2
+G4_scr <--- 1
+G4_scr <--- G3_o0
+G4_scr <--- G3_o1
+# build B (group 1)
+G4_scr <--- 1
+G4_scr <--- G3_o0 & G3_o1
+# build scr2 = (b^m0^m1)*B (group 1)
+G4_scr2 <--- s1_0_1 & G4_scr
+mp23 <--- G4_scr & s1_0_2
+G4_scr2 <--- mp23 & s1_0_3
+mp22 <--- G4_scr & s1_0_3
+G4_scr2 <--- mp22 & s1_0_4
+G4_scr2 <--- G4_ch2 & G4_scr
+mp21 <--- G4_scr & s1_1_2
+G4_scr2 <--- mp21 & s1_1_4
+G4_scr2 <--- s1_0_0 & G4_scr
+mp20 <--- G4_scr & s1_1_3
+G4_scr2 <--- mp20 & s1_1_4
+G4_scr2 <--- G4_ch3 & G4_scr
+G4_scr2 <--- mp23 & s1_0_4
+G4_scr2 <--- mp21 & s1_1_3
+G4_scr2 <--- s1_1_0 & G4_scr
+G4_scr2 <--- s1_1_1 & G4_scr
+# A2 + run -> o2 (group 1)
+G4_o2 <--- G3_o2
+mp12 <--- G4_scr & G4_ch3
+mp7 <--- mp12 & s0_1_2
+G4_o2 <--- mp7 & s0_1_4
+mp4 <--- G4_scr & G3_R3
+G4_o2 <--- mp4 & G3_R4
+G4_o2 <--- mp12 & s0_1_1
+G4_o2 <--- G3_R1 & G4_scr
+mp9 <--- mp12 & s0_0_3
+G4_o2 <--- mp9 & s0_0_4
+mp17 <--- mp12 & s0_0_2
+G4_o2 <--- mp17 & s0_0_3
+G4_o2 <--- mp12 & s0_0_0
+G4_o2 <--- G4_ch0 & G4_scr
+mp6 <--- G4_scr2 & s0_0_2
+G4_o2 <--- mp6 & s0_0_4
+dec0 <--- G4_scr & G4_R2
+G4_o2 <--- dec0 & G4_R3
+dec0 <--- G4_scr & G4_R2
+G4_o2 <--- s0_1_1 & G4_scr2
+dec0 <--- G4_scr & G4_R2
+G4_o2 <--- dec0 & G4_R4
+dec0 <--- G4_scr & G4_R2
+mp16 <--- G4_scr2 & s0_0_3
+G4_o2 <--- mp16 & s0_0_4
+mp15 <--- G4_scr2 & s0_1_2
+G4_o2 <--- mp15 & s0_1_3
+G4_o2 <--- s0_0_1 & G4_scr2
+G4_o2 <--- G4_ch1 & G4_scr
+G4_o2 <--- mp12 & s0_1_0
+G4_o2 <--- mp17 & s0_0_4
+G4_o2 <--- mp7 & s0_1_3
+mp19 <--- G4_scr & G3_R2
+G4_o2 <--- mp19 & G3_R3
+G4_o2 <--- mp12 & s0_0_1
+G4_o2 <--- G4_R1 & G4_scr
+mp5 <--- mp12 & s0_1_3
+G4_o2 <--- mp5 & s0_1_4
+G4_o2 <--- G3_R0 & G4_scr
+mp11 <--- G4_scr & G4_ch2
+G4_o2 <--- mp11 & s0_0_1
+mp13 <--- mp11 & s0_0_2
+G4_o2 <--- mp13 & s0_0_4
+G4_o2 <--- G4_R0 & G4_scr
+mp14 <--- mp11 & s0_1_2
+G4_o2 <--- mp14 & s0_1_3
+G4_o2 <--- mp11 & s0_1_0
+G4_o2 <--- mp13 & s0_0_3
+G4_o2 <--- G4_ch0 & G4_scr
+G4_o2 <--- s0_0_0 & G4_scr2
+G4_o2 <--- mp19 & G3_R4
+mp8 <--- G4_scr2 & s0_1_3
+G4_o2 <--- mp8 & s0_1_4
+G4_o2 <--- mp15 & s0_1_4
+G4_o2 <--- s0_1_0 & G4_scr2
+G4_o2 <--- mp6 & s0_0_3
+G4_o2 <--- G4_ch1 & G4_scr
+mp10 <--- mp11 & s0_0_3
+G4_o2 <--- mp10 & s0_0_4
+G4_o2 <--- mp11 & s0_0_0
+dec0 <--- G4_scr & G4_R3
+G4_o2 <--- dec0 & G4_R4
+dec0 <--- G4_scr & G4_R3
+mp18 <--- mp11 & s0_1_3
+G4_o2 <--- mp18 & s0_1_4
+G4_o2 <--- mp14 & s0_1_4
+G4_o2 <--- mp11 & s0_1_1
+# unbuild scr2, reverse (group 1)
+mp8 <--- G4_scr2 & s0_1_3
+mp15 <--- G4_scr2 & s0_1_2
+mp16 <--- G4_scr2 & s0_0_3
+mp6 <--- G4_scr2 & s0_0_2
+G4_scr2 <--- s1_1_1 & G4_scr
+G4_scr2 <--- s1_1_0 & G4_scr
+G4_scr2 <--- mp21 & s1_1_3
+G4_scr2 <--- mp23 & s1_0_4
+G4_scr2 <--- G4_ch3 & G4_scr
+G4_scr2 <--- mp20 & s1_1_4
+G4_scr2 <--- s1_0_0 & G4_scr
+G4_scr2 <--- mp21 & s1_1_4
+G4_scr2 <--- G4_ch2 & G4_scr
+G4_scr2 <--- mp22 & s1_0_4
+G4_scr2 <--- mp23 & s1_0_3
+G4_scr2 <--- s1_0_1 & G4_scr
+# unbuild B (group 1)
+mp18 <--- mp11 & s0_1_3
+mp10 <--- mp11 & s0_0_3
+mp14 <--- mp11 & s0_1_2
+mp13 <--- mp11 & s0_0_2
+mp11 <--- G4_scr & G4_ch2
+mp5 <--- mp12 & s0_1_3
+mp19 <--- G4_scr & G3_R2
+mp17 <--- mp12 & s0_0_2
+mp9 <--- mp12 & s0_0_3
+mp4 <--- G4_scr & G3_R3
+mp7 <--- mp12 & s0_1_2
+mp12 <--- G4_scr & G4_ch3
+mp20 <--- G4_scr & s1_1_3
+mp21 <--- G4_scr & s1_1_2
+mp22 <--- G4_scr & s1_0_3
+mp23 <--- G4_scr & s1_0_2
+G4_scr <--- 1
+G4_scr <--- G3_o0 & G3_o1
+# G5 (copy): r2 ^= gA
+# build B (group 0)
+G5_scr <--- 1
+G5_scr <--- G4_o0
+G5_scr <--- G4_o1
+# A0 + run -> o0 (copy)
+G5_o0 <--- G4_o0
+G5_o0 <--- gA_0_0 & G5_scr
+mp23 <--- G5_scr & gA_0_2
+G5_o0 <--- mp23 & gA_0_3
+mp22 <--- G5_scr & gA_0_3
+G5_o0 <--- mp22 & gA_0_4
+G5_o0 <--- gA_1_0 & G5_scr
+mp21 <--- G5_scr & gA_1_2
+G5_o0 <--- mp21 & gA_1_4
+G5_o0 <--- G5_ch0 & G5_scr
+G5_o0 <--- mp21 & gA_1_3
+G5_o0 <--- gA_0_1 & G5_scr
+G5_o0 <--- mp23 & gA_0_4
+mp20 <--- G5_scr & gA_1_3
+G5_o0 <--- mp20 & gA_1_4
+G5_o0 <--- gA_1_1 & G5_scr
+G5_o0 <--- G5_ch1 & G5_scr
+G5_o0 <--- G5_R1 & G5_scr
+mp12 <--- G5_scr & G4_R2
+G5_o0 <--- mp12 & G4_R4
+dec0 <--- G5_scr & G5_R2
+G5_o0 <--- dec0 & G5_R3
+dec0 <--- G5_scr & G5_R2
+G5_o0 <--- G5_R0 & G5_scr
+dec0 <--- G5_scr & G5_R2
+G5_o0 <--- dec0 & G5_R4
+dec0 <--- G5_scr & G5_R2
+G5_o0 <--- G5_ch0 & G5_scr
+dec0 <--- G5_scr & G5_R3
+G5_o0 <--- dec0 & G5_R4
+dec0 <--- G5_scr & G5_R3
+G5_o0 <--- G4_R1 & G5_scr
+G5_o0 <--- mp12 & G4_R3
+mp7 <--- G5_scr & G4_R3
+G5_o0 <--- mp7 & G4_R4
+G5_o0 <--- G4_R0 & G5_scr
+G5_o0 <--- G5_ch1 & G5_scr
+# A1 + run -> o1 (copy)
+G5_o1 <--- G4_o1
+G5_o1 <--- gA_0_0 & G5_scr
+G5_o1 <--- mp23 & gA_0_3
+G5_o1 <--- mp22 & gA_0_4
+G5_o1 <--- gA_1_0 & G5_scr
+G5_o1 <--- mp21 & gA_1_4
+G5_o1 <--- G5_ch0 & G5_scr
+G5_o1 <--- mp21 & gA_1_3
+G5_o1 <--- gA_0_1 & G5_scr
+G5_o1 <--- mp23 & gA_0_4
+G5_o1 <--- mp20 & gA_1_4
+G5_o1 <--- gA_1_1 & G5_scr
+G5_o1 <--- G5_ch1 & G5_scr
+G5_o1 <--- G5_R1 & G5_scr
+G5_o1 <--- mp12 & G4_R4
+dec0 <--- G5_scr & G5_R2
+G5_o1 <--- dec0 & G5_R3
+dec0 <--- G5_scr & G5_R2
+G5_o1 <--- G5_R0 & G5_scr
+dec0 <--- G5_scr & G5_R2
+G5_o1 <--- dec0 & G5_R4
+dec0 <--- G5_scr & G5_R2
+G5_o1 <--- G5_ch0 & G5_scr
+dec0 <--- G5_scr & G5_R3
+G5_o1 <--- dec0 & G5_R4
+dec0 <--- G5_scr & G5_R3
+G5_o1 <--- G4_R1 & G5_scr
+G5_o1 <--- mp12 & G4_R3
+G5_o1 <--- mp7 & G4_R4
+G5_o1 <--- G4_R0 & G5_scr
+G5_o1 <--- G5_ch1 & G5_scr
+# unbuild B (group 0)
+mp7 <--- G5_scr & G4_R3
+mp12 <--- G5_scr & G4_R2
+mp20 <--- G5_scr & gA_1_3
+mp21 <--- G5_scr & gA_1_2
+mp22 <--- G5_scr & gA_0_3
+mp23 <--- G5_scr & gA_0_2
+G5_scr <--- 1
+G5_scr <--- G4_o0
+G5_scr <--- G4_o1
+# build B (group 1)
+G5_scr <--- 1
+G5_scr <--- G4_o0 & G4_o1
+# A2 + run -> o2 (copy)
+G5_o2 <--- G4_o2
+mp23 <--- G5_scr & gA_1_3
+G5_o2 <--- mp23 & gA_1_4
+G5_o2 <--- gA_1_0 & G5_scr
+mp22 <--- G5_scr & gA_0_2
+G5_o2 <--- mp22 & gA_0_4
+mp21 <--- G5_scr & gA_1_2
+G5_o2 <--- mp21 & gA_1_3
+G5_o2 <--- gA_1_1 & G5_scr
+G5_o2 <--- G5_ch0 & G5_scr
+G5_o2 <--- G4_R0 & G5_scr
+dec0 <--- G5_scr & G5_R3
+G5_o2 <--- dec0 & G5_R4
+dec0 <--- G5_scr & G5_R3
+dec0 <--- G5_scr & G5_R2
+G5_o2 <--- dec0 & G5_R4
+dec0 <--- G5_scr & G5_R2
+G5_o2 <--- G5_R0 & G5_scr
+mp20 <--- G5_scr & G4_R2
+G5_o2 <--- mp20 & G4_R3
+G5_o2 <--- G5_ch1 & G5_scr
+G5_o2 <--- gA_0_1 & G5_scr
+G5_o2 <--- mp22 & gA_0_3
+mp12 <--- G5_scr & gA_0_3
+G5_o2 <--- mp12 & gA_0_4
+G5_o2 <--- gA_0_0 & G5_scr
+G5_o2 <--- mp21 & gA_1_4
+G5_o2 <--- G5_ch0 & G5_scr
+G5_o2 <--- mp20 & G4_R4
+G5_o2 <--- G5_R1 & G5_scr
+mp7 <--- G5_scr & G4_R3
+G5_o2 <--- mp7 & G4_R4
+dec0 <--- G5_scr & G5_R2
+G5_o2 <--- dec0 & G5_R3
+dec0 <--- G5_scr & G5_R2
+G5_o2 <--- G4_R1 & G5_scr
+G5_o2 <--- G5_ch1 & G5_scr
+# unbuild B (group 1)
+mp7 <--- G5_scr & G4_R3
+mp12 <--- G5_scr & gA_0_3
+mp20 <--- G5_scr & G4_R2
+mp21 <--- G5_scr & gA_1_2
+mp22 <--- G5_scr & gA_0_2
+mp23 <--- G5_scr & gA_1_3
+G5_scr <--- 1
+G5_scr <--- G4_o0 & G4_o1
+# G6 (copy): s2 ^= gA
+# build B (group 0)
+G6_scr <--- 1
+G6_scr <--- s2_1_2
+G6_scr <--- s2_1_3
+# A0 + run -> o0 (copy)
+G6_o0 <--- s2_1_2
+G6_o0 <--- gA_0_0 & G6_scr
+mp23 <--- G6_scr & gA_0_2
+G6_o0 <--- mp23 & gA_0_3
+mp22 <--- G6_scr & gA_0_3
+G6_o0 <--- mp22 & gA_0_4
+G6_o0 <--- gA_1_0 & G6_scr
+mp21 <--- G6_scr & gA_1_2
+G6_o0 <--- mp21 & gA_1_4
+G6_o0 <--- G6_ch0 & G6_scr
+G6_o0 <--- mp21 & gA_1_3
+G6_o0 <--- gA_0_1 & G6_scr
+G6_o0 <--- mp23 & gA_0_4
+mp20 <--- G6_scr & gA_1_3
+G6_o0 <--- mp20 & gA_1_4
+G6_o0 <--- gA_1_1 & G6_scr
+G6_o0 <--- G6_ch1 & G6_scr
+G6_o0 <--- G6_R1 & G6_scr
+mp12 <--- G6_scr & s2_0_2
+G6_o0 <--- mp12 & s2_0_4
+dec0 <--- G6_scr & G6_R2
+G6_o0 <--- dec0 & G6_R3
+dec0 <--- G6_scr & G6_R2
+G6_o0 <--- G6_R0 & G6_scr
+dec0 <--- G6_scr & G6_R2
+G6_o0 <--- dec0 & G6_R4
+dec0 <--- G6_scr & G6_R2
+G6_o0 <--- G6_ch0 & G6_scr
+dec0 <--- G6_scr & G6_R3
+G6_o0 <--- dec0 & G6_R4
+dec0 <--- G6_scr & G6_R3
+G6_o0 <--- s2_0_1 & G6_scr
+G6_o0 <--- mp12 & s2_0_3
+mp7 <--- G6_scr & s2_0_3
+G6_o0 <--- mp7 & s2_0_4
+G6_o0 <--- s2_0_0 & G6_scr
+G6_o0 <--- G6_ch1 & G6_scr
+# A1 + run -> o1 (copy)
+G6_o1 <--- s2_1_3
+G6_o1 <--- gA_0_0 & G6_scr
+G6_o1 <--- mp23 & gA_0_3
+G6_o1 <--- mp22 & gA_0_4
+G6_o1 <--- gA_1_0 & G6_scr
+G6_o1 <--- mp21 & gA_1_4
+G6_o1 <--- G6_ch0 & G6_scr
+G6_o1 <--- mp21 & gA_1_3
+G6_o1 <--- gA_0_1 & G6_scr
+G6_o1 <--- mp23 & gA_0_4
+G6_o1 <--- mp20 & gA_1_4
+G6_o1 <--- gA_1_1 & G6_scr
+G6_o1 <--- G6_ch1 & G6_scr
+G6_o1 <--- G6_R1 & G6_scr
+G6_o1 <--- mp12 & s2_0_4
+dec0 <--- G6_scr & G6_R2
+G6_o1 <--- dec0 & G6_R3
+dec0 <--- G6_scr & G6_R2
+G6_o1 <--- G6_R0 & G6_scr
+dec0 <--- G6_scr & G6_R2
+G6_o1 <--- dec0 & G6_R4
+dec0 <--- G6_scr & G6_R2
+G6_o1 <--- G6_ch0 & G6_scr
+dec0 <--- G6_scr & G6_R3
+G6_o1 <--- dec0 & G6_R4
+dec0 <--- G6_scr & G6_R3
+G6_o1 <--- s2_0_1 & G6_scr
+G6_o1 <--- mp12 & s2_0_3
+G6_o1 <--- mp7 & s2_0_4
+G6_o1 <--- s2_0_0 & G6_scr
+G6_o1 <--- G6_ch1 & G6_scr
+# unbuild B (group 0)
+mp7 <--- G6_scr & s2_0_3
+mp12 <--- G6_scr & s2_0_2
+mp20 <--- G6_scr & gA_1_3
+mp21 <--- G6_scr & gA_1_2
+mp22 <--- G6_scr & gA_0_3
+mp23 <--- G6_scr & gA_0_2
+G6_scr <--- 1
+G6_scr <--- s2_1_2
+G6_scr <--- s2_1_3
+# build B (group 1)
+G6_scr <--- 1
+G6_scr <--- s2_1_2 & s2_1_3
+# A2 + run -> o2 (copy)
+G6_o2 <--- s2_1_4
+mp23 <--- G6_scr & gA_1_3
+G6_o2 <--- mp23 & gA_1_4
+G6_o2 <--- gA_1_0 & G6_scr
+mp22 <--- G6_scr & gA_0_2
+G6_o2 <--- mp22 & gA_0_4
+mp21 <--- G6_scr & gA_1_2
+G6_o2 <--- mp21 & gA_1_3
+G6_o2 <--- gA_1_1 & G6_scr
+G6_o2 <--- G6_ch0 & G6_scr
+G6_o2 <--- s2_0_0 & G6_scr
+dec0 <--- G6_scr & G6_R3
+G6_o2 <--- dec0 & G6_R4
+dec0 <--- G6_scr & G6_R3
+dec0 <--- G6_scr & G6_R2
+G6_o2 <--- dec0 & G6_R4
+dec0 <--- G6_scr & G6_R2
+G6_o2 <--- G6_R0 & G6_scr
+mp20 <--- G6_scr & s2_0_2
+G6_o2 <--- mp20 & s2_0_3
+G6_o2 <--- G6_ch1 & G6_scr
+G6_o2 <--- gA_0_1 & G6_scr
+G6_o2 <--- mp22 & gA_0_3
+mp12 <--- G6_scr & gA_0_3
+G6_o2 <--- mp12 & gA_0_4
+G6_o2 <--- gA_0_0 & G6_scr
+G6_o2 <--- mp21 & gA_1_4
+G6_o2 <--- G6_ch0 & G6_scr
+G6_o2 <--- mp20 & s2_0_4
+G6_o2 <--- G6_R1 & G6_scr
+mp7 <--- G6_scr & s2_0_3
+G6_o2 <--- mp7 & s2_0_4
+dec0 <--- G6_scr & G6_R2
+G6_o2 <--- dec0 & G6_R3
+dec0 <--- G6_scr & G6_R2
+G6_o2 <--- s2_0_1 & G6_scr
+G6_o2 <--- G6_ch1 & G6_scr
+# unbuild B (group 1)
+mp7 <--- G6_scr & s2_0_3
+mp12 <--- G6_scr & gA_0_3
+mp20 <--- G6_scr & s2_0_2
+mp21 <--- G6_scr & gA_1_2
+mp22 <--- G6_scr & gA_0_2
+mp23 <--- G6_scr & gA_1_3
+G6_scr <--- 1
+G6_scr <--- s2_1_2 & s2_1_3

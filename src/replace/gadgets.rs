@@ -2246,9 +2246,15 @@ fn emit_cg_variant(
 }
 
 /// One CG, drawn uniformly from the menu (see [`emit_cg_variant`]).
-fn emit_cg_menu(state: &GadgetState, gate: [u16; 3], rng: &mut impl Rng, out: &mut Vec<XGate>) {
+pub fn emit_cg_menu(
+    state: &GadgetState,
+    gate: [u16; 3],
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) -> u32 {
     let variant = rng.random_range(0..CG_VARIANTS);
     emit_cg_variant(state, gate, variant, rng, out);
+    variant
 }
 
 /// Recognize an XGate that IS a g57 — complemented with exactly one negative
@@ -4926,7 +4932,7 @@ fn normalize_lits(lits: &mut Vec<(u16, bool)>) -> Option<()> {
 /// CGs — the only emissions are the inject ramp, optional re-source churn,
 /// optional band rolls (which move a band value to another wire without
 /// changing it), the per-CG ANF folds, and the final strip.
-struct ProdLedger {
+pub struct ProdLedger {
     /// Per-value injection plan: the multiset of mask degrees each value
     /// carries (k copies of `deg` then k_hi copies of `deg_hi`).
     plan: Vec<usize>,
@@ -5027,7 +5033,7 @@ struct ProdLedger {
 }
 
 impl ProdLedger {
-    fn new(
+    pub fn new(
         n: usize,
         cfg: &ProdConfig,
         carrier_total: usize,
@@ -5567,7 +5573,7 @@ impl ProdLedger {
 
     /// Advance the lookahead clock to source-gate position `pos`, and (when
     /// PROD_BARE_CENSUS is set) sample how many values are currently bare.
-    fn set_pos(&mut self, pos: usize) {
+    pub fn set_pos(&mut self, pos: usize) {
         self.pos = pos;
     }
 
@@ -5763,7 +5769,7 @@ impl ProdLedger {
     /// W1 ramp: the planned mask multiset per value (k deg-`deg` + k_hi
     /// deg-`deg_hi`), right after the sharing bookend, so every value is
     /// product-masked before its first body use.
-    fn inject_all(&mut self, state: &GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
+    pub fn inject_all(&mut self, state: &GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
         if !self.enabled() {
             return;
         }
@@ -5802,7 +5808,7 @@ impl ProdLedger {
     /// RG3': re-randomize one slot of a random value — inject the fresh term
     /// FIRST (same degree as the one it replaces), then strip the old one, so
     /// the value is never momentarily bare.
-    fn resource(&mut self, state: &GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
+    pub fn resource(&mut self, state: &GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
         if !self.enabled() {
             return;
         }
@@ -6021,7 +6027,7 @@ impl ProdLedger {
     ///
     /// Invariant: carriers and band wires stay disjoint (a swap exchanges the
     /// two roles), so a fold/inject target is never also a mask literal.
-    fn roll(&mut self, state: &mut GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
+    pub fn roll(&mut self, state: &mut GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
         if !self.enabled() || self.loc.is_empty() {
             return;
         }
@@ -6147,7 +6153,7 @@ impl ProdLedger {
         }
     }
 
-    fn fold_cg(
+    pub fn fold_cg(
         &mut self,
         gate: &XGate,
         state: &GadgetState,
@@ -8757,6 +8763,80 @@ fn emit_band_fill_nl(
     emit_band_fill_nl_pivots(n, band, fill_nl, false, rng, out)
 }
 
+/// Band fill that reads INPUTS through a blinded pool: `read_map[w]` is the
+/// physical wire that holds the (butterfly-churned) image of logical input `w`.
+/// The band wires then become HIGH-degree functions of the raw inputs, so no
+/// band-fill gate output is a clean low-degree input monomial (the sec 3.9
+/// band-fill leak). The churn is a bijection on the inputs, so the band stays
+/// jointly uniform. Cascade sources that are band wires are left unmapped.
+fn emit_band_fill_nl_blind(
+    n: usize,
+    band: &[u16],
+    fill_nl: usize,
+    read_map: &[u16],
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) {
+    // Map a physical source wire: if it is a raw input (< n), substitute the
+    // blinded wire; band wires (>= n) pass through unchanged.
+    let map = |w: u16| -> u16 {
+        if (w as usize) < n {
+            read_map[w as usize]
+        } else {
+            w
+        }
+    };
+    let mut supports: Vec<std::collections::HashSet<usize>> = Vec::new();
+    for (index, &band_wire) in band.iter().enumerate() {
+        let pivot = rng.random_range(0..n);
+        let mut support: std::collections::HashSet<usize> = std::iter::once(pivot).collect();
+        out.push(XGate::cnot(band_wire, map(pivot as u16)));
+        let lin_max = (n - 1).min(7);
+        let lin_w = 1 + rng.random_range(0..lin_max);
+        let mut pool: Vec<usize> = (0..n).filter(|&w| w != pivot).collect();
+        let lin_w = lin_w.min(pool.len());
+        for _ in 0..lin_w {
+            let i = rng.random_range(0..pool.len());
+            let w = pool.swap_remove(i);
+            support.insert(w);
+            out.push(XGate::cnot(band_wire, map(w as u16)));
+        }
+        let eligible_band: Vec<usize> = (0..index)
+            .filter(|&i| !supports[i].contains(&pivot))
+            .collect();
+        for _ in 0..fill_nl {
+            let mut draw = |exclude: Option<u16>| loop {
+                let wire = if !eligible_band.is_empty() && rng.random_bool(0.5) {
+                    band[eligible_band[rng.random_range(0..eligible_band.len())]]
+                } else {
+                    loop {
+                        let w = rng.random_range(0..n);
+                        if w != pivot {
+                            break map(w as u16);
+                        }
+                    }
+                };
+                if Some(wire) != exclude {
+                    break wire;
+                }
+            };
+            let s1 = draw(None);
+            let s2 = draw(Some(s1));
+            let lits = [(s1, rng.random::<bool>()), (s2, rng.random::<bool>())];
+            emit_g57_form(band_wire, &lits, rng, out);
+            for s in [s1, s2] {
+                match band[..index].iter().position(|&w| w == s) {
+                    Some(earlier) => support.extend(supports[earlier].iter().copied()),
+                    None => {
+                        support.insert(s as usize);
+                    }
+                }
+            }
+        }
+        supports.push(support);
+    }
+}
+
 /// The cascade fill, optionally with a RESERVED PIVOT BLOCK.
 ///
 /// Per-wire balance only needs each wire's own pivot excluded from its own
@@ -8834,20 +8914,46 @@ fn emit_band_fill_nl_pivots(
         let eligible_band: Vec<usize> = (0..index)
             .filter(|&i| !supports[i].contains(&pivot))
             .collect();
+        // NC_DEEP_BAND: force nonlinear products to read ONLY from earlier band
+        // wires (full cascade), never raw inputs. The first band wire is then a
+        // degree-2 input monomial still, but every later wire cascades to high
+        // degree, shrinking the statically-readable low-degree population the
+        // Gaussian attacker recombines (sec 3.9).
+        let deep_band = std::env::var("NC_DEEP_BAND").is_ok();
         for _ in 0..fill_nl {
-            let mut draw = |exclude: Option<u16>| loop {
-                let wire = if !eligible_band.is_empty() && rng.random_bool(0.5) {
-                    band[eligible_band[rng.random_range(0..eligible_band.len())]]
-                } else {
-                    loop {
-                        let w = rng.random_range(0..n);
-                        if w != pivot && !(reserve && reserved.contains(&w)) {
-                            break w as u16;
+            let mut draw = |exclude: Option<u16>| {
+                // In deep_band mode prefer earlier band wires; but if the only
+                // eligible band wires are all excluded, fall back to an input.
+                for _ in 0..64 {
+                    let wire = if !eligible_band.is_empty() && (deep_band || rng.random_bool(0.5)) {
+                        band[eligible_band[rng.random_range(0..eligible_band.len())]]
+                    } else {
+                        loop {
+                            let w = rng.random_range(0..n);
+                            if w != pivot && !(reserve && reserved.contains(&w)) {
+                                break w as u16;
+                            }
                         }
+                    };
+                    if Some(wire) != exclude {
+                        return wire;
                     }
-                };
-                if Some(wire) != exclude {
-                    break wire;
+                    // If we cannot use band (all excluded), force an input draw.
+                    if eligible_band.iter().all(|&i| Some(band[i]) == exclude) {
+                        return loop {
+                            let w = rng.random_range(0..n);
+                            if w != pivot && !(reserve && reserved.contains(&w)) && Some(w as u16) != exclude {
+                                break w as u16;
+                            }
+                        };
+                    }
+                }
+                // Give up on distinctness (extremely unlikely); return any input.
+                loop {
+                    let w = rng.random_range(0..n);
+                    if w != pivot && !(reserve && reserved.contains(&w)) {
+                        break w as u16;
+                    }
                 }
             };
             let s1 = draw(None);
@@ -8876,17 +8982,18 @@ fn emit_band_fill_nl_pivots(
 /// all logical values (it only relocates/refreshes carriers), so the
 /// value-sourced deferred masks are invariant under it and need no
 /// interception here.
-fn emit_nonlinear_rg(
+pub fn emit_nonlinear_rg(
     state: &mut GadgetState,
     pair_queue: &mut VecDeque<(usize, usize)>,
     single_queue: &mut VecDeque<usize>,
     prod: &mut ProdLedger,
     out: &mut Vec<XGate>,
     rng: &mut impl Rng,
-) {
+) -> String {
     let n = state.n;
     let total = 2 * n;
     let mut buf: Vec<[u16; 3]> = Vec::new();
+    let mut label = String::new();
     // Every RG network overwrites the carriers it touches (RG1 and RG2 target
     // all four wires of the two pairs, RG3 both carriers of one value), so
     // under distributed sourcing each of those wires is released first: any
@@ -8898,11 +9005,13 @@ fn emit_nonlinear_rg(
             let (i, j) = next_pair(pair_queue, n, rng);
             prod.release(&rg_pair_wires(state, i, j), state, rng, out);
             emit_rg1(state, i, j, &mut buf);
+            label = format!("RG1 re-share ({i},{j})");
         }
         1 => {
             let (i, j) = next_pair(pair_queue, n, rng);
             prod.release(&rg_pair_wires(state, i, j), state, rng, out);
             emit_rg2(state, i, j, &mut buf);
+            label = format!("RG2 re-share ({i},{j})");
         }
         _ => {
             let i = next_single(single_queue, n, rng);
@@ -8912,9 +9021,11 @@ fn emit_nonlinear_rg(
             let r1 = random_wire_except(total, &[s, p], rng);
             let r2 = random_wire_except(total, &[s, p, r1], rng);
             emit_rg3(state, i, r1, r2, &mut buf);
+            label = format!("RG3 re-share value {i}");
         }
     }
     out.extend(buf.into_iter().map(XGate::from_g57));
+    label
 }
 
 /// The four carriers an RG1/RG2 network rewrites.
@@ -9184,7 +9295,7 @@ fn emit_wire_swap(a: usize, b: usize, out: &mut Vec<XGate>) {
 }
 
 /// Relocate one value to a different carrier wire (the single-carrier RG).
-fn emit_value_relocation(
+pub fn emit_value_relocation(
     state: &mut GadgetState,
     carrier_total: usize,
     out: &mut Vec<XGate>,
@@ -12632,6 +12743,1353 @@ pub fn feistalize_with_slice_zero_random_cnot(
         .gates
         .extend(feistalize_cnot(main, n, rg_freq, rng).gates);
     preblock
+}
+
+// ============================================================================
+// Nonlinear-carrier (NC) gadget — implementation of nonlinear-carrier-gadget.md
+// ============================================================================
+//
+// Each logical value is carried on FIVE wires c0..c4 with nonlinear decode
+//     D(c) = c0 ^ maj(c1,c2,c3) ^ c1*c4 = c0 ^ c1c2 ^ c1c3 ^ c2c3 ^ c1c4
+// plus the production band-mask plan [2,2,2,3] and a ledger constant kappa:
+//     V_i = D(c_i) ^ M_i ^ kappa_i.
+// A source gate with fire value f is applied as U_f = (flip c0 by f) ∘ U0,
+// where U0 is a class-preserving fixed-point-free 5-bit permutation whose
+// weight-1/2 carrier correlations with f vanish (doc §2). The c0 flip is NOT
+// emitted as a contiguous block: its materialization (the Gray-cycle u·z
+// emissions and the linear decode atoms) is interleaved with U0's own gates
+// (per-gate random pivot), so no trace pair brackets exactly the flip while
+// sitting on class-aligned pre/post-U0 carrier states.
+
+/// The verified 35-gate U0 (alternate instance; checked against the doc's
+/// three constraints: permutation, class-preserving under D, fixed-point-free,
+/// W0(e_i, e_0)=0 for all i, deg(c0-part flip bit)=3, U0^e0 class-inverting).
+/// Local wire indices 0..=4 map to the value's carriers c0..c4.
+/// Entries: (target, [(wire, polarity); 2], lits_len).
+static NC_U0: [(u8, [(u8, bool); 2], u8); 35] = [
+    (2, [(3, true), (0, false)], 1),
+    (4, [(2, true), (3, false)], 2),
+    (0, [(2, true), (3, false)], 2),
+    (0, [(2, false), (3, false)], 2),
+    (2, [(3, true), (0, false)], 1),
+    (1, [(0, false), (2, true)], 2),
+    (3, [(0, false), (4, false)], 2),
+    (3, [(1, true), (2, false)], 2),
+    (0, [(2, true), (3, true)], 2),
+    (3, [(1, true), (2, true)], 2),
+    (2, [(3, false), (4, true)], 2),
+    (2, [(1, false), (3, true)], 2),
+    (1, [(2, false), (0, false)], 1),
+    (4, [(2, true), (0, false)], 1),
+    (1, [(4, false), (0, false)], 1),
+    (2, [(3, false), (4, false)], 2),
+    (2, [(0, false), (4, false)], 2),
+    (2, [(3, false), (4, false)], 2),
+    (3, [(2, false), (0, false)], 1),
+    (4, [(3, false), (0, false)], 1),
+    (3, [(2, true), (0, false)], 1),
+    (2, [(1, true), (4, false)], 2),
+    (2, [(0, true), (3, true)], 2),
+    (2, [(0, false), (1, false)], 2),
+    (0, [(1, true), (0, false)], 1),
+    (4, [(0, false), (0, false)], 1),
+    (4, [(1, true), (3, false)], 2),
+    (2, [(0, true), (0, false)], 1),
+    (3, [(0, false), (2, false)], 2),
+    (2, [(1, true), (4, false)], 2),
+    (1, [(0, false), (2, false)], 2),
+    (4, [(0, true), (2, true)], 2),
+    (2, [(0, true), (4, false)], 2),
+    (1, [(0, false), (2, true)], 2),
+    (3, [(1, true), (2, true)], 2),
+];
+
+/// D(c0..c4) = c0 ^ maj(c1,c2,c3) ^ c1*c4, for tests and the exit route.
+fn nc_decode_d(c: [bool; 5]) -> bool {
+    c[0] ^ (c[1] & c[2]) ^ (c[1] & c[3]) ^ (c[2] & c[3]) ^ (c[1] & c[4])
+}
+
+/// Emit U0's gates [start..end) for the value on `carriers` (local index ->
+/// physical wire). Every gate has <= 2 controls, so each maps to one XGate.
+fn emit_nc_u0(carriers: &[u16; 5], start: usize, end: usize, out: &mut Vec<XGate>) {
+    for &(t, lits, len) in &NC_U0[start..end] {
+        let lits: Vec<(u16, bool)> = lits[..len as usize]
+            .iter()
+            .map(|&(w, pol)| (carriers[w as usize], pol))
+            .collect();
+        out.push(XGate::conj(carriers[t as usize], lits).expect("U0 wires are distinct"));
+    }
+}
+
+/// Emit U0^{-1} (gates in reverse order; each XGate is its own inverse).
+fn emit_nc_u0_inv(carriers: &[u16; 5], out: &mut Vec<XGate>) {
+    for &(t, lits, len) in NC_U0.iter().rev() {
+        let lits: Vec<(u16, bool)> = lits[..len as usize]
+            .iter()
+            .map(|&(w, pol)| (carriers[w as usize], pol))
+            .collect();
+        out.push(XGate::conj(carriers[t as usize], lits).expect("U0 wires are distinct"));
+    }
+}
+
+/// Per-value mask table for the NC gadget: production plan [2,2,2,3] over a
+/// static band (no rolling/migration in v1), plus the ledger constant kappa.
+/// Band literals are stored as physical wires, so no `loc` indirection.
+struct NcMasks {
+    /// terms[v] = mask monomials of value v (each a conjunction of band lits).
+    terms: Vec<Vec<Vec<(u16, bool)>>>,
+    kappa: Vec<bool>,
+}
+
+impl NcMasks {
+    /// Draw fresh masks for `values` over `band` (physical wires), plan
+    /// [2,2,2,3], term variables disjoint within a value (the draw_slot rule).
+    fn new(values: usize, band: &[u16], rng: &mut impl Rng) -> Self {
+        let mut terms = Vec::with_capacity(values);
+        for v in 0..values {
+            let mut taken: Vec<u16> = Vec::new();
+            let mut v_terms = Vec::with_capacity(4);
+            for &deg in &[2usize, 2, 2, 3] {
+                debug_assert!(band.len() - taken.len() >= deg, "band too small for plan");
+                let mut vars: Vec<u16> = Vec::with_capacity(deg);
+                let mut spins = 0usize;
+                while vars.len() < deg {
+                    spins += 1;
+                    assert!(spins <= 1_000_000, "NcMasks::new: band too small for disjoint plan");
+                    let b = band[rng.random_range(0..band.len())];
+                    if !vars.contains(&b) && !taken.contains(&b) {
+                        vars.push(b);
+                    }
+                }
+                vars.sort_unstable();
+                taken.extend(vars.iter().copied());
+                v_terms.push(
+                    vars.into_iter().map(|w| (w, rng.random_bool(0.5))).collect::<Vec<_>>(),
+                );
+            }
+            terms.push(v_terms);
+        }
+        NcMasks { terms, kappa: vec![false; values] }
+    }
+}
+
+/// Emit the conjunction `lits` into `target` (i.e. target ^= AND lits).
+///
+/// 3-literal terms go through the dirty helper `h`. Because borrows are never
+/// cleared (h starts in an UNKNOWN state h0), the naive 3-gate spelling
+/// (h ^= a&b; target ^= h&c; h ^= a&b) would deliver a&b&c ^ h0&c -- wrong.
+/// The h0-agnostic spelling below costs 4 gates and nets exactly a&b&c while
+/// restoring h:
+///   h ^= a&b          (h = h0 ^ ab)
+///   target ^= h&c     (target += (h0^ab)&c)
+///   h ^= a&b          (h = h0)
+///   target ^= h&c     (target += h0&c)
+///   -- h is back to h0, and target gained (h0^ab)&c ^ h0&c = ab&c.
+/// Wider terms are not used by the plan.
+fn nc_emit_atom(target: u16, lits: &[(u16, bool)], helper: u16, out: &mut Vec<XGate>) {
+    match lits.len() {
+        0 => out.push(XGate::x_gate(target)),
+        1 | 2 => out.push(XGate::conj(target, lits.to_vec()).expect("atom wires distinct")),
+        3 => {
+            let (a, b, c) = (lits[0], lits[1], lits[2]);
+            debug_assert!(helper != target);
+            let ab = XGate::conj(helper, vec![a, b]).expect("helper build");
+            let hc = XGate::conj(target, vec![(helper, true), c]).expect("helper fire");
+            out.push(ab.clone());
+            out.push(hc.clone());
+            out.push(ab);
+            out.push(hc);
+        }
+        _ => panic!("NC mask plan has no terms wider than 3"),
+    }
+}
+
+/// Emit every atom of the full decode S_v = D(c_v) ^ M_v ^ kappa_v into
+/// `target` (carrier atoms, then mask atoms, then the constant).
+fn nc_emit_decode(
+    target: u16,
+    v: usize,
+    carriers: &[[u16; 5]],
+    masks: &NcMasks,
+    helper: u16,
+    out: &mut Vec<XGate>,
+) {
+    let c = &carriers[v];
+    // Carrier atoms: c0, then the four quadratic terms of D.
+    out.push(XGate::cnot(target, c[0]));
+    nc_emit_decode_nl(target, v, carriers, masks, helper, out);
+}
+
+/// The NONLINEAR part of the decode only: the four quadratic carrier terms of
+/// D, the mask atoms, and the ledger constant -- everything except the linear
+/// c0 atom. This is the prod-style split: the linear carrier literal c0 is the
+/// analogue of prod's carrier share and is kept OFF the borrow (folded via
+/// cross terms), while only the masked/quadratic residual R_x = Q_x ^ M_x ^
+/// kappa_x is gathered onto the accumulator. Because R_x still carries the
+/// mask, the borrow never holds a bare plaintext decode of the value.
+fn nc_emit_decode_nl(
+    target: u16,
+    v: usize,
+    carriers: &[[u16; 5]],
+    masks: &NcMasks,
+    helper: u16,
+    out: &mut Vec<XGate>,
+) {
+    let c = &carriers[v];
+    for &(a, b) in &[(1usize, 2usize), (1, 3), (2, 3), (1, 4)] {
+        out.push(
+            XGate::conj(target, vec![(c[a], true), (c[b], true)]).expect("carrier atoms distinct"),
+        );
+    }
+    for term in &masks.terms[v] {
+        nc_emit_atom(target, term, helper, out);
+    }
+    if masks.kappa[v] {
+        out.push(XGate::x_gate(target));
+    }
+}
+
+/// Emit `target ^= gate_lit AND R_v` -- the nonlinear decode residual of value
+/// `v`, every atom gated by the extra literal `gate_lit` (a c0 of the other
+/// operand). Used for the cross terms `c0_b.R_c` / `c0_c.R_b`: each atom stays
+/// a <=2-control conjunction by widening through the dirty helper where the
+/// extra control would push a term past width 2.
+fn nc_emit_decode_gated(
+    target: u16,
+    v: usize,
+    gate_lit: u16,
+    carriers: &[[u16; 5]],
+    masks: &NcMasks,
+    helper: u16,
+    helper2: u16,
+    out: &mut Vec<XGate>,
+) {
+    let c = &carriers[v];
+    // Quadratic carrier terms: c_a.c_b.gate_lit is width 3 -> helper path.
+    for &(a, b) in &[(1usize, 2usize), (1, 3), (2, 3), (1, 4)] {
+        let lits = vec![(c[a], true), (c[b], true), (gate_lit, true)];
+        nc_emit_atom(target, &lits, helper, out);
+    }
+    // Mask terms (width 2 or 3) gated by gate_lit -> width 3 or 4.
+    for term in &masks.terms[v] {
+        let mut lits: Vec<(u16, bool)> = term.clone();
+        lits.push((gate_lit, true));
+        nc_emit_atom2(target, &lits, helper, helper2, out);
+    }
+    if masks.kappa[v] {
+        // kappa . gate_lit: a single-control gate.
+        out.push(XGate::cnot(target, gate_lit));
+    }
+}
+
+/// Emit target ^= AND(lits) for lits of width up to 4, h0/h1-agnostic, with
+/// both helpers restored. width-3 uses the single-helper 4-gate spelling;
+/// width-4 (only from a gated width-3 mask term) builds a.b on helper, then
+/// the width-3 (helper, c, d) fires through helper2, then helper is restored.
+fn nc_emit_atom2(
+    target: u16,
+    lits: &[(u16, bool)],
+    helper: u16,
+    helper2: u16,
+    out: &mut Vec<XGate>,
+) {
+    nc_emit_atom_wide(target, lits, &[helper, helper2], out)
+}
+
+/// General dirty-tolerant AND emitter for any width, using a pool of dirty
+/// helper wires (all restored). Recursive "materialize halves on two helpers,
+/// fire t ^= h1&h2, restore" construction, EXHAUSTIVELY VERIFIED for widths
+/// 3..=6 in the design search: width 3 = 4 gates/1 helper, 4 = 8/2, 5 = 14/4,
+/// 6 = 20/4. Helpers beyond index 1 are only needed for width >= 5 and are
+/// themselves restored, so extra band wires may be passed as scratch. Every
+/// helper returns to its incoming value.
+fn nc_emit_atom_wide(
+    target: u16,
+    lits: &[(u16, bool)],
+    helpers: &[u16],
+    out: &mut Vec<XGate>,
+) {
+    let n = lits.len();
+    match n {
+        0 => out.push(XGate::x_gate(target)),
+        1 | 2 => out.push(XGate::conj(target, lits.to_vec()).expect("distinct")),
+        3 => nc_emit_atom(target, lits, helpers[0], out),
+        _ => {
+            assert!(helpers.len() >= 2, "wide atom needs >=2 helpers");
+            let (h1, h2) = (helpers[0], helpers[1]);
+            let mid = n / 2;
+            let g1 = &lits[..mid];
+            let g2 = &lits[mid..];
+            let sub: &[u16] = &helpers[2..];
+            let fire = XGate::conj(target, vec![(h1, true), (h2, true)]).expect("fire distinct");
+            // Verified order: B1 F B2 F B1 F B2 F (B1: h1^=AND(g1), B2: h2^=AND(g2)).
+            nc_emit_atom_wide(h1, g1, sub, out);
+            out.push(fire.clone());
+            nc_emit_atom_wide(h2, g2, sub, out);
+            out.push(fire.clone());
+            nc_emit_atom_wide(h1, g1, sub, out);
+            out.push(fire.clone());
+            nc_emit_atom_wide(h2, g2, sub, out);
+            out.push(fire);
+        }
+    }
+}
+/// Expand the k=2 fire value `f = S_b * S_c` into individual monomials over the
+/// TEN source carrier wires (5 of b, 5 of c) plus the source mask monomials,
+/// WITHOUT materializing R_b/R_c onto borrow wires. `S_x = D(x) ^ M_x ^
+/// kappa_x`, so `S_b*S_c` is a degree-<=4 polynomial. Each monomial is a list
+/// of literals (physical wires). The constant/linear parts are handled by the
+/// caller (kappa ledger / linear decode). Returned monomials have width 2..=4.
+fn nc_expand_product_monomials(
+    b: usize,
+    c: usize,
+    carriers: &[[u16; 5]],
+    masks: &NcMasks,
+) -> Vec<Vec<(u16, bool)>> {
+    // Monomials of D(x): {x0} (linear) and {x1x2, x1x3, x2x3, x1x4} (quadratic).
+    // Represent each source's S_x monomial set as: linear term (just coord 0),
+    // the 4 quadratic carrier pairs, the mask terms (width 2/3), and kappa.
+    // We only need the CROSS products for S_b*S_c. Build S_b and S_c as lists
+    // of monomials (each a Vec of (wire,pol)), then take the pairwise product.
+    // S_x = D(x) ^ M_x ^ kappa_x. kappa is a CONSTANT-1 monomial (empty list).
+    let monos_of = |v: usize| -> Vec<Vec<(u16, bool)>> {
+        let cv = &carriers[v];
+        let mut m: Vec<Vec<(u16, bool)>> = Vec::new();
+        m.push(vec![(cv[0], true)]); // linear c0
+        for &(a, bb) in &[(1usize, 2usize), (1, 3), (2, 3), (1, 4)] {
+            m.push(vec![(cv[a], true), (cv[bb], true)]); // quadratic carrier terms
+        }
+        for term in &masks.terms[v] {
+            m.push(term.clone()); // mask terms (physical wires + pols)
+        }
+        if masks.kappa[v] {
+            m.push(Vec::new()); // constant-1 monomial
+        }
+        m
+    };
+    let mb = monos_of(b);
+    let mc = monos_of(c);
+    let mut out: Vec<Vec<(u16, bool)>> = Vec::new();
+    for x in &mb {
+        for y in &mc {
+            // product = union of literals. empty (constant) x anything = anything;
+            // empty x empty = constant (empty). Same wire same pol = once (AND
+            // idempotent); opposite pol = the monomial vanishes (contributes 0).
+            let mut mono: Vec<(u16, bool)> = x.clone();
+            let mut vanished = false;
+            for &(w, p) in y {
+                if let Some(pos) = mono.iter().position(|&(w2, _)| w2 == w) {
+                    if mono[pos].1 != p {
+                        vanished = true; // (w)(1+w) = 0
+                        break;
+                    }
+                } else {
+                    mono.push((w, p));
+                }
+            }
+            if !vanished {
+                out.push(mono);
+            }
+        }
+    }
+    out
+}
+
+/// c0 by f = comp ^ AND_i lit_i, interleaved (doc §2.3 + the P1 fix: no
+/// contiguous post-permutation flip block).
+///
+/// For k = |srcs| <= 2 the fire value expands as
+///     f = K ^ sum of requested linear decodes ^ S_b*S_c
+/// with K = comp ^ (k==1 ? d : k==2 ? d_b&d_c : 0), where d = 1 marks a
+/// negated control. K is folded into kappa_t rather than emitted.
+#[allow(clippy::too_many_arguments)]
+fn emit_nc_gate(
+    t: usize,
+    srcs: &[usize],
+    pols: &[bool],
+    comp: bool,
+    carriers: &[[u16; 5]],
+    masks: &mut NcMasks,
+    u: u16,
+    z: u16,
+    h: u16,
+    h2: u16,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) {
+    let k = srcs.len();
+    assert!(k <= 2, "NC emitter handles gates with at most 2 controls");
+    let ct = carriers[t];
+    let c0 = ct[0];
+
+    // Constant part -> kappa_t (avoids an attributable unconditional NOT).
+    let dk: Vec<bool> = pols.iter().map(|&p| !p).collect();
+    let konst = comp
+        ^ match k {
+            0 => false,
+            1 => dk[0],
+            _ => dk[0] & dk[1],
+        };
+    masks.kappa[t] ^= konst;
+
+    // =====================================================================
+    // VARIANT A+B (NC_EXPAND): expand the fire value f into monomials over the
+    // TEN source carrier wires (+ mask terms) and emit each monomial directly
+    // to c0 with a FULL U0 interleaved after every monomial. NO borrow wires
+    // are materialized (no u = R_b, z = R_c), so the entire borrow channel is
+    // gone by construction. Because U0 is class-preserving, interleaving it
+    // between monomials leaves the accumulated value exactly f while
+    // re-randomizing c0 after each monomial -- killing both the borrow channel
+    // AND the across-time c0 accumulation channel.
+    //
+    // f = K ^ (linear terms) ^ S_b*S_c. K is in the kappa ledger (above). The
+    // linear terms delta_c*S_b / delta_b*S_c are full decodes; to avoid
+    // materializing a bare source decode on c0 we expand them into monomials
+    // too (each is a single source's D+mask atoms, gated by the polarity
+    // constant). All monomials go through nc_emit_atom2 (width <= 4 via the
+    // verified dirty-double-ancilla spelling).
+    // =====================================================================
+    if std::env::var("NC_EXPAND").is_ok() {
+        // Collect every monomial to XOR into c0.
+        let mut monos: Vec<Vec<(u16, bool)>> = Vec::new();
+        if k == 2 {
+            let (b, c) = (srcs[0], srcs[1]);
+            // Quadratic term S_b*S_c, expanded over carrier+mask wires.
+            monos.extend(nc_expand_product_monomials(b, c, carriers, masks));
+            // Linear terms: delta_c * S_b  and  delta_b * S_c (dk = !pol).
+            // S_x = D(x) ^ M_x ^ kappa_x. Emit each monomial of S_x when the
+            // coefficient is 1. kappa_x folds into the target kappa ledger.
+            if dk[1] {
+                // S_b monomials
+                let cb = &carriers[b];
+                monos.push(vec![(cb[0], true)]);
+                for &(a1, a2) in &[(1usize, 2usize), (1, 3), (2, 3), (1, 4)] {
+                    monos.push(vec![(cb[a1], true), (cb[a2], true)]);
+                }
+                for term in &masks.terms[b] {
+                    monos.push(term.clone());
+                }
+                if masks.kappa[b] {
+                    masks.kappa[t] ^= true; // delta_c * kappa_b
+                }
+            }
+            if dk[0] {
+                let cc = &carriers[c];
+                monos.push(vec![(cc[0], true)]);
+                for &(a1, a2) in &[(1usize, 2usize), (1, 3), (2, 3), (1, 4)] {
+                    monos.push(vec![(cc[a1], true), (cc[a2], true)]);
+                }
+                for term in &masks.terms[c] {
+                    monos.push(term.clone());
+                }
+                if masks.kappa[c] {
+                    masks.kappa[t] ^= true; // delta_b * kappa_c
+                }
+            }
+        } else if k == 1 {
+            let b = srcs[0];
+            let cb = &carriers[b];
+            monos.push(vec![(cb[0], true)]);
+            for &(a1, a2) in &[(1usize, 2usize), (1, 3), (2, 3), (1, 4)] {
+                monos.push(vec![(cb[a1], true), (cb[a2], true)]);
+            }
+            for term in &masks.terms[b] {
+                monos.push(term.clone());
+            }
+            if masks.kappa[b] {
+                masks.kappa[t] ^= true;
+            }
+        }
+        // Emit: for each monomial, XOR into c0, then a FULL U0. Net float must
+        // advance by exactly one U0 (matching the pipeline invariant), so after
+        // the m monomials + m U0s we undo (m) and apply 1.
+        // Helper pool for wide atoms: h, h2 plus the (unused in EXPAND mode)
+        // borrow wires u, z as extra dirty scratch (all restored by the wide
+        // emitter, so this is sound).
+        let m = monos.len();
+        let help = [h, h2, u, z];
+        for mono in &monos {
+            nc_emit_atom_wide(c0, mono, &help, out);
+            emit_nc_u0(&ct, 0, NC_U0.len(), out);
+        }
+        for _ in 0..m.saturating_sub(1) {
+            emit_nc_u0_inv(&ct, out);
+        }
+        if m == 0 {
+            // pure float (k=0 or empty): still advance one U0 for the churn.
+            emit_nc_u0(&ct, 0, NC_U0.len(), out);
+        }
+        return;
+    }
+
+    // Build the emission pieces. PROD-STYLE GRAY FOLD (the borrow-channel
+    // fix): the value decode splits as S_x = c0_x ^ R_x, with c0_x the linear
+    // carrier literal (kept OFF the borrows) and R_x = Q_x ^ M_x ^ kappa_x
+    // the masked nonlinear residual (the only thing gathered). Then
+    //   S_b.S_c = c0_b.c0_c ^ c0_b.R_c ^ R_b.c0_c ^ R_b.R_c
+    // and R_b.R_c is the Gray inclusion-exclusion over u=R_b, z=R_c. Because
+    // R_x carries the mask, no borrow ever holds a bare plaintext decode.
+    let mut pieces: Vec<Vec<XGate>> = Vec::new();
+    // NC_DEBUG_K2_NOQUAD: drop the quadratic Gray cycle + cross terms (keep
+    // only the linear correction), to isolate which part of k=2 leaks.
+    let no_quad = std::env::var("NC_DEBUG_K2_NOQUAD").is_ok();
+    if k == 2 {
+        let (b, c) = (srcs[0], srcs[1]);
+        let c0b = carriers[b][0];
+        let c0c = carriers[c][0];
+        if !no_quad {
+        let uz = vec![XGate::conj(c0, vec![(u, true), (z, true)]).unwrap()];
+        let mut gather_b = Vec::new();
+        nc_emit_decode_nl(u, b, carriers, masks, h, &mut gather_b); // R_b -> u
+        let mut gather_c = Vec::new();
+        nc_emit_decode_nl(z, c, carriers, masks, h, &mut gather_c); // R_c -> z
+        // Gray cycle A,B,C,D with the four u.z emissions (net R_b.R_c).
+        pieces.push(uz.clone()); // (A)
+        pieces.push(gather_b.clone());
+        pieces.push(uz.clone()); // (B)
+        pieces.push(gather_c.clone());
+        pieces.push(uz.clone()); // (C)
+        pieces.push(gather_b); // strip R_b
+        pieces.push(uz); // (D)
+        pieces.push(gather_c); // strip R_c
+        // Cross terms: c0_b.c0_c, c0_b.R_c, c0_c.R_b. The R's are emitted
+        // gated by the OTHER operand's c0 literal (reading the source carriers
+        // directly, NOT the borrows), so each stays a <=2-control conjunction.
+            let mut cross = vec![XGate::conj(c0, vec![(c0b, true), (c0c, true)]).unwrap()];
+            nc_emit_decode_gated(c0, c, c0b, carriers, masks, h, h2, &mut cross); // c0 += c0_b . R_c
+            nc_emit_decode_gated(c0, b, c0c, carriers, masks, h, h2, &mut cross); // c0 += c0_c . R_b
+            pieces.push(cross);
+        }
+        // Linear terms: coefficient of S_b is delta_c, of S_c is delta_b.
+        // NC_DEBUG_K2_NOLIN: drop these (functionally wrong) to isolate whether
+        // the across-time c0 leak comes from writing the full source decode
+        // onto c0 here.
+        let no_lin = std::env::var("NC_DEBUG_K2_NOLIN").is_ok();
+        let mut lin = Vec::new();
+        if dk[1] && !no_lin {
+            nc_emit_decode(c0, b, carriers, masks, h, &mut lin);
+        }
+        if dk[0] && !no_lin {
+            nc_emit_decode(c0, c, carriers, masks, h, &mut lin);
+        }
+        pieces.push(lin);
+    } else {
+        let mut lin = Vec::new();
+        if k == 1 {
+            nc_emit_decode(c0, srcs[0], carriers, masks, h, &mut lin);
+        }
+        pieces.push(lin);
+    }
+    pieces.retain(|p| !p.is_empty());
+
+    // Floating regime (doc SS2.3 step 5 / SS5): the write applies
+    //     s' = U0(s ^ f*e0)
+    // exactly, so the post-state is the next float word and wire c0 becomes a
+    // fresh word of the tuple (this is what kills the across-time pair
+    // correlation the single-U0 split cannot). To interleave the flip INTO
+    // the permutation without leaving the decode-correct region, we:
+    //   1. un-float: apply U0^{-1}, landing on the pre-U0 word s,
+    //   2. apply U0 with the flip pieces spliced at a random cut inside a
+    //      c0-free run (cuts 0..=5 / 34..=35 for this instance): the prefix
+    //      U0[..cut] does not touch c0, the flip pieces XOR into c0 (and the
+    //      borrows), and the suffix U0[cut..] finishes the rotation.
+    // P_cut = U0[cut..] o (c0 ^= f) o U0[..cut] preserves D exactly there
+    // (verified exhaustively), and composing with step 1 gives
+    // U0[cut..] o flip_f o U0[..cut] o U0^{-1} applied to the floated word --
+    // since U0[..cut] o U0^{-1} = U0^{-1}[cut..] (truncated inverse), the net
+    // is the decode-correct floated update. Pieces never read the target
+    // tuple and U0 gates never touch c0/u/z/h except through c0 of the
+    // target, so pieces commute with the U0 gates of OTHER values and with
+    // each other's borrow targets exactly as in the single-U0 analysis.
+    let no_u0 = std::env::var("NC_DEBUG_NO_U0").is_ok();
+    if no_u0 {
+        for piece in &pieces {
+            out.extend(piece.iter().cloned());
+        }
+        return;
+    }
+
+    // VARIANT A (NC_INTERLEAVE): run a FULL U0 on the target carrier between
+    // EVERY piece of the flip. U0 is class-preserving (D(U0(s)) = D(s)), so
+    // interleaving it between XOR-into-c0 pieces leaves the accumulated value
+    // exactly f while re-randomizing c0 (50% flip per coord) after every
+    // monomial. This kills the across-time c0-before/c0-after correlation that
+    // the single-cut split leaves exposed: c0 is never left holding the
+    // plaintext accumulation of more than one piece. Pieces read only source
+    // carriers / borrow wires (never the target's c1..c4), and U0 touches only
+    // the target's own 5 carrier wires, so the interleave is sound.
+    if std::env::var("NC_INTERLEAVE").is_ok() {
+        // Net transform must equal s' = U0(s ^ f*e0). We realize it as:
+        //   U0  o  (c0 ^= f_p) o U0  o ... o (c0 ^= f_1) o U0  applied to s,
+        // but U0 in the middle would over-rotate. Instead use the canonical
+        // form: start from s, and for each piece do  c0 ^= f_i  then U0.
+        // After the last piece we have applied U0 once per piece. To land on
+        // the SAME float index as the baseline (one net U0), we must un-rotate
+        // the extra (pieces-1) U0 applications. Simplest correct form:
+        //   apply U0^{-1} once (undo incoming float), then for each piece:
+        //   emit the piece's c0-XOR, then a full U0. But that rotates once per
+        //   piece. To keep the float index advancing by exactly ONE (matching
+        //   the rest of the pipeline's float-index bookkeeping), we instead:
+        //   emit piece_i, then U0, for i in 1..m, and finally U0^{-(m-1)} so
+        //   the net rotation is a single U0. U0^{-(m-1)} = U0^{ord-(m-1) mod
+        //   ord}; but we don't track ord here -- instead we apply U0^{-1}
+        //   (m-1) times via emit_nc_u0_inv. Net: value gets f, float advances 1.
+        let m = pieces.len();
+        for piece in &pieces {
+            out.extend(piece.iter().cloned());
+            emit_nc_u0(&ct, 0, NC_U0.len(), out);
+        }
+        // Undo the extra (m) rotations, then apply exactly one net U0.
+        for _ in 0..m {
+            emit_nc_u0_inv(&ct, out);
+        }
+        emit_nc_u0(&ct, 0, NC_U0.len(), out);
+        return;
+    }
+
+    // NC_DEBUG_CUT pins the interleave cut (0 = full U0 prefix, then all
+    // pieces, then nothing; 5 = five-gate prefix). Diagnostic only.
+    let cut: usize = std::env::var("NC_DEBUG_CUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| rng.random_range(0..=5));
+    emit_nc_u0_inv(&ct, out);
+    emit_nc_u0(&ct, 0, cut, out);
+    for piece in &pieces {
+        out.extend(piece.iter().cloned());
+    }
+    emit_nc_u0(&ct, cut, NC_U0.len(), out);
+}
+
+// ---------------------------------------------------------------------------
+// Single-gate probe: expose the exact emission of ONE NC gate so a harness can
+// feed band/borrow wires true randomness and enumerate exact correlations.
+// ---------------------------------------------------------------------------
+
+/// The number of band wires / wire layout for a `vals`-value probe circuit.
+pub fn nc_probe_layout(vals: usize, band_n: usize) -> (usize, usize, usize, usize, usize) {
+    let band_start = 5 * vals;
+    let nw = band_start + band_n + 4;
+    (nw, band_start, band_start + band_n, band_start + band_n + 1, band_start + band_n + 2)
+}
+
+/// Emit exactly one NC gate (t ^= AND(srcs, pols) ^ comp) into `out`, with a
+/// fresh random mask plan. Returns the carriers layout, band wires, the helper
+/// wires (u,z,h,h2), and the kappa/term masks actually used (for reference).
+pub fn nc_probe_emit_one(
+    vals: usize,
+    band_n: usize,
+    t: usize,
+    srcs: &[usize],
+    pols: &[bool],
+    comp: bool,
+    rng: &mut impl Rng,
+) -> (Vec<XGate>, Vec<[u16; 5]>, Vec<u16>) {
+    let (_nw, band_start, _bu, _bz, _bh) = nc_probe_layout(vals, band_n);
+    let band: Vec<u16> = (band_start..band_start + band_n).map(|x| x as u16).collect();
+    let carriers: Vec<[u16; 5]> = (0..vals)
+        .map(|v| [v as u16, (vals + 4 * v) as u16, (vals + 4 * v + 1) as u16, (vals + 4 * v + 2) as u16, (vals + 4 * v + 3) as u16])
+        .collect();
+    let (uu, zz, hh, hh2) = ((band_start + band_n) as u16, (band_start + band_n + 1) as u16, (band_start + band_n + 2) as u16, (band_start + band_n + 3) as u16);
+    let mut masks = NcMasks::new(vals, &band, rng);
+    let mut out = Vec::new();
+    emit_nc_gate(t, srcs, pols, comp, &carriers, &mut masks, uu, zz, hh, hh2, rng, &mut out);
+    (out, carriers, band)
+}
+
+/// The realized permutation of U0 as a 32-entry table (state i -> U0(i)),
+/// computed once by simulating the 35-gate decomposition over GF(2).
+fn nc_u0_perm() -> [usize; 32] {
+    let mut perm = [0usize; 32];
+    for s in 0..32usize {
+        let mut st = [(s & 1) != 0, (s >> 1) & 1 != 0, (s >> 2) & 1 != 0, (s >> 3) & 1 != 0, (s >> 4) & 1 != 0];
+        for &(t, lits, len) in &NC_U0 {
+            let mut acc = true;
+            for &(w, pol) in &lits[..len as usize] {
+                let v = st[w as usize];
+                acc &= if pol { v } else { !v };
+            }
+            st[t as usize] ^= acc;
+        }
+        perm[s] = (st[0] as usize) | ((st[1] as usize) << 1) | ((st[2] as usize) << 2) | ((st[3] as usize) << 3) | ((st[4] as usize) << 4);
+    }
+    perm
+}
+
+/// The float word for a value: U0^j applied to the seed tuple (value,0,0,0,0),
+/// returned as a 5-bit state (bit i = carrier coord i). Class-correct by
+/// construction, so the decode of the word equals `value & 1`.
+pub fn nc_probe_float_word(value: bool, j: usize) -> u8 {
+    let perm = nc_u0_perm();
+    let mut s: usize = if value { 1 } else { 0 };
+    for _ in 0..j {
+        s = perm[s];
+    }
+    s as u8
+}
+
+/// Gadgetize the 2`n`-wire sandwich with the nonlinear-carrier encoding.
+///
+/// Layout (values = the `vals = 2n` sandwich wires):
+///   - c0 of value v is physical wire v (so the low-`vals` input/output
+///     contract of the sandwich holds unchanged),
+///   - c1..c4 of value v at `vals + 4v .. vals + 4v + 3`,
+///   - band: `band_n` wires starting at `5 * vals`,
+///   - helpers u, z, h (plus one spare) directly after the band.
+///
+/// v1 scope: no re-randomization networks, no band rolling, no preblock, no
+/// commuting shuffle across the gadget — the carrier churn of U0 plus the
+/// interleave is the mechanism under test.
+pub fn gadgetize_xgates_nc(
+    source: &[XGate],
+    vals: usize,
+    band_n: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(vals >= 8, "NC gadget needs a few values");
+    let carrier_end = 5 * vals;
+    let band_start = carrier_end;
+    let band: Vec<u16> = (0..band_n).map(|i| (band_start + i) as u16).collect();
+    let u = (band_start + band_n) as u16;
+    let z = u + 1;
+    let h = u + 2;
+    let h2 = u + 3;
+    // A diagnostic pool of extra borrow wires. When NC_DEBUG_POOL_BORROWS is
+    // set, each gate draws FRESH u/z/h/h2 from [band_start+band_n, num_wires)
+    // instead of reusing fixed globals -- mimicking the production emitter's
+    // "no shared accumulator" discipline.
+    let pool_extra: usize = if std::env::var("NC_DEBUG_POOL_BORROWS").is_ok() { 64 } else { 0 };
+    // NC_BLIND: allocate `vals` extra wires for the input butterfly (blind pool).
+    // The band-fill then reads the churned (high-degree) images of the inputs
+    // instead of the raw inputs, so no band-fill gate output is a low-degree
+    // input monomial (the sec 3.9 band-fill leak).
+    let blind_layers: usize = std::env::var("NC_BLIND")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let blind_n = if blind_layers > 0 { vals } else { 0 };
+    let num_wires = band_start + band_n + 4 + pool_extra + blind_n;
+    let blind_start = band_start + band_n + 4 + pool_extra;
+
+    // Carriers: c0_v = v, c1..c4 of value v at vals + 4v + (0..3).
+    let mut carriers: Vec<[u16; 5]> = Vec::with_capacity(vals);
+    for v in 0..vals {
+        carriers.push([
+            v as u16,
+            (vals + 4 * v) as u16,
+            (vals + 4 * v + 1) as u16,
+            (vals + 4 * v + 2) as u16,
+            (vals + 4 * v + 3) as u16,
+        ]);
+    }
+
+    let mut gates: Vec<XGate> = Vec::new();
+
+    // Band fill from the data wires (the input x sits on 0..vals), then mask
+    // injection for every value: atoms go into c0, which enters D linearly,
+    // so the decode V = D ^ M ^ kappa is unchanged by construction.
+    // NC_DEBUG_NO_MASKS: skip band fill + injection (unmasked carriers; the
+    // gadget is then functionally wrong but isolates the carrier/float core).
+    let no_masks = std::env::var("NC_DEBUG_NO_MASKS").is_ok();
+    let no_loop = std::env::var("NC_DEBUG_NO_LOOP").is_ok();
+    let stage_dbg = std::env::var("NC_DEBUG_STAGES").is_ok();
+    // NC_BLIND input butterfly: copy each input wire to a blind-pool wire, then
+    // churn the blind pool through `blind_layers` layers of U0 applied to
+    // overlapping shifted 5-subsets. Since U0 is a bijection, the blind pool is
+    // a bijective (hence jointly-uniform) image of the inputs, but each blind
+    // wire is a HIGH-degree function of the raw inputs. Band-fill reads the
+    // blind pool, so band wires become high-degree in the raw inputs.
+    let blind_pool: Vec<u16> = (0..blind_n).map(|i| (blind_start + i) as u16).collect();
+    if !no_masks && blind_layers > 0 && blind_n >= 5 {
+        // copy raw inputs into the blind pool
+        for v in 0..vals {
+            gates.push(XGate::cnot(blind_pool[v], v as u16));
+        }
+        if stage_dbg {
+            eprintln!("[stages] blind copy ends at gate {}", gates.len());
+        }
+        // churn: layers of U0 over shifted overlapping 5-windows
+        for layer in 0..blind_layers {
+            let off = (layer * 2) % blind_n;
+            let mut i = 0usize;
+            while i + 5 <= blind_n {
+                let idx: Vec<usize> = (0..5).map(|k| (off + i + k) % blind_n).collect();
+                let c: [u16; 5] = [
+                    blind_pool[idx[0]], blind_pool[idx[1]], blind_pool[idx[2]],
+                    blind_pool[idx[3]], blind_pool[idx[4]],
+                ];
+                emit_nc_u0(&c, 0, NC_U0.len(), &mut gates);
+                i += 5;
+            }
+            if stage_dbg {
+                eprintln!("[stages] blind layer {} ends at gate {}", layer, gates.len());
+            }
+        }
+    }
+    if !no_masks {
+        if blind_layers > 0 && blind_n >= 5 {
+            emit_band_fill_nl_blind(vals, &band, 2, &blind_pool, rng, &mut gates);
+        } else {
+            emit_band_fill_nl(vals, &band, 2, rng, &mut gates);
+        }
+    }
+    // NC_BAND_CHURN: root-cause fix for the band-fill leak (sec 3.9). The fill
+    // leaves low-degree (deg<=2) input monomials statically readable as gate
+    // outputs, and a Gaussian attacker recombines them into any first-level
+    // source AND. A single churn pass does NOT remove those leaked gate outputs
+    // (they stay in the trace) -- but the point here is different: we want the
+    // band VALUES that the masks read (and that sit on the band during the main
+    // loop) to be HIGH-degree in the inputs, so no clean input monomial reaches
+    // the decode through the band. Apply NC_BAND_CHURN layers of the nonlinear
+    // U0 permutation across SHIFTED overlapping 5-subsets so the mixing
+    // propagates across the whole band (layer L groups band wires starting at
+    // offset (L*2) % 5, so successive layers overlap different wires). The masks
+    // are drawn AFTER the churn so they read the churned high-degree band values,
+    // preserving the decode V = D ^ M ^ kappa.
+    let band_churn: usize = std::env::var("NC_BAND_CHURN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if !no_masks && band_churn > 0 && band.len() >= 5 {
+        let bl = band.len();
+        for layer in 0..band_churn {
+            // Rotate the grouping offset per layer so different wire subsets mix.
+            let off = (layer * 2) % bl;
+            // Apply U0 to consecutive 5-windows starting at `off`, wrapping.
+            let mut i = 0usize;
+            while i + 5 <= bl {
+                let idx: Vec<usize> = (0..5).map(|k| (off + i + k) % bl).collect();
+                let c: [u16; 5] = [band[idx[0]], band[idx[1]], band[idx[2]], band[idx[3]], band[idx[4]]];
+                emit_nc_u0(&c, 0, NC_U0.len(), &mut gates);
+                i += 5;
+            }
+        }
+    }
+    if stage_dbg {
+        eprintln!("[stages] band_fill+churn: gates [0, {})", gates.len());
+    }
+    let mut masks = if no_masks {
+        NcMasks { terms: vec![Vec::new(); vals], kappa: vec![false; vals] }
+    } else {
+        NcMasks::new(vals, &band, rng)
+    };
+    if !no_masks {
+        for v in 0..vals {
+            for term in &masks.terms[v] {
+                nc_emit_atom(carriers[v][0], term, h, &mut gates);
+            }
+        }
+    }
+    if stage_dbg {
+        eprintln!("[stages] mask_inject: ends at gate {}", gates.len());
+    }
+
+    // Main loop: one NC update per sandwich gate.
+    if !no_loop {
+        for (gi, g) in source.iter().enumerate() {
+            if stage_dbg {
+                eprintln!("[stages] main loop gate {} (source tgt {}) starts at {}", gi, g.target, gates.len());
+            }
+            let t = g.target as usize;
+            let srcs: Vec<usize> = g.ctrls.iter().map(|&(w, _)| w as usize).collect();
+            let pols: Vec<bool> = g.ctrls.iter().map(|&(_, p)| p).collect();
+            // NC_DEBUG_NO_FLIP: drop the srcs/comp so every gate is a pure
+            // float (U0 churn, no information). Isolates float vs flip.
+            // NC_DEBUG_K1: collapse every gate to a single control (keeps the
+            // k=1 decode path only). NC_DEBUG_K1CONST: keep control count but
+            // force comp=false,pols=true.
+            let (srcs, pols) = if std::env::var("NC_DEBUG_NO_FLIP").is_ok() {
+                (Vec::new(), Vec::new())
+            } else if std::env::var("NC_DEBUG_K1").is_ok() {
+                if srcs.is_empty() { (srcs, pols) } else { (vec![srcs[0]], vec![pols[0]]) }
+            } else {
+                (srcs, pols)
+            };
+            // RANDOMIZED BORROWS (prod's pick_accumulators discipline): u and
+            // z are drawn as DISTINCT RANDOM BAND WIRES each gate, not fixed
+            // dedicated wires. A band wire holds a random (input-dependent,
+            // masked) value r, so the gather lands u = r ^ R_b: the borrow is
+            // masked by r and is NOT affine-related to the plaintext decode
+            // S_b through any single readable wire (the attacker would need
+            // to also read and cancel r, which lives on a random band wire).
+            // The Gray cycle restores u,z to r afterwards, preserving the
+            // read-only band/mask invariant (verified by borrow-restore
+            // tests). h,h2 stay dedicated (they only ever hold width>=3
+            // partial products, already nonlinear, never a bare decode).
+            let use_rand = pool_extra > 0 || std::env::var("NC_RAND_BORROW").is_ok();
+            let (uu, zz) = if use_rand {
+                // Forbid band wires that this gate READS as mask atoms (of the
+                // target and both sources) -- borrowing one would put a control
+                // literal on its own target and corrupt the mask mid-gate.
+                let mut forbidden: std::collections::HashSet<u16> = std::collections::HashSet::new();
+                let mut involved = vec![t];
+                involved.extend_from_slice(&srcs);
+                for &v in &involved {
+                    for term in &masks.terms[v] {
+                        for &(w, _) in term {
+                            forbidden.insert(w);
+                        }
+                    }
+                }
+                let mut picked: Vec<u16> = Vec::with_capacity(2);
+                let mut guard = 0;
+                while picked.len() < 2 && guard < 1000 {
+                    guard += 1;
+                    let w = band[rng.random_range(0..band_n)];
+                    if !forbidden.contains(&w) && !picked.contains(&w) {
+                        picked.push(w);
+                    }
+                }
+                if picked.len() == 2 {
+                    (picked[0], picked[1])
+                } else {
+                    (u, z)
+                }
+            } else {
+                (u, z)
+            };
+            let (hh, hh2) = (h, h2);
+            emit_nc_gate(t, &srcs, &pols, g.comp, &carriers, &mut masks, uu, zz, hh, hh2, rng, &mut gates);
+            // NC_DEBUG_REMASK: after each gate, XOR a FRESH random band-wire
+            // product into the target's c0 AND record it in the mask ledger, so
+            // the mask is no longer static across time. Tests whether the
+            // across-time c0_v(0) XOR c0_v(late) channel survives because the
+            // mask M_v is a compile-time constant (cancellable by the XOR).
+            if std::env::var("NC_DEBUG_REMASK").is_ok() {
+                let a = band[rng.random_range(0..band_n)];
+                let b2 = band[rng.random_range(0..band_n)];
+                let c0t = carriers[t][0];
+                if a != b2 && a != c0t && b2 != c0t {
+                    gates.push(XGate::conj(c0t, vec![(a, true), (b2, true)]).unwrap());
+                    masks.terms[t].push(vec![(a, true), (b2, true)]);
+                }
+            }
+            // NC_DEBUG_CHURN_ALL: float EVERY value's carrier once per gate,
+            // not just the target. Diagnostic: tests whether the across-time
+            // c0_v XOR input_v carrier channel survives because non-target
+            // values never float (staying glued to their initial = input
+            // value). Costs vals U0 blocks per gate (correctness preserved:
+            // U0 is class-preserving so floating extra values changes no
+            // decodes).
+            if std::env::var("NC_DEBUG_CHURN_ALL").is_ok() {
+                for v in 0..vals {
+                    if v != t {
+                        emit_nc_u0(&carriers[v], 0, NC_U0.len(), &mut gates);
+                    }
+                }
+            }
+        }
+    }
+
+    // Exit (floating regime): each value's carriers hold the float word
+    // U0^{j_v}(s_v), with V_v = D ^ M_v ^ kappa_v the sandwich output bit.
+    // Un-float, strip the mask into c0, absorb kappa, then route the
+    // quadratic part of D off c0 so the low-`vals` wires physically hold the
+    // output bits. The upper wires are free (zero-slice contract).
+    // NC_DEBUG_NO_EXIT: skip the exit block entirely (leaves the state
+    // floated + masked). Functionally wrong on the low wires, but isolates
+    // whether the trace leak lives in the main loop or the exit.
+    if std::env::var("NC_DEBUG_NO_EXIT").is_err() {
+        for v in 0..vals {
+            emit_nc_u0_inv(&carriers[v], &mut gates);
+            let c0 = carriers[v][0];
+            let terms = std::mem::take(&mut masks.terms[v]);
+            for term in &terms {
+                nc_emit_atom(c0, term, h, &mut gates);
+            }
+            if masks.kappa[v] {
+                gates.push(XGate::x_gate(c0));
+                masks.kappa[v] = false;
+            }
+            let c = &carriers[v];
+            for &(a, b) in &[(1usize, 2usize), (1, 3), (2, 3), (1, 4)] {
+                gates.push(
+                    XGate::conj(c0, vec![(c[a], true), (c[b], true)]).expect("route atoms distinct"),
+                );
+            }
+        }
+    }
+
+    CnotCircuit { gates, num_wires }
+}
+
+#[cfg(test)]
+mod nc_tests {
+    use super::*;
+
+    /// Apply the 35-gate U0 table to a 5-bit word (bit i = local wire i).
+    pub(super) fn apply_u0(s: u8) -> u8 {
+        let mut w = [false; 5];
+        for i in 0..5 {
+            w[i] = (s >> i) & 1 == 1;
+        }
+        for &(t, lits, len) in &NC_U0 {
+            let mut fire = true;
+            for &(cw, pol) in &lits[..len as usize] {
+                fire &= w[cw as usize] == pol;
+            }
+            w[t as usize] ^= fire;
+        }
+        let mut s2 = 0u8;
+        for i in 0..5 {
+            if w[i] {
+                s2 |= 1 << i;
+            }
+        }
+        s2
+    }
+
+    #[test]
+    fn u0_satisfies_doc_constraints() {
+        // Permutation, class-preserving, fixed-point-free.
+        let mut seen = [false; 32];
+        for s in 0..32u8 {
+            let s2 = apply_u0(s);
+            assert!(!seen[s2 as usize], "U0 not injective");
+            seen[s2 as usize] = true;
+            assert_ne!(s2, s, "U0 has a fixed point");
+            let d = |x: u8| nc_decode_d([x & 1 == 1, x >> 1 & 1 == 1, x >> 2 & 1 == 1, x >> 3 & 1 == 1, x >> 4 & 1 == 1]);
+            assert_eq!(d(s2), d(s), "U0 not class-preserving");
+        }
+        // W0(e_i, e_0) = sum over ALL states of (-1)^(s_i ^ U0(s)_0): the
+        // across-time correlation between pre-U0 carrier coordinate i and the
+        // post-U0 c0 (the wire f lands on) must vanish (doc constraint (c)).
+        for i in 0..5u8 {
+            let mut sum = 0i32;
+            for s in 0..32u8 {
+                let s2 = apply_u0(s);
+                let bit = ((s >> i) & 1) ^ (s2 & 1);
+                sum += if bit == 1 { -1 } else { 1 };
+            }
+            assert_eq!(sum, 0, "W0(e_{i}, e_0) != 0");
+        }
+        // The flip bit h(s) = s_0 ^ U0(s)_0 must have algebraic degree exactly
+        // k-2 = 3 (Siegenthaler-tight, doc SS3 design rule).
+        let mut anf = [0u8; 32];
+        for s in 0..32u8 {
+            anf[s as usize] = (s ^ apply_u0(s)) & 1;
+        }
+        for i in 0..5usize {
+            for m in 0..32usize {
+                if m & (1 << i) != 0 {
+                    anf[m] ^= anf[m ^ (1 << i)];
+                }
+            }
+        }
+        let deg = (0..32usize)
+            .filter(|&m| anf[m] == 1)
+            .map(|m| m.count_ones() as usize)
+            .max()
+            .unwrap();
+        assert_eq!(deg, 3, "deg(h) must be exactly 3");
+        // U1 = U0 ^ e0 is class-inverting and hence a permutation.
+        let mut seen1 = [false; 32];
+        for s in 0..32u8 {
+            let s2 = apply_u0(s) ^ 1;
+            assert!(!seen1[s2 as usize]);
+            seen1[s2 as usize] = true;
+            let d = |x: u8| nc_decode_d([x & 1 == 1, x >> 1 & 1 == 1, x >> 2 & 1 == 1, x >> 3 & 1 == 1, x >> 4 & 1 == 1]);
+            assert_ne!(d(s2), d(s), "U1 not class-inverting");
+        }
+    }
+}
+
+#[cfg(test)]
+mod nc_debug_tests {
+    use super::nc_tests::apply_u0;
+    use super::*;
+    use rand::{rngs::StdRng, SeedableRng};
+
+    fn eval(gates: &[XGate], nw: usize, input: &[bool]) -> Vec<bool> {
+        let mut st = input.to_vec();
+        st.resize(nw, false);
+        for g in gates {
+            let mut acc = true;
+            for &(w, pol) in &g.ctrls {
+                acc &= st[w as usize] == pol;
+            }
+            st[g.target as usize] ^= acc ^ g.comp;
+        }
+        st
+    }
+
+    #[test]
+    fn nc_debug_bare_u0() {
+        // k=0 (pure toggle) with NO band fill and NO masks, in the floating
+        // regime: the input word is the FLOATED tuple w0 = U0(s), and the net
+        // map must be U0(s) -> U0(s ^ comp*e0) (the flip itself is absorbed
+        // into kappa, so for comp=false the map is the identity on w0, and
+        // for comp=true it is the decode-flip within the float class).
+        let mut rng = StdRng::seed_from_u64(11);
+        let vals = 1usize;
+        let carriers: Vec<[u16; 5]> = vec![[0, 4, 5, 6, 7]];
+        let (u, z, h, h2) = (8u16, 9u16, 10u16, 11u16);
+        for comp in [false, true] {
+            let mut masks = NcMasks { terms: vec![Vec::new()], kappa: vec![false] };
+            let mut gates = Vec::new();
+            emit_nc_gate(0, &[], &[], comp, &carriers, &mut masks, u, z, h, h2, &mut rng, &mut gates);
+            assert!(masks.kappa[0] == comp, "kappa must absorb comp");
+            for s in 0..32u8 {
+                // floated input word w0 = U0(s) on wires 0,4,5,6,7.
+                let w0 = apply_u0(s);
+                let mut input = vec![false; 11];
+                for i in 0..5usize {
+                    let w = [0usize, 4, 5, 6, 7][i];
+                    input[w] = (w0 >> i) & 1 == 1;
+                }
+                let st = eval(&gates, 11, &input);
+                let mut got = 0u8;
+                for (i, &w) in [0usize, 4, 5, 6, 7].iter().enumerate() {
+                    got |= (st[w] as u8) << i;
+                }
+                // k=0 has no flip pieces (the constant went to kappa), so the
+                // physical word is unchanged: U0^{-1} then U0 with an empty
+                // splice = identity on the floated word w0 = U0(s).
+                let want = apply_u0(s);
+                assert_eq!(got, want, "comp={comp} s={s:#07b}");
+            }
+        }
+    }
+
+    #[test]
+    fn nc_debug_bare_copy() {
+        // k=1 copy, NO band fill, NO masks, floating regime: value 0's word
+        // is the floated w0 = U0(s0); value 1's carriers hold s1 (unfloated --
+        // reads are decode-based, so the float phase of the SOURCE does not
+        // matter). The post-tuple of value 0 must be U0(s0 ^ f*e0) exactly
+        // (cuts 0..=5 give exact U_f), with f = D(s1).
+        let mut rng = StdRng::seed_from_u64(13);
+        let vals = 2usize;
+        let carriers: Vec<[u16; 5]> = vec![[0, 8, 9, 10, 11], [1, 12, 13, 14, 15]];
+        let (u, z, h, h2) = (16u16, 17u16, 18u16, 19u16);
+        let mut masks = NcMasks { terms: vec![Vec::new(); 2], kappa: vec![false; 2] };
+        let mut gates = Vec::new();
+        emit_nc_gate(0, &[1], &[true], false, &carriers, &mut masks, u, z, h, h2, &mut rng, &mut gates);
+        assert!(!masks.kappa[0]);
+        for s0 in 0..32u8 {
+            for s1 in [0u8, 1, 5, 17, 31] {
+                let w0 = apply_u0(s0);
+                let mut input = vec![false; 20];
+                for (i, &w) in [0usize, 8, 9, 10, 11].iter().enumerate() {
+                    input[w] = (w0 >> i) & 1 == 1;
+                }
+                for (i, &w) in [1usize, 12, 13, 14, 15].iter().enumerate() {
+                    input[w] = (s1 >> i) & 1 == 1;
+                }
+                let st = eval(&gates, 20, &input);
+                let d1 = nc_decode_d([s1 & 1 == 1, s1 >> 1 & 1 == 1, s1 >> 2 & 1 == 1, s1 >> 3 & 1 == 1, s1 >> 4 & 1 == 1]);
+                let got: [bool; 5] = [st[0], st[8], st[9], st[10], st[11]];
+                let got_s = (got[0] as u8) | (got[1] as u8) << 1 | (got[2] as u8) << 2 | (got[3] as u8) << 3 | (got[4] as u8) << 4;
+                let want = apply_u0(s0 ^ (d1 as u8));
+                assert_eq!(got_s, want, "tuple wrong s0={s0:#07b} s1={s1:#07b}");
+            }
+        }
+    }
+
+    #[test]
+    fn nc_debug_helper_atom() {
+        // Exhaustively check the 3-literal helper path of nc_emit_atom.
+        let h = 4u16;
+        let lits = [(0u16, false), (2u16, true), (3u16, true)];
+        for h0 in [false, true] {
+            for x in 0..16u8 {
+                let mut gates = Vec::new();
+                nc_emit_atom(1, &lits, h, &mut gates);
+                let mut input: Vec<bool> = (0..5).map(|w| (x >> w) & 1 == 1).collect();
+                input[4] = h0;
+                let st = eval(&gates, 5, &input);
+                let fire = ((x & 1) == 0) & (((x >> 2) & 1) == 1) & (((x >> 3) & 1) == 1);
+                assert_eq!(st[1], ((x >> 1) & 1 == 1) ^ fire, "x={x:#06b} h0={h0}");
+                assert_eq!(st[4], h0, "helper not restored x={x:#06b} h0={h0}");
+            }
+        }
+    }
+
+    #[test]
+    fn nc_debug_borrow_restore() {
+        // Doc SS2.3 invariant: the borrows u,z,h must return to their
+        // incoming values after every gate (never cleared, never drifting).
+        // If a shared borrow drifts / accumulates, it becomes a long-lived
+        // wire correlated with the data -- the across-time leak channel.
+        let mut rng = StdRng::seed_from_u64(21);
+        let vals = 3usize;
+        let carriers: Vec<[u16; 5]> = (0..vals)
+            .map(|v| [v as u16, (8 + 4 * v) as u16, (9 + 4 * v) as u16, (10 + 4 * v) as u16, (11 + 4 * v) as u16])
+            .collect();
+        let (u, z, h, h2) = (20u16, 21u16, 22u16, 23u16);
+        let mut masks = NcMasks { terms: vec![Vec::new(); vals], kappa: vec![false; vals] };
+        // Random initial state including junk on u,z,h.
+        let mut input: Vec<bool> = (0..23).map(|_| rng.random_bool(0.5)).collect();
+        let u0 = [input[20], input[21], input[22]];
+        let mut gates = Vec::new();
+        // A k=2 gate (uses the full Gray cycle with u,z,h).
+        emit_nc_gate(0, &[1, 2], &[true, true], false, &carriers, &mut masks, u, z, h, h2, &mut rng, &mut gates);
+        let st = eval(&gates, 23, &input);
+        assert_eq!([st[20], st[21], st[22]], u0, "borrows not restored after k=2 gate");
+    }
+
+    #[test]
+    fn nc_debug_borrow_drift_longrun() {
+        // Apply a chain of k=2 gates sharing the global borrows and check
+        // u,z,h return to their initial junk after EVERY gate (no drift), and
+        // record whether the final u/z/h correlate with the data decodes.
+        let mut rng = StdRng::seed_from_u64(23);
+        let vals = 6usize;
+        let carriers: Vec<[u16; 5]> = (0..vals)
+            .map(|v| [v as u16, (8 + 4 * v) as u16, (9 + 4 * v) as u16, (10 + 4 * v) as u16, (11 + 4 * v) as u16])
+            .collect();
+        let (u, z, h, h2) = (32u16, 33u16, 34u16, 35u16);
+        let mut masks = NcMasks { terms: vec![Vec::new(); vals], kappa: vec![false; vals] };
+        let mut gates: Vec<XGate> = Vec::new();
+        // Block boundaries (gate counts) after each emit_nc_gate.
+        let mut marks = vec![0usize];
+        for _ in 0..8 {
+            let t = rng.random_range(0..vals);
+            let mut others: Vec<usize> = (0..vals).filter(|&v| v != t).collect();
+            use rand::seq::SliceRandom;
+            others.shuffle(&mut rng);
+            let (b, c) = (others[0], others[1]);
+            emit_nc_gate(t, &[b, c], &[true, true], false, &carriers, &mut masks, u, z, h, h2, &mut rng, &mut gates);
+            marks.push(gates.len());
+        }
+        // Simulate over random inputs, snapshotting u,z,h at each mark.
+        for trial in 0..40 {
+            let input: Vec<bool> = (0..35).map(|_| rng.random_bool(0.5)).collect();
+            let init = [input[32], input[33], input[34]];
+            let mut st = input.clone();
+            let mut gi = 0usize;
+            for (m, &end) in marks.iter().enumerate().skip(1) {
+                while gi < end {
+                    let g = &gates[gi];
+                    let mut acc = true;
+                    for &(w, pol) in &g.ctrls {
+                        acc &= st[w as usize] == pol;
+                    }
+                    st[g.target as usize] ^= acc ^ g.comp;
+                    gi += 1;
+                }
+                let now = [st[32], st[33], st[34]];
+                assert_eq!(now, init, "borrow drift after gate {m}, trial {trial}");
+            }
+        }
+        eprintln!("borrow_drift_longrun: {} gates, all borrows restored every gate", gates.len());
+    }
+
+    #[test]
+    fn nc_debug_masked_nogate() {
+        // Band fill + mask injection only: decode of every value must equal
+        // the input bit, carrier c0 must look masked, band wires nonzero.
+        let mut rng = StdRng::seed_from_u64(7);
+        let vals = 4usize;
+        let band: Vec<u16> = (20..44).collect();
+        let h = 46u16;
+        let mut carriers: Vec<[u16; 5]> = Vec::new();
+        for v in 0..vals {
+            carriers.push([
+                v as u16,
+                (vals + 4 * v) as u16,
+                (vals + 4 * v + 1) as u16,
+                (vals + 4 * v + 2) as u16,
+                (vals + 4 * v + 3) as u16,
+            ]);
+        }
+        let mut gates = Vec::new();
+        emit_band_fill_nl(vals, &band, 2, &mut rng, &mut gates);
+        let mut masks = NcMasks::new(vals, &band, &mut rng);
+        for v in 0..vals {
+            for term in &masks.terms[v] {
+                nc_emit_atom(carriers[v][0], term, h, &mut gates);
+            }
+        }
+        let decode = |st: &[bool], v: usize, masks: &NcMasks| -> bool {
+            let c = &carriers[v];
+            let mut d = nc_decode_d([st[c[0] as usize], st[c[1] as usize], st[c[2] as usize], st[c[3] as usize], st[c[4] as usize]]);
+            for term in &masks.terms[v] {
+                let mut m = true;
+                for &(w, pol) in term {
+                    m &= st[w as usize] == pol;
+                }
+                d ^= m;
+            }
+            d ^ masks.kappa[v]
+        };
+        for x in 0..16u8 {
+            let input: Vec<bool> = (0..47).map(|w| w < 4 && (x >> w) & 1 == 1).collect();
+            let st = eval(&gates, 47, &input);
+            for v in 0..vals {
+                let want = (x >> v) & 1 == 1;
+                assert_eq!(decode(&st, v, &masks), want, "v={v} x={x:#06b}");
+            }
+        }
+    }
+
+    #[test]
+    fn nc_debug_single_gate() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let vals = 4usize;
+        // Band of 24 wires: the disjoint draw of the [2,2,2,3] plan needs >= 9.
+        let band: Vec<u16> = (20..44).collect();
+        let (u, z, h, h2) = (44u16, 45u16, 46u16, 47u16);
+        let mut carriers: Vec<[u16; 5]> = Vec::new();
+        for v in 0..vals {
+            carriers.push([
+                v as u16,
+                (vals + 4 * v) as u16,
+                (vals + 4 * v + 1) as u16,
+                (vals + 4 * v + 2) as u16,
+                (vals + 4 * v + 3) as u16,
+            ]);
+        }
+        for (srcs, pols, comp, name) in [
+            (vec![1usize], vec![true], false, "copy"),
+            (vec![1usize], vec![false], true, "g57-1"),
+            (vec![1usize, 2], vec![true, true], false, "and"),
+            (vec![1usize, 2], vec![false, true], true, "g57-2"),
+        ] {
+            let mut gates = Vec::new();
+            emit_band_fill_nl(vals, &band, 2, &mut rng, &mut gates);
+            let mut masks = NcMasks::new(vals, &band, &mut rng);
+            for v in 0..vals {
+                for term in &masks.terms[v] {
+                    nc_emit_atom(carriers[v][0], term, h, &mut gates);
+                }
+            }
+            emit_nc_gate(0, &srcs, &pols, comp, &carriers, &mut masks, u, z, h, h2, &mut rng, &mut gates);
+            let kappa0 = masks.kappa[0];
+            // Decode-level assertion: V_0' = D(carriers_0) ^ M_0 ^ kappa_0
+            // must equal x_0 ^ f. (Physical wire 0 is a permuted carrier, NOT
+            // the raw value -- that distinction is the point of the gadget.)
+            let decode0 = |st: &[bool], masks: &NcMasks| -> bool {
+                let c = &carriers[0];
+                let mut d = nc_decode_d([
+                    st[c[0] as usize], st[c[1] as usize], st[c[2] as usize],
+                    st[c[3] as usize], st[c[4] as usize],
+                ]);
+                for term in &masks.terms[0] {
+                    let mut m = true;
+                    for &(w, pol) in term {
+                        m &= st[w as usize] == pol;
+                    }
+                    d ^= m;
+                }
+                d ^ masks.kappa[0]
+            };
+            for x in 0..16u8 {
+                let input: Vec<bool> = (0..47).map(|w| w < 4 && (x >> w) & 1 == 1).collect();
+                let st = eval(&gates, 48, &input);
+                let sb = (x >> 1) & 1 == 1;
+                let sc = (x >> 2) & 1 == 1;
+                let f = comp
+                    ^ match srcs.len() {
+                        1 => sb == pols[0],
+                        _ => (sb == pols[0]) & (sc == pols[1]),
+                    };
+                let expect = (x & 1 == 1) ^ f;
+                assert_eq!(decode0(&st, &masks), expect, "{name} x={x:#05b} kappa0={kappa0}");
+            }
+            println!("{name}: OK ({} gates, kappa0={})", gates.len(), kappa0);
+        }
+    }
 }
 
 #[cfg(test)]
