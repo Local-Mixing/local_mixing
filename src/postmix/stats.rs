@@ -54,7 +54,10 @@ pub fn leeway_at(gates: &[XGate], i: usize, cap: usize) -> usize {
 // no spread information and are skipped; synthetic gates are skipped.
 pub fn origin_diffusion(origins: &[u32]) -> f64 {
     let n = origins.len() as f64;
-    let mut acc: std::collections::HashMap<u32, (u64, f64, f64)> = std::collections::HashMap::new();
+    // FxHashMap: cheaper hashing per gate, and its deterministic iteration
+    // order makes the float-summed metric reproducible across runs (std
+    // RandomState order made the low digits run-dependent).
+    let mut acc: rustc_hash::FxHashMap<u32, (u64, f64, f64)> = rustc_hash::FxHashMap::default();
     for (i, &o) in origins.iter().enumerate() {
         if o == ORIGIN_SYNTH {
             continue;
@@ -90,7 +93,7 @@ pub fn origin_spread_quantiles(
     ref_gates: f64,
 ) -> (f64, Vec<f64>, f64) {
     let n = origins.len() as f64;
-    let mut acc: std::collections::HashMap<u32, (u64, f64, f64)> = std::collections::HashMap::new();
+    let mut acc: rustc_hash::FxHashMap<u32, (u64, f64, f64)> = rustc_hash::FxHashMap::default();
     let mut real = 0u64;
     for (i, &o) in origins.iter().enumerate() {
         if o == ORIGIN_SYNTH {

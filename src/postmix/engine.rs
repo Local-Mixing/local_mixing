@@ -320,15 +320,19 @@ impl Engine {
     // Slide `id` in `dir` past every non-colliding neighbor; returns steps taken.
     // After this, the `dir`-neighbor (if any) collides with `id`.
     fn float_to_collision(&mut self, id: u32, dir: Dir) -> usize {
-        let g = self.arena.gate(id).clone();
-        let mut last = NIL;
-        let mut cur = self.arena.neighbor(id, dir);
-        let mut steps = 0usize;
-        while cur != NIL && !XGate::collides(&g, self.arena.gate(cur)) {
-            last = cur;
-            steps += 1;
-            cur = self.arena.neighbor(cur, dir);
-        }
+        // Scan with borrows only (no gate clone); mutate after the scan scope.
+        let (last, steps) = {
+            let g = self.arena.gate(id);
+            let mut last = NIL;
+            let mut cur = self.arena.neighbor(id, dir);
+            let mut steps = 0usize;
+            while cur != NIL && !XGate::collides(g, self.arena.gate(cur)) {
+                last = cur;
+                steps += 1;
+                cur = self.arena.neighbor(cur, dir);
+            }
+            (last, steps)
+        };
         if steps > 0 {
             self.arena.unlink(id);
             match dir {
@@ -349,21 +353,23 @@ impl Engine {
     // BOTH (a shared "wall"): float g toward h past its non-colliders, then h
     // toward g past its non-colliders, and they meet. Returns the target's id.
     fn find_g57_collision(&self, g_id: u32, dir: Dir, window: usize) -> Option<u32> {
-        let g = self.arena.gate(g_id).clone();
-        let mut between: Vec<XGate> = Vec::new();
+        // Track scanned node ids and read gates through the arena: no clones.
+        let g = self.arena.gate(g_id);
+        let mut between: Vec<u32> = Vec::new();
         let mut cur = self.arena.neighbor(g_id, dir);
         let mut steps = 0usize;
         while cur != NIL && steps < window {
-            let x = self.arena.gate(cur).clone();
-            if x.comp && XGate::collides(&g, &x) {
-                let wall = between
-                    .iter()
-                    .any(|b| XGate::collides(&g, b) && XGate::collides(b, &x));
+            let x = self.arena.gate(cur);
+            if x.comp && XGate::collides(g, x) {
+                let wall = between.iter().any(|&b| {
+                    let bg = self.arena.gate(b);
+                    XGate::collides(g, bg) && XGate::collides(bg, x)
+                });
                 if !wall {
                     return Some(cur);
                 }
             }
-            between.push(x);
+            between.push(cur);
             cur = self.arena.neighbor(cur, dir);
             steps += 1;
         }

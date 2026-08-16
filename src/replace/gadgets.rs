@@ -2940,7 +2940,7 @@ fn target_schedule(count: usize, n: usize, target_at: impl Fn(usize) -> usize) -
 
 /// Tuning for the product-share encoding. `off()` (k = 0) reproduces the
 /// plain gadget bit-identically.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProdConfig {
     /// Base product mask terms per value (0 disables base). Against a
     /// statistical degree-`<deg` adversary the terms pile up (k=1 -> error
@@ -3140,19 +3140,30 @@ pub struct ProdConfig {
     /// no single-carrier analogue — only relocation and mask re-sourcing
     /// survive, so the re-randomisation layer is thinner.
     pub single: usize,
-    /// Gray-code fold: gather each operand's mask sum onto a dirty accumulator
-    /// once and read it back four times, instead of expanding the cartesian
-    /// product into fragments of width up to `arity * max_deg` (0 = off).
+    /// Product-fold mode: 0 expands the cartesian product, 1 is the original
+    /// aggregate Gray fold, 2 is the four-share micro-Gray fold, and 3 is the
+    /// sentinel Gray fold that gathers only quadratic atoms.
     ///
-    /// Every emitted gate is then at most two controls WITHOUT laddering
-    /// anything: the fold stops producing the width-3..6 material the frozen
-    /// store cannot digest (0.41% hit rate at width 3, absent above), at ~3x the
-    /// block's fragment count rather than full narrow mode's ~6.2x, because the
-    /// mask products are derived once per block instead of once per fragment.
-    /// Blocks it cannot amortize (arity != 2, an operand with no mask terms)
-    /// fall back to the odometer with laddering forced on.
+    /// Mode 1 gathers each operand's complete mask sum onto a dirty
+    /// accumulator once and reads it back four times. Mode 2 instead partitions
+    /// every operand into four formal ANF shares and evaluates all sixteen
+    /// share rectangles. No accumulator transition in mode 2 contains more
+    /// than one share; the four share deltas still reconstruct the operand, so
+    /// this is a narrower trace claim, not protection against a structural
+    /// attacker that can identify and combine the whole block.
     ///
-    /// Exposure is audited exactly, per prefix: see [`ProdLedger::fold_cg_gray`].
+    /// In aggregate and micro mode the product reads are at most two controls;
+    /// a degree-three gather uses a restored dirty helper and a quartic micro
+    /// gather uses two. Sentinel mode instead ladders cross tails through
+    /// width four and deliberately leaves wider high--high products as fossils.
+    /// Blocks a mode cannot amortize fall back to the odometer.
+    ///
+    /// SECURITY LIMIT: the old audit considered each prefix independently.
+    /// A trace adversary can subtract the accumulator before and after the
+    /// gather and recover the complete operand mask sum exactly.  See
+    /// `prod_gray_fold_has_an_exact_space_time_operand_recovery`; deployments
+    /// that reject this witness should use
+    /// [`ProdConfig::production_single_no_gray_phase_a`].
     pub gray_fold: usize,
 }
 
@@ -3295,6 +3306,46 @@ impl ProdConfig {
         }
     }
 
+    /// Production product-mask settings for the opt-in five-carrier
+    /// representation.
+    ///
+    /// The mask plan and churn policy intentionally match
+    /// [`Self::production_single`].  `single` remains set internally because
+    /// the shared product ledger injects every mask through c0; representation
+    /// selection itself is carried by the public five-carrier entry point, not
+    /// by this legacy ledger bit.
+    pub fn production_five_carrier() -> ProdConfig {
+        Self::production_single()
+    }
+
+    /// Product-mask settings for the opt-in six-carrier representation.
+    /// Representation selection remains the caller's responsibility; the
+    /// shared ledger still injects masks through lane c0.
+    pub fn production_six_carrier() -> ProdConfig {
+        Self::production_single()
+    }
+
+    /// Product-mask settings for the opt-in seven-carrier representation.
+    /// Representation selection remains the caller's responsibility; the
+    /// shared ledger still injects masks through lane c0.
+    pub fn production_seven_carrier() -> ProdConfig {
+        Self::production_single()
+    }
+
+    /// Phase-A-friendly product sharing without the aggregate Gray gather.
+    ///
+    /// This expands source products atom-by-atom and narrows fragments through
+    /// width four while the ledger still knows their operand boundaries.  It
+    /// deliberately leaves the rarer width-five/six fragments intact: the
+    /// frozen-store census and live GSS samplers both found full laddering less
+    /// usable despite its slightly higher structural width eligibility.
+    pub fn production_single_no_gray_phase_a() -> ProdConfig {
+        let mut p = Self::production_single();
+        p.gray_fold = 0;
+        p.ladder_cap = 4;
+        p
+    }
+
     /// Distributed (band-free) sourcing: mask literals live on ordinary
     /// carriers, protected by the write barrier instead of by a freeze.
     pub fn dist(&self) -> bool {
@@ -3414,6 +3465,618 @@ impl ProdSlot {
     fn wires(&self) -> impl Iterator<Item = usize> + '_ {
         self.factors.iter().map(|&(b, _)| b as usize)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Five-carrier nonlinear representation.
+//
+// A logical bit carried by the five physical wires `c[0..5]` is
+//
+//   D(c) = c0 + c1*c2 + c1*c3 + c2*c3 + c1*c4.
+//
+// Product masks and the ledger constant are added outside D exactly as in the
+// existing product-share construction.  The update map below is the supplied
+// fixed-point-free, class-preserving permutation U0; U1 is U0 followed by a
+// flip of c0.  Since c0 occurs linearly in D, U1 flips the logical class.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+const FIVE_CARRIER_U0: [u8; 32] = [
+    19, 27, 8, 28, 0, 25, 12, 22, 24, 18, 1, 30, 5, 7, 3, 11, 29, 21, 23, 15, 26, 6, 4,
+    31, 16, 14, 13, 10, 9, 20, 2, 17,
+];
+
+/// Exact 40-gate realization of the supplied U0 truth table on local wires
+/// 0..4.
+/// Each tuple is `(target, controls)`, with controls encoded as `(wire,
+/// polarity)`.  The three width-4 gates are unavoidable in any no-helper
+/// realization: U0 is an odd permutation, while every gate with at most three
+/// controls induces an even permutation on five bits.
+const FIVE_CARRIER_U0_GATES: &[(u8, &[(u8, bool)])] = &[
+    (2, &[]),
+    (1, &[(2, true), (3, true), (4, false)]),
+    (2, &[(3, true)]),
+    (0, &[(3, true)]),
+    (3, &[(0, true)]),
+    (0, &[(2, true)]),
+    (4, &[(0, false), (1, true), (3, false)]),
+    (0, &[(4, true)]),
+    (2, &[(1, true), (3, false)]),
+    (4, &[(0, true), (1, true)]),
+    (1, &[(2, true)]),
+    (0, &[(1, true), (2, true)]),
+    (1, &[(0, true), (2, true), (4, false)]),
+    (1, &[(4, true)]),
+    (3, &[(4, true)]),
+    (2, &[(1, true), (4, true)]),
+    (4, &[(0, false), (1, true), (2, true)]),
+    (4, &[(3, true)]),
+    (0, &[(1, true), (3, true)]),
+    (3, &[(0, true), (1, true), (2, true), (4, false)]),
+    (0, &[(1, false), (2, false), (3, true)]),
+    (0, &[(2, true), (3, true), (4, false)]),
+    (2, &[(0, true), (3, true)]),
+    (4, &[(1, true), (3, true)]),
+    (3, &[(4, true)]),
+    (4, &[(0, true), (1, true), (3, true)]),
+    (1, &[(4, true)]),
+    (3, &[(4, true)]),
+    (4, &[(2, true), (3, true)]),
+    (0, &[(4, true)]),
+    (4, &[(1, true), (2, true), (3, true)]),
+    (1, &[(2, true), (4, true)]),
+    (2, &[(1, true), (3, false), (4, true)]),
+    (0, &[(2, true), (3, true), (4, true)]),
+    (3, &[(0, true), (1, true), (2, true), (4, true)]),
+    (0, &[(2, false), (3, true), (4, true)]),
+    (0, &[(1, true), (3, true), (4, true)]),
+    (1, &[(0, true), (3, true), (4, true)]),
+    (0, &[(1, true), (3, true), (4, true)]),
+    (1, &[(0, false), (2, true), (3, true), (4, true)]),
+];
+
+// ---------------------------------------------------------------------------
+// Strong five-carrier sibling.
+//
+// The screenshot-supplied five-carrier map above is quadratic and therefore
+// has an exact degree-two endpoint recovery.  This opt-in sibling replaces it
+// with the cubic decode
+//
+//   D(c) = c0 + c2 + c2*c3 + c1*c2*c3 + c1*c2*c4 + c3*c4.
+//
+// Its class-preserving update has the affine tail
+//   (c1,c2,c3,c4) -> (c1,c2,c3+1,c4+c3)
+// and compensates c0 by D's coboundary.  The six gates below are in execution
+// order.  Exhaustive tests pin the truth table, class transition, raw Walsh
+// spectrum, and exact degree-three boundary.  Two tail lanes remain fixed, so
+// this is explicitly an experimental algebraic upgrade, not a claim that the
+// whole carrier tuple is structurally hidden.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+const STRONG_FIVE_CARRIER_U0: [u8; 32] = [
+    8, 9, 10, 11, 13, 12, 14, 15, 16, 17, 18, 19, 21, 20, 23, 22, 25, 24, 27, 26, 28,
+    29, 31, 30, 1, 0, 3, 2, 4, 5, 6, 7,
+];
+
+const STRONG_FIVE_CARRIER_U0_GATES: &[(u8, &[(u8, bool)])] = &[
+    (0, &[(2, true)]),
+    (0, &[(1, true), (2, true)]),
+    (0, &[(1, true), (2, true), (3, true)]),
+    (0, &[(4, true)]),
+    (4, &[(3, true)]),
+    (3, &[]),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FiveCarrierFlavor {
+    SuppliedQuadratic,
+    StrongCubic,
+}
+
+#[inline]
+#[cfg(test)]
+fn five_carrier_decode_word(x: u8) -> bool {
+    let c = |i: usize| ((x >> i) & 1) != 0;
+    c(0) ^ (c(1) & c(2)) ^ (c(1) & c(3)) ^ (c(2) & c(3)) ^ (c(1) & c(4))
+}
+
+#[inline]
+#[cfg(test)]
+fn strong_five_carrier_decode_word(x: u8) -> bool {
+    let c = |i: usize| ((x >> i) & 1) != 0;
+    c(0)
+        ^ c(2)
+        ^ (c(2) & c(3))
+        ^ (c(1) & c(2) & c(3))
+        ^ (c(1) & c(2) & c(4))
+        ^ (c(3) & c(4))
+}
+
+fn emit_five_carrier_update(carriers: &[usize; 5], out: &mut Vec<XGate>) {
+    for &(target_local, controls) in FIVE_CARRIER_U0_GATES {
+        let target = carriers[target_local as usize] as u16;
+        let lits = controls
+            .iter()
+            .map(|&(wire, polarity)| (carriers[wire as usize] as u16, polarity));
+        out.push(XGate::conj(target, lits).expect("U0 controls exclude their target"));
+    }
+}
+
+fn emit_strong_five_carrier_update(carriers: &[usize; 5], out: &mut Vec<XGate>) {
+    for &(target_local, controls) in STRONG_FIVE_CARRIER_U0_GATES {
+        let target = carriers[target_local as usize] as u16;
+        let lits = controls
+            .iter()
+            .map(|&(wire, polarity)| (carriers[wire as usize] as u16, polarity));
+        out.push(
+            XGate::conj(target, lits).expect("strong-five U0 controls exclude their target"),
+        );
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FiveCarrierState {
+    n: usize,
+    flavor: FiveCarrierFlavor,
+    /// Logical value -> its five current physical carrier locations.  Rolls
+    /// may exchange any lane with a band variable, so this is a role map, not
+    /// an arithmetic layout past the input port.
+    carriers: Vec<[usize; 5]>,
+}
+
+impl FiveCarrierState {
+    #[cfg(test)]
+    fn home(n: usize) -> FiveCarrierState {
+        Self::home_with_flavor(n, FiveCarrierFlavor::SuppliedQuadratic)
+    }
+
+    fn home_with_flavor(n: usize, flavor: FiveCarrierFlavor) -> FiveCarrierState {
+        FiveCarrierState {
+            n,
+            flavor,
+            carriers: (0..n)
+                .map(|value| std::array::from_fn(|lane| lane * n + value))
+                .collect(),
+        }
+    }
+
+    fn emit_update(&self, value: usize, out: &mut Vec<XGate>) {
+        match self.flavor {
+            FiveCarrierFlavor::SuppliedQuadratic => {
+                emit_five_carrier_update(&self.carriers[value], out)
+            }
+            FiveCarrierFlavor::StrongCubic => {
+                emit_strong_five_carrier_update(&self.carriers[value], out)
+            }
+        }
+    }
+
+    /// The product ledger is deliberately reused for mask allocation and
+    /// churn.  Its single-carrier view is exactly lane c0.
+    fn c0_view(&self) -> GadgetState {
+        GadgetState {
+            n: self.n,
+            pairs: self
+                .carriers
+                .iter()
+                .map(|c| (c[0], c[0]))
+                .collect(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Six-carrier nonlinear representation.
+//
+//   D(c) = c0 + c1*c2 + c3 + c1*c3 + c4 + c1*c3*c4
+//          + c5 + c2*c5 + c2*c3*c5.
+//
+// The fixed update U0 below preserves D and has no fixed points. U1 is U0
+// followed by c0 ^= 1, which changes the decoded class because c0 is the only
+// occurrence of lane zero in D. Product masks and ledger constants remain
+// outside D exactly as in the five-carrier sibling.
+// ---------------------------------------------------------------------------
+
+const SIX_CARRIER_D_ATOMS: [&[u8]; 9] = [
+    &[0],
+    &[1, 2],
+    &[3],
+    &[1, 3],
+    &[4],
+    &[1, 3, 4],
+    &[5],
+    &[2, 5],
+    &[2, 3, 5],
+];
+
+#[cfg(test)]
+const SIX_CARRIER_U0: [u8; 64] = [
+    2, 3, 0, 1, 7, 6, 5, 4, 11, 10, 9, 8, 14, 15, 12, 13, 30, 31, 29, 28, 27, 26, 24, 25,
+    22, 23, 21, 20, 19, 18, 16, 17, 42, 43, 41, 40, 46, 47, 45, 44, 35, 34, 32, 33, 39, 38,
+    36, 37, 54, 55, 53, 52, 51, 50, 48, 49, 63, 62, 60, 61, 58, 59, 57, 56,
+];
+
+/// Exact ten-gate ancilla-free realization of the supplied U0 truth table. The
+/// first six gates update c0 from the original controls; keep them before the
+/// affine four-gate tail. Controls are `(local_wire, positive_polarity)`.
+const SIX_CARRIER_U0_GATES: &[(u8, &[(u8, bool)])] = &[
+    (0, &[(3, true), (4, true), (5, false)]),
+    (0, &[(2, true), (4, false), (5, true)]),
+    (0, &[(1, true), (4, false), (5, true)]),
+    (0, &[(1, true), (4, true)]),
+    (0, &[(3, true)]),
+    (0, &[(2, true)]),
+    (1, &[]),
+    (2, &[(4, true)]),
+    (3, &[(4, true)]),
+    (3, &[(5, true)]),
+];
+
+// Experimental structural six-carrier sibling.  It deliberately keeps the
+// established cubic decode (and therefore its static Walsh properties and
+// exact degree-three firing boundary), but replaces the compact update's
+// affine/frozen tail with a nonlinear full-affine-rank endpoint graph.
+//
+// The first eleven gates compensate c0 by the coboundary
+// D_tail(t) + D_tail(T(t)) while t is still unmodified.  The remaining ten
+// gates realize T on c1..c5.  U1 is again U0 followed by c0 ^= 1.
+#[cfg(test)]
+const STRONG_SIX_CARRIER_U0: [u8; 64] = [
+    2, 3, 9, 8, 7, 6, 5, 4, 27, 26, 0, 1, 14, 15, 12, 13, 60, 61, 63, 62, 25, 24, 10,
+    11, 54, 55, 53, 52, 19, 18, 16, 17, 58, 59, 32, 33, 46, 47, 45, 44, 39, 38, 41,
+    40, 22, 23, 21, 20, 35, 34, 36, 37, 51, 50, 48, 49, 29, 28, 30, 31, 56, 57, 43,
+    42,
+];
+
+const STRONG_SIX_CARRIER_U0_GATES: &[(u8, &[(u8, bool)])] = &[
+    // c0 coboundary, evaluated on the original c1..c5 tail.
+    (0, &[(1, true)]),
+    (0, &[(2, true)]),
+    (0, &[(1, true), (2, true)]),
+    (0, &[(3, true)]),
+    (0, &[(1, true), (2, true), (4, true)]),
+    (0, &[(3, true), (4, true)]),
+    (0, &[(1, true), (5, true)]),
+    (0, &[(2, true), (5, true)]),
+    (0, &[(2, true), (3, true), (5, true)]),
+    (0, &[(4, true), (5, true)]),
+    (0, &[(1, true), (4, true), (5, true)]),
+    // Full-rank nonlinear tail permutation T.
+    (1, &[]),
+    (2, &[(4, true)]),
+    (3, &[(4, true)]),
+    (3, &[(5, true)]),
+    (4, &[(2, true), (3, false), (5, true)]),
+    (5, &[(2, true), (4, true)]),
+    (1, &[(3, true), (4, true)]),
+    (2, &[(1, true), (3, false), (4, false), (5, true)]),
+    (3, &[(1, false), (2, false), (4, false)]),
+    (4, &[(1, true), (2, false), (3, true)]),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SixCarrierFlavor {
+    SuppliedCompact,
+    StrongFullRank,
+}
+
+#[inline]
+#[cfg(test)]
+fn six_carrier_decode_word(x: u8) -> bool {
+    SIX_CARRIER_D_ATOMS.iter().fold(false, |value, atom| {
+        value ^ atom.iter().all(|&lane| ((x >> lane) & 1) != 0)
+    })
+}
+
+fn emit_six_carrier_update(carriers: &[usize; 6], out: &mut Vec<XGate>) {
+    for &(target_local, controls) in SIX_CARRIER_U0_GATES {
+        let target = carriers[target_local as usize] as u16;
+        let lits = controls
+            .iter()
+            .map(|&(wire, polarity)| (carriers[wire as usize] as u16, polarity));
+        out.push(XGate::conj(target, lits).expect("U0 controls exclude their target"));
+    }
+}
+
+fn emit_strong_six_carrier_update(carriers: &[usize; 6], out: &mut Vec<XGate>) {
+    for &(target_local, controls) in STRONG_SIX_CARRIER_U0_GATES {
+        let target = carriers[target_local as usize] as u16;
+        let lits = controls
+            .iter()
+            .map(|&(wire, polarity)| (carriers[wire as usize] as u16, polarity));
+        out.push(
+            XGate::conj(target, lits).expect("strong-six U0 controls exclude their target"),
+        );
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SixCarrierState {
+    n: usize,
+    flavor: SixCarrierFlavor,
+    /// Logical value -> six current physical carrier locations. Band rolling
+    /// changes this role map while the public ports remain lane-major.
+    carriers: Vec<[usize; 6]>,
+}
+
+impl SixCarrierState {
+    #[cfg(test)]
+    fn home(n: usize) -> SixCarrierState {
+        Self::home_with_flavor(n, SixCarrierFlavor::SuppliedCompact)
+    }
+
+    #[cfg(test)]
+    fn strong_home(n: usize) -> SixCarrierState {
+        Self::home_with_flavor(n, SixCarrierFlavor::StrongFullRank)
+    }
+
+    fn home_with_flavor(n: usize, flavor: SixCarrierFlavor) -> SixCarrierState {
+        SixCarrierState {
+            n,
+            flavor,
+            carriers: (0..n)
+                .map(|value| std::array::from_fn(|lane| lane * n + value))
+                .collect(),
+        }
+    }
+
+    fn emit_update(&self, value: usize, out: &mut Vec<XGate>) {
+        match self.flavor {
+            SixCarrierFlavor::SuppliedCompact => {
+                emit_six_carrier_update(&self.carriers[value], out)
+            }
+            SixCarrierFlavor::StrongFullRank => {
+                emit_strong_six_carrier_update(&self.carriers[value], out)
+            }
+        }
+    }
+
+    fn c0_view(&self) -> GadgetState {
+        GadgetState {
+            n: self.n,
+            pairs: self
+                .carriers
+                .iter()
+                .map(|carriers| (carriers[0], carriers[0]))
+                .collect(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Seven-carrier nonlinear representation.
+//
+//   D(c) = c0 + c1 + c2 + c3*c4 + c5*c6 + c3*c4*c5*c6.
+//
+// The fixed update U0 below preserves D and has no fixed points.  The legacy
+// fold obtains U1 by following U0 with c0 ^= 1.  The opt-in distributed-refresh
+// fold deliberately emits no U0: it places the source fragments on a randomly
+// relabeled linear lane, then separates consecutive fragments with nonlinear
+// D-preserving shears. Product masks and ledger constants remain outside D
+// exactly as in the five- and six-carrier siblings.
+// ---------------------------------------------------------------------------
+
+const SEVEN_CARRIER_D_ATOMS: [&[u8]; 6] = [
+    &[0],
+    &[1],
+    &[2],
+    &[3, 4],
+    &[5, 6],
+    &[3, 4, 5, 6],
+];
+
+#[cfg(test)]
+const SEVEN_CARRIER_U0: [u8; 128] = [
+    80, 81, 44, 45, 47, 46, 83, 82, 119, 118, 94, 95, 107, 106, 90, 91, 60, 61, 66, 67,
+    65, 64, 63, 62, 101, 100, 121, 120, 72, 73, 76, 77, 113, 112, 87, 86, 84, 85, 114,
+    115, 89, 88, 104, 105, 93, 92, 116, 117, 69, 68, 99, 98, 96, 97, 70, 71, 102, 103,
+    122, 123, 75, 74, 79, 78, 16, 17, 55, 54, 52, 53, 19, 18, 25, 24, 42, 43, 41, 40,
+    26, 27, 37, 36, 2, 3, 1, 0, 38, 39, 126, 127, 11, 10, 8, 9, 125, 124, 49, 48, 22,
+    23, 21, 20, 50, 51, 110, 111, 31, 30, 28, 29, 109, 108, 4, 5, 35, 34, 32, 33, 7,
+    6, 12, 13, 57, 56, 58, 59, 15, 14,
+];
+
+/// Exact 26-gate ancilla-free realization of the supplied U0 truth table.
+/// Controls are `(local_wire, positive_polarity)` and must be applied in the
+/// listed order. The two four-control decode gates are intentional.
+const SEVEN_CARRIER_U0_GATES: &[(u8, &[(u8, bool)])] = &[
+    (0, &[(2, true)]),
+    (0, &[(3, true), (4, true)]),
+    (0, &[(5, true), (6, true)]),
+    (0, &[(3, true), (4, true), (5, true), (6, true)]),
+    (2, &[(1, true)]),
+    (2, &[(4, true)]),
+    (5, &[(2, true)]),
+    (4, &[]),
+    (6, &[]),
+    (0, &[(2, true)]),
+    (0, &[(3, true), (4, true)]),
+    (0, &[(5, true), (6, true)]),
+    (0, &[(3, true), (4, true), (5, true), (6, true)]),
+    (1, &[(2, true)]),
+    (1, &[(3, true), (4, true)]),
+    (1, &[(5, true), (6, true)]),
+    (1, &[(3, true), (4, true), (5, true), (6, true)]),
+    (5, &[(1, true), (3, true), (6, true)]),
+    (2, &[(3, true), (4, true), (5, true)]),
+    (3, &[(2, true), (5, true), (6, true)]),
+    (4, &[(3, true), (5, true)]),
+    (6, &[(2, true), (3, true), (5, true)]),
+    (1, &[(2, true)]),
+    (1, &[(3, true), (4, true)]),
+    (1, &[(5, true), (6, true)]),
+    (1, &[(3, true), (4, true), (5, true), (6, true)]),
+];
+
+/// A random automorphism of D: arbitrary S3 on the linear roles, independent
+/// swaps inside the two nonlinear pairs, and an optional pair swap.  `role[i]`
+/// is the physical carrier-lane role used for canonical coordinate i.
+fn seven_carrier_role_automorphism(rng: &mut impl Rng) -> [u8; 7] {
+    let mut linear = [0u8, 1, 2];
+    linear.shuffle(rng);
+    let mut left = [3u8, 4];
+    let mut right = [5u8, 6];
+    if rng.random_bool(0.5) {
+        left.swap(0, 1);
+    }
+    if rng.random_bool(0.5) {
+        right.swap(0, 1);
+    }
+    if rng.random_bool(0.5) {
+        std::mem::swap(&mut left, &mut right);
+    }
+    [
+        linear[0], linear[1], linear[2], left[0], left[1], right[0], right[1],
+    ]
+}
+
+#[inline]
+#[cfg(test)]
+fn seven_carrier_decode_word(x: u8) -> bool {
+    SEVEN_CARRIER_D_ATOMS.iter().fold(false, |value, atom| {
+        value ^ atom.iter().all(|&lane| ((x >> lane) & 1) != 0)
+    })
+}
+
+fn emit_seven_carrier_update(carriers: &[usize; 7], out: &mut Vec<XGate>) {
+    for &(target_local, controls) in SEVEN_CARRIER_U0_GATES {
+        let target = carriers[target_local as usize] as u16;
+        let lits = controls
+            .iter()
+            .map(|&(wire, polarity)| (carriers[wire as usize] as u16, polarity));
+        out.push(XGate::conj(target, lits).expect("U0 controls exclude their target"));
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SevenCarrierState {
+    n: usize,
+    /// Logical value -> seven current physical carrier locations. Band rolling
+    /// changes this role map while the public ports remain lane-major.
+    carriers: Vec<[usize; 7]>,
+}
+
+impl SevenCarrierState {
+    fn home(n: usize) -> SevenCarrierState {
+        SevenCarrierState {
+            n,
+            carriers: (0..n)
+                .map(|value| std::array::from_fn(|lane| lane * n + value))
+                .collect(),
+        }
+    }
+
+    fn c0_view(&self) -> GadgetState {
+        GadgetState {
+            n: self.n,
+            pairs: self
+                .carriers
+                .iter()
+                .map(|carriers| (carriers[0], carriers[0]))
+                .collect(),
+        }
+    }
+}
+
+type SevenCarrierShearKey = [(u16, bool); 2];
+
+/// Draw a two-literal selector from carrier coordinates of two distinct,
+/// non-target logical values.  No target carrier is read, so the same selector
+/// remains stable across all three gates of a shear.
+fn draw_seven_carrier_shear_selector(
+    state: &SevenCarrierState,
+    target_value: usize,
+    used: &mut std::collections::HashSet<SevenCarrierShearKey>,
+    rng: &mut impl Rng,
+) -> SevenCarrierShearKey {
+    let partners: Vec<usize> = (0..state.n)
+        .filter(|&value| value != target_value)
+        .collect();
+    assert!(partners.len() >= 2, "a seven-carrier shear needs two partner values");
+
+    // At n=3 there are 49 lane pairs * 4 polarity pairs = 196 selectors,
+    // enough for the production two-control folds.  Wider heterogeneous gates
+    // can exceed that finite set; start a fresh no-repeat epoch if necessary.
+    let capacity = partners.len() * (partners.len() - 1) / 2 * 7 * 7 * 4;
+    if used.len() == capacity {
+        used.clear();
+    }
+    loop {
+        let first_index = rng.random_range(0..partners.len());
+        let second_index = loop {
+            let index = rng.random_range(0..partners.len());
+            if index != first_index {
+                break index;
+            }
+        };
+        let first_value = partners[first_index];
+        let second_value = partners[second_index];
+        let mut selector = [
+            (
+                state.carriers[first_value][rng.random_range(0..7)] as u16,
+                rng.random_bool(0.5),
+            ),
+            (
+                state.carriers[second_value][rng.random_range(0..7)] as u16,
+                rng.random_bool(0.5),
+            ),
+        ];
+        if selector[1] < selector[0] {
+            selector.swap(0, 1);
+        }
+        if used.insert(selector) {
+            return selector;
+        }
+    }
+}
+
+/// Emit the three-gate nonlinear shear associated with canonical nonlinear
+/// coordinate `x` (3..=6), interpreted through a random D automorphism.
+///
+/// If `m` is x's pair-mate and `(p,q)` is the other nonlinear pair, changing
+/// x by h changes D by `h*m*(1+p*q)`.  The first two gates add that exact
+/// quantity to one linear coordinate before the third gate changes x, so the
+/// complete shear preserves D for every carrier tuple and every dirty h.
+fn emit_seven_carrier_preserving_shear(
+    state: &SevenCarrierState,
+    target_value: usize,
+    roles: &[u8; 7],
+    x: u8,
+    selector: SevenCarrierShearKey,
+    out: &mut Vec<XGate>,
+) {
+    let (mate, other_left, other_right) = match x {
+        3 => (4, 5, 6),
+        4 => (3, 5, 6),
+        5 => (6, 3, 4),
+        6 => (5, 3, 4),
+        _ => panic!("seven-carrier shear coordinate must be in 3..=6"),
+    };
+    let carrier = |canonical: u8| {
+        state.carriers[target_value][roles[canonical as usize] as usize] as u16
+    };
+    let linear_target = carrier(0);
+    let mut first = selector.to_vec();
+    first.push((carrier(mate), true));
+    out.push(
+        XGate::conj(linear_target, first)
+            .expect("external shear selector and target carriers are distinct"),
+    );
+    let mut second = selector.to_vec();
+    second.extend([
+        (carrier(mate), true),
+        (carrier(other_left), true),
+        (carrier(other_right), true),
+    ]);
+    out.push(
+        XGate::conj(linear_target, second)
+            .expect("external shear selector and target carriers are distinct"),
+    );
+    out.push(
+        XGate::conj(carrier(x), selector)
+            .expect("external shear selector and target carriers are distinct"),
+    );
 }
 
 /// Emit `target ^= conj(lits)` (1 or 2 literals) in the phase-A g57/CNOT
@@ -3818,7 +4481,28 @@ fn emit_atom_onto(
         out.extend(spellings[pick].iter().cloned());
         return konst;
     }
-    debug_assert_eq!(atom.len(), 3, "only degree <= 3 masks are gathered");
+    debug_assert!(
+        atom.len() == 3 || atom.len() == 4,
+        "only degree <= 4 atoms are gathered"
+    );
+    if atom.len() == 4 {
+        // Exact one-rung dirty double sweep for A*B*C*D. With dirty h,
+        //   acc ^= h*C*D; h ^= A*B; acc ^= h*C*D; h ^= A*B
+        // adds A*B*C*D and restores h. Every emitted gate has at most three
+        // controls and there is no residual constant to ledger.
+        let rung = [atom[0], atom[1]];
+        let tail = [(helper, true), atom[2], atom[3]];
+        for _ in 0..2 {
+            out.push(
+                XGate::conj(acc, tail)
+                    .expect("quartic accumulator controls are distinct"),
+            );
+            out.push(
+                XGate::conj(helper, rung).expect("quartic atom literals are distinct"),
+            );
+        }
+        return false;
+    }
     let lam = atom[pivot];
     let rung: Vec<(u16, bool)> = (0..atom.len())
         .filter(|&i| i != pivot)
@@ -3883,6 +4567,181 @@ fn choose_pivot(atom: &[(u16, bool)], rng: &mut impl Rng) -> usize {
         rng.random_range(0..atom.len())
     } else {
         cheap[rng.random_range(0..cheap.len())]
+    }
+}
+
+/// Fixed choices needed to add one formal ANF atom to a dirty accumulator and
+/// later remove that same atom with exactly the same residual convention.
+#[derive(Clone, Copy, Debug)]
+struct MicroAtomPlan {
+    helper0: u16,
+    helper1: u16,
+    pivot: usize,
+}
+
+/// Add one atom to a dirty accumulator with a primitive width cap of two.
+///
+/// Degrees through three use the established one-helper dirty sweep. A
+/// quartic uses two arbitrary-dirty helpers:
+///
+///   a ^= h1*d; h1 ^= h0*c; h0 ^= a*b; h1 ^= h0*c
+///
+/// repeated twice. The inner palindrome changes `h1` by `a*b*c` while
+/// restoring `h0`; the two outer reads therefore add `a*b*c*d` and restore
+/// both helpers. No clean-ancilla assumption is made.
+fn emit_micro_atom_onto(
+    acc: u16,
+    atom: &[(u16, bool)],
+    plan: MicroAtomPlan,
+    menu: usize,
+    seen: &mut SpellingLog,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) -> bool {
+    if atom.len() <= 3 {
+        return emit_atom_onto(
+            acc,
+            atom,
+            plan.helper0,
+            plan.pivot,
+            menu,
+            seen,
+            rng,
+            out,
+        );
+    }
+    debug_assert_eq!(atom.len(), 4, "micro-Gray supports degree <= 4 atoms");
+    let ab = [atom[0], atom[1]];
+    let h0c = [(plan.helper0, true), atom[2]];
+    let h1d = [(plan.helper1, true), atom[3]];
+    for _ in 0..2 {
+        out.push(XGate::conj(acc, h1d).expect("micro target controls are distinct"));
+        out.push(
+            XGate::conj(plan.helper1, h0c)
+                .expect("micro helper controls are distinct"),
+        );
+        out.push(XGate::conj(plan.helper0, ab).expect("micro rung literals are distinct"));
+        out.push(
+            XGate::conj(plan.helper1, h0c)
+                .expect("micro helper controls are distinct"),
+        );
+    }
+    false
+}
+
+/// Random full-rank four-share schedule over an operand's formal ANF atoms.
+/// The rows are a disjoint, nonempty partition: their XOR is the operand and
+/// no proper subset of row deltas is. This is deliberately a statement about
+/// the formal atom basis; cancellations caused by a particular runtime input
+/// do not change the schedule's rank.
+fn micro_partition_atoms(
+    atoms: &[Vec<(u16, bool)>],
+    rng: &mut impl Rng,
+) -> Option<[Vec<Vec<(u16, bool)>>; 4]> {
+    if atoms.len() < 4 {
+        return None;
+    }
+    let mut order: Vec<usize> = (0..atoms.len()).collect();
+    order.shuffle(rng);
+    let mut shares: [Vec<Vec<(u16, bool)>>; 4] = std::array::from_fn(|_| Vec::new());
+    for (position, atom) in order.into_iter().enumerate() {
+        shares[position % 4].push(atoms[atom].clone());
+    }
+    let mut row_order = [0usize, 1, 2, 3];
+    row_order.shuffle(rng);
+    Some(std::array::from_fn(|i| shares[row_order[i]].clone()))
+}
+
+/// Remove constant atoms without ever materializing `1 * H`: an odd empty-atom
+/// parity is absorbed by complementing one live linear literal. Complementing
+/// a one-literal conjunction adds exactly one to its ANF function.
+fn absorb_constants_into_linear_atom(atoms: &mut Vec<Vec<(u16, bool)>>) -> bool {
+    let odd = atoms.iter().filter(|atom| atom.is_empty()).count() % 2 != 0;
+    atoms.retain(|atom| !atom.is_empty());
+    if !odd {
+        return true;
+    }
+    let Some(linear) = atoms.iter_mut().find(|atom| atom.len() == 1) else {
+        return false;
+    };
+    linear[0].1 = !linear[0].1;
+    true
+}
+
+#[derive(Clone, Debug)]
+struct SentinelParts {
+    /// Nonempty degree-one atoms, including the live literal into which any
+    /// source/ledger constant was absorbed.
+    low: Vec<Vec<(u16, bool)>>,
+    /// Degrees 2..max-1: the only material allowed onto an accumulator.
+    gathered: Vec<Vec<(u16, bool)>>,
+    /// Every maximum-degree atom. These remain explicit in all transitions.
+    high: Vec<Vec<(u16, bool)>>,
+}
+
+fn partition_max_degree_sentinel(atoms: &[Vec<(u16, bool)>]) -> Option<SentinelParts> {
+    if atoms.iter().any(|atom| atom.is_empty()) {
+        return None;
+    }
+    let max_degree = atoms.iter().map(Vec::len).max()?;
+    if max_degree < 3 {
+        return None;
+    }
+    let low: Vec<_> = atoms.iter().filter(|atom| atom.len() == 1).cloned().collect();
+    let gathered: Vec<_> = atoms
+        .iter()
+        .filter(|atom| (2..max_degree).contains(&atom.len()))
+        .cloned()
+        .collect();
+    let high: Vec<_> = atoms
+        .iter()
+        .filter(|atom| atom.len() == max_degree)
+        .cloned()
+        .collect();
+    if low.is_empty()
+        || gathered.is_empty()
+        || high.is_empty()
+        || gathered.iter().any(|atom| atom.len() > 4)
+    {
+        return None;
+    }
+    Some(SentinelParts {
+        low,
+        gathered,
+        high,
+    })
+}
+
+/// Exact cap-two dirty ladder for a normalized width-three/four conjunction.
+/// The caller controls the literal order. For a sentinel cross tail it passes
+/// `[blind, high[0], high[1], ...]`, making rung zero cross-factor by
+/// construction; neither helper transition can then equal the whole H atom.
+fn emit_exact_dirty_cap2(
+    target: u16,
+    lits: &[(u16, bool)],
+    helper0: u16,
+    helper1: u16,
+    out: &mut Vec<XGate>,
+) {
+    debug_assert!((3..=4).contains(&lits.len()));
+    let rung0 = [lits[0], lits[1]];
+    if lits.len() == 3 {
+        let tail = [(helper0, true), lits[2]];
+        for _ in 0..2 {
+            out.push(XGate::conj(target, tail).expect("sentinel target controls distinct"));
+            out.push(
+                XGate::conj(helper0, rung0).expect("sentinel rung-zero controls distinct"),
+            );
+        }
+        return;
+    }
+    let rung1 = [(helper0, true), lits[2]];
+    let tail = [(helper1, true), lits[3]];
+    for _ in 0..2 {
+        out.push(XGate::conj(target, tail).expect("sentinel target controls distinct"));
+        out.push(XGate::conj(helper1, rung1).expect("sentinel rung-one controls distinct"));
+        out.push(XGate::conj(helper0, rung0).expect("sentinel rung-zero controls distinct"));
+        out.push(XGate::conj(helper1, rung1).expect("sentinel rung-one controls distinct"));
     }
 }
 
@@ -4095,6 +4954,12 @@ struct ProdLedger {
     /// Gather each operand's mask sum onto a dirty accumulator (see
     /// [`ProdLedger::fold_cg_gray`]).
     gray_fold: bool,
+    /// Four-share micro-Gray mode. Kept separate from `gray_fold` so mode 1's
+    /// established gate stream and defaults remain byte-for-byte unchanged.
+    micro_gray: bool,
+    /// Sentinel Gray mode. Quadratic atoms alone visit dirty accumulators;
+    /// degree-three-plus atoms remain explicit sentinels in every transition.
+    sentinel_gray: bool,
     /// Emit DB-eligible fold fragments in the g57/CNOT vocabulary.
     g57_narrow: bool,
     ladder_cap: usize,
@@ -4151,6 +5016,13 @@ struct ProdLedger {
     cg_fossils: u64,
     /// CG blocks emitted by the Gray fold rather than the odometer.
     cg_gray: u64,
+    /// Mode-3 blocks emitted by the max-degree sentinel schedule.
+    cg_sentinel: u64,
+    /// Original/emitted fragment counts and requested branch floors in each
+    /// opt-in distributed seven-carrier fold.
+    distributed_fold_original_fragments: Vec<usize>,
+    distributed_fold_fragments: Vec<usize>,
+    distributed_fold_floors: Vec<usize>,
     ledger_consts: u64,
 }
 
@@ -4161,6 +5033,10 @@ impl ProdLedger {
         carrier_total: usize,
         sched: Option<Vec<Vec<usize>>>,
     ) -> ProdLedger {
+        assert!(
+            cfg.gray_fold <= 3,
+            "prod gray_fold mode must be 0 (expanded), 1 (aggregate), 2 (micro), or 3 (sentinel)"
+        );
         let band_len = cfg.band_size(n);
         let mut plan: Vec<usize> = Vec::new();
         plan.extend(std::iter::repeat(cfg.deg.max(2)).take(cfg.k));
@@ -4209,7 +5085,9 @@ impl ProdLedger {
             used: std::collections::HashSet::new(),
             dist: cfg.dist(),
             single: cfg.single_carrier(),
-            gray_fold: cfg.gray_fold > 0,
+            gray_fold: cfg.gray_fold == 1,
+            micro_gray: cfg.gray_fold == 2,
+            sentinel_gray: cfg.gray_fold == 3,
             g57_narrow: cfg.g57_narrow > 0,
             ladder_cap: cfg.ladder_cap,
             cg_jitter: cfg.cg_jitter,
@@ -4238,6 +5116,10 @@ impl ProdLedger {
             cg_laddered: 0,
             cg_fossils: 0,
             cg_gray: 0,
+            cg_sentinel: 0,
+            distributed_fold_original_fragments: Vec::new(),
+            distributed_fold_fragments: Vec::new(),
+            distributed_fold_floors: Vec::new(),
             ledger_consts: 0,
         }
     }
@@ -5203,8 +6085,7 @@ impl ProdLedger {
 
     /// The share-native CG: fold `v_t ^= f(controls)` by expanding f's ANF
     /// over the operands' full decodes. Each control value contributes its
-    /// summand atoms (two carrier literals, k product-literal pairs, and a
-    /// constant when c_w and/or a negative control polarity applies); every
+    /// summand atoms (carrier literals and k product-literal pairs); every
     /// cross-product of one atom per control is one conjunction fragment
     /// folded into either carrier of the target. Constant terms (and the
     /// gate's own complement) go to the target's ledger constant — no bare X.
@@ -5281,22 +6162,41 @@ impl ProdLedger {
             let w = w as usize;
             debug_assert_ne!(w, t);
             let (c0, c1) = state.pairs[w];
+            // A control's decode is C + masks + delta, where delta combines
+            // the ledger constant and the source-control polarity.  In the
+            // expanded (non-Gray) construction, absorb delta into the polarity
+            // of one carrier literal: !C is C+1.  This removes the empty atom.
+            // Consequently an arity-2 fold has exactly one NONEMPTY atom from
+            // each operand in every product fragment; the dirty ladder never
+            // has to realize a constant times one operand's mask in isolation.
+            //
+            // Keep the aggregate Gray representation unchanged.  Besides
+            // preserving its established spelling/measurements, its gather
+            // residual is currently expressed by toggling an empty simple
+            // atom inside fold_cg_gray.
+            let delta = self.consts[w] ^ !positive;
+            let aggregate = self.gray_fold || self.micro_gray;
+            // Sentinel mode follows the expanded encoding here: absorb the
+            // constant into a live linear literal. An empty atom times H would
+            // expose the sentinel itself on the target trace.
+            let carrier_polarity = if aggregate { true } else { !delta };
             // Single-carrier decode contributes ONE linear atom, not two: the
             // pair collapses to a single wire, and emitting it twice would
             // cancel. Every other atom (the mask terms, the constant) is
             // unchanged, so the fold's fragment count drops from
             // (2 + k)^arity to (1 + k)^arity at equal mask strength.
             let mut atoms: Vec<Vec<(u16, bool)>> = if self.single {
-                vec![vec![(c0 as u16, true)]]
+                vec![vec![(c0 as u16, carrier_polarity)]]
             } else {
-                vec![vec![(c0 as u16, true)], vec![(c1 as u16, true)]]
+                vec![
+                    vec![(c0 as u16, carrier_polarity)],
+                    vec![(c1 as u16, true)],
+                ]
             };
             for slot in &self.slots[w] {
                 atoms.push(slot.lits(&self.loc));
             }
-            // D'_w = D_w (+1 for a negative literal); with c_w set the two
-            // constants cancel by parity.
-            if self.consts[w] ^ !positive {
+            if aggregate && delta {
                 atoms.push(Vec::new());
             }
             lists.push(atoms);
@@ -5314,7 +6214,60 @@ impl ProdLedger {
         if self.gray_fold && self.fold_cg_gray(t, &lists, state, rng, out) {
             return;
         }
-        let ladder_cap = if self.gray_fold {
+        if self.micro_gray {
+            let target = self.free_carrier(t, state, rng);
+            let (t0, t1) = state.pairs[t];
+            let protected = [t0 as u16, t1 as u16];
+            let carrier_groups: Vec<Vec<u16>> = state
+                .pairs
+                .iter()
+                .map(|&(a, b)| {
+                    if a == b {
+                        vec![a as u16]
+                    } else {
+                        vec![a as u16, b as u16]
+                    }
+                })
+                .collect();
+            if self.fold_micro_product(
+                target,
+                &lists,
+                &protected,
+                &carrier_groups,
+                rng,
+                out,
+            ) {
+                return;
+            }
+        }
+        if self.sentinel_gray {
+            let target = self.free_carrier(t, state, rng);
+            let (t0, t1) = state.pairs[t];
+            let protected = [t0 as u16, t1 as u16];
+            let carrier_groups: Vec<Vec<u16>> = state
+                .pairs
+                .iter()
+                .map(|&(a, b)| {
+                    if a == b {
+                        vec![a as u16]
+                    } else {
+                        vec![a as u16, b as u16]
+                    }
+                })
+                .collect();
+            if self.fold_sentinel_product(
+                t,
+                target,
+                &lists,
+                &protected,
+                &carrier_groups,
+                rng,
+                out,
+            ) {
+                return;
+            }
+        }
+        let ladder_cap = if self.gray_fold || self.micro_gray {
             usize::MAX
         } else {
             self.ladder_cap
@@ -5560,6 +6513,430 @@ impl ProdLedger {
     /// Returns false when the block does not fit the shape (arity != 2, or an
     /// operand with no mask terms to gather, or no room to borrow), leaving the
     /// caller to emit it the ordinary way.
+    /// Gather one micro share exactly onto an arbitrary-dirty accumulator.
+    /// `plans` is reused for the matching strip so every spelling residual
+    /// follows the same convention on both passes.
+    fn gather_micro_share_exact(
+        &self,
+        acc: u16,
+        atoms: &[Vec<(u16, bool)>],
+        plans: &[MicroAtomPlan],
+        constant_helper: u16,
+        seen: &mut SpellingLog,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        debug_assert_eq!(atoms.len(), plans.len());
+        let mut correction = false;
+        for (atom, &plan) in atoms.iter().zip(plans) {
+            if atom.is_empty() {
+                correction ^= true;
+            } else {
+                correction ^= emit_micro_atom_onto(
+                    acc,
+                    atom,
+                    plan,
+                    self.rung_menu,
+                    seen,
+                    rng,
+                    out,
+                );
+            }
+        }
+        if correction {
+            // (!h) + h = 1 without a clean constant wire.
+            out.push(
+                XGate::conj(acc, [(constant_helper, false)])
+                    .expect("micro constant helper differs from accumulator"),
+            );
+            out.push(XGate::cnot(acc, constant_helper));
+        }
+    }
+
+    /// Emit one product of two nonempty formal atoms. Literal order starts
+    /// with one factor from each atom, so every width-three/four ladder has a
+    /// cross-factor rung zero. This is load-bearing for `blind * H`: starting
+    /// with two H literals would make the whole cubic H appear as a helper
+    /// before/after delta one rung later.
+    fn emit_sentinel_atom_product(
+        &mut self,
+        ledger_target: usize,
+        target: u16,
+        left: &[(u16, bool)],
+        right: &[(u16, bool)],
+        helper0: u16,
+        helper1: u16,
+        out: &mut Vec<XGate>,
+    ) {
+        debug_assert!(!left.is_empty() && !right.is_empty());
+        let mut lits = Vec::with_capacity(left.len() + right.len());
+        lits.push(left[0]);
+        lits.push(right[0]);
+        lits.extend_from_slice(&left[1..]);
+        lits.extend_from_slice(&right[1..]);
+        if normalize_lits(&mut lits).is_none() {
+            return;
+        }
+        if lits.is_empty() {
+            self.consts[ledger_target] ^= true;
+            self.ledger_consts += 1;
+            return;
+        }
+        match lits.len() {
+            1 | 2 => {
+                out.push(XGate::conj(target, lits).expect("sentinel term excludes target"));
+                self.cg_narrow += 1;
+            }
+            3 | 4 => {
+                emit_exact_dirty_cap2(target, &lits, helper0, helper1, out);
+                self.cg_laddered += 1;
+            }
+            _ => {
+                out.push(XGate::conj(target, lits).expect("sentinel term excludes target"));
+                self.cg_fossils += 1;
+            }
+        }
+        self.cg_fragments += 1;
+    }
+
+    /// Exact Q toggle. Sentinel mode deliberately allows Q to be trace-affine,
+    /// but never permits a maximum-degree H atom onto this accumulator. The
+    /// raw dirty ladder has no spelling residual, so there is no hidden kappa
+    /// that would also have to be propagated through every H tail.
+    fn toggle_sentinel_q(
+        &self,
+        acc: u16,
+        atoms: &[Vec<(u16, bool)>],
+        helper0: u16,
+        helper1: u16,
+        out: &mut Vec<XGate>,
+    ) {
+        for atom in atoms {
+            debug_assert!((2..=4).contains(&atom.len()));
+            if atom.len() <= 2 {
+                out.push(XGate::conj(acc, atom.iter().copied()).expect("Q excludes accumulator"));
+            } else {
+                emit_exact_dirty_cap2(acc, atom, helper0, helper1, out);
+            }
+        }
+    }
+
+    /// Emit the audited four-phase sentinel identity for fixed dirty borrows.
+    /// With S=L+Q+H and T=R+Q'+K, the phase brackets contribute QR, QK, LQ',
+    /// HQ', and QQ'; the direct tails contribute LR, HR, LK, HK. Incoming
+    /// accumulator/helper junk cancels and all four borrowed wires restore.
+    fn emit_sentinel_schedule(
+        &mut self,
+        ledger_target: usize,
+        target: u16,
+        parts: &[SentinelParts; 2],
+        borrowed: [u16; 4],
+        out: &mut Vec<XGate>,
+    ) {
+        let [u, z, helper0, helper1] = borrowed;
+        let u_atom = [(u, true)];
+        let z_atom = [(z, true)];
+        let (left, right) = (&parts[0], &parts[1]);
+
+        // Direct tails: LR + HR + LK + HK.
+        for l in &left.low {
+            for r in &right.low {
+                self.emit_sentinel_atom_product(
+                    ledger_target, target, l, r, helper0, helper1, out,
+                );
+            }
+        }
+        for h in &left.high {
+            for r in &right.low {
+                self.emit_sentinel_atom_product(
+                    ledger_target, target, h, r, helper0, helper1, out,
+                );
+            }
+        }
+        for l in &left.low {
+            for h in &right.high {
+                self.emit_sentinel_atom_product(
+                    ledger_target, target, l, h, helper0, helper1, out,
+                );
+            }
+        }
+        for h0 in &left.high {
+            for h1 in &right.high {
+                self.emit_sentinel_atom_product(
+                    ledger_target, target, h0, h1, helper0, helper1, out,
+                );
+            }
+        }
+
+        // A: uR + uK + uz.
+        for r in &right.low {
+            self.emit_sentinel_atom_product(
+                ledger_target, target, &u_atom, r, helper0, helper1, out,
+            );
+        }
+        for h in &right.high {
+            self.emit_sentinel_atom_product(
+                ledger_target, target, &u_atom, h, helper0, helper1, out,
+            );
+        }
+        self.emit_sentinel_atom_product(
+            ledger_target, target, &u_atom, &z_atom, helper0, helper1, out,
+        );
+        self.toggle_sentinel_q(u, &left.gathered, helper0, helper1, out);
+
+        // B: uR + uK + Lz + Hz + uz.
+        for r in &right.low {
+            self.emit_sentinel_atom_product(
+                ledger_target, target, &u_atom, r, helper0, helper1, out,
+            );
+        }
+        for h in &right.high {
+            self.emit_sentinel_atom_product(
+                ledger_target, target, &u_atom, h, helper0, helper1, out,
+            );
+        }
+        for l in &left.low {
+            self.emit_sentinel_atom_product(
+                ledger_target, target, l, &z_atom, helper0, helper1, out,
+            );
+        }
+        for h in &left.high {
+            self.emit_sentinel_atom_product(
+                ledger_target, target, h, &z_atom, helper0, helper1, out,
+            );
+        }
+        self.emit_sentinel_atom_product(
+            ledger_target, target, &u_atom, &z_atom, helper0, helper1, out,
+        );
+        self.toggle_sentinel_q(z, &right.gathered, helper0, helper1, out);
+
+        // C: Lz + Hz + uz.
+        for l in &left.low {
+            self.emit_sentinel_atom_product(
+                ledger_target, target, l, &z_atom, helper0, helper1, out,
+            );
+        }
+        for h in &left.high {
+            self.emit_sentinel_atom_product(
+                ledger_target, target, h, &z_atom, helper0, helper1, out,
+            );
+        }
+        self.emit_sentinel_atom_product(
+            ledger_target, target, &u_atom, &z_atom, helper0, helper1, out,
+        );
+        self.toggle_sentinel_q(u, &left.gathered, helper0, helper1, out);
+
+        // D: uz, then restore z.
+        self.emit_sentinel_atom_product(
+            ledger_target, target, &u_atom, &z_atom, helper0, helper1, out,
+        );
+        self.toggle_sentinel_q(z, &right.gathered, helper0, helper1, out);
+    }
+
+    fn fold_sentinel_product(
+        &mut self,
+        ledger_target: usize,
+        target: u16,
+        lists: &[Vec<Vec<(u16, bool)>>],
+        protected: &[u16],
+        carrier_groups: &[Vec<u16>],
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) -> bool {
+        if lists.len() != 2 {
+            return false;
+        }
+        let Some(left) = partition_max_degree_sentinel(&lists[0]) else {
+            return false;
+        };
+        let Some(right) = partition_max_degree_sentinel(&lists[1]) else {
+            return false;
+        };
+
+        let mut forbidden = protected.to_vec();
+        forbidden.push(target);
+        forbidden.extend(
+            lists
+                .iter()
+                .flatten()
+                .flatten()
+                .map(|&(wire, _)| wire),
+        );
+        forbidden.sort_unstable();
+        forbidden.dedup();
+        let mut pool: Vec<&Vec<u16>> = carrier_groups
+            .iter()
+            .filter(|group| {
+                !group.is_empty() && group.iter().all(|wire| !forbidden.contains(wire))
+            })
+            .collect();
+        pool.shuffle(rng);
+        if pool.len() < 4 {
+            return false;
+        }
+        let borrowed: [u16; 4] = std::array::from_fn(|index| {
+            let group = pool[index];
+            group[rng.random_range(0..group.len())]
+        });
+        self.emit_sentinel_schedule(ledger_target, target, &[left, right], borrowed, out);
+        self.cg_gray += 1;
+        self.cg_sentinel += 1;
+        true
+    }
+
+    /// Four-share micro-Gray product. Every operand is partitioned into four
+    /// formal ANF rows, and every one of the sixteen row rectangles is emitted
+    /// as an independently restored dirty-accumulator inclusion/exclusion:
+    ///
+    ///   P; u^=q; P; z^=r; P; u^=q; P; z^=r
+    ///
+    /// where P toggles the target by `u*z`. Thus a rectangle contributes
+    /// exactly `q*r`, while `u`, `z`, and all ladder helpers return to their
+    /// arbitrary incoming values. No transition gathers the complete operand.
+    fn fold_micro_product(
+        &mut self,
+        target: u16,
+        lists: &[Vec<Vec<(u16, bool)>>],
+        protected: &[u16],
+        carrier_groups: &[Vec<u16>],
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) -> bool {
+        if lists.len() != 2
+            || lists.iter().any(|list| list.len() < 4)
+            || lists.iter().flatten().any(|atom| atom.len() > 4)
+        {
+            return false;
+        }
+        let Some(left) = micro_partition_atoms(&lists[0], rng) else {
+            return false;
+        };
+        let Some(right) = micro_partition_atoms(&lists[1], rng) else {
+            return false;
+        };
+        let shares = [left, right];
+        let quartic = lists.iter().flatten().any(|atom| atom.len() == 4);
+
+        // Borrow by logical role, never merely by numeric wire range. A whole
+        // group is rejected when any lane is read or protected, so each
+        // accumulator/helper comes from a different unrelated representation.
+        let mut forbidden = protected.to_vec();
+        forbidden.push(target);
+        for &(wire, _) in lists.iter().flatten().flatten() {
+            forbidden.push(wire);
+        }
+        forbidden.sort_unstable();
+        forbidden.dedup();
+        let needed = if quartic { 4 } else { 3 };
+        let mut pool: Vec<&Vec<u16>> = carrier_groups
+            .iter()
+            .filter(|group| {
+                !group.is_empty() && group.iter().all(|wire| !forbidden.contains(wire))
+            })
+            .collect();
+        pool.shuffle(rng);
+        if pool.len() < needed {
+            return false;
+        }
+        let borrowed: Vec<u16> = pool
+            .into_iter()
+            .take(needed)
+            .map(|group| group[rng.random_range(0..group.len())])
+            .collect();
+        let (u, z, helper0) = (borrowed[0], borrowed[1], borrowed[2]);
+        let helper1 = if quartic { borrowed[3] } else { helper0 };
+
+        let plans: Vec<Vec<Vec<MicroAtomPlan>>> = shares
+            .iter()
+            .map(|side| {
+                side.iter()
+                    .map(|share| {
+                        share
+                            .iter()
+                            .map(|atom| MicroAtomPlan {
+                                helper0,
+                                helper1,
+                                pivot: if atom.len() == 3 {
+                                    choose_pivot(atom, rng)
+                                } else {
+                                    0
+                                },
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let mut rectangles: Vec<(usize, usize)> = (0..4)
+            .flat_map(|left| (0..4).map(move |right| (left, right)))
+            .collect();
+        rectangles.shuffle(rng);
+        let mut seen: SpellingLog = std::collections::HashMap::new();
+        let product_lits = [(u, true), (z, true)];
+        for (li, ri) in rectangles {
+            // Every spelling of u*z has the same residual constant. There are
+            // four reads per rectangle, so that residual cancels exactly.
+            let emit_product = |seen: &mut SpellingLog,
+                                rng: &mut _,
+                                out: &mut Vec<XGate>| {
+                let (spellings, _) = spellings_at(target, &product_lits, self.rung_menu);
+                let pick = pick_spelling(
+                    target,
+                    &product_lits,
+                    spellings.len(),
+                    seen,
+                    rng,
+                );
+                out.extend(spellings[pick].iter().cloned());
+            };
+            emit_product(&mut seen, rng, out);
+            self.gather_micro_share_exact(
+                u,
+                &shares[0][li],
+                &plans[0][li],
+                helper0,
+                &mut seen,
+                rng,
+                out,
+            );
+            emit_product(&mut seen, rng, out);
+            self.gather_micro_share_exact(
+                z,
+                &shares[1][ri],
+                &plans[1][ri],
+                helper0,
+                &mut seen,
+                rng,
+                out,
+            );
+            emit_product(&mut seen, rng, out);
+            self.gather_micro_share_exact(
+                u,
+                &shares[0][li],
+                &plans[0][li],
+                helper0,
+                &mut seen,
+                rng,
+                out,
+            );
+            emit_product(&mut seen, rng, out);
+            self.gather_micro_share_exact(
+                z,
+                &shares[1][ri],
+                &plans[1][ri],
+                helper0,
+                &mut seen,
+                rng,
+                out,
+            );
+        }
+        self.cg_fragments += 64;
+        self.cg_narrow += 64;
+        self.cg_gray += 1;
+        true
+    }
+
     fn fold_cg_gray(
         &mut self,
         t: usize,
@@ -5593,13 +6970,14 @@ impl ProdLedger {
             // verified, so decline rather than emit something unaudited.
             return false;
         }
+
         // Borrow nothing the block reads or writes, nor any sibling of those:
         // a borrow that is the sibling of a literal would put both carriers of
         // one value into one gate across a read and a write.
         let sibling = self.sibling_map(state);
         let mut forbid: Vec<u16> = vec![state.pairs[t].0 as u16, state.pairs[t].1 as u16];
-        for list in lists {
-            for atom in list {
+        for side in 0..2 {
+            for atom in simple[side].iter().chain(&masks[side]) {
                 for &(w, _) in atom {
                     forbid.push(w);
                     if (w as usize) < sibling.len() {
@@ -5813,7 +7191,11 @@ impl ProdLedger {
         rng: &mut impl Rng,
         out: &mut Vec<XGate>,
     ) {
-        let mut frags: Vec<Vec<(u16, bool)>> = Vec::new();
+        // Keep the selected atoms beside the flattened conjunction.  The
+        // narrowing primitive uses those boundaries when choosing its first
+        // dirty rung; dropping them here silently disabled the guard that
+        // prevents a borrowed wire from holding a whole operand atom.
+        let mut frags: Vec<(Vec<(u16, bool)>, Vec<Vec<(u16, bool)>>)> = Vec::new();
         let mut combo = vec![0usize; lists.len()];
         'odometer: loop {
             let picked: Vec<&Vec<(u16, bool)>> = lists
@@ -5827,7 +7209,7 @@ impl ProdLedger {
                 self.consts[t] ^= true;
                 self.ledger_consts += 1;
             } else if normalize_lits(&mut lits).is_some() {
-                frags.push(lits);
+                frags.push((lits, picked));
             }
             let mut axis = 0;
             loop {
@@ -5854,7 +7236,7 @@ impl ProdLedger {
         // former band wire, so indexing by carrier_total alone goes out of
         // bounds the moment --prod-roll is on.
         let sibling = self.sibling_map(state);
-        for lits in &frags {
+        for (lits, atoms) in &frags {
             let target = self.free_carrier(t, state, rng);
             self.debug_check_fragment(target, lits, state);
             let mut forbidden: Vec<u16> = vec![sibling[target as usize % sibling.len()]];
@@ -5871,7 +7253,7 @@ impl ProdLedger {
                 &self.carrier_wires(state),
                 self.borrow_total(),
                 &forbidden,
-                &[],
+                atoms,
                 self.rung_menu,
                 rng,
                 out,
@@ -5943,7 +7325,1325 @@ impl ProdLedger {
                     ""
                 }
             );
+            if !self.distributed_fold_fragments.is_empty() {
+                let mut original = self.distributed_fold_original_fragments.clone();
+                let mut counts = self.distributed_fold_fragments.clone();
+                let mut floors = self.distributed_fold_floors.clone();
+                let below_floor = self
+                    .distributed_fold_original_fragments
+                    .iter()
+                    .zip(&self.distributed_fold_fragments)
+                    .zip(&self.distributed_fold_floors)
+                    .filter(|&((original, count), floor)| {
+                        *original > 0 && *floor > 0 && count < floor
+                    })
+                    .count();
+                original.sort_unstable();
+                counts.sort_unstable();
+                floors.sort_unstable();
+                println!(
+                    "[prod] distributed-fold-fragments blocks={} original={}/{}/{} emitted={}/{}/{} floor={}/{}/{} below_floor={}",
+                    counts.len(),
+                    original[0],
+                    original[original.len() / 2],
+                    original[original.len() - 1],
+                    counts[0],
+                    counts[counts.len() / 2],
+                    counts[counts.len() - 1],
+                    floors[0],
+                    floors[floors.len() / 2],
+                    floors[floors.len() - 1],
+                    below_floor,
+                );
+            }
         }
+    }
+}
+
+impl ProdLedger {
+    /// ANF atoms of one five-carrier logical literal.  An empty atom denotes
+    /// the constant one, so the ordinary cartesian fold can treat constants
+    /// exactly like every other summand.
+    fn five_decode_atoms(
+        &self,
+        value: usize,
+        positive: bool,
+        state: &FiveCarrierState,
+    ) -> Vec<Vec<(u16, bool)>> {
+        let c = state.carriers[value];
+        let mut atoms = match state.flavor {
+            FiveCarrierFlavor::SuppliedQuadratic => vec![
+                vec![(c[0] as u16, true)],
+                vec![(c[1] as u16, true), (c[2] as u16, true)],
+                vec![(c[1] as u16, true), (c[3] as u16, true)],
+                vec![(c[2] as u16, true), (c[3] as u16, true)],
+                vec![(c[1] as u16, true), (c[4] as u16, true)],
+            ],
+            FiveCarrierFlavor::StrongCubic => vec![
+                vec![(c[0] as u16, true)],
+                vec![(c[2] as u16, true)],
+                vec![(c[2] as u16, true), (c[3] as u16, true)],
+                vec![
+                    (c[1] as u16, true),
+                    (c[2] as u16, true),
+                    (c[3] as u16, true),
+                ],
+                vec![
+                    (c[1] as u16, true),
+                    (c[2] as u16, true),
+                    (c[4] as u16, true),
+                ],
+                vec![(c[3] as u16, true), (c[4] as u16, true)],
+            ],
+        };
+        atoms.extend(self.slots[value].iter().map(|slot| slot.lits(&self.loc)));
+        if self.consts[value] ^ !positive {
+            atoms.push(Vec::new());
+        }
+        atoms
+    }
+
+    /// Add the supplied ANF atoms to a dirty accumulator exactly.  The phase-A
+    /// spellings can leave a constant residual; a complementary one-control
+    /// pair removes it without assuming a clean wire or changing the helper.
+    fn gather_five_atoms_exact(
+        &self,
+        acc: u16,
+        atoms: &[Vec<(u16, bool)>],
+        plan: &[(u16, usize)],
+        constant_helper: u16,
+        seen: &mut SpellingLog,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        let mut correction = false;
+        for (atom, &(helper, pivot)) in atoms.iter().zip(plan) {
+            if atom.is_empty() {
+                correction ^= true;
+            } else {
+                correction ^=
+                    emit_atom_onto(acc, atom, helper, pivot, self.rung_menu, seen, rng, out);
+            }
+        }
+        if correction {
+            // (!h) + h = 1 for arbitrary dirty h.
+            out.push(
+                XGate::conj(acc, [(constant_helper, false)])
+                    .expect("constant helper differs from accumulator"),
+            );
+            out.push(XGate::cnot(acc, constant_helper));
+        }
+    }
+
+    /// The supplied four-phase g57 construction.  Both complete source
+    /// decodes (five D atoms, every product-mask atom, and the ledger
+    /// constant) are gathered, so the four `u*z` reads telescope to S_b*S_c.
+    /// The remaining S_c term is emitted directly into target c0.
+    ///
+    /// SECURITY SCOPE: the tested zero weight-1/2 correlation is the ten-wire
+    /// `(carrier_before, carrier_after)` trace of U0/U1.  As in the older Gray
+    /// fold, a stronger space-time observer can XOR one accumulator immediately
+    /// before and after its gather and recover S_b or S_c exactly.  Keeping the
+    /// gather here is intentional fidelity to the supplied four-phase circuit,
+    /// not a claim that this separate aggregate-accumulator witness vanished.
+    fn fold_five_g57_gray(
+        &mut self,
+        gate: &XGate,
+        state: &FiveCarrierState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) -> bool {
+        if !gate.comp || gate.ctrls.len() != 2 {
+            return false;
+        }
+        let Some(&(b_wire, false)) = gate.ctrls.iter().find(|&&(_, p)| !p) else {
+            return false;
+        };
+        let Some(&(c_wire, true)) = gate.ctrls.iter().find(|&&(_, p)| p) else {
+            return false;
+        };
+        let (t, b, c) = (
+            gate.target as usize,
+            b_wire as usize,
+            c_wire as usize,
+        );
+        let b_atoms = self.five_decode_atoms(b, true, state);
+        let c_atoms = self.five_decode_atoms(c, true, state);
+        if b_atoms
+            .iter()
+            .chain(&c_atoms)
+            .any(|atom| atom.len() > 3)
+        {
+            return false;
+        }
+
+        // Borrow u, z, and h from three OTHER logical values.  Keeping their
+        // five-tuples distinct ensures no local gate reads/writes two carriers
+        // of one borrowed representation.  In a circuit too small to offer
+        // three such values, the exact cartesian fold below is the safe
+        // fallback.
+        let mut borrow_values: Vec<usize> = (0..state.n)
+            .filter(|value| *value != t && *value != b && *value != c)
+            .collect();
+        use rand::seq::SliceRandom;
+        borrow_values.shuffle(rng);
+        if borrow_values.len() < 3 {
+            return false;
+        }
+        let u = state.carriers[borrow_values[0]][rng.random_range(0..5)] as u16;
+        let z = state.carriers[borrow_values[1]][rng.random_range(0..5)] as u16;
+        let helper = state.carriers[borrow_values[2]][rng.random_range(0..5)] as u16;
+        let b_plan: Vec<(u16, usize)> = b_atoms
+            .iter()
+            .map(|atom| {
+                let pivot = if atom.len() == 3 {
+                    choose_pivot(atom, rng)
+                } else {
+                    0
+                };
+                (helper, pivot)
+            })
+            .collect();
+        let c_plan: Vec<(u16, usize)> = c_atoms
+            .iter()
+            .map(|atom| {
+                let pivot = if atom.len() == 3 {
+                    choose_pivot(atom, rng)
+                } else {
+                    0
+                };
+                (helper, pivot)
+            })
+            .collect();
+        let constant_helper = helper;
+        let product = |out: &mut Vec<XGate>| {
+            out.push(
+                XGate::conj(state.carriers[t][0] as u16, [(u, true), (z, true)])
+                    .expect("accumulators differ from target c0"),
+            );
+        };
+        let mut seen: SpellingLog = std::collections::HashMap::new();
+
+        // A(raw,raw), B(+S_b,raw), C(+S_b,+S_c), D(raw,+S_c).
+        product(out);
+        self.gather_five_atoms_exact(
+            u,
+            &b_atoms,
+            &b_plan,
+            constant_helper,
+            &mut seen,
+            rng,
+            out,
+        );
+        product(out);
+        self.gather_five_atoms_exact(
+            z,
+            &c_atoms,
+            &c_plan,
+            constant_helper,
+            &mut seen,
+            rng,
+            out,
+        );
+        product(out);
+        self.gather_five_atoms_exact(
+            u,
+            &b_atoms,
+            &b_plan,
+            constant_helper,
+            &mut seen,
+            rng,
+            out,
+        );
+        product(out);
+        self.gather_five_atoms_exact(
+            z,
+            &c_atoms,
+            &c_plan,
+            constant_helper,
+            &mut seen,
+            rng,
+            out,
+        );
+
+        // g57 fires as 1 + S_c + S_b*S_c.  The caller already put the leading
+        // one into kappa_t; emit the remaining S_c term atom-by-atom.
+        for (atom, &(helper, pivot)) in c_atoms.iter().zip(&c_plan) {
+            if atom.is_empty() {
+                self.consts[t] ^= true;
+                self.ledger_consts += 1;
+                continue;
+            }
+            let residual = emit_atom_onto(
+                state.carriers[t][0] as u16,
+                atom,
+                helper,
+                pivot,
+                self.rung_menu,
+                &mut seen,
+                rng,
+                out,
+            );
+            if residual {
+                self.consts[t] ^= true;
+                self.ledger_consts += 1;
+            }
+        }
+        self.cg_gray += 1;
+        true
+    }
+
+    /// Apply one source gate to the five-carrier encoding.  U0 is always
+    /// applied to the target tuple; c0 is then toggled by the source gate's
+    /// logical firing function.  This realizes U0 on output zero and U1 on
+    /// output one while preserving the product masks and ledger convention.
+    fn fold_five(
+        &mut self,
+        gate: &XGate,
+        state: &FiveCarrierState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        let t = gate.target as usize;
+        state.emit_update(t, out);
+        if gate.comp {
+            self.consts[t] ^= true;
+            self.ledger_consts += 1;
+        }
+        if self.gray_fold && self.fold_five_g57_gray(gate, state, rng, out) {
+            return;
+        }
+
+        let lists: Vec<Vec<Vec<(u16, bool)>>> = gate
+            .ctrls
+            .iter()
+            .map(|&(wire, positive)| {
+                self.five_decode_atoms(wire as usize, positive, state)
+            })
+            .collect();
+        if self.micro_gray {
+            let protected: Vec<u16> = state.carriers[t]
+                .iter()
+                .map(|&wire| wire as u16)
+                .collect();
+            let carrier_groups: Vec<Vec<u16>> = state
+                .carriers
+                .iter()
+                .map(|group| group.iter().map(|&wire| wire as u16).collect())
+                .collect();
+            if self.fold_micro_product(
+                state.carriers[t][0] as u16,
+                &lists,
+                &protected,
+                &carrier_groups,
+                rng,
+                out,
+            ) {
+                return;
+            }
+        }
+        if self.sentinel_gray {
+            let mut sentinel_lists = lists.clone();
+            if sentinel_lists
+                .iter_mut()
+                .all(absorb_constants_into_linear_atom)
+            {
+                let protected: Vec<u16> = state.carriers[t]
+                    .iter()
+                    .map(|&wire| wire as u16)
+                    .collect();
+                let carrier_groups: Vec<Vec<u16>> = state
+                    .carriers
+                    .iter()
+                    .map(|group| group.iter().map(|&wire| wire as u16).collect())
+                    .collect();
+                if self.fold_sentinel_product(
+                    t,
+                    state.carriers[t][0] as u16,
+                    &sentinel_lists,
+                    &protected,
+                    &carrier_groups,
+                    rng,
+                    out,
+                ) {
+                    return;
+                }
+            }
+        }
+        if lists.is_empty() {
+            // AND over no controls is one.
+            self.consts[t] ^= true;
+            self.ledger_consts += 1;
+            return;
+        }
+
+        let mut combo = vec![0usize; lists.len()];
+        'odometer: loop {
+            let atoms: Vec<Vec<(u16, bool)>> = lists
+                .iter()
+                .zip(&combo)
+                .map(|(list, &index)| list[index].clone())
+                .collect();
+            let mut lits = interleave_atoms(&atoms);
+            if lits.is_empty() {
+                self.consts[t] ^= true;
+                self.ledger_consts += 1;
+            } else if normalize_lits(&mut lits).is_some() {
+                if let Some(fragment) = XGate::conj(state.carriers[t][0] as u16, lits) {
+                    if fragment.width() <= 2 {
+                        self.cg_narrow += 1;
+                    } else {
+                        self.cg_fossils += 1;
+                    }
+                    out.push(fragment);
+                    self.cg_fragments += 1;
+                }
+            }
+            let mut axis = 0;
+            loop {
+                combo[axis] += 1;
+                if combo[axis] < lists[axis].len() {
+                    break;
+                }
+                combo[axis] = 0;
+                axis += 1;
+                if axis == combo.len() {
+                    break 'odometer;
+                }
+            }
+        }
+    }
+
+    /// Five-carrier variant of the rolling-band role swap.
+    fn roll_five(
+        &mut self,
+        state: &mut FiveCarrierState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        if !self.enabled() || self.loc.is_empty() {
+            return;
+        }
+        let total = self.carrier_total + self.loc.len();
+        let var = rng.random_range(0..self.loc.len());
+        let from = self.loc[var];
+        let to = loop {
+            let wire = rng.random_range(0..total) as u16;
+            if wire != from {
+                break wire;
+            }
+        };
+        if let Some(other) = self.loc.iter().position(|&wire| wire == to) {
+            self.loc[other] = from;
+        } else {
+            let mut found = false;
+            'values: for carriers in &mut state.carriers {
+                for wire in carriers {
+                    if *wire == to as usize {
+                        *wire = from as usize;
+                        found = true;
+                        break 'values;
+                    }
+                }
+            }
+            assert!(found, "five-carrier roll partner has no role");
+        }
+        self.loc[var] = to;
+        let (a, b) = if rng.random_bool(0.5) {
+            (from, to)
+        } else {
+            (to, from)
+        };
+        for (target, source) in [(a, b), (b, a), (a, b)] {
+            emit_transvection_mixed(target, source, total, rng, out);
+        }
+        self.rolled += 1;
+    }
+}
+
+impl ProdLedger {
+    /// Full ANF decode of one six-carrier logical literal. An empty atom is the
+    /// constant one contributed by the ledger or a negative source literal.
+    fn six_decode_atoms(
+        &self,
+        value: usize,
+        positive: bool,
+        state: &SixCarrierState,
+    ) -> Vec<Vec<(u16, bool)>> {
+        let carriers = state.carriers[value];
+        let mut atoms: Vec<Vec<(u16, bool)>> = SIX_CARRIER_D_ATOMS
+            .iter()
+            .map(|atom| {
+                atom.iter()
+                    .map(|&lane| (carriers[lane as usize] as u16, true))
+                    .collect()
+            })
+            .collect();
+        atoms.extend(self.slots[value].iter().map(|slot| slot.lits(&self.loc)));
+        if self.consts[value] ^ !positive {
+            atoms.push(Vec::new());
+        }
+        atoms
+    }
+
+    /// Four-phase dirty-accumulator fold for a six-carrier g57. It gathers the
+    /// complete D+mask+constant decode of each operand, so the four product
+    /// reads telescope to S_b*S_c; the direct final pass contributes S_c.
+    fn fold_six_g57_gray(
+        &mut self,
+        gate: &XGate,
+        state: &SixCarrierState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) -> bool {
+        if !gate.comp || gate.ctrls.len() != 2 {
+            return false;
+        }
+        let Some(&(b_wire, false)) = gate.ctrls.iter().find(|&&(_, polarity)| !polarity) else {
+            return false;
+        };
+        let Some(&(c_wire, true)) = gate.ctrls.iter().find(|&&(_, polarity)| polarity) else {
+            return false;
+        };
+        let (target, b, c) = (
+            gate.target as usize,
+            b_wire as usize,
+            c_wire as usize,
+        );
+        let b_atoms = self.six_decode_atoms(b, true, state);
+        let c_atoms = self.six_decode_atoms(c, true, state);
+        if b_atoms
+            .iter()
+            .chain(&c_atoms)
+            .any(|atom| atom.len() > 3)
+        {
+            return false;
+        }
+
+        // Use three distinct unrelated logical values for u, z, and the dirty
+        // helper. Small source widths safely fall back to the exact cartesian
+        // fold when this pool does not exist.
+        let mut borrow_values: Vec<usize> = (0..state.n)
+            .filter(|value| *value != target && *value != b && *value != c)
+            .collect();
+        use rand::seq::SliceRandom;
+        borrow_values.shuffle(rng);
+        if borrow_values.len() < 3 {
+            return false;
+        }
+        let u = state.carriers[borrow_values[0]][rng.random_range(0..6)] as u16;
+        let z = state.carriers[borrow_values[1]][rng.random_range(0..6)] as u16;
+        let helper = state.carriers[borrow_values[2]][rng.random_range(0..6)] as u16;
+        let b_plan: Vec<(u16, usize)> = b_atoms
+            .iter()
+            .map(|atom| {
+                let pivot = if atom.len() == 3 {
+                    choose_pivot(atom, rng)
+                } else {
+                    0
+                };
+                (helper, pivot)
+            })
+            .collect();
+        let c_plan: Vec<(u16, usize)> = c_atoms
+            .iter()
+            .map(|atom| {
+                let pivot = if atom.len() == 3 {
+                    choose_pivot(atom, rng)
+                } else {
+                    0
+                };
+                (helper, pivot)
+            })
+            .collect();
+        let product = |out: &mut Vec<XGate>| {
+            out.push(
+                XGate::conj(
+                    state.carriers[target][0] as u16,
+                    [(u, true), (z, true)],
+                )
+                .expect("accumulators differ from target c0"),
+            );
+        };
+        let mut seen: SpellingLog = std::collections::HashMap::new();
+
+        product(out);
+        self.gather_five_atoms_exact(
+            u,
+            &b_atoms,
+            &b_plan,
+            helper,
+            &mut seen,
+            rng,
+            out,
+        );
+        product(out);
+        self.gather_five_atoms_exact(
+            z,
+            &c_atoms,
+            &c_plan,
+            helper,
+            &mut seen,
+            rng,
+            out,
+        );
+        product(out);
+        self.gather_five_atoms_exact(
+            u,
+            &b_atoms,
+            &b_plan,
+            helper,
+            &mut seen,
+            rng,
+            out,
+        );
+        product(out);
+        self.gather_five_atoms_exact(
+            z,
+            &c_atoms,
+            &c_plan,
+            helper,
+            &mut seen,
+            rng,
+            out,
+        );
+
+        for (atom, &(atom_helper, pivot)) in c_atoms.iter().zip(&c_plan) {
+            if atom.is_empty() {
+                self.consts[target] ^= true;
+                self.ledger_consts += 1;
+                continue;
+            }
+            let residual = emit_atom_onto(
+                state.carriers[target][0] as u16,
+                atom,
+                atom_helper,
+                pivot,
+                self.rung_menu,
+                &mut seen,
+                rng,
+                out,
+            );
+            if residual {
+                self.consts[target] ^= true;
+                self.ledger_consts += 1;
+            }
+        }
+        self.cg_gray += 1;
+        true
+    }
+
+    /// Apply one heterogeneous source gate under the six-carrier decode.
+    fn fold_six(
+        &mut self,
+        gate: &XGate,
+        state: &SixCarrierState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        let target = gate.target as usize;
+        state.emit_update(target, out);
+        if gate.comp {
+            self.consts[target] ^= true;
+            self.ledger_consts += 1;
+        }
+        if self.gray_fold && self.fold_six_g57_gray(gate, state, rng, out) {
+            return;
+        }
+
+        let lists: Vec<Vec<Vec<(u16, bool)>>> = gate
+            .ctrls
+            .iter()
+            .map(|&(wire, positive)| {
+                self.six_decode_atoms(wire as usize, positive, state)
+            })
+            .collect();
+        if self.micro_gray {
+            let protected: Vec<u16> = state.carriers[target]
+                .iter()
+                .map(|&wire| wire as u16)
+                .collect();
+            let carrier_groups: Vec<Vec<u16>> = state
+                .carriers
+                .iter()
+                .map(|group| group.iter().map(|&wire| wire as u16).collect())
+                .collect();
+            if self.fold_micro_product(
+                state.carriers[target][0] as u16,
+                &lists,
+                &protected,
+                &carrier_groups,
+                rng,
+                out,
+            ) {
+                return;
+            }
+        }
+        if self.sentinel_gray {
+            let mut sentinel_lists = lists.clone();
+            if sentinel_lists
+                .iter_mut()
+                .all(absorb_constants_into_linear_atom)
+            {
+                let protected: Vec<u16> = state.carriers[target]
+                    .iter()
+                    .map(|&wire| wire as u16)
+                    .collect();
+                let carrier_groups: Vec<Vec<u16>> = state
+                    .carriers
+                    .iter()
+                    .map(|group| group.iter().map(|&wire| wire as u16).collect())
+                    .collect();
+                if self.fold_sentinel_product(
+                    target,
+                    state.carriers[target][0] as u16,
+                    &sentinel_lists,
+                    &protected,
+                    &carrier_groups,
+                    rng,
+                    out,
+                ) {
+                    return;
+                }
+            }
+        }
+        if lists.is_empty() {
+            self.consts[target] ^= true;
+            self.ledger_consts += 1;
+            return;
+        }
+
+        let mut combo = vec![0usize; lists.len()];
+        'odometer: loop {
+            let atoms: Vec<Vec<(u16, bool)>> = lists
+                .iter()
+                .zip(&combo)
+                .map(|(list, &index)| list[index].clone())
+                .collect();
+            let mut lits = interleave_atoms(&atoms);
+            if lits.is_empty() {
+                self.consts[target] ^= true;
+                self.ledger_consts += 1;
+            } else if normalize_lits(&mut lits).is_some() {
+                if let Some(fragment) = XGate::conj(state.carriers[target][0] as u16, lits) {
+                    if fragment.width() <= 2 {
+                        self.cg_narrow += 1;
+                    } else {
+                        self.cg_fossils += 1;
+                    }
+                    out.push(fragment);
+                    self.cg_fragments += 1;
+                }
+            }
+            let mut axis = 0;
+            loop {
+                combo[axis] += 1;
+                if combo[axis] < lists[axis].len() {
+                    break;
+                }
+                combo[axis] = 0;
+                axis += 1;
+                if axis == combo.len() {
+                    break 'odometer;
+                }
+            }
+        }
+    }
+
+    fn roll_six(
+        &mut self,
+        state: &mut SixCarrierState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        if !self.enabled() || self.loc.is_empty() {
+            return;
+        }
+        let total = self.carrier_total + self.loc.len();
+        let var = rng.random_range(0..self.loc.len());
+        let from = self.loc[var];
+        let to = loop {
+            let wire = rng.random_range(0..total) as u16;
+            if wire != from {
+                break wire;
+            }
+        };
+        if let Some(other) = self.loc.iter().position(|&wire| wire == to) {
+            self.loc[other] = from;
+        } else {
+            let mut found = false;
+            'values: for carriers in &mut state.carriers {
+                for wire in carriers {
+                    if *wire == to as usize {
+                        *wire = from as usize;
+                        found = true;
+                        break 'values;
+                    }
+                }
+            }
+            assert!(found, "six-carrier roll partner has no role");
+        }
+        self.loc[var] = to;
+        let (a, b) = if rng.random_bool(0.5) {
+            (from, to)
+        } else {
+            (to, from)
+        };
+        for (target, source) in [(a, b), (b, a), (a, b)] {
+            emit_transvection_mixed(target, source, total, rng, out);
+        }
+        self.rolled += 1;
+    }
+}
+
+impl ProdLedger {
+    /// Full ANF decode of one seven-carrier logical literal. An empty atom is
+    /// the constant one contributed by the ledger or a negative source
+    /// literal. The quartic decode atom is gathered by [`emit_atom_onto`]'s
+    /// dirty-helper double sweep.
+    fn seven_decode_atoms(
+        &self,
+        value: usize,
+        positive: bool,
+        state: &SevenCarrierState,
+    ) -> Vec<Vec<(u16, bool)>> {
+        let carriers = state.carriers[value];
+        let mut atoms: Vec<Vec<(u16, bool)>> = SEVEN_CARRIER_D_ATOMS
+            .iter()
+            .map(|atom| {
+                atom.iter()
+                    .map(|&lane| (carriers[lane as usize] as u16, true))
+                    .collect()
+            })
+            .collect();
+        atoms.extend(self.slots[value].iter().map(|slot| slot.lits(&self.loc)));
+        if self.consts[value] ^ !positive {
+            atoms.push(Vec::new());
+        }
+        atoms
+    }
+
+    /// Four-phase dirty-accumulator fold for a seven-carrier g57. It gathers
+    /// the complete decode, including the quartic c3*c4*c5*c6 atom, so the
+    /// four product reads telescope to S_b*S_c and the direct pass supplies
+    /// S_c. Every gathered atom uses at most three controls after adjustment.
+    fn fold_seven_g57_gray(
+        &mut self,
+        gate: &XGate,
+        state: &SevenCarrierState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) -> bool {
+        if !gate.comp || gate.ctrls.len() != 2 {
+            return false;
+        }
+        let Some(&(b_wire, false)) = gate.ctrls.iter().find(|&&(_, polarity)| !polarity) else {
+            return false;
+        };
+        let Some(&(c_wire, true)) = gate.ctrls.iter().find(|&&(_, polarity)| polarity) else {
+            return false;
+        };
+        let (target, b, c) = (
+            gate.target as usize,
+            b_wire as usize,
+            c_wire as usize,
+        );
+        let b_atoms = self.seven_decode_atoms(b, true, state);
+        let c_atoms = self.seven_decode_atoms(c, true, state);
+        if b_atoms
+            .iter()
+            .chain(&c_atoms)
+            .any(|atom| atom.len() > 4)
+        {
+            return false;
+        }
+
+        // u, z, and h come from three distinct unrelated logical values. This
+        // keeps all borrowed wires distinct even after role rolling. For small
+        // sources the ordinary exact cartesian fold remains the safe fallback.
+        let mut borrow_values: Vec<usize> = (0..state.n)
+            .filter(|value| *value != target && *value != b && *value != c)
+            .collect();
+        use rand::seq::SliceRandom;
+        borrow_values.shuffle(rng);
+        if borrow_values.len() < 3 {
+            return false;
+        }
+        let u = state.carriers[borrow_values[0]][rng.random_range(0..7)] as u16;
+        let z = state.carriers[borrow_values[1]][rng.random_range(0..7)] as u16;
+        let helper = state.carriers[borrow_values[2]][rng.random_range(0..7)] as u16;
+        let b_plan: Vec<(u16, usize)> = b_atoms
+            .iter()
+            .map(|atom| {
+                let pivot = if atom.len() == 3 {
+                    choose_pivot(atom, rng)
+                } else {
+                    0
+                };
+                (helper, pivot)
+            })
+            .collect();
+        let c_plan: Vec<(u16, usize)> = c_atoms
+            .iter()
+            .map(|atom| {
+                let pivot = if atom.len() == 3 {
+                    choose_pivot(atom, rng)
+                } else {
+                    0
+                };
+                (helper, pivot)
+            })
+            .collect();
+        let product = |out: &mut Vec<XGate>| {
+            out.push(
+                XGate::conj(
+                    state.carriers[target][0] as u16,
+                    [(u, true), (z, true)],
+                )
+                .expect("accumulators differ from target c0"),
+            );
+        };
+        let mut seen: SpellingLog = std::collections::HashMap::new();
+
+        product(out);
+        self.gather_five_atoms_exact(
+            u,
+            &b_atoms,
+            &b_plan,
+            helper,
+            &mut seen,
+            rng,
+            out,
+        );
+        product(out);
+        self.gather_five_atoms_exact(
+            z,
+            &c_atoms,
+            &c_plan,
+            helper,
+            &mut seen,
+            rng,
+            out,
+        );
+        product(out);
+        self.gather_five_atoms_exact(
+            u,
+            &b_atoms,
+            &b_plan,
+            helper,
+            &mut seen,
+            rng,
+            out,
+        );
+        product(out);
+        self.gather_five_atoms_exact(
+            z,
+            &c_atoms,
+            &c_plan,
+            helper,
+            &mut seen,
+            rng,
+            out,
+        );
+
+        for (atom, &(atom_helper, pivot)) in c_atoms.iter().zip(&c_plan) {
+            if atom.is_empty() {
+                self.consts[target] ^= true;
+                self.ledger_consts += 1;
+                continue;
+            }
+            let residual = emit_atom_onto(
+                state.carriers[target][0] as u16,
+                atom,
+                atom_helper,
+                pivot,
+                self.rung_menu,
+                &mut seen,
+                rng,
+                out,
+            );
+            if residual {
+                self.consts[target] ^= true;
+                self.ledger_consts += 1;
+            }
+        }
+        self.cg_gray += 1;
+        true
+    }
+
+    fn make_seven_distributed_fragment(
+        &mut self,
+        target: u16,
+        mut lits: Vec<(u16, bool)>,
+    ) -> Option<XGate> {
+        if normalize_lits(&mut lits).is_none() {
+            return None;
+        }
+        let Some(fragment) = XGate::conj(target, lits) else {
+            return None;
+        };
+        Some(fragment)
+    }
+
+    fn record_seven_distributed_fragment(&mut self, fragment: &XGate) {
+        if fragment.width() <= 2 {
+            self.cg_narrow += 1;
+        } else {
+            self.cg_fossils += 1;
+        }
+        self.cg_fragments += 1;
+    }
+
+    /// Opt-in expanded seven-carrier fold with nonlinear D-preserving refreshes
+    /// between every pair of consecutive emitted product fragments.
+    ///
+    /// A random automorphism first chooses which physical linear lane receives
+    /// this occurrence's ANF fragments.  Each fragment still changes D by its
+    /// firing value, while every inserted three-gate shear preserves D exactly.
+    /// There is deliberately no fixed U0 bookend: exhaustive local trace tests
+    /// found that even one such update collapses the intended distance gain.
+    fn fold_seven_distributed(
+        &mut self,
+        gate: &XGate,
+        state: &SevenCarrierState,
+        partition_floor: usize,
+        partition_helper_limit: usize,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        assert!(
+            !self.gray_fold && !self.micro_gray && !self.sentinel_gray,
+            "distributed seven-carrier switching currently requires expanded/no-Gray folding"
+        );
+
+        let target_value = gate.target as usize;
+        let roles = seven_carrier_role_automorphism(rng);
+        let physical_target = state.carriers[target_value][roles[0] as usize] as u16;
+        if gate.comp {
+            self.consts[target_value] ^= true;
+            self.ledger_consts += 1;
+        }
+        let lists: Vec<Vec<Vec<(u16, bool)>>> = gate
+            .ctrls
+            .iter()
+            .map(|&(wire, positive)| {
+                self.seven_decode_atoms(wire as usize, positive, state)
+            })
+            .collect();
+
+        let mut fragments = Vec::new();
+        let mut physical_constant = false;
+        if lists.is_empty() {
+            if partition_floor > 0 {
+                physical_constant = true;
+            } else {
+                self.consts[target_value] ^= true;
+                self.ledger_consts += 1;
+                self.distributed_fold_original_fragments.push(0);
+                self.distributed_fold_fragments.push(0);
+                self.distributed_fold_floors.push(0);
+                return;
+            }
+        } else {
+            let mut combo = vec![0usize; lists.len()];
+            'odometer: loop {
+                let atoms: Vec<Vec<(u16, bool)>> = lists
+                    .iter()
+                    .zip(&combo)
+                    .map(|(list, &index)| list[index].clone())
+                    .collect();
+                let lits = interleave_atoms(&atoms);
+                if lits.is_empty() {
+                    if partition_floor > 0 {
+                        physical_constant ^= true;
+                    } else {
+                        self.consts[target_value] ^= true;
+                        self.ledger_consts += 1;
+                    }
+                } else if let Some(fragment) =
+                    self.make_seven_distributed_fragment(physical_target, lits)
+                {
+                    fragments.push(fragment);
+                }
+
+                let mut axis = 0;
+                loop {
+                    combo[axis] += 1;
+                    if combo[axis] < lists[axis].len() {
+                        break;
+                    }
+                    combo[axis] = 0;
+                    axis += 1;
+                    if axis == combo.len() {
+                        break 'odometer;
+                    }
+                }
+            }
+        }
+        if physical_constant {
+            fragments.push(XGate::x_gate(physical_target));
+        }
+
+        let original_fragment_count = fragments.len();
+        if partition_floor > 0
+            && !fragments.is_empty()
+            && fragments.len() < partition_floor
+        {
+            let controls: std::collections::HashSet<usize> =
+                gate.ctrls.iter().map(|&(wire, _)| wire as usize).collect();
+            assert!(partition_helper_limit <= state.n);
+            let mut helper_values: Vec<usize> = (0..partition_helper_limit)
+                .filter(|&value| value != target_value && !controls.contains(&value))
+                .collect();
+            let mut split_bits = 0usize;
+            let cell_count = loop {
+                let cells = 1usize
+                    .checked_shl(split_bits as u32)
+                    .expect("partition floor needs too many selector bits");
+                if fragments
+                    .len()
+                    .checked_mul(cells)
+                    .expect("partition branch count overflow")
+                    >= partition_floor
+                {
+                    break cells;
+                }
+                split_bits += 1;
+            };
+            assert!(
+                helper_values.len() >= split_bits,
+                "partitioned seven-carrier folds need one distinct logical value outside the target and every gate control per split bit"
+            );
+            helper_values.shuffle(rng);
+            // Use canonical c0 from distinct logical values in the caller's
+            // eligible prefix.  A sliced-sandwich caller can restrict that
+            // prefix to its known-live data half; this avoids selecting fixed
+            // upper-half coordinates.  Several lanes of one freshly
+            // initialized representative could likewise all be fixed zero.
+            // Rolls change physical locations, not roles, so this remains c0.
+            let helpers: Vec<u16> = helper_values
+                .into_iter()
+                .take(split_bits)
+                .map(|value| state.carriers[value][0] as u16)
+                .collect();
+            let mut partitioned = Vec::with_capacity(fragments.len() * cell_count);
+            for fragment in fragments {
+                // Independent cell order per original fragment prevents the
+                // same physical lane from walking through identical polarity
+                // transitions at every product occurrence.
+                let mut cells: Vec<usize> = (0..cell_count).collect();
+                cells.shuffle(rng);
+                for cell in cells {
+                    let mut lits: Vec<(u16, bool)> = fragment.ctrls.iter().copied().collect();
+                    lits.extend(
+                        helpers
+                            .iter()
+                            .enumerate()
+                            .map(|(bit, &wire)| (wire, cell & (1 << bit) != 0)),
+                    );
+                    partitioned.push(
+                        XGate::conj(fragment.target, lits)
+                            .expect("unrelated helper value cannot contradict a source fragment"),
+                    );
+                }
+            }
+            fragments = partitioned;
+        }
+
+        let mut used_selectors = std::collections::HashSet::new();
+        let rotation = rng.random_range(0..4usize);
+        let fragment_count = fragments.len();
+        self.distributed_fold_original_fragments
+            .push(original_fragment_count);
+        self.distributed_fold_fragments.push(fragment_count);
+        self.distributed_fold_floors.push(partition_floor);
+        for (index, fragment) in fragments.into_iter().enumerate() {
+            self.record_seven_distributed_fragment(&fragment);
+            out.push(fragment);
+            if index + 1 == fragment_count {
+                continue;
+            }
+            let selector = draw_seven_carrier_shear_selector(
+                state,
+                target_value,
+                &mut used_selectors,
+                rng,
+            );
+            let x = 3 + ((rotation + index) % 4) as u8;
+            emit_seven_carrier_preserving_shear(
+                state,
+                target_value,
+                &roles,
+                x,
+                selector,
+                out,
+            );
+        }
+    }
+
+    /// Apply one heterogeneous source gate under the legacy seven-carrier
+    /// decode.  This retains the distinguished-c0 switch for byte-for-byte
+    /// compatibility; the distributed sibling is explicitly selected by its
+    /// own public gadgetizer entry point.
+    fn fold_seven(
+        &mut self,
+        gate: &XGate,
+        state: &SevenCarrierState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        let target = gate.target as usize;
+        emit_seven_carrier_update(&state.carriers[target], out);
+        if gate.comp {
+            self.consts[target] ^= true;
+            self.ledger_consts += 1;
+        }
+        if self.gray_fold && self.fold_seven_g57_gray(gate, state, rng, out) {
+            return;
+        }
+
+        let lists: Vec<Vec<Vec<(u16, bool)>>> = gate
+            .ctrls
+            .iter()
+            .map(|&(wire, positive)| {
+                self.seven_decode_atoms(wire as usize, positive, state)
+            })
+            .collect();
+        if self.micro_gray {
+            let protected: Vec<u16> = state.carriers[target]
+                .iter()
+                .map(|&wire| wire as u16)
+                .collect();
+            let carrier_groups: Vec<Vec<u16>> = state
+                .carriers
+                .iter()
+                .map(|group| group.iter().map(|&wire| wire as u16).collect())
+                .collect();
+            if self.fold_micro_product(
+                state.carriers[target][0] as u16,
+                &lists,
+                &protected,
+                &carrier_groups,
+                rng,
+                out,
+            ) {
+                return;
+            }
+        }
+        if self.sentinel_gray {
+            let mut sentinel_lists = lists.clone();
+            if sentinel_lists
+                .iter_mut()
+                .all(absorb_constants_into_linear_atom)
+            {
+                let protected: Vec<u16> = state.carriers[target]
+                    .iter()
+                    .map(|&wire| wire as u16)
+                    .collect();
+                let carrier_groups: Vec<Vec<u16>> = state
+                    .carriers
+                    .iter()
+                    .map(|group| group.iter().map(|&wire| wire as u16).collect())
+                    .collect();
+                if self.fold_sentinel_product(
+                    target,
+                    state.carriers[target][0] as u16,
+                    &sentinel_lists,
+                    &protected,
+                    &carrier_groups,
+                    rng,
+                    out,
+                ) {
+                    return;
+                }
+            }
+        }
+        if lists.is_empty() {
+            self.consts[target] ^= true;
+            self.ledger_consts += 1;
+            return;
+        }
+
+        let mut combo = vec![0usize; lists.len()];
+        'odometer: loop {
+            let atoms: Vec<Vec<(u16, bool)>> = lists
+                .iter()
+                .zip(&combo)
+                .map(|(list, &index)| list[index].clone())
+                .collect();
+            let mut lits = interleave_atoms(&atoms);
+            if lits.is_empty() {
+                self.consts[target] ^= true;
+                self.ledger_consts += 1;
+            } else if normalize_lits(&mut lits).is_some() {
+                if let Some(fragment) = XGate::conj(state.carriers[target][0] as u16, lits) {
+                    if fragment.width() <= 2 {
+                        self.cg_narrow += 1;
+                    } else {
+                        self.cg_fossils += 1;
+                    }
+                    out.push(fragment);
+                    self.cg_fragments += 1;
+                }
+            }
+            let mut axis = 0;
+            loop {
+                combo[axis] += 1;
+                if combo[axis] < lists[axis].len() {
+                    break;
+                }
+                combo[axis] = 0;
+                axis += 1;
+                if axis == combo.len() {
+                    break 'odometer;
+                }
+            }
+        }
+    }
+
+    fn roll_seven(
+        &mut self,
+        state: &mut SevenCarrierState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        if !self.enabled() || self.loc.is_empty() {
+            return;
+        }
+        let total = self.carrier_total + self.loc.len();
+        let var = rng.random_range(0..self.loc.len());
+        let from = self.loc[var];
+        let to = loop {
+            let wire = rng.random_range(0..total) as u16;
+            if wire != from {
+                break wire;
+            }
+        };
+        if let Some(other) = self.loc.iter().position(|&wire| wire == to) {
+            self.loc[other] = from;
+        } else {
+            let mut found = false;
+            'values: for carriers in &mut state.carriers {
+                for wire in carriers {
+                    if *wire == to as usize {
+                        *wire = from as usize;
+                        found = true;
+                        break 'values;
+                    }
+                }
+            }
+            assert!(found, "seven-carrier roll partner has no role");
+        }
+        self.loc[var] = to;
+        let (a, b) = if rng.random_bool(0.5) {
+            (from, to)
+        } else {
+            (to, from)
+        };
+        for (target, source) in [(a, b), (b, a), (a, b)] {
+            emit_transvection_mixed(target, source, total, rng, out);
+        }
+        self.rolled += 1;
     }
 }
 
@@ -6001,6 +8701,39 @@ fn emit_band_fill(n: usize, band: &[u16], rng: &mut impl Rng, out: &mut Vec<XGat
             break;
         }
     }
+}
+
+/// Linear band fill used by the opt-in boundary-partition experiment, with
+/// the exact affine support of every band wire on a known-live input prefix.
+/// Its draw/emission order deliberately matches [`emit_band_fill`].
+fn emit_band_fill_with_live_supports(
+    n: usize,
+    band: &[u16],
+    live_prefix: usize,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) -> Vec<Vec<u64>> {
+    assert!(live_prefix <= n);
+    let words = live_prefix.div_ceil(64);
+    let mut supports = Vec::with_capacity(band.len());
+    for &band_wire in band {
+        loop {
+            let subset: Vec<usize> = (0..n).filter(|_| rng.random_bool(0.5)).collect();
+            if subset.len() < 2 {
+                continue;
+            }
+            let mut support = vec![0u64; words];
+            for data_wire in subset {
+                if data_wire < live_prefix {
+                    support[data_wire / 64] ^= 1u64 << (data_wire % 64);
+                }
+                out.push(XGate::cnot(band_wire, data_wire as u16));
+            }
+            supports.push(support);
+            break;
+        }
+    }
+    supports
 }
 
 /// W0 (nonlinear cascade): fill each band wire with
@@ -6257,6 +8990,26 @@ pub fn commuting_shuffle_order(gates: &mut Vec<XGate>, rng: &mut impl Rng) -> Ve
     order
 }
 
+/// Bounded linear-time reorder used by the terminal-fence measurement
+/// fixture. Each pass considers one parity of disjoint adjacent pairs and
+/// swaps a fair random subset of the pairs that commute. Applying this to a
+/// prefix slice makes crossing the slice boundary impossible by construction.
+fn adjacent_commuting_swap_passes(
+    gates: &mut [XGate],
+    passes: usize,
+    rng: &mut impl Rng,
+) {
+    for _ in 0..passes {
+        let mut index = rng.random_range(0..2);
+        while index + 1 < gates.len() {
+            if rng.random_bool(0.5) && !XGate::collides(&gates[index], &gates[index + 1]) {
+                gates.swap(index, index + 1);
+            }
+            index += 2;
+        }
+    }
+}
+
 /// Two-share gadgetization with native CNOT linear bookends, a per-gate
 /// uniform draw from the seven-variant CG menu ([`emit_cg_variant`]), and
 /// the legacy NONLINEAR g57 RGs drawn uniformly from
@@ -6459,6 +9212,1056 @@ fn emit_value_relocation(
     emit_wire_swap(wi, wj, out);
     state.pairs[i] = (wj, wj);
     state.pairs[j] = (wi, wi);
+}
+
+/// Toggle c0 by the nonlinear part of D.  At the input port this encodes a
+/// plain bit x as D(c)=x for arbitrary incoming c1..c4; at the output port the
+/// identical self-inverse block decodes D back onto c0.
+fn emit_five_carrier_decode_toggle(carriers: &[usize; 5], out: &mut Vec<XGate>) {
+    for (a, b) in [(1usize, 2usize), (1, 3), (2, 3), (1, 4)] {
+        out.push(
+            XGate::conj(
+                carriers[0] as u16,
+                [(carriers[a] as u16, true), (carriers[b] as u16, true)],
+            )
+            .expect("five carrier lanes are distinct"),
+        );
+    }
+}
+
+/// Public-port encoder/decoder for the strong cubic five-carrier decode.
+/// Every atom excludes c0, so the block is self-inverse for arbitrary junk in
+/// c1..c4.
+fn emit_strong_five_carrier_decode_toggle(carriers: &[usize; 5], out: &mut Vec<XGate>) {
+    const ATOMS: &[&[usize]] = &[&[2], &[2, 3], &[1, 2, 3], &[1, 2, 4], &[3, 4]];
+    for atom in ATOMS {
+        let controls = atom
+            .iter()
+            .map(|&lane| (carriers[lane] as u16, true));
+        out.push(
+            XGate::conj(carriers[0] as u16, controls)
+                .expect("strong-five decode atoms exclude c0"),
+        );
+    }
+}
+
+fn emit_five_carrier_port_toggle(
+    flavor: FiveCarrierFlavor,
+    carriers: &[usize; 5],
+    out: &mut Vec<XGate>,
+) {
+    match flavor {
+        FiveCarrierFlavor::SuppliedQuadratic => emit_five_carrier_decode_toggle(carriers, out),
+        FiveCarrierFlavor::StrongCubic => emit_strong_five_carrier_decode_toggle(carriers, out),
+    }
+}
+
+/// Resolve the joint carrier/band role permutation produced by rolling.  Every
+/// carrier lane returns to `lane*n + value`; band roles absorb the displaced
+/// junk.  This exposes decoded values only at the final port.
+fn route_five_carriers_home(
+    state: &mut FiveCarrierState,
+    ledger: &mut ProdLedger,
+    out: &mut Vec<XGate>,
+) {
+    for value in 0..state.n {
+        for lane in 0..5 {
+            let home = lane * state.n + value;
+            let current = state.carriers[value][lane];
+            if current == home {
+                continue;
+            }
+            emit_wire_swap(current, home, out);
+
+            if let Some(var) = ledger.loc.iter().position(|&wire| wire as usize == home) {
+                ledger.loc[var] = current as u16;
+            } else {
+                let mut displaced = None;
+                'find: for other_value in 0..state.n {
+                    for other_lane in 0..5 {
+                        if state.carriers[other_value][other_lane] == home {
+                            displaced = Some((other_value, other_lane));
+                            break 'find;
+                        }
+                    }
+                }
+                let (other_value, other_lane) =
+                    displaced.expect("every non-band wire has one carrier role");
+                state.carriers[other_value][other_lane] = current;
+            }
+            state.carriers[value][lane] = home;
+        }
+    }
+}
+
+fn gadgetize_five_carrier_source(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    flavor: FiveCarrierFlavor,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "five-carrier gadgetization requires n >= 3");
+    assert!(prod.enabled(), "five-carrier gadgetization needs product masks");
+    assert!(
+        !prod.dist(),
+        "distributed mask sourcing is not supported by five-carrier mode"
+    );
+    assert!(
+        source.iter().all(|gate| {
+            (gate.target as usize) < n
+                && gate
+                    .ctrls
+                    .iter()
+                    .all(|&(wire, _)| (wire as usize) < n)
+        }),
+        "source wire outside 0..n"
+    );
+
+    let carrier_total = 5 * n;
+    let band_len = prod.band_size(n);
+    let total = carrier_total + band_len;
+    assert!(total <= u16::MAX as usize, "too many wires");
+
+    let mut out = Vec::new();
+    let band_home: Vec<u16> = (carrier_total..total).map(|wire| wire as u16).collect();
+    if prod.fill_nl > 0 {
+        emit_band_fill_nl_pivots(
+            n,
+            &band_home,
+            prod.fill_nl,
+            prod.fill_pivots > 0,
+            rng,
+            &mut out,
+        );
+    } else {
+        emit_band_fill(n, &band_home, rng, &mut out);
+    }
+
+    let mut state = FiveCarrierState::home_with_flavor(n, flavor);
+    for carriers in &state.carriers {
+        emit_five_carrier_port_toggle(flavor, carriers, &mut out);
+    }
+    let mut ledger = ProdLedger::new(n, prod, carrier_total, None);
+    ledger.inject_all(&state.c0_view(), rng, &mut out);
+
+    for (index, gate) in source.iter().enumerate() {
+        ledger.set_pos(index);
+        ledger.fold_five(gate, &state, rng, &mut out);
+        if index + 1 == source.len() {
+            break;
+        }
+        // U0 itself is a fixed-point-free, class-preserving representation
+        // refresh, so it is the natural five-carrier RG between source gates.
+        for _ in 0..rg_freq {
+            let value = rng.random_range(0..n);
+            state.emit_update(value, &mut out);
+        }
+        for _ in 0..prod.rsrc {
+            ledger.resource(&state.c0_view(), rng, &mut out);
+        }
+        for _ in 0..prod.roll {
+            ledger.roll_five(&mut state, rng, &mut out);
+        }
+        if prod.epoch > 0 && rng.random_range(0..prod.epoch) == 0 {
+            ledger.retire_refill(
+                &state.c0_view(),
+                prod.refill_data,
+                prod.fill_nl,
+                rng,
+                &mut out,
+            );
+        }
+    }
+
+    ledger.strip_all(&state.c0_view(), rng, &mut out);
+    ledger.report();
+    route_five_carriers_home(&mut state, &mut ledger, &mut out);
+    for carriers in &state.carriers {
+        emit_five_carrier_port_toggle(flavor, carriers, &mut out);
+    }
+
+    // Every high wire is junk at the public port: four carrier lanes plus the
+    // mask band.  Filling the whole region avoids publishing which leftovers
+    // are band roles after the rolling body.
+    let nondata: Vec<u16> = (n..total).map(|wire| wire as u16).collect();
+    if prod.fill_nl > 0 {
+        emit_band_fill_nl_pivots(
+            n,
+            &nondata,
+            prod.fill_nl,
+            prod.fill_pivots > 0,
+            rng,
+            &mut out,
+        );
+    } else {
+        emit_band_fill(n, &nondata, rng, &mut out);
+    }
+
+    commuting_shuffle(&mut out, rng);
+    CnotCircuit {
+        gates: out,
+        num_wires: total,
+    }
+}
+
+/// Five-carrier nonlinear gadgetization of a g57 source circuit.
+pub fn gadgetize_cnot_five_carrier(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut main = main.clone();
+    let rounds = main.gates.len();
+    shoot_random_gate(&mut main, rounds);
+    let source: Vec<XGate> = main.gates.iter().copied().map(XGate::from_g57).collect();
+    gadgetize_five_carrier_source(
+        &source,
+        n,
+        rg_freq,
+        prod,
+        FiveCarrierFlavor::SuppliedQuadratic,
+        rng,
+    )
+}
+
+/// Five-carrier nonlinear gadgetization of a heterogeneous XGate source.
+pub fn gadgetize_xgates_five_carrier(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    gadgetize_five_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        FiveCarrierFlavor::SuppliedQuadratic,
+        rng,
+    )
+}
+
+/// Experimental strong five-carrier gadgetization.  This uses a cubic decode
+/// whose firing bit is outside the complete degree-two endpoint span.
+pub fn gadgetize_cnot_strong_five_carrier(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut main = main.clone();
+    let rounds = main.gates.len();
+    shoot_random_gate(&mut main, rounds);
+    let source: Vec<XGate> = main.gates.iter().copied().map(XGate::from_g57).collect();
+    gadgetize_five_carrier_source(
+        &source,
+        n,
+        rg_freq,
+        prod,
+        FiveCarrierFlavor::StrongCubic,
+        rng,
+    )
+}
+
+/// Heterogeneous-source counterpart of
+/// [`gadgetize_cnot_strong_five_carrier`].
+pub fn gadgetize_xgates_strong_five_carrier(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    gadgetize_five_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        FiveCarrierFlavor::StrongCubic,
+        rng,
+    )
+}
+
+/// Toggle c0 by all non-c0 atoms of the six-carrier decode. This is a
+/// self-inverse public-port encoder/decoder for arbitrary incoming c1..c5.
+fn emit_six_carrier_decode_toggle(carriers: &[usize; 6], out: &mut Vec<XGate>) {
+    for atom in SIX_CARRIER_D_ATOMS.iter().skip(1) {
+        let controls = atom
+            .iter()
+            .map(|&lane| (carriers[lane as usize] as u16, true));
+        out.push(
+            XGate::conj(carriers[0] as u16, controls)
+                .expect("six-carrier decode atoms exclude c0"),
+        );
+    }
+}
+
+fn route_six_carriers_home(
+    state: &mut SixCarrierState,
+    ledger: &mut ProdLedger,
+    out: &mut Vec<XGate>,
+) {
+    for value in 0..state.n {
+        for lane in 0..6 {
+            let home = lane * state.n + value;
+            let current = state.carriers[value][lane];
+            if current == home {
+                continue;
+            }
+            emit_wire_swap(current, home, out);
+
+            if let Some(var) = ledger.loc.iter().position(|&wire| wire as usize == home) {
+                ledger.loc[var] = current as u16;
+            } else {
+                let mut displaced = None;
+                'find: for other_value in 0..state.n {
+                    for other_lane in 0..6 {
+                        if state.carriers[other_value][other_lane] == home {
+                            displaced = Some((other_value, other_lane));
+                            break 'find;
+                        }
+                    }
+                }
+                let (other_value, other_lane) =
+                    displaced.expect("every non-band wire has one six-carrier role");
+                state.carriers[other_value][other_lane] = current;
+            }
+            state.carriers[value][lane] = home;
+        }
+    }
+}
+
+fn gadgetize_six_carrier_source(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    flavor: SixCarrierFlavor,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    assert!(n >= 3, "six-carrier gadgetization requires n >= 3");
+    assert!(prod.enabled(), "six-carrier gadgetization needs product masks");
+    assert!(
+        !prod.dist(),
+        "distributed mask sourcing is not supported by six-carrier mode"
+    );
+    assert!(
+        source.iter().all(|gate| {
+            (gate.target as usize) < n
+                && gate
+                    .ctrls
+                    .iter()
+                    .all(|&(wire, _)| (wire as usize) < n)
+        }),
+        "source wire outside 0..n"
+    );
+
+    let carrier_total = 6 * n;
+    let band_len = prod.band_size(n);
+    let total = carrier_total + band_len;
+    assert!(total <= u16::MAX as usize, "too many wires");
+
+    let mut out = Vec::new();
+    let band_home: Vec<u16> = (carrier_total..total).map(|wire| wire as u16).collect();
+    if prod.fill_nl > 0 {
+        emit_band_fill_nl_pivots(
+            n,
+            &band_home,
+            prod.fill_nl,
+            prod.fill_pivots > 0,
+            rng,
+            &mut out,
+        );
+    } else {
+        emit_band_fill(n, &band_home, rng, &mut out);
+    }
+
+    let mut state = SixCarrierState::home_with_flavor(n, flavor);
+    for carriers in &state.carriers {
+        emit_six_carrier_decode_toggle(carriers, &mut out);
+    }
+    let mut ledger = ProdLedger::new(n, prod, carrier_total, None);
+    ledger.inject_all(&state.c0_view(), rng, &mut out);
+
+    for (index, gate) in source.iter().enumerate() {
+        ledger.set_pos(index);
+        ledger.fold_six(gate, &state, rng, &mut out);
+        if index + 1 == source.len() {
+            break;
+        }
+        for _ in 0..rg_freq {
+            let value = rng.random_range(0..n);
+            state.emit_update(value, &mut out);
+        }
+        for _ in 0..prod.rsrc {
+            ledger.resource(&state.c0_view(), rng, &mut out);
+        }
+        for _ in 0..prod.roll {
+            ledger.roll_six(&mut state, rng, &mut out);
+        }
+        if prod.epoch > 0 && rng.random_range(0..prod.epoch) == 0 {
+            ledger.retire_refill(
+                &state.c0_view(),
+                prod.refill_data,
+                prod.fill_nl,
+                rng,
+                &mut out,
+            );
+        }
+    }
+
+    ledger.strip_all(&state.c0_view(), rng, &mut out);
+    ledger.report();
+    route_six_carriers_home(&mut state, &mut ledger, &mut out);
+    for carriers in &state.carriers {
+        emit_six_carrier_decode_toggle(carriers, &mut out);
+    }
+
+    // The five extra carrier lanes and the product band are all arbitrary
+    // junk at the public port. Fill the entire high region uniformly.
+    let nondata: Vec<u16> = (n..total).map(|wire| wire as u16).collect();
+    if prod.fill_nl > 0 {
+        emit_band_fill_nl_pivots(
+            n,
+            &nondata,
+            prod.fill_nl,
+            prod.fill_pivots > 0,
+            rng,
+            &mut out,
+        );
+    } else {
+        emit_band_fill(n, &nondata, rng, &mut out);
+    }
+
+    commuting_shuffle(&mut out, rng);
+    CnotCircuit {
+        gates: out,
+        num_wires: total,
+    }
+}
+
+/// Six-carrier nonlinear gadgetization of a g57 source circuit.
+pub fn gadgetize_cnot_six_carrier(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut main = main.clone();
+    let rounds = main.gates.len();
+    shoot_random_gate(&mut main, rounds);
+    let source: Vec<XGate> = main.gates.iter().copied().map(XGate::from_g57).collect();
+    gadgetize_six_carrier_source(
+        &source,
+        n,
+        rg_freq,
+        prod,
+        SixCarrierFlavor::SuppliedCompact,
+        rng,
+    )
+}
+
+/// Six-carrier nonlinear gadgetization of a heterogeneous XGate source.
+pub fn gadgetize_xgates_six_carrier(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    gadgetize_six_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        SixCarrierFlavor::SuppliedCompact,
+        rng,
+    )
+}
+
+/// Experimental structural six-carrier gadgetization.  It retains the
+/// established cubic decode and degree-three firing boundary, while using a
+/// fixed-point-free update whose endpoint graph has full affine rank and no
+/// frozen carrier lane.
+pub fn gadgetize_cnot_strong_six_carrier(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut main = main.clone();
+    let rounds = main.gates.len();
+    shoot_random_gate(&mut main, rounds);
+    let source: Vec<XGate> = main.gates.iter().copied().map(XGate::from_g57).collect();
+    gadgetize_six_carrier_source(
+        &source,
+        n,
+        rg_freq,
+        prod,
+        SixCarrierFlavor::StrongFullRank,
+        rng,
+    )
+}
+
+/// Heterogeneous-source counterpart of
+/// [`gadgetize_cnot_strong_six_carrier`].
+pub fn gadgetize_xgates_strong_six_carrier(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    gadgetize_six_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        SixCarrierFlavor::StrongFullRank,
+        rng,
+    )
+}
+
+/// Toggle c0 by all non-c0 atoms of the seven-carrier decode. This is a
+/// self-inverse public-port encoder/decoder for arbitrary incoming c1..c6.
+fn emit_seven_carrier_decode_toggle(carriers: &[usize; 7], out: &mut Vec<XGate>) {
+    for atom in SEVEN_CARRIER_D_ATOMS.iter().skip(1) {
+        let controls = atom
+            .iter()
+            .map(|&lane| (carriers[lane as usize] as u16, true));
+        out.push(
+            XGate::conj(carriers[0] as u16, controls)
+                .expect("seven-carrier decode atoms exclude c0"),
+        );
+    }
+}
+
+fn route_seven_carriers_home(
+    state: &mut SevenCarrierState,
+    ledger: &mut ProdLedger,
+    out: &mut Vec<XGate>,
+) {
+    for value in 0..state.n {
+        for lane in 0..7 {
+            let home = lane * state.n + value;
+            let current = state.carriers[value][lane];
+            if current == home {
+                continue;
+            }
+            emit_wire_swap(current, home, out);
+
+            if let Some(var) = ledger.loc.iter().position(|&wire| wire as usize == home) {
+                ledger.loc[var] = current as u16;
+            } else {
+                let mut displaced = None;
+                'find: for other_value in 0..state.n {
+                    for other_lane in 0..7 {
+                        if state.carriers[other_value][other_lane] == home {
+                            displaced = Some((other_value, other_lane));
+                            break 'find;
+                        }
+                    }
+                }
+                let (other_value, other_lane) =
+                    displaced.expect("every non-band wire has one seven-carrier role");
+                state.carriers[other_value][other_lane] = current;
+            }
+            state.carriers[value][lane] = home;
+        }
+    }
+}
+
+fn live_support_pivot(words: &[u64]) -> Option<usize> {
+    words.iter().enumerate().rev().find_map(|(index, &word)| {
+        (word != 0).then_some(index * 64 + (63 - word.leading_zeros() as usize))
+    })
+}
+
+/// Pick band wires whose affine functions on the live input prefix are
+/// linearly independent. Candidate order is independently randomized for each
+/// captured injection gate, matching the post-hoc boundary experiment.
+fn select_independent_band_helpers(
+    gate: &XGate,
+    band: &[u16],
+    supports: &[Vec<u64>],
+    bits: usize,
+    rng: &mut impl Rng,
+) -> Vec<u16> {
+    assert_eq!(band.len(), supports.len());
+    let occupied: std::collections::HashSet<u16> = std::iter::once(gate.target)
+        .chain(gate.ctrls.iter().map(|&(wire, _)| wire))
+        .collect();
+    let mut candidates: Vec<usize> = band
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &wire)| (!occupied.contains(&wire)).then_some(index))
+        .collect();
+    candidates.shuffle(rng);
+
+    let basis_len = supports.first().map_or(0, |support| support.len() * 64);
+    let mut basis: Vec<Option<Vec<u64>>> = vec![None; basis_len];
+    let mut helpers = Vec::with_capacity(bits);
+    for index in candidates {
+        let mut residual = supports[index].clone();
+        loop {
+            let Some(pivot) = live_support_pivot(&residual) else {
+                break;
+            };
+            if let Some(row) = &basis[pivot] {
+                for (word, &basis_word) in residual.iter_mut().zip(row) {
+                    *word ^= basis_word;
+                }
+                continue;
+            }
+            basis[pivot] = Some(residual);
+            helpers.push(band[index]);
+            break;
+        }
+        if helpers.len() == bits {
+            return helpers;
+        }
+    }
+    panic!(
+        "initial boundary partition needs {bits} affine-independent band helpers, found {}",
+        helpers.len()
+    );
+}
+
+/// Replace every gate emitted by the one initial `inject_all` call with its
+/// exhaustive polarity partition. Complemented conjunctions use
+/// `!F = 1 XOR F`, hence the cell-only emission followed by the F-and-cell
+/// emission. No shears are inserted in this boundary-specific experiment.
+fn emit_partitioned_initial_injection(
+    original: &[XGate],
+    band: &[u16],
+    supports: &[Vec<u64>],
+    bits: usize,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) -> usize {
+    let cell_count = 1usize
+        .checked_shl(bits as u32)
+        .expect("initial boundary partition needs too many helper bits");
+    let before = out.len();
+    for gate in original {
+        let helpers = select_independent_band_helpers(gate, band, supports, bits, rng);
+        let mut cells: Vec<usize> = (0..cell_count).collect();
+        cells.shuffle(rng);
+        for cell in cells {
+            let cell_lits: Vec<(u16, bool)> = helpers
+                .iter()
+                .enumerate()
+                .map(|(bit, &wire)| (wire, cell & (1 << bit) != 0))
+                .collect();
+            if gate.comp {
+                out.push(
+                    XGate::conj(gate.target, cell_lits.iter().copied())
+                        .expect("independent helpers exclude the injection target"),
+                );
+            }
+            let mut lits: Vec<(u16, bool)> = gate.ctrls.iter().copied().collect();
+            lits.extend(cell_lits);
+            out.push(
+                XGate::conj(gate.target, lits)
+                    .expect("boundary helpers exclude the injection controls"),
+            );
+        }
+    }
+    out.len() - before
+}
+
+fn gadgetize_seven_carrier_source_with_terminal_start(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    distributed_switch: bool,
+    partition_floor: usize,
+    partition_helper_limit: usize,
+    initial_boundary_partition_bits: usize,
+    shuffle_output: bool,
+    rng: &mut impl Rng,
+) -> (CnotCircuit, usize) {
+    assert!(n >= 3, "seven-carrier gadgetization requires n >= 3");
+    assert!(prod.enabled(), "seven-carrier gadgetization needs product masks");
+    assert!(
+        !prod.dist(),
+        "distributed mask sourcing is not supported by seven-carrier mode"
+    );
+    if distributed_switch {
+        assert_eq!(
+            prod.gray_fold, 0,
+            "distributed seven-carrier switching currently requires --prod-gray-fold 0"
+        );
+    }
+    assert!(
+        partition_floor == 0 || distributed_switch,
+        "fragment partitioning belongs to the distributed seven-carrier path"
+    );
+    assert!(
+        partition_helper_limit <= n,
+        "partition helper prefix exceeds the logical wire count"
+    );
+    let band_len = prod.band_size(n);
+    if initial_boundary_partition_bits > 0 {
+        assert!(
+            partition_floor >= 1024,
+            "the boundary-r10 experiment needs a body floor of at least 1024"
+        );
+        assert_eq!(
+            prod.fill_nl, 0,
+            "the boundary-r10 experiment requires the linear band fill"
+        );
+        assert!(
+            band_len >= initial_boundary_partition_bits,
+            "not enough band wires for the initial boundary partition"
+        );
+    }
+    assert!(
+        source.iter().all(|gate| {
+            (gate.target as usize) < n
+                && gate
+                    .ctrls
+                    .iter()
+                    .all(|&(wire, _)| (wire as usize) < n)
+        }),
+        "source wire outside 0..n"
+    );
+
+    let carrier_total = 7 * n;
+    let total = carrier_total + band_len;
+    assert!(total <= u16::MAX as usize, "too many wires");
+
+    let mut out = Vec::new();
+    let band_home: Vec<u16> = (carrier_total..total).map(|wire| wire as u16).collect();
+    let live_band_supports = if initial_boundary_partition_bits > 0 {
+        Some(emit_band_fill_with_live_supports(
+            n,
+            &band_home,
+            partition_helper_limit,
+            rng,
+            &mut out,
+        ))
+    } else if prod.fill_nl > 0 {
+        emit_band_fill_nl_pivots(
+            n,
+            &band_home,
+            prod.fill_nl,
+            prod.fill_pivots > 0,
+            rng,
+            &mut out,
+        );
+        None
+    } else {
+        emit_band_fill(n, &band_home, rng, &mut out);
+        None
+    };
+
+    let mut state = SevenCarrierState::home(n);
+    for carriers in &state.carriers {
+        emit_seven_carrier_decode_toggle(carriers, &mut out);
+    }
+    let mut ledger = ProdLedger::new(n, prod, carrier_total, None);
+    if initial_boundary_partition_bits > 0 {
+        let mut original_injection = Vec::new();
+        ledger.inject_all(&state.c0_view(), rng, &mut original_injection);
+        let mut boundary_rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(734_001);
+        let emitted = emit_partitioned_initial_injection(
+            &original_injection,
+            &band_home,
+            live_band_supports
+                .as_ref()
+                .expect("boundary partition requires tracked band supports"),
+            initial_boundary_partition_bits,
+            &mut boundary_rng,
+            &mut out,
+        );
+        println!(
+            "[prod] initial-boundary-partition original={} emitted={} bits={}",
+            original_injection.len(),
+            emitted,
+            initial_boundary_partition_bits
+        );
+    } else {
+        ledger.inject_all(&state.c0_view(), rng, &mut out);
+    }
+
+    for (index, gate) in source.iter().enumerate() {
+        ledger.set_pos(index);
+        if distributed_switch {
+            ledger.fold_seven_distributed(
+                gate,
+                &state,
+                partition_floor,
+                partition_helper_limit,
+                rng,
+                &mut out,
+            );
+        } else {
+            ledger.fold_seven(gate, &state, rng, &mut out);
+        }
+        if index + 1 == source.len() {
+            break;
+        }
+        for _ in 0..rg_freq {
+            let value = rng.random_range(0..n);
+            if distributed_switch {
+                let roles = seven_carrier_role_automorphism(rng);
+                let mut used = std::collections::HashSet::new();
+                let selector =
+                    draw_seven_carrier_shear_selector(&state, value, &mut used, rng);
+                let x = rng.random_range(3..7) as u8;
+                emit_seven_carrier_preserving_shear(
+                    &state,
+                    value,
+                    &roles,
+                    x,
+                    selector,
+                    &mut out,
+                );
+            } else {
+                emit_seven_carrier_update(&state.carriers[value], &mut out);
+            }
+        }
+        for _ in 0..prod.rsrc {
+            ledger.resource(&state.c0_view(), rng, &mut out);
+        }
+        for _ in 0..prod.roll {
+            ledger.roll_seven(&mut state, rng, &mut out);
+        }
+        if prod.epoch > 0 && rng.random_range(0..prod.epoch) == 0 {
+            ledger.retire_refill(
+                &state.c0_view(),
+                prod.refill_data,
+                prod.fill_nl,
+                rng,
+                &mut out,
+            );
+        }
+    }
+
+    // Everything from here onward is the terminal strip/route/decode suffix.
+    // Experimental callers that return this boundary require every later
+    // ordering transform to keep the suffix intact and forbid crossings at
+    // this exact position.
+    let terminal_start = out.len();
+    ledger.strip_all(&state.c0_view(), rng, &mut out);
+    ledger.report();
+    route_seven_carriers_home(&mut state, &mut ledger, &mut out);
+    for carriers in &state.carriers {
+        emit_seven_carrier_decode_toggle(carriers, &mut out);
+    }
+
+    if initial_boundary_partition_bits == 0 {
+        // The six extra carrier lanes and the product band are arbitrary junk
+        // at the public port. Legacy and ordinary experimental paths retain
+        // their output-side mirror fill; the boundary-r10 fixture omits it.
+        let nondata: Vec<u16> = (n..total).map(|wire| wire as u16).collect();
+        if prod.fill_nl > 0 {
+            emit_band_fill_nl_pivots(
+                n,
+                &nondata,
+                prod.fill_nl,
+                prod.fill_pivots > 0,
+                rng,
+                &mut out,
+            );
+        } else {
+            emit_band_fill(n, &nondata, rng, &mut out);
+        }
+    }
+
+    if shuffle_output {
+        commuting_shuffle(&mut out, rng);
+    }
+    (
+        CnotCircuit {
+            gates: out,
+            num_wires: total,
+        },
+        terminal_start,
+    )
+}
+
+fn gadgetize_seven_carrier_source(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    distributed_switch: bool,
+    partition_floor: usize,
+    partition_helper_limit: usize,
+    initial_boundary_partition_bits: usize,
+    shuffle_output: bool,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    gadgetize_seven_carrier_source_with_terminal_start(
+        source,
+        n,
+        rg_freq,
+        prod,
+        distributed_switch,
+        partition_floor,
+        partition_helper_limit,
+        initial_boundary_partition_bits,
+        shuffle_output,
+        rng,
+    )
+    .0
+}
+
+/// Seven-carrier nonlinear gadgetization of a g57 source circuit.
+pub fn gadgetize_cnot_seven_carrier(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut main = main.clone();
+    let rounds = main.gates.len();
+    shoot_random_gate(&mut main, rounds);
+    let source: Vec<XGate> = main.gates.iter().copied().map(XGate::from_g57).collect();
+    gadgetize_seven_carrier_source(&source, n, rg_freq, prod, false, 0, n, 0, true, rng)
+}
+
+/// Seven-carrier nonlinear gadgetization of a heterogeneous XGate source.
+pub fn gadgetize_xgates_seven_carrier(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    gadgetize_seven_carrier_source(source, n, rg_freq, prod, false, 0, n, 0, true, rng)
+}
+
+/// Experimental seven-carrier gadgetization with a randomized distributed
+/// refresh schedule.  Each fold relabels the decode roles, emits its source
+/// fragments on that occurrence's linear lane, and puts a nonlinear
+/// D-preserving shear between consecutive fragments.  This currently supports
+/// only expanded/no-Gray product folding (`prod.gray_fold == 0`).
+pub fn gadgetize_cnot_seven_carrier_distributed(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut main = main.clone();
+    let rounds = main.gates.len();
+    shoot_random_gate(&mut main, rounds);
+    let source: Vec<XGate> = main.gates.iter().copied().map(XGate::from_g57).collect();
+    gadgetize_seven_carrier_source(&source, n, rg_freq, prod, true, 0, n, 0, true, rng)
+}
+
+/// Heterogeneous-source counterpart of
+/// [`gadgetize_cnot_seven_carrier_distributed`].
+pub fn gadgetize_xgates_seven_carrier_distributed(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    gadgetize_seven_carrier_source(source, n, rg_freq, prod, true, 0, n, 0, true, rng)
+}
+
+/// Unshuffled A/B fixture for [`gadgetize_cnot_seven_carrier_distributed`].
+/// It exists so trace measurements can distinguish the refresh schedule from
+/// the final commuting shuffle; it is not the production-facing variant.
+pub fn gadgetize_cnot_seven_carrier_distributed_unshuffled(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut main = main.clone();
+    let rounds = main.gates.len();
+    shoot_random_gate(&mut main, rounds);
+    let source: Vec<XGate> = main.gates.iter().copied().map(XGate::from_g57).collect();
+    gadgetize_seven_carrier_source(&source, n, rg_freq, prod, true, 0, n, 0, false, rng)
+}
+
+/// Heterogeneous-source counterpart of
+/// [`gadgetize_cnot_seven_carrier_distributed_unshuffled`].
+pub fn gadgetize_xgates_seven_carrier_distributed_unshuffled(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    gadgetize_seven_carrier_source(source, n, rg_freq, prod, true, 0, n, 0, false, rng)
+}
+
+/// Second experimental distributed-refresh variant.  Every nonempty source
+/// fold is polarity-partitioned to at least 128 emitted branches before the
+/// preserving shears are inserted.  This removes the direct `2*m <= 100`
+/// checkpoint upper bound of a low-fragment fold, but makes no claim about
+/// unrelated whole-trace relations.  Every selector bit comes from canonical
+/// c0 of a different logical value outside the fold's target and controls.
+pub fn gadgetize_cnot_seven_carrier_distributed_partitioned(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut main = main.clone();
+    let rounds = main.gates.len();
+    shoot_random_gate(&mut main, rounds);
+    let source: Vec<XGate> = main.gates.iter().copied().map(XGate::from_g57).collect();
+    gadgetize_seven_carrier_source(&source, n, rg_freq, prod, true, 128, n, 0, true, rng)
+}
+
+/// Heterogeneous-source counterpart of
+/// [`gadgetize_cnot_seven_carrier_distributed_partitioned`].
+pub fn gadgetize_xgates_seven_carrier_distributed_partitioned(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    gadgetize_seven_carrier_source(source, n, rg_freq, prod, true, 128, n, 0, true, rng)
+}
+
+/// Unshuffled A/B fixture for
+/// [`gadgetize_cnot_seven_carrier_distributed_partitioned`].
+pub fn gadgetize_cnot_seven_carrier_distributed_partitioned_unshuffled(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let mut main = main.clone();
+    let rounds = main.gates.len();
+    shoot_random_gate(&mut main, rounds);
+    let source: Vec<XGate> = main.gates.iter().copied().map(XGate::from_g57).collect();
+    gadgetize_seven_carrier_source(&source, n, rg_freq, prod, true, 128, n, 0, false, rng)
+}
+
+/// Heterogeneous-source counterpart of
+/// [`gadgetize_cnot_seven_carrier_distributed_partitioned_unshuffled`].
+pub fn gadgetize_xgates_seven_carrier_distributed_partitioned_unshuffled(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    gadgetize_seven_carrier_source(source, n, rg_freq, prod, true, 128, n, 0, false, rng)
 }
 
 pub fn gadgetize_cnot(
@@ -7102,6 +10905,151 @@ pub fn gadgetize_with_slice_zero_ccnot(
     circuit
 }
 
+/// Five-carrier gadgetization behind the nonlinear zero-slice preblock.  The
+/// protected slice contains four extra carrier lanes per value plus the mask
+/// band, so its width is `4*n + band`.
+pub fn gadgetize_with_slice_zero_ccnot_five_carrier(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    _masks: &MaskConfig,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 4 * n + prod.band_size(n);
+    let mut circuit =
+        slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_cnot_five_carrier(main, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Strong cubic five-carrier counterpart of
+/// [`gadgetize_with_slice_zero_ccnot_five_carrier`].
+pub fn gadgetize_with_slice_zero_ccnot_strong_five_carrier(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    _masks: &MaskConfig,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 4 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_cnot_strong_five_carrier(main, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Six-carrier gadgetization behind the nonlinear zero-slice preblock. The
+/// protected slice is five extra carrier lanes per value plus the mask band.
+pub fn gadgetize_with_slice_zero_ccnot_six_carrier(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    _masks: &MaskConfig,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 5 * n + prod.band_size(n);
+    let mut circuit =
+        slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_cnot_six_carrier(main, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Full-affine-rank strong-six counterpart of
+/// [`gadgetize_with_slice_zero_ccnot_six_carrier`].
+pub fn gadgetize_with_slice_zero_ccnot_strong_six_carrier(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    _masks: &MaskConfig,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 5 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_cnot_strong_six_carrier(main, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Seven-carrier gadgetization behind the nonlinear zero-slice preblock. The
+/// protected slice is six extra carrier lanes per value plus the mask band.
+pub fn gadgetize_with_slice_zero_ccnot_seven_carrier(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    _masks: &MaskConfig,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit =
+        slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_cnot_seven_carrier(main, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Distributed-refresh seven-carrier counterpart of
+/// [`gadgetize_with_slice_zero_ccnot_seven_carrier`].
+pub fn gadgetize_with_slice_zero_ccnot_seven_carrier_distributed(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    _masks: &MaskConfig,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_cnot_seven_carrier_distributed(main, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Partitioned-128 counterpart of
+/// [`gadgetize_with_slice_zero_ccnot_seven_carrier_distributed`].
+pub fn gadgetize_with_slice_zero_ccnot_seven_carrier_distributed_partitioned(
+    main: &CircuitSeq,
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    _masks: &MaskConfig,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget =
+        gadgetize_cnot_seven_carrier_distributed_partitioned(main, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
 /// Two-share gadgetization of a heterogeneous mpmct1 `source` (CNOT/CCNOT/
 /// g57/fragments) on `n` wires, producing a 2n-wire circuit whose low n
 /// output wires equal `source(x)` for any aux input. Identical scaffolding to
@@ -7507,6 +11455,556 @@ pub fn gadgetize_xgates_with_slice_zero_ccnot_single(
     circuit.gates.extend(gadget.gates);
     commuting_shuffle(&mut circuit.gates, rng);
     circuit
+}
+
+/// XGate-source counterpart of
+/// [`gadgetize_with_slice_zero_ccnot_five_carrier`].
+pub fn gadgetize_xgates_with_slice_zero_ccnot_five_carrier(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 4 * n + prod.band_size(n);
+    let mut circuit =
+        slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_xgates_five_carrier(source, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// XGate-source counterpart of
+/// [`gadgetize_with_slice_zero_ccnot_strong_five_carrier`].
+pub fn gadgetize_xgates_with_slice_zero_ccnot_strong_five_carrier(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 4 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_xgates_strong_five_carrier(source, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// XGate-source counterpart of
+/// [`gadgetize_with_slice_zero_ccnot_six_carrier`].
+pub fn gadgetize_xgates_with_slice_zero_ccnot_six_carrier(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 5 * n + prod.band_size(n);
+    let mut circuit =
+        slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_xgates_six_carrier(source, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// XGate-source counterpart of
+/// [`gadgetize_with_slice_zero_ccnot_strong_six_carrier`].
+pub fn gadgetize_xgates_with_slice_zero_ccnot_strong_six_carrier(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 5 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_xgates_strong_six_carrier(source, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// XGate-source counterpart of
+/// [`gadgetize_with_slice_zero_ccnot_seven_carrier`].
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit =
+        slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_xgates_seven_carrier(source, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// XGate-source counterpart of
+/// [`gadgetize_with_slice_zero_ccnot_seven_carrier_distributed`].
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_xgates_seven_carrier_distributed(source, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Unshuffled A/B fixture for
+/// [`gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed`].
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_unshuffled(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget =
+        gadgetize_xgates_seven_carrier_distributed_unshuffled(source, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    circuit
+}
+
+/// Partitioned-128 XGate-source counterpart of
+/// [`gadgetize_with_slice_zero_ccnot_seven_carrier_distributed_partitioned`].
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget =
+        gadgetize_xgates_seven_carrier_distributed_partitioned(source, n, rg_freq, prod, rng);
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Unshuffled A/B fixture for
+/// [`gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned`].
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_unshuffled(
+    source: &[XGate],
+    n: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_xgates_seven_carrier_distributed_partitioned_unshuffled(
+        source, n, rg_freq, prod, rng,
+    );
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    circuit
+}
+
+/// Partitioned-128 sliced-sandwich fixture with an explicit prefix of logical
+/// values eligible as selector helpers.  For a `2*original_n` sliced sandwich,
+/// pass `live_helper_prefix = original_n`: the upper half is fixed zero on the
+/// intended input slice and must not be used to create nominal-only cells.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_live_prefix(
+    source: &[XGate],
+    n: usize,
+    live_helper_prefix: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_seven_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        true,
+        128,
+        live_helper_prefix,
+        0,
+        true,
+        rng,
+    );
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Unshuffled A/B counterpart of
+/// [`gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_live_prefix`].
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_live_prefix_unshuffled(
+    source: &[XGate],
+    n: usize,
+    live_helper_prefix: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_seven_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        true,
+        128,
+        live_helper_prefix,
+        0,
+        false,
+        rng,
+    );
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    circuit
+}
+
+/// Floor-1024 refinement of the live-prefix partitioned experiment.  This is
+/// intentionally a separate opt-in API so neither the legacy path nor the
+/// floor-128 fixture changes cost unexpectedly.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor1024_live_prefix(
+    source: &[XGate],
+    n: usize,
+    live_helper_prefix: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_seven_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        true,
+        1024,
+        live_helper_prefix,
+        0,
+        true,
+        rng,
+    );
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Unshuffled A/B counterpart of the floor-1024 live-prefix fixture.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor1024_live_prefix_unshuffled(
+    source: &[XGate],
+    n: usize,
+    live_helper_prefix: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_seven_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        true,
+        1024,
+        live_helper_prefix,
+        0,
+        false,
+        rng,
+    );
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    circuit
+}
+
+/// Source-integrated boundary-r10 counterpart of the floor-1024 experiment.
+/// It requires the linear input band fill, partitions only the gates captured
+/// from the single initial `inject_all` call over ten affine-independent band
+/// helpers, and omits the terminal nondata mirror fill. The slice preblock is
+/// unchanged. This remains an opt-in measurement fixture.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor1024_boundary_r10_live_prefix(
+    source: &[XGate],
+    n: usize,
+    live_helper_prefix: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_seven_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        true,
+        1024,
+        live_helper_prefix,
+        10,
+        true,
+        rng,
+    );
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Unshuffled A/B counterpart of the floor-1024 boundary-r10 fixture.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor1024_boundary_r10_live_prefix_unshuffled(
+    source: &[XGate],
+    n: usize,
+    live_helper_prefix: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_seven_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        true,
+        1024,
+        live_helper_prefix,
+        10,
+        false,
+        rng,
+    );
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    circuit
+}
+
+/// Floor-4096 live-prefix body experiment, without boundary-r10 changes.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor4096_live_prefix(
+    source: &[XGate],
+    n: usize,
+    live_helper_prefix: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_seven_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        true,
+        4096,
+        live_helper_prefix,
+        0,
+        true,
+        rng,
+    );
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Unshuffled A/B counterpart of the floor-4096 live-prefix body fixture.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor4096_live_prefix_unshuffled(
+    source: &[XGate],
+    n: usize,
+    live_helper_prefix: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_seven_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        true,
+        4096,
+        live_helper_prefix,
+        0,
+        false,
+        rng,
+    );
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    circuit
+}
+
+/// Combined floor-4096 body and source-integrated boundary-r10 experiment.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor4096_boundary_r10_live_prefix(
+    source: &[XGate],
+    n: usize,
+    live_helper_prefix: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_seven_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        true,
+        4096,
+        live_helper_prefix,
+        10,
+        true,
+        rng,
+    );
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    commuting_shuffle(&mut circuit.gates, rng);
+    circuit
+}
+
+/// Unshuffled A/B counterpart of the combined floor-4096 boundary-r10 fixture.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor4096_boundary_r10_live_prefix_unshuffled(
+    source: &[XGate],
+    n: usize,
+    live_helper_prefix: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let gadget = gadgetize_seven_carrier_source(
+        source,
+        n,
+        rg_freq,
+        prod,
+        true,
+        4096,
+        live_helper_prefix,
+        10,
+        false,
+        rng,
+    );
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    circuit
+}
+
+/// Unshuffled floor-4096/boundary-r10 fixture with an explicit hard terminal
+/// boundary. The returned index is the first gate of `strip_all`, followed by
+/// carrier routing and final decode. Every downstream ordering transform must
+/// operate independently on `gates[..terminal_start]` and
+/// `gates[terminal_start..]`; allowing a gate to cross the boundary invalidates
+/// the measured construction.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor4096_boundary_r10_live_prefix_terminal_fenced_unshuffled(
+    source: &[XGate],
+    n: usize,
+    live_helper_prefix: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> (CnotCircuit, usize) {
+    let nondata = 6 * n + prod.band_size(n);
+    let mut circuit = slice_zero_preblock_dims(n, nondata, gate_count.max(nondata), rng);
+    let preblock_len = circuit.gates.len();
+    let (gadget, gadget_terminal_start) = gadgetize_seven_carrier_source_with_terminal_start(
+        source,
+        n,
+        rg_freq,
+        prod,
+        true,
+        4096,
+        live_helper_prefix,
+        10,
+        false,
+        rng,
+    );
+    circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
+    circuit.gates.extend(gadget.gates);
+    let terminal_start = preblock_len + gadget_terminal_start;
+    assert!(terminal_start < circuit.gates.len());
+    (circuit, terminal_start)
+}
+
+/// Deterministic A/B artifact for the hard-terminal-fence experiment. It uses
+/// 32 linear-time adjacent-commuting passes on the prefix only and returns the
+/// same exact boundary so later stages can preserve it. The dedicated seed is
+/// fixed for reproducibility and does not perturb gadget generation.
+pub fn gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor4096_boundary_r10_live_prefix_terminal_fenced_adj32(
+    source: &[XGate],
+    n: usize,
+    live_helper_prefix: usize,
+    rg_freq: usize,
+    gate_count: usize,
+    prod: &ProdConfig,
+    rng: &mut impl Rng,
+) -> (CnotCircuit, usize) {
+    let (mut circuit, terminal_start) = gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor4096_boundary_r10_live_prefix_terminal_fenced_unshuffled(
+        source,
+        n,
+        live_helper_prefix,
+        rg_freq,
+        gate_count,
+        prod,
+        rng,
+    );
+    let mut shuffle_rng =
+        <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(880_033);
+    adjacent_commuting_swap_passes(
+        &mut circuit.gates[..terminal_start],
+        32,
+        &mut shuffle_rng,
+    );
+    (circuit, terminal_start)
 }
 
 pub fn gadgetize_xgates_with_slice_zero_ccnot(
@@ -9305,6 +13803,136 @@ mod cnot_gadget_tests {
         v ^ consts[value] as u64
     }
 
+    fn eval_anf_atoms(state: u64, atoms: &[Vec<(u16, bool)>]) -> u64 {
+        atoms.iter().fold(0u64, |value, atom| {
+            value
+                ^ atom
+                    .iter()
+                    .all(|&(wire, polarity)| ((state >> wire) & 1 != 0) == polarity)
+                    as u64
+        })
+    }
+
+    /// Truth table of every physical wire at every circuit prefix, packed one
+    /// column at a time.  Keeping the whole Boolean function (rather than a
+    /// sample or a correlation) lets the space-time checks below prove an
+    /// identity over every possible incoming dirty state.
+    fn prefix_wire_signatures(gates: &[XGate], wires: usize) -> Vec<Vec<u64>> {
+        let rows = 1usize << wires;
+        let words = (rows + 63) / 64;
+        let mut columns = vec![vec![0u64; words]; (gates.len() + 1) * wires];
+        for input in 0..rows {
+            let mut physical = input as u64;
+            for prefix in 0..=gates.len() {
+                for wire in 0..wires {
+                    if (physical >> wire) & 1 != 0 {
+                        columns[prefix * wires + wire][input / 64] |= 1u64 << (input % 64);
+                    }
+                }
+                if let Some(gate) = gates.get(prefix) {
+                    physical = gate.apply_u64(physical);
+                }
+            }
+        }
+        columns
+    }
+
+    fn prod_decode_signature(
+        wires: usize,
+        value: usize,
+        pairs: &[(usize, usize)],
+        slots: &[Vec<ProdSlot>],
+        consts: &[bool],
+        loc: &[u16],
+    ) -> Vec<u64> {
+        let rows = 1usize << wires;
+        let mut signature = vec![0u64; (rows + 63) / 64];
+        for input in 0..rows {
+            if prod_decode(input as u64, value, pairs, slots, consts, loc) != 0 {
+                signature[input / 64] |= 1u64 << (input % 64);
+            }
+        }
+        signature
+    }
+
+    fn xor_signatures(left: &[u64], right: &[u64]) -> Vec<u64> {
+        left.iter().zip(right).map(|(&a, &b)| a ^ b).collect()
+    }
+
+    fn signature_pivot(value: &[u64]) -> Option<usize> {
+        value.iter().enumerate().rev().find_map(|(word, &bits)| {
+            (bits != 0).then(|| word * 64 + (63 - bits.leading_zeros() as usize))
+        })
+    }
+
+    /// Does `target` belong to the affine span of these simultaneous wires?
+    fn affine_span_contains(columns: &[Vec<u64>], target: &[u64]) -> bool {
+        let bit_count = target.len() * 64;
+        let mut basis: Vec<Option<Vec<u64>>> = vec![None; bit_count];
+        let mut insert = |mut value: Vec<u64>| {
+            while let Some(pivot) = signature_pivot(&value) {
+                if let Some(row) = &basis[pivot] {
+                    for (word, &rhs) in value.iter_mut().zip(row) {
+                        *word ^= rhs;
+                    }
+                } else {
+                    basis[pivot] = Some(value);
+                    return;
+                }
+            }
+        };
+        for column in columns {
+            insert(column.clone());
+        }
+        insert(vec![u64::MAX; target.len()]);
+
+        let mut residual = target.to_vec();
+        while let Some(pivot) = signature_pivot(&residual) {
+            let Some(row) = &basis[pivot] else {
+                return false;
+            };
+            for (word, &rhs) in residual.iter_mut().zip(row) {
+                *word ^= rhs;
+            }
+        }
+        true
+    }
+
+    /// Find the specific short space-time identity at issue:
+    ///
+    /// logical operand = its entry carrier XOR wire@p XOR wire@q XOR constant.
+    ///
+    /// This search is deliberately blind to which wires the fold borrowed and
+    /// where its gather/strip boundaries are.
+    fn same_wire_space_time_witness(
+        trace: &[Vec<u64>],
+        wires: usize,
+        needed_delta: &[u64],
+    ) -> Option<(usize, usize, usize, bool)> {
+        let prefixes = trace.len() / wires;
+        for wire in 0..wires {
+            for left in 0..prefixes {
+                for right in left + 1..prefixes {
+                    let delta = xor_signatures(
+                        &trace[left * wires + wire],
+                        &trace[right * wires + wire],
+                    );
+                    if delta == needed_delta {
+                        return Some((wire, left, right, false));
+                    }
+                    if delta
+                        .iter()
+                        .zip(needed_delta)
+                        .all(|(&observed, &needed)| observed == !needed)
+                    {
+                        return Some((wire, left, right, true));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     #[test]
     fn prod_fold_cg_applies_the_virtual_gate_share_natively() {
         // Manually built ledger; fold one g57, one CNOT, one CCNOT-with-
@@ -9621,6 +14249,789 @@ mod cnot_gadget_tests {
     }
 
     #[test]
+    fn prod_micro_gray_quartic_gather_is_exact_over_two_dirty_helpers() {
+        // acc=0, helpers=1,2, quartic inputs=3..6. Exercise every literal
+        // polarity and every incoming state: only acc may change, by exactly
+        // the requested quartic, and both arbitrary-dirty helpers come back.
+        for polarity_mask in 0u8..16 {
+            let atom: Vec<(u16, bool)> = (0..4)
+                .map(|index| (3 + index, polarity_mask & (1 << index) != 0))
+                .collect();
+            let mut rng = StdRng::seed_from_u64(0x4d47_0000 + polarity_mask as u64);
+            let mut seen = std::collections::HashMap::new();
+            let mut gates = Vec::new();
+            assert!(!emit_micro_atom_onto(
+                0,
+                &atom,
+                MicroAtomPlan {
+                    helper0: 1,
+                    helper1: 2,
+                    pivot: 0,
+                },
+                1,
+                &mut seen,
+                &mut rng,
+                &mut gates,
+            ));
+            assert_eq!(gates.len(), 8, "quartic micro ladder cost drifted");
+            assert!(gates.iter().all(|gate| gate.width() <= 2));
+            for input in 0u64..128 {
+                let fire = atom
+                    .iter()
+                    .all(|&(wire, polarity)| ((input >> wire) & 1 != 0) == polarity);
+                assert_eq!(
+                    eval_u64(&gates, input),
+                    input ^ fire as u64,
+                    "polarity={polarity_mask:#06b} input={input:#09b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prod_micro_gray_trace_needs_all_four_share_deltas() {
+        // Four one-atom formal shares, each gathered and immediately stripped
+        // from the same dirty accumulator. The trace contains each individual
+        // row delta, but never the complete operand on one before/after pair.
+        let cfg = ProdConfig::off();
+        let ledger = ProdLedger::new(1, &cfg, 6, None);
+        let atoms: Vec<Vec<(u16, bool)>> =
+            (1..=4u16).map(|wire| vec![(wire, true)]).collect();
+        let mut rng = StdRng::seed_from_u64(0x4d47_1001);
+        let shares = micro_partition_atoms(&atoms, &mut rng).expect("four atoms make four rows");
+        let plan = [MicroAtomPlan {
+            helper0: 5,
+            helper1: 5,
+            pivot: 0,
+        }];
+        let mut seen = std::collections::HashMap::new();
+        let mut gates = Vec::new();
+        let mut intervals = Vec::new();
+        for share in &shares {
+            let before = gates.len();
+            ledger.gather_micro_share_exact(
+                0,
+                share,
+                &plan,
+                5,
+                &mut seen,
+                &mut rng,
+                &mut gates,
+            );
+            let after = gates.len();
+            intervals.push((before, after));
+            ledger.gather_micro_share_exact(
+                0,
+                share,
+                &plan,
+                5,
+                &mut seen,
+                &mut rng,
+                &mut gates,
+            );
+        }
+        let wires = 6;
+        let trace = prefix_wire_signatures(&gates, wires);
+        let mut operand = vec![0u64; 1];
+        for wire in 1..=4 {
+            operand = xor_signatures(&operand, &trace[wire]);
+        }
+        let deltas: Vec<Vec<u64>> = intervals
+            .iter()
+            .map(|&(before, after)| {
+                xor_signatures(
+                    &trace[before * wires],
+                    &trace[after * wires],
+                )
+            })
+            .collect();
+        for subset in 1usize..16 {
+            let mut sum = vec![0u64; operand.len()];
+            for (row, delta) in deltas.iter().enumerate() {
+                if subset & (1 << row) != 0 {
+                    sum = xor_signatures(&sum, delta);
+                }
+            }
+            assert_eq!(
+                sum == operand,
+                subset == 15,
+                "formal share subset {subset:#06b} changed rank"
+            );
+        }
+        assert!(
+            same_wire_space_time_witness(&trace, wires, &operand).is_none(),
+            "a single accumulator interval gathered the complete operand"
+        );
+        for input in 0u64..(1 << wires) {
+            assert_eq!(
+                eval_u64(&gates, input),
+                input,
+                "share gathers did not strip back to arbitrary incoming junk"
+            );
+        }
+    }
+
+    #[test]
+    fn prod_micro_gray_generic_fold_is_exhaustive_and_two_control() {
+        // Four atoms per operand, including a quartic mask, force the r=4
+        // schedule and its two-helper path. Exhaust the complete 12-wire state
+        // space so target semantics and restoration of every dirty borrow are
+        // checked without a clean-wire assumption.
+        let n = 7;
+        let carrier_total = n;
+        let pairs: Vec<(usize, usize)> = (0..n).map(|wire| (wire, wire)).collect();
+        let band = 5;
+        let live = carrier_total + band;
+        let cfg = ProdConfig {
+            k: 2,
+            deg: 2,
+            k_hi: 1,
+            deg_hi: 4,
+            band,
+            rsrc: 0,
+            single: 1,
+            g57_narrow: 1,
+            rung_menu: 1,
+            gray_fold: 2,
+            ..ProdConfig::off()
+        };
+        let gate = XGate::from_g57([0, 1, 2]);
+        for seed in 0..3u64 {
+            let state = GadgetState {
+                n,
+                pairs: pairs.clone(),
+            };
+            let mut rng = StdRng::seed_from_u64(0x4d47_2000 + seed);
+            let mut ledger = ProdLedger::new(n, &cfg, carrier_total, None);
+            let mut ramp = Vec::new();
+            ledger.inject_all(&state, &mut rng, &mut ramp);
+            let slots_before = ledger.slots.clone();
+            let consts_before = ledger.consts.clone();
+            let mut fold = Vec::new();
+            ledger.fold_cg(&gate, &state, &mut rng, &mut fold);
+            assert_eq!(ledger.cg_gray, 1, "seed={seed}: micro path declined");
+            assert!(
+                fold.iter().all(|emitted| emitted.width() <= 2),
+                "seed={seed}: micro product emitted above the width cap"
+            );
+            let touched = 1u64 << gate.target;
+            for input in 0u64..(1u64 << live) {
+                let before: Vec<u64> = (0..n)
+                    .map(|value| {
+                        prod_decode(
+                            input,
+                            value,
+                            &pairs,
+                            &slots_before,
+                            &consts_before,
+                            &ledger.loc,
+                        )
+                    })
+                    .collect();
+                let output = eval_u64(&fold, input);
+                assert_eq!(
+                    (output ^ input) & !touched,
+                    0,
+                    "seed={seed} input={input:#x}: dirty borrow was not restored"
+                );
+                let after: Vec<u64> = (0..n)
+                    .map(|value| {
+                        prod_decode(
+                            output,
+                            value,
+                            &pairs,
+                            &ledger.slots,
+                            &ledger.consts,
+                            &ledger.loc,
+                        )
+                    })
+                    .collect();
+                let fires = gate
+                    .ctrls
+                    .iter()
+                    .all(|&(wire, polarity)| (before[wire as usize] != 0) == polarity)
+                    ^ gate.comp;
+                for value in 0..n {
+                    assert_eq!(
+                        after[value],
+                        before[value] ^ ((value == gate.target as usize && fires) as u64),
+                        "seed={seed} input={input:#x} value={value}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prod_micro_gray_five_six_seven_width_and_restoration_census() {
+        let gate = XGate::from_g57([0, 1, 2]);
+        let check = |label: &str,
+                     fold: &[XGate],
+                     update_len: usize,
+                     total: usize,
+                     target_wires: &[usize],
+                     before_atoms: &[Vec<Vec<(u16, bool)>>],
+                     after_atoms: &[Vec<Vec<(u16, bool)>>]| {
+            assert!(
+                fold[update_len..]
+                    .iter()
+                    .all(|emitted| emitted.width() <= 2),
+                "{label}: micro product/gather suffix exceeded two controls"
+            );
+            let live_mask = (1u64 << total) - 1;
+            let target_mask = target_wires
+                .iter()
+                .fold(0u64, |mask, &wire| mask | (1u64 << wire));
+            let mut samples = vec![0u64, live_mask];
+            samples.extend((0..1024u64).map(|index| {
+                index
+                    .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                    .rotate_left((index as u32 * 11) & 63)
+                    & live_mask
+            }));
+            for input in samples {
+                let before: Vec<u64> = before_atoms
+                    .iter()
+                    .map(|atoms| eval_anf_atoms(input, atoms))
+                    .collect();
+                let output = eval_u64(fold, input);
+                assert_eq!(
+                    (output ^ input) & (live_mask ^ target_mask),
+                    0,
+                    "{label}: accumulator/helper was not restored at {input:#x}"
+                );
+                let after: Vec<u64> = after_atoms
+                    .iter()
+                    .map(|atoms| eval_anf_atoms(output, atoms))
+                    .collect();
+                let fires = gate
+                    .ctrls
+                    .iter()
+                    .all(|&(wire, polarity)| (before[wire as usize] != 0) == polarity)
+                    ^ gate.comp;
+                for value in 0..before.len() {
+                    assert_eq!(
+                        after[value],
+                        before[value] ^ ((value == gate.target as usize && fires) as u64),
+                        "{label}: logical mismatch at input={input:#x} value={value}"
+                    );
+                }
+            }
+        };
+
+        let n = 7;
+        let mut cfg = ProdConfig::off();
+        cfg.gray_fold = 2;
+        cfg.rung_menu = 1;
+
+        let five = FiveCarrierState::home(n);
+        let mut five_ledger = ProdLedger::new(n, &cfg, 5 * n, None);
+        let five_before: Vec<_> = (0..n)
+            .map(|value| five_ledger.five_decode_atoms(value, true, &five))
+            .collect();
+        let mut rng = StdRng::seed_from_u64(0x4d47_5005);
+        let mut five_fold = Vec::new();
+        five_ledger.fold_five(&gate, &five, &mut rng, &mut five_fold);
+        assert_eq!(five_ledger.cg_gray, 1, "five-carrier micro path declined");
+        assert_eq!((five_ledger.cg_fragments, five_ledger.cg_narrow), (64, 64));
+        let five_after: Vec<_> = (0..n)
+            .map(|value| five_ledger.five_decode_atoms(value, true, &five))
+            .collect();
+        check(
+            "five",
+            &five_fold,
+            FIVE_CARRIER_U0_GATES.len(),
+            5 * n,
+            &five.carriers[0],
+            &five_before,
+            &five_after,
+        );
+
+        let six = SixCarrierState::home(n);
+        let mut six_ledger = ProdLedger::new(n, &cfg, 6 * n, None);
+        let six_before: Vec<_> = (0..n)
+            .map(|value| six_ledger.six_decode_atoms(value, true, &six))
+            .collect();
+        let mut rng = StdRng::seed_from_u64(0x4d47_6006);
+        let mut six_fold = Vec::new();
+        six_ledger.fold_six(&gate, &six, &mut rng, &mut six_fold);
+        assert_eq!(six_ledger.cg_gray, 1, "six-carrier micro path declined");
+        assert_eq!((six_ledger.cg_fragments, six_ledger.cg_narrow), (64, 64));
+        let six_after: Vec<_> = (0..n)
+            .map(|value| six_ledger.six_decode_atoms(value, true, &six))
+            .collect();
+        check(
+            "six",
+            &six_fold,
+            SIX_CARRIER_U0_GATES.len(),
+            6 * n,
+            &six.carriers[0],
+            &six_before,
+            &six_after,
+        );
+
+        let seven = SevenCarrierState::home(n);
+        let mut seven_ledger = ProdLedger::new(n, &cfg, 7 * n, None);
+        let seven_before: Vec<_> = (0..n)
+            .map(|value| seven_ledger.seven_decode_atoms(value, true, &seven))
+            .collect();
+        let mut rng = StdRng::seed_from_u64(0x4d47_7007);
+        let mut seven_fold = Vec::new();
+        seven_ledger.fold_seven(&gate, &seven, &mut rng, &mut seven_fold);
+        assert_eq!(
+            seven_ledger.cg_gray, 1,
+            "seven-carrier micro path declined"
+        );
+        assert_eq!(
+            (seven_ledger.cg_fragments, seven_ledger.cg_narrow),
+            (64, 64)
+        );
+        let seven_after: Vec<_> = (0..n)
+            .map(|value| seven_ledger.seven_decode_atoms(value, true, &seven))
+            .collect();
+        check(
+            "seven",
+            &seven_fold,
+            SEVEN_CARRIER_U0_GATES.len(),
+            7 * n,
+            &seven.carriers[0],
+            &seven_before,
+            &seven_after,
+        );
+    }
+
+    #[test]
+    fn prod_sentinel_cross_ladders_are_exact_and_force_a_cross_rung() {
+        // target=0, dirty helpers=1,2, blind=3, H literals=4..6. Every
+        // polarity pattern and incoming state is covered. The gates writing
+        // helper0 must read the blind plus exactly one H literal; choosing two
+        // H literals here would expose the complete cubic H one rung later.
+        for width in 3usize..=4 {
+            for polarity_mask in 0usize..(1usize << width) {
+                let lits: Vec<(u16, bool)> = (0..width)
+                    .map(|index| ((index + 3) as u16, polarity_mask & (1 << index) != 0))
+                    .collect();
+                let mut gates = Vec::new();
+                emit_exact_dirty_cap2(0, &lits, 1, 2, &mut gates);
+                assert_eq!(gates.len(), if width == 3 { 4 } else { 8 });
+                assert!(gates.iter().all(|gate| gate.width() <= 2));
+                for gate in gates.iter().filter(|gate| gate.target == 1) {
+                    let controls: Vec<u16> = gate.ctrls.iter().map(|&(wire, _)| wire).collect();
+                    assert!(controls.contains(&3), "rung zero lost the blind factor");
+                    assert!(controls.contains(&4), "rung zero lost its first H factor");
+                    assert_eq!(controls.len(), 2);
+                }
+                let wires = width + 3;
+                for input in 0u64..(1u64 << wires) {
+                    let fire = lits
+                        .iter()
+                        .all(|&(wire, polarity)| ((input >> wire) & 1 != 0) == polarity);
+                    assert_eq!(
+                        eval_u64(&gates, input),
+                        input ^ fire as u64,
+                        "width={width} polarity={polarity_mask:#x} input={input:#x}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prod_sentinel_schedule_is_exhaustive_restores_junk_and_has_no_full_gather() {
+        // Physical roles: target 0; live linear operands 1,2; unrelated dirty
+        // u,z,h0,h1 = 3..6; shared mask variables 7..12. The Q/H factors
+        // overlap deliberately, so this is not a disjoint-variable toy.
+        let lists = [
+            vec![
+                vec![(1u16, false)],
+                vec![(7, true), (8, false)],
+                vec![(7, true), (8, false), (9, true)],
+            ],
+            vec![
+                vec![(2u16, true)],
+                vec![(8, true), (9, true)],
+                vec![(10, false), (11, true), (12, false)],
+            ],
+        ];
+        let parts = [
+            partition_max_degree_sentinel(&lists[0]).unwrap(),
+            partition_max_degree_sentinel(&lists[1]).unwrap(),
+        ];
+        let cfg = ProdConfig::off();
+        let mut ledger = ProdLedger::new(7, &cfg, 7, None);
+        let mut gates = Vec::new();
+        ledger.emit_sentinel_schedule(0, 0, &parts, [3, 4, 5, 6], &mut gates);
+        let census = |width| gates.iter().filter(|gate| gate.width() == width).count();
+        assert_eq!(gates.len(), 62, "sentinel primitive cost drifted");
+        assert_eq!(census(2), 61, "cap-two population drifted");
+        assert_eq!(census(6), 1, "H*H sentinel fossil drifted");
+        assert_eq!(ledger.cg_laddered, 6, "expected six cross-tail ladders");
+        assert_eq!(ledger.cg_fossils, 1, "expected exactly one H*H fossil");
+
+        let wires = 13;
+        for input in 0u64..(1u64 << wires) {
+            let left = eval_anf_atoms(input, &lists[0]);
+            let right = eval_anf_atoms(input, &lists[1]);
+            let output = eval_u64(&gates, input);
+            assert_eq!(
+                output,
+                input ^ (left & right),
+                "sentinel identity/restoration failed at {input:#x}"
+            );
+        }
+
+        // Q is the intentional canary: an accumulator interval must reveal it.
+        // Neither H nor a complete operand may appear on u/z/helper deltas.
+        let trace = prefix_wire_signatures(&gates, wires);
+        let signature = |atoms: &[Vec<(u16, bool)>]| -> Vec<u64> {
+            let mut value = vec![0u64; (1usize << wires) / 64];
+            for input in 0usize..(1usize << wires) {
+                if eval_anf_atoms(input as u64, atoms) != 0 {
+                    value[input / 64] |= 1u64 << (input % 64);
+                }
+            }
+            value
+        };
+        let q = [signature(&parts[0].gathered), signature(&parts[1].gathered)];
+        let forbidden = [
+            signature(&parts[0].high),
+            signature(&parts[1].high),
+            signature(&lists[0]),
+            signature(&lists[1]),
+        ];
+        let prefixes = gates.len() + 1;
+        let mut saw_q = [false; 2];
+        for wire in [3usize, 4, 5, 6] {
+            for before in 0..prefixes {
+                for after in before + 1..prefixes {
+                    let delta = xor_signatures(
+                        &trace[before * wires + wire],
+                        &trace[after * wires + wire],
+                    );
+                    for side in 0..2 {
+                        saw_q[side] |= delta == q[side];
+                    }
+                    assert!(
+                        forbidden.iter().all(|secret| delta != *secret),
+                        "borrowed wire {wire} gathered H or a complete operand"
+                    );
+                }
+            }
+        }
+        assert_eq!(saw_q, [true, true], "Q canary was not trace-recoverable");
+    }
+
+    #[test]
+    fn prod_sentinel_production_single_is_exhaustive_with_signed_constants() {
+        // Deterministic [2,2,2,3] production mask plan on two disjoint halves
+        // of a six-wire band. This pins the nominal sentinel census exactly:
+        // 69 cap-two primitives and one cubic*cubic width-six fossil.
+        let n = 7;
+        let carrier_total = n;
+        let pairs: Vec<(usize, usize)> = (0..n).map(|wire| (wire, wire)).collect();
+        let state = GadgetState {
+            n,
+            pairs: pairs.clone(),
+        };
+        let cfg = ProdConfig {
+            k: 3,
+            deg: 2,
+            k_hi: 1,
+            deg_hi: 3,
+            band: 6,
+            rsrc: 0,
+            single: 1,
+            gray_fold: 3,
+            ..ProdConfig::off()
+        };
+        let source = XGate::from_g57([0, 1, 2]);
+        let plans = [
+            vec![
+                ProdSlot {
+                    factors: vec![(0, false), (1, false)],
+                },
+                ProdSlot {
+                    factors: vec![(0, false), (2, false)],
+                },
+                ProdSlot {
+                    factors: vec![(1, false), (2, false)],
+                },
+                ProdSlot {
+                    factors: vec![(0, false), (1, false), (2, false)],
+                },
+            ],
+            vec![
+                ProdSlot {
+                    factors: vec![(3, false), (4, false)],
+                },
+                ProdSlot {
+                    factors: vec![(3, false), (5, false)],
+                },
+                ProdSlot {
+                    factors: vec![(4, false), (5, false)],
+                },
+                ProdSlot {
+                    factors: vec![(3, false), (4, false), (5, false)],
+                },
+            ],
+        ];
+        let live = carrier_total + 6;
+        for constant_mask in 0usize..4 {
+            let mut ledger = ProdLedger::new(n, &cfg, carrier_total, None);
+            ledger.slots[1] = plans[0].clone();
+            ledger.slots[2] = plans[1].clone();
+            ledger.consts[1] = constant_mask & 1 != 0;
+            ledger.consts[2] = constant_mask & 2 != 0;
+            let slots_before = ledger.slots.clone();
+            let consts_before = ledger.consts.clone();
+            let mut rng = StdRng::seed_from_u64(0x5e17_0000 + constant_mask as u64);
+            let mut fold = Vec::new();
+            ledger.fold_cg(&source, &state, &mut rng, &mut fold);
+            assert_eq!(ledger.cg_sentinel, 1, "sentinel path declined");
+            assert_eq!(fold.len(), 70, "production-single cost drifted");
+            assert_eq!(
+                fold.iter().filter(|gate| gate.width() == 2).count(),
+                69
+            );
+            assert_eq!(
+                fold.iter().filter(|gate| gate.width() == 6).count(),
+                1
+            );
+            let touched = 1u64 << source.target;
+            for input in 0u64..(1u64 << live) {
+                let before: Vec<u64> = (0..n)
+                    .map(|value| {
+                        prod_decode(
+                            input,
+                            value,
+                            &pairs,
+                            &slots_before,
+                            &consts_before,
+                            &ledger.loc,
+                        )
+                    })
+                    .collect();
+                let output = eval_u64(&fold, input);
+                assert_eq!(
+                    (output ^ input) & !touched,
+                    0,
+                    "constant_mask={constant_mask} input={input:#x}: borrow leaked"
+                );
+                let after: Vec<u64> = (0..n)
+                    .map(|value| {
+                        prod_decode(
+                            output,
+                            value,
+                            &pairs,
+                            &ledger.slots,
+                            &ledger.consts,
+                            &ledger.loc,
+                        )
+                    })
+                    .collect();
+                let fires = source
+                    .ctrls
+                    .iter()
+                    .all(|&(wire, polarity)| (before[wire as usize] != 0) == polarity)
+                    ^ source.comp;
+                for value in 0..n {
+                    assert_eq!(
+                        after[value],
+                        before[value] ^ ((value == 0 && fires) as u64),
+                        "constant_mask={constant_mask} input={input:#x} value={value}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prod_sentinel_five_six_seven_correctness_and_width_census() {
+        let n = 7usize;
+        let band = 6usize;
+        let source = XGate::from_g57([0, 1, 2]);
+        let cfg = ProdConfig {
+            k: 3,
+            deg: 2,
+            k_hi: 1,
+            deg_hi: 3,
+            band,
+            rsrc: 0,
+            single: 1,
+            gray_fold: 3,
+            ..ProdConfig::off()
+        };
+        let plans = [
+            vec![
+                ProdSlot {
+                    factors: vec![(0, false), (1, false)],
+                },
+                ProdSlot {
+                    factors: vec![(0, false), (2, false)],
+                },
+                ProdSlot {
+                    factors: vec![(1, false), (2, false)],
+                },
+                ProdSlot {
+                    factors: vec![(0, false), (1, false), (2, false)],
+                },
+            ],
+            vec![
+                ProdSlot {
+                    factors: vec![(3, false), (4, false)],
+                },
+                ProdSlot {
+                    factors: vec![(3, false), (5, false)],
+                },
+                ProdSlot {
+                    factors: vec![(4, false), (5, false)],
+                },
+                ProdSlot {
+                    factors: vec![(3, false), (4, false), (5, false)],
+                },
+            ],
+        ];
+        let census = |gates: &[XGate]| -> Vec<(usize, usize)> {
+            let mut counts = std::collections::BTreeMap::new();
+            for gate in gates {
+                *counts.entry(gate.width()).or_insert(0usize) += 1;
+            }
+            counts.into_iter().collect()
+        };
+        let samples = |total: usize| -> Vec<u64> {
+            let mask = (1u64 << total) - 1;
+            std::iter::once(0)
+                .chain(std::iter::once(mask))
+                .chain((0..2048u64).map(|index| {
+                    index
+                        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                        .rotate_left((index as u32 * 7) & 63)
+                        & mask
+                }))
+                .collect()
+        };
+
+        let five = FiveCarrierState::home(n);
+        let mut five_ledger = ProdLedger::new(n, &cfg, 5 * n, None);
+        five_ledger.slots[1] = plans[0].clone();
+        five_ledger.slots[2] = plans[1].clone();
+        let five_before: Vec<_> = (0..n)
+            .map(|value| five_ledger.five_decode_atoms(value, true, &five))
+            .collect();
+        let mut five_fold = Vec::new();
+        let mut rng = StdRng::seed_from_u64(0x5e17_5005);
+        five_ledger.fold_five(&source, &five, &mut rng, &mut five_fold);
+        let five_after: Vec<_> = (0..n)
+            .map(|value| five_ledger.five_decode_atoms(value, true, &five))
+            .collect();
+        let five_suffix = &five_fold[FIVE_CARRIER_U0_GATES.len()..];
+        assert_eq!(five_ledger.cg_sentinel, 1, "five sentinel path declined");
+        assert_eq!(census(five_suffix), vec![(2, 85), (6, 1)]);
+
+        let six = SixCarrierState::home(n);
+        let mut six_ledger = ProdLedger::new(n, &cfg, 6 * n, None);
+        six_ledger.slots[1] = plans[0].clone();
+        six_ledger.slots[2] = plans[1].clone();
+        let six_before: Vec<_> = (0..n)
+            .map(|value| six_ledger.six_decode_atoms(value, true, &six))
+            .collect();
+        let mut six_fold = Vec::new();
+        let mut rng = StdRng::seed_from_u64(0x5e17_6006);
+        six_ledger.fold_six(&source, &six, &mut rng, &mut six_fold);
+        let six_after: Vec<_> = (0..n)
+            .map(|value| six_ledger.six_decode_atoms(value, true, &six))
+            .collect();
+        let six_suffix = &six_fold[SIX_CARRIER_U0_GATES.len()..];
+        assert_eq!(six_ledger.cg_sentinel, 1, "six sentinel path declined");
+        assert_eq!(census(six_suffix), vec![(2, 348), (6, 9)]);
+
+        let seven = SevenCarrierState::home(n);
+        let mut seven_ledger = ProdLedger::new(n, &cfg, 7 * n, None);
+        seven_ledger.slots[1] = plans[0].clone();
+        seven_ledger.slots[2] = plans[1].clone();
+        let seven_before: Vec<_> = (0..n)
+            .map(|value| seven_ledger.seven_decode_atoms(value, true, &seven))
+            .collect();
+        let mut seven_fold = Vec::new();
+        let mut rng = StdRng::seed_from_u64(0x5e17_7007);
+        seven_ledger.fold_seven(&source, &seven, &mut rng, &mut seven_fold);
+        let seven_after: Vec<_> = (0..n)
+            .map(|value| seven_ledger.seven_decode_atoms(value, true, &seven))
+            .collect();
+        let seven_suffix = &seven_fold[SEVEN_CARRIER_U0_GATES.len()..];
+        assert_eq!(seven_ledger.cg_sentinel, 1, "seven sentinel path declined");
+        // Quartic H makes H*accumulator width five; mode 3 intentionally
+        // ladders only through width four, so those ten brackets remain as
+        // fossils. The production cubic mask is below the representation's
+        // max degree and is therefore gathered as Q, not treated as H.
+        assert_eq!(
+            census(seven_suffix),
+            vec![(2, 61), (5, 10), (8, 1)]
+        );
+
+        let fixtures = [
+            (
+                "five",
+                5 * n + band,
+                &five_fold[..],
+                &five.carriers[0][..],
+                &five_before[..],
+                &five_after[..],
+            ),
+            (
+                "six",
+                6 * n + band,
+                &six_fold[..],
+                &six.carriers[0][..],
+                &six_before[..],
+                &six_after[..],
+            ),
+            (
+                "seven",
+                7 * n + band,
+                &seven_fold[..],
+                &seven.carriers[0][..],
+                &seven_before[..],
+                &seven_after[..],
+            ),
+        ];
+        for (label, total, fold, target_group, before_atoms, after_atoms) in fixtures {
+            let target_mask = target_group
+                .iter()
+                .fold(0u64, |mask, &wire| mask | (1u64 << wire));
+            let total_mask = (1u64 << total) - 1;
+            for input in samples(total) {
+                let before: Vec<u64> = before_atoms
+                    .iter()
+                    .map(|atoms| eval_anf_atoms(input, atoms))
+                    .collect();
+                let output = eval_u64(fold, input);
+                assert_eq!(
+                    (output ^ input) & (total_mask ^ target_mask),
+                    0,
+                    "{label}: unrelated dirty wire changed at {input:#x}"
+                );
+                let after: Vec<u64> = after_atoms
+                    .iter()
+                    .map(|atoms| eval_anf_atoms(output, atoms))
+                    .collect();
+                let fires = source
+                    .ctrls
+                    .iter()
+                    .all(|&(wire, polarity)| (before[wire as usize] != 0) == polarity)
+                    ^ source.comp;
+                for value in 0..n {
+                    assert_eq!(
+                        after[value],
+                        before[value] ^ ((value == 0 && fires) as u64),
+                        "{label}: logical mismatch at {input:#x}, value={value}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn prod_gray_fold_is_share_native_and_two_control() {
         // The Gray fold's contract, over the WHOLE input domain (dirty borrows,
         // no clean-ancilla assumption anywhere): the target value's decode
@@ -9814,6 +15225,108 @@ mod cnot_gadget_tests {
                     "seed={seed}: wire {w} is both borrowed and read as an operand literal"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn prod_gray_fold_has_an_exact_space_time_operand_recovery() {
+        // Red-team the assumption made by the ordinary Gray audit: it checks
+        // every prefix separately, while a trace adversary can combine two
+        // prefixes.  Compare identical masks and RNG choices with and without
+        // the aggregate Gray gather.
+        let n = 6;
+        let band = 5usize;
+        let wires = n + band;
+        let pairs: Vec<(usize, usize)> = (0..n).map(|value| (value, value)).collect();
+        let state = GadgetState {
+            n,
+            pairs: pairs.clone(),
+        };
+        let source = XGate::from_g57([0, 1, 2]);
+
+        let build = |gray: bool| {
+            // Build the SAME masks and consume the SAME injection RNG in both
+            // arms, then switch only the fold strategy.  Configuring max_width
+            // differently before injection shifts the random mask stream and
+            // invalidates the A/B comparison this test is meant to make.
+            let cfg = ProdConfig {
+                k: 3,
+                deg: 2,
+                k_hi: 1,
+                deg_hi: 3,
+                band,
+                rsrc: 0,
+                single: 1,
+                max_width: 2,
+                g57_narrow: 1,
+                gray_fold: 0,
+                ..ProdConfig::off()
+            };
+            let mut rng = StdRng::seed_from_u64(0x67a6_5ace);
+            let mut ledger = ProdLedger::new(n, &cfg, n, None);
+            let mut ramp = Vec::new();
+            ledger.inject_all(&state, &mut rng, &mut ramp);
+            let slots = ledger.slots.clone();
+            let consts = ledger.consts.clone();
+            let loc = ledger.loc.clone();
+            ledger.gray_fold = gray;
+            let mut fold = Vec::new();
+            ledger.fold_cg(&source, &state, &mut rng, &mut fold);
+            (fold, slots, consts, loc, ledger.cg_gray)
+        };
+
+        let (gray_fold, slots, consts, loc, gray_blocks) = build(true);
+        let (expanded_fold, expanded_slots, expanded_consts, expanded_loc, expanded_gray) =
+            build(false);
+        assert_eq!(slots, expanded_slots, "A/B masks differ");
+        assert_eq!(consts, expanded_consts, "A/B mask constants differ");
+        assert_eq!(loc, expanded_loc, "A/B band locations differ");
+        assert_eq!(gray_blocks, 1, "fixture did not exercise the Gray path");
+        assert_eq!(expanded_gray, 0, "control unexpectedly used the Gray path");
+
+        let gray_trace = prefix_wire_signatures(&gray_fold, wires);
+        let expanded_trace = prefix_wire_signatures(&expanded_fold, wires);
+        for operand in [1usize, 2] {
+            let logical = prod_decode_signature(wires, operand, &pairs, &slots, &consts, &loc);
+            let carrier_at_entry = &gray_trace[operand];
+            let needed_delta = xor_signatures(&logical, carrier_at_entry);
+
+            // This is the guarantee the current per-prefix audit actually
+            // establishes: no simultaneous affine view recovers the operand.
+            for (prefix, columns) in gray_trace.chunks_exact(wires).enumerate() {
+                assert!(
+                    !affine_span_contains(columns, &logical),
+                    "operand {operand} is already affine at Gray prefix {prefix}"
+                );
+            }
+
+            // Combining two times on one (unknown in advance) physical wire
+            // changes the answer from impossible to exact over all 2^11 input
+            // states.
+            let witness = same_wire_space_time_witness(
+                &gray_trace,
+                wires,
+                &needed_delta,
+            )
+            .unwrap_or_else(|| panic!("no Gray space-time witness for operand {operand}"));
+            eprintln!(
+                "operand {operand} = entry carrier {operand} XOR wire {}@prefix {} XOR \
+                 wire {}@prefix {} XOR {} (all {} states)",
+                witness.0,
+                witness.1,
+                witness.0,
+                witness.2,
+                witness.3 as u8,
+                1usize << wires
+            );
+
+            // Proper per-monomial expansion never gathers the complete mask on
+            // one borrowed wire, so the same short aggregate-mask identity must
+            // be absent in the otherwise identical control.
+            assert!(
+                same_wire_space_time_witness(&expanded_trace, wires, &needed_delta).is_none(),
+                "expanded control unexpectedly has the Gray aggregate-mask witness"
+            );
         }
     }
 
@@ -10368,6 +15881,19 @@ mod cnot_gadget_tests {
         assert_eq!(p.cg_jitter, 50, "block-count entropy at its maximum");
         assert!(p.epoch > 0, "a frozen band is recoverable by function lifetime");
         assert_eq!(p.fill_pivots, 0, "band = n leaves the pivot block no room");
+    }
+
+    #[test]
+    fn no_gray_phase_a_preset_changes_only_the_fold_strategy() {
+        let gray = ProdConfig::production_single();
+        let safe = ProdConfig::production_single_no_gray_phase_a();
+        assert_eq!(safe.gray_fold, 0, "must not gather an aggregate operand mask");
+        assert_eq!(safe.ladder_cap, 4, "measured selective-narrow ceiling");
+
+        let mut expected = gray;
+        expected.gray_fold = 0;
+        expected.ladder_cap = 4;
+        assert_eq!(safe, expected, "preset drifted beyond its two measured levers");
     }
 
     /// `strip_all`'s constant discharge must not read the target's SIBLING.
@@ -11543,5 +17069,2190 @@ mod cnot_gadget_tests {
             legacy_feistal_total / 16,
             cnot_feistal_total / 16,
         );
+    }
+
+    // Keep a test-side copy: comparing the circuit only to the implementation
+    // constant would let both drift together without pinning the supplied map.
+    const EXPECTED_FIVE_CARRIER_U0: [u8; 32] = [
+        19, 27, 8, 28, 0, 25, 12, 22, 24, 18, 1, 30, 5, 7, 3, 11, 29, 21, 23, 15, 26, 6,
+        4, 31, 16, 14, 13, 10, 9, 20, 2, 17,
+    ];
+
+    #[test]
+    fn five_carrier_u0_realization_has_the_supplied_truth_table() {
+        assert_eq!(
+            FIVE_CARRIER_U0, EXPECTED_FIVE_CARRIER_U0,
+            "the frozen U0 table drifted from the supplied permutation"
+        );
+        let carriers = [0usize, 1, 2, 3, 4];
+        let mut gates = Vec::new();
+        emit_five_carrier_update(&carriers, &mut gates);
+        assert_eq!(gates.len(), 40, "the frozen U0 realization drifted");
+
+        let mut seen_u0 = [false; 32];
+        let mut seen_u1 = [false; 32];
+        let mut classes = [0usize; 2];
+        for input in 0u8..32 {
+            let output = eval_u64(&gates, input as u64) as u8;
+            assert_eq!(
+                output, EXPECTED_FIVE_CARRIER_U0[input as usize],
+                "U0 truth-table mismatch at {input:#07b}"
+            );
+            assert!(!seen_u0[output as usize], "U0 is not injective");
+            seen_u0[output as usize] = true;
+            assert_ne!(output, input, "U0 has a fixed point at {input:#07b}");
+            assert_eq!(
+                five_carrier_decode_word(output),
+                five_carrier_decode_word(input),
+                "U0 changed the decode class at {input:#07b}"
+            );
+
+            // U1 is U0 followed by the designated c0 flip.  It is another
+            // fixed-point-free permutation and changes exactly the D class.
+            let output_u1 = output ^ 1;
+            assert!(!seen_u1[output_u1 as usize], "U1 is not injective");
+            seen_u1[output_u1 as usize] = true;
+            assert_ne!(output_u1, input, "U1 has a fixed point at {input:#07b}");
+            assert_ne!(
+                five_carrier_decode_word(output_u1),
+                five_carrier_decode_word(input),
+                "U1 did not change the decode class at {input:#07b}"
+            );
+            classes[five_carrier_decode_word(input) as usize] += 1;
+        }
+        assert!(seen_u0.into_iter().all(|seen| seen));
+        assert!(seen_u1.into_iter().all(|seen| seen));
+        assert_eq!(classes, [16, 16], "D must split the carrier space evenly");
+        assert!(
+            gates.iter().any(|gate| gate.width() == 4),
+            "an ancilla-free realization of the odd U0 permutation needs a width-4 gate"
+        );
+    }
+
+    #[test]
+    fn five_carrier_update_trace_has_no_weight_one_or_two_walsh_detector() {
+        // A trace row consists of the five carrier bits immediately before and
+        // after one update.  For firing bit f, the post-state is
+        // U_f(x) = U0(x) XOR f*e0.  Its Walsh coefficient against a detector
+        // is sum_{x,f} (-1)^(f XOR parity(detector & (x,U_f(x)))).
+        // Thus a zero sum means exactly zero correlation with f.
+        let walsh_sum = |detector: u16| -> i32 {
+            let mut sum = 0i32;
+            for input in 0u16..32 {
+                for firing in 0u16..2 {
+                    let output = EXPECTED_FIVE_CARRIER_U0[input as usize] as u16 ^ firing;
+                    let trace = input | (output << 5);
+                    let prediction = (trace & detector).count_ones() as u16 & 1;
+                    sum += if prediction == firing { 1 } else { -1 };
+                }
+            }
+            sum
+        };
+
+        for detector in 1u16..(1u16 << 10) {
+            let weight = detector.count_ones();
+            if weight <= 2 {
+                assert_eq!(
+                    walsh_sum(detector),
+                    0,
+                    "weight-{weight} trace detector {detector:#012b} is correlated"
+                );
+            }
+        }
+
+        let max_weight_three = (1u16..(1u16 << 10))
+            .filter(|detector| detector.count_ones() == 3)
+            .map(|detector| walsh_sum(detector).unsigned_abs())
+            .max()
+            .unwrap();
+        assert_eq!(
+            max_weight_three, 32,
+            "the first nonzero trace spectrum should have Walsh magnitude 1/2"
+        );
+        // There are 64 equally weighted (x,f) rows.  A Walsh magnitude of 32
+        // is |Pr[predict=f] - 1/2| = 32/(2*64) = 1/4.
+    }
+
+    #[test]
+    fn five_carrier_endpoint_firing_bit_is_exactly_degree_two() {
+        // Pin the algebraic boundary separately from the raw-parity spectrum.
+        // The supplied decode is quadratic, so every transition satisfies
+        //
+        //   firing = D(carrier_before) XOR D(carrier_after).
+        //
+        // Zero correlation with all weight-one/two XOR detectors does not
+        // imply immunity to Gaussian elimination on the second tensor: the
+        // right-hand side below is an XOR of nine degree-one/two features.
+        fn gf2_rank(signatures: impl IntoIterator<Item = u64>) -> usize {
+            let mut basis = [0u64; 64];
+            let mut rank = 0usize;
+            for mut signature in signatures {
+                while signature != 0 {
+                    let pivot = 63 - signature.leading_zeros() as usize;
+                    if basis[pivot] != 0 {
+                        signature ^= basis[pivot];
+                    } else {
+                        basis[pivot] = signature;
+                        rank += 1;
+                        break;
+                    }
+                }
+            }
+            rank
+        }
+
+        let mut columns = [0u64; 10];
+        let mut firing_signature = 0u64;
+        let mut decode_delta_signature = 0u64;
+        for input in 0usize..32 {
+            for firing in 0usize..2 {
+                let row = 2 * input + firing;
+                let output = EXPECTED_FIVE_CARRIER_U0[input] as usize ^ firing;
+                let trace = input | (output << 5);
+                for (wire, column) in columns.iter_mut().enumerate() {
+                    if trace & (1usize << wire) != 0 {
+                        *column |= 1u64 << row;
+                    }
+                }
+                if firing != 0 {
+                    firing_signature |= 1u64 << row;
+                }
+                if five_carrier_decode_word(input as u8)
+                    ^ five_carrier_decode_word(output as u8)
+                {
+                    decode_delta_signature |= 1u64 << row;
+                }
+            }
+        }
+        assert_eq!(
+            decode_delta_signature, firing_signature,
+            "the supplied quadratic decode must recover every firing bit exactly"
+        );
+
+        let degree_one: Vec<u64> = std::iter::once(u64::MAX).chain(columns).collect();
+        assert_eq!(gf2_rank(degree_one.iter().copied()), 11);
+        assert_eq!(
+            gf2_rank(
+                degree_one
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(firing_signature))
+            ),
+            12,
+            "degree-one endpoint features unexpectedly recovered the firing bit"
+        );
+
+        let mut degree_two = degree_one;
+        for left in 0..10 {
+            for right in left + 1..10 {
+                degree_two.push(columns[left] & columns[right]);
+            }
+        }
+        assert_eq!(gf2_rank(degree_two.iter().copied()), 42);
+        assert_eq!(
+            gf2_rank(
+                degree_two
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(firing_signature))
+            ),
+            42,
+            "the exact recovery boundary must be degree two"
+        );
+    }
+
+    #[test]
+    fn five_carrier_endpoint_has_no_perfect_xor_detector_at_any_weight() {
+        let walsh_sum = |detector: u16| -> i32 {
+            let mut sum = 0i32;
+            for input in 0u16..32 {
+                for firing in 0u16..2 {
+                    let output = EXPECTED_FIVE_CARRIER_U0[input as usize] as u16 ^ firing;
+                    let trace = input | (output << 5);
+                    let prediction = (trace & detector).count_ones() as u16 & 1;
+                    sum += if prediction == firing { 1 } else { -1 };
+                }
+            }
+            sum
+        };
+
+        let maximum = (1u16..(1u16 << 10))
+            .map(|detector| walsh_sum(detector).unsigned_abs())
+            .max();
+        assert_eq!(
+            maximum,
+            Some(32),
+            "the supplied map should have no perfect affine endpoint relation"
+        );
+    }
+
+    #[test]
+    fn strong_five_carrier_u0_decode_and_degree_boundary() {
+        let carriers = [0usize, 1, 2, 3, 4];
+        let mut gates = Vec::new();
+        emit_strong_five_carrier_update(&carriers, &mut gates);
+        assert_eq!(gates.len(), 6, "strong-five U0 gate count drifted");
+
+        let mut seen_u0 = [false; 32];
+        let mut seen_u1 = [false; 32];
+        for input in 0u8..32 {
+            let output = eval_u64(&gates, input as u64) as u8;
+            assert_eq!(output, STRONG_FIVE_CARRIER_U0[input as usize]);
+            assert!(!seen_u0[output as usize]);
+            seen_u0[output as usize] = true;
+            assert_ne!(output, input, "strong-five U0 has a fixed point");
+            assert_eq!(
+                strong_five_carrier_decode_word(output),
+                strong_five_carrier_decode_word(input),
+                "strong-five U0 changed decode class"
+            );
+
+            let output_u1 = output ^ 1;
+            assert!(!seen_u1[output_u1 as usize]);
+            seen_u1[output_u1 as usize] = true;
+            assert_ne!(output_u1, input, "strong-five U1 has a fixed point");
+            assert_ne!(
+                strong_five_carrier_decode_word(output_u1),
+                strong_five_carrier_decode_word(input),
+                "strong-five U1 did not flip decode class"
+            );
+        }
+        assert!(seen_u0.into_iter().all(|seen| seen));
+        assert!(seen_u1.into_iter().all(|seen| seen));
+
+        fn gf2_rank(signatures: impl IntoIterator<Item = u64>) -> usize {
+            let mut basis = [0u64; 64];
+            let mut rank = 0usize;
+            for mut signature in signatures {
+                while signature != 0 {
+                    let pivot = 63 - signature.leading_zeros() as usize;
+                    if basis[pivot] != 0 {
+                        signature ^= basis[pivot];
+                    } else {
+                        basis[pivot] = signature;
+                        rank += 1;
+                        break;
+                    }
+                }
+            }
+            rank
+        }
+
+        let mut columns = [0u64; 10];
+        let mut firing_signature = 0u64;
+        let mut decode_delta = 0u64;
+        for input in 0usize..32 {
+            for firing in 0usize..2 {
+                let row = 2 * input + firing;
+                let output = STRONG_FIVE_CARRIER_U0[input] as usize ^ firing;
+                let trace = input | (output << 5);
+                for (wire, column) in columns.iter_mut().enumerate() {
+                    if trace & (1usize << wire) != 0 {
+                        *column |= 1u64 << row;
+                    }
+                }
+                if firing != 0 {
+                    firing_signature |= 1u64 << row;
+                }
+                if strong_five_carrier_decode_word(input as u8)
+                    ^ strong_five_carrier_decode_word(output as u8)
+                {
+                    decode_delta |= 1u64 << row;
+                }
+            }
+        }
+        assert_eq!(decode_delta, firing_signature);
+
+        let degree_one: Vec<u64> = std::iter::once(u64::MAX).chain(columns).collect();
+        let mut degree_two = degree_one.clone();
+        for a in 0..10 {
+            for b in a + 1..10 {
+                degree_two.push(columns[a] & columns[b]);
+            }
+        }
+        let rank_two = gf2_rank(degree_two.iter().copied());
+        assert_eq!(rank_two, 22);
+        assert_eq!(
+            gf2_rank(
+                degree_two
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(firing_signature))
+            ),
+            rank_two + 1,
+            "degree-two endpoint features recovered strong-five firing"
+        );
+
+        let mut degree_three = degree_two;
+        for a in 0..10 {
+            for b in a + 1..10 {
+                for c in b + 1..10 {
+                    degree_three.push(columns[a] & columns[b] & columns[c]);
+                }
+            }
+        }
+        assert_eq!(gf2_rank(degree_three.iter().copied()), 42);
+        assert_eq!(
+            gf2_rank(
+                degree_three
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(firing_signature))
+            ),
+            42,
+            "strong-five exact boundary must first appear at degree three"
+        );
+    }
+
+    #[test]
+    fn strong_five_carrier_endpoint_walsh_and_affine_structure() {
+        let walsh_sum = |detector: u16| -> i32 {
+            let mut sum = 0i32;
+            for input in 0u16..32 {
+                for firing in 0u16..2 {
+                    let output = STRONG_FIVE_CARRIER_U0[input as usize] as u16 ^ firing;
+                    let trace = input | (output << 5);
+                    let prediction = (trace & detector).count_ones() as u16 & 1;
+                    sum += if prediction == firing { 1 } else { -1 };
+                }
+            }
+            sum
+        };
+
+        for detector in 1u16..(1u16 << 10) {
+            if detector.count_ones() <= 2 {
+                assert_eq!(walsh_sum(detector), 0);
+            }
+            assert_ne!(walsh_sum(detector).unsigned_abs(), 64);
+        }
+        let weight_three: Vec<u32> = (1u16..(1u16 << 10))
+            .filter(|detector| detector.count_ones() == 3)
+            .map(|detector| walsh_sum(detector).unsigned_abs())
+            .collect();
+        assert_eq!(weight_three.iter().copied().max(), Some(16));
+        assert_eq!(
+            weight_three.iter().filter(|&&magnitude| magnitude != 0).count(),
+            2
+        );
+
+        // The compact affine tail deliberately leaves c1 and c2 fixed.  Pin
+        // that structural tradeoff so it cannot be omitted from the mode's
+        // documentation or accidentally mistaken for full affine rank.
+        for input in 0u8..32 {
+            let output = STRONG_FIVE_CARRIER_U0[input as usize];
+            assert_eq!((input >> 1) & 1, (output >> 1) & 1);
+            assert_eq!((input >> 2) & 1, (output >> 2) & 1);
+        }
+    }
+
+    #[test]
+    fn strong_five_carrier_all_fold_modes_preserve_dirty_high_inputs() {
+        let n = 6usize;
+        let band = 6usize;
+        let source = vec![
+            XGate::from_g57([0, 1, 2]),
+            XGate::cnot(3, 4),
+            XGate::conj(5, [(0u16, true), (2u16, false)]).unwrap(),
+        ];
+        let low_mask = (1u64 << n) - 1;
+        let total = 5 * n + band;
+        let high_mask = ((1u64 << total) - 1) ^ low_mask;
+        let junk_patterns = [
+            0,
+            high_mask,
+            0xaaaa_aaaa_aaaa_aaaau64 & high_mask,
+            0x36db_6db6_db6d_b6dbu64 & high_mask,
+        ];
+
+        for gray_fold in 0..=3usize {
+            let mut prod = ProdConfig::production_five_carrier();
+            prod.band = band;
+            prod.gray_fold = gray_fold;
+            prod.cg_jitter = 0;
+            let mut rng = StdRng::seed_from_u64(0x5c0b_1c00 + gray_fold as u64);
+            let gadget =
+                gadgetize_xgates_strong_five_carrier(&source, n, 2, &prod, &mut rng);
+            assert_eq!(gadget.num_wires, total);
+            for low in 0..=low_mask {
+                let expected = eval_u64(&source, low) & low_mask;
+                for &junk in &junk_patterns {
+                    assert_eq!(
+                        eval_u64(&gadget.gates, low | junk) & low_mask,
+                        expected,
+                        "strong-five mode={gray_fold} low={low:#x} junk={junk:#x}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn five_carrier_gadget_preserves_low_wires_for_dirty_high_inputs() {
+        let n = 6usize;
+        let band = 6usize;
+        let mut prod = ProdConfig::production_five_carrier();
+        prod.band = band;
+
+        // Certify that this fixture really reaches the optimized four-phase
+        // g57 fold, rather than silently exercising only the general odometer.
+        let state = FiveCarrierState::home(n);
+        let mut audit_rng = StdRng::seed_from_u64(0x5ca1_67a7);
+        let mut ledger = ProdLedger::new(n, &prod, 5 * n, None);
+        let mut injection = Vec::new();
+        ledger.inject_all(&state.c0_view(), &mut audit_rng, &mut injection);
+        let mut optimized_fold = Vec::new();
+        ledger.fold_five(
+            &XGate::from_g57([0, 1, 2]),
+            &state,
+            &mut audit_rng,
+            &mut optimized_fold,
+        );
+        assert_eq!(ledger.cg_gray, 1, "fixture missed the optimized g57 path");
+
+        // Keep the optimized g57 and add native heterogeneous forms handled by
+        // fold_five's general path: CNOT plus a mixed-polarity CCNOT.
+        let source = vec![
+            XGate::from_g57([0, 1, 2]),
+            XGate::cnot(3, 4),
+            XGate::conj(5, [(0u16, true), (2u16, false)]).unwrap(),
+        ];
+        let low_mask = (1u64 << n) - 1;
+        let total = 5 * n + band;
+        let high_mask = ((1u64 << total) - 1) ^ low_mask;
+        let fixed_junk = [
+            0,
+            high_mask,
+            0xaaaa_aaaa_aaaa_aaaau64 & high_mask,
+            0x5555_5555_5555_5555u64 & high_mask,
+            0x9249_2492_4924_9249u64 & high_mask,
+            0x36db_6db6_db6d_b6dbu64 & high_mask,
+        ];
+
+        for seed in 0..3u64 {
+            let mut rng = StdRng::seed_from_u64(0x5ca1_0000 + seed);
+            let gadget = gadgetize_xgates_five_carrier(&source, n, 2, &prod, &mut rng);
+            assert_eq!(gadget.num_wires, total, "expected 5*n + band wires");
+
+            for low in 0..=low_mask {
+                let expected = eval_u64(&source, low) & low_mask;
+                for (junk_index, &junk) in fixed_junk.iter().enumerate() {
+                    let input = low | junk;
+                    assert_eq!(
+                        eval_u64(&gadget.gates, input) & low_mask,
+                        expected,
+                        "seed={seed} low={low:#x} junk pattern {junk_index}"
+                    );
+                }
+                // One extra non-periodic high assignment per low word catches
+                // accidental assumptions hidden by the structured patterns.
+                let junk = (low
+                    .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                    .rotate_left((low as u32) & 31))
+                    & high_mask;
+                assert_eq!(
+                    eval_u64(&gadget.gates, low | junk) & low_mask,
+                    expected,
+                    "seed={seed} low={low:#x} hashed high junk"
+                );
+            }
+        }
+    }
+
+    const EXPECTED_SIX_CARRIER_U0: [u8; 64] = [
+        2, 3, 0, 1, 7, 6, 5, 4, 11, 10, 9, 8, 14, 15, 12, 13, 30, 31, 29, 28, 27, 26, 24,
+        25, 22, 23, 21, 20, 19, 18, 16, 17, 42, 43, 41, 40, 46, 47, 45, 44, 35, 34, 32, 33,
+        39, 38, 36, 37, 54, 55, 53, 52, 51, 50, 48, 49, 63, 62, 60, 61, 58, 59, 57, 56,
+    ];
+
+    #[test]
+    fn six_carrier_u0_realization_has_the_supplied_truth_table() {
+        assert_eq!(SIX_CARRIER_U0, EXPECTED_SIX_CARRIER_U0);
+        let carriers = [0usize, 1, 2, 3, 4, 5];
+        let mut gates = Vec::new();
+        emit_six_carrier_update(&carriers, &mut gates);
+        assert_eq!(gates.len(), 10, "the compact U0 realization drifted");
+
+        let mut seen_u0 = [false; 64];
+        let mut seen_u1 = [false; 64];
+        let mut classes = [0usize; 2];
+        for input in 0u8..64 {
+            let output = eval_u64(&gates, input as u64) as u8;
+            assert_eq!(
+                output, EXPECTED_SIX_CARRIER_U0[input as usize],
+                "U0 truth-table mismatch at {input:#08b}"
+            );
+            assert!(!seen_u0[output as usize], "U0 is not injective");
+            seen_u0[output as usize] = true;
+            assert_ne!(output, input, "U0 fixed point at {input:#08b}");
+            assert_eq!(
+                EXPECTED_SIX_CARRIER_U0[output as usize], input,
+                "the supplied U0 must be an involution"
+            );
+            assert_eq!(
+                six_carrier_decode_word(output),
+                six_carrier_decode_word(input),
+                "U0 changed the decode class at {input:#08b}"
+            );
+
+            let output_u1 = output ^ 1;
+            assert!(!seen_u1[output_u1 as usize], "U1 is not injective");
+            seen_u1[output_u1 as usize] = true;
+            assert_ne!(output_u1, input, "U1 fixed point at {input:#08b}");
+            assert_ne!(
+                six_carrier_decode_word(output_u1),
+                six_carrier_decode_word(input),
+                "U1 did not change the decode class at {input:#08b}"
+            );
+            classes[six_carrier_decode_word(input) as usize] += 1;
+        }
+        assert!(seen_u0.into_iter().all(|seen| seen));
+        assert!(seen_u1.into_iter().all(|seen| seen));
+        assert_eq!(classes, [32, 32], "D must split the carrier space evenly");
+        let widths: Vec<usize> = gates.iter().map(XGate::width).collect();
+        assert_eq!(
+            widths.iter().filter(|&&width| width == 0).count(),
+            1
+        );
+        assert_eq!(
+            widths.iter().filter(|&&width| width == 1).count(),
+            5
+        );
+        assert_eq!(
+            widths.iter().filter(|&&width| width == 2).count(),
+            1
+        );
+        assert_eq!(
+            widths.iter().filter(|&&width| width == 3).count(),
+            3
+        );
+    }
+
+    #[test]
+    fn six_carrier_decode_has_no_weight_one_or_two_static_parity_correlation() {
+        let correlation_sum = |detector: u8| -> i32 {
+            (0u8..64)
+                .map(|carrier| {
+                    let detector_value = (carrier & detector).count_ones() & 1 != 0;
+                    if detector_value == six_carrier_decode_word(carrier) {
+                        1
+                    } else {
+                        -1
+                    }
+                })
+                .sum()
+        };
+        for detector in 1u8..64 {
+            if detector.count_ones() <= 2 {
+                assert_eq!(
+                    correlation_sum(detector),
+                    0,
+                    "low-weight static detector {detector:#08b} is correlated"
+                );
+            }
+        }
+        let max_weight_three = (1u8..64)
+            .filter(|detector| detector.count_ones() == 3)
+            .map(|detector| correlation_sum(detector).unsigned_abs())
+            .max()
+            .unwrap();
+        assert_eq!(max_weight_three, 16, "expected normalized magnitude 1/4");
+    }
+
+    #[test]
+    fn six_carrier_update_trace_has_no_weight_one_two_or_three_walsh_detector() {
+        let walsh_sum = |detector: u16| -> i32 {
+            let mut sum = 0i32;
+            for input in 0u16..64 {
+                for firing in 0u16..2 {
+                    let output = EXPECTED_SIX_CARRIER_U0[input as usize] as u16 ^ firing;
+                    let trace = input | (output << 6);
+                    let prediction = (trace & detector).count_ones() as u16 & 1;
+                    sum += if prediction == firing { 1 } else { -1 };
+                }
+            }
+            sum
+        };
+
+        for detector in 1u16..(1u16 << 12) {
+            let weight = detector.count_ones();
+            if weight <= 3 {
+                assert_eq!(
+                    walsh_sum(detector),
+                    0,
+                    "weight-{weight} endpoint detector {detector:#014b} is correlated"
+                );
+            }
+        }
+        let max_weight_four = (1u16..(1u16 << 12))
+            .filter(|detector| detector.count_ones() == 4)
+            .map(|detector| walsh_sum(detector).unsigned_abs())
+            .max()
+            .unwrap();
+        assert_eq!(max_weight_four, 32, "first normalized Walsh magnitude is 1/4");
+    }
+
+    #[test]
+    fn six_carrier_endpoint_firing_bit_is_outside_the_degree_two_trace_span() {
+        fn gf2_rank(signatures: impl IntoIterator<Item = u128>) -> usize {
+            let mut basis = [0u128; 128];
+            let mut rank = 0usize;
+            for mut signature in signatures {
+                while signature != 0 {
+                    let pivot = 127 - signature.leading_zeros() as usize;
+                    if basis[pivot] != 0 {
+                        signature ^= basis[pivot];
+                    } else {
+                        basis[pivot] = signature;
+                        rank += 1;
+                        break;
+                    }
+                }
+            }
+            rank
+        }
+
+        let mut columns = [0u128; 12];
+        let mut firing_signature = 0u128;
+        for input in 0usize..64 {
+            for firing in 0usize..2 {
+                let row = 2 * input + firing;
+                let output = EXPECTED_SIX_CARRIER_U0[input] as usize ^ firing;
+                let trace = input | (output << 6);
+                for (wire, column) in columns.iter_mut().enumerate() {
+                    if (trace >> wire) & 1 != 0 {
+                        *column |= 1u128 << row;
+                    }
+                }
+                if firing != 0 {
+                    firing_signature |= 1u128 << row;
+                }
+            }
+        }
+
+        let mut degree_two = vec![u128::MAX];
+        degree_two.extend(columns);
+        for left in 0..12 {
+            for right in left + 1..12 {
+                degree_two.push(columns[left] & columns[right]);
+            }
+        }
+        let rank_two = gf2_rank(degree_two.iter().copied());
+        let rank_with_firing = gf2_rank(
+            degree_two
+                .iter()
+                .copied()
+                .chain(std::iter::once(firing_signature)),
+        );
+        assert_eq!(rank_two, 29, "degree-two endpoint feature rank drifted");
+        assert_eq!(
+            rank_with_firing,
+            rank_two + 1,
+            "degree-two Gaussian elimination recovered the firing bit"
+        );
+
+        // Pin the intended boundary: degree three does contain an exact
+        // recovery, while degree two does not.
+        let mut degree_three = degree_two;
+        for a in 0..12 {
+            for b in a + 1..12 {
+                for c in b + 1..12 {
+                    degree_three.push(columns[a] & columns[b] & columns[c]);
+                }
+            }
+        }
+        assert_eq!(
+            gf2_rank(degree_three.iter().copied()),
+            gf2_rank(
+                degree_three
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(firing_signature))
+            ),
+            "degree-three boundary unexpectedly moved"
+        );
+    }
+
+    #[test]
+    fn six_carrier_gadget_preserves_low_wires_for_dirty_high_inputs() {
+        let n = 6usize;
+        let band = 6usize;
+        let mut prod = ProdConfig::production_six_carrier();
+        prod.band = band;
+
+        let state = SixCarrierState::home(n);
+        let mut audit_rng = StdRng::seed_from_u64(0x6ca1_67a7);
+        let mut ledger = ProdLedger::new(n, &prod, 6 * n, None);
+        let mut injection = Vec::new();
+        ledger.inject_all(&state.c0_view(), &mut audit_rng, &mut injection);
+        let mut optimized_fold = Vec::new();
+        ledger.fold_six(
+            &XGate::from_g57([0, 1, 2]),
+            &state,
+            &mut audit_rng,
+            &mut optimized_fold,
+        );
+        assert_eq!(ledger.cg_gray, 1, "fixture missed the six-carrier Gray fold");
+
+        let source = vec![
+            XGate::from_g57([0, 1, 2]),
+            XGate::cnot(3, 4),
+            XGate::conj(5, [(0u16, true), (2u16, false)]).unwrap(),
+        ];
+        let low_mask = (1u64 << n) - 1;
+        let total = 6 * n + band;
+        let high_mask = ((1u64 << total) - 1) ^ low_mask;
+        let fixed_junk = [
+            0,
+            high_mask,
+            0xaaaa_aaaa_aaaa_aaaau64 & high_mask,
+            0x5555_5555_5555_5555u64 & high_mask,
+            0x9249_2492_4924_9249u64 & high_mask,
+            0x36db_6db6_db6d_b6dbu64 & high_mask,
+        ];
+
+        for seed in 0..3u64 {
+            let mut rng = StdRng::seed_from_u64(0x6ca1_0000 + seed);
+            let gadget = gadgetize_xgates_six_carrier(&source, n, 2, &prod, &mut rng);
+            assert_eq!(gadget.num_wires, total, "expected 6*n + band wires");
+
+            for low in 0..=low_mask {
+                let expected = eval_u64(&source, low) & low_mask;
+                for (junk_index, &junk) in fixed_junk.iter().enumerate() {
+                    assert_eq!(
+                        eval_u64(&gadget.gates, low | junk) & low_mask,
+                        expected,
+                        "seed={seed} low={low:#x} junk pattern {junk_index}"
+                    );
+                }
+                let junk = (low
+                    .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                    .rotate_left((low as u32) & 31))
+                    & high_mask;
+                assert_eq!(
+                    eval_u64(&gadget.gates, low | junk) & low_mask,
+                    expected,
+                    "seed={seed} low={low:#x} hashed high junk"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn six_carrier_public_cnot_and_slice_wrappers_have_the_expected_port() {
+        let n = 6usize;
+        let band = 6usize;
+        let mut prod = ProdConfig::production_six_carrier();
+        prod.band = band;
+        let total = 6 * n + band;
+        let low_mask = (1u64 << n) - 1;
+        let high_mask = ((1u64 << total) - 1) ^ low_mask;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2]],
+        };
+        let source = vec![XGate::from_g57([0, 1, 2])];
+
+        let mut bare_rng = StdRng::seed_from_u64(0x6ca2_0001);
+        let bare = gadgetize_cnot_six_carrier(&main, n, 1, &prod, &mut bare_rng);
+        let mut slice_cnot_rng = StdRng::seed_from_u64(0x6ca2_0002);
+        let slice_cnot = gadgetize_with_slice_zero_ccnot_six_carrier(
+            &main,
+            n,
+            1,
+            10 * n,
+            &MaskConfig::off(),
+            &prod,
+            &mut slice_cnot_rng,
+        );
+        let mut slice_xgate_rng = StdRng::seed_from_u64(0x6ca2_0003);
+        let slice_xgate = gadgetize_xgates_with_slice_zero_ccnot_six_carrier(
+            &source,
+            n,
+            1,
+            10 * n,
+            &prod,
+            &mut slice_xgate_rng,
+        );
+        assert_eq!(bare.num_wires, total);
+        assert_eq!(slice_cnot.num_wires, total);
+        assert_eq!(slice_xgate.num_wires, total);
+
+        for low in 0..=low_mask {
+            let expected = eval_u64(&source, low) & low_mask;
+            assert_eq!(eval_u64(&bare.gates, low) & low_mask, expected);
+            assert_eq!(eval_u64(&bare.gates, low | high_mask) & low_mask, expected);
+            assert_eq!(eval_u64(&slice_cnot.gates, low) & low_mask, expected);
+            assert_eq!(eval_u64(&slice_xgate.gates, low) & low_mask, expected);
+        }
+    }
+
+    #[test]
+    fn six_carrier_empty_source_is_the_identity_for_arbitrary_high_junk() {
+        let n = 3usize;
+        let mut prod = ProdConfig::production_six_carrier();
+        prod.band = 6;
+        let total = 6 * n + prod.band_size(n);
+        let low_mask = (1u64 << n) - 1;
+        let high_mask = ((1u64 << total) - 1) ^ low_mask;
+        let mut rng = StdRng::seed_from_u64(0x6ca3_0001);
+        let gadget = gadgetize_xgates_six_carrier(&[], n, 1, &prod, &mut rng);
+        assert_eq!(gadget.num_wires, total);
+
+        for low in 0..=low_mask {
+            for junk in [
+                0,
+                high_mask,
+                0xaaaa_aaaa_aaaa_aaaau64 & high_mask,
+                0x9249_2492_4924_9249u64 & high_mask,
+            ] {
+                assert_eq!(eval_u64(&gadget.gates, low | junk) & low_mask, low);
+            }
+        }
+    }
+
+    #[test]
+    fn strong_six_carrier_u0_truth_table_class_and_width_census() {
+        let carriers = [0usize, 1, 2, 3, 4, 5];
+        let mut gates = Vec::new();
+        emit_strong_six_carrier_update(&carriers, &mut gates);
+        assert_eq!(gates.len(), 21, "strong-six U0 gate count drifted");
+
+        let mut seen_u0 = [false; 64];
+        let mut seen_u1 = [false; 64];
+        let mut classes = [0usize; 2];
+        for input in 0u8..64 {
+            let output = eval_u64(&gates, input as u64) as u8;
+            assert_eq!(
+                output, STRONG_SIX_CARRIER_U0[input as usize],
+                "strong-six U0 truth-table mismatch at {input:#08b}"
+            );
+            assert!(!seen_u0[output as usize], "strong-six U0 is not injective");
+            seen_u0[output as usize] = true;
+            assert_ne!(output, input, "strong-six U0 fixed point at {input:#08b}");
+            assert_eq!(
+                six_carrier_decode_word(output),
+                six_carrier_decode_word(input),
+                "strong-six U0 changed the decode class at {input:#08b}"
+            );
+
+            let output_u1 = output ^ 1;
+            assert!(!seen_u1[output_u1 as usize], "strong-six U1 is not injective");
+            seen_u1[output_u1 as usize] = true;
+            assert_ne!(
+                output_u1, input,
+                "strong-six U1 fixed point at {input:#08b}"
+            );
+            assert_ne!(
+                six_carrier_decode_word(output_u1),
+                six_carrier_decode_word(input),
+                "strong-six U1 did not change the decode class at {input:#08b}"
+            );
+            classes[six_carrier_decode_word(input) as usize] += 1;
+        }
+        assert!(seen_u0.into_iter().all(|seen| seen));
+        assert!(seen_u1.into_iter().all(|seen| seen));
+        assert_eq!(classes, [32, 32]);
+
+        let widths: Vec<usize> = gates.iter().map(XGate::width).collect();
+        for (width, expected) in [(0, 1), (1, 6), (2, 7), (3, 6), (4, 1)] {
+            assert_eq!(
+                widths.iter().filter(|&&actual| actual == width).count(),
+                expected,
+                "strong-six width-{width} gate count drifted"
+            );
+        }
+    }
+
+    #[test]
+    fn strong_six_carrier_endpoint_has_full_affine_rank_and_pinned_walsh_spectrum() {
+        fn gf2_rank(signatures: impl IntoIterator<Item = u64>) -> usize {
+            let mut basis = [0u64; 64];
+            let mut rank = 0usize;
+            for mut signature in signatures {
+                while signature != 0 {
+                    let pivot = 63 - signature.leading_zeros() as usize;
+                    if basis[pivot] != 0 {
+                        signature ^= basis[pivot];
+                    } else {
+                        basis[pivot] = signature;
+                        rank += 1;
+                        break;
+                    }
+                }
+            }
+            rank
+        }
+
+        // Constant plus all six before and six U0-after coordinates have the
+        // maximum possible rank.  Pin the movement census too: unlike the
+        // compact sibling, no carrier lane is frozen or an affine duplicate.
+        let mut graph_columns = [0u64; 12];
+        let mut movement = [0usize; 6];
+        for input in 0usize..64 {
+            let output = STRONG_SIX_CARRIER_U0[input] as usize;
+            let trace = input | (output << 6);
+            for (wire, column) in graph_columns.iter_mut().enumerate() {
+                if (trace >> wire) & 1 != 0 {
+                    *column |= 1u64 << input;
+                }
+            }
+            for (lane, count) in movement.iter_mut().enumerate() {
+                *count += ((input ^ output) >> lane) & 1;
+            }
+        }
+        assert_eq!(
+            gf2_rank(std::iter::once(u64::MAX).chain(graph_columns)),
+            13,
+            "strong-six endpoint graph lost full affine rank"
+        );
+        assert_eq!(movement, [32, 48, 32, 32, 16, 16]);
+        assert!(movement.into_iter().all(|count| count != 0));
+
+        // Histogram bins are |W| = 16,32,48,64 over all 128 (input,firing)
+        // rows.  No coefficient exists through detector weight three; the
+        // first signal is rho=32/128=1/4 at weight four.  No parity detector
+        // at any weight is perfect.
+        let expected: [[usize; 4]; 13] = [
+            [0, 0, 0, 0],
+            [0, 0, 0, 0],
+            [0, 0, 0, 0],
+            [0, 0, 0, 0],
+            [2, 15, 0, 0],
+            [12, 53, 2, 2],
+            [33, 66, 9, 7],
+            [65, 71, 5, 5],
+            [60, 52, 10, 2],
+            [33, 33, 9, 1],
+            [13, 10, 1, 1],
+            [2, 3, 0, 0],
+            [0, 1, 0, 0],
+        ];
+        let mut actual = [[0usize; 4]; 13];
+        for detector in 1u16..(1u16 << 12) {
+            let mut sum = 0i32;
+            for input in 0u16..64 {
+                for firing in 0u16..2 {
+                    let output = STRONG_SIX_CARRIER_U0[input as usize] as u16 ^ firing;
+                    let trace = input | (output << 6);
+                    let prediction = (trace & detector).count_ones() as u16 & 1;
+                    sum += if prediction == firing { 1 } else { -1 };
+                }
+            }
+            let magnitude = sum.unsigned_abs() as usize;
+            if magnitude != 0 {
+                assert!(magnitude <= 64, "strong-six gained a stronger parity leak");
+                assert_eq!(magnitude % 16, 0);
+                actual[detector.count_ones() as usize][magnitude / 16 - 1] += 1;
+            }
+        }
+        assert_eq!(actual, expected, "strong-six endpoint Walsh spectrum drifted");
+    }
+
+    #[test]
+    fn strong_six_carrier_exact_firing_boundary_is_degree_three() {
+        fn gf2_rank(signatures: impl IntoIterator<Item = u128>) -> usize {
+            let mut basis = [0u128; 128];
+            let mut rank = 0usize;
+            for mut signature in signatures {
+                while signature != 0 {
+                    let pivot = 127 - signature.leading_zeros() as usize;
+                    if basis[pivot] != 0 {
+                        signature ^= basis[pivot];
+                    } else {
+                        basis[pivot] = signature;
+                        rank += 1;
+                        break;
+                    }
+                }
+            }
+            rank
+        }
+
+        let mut columns = [0u128; 12];
+        let mut firing_signature = 0u128;
+        for input in 0usize..64 {
+            for firing in 0usize..2 {
+                let row = 2 * input + firing;
+                let output = STRONG_SIX_CARRIER_U0[input] as usize ^ firing;
+                let trace = input | (output << 6);
+                for (wire, column) in columns.iter_mut().enumerate() {
+                    if (trace >> wire) & 1 != 0 {
+                        *column |= 1u128 << row;
+                    }
+                }
+                if firing != 0 {
+                    firing_signature |= 1u128 << row;
+                }
+            }
+        }
+
+        let mut features = vec![u128::MAX];
+        features.extend(columns);
+        assert_eq!(gf2_rank(features.iter().copied()), 13);
+        assert_eq!(
+            gf2_rank(
+                features
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(firing_signature))
+            ),
+            14
+        );
+        for a in 0..12 {
+            for b in a + 1..12 {
+                features.push(columns[a] & columns[b]);
+            }
+        }
+        assert_eq!(gf2_rank(features.iter().copied()), 53);
+        assert_eq!(
+            gf2_rank(
+                features
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(firing_signature))
+            ),
+            54,
+            "degree-two endpoint features recovered strong-six firing"
+        );
+        for a in 0..12 {
+            for b in a + 1..12 {
+                for c in b + 1..12 {
+                    features.push(columns[a] & columns[b] & columns[c]);
+                }
+            }
+        }
+        assert_eq!(gf2_rank(features.iter().copied()), 103);
+        assert_eq!(
+            gf2_rank(
+                features
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(firing_signature))
+            ),
+            103,
+            "strong-six exact firing boundary moved above degree three"
+        );
+    }
+
+    #[test]
+    fn strong_six_carrier_all_fold_modes_preserve_dirty_high_inputs() {
+        let n = 6usize;
+        let band = 6usize;
+        let source = vec![
+            XGate::from_g57([0, 1, 2]),
+            XGate::cnot(3, 4),
+            XGate::conj(5, [(0u16, true), (2u16, false)]).unwrap(),
+        ];
+        let low_mask = (1u64 << n) - 1;
+        let total = 6 * n + band;
+        let high_mask = ((1u64 << total) - 1) ^ low_mask;
+        let junk_patterns = [
+            0,
+            high_mask,
+            0xaaaa_aaaa_aaaa_aaaau64 & high_mask,
+            0x36db_6db6_db6d_b6dbu64 & high_mask,
+        ];
+
+        // Exercise state-dispatched updates directly as well as through every
+        // folding implementation: expanded, aggregate Gray, micro Gray, and
+        // sentinel Gray.
+        let state = SixCarrierState::strong_home(n);
+        let mut update = Vec::new();
+        state.emit_update(0, &mut update);
+        assert_eq!(update.len(), STRONG_SIX_CARRIER_U0_GATES.len());
+
+        for gray_fold in 0..=3usize {
+            let mut prod = ProdConfig::production_six_carrier();
+            prod.band = band;
+            prod.gray_fold = gray_fold;
+            prod.cg_jitter = 0;
+            let mut rng = StdRng::seed_from_u64(0x6c0b_1c00 + gray_fold as u64);
+            let gadget =
+                gadgetize_xgates_strong_six_carrier(&source, n, 2, &prod, &mut rng);
+            assert_eq!(gadget.num_wires, total);
+            for low in 0..=low_mask {
+                let expected = eval_u64(&source, low) & low_mask;
+                for &junk in &junk_patterns {
+                    assert_eq!(
+                        eval_u64(&gadget.gates, low | junk) & low_mask,
+                        expected,
+                        "strong-six mode={gray_fold} low={low:#x} junk={junk:#x}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn strong_six_carrier_public_wrappers_have_the_expected_port() {
+        // The nonlinear slice preblock needs enough data coordinates to
+        // disturb its 5*n+band nonzero slices; n=3 is intentionally rejected
+        // by its exhaustive constructor for this width.
+        let n = 6usize;
+        let band = 6usize;
+        let mut prod = ProdConfig::production_six_carrier();
+        prod.band = band;
+        let total = 6 * n + band;
+        let low_mask = (1u64 << n) - 1;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2]],
+        };
+        let source = vec![XGate::from_g57([0, 1, 2])];
+
+        let mut bare_cnot_rng = StdRng::seed_from_u64(0x6c06_0001);
+        let bare_cnot =
+            gadgetize_cnot_strong_six_carrier(&main, n, 1, &prod, &mut bare_cnot_rng);
+        let mut bare_xgate_rng = StdRng::seed_from_u64(0x6c06_0002);
+        let bare_xgate = gadgetize_xgates_strong_six_carrier(
+            &source,
+            n,
+            1,
+            &prod,
+            &mut bare_xgate_rng,
+        );
+        let mut slice_cnot_rng = StdRng::seed_from_u64(0x6c06_0003);
+        let slice_cnot = gadgetize_with_slice_zero_ccnot_strong_six_carrier(
+            &main,
+            n,
+            1,
+            10 * n,
+            &MaskConfig::off(),
+            &prod,
+            &mut slice_cnot_rng,
+        );
+        let mut slice_xgate_rng = StdRng::seed_from_u64(0x6c06_0004);
+        let slice_xgate = gadgetize_xgates_with_slice_zero_ccnot_strong_six_carrier(
+            &source,
+            n,
+            1,
+            10 * n,
+            &prod,
+            &mut slice_xgate_rng,
+        );
+        for circuit in [&bare_cnot, &bare_xgate, &slice_cnot, &slice_xgate] {
+            assert_eq!(circuit.num_wires, total);
+            for low in 0..=low_mask {
+                assert_eq!(
+                    eval_u64(&circuit.gates, low) & low_mask,
+                    eval_u64(&source, low) & low_mask
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seven_carrier_quartic_dirty_gather_restores_every_borrow() {
+        // Wires: acc, h, A, B, C, D. Exercise both dirty inputs explicitly;
+        // the adjusted Gray fold may not assume either scratch bit is clean.
+        let atom = [(2u16, true), (3, true), (4, true), (5, true)];
+        let mut rng = StdRng::seed_from_u64(0x7ca0_0001);
+        let mut seen = std::collections::HashMap::new();
+        let mut gates = Vec::new();
+        assert!(!emit_atom_onto(
+            0,
+            &atom,
+            1,
+            0,
+            1,
+            &mut seen,
+            &mut rng,
+            &mut gates,
+        ));
+        assert_eq!(gates.len(), 4);
+        assert!(gates.iter().all(|gate| gate.width() <= 3));
+        for input in 0u64..64 {
+            let product = ((input >> 2) & 1)
+                & ((input >> 3) & 1)
+                & ((input >> 4) & 1)
+                & ((input >> 5) & 1);
+            let expected = input ^ product;
+            assert_eq!(
+                eval_u64(&gates, input),
+                expected,
+                "dirty quartic gather failed at {input:#08b}"
+            );
+        }
+    }
+
+    #[test]
+    fn seven_carrier_u0_realization_has_the_selected_truth_table() {
+        let carriers = [0usize, 1, 2, 3, 4, 5, 6];
+        let mut gates = Vec::new();
+        emit_seven_carrier_update(&carriers, &mut gates);
+        assert_eq!(gates.len(), 26, "the selected nonlinear U0 drifted");
+
+        let mut seen_u0 = [false; 128];
+        let mut seen_u1 = [false; 128];
+        let mut classes = [0usize; 2];
+        for input in 0u8..128 {
+            let output = eval_u64(&gates, input as u64) as u8;
+            assert_eq!(
+                output, SEVEN_CARRIER_U0[input as usize],
+                "U0 truth-table mismatch at {input:#09b}"
+            );
+            assert!(!seen_u0[output as usize], "U0 is not injective");
+            seen_u0[output as usize] = true;
+            assert_ne!(output, input, "U0 fixed point at {input:#09b}");
+            assert_eq!(
+                seven_carrier_decode_word(output),
+                seven_carrier_decode_word(input),
+                "U0 changed the decode class at {input:#09b}"
+            );
+
+            let output_u1 = output ^ 1;
+            assert!(!seen_u1[output_u1 as usize], "U1 is not injective");
+            seen_u1[output_u1 as usize] = true;
+            assert_ne!(output_u1, input, "U1 fixed point at {input:#09b}");
+            assert_ne!(
+                seven_carrier_decode_word(output_u1),
+                seven_carrier_decode_word(input),
+                "U1 did not change the decode class at {input:#09b}"
+            );
+            classes[seven_carrier_decode_word(input) as usize] += 1;
+        }
+        assert!(seen_u0.into_iter().all(|seen| seen));
+        assert!(seen_u1.into_iter().all(|seen| seen));
+        assert_eq!(classes, [64, 64], "D must split the carrier space evenly");
+
+        let widths: Vec<usize> = gates.iter().map(XGate::width).collect();
+        for (width, expected) in [(0, 2), (1, 7), (2, 9), (3, 4), (4, 4)] {
+            assert_eq!(
+                widths.iter().filter(|&&actual| actual == width).count(),
+                expected,
+                "width-{width} gate count drifted"
+            );
+        }
+    }
+
+    #[test]
+    fn seven_carrier_decode_has_no_weight_one_or_two_static_parity_correlation() {
+        let correlation_sum = |detector: u8| -> i32 {
+            (0u8..128)
+                .map(|carrier| {
+                    let prediction = (carrier & detector).count_ones() & 1 != 0;
+                    if prediction == seven_carrier_decode_word(carrier) {
+                        1
+                    } else {
+                        -1
+                    }
+                })
+                .sum()
+        };
+        for detector in 1u8..128 {
+            if detector.count_ones() <= 2 {
+                assert_eq!(
+                    correlation_sum(detector),
+                    0,
+                    "low-weight static detector {detector:#09b} is correlated"
+                );
+            }
+        }
+        let max_weight_three = (1u8..128)
+            .filter(|detector| detector.count_ones() == 3)
+            .map(|detector| correlation_sum(detector).unsigned_abs())
+            .max()
+            .unwrap();
+        assert_eq!(
+            max_weight_three, 16,
+            "first normalized static magnitude must be 1/8"
+        );
+    }
+
+    #[test]
+    fn seven_carrier_update_trace_has_zero_walsh_through_weight_three() {
+        let walsh_sum = |detector: u16| -> i32 {
+            let mut sum = 0i32;
+            for input in 0u16..128 {
+                for firing in 0u16..2 {
+                    let output = SEVEN_CARRIER_U0[input as usize] as u16 ^ firing;
+                    let trace = input | (output << 7);
+                    let prediction = (trace & detector).count_ones() as u16 & 1;
+                    sum += if prediction == firing { 1 } else { -1 };
+                }
+            }
+            sum
+        };
+
+        for detector in 1u16..(1u16 << 14) {
+            let weight = detector.count_ones();
+            if weight <= 3 {
+                assert_eq!(
+                    walsh_sum(detector),
+                    0,
+                    "weight-{weight} endpoint detector {detector:#016b} is correlated"
+                );
+            }
+        }
+        let weight_four: Vec<u32> = (1u16..(1u16 << 14))
+            .filter(|detector| detector.count_ones() == 4)
+            .map(|detector| walsh_sum(detector).unsigned_abs())
+            .collect();
+        assert_eq!(weight_four.iter().copied().max(), Some(64));
+        assert_eq!(
+            weight_four.iter().filter(|&&magnitude| magnitude == 64).count(),
+            3,
+            "maximum-bias weight-four endpoint multiplicity drifted"
+        );
+        assert_eq!(
+            weight_four.iter().filter(|&&magnitude| magnitude != 0).count(),
+            21,
+            "weight-four endpoint spectrum drifted"
+        );
+    }
+
+    #[test]
+    fn seven_carrier_endpoint_affine_and_degree_boundary() {
+        type Signature = [u64; 4];
+
+        fn and(left: Signature, right: Signature) -> Signature {
+            std::array::from_fn(|word| left[word] & right[word])
+        }
+
+        fn gf2_rank(signatures: impl IntoIterator<Item = Signature>) -> usize {
+            let mut basis = [[0u64; 4]; 256];
+            let mut rank = 0usize;
+            for mut signature in signatures {
+                loop {
+                    let Some(pivot) = (0..256).rev().find(|&bit| {
+                        signature[bit / 64] & (1u64 << (bit % 64)) != 0
+                    }) else {
+                        break;
+                    };
+                    if basis[pivot] == [0; 4] {
+                        basis[pivot] = signature;
+                        rank += 1;
+                        break;
+                    }
+                    for word in 0..4 {
+                        signature[word] ^= basis[pivot][word];
+                    }
+                }
+            }
+            rank
+        }
+
+        fn with_firing_rank(features: &[Signature], firing: Signature) -> usize {
+            gf2_rank(features.iter().copied().chain(std::iter::once(firing)))
+        }
+
+        let mut columns = [[0u64; 4]; 14];
+        let mut firing = [0u64; 4];
+        for input in 0usize..128 {
+            for fires in 0usize..2 {
+                let row = 2 * input + fires;
+                let output = SEVEN_CARRIER_U0[input] as usize ^ fires;
+                let trace = input | (output << 7);
+                for (wire, column) in columns.iter_mut().enumerate() {
+                    if trace & (1usize << wire) != 0 {
+                        column[row / 64] |= 1u64 << (row % 64);
+                    }
+                }
+                if fires != 0 {
+                    firing[row / 64] |= 1u64 << (row % 64);
+                }
+            }
+        }
+
+        let degree_one: Vec<Signature> = std::iter::once([u64::MAX; 4])
+            .chain(columns)
+            .collect();
+        assert_eq!(gf2_rank(degree_one.iter().copied()), 15);
+        assert_eq!(with_firing_rank(&degree_one, firing), 16);
+
+        let mut degree_two = degree_one.clone();
+        for a in 0..14 {
+            for b in a + 1..14 {
+                degree_two.push(and(columns[a], columns[b]));
+            }
+        }
+        assert_eq!(gf2_rank(degree_two.iter().copied()), 71);
+        assert_eq!(with_firing_rank(&degree_two, firing), 72);
+
+        let mut degree_three = degree_two.clone();
+        for a in 0..14 {
+            for b in a + 1..14 {
+                for c in b + 1..14 {
+                    degree_three.push(and(and(columns[a], columns[b]), columns[c]));
+                }
+            }
+        }
+        assert_eq!(gf2_rank(degree_three.iter().copied()), 160);
+        assert_eq!(with_firing_rank(&degree_three, firing), 161);
+
+        let mut degree_four = degree_three.clone();
+        for a in 0..14 {
+            for b in a + 1..14 {
+                for c in b + 1..14 {
+                    for d in c + 1..14 {
+                        degree_four.push(and(
+                            and(columns[a], columns[b]),
+                            and(columns[c], columns[d]),
+                        ));
+                    }
+                }
+            }
+        }
+        assert_eq!(gf2_rank(degree_four.iter().copied()), 226);
+        assert_eq!(
+            with_firing_rank(&degree_four, firing),
+            226,
+            "the exact recovery boundary must first appear at degree four"
+        );
+    }
+
+    #[test]
+    fn seven_carrier_role_automorphisms_preserve_every_decode_class() {
+        for seed in 0..64u64 {
+            let mut rng = StdRng::seed_from_u64(0x7d15_7000 + seed);
+            let roles = seven_carrier_role_automorphism(&mut rng);
+            let mut seen_roles = [false; 7];
+            for &role in &roles {
+                assert!(!seen_roles[role as usize]);
+                seen_roles[role as usize] = true;
+            }
+            for input in 0u8..128 {
+                let relabeled = (0..7).fold(0u8, |word, canonical| {
+                    word
+                        | (((input >> canonical) & 1)
+                            << roles[canonical as usize])
+                });
+                assert_eq!(
+                    seven_carrier_decode_word(relabeled),
+                    seven_carrier_decode_word(input),
+                    "seed {seed} changed D at {input:#09b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seven_carrier_distributed_fold_is_exact_on_arbitrary_representatives() {
+        let n = 3usize;
+        let state = SevenCarrierState::home(n);
+        let cfg = ProdConfig::off();
+        let mut ledger = ProdLedger::new(n, &cfg, 7 * n, None);
+        let mut rng = StdRng::seed_from_u64(0x7d15_f01d);
+        let mut fold = Vec::new();
+        ledger.fold_seven_distributed(
+            &XGate::cnot(0, 1),
+            &state,
+            0,
+            n,
+            &mut rng,
+            &mut fold,
+        );
+        // Six decode atoms produce six source fragments.  Five boundaries,
+        // each carrying a three-gate shear, give 6 + 5*3 gates and no U0.
+        assert_eq!(fold.len(), 21);
+        assert!(
+            fold.iter().all(|gate| !gate.ctrls.is_empty()),
+            "the refresh fold emitted an always-firing gate"
+        );
+        let conditional_targets: std::collections::HashSet<u16> =
+            fold.iter().map(|gate| gate.target).collect();
+        assert_eq!(conditional_targets.len(), 5);
+
+        let pack = |value: usize, carrier: u8| -> u64 {
+            (0..7).fold(0u64, |word, lane| {
+                word | ((((carrier >> lane) & 1) as u64) << (lane * n + value))
+            })
+        };
+        let unpack = |physical: u64, value: usize| -> u8 {
+            (0..7).fold(0u8, |carrier, lane| {
+                carrier | ((((physical >> (lane * n + value)) & 1) as u8) << lane)
+            })
+        };
+        for target_carrier in 0u8..128 {
+            for source_carrier in 0u8..128 {
+                let input = pack(0, target_carrier) | pack(1, source_carrier);
+                let output = eval_u64(&fold, input);
+                assert_eq!(
+                    seven_carrier_decode_word(unpack(output, 0)),
+                    seven_carrier_decode_word(target_carrier)
+                        ^ seven_carrier_decode_word(source_carrier),
+                    "target={target_carrier:#09b} source={source_carrier:#09b}"
+                );
+                assert_eq!(
+                    unpack(output, 1),
+                    source_carrier,
+                    "the source representative was modified"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seven_carrier_partitioned_fold_reaches_128_and_is_exact() {
+        // A CNOT's six source fragments need five selector bits to clear the
+        // floor.  The eligible prefix supplies exactly values 2..6 after the
+        // target/control exclusion; values 7 and 8 deliberately sit outside
+        // it, modeling the sliced sandwich's fixed upper half.
+        let n = 9usize;
+        let live_helper_prefix = 7usize;
+        let state = SevenCarrierState::home(n);
+        let cfg = ProdConfig::off();
+        let mut ledger = ProdLedger::new(n, &cfg, 7 * n, None);
+        let mut rng = StdRng::seed_from_u64(0x7d15_1280);
+        let mut fold = Vec::new();
+        ledger.fold_seven_distributed(
+            &XGate::cnot(0, 1),
+            &state,
+            128,
+            live_helper_prefix,
+            &mut rng,
+            &mut fold,
+        );
+        // Six original decode atoms need five polarity bits: 6*32=192
+        // branches.  There is one three-gate shear at every boundary.
+        assert_eq!(ledger.distributed_fold_original_fragments, vec![6]);
+        assert_eq!(ledger.distributed_fold_fragments, vec![192]);
+        assert_eq!(ledger.cg_fragments, 192);
+        assert_eq!(fold.len(), 192 + 3 * 191);
+        assert!(fold.iter().all(|gate| !gate.ctrls.is_empty()));
+        let expected_helpers: std::collections::HashSet<u16> = (2..7).collect();
+        for fragment in fold.iter().step_by(4) {
+            let actual_helpers: std::collections::HashSet<u16> = fragment
+                .ctrls
+                .iter()
+                .filter_map(|&(wire, _)| expected_helpers.contains(&wire).then_some(wire))
+                .collect();
+            assert_eq!(actual_helpers, expected_helpers);
+            assert!(fragment.ctrls.iter().all(|&(wire, _)| wire != 7 && wire != 8));
+        }
+
+        let pack = |value: usize, carrier: u8| -> u64 {
+            (0..7).fold(0u64, |word, lane| {
+                word | ((((carrier >> lane) & 1) as u64) << (lane * n + value))
+            })
+        };
+        let unpack = |physical: u64, value: usize| -> u8 {
+            (0..7).fold(0u8, |carrier, lane| {
+                carrier | ((((physical >> (lane * n + value)) & 1) as u8) << lane)
+            })
+        };
+        for helper_seed in [0u8, 0x7f, 0x55, 0x2a] {
+            for target_carrier in 0u8..128 {
+                for source_carrier in 0u8..128 {
+                    let helpers: Vec<u8> = (2..n)
+                        .map(|value| helper_seed.rotate_left((value - 2) as u32) & 0x7f)
+                        .collect();
+                    let mut input = pack(0, target_carrier) | pack(1, source_carrier);
+                    for (value, &helper) in (2..n).zip(&helpers) {
+                        input |= pack(value, helper);
+                    }
+                    let output = eval_u64(&fold, input);
+                    assert_eq!(
+                        seven_carrier_decode_word(unpack(output, 0)),
+                        seven_carrier_decode_word(target_carrier)
+                            ^ seven_carrier_decode_word(source_carrier)
+                    );
+                    assert_eq!(unpack(output, 1), source_carrier);
+                    for (value, &helper) in (2..n).zip(&helpers) {
+                        assert_eq!(unpack(output, value), helper);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn seven_carrier_partitioned_floor1024_is_exact_and_shuffles_each_cell_block() {
+        // A two-control fold has 6*6=36 source fragments. Five independent
+        // helper bits raise it to 36*32=1152 branches, just over floor 1024.
+        let n = 8usize;
+        let state = SevenCarrierState::home(n);
+        let cfg = ProdConfig::off();
+        let mut ledger = ProdLedger::new(n, &cfg, 7 * n, None);
+        let mut rng = StdRng::seed_from_u64(0x7d15_1024);
+        let gate = XGate::conj(0, [(1u16, true), (2u16, true)]).unwrap();
+        let mut fold = Vec::new();
+        ledger.fold_seven_distributed(&gate, &state, 1024, n, &mut rng, &mut fold);
+        assert_eq!(ledger.distributed_fold_original_fragments, vec![36]);
+        assert_eq!(ledger.distributed_fold_fragments, vec![1152]);
+        assert_eq!(ledger.distributed_fold_floors, vec![1024]);
+        assert_eq!(fold.len(), 4 * 1152 - 3);
+
+        // Source branches occupy every fourth position. Every 32-branch group
+        // must enumerate the full cell cube, and independent shuffles should
+        // give consecutive original fragments different orders.
+        let branches: Vec<&XGate> = fold.iter().step_by(4).collect();
+        assert_eq!(branches.len(), 1152);
+        let pattern = |fragment: &XGate| -> u8 {
+            (3u16..8).enumerate().fold(0u8, |word, (bit, helper)| {
+                let polarity = fragment
+                    .ctrls
+                    .iter()
+                    .find_map(|&(wire, polarity)| (wire == helper).then_some(polarity))
+                    .expect("every branch must carry every helper literal");
+                word | ((polarity as u8) << bit)
+            })
+        };
+        let first: Vec<u8> = branches[..32].iter().map(|gate| pattern(gate)).collect();
+        let second: Vec<u8> = branches[32..64].iter().map(|gate| pattern(gate)).collect();
+        assert_eq!(
+            first.iter().copied().collect::<std::collections::HashSet<_>>().len(),
+            32
+        );
+        assert_eq!(
+            second.iter().copied().collect::<std::collections::HashSet<_>>().len(),
+            32
+        );
+        assert_ne!(first, second, "cell order was reused across fragments");
+
+        let pack = |value: usize, carrier: u8| -> u64 {
+            (0..7).fold(0u64, |word, lane| {
+                word | ((((carrier >> lane) & 1) as u64) << (lane * n + value))
+            })
+        };
+        let unpack = |physical: u64, value: usize| -> u8 {
+            (0..7).fold(0u8, |carrier, lane| {
+                carrier | ((((physical >> (lane * n + value)) & 1) as u8) << lane)
+            })
+        };
+        for _ in 0..2048 {
+            let carriers: [u8; 8] = std::array::from_fn(|_| rng.random_range(0..128));
+            let input = carriers
+                .iter()
+                .enumerate()
+                .fold(0u64, |word, (value, &carrier)| word | pack(value, carrier));
+            let output = eval_u64(&fold, input);
+            assert_eq!(
+                seven_carrier_decode_word(unpack(output, 0)),
+                seven_carrier_decode_word(carriers[0])
+                    ^ (seven_carrier_decode_word(carriers[1])
+                        & seven_carrier_decode_word(carriers[2]))
+            );
+            for (value, &carrier) in carriers.iter().enumerate().skip(1) {
+                assert_eq!(unpack(output, value), carrier);
+            }
+        }
+    }
+
+    #[test]
+    fn seven_carrier_initial_boundary_partition_preserves_complemented_gates() {
+        let band: Vec<u16> = (20..32).collect();
+        let supports: Vec<Vec<u64>> = (0..band.len())
+            .map(|bit| vec![1u64 << bit])
+            .collect();
+        let original = vec![
+            XGate::conj(0, [(1u16, true), (2u16, false)]).unwrap(),
+            XGate::from_g57([3, 4, 5]),
+        ];
+        let mut rng = StdRng::seed_from_u64(0xb0a1_0d10);
+        let mut partitioned = Vec::new();
+        let emitted = emit_partitioned_initial_injection(
+            &original,
+            &band,
+            &supports,
+            4,
+            &mut rng,
+            &mut partitioned,
+        );
+        // Pure conjunction: 16 cells. Complemented conjunction: cell-only
+        // plus F-and-cell in every cell, for 32 more emissions.
+        assert_eq!(emitted, 48);
+        assert!(partitioned.iter().all(|gate| !gate.comp));
+        for _ in 0..4096 {
+            let input = rng.random::<u64>() & ((1u64 << 32) - 1);
+            assert_eq!(eval_u64(&partitioned, input), eval_u64(&original, input));
+        }
+    }
+
+    #[test]
+    fn seven_carrier_floor4096_boundary_r10_preserves_the_zero_slice() {
+        let n = 12usize;
+        let band = 32usize;
+        let total = 7 * n + band;
+        let mut prod = ProdConfig::production_seven_carrier();
+        prod.gray_fold = 0;
+        prod.fill_nl = 0;
+        prod.band = band;
+        prod.cg_jitter = 0;
+        let mut rng = StdRng::seed_from_u64(0xb0a1_0d11);
+        let source = [XGate::cnot(0, 1)];
+        let circuit = gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor4096_boundary_r10_live_prefix_unshuffled(
+            &source,
+            n,
+            n,
+            1,
+            total,
+            &prod,
+            &mut rng,
+        );
+        assert_eq!(circuit.num_wires, total);
+        assert!(
+            circuit
+                .gates
+                .iter()
+                .rev()
+                .take(5 * n)
+                .all(|gate| (gate.target as usize) < n),
+            "the boundary fixture unexpectedly retained the terminal high-wire fill"
+        );
+
+        let evaluate = |input: u16| -> u16 {
+            let mut state = vec![false; total];
+            for wire in 0..n {
+                state[wire] = input & (1 << wire) != 0;
+            }
+            for gate in &circuit.gates {
+                let firing = gate.comp
+                    ^ gate
+                        .ctrls
+                        .iter()
+                        .all(|&(wire, polarity)| state[wire as usize] == polarity);
+                state[gate.target as usize] ^= firing;
+            }
+            (0..n).fold(0u16, |word, wire| word | ((state[wire] as u16) << wire))
+        };
+        for input in [0u16, 1, 0x555, 0xaaa, 0xfff, 0x31c, 0x8e7] {
+            let expected = input ^ (((input >> 1) & 1) << 0);
+            assert_eq!(evaluate(input), expected);
+        }
+    }
+
+    #[test]
+    fn seven_carrier_floor4096_terminal_fence_is_exact_and_adj32_stays_in_prefix() {
+        let n = 12usize;
+        let band = 32usize;
+        let total = 7 * n + band;
+        let mut prod = ProdConfig::production_seven_carrier();
+        prod.gray_fold = 0;
+        prod.fill_nl = 0;
+        prod.band = band;
+        prod.cg_jitter = 0;
+        let source = [XGate::cnot(0, 1)];
+
+        let mut ordered_rng = StdRng::seed_from_u64(0xb0a1_0d12);
+        let (ordered, ordered_terminal_start) = gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor4096_boundary_r10_live_prefix_terminal_fenced_unshuffled(
+            &source,
+            n,
+            n,
+            1,
+            total,
+            &prod,
+            &mut ordered_rng,
+        );
+        let mut shuffled_rng = StdRng::seed_from_u64(0xb0a1_0d12);
+        let (shuffled, shuffled_terminal_start) = gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor4096_boundary_r10_live_prefix_terminal_fenced_adj32(
+            &source,
+            n,
+            n,
+            1,
+            total,
+            &prod,
+            &mut shuffled_rng,
+        );
+
+        assert_eq!(ordered.num_wires, shuffled.num_wires);
+        assert_eq!(ordered.gates.len(), shuffled.gates.len());
+        assert_eq!(ordered_terminal_start, shuffled_terminal_start);
+        assert!(ordered_terminal_start > 0);
+        assert!(ordered_terminal_start < ordered.gates.len());
+        assert_eq!(
+            &ordered.gates[ordered_terminal_start..],
+            &shuffled.gates[shuffled_terminal_start..],
+            "a prefix-only reorder modified the protected terminal suffix"
+        );
+        assert_ne!(
+            &ordered.gates[..ordered_terminal_start],
+            &shuffled.gates[..shuffled_terminal_start],
+            "the deterministic adjacent passes did not reorder the prefix"
+        );
+
+        let evaluate = |circuit: &CnotCircuit, input: u16| -> u16 {
+            let mut state = vec![false; total];
+            for wire in 0..n {
+                state[wire] = input & (1 << wire) != 0;
+            }
+            for gate in &circuit.gates {
+                let firing = gate.comp
+                    ^ gate
+                        .ctrls
+                        .iter()
+                        .all(|&(wire, polarity)| state[wire as usize] == polarity);
+                state[gate.target as usize] ^= firing;
+            }
+            (0..n).fold(0u16, |word, wire| word | ((state[wire] as u16) << wire))
+        };
+        for input in [0u16, 1, 0x555, 0xaaa, 0xfff, 0x31c, 0x8e7] {
+            let expected = input ^ (((input >> 1) & 1) << 0);
+            assert_eq!(evaluate(&ordered, input), expected);
+            assert_eq!(evaluate(&shuffled, input), expected);
+        }
+    }
+
+    #[test]
+    fn seven_carrier_distributed_public_paths_preserve_dirty_high_inputs() {
+        // Six values leave four distinct helpers for the CNOT's floor-128
+        // partition while keeping the complete public port inside u64.
+        let n = 6usize;
+        let band = 8usize;
+        let total = 7 * n + band;
+        let source = vec![XGate::from_g57([0, 1, 2]), XGate::cnot(3, 0)];
+        let mut prod = ProdConfig::production_seven_carrier();
+        prod.gray_fold = 0;
+        prod.band = band;
+        prod.cg_jitter = 0;
+
+        let mut shuffled_rng = StdRng::seed_from_u64(0x7d15_e2e1);
+        let shuffled = gadgetize_xgates_seven_carrier_distributed(
+            &source,
+            n,
+            1,
+            &prod,
+            &mut shuffled_rng,
+        );
+        let mut ordered_rng = StdRng::seed_from_u64(0x7d15_e2e2);
+        let ordered = gadgetize_xgates_seven_carrier_distributed_unshuffled(
+            &source,
+            n,
+            1,
+            &prod,
+            &mut ordered_rng,
+        );
+        let mut partitioned_rng = StdRng::seed_from_u64(0x7d15_e2e3);
+        let partitioned = gadgetize_xgates_seven_carrier_distributed_partitioned(
+            &source,
+            n,
+            1,
+            &prod,
+            &mut partitioned_rng,
+        );
+        let mut partitioned_ordered_rng = StdRng::seed_from_u64(0x7d15_e2e4);
+        let partitioned_ordered =
+            gadgetize_xgates_seven_carrier_distributed_partitioned_unshuffled(
+                &source,
+                n,
+                1,
+                &prod,
+                &mut partitioned_ordered_rng,
+            );
+        let low_mask = (1u64 << n) - 1;
+        let high_mask = ((1u64 << total) - 1) ^ low_mask;
+        let junk = [
+            0,
+            high_mask,
+            0xaaaa_aaaa & high_mask,
+            0x5555_5555 & high_mask,
+            0x9249_2492 & high_mask,
+        ];
+        for circuit in [
+            &shuffled,
+            &ordered,
+            &partitioned,
+            &partitioned_ordered,
+        ] {
+            assert_eq!(circuit.num_wires, total);
+            for low in 0..=low_mask {
+                let expected = eval_u64(&source, low) & low_mask;
+                for &high in &junk {
+                    assert_eq!(
+                        eval_u64(&circuit.gates, low | high) & low_mask,
+                        expected,
+                        "low={low:#x} high={high:#x}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejected_direct_switch_trace_has_a_measured_boundary() {
+        // This models the earlier direct class-switch candidate, not the
+        // shipped opt-in shear fold.  Keep its falsification pinned: it looked
+        // good in isolation but one later U0 put the firing bit back in span,
+        // which is why the implemented path removes every fixed U0 instead.
+        type Signature = [u64; 4];
+
+        fn rank(signatures: impl IntoIterator<Item = Signature>) -> usize {
+            let mut basis = [[0u64; 4]; 256];
+            let mut rank = 0usize;
+            for mut signature in signatures {
+                loop {
+                    let Some(pivot) = (0..256).rev().find(|&bit| {
+                        signature[bit / 64] & (1u64 << (bit % 64)) != 0
+                    }) else {
+                        break;
+                    };
+                    if basis[pivot] == [0; 4] {
+                        basis[pivot] = signature;
+                        rank += 1;
+                        break;
+                    }
+                    for word in 0..4 {
+                        signature[word] ^= basis[pivot][word];
+                    }
+                }
+            }
+            rank
+        }
+
+        fn contains(features: &[Signature], target: Signature) -> bool {
+            rank(features.iter().copied())
+                == rank(features.iter().copied().chain(std::iter::once(target)))
+        }
+
+        // A fixed member of the randomized family: R toggles c0,c1 by !c3;
+        // the middle is the c3/c5-oriented class-switch core.
+        let plan: Vec<(u8, Vec<(u8, bool)>)> = vec![
+            (0, vec![(3, false)]),
+            (1, vec![(3, false)]),
+            (3, vec![(5, true)]),
+            (1, vec![(4, false)]),
+            (1, vec![(4, true), (5, false)]),
+            (1, vec![(4, true), (5, true), (6, true)]),
+            (1, vec![(3, false)]),
+            (0, vec![(3, false)]),
+        ];
+
+        let trace = |suffix_updates: usize| {
+            let mut columns: Vec<Signature> = Vec::new();
+            let mut owners: Vec<u8> = Vec::new();
+            let mut firing = [0u64; 4];
+            for input in 0u64..128 {
+                for fires in 0u64..2 {
+                    let row = (2 * input + fires) as usize;
+                    if fires != 0 {
+                        firing[row / 64] |= 1u64 << (row % 64);
+                    }
+                    let mut state = input;
+                    // Build each row independently, then merge it into the
+                    // already allocated chronological columns.
+                    let mut column_index = 0usize;
+                    let mut apply_and_record =
+                        |target: u8, selector: &[(u8, bool)], conditional: bool| {
+                            if !conditional || fires != 0 {
+                                let fire = selector.iter().all(|&(wire, polarity)| {
+                                    ((state >> wire) & 1 != 0) == polarity
+                                });
+                                if fire {
+                                    state ^= 1u64 << target;
+                                }
+                            }
+                            if columns.len() == column_index {
+                                columns.push([0; 4]);
+                                owners.push(target);
+                            }
+                            debug_assert_eq!(owners[column_index], target);
+                            if state & (1u64 << target) != 0 {
+                                columns[column_index][row / 64] |= 1u64 << (row % 64);
+                            }
+                            column_index += 1;
+                        };
+
+                    for &(target, controls) in SEVEN_CARRIER_U0_GATES {
+                        apply_and_record(target, controls, false);
+                    }
+                    for (target, selector) in &plan {
+                        apply_and_record(*target, selector, true);
+                    }
+                    for _ in 0..suffix_updates {
+                        for &(target, controls) in SEVEN_CARRIER_U0_GATES {
+                            apply_and_record(target, controls, false);
+                        }
+                    }
+                }
+            }
+            let mut affine = vec![[u64::MAX; 4]];
+            affine.extend(columns.iter().copied());
+            (affine, owners, firing)
+        };
+
+        let (isolated, _, firing) = trace(0);
+        assert!(
+            !contains(&isolated, firing),
+            "the isolated distributed block unexpectedly recovered its firing bit"
+        );
+
+        // Exact limitation: this local construction raises checkpoint distance
+        // but does not remove the firing bit forever.  One subsequent fixed U0
+        // already puts it back in the *global* affine span.
+        let (after_one, _, firing) = trace(1);
+        assert!(contains(&after_one, firing));
+
+        // The corresponding one-wire catalog lasts longer for this fixed
+        // member, but it too eventually closes after repeated identical U0s.
+        let (after_six, owners_six, firing) = trace(6);
+        for wire in 0..7u8 {
+            let mut features = vec![[u64::MAX; 4]];
+            features.extend(
+                after_six
+                    .iter()
+                    .skip(1)
+                    .zip(&owners_six)
+                    .filter_map(|(&signature, &owner)| (owner == wire).then_some(signature)),
+            );
+            assert!(!contains(&features, firing), "wire {wire} closed too early");
+        }
+        let (after_seven, owners_seven, firing) = trace(7);
+        assert!((0..7u8).any(|wire| {
+            let mut features = vec![[u64::MAX; 4]];
+            features.extend(
+                after_seven
+                    .iter()
+                    .skip(1)
+                    .zip(&owners_seven)
+                    .filter_map(|(&signature, &owner)| (owner == wire).then_some(signature)),
+            );
+            contains(&features, firing)
+        }));
+    }
+
+    #[test]
+    fn seven_carrier_gadget_preserves_low_wires_for_dirty_high_inputs() {
+        let n = 6usize;
+        let band = 6usize;
+        let mut prod = ProdConfig::production_seven_carrier();
+        prod.band = band;
+
+        // Pin the production [2,2,2,3] mask plan and certify that the quartic
+        // carrier decode still takes the adjusted Gray path. Keep this local
+        // audit deterministic, while the end-to-end runs below retain the
+        // production preset's extra per-value mask-atom jitter.
+        let mut audit_prod = prod;
+        audit_prod.cg_jitter = 0;
+        let state = SevenCarrierState::home(n);
+        let mut audit_rng = StdRng::seed_from_u64(0x7ca1_67a7);
+        let mut ledger = ProdLedger::new(n, &audit_prod, 7 * n, None);
+        let mut injection = Vec::new();
+        ledger.inject_all(&state.c0_view(), &mut audit_rng, &mut injection);
+        for slots in &ledger.slots {
+            assert_eq!(
+                slots
+                    .iter()
+                    .map(|slot| slot.factors.len())
+                    .collect::<Vec<_>>(),
+                vec![2, 2, 2, 3]
+            );
+        }
+        let mut optimized_fold = Vec::new();
+        ledger.fold_seven(
+            &XGate::from_g57([0, 1, 2]),
+            &state,
+            &mut audit_rng,
+            &mut optimized_fold,
+        );
+        assert_eq!(ledger.cg_gray, 1, "fixture missed the seven-carrier Gray fold");
+        assert!(
+            optimized_fold.iter().all(|gate| gate.width() <= 4),
+            "adjusted Gray fold emitted a wider-than-decode gate"
+        );
+
+        let source = vec![
+            XGate::from_g57([0, 1, 2]),
+            XGate::cnot(3, 4),
+            XGate::conj(5, [(0u16, true), (2u16, false)]).unwrap(),
+        ];
+        let low_mask = (1u64 << n) - 1;
+        let total = 7 * n + band;
+        let high_mask = ((1u64 << total) - 1) ^ low_mask;
+        let fixed_junk = [
+            0,
+            high_mask,
+            0xaaaa_aaaa_aaaa_aaaau64 & high_mask,
+            0x5555_5555_5555_5555u64 & high_mask,
+            0x9249_2492_4924_9249u64 & high_mask,
+            0x36db_6db6_db6d_b6dbu64 & high_mask,
+        ];
+
+        for seed in 0..3u64 {
+            let mut rng = StdRng::seed_from_u64(0x7ca1_0000 + seed);
+            let gadget = gadgetize_xgates_seven_carrier(&source, n, 2, &prod, &mut rng);
+            assert_eq!(gadget.num_wires, total, "expected 7*n + band wires");
+
+            for low in 0..=low_mask {
+                let expected = eval_u64(&source, low) & low_mask;
+                for (junk_index, &junk) in fixed_junk.iter().enumerate() {
+                    assert_eq!(
+                        eval_u64(&gadget.gates, low | junk) & low_mask,
+                        expected,
+                        "seed={seed} low={low:#x} junk pattern {junk_index}"
+                    );
+                }
+                let junk = (low
+                    .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                    .rotate_left((low as u32) & 31))
+                    & high_mask;
+                assert_eq!(
+                    eval_u64(&gadget.gates, low | junk) & low_mask,
+                    expected,
+                    "seed={seed} low={low:#x} hashed high junk"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seven_carrier_public_cnot_and_slice_wrappers_have_the_expected_port() {
+        let n = 6usize;
+        let band = 6usize;
+        let mut prod = ProdConfig::production_seven_carrier();
+        prod.band = band;
+        prod.cg_jitter = 0;
+        let total = 7 * n + band;
+        let low_mask = (1u64 << n) - 1;
+        let high_mask = ((1u64 << total) - 1) ^ low_mask;
+        let main = CircuitSeq {
+            gates: vec![[0, 1, 2]],
+        };
+        let source = vec![XGate::from_g57([0, 1, 2])];
+
+        let mut bare_rng = StdRng::seed_from_u64(0x7ca2_0001);
+        let bare = gadgetize_cnot_seven_carrier(&main, n, 1, &prod, &mut bare_rng);
+        let mut slice_cnot_rng = StdRng::seed_from_u64(0x7ca2_0002);
+        let slice_cnot = gadgetize_with_slice_zero_ccnot_seven_carrier(
+            &main,
+            n,
+            1,
+            10 * n,
+            &MaskConfig::off(),
+            &prod,
+            &mut slice_cnot_rng,
+        );
+        let mut slice_xgate_rng = StdRng::seed_from_u64(0x7ca2_0003);
+        let slice_xgate = gadgetize_xgates_with_slice_zero_ccnot_seven_carrier(
+            &source,
+            n,
+            1,
+            10 * n,
+            &prod,
+            &mut slice_xgate_rng,
+        );
+        assert_eq!(bare.num_wires, total);
+        assert_eq!(slice_cnot.num_wires, total);
+        assert_eq!(slice_xgate.num_wires, total);
+
+        for low in 0..=low_mask {
+            let expected = eval_u64(&source, low) & low_mask;
+            assert_eq!(eval_u64(&bare.gates, low) & low_mask, expected);
+            assert_eq!(eval_u64(&bare.gates, low | high_mask) & low_mask, expected);
+            assert_eq!(eval_u64(&slice_cnot.gates, low) & low_mask, expected);
+            assert_eq!(eval_u64(&slice_xgate.gates, low) & low_mask, expected);
+        }
+    }
+
+    #[test]
+    fn seven_carrier_empty_source_is_the_identity_for_arbitrary_high_junk() {
+        let n = 3usize;
+        let mut prod = ProdConfig::production_seven_carrier();
+        prod.band = 6;
+        prod.cg_jitter = 0;
+        let total = 7 * n + prod.band_size(n);
+        let low_mask = (1u64 << n) - 1;
+        let high_mask = ((1u64 << total) - 1) ^ low_mask;
+        let mut rng = StdRng::seed_from_u64(0x7ca3_0001);
+        let gadget = gadgetize_xgates_seven_carrier(&[], n, 1, &prod, &mut rng);
+        assert_eq!(gadget.num_wires, total);
+
+        for low in 0..=low_mask {
+            for junk in [
+                0,
+                high_mask,
+                0xaaaa_aaaa_aaaa_aaaau64 & high_mask,
+                0x9249_2492_4924_9249u64 & high_mask,
+            ] {
+                assert_eq!(eval_u64(&gadget.gates, low | junk) & low_mask, low);
+            }
+        }
     }
 }

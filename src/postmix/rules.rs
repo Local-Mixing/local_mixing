@@ -6,7 +6,7 @@
 //
 // Residue widths are checked against `k_max` BEFORE anything is emitted; a
 // Blocked outcome leaves the circuit untouched.
-use super::xgate::XGate;
+use super::xgate::{Lits, XGate};
 use rand::Rng;
 use rand::seq::SliceRandom;
 
@@ -58,7 +58,7 @@ pub enum Outcome {
 // they pairwise commute.
 pub fn presplit(g: &XGate, rng: &mut impl Rng) -> Vec<XGate> {
     assert!(g.comp, "presplit is only for complemented (g57) gates");
-    let mut m: Vec<(u16, bool)> = g.ctrls.to_vec();
+    let mut m: Lits = g.ctrls.clone();
     m.shuffle(rng);
     let mut pieces = Vec::with_capacity(m.len());
     for j in 0..m.len() {
@@ -99,8 +99,8 @@ fn r1(g: &XGate, h: &XGate, k_max: usize, rng: &mut impl Rng) -> Outcome {
     let a = g.target;
     let b = h.target;
     let pb = g.lit_on(b).unwrap();
-    let s: Vec<(u16, bool)> = g.ctrls_without(b);
-    let mut m: Vec<(u16, bool)> = h.ctrls.to_vec();
+    let s: Lits = g.ctrls_without(b);
+    let mut m: Lits = h.ctrls.clone();
     m.shuffle(rng); // ladder order is a free choice
     let flip_full = !h.comp; // h's monomial holds => h fired iff comp=0
     let flip_rung = h.comp; //  some literal failed => h fired iff comp=1
@@ -141,8 +141,8 @@ fn r2(g: &XGate, h: &XGate, k_max: usize, rng: &mut impl Rng) -> Outcome {
     let a = g.target;
     let b = h.target;
     let pa = h.lit_on(a).unwrap();
-    let r: Vec<(u16, bool)> = h.ctrls_without(a);
-    let mut f: Vec<(u16, bool)> = g.ctrls.to_vec();
+    let r: Lits = h.ctrls_without(a);
+    let mut f: Lits = g.ctrls.clone();
     f.shuffle(rng);
 
     let mut pieces: Vec<XGate> = Vec::with_capacity(f.len() + 1);
@@ -181,8 +181,8 @@ fn r3(g: &XGate, h: &XGate, k_max: usize, rng: &mut impl Rng) -> Outcome {
     let a = g.target;
     let b = h.target;
     let pb = g.lit_on(b).unwrap();
-    let s: Vec<(u16, bool)> = g.ctrls_without(b);
-    let mut r: Vec<(u16, bool)> = h.ctrls_without(a);
+    let s: Lits = g.ctrls_without(b);
+    let mut r: Lits = h.ctrls_without(a);
     if r.is_empty() {
         // h reads only a: always sensitive, nothing crosses (facing-CNOT core).
         return Outcome::Blocked(BlockReason::Deadlock);
@@ -251,20 +251,29 @@ pub fn verify_rewrite(before: &[XGate], after: &[XGate]) -> bool {
     let ag: Vec<XGate> = after.iter().map(dense).collect();
 
     let total: u64 = 1u64 << k;
+    // 64 assignments per batch: lane l is assignment v + l, i.e. bit l of wire
+    // i's lane word is ((v+l)>>i)&1. With v a multiple of 64 the low six wires
+    // are the constant patterns below and each higher wire is all-ones or
+    // all-zeros according to bit i of v (no carry: l < 64).
+    const LANE: [u64; 6] = [
+        0xAAAA_AAAA_AAAA_AAAA,
+        0xCCCC_CCCC_CCCC_CCCC,
+        0xF0F0_F0F0_F0F0_F0F0,
+        0xFF00_FF00_FF00_FF00,
+        0xFFFF_0000_FFFF_0000,
+        0xFFFF_FFFF_0000_0000,
+    ];
+    let mut st_b = vec![0u64; k];
+    let mut st_a = vec![0u64; k];
     let mut v = 0u64;
     while v < total {
-        // 64 assignments per batch: lane l is assignment v + l.
-        let mut st_b = vec![0u64; k];
-        for (i, w) in st_b.iter_mut().enumerate() {
-            let mut acc = 0u64;
-            for l in 0..64u64 {
-                if ((v + l) >> i) & 1 == 1 {
-                    acc |= 1 << l;
-                }
-            }
-            *w = acc;
+        for i in 0..k.min(6) {
+            st_b[i] = LANE[i];
         }
-        let mut st_a = st_b.clone();
+        for i in 6..k {
+            st_b[i] = 0u64.wrapping_sub((v >> i) & 1);
+        }
+        st_a.copy_from_slice(&st_b);
         super::xgate::eval_lanes(&bg, &mut st_b);
         super::xgate::eval_lanes(&ag, &mut st_a);
         // Ignore lanes beyond `total` when k < 6.
@@ -277,4 +286,45 @@ pub fn verify_rewrite(before: &[XGate], after: &[XGate]) -> bool {
         v += 64;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+
+    // The hoisted constant lane basis in verify_rewrite must match the
+    // original per-bit construction for every wire index and batch base.
+    #[test]
+    fn opt_equiv_lane_basis_matches_bitwise_construction() {
+        const LANE: [u64; 6] = [
+            0xAAAA_AAAA_AAAA_AAAA,
+            0xCCCC_CCCC_CCCC_CCCC,
+            0xF0F0_F0F0_F0F0_F0F0,
+            0xFF00_FF00_FF00_FF00,
+            0xFFFF_0000_FFFF_0000,
+            0xFFFF_FFFF_0000_0000,
+        ];
+        for k in 1usize..=12 {
+            let total = 1u64 << k;
+            let mut v = 0u64;
+            while v < total {
+                for i in 0..k {
+                    let mut acc = 0u64;
+                    for l in 0..64u64 {
+                        if ((v + l) >> i) & 1 == 1 {
+                            acc |= 1 << l;
+                        }
+                    }
+                    let fast = if i < 6 {
+                        LANE[i]
+                    } else {
+                        0u64.wrapping_sub((v >> i) & 1)
+                    };
+                    assert_eq!(acc, fast, "k={k} v={v} i={i}");
+                }
+                v += 64;
+            }
+        }
+    }
 }

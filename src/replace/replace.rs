@@ -16,6 +16,7 @@ use crate::{
 };
 use crate::replace::frozen::FrozenDb;
 use rand::Rng;
+use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use std::fs::File;
@@ -459,11 +460,10 @@ pub fn float_all_gates(
         if bound > i {
             let t = rng.random_range(i..=bound);
             if t != i {
-                let gate = gates.remove(i);
-                gates.insert(t, gate);
+                // Same array as remove(i)+insert(t), without shifting the tail.
+                gates[i..=t].rotate_left(1);
                 if track {
-                    let tag = tags.remove(i);
-                    tags.insert(t, tag);
+                    tags[i..=t].rotate_left(1);
                 }
                 moved += 1;
                 disp += t - i;
@@ -482,11 +482,10 @@ pub fn float_all_gates(
         if bound < i {
             let t = rng.random_range(bound..=i);
             if t != i {
-                let gate = gates.remove(i);
-                gates.insert(t, gate);
+                // Same array as remove(i)+insert(t), without shifting the tail.
+                gates[t..=i].rotate_right(1);
                 if track {
-                    let tag = tags.remove(i);
-                    tags.insert(t, tag);
+                    tags[t..=i].rotate_right(1);
                 }
                 moved += 1;
                 disp += i - t;
@@ -641,6 +640,8 @@ pub static DEGREE_FILTER_SKIPS: AtomicUsize = AtomicUsize::new(0);
 // degree-D monomial regardless of which wires carry it. One-sided: a low-degree function never
 // produces a witness. `gates` in dense wire space (0..nw). Returns true iff some output wire's
 // derivative is 1. `dirs[i][w]` = does direction i include wire w; `base[w]` = base bit for w.
+// Original nested-Vec implementation, kept as the test oracle for `derivative_witness_flat`.
+#[cfg(test)]
 fn derivative_witness(
     gates: &[[u16; 3]],
     nw: usize,
@@ -705,6 +706,68 @@ fn derivative_witness(
     false
 }
 
+// Flat-buffer version of `derivative_witness`: `dirs` is m*nw (dirs[i*nw + w]), `col` is the
+// precomputed m*words axis-column matrix (col[i] has bit p set iff (p>>i)&1 == 1 — it depends
+// only on m, so the caller builds it once per window), and `state` is an nw*words scratch that
+// is fully overwritten here, letting the caller reuse one allocation across all k probes.
+fn derivative_witness_flat(
+    gates: &[[u16; 3]],
+    nw: usize,
+    m: usize,
+    dirs: &[bool],
+    base: &[bool],
+    col: &[u64],
+    state: &mut [u64],
+) -> bool {
+    let total = 1usize << m; // affine-subcube points
+    let words = total.div_ceil(64);
+    debug_assert_eq!(dirs.len(), m * nw);
+    debug_assert_eq!(col.len(), m * words);
+    debug_assert_eq!(state.len(), nw * words);
+    // Wire w value across points = base[w] (constant) XOR of the columns of directions hitting w.
+    for w in 0..nw {
+        let fill = if base[w] { u64::MAX } else { 0 };
+        for x in state[w * words..(w + 1) * words].iter_mut() {
+            *x = fill;
+        }
+        for i in 0..m {
+            if dirs[i * nw + w] {
+                for wi in 0..words {
+                    state[w * words + wi] ^= col[i * words + wi];
+                }
+            }
+        }
+    }
+    // g57 update, matching to_polynomial exactly: a' = a XOR NOT(b AND NOT c) (= a XOR 1 XOR b XOR bc).
+    for &[a, b, c] in gates {
+        let (a, b, c) = (a as usize, b as usize, c as usize);
+        for wi in 0..words {
+            let v = !(state[b * words + wi] & !state[c * words + wi]);
+            state[a * words + wi] ^= v;
+        }
+    }
+    let mask_last = if total % 64 == 0 {
+        u64::MAX
+    } else {
+        (1u64 << (total % 64)) - 1
+    };
+    for w in 0..nw {
+        let mut par = 0u32;
+        for wi in 0..words {
+            let word = if wi + 1 == words {
+                state[w * words + wi] & mask_last
+            } else {
+                state[w * words + wi]
+            };
+            par ^= word.count_ones() & 1;
+        }
+        if par & 1 == 1 {
+            return true;
+        }
+    }
+    false
+}
+
 // Certify that the window's function IN ONE DIRECTION has degree > d (reversed = the inverse
 // permutation, since g57 gates are involutions so the inverse is the reversed gate list). One-
 // sided: returns true only on a witness (never a false positive), so a `true` means the DB
@@ -721,29 +784,58 @@ pub fn degree_exceeds_dir(
     if nw <= d || d + 1 > 12 {
         return false; // degree <= #inputs <= d, or subcube too large to probe cheaply
     }
-    let wire_map: std::collections::HashMap<u16, u16> =
-        used.iter().enumerate().map(|(i, &w)| (w, i as u16)).collect();
+    // Dense direct-index wire map (used wires are sorted ascending, so the max is last).
+    let mut wire_map = vec![0u16; *used.last().unwrap() as usize + 1];
+    for (i, &w) in used.iter().enumerate() {
+        wire_map[w as usize] = i as u16;
+    }
     let mut dense: Vec<[u16; 3]> = sub
         .gates
         .iter()
-        .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+        .map(|&[t, c1, c2]| {
+            [
+                wire_map[t as usize],
+                wire_map[c1 as usize],
+                wire_map[c2 as usize],
+            ]
+        })
         .collect();
     if reversed {
         dense.reverse();
     }
+    let m = d + 1;
+    let total = 1usize << m;
+    let words = total.div_ceil(64);
+    // Axis columns depend only on m: build them once for all k probes.
+    let mut col = vec![0u64; m * words];
+    for i in 0..m {
+        for p in 0..total {
+            if (p >> i) & 1 == 1 {
+                col[i * words + p / 64] |= 1u64 << (p % 64);
+            }
+        }
+    }
+    // Flat direction/base/state buffers reused across the k probes (state is overwritten by
+    // derivative_witness_flat each probe).
+    let mut dirs = vec![false; m * nw];
+    let mut base = vec![false; nw];
+    let mut state = vec![0u64; nw * words];
     for _ in 0..k {
-        // d+1 random nonzero direction vectors over the nw wires, plus a random base point.
-        let dirs: Vec<Vec<bool>> = (0..d + 1)
-            .map(|_| {
-                let mut v: Vec<bool> = (0..nw).map(|_| rng.random_bool(0.5)).collect();
-                if v.iter().all(|&b| !b) {
-                    v[rng.random_range(0..nw)] = true; // avoid the zero direction
-                }
-                v
-            })
-            .collect();
-        let base: Vec<bool> = (0..nw).map(|_| rng.random_bool(0.5)).collect();
-        if derivative_witness(&dense, nw, &dirs, &base) {
+        // d+1 random nonzero direction vectors over the nw wires, plus a random base point
+        // (same RNG draws, in the same order, as the per-probe Vec-building version).
+        for i in 0..m {
+            let v = &mut dirs[i * nw..(i + 1) * nw];
+            for b in v.iter_mut() {
+                *b = rng.random_bool(0.5);
+            }
+            if v.iter().all(|&b| !b) {
+                v[rng.random_range(0..nw)] = true; // avoid the zero direction
+            }
+        }
+        for b in base.iter_mut() {
+            *b = rng.random_bool(0.5);
+        }
+        if derivative_witness_flat(&dense, nw, m, &dirs, &base, &col, &mut state) {
             return true;
         }
     }
@@ -878,12 +970,13 @@ pub fn cand_features(
     use crate::replace::ranking::CandFeatures;
     let thr = MIN_MEDIAN_LEEWAY.load(Ordering::Relaxed);
     let n = window.len();
-    let mut wires = std::collections::HashSet::new();
+    // Only the distinct count is observed; sort+dedup beats per-wire hashing.
+    let mut wires: Vec<u16> = Vec::with_capacity(window.len() * 3);
     for g in window {
-        wires.insert(g[0]);
-        wires.insert(g[1]);
-        wires.insert(g[2]);
+        wires.extend_from_slice(g);
     }
+    wires.sort_unstable();
+    wires.dedup();
     let mut buckets = [0usize; 5];
     let (mut zero_fanout, mut low_leeway, mut maxf) = (0usize, 0usize, 0usize);
     for i in 0..n {
@@ -1139,6 +1232,140 @@ pub fn random_subcircuit_max(circuit: &CircuitSeq, max_len: usize) -> (CircuitSe
     (CircuitSeq { gates: subcircuit }, start, end)
 }
 
+// ---------------------------------------------------------------------------
+// Frozen-store lookup cache.
+//
+// The frozen database is immutable for the lifetime of the
+// process, so a lookup's result can never change: caching (key -> value bytes,
+// including "absent") is exact, not approximate. Windows drawn by the
+// expansion/compression games repeat heavily (SAMF templates recur all over
+// the circuit), and most canonical keys MISS the DB, so caching negative
+// results is as valuable as positive ones. On hosts whose RAM is smaller than
+// the DB, each avoided lookup is an avoided page fault.
+//
+// LOOKUP_CACHE_MB caps the approximate value-byte footprint (default 512 MiB;
+// 0 disables the cache). When the cap is exceeded the cache is cleared
+// wholesale — an epoch reset is cheaper and simpler than LRU bookkeeping and
+// the working set refills within seconds.
+// ---------------------------------------------------------------------------
+// Cache keys are namespaced: byte 0 distinguishes which logical database the
+// lookup targeted (shard vs curated); the same 16-byte canonical hash may
+// exist in both with different values.
+type LookupCacheMap = DashMap<[u8; 17], Option<std::sync::Arc<[u8]>>, rustc_hash::FxBuildHasher>;
+
+pub(crate) const LOOKUP_NS_SHARD: u8 = 0;
+pub(crate) const LOOKUP_NS_CURATED: u8 = 1;
+
+static LOOKUP_CACHE_BYTES: AtomicU64 = AtomicU64::new(0);
+pub static LOOKUP_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+pub static LOOKUP_CACHE_QUERIES: AtomicU64 = AtomicU64::new(0);
+
+fn lookup_cache_cap_bytes() -> u64 {
+    static CAP: OnceLock<u64> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("LOOKUP_CACHE_MB")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(512)
+            .saturating_mul(1024 * 1024)
+    })
+}
+
+fn lookup_cache() -> Option<&'static LookupCacheMap> {
+    static CACHE: OnceLock<Option<LookupCacheMap>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| (lookup_cache_cap_bytes() > 0).then(LookupCacheMap::default))
+        .as_ref()
+}
+
+/// Fetch one namespaced key from the immutable frozen database.
+fn raw_db_get(db: &FrozenDb, namespace: u8, key: &[u8; 16]) -> Option<std::sync::Arc<[u8]>> {
+    let value = if namespace == LOOKUP_NS_CURATED {
+        db.get_curated(key)
+    } else {
+        db.get_regular(key)
+    };
+    value.map(std::sync::Arc::from)
+}
+
+/// Point lookup with an exact process-wide cache in front. Returns the value
+/// bytes (shared, immutable) or None when the key is absent — byte-identical
+/// to the uncached lookup on a read-only environment.
+pub(crate) fn cached_db_get(
+    db: &FrozenDb,
+    namespace: u8,
+    key: &[u8; 16],
+) -> Option<std::sync::Arc<[u8]>> {
+    let Some(cache) = lookup_cache() else {
+        return raw_db_get(db, namespace, key);
+    };
+    let mut ns_key = [0u8; 17];
+    ns_key[0] = namespace;
+    ns_key[1..].copy_from_slice(key);
+    LOOKUP_CACHE_QUERIES.fetch_add(1, Ordering::Relaxed);
+    if let Some(entry) = cache.get(&ns_key) {
+        LOOKUP_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+        return entry.clone();
+    }
+    let result: Option<std::sync::Arc<[u8]>> = raw_db_get(db, namespace, key);
+    // A complete curated value can contain hundreds of thousands of
+    // candidates and occupy many megabytes (the historical worst case was
+    // multi-megabyte, and one historical shard exceeded a gigabyte). Keep exact
+    // curated misses in the cache, but do not pin a positive full value there:
+    // callers already hold it during selection, and retaining it would let a
+    // few hot full-coverage keys evict the regular working set or exhaust the
+    // process. Regular positives remain cached; their friend lists are small.
+    if namespace == LOOKUP_NS_CURATED && result.is_some() {
+        return result;
+    }
+    let entry_bytes = 17 + 64 + result.as_ref().map_or(0, |v| v.len()) as u64;
+    if LOOKUP_CACHE_BYTES.fetch_add(entry_bytes, Ordering::Relaxed) + entry_bytes
+        > lookup_cache_cap_bytes()
+    {
+        cache.clear();
+        LOOKUP_CACHE_BYTES.store(entry_bytes, Ordering::Relaxed);
+    }
+    cache.insert(ns_key, result.clone());
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Lookup direction strategy.
+//
+// The shard DBs are keyed by the *minimum* of a circuit's forward and reverse
+// canonical polynomial forms (build_from_rocks inserts min(canon_fwd,
+// canon_rev) only). Since canonical polys are determined by the function a
+// circuit computes, a window's non-min direction key can only exist in the DB
+// if it equals the min key. Probing just the min direction is therefore
+// exactly equivalent to the legacy forward-then-reverse probe — and it halves
+// the number of cold frozen-store probes on misses, which dominate when the DB is
+// larger than RAM.
+//
+// MIN_DIR_LOOKUP=0        -> legacy: forward probe, reverse probe on miss.
+// MIN_DIR_LOOKUP=validate -> min-direction probe, but on a miss also probe the
+//                            other direction and count/log any hit (which
+//                            would disprove the min-key invariant).
+// unset / any other value -> min-direction probe only (default).
+// ---------------------------------------------------------------------------
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MinDirLookup {
+    Legacy,
+    Min,
+    Validate,
+}
+
+pub(crate) fn min_dir_lookup_mode() -> MinDirLookup {
+    static MODE: OnceLock<MinDirLookup> = OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("MIN_DIR_LOOKUP").as_deref() {
+        Ok("0") => MinDirLookup::Legacy,
+        Ok("validate") => MinDirLookup::Validate,
+        _ => MinDirLookup::Min,
+    })
+}
+
+pub static MIN_DIR_VALIDATE_PROBES: AtomicU64 = AtomicU64::new(0);
+pub static MIN_DIR_VIOLATIONS: AtomicU64 = AtomicU64::new(0);
+
 pub static CANON_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONVEX_FIND_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CONVEX_MAX_WIRES_TIME: AtomicU64 = AtomicU64::new(0);
@@ -1273,10 +1500,8 @@ pub fn compress_loop(
         let ranges = split_into_random_chunk_ranges(acc.gates.len(), k, &mut rng);
         let acc_tags_ref = &acc_tags;
         let compressed_chunks: Vec<(usize, usize, usize, Vec<[u16; 3]>, Vec<Tag>, u128)> = ranges
-            .into_iter()
-            .enumerate()
-            .collect::<Vec<_>>()
             .into_par_iter()
+            .enumerate()
             .map(|(chunk_idx, (start, end))| {
                 let sub = CircuitSeq {
                     gates: acc.gates[start..end].to_vec(),
@@ -1531,9 +1756,6 @@ pub fn expand_db(
     db: &FrozenDb,
     pair_mode: &ExpandPairMode,
 ) -> CircuitSeq {
-    use crate::circuit::circuit::polys_repr_blob;
-    use xxhash_rust::xxh3::xxh3_128;
-
     let mut expanded = c.clone();
 
     if expanded.gates.is_empty() {
@@ -1581,15 +1803,22 @@ pub fn expand_db(
             .unwrap_or(false);
 
         // (value, final_order, used, is_reversed)
-        let mut matched: Option<(Vec<u8>, Permutation, Vec<u16>, bool)> = None;
+        let mut matched: Option<(std::sync::Arc<[u8]>, Permutation, Vec<u16>, bool)> = None;
         if !fwd_high {
             let t_canon = Instant::now();
-            let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
+            // The hashed variant returns the same 16-byte frozen-DB key the
+            // plain variant's polys would hash to (byte-identical), skipping
+            // the poly-vector clone on canon-cache hits and the caller-side
+            // serialize+hash. None == the plain variant's empty-polys skip.
+            let (fwd_key, fwd_order, used) = sub.canonicalize_polys_single_hashed(false);
             CANONICALIZE_TIME.fetch_add(t_canon.elapsed().as_nanos() as u64, Ordering::Relaxed);
-            if !fwd_polys.is_empty() {
-                let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
+            if let Some(fwd_key) = fwd_key {
                 let t_lookup = Instant::now();
-                let fwd_result = db.get_regular(&fwd_key);
+                let fwd_result = crate::replace::replace::cached_db_get(
+                    db,
+                    crate::replace::replace::LOOKUP_NS_SHARD,
+                    &fwd_key,
+                );
                 LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 if let Some(v) = fwd_result {
                     matched = Some((v, fwd_order, used, false));
@@ -1607,12 +1836,15 @@ pub fn expand_db(
                 }
             } else {
                 let t_canon2 = Instant::now();
-                let (rev_polys, rev_order, used) = sub.canonicalize_polys_single(true);
+                let (rev_key, rev_order, used) = sub.canonicalize_polys_single_hashed(true);
                 CANONICALIZE_TIME.fetch_add(t_canon2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                if !rev_polys.is_empty() {
-                    let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
+                if let Some(rev_key) = rev_key {
                     let t_lookup2 = Instant::now();
-                    let rev_result = db.get_regular(&rev_key);
+                    let rev_result = crate::replace::replace::cached_db_get(
+                        db,
+                        crate::replace::replace::LOOKUP_NS_SHARD,
+                        &rev_key,
+                    );
                     LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     if let Some(v) = rev_result {
                         matched = Some((v, rev_order, used, true));
@@ -1718,7 +1950,14 @@ pub fn expand_db(
         let repl_n_b = repl.max_wire() + 1;
         let mut used_ext = used.clone();
         if used_ext.len() < repl_n_b {
-            let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
+            let mut used_mask = vec![false; n];
+            for &w in used_ext.iter() {
+                if (w as usize) < n {
+                    used_mask[w as usize] = true;
+                }
+            }
+            let mut available: Vec<u16> =
+                (0..n as u16).filter(|&w| !used_mask[w as usize]).collect();
             rand::seq::SliceRandom::shuffle(available.as_mut_slice(), &mut rng);
             let mut avail = available.into_iter();
             while used_ext.len() < repl_n_b {
@@ -1768,7 +2007,13 @@ fn rewire_candidate(
     let repl_n_b = repl.max_wire() + 1;
     let mut used_ext = used.to_vec();
     if used_ext.len() < repl_n_b {
-        let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
+        let mut used_mask = vec![false; n];
+        for &w in used_ext.iter() {
+            if (w as usize) < n {
+                used_mask[w as usize] = true;
+            }
+        }
+        let mut available: Vec<u16> = (0..n as u16).filter(|&w| !used_mask[w as usize]).collect();
         rand::seq::SliceRandom::shuffle(available.as_mut_slice(), rng);
         let mut avail = available.into_iter();
         while used_ext.len() < repl_n_b {
@@ -1790,26 +2035,15 @@ pub fn compress_db(
     base_offset: usize,
     tags: &mut Vec<Tag>,
 ) -> CircuitSeq {
-    use crate::circuit::circuit::polys_repr_blob;
-    use xxhash_rust::xxh3::xxh3_128;
-
     // `tags` (non-empty when --track-survivors): per-gate origin id, kept in lockstep with
     // `compressed.gates`. `base_offset` makes the recorded replacement position circuit-relative.
     let track = !tags.is_empty();
     let mut compressed = c.clone();
 
-    let mut i = 0;
-    while i < compressed.gates.len().saturating_sub(1) {
-        if compressed.gates[i] == compressed.gates[i + 1] {
-            compressed.gates.drain(i..=i + 1);
-            if track {
-                tags.drain(i..=i + 1);
-            }
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
+    crate::circuit::circuit::cancel_adjacent_duplicates(
+        &mut compressed.gates,
+        track.then(|| &mut *tags),
+    );
 
     if compressed.gates.is_empty() {
         return CircuitSeq { gates: Vec::new() };
@@ -1866,7 +2100,9 @@ pub fn compress_db(
         }
 
         let t_canon = Instant::now();
-        let (fwd_polys, fwd_order, used) = sub.canonicalize_polys_single(false);
+        // Hashed variant: same 16-byte DB key the plain variant's polys would
+        // hash to; None == the plain variant's empty-polys skip.
+        let (fwd_key, fwd_order, used) = sub.canonicalize_polys_single_hashed(false);
         let canon_elapsed = t_canon.elapsed().as_nanos() as u64;
         CANONICALIZE_TIME.fetch_add(canon_elapsed, Ordering::Relaxed);
         match mode {
@@ -1889,21 +2125,23 @@ pub fn compress_db(
             );
         }
 
-        if fwd_polys.is_empty() {
+        let Some(fwd_key) = fwd_key else {
             continue;
-        }
-
-        let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
+        };
 
         let t_lookup = Instant::now();
-        let fwd_result = db.get_regular(&fwd_key);
+        let fwd_result = crate::replace::replace::cached_db_get(
+            db,
+            crate::replace::replace::LOOKUP_NS_SHARD,
+            &fwd_key,
+        );
         LMDB_LOOKUP_TIME.fetch_add(t_lookup.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         let (value, final_order, is_reversed) = if let Some(v) = fwd_result {
             (v, fwd_order, false)
         } else {
             let t_canon2 = Instant::now();
-            let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
+            let (rev_key, rev_order, _) = sub.canonicalize_polys_single_hashed(true);
             let canon2_elapsed = t_canon2.elapsed().as_nanos() as u64;
             CANONICALIZE_TIME.fetch_add(canon2_elapsed, Ordering::Relaxed);
             match mode {
@@ -1926,14 +2164,16 @@ pub fn compress_db(
                 );
             }
 
-            if rev_polys.is_empty() {
+            let Some(rev_key) = rev_key else {
                 continue;
-            }
-
-            let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
+            };
 
             let t_lookup2 = Instant::now();
-            let rev_result = db.get_regular(&rev_key);
+            let rev_result = crate::replace::replace::cached_db_get(
+                db,
+                crate::replace::replace::LOOKUP_NS_SHARD,
+                &rev_key,
+            );
             LMDB_LOOKUP_TIME.fetch_add(t_lookup2.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             match rev_result {
@@ -2099,18 +2339,10 @@ pub fn compress_db(
         TRIAL_TIME.fetch_add(t_trial.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    let mut j = 0;
-    while j < compressed.gates.len().saturating_sub(1) {
-        if compressed.gates[j] == compressed.gates[j + 1] {
-            compressed.gates.drain(j..=j + 1);
-            if track {
-                tags.drain(j..=j + 1);
-            }
-            j = j.saturating_sub(2);
-        } else {
-            j += 1;
-        }
-    }
+    crate::circuit::circuit::cancel_adjacent_duplicates(
+        &mut compressed.gates,
+        track.then(|| &mut *tags),
+    );
 
     compressed
 }
@@ -2130,18 +2362,10 @@ pub fn compress_big_ancillas(
     let mut circuit = c.clone();
     let mut rng = rand::rng();
 
-    let mut i = 0;
-    while i < circuit.gates.len().saturating_sub(1) {
-        if circuit.gates[i] == circuit.gates[i + 1] {
-            circuit.gates.drain(i..=i + 1);
-            if track {
-                tags.drain(i..=i + 1);
-            }
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
+    crate::circuit::circuit::cancel_adjacent_duplicates(
+        &mut circuit.gates,
+        track.then(|| &mut *tags),
+    );
 
     let chunk_budget = compress_chunk_budget_ms();
     let chunk_started = Instant::now();
@@ -2189,12 +2413,20 @@ pub fn compress_big_ancillas(
         let max = num_wires;
         let new_wires = rng.random_range(n_wires..=max);
         if new_wires > n_wires {
+            // Dense mask: same accept/reject decisions and RNG draws as the
+            // linear-contains rejection loop, without rescanning per draw.
+            let mask_len = num_wires.max(used_wires.last().map_or(0, |&w| w as usize + 1));
+            let mut used_mask = vec![false; mask_len];
+            for &w in &used_wires {
+                used_mask[w as usize] = true;
+            }
             let mut count = n_wires;
             while count < new_wires {
                 let random = rng.random_range(0..num_wires);
-                if used_wires.contains(&(random as u16)) {
+                if used_mask[random] {
                     continue;
                 }
+                used_mask[random] = true;
                 used_wires.push(random as u16);
                 count += 1;
             }
@@ -2274,18 +2506,10 @@ pub fn compress_big_ancillas(
     }
 
     let t7 = Instant::now();
-    let mut i = 0;
-    while i < circuit.gates.len().saturating_sub(1) {
-        if circuit.gates[i] == circuit.gates[i + 1] {
-            circuit.gates.drain(i..=i + 1);
-            if track {
-                tags.drain(i..=i + 1);
-            }
-            i = i.saturating_sub(2);
-        } else {
-            i += 1;
-        }
-    }
+    crate::circuit::circuit::cancel_adjacent_duplicates(
+        &mut circuit.gates,
+        track.then(|| &mut *tags),
+    );
     DEDUP_TIME.fetch_add(t7.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     circuit
@@ -2589,6 +2813,48 @@ mod degree_filter_tests {
     use crate::circuit::circuit::CircuitSeq;
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
+
+    // The flat bit-sliced witness must agree with the nested-Vec original on
+    // every (gates, dirs, base) input, including the m*nw layout mapping.
+    #[test]
+    fn opt_equiv_derivative_witness_flat_matches_nested() {
+        let mut rng = StdRng::seed_from_u64(0xdeadbeef);
+        for _ in 0..300 {
+            let nw = rng.random_range(3..12usize);
+            let m = rng.random_range(1..6usize);
+            let n_gates = rng.random_range(0..25usize);
+            let gates: Vec<[u16; 3]> = (0..n_gates)
+                .map(|_| {
+                    [
+                        rng.random_range(0..nw) as u16,
+                        rng.random_range(0..nw) as u16,
+                        rng.random_range(0..nw) as u16,
+                    ]
+                })
+                .collect();
+            let dirs_nested: Vec<Vec<bool>> = (0..m)
+                .map(|_| (0..nw).map(|_| rng.random_bool(0.5)).collect())
+                .collect();
+            let base: Vec<bool> = (0..nw).map(|_| rng.random_bool(0.5)).collect();
+            let dirs_flat: Vec<bool> = dirs_nested.iter().flatten().copied().collect();
+            let total = 1usize << m;
+            let words = total.div_ceil(64);
+            let mut col = vec![0u64; m * words];
+            for i in 0..m {
+                for p in 0..total {
+                    if (p >> i) & 1 == 1 {
+                        col[i * words + p / 64] |= 1u64 << (p % 64);
+                    }
+                }
+            }
+            let mut state = vec![0u64; nw * words];
+            assert_eq!(
+                derivative_witness_flat(&gates, nw, m, &dirs_flat, &base, &col, &mut state),
+                derivative_witness(&gates, nw, &dirs_nested, &base),
+                "nw={nw} m={m} gates={gates:?}"
+            );
+        }
+    }
 
     // True max ANF degree of the window (both directions), computed exactly via to_polynomial.
     fn true_max_degree(sub: &CircuitSeq) -> usize {

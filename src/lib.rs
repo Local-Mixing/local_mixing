@@ -3,6 +3,7 @@ pub mod circuit;
 pub mod postmix;
 pub mod rainbow;
 pub mod random;
+pub mod rainbow_table;
 pub mod replace;
 use crate::circuit::{CircuitSeq, Gate, U1024};
 use numpy::PyArray2;

@@ -3,13 +3,13 @@ use std::path::Path;
 
 use local_mixing::circuit::CircuitSeq;
 use local_mixing::replace::frozen::FrozenDb;
-use local_mixing::replace::gadgets::{
-    sandwich_default_m, sandwich_default_s, SLICE_ZERO_CCNOT_GATES_PER_WIRE,
-    SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS, SLICE_ZERO_RANDOM_GATES_PER_WIRE,
-};
 use local_mixing::replace::gadgets::{MaskConfig, ProdConfig};
+use local_mixing::replace::gadgets::{
+    SLICE_ZERO_CCNOT_GATES_PER_WIRE, SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS,
+    SLICE_ZERO_RANDOM_GATES_PER_WIRE, sandwich_default_m, sandwich_default_s,
+};
 use local_mixing::replace::main_mix::main_shuffle_shoot_shuffle;
-use local_mixing::replace::main_mix_cnot::{main_shuffle_shoot_shuffle_cnot, CnotSssParams};
+use local_mixing::replace::main_mix_cnot::{CnotSssParams, main_shuffle_shoot_shuffle_cnot};
 use local_mixing::replace::mixing::install_kill_handler;
 use local_mixing::replace::replace::{
     print_compress_timers, record_finish, record_init, write_compression_histogram,
@@ -26,6 +26,11 @@ pub fn run(sub: &clap::ArgMatches) {
     let x: usize = *sub.get_one("x").unwrap();
     let leave = sub.get_flag("interleave");
     let do_gadgetize = sub.get_flag("gadgetize");
+    let five_carrier = sub.get_flag("five_carrier");
+    let strong_five_carrier = sub.get_flag("strong_five_carrier");
+    let six_carrier = sub.get_flag("six_carrier");
+    let strong_six_carrier = sub.get_flag("strong_six_carrier");
+    let seven_carrier = sub.get_flag("seven_carrier");
     let do_feistalize = sub.get_flag("feistalize");
     let slice_zero = sub.get_flag("slice_zero");
     let slice_zero_random = sub.get_flag("slice_zero_random");
@@ -92,12 +97,20 @@ pub fn run(sub: &clap::ArgMatches) {
             depth: *sub.get_one("mask_depth").unwrap(),
             taper: sub.get_one("mask_taper").copied(),
         };
-        // Start from the validated production setting and let an explicitly
-        // passed flag override a field. Copying the values into clap defaults
-        // instead would recreate the bug this replaces: the preset sat in the
-        // tree with no callers, so every "production" lever it named was off
-        // in every circuit anyone actually built.
-        let preset = ProdConfig::production_single();
+        // Start from the selected representation's coherent production setting
+        // and let an explicitly passed --prod-* flag override one field.
+        // Representation selection stays separate from ProdConfig: the same
+        // band/mask knobs feed both constructors, but their carrier layouts and
+        // gate folds are fundamentally different.
+        let preset = if seven_carrier {
+            ProdConfig::production_seven_carrier()
+        } else if six_carrier || strong_six_carrier {
+            ProdConfig::production_six_carrier()
+        } else if five_carrier || strong_five_carrier {
+            ProdConfig::production_five_carrier()
+        } else {
+            ProdConfig::production_single()
+        };
         let opt = |id: &str, cur: usize| -> usize {
             match sub.value_source(id) {
                 Some(clap::parser::ValueSource::CommandLine) => {
@@ -130,6 +143,10 @@ pub fn run(sub: &clap::ArgMatches) {
             single: opt("prod_single", preset.single),
             gray_fold: opt("prod_gray_fold", preset.gray_fold),
         };
+        assert!(
+            prod.gray_fold <= 3,
+            "--prod-gray-fold must be 0 (expanded), 1 (aggregate), 2 (micro), or 3 (sentinel)"
+        );
         let c = CircuitSeq::from_string(&data);
         let collision_rounds: usize = *sub.get_one("collision_rounds").unwrap();
         let stable_compressions: usize = *sub.get_one("stable_compressions").unwrap();
@@ -141,6 +158,11 @@ pub fn run(sub: &clap::ArgMatches) {
             save: d,
             source: s,
             do_gadgetize,
+            five_carrier,
+            strong_five_carrier,
+            six_carrier,
+            strong_six_carrier,
+            seven_carrier,
             do_feistalize,
             slice_zero,
             slice_zero_random,

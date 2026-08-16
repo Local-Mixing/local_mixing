@@ -453,6 +453,12 @@ pub struct DbResult {
     /// identity/reorder, which is why this is excluded rather than merely
     /// counted.
     pub identity_skipped: usize,
+    /// Candidates dropped by the pair-window reorder ban (`ban_reorder`): a
+    /// permutation of the outgoing gates computes the same function only
+    /// because they commute — the reorder half of the identity/reorder
+    /// pathology, which the gate-for-gate guard above cannot see. Armed only
+    /// for pair-geometry windows; zero everywhere else.
+    pub permutation_skipped: usize,
     /// Of the surviving candidates, how many came from the curated store.
     pub curated_matches: usize,
     /// Whether the selected replacement came from the curated store.
@@ -515,14 +521,23 @@ pub fn db_replace(
     curated_in_comp: bool,
     regular_fallback: bool,
     pay_random: bool,
+    ban_reorder: bool,
     rng: &mut impl Rng,
 ) -> DbResult {
     let armed = curated_armed_for(curated, mode, curated_in_comp);
-    db_replace_with(window, num_wires, budget, mode, guard, armed, regular_fallback, pay_random, rng, |key, want_curated| {
+    db_replace_with(window, num_wires, budget, mode, guard, armed, regular_fallback, pay_random, ban_reorder, rng, |key, want_curated| {
+        // Every probe goes through the exact process-wide lookup cache
+        // (see src/replace/replace.rs): the store is immutable, so cached
+        // hits AND misses are byte-identical to raw probes.
+        use crate::replace::replace::{LOOKUP_NS_CURATED, LOOKUP_NS_SHARD, cached_db_get};
         if want_curated {
-            if curated { db.get_curated(key) } else { None }
+            if curated {
+                cached_db_get(db, LOOKUP_NS_CURATED, key).map(|v| v.to_vec())
+            } else {
+                None
+            }
         } else {
-            db.get_regular(key)
+            cached_db_get(db, LOOKUP_NS_SHARD, key).map(|v| v.to_vec())
         }
     })
 }
@@ -586,6 +601,7 @@ pub fn db_replace_with<F>(
     curated_armed: bool,
     regular_fallback: bool,
     pay_random: bool,
+    ban_reorder: bool,
     rng: &mut impl Rng,
     mut lookup: F,
 ) -> DbResult
@@ -608,6 +624,7 @@ where
         chosen: None,
         degree_skipped,
         identity_skipped: 0,
+        permutation_skipped: 0,
         curated_matches: 0,
         chosen_curated: false,
         choice_count: 0,
@@ -690,6 +707,9 @@ where
     let mut values: Vec<Vec<u8>> = Vec::new();
     let mut refs: Vec<CandRef> = Vec::new();
     let mut identity_skipped = 0usize;
+    let mut permutation_skipped = 0usize;
+    // Forward canonical key, exposed on DbResult so a caller can re-query
+    // another store for the same permutation (class attribution).
     let mut fwd_key: Option<[u8; 16]> = directions
         .iter()
         .find(|(rev, _)| !rev)
@@ -726,17 +746,67 @@ where
             Err(XPolyError::DegreeExceeded { .. }) => degree_skipped = true,
             Err(_) => {}
         }
-        let mut seen_keys = std::collections::HashSet::new();
-        for (dir_ix, (reversed, canonical)) in directions.iter().enumerate() {
-            let key = key_of(canonical);
-            if !*reversed && fwd_key.is_none() {
-                fwd_key = Some(key);
+        // The regular store is keyed by min(canon_fwd, canon_rev) (see the
+        // MIN_DIR_LOOKUP note in src/replace/replace.rs): when both directions
+        // composed, the default Min mode probes only the min direction — the
+        // non-min key can only exist if it equals the min key, so the candidate
+        // set is unchanged. Legacy restores the historical probe-both cascade;
+        // Validate probes the other direction on a miss and counts violations.
+        use crate::replace::replace::{
+            MIN_DIR_VALIDATE_PROBES, MIN_DIR_VIOLATIONS, MinDirLookup, min_dir_lookup_mode,
+        };
+        use std::sync::atomic::Ordering;
+        let fwd_idx = directions.iter().position(|(reversed, _)| !reversed);
+        let rev_idx = directions.iter().position(|(reversed, _)| *reversed);
+        // Stage B may be the first place the forward direction exists.
+        if fwd_key.is_none() {
+            if let Some(i) = fwd_idx {
+                fwd_key = Some(key_of(&directions[i].1));
             }
-            if !seen_keys.insert(key) {
-                continue;
+        }
+        let min_mode = match (fwd_idx, rev_idx) {
+            (Some(_), Some(_)) => min_dir_lookup_mode(),
+            _ => MinDirLookup::Legacy,
+        };
+        match min_mode {
+            MinDirLookup::Legacy => {
+                // At most two directions exist; dedup the second key against the first.
+                let mut first_key: Option<[u8; 16]> = None;
+                for (dir_ix, (reversed, canonical)) in directions.iter().enumerate() {
+                    let key = key_of(canonical);
+                    if first_key == Some(key) {
+                        continue;
+                    }
+                    if first_key.is_none() {
+                        first_key = Some(key);
+                    }
+                    if let Some(value) = lookup(&key, false) {
+                        catalogue(value, false, *reversed, dir_ix, &mut values, &mut refs);
+                    }
+                }
             }
-            if let Some(value) = lookup(&key, false) {
-                catalogue(value, false, *reversed, dir_ix, &mut values, &mut refs);
+            mode => {
+                let fi = fwd_idx.expect("min mode requires both directions");
+                let ri = rev_idx.expect("min mode requires both directions");
+                let rev_is_min = directions[ri].1.polys < directions[fi].1.polys;
+                let (min_idx, alt_idx) = if rev_is_min { (ri, fi) } else { (fi, ri) };
+                let min_key = key_of(&directions[min_idx].1);
+                if let Some(value) = lookup(&min_key, false) {
+                    catalogue(value, false, directions[min_idx].0, min_idx, &mut values, &mut refs);
+                } else if mode == MinDirLookup::Validate {
+                    let alt_key = key_of(&directions[alt_idx].1);
+                    if alt_key != min_key {
+                        MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
+                        if let Some(value) = lookup(&alt_key, false) {
+                            MIN_DIR_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+                            eprintln!(
+                                "[min-dir-violation] fmix db_replace: non-min canonical key present while min key absent (window={})",
+                                window.len()
+                            );
+                            catalogue(value, false, directions[alt_idx].0, alt_idx, &mut values, &mut refs);
+                        }
+                    }
+                }
             }
         }
     }
@@ -773,6 +843,17 @@ where
             identity_skipped += 1;
             continue;
         }
+        // Pair-window reorder ban: a candidate that merely permutes the
+        // outgoing gates is a re-spelling commutation gives away for free.
+        // The ban lives INSIDE this retry loop on purpose — the banned
+        // candidate is consumed and choose_ref re-evaluates free-vs-pay on
+        // the survivors, so with both bans armed a commuting 2-gate pair has
+        // no admissible same-length spelling and the splice is forced onto a
+        // genuinely different (usually paid/curated) one.
+        if ban_reorder && is_reorder(&gates, window) {
+            permutation_skipped += 1;
+            continue;
+        }
         chosen = Some(gates);
         chosen_curated = r.curated;
         choice_count = n_eligible;
@@ -783,12 +864,33 @@ where
         chosen,
         degree_skipped,
         identity_skipped,
+        permutation_skipped,
         curated_matches,
         chosen_curated,
         choice_count,
         min_match_len,
         fwd_key,
     }
+}
+
+/// Gate-multiset equality: `a` is a reordering of `b` (including the identical
+/// order, which the identity guard catches first). O(n²) with a used-mask —
+/// windows here are tiny.
+fn is_reorder(a: &[XGate], b: &[XGate]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut used = vec![false; b.len()];
+    'outer: for g in a {
+        for (i, h) in b.iter().enumerate() {
+            if !used[i] && g == h {
+                used[i] = true;
+                continue 'outer;
+            }
+        }
+        return false;
+    }
+    true
 }
 
 /// Pick which candidate to decode, from gate counts alone.
@@ -1058,6 +1160,7 @@ mod tests {
             false,
             true,
             false,
+            false,
             &mut rng,
             |k, cur| if cur { None } else { store.get(k).cloned() },
         );
@@ -1068,6 +1171,75 @@ mod tests {
             exhaustively_equal(&window, &repl, 8),
             "returned replacement must compute the window's function"
         );
+    }
+
+    #[test]
+    fn is_reorder_is_multiset_equality() {
+        let a = db_g57_to_xgate([0, 1, 2]);
+        let b = db_g57_to_xgate([3, 4, 5]);
+        let c = db_g57_to_xgate([0, 1, 3]);
+        assert!(is_reorder(&[a.clone(), b.clone()], &[b.clone(), a.clone()]));
+        assert!(is_reorder(&[a.clone(), b.clone()], &[a.clone(), b.clone()]));
+        assert!(!is_reorder(&[a.clone(), b.clone()], &[a.clone(), c.clone()]));
+        assert!(!is_reorder(&[a.clone()], &[a.clone(), b.clone()]));
+        // Duplicates must pair off one-to-one.
+        assert!(!is_reorder(&[a.clone(), a.clone()], &[a.clone(), b]));
+        assert!(is_reorder(&[a.clone(), a.clone()], &[a.clone(), a]));
+    }
+
+    // The pair-window reorder ban: for a commuting 2-gate window whose stored
+    // spellings are exactly its two orderings, the identity guard kills one
+    // and ban_reorder must kill the other, so nothing is chosen — the
+    // situation that forces a real pair splice onto a longer spelling. With
+    // the ban off, the reordered spelling is (deliberately) still admissible.
+    // A commuting involution pair is its own inverse, so both canonical
+    // directions share one key and the single stored value serves either
+    // probe direction.
+    #[test]
+    fn ban_reorder_refuses_the_permuted_pair() {
+        let g1 = db_g57_to_xgate([0, 1, 2]);
+        let g2 = db_g57_to_xgate([3, 4, 5]);
+        let window = vec![g1.clone(), g2.clone()];
+
+        let legacy = CircuitSeq { gates: vec![[0, 1, 2], [3, 4, 5]] };
+        let (polys, order, _used) = legacy.canonicalize_polys_single(false);
+        let key = xxh3_128(&polys_repr_blob(&polys)).to_le_bytes();
+        let mut fwd = legacy.clone();
+        fwd.rewire(&order.invert(), fwd.max_wire() as usize + 1);
+        let mut rev = fwd.clone();
+        rev.gates.reverse();
+        let store = HashMap::from([(key, encode_value(&[fwd, rev]))]);
+
+        for ban in [false, true] {
+            let mut rng = StdRng::seed_from_u64(7);
+            let res = db_replace_with(
+                &window,
+                8,
+                XPolyBudget::default(),
+                DbMode::Mix,
+                DegreeGuard::OFF,
+                false,
+                true,
+                false,
+                ban,
+                &mut rng,
+                |k, cur| if cur { None } else { store.get(k).cloned() },
+            );
+            assert_eq!(res.match_count, 2);
+            if ban {
+                assert!(res.chosen.is_none(), "both orderings must be refused");
+                assert_eq!(res.identity_skipped, 1);
+                assert_eq!(res.permutation_skipped, 1);
+            } else {
+                let repl = res.chosen.expect("without the ban the reorder is admissible");
+                assert_eq!(repl, vec![g2.clone(), g1.clone()], "the non-identity ordering wins");
+                assert_eq!(res.permutation_skipped, 0);
+                assert!(
+                    exhaustively_equal(&window, &repl, 8),
+                    "the reorder computes the same function (the pair commutes)"
+                );
+            }
+        }
     }
 
     // regular_fallback=false must SUPPRESS the regular stage while the
@@ -1101,6 +1273,7 @@ mod tests {
                 guard,
                 false,
                 true,
+                false,
                 false,
                 &mut rng,
                 |_, _| {
@@ -1140,6 +1313,7 @@ mod tests {
                 false,
                 true,
                 false,
+                false,
                 &mut rng,
                 |_, _| None,
             );
@@ -1170,6 +1344,7 @@ mod tests {
             true,
             true,
             false,
+            false,
             &mut rng,
             lookup,
         );
@@ -1184,6 +1359,7 @@ mod tests {
             DbMode::Mix,
             DegreeGuard::OFF,
             true,
+            false,
             false,
             false,
             &mut rng,
@@ -1204,6 +1380,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             &mut rng,
             lookup,
         );
@@ -1220,6 +1397,7 @@ mod tests {
             // The mode rule now lives in `db_replace`; apply it as that caller
             // would. Its own contract is asserted directly below.
             curated_armed_for(true, DbMode::Compressing, false),
+            false,
             false,
             false,
             &mut rng,
@@ -1257,6 +1435,7 @@ mod tests {
             false,
             true,
             false,
+            false,
             &mut rng,
             |_, _| None,
         );
@@ -1284,6 +1463,7 @@ mod tests {
             true,
             true,
             false,
+            false,
             &mut rng,
             |_, cur| {
                 probes.push(cur);
@@ -1303,6 +1483,7 @@ mod tests {
             DegreeGuard::OFF,
             true,
             true,
+            false,
             false,
             &mut rng,
             |_, cur| {
@@ -1327,6 +1508,7 @@ mod tests {
             DegreeGuard::OFF,
             curated_armed_for(true, DbMode::Compressing, false),
             true,
+            false,
             false,
             &mut rng,
             |_, cur| {
@@ -1421,6 +1603,7 @@ mod tests {
             false,
             true,
             false,
+            false,
             &mut rng,
             |_, _| {
                 lookups += 1;
@@ -1441,6 +1624,7 @@ mod tests {
             guard,
             false,
             true,
+            false,
             false,
             &mut rng,
             |_, _| None,
@@ -1466,13 +1650,13 @@ mod tests {
 
         // Compressing: the only friend (3 gates) grows the 1-gate window -> reject.
         let mut rng = StdRng::seed_from_u64(3);
-        let comp = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::Compressing, DegreeGuard::OFF, false, true, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
+        let comp = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::Compressing, DegreeGuard::OFF, false, true, false, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         assert_eq!(comp.match_count, 1);
         assert!(comp.chosen.is_none(), "compressing must reject a growing friend");
 
         // Size-agnostic: accept the longer equivalent.
         let mut rng = StdRng::seed_from_u64(3);
-        let agn = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::SizeAgnostic, DegreeGuard::OFF, false, true, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
+        let agn = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::SizeAgnostic, DegreeGuard::OFF, false, true, false, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         assert_eq!(agn.match_count, 1);
         let repl = agn.chosen.expect("size-agnostic accepts any length");
         assert!(repl.len() > window.len(), "this friend grows the window");
@@ -1482,7 +1666,7 @@ mod tests {
         // MinGrow: also accepts it — the shortest spelling that exists is the
         // paid channel's whole point when nothing non-growing is available.
         let mut rng = StdRng::seed_from_u64(3);
-        let mg = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::MinGrow, DegreeGuard::OFF, false, true, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
+        let mg = db_replace_with(&window, 8, XPolyBudget::default(), DbMode::MinGrow, DegreeGuard::OFF, false, true, false, false, &mut rng, |k, cur| if cur { None } else { store.get(k).cloned() });
         let repl = mg.chosen.expect("min-grow accepts the shortest growing friend");
         assert_eq!(repl.len(), 3);
         assert!(exhaustively_equal(&window, &repl, 8));

@@ -4,7 +4,7 @@ use crate::replace::replace::Tag;
 use crate::replace::frozen::FrozenDb;
 use rand::Rng;
 use rand::seq::IndexedRandom;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub static SAMF_INSERTIONS_MADE: AtomicUsize = AtomicUsize::new(0);
@@ -59,6 +59,13 @@ pub static PAR_ANCHORS: AtomicUsize = AtomicUsize::new(0);
 pub fn shoot_profile_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("SHOOT_PROFILE").is_ok())
+}
+
+// Read once: this is consulted per collision inside the shooting game, and
+// std::env::var takes the env lock and allocates on every call.
+fn absorb_nots_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("ABSORB_NOTS").is_ok())
 }
 
 // SHOOT_PARALLEL=k (default 1 = legacy serial): batch up to k non-overlapping min-generation
@@ -1216,13 +1223,24 @@ impl Transpositions {
     }
 
     pub fn to_perm(&self, n: usize) -> Permutation {
-        let mut perm = Permutation {
-            data: Vec::with_capacity(n),
-        };
-        for i in 0..n {
-            perm.data.push(self.evaluate(i as u16) as usize);
+        // One walk of the transposition list updating every wire at once
+        // (O(n+T)) instead of n independent evaluate() scans (O(n*T)).
+        // map[w] tracks evaluate(w); inv is its inverse image.
+        let mut m = n;
+        for &(a, b, _) in &self.transpositions {
+            m = m.max(a as usize + 1).max(b as usize + 1);
         }
-        perm
+        let mut map: Vec<usize> = (0..m).collect();
+        let mut inv: Vec<usize> = (0..m).collect();
+        for &(a, b, _) in &self.transpositions {
+            let (a, b) = (a as usize, b as usize);
+            let w1 = inv[a];
+            let w2 = inv[b];
+            map.swap(w1, w2);
+            inv.swap(a, b);
+        }
+        map.truncate(n);
+        Permutation { data: map }
     }
 
     pub fn from_perm(perm: &Permutation) -> Self {
@@ -1433,6 +1451,78 @@ impl Transpositions {
     }
 }
 
+// Incremental wire-permutation view of a growing transposition list.
+//
+// Invariant: `map[w] == t_list.evaluate(w)` for the swap sequence represented so far, and `inv`
+// is its inverse (`inv[map[w] as usize] == w`). Appending one swap to the END of the list (which
+// `evaluate` applies LAST) is an O(1) update: new_eval(w) = swap_ab(old_eval(w)), so the two
+// wires currently mapping to `a` and `b` — that is `inv[a]` and `inv[b]` — exchange their images
+// (the same walk `to_perm` performs, kept live). This turns the O(|t_list|) per-wire `evaluate`
+// scans on the hot relabeling paths into single array loads.
+#[derive(Debug, Clone)]
+pub(crate) struct WireMap {
+    map: Vec<u16>,
+    inv: Vec<u16>,
+}
+
+impl WireMap {
+    pub(crate) fn identity(n: usize) -> Self {
+        WireMap {
+            map: (0..n as u16).collect(),
+            inv: (0..n as u16).collect(),
+        }
+    }
+
+    // Build the map for an existing list, sized to cover `n` and every listed wire
+    // (same sizing rule as `Transpositions::to_perm`).
+    pub(crate) fn from_transpositions(t: &Transpositions, n: usize) -> Self {
+        let mut m = n;
+        for &(a, b, _) in &t.transpositions {
+            m = m.max(a as usize + 1).max(b as usize + 1);
+        }
+        let mut wm = WireMap::identity(m);
+        for &(a, b, _) in &t.transpositions {
+            wm.push_swap(a, b);
+        }
+        wm
+    }
+
+    // Append swap (a, b) at the END of the represented list; `evaluate` applies it LAST, so the
+    // wires whose current images are `a` and `b` swap those images.
+    #[inline]
+    pub(crate) fn push_swap(&mut self, a: u16, b: u16) {
+        let wa = self.inv[a as usize] as usize;
+        let wb = self.inv[b as usize] as usize;
+        self.map[wa] = b;
+        self.map[wb] = a;
+        self.inv.swap(a as usize, b as usize);
+    }
+
+    // PREPEND a whole permutation (applied FIRST by `evaluate`): new_map[w] = old_map[perm[w]].
+    // Matches grafting `perm_to_swaps()` in front of the list, whose ordered evaluation
+    // reproduces exactly `perm` (see SamfTail::perm_to_swaps), in O(n) instead of O(|t_list|).
+    pub(crate) fn precompose_perm(&mut self, perm: &[u16]) {
+        debug_assert_eq!(perm.len(), self.map.len());
+        let new_map: Vec<u16> = perm.iter().map(|&p| self.map[p as usize]).collect();
+        self.map = new_map;
+        for (w, &v) in self.map.iter().enumerate() {
+            self.inv[v as usize] = w as u16;
+        }
+    }
+
+    #[inline]
+    pub(crate) fn relabel(&self, w: u16) -> u16 {
+        // Wires beyond the tracked range are untouched by every listed swap, matching
+        // `Transpositions::evaluate` on such inputs.
+        self.map.get(w as usize).copied().unwrap_or(w)
+    }
+
+    #[inline]
+    pub(crate) fn relabel_gate(&self, g: [u16; 3]) -> [u16; 3] {
+        [self.relabel(g[0]), self.relabel(g[1]), self.relabel(g[2])]
+    }
+}
+
 // Append a SAMF/NOT gadget (`samf`) to `gates`, first trying to fuse it with the last
 // up-to-3 already-emitted gates through a single curated-DB lookup. On a hit, that window
 // (the trailing gates + the gadget) is replaced by the equal-or-shorter equivalent the DB
@@ -1570,16 +1660,17 @@ pub fn apply_unsamf(
 ) {
     let p = t_list.to_perm(n);
     let mut t = Transpositions::from_perm(&p);
-    let mut wire_positions: HashMap<u16, (usize, usize)> = HashMap::new();
+    // Dense direct-index table: wires are < n and the map is get-only.
+    let mut wire_positions: Vec<Option<(usize, usize)>> = vec![None; n.max(negation_mask.len())];
     for (idx, (wa, wb, _)) in t.transpositions.iter().enumerate() {
-        wire_positions.insert(*wa, (idx, 0));
-        wire_positions.insert(*wb, (idx, 1));
+        wire_positions[*wa as usize] = Some((idx, 0));
+        wire_positions[*wb as usize] = Some((idx, 1));
     }
     const TRANSITION: [[u8; 4]; 2] = [[1, 0, 3, 2], [2, 3, 0, 1]];
     let mut leftover_nots: Vec<u16> = Vec::new();
     for (wire, &val) in negation_mask.iter().enumerate() {
         if val == 1 {
-            if let Some(&(swap_idx, pos)) = wire_positions.get(&(wire as u16)) {
+            if let Some((swap_idx, pos)) = wire_positions[wire] {
                 let curr = t.transpositions[swap_idx].2;
                 if pos > 1 || curr > 3 {
                     panic!("Invalid pos or curr_neg_type");
@@ -1622,15 +1713,19 @@ pub fn insert_wire_shuffles_knuth(
     let mut gates: Vec<[u16; 3]> = Vec::new();
     let mut negation_mask = vec![0u8; n];
 
+    // Incremental image of t_list (wmap.relabel == t_list.evaluate): O(1) per-gate relabels.
+    let mut wmap = WireMap::identity(n);
+
     for &gate in &circuit.gates {
         let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
         gates.extend_from_slice(&t.to_circuit(n).gates);
+        for &(a, b, _) in &t.transpositions {
+            wmap.push_swap(a, b);
+        }
         t_list.transpositions.extend_from_slice(&t.transpositions);
         SAMF_INSERTIONS_MADE.fetch_add(t.transpositions.len(), Ordering::Relaxed);
-        let a = t_list.evaluate(gate[0]);
-        let b = t_list.evaluate(gate[1]);
-        let c = t_list.evaluate(gate[2]);
-        let gate = [a, b, c];
+        let gate = wmap.relabel_gate(gate);
+        let [_, b, c] = gate;
         if negation_mask[b as usize] == 1 {
             gates.extend_from_slice(&Transpositions::gen_gates_not(n, b));
             negation_mask[b as usize] = 0;
@@ -1691,16 +1786,19 @@ pub fn insert_wire_shuffles_simple(
         points.push(p as usize);
     }
     let mut last = 0;
+    // Incremental image of t_list (wmap.relabel == t_list.evaluate): O(1) per-gate relabels.
+    let mut wmap = WireMap::identity(n);
     for (i, gate) in circuit.gates.iter().enumerate() {
         let t = Transpositions::gen_random_simple(n, points[i] - last, &mut negation_mask);
         last = points[i];
         gates.extend_from_slice(&t.to_circuit(n).gates);
+        for &(a, b, _) in &t.transpositions {
+            wmap.push_swap(a, b);
+        }
         t_list.transpositions.extend_from_slice(&t.transpositions);
         SAMF_INSERTIONS_MADE.fetch_add(t.transpositions.len(), Ordering::Relaxed);
-        let a = t_list.evaluate(gate[0]);
-        let b = t_list.evaluate(gate[1]);
-        let c = t_list.evaluate(gate[2]);
-        let gate = [a, b, c];
+        let gate = wmap.relabel_gate(*gate);
+        let [_, b, c] = gate;
         if negation_mask[b as usize] == 1 {
             gates.extend_from_slice(&Transpositions::gen_gates_not(n, b));
             negation_mask[b as usize] = 0;
@@ -1752,17 +1850,20 @@ pub fn insert_wire_shuffles_x(
 
     nums.push(0);
 
+    // Incremental image of t_list (wmap.relabel == t_list.evaluate): O(1) per-gate relabels.
+    let mut wmap = WireMap::identity(n);
     for (i, gate) in circuit.gates.iter().enumerate() {
         if nums.contains(&i) {
             let t = Transpositions::gen_random_knuth(n, 150, &mut negation_mask);
             gates.extend_from_slice(&t.to_circuit(n).gates);
+            for &(a, b, _) in &t.transpositions {
+                wmap.push_swap(a, b);
+            }
             t_list.transpositions.extend_from_slice(&t.transpositions);
             SAMF_INSERTIONS_MADE.fetch_add(t.transpositions.len(), Ordering::Relaxed);
         }
-        let a = t_list.evaluate(gate[0]);
-        let b = t_list.evaluate(gate[1]);
-        let c = t_list.evaluate(gate[2]);
-        let gate = [a, b, c];
+        let gate = wmap.relabel_gate(*gate);
+        let [_, b, c] = gate;
         if negation_mask[b as usize] == 1 {
             gates.extend_from_slice(&Transpositions::gen_gates_not(n, b));
             negation_mask[b as usize] = 0;
@@ -1808,6 +1909,9 @@ fn insert_m_samfs_core(
     let mut t_list = Transpositions {
         transpositions: Vec::new(),
     };
+    // Incremental image of t_list (wmap.relabel == t_list.evaluate): the per-gate relabel is
+    // O(1) instead of an O(|t_list|) scan that grows by m swaps every x gates.
+    let mut wmap = WireMap::identity(n);
     let mut gates: Vec<[u16; 3]> = Vec::new();
     let mut out_tags: Vec<crate::replace::replace::Tag> = Vec::new();
     let mut negation_mask = vec![0u8; n];
@@ -1815,13 +1919,14 @@ fn insert_m_samfs_core(
         if i % x == 0 {
             let t = Transpositions::gen_random_simple(n, m, &mut negation_mask);
             gates.extend_from_slice(&t.to_circuit(n).gates);
+            for &(a, b, _) in &t.transpositions {
+                wmap.push_swap(a, b);
+            }
             t_list.transpositions.extend_from_slice(&t.transpositions);
             SAMF_INSERTIONS_MADE.fetch_add(t.transpositions.len(), Ordering::Relaxed);
         }
-        let a = t_list.evaluate(gate[0]);
-        let b = t_list.evaluate(gate[1]);
-        let c = t_list.evaluate(gate[2]);
-        let g = [a, b, c];
+        let g = wmap.relabel_gate(*gate);
+        let [_, b, c] = g;
         if negation_mask[b as usize] == 1 {
             gates.extend_from_slice(&Transpositions::gen_gates_not(n, b));
             negation_mask[b as usize] = 0;
@@ -1880,7 +1985,15 @@ fn gates_collide(g1: [u16; 3], g2: [u16; 3]) -> bool {
     g1[0] == g2[1] || g1[0] == g2[2] || g2[0] == g1[1] || g2[0] == g1[2]
 }
 
-fn relabel_gate(gate: [u16; 3], t_list: &Transpositions) -> [u16; 3] {
+#[inline]
+fn relabel_gate(gate: [u16; 3], wmap: &WireMap) -> [u16; 3] {
+    wmap.relabel_gate(gate)
+}
+
+// Pre-optimization reference: relabel through the full transposition list, O(|t_list|)
+// per wire. Kept for the opt_equiv_* property tests.
+#[cfg(test)]
+fn relabel_gate_ref(gate: [u16; 3], t_list: &Transpositions) -> [u16; 3] {
     [
         t_list.evaluate(gate[0]),
         t_list.evaluate(gate[1]),
@@ -1888,14 +2001,54 @@ fn relabel_gate(gate: [u16; 3], t_list: &Transpositions) -> [u16; 3] {
     ]
 }
 
+// Per-gate collision bitmasks over a bounded candidate window: masks[j] has bit m set iff
+// rg[j] collides with rg[m] (Gate::collides_index). Built once in O(len^2), it turns each
+// "does rg[x] commute past everything before it" scan of the window enumeration into an O(1)
+// mask test. Returns None when the window cannot be represented in u128; callers keep the
+// original scans as the fallback.
+pub(crate) fn window_collision_masks(rg: &[[u16; 3]]) -> Option<Vec<u128>> {
+    use crate::circuit::circuit::Gate;
+    if rg.len() > 128 {
+        return None;
+    }
+    Some(
+        rg.iter()
+            .map(|g| {
+                let mut m = 0u128;
+                for (i, o) in rg.iter().enumerate() {
+                    if Gate::collides_index(g, o) {
+                        m |= 1u128 << i;
+                    }
+                }
+                m
+            })
+            .collect(),
+    )
+}
+
+// Mask-test equivalent of `(1..x).filter(|&m| m != ex1 && m != ex2).all(|m|
+// !Gate::collides_index(&rg[x], &rg[m]))` — pass usize::MAX for an unused exclusion.
+#[inline]
+pub(crate) fn reaches_front(masks: &[u128], x: usize, ex1: usize, ex2: usize) -> bool {
+    // Bits 1..x (bit 0 is the collider anchor, never a blocker in these predicates).
+    let mut blockers = masks[x] & ((1u128 << x) - 2);
+    if ex1 < 128 {
+        blockers &= !(1u128 << ex1);
+    }
+    if ex2 < 128 {
+        blockers &= !(1u128 << ex2);
+    }
+    blockers == 0
+}
+
 fn flush_relabelled_gate_controls(
     gate: [u16; 3],
     output: &mut Vec<[u16; 3]>,
-    t_list: &Transpositions,
+    wmap: &WireMap,
     negation_mask: &mut [u8],
     n: usize,
 ) {
-    let [_, b, c] = relabel_gate(gate, t_list);
+    let [_, b, c] = relabel_gate(gate, wmap);
     if negation_mask[b as usize] == 1 {
         output.extend_from_slice(&Transpositions::gen_gates_not(n, b));
         negation_mask[b as usize] = 0;
@@ -1909,12 +2062,12 @@ fn flush_relabelled_gate_controls(
 fn emit_relabelled_gate(
     gate: [u16; 3],
     output: &mut Vec<[u16; 3]>,
-    t_list: &Transpositions,
+    wmap: &WireMap,
     negation_mask: &mut [u8],
     n: usize,
 ) {
-    flush_relabelled_gate_controls(gate, output, t_list, negation_mask, n);
-    output.push(relabel_gate(gate, t_list));
+    flush_relabelled_gate_controls(gate, output, wmap, negation_mask, n);
+    output.push(relabel_gate(gate, wmap));
 }
 
 // Remove the first remaining gate and shoot it right across every gate it commutes with.
@@ -1922,11 +2075,11 @@ fn emit_relabelled_gate(
 // it remains at the front of `remaining`; otherwise the shot gate reached the end.
 fn shoot_gate_to_first_collision(
     remaining: &mut VecDeque<[u16; 3]>,
-    t_list: &Transpositions,
+    wmap: &WireMap,
     negation_mask: &[u8],
 ) -> Option<([u16; 3], Vec<[u16; 3]>, bool)> {
     let shot = remaining.pop_front()?;
-    let relabelled = relabel_gate(shot, t_list);
+    let relabelled = relabel_gate(shot, wmap);
     let [_, b, c] = relabelled;
     if negation_mask[b as usize] != 0 || negation_mask[c as usize] != 0 {
         // The control-correction NOT belongs immediately before this gate. It may collide with
@@ -1934,7 +2087,7 @@ fn shoot_gate_to_first_collision(
         return Some((shot, Vec::new(), false));
     }
     let (passed, collided) =
-        shoot_materialized_gate_to_first_collision(relabelled, remaining, t_list, negation_mask);
+        shoot_materialized_gate_to_first_collision(relabelled, remaining, wmap, negation_mask);
     Some((shot, passed, collided))
 }
 
@@ -1943,13 +2096,13 @@ fn shoot_gate_to_first_collision(
 fn shoot_materialized_gate_to_first_collision(
     shot: [u16; 3],
     remaining: &mut VecDeque<[u16; 3]>,
-    t_list: &Transpositions,
+    wmap: &WireMap,
     negation_mask: &[u8],
 ) -> (Vec<[u16; 3]>, bool) {
     let mut passed = Vec::new();
 
     while let Some(&next) = remaining.front() {
-        let relabelled = relabel_gate(next, t_list);
+        let relabelled = relabel_gate(next, wmap);
         let [_, b, c] = relabelled;
         if negation_mask[b as usize] != 0 || negation_mask[c as usize] != 0 {
             return (passed, false);
@@ -2016,6 +2169,10 @@ fn shuffled_shooting_game_core(
     let mut t_list = Transpositions {
         transpositions: Vec::new(),
     };
+    // Incremental image of `t_list`: wmap.relabel(w) == t_list.evaluate(w) at every point (the
+    // single t_list mutation point below — the hidden-SAMF tuck — pushes the same swap into
+    // both). Relabeling is then an array load instead of an O(|t_list|) scan per wire.
+    let mut wmap = WireMap::identity(n);
     let mut negation_mask = vec![0u8; n];
     let mut compressions: usize = 0;
 
@@ -2045,7 +2202,7 @@ fn shuffled_shooting_game_core(
                 let (passed, collided) = shoot_materialized_gate_to_first_collision(
                     shot,
                     &mut remaining,
-                    &t_list,
+                    &wmap,
                     &negation_mask,
                 );
                 // Materialized shot is a gate born during mixing (Tag::NEW). `passed` came off
@@ -2060,7 +2217,7 @@ fn shuffled_shooting_game_core(
                 (shot, true, passed, collided, materialized_shot_tag, passed_tags)
             } else {
                 let (shot, passed, collided) =
-                    shoot_gate_to_first_collision(&mut remaining, &t_list, &negation_mask).unwrap();
+                    shoot_gate_to_first_collision(&mut remaining, &wmap, &negation_mask).unwrap();
                 // The shot was popped first, then the `passed` gates.
                 let (shot_tag, passed_tags) = if track {
                     let st = remaining_tags.pop_front().unwrap();
@@ -2079,7 +2236,7 @@ fn shuffled_shooting_game_core(
         // gate. A materialized replacement tail has already been emitted in the current wire
         // space and must not be corrected or relabeled again.
         if !shot_is_materialized {
-            flush_relabelled_gate_controls(shot, &mut output, &t_list, &mut negation_mask, n);
+            flush_relabelled_gate_controls(shot, &mut output, &wmap, &mut negation_mask, n);
             if track {
                 // emitted NOT-corrections are new gates: generation = shot's generation + 1
                 let new_count = output.len() - output_tags.len();
@@ -2115,7 +2272,7 @@ fn shuffled_shooting_game_core(
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         for (i, gate) in passed.into_iter().enumerate() {
-            emit_relabelled_gate(gate, &mut output, &t_list, &mut negation_mask, n);
+            emit_relabelled_gate(gate, &mut output, &wmap, &mut negation_mask, n);
             if track {
                 // emit_relabelled_gate appends [NOT-corrections..., the gate]; the gate is last.
                 // The NOT-corrections are new gates: generation = this gate's generation + 1.
@@ -2162,7 +2319,7 @@ fn shuffled_shooting_game_core(
                 let shot_rg = if shot_is_materialized {
                     shot
                 } else {
-                    relabel_gate(shot, &t_list)
+                    relabel_gate(shot, &wmap)
                 };
                 // A gate is "clean" if neither control carries a pending negation correction.
                 let clean = |g: &[u16; 3]| {
@@ -2176,7 +2333,7 @@ fn shuffled_shooting_game_core(
                 let rg: Vec<[u16; 3]> = remaining
                     .iter()
                     .take(look)
-                    .map(|&g| relabel_gate(g, &t_list))
+                    .map(|&g| relabel_gate(g, &wmap))
                     .collect();
 
                 // Candidate windows as (consumed_indices, window_gates).
@@ -2189,27 +2346,34 @@ fn shuffled_shooting_game_core(
                     // the clean() gate is gone. Reachability is purely about commutation.
                     if !rg.is_empty() {
                         candidates.push((vec![0], vec![shot_rg, rg[0]]));
+                        // Precomputed collision bitmasks make each reachability test O(1); windows
+                        // wider than 128 gates (gates_ahead_expand > 128) fall back to the scans.
+                        // Candidate contents and ORDER are identical either way.
+                        let masks = window_collision_masks(&rg);
+                        const NO_EX: usize = usize::MAX;
+                        let reach = |x: usize, ex1: usize, ex2: usize| -> bool {
+                            match &masks {
+                                Some(ms) => reaches_front(ms, x, ex1, ex2),
+                                None => (1..x)
+                                    .filter(|&m| m != ex1 && m != ex2)
+                                    .all(|m| !Gate::collides_index(&rg[x], &rg[m])),
+                            }
+                        };
                         let reach1: Vec<usize> = (1..rg.len())
-                            .filter(|&j| (1..j).all(|m| !Gate::collides_index(&rg[j], &rg[m])))
+                            .filter(|&j| reach(j, NO_EX, NO_EX))
                             .collect();
                         for &j in &reach1 {
                             candidates.push((vec![0, j], vec![shot_rg, rg[0], rg[j]]));
                         }
                         for &j in &reach1 {
                             for k in (j + 1)..rg.len() {
-                                if (1..k)
-                                    .filter(|&m| m != j)
-                                    .all(|m| !Gate::collides_index(&rg[k], &rg[m]))
-                                {
+                                if reach(k, j, NO_EX) {
                                     candidates
                                         .push((vec![0, j, k], vec![shot_rg, rg[0], rg[j], rg[k]]));
                                     // size 5 (lookahead 3): a 4th post-collider gate that also
                                     // reaches the front by commutation (past everything except j, k).
                                     for l in (k + 1)..rg.len() {
-                                        if (1..l)
-                                            .filter(|&m| m != j && m != k)
-                                            .all(|m| !Gate::collides_index(&rg[l], &rg[m]))
-                                        {
+                                        if reach(l, j, k) {
                                             candidates.push((
                                                 vec![0, j, k, l],
                                                 vec![shot_rg, rg[0], rg[j], rg[k], rg[l]],
@@ -2247,10 +2411,10 @@ fn shuffled_shooting_game_core(
                     let feats: Vec<crate::replace::ranking::CandFeatures> = candidates
                         .iter()
                         .map(|(idxs, win)| {
-                            let skip: std::collections::HashSet<usize> =
-                                idxs.iter().copied().collect();
+                            // idxs holds a handful of indices: a linear scan
+                            // beats building a hash set per candidate.
                             let right: Vec<[u16; 3]> = (0..rg.len())
-                                .filter(|m| !skip.contains(m))
+                                .filter(|m| !idxs.contains(m))
                                 .take(FEATURE_CTX)
                                 .map(|m| rg[m])
                                 .collect();
@@ -2334,7 +2498,7 @@ fn shuffled_shooting_game_core(
                 // carry a pending NOT on a CONTROL (a clean expansion E==window still correctly
                 // preserves a deferred TARGET negation, which commutes through the window's XOR).
                 // Set env ABSORB_NOTS=1 to re-enable #10 (for debugging only).
-                let absorb_nots = gen_m && std::env::var("ABSORB_NOTS").is_ok();
+                let absorb_nots = gen_m && absorb_nots_enabled();
                 let mut picked: Option<(Vec<usize>, Vec<[u16; 3]>, Vec<[u16; 3]>, Vec<u16>, bool)> =
                     None;
                 for &ci in order.iter().take(MAX_EXPAND_ATTEMPTS) {
@@ -2450,7 +2614,18 @@ fn shuffled_shooting_game_core(
             let from_output = (ctx - exp_take).min(output.len());
             let out_keep = output.len() - from_output;
 
-            let candidate_types: Vec<u16> = (0u16..=3).collect();
+            // Loop-invariant prefix of every hide window ([output tail] ++ [expansion tail]):
+            // built once and reused across the pair/type attempts below — only samf[0..3] varies.
+            // `output`/`expansion` are not mutated inside the attempt loops.
+            let mut hide_window: Vec<[u16; 3]> = Vec::with_capacity(ctx + 3);
+            hide_window.extend_from_slice(&output[out_keep..]);
+            hide_window.extend_from_slice(&expansion[exp_tail_start..]);
+            let hide_prefix_len = hide_window.len();
+
+            // Fixed candidate set: `choose_multiple` samples indices by slice LENGTH only, so a
+            // const slice draws the identical RNG sequence as the old per-collision
+            // `(0u16..=3).collect()`.
+            const CANDIDATE_TYPES: [u16; 4] = [0, 1, 2, 3];
             // (score, swap_lo, swap_hi, neg_type, samf, repl): the context window ++ samf[0..3] becomes `repl`, and
             // all but the final gate of samf[3..] is emitted after it.
             let mut tuck: Option<(f64, u16, u16, u16, Vec<[u16; 3]>, Vec<[u16; 3]>)> = None;
@@ -2474,22 +2649,20 @@ fn shuffled_shooting_game_core(
                     (swap_hi, swap_lo)
                 };
 
-                for &neg_type in candidate_types.choose_multiple(&mut rng, type_attempts.max(1)) {
+                for &neg_type in CANDIDATE_TYPES.choose_multiple(&mut rng, type_attempts.max(1)) {
                     let samf = Transpositions::gen_gates_swap(n, (swap_lo, swap_hi, neg_type));
                     if samf.len() < 3 {
                         continue;
                     }
                     SAMF_HIDE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
                     // Window: [output tail] ++ [expansion tail] ++ samf[0..3]. Always contains SAMF
-                    // gates, so every lookup is a genuine hide attempt.
-                    let mut window: Vec<[u16; 3]> = Vec::with_capacity(ctx + 3);
-                    window.extend_from_slice(&output[out_keep..]);
-                    window.extend_from_slice(&expansion[exp_tail_start..]);
-                    window.extend_from_slice(&samf[..3]);
+                    // gates, so every lookup is a genuine hide attempt. The invariant prefix is
+                    // already in `hide_window`; swap in this attempt's samf[0..3].
+                    hide_window.truncate(hide_prefix_len);
+                    hide_window.extend_from_slice(&samf[..3]);
                     // ROUTING CONTRACT (bounded curated DB, 2026-07-30): SAMF
                     // hiding is a compression lookup — regular store only.
-                    if let Some(repl) =
-                        compress_curated_db(&window, n, db, false, use_regular)
+                    if let Some(repl) = compress_curated_db(&hide_window, n, db, false, use_regular)
                     {
                         // Accept only if the SAMF gates are genuinely absorbed (not surviving verbatim).
                         let samf_slice = &samf[..3];
@@ -2544,12 +2717,12 @@ fn shuffled_shooting_game_core(
             // Distinct-wire counts of the consumed input window vs the expansion. `window` is the
             // chosen outgoing subcircuit, already relabeled into the current wire space.
             let distinct_wires = |gates: &[[u16; 3]]| {
-                let mut seen = std::collections::HashSet::new();
+                let mut seen: Vec<u16> = Vec::with_capacity(gates.len() * 3);
                 for g in gates {
-                    seen.insert(g[0]);
-                    seen.insert(g[1]);
-                    seen.insert(g[2]);
+                    seen.extend_from_slice(g);
                 }
+                seen.sort_unstable();
+                seen.dedup();
                 seen.len()
             };
             let before_wires = distinct_wires(&window);
@@ -2578,6 +2751,7 @@ fn shuffled_shooting_game_core(
                         materialized_shot = Some(*last);
                     }
                     t_list.transpositions.push((swap_lo, swap_hi, neg_type));
+                    wmap.push_swap(swap_lo, swap_hi);
                     apply_neg_to_mask(
                         &mut negation_mask,
                         swap_lo as usize,
@@ -2651,7 +2825,7 @@ fn shuffled_shooting_game_core(
                     output_tags.push(shot_tag);
                 }
             } else {
-                emit_relabelled_gate(shot, &mut output, &t_list, &mut negation_mask, n);
+                emit_relabelled_gate(shot, &mut output, &wmap, &mut negation_mask, n);
                 if track {
                     // NOT-corrections preceding the shot are new gates: generation = shot's + 1.
                     let new_count = output.len() - 1 - output_tags.len();
@@ -2688,7 +2862,7 @@ fn shuffled_shooting_game_core(
         }
     }
     while let Some(g) = remaining.pop_front() {
-        emit_relabelled_gate(g, &mut output, &t_list, &mut negation_mask, n);
+        emit_relabelled_gate(g, &mut output, &wmap, &mut negation_mask, n);
         if track {
             let gt = remaining_tags.pop_front().unwrap();
             let new_count = output.len() - 1 - output_tags.len();
@@ -3400,20 +3574,23 @@ fn apply_ledger(
 ) -> (Vec<[u16; 3]>, Vec<Tag>, crate::replace::segcircuit::SamfTail) {
     use crate::replace::segcircuit::SamfTail;
     let track = !tags.is_empty();
-    let mut t_list = Transpositions {
-        transpositions: Vec::new(),
-    };
+    // Running permutation as a direct map (wmap.relabel == what the reference t_list would
+    // evaluate) — see apply_ledger_ref in the opt_equiv tests for the original list-of-swaps
+    // fold this replaces.
+    let mut wmap = WireMap::identity(n);
     let mut mask = vec![0u8; n];
     let mut out: Vec<[u16; 3]> = Vec::with_capacity(gates.len());
     let mut out_t: Vec<Tag> = Vec::with_capacity(if track { gates.len() } else { 0 });
     let mut ei = 0usize;
-    // Fold one ledger tail into the running (t_list, mask). Each pass recorded its tail in the
+    // Fold one ledger tail into the running (wmap, mask). Each pass recorded its tail in the
     // frame that IGNORES the entries to its left (uniform relabel); at the flush those left entries
     // are applied first and CONJUGATE this tail. Equivalently, compose with this (later-position)
-    // tail INNERMOST -- i.e. PREPEND its swaps so the running permutation is
+    // tail INNERMOST -- the reference PREPENDS its swaps so the running permutation is
     // sigma_1 . sigma_2 . ... . sigma_k (earliest-position outermost), not appended (which gave the
     // reversed sigma_k . ... . sigma_1 and only matched when the tails happened to commute).
-    let mut fold = |t_list: &mut Transpositions, mask: &mut Vec<u8>, e: &SamfTail| {
+    // Since the prepended swaps evaluate to exactly e.perm (perm_to_swaps contract), prepending
+    // is one O(n) precompose: new_map[w] = old_map[e.perm[w]].
+    let mut fold = |wmap: &mut WireMap, mask: &mut Vec<u8>, e: &SamfTail| {
         let mut nm = e.neg.clone();
         for w in 0..n {
             if mask[w] == 1 {
@@ -3421,17 +3598,15 @@ fn apply_ledger(
             }
         }
         *mask = nm;
-        let mut swaps = e.perm_to_swaps();
-        swaps.append(&mut t_list.transpositions);
-        t_list.transpositions = swaps; // prepend e's swaps (e applied first in evaluate)
+        wmap.precompose_perm(&e.perm); // prepend e's swaps (e applied first in evaluate)
     };
     for (i, &g) in gates.iter().enumerate() {
         while ei < entries.len() && entries[ei].0 <= i {
-            fold(&mut t_list, &mut mask, &entries[ei].1);
+            fold(&mut wmap, &mut mask, &entries[ei].1);
             ei += 1;
         }
         let before = out.len();
-        emit_relabelled_gate(g, &mut out, &t_list, &mut mask, n);
+        emit_relabelled_gate(g, &mut out, &wmap, &mut mask, n);
         if track {
             let added = out.len() - before; // [NOT-corrections..., the gate]
             if added > 1 {
@@ -3442,10 +3617,10 @@ fn apply_ledger(
         }
     }
     while ei < entries.len() {
-        fold(&mut t_list, &mut mask, &entries[ei].1);
+        fold(&mut wmap, &mut mask, &entries[ei].1);
         ei += 1;
     }
-    let perm: Vec<u16> = (0..n as u16).map(|w| t_list.evaluate(w)).collect();
+    let perm: Vec<u16> = (0..n as u16).map(|w| wmap.relabel(w)).collect();
     (out, out_t, SamfTail { perm, neg: mask })
 }
 
@@ -3498,8 +3673,8 @@ pub fn shuffled_shoot_then_samf(
 #[cfg(test)]
 mod reversed_samf_tests {
     use super::{
-        SWAP_N1_3W, SWAP_N1_4W, SWAP_N2_3W, SWAP_N2_4W, Transpositions, neg_flips, random_neg_type,
-        shoot_gate_to_first_collision, shoot_materialized_gate_to_first_collision,
+        SWAP_N1_3W, SWAP_N1_4W, SWAP_N2_3W, SWAP_N2_4W, Transpositions, WireMap, neg_flips,
+        random_neg_type, shoot_gate_to_first_collision, shoot_materialized_gate_to_first_collision,
     };
     use crate::circuit::circuit::CircuitSeq;
     use std::collections::VecDeque;
@@ -3515,9 +3690,10 @@ mod reversed_samf_tests {
         let t = Transpositions {
             transpositions: Vec::new(),
         };
+        let wm = WireMap::from_transpositions(&t, 17);
 
         let (actual_shot, passed, collided) =
-            shoot_gate_to_first_collision(&mut remaining, &t, &[0; 17]).unwrap();
+            shoot_gate_to_first_collision(&mut remaining, &wm, &[0; 17]).unwrap();
 
         assert_eq!(actual_shot, shot);
         assert_eq!(passed, vec![pass_a, pass_b]);
@@ -3534,9 +3710,10 @@ mod reversed_samf_tests {
         let t = Transpositions {
             transpositions: Vec::new(),
         };
+        let wm = WireMap::from_transpositions(&t, 17);
 
         let (actual_shot, passed, collided) =
-            shoot_gate_to_first_collision(&mut remaining, &t, &[0; 17]).unwrap();
+            shoot_gate_to_first_collision(&mut remaining, &wm, &[0; 17]).unwrap();
 
         assert_eq!(actual_shot, collider);
         assert_eq!(passed, vec![suffix_a, suffix_b]);
@@ -3553,9 +3730,10 @@ mod reversed_samf_tests {
         let t = Transpositions {
             transpositions: vec![(0, 7, 0)],
         };
+        let wm = WireMap::from_transpositions(&t, 17);
 
         let (passed, collided) =
-            shoot_materialized_gate_to_first_collision(shot, &mut remaining, &t, &[0; 17]);
+            shoot_materialized_gate_to_first_collision(shot, &mut remaining, &wm, &[0; 17]);
 
         assert_eq!(passed, vec![commuting]);
         assert!(collided);
@@ -3571,11 +3749,12 @@ mod reversed_samf_tests {
         let t = Transpositions {
             transpositions: Vec::new(),
         };
+        let wm = WireMap::from_transpositions(&t, 9);
         let mut negation_mask = [0; 9];
         negation_mask[4] = 1;
 
         let (passed, collided) =
-            shoot_materialized_gate_to_first_collision(shot, &mut remaining, &t, &negation_mask);
+            shoot_materialized_gate_to_first_collision(shot, &mut remaining, &wm, &negation_mask);
 
         assert!(passed.is_empty());
         assert!(!collided);
@@ -3590,11 +3769,12 @@ mod reversed_samf_tests {
         let t = Transpositions {
             transpositions: Vec::new(),
         };
+        let wm = WireMap::from_transpositions(&t, 6);
         let mut negation_mask = [0; 6];
         negation_mask[1] = 1;
 
         let (actual_shot, passed, collided) =
-            shoot_gate_to_first_collision(&mut remaining, &t, &negation_mask).unwrap();
+            shoot_gate_to_first_collision(&mut remaining, &wm, &negation_mask).unwrap();
 
         assert_eq!(actual_shot, shot);
         assert!(passed.is_empty());

@@ -430,6 +430,10 @@ fn split_key(k: &[u8]) -> (usize, u32, u64) {
 // encode one bucket (tails + values) into bytes
 fn encode_bucket(t: &Tables, tails: &[u64], vals: &[Vec<u8>]) -> Vec<u8> {
     let n = tails.len();
+    assert!(
+        n <= u16::MAX as usize,
+        "frozen bucket has {n} keys, beyond the 16-bit format limit"
+    );
     let mut bw = BitWriter::new();
     let bits_n = 64 - (n as u64).leading_zeros();
     let l = TAIL_BITS.saturating_sub(bits_n);
@@ -476,21 +480,181 @@ pub fn open_shards(env: &lmdb::Environment, prefix: &str) -> Vec<lmdb::Database>
         .collect()
 }
 
-// ---------------------------------------------------------------- stages
-pub fn stage_tables(lmdb_dir: &str, prefix: &str, out_dir: &str, per_range: usize) {
+// ------------------------------------------------------------- shard sources
+//
+// The three stages below only ever need one thing from their input: the
+// `(16-byte key, legacy value bytes)` pairs of one shard, in ascending key
+// order. Abstracting exactly that lets a composite RocksDB store feed the
+// unchanged encoder, which matters because the legacy LMDB hop cannot
+// represent the uncapped curated database at all -- LMDB caps a non-DUPSORT
+// value at `MAXDATASIZE` (4 GiB - 1) and the largest curated key needs ~16 GiB.
+
+/// Ordered per-shard access to `(key, legacy value)` pairs.
+pub trait ShardReader: Sync {
+    /// Visit each pair in `shard` in ascending key order, stopping early once
+    /// `limit` entries have been visited.
+    fn for_each_entry(&self, shard: usize, limit: Option<usize>, visit: &mut dyn FnMut(&[u8], &[u8]));
+}
+
+pub struct LmdbShards {
+    env: lmdb::Environment,
+    dbs: Vec<lmdb::Database>,
+}
+
+impl LmdbShards {
+    pub fn open(dir: &str, prefix: &str) -> Self {
+        let env = open_env(dir);
+        let dbs = open_shards(&env, prefix);
+        Self { env, dbs }
+    }
+}
+
+impl ShardReader for LmdbShards {
+    fn for_each_entry(&self, shard: usize, limit: Option<usize>, visit: &mut dyn FnMut(&[u8], &[u8])) {
+        let txn = self.env.begin_ro_txn().expect("ro txn");
+        let mut cursor = txn.open_ro_cursor(self.dbs[shard]).expect("cursor");
+        let mut seen = 0usize;
+        for (key, value) in cursor.iter() {
+            visit(key, value);
+            seen += 1;
+            if limit.is_some_and(|cap| seen >= cap) {
+                break;
+            }
+        }
+    }
+}
+
+/// Reads a curated-full composite store (`function_key || blob` keys, empty
+/// values) and reassembles the legacy `[len][blob]...` value each key would
+/// have had in LMDB. Byte-for-byte the same input the LMDB path produced:
+/// RocksDB orders `key || blob` lexicographically, so groups arrive in the same
+/// key order and each group's records in the same blob order.
+#[cfg(feature = "legacy-db-tools")]
+pub struct CompositeShards {
+    db: rocksdb::DB,
+    /// Drop any key whose shortest candidate has fewer than this many gates.
+    /// A key whose minimal circuit is a single gate describes a one-gate
+    /// function; it is both useless as a replacement target and, for the CCX
+    /// class, large enough to make its frozen bucket unreadable.
+    min_gates: usize,
+}
+
+#[cfg(feature = "legacy-db-tools")]
+impl CompositeShards {
+    /// Keep every key.
+    pub fn open(dir: &str) -> Self {
+        Self::open_with_min_gates(dir, 0)
+    }
+
+    pub fn open_with_min_gates(dir: &str, min_gates: usize) -> Self {
+        use crate::rainbow_table::curated_full::{
+            COMPOSITE_COMPLETE_MARKER, COMPOSITE_FORMAT_MARKER,
+        };
+        let mut options = rocksdb::Options::default();
+        options.create_if_missing(false);
+        options.set_compression_type(rocksdb::DBCompressionType::Zstd);
+        options.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
+        let db = rocksdb::DB::open_for_read_only(&options, dir, false)
+            .unwrap_or_else(|e| panic!("open composite store {dir}: {e}"));
+        assert_eq!(
+            db.get(COMPOSITE_FORMAT_MARKER)
+                .expect("composite format marker")
+                .as_deref(),
+            Some(&b"1"[..]),
+            "{dir} is not a curated-full composite-v1 store"
+        );
+        assert!(
+            db.get(COMPOSITE_COMPLETE_MARKER)
+                .expect("composite completion manifest")
+                .is_some(),
+            "{dir} has no completion manifest; refusing a partial store"
+        );
+        Self { db, min_gates }
+    }
+}
+
+#[cfg(feature = "legacy-db-tools")]
+impl ShardReader for CompositeShards {
+    fn for_each_entry(&self, shard: usize, limit: Option<usize>, visit: &mut dyn FnMut(&[u8], &[u8])) {
+        use crate::rainbow_table::curated_full::{
+            COMPOSITE_COMPLETE_MARKER, COMPOSITE_FORMAT_MARKER, FUNCTION_KEY_BYTES,
+            split_composite_key,
+        };
+        let start = [shard as u8];
+        let mut current: Option<[u8; FUNCTION_KEY_BYTES]> = None;
+        let mut value: Vec<u8> = Vec::new();
+        let mut min_gates = usize::MAX;
+        let mut seen = 0usize;
+        for item in self
+            .db
+            .iterator(rocksdb::IteratorMode::From(&start, rocksdb::Direction::Forward))
+        {
+            let (record, _) = item.expect("composite iterator");
+            if record.is_empty() || record[0] as usize != shard {
+                break;
+            }
+            if &*record == COMPOSITE_FORMAT_MARKER || &*record == COMPOSITE_COMPLETE_MARKER {
+                continue;
+            }
+            let (key, blob) = split_composite_key(&record).expect("composite record");
+            if current != Some(key) {
+                if let Some(previous) = current {
+                    if min_gates >= self.min_gates {
+                        visit(&previous, &value);
+                        seen += 1;
+                        if limit.is_some_and(|cap| seen >= cap) {
+                            return;
+                        }
+                    }
+                }
+                current = Some(key);
+                value.clear();
+                min_gates = usize::MAX;
+            }
+            // Legacy framing: one length byte then the blob.
+            let len = u8::try_from(blob.len())
+                .unwrap_or_else(|_| panic!("circuit blob of {} bytes exceeds legacy framing", blob.len()));
+            value.push(len);
+            value.extend_from_slice(blob);
+            min_gates = min_gates.min(blob.len() / 3);
+        }
+        if let Some(previous) = current {
+            if min_gates >= self.min_gates {
+                visit(&previous, &value);
+            }
+        }
+    }
+}
+
+/// A full curated materialization writes this marker only after every shard
+/// transaction is committed and synced. Frozen conversion refuses a missing
+/// marker so an interrupted LMDB cannot be mistaken for a complete input.
+pub fn require_curated_full_manifest(lmdb_dir: &str) {
     let env = open_env(lmdb_dir);
-    let dbs = open_shards(&env, prefix);
+    let db = env
+        .open_db(Some("curated_full_meta"))
+        .expect("curated LMDB has no curated_full_meta database; build may be partial or legacy");
+    let txn = env.begin_ro_txn().expect("curated metadata transaction");
+    let value = txn
+        .get(db, &b"composite-v1")
+        .expect("curated LMDB has no completion manifest; build may be partial");
+    assert_eq!(
+        value.len(),
+        32,
+        "curated LMDB completion manifest has invalid length"
+    );
+}
+
+// ---------------------------------------------------------------- stages
+pub fn stage_tables(source: &dyn ShardReader, out_dir: &str, per_range: usize) {
     let hdr = Mutex::new(HashMap::<u32, u64>::new());
     let gats = Mutex::new(HashMap::<(usize, u32), u64>::new());
     (0..256u32).into_par_iter().for_each(|r| {
         let mut lh: HashMap<u32, u64> = HashMap::new();
         let mut lg: HashMap<(usize, u32), u64> = HashMap::new();
-        let txn = env.begin_ro_txn().expect("ro txn");
-        let mut cursor = txn.open_ro_cursor(dbs[r as usize]).expect("cursor");
-        let mut n = 0usize;
-        for (key, v) in cursor.iter() {
+        source.for_each_entry(r as usize, Some(per_range), &mut |key, v| {
             assert_eq!(key[0], r as u8, "key outside its shard db");
-            if let Some(blobs) = parse_value(&v) {
+            if let Some(blobs) = parse_value(v) {
                 let nb = blobs.len();
                 for (bi, blob) in blobs.iter().enumerate() {
                     let g = (blob.len() / 3) as u32;
@@ -510,11 +674,7 @@ pub fn stage_tables(lmdb_dir: &str, prefix: &str, out_dir: &str, per_range: usiz
                     }
                 }
             }
-            n += 1;
-            if n >= per_range {
-                break;
-            }
-        }
+        });
         let mut h = hdr.lock().unwrap();
         for (k, v) in lh {
             *h.entry(k).or_insert(0) += v;
@@ -553,19 +713,14 @@ pub fn stage_tables(lmdb_dir: &str, prefix: &str, out_dir: &str, per_range: usiz
     );
 }
 
-pub fn stage_write(lmdb_dir: &str, prefix: &str, out_dir: &str) {
+pub fn stage_write(source: &dyn ShardReader, out_dir: &str) {
     let tables = std::sync::Arc::new(load_tables(&format!("{out_dir}/tables.bin")));
-    let env = open_env(lmdb_dir);
-    let dbs = open_shards(&env, prefix);
     let total = AtomicU64::new(0);
     let done = AtomicU64::new(0);
     let head_len = 24usize + (BUCKETS + 1) * 5;
 
     (0..256usize).into_par_iter().for_each(|shard| {
         let t = &*tables;
-        let txn = env.begin_ro_txn().expect("ro txn");
-        let mut cursor = txn.open_ro_cursor(dbs[shard]).expect("cursor");
-
         let path = format!("{out_dir}/shard_{shard:02x}.frz");
         let mut file = std::fs::File::create(&path).unwrap();
         file.seek(SeekFrom::Start(head_len as u64)).unwrap();
@@ -594,22 +749,30 @@ pub fn stage_write(lmdb_dir: &str, prefix: &str, out_dir: &str) {
             }};
         }
 
-        for (key, v) in cursor.iter() {
+        source.for_each_entry(shard, None, &mut |key, v| {
             assert_eq!(key[0] as usize, shard, "key outside its shard db");
             let (_, bucket, tail) = split_key(key);
             if bucket != cur_bucket {
                 flush_to!(bucket);
                 cur_bucket = bucket;
             }
+            assert!(
+                tails.last().is_none_or(|&previous| previous < tail),
+                "frozen format cannot distinguish full keys in shard {shard:02x}, bucket {bucket:05x}, tail {tail:012x}"
+            );
             tails.push(tail);
             vals.push(v.to_vec());
             count += 1;
-        }
+        });
         flush_to!(BUCKETS as u32);
         out.flush().unwrap();
         drop(out);
 
         // backpatch header + offsets
+        assert!(
+            data_len < (1u64 << 40),
+            "frozen shard {shard:02x} has {data_len} encoded bytes, beyond the 40-bit offset limit"
+        );
         let mut head: Vec<u8> = Vec::with_capacity(head_len);
         head.extend(b"FRZTBL01");
         head.extend(count.to_le_bytes());
@@ -637,10 +800,8 @@ pub fn stage_write(lmdb_dir: &str, prefix: &str, out_dir: &str) {
     );
 }
 
-pub fn stage_validate(lmdb_dir: &str, prefix: &str, out_dir: &str) {
+pub fn stage_validate(source: &dyn ShardReader, out_dir: &str) {
     let tables = std::sync::Arc::new(load_tables(&format!("{out_dir}/tables.bin")));
-    let env = open_env(lmdb_dir);
-    let dbs = open_shards(&env, prefix);
     let mismatches = AtomicU64::new(0);
     let checked = AtomicU64::new(0);
     let done = AtomicU64::new(0);
@@ -660,9 +821,6 @@ pub fn stage_validate(lmdb_dir: &str, prefix: &str, out_dir: &str) {
             u64::from_le_bytes(b)
         };
 
-        let txn = env.begin_ro_txn().expect("ro txn");
-        let mut cursor = txn.open_ro_cursor(dbs[shard]).expect("cursor");
-
         let mut cur_bucket = u32::MAX;
         let mut bucket_buf: Vec<u8> = Vec::new();
         let mut br_pos = 0usize; // decoded entries so far in bucket
@@ -674,7 +832,7 @@ pub fn stage_validate(lmdb_dir: &str, prefix: &str, out_dir: &str) {
 
         // Work around borrow of bucket_buf: decode bucket fully on entry-by-entry
         // basis using an index-based reader recreated per bucket.
-        for (key, v) in cursor.iter() {
+        source.for_each_entry(shard, None, &mut |key, v| {
             assert_eq!(key[0] as usize, shard, "key outside its shard db");
             let (_, bucket, tail) = split_key(key);
             if bucket != cur_bucket {
@@ -717,12 +875,12 @@ pub fn stage_validate(lmdb_dir: &str, prefix: &str, out_dir: &str) {
             }
             scratch.clear();
             decode_value(t, r, &mut scratch);
-            if scratch.as_slice() != &v[..] {
+            if scratch.as_slice() != v {
                 bad += 1;
             }
             br_pos += 1;
             n += 1;
-        }
+        });
         if reader.is_some() && br_pos != btails.len() {
             bad += 1;
         }

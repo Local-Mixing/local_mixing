@@ -62,34 +62,94 @@ fn frozen_lookup(
     negated_inputs: &[u16],
 ) -> Option<(Vec<u8>, crate::circuit::circuit::Permutation, bool, Vec<u16>)> {
     use crate::circuit::circuit::polys_repr_blob;
+    use crate::replace::replace::{
+        LOOKUP_NS_CURATED, LOOKUP_NS_SHARD, MIN_DIR_VALIDATE_PROBES, MIN_DIR_VIOLATIONS,
+        MinDirLookup, cached_db_get, min_dir_lookup_mode,
+    };
+    use std::sync::atomic::Ordering;
     use xxhash_rust::xxh3::xxh3_128;
 
-    let (fwd_polys, fwd_order, used) = if negated_inputs.is_empty() {
-        sub.canonicalize_polys_single(false)
+    // Forward canonicalization. Only the Min/Validate regular-store compare
+    // needs the actual polynomial vector (rev < fwd ordering); every other
+    // consumer needs just the 16-byte DB key, which the hashed variant returns
+    // byte-identically while skipping the poly-vector clone on canon-cache
+    // hits and the caller-side serialize+hash. None == empty-polys skip.
+    let (fwd_key, fwd_order, used, fwd_polys) = if !negated_inputs.is_empty() {
+        let (polys, order, used) = sub.canonicalize_polys_single_neg(negated_inputs);
+        if polys.is_empty() {
+            return None;
+        }
+        let key = xxh3_128(&polys_repr_blob(&polys)).to_le_bytes();
+        // Regular-store arm below is unreachable with negations present.
+        (key, order, used, None)
+    } else if use_regular && !matches!(min_dir_lookup_mode(), MinDirLookup::Legacy) {
+        let (polys, order, used) = sub.canonicalize_polys_single(false);
+        if polys.is_empty() {
+            return None;
+        }
+        let key = xxh3_128(&polys_repr_blob(&polys)).to_le_bytes();
+        (key, order, used, Some(polys))
     } else {
-        sub.canonicalize_polys_single_neg(negated_inputs)
+        let (key, order, used) = sub.canonicalize_polys_single_hashed(false);
+        let Some(key) = key else {
+            return None;
+        };
+        (key, order, used, None)
     };
-    if fwd_polys.is_empty() {
-        return None;
-    }
-    let fwd_key = xxh3_128(&polys_repr_blob(&fwd_polys)).to_le_bytes();
 
-    if use_curated {
-        if let Some(v) = db.get_curated(&fwd_key) {
-            return Some((v, fwd_order, false, used));
+    if use_curated && db.has_curated() {
+        if let Some(v) = cached_db_get(db, LOOKUP_NS_CURATED, &fwd_key) {
+            return Some((v.to_vec(), fwd_order, false, used));
         }
     }
     if use_regular && negated_inputs.is_empty() {
-        if let Some(v) = db.get_regular(&fwd_key) {
-            return Some((v, fwd_order, false, used));
-        }
-        let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
-        if rev_polys.is_empty() {
-            return None;
-        }
-        let rev_key = xxh3_128(&polys_repr_blob(&rev_polys)).to_le_bytes();
-        if let Some(v) = db.get_regular(&rev_key) {
-            return Some((v, rev_order, true, used));
+        // The regular store is keyed by min(canon_fwd, canon_rev); honour
+        // MIN_DIR_LOOKUP (Legacy probes fwd then rev, Min probes only the
+        // min direction, Validate counts violations of the min-key invariant).
+        match min_dir_lookup_mode() {
+            MinDirLookup::Legacy => {
+                if let Some(v) = cached_db_get(db, LOOKUP_NS_SHARD, &fwd_key) {
+                    return Some((v.to_vec(), fwd_order, false, used));
+                }
+                let (rev_key, rev_order, _) = sub.canonicalize_polys_single_hashed(true);
+                let Some(rev_key) = rev_key else {
+                    return None;
+                };
+                if let Some(v) = cached_db_get(db, LOOKUP_NS_SHARD, &rev_key) {
+                    return Some((v.to_vec(), rev_order, true, used));
+                }
+            }
+            mode => {
+                let fwd_polys = fwd_polys
+                    .expect("min-dir compare requires forward polys (computed above for this mode)");
+                let (rev_polys, rev_order, _) = sub.canonicalize_polys_single(true);
+                if rev_polys.is_empty() {
+                    return None;
+                }
+                let rev_is_min = rev_polys < fwd_polys;
+                let (min_polys, min_order, min_reversed, alt_polys, alt_order, alt_reversed) =
+                    if rev_is_min {
+                        (rev_polys, rev_order, true, fwd_polys, fwd_order, false)
+                    } else {
+                        (fwd_polys, fwd_order, false, rev_polys, rev_order, true)
+                    };
+                let min_key = xxh3_128(&polys_repr_blob(&min_polys)).to_le_bytes();
+                if let Some(v) = cached_db_get(db, LOOKUP_NS_SHARD, &min_key) {
+                    return Some((v.to_vec(), min_order, min_reversed, used));
+                }
+                if mode == MinDirLookup::Validate {
+                    MIN_DIR_VALIDATE_PROBES.fetch_add(1, Ordering::Relaxed);
+                    let alt_key = xxh3_128(&polys_repr_blob(&alt_polys)).to_le_bytes();
+                    if let Some(v) = cached_db_get(db, LOOKUP_NS_SHARD, &alt_key) {
+                        MIN_DIR_VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+                        eprintln!(
+                            "[min-dir-violation] pairs: non-min canonical key present while min key absent (gates={})",
+                            sub.gates.len()
+                        );
+                        return Some((v.to_vec(), alt_order, alt_reversed, used));
+                    }
+                }
+            }
         }
     }
     None
@@ -219,7 +279,13 @@ pub fn expand_curated_db_neg(
     let repl_n_b = repl.max_wire() + 1;
     let mut used_ext = used.clone();
     if used_ext.len() < repl_n_b {
-        let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
+        let mut used_mask = vec![false; n];
+        for &w in used_ext.iter() {
+            if (w as usize) < n {
+                used_mask[w as usize] = true;
+            }
+        }
+        let mut available: Vec<u16> = (0..n as u16).filter(|&w| !used_mask[w as usize]).collect();
         available.shuffle(&mut rng);
         let mut avail = available.into_iter();
         while used_ext.len() < repl_n_b {
@@ -346,7 +412,13 @@ pub fn compress_curated_db(
     let repl_n_b = repl.max_wire() + 1;
     let mut used_ext = used.clone();
     if used_ext.len() < repl_n_b {
-        let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
+        let mut used_mask = vec![false; n];
+        for &w in used_ext.iter() {
+            if (w as usize) < n {
+                used_mask[w as usize] = true;
+            }
+        }
+        let mut available: Vec<u16> = (0..n as u16).filter(|&w| !used_mask[w as usize]).collect();
         available.shuffle(&mut rng);
         let mut avail = available.into_iter();
         while used_ext.len() < repl_n_b {
@@ -424,7 +496,13 @@ pub fn find_any_replacement_db(
     let repl_n_b = repl.max_wire() + 1;
     let mut used_ext = used.clone();
     if used_ext.len() < repl_n_b {
-        let mut available: Vec<u16> = (0..n as u16).filter(|w| !used_ext.contains(w)).collect();
+        let mut used_mask = vec![false; n];
+        for &w in used_ext.iter() {
+            if (w as usize) < n {
+                used_mask[w as usize] = true;
+            }
+        }
+        let mut available: Vec<u16> = (0..n as u16).filter(|&w| !used_mask[w as usize]).collect();
         available.shuffle(&mut rng);
         let mut avail = available.into_iter();
         while used_ext.len() < repl_n_b {

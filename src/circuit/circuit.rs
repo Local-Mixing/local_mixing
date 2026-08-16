@@ -2,16 +2,14 @@
 use primitive_types::U256 as u256;
 use primitive_types::U512 as u512;
 use rand::{RngCore, seq::SliceRandom};
+use rustc_hash::FxHashSet as HashSet;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering as CmpOrdering;
-use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use uint::construct_uint;
-
-use std::collections::BTreeMap;
 
 construct_uint! {
     pub struct U1024(16);
@@ -23,64 +21,114 @@ pub static CANON_BENCH_CALLS: AtomicU64 = AtomicU64::new(0);
 pub static CANON4_RULE_L_TIME: AtomicU64 = AtomicU64::new(0);
 pub static CANON4_RULE_L_CALLS: AtomicU64 = AtomicU64::new(0);
 pub static CANON4_RULE_L_BRANCHES: AtomicU64 = AtomicU64::new(0);
-/// Count of canonicalize-for-DB-lookup calls skipped because the window touches >64 distinct wires
-/// (Monomial = u64 cannot represent variable x_i for i>=64; the lookup is skipped to avoid an
-/// overflow-aliased canonical key that could spuriously match a non-equivalent DB entry).
+
+/// Canonicalization-for-lookup calls skipped because a window touches more
+/// than 64 distinct wires. `Monomial` is a `u64`, so such a window cannot be
+/// represented without aliasing variables and potentially producing a false
+/// database hit.
 pub static OVERSIZED_CANON_SKIPS: AtomicU64 = AtomicU64::new(0);
 
-// All bits below n (the dense wire space of a canonicalization window, n <= 64).
-#[inline]
-fn wire_mask(n: usize) -> u64 {
-    if n >= 64 { u64::MAX } else { (1u64 << n) - 1 }
-}
-// Windows skipped by the CANON_MONOMIAL_CAP bail-out (treated as clean DB misses).
+/// Windows skipped while constructing polynomials because
+/// `CANON_MONOMIAL_CAP` was exceeded.
 pub static CANON_CAP_SKIPS: AtomicU64 = AtomicU64::new(0);
 
-// Windows skipped by the CANON_RULE_L_BRANCH_CAP bail-out (Rule-L backtracking exceeded its
-// branch budget). Treated as clean DB misses, exactly like the monomial cap.
+/// Windows skipped because Rule-L backtracking exceeded
+/// `CANON_RULE_L_BRANCH_CAP`.
 pub static CANON_RULE_L_SKIPS: AtomicU64 = AtomicU64::new(0);
 
-// CANON_RULE_L_BRANCH_CAP (env): deterministic bound on the TOTAL number of Rule-L candidate
-// branches explored while canonicalizing one window (summed across the whole recursive
-// backtracking tree). Rule L is factorial worst-case: a window with many symmetric wires (e.g.
-// 13 gates over 38 near-identical low-degree wires) produces huge tied groups and explores
-// millions of branches, pinning a compression trial to one core for hours — the monomial cap
-// does NOT catch this because the polynomials themselves stay small. When the budget is
-// exceeded, canon4 bails (Err -> empty polys -> clean DB miss), one-sided like every other cap:
-// it only ever DECLINES a match, never produces a wrong canonical key. Unset = legacy (unbounded).
+/// Optional deterministic bound on the total Rule-L candidate budget across
+/// one complete recursive canonicalization tree. Unset means unbounded.
 pub fn canon_rule_l_branch_cap() -> Option<u64> {
-    static V: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
-    *V.get_or_init(|| {
+    static CAP: OnceLock<Option<u64>> = OnceLock::new();
+    *CAP.get_or_init(|| {
         std::env::var("CANON_RULE_L_BRANCH_CAP")
             .ok()
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .filter(|c| *c > 0)
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|&cap| cap > 0)
     })
 }
 
 thread_local! {
-    // Cumulative Rule-L branches explored in the current top-level canonicalize_polys_4 call.
-    // Reset at each canonicalize_polys_4 entry; read/incremented inside canon4_run's Rule L.
+    // Reset at each canonicalize_polys_4 entry, then shared by every
+    // recursive canon4_run call in that top-level canonicalization.
     static RULE_L_BRANCHES_USED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-// CANON_MONOMIAL_CAP (env): deterministic bound on per-wire monomial counts while building a
-// window's polynomials. Windows that exceed it are treated as clean DB misses (empty polys) —
-// they could never be usefully canonicalized in reasonable time anyway. Unset = legacy
-// (unbounded; a pathological window can pin a compression trial to one core for hours).
+/// Optional deterministic bound on the number of monomials retained per wire
+/// while constructing a lookup window. Unset means unbounded.
 pub fn canon_monomial_cap() -> Option<usize> {
-    static V: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
-    *V.get_or_init(|| {
+    static CAP: OnceLock<Option<usize>> = OnceLock::new();
+    *CAP.get_or_init(|| {
         std::env::var("CANON_MONOMIAL_CAP")
             .ok()
-            .and_then(|s| s.trim().parse::<usize>().ok())
-            .filter(|c| *c > 0)
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|&cap| cap > 0)
     })
 }
 
 fn bench_canon_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var("BENCH_CANON").is_ok())
+}
+
+// ---------------------------------------------------------------------------
+// Canonicalization result cache.
+//
+// canonicalize_polys_single is pure: the canonical polys and final order are
+// fully determined by the dense-remapped, gate-canonicalized window. The
+// expansion/compression games draw the same windows over and over (SAMF
+// templates recur all over the circuit), so an exact process-wide cache
+// skips to_polynomial + canonicalize_polys_4 entirely on repeats.
+//
+// CANON_CACHE_MB caps the approximate entry-byte footprint (default 256 MiB;
+// 0 disables). On overflow the cache is cleared wholesale, mirroring the
+// Frozen lookup cache's epoch-reset policy.
+// ---------------------------------------------------------------------------
+struct CanonCacheEntry {
+    polys: Vec<Polynomial>,
+    order: Vec<usize>,
+    /// `xxh3_128(polys_repr_blob(polys)).to_le_bytes()`, precomputed at insert
+    /// time so hashed lookups can return the frozen-DB key on a cache hit
+    /// without deep-cloning `polys` and re-serializing/re-hashing them.
+    polys_key: [u8; 16],
+}
+
+/// Outcome of the shared canonicalize-single core, before the public wrappers
+/// shape it into their respective return types.
+enum CanonSingleInner {
+    /// Oversized window, monomial-cap skip, or Rule-L budget skip: the
+    /// canonical result is the empty sentinel.
+    Skip,
+    /// Exact-cache hit; the entry holds polys, order, and the precomputed key.
+    Cached(std::sync::Arc<CanonCacheEntry>),
+    /// Freshly computed `(polys, order, polys_key)`. The key is `Some` iff the
+    /// result was just inserted into the cache (where it is computed anyway).
+    Fresh(Vec<Polynomial>, Vec<usize>, Option<[u8; 16]>),
+}
+
+type CanonCacheMap =
+    dashmap::DashMap<Box<[u16]>, std::sync::Arc<CanonCacheEntry>, rustc_hash::FxBuildHasher>;
+
+static CANON_CACHE_BYTES: AtomicU64 = AtomicU64::new(0);
+pub static CANON_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+pub static CANON_CACHE_QUERIES: AtomicU64 = AtomicU64::new(0);
+
+fn canon_cache_cap_bytes() -> u64 {
+    static CAP: OnceLock<u64> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("CANON_CACHE_MB")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(256)
+            .saturating_mul(1024 * 1024)
+    })
+}
+
+fn canon_cache() -> Option<&'static CanonCacheMap> {
+    static CACHE: OnceLock<Option<CanonCacheMap>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| (canon_cache_cap_bytes() > 0).then(CanonCacheMap::default))
+        .as_ref()
 }
 
 fn compression_trace_enabled() -> bool {
@@ -153,32 +201,48 @@ impl Gate {
         state ^ (c1 | ((!c2) & 1)) << gate[0]
     }
 
-    // Evaluate up to 256 bits
+    // Evaluate up to 128 bits
     #[inline(always)]
-    pub fn evaluate_index_256(state: u256, gate: [u16; 3]) -> u256 {
-        let one = u256::one();
-        let c1 = (state >> gate[1]) & one;
-        let c2 = (state >> gate[2]) & one;
-        state ^ ((c1 | (one ^ c2)) << gate[0])
+    pub fn evaluate_index_128(state: u128, gate: [u16; 3]) -> u128 {
+        let c1 = (state >> gate[1]) & 1;
+        let c2 = (state >> gate[2]) & 1;
+        state ^ ((c1 | (1 ^ c2)) << gate[0])
     }
 
-    pub fn evaluate_index_512(state: u512, gate: [u16; 3]) -> u512 {
-        let one = u512::one();
-        let c1 = (state >> gate[1]) & one;
-        let c2 = (state >> gate[2]) & one;
-        state ^ ((c1 | (one ^ c2)) << gate[0])
+    // Evaluate up to 256 bits. Direct limb indexing: the bignum shift chains
+    // cost ~6 full-width ops per gate where 3 u64 ops suffice. Wires must be
+    // in range (the old full-width shifts silently evaluated out-of-range
+    // wires as zero; dispatchers pick the kernel by max touched wire).
+    #[inline(always)]
+    pub fn evaluate_index_256(mut state: u256, gate: [u16; 3]) -> u256 {
+        debug_assert!(gate[0] < 256 && gate[1] < 256 && gate[2] < 256);
+        let c1 = (state.0[(gate[1] >> 6) as usize] >> (gate[1] & 63)) & 1;
+        let c2 = (state.0[(gate[2] >> 6) as usize] >> (gate[2] & 63)) & 1;
+        state.0[(gate[0] >> 6) as usize] ^= (c1 | (1 ^ c2)) << (gate[0] & 63);
+        state
     }
 
-    pub fn evaluate_index_1024(state: U1024, gate: [u16; 3]) -> U1024 {
-        let one = U1024::one();
-        let c1 = (state >> gate[1]) & one;
-        let c2 = (state >> gate[2]) & one;
-        state ^ ((c1 | (one ^ c2)) << gate[0])
+    #[inline(always)]
+    pub fn evaluate_index_512(mut state: u512, gate: [u16; 3]) -> u512 {
+        debug_assert!(gate[0] < 512 && gate[1] < 512 && gate[2] < 512);
+        let c1 = (state.0[(gate[1] >> 6) as usize] >> (gate[1] & 63)) & 1;
+        let c2 = (state.0[(gate[2] >> 6) as usize] >> (gate[2] & 63)) & 1;
+        state.0[(gate[0] >> 6) as usize] ^= (c1 | (1 ^ c2)) << (gate[0] & 63);
+        state
+    }
+
+    #[inline(always)]
+    pub fn evaluate_index_1024(mut state: U1024, gate: [u16; 3]) -> U1024 {
+        debug_assert!(gate[0] < 1024 && gate[1] < 1024 && gate[2] < 1024);
+        let c1 = (state.0[(gate[1] >> 6) as usize] >> (gate[1] & 63)) & 1;
+        let c2 = (state.0[(gate[2] >> 6) as usize] >> (gate[2] & 63)) & 1;
+        state.0[(gate[0] >> 6) as usize] ^= (c1 | (1 ^ c2)) << (gate[0] & 63);
+        state
     }
 
     // Evaluate a list of gates
     #[inline(always)]
-    pub fn evaluate_index_list(state: usize, gates: &Vec<[u16; 3]>) -> usize {
+    pub fn evaluate_index_list(state: usize, gates: &[[u16; 3]]) -> usize {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index(current_wires, *g);
@@ -187,7 +251,16 @@ impl Gate {
     }
 
     #[inline(always)]
-    pub fn evaluate_index_list_256(state: u256, gates: &Vec<[u16; 3]>) -> u256 {
+    pub fn evaluate_index_list_128(state: u128, gates: &[[u16; 3]]) -> u128 {
+        let mut current_wires = state;
+        for g in gates {
+            current_wires = Self::evaluate_index_128(current_wires, *g);
+        }
+        current_wires
+    }
+
+    #[inline(always)]
+    pub fn evaluate_index_list_256(state: u256, gates: &[[u16; 3]]) -> u256 {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_256(current_wires, *g);
@@ -196,7 +269,7 @@ impl Gate {
     }
 
     #[inline(always)]
-    pub fn evaluate_index_list_512(state: u512, gates: &Vec<[u16; 3]>) -> u512 {
+    pub fn evaluate_index_list_512(state: u512, gates: &[[u16; 3]]) -> u512 {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_512(current_wires, *g);
@@ -205,7 +278,7 @@ impl Gate {
     }
 
     #[inline(always)]
-    pub fn evaluate_index_list_1024(state: U1024, gates: &Vec<[u16; 3]>) -> U1024 {
+    pub fn evaluate_index_list_1024(state: U1024, gates: &[[u16; 3]]) -> U1024 {
         let mut current_wires = state;
         for g in gates {
             current_wires = Self::evaluate_index_1024(current_wires, *g);
@@ -310,6 +383,11 @@ impl CircuitSeq {
         Gate::evaluate_index_list(input, &self.gates)
     }
 
+    // Evaluate the circuit on a 128-bit input state (one bit per wire).
+    pub fn evaluate_128(&self, input: u128) -> u128 {
+        Gate::evaluate_index_list_128(input, &self.gates)
+    }
+
     // Evaluate the circuit on a 256-bit input state (one bit per wire).
     pub fn evaluate_256(&self, input: u256) -> u256 {
         Gate::evaluate_index_list_256(input, &self.gates)
@@ -329,6 +407,22 @@ impl CircuitSeq {
             blob.push(gate[2] as u8);
         }
         blob
+    }
+
+    /// True if any two adjacent gates are identical. Two identical adjacent
+    /// self-inverse gates cancel, so a canonicalized circuit containing an
+    /// adjacent duplicate is not minimal — the rainbow_table build pipeline
+    /// uses this to reject such candidates.
+    pub fn adjacent_id(&self) -> bool {
+        if self.gates.is_empty() {
+            return false;
+        }
+        for i in 0..self.gates.len() - 1 {
+            if self.gates[i] == self.gates[i + 1] {
+                return true;
+            }
+        }
+        false
     }
 
     /// Reconstruct CircuitSeq from a BLOB
@@ -547,15 +641,63 @@ impl CircuitSeq {
 
     // Returns the wires touched by a circuit
     pub fn used_wires(&self) -> Vec<u16> {
-        let mut used: HashSet<u16> = HashSet::new();
-        for gates in &self.gates {
-            used.insert(gates[0]);
-            used.insert(gates[1]);
-            used.insert(gates[2]);
+        // Stack-bitset fast path: mark wires in a [u64; 16] (covers wires
+        // 0..1023, the overwhelmingly common case) in a single pass, then
+        // emit the identical sorted list from the set bits. Falls back to the
+        // heap-marking implementation the moment any wire is out of range.
+        let mut words = [0u64; 16];
+        for &[t, a, b] in &self.gates {
+            if t >= 1024 || a >= 1024 || b >= 1024 {
+                return self.used_wires_heap();
+            }
+            words[(t >> 6) as usize] |= 1u64 << (t & 63);
+            words[(a >> 6) as usize] |= 1u64 << (a & 63);
+            words[(b >> 6) as usize] |= 1u64 << (b & 63);
         }
-        let mut wires: Vec<u16> = used.into_iter().collect();
-        wires.sort();
-        wires
+        let count: usize = words.iter().map(|w| w.count_ones() as usize).sum();
+        let mut out = Vec::with_capacity(count);
+        for (wi, &word) in words.iter().enumerate() {
+            let base = (wi as u16) << 6;
+            let mut word = word;
+            while word != 0 {
+                out.push(base + word.trailing_zeros() as u16);
+                word &= word - 1;
+            }
+        }
+        out
+    }
+
+    // Heap fallback for circuits touching wires >= 1024 (u16 wires cap at
+    // 65535). Identical to the historical implementation.
+    fn used_wires_heap(&self) -> Vec<u16> {
+        let Some(max_wire) = self.gates.iter().flatten().copied().max() else {
+            return Vec::new();
+        };
+        let mut used = vec![false; max_wire as usize + 1];
+        for &[target, control_a, control_b] in &self.gates {
+            used[target as usize] = true;
+            used[control_a as usize] = true;
+            used[control_b as usize] = true;
+        }
+        used.into_iter()
+            .enumerate()
+            .filter_map(|(wire, is_used)| is_used.then_some(wire as u16))
+            .collect()
+    }
+
+    /// Number of distinct wires touched by the circuit, without materializing
+    /// the sorted wire list. Equals `self.used_wires().len()`.
+    pub fn used_wires_len(&self) -> usize {
+        let mut words = [0u64; 16];
+        for &[t, a, b] in &self.gates {
+            if t >= 1024 || a >= 1024 || b >= 1024 {
+                return self.used_wires_heap().len();
+            }
+            words[(t >> 6) as usize] |= 1u64 << (t & 63);
+            words[(a >> 6) as usize] |= 1u64 << (a & 63);
+            words[(b >> 6) as usize] |= 1u64 << (b & 63);
+        }
+        words.iter().map(|w| w.count_ones() as usize).sum()
     }
 
     // "Bottom" function for gates
@@ -565,22 +707,15 @@ impl CircuitSeq {
 
     // Undo rewiring. Note: Recall that the number of wires in CircuitSeq is not stored
     pub fn unrewire_subcircuit(subcircuit: &CircuitSeq, used_wires: &[u16]) -> CircuitSeq {
-        // Build a mapping from new wire -> original wire
-        let wire_map: HashMap<u16, u16> = used_wires
-            .iter()
-            .enumerate()
-            .map(|(new_idx, &orig_wire)| (new_idx as u16, orig_wire))
-            .collect();
-
         // Replace wires in each gate with original wires
         let new_gates: Vec<[u16; 3]> = subcircuit
             .gates
             .iter()
             .map(|&[t, c1, c2]| {
                 [
-                    *wire_map.get(&t).unwrap(),
-                    *wire_map.get(&c1).unwrap(),
-                    *wire_map.get(&c2).unwrap(),
+                    used_wires[t as usize],
+                    used_wires[c1 as usize],
+                    used_wires[c2 as usize],
                 ]
             })
             .collect();
@@ -590,7 +725,8 @@ impl CircuitSeq {
 
     pub fn evaluate_evolution_256(&self, input: u256) -> Vec<u256> {
         let mut state = input;
-        let mut evolution = vec![state];
+        let mut evolution = Vec::with_capacity(self.gates.len() + 1);
+        evolution.push(state);
 
         for gate in &self.gates {
             state = Gate::evaluate_index_256(state, *gate);
@@ -600,9 +736,23 @@ impl CircuitSeq {
         evolution
     }
 
+    pub fn evaluate_evolution_128(&self, input: u128) -> Vec<u128> {
+        let mut state = input;
+        let mut evolution = Vec::with_capacity(self.gates.len() + 1);
+        evolution.push(state);
+
+        for gate in &self.gates {
+            state = Gate::evaluate_index_128(state, *gate);
+            evolution.push(state);
+        }
+
+        evolution
+    }
+
     pub fn evaluate_evolution_1024(&self, input: U1024) -> Vec<U1024> {
         let mut state = input;
-        let mut evolution = vec![state];
+        let mut evolution = Vec::with_capacity(self.gates.len() + 1);
+        evolution.push(state);
 
         for gate in &self.gates {
             state = Gate::evaluate_index_1024(state, *gate);
@@ -644,24 +794,66 @@ impl CircuitSeq {
     ) -> Result<(), String> {
         use rayon::prelude::*;
 
-        // Evaluation width must cover every wire either circuit TOUCHES, not just the
-        // num_wires input/compare contract: checking a 512-wire gadgetized circuit on a
-        // 256-bit contract with u256 arithmetic silently zeroes all shifts >= 256
-        // (primitive-types overflow semantics), corrupting every aux-wire access and
-        // reporting spurious non-equivalence. Inputs/outputs stay masked to num_wires.
-        let eval_wires = self
-            .gates
-            .iter()
-            .chain(other_circuit.gates.iter())
-            .flat_map(|g| g.iter())
-            .map(|&w| w as usize + 1)
-            .max()
-            .unwrap_or(0)
-            .max(num_wires);
+        // Arithmetic width must cover every wire either circuit TOUCHES, not
+        // just the num_wires input/compare contract: primitive_types shifts
+        // >= the type width silently return 0, so evaluating a circuit wider
+        // than the chosen type corrupts every access to the high wires (e.g.
+        // a 512-wire gadgetized circuit checked against its 256-wire source
+        // was evaluated in u256 and reported non-equivalent). The num_wires
+        // mask below is unchanged: inputs are drawn on num_wires bits and
+        // outputs compared on num_wires bits.
+        let eval_wires = num_wires
+            .max(self.max_wire() + 1)
+            .max(other_circuit.max_wire() + 1);
+
+        if eval_wires <= 128 {
+            let mask = if num_wires < 128 {
+                (1u128 << num_wires) - 1
+            } else {
+                u128::MAX
+            };
+            return (0..num_inputs).into_par_iter().try_for_each(|_| {
+                let mut bytes = [0u8; 16];
+                rand::rng().fill_bytes(&mut bytes);
+                let random_input = u128::from_le_bytes(bytes) & mask;
+
+                let self_output = Gate::evaluate_index_list_128(random_input, &self.gates);
+                let other_output =
+                    Gate::evaluate_index_list_128(random_input, &other_circuit.gates);
+
+                if (self_output & mask) != (other_output & mask) {
+                    Err("Circuits are not equal".to_string())
+                } else {
+                    Ok(())
+                }
+            });
+        }
 
         if eval_wires > 256 {
             if eval_wires > 1024 {
                 return Err("probabilistic equality supports up to 1024 wires".to_string());
+            }
+            // 257..=512 wires: the u512 kernel halves the limb work the U1024
+            // path would spend. Same masked-input/masked-compare contract.
+            if eval_wires <= 512 {
+                let mask = if num_wires < 512 {
+                    (u512::one() << num_wires) - u512::one()
+                } else {
+                    u512::MAX
+                };
+                return (0..num_inputs).into_par_iter().try_for_each(|_| {
+                    let mut bytes = [0u8; 64];
+                    rand::rng().fill_bytes(&mut bytes);
+                    let random_input = u512::from_little_endian(&bytes) & mask;
+                    let self_output = Gate::evaluate_index_list_512(random_input, &self.gates);
+                    let other_output =
+                        Gate::evaluate_index_list_512(random_input, &other_circuit.gates);
+                    if (self_output & mask) != (other_output & mask) {
+                        Err("Circuits are not equal".to_string())
+                    } else {
+                        Ok(())
+                    }
+                });
             }
             let mask = if num_wires < 1024 {
                 (U1024::one() << num_wires) - U1024::one()
@@ -710,12 +902,17 @@ impl CircuitSeq {
         // Wire i starts as degree 1 monomial
         let mut polys: Vec<Polynomial> = (0..n).map(|i| vec![1u64 << i]).collect();
 
+        // Ping-pong scratch buffers reused across the gate loop: `term`
+        // holds the AND-NOT product, `merged` receives the XOR merge and is
+        // then swapped into polys[a], recycling the displaced allocation.
+        let mut term: Vec<Monomial> = Vec::new();
+        let mut merged: Vec<Monomial> = Vec::new();
+
         for &[a, b, c] in gates {
-            // evaluate_index toggles a on (b OR NOT c) = 1 + c*NOT(b) over GF(2),
-            // i.e. a' = a + NOT(b)*c + 1. Must match the executor (and from_g57);
-            // the arg order to poly_and_not is load-bearing for DB key agreement.
-            let term = poly_and_not(&polys[c as usize], &polys[b as usize]);
-            poly_xor_assign(&mut polys[a as usize], term);
+            // evaluate() toggles on b OR NOT(c), which is 1 + c*NOT(b) over GF(2).
+            poly_and_not_into(&polys[c as usize], &polys[b as usize], &mut term);
+            poly_xor_merge_into(&polys[a as usize], &term, &mut merged);
+            std::mem::swap(&mut polys[a as usize], &mut merged);
             toggle_monomial(&mut polys[a as usize], 0u64);
         }
 
@@ -728,11 +925,9 @@ impl CircuitSeq {
         polys
     }
 
-    // Like to_polynomial, but bails out (None) if any wire's polynomial exceeds `cap` monomials,
-    // or if an upcoming AND would multiply monomial sets whose product exceeds 16*cap. Bounds the
-    // pathological windows whose monomial counts explode and pin a compression trial for hours —
-    // the chunk budget can only stop new trials, not interrupt a running one. Deterministic (a
-    // pure function of the window), so identical runs make identical skip decisions.
+    /// Like `to_polynomial`, but returns `None` when polynomial growth exceeds
+    /// `cap`. The early product guard avoids allocating an intermediate AND
+    /// whose raw cross product is already far beyond the useful limit.
     pub fn to_polynomial_capped(
         &self,
         n: usize,
@@ -743,6 +938,11 @@ impl CircuitSeq {
         let gates = &self.gates[start..end];
         let mut polys: Vec<Polynomial> = (0..n).map(|i| vec![1u64 << i]).collect();
 
+        // Same reused scratch buffers as `to_polynomial`; the budget checks
+        // below are unchanged and see identical lengths.
+        let mut term: Vec<Monomial> = Vec::new();
+        let mut merged: Vec<Monomial> = Vec::new();
+
         for &[a, b, c] in gates {
             if polys[b as usize]
                 .len()
@@ -751,14 +951,17 @@ impl CircuitSeq {
             {
                 return None;
             }
-            // Same convention as to_polynomial / the executor: a += NOT(b)*c + 1.
-            let term = poly_and_not(&polys[c as usize], &polys[b as usize]);
-            poly_xor_assign(&mut polys[a as usize], term);
+
+            // Keep the executor's g57 convention: a += NOT(b)*c + 1.
+            poly_and_not_into(&polys[c as usize], &polys[b as usize], &mut term);
+            poly_xor_merge_into(&polys[a as usize], &term, &mut merged);
+            std::mem::swap(&mut polys[a as usize], &mut merged);
             toggle_monomial(&mut polys[a as usize], 0u64);
             if polys[a as usize].len() > cap {
                 return None;
             }
         }
+
         Some(polys)
     }
 
@@ -782,16 +985,18 @@ impl CircuitSeq {
         // Remap to minimal wires: e.g. [3,7,11] -> [0,1,2].
         // `used` is returned so callers can unrewire canonical circuits back to original wires.
         let used = self.used_wires();
-        let wire_map: HashMap<u16, u16> = used
-            .iter()
-            .enumerate()
-            .map(|(i, &w)| (w, i as u16))
-            .collect();
+        let wire_map = dense_wire_map(&used);
         let remapped = CircuitSeq {
             gates: self
                 .gates
                 .iter()
-                .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+                .map(|&[t, c1, c2]| {
+                    [
+                        wire_map[t as usize],
+                        wire_map[c1 as usize],
+                        wire_map[c2 as usize],
+                    ]
+                })
                 .collect(),
         };
         let mut c1 = remapped.clone();
@@ -812,56 +1017,129 @@ impl CircuitSeq {
         // final_order.data[canonical_pos] = wire in the dense remapped space (0..k-1).
         // To unrewire a canonical circuit back to original wires, apply final_order first
         // (canonical → dense), then apply `used` (dense → original).
-        Some(if poly_vec_key(&canon1.0) < poly_vec_key(&canon2.0) {
-            (canon1.0, c1, false, canon1.1, used)
-        } else if poly_vec_key(&canon1.0) > poly_vec_key(&canon2.0) {
-            (canon2.0, c2, true, canon2.1, used)
-        } else if c1.gates <= c2.gates {
-            (canon1.0, c1, false, canon1.1, used)
-        } else {
-            (canon2.0, c2, true, canon2.1, used)
+        // Compute each key once; the old comparison chain rebuilt both keys
+        // for every branch it inspected.
+        let key1 = poly_vec_key(&canon1.0);
+        let key2 = poly_vec_key(&canon2.0);
+        Some(match key1.cmp(&key2) {
+            CmpOrdering::Less => (canon1.0, c1, false, canon1.1, used),
+            CmpOrdering::Greater => (canon2.0, c2, true, canon2.1, used),
+            CmpOrdering::Equal => {
+                if c1.gates <= c2.gates {
+                    (canon1.0, c1, false, canon1.1, used)
+                } else {
+                    (canon2.0, c2, true, canon2.1, used)
+                }
+            }
         })
     }
 
     /// Compute canonical polynomials for one direction only (forward or reversed).
     /// Returns (canonical_polys, final_order, used_wires).
-    /// Used by compress_db to try forward first, then reverse on miss.
+    /// Used by frozen compression to try forward first, then reverse on miss.
     pub fn canonicalize_polys_single(
         &self,
         reversed: bool,
     ) -> (Vec<Polynomial>, Permutation, Vec<u16>) {
         let used = self.used_wires();
-        // Monomial = u64: a window touching >64 distinct wires cannot be represented (1u64<<i
-        // overflows for i>=64, aliasing variables), which would yield a WRONG canonical key and a
-        // possibly non-equivalent DB hit. Return empty polys so callers treat it as a clean miss
-        // (a >64-wire window can never legitimately match the small-circuit curated DB anyway).
+        match self.canonicalize_polys_single_inner(reversed, &used) {
+            CanonSingleInner::Skip => (Vec::new(), Permutation { data: Vec::new() }, used),
+            CanonSingleInner::Cached(entry) => (
+                entry.polys.clone(),
+                Permutation {
+                    data: entry.order.clone(),
+                },
+                used,
+            ),
+            CanonSingleInner::Fresh(polys, order, _) => (polys, Permutation { data: order }, used),
+        }
+    }
+
+    /// Like `canonicalize_polys_single`, but returns the frozen-DB lookup key
+    /// (`xxh3_128(polys_repr_blob(polys)).to_le_bytes()`) instead of the
+    /// canonical polynomials, so cache hits skip the deep clone of the
+    /// polynomial vector and the re-serialize/re-hash on the caller side.
+    /// `None` corresponds exactly to the empty-polys skip outcome of
+    /// `canonicalize_polys_single` (oversized window, monomial-cap skip, or
+    /// Rule-L budget skip).
+    pub fn canonicalize_polys_single_hashed(
+        &self,
+        reversed: bool,
+    ) -> (Option<[u8; 16]>, Permutation, Vec<u16>) {
+        let used = self.used_wires();
+        match self.canonicalize_polys_single_inner(reversed, &used) {
+            CanonSingleInner::Skip => (None, Permutation { data: Vec::new() }, used),
+            CanonSingleInner::Cached(entry) => (
+                Some(entry.polys_key),
+                Permutation {
+                    data: entry.order.clone(),
+                },
+                used,
+            ),
+            CanonSingleInner::Fresh(polys, order, key) => {
+                let key = key.unwrap_or_else(|| {
+                    xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&polys)).to_le_bytes()
+                });
+                (Some(key), Permutation { data: order }, used)
+            }
+        }
+    }
+
+    fn canonicalize_polys_single_inner(&self, reversed: bool, used: &[u16]) -> CanonSingleInner {
+        // A u64 monomial cannot distinguish x_64 from lower variables. Treat
+        // oversized lookup windows as clean misses rather than constructing an
+        // overflow-aliased key.
         if used.len() > 64 {
             OVERSIZED_CANON_SKIPS.fetch_add(1, Ordering::Relaxed);
-            return (Vec::new(), Permutation { data: Vec::new() }, used);
+            return CanonSingleInner::Skip;
         }
-        let wire_map: HashMap<u16, u16> = used
-            .iter()
-            .enumerate()
-            .map(|(i, &w)| (w, i as u16))
-            .collect();
+        let wire_map = dense_wire_map(used);
         let mut c = CircuitSeq {
             gates: self
                 .gates
                 .iter()
-                .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+                .map(|&[t, c1, c2]| {
+                    [
+                        wire_map[t as usize],
+                        wire_map[c1 as usize],
+                        wire_map[c2 as usize],
+                    ]
+                })
                 .collect(),
         };
         if reversed {
             c.gates.reverse();
         }
         c.canonicalize();
+
+        // Canonicalization is pure and windows repeat heavily in the
+        // compress/expand games, so an exact process-wide cache keyed on the
+        // dense-remapped, gate-canonicalized window is a straight win. The
+        // reversed direction needs no key flag: it produces a different gate
+        // sequence (and when it doesn't, the results coincide anyway).
+        let cache = canon_cache();
+        let cache_key: Option<Box<[u16]>> = cache.map(|_| {
+            let mut key = Vec::with_capacity(c.gates.len() * 3);
+            for g in &c.gates {
+                key.extend_from_slice(g);
+            }
+            key.into_boxed_slice()
+        });
+        if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+            CANON_CACHE_QUERIES.fetch_add(1, Ordering::Relaxed);
+            if let Some(entry) = cache.get(key) {
+                CANON_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+                return CanonSingleInner::Cached(std::sync::Arc::clone(entry.value()));
+            }
+        }
+
         let n = c.max_wire() as usize + 1;
         let polys = match canon_monomial_cap() {
             Some(cap) => match c.to_polynomial_capped(n, 0, c.gates.len(), cap) {
-                Some(p) => p,
+                Some(polys) => polys,
                 None => {
                     CANON_CAP_SKIPS.fetch_add(1, Ordering::Relaxed);
-                    return (Vec::new(), Permutation { data: Vec::new() }, used);
+                    return CanonSingleInner::Skip;
                 }
             },
             None => c.to_polynomial(n, 0, c.gates.len()),
@@ -874,12 +1152,11 @@ impl CircuitSeq {
         };
 
         let t4 = Instant::now();
-        // Rule-L cap may bail (Err); treat as a clean DB miss, exactly like the monomial cap above.
         let canon = match canonicalize_polys_4(polys, true) {
-            Ok(c) => c,
+            Ok(canon) => canon,
             Err(()) => {
                 CANON_RULE_L_SKIPS.fetch_add(1, Ordering::Relaxed);
-                return (Vec::new(), Permutation { data: Vec::new() }, used);
+                return CanonSingleInner::Skip;
             }
         };
         let canon_elapsed = t4.elapsed();
@@ -904,15 +1181,39 @@ impl CircuitSeq {
             CANON_BENCH_CALLS.fetch_add(1, Ordering::Relaxed);
         }
 
-        (canon.0, canon.1, used)
+        // All cap exits return above, so the exact cache can contain only
+        // complete, valid canonical keys—never a clean-miss sentinel.
+        if let (Some(cache), Some(key)) = (cache, cache_key) {
+            let polys_key = xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&canon.0)).to_le_bytes();
+            let entry_bytes = (96
+                + key.len() * 2
+                + canon.0.iter().map(|p| 24 + p.len() * 8).sum::<usize>()
+                + canon.1.data.len() * 8) as u64;
+            if CANON_CACHE_BYTES.fetch_add(entry_bytes, Ordering::Relaxed) + entry_bytes
+                > canon_cache_cap_bytes()
+            {
+                // Wholesale epoch reset, same policy as the frozen lookup cache.
+                cache.clear();
+                CANON_CACHE_BYTES.store(entry_bytes, Ordering::Relaxed);
+            }
+            cache.insert(
+                key,
+                std::sync::Arc::new(CanonCacheEntry {
+                    polys: canon.0.clone(),
+                    order: canon.1.data.clone(),
+                    polys_key,
+                }),
+            );
+            return CanonSingleInner::Fresh(canon.0, canon.1.data, Some(polys_key));
+        }
+
+        CanonSingleInner::Fresh(canon.0, canon.1.data, None)
     }
 
-    /// Like `canonicalize_polys_single` but absorbs pending NOTs on the given INPUT control wires
-    /// (`negated_inputs`, in this subcircuit's own wire space) by substituting x_w -> x_w+1 in the
-    /// polynomials before canonicalization. Used by Stage F / #10 so an "unclean" window (a control
-    /// carries a pending NOT) can be looked up against the curated DB as if the control were already
-    /// negated — the replacement then absorbs the NOT, so no standalone NOT gadget is emitted.
-    /// Only the forward direction is meaningful here (negated_inputs assumes the natural orientation).
+    /// Like `canonicalize_polys_single`, but absorbs pending NOTs on input wires by substituting
+    /// x_w -> x_w + 1 in the polynomial form before canonicalization. This supports Stage-F-style
+    /// curated lookups where the replacement consumes the pending NOT instead of materializing a
+    /// standalone NOT gadget.
     pub fn canonicalize_polys_single_neg(
         &self,
         negated_inputs: &[u16],
@@ -922,23 +1223,69 @@ impl CircuitSeq {
             OVERSIZED_CANON_SKIPS.fetch_add(1, Ordering::Relaxed);
             return (Vec::new(), Permutation { data: Vec::new() }, used);
         }
-        let wire_map: HashMap<u16, u16> = used
-            .iter()
-            .enumerate()
-            .map(|(i, &w)| (w, i as u16))
-            .collect();
+        let wire_map = dense_wire_map(&used);
         let mut c = CircuitSeq {
             gates: self
                 .gates
                 .iter()
-                .map(|&[t, c1, c2]| [wire_map[&t], wire_map[&c1], wire_map[&c2]])
+                .map(|&[t, c1, c2]| {
+                    [
+                        wire_map[t as usize],
+                        wire_map[c1 as usize],
+                        wire_map[c2 as usize],
+                    ]
+                })
                 .collect(),
         };
         c.canonicalize();
+
+        // Sorted mapped negation multiset. Substitutions of distinct input
+        // variables commute and a repeated variable is an involution applied
+        // twice, so the sorted list fully determines the outcome and doubles
+        // as the cache-key component.
+        let mut mapped_negs: Vec<u16> = negated_inputs
+            .iter()
+            .filter_map(|&w| match wire_map.get(w as usize) {
+                Some(&m) if m != u16::MAX => Some(m),
+                _ => None,
+            })
+            .collect();
+        mapped_negs.sort_unstable();
+
+        // Same exact result-cache treatment as the plain path. The leading
+        // u16::MAX tag namespaces neg entries away from plain window keys
+        // (whose first element is a dense wire index < 64, given the
+        // used.len() <= 64 guard above), and the negation-count element keeps
+        // the encoding prefix-unambiguous.
+        let cache = canon_cache();
+        let cache_key: Option<Box<[u16]>> = cache.map(|_| {
+            let mut key = Vec::with_capacity(2 + mapped_negs.len() + c.gates.len() * 3);
+            key.push(u16::MAX);
+            key.push(mapped_negs.len() as u16);
+            key.extend_from_slice(&mapped_negs);
+            for g in &c.gates {
+                key.extend_from_slice(g);
+            }
+            key.into_boxed_slice()
+        });
+        if let (Some(cache), Some(key)) = (cache, cache_key.as_ref()) {
+            CANON_CACHE_QUERIES.fetch_add(1, Ordering::Relaxed);
+            if let Some(entry) = cache.get(key) {
+                CANON_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+                return (
+                    entry.polys.clone(),
+                    Permutation {
+                        data: entry.order.clone(),
+                    },
+                    used,
+                );
+            }
+        }
+
         let n = c.max_wire() as usize + 1;
         let mut polys = match canon_monomial_cap() {
             Some(cap) => match c.to_polynomial_capped(n, 0, c.gates.len(), cap) {
-                Some(p) => p,
+                Some(polys) => polys,
                 None => {
                     CANON_CAP_SKIPS.fetch_add(1, Ordering::Relaxed);
                     return (Vec::new(), Permutation { data: Vec::new() }, used);
@@ -946,22 +1293,61 @@ impl CircuitSeq {
             },
             None => c.to_polynomial(n, 0, c.gates.len()),
         };
-        for &w in negated_inputs {
-            if let Some(&mw) = wire_map.get(&w) {
-                for p in polys.iter_mut() {
-                    substitute_input_negation(p, mw as usize);
-                }
+        for &mapped in &mapped_negs {
+            let mapped = mapped as usize;
+            if mapped >= 64 {
+                return (Vec::new(), Permutation { data: Vec::new() }, used);
+            }
+            for p in polys.iter_mut() {
+                substitute_input_negation(p, mapped);
             }
         }
+
         let canon = match canonicalize_polys_4(polys, true) {
-            Ok(c) => c,
+            Ok(canon) => canon,
             Err(()) => {
                 CANON_RULE_L_SKIPS.fetch_add(1, Ordering::Relaxed);
                 return (Vec::new(), Permutation { data: Vec::new() }, used);
             }
         };
+
+        // Only complete successes are inserted, mirroring the plain path: a
+        // hit therefore always replays a deterministic success.
+        if let (Some(cache), Some(key)) = (cache, cache_key) {
+            let polys_key = xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&canon.0)).to_le_bytes();
+            let entry_bytes = (96
+                + key.len() * 2
+                + canon.0.iter().map(|p| 24 + p.len() * 8).sum::<usize>()
+                + canon.1.data.len() * 8) as u64;
+            if CANON_CACHE_BYTES.fetch_add(entry_bytes, Ordering::Relaxed) + entry_bytes
+                > canon_cache_cap_bytes()
+            {
+                cache.clear();
+                CANON_CACHE_BYTES.store(entry_bytes, Ordering::Relaxed);
+            }
+            cache.insert(
+                key,
+                std::sync::Arc::new(CanonCacheEntry {
+                    polys: canon.0.clone(),
+                    order: canon.1.data.clone(),
+                    polys_key,
+                }),
+            );
+        }
         (canon.0, canon.1, used)
     }
+}
+
+/// Dense old-wire -> compact-index map for a sorted `used_wires` list.
+/// Entries for unused wires are `u16::MAX`; used wires map to their position.
+/// Replaces per-call `HashMap<u16, u16>` construction on canonicalization hot paths.
+fn dense_wire_map(used: &[u16]) -> Vec<u16> {
+    let len = used.last().map_or(0, |&w| w as usize + 1);
+    let mut map = vec![u16::MAX; len];
+    for (i, &w) in used.iter().enumerate() {
+        map[w as usize] = i as u16;
+    }
+    map
 }
 
 pub fn polynomial_from_terms<I>(terms: I) -> Polynomial
@@ -994,16 +1380,25 @@ pub fn normalize_polynomial(poly: &mut Polynomial) {
     poly.truncate(write);
 }
 
-/// Absorb a pending NOT on INPUT variable `w` into a (normalized, sorted) polynomial: substitute
-/// x_w -> x_w + 1. Each monomial M containing x_w becomes M + (M without x_w), i.e. toggle the
-/// "rest" (M with bit w cleared). Used by Stage F / #10 to make a curated lookup compute as if the
-/// control wire were negated, so an "unclean" gate can be replaced without emitting a NOT gadget.
 pub fn substitute_input_negation(poly: &mut Polynomial, w: usize) {
+    // Substituting x_w -> x_w + 1 toggles, for every monomial containing x_w,
+    // the same monomial with x_w cleared. The rests are pairwise distinct
+    // (rest | bit reconstructs its unique source), so the sequential
+    // binary-search toggles the old implementation performed are exactly one
+    // sorted symmetric-difference merge.
     let bit = 1u64 << w;
-    let rests: Vec<Monomial> = poly.iter().filter(|&&m| m & bit != 0).map(|&m| m & !bit).collect();
-    for r in rests {
-        toggle_monomial(poly, r);
+    let mut rests: Vec<Monomial> = poly
+        .iter()
+        .filter(|&&m| m & bit != 0)
+        .map(|&m| m & !bit)
+        .collect();
+    if rests.is_empty() {
+        return;
     }
+    // Rests inherit the poly's sort order (the cleared bit is common to every
+    // source monomial); sort defensively anyway — it is a no-op then.
+    rests.sort_unstable();
+    poly_xor_assign(poly, rests);
 }
 
 fn toggle_monomial(poly: &mut Polynomial, m: Monomial) {
@@ -1044,6 +1439,7 @@ fn poly_xor_assign(poly: &mut Polynomial, terms: Polynomial) {
     *poly = merged;
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn poly_and_not(poly_1: &Polynomial, poly_2: &Polynomial) -> Polynomial {
     let mut terms = Vec::with_capacity(poly_1.len() * (poly_2.len() + 1));
     for &m1 in poly_1 {
@@ -1055,15 +1451,94 @@ fn poly_and_not(poly_1: &Polynomial, poly_2: &Polynomial) -> Polynomial {
     polynomial_from_terms(terms)
 }
 
+/// Allocation-reusing form of `poly_and_not`: same raw term stream and the
+/// same sort+cancel normalization, written into a caller-owned scratch vec.
+fn poly_and_not_into(poly_1: &[Monomial], poly_2: &[Monomial], out: &mut Vec<Monomial>) {
+    out.clear();
+    out.reserve(poly_1.len() * (poly_2.len() + 1));
+    for &m1 in poly_1 {
+        out.push(m1);
+        for &m2 in poly_2 {
+            out.push(m1 | m2);
+        }
+    }
+    normalize_polynomial(out);
+}
+
+/// Allocation-reusing form of `poly_xor_assign`: merges the sorted symmetric
+/// difference of `a` and `b` into a caller-owned scratch vec.
+fn poly_xor_merge_into(a: &[Monomial], b: &[Monomial], out: &mut Vec<Monomial>) {
+    out.clear();
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            CmpOrdering::Less => {
+                out.push(a[i]);
+                i += 1;
+            }
+            CmpOrdering::Greater => {
+                out.push(b[j]);
+                j += 1;
+            }
+            CmpOrdering::Equal => {
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    out.extend_from_slice(&a[i..]);
+    out.extend_from_slice(&b[j..]);
+}
+
+/// Cancel adjacent duplicate gates to a fixed point, keeping `tags` (when
+/// present) in lockstep with the gate vector. Stack-style single pass:
+/// produces the identical final sequence to the historical
+/// drain-with-backtrack loop (`aa -> empty` rewriting is confluent, and the
+/// backtrack re-examined exactly the stack top) without the O(n) tail
+/// memmove per removal.
+pub fn cancel_adjacent_duplicates<T: Copy>(
+    gates: &mut Vec<[u16; 3]>,
+    mut tags: Option<&mut Vec<T>>,
+) {
+    let mut write = 0usize;
+    for read in 0..gates.len() {
+        if write > 0 && gates[write - 1] == gates[read] {
+            write -= 1;
+        } else {
+            gates[write] = gates[read];
+            if let Some(tags) = tags.as_deref_mut() {
+                tags[write] = tags[read];
+            }
+            write += 1;
+        }
+    }
+    gates.truncate(write);
+    if let Some(tags) = tags {
+        tags.truncate(write);
+    }
+}
+
 // Display polynomials
 
 pub fn polys_repr_blob(polys: &Vec<Polynomial>) -> Vec<u8> {
-    let mut bytes = Vec::new();
+    let total: usize = polys.iter().map(|p| p.len() + 1).sum();
+    let mut bytes = Vec::with_capacity(total * 8);
+    let mut scratch: Vec<u64> = Vec::new();
     for poly in polys {
-        let mut monomials: Vec<u64> = poly.iter().copied().collect();
-        monomials.sort_unstable();
-        for m in monomials {
-            bytes.extend_from_slice(&m.to_le_bytes());
+        // Canonical polys are already monomial-sorted; only re-sort when a
+        // caller hands us an unsorted polynomial.
+        if poly.is_sorted() {
+            for m in poly {
+                bytes.extend_from_slice(&m.to_le_bytes());
+            }
+        } else {
+            scratch.clear();
+            scratch.extend_from_slice(poly);
+            scratch.sort_unstable();
+            for m in &scratch {
+                bytes.extend_from_slice(&m.to_le_bytes());
+            }
         }
         bytes.extend_from_slice(&u64::MAX.to_le_bytes()); // separator
     }
@@ -1206,6 +1681,35 @@ static TIME_RULE_2_2: AtomicU64 = AtomicU64::new(0);
 static TIME_RULE_2_4: AtomicU64 = AtomicU64::new(0);
 static TIME_RULE_2_5: AtomicU64 = AtomicU64::new(0);
 static TIME_RULE_L: AtomicU64 = AtomicU64::new(0);
+
+/// Rule timing report used by the rainbow_table build pipeline (ported from
+/// the dbgen server tree). Rule 2.3 was removed from this canonicalizer; its
+/// line prints 0 to keep the report shape identical to the server output.
+pub fn print_rule_times() {
+    let t1 = TIME_RULE_2_1.load(Ordering::Relaxed);
+    let t2 = TIME_RULE_2_2.load(Ordering::Relaxed);
+    let t3 = 0u64;
+    let t4 = TIME_RULE_2_4.load(Ordering::Relaxed);
+    let t5 = TIME_RULE_2_5.load(Ordering::Relaxed);
+    let tl = TIME_RULE_L.load(Ordering::Relaxed);
+    let total = t1 + t2 + t3 + t4 + t5 + tl;
+    let pct = |t: u64| {
+        if total > 0 {
+            t as f64 / total as f64 * 100.0
+        } else {
+            0.0
+        }
+    };
+
+    println!("Rule timing breakdown:");
+    println!("  Rule 2.1: {:>12} ms ({:.1}%)", t1 / 1_000_000, pct(t1));
+    println!("  Rule 2.2: {:>12} ms ({:.1}%)", t2 / 1_000_000, pct(t2));
+    println!("  Rule 2.3: {:>12} ms ({:.1}%)", t3 / 1_000_000, pct(t3));
+    println!("  Rule 2.4: {:>12} ms ({:.1}%)", t4 / 1_000_000, pct(t4));
+    println!("  Rule 2.5: {:>12} ms ({:.1}%)", t5 / 1_000_000, pct(t5));
+    println!("  Rule L:   {:>12} ms ({:.1}%)", tl / 1_000_000, pct(tl));
+    println!("  Total:    {:>12} ms", total / 1_000_000);
+}
 
 /// Holds the current partial ordering of polynomial/variable indices as a list of groups.
 /// Each group is a Vec<usize> of indices that are currently tied with each other.
@@ -1537,7 +2041,7 @@ fn is_same_orbit(
     auts2: &[Vec<usize>],
 ) -> bool {
     let cset: HashSet<usize> = candidates.iter().copied().collect();
-    let mut visited: HashSet<usize> = HashSet::new();
+    let mut visited: HashSet<usize> = HashSet::default();
     let mut frontier = vec![a];
     visited.insert(a);
     while let Some(x) = frontier.pop() {
@@ -2105,15 +2609,28 @@ pub fn trim_canonicalized(polynomials: Vec<Polynomial>) -> Vec<Polynomial> {
 
 const MONOMIAL_RANK_KEY_LEN_4: usize = 65;
 
+const MONOMIAL_RANK_PREFIX_LEN_4: usize = 16;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MonomialRankKey4 {
     degree: u8,
+    /// Big-endian packing of `encoded_ranks[..16]`. Comparing prefixes as
+    /// integers equals comparing the first 16 bytes lexicographically, so the
+    /// full 65-byte compare only runs on prefix ties (rare: it requires two
+    /// monomials agreeing on their 16 highest-priority rank slots).
+    prefix: u128,
     encoded_ranks: [u8; MONOMIAL_RANK_KEY_LEN_4],
 }
 
 impl Ord for MonomialRankKey4 {
     fn cmp(&self, other: &Self) -> CmpOrdering {
-        self.encoded_ranks.cmp(&other.encoded_ranks)
+        // Identical ordering to `encoded_ranks.cmp(&other.encoded_ranks)`:
+        // lexicographic byte compare == big-endian integer compare on the
+        // packed prefix, and the tail settles prefix ties.
+        self.prefix.cmp(&other.prefix).then_with(|| {
+            self.encoded_ranks[MONOMIAL_RANK_PREFIX_LEN_4..]
+                .cmp(&other.encoded_ranks[MONOMIAL_RANK_PREFIX_LEN_4..])
+        })
     }
 }
 
@@ -2131,21 +2648,26 @@ struct MonomialLevelKey4 {
 
 type LevelEntry4 = (Monomial, usize, MonomialLevelKey4);
 
-fn monomial_rank_key_4(m: Monomial, vr: &[usize], n: usize) -> MonomialRankKey4 {
+fn monomial_rank_key_4(m: Monomial, vr: &[usize], _n: usize) -> MonomialRankKey4 {
     let mut encoded_ranks = [0u8; MONOMIAL_RANK_KEY_LEN_4];
     let mut degree = 0usize;
-    // Set-bit iteration (increasing v, same visit order as the 0..n scan; bits >= n masked off).
-    let mut mm = m & wire_mask(n);
+    let mut mm = m;
     while mm != 0 {
         let v = mm.trailing_zeros() as usize;
-        mm &= mm - 1;
         debug_assert!(vr[v] < u8::MAX as usize);
         encoded_ranks[degree] = (vr[v] + 1) as u8;
         degree += 1;
+        mm &= mm - 1;
     }
     encoded_ranks[..degree].sort_unstable();
+    let prefix = u128::from_be_bytes(
+        encoded_ranks[..MONOMIAL_RANK_PREFIX_LEN_4]
+            .try_into()
+            .unwrap(),
+    );
     MonomialRankKey4 {
         degree: degree as u8,
+        prefix,
         encoded_ranks,
     }
 }
@@ -2161,12 +2683,84 @@ fn cmp_level_key_4(a: &MonomialLevelKey4, b: &MonomialLevelKey4) -> CmpOrdering 
     b.rank_key
         .degree
         .cmp(&a.rank_key.degree)
-        .then(a.rank_key.cmp(&b.rank_key))
-        .then(b.coeff.cmp(&a.coeff))
+        .then_with(|| a.rank_key.cmp(&b.rank_key))
+        .then_with(|| b.coeff.cmp(&a.coeff))
+}
+
+// ── Compact level entries ────────────────────────────────────────────────────
+// Valid iff every monomial degree <= MONOMIAL_RANK_PREFIX_LEN_4 (16): the fat
+// key's 65-byte tail is then all zeros for every entry, so the full comparison
+// collapses to (degree desc, prefix asc, coeff desc) — the same total order
+// and the same equalities as the fat key. 32 bytes instead of ~128: 4x less
+// build traffic, 4x smaller sort moves, and a 21-byte equality compare in the
+// level walk. `canonicalize_polys_4` checks the degree bound once per top
+// call (`compact_ok`); class polys and D-class polys reuse the same
+// monomials, so that one check covers every scan in the recursion. Measured
+// on the DB-armed fmix recipe the bound always holds; the fat path stays as
+// the deg>16 fallback.
+
+#[derive(Clone, Copy)]
+struct LevelEntryC {
+    prefix: u128,
+    m: Monomial,
+    coeff: u32,
+    degree: u8,
+}
+
+// Shared rank packing for the compact paths: (degree, big-endian prefix of
+// the +1-encoded, ascending-sorted rank bytes). Identical to
+// monomial_rank_key_4 restricted to the first 16 slots; callers must uphold
+// degree <= 16 (`compact_ok`).
+#[inline]
+fn rank_prefix_c(m: Monomial, vr: &[usize]) -> (u8, u128) {
+    let mut ranks = [0u8; MONOMIAL_RANK_PREFIX_LEN_4];
+    let mut degree = 0usize;
+    let mut mm = m;
+    while mm != 0 {
+        let v = mm.trailing_zeros() as usize;
+        debug_assert!(vr[v] < u8::MAX as usize);
+        ranks[degree] = (vr[v] + 1) as u8;
+        degree += 1;
+        mm &= mm - 1;
+    }
+    ranks[..degree].sort_unstable();
+    (degree as u8, u128::from_be_bytes(ranks))
+}
+
+#[inline]
+fn level_entry_c(m: Monomial, coeff: usize, vr: &[usize]) -> LevelEntryC {
+    let (degree, prefix) = rank_prefix_c(m, vr);
+    LevelEntryC {
+        prefix,
+        m,
+        // Class-poly coefficients count contributing wires, so they never
+        // exceed n <= 64.
+        coeff: coeff as u32,
+        degree,
+    }
+}
+
+#[inline]
+fn cmp_level_c(a: &LevelEntryC, b: &LevelEntryC) -> CmpOrdering {
+    b.degree
+        .cmp(&a.degree)
+        .then_with(|| a.prefix.cmp(&b.prefix))
+        .then_with(|| b.coeff.cmp(&a.coeff))
+}
+
+#[inline]
+fn eq_level_c(a: &LevelEntryC, b: &LevelEntryC) -> bool {
+    a.degree == b.degree && a.prefix == b.prefix && a.coeff == b.coeff
+}
+
+fn sorted_level_entries_c(cp: &[(Monomial, usize)], vr: &[usize], entries: &mut Vec<LevelEntryC>) {
+    entries.clear();
+    entries.extend(cp.iter().map(|&(m, c)| level_entry_c(m, c, vr)));
+    entries.sort_by(cmp_level_c);
 }
 
 fn sorted_level_entries_4(
-    cp: &BTreeMap<Monomial, usize>,
+    cp: &[(Monomial, usize)],
     vr: &[usize],
     n: usize,
     entries: &mut Vec<LevelEntry4>,
@@ -2174,7 +2768,7 @@ fn sorted_level_entries_4(
     entries.clear();
     entries.extend(
         cp.iter()
-            .map(|(&m, &c)| (m, c, monomial_level_key_4(m, c, vr, n))),
+            .map(|&(m, c)| (m, c, monomial_level_key_4(m, c, vr, n))),
     );
     entries.sort_by(|a, b| cmp_level_key_4(&a.2, &b.2));
 }
@@ -2184,7 +2778,46 @@ fn wire_freq_4(level: &[LevelEntry4], n: usize, freq: &mut Vec<usize>) {
     freq.resize(n, 0);
     freq.fill(0);
     for &(m, _, _) in level {
-        let mut mm = m & wire_mask(n);
+        let mut mm = m;
+        while mm != 0 {
+            freq[mm.trailing_zeros() as usize] += 1;
+            mm &= mm - 1;
+        }
+    }
+}
+
+// Freq counts restricted to tied wires — the only entries split decisions
+// read (untied wires never belong to a multi-member rank group). Masking
+// before the bit walk skips most of the per-monomial popcount work.
+fn wire_freq_tied_4(level: &[LevelEntry4], tied_mask: u64, n: usize, freq: &mut Vec<usize>) {
+    freq.resize(n, 0);
+    freq.fill(0);
+    for &(m, _, _) in level {
+        let mut mm = m & tied_mask;
+        while mm != 0 {
+            freq[mm.trailing_zeros() as usize] += 1;
+            mm &= mm - 1;
+        }
+    }
+}
+
+fn wire_freq_c(level: &[LevelEntryC], n: usize, freq: &mut Vec<usize>) {
+    freq.resize(n, 0);
+    freq.fill(0);
+    for e in level {
+        let mut mm = e.m;
+        while mm != 0 {
+            freq[mm.trailing_zeros() as usize] += 1;
+            mm &= mm - 1;
+        }
+    }
+}
+
+fn wire_freq_tied_c(level: &[LevelEntryC], tied_mask: u64, n: usize, freq: &mut Vec<usize>) {
+    freq.resize(n, 0);
+    freq.fill(0);
+    for e in level {
+        let mut mm = e.m & tied_mask;
         while mm != 0 {
             freq[mm.trailing_zeros() as usize] += 1;
             mm &= mm - 1;
@@ -2193,7 +2826,9 @@ fn wire_freq_4(level: &[LevelEntry4], n: usize, freq: &mut Vec<usize>) {
 }
 
 // Split the FIRST (highest-priority) tied wire group whose members have different
-// frequencies. Higher frequency → higher priority (lower rank number). Returns true if any split.
+// frequencies. Higher frequency → higher priority (lower rank number).
+// Returns the split group's wire bitmask (None = no split) so the caller can
+// track which class polys the split can possibly affect (cleanskip).
 fn split_by_freq_4(
     vr: &mut Vec<usize>,
     n: usize,
@@ -2201,7 +2836,7 @@ fn split_by_freq_4(
     tied: &mut Vec<usize>,
     sorted: &mut Vec<usize>,
     sub_ranks: &mut Vec<usize>,
-) -> bool {
+) -> Option<u64> {
     let max_rank = *vr.iter().max().unwrap_or(&0);
     for cur_rank in 0..=max_rank {
         tied.clear();
@@ -2235,9 +2870,99 @@ fn split_by_freq_4(
         for (i, &v) in sorted.iter().enumerate() {
             vr[v] = cur_rank + sub_ranks[i];
         }
-        return true;
+        let group_mask = if n <= 64 {
+            sorted.iter().fold(0u64, |acc, &v| acc | (1u64 << v))
+        } else {
+            // Degenerate width: report "could affect anything" so cleanskip
+            // conservatively clears every flag.
+            u64::MAX
+        };
+        return Some(group_mask);
     }
-    false
+    None
+}
+
+// Tied groups precomputed once per master iteration (vr is constant between
+// splits), stored flat to avoid allocs. groups_meta holds
+// (rank, member bitmask, members start, members end) in ascending rank order,
+// multi-member groups only. n <= 64 callers only.
+fn tied_groups_4(
+    vr: &[usize],
+    n: usize,
+    groups_meta: &mut Vec<(usize, u64, usize, usize)>,
+    groups_members: &mut Vec<usize>,
+) {
+    groups_meta.clear();
+    groups_members.clear();
+    debug_assert!(n <= 64);
+    let mut count = [0u8; 64];
+    for &r in vr {
+        count[r] += 1;
+    }
+    for r in 0..n {
+        if count[r] > 1 {
+            let start = groups_members.len();
+            let mut mask = 0u64;
+            for v in 0..n {
+                if vr[v] == r {
+                    groups_members.push(v);
+                    mask |= 1u64 << v;
+                }
+            }
+            groups_meta.push((r, mask, start, groups_members.len()));
+        }
+    }
+}
+
+// split_by_freq_4 with the rank iteration replaced by the precomputed group
+// list. Identical selection: groups visited in ascending rank order; a group
+// whose mask misses the level union has all-zero freqs (the old code also
+// skipped it as all-equal); the stable freq-desc sort sees members in
+// ascending wire id exactly like the old (0..n).filter build. Returns the
+// split group's mask.
+#[allow(clippy::too_many_arguments)]
+fn split_by_freq_groups_4(
+    vr: &mut Vec<usize>,
+    n: usize,
+    freq: &[usize],
+    groups_meta: &[(usize, u64, usize, usize)],
+    groups_members: &[usize],
+    level_union: u64,
+    sorted: &mut Vec<usize>,
+    sub_ranks: &mut Vec<usize>,
+) -> Option<u64> {
+    for &(cur_rank, gmask, s, e) in groups_meta {
+        if gmask & level_union == 0 {
+            continue;
+        }
+        let members = &groups_members[s..e];
+        let f0 = freq[members[0]];
+        if members.iter().all(|&v| freq[v] == f0) {
+            continue;
+        }
+        sorted.clear();
+        sorted.extend_from_slice(members);
+        sorted.sort_by(|&a, &b| freq[b].cmp(&freq[a]));
+        let mut sub_rank = 0usize;
+        sub_ranks.clear();
+        sub_ranks.resize(sorted.len(), 0);
+        for i in 1..sorted.len() {
+            if freq[sorted[i]] != freq[sorted[i - 1]] {
+                sub_rank += 1;
+            }
+            sub_ranks[i] = sub_rank;
+        }
+        for v in 0..n {
+            if vr[v] > cur_rank {
+                vr[v] += sub_rank;
+            }
+        }
+        for (i, &v) in sorted.iter().enumerate() {
+            vr[v] = cur_rank + sub_ranks[i];
+        }
+        return Some(gmask);
+    }
+    None
 }
 
 // Remapped polynomial key for tiebreak #1: replace each variable with its var_rank,
@@ -2249,6 +2974,33 @@ fn poly_key_4(poly: &Polynomial, vr: &[usize], n: usize) -> Vec<MonomialRankKey4
         .collect();
     terms.sort_by(|a, b| b.degree.cmp(&a.degree).then(a.cmp(b)));
     terms
+}
+
+// Compact tiebreak-#1 key, exact under the same deg <= 16 precondition as
+// LevelEntryC: with the 65-byte tail all zeros, the fat rank-key ordering is
+// its prefix ordering, so (degree, prefix) pairs sorted by
+// (degree desc, prefix asc) reproduce poly_key_4's term order.
+fn poly_key_c(poly: &Polynomial, vr: &[usize]) -> Vec<(u8, u128)> {
+    let mut terms: Vec<(u8, u128)> = poly.iter().map(|&m| rank_prefix_c(m, vr)).collect();
+    terms.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    terms
+}
+
+// Keyed-wire comparison matching Vec<MonomialRankKey4>::cmp under the
+// compact precondition: element order is prefix order (the fat Ord ignores
+// the degree byte and the tail is zero), and equal prefixes imply equal
+// degrees (a degree-d key has exactly d nonzero prefix bytes), so
+// lexicographic-by-prefix plus the length tiebreak is the identical total
+// order — and its Equal class is the identical equality.
+fn cmp_poly_key_c(a: &[(u8, u128)], b: &[(u8, u128)]) -> CmpOrdering {
+    let common = a.len().min(b.len());
+    for i in 0..common {
+        match a[i].1.cmp(&b[i].1) {
+            CmpOrdering::Equal => {}
+            other => return other,
+        }
+    }
+    a.len().cmp(&b.len())
 }
 
 fn push_flat_canonical_form_4(
@@ -2269,7 +3021,7 @@ fn push_flat_canonical_form_4(
         monomials.clear();
         monomials.extend(polynomials[wire].iter().map(|&m| {
             let mut r = 0u64;
-            let mut mm = m & wire_mask(n);
+            let mut mm = m;
             while mm != 0 {
                 r |= 1u64 << wire_to_pos[mm.trailing_zeros() as usize];
                 mm &= mm - 1;
@@ -2282,71 +3034,384 @@ fn push_flat_canonical_form_4(
     }
 }
 
+// `groups`: the (groups_meta, groups_members) tied-group precompute for the
+// n <= 64 fast path; None keeps the legacy per-level rank rescan (n > 64).
+// Returns the split group's wire mask, None when no split fired.
+#[allow(clippy::too_many_arguments)]
 fn scan_class_poly_levels_4(
-    cp: &BTreeMap<Monomial, usize>,
+    cp: &[(Monomial, usize)],
     vr: &mut Vec<usize>,
     n: usize,
+    tied_mask: u64,
     level_entries: &mut Vec<LevelEntry4>,
     freq: &mut Vec<usize>,
     tied: &mut Vec<usize>,
     sorted: &mut Vec<usize>,
     sub_ranks: &mut Vec<usize>,
-) -> bool {
+    groups: Option<(&[(usize, u64, usize, usize)], &[usize])>,
+) -> Option<u64> {
     sorted_level_entries_4(cp, vr, n, level_entries);
     let mut start = 0usize;
     while start < level_entries.len() {
         let mut end = start + 1;
+        let mut level_union = level_entries[start].0;
         while end < level_entries.len() && level_entries[end].2 == level_entries[start].2 {
+            level_union |= level_entries[end].0;
             end += 1;
         }
-        wire_freq_4(&level_entries[start..end], n, freq);
-        if split_by_freq_4(vr, n, freq, tied, sorted, sub_ranks) {
-            return true;
+        // A level containing no tied wire gives every member of every tied
+        // group frequency 0, so no split can fire — skip the freq count.
+        if level_union & tied_mask != 0 {
+            let split = if let Some((gm, gmem)) = groups {
+                wire_freq_tied_4(&level_entries[start..end], tied_mask, n, freq);
+                split_by_freq_groups_4(vr, n, freq, gm, gmem, level_union, sorted, sub_ranks)
+            } else {
+                wire_freq_4(&level_entries[start..end], n, freq);
+                split_by_freq_4(vr, n, freq, tied, sorted, sub_ranks)
+            };
+            if split.is_some() {
+                return split;
+            }
         }
         start = end;
     }
-    false
+    None
+}
+
+// Compact-entry scan: byte-for-byte the same level grouping and split
+// decisions as scan_class_poly_levels_4 whenever all degrees <= 16
+// (`compact_ok`).
+#[allow(clippy::too_many_arguments)]
+fn scan_class_poly_levels_c(
+    cp: &[(Monomial, usize)],
+    vr: &mut Vec<usize>,
+    n: usize,
+    tied_mask: u64,
+    entries: &mut Vec<LevelEntryC>,
+    freq: &mut Vec<usize>,
+    tied: &mut Vec<usize>,
+    sorted: &mut Vec<usize>,
+    sub_ranks: &mut Vec<usize>,
+    groups: Option<(&[(usize, u64, usize, usize)], &[usize])>,
+) -> Option<u64> {
+    sorted_level_entries_c(cp, vr, entries);
+    let mut start = 0usize;
+    while start < entries.len() {
+        let mut end = start + 1;
+        let mut level_union = entries[start].m;
+        while end < entries.len() && eq_level_c(&entries[end], &entries[start]) {
+            level_union |= entries[end].m;
+            end += 1;
+        }
+        if level_union & tied_mask != 0 {
+            let split = if let Some((gm, gmem)) = groups {
+                wire_freq_tied_c(&entries[start..end], tied_mask, n, freq);
+                split_by_freq_groups_4(vr, n, freq, gm, gmem, level_union, sorted, sub_ranks)
+            } else {
+                wire_freq_c(&entries[start..end], n, freq);
+                split_by_freq_4(vr, n, freq, tied, sorted, sub_ranks)
+            };
+            if split.is_some() {
+                return split;
+            }
+        }
+        start = end;
+    }
+    None
+}
+
+// Bitmask of wires whose current rank is shared with another wire. Callers
+// only use this to skip scans that provably cannot split anything, so for the
+// (unreachable in practice) n > 64 case it degrades to "skip nothing".
+fn tied_mask_4(vr: &[usize]) -> u64 {
+    let n = vr.len();
+    if n > 64 {
+        return u64::MAX;
+    }
+    let mut count = [0u8; 64];
+    for &r in vr {
+        count[r] += 1;
+    }
+    let mut mask = 0u64;
+    for (v, &r) in vr.iter().enumerate() {
+        if count[r] > 1 {
+            mask |= 1u64 << v;
+        }
+    }
+    mask
 }
 
 fn has_ties_4(vr: &[usize]) -> bool {
+    // Rank values stay contiguous in 0..n, so a bitmask detects duplicates in
+    // one pass for the common n <= 64 case (monomials are u64 bitmasks, so n
+    // never exceeds 64 on the polynomial-canonicalization paths).
+    if vr.len() <= 64 {
+        let mut seen = 0u64;
+        for &r in vr {
+            let bit = 1u64 << r;
+            if seen & bit != 0 {
+                return true;
+            }
+            seen |= bit;
+        }
+        return false;
+    }
     let n = vr.len();
     (0..n).any(|v| (0..n).any(|u| u != v && vr[u] == vr[v]))
 }
 
+// Sort concatenated (monomial, 1) pairs and merge duplicates into counts.
+// Produces the same monomial-ascending (monomial, count) sequence a BTreeMap
+// build would, without per-insert tree traversal.
+fn coalesce_class_poly(sum: &mut Vec<(Monomial, usize)>) {
+    sum.sort_unstable_by_key(|&(m, _)| m);
+    let mut write = 0usize;
+    for read in 0..sum.len() {
+        if write > 0 && sum[write - 1].0 == sum[read].0 {
+            sum[write - 1].1 += sum[read].1;
+        } else {
+            sum[write] = sum[read];
+            write += 1;
+        }
+    }
+    sum.truncate(write);
+}
+
+// Is `b` reachable from `a` within `candidates` under known automorphisms that
+// preserve the current rank coloring? Mirrors `is_same_orbit` (Rule L of the
+// legacy canonicalizer); the coloring filter is what makes automorphisms
+// discovered elsewhere in the recursion safe to reuse at this node, and each
+// usable automorphism is applied in both directions (the group is closed
+// under inversion).
+// Does the orbit of `w` within `candidates` under `usable` (a set of
+// coloring-preserving automorphisms, closed under inversion) contain any
+// already-tried candidate? Because `usable` contains every inverse,
+// reachability is symmetric, so this is exactly "exists t in tried reachable
+// from t to w" — the historical per-(tried, candidate) check — computed with
+// one BFS per candidate instead of one per pair. The caller maintains
+// `usable` incrementally (vr is constant across one candidate loop).
+fn canon4_orbit_hits_tried(
+    w: usize,
+    tried: &[usize],
+    candidates: &[usize],
+    usable: &[Vec<usize>],
+) -> bool {
+    if usable.is_empty() || tried.is_empty() {
+        return false;
+    }
+    let cset: HashSet<usize> = candidates.iter().copied().collect();
+    let tset: HashSet<usize> = tried.iter().copied().collect();
+    let mut visited: HashSet<usize> = HashSet::default();
+    let mut frontier = vec![w];
+    visited.insert(w);
+    while let Some(x) = frontier.pop() {
+        for aut in usable {
+            let img = aut[x];
+            if tset.contains(&img) {
+                return true;
+            }
+            if cset.contains(&img) && visited.insert(img) {
+                frontier.push(img);
+            }
+        }
+    }
+    false
+}
+
 // Core loop: refine var_rank until fully resolved, then return final_order.
+// `known_auts` accumulates automorphisms of the polynomial system discovered
+// whenever two Rule L trials produce identical canonical forms; they are
+// shared across the whole recursion to prune orbit-equivalent candidates.
+// Per-invocation scratch buffers for canon4_run, pooled per thread and per
+// recursion depth (each recursive call pops its own frame). Reuse kills the
+// ~50+ heap allocations a fresh call would make; contents are always cleared
+// before use, so pooling is invisible to the algorithm.
+#[derive(Default)]
+struct Canon4Frame {
+    level_entries: Vec<LevelEntry4>,
+    entries_c: Vec<LevelEntryC>,
+    groups_meta: Vec<(usize, u64, usize, usize)>,
+    groups_members: Vec<usize>,
+    clean: Vec<bool>,
+    freq_scratch: Vec<usize>,
+    tied_scratch: Vec<usize>,
+    sorted_scratch: Vec<usize>,
+    sub_ranks_scratch: Vec<usize>,
+    d_class_poly: Vec<(Monomial, usize)>,
+    tied_buf: Vec<usize>,
+    keyed_buf: Vec<(usize, Vec<MonomialRankKey4>)>,
+    keyed_buf_c: Vec<(usize, Vec<(u8, u128)>)>,
+    sub_ranks_buf: Vec<usize>,
+    best_canonical: Vec<Option<Monomial>>,
+    trial_canonical: Vec<Option<Monomial>>,
+    canonical_monomials: Vec<Monomial>,
+    wire_to_pos: Vec<usize>,
+    tried: Vec<usize>,
+    usable_auts: Vec<Vec<usize>>,
+}
+
+thread_local! {
+    static CANON4_FRAMES: std::cell::RefCell<Vec<Canon4Frame>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[allow(clippy::too_many_arguments)]
 fn canon4_run(
     polynomials: &[Polynomial],
-    class_polys: &[BTreeMap<Monomial, usize>],
+    class_polys: &[Vec<(Monomial, usize)>],
+    class_unions: &[u64],
+    vr: Vec<usize>,
+    allow_rule_l: bool,
+    known_auts: &mut Vec<Vec<usize>>,
+    compact_ok: bool,
+) -> Result<Vec<usize>, ()> {
+    let mut frame = CANON4_FRAMES
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_default();
+    let result = canon4_run_inner(
+        polynomials,
+        class_polys,
+        class_unions,
+        vr,
+        allow_rule_l,
+        known_auts,
+        compact_ok,
+        &mut frame,
+    );
+    CANON4_FRAMES.with(|pool| pool.borrow_mut().push(frame));
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn canon4_run_inner(
+    polynomials: &[Polynomial],
+    class_polys: &[Vec<(Monomial, usize)>],
+    class_unions: &[u64],
     mut vr: Vec<usize>,
     allow_rule_l: bool,
+    known_auts: &mut Vec<Vec<usize>>,
+    compact_ok: bool,
+    frame: &mut Canon4Frame,
 ) -> Result<Vec<usize>, ()> {
     let n = polynomials.len();
-    let mut level_entries: Vec<LevelEntry4> = Vec::new();
-    let mut freq_scratch: Vec<usize> = Vec::with_capacity(n);
-    let mut tied_scratch: Vec<usize> = Vec::with_capacity(n);
-    let mut sorted_scratch: Vec<usize> = Vec::with_capacity(n);
-    let mut sub_ranks_scratch: Vec<usize> = Vec::with_capacity(n);
-    let mut d_class_poly: BTreeMap<Monomial, usize> = BTreeMap::new();
+    let Canon4Frame {
+        level_entries,
+        entries_c,
+        groups_meta,
+        groups_members,
+        clean,
+        freq_scratch,
+        tied_scratch,
+        sorted_scratch,
+        sub_ranks_scratch,
+        d_class_poly,
+        tied_buf,
+        keyed_buf,
+        keyed_buf_c,
+        sub_ranks_buf,
+        best_canonical,
+        trial_canonical,
+        canonical_monomials,
+        wire_to_pos,
+        tried,
+        usable_auts,
+    } = frame;
+    level_entries.clear();
+    entries_c.clear();
+    // One reservation per canon4_run: every scan reuses this buffer, and no
+    // static class poly can exceed the largest one's length.
+    let max_cp_len = class_polys.iter().map(|cp| cp.len()).max().unwrap_or(0);
+    if compact_ok {
+        entries_c.reserve(max_cp_len);
+    } else {
+        level_entries.reserve(max_cp_len);
+    }
+    freq_scratch.clear();
+    tied_scratch.clear();
+    sorted_scratch.clear();
+    sub_ranks_scratch.clear();
+    d_class_poly.clear();
+    // The tied-group precompute and cleanskip apply on the n <= 64 fast path
+    // only (monomials are u64 bitmasks, so canonicalization callers never
+    // exceed it; the degenerate n > 64 path keeps the legacy per-level rank
+    // rescan and never skips).
+    let fast = n <= 64;
+    // Cleanskip state is per canon4_run invocation: clean[i] = the last scan
+    // of class poly i in THIS run returned no-split and every split since had
+    // a group disjoint from its union. A split renumbers ranks
+    // order-isomorphically outside its own group, so such a rescan must
+    // return no-split again; skipping it cannot change vr and the result
+    // stays byte-identical.
+    clean.clear();
+    clean.resize(class_polys.len(), false);
 
     'master: loop {
         if !has_ties_4(&vr) {
             break;
         }
 
+        // Wires still sharing a rank; scans over polys that touch none of
+        // them can never split anything and are skipped wholesale.
+        let tied_mask = tied_mask_4(&vr);
+        if fast {
+            tied_groups_4(&vr, n, groups_meta, groups_members);
+        }
+        let groups: Option<(&[(usize, u64, usize, usize)], &[usize])> = if fast {
+            Some((groups_meta.as_slice(), groups_members.as_slice()))
+        } else {
+            None
+        };
+
         // Phase 1: scan P_{C_i} monomial levels; split by wire frequency.
         // Any split of the first splittable group → restart.
-        for cp in class_polys {
-            if scan_class_poly_levels_4(
-                cp,
-                &mut vr,
-                n,
-                &mut level_entries,
-                &mut freq_scratch,
-                &mut tied_scratch,
-                &mut sorted_scratch,
-                &mut sub_ranks_scratch,
-            ) {
-                continue 'master;
+        for (idx, (cp, &cp_union)) in class_polys.iter().zip(class_unions).enumerate() {
+            if cp_union & tied_mask == 0 {
+                continue;
+            }
+            // A clean poly's rescan is provably a no-split; skipping it
+            // leaves vr untouched, so the outcome is byte-identical.
+            if fast && clean[idx] {
+                continue;
+            }
+            let scan_res = if compact_ok {
+                scan_class_poly_levels_c(
+                    cp,
+                    &mut vr,
+                    n,
+                    tied_mask,
+                    entries_c,
+                    freq_scratch,
+                    tied_scratch,
+                    sorted_scratch,
+                    sub_ranks_scratch,
+                    groups,
+                )
+            } else {
+                scan_class_poly_levels_4(
+                    cp,
+                    &mut vr,
+                    n,
+                    tied_mask,
+                    level_entries,
+                    freq_scratch,
+                    tied_scratch,
+                    sorted_scratch,
+                    sub_ranks_scratch,
+                    groups,
+                )
+            };
+            match scan_res {
+                Some(gmask) => {
+                    for (j, &u) in class_unions.iter().enumerate() {
+                        if u & gmask != 0 {
+                            clean[j] = false;
+                        }
+                    }
+                    continue 'master;
+                }
+                None => {
+                    clean[idx] = true;
+                }
             }
         }
 
@@ -2355,36 +3420,76 @@ fn canon4_run(
         }
 
         // Tiebreak #1: for each tied group, compare remapped polynomial keys.
-        // First group where keys differ → split and restart.
+        // First group where keys differ → split and restart. The compact and
+        // fat branches compute the identical stable sort and sub-rank
+        // partition (cmp_poly_key_c == Vec<MonomialRankKey4>::cmp under
+        // compact_ok, including its Equal classes).
         let max_rank = *vr.iter().max().unwrap_or(&0);
         for cur_rank in 0..=max_rank {
-            let tied: Vec<usize> = (0..n).filter(|&v| vr[v] == cur_rank).collect();
-            if tied.len() <= 1 {
+            tied_buf.clear();
+            tied_buf.extend((0..n).filter(|&v| vr[v] == cur_rank));
+            if tied_buf.len() <= 1 {
                 continue;
             }
 
-            let mut sorted: Vec<(usize, Vec<MonomialRankKey4>)> = tied
-                .iter()
-                .map(|&v| (v, poly_key_4(&polynomials[v], &vr, n)))
-                .collect();
-            sorted.sort_by(|a, b| a.1.cmp(&b.1));
-
             let mut sub_rank = 0usize;
-            let mut sub_ranks = vec![0usize; sorted.len()];
-            for i in 1..sorted.len() {
-                if sorted[i - 1].1 != sorted[i].1 {
-                    sub_rank += 1;
+            sub_ranks_buf.clear();
+            sub_ranks_buf.resize(tied_buf.len(), 0);
+            if compact_ok {
+                keyed_buf_c.clear();
+                keyed_buf_c.extend(
+                    tied_buf
+                        .iter()
+                        .map(|&v| (v, poly_key_c(&polynomials[v], &vr))),
+                );
+                keyed_buf_c.sort_by(|a, b| cmp_poly_key_c(&a.1, &b.1));
+                for i in 1..keyed_buf_c.len() {
+                    if keyed_buf_c[i - 1].1 != keyed_buf_c[i].1 {
+                        sub_rank += 1;
+                    }
+                    sub_ranks_buf[i] = sub_rank;
                 }
-                sub_ranks[i] = sub_rank;
+            } else {
+                keyed_buf.clear();
+                keyed_buf.extend(
+                    tied_buf
+                        .iter()
+                        .map(|&v| (v, poly_key_4(&polynomials[v], &vr, n))),
+                );
+                keyed_buf.sort_by(|a, b| a.1.cmp(&b.1));
+                for i in 1..keyed_buf.len() {
+                    if keyed_buf[i - 1].1 != keyed_buf[i].1 {
+                        sub_rank += 1;
+                    }
+                    sub_ranks_buf[i] = sub_rank;
+                }
             }
             if sub_rank > 0 {
+                // This split's group is exactly the tied group at cur_rank;
+                // clear clean flags for every class poly it touches.
+                let gmask = if n <= 64 {
+                    tied_buf.iter().fold(0u64, |acc, &v| acc | (1u64 << v))
+                } else {
+                    u64::MAX
+                };
+                for (j, &u) in class_unions.iter().enumerate() {
+                    if u & gmask != 0 {
+                        clean[j] = false;
+                    }
+                }
                 for v in 0..n {
                     if vr[v] > cur_rank {
                         vr[v] += sub_rank;
                     }
                 }
-                for (i, &(v, _)) in sorted.iter().enumerate() {
-                    vr[v] = cur_rank + sub_ranks[i];
+                if compact_ok {
+                    for (i, &(v, _)) in keyed_buf_c.iter().enumerate() {
+                        vr[v] = cur_rank + sub_ranks_buf[i];
+                    }
+                } else {
+                    for (i, &(v, _)) in keyed_buf.iter().enumerate() {
+                        vr[v] = cur_rank + sub_ranks_buf[i];
+                    }
                 }
                 continue 'master;
             }
@@ -2399,50 +3504,83 @@ fn canon4_run(
         let max_rank_val = *vr.iter().max().unwrap_or(&0);
         for rk in 0..=max_rank_val {
             d_class_poly.clear();
+            let mut d_union = 0u64;
             for w in 0..n {
                 if vr[w] == rk {
                     for &m in &polynomials[w] {
-                        *d_class_poly.entry(m).or_insert(0) += 1;
+                        d_class_poly.push((m, 1usize));
+                        d_union |= m;
                     }
                 }
             }
-            if d_class_poly.is_empty() {
+            if d_class_poly.is_empty() || d_union & tied_mask == 0 {
                 continue;
             }
-            if scan_class_poly_levels_4(
-                &d_class_poly,
-                &mut vr,
-                n,
-                &mut level_entries,
-                &mut freq_scratch,
-                &mut tied_scratch,
-                &mut sorted_scratch,
-                &mut sub_ranks_scratch,
-            ) {
+            coalesce_class_poly(d_class_poly);
+            let dscan_res = if compact_ok {
+                scan_class_poly_levels_c(
+                    d_class_poly,
+                    &mut vr,
+                    n,
+                    tied_mask,
+                    entries_c,
+                    freq_scratch,
+                    tied_scratch,
+                    sorted_scratch,
+                    sub_ranks_scratch,
+                    groups,
+                )
+            } else {
+                scan_class_poly_levels_4(
+                    d_class_poly,
+                    &mut vr,
+                    n,
+                    tied_mask,
+                    level_entries,
+                    freq_scratch,
+                    tied_scratch,
+                    sorted_scratch,
+                    sub_ranks_scratch,
+                    groups,
+                )
+            };
+            if let Some(gmask) = dscan_res {
+                for (j, &u) in class_unions.iter().enumerate() {
+                    if u & gmask != 0 {
+                        clean[j] = false;
+                    }
+                }
                 continue 'master;
             }
         }
 
         // Rule L: try each wire in the first tied group as the sole winner.
         // Take the candidate that produces the lexicographically smallest canonical form.
-        let tied_rank = (0..n)
-            .filter(|&v| (0..n).filter(|&u| vr[u] == vr[v]).count() > 1)
-            .map(|v| vr[v])
-            .min();
+        let tied_rank = if n <= 64 {
+            (0..n)
+                .filter(|&v| tied_mask & (1u64 << v) != 0)
+                .map(|v| vr[v])
+                .min()
+        } else {
+            (0..n)
+                .filter(|&v| (0..n).filter(|&u| vr[u] == vr[v]).count() > 1)
+                .map(|v| vr[v])
+                .min()
+        };
 
         if let Some(tr) = tied_rank {
             if !allow_rule_l {
                 return Err(());
             }
             let candidates: Vec<usize> = (0..n).filter(|&v| vr[v] == tr).collect();
-            // Rule-L branch cap: bail deterministically once the cumulative branch budget for this
-            // top-level canonicalization is exhausted. One-sided (Err -> clean DB miss); mirrors
-            // CANON_MONOMIAL_CAP. The budget is reset at each canonicalize_polys_4 entry.
+            // Charge the full tied-group candidate budget at every recursive
+            // node. The thread-local accumulator is reset once per top-level
+            // canonicalization, so the cap covers the entire Rule-L tree.
             if let Some(cap) = canon_rule_l_branch_cap() {
-                let used = RULE_L_BRANCHES_USED.with(|c| {
-                    let v = c.get().saturating_add(candidates.len() as u64);
-                    c.set(v);
-                    v
+                let used = RULE_L_BRANCHES_USED.with(|branches| {
+                    let used = branches.get().saturating_add(candidates.len() as u64);
+                    branches.set(used);
+                    used
                 });
                 if used > cap {
                     return Err(());
@@ -2451,14 +3589,42 @@ fn canon4_run(
             let rule_l_start = Instant::now();
             CANON4_RULE_L_CALLS.fetch_add(1, Ordering::Relaxed);
             CANON4_RULE_L_BRANCHES.fetch_add(candidates.len() as u64, Ordering::Relaxed);
-            let mut best_canonical: Vec<Option<Monomial>> = Vec::new();
-            let mut trial_canonical: Vec<Option<Monomial>> = Vec::new();
-            let mut canonical_monomials: Vec<Monomial> = Vec::new();
-            let mut wire_to_pos: Vec<usize> = Vec::with_capacity(n);
+            best_canonical.clear();
+            trial_canonical.clear();
+            canonical_monomials.clear();
+            wire_to_pos.clear();
             let mut have_best = false;
             let mut best_order: Vec<usize> = Vec::new();
+            tried.clear();
+            // Coloring-compatible automorphisms (plus inverses) for this
+            // node's vr, synced lazily as the recursion appends to
+            // known_auts. vr is constant across the candidate loop, so the
+            // usability filter never changes and each aut is examined once.
+            usable_auts.clear();
+            let mut auts_synced = 0usize;
 
             for &w in &candidates {
+                // Orbit pruning: a candidate reachable from an already-tried
+                // one via a coloring-preserving automorphism completes to the
+                // same canonical form, and equal forms never replace the best
+                // (strict `<` below), so skipping it leaves the result
+                // byte-identical while collapsing factorial symmetric blowup.
+                while auts_synced < known_auts.len() {
+                    let aut = &known_auts[auts_synced];
+                    if aut.iter().enumerate().all(|(v, &img)| vr[img] == vr[v]) {
+                        let mut inv = vec![0usize; aut.len()];
+                        for (v, &img) in aut.iter().enumerate() {
+                            inv[img] = v;
+                        }
+                        usable_auts.push(aut.clone());
+                        usable_auts.push(inv);
+                    }
+                    auts_synced += 1;
+                }
+                if canon4_orbit_hits_tried(w, &tried, &candidates, &usable_auts) {
+                    continue;
+                }
+
                 let mut trial_vr = vr.clone();
                 for v in 0..n {
                     if trial_vr[v] > tr {
@@ -2471,21 +3637,40 @@ fn canon4_run(
                     }
                 }
 
-                let trial_order = canon4_run(polynomials, class_polys, trial_vr, true)?;
+                let trial_order = canon4_run(
+                    polynomials,
+                    class_polys,
+                    class_unions,
+                    trial_vr,
+                    true,
+                    known_auts,
+                    compact_ok,
+                )?;
                 push_flat_canonical_form_4(
                     polynomials,
                     &trial_order,
-                    &mut wire_to_pos,
-                    &mut canonical_monomials,
-                    &mut trial_canonical,
+                    wire_to_pos,
+                    canonical_monomials,
+                    trial_canonical,
                 );
 
-                if !have_best || trial_canonical < best_canonical {
+                if !have_best {
                     best_canonical.clear();
                     best_canonical.extend_from_slice(&trial_canonical);
                     best_order = trial_order;
                     have_best = true;
+                } else if trial_canonical == best_canonical {
+                    // Two completions with the same canonical form yield an
+                    // automorphism; record it for pruning everywhere in the
+                    // recursion (usability is re-checked per node).
+                    known_auts.push(automorphism_from_orders(&best_order, &trial_order, n));
+                } else if trial_canonical < best_canonical {
+                    best_canonical.clear();
+                    best_canonical.extend_from_slice(&trial_canonical);
+                    best_order = trial_order;
                 }
+
+                tried.push(w);
             }
             let rule_l_elapsed = rule_l_start.elapsed();
             CANON4_RULE_L_TIME.fetch_add(rule_l_elapsed.as_nanos() as u64, Ordering::Relaxed);
@@ -2519,11 +3704,18 @@ pub fn canonicalize_polys_4(
     if n == 0 {
         return Ok((vec![], Permutation { data: vec![] }));
     }
-    // Reset the per-canonicalization Rule-L branch budget (see CANON_RULE_L_BRANCH_CAP). The
-    // budget spans the whole recursive canon4_run tree of this top-level call; forward and reverse
-    // directions each get a fresh budget (separate canonicalize_polys_4 calls).
+    // Compact level keys are exact iff every rank key's 65-byte tail stays
+    // zero, i.e. every monomial degree <= MONOMIAL_RANK_PREFIX_LEN_4 (16).
+    // Class polys and D-class polys reuse these same monomials, so one
+    // top-level check covers every scan in the recursion.
+    let compact_ok = !polynomials.iter().any(|p| {
+        p.iter()
+            .any(|m| m.count_ones() > MONOMIAL_RANK_PREFIX_LEN_4 as u32)
+    });
+    // Each direction gets an independent budget, while every recursive
+    // canon4_run invocation in this call shares the same accumulator.
     if canon_rule_l_branch_cap().is_some() {
-        RULE_L_BRANCHES_USED.with(|c| c.set(0));
+        RULE_L_BRANCHES_USED.with(|branches| branches.set(0));
     }
     for poly in &mut polynomials {
         normalize_polynomial(poly);
@@ -2550,22 +3742,38 @@ pub fn canonicalize_polys_4(
         class_groups.push(current);
     }
 
-    // Build P_{C_i}: sum of polynomials in each class group (natural-number coefficients).
-    let class_polys: Vec<BTreeMap<Monomial, usize>> = class_groups
+    // Build P_{C_i}: sum of polynomials in each class group (natural-number
+    // coefficients), as monomial-sorted (monomial, count) vectors.
+    let class_polys: Vec<Vec<(Monomial, usize)>> = class_groups
         .iter()
         .map(|group| {
-            let mut sum: BTreeMap<Monomial, usize> = BTreeMap::new();
+            let mut sum: Vec<(Monomial, usize)> = Vec::new();
             for &wire in group {
-                for &m in &polynomials[wire] {
-                    *sum.entry(m).or_insert(0) += 1;
-                }
+                sum.extend(polynomials[wire].iter().map(|&m| (m, 1usize)));
             }
+            coalesce_class_poly(&mut sum);
             sum
         })
         .collect();
 
+    // Static per-class-poly wire unions let canon4_run skip scans over polys
+    // that touch no still-tied wire.
+    let class_unions: Vec<u64> = class_polys
+        .iter()
+        .map(|cp| cp.iter().fold(0u64, |acc, &(m, _)| acc | m))
+        .collect();
+
     // All wires start tied; canon4_run refines iteratively.
-    let final_order = canon4_run(&polynomials, &class_polys, vec![0usize; n], allow_rule_l)?;
+    let mut known_auts: Vec<Vec<usize>> = Vec::new();
+    let final_order = canon4_run(
+        &polynomials,
+        &class_polys,
+        &class_unions,
+        vec![0usize; n],
+        allow_rule_l,
+        &mut known_auts,
+        compact_ok,
+    )?;
 
     let mut wire_to_pos = vec![0usize; n];
     for (pos, &wire) in final_order.iter().enumerate() {
@@ -2573,7 +3781,7 @@ pub fn canonicalize_polys_4(
     }
     let remap_monomial = |m: Monomial| -> Monomial {
         let mut result = 0u64;
-        let mut mm = m & wire_mask(n);
+        let mut mm = m;
         while mm != 0 {
             result |= 1u64 << wire_to_pos[mm.trailing_zeros() as usize];
             mm &= mm - 1;
@@ -2942,11 +4150,809 @@ pub fn poly_to_compressed_str(poly: &Polynomial, n: usize) -> String {
 mod tests {
     use super::*;
     use crate::random::random_data::random_circuit;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
     use std::collections::BTreeSet;
 
     #[test]
     fn polynomial_from_terms_sorts_and_cancels_pairs() {
         assert_eq!(polynomial_from_terms([5, 3, 5, 1, 3, 5, 7, 7]), vec![1, 5]);
+    }
+
+    // Limb-indexed wide kernels must be bit-exact against the original
+    // full-width bignum shift formulation for every in-range wire, including
+    // limb boundaries.
+    #[test]
+    fn opt_equiv_limb_kernels_match_bignum_shifts() {
+        fn ref_256(state: u256, gate: [u16; 3]) -> u256 {
+            let one = u256::one();
+            let c1 = (state >> gate[1]) & one;
+            let c2 = (state >> gate[2]) & one;
+            state ^ ((c1 | (one ^ c2)) << gate[0])
+        }
+        fn ref_512(state: u512, gate: [u16; 3]) -> u512 {
+            let one = u512::one();
+            let c1 = (state >> gate[1]) & one;
+            let c2 = (state >> gate[2]) & one;
+            state ^ ((c1 | (one ^ c2)) << gate[0])
+        }
+        fn ref_1024(state: U1024, gate: [u16; 3]) -> U1024 {
+            let one = U1024::one();
+            let c1 = (state >> gate[1]) & one;
+            let c2 = (state >> gate[2]) & one;
+            state ^ ((c1 | (one ^ c2)) << gate[0])
+        }
+        let mut state = 0x0dd_ba11_5eed_2026u64;
+        let mut next = |m: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % m
+        };
+        let boundary = [0u64, 1, 63, 64, 65, 127, 128, 191, 255];
+        for trial in 0..4000 {
+            let pick = |next: &mut dyn FnMut(u64) -> u64, width: u64| -> u16 {
+                if trial % 3 == 0 {
+                    boundary[next(boundary.len() as u64) as usize].min(width - 1) as u16
+                } else {
+                    next(width) as u16
+                }
+            };
+            let mut bytes = [0u8; 128];
+            for b in bytes.iter_mut() {
+                *b = next(256) as u8;
+            }
+            let g256 = [
+                pick(&mut next, 256),
+                pick(&mut next, 256),
+                pick(&mut next, 256),
+            ];
+            let s256 = u256::from_little_endian(&bytes[..32]);
+            assert_eq!(Gate::evaluate_index_256(s256, g256), ref_256(s256, g256));
+            let g512 = [
+                pick(&mut next, 512),
+                pick(&mut next, 512),
+                pick(&mut next, 512),
+            ];
+            let s512 = u512::from_little_endian(&bytes[..64]);
+            assert_eq!(Gate::evaluate_index_512(s512, g512), ref_512(s512, g512));
+            let g1024 = [
+                pick(&mut next, 1024),
+                pick(&mut next, 1024),
+                pick(&mut next, 1024),
+            ];
+            let s1024 = U1024::from_little_endian(&bytes);
+            assert_eq!(
+                Gate::evaluate_index_1024(s1024, g1024),
+                ref_1024(s1024, g1024)
+            );
+        }
+    }
+
+    // The u512 probably_equal arm (300 eval wires) must keep both verdicts.
+    #[test]
+    fn opt_equiv_probably_equal_512_arm_agrees() {
+        let c = random_circuit(300, 400);
+        // Equivalent pair: append a cancelling gate pair (target not among its
+        // controls, so the two applications undo each other).
+        let mut c2 = c.clone();
+        c2.gates.push([5, 20, 30]);
+        c2.gates.push([5, 20, 30]);
+        assert!(c.probably_equal(&c2, 300, 64).is_ok());
+        // Non-equivalent pair: [0,1,1] fires on every input (c1 | !c1), so
+        // wire 0 differs on every drawn input.
+        let mut c3 = c.clone();
+        c3.gates.push([0, 1, 1]);
+        assert!(c.probably_equal(&c3, 300, 64).is_err());
+    }
+
+    // The stack-style pass must reproduce the historical drain-with-backtrack
+    // cancellation exactly, including tag lockstep.
+    #[test]
+    fn opt_equiv_cancel_adjacent_duplicates_matches_drain_reference() {
+        fn reference(gates: &mut Vec<[u16; 3]>, tags: Option<&mut Vec<u32>>) {
+            let mut tags = tags;
+            let mut j = 0;
+            while j < gates.len().saturating_sub(1) {
+                if gates[j] == gates[j + 1] {
+                    gates.drain(j..=j + 1);
+                    if let Some(tags) = tags.as_deref_mut() {
+                        tags.drain(j..=j + 1);
+                    }
+                    j = j.saturating_sub(2);
+                } else {
+                    j += 1;
+                }
+            }
+        }
+        let mut state = 0xdead_beef_cafe_1234u64;
+        let mut next = |m: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % m
+        };
+        for len in [0usize, 1, 2, 3, 10, 200, 2000] {
+            // A tiny alphabet makes adjacent duplicates and cascades common.
+            let mut gates: Vec<[u16; 3]> = (0..len)
+                .map(|_| [next(3) as u16, next(3) as u16, next(3) as u16])
+                .collect();
+            let mut tags: Vec<u32> = (0..len as u32).collect();
+            let mut ref_gates = gates.clone();
+            let mut ref_tags = tags.clone();
+            cancel_adjacent_duplicates(&mut gates, Some(&mut tags));
+            reference(&mut ref_gates, Some(&mut ref_tags));
+            assert_eq!(gates, ref_gates, "len={len}");
+            assert_eq!(tags, ref_tags, "len={len}");
+        }
+    }
+
+    #[test]
+    fn polynomial_xor_assign_cancels_shared_terms() {
+        let mut left = vec![1, 3, 8];
+        poly_xor_assign(&mut left, vec![3, 5, 8]);
+        assert_eq!(left, vec![1, 5]);
+    }
+
+    #[test]
+    fn to_polynomial_keeps_terms_sorted_and_cancelled() {
+        let circuit = CircuitSeq {
+            gates: vec![[0, 1, 2]],
+        };
+        let polys = circuit.to_polynomial(3, 0, 1);
+        assert_eq!(polys[0], vec![0, 1, 4, 6]);
+        assert_eq!(polys[1], vec![2]);
+        assert_eq!(polys[2], vec![4]);
+    }
+
+    #[test]
+    fn evaluate_1024_handles_wires_above_512() {
+        let circuit = CircuitSeq {
+            gates: vec![[900, 901, 902]],
+        };
+        let one = U1024::one();
+
+        let flipped = circuit.evaluate_1024(U1024::zero());
+        assert_eq!((flipped >> 900) & one, one);
+
+        let blocked = circuit.evaluate_1024(one << 902);
+        assert_eq!((blocked >> 900) & one, U1024::zero());
+    }
+
+    #[test]
+    fn evaluate_128_matches_256_for_supported_wires() {
+        let mut rng = fastrand::Rng::with_seed(0x6576_616c_3132_38);
+        for _ in 0..500 {
+            let n = rng.usize(3..=128);
+            let m = rng.usize(0..=(3 * n));
+            fastrand::seed(rng.u64(..));
+            let circuit = random_circuit(n, m);
+            let input = rng.u128(..);
+            let mask = if n < 128 { (1u128 << n) - 1 } else { u128::MAX };
+
+            let output_128 = circuit.evaluate_128(input) & mask;
+            let output_256 = circuit.evaluate_256(u256::from(input)) & u256::from(mask);
+            assert_eq!(u256::from(output_128), output_256, "n={n} m={m}");
+        }
+    }
+
+    fn old_toggle(poly: &mut BTreeSet<Monomial>, m: Monomial) {
+        if !poly.remove(&m) {
+            poly.insert(m);
+        }
+    }
+
+    fn old_xor(mut left: BTreeSet<Monomial>, right: BTreeSet<Monomial>) -> BTreeSet<Monomial> {
+        for m in right {
+            old_toggle(&mut left, m);
+        }
+        left
+    }
+
+    fn old_and(left: &BTreeSet<Monomial>, right: &BTreeSet<Monomial>) -> BTreeSet<Monomial> {
+        let mut result = BTreeSet::new();
+        for &m1 in left {
+            for &m2 in right {
+                old_toggle(&mut result, m1 | m2);
+            }
+        }
+        result
+    }
+
+    fn old_not(poly: BTreeSet<Monomial>) -> BTreeSet<Monomial> {
+        old_xor(BTreeSet::from([0u64]), poly)
+    }
+
+    fn old_hashset_style_to_polynomial(circuit: &CircuitSeq, n: usize) -> Vec<Polynomial> {
+        let mut polys: Vec<BTreeSet<Monomial>> =
+            (0..n).map(|i| BTreeSet::from([1u64 << i])).collect();
+
+        for &[a, b, c] in &circuit.gates {
+            let not_b = old_not(polys[b as usize].clone());
+            let term = old_and(&polys[c as usize], &not_b);
+            let mut new_a = old_xor(polys[a as usize].clone(), term);
+            old_toggle(&mut new_a, 0u64);
+            polys[a as usize] = new_a;
+        }
+
+        polys
+            .into_iter()
+            .map(|poly| poly.into_iter().collect())
+            .collect()
+    }
+
+    #[test]
+    fn to_polynomial_matches_old_hashset_style_implementation() {
+        let mut rng = fastrand::Rng::with_seed(0x706f_6c79_7665_6375);
+        for _ in 0..200 {
+            let n = rng.usize(3..=12);
+            let m = rng.usize(0..=(3 * n));
+            fastrand::seed(rng.u64(..));
+            let circuit = random_circuit(n, m);
+
+            assert_eq!(
+                circuit.to_polynomial(n, 0, circuit.gates.len()),
+                old_hashset_style_to_polynomial(&circuit, n)
+            );
+        }
+    }
+
+    #[test]
+    fn to_polynomial_capped_matches_unbounded_and_bails_cleanly() {
+        let circuit = CircuitSeq {
+            gates: vec![[0, 1, 2]],
+        };
+        let expected = circuit.to_polynomial(3, 0, circuit.gates.len());
+
+        assert_eq!(
+            circuit.to_polynomial_capped(3, 0, circuit.gates.len(), 4),
+            Some(expected)
+        );
+        assert_eq!(
+            circuit.to_polynomial_capped(3, 0, circuit.gates.len(), 3),
+            None
+        );
+    }
+
+    #[test]
+    fn canonicalize_skips_window_over_64_distinct_wires() {
+        // 22 disjoint triples touch 66 distinct wires. Building u64
+        // monomials for this window would alias variables above bit 63.
+        let gates: Vec<[u16; 3]> = (0..22u16)
+            .map(|gate| [3 * gate, 3 * gate + 1, 3 * gate + 2])
+            .collect();
+        let circuit = CircuitSeq { gates };
+        assert_eq!(circuit.used_wires().len(), 66);
+
+        let skips_before = OVERSIZED_CANON_SKIPS.load(Ordering::Relaxed);
+        assert!(circuit.canonicalize_polys_single(false).0.is_empty());
+        assert!(circuit.canonicalize_polys_single(true).0.is_empty());
+        assert!(circuit.canonicalize_polys_single_neg(&[]).0.is_empty());
+        assert!(OVERSIZED_CANON_SKIPS.load(Ordering::Relaxed) >= skips_before.saturating_add(3));
+
+        let small = CircuitSeq {
+            gates: vec![[0, 1, 2], [1, 2, 0]],
+        };
+        assert!(!small.canonicalize_polys_single(false).0.is_empty());
+    }
+
+    fn eval_poly(poly: &Polynomial, input: usize) -> usize {
+        poly.iter().fold(0usize, |acc, &monomial| {
+            let term = if monomial == 0 || ((input as u64) & monomial) == monomial {
+                1
+            } else {
+                0
+            };
+            acc ^ term
+        })
+    }
+
+    fn eval_polys(polys: &[Polynomial], input: usize) -> usize {
+        polys.iter().enumerate().fold(0usize, |acc, (wire, poly)| {
+            acc | (eval_poly(poly, input) << wire)
+        })
+    }
+
+    #[test]
+    fn probably_equal_widens_to_actual_circuit_wires() {
+        // Both circuits compute w2 ^= (w1 AND NOT w0) on the 200-wire compare
+        // contract, via a zero-initialized aux wire. A's aux lives at wire
+        // 300/301 — beyond u256 — so the old num_wires-based width dispatch
+        // evaluated it in u256 where shifts >= 256 silently return 0,
+        // corrupting the aux accesses and reporting a false "not equal".
+        // Width must follow the circuits' actual max wire.
+        let a = CircuitSeq {
+            gates: vec![[300, 0, 1], [2, 301, 300]],
+        };
+        let b = CircuitSeq {
+            gates: vec![[250, 0, 1], [2, 251, 250]],
+        };
+        assert!(
+            a.probably_equal(&b, 200, 512).is_ok(),
+            "equivalent circuits reported non-equal — width dispatch regressed"
+        );
+        assert!(b.probably_equal(&a, 200, 512).is_ok());
+
+        // Sanity: genuinely different circuits are still detected at the
+        // widened evaluation width.
+        let c = CircuitSeq {
+            gates: vec![[2, 1, 0]],
+        };
+        assert!(a.probably_equal(&c, 200, 512).is_err());
+    }
+
+    // The packed-prefix rank-key comparator must order and equate exactly like
+    // the full 65-byte lexicographic compare it replaces.
+    #[test]
+    fn opt_equiv_rank_key_prefix_cmp_matches_lexicographic() {
+        let mut state = 0x7261_6e6b_6b65_7934u64;
+        let mut next = |m: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % m
+        };
+        let mut keys: Vec<MonomialRankKey4> = Vec::new();
+        // Raw random byte arrays with a tiny alphabet and frequent short
+        // fills, so prefix ties (and ties resolved only past byte 16) are
+        // common.
+        for _ in 0..200 {
+            let mut encoded_ranks = [0u8; MONOMIAL_RANK_KEY_LEN_4];
+            let filled = if next(2) == 0 {
+                next(6) as usize
+            } else {
+                next(1 + MONOMIAL_RANK_KEY_LEN_4 as u64) as usize
+            };
+            for slot in 0..filled {
+                encoded_ranks[slot] = next(4) as u8;
+            }
+            let degree = encoded_ranks.iter().filter(|&&b| b != 0).count() as u8;
+            let prefix = u128::from_be_bytes(
+                encoded_ranks[..MONOMIAL_RANK_PREFIX_LEN_4]
+                    .try_into()
+                    .unwrap(),
+            );
+            keys.push(MonomialRankKey4 {
+                degree,
+                prefix,
+                encoded_ranks,
+            });
+        }
+        // Realistic keys from random monomials under random rank vectors.
+        for _ in 0..200 {
+            let n = 1 + next(16) as usize;
+            let vr: Vec<usize> = (0..n).map(|_| next(n as u64) as usize).collect();
+            let m: Monomial = next(1u64 << n);
+            keys.push(monomial_rank_key_4(m, &vr, n));
+        }
+        for a in &keys {
+            for b in &keys {
+                assert_eq!(a.cmp(b), a.encoded_ranks.cmp(&b.encoded_ranks));
+                assert_eq!(*a == *b, a.encoded_ranks == b.encoded_ranks);
+            }
+        }
+    }
+
+    // The stack-bitset used_wires fast path (and the len-only variant) must
+    // match the historical marking implementation, on either side of the
+    // 1024-wire fallback boundary.
+    #[test]
+    fn opt_equiv_used_wires_matches_marking_reference() {
+        fn reference(gates: &[[u16; 3]]) -> Vec<u16> {
+            let Some(max_wire) = gates.iter().flatten().copied().max() else {
+                return Vec::new();
+            };
+            let mut used = vec![false; max_wire as usize + 1];
+            for &[target, control_a, control_b] in gates {
+                used[target as usize] = true;
+                used[control_a as usize] = true;
+                used[control_b as usize] = true;
+            }
+            used.into_iter()
+                .enumerate()
+                .filter_map(|(wire, is_used)| is_used.then_some(wire as u16))
+                .collect()
+        }
+        let mut state = 0x7573_6564_7769_7265u64;
+        let mut next = |m: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % m
+        };
+        for len in [0usize, 1, 5, 40, 300] {
+            for &wire_span in &[3u64, 60, 1023, 1024, 1500, 65535] {
+                let gates: Vec<[u16; 3]> = (0..len)
+                    .map(|_| {
+                        [
+                            next(wire_span + 1) as u16,
+                            next(wire_span + 1) as u16,
+                            next(wire_span + 1) as u16,
+                        ]
+                    })
+                    .collect();
+                let circuit = CircuitSeq { gates };
+                let expected = reference(&circuit.gates);
+                assert_eq!(circuit.used_wires(), expected, "len={len} span={wire_span}");
+                assert_eq!(circuit.used_wires_len(), expected.len());
+            }
+        }
+    }
+
+    // Scratch-buffer to_polynomial/_capped must reproduce the historical
+    // allocate-per-gate pipeline exactly, including the capped budget checks.
+    fn reference_to_polynomial(
+        circuit: &CircuitSeq,
+        n: usize,
+        start: usize,
+        end: usize,
+    ) -> Vec<Polynomial> {
+        let gates = &circuit.gates[start..end];
+        let mut polys: Vec<Polynomial> = (0..n).map(|i| vec![1u64 << i]).collect();
+        for &[a, b, c] in gates {
+            let term = poly_and_not(&polys[c as usize], &polys[b as usize]);
+            poly_xor_assign(&mut polys[a as usize], term);
+            toggle_monomial(&mut polys[a as usize], 0u64);
+        }
+        polys
+    }
+
+    fn reference_to_polynomial_capped(
+        circuit: &CircuitSeq,
+        n: usize,
+        start: usize,
+        end: usize,
+        cap: usize,
+    ) -> Option<Vec<Polynomial>> {
+        let gates = &circuit.gates[start..end];
+        let mut polys: Vec<Polynomial> = (0..n).map(|i| vec![1u64 << i]).collect();
+        for &[a, b, c] in gates {
+            if polys[b as usize]
+                .len()
+                .saturating_mul(polys[c as usize].len())
+                > cap.saturating_mul(16)
+            {
+                return None;
+            }
+            let term = poly_and_not(&polys[c as usize], &polys[b as usize]);
+            poly_xor_assign(&mut polys[a as usize], term);
+            toggle_monomial(&mut polys[a as usize], 0u64);
+            if polys[a as usize].len() > cap {
+                return None;
+            }
+        }
+        Some(polys)
+    }
+
+    #[test]
+    fn opt_equiv_to_polynomial_scratch_reuse_matches_reference() {
+        let mut rng = fastrand::Rng::with_seed(0x7363_7261_7463_6821);
+        for _ in 0..200 {
+            let n = rng.usize(3..=12);
+            let m = rng.usize(0..=(3 * n));
+            fastrand::seed(rng.u64(..));
+            let circuit = random_circuit(n, m);
+            let start = rng.usize(0..=circuit.gates.len());
+            let end = rng.usize(start..=circuit.gates.len());
+            assert_eq!(
+                circuit.to_polynomial(n, start, end),
+                reference_to_polynomial(&circuit, n, start, end),
+                "n={n} m={m} start={start} end={end}"
+            );
+            for cap in [1usize, 2, 4, 8, 64, usize::MAX] {
+                assert_eq!(
+                    circuit.to_polynomial_capped(n, start, end, cap),
+                    reference_to_polynomial_capped(&circuit, n, start, end, cap),
+                    "n={n} m={m} start={start} end={end} cap={cap}"
+                );
+            }
+        }
+    }
+
+    // Merge-based input negation must match the historical per-rest
+    // binary-search toggles on normalized polynomials.
+    #[test]
+    fn opt_equiv_substitute_input_negation_matches_toggle_reference() {
+        fn reference(poly: &mut Polynomial, w: usize) {
+            let bit = 1u64 << w;
+            let rests: Vec<Monomial> = poly
+                .iter()
+                .filter(|&&m| m & bit != 0)
+                .map(|&m| m & !bit)
+                .collect();
+            for rest in rests {
+                toggle_monomial(poly, rest);
+            }
+        }
+        let mut rng = fastrand::Rng::with_seed(0x6e65_6761_7465_7331);
+        for _ in 0..500 {
+            let k = rng.usize(1..=12);
+            let terms: Vec<Monomial> = (0..rng.usize(0..=40))
+                .map(|_| rng.u64(..) & ((1u64 << k) - 1))
+                .collect();
+            let poly = polynomial_from_terms(terms);
+            let w = rng.usize(0..k);
+            let mut new_poly = poly.clone();
+            let mut old_poly = poly.clone();
+            substitute_input_negation(&mut new_poly, w);
+            reference(&mut old_poly, w);
+            assert_eq!(new_poly, old_poly, "k={k} w={w} poly={poly:?}");
+            // Involution sanity: substituting the same wire twice restores
+            // the input.
+            substitute_input_negation(&mut new_poly, w);
+            assert_eq!(new_poly, poly, "k={k} w={w}");
+        }
+    }
+
+    // The hashed single-direction variant must agree with the plain variant
+    // on order and used wires, and its key must be exactly
+    // xxh3_128(polys_repr_blob(plain polys)) in both fresh and cached paths.
+    #[test]
+    fn opt_equiv_canonicalize_polys_single_hashed_matches_plain() {
+        use xxhash_rust::xxh3::xxh3_128;
+        let mut rng = fastrand::Rng::with_seed(0x6861_7368_6564_2101);
+        for trial in 0..60 {
+            let n = rng.usize(3..=10);
+            let m = rng.usize(1..=(3 * n));
+            fastrand::seed(rng.u64(..));
+            let circuit = random_circuit(n, m);
+            for reversed in [false, true] {
+                let (hash, h_order, h_used) = circuit.canonicalize_polys_single_hashed(reversed);
+                let (polys, p_order, p_used) = circuit.canonicalize_polys_single(reversed);
+                assert_eq!(h_order.data, p_order.data, "trial={trial} rev={reversed}");
+                assert_eq!(h_used, p_used);
+                assert_eq!(
+                    hash,
+                    Some(xxh3_128(&polys_repr_blob(&polys)).to_le_bytes()),
+                    "trial={trial} rev={reversed}"
+                );
+                // Second call exercises the cached path when the cache is on.
+                let (hash2, order2, used2) = circuit.canonicalize_polys_single_hashed(reversed);
+                assert_eq!(hash2, hash);
+                assert_eq!(order2.data, p_order.data);
+                assert_eq!(used2, p_used);
+            }
+        }
+        // Oversized windows keep the skip contract: no key, empty order.
+        let gates: Vec<[u16; 3]> = (0..22u16)
+            .map(|gate| [3 * gate, 3 * gate + 1, 3 * gate + 2])
+            .collect();
+        let big = CircuitSeq { gates };
+        let (hash, order, used) = big.canonicalize_polys_single_hashed(false);
+        assert_eq!(hash, None);
+        assert!(order.data.is_empty());
+        assert_eq!(used.len(), 66);
+    }
+
+    // The cached neg variant must match the historical uncached pipeline
+    // (per-input substitution in caller order) on fresh and hit paths, and an
+    // empty negation set must coincide with the plain canonicalization.
+    #[test]
+    fn opt_equiv_canon_single_neg_cache_matches_uncached_reference() {
+        fn reference_neg(
+            circuit: &CircuitSeq,
+            negated_inputs: &[u16],
+        ) -> (Vec<Polynomial>, Permutation, Vec<u16>) {
+            let used = circuit.used_wires();
+            if used.len() > 64 {
+                return (Vec::new(), Permutation { data: Vec::new() }, used);
+            }
+            let wire_map = dense_wire_map(&used);
+            let mut c = CircuitSeq {
+                gates: circuit
+                    .gates
+                    .iter()
+                    .map(|&[t, c1, c2]| {
+                        [
+                            wire_map[t as usize],
+                            wire_map[c1 as usize],
+                            wire_map[c2 as usize],
+                        ]
+                    })
+                    .collect(),
+            };
+            c.canonicalize();
+            let n = c.max_wire() as usize + 1;
+            let mut polys = c.to_polynomial(n, 0, c.gates.len());
+            for &w in negated_inputs {
+                let mapped = match wire_map.get(w as usize) {
+                    Some(&mw) if mw != u16::MAX => mw as usize,
+                    _ => continue,
+                };
+                for p in polys.iter_mut() {
+                    // Sequential toggle substitution, as the historical code
+                    // did.
+                    let bit = 1u64 << mapped;
+                    let rests: Vec<Monomial> = p
+                        .iter()
+                        .filter(|&&mm| mm & bit != 0)
+                        .map(|&mm| mm & !bit)
+                        .collect();
+                    for rest in rests {
+                        toggle_monomial(p, rest);
+                    }
+                }
+            }
+            let canon = match canonicalize_polys_4(polys, true) {
+                Ok(canon) => canon,
+                Err(()) => return (Vec::new(), Permutation { data: Vec::new() }, used),
+            };
+            (canon.0, canon.1, used)
+        }
+
+        let mut rng = fastrand::Rng::with_seed(0x6e65_675f_6361_6368);
+        for trial in 0..60 {
+            let n = rng.usize(3..=10);
+            let m = rng.usize(1..=(3 * n));
+            fastrand::seed(rng.u64(..));
+            let circuit = random_circuit(n, m);
+            // Random negation list: in-range wires (used or not), a possible
+            // duplicate (involution), and a possible out-of-range wire to
+            // exercise the skip filter.
+            let mut negs: Vec<u16> = (0..rng.usize(0..=4))
+                .map(|_| rng.u16(0..n as u16))
+                .collect();
+            if rng.bool() && !negs.is_empty() {
+                let dup = negs[0];
+                negs.push(dup);
+            }
+            if rng.bool() {
+                negs.push(500);
+            }
+            let expected = reference_neg(&circuit, &negs);
+            let first = circuit.canonicalize_polys_single_neg(&negs);
+            let second = circuit.canonicalize_polys_single_neg(&negs);
+            assert_eq!(first.0, expected.0, "trial={trial} negs={negs:?}");
+            assert_eq!(first.1.data, expected.1.data, "trial={trial} negs={negs:?}");
+            assert_eq!(first.2, expected.2);
+            assert_eq!(second.0, expected.0, "hit path, trial={trial}");
+            assert_eq!(second.1.data, expected.1.data);
+            assert_eq!(second.2, expected.2);
+            // Empty negation set must coincide with plain canonicalization.
+            let plain = circuit.canonicalize_polys_single(false);
+            let neg_empty = circuit.canonicalize_polys_single_neg(&[]);
+            assert_eq!(neg_empty.0, plain.0, "trial={trial}");
+            assert_eq!(neg_empty.1.data, plain.1.data);
+            assert_eq!(neg_empty.2, plain.2);
+        }
+    }
+
+    #[test]
+    fn to_polynomial_matches_evaluate_control_semantics() {
+        let cases = [
+            CircuitSeq {
+                gates: vec![[0, 1, 2]],
+            },
+            CircuitSeq {
+                gates: vec![[3, 0, 1], [1, 2, 3], [2, 3, 0], [0, 1, 4]],
+            },
+        ];
+
+        for circuit in cases {
+            let n = 5;
+            let mask = (1usize << n) - 1;
+            let polys = circuit.to_polynomial(n, 0, circuit.gates.len());
+            for input in 0..(1usize << n) {
+                assert_eq!(
+                    eval_polys(&polys, input) & mask,
+                    circuit.evaluate(input) & mask,
+                    "input={input:#b} circuit={:?}",
+                    circuit.gates
+                );
+            }
+        }
+    }
+
+    fn canon_hash(seed: u64, n_wires: u16, gates: usize) -> u128 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut c = CircuitSeq { gates: Vec::new() };
+        while c.gates.len() < gates {
+            let a = rng.random_range(0..n_wires);
+            let b = rng.random_range(0..n_wires);
+            let d = rng.random_range(0..n_wires);
+            if a != b && a != d && b != d {
+                c.gates.push([a, b, d]);
+            }
+        }
+        let (polys, _, _) = c.canonicalize_polys_single(seed % 2 == 0);
+        xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&polys))
+    }
+
+    // Golden canonical-form hashes. The canonical form defines every curated-DB key, so any
+    // change to these values means the DB has been silently invalidated. Do not regenerate
+    // casually. Regenerated 2026-07-18 after fixing a swapped-argument bug in to_polynomial
+    // (the g57 monomial was b*NOT(c); the executor and from_g57 use NOT(b)*c) — this realigns
+    // our DB keys with the source/upstream convention. Regenerate via the #[ignore]d
+    // regenerate_canon_golden test only when the canonical form legitimately changes.
+    #[test]
+    fn canonical_form_golden() {
+        const GOLDEN: &[(&str, &str)] = &[
+            ("G0", "6fa0209f74c6aca5a629ea4de7b882dd"),
+            ("H0", "f8decf2b941d92e0016521e783bea5a8"),
+            ("G1", "541946580565039aca15fdbd19755175"),
+            ("H1", "25fb31deb42fd599dc90d9dea6fba89d"),
+            ("G2", "5d551f5eba5474d33a871ecb0a8e46b7"),
+            ("H2", "36a43931107c7d80f1fffbc5527c313a"),
+            ("G3", "fd20b272d990c65207f9ffa0b3582b31"),
+            ("H3", "1502ecfb3f88e59418564f2185548dce"),
+            ("G4", "b6d47169d8e88efc8d965ff190d6c21f"),
+            ("H4", "56986adc1dfa776e9de5480a80e9ab46"),
+            ("G5", "fdf065eb905e344adb801bf88319a929"),
+            ("H5", "e924c80a183b499d7b576bde07129131"),
+            ("G6", "fbda8128fafdf7924880c95813641b7a"),
+            ("H6", "245dd8d448f23884fbbac2b87aacaa86"),
+            ("G7", "f7594dc87bdccb66a5e77d816b05b06a"),
+            ("H7", "e015d3a5ec42bab54220110ad22f2612"),
+            ("G8", "c29cd6d9be717edd6850b647f5370c0c"),
+            ("H8", "602c1fad413f6816a32e4d299d096879"),
+            ("G9", "e36265eba0672f79bbd54ed94c388564"),
+            ("H9", "3fd134840c7913907227cf9205bdac9e"),
+            ("G10", "d19251954f40b19ccb15c700f246276b"),
+            ("H10", "59e94f3dedd110d92c1dae1e0a74cade"),
+            ("G11", "b3cb06c6bb4c1f8f3f8e612e2622f2bf"),
+            ("H11", "5168e7504437bd05203e558be87d7a5a"),
+            ("G12", "3a2eebdc712c2cb9f8896f11169e4026"),
+            ("H12", "c6ad8d964f866af06894dae44cad7911"),
+            ("G13", "586eb625594255c9621e813a91669339"),
+            ("H13", "2bfc4e6ff9208214514c899ffc57bb62"),
+            ("G14", "1192d8249e2773dd389c2e8611bf256c"),
+            ("H14", "d28943f055eb4a63aa4e4f4c4670ba13"),
+            ("G15", "bca4629cf33574b8bd9eec6527e0c95f"),
+            ("H15", "3523ee73c966859cabd1a5e626cdc51f"),
+            ("G16", "2f0196c07918909d574b35e423bc60c7"),
+            ("H16", "b76ea7f0d46c738a83d5ccdfacec678c"),
+            ("G17", "1f0f68761b56f660f88c9ebdc2177bb7"),
+            ("H17", "bd6e51d525fbeab79ec34b154ee398b4"),
+            ("G18", "1d12417189ed645c0d68e74c85c3e4bd"),
+            ("H18", "360c53cc42d3591e7c3558384e5d7a7f"),
+            ("G19", "ac596d2604e6963258e9de7746f1efd7"),
+            ("H19", "c24ea23211b28ac22faac1480c51289b"),
+            ("G20", "e020d8c2d1dd740c9ef7e71d0ae52ac9"),
+            ("H20", "a5b37a68dddb773429da7672d6c4870d"),
+            ("G21", "39b636d94d180700abfe4e0b299e62c8"),
+            ("H21", "c7b6d35f0b75ee1a3a23910657d13935"),
+            ("G22", "b0a48bb2e87a13245269b1e309380d07"),
+            ("H22", "53c37dd76b64c030b4c50b3ffd68a2c9"),
+            ("G23", "631171335b8ff30b1a4406c1913cfed8"),
+            ("H23", "acf0954bed92446336cd7dd618c46a22"),
+            ("G24", "6d1677f347a24adaddd438be1758575f"),
+            ("H24", "227c2822c97ec6a2add6ef947e57557b"),
+            ("G25", "00c835f56a23564e21bc44105f1169b2"),
+            ("H25", "5fd407309e7f74231d8cc0890f7d63f6"),
+            ("G26", "783cd181e4f96d3bf9656d5aa0737b98"),
+            ("H26", "d8dc7d0de786e49c90e97f77cebc19bf"),
+            ("G27", "5d739004d2e1c3232660d923c341950f"),
+            ("H27", "e854979b9d3fe892e12223aa67f261a1"),
+            ("G28", "bcceaba13911caa90caddbd5c9090af3"),
+            ("H28", "7a70480cb8f8a667167669f7a1128d14"),
+            ("G29", "39c9d5702ff15e41a0504d0e6cbefe39"),
+            ("H29", "ece8b5e185ca0c4cb818fc3fea4cf033"),
+        ];
+        for (tag, want) in GOLDEN {
+            let (series, seed_s) = tag.split_at(1);
+            let seed: u64 = seed_s.parse().unwrap();
+            let got = match series {
+                "G" => canon_hash(seed, 10, 8),
+                _ => canon_hash(seed.wrapping_mul(0x9e37), 14, 12),
+            };
+            assert_eq!(
+                format!("{:032x}", got),
+                *want,
+                "canonical form changed for {}",
+                tag
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn regenerate_canon_golden() {
+        for i in 0..30u64 {
+            let g = canon_hash(i, 10, 8);
+            let h = canon_hash(i.wrapping_mul(0x9e37), 14, 12);
+            println!("(\"G{i}\", \"{:032x}\"),", g);
+            println!("(\"H{i}\", \"{:032x}\"),", h);
+        }
     }
 
     #[test]
@@ -2984,240 +4990,191 @@ mod tests {
         }
     }
 
+    // The three canon4 scan configurations must be interchangeable: the
+    // legacy per-level rank rescan (fat entries, groups=None), the tied-group
+    // precompute (fat entries, groups=Some), and the compact-entry scan
+    // (deg<=16). Same split verdict, same split-group mask, same vr after.
     #[test]
-    fn polynomial_xor_assign_cancels_shared_terms() {
-        let mut left = vec![1, 3, 8];
-        poly_xor_assign(&mut left, vec![3, 5, 8]);
-        assert_eq!(left, vec![1, 5]);
-    }
+    fn opt_equiv_canon4_scan_paths_agree() {
+        let mut rng = StdRng::seed_from_u64(0x5ca9_2026);
+        for trial in 0..400 {
+            // Wide trials force degrees > 16 to exercise the fat fallback
+            // beside the group precompute; narrow trials cover compact too.
+            let wide = trial % 4 == 3;
+            let n = if wide {
+                rng.random_range(17..=22usize)
+            } else {
+                rng.random_range(4..=12usize)
+            };
+            let ranks = rng.random_range(1..=n);
+            let vr0: Vec<usize> = (0..n).map(|_| rng.random_range(0..ranks)).collect();
+            let terms = rng.random_range(1..=12usize);
+            let mut cp: Vec<(Monomial, usize)> = (0..terms)
+                .map(|_| {
+                    let m = if n >= 64 {
+                        rng.random_range(0..u64::MAX)
+                    } else {
+                        rng.random_range(0..(1u64 << n))
+                    };
+                    (m, 1usize)
+                })
+                .collect();
+            coalesce_class_poly(&mut cp);
+            let tied_mask = tied_mask_4(&vr0);
+            let mut groups_meta = Vec::new();
+            let mut groups_members = Vec::new();
+            tied_groups_4(&vr0, n, &mut groups_meta, &mut groups_members);
+            let groups = Some((groups_meta.as_slice(), groups_members.as_slice()));
 
-    #[test]
-    fn to_polynomial_keeps_terms_sorted_and_cancelled() {
-        let circuit = CircuitSeq {
-            gates: vec![[0, 1, 2]],
-        };
-        let polys = circuit.to_polynomial(3, 0, 1);
-        // g57 [0,1,2] = w0 ^= (NOT w1 AND w2) XOR 1 (evaluate_index convention):
-        // 1(const) + w0 + w2 + w1*w2 = monomials {0, 1<<0, 1<<2, (1<<1)|(1<<2)}.
-        assert_eq!(polys[0], vec![0, 1, 4, 6]);
-        assert_eq!(polys[1], vec![2]);
-        assert_eq!(polys[2], vec![4]);
-    }
+            let scratch = || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            let (mut le, mut f, mut t, mut s, mut sr) = scratch();
+            let mut vr_legacy = vr0.clone();
+            let res_legacy = scan_class_poly_levels_4(
+                &cp,
+                &mut vr_legacy,
+                n,
+                tied_mask,
+                &mut le,
+                &mut f,
+                &mut t,
+                &mut s,
+                &mut sr,
+                None,
+            );
+            let (mut le, mut f, mut t, mut s, mut sr) = scratch();
+            let mut vr_groups = vr0.clone();
+            let res_groups = scan_class_poly_levels_4(
+                &cp,
+                &mut vr_groups,
+                n,
+                tied_mask,
+                &mut le,
+                &mut f,
+                &mut t,
+                &mut s,
+                &mut sr,
+                groups,
+            );
+            assert_eq!(res_legacy, res_groups, "trial={trial} n={n}");
+            assert_eq!(vr_legacy, vr_groups, "trial={trial} n={n}");
 
-    #[test]
-    fn evaluate_1024_handles_wires_above_512() {
-        let circuit = CircuitSeq {
-            gates: vec![[900, 901, 902]],
-        };
-        let one = U1024::one();
-
-        let flipped = circuit.evaluate_1024(U1024::zero());
-        assert_eq!((flipped >> 900) & one, one);
-
-        let blocked = circuit.evaluate_1024(one << 902);
-        assert_eq!((blocked >> 900) & one, U1024::zero());
-    }
-
-    fn old_toggle(poly: &mut BTreeSet<Monomial>, m: Monomial) {
-        if !poly.remove(&m) {
-            poly.insert(m);
-        }
-    }
-
-    fn old_xor(mut left: BTreeSet<Monomial>, right: BTreeSet<Monomial>) -> BTreeSet<Monomial> {
-        for m in right {
-            old_toggle(&mut left, m);
-        }
-        left
-    }
-
-    fn old_and(left: &BTreeSet<Monomial>, right: &BTreeSet<Monomial>) -> BTreeSet<Monomial> {
-        let mut result = BTreeSet::new();
-        for &m1 in left {
-            for &m2 in right {
-                old_toggle(&mut result, m1 | m2);
+            let compact_ok = cp.iter().all(|&(m, _)| m.count_ones() <= 16);
+            if compact_ok {
+                let mut ec = Vec::new();
+                let (_, mut f, mut t, mut s, mut sr) = scratch();
+                let mut vr_c = vr0.clone();
+                let res_c = scan_class_poly_levels_c(
+                    &cp, &mut vr_c, n, tied_mask, &mut ec, &mut f, &mut t, &mut s, &mut sr, groups,
+                );
+                assert_eq!(res_legacy, res_c, "compact trial={trial} n={n}");
+                assert_eq!(vr_legacy, vr_c, "compact trial={trial} n={n}");
             }
         }
-        result
     }
 
-    fn old_not(poly: BTreeSet<Monomial>) -> BTreeSet<Monomial> {
-        old_xor(BTreeSet::from([0u64]), poly)
-    }
-
-    fn old_hashset_style_to_polynomial(circuit: &CircuitSeq, n: usize) -> Vec<Polynomial> {
-        let mut polys: Vec<BTreeSet<Monomial>> =
-            (0..n).map(|i| BTreeSet::from([1u64 << i])).collect();
-
-        for &[a, b, c] in &circuit.gates {
-            // NOT(b) AND c, matching evaluate_index / to_polynomial.
-            let not_b = old_not(polys[b as usize].clone());
-            let term = old_and(&not_b, &polys[c as usize]);
-            let mut new_a = old_xor(polys[a as usize].clone(), term);
-            old_toggle(&mut new_a, 0u64);
-            polys[a as usize] = new_a;
-        }
-
-        polys
-            .into_iter()
-            .map(|poly| poly.into_iter().collect())
-            .collect()
-    }
-
+    // Compact tiebreak-#1 keys must reproduce the fat keyed comparison
+    // exactly (ordering AND equality classes) whenever all degrees <= 16.
     #[test]
-    fn to_polynomial_matches_old_hashset_style_implementation() {
-        let mut rng = fastrand::Rng::with_seed(0x706f_6c79_7665_6375);
-        for _ in 0..200 {
-            let n = rng.usize(3..=12);
-            let m = rng.usize(0..=(3 * n));
-            fastrand::seed(rng.u64(..));
-            let circuit = random_circuit(n, m);
-
+    fn opt_equiv_canon4_poly_key_compact_matches_fat() {
+        let mut rng = StdRng::seed_from_u64(0x9e37_2026);
+        for trial in 0..2000 {
+            let n = rng.random_range(2..=14usize);
+            let ranks = rng.random_range(1..=n);
+            let vr: Vec<usize> = (0..n).map(|_| rng.random_range(0..ranks)).collect();
+            let mut poly = |force_share: Option<&Polynomial>| -> Polynomial {
+                // Bias toward shared monomials so equality cases actually occur.
+                let terms = rng.random_range(0..=6usize);
+                (0..terms)
+                    .map(|_| match force_share {
+                        Some(other) if !other.is_empty() && rng.random_range(0..2u8) == 0 => {
+                            other[rng.random_range(0..other.len())]
+                        }
+                        _ => rng.random_range(0..(1u64 << n)),
+                    })
+                    .collect()
+            };
+            let a = poly(None);
+            let b = poly(Some(&a));
+            let fat_a = poly_key_4(&a, &vr, n);
+            let fat_b = poly_key_4(&b, &vr, n);
+            let c_a = poly_key_c(&a, &vr);
+            let c_b = poly_key_c(&b, &vr);
             assert_eq!(
-                circuit.to_polynomial(n, 0, circuit.gates.len()),
-                old_hashset_style_to_polynomial(&circuit, n)
+                cmp_poly_key_c(&c_a, &c_b),
+                fat_a.cmp(&fat_b),
+                "trial={trial} n={n}"
+            );
+            assert_eq!(c_a == c_b, fat_a == fat_b, "trial={trial} n={n}");
+            // Term order must match one-to-one: (degree, prefix) of fat terms.
+            assert_eq!(
+                c_a,
+                fat_a
+                    .iter()
+                    .map(|k| (k.degree, k.prefix))
+                    .collect::<Vec<_>>(),
+                "trial={trial} n={n}"
             );
         }
     }
 
-    // Monomial = u64 cannot represent variable x_i for i >= 64: `1u64 << i` aliases (x86 masks the
-    // shift count, so x_64 == x_0; debug builds panic on the overflow). A window touching > 64
-    // distinct wires would therefore produce a WRONG canonical key that could spuriously match a
-    // non-equivalent curated-DB entry, breaking functional equivalence. canonicalize_polys_single
-    // [_neg] must skip such windows (return empty polys) so every caller treats it as a clean miss.
-    // This regression test locks that guard in.
+    // End-to-end: the shipped compact/split2/cleanskip canonicalizer must
+    // stay deterministic and produce a canonical form invariant under wire
+    // relabeling — the property every curated-DB key relies on. Narrow trials
+    // run the compact path, wide trials (a forced degree-17+ monomial) run
+    // the fat fallback through the same driver.
     #[test]
-    fn canonicalize_skips_window_over_64_distinct_wires() {
-        // 22 gates on disjoint wire triples => 66 distinct wires (> 64).
-        let gates: Vec<[u16; 3]> = (0..22u16).map(|k| [3 * k, 3 * k + 1, 3 * k + 2]).collect();
-        let sub = CircuitSeq { gates };
-        assert!(sub.used_wires().len() > 64, "precondition: window must exceed 64 wires");
-
-        let (fwd, _, _) = sub.canonicalize_polys_single(false);
-        assert!(fwd.is_empty(), "oversized window must canonicalize to empty (clean miss), not an overflow-aliased key");
-        let (rev, _, _) = sub.canonicalize_polys_single(true);
-        assert!(rev.is_empty(), "reversed oversized window must also skip");
-        let (neg, _, _) = sub.canonicalize_polys_single_neg(&[]);
-        assert!(neg.is_empty(), "the _neg path must also skip oversized windows");
-
-        // Control: a <= 64-wire window still canonicalizes normally (non-empty polys).
-        let small = CircuitSeq { gates: vec![[0, 1, 2], [1, 2, 0]] };
-        assert!(small.used_wires().len() <= 64);
-        let (sp, _, _) = small.canonicalize_polys_single(false);
-        assert!(!sp.is_empty(), "a small window must still produce a canonical key");
-    }
-}
-
-#[cfg(test)]
-mod canon_golden_tests {
-    use super::*;
-    use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
-
-    fn canon_hash(seed: u64, n_wires: u16, gates: usize) -> u128 {
-        let mut rng = StdRng::seed_from_u64(seed);
-        let mut c = CircuitSeq { gates: Vec::new() };
-        while c.gates.len() < gates {
-            let a = rng.random_range(0..n_wires);
-            let b = rng.random_range(0..n_wires);
-            let d = rng.random_range(0..n_wires);
-            if a != b && a != d && b != d {
-                c.gates.push([a, b, d]);
-            }
-        }
-        let (polys, _, _) = c.canonicalize_polys_single(seed % 2 == 0);
-        xxhash_rust::xxh3::xxh3_128(&polys_repr_blob(&polys))
-    }
-
-    // Golden canonical-form hashes. The canonical form defines every curated-DB key, so any
-    // change to these values means the DB has been silently invalidated. Do not regenerate
-    // casually. Regenerated 2026-07-18 after fixing a swapped-argument bug in to_polynomial
-    // (the g57 monomial was b*NOT(c); the executor and from_g57 use NOT(b)*c) — this realigns
-    // our DB keys with the source/upstream convention. Regenerate via the #[ignore]d
-    // regenerate_canon_golden test only when the canonical form legitimately changes.
-    #[test]
-    fn canonical_form_golden() {
-        const GOLDEN: &[(&str, &str)] = &[
-        ("G0", "6fa0209f74c6aca5a629ea4de7b882dd"),
-        ("H0", "f8decf2b941d92e0016521e783bea5a8"),
-        ("G1", "541946580565039aca15fdbd19755175"),
-        ("H1", "25fb31deb42fd599dc90d9dea6fba89d"),
-        ("G2", "5d551f5eba5474d33a871ecb0a8e46b7"),
-        ("H2", "36a43931107c7d80f1fffbc5527c313a"),
-        ("G3", "fd20b272d990c65207f9ffa0b3582b31"),
-        ("H3", "1502ecfb3f88e59418564f2185548dce"),
-        ("G4", "b6d47169d8e88efc8d965ff190d6c21f"),
-        ("H4", "56986adc1dfa776e9de5480a80e9ab46"),
-        ("G5", "fdf065eb905e344adb801bf88319a929"),
-        ("H5", "e924c80a183b499d7b576bde07129131"),
-        ("G6", "fbda8128fafdf7924880c95813641b7a"),
-        ("H6", "245dd8d448f23884fbbac2b87aacaa86"),
-        ("G7", "f7594dc87bdccb66a5e77d816b05b06a"),
-        ("H7", "e015d3a5ec42bab54220110ad22f2612"),
-        ("G8", "c29cd6d9be717edd6850b647f5370c0c"),
-        ("H8", "602c1fad413f6816a32e4d299d096879"),
-        ("G9", "e36265eba0672f79bbd54ed94c388564"),
-        ("H9", "3fd134840c7913907227cf9205bdac9e"),
-        ("G10", "d19251954f40b19ccb15c700f246276b"),
-        ("H10", "59e94f3dedd110d92c1dae1e0a74cade"),
-        ("G11", "b3cb06c6bb4c1f8f3f8e612e2622f2bf"),
-        ("H11", "5168e7504437bd05203e558be87d7a5a"),
-        ("G12", "3a2eebdc712c2cb9f8896f11169e4026"),
-        ("H12", "c6ad8d964f866af06894dae44cad7911"),
-        ("G13", "586eb625594255c9621e813a91669339"),
-        ("H13", "2bfc4e6ff9208214514c899ffc57bb62"),
-        ("G14", "1192d8249e2773dd389c2e8611bf256c"),
-        ("H14", "d28943f055eb4a63aa4e4f4c4670ba13"),
-        ("G15", "bca4629cf33574b8bd9eec6527e0c95f"),
-        ("H15", "3523ee73c966859cabd1a5e626cdc51f"),
-        ("G16", "2f0196c07918909d574b35e423bc60c7"),
-        ("H16", "b76ea7f0d46c738a83d5ccdfacec678c"),
-        ("G17", "1f0f68761b56f660f88c9ebdc2177bb7"),
-        ("H17", "bd6e51d525fbeab79ec34b154ee398b4"),
-        ("G18", "1d12417189ed645c0d68e74c85c3e4bd"),
-        ("H18", "360c53cc42d3591e7c3558384e5d7a7f"),
-        ("G19", "ac596d2604e6963258e9de7746f1efd7"),
-        ("H19", "c24ea23211b28ac22faac1480c51289b"),
-        ("G20", "e020d8c2d1dd740c9ef7e71d0ae52ac9"),
-        ("H20", "a5b37a68dddb773429da7672d6c4870d"),
-        ("G21", "39b636d94d180700abfe4e0b299e62c8"),
-        ("H21", "c7b6d35f0b75ee1a3a23910657d13935"),
-        ("G22", "b0a48bb2e87a13245269b1e309380d07"),
-        ("H22", "53c37dd76b64c030b4c50b3ffd68a2c9"),
-        ("G23", "631171335b8ff30b1a4406c1913cfed8"),
-        ("H23", "acf0954bed92446336cd7dd618c46a22"),
-        ("G24", "6d1677f347a24adaddd438be1758575f"),
-        ("H24", "227c2822c97ec6a2add6ef947e57557b"),
-        ("G25", "00c835f56a23564e21bc44105f1169b2"),
-        ("H25", "5fd407309e7f74231d8cc0890f7d63f6"),
-        ("G26", "783cd181e4f96d3bf9656d5aa0737b98"),
-        ("H26", "d8dc7d0de786e49c90e97f77cebc19bf"),
-        ("G27", "5d739004d2e1c3232660d923c341950f"),
-        ("H27", "e854979b9d3fe892e12223aa67f261a1"),
-        ("G28", "bcceaba13911caa90caddbd5c9090af3"),
-        ("H28", "7a70480cb8f8a667167669f7a1128d14"),
-        ("G29", "39c9d5702ff15e41a0504d0e6cbefe39"),
-        ("H29", "ece8b5e185ca0c4cb818fc3fea4cf033")
-        ];
-        for (tag, want) in GOLDEN {
-            let (series, seed_s) = tag.split_at(1);
-            let seed: u64 = seed_s.parse().unwrap();
-            let got = match series {
-                "G" => canon_hash(seed, 10, 8),
-                _ => canon_hash(seed.wrapping_mul(0x9e37), 14, 12),
+    fn opt_equiv_canon4_form_invariant_under_relabeling() {
+        let mut rng = StdRng::seed_from_u64(0xfab1e_2026);
+        for trial in 0..72 {
+            let wide = trial % 6 == 5;
+            let n = if wide {
+                rng.random_range(17..=20usize)
+            } else {
+                rng.random_range(3..=9usize)
             };
-            assert_eq!(format!("{:032x}", got), *want, "canonical form changed for {}", tag);
-        }
-    }
+            let mut polys: Vec<Polynomial> = (0..n)
+                .map(|_| {
+                    let terms = rng.random_range(1..=5usize);
+                    (0..terms)
+                        .map(|_| rng.random_range(0..(1u64 << n)))
+                        .collect()
+                })
+                .collect();
+            if wide {
+                // Guarantee a degree > 16 monomial so compact_ok is false.
+                let w = rng.random_range(0..n);
+                polys[w].push((1u64 << n) - 1);
+            }
+            let (canon_a, _) = canonicalize_polys_4(polys.clone(), true).unwrap();
+            let (canon_again, _) = canonicalize_polys_4(polys.clone(), true).unwrap();
+            assert_eq!(canon_a, canon_again, "determinism trial={trial} n={n}");
 
-    #[test]
-    #[ignore]
-    fn regenerate_canon_golden() {
-        for i in 0..30u64 {
-            let g = canon_hash(i, 10, 8);
-            let h = canon_hash(i.wrapping_mul(0x9e37), 14, 12);
-            println!("(\"G{i}\", \"{:032x}\"),", g);
-            println!("(\"H{i}\", \"{:032x}\"),", h);
+            let mut sigma: Vec<usize> = (0..n).collect();
+            for i in (1..n).rev() {
+                let j = rng.random_range(0..=i);
+                sigma.swap(i, j);
+            }
+            let mut relabeled: Vec<Polynomial> = vec![Vec::new(); n];
+            for w in 0..n {
+                relabeled[sigma[w]] = polys[w]
+                    .iter()
+                    .map(|&m| {
+                        let mut r = 0u64;
+                        let mut mm = m;
+                        while mm != 0 {
+                            let v = mm.trailing_zeros() as usize;
+                            r |= 1u64 << sigma[v];
+                            mm &= mm - 1;
+                        }
+                        r
+                    })
+                    .collect();
+            }
+            let (canon_b, _) = canonicalize_polys_4(relabeled, true).unwrap();
+            assert_eq!(
+                canon_a, canon_b,
+                "relabeling trial={trial} n={n} sigma={sigma:?}"
+            );
         }
     }
 }

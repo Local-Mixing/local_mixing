@@ -382,6 +382,39 @@ struct Args {
     /// kills DB matching. Off by default (it changes trajectories).
     #[arg(long, default_value_t = false)]
     db_advance: bool,
+    /// Pair-geometry rate (docs/NONLOCAL_PHASE_A.md): probability a non-COMP
+    /// DB round samples its window as the seed plus one FAR COMMUTING partner,
+    /// floated adjacent and fused into a 2-gate window — the phase-A transport
+    /// experiment. The fused splice unions litters across the seed's whole
+    /// commutation box, and the reorder ban forces every pair splice onto a
+    /// genuinely different spelling. 0 = off, draws no RNG.
+    #[arg(long, default_value_t = 0.0)]
+    p_pair: f64,
+    /// Pair geometry: cap on the commutation-box scan past the seed.
+    #[arg(long, default_value_t = 4096)]
+    pair_scan_cap: usize,
+    /// Pair geometry: pick the partner uniformly from the eligible box instead
+    /// of the farthest gate.
+    #[arg(long, default_value_t = false)]
+    pair_pick_uniform: bool,
+    /// Bridge-fusion rate (docs/NONLOCAL_PHASE_A.md): per-round probability of
+    /// jointly re-encoding two gates that commutation CANNOT bring together —
+    /// a carrier conjugates the interior (wake corrections on interior
+    /// colliders, non-g57: trades polf for reach like legacy twist packets)
+    /// and both carrier-adjacent windows are re-spelled through the store.
+    /// 0 = off, draws no RNG.
+    #[arg(long, default_value_t = 0.0)]
+    p_bridge: f64,
+    /// Bridge: log-uniform interior-length draw, lower bound.
+    #[arg(long, default_value_t = 16)]
+    bridge_min_span: usize,
+    /// Bridge: log-uniform interior-length draw, upper bound.
+    #[arg(long, default_value_t = 512)]
+    bridge_max_span: usize,
+    /// Bridge: refuse rounds whose interior holds more colliders than this
+    /// (each costs one or two wake correction gates).
+    #[arg(long, default_value_t = 8)]
+    bridge_max_colliders: usize,
     /// Layer-2 mode overlay (slot 0): per-round probability the slot-2 DB move
     /// is MIX-DB, else COMP-DB. Each round flips this coin, overriding --db-mode
     /// and reading the chosen mode's own knobs -- MIX uses --s-db / --p-convex /
@@ -999,6 +1032,20 @@ fn main() {
         args.seed
     );
     }
+    if args.p_pair > 0.0 {
+        println!(
+            "[fmix] pair geometry ON: p_pair={} scan_cap={} pick={} (far-pair fusion, docs/NONLOCAL_PHASE_A.md)",
+            args.p_pair,
+            args.pair_scan_cap,
+            if args.pair_pick_uniform { "uniform" } else { "far" }
+        );
+    }
+    if args.p_bridge > 0.0 {
+        println!(
+            "[fmix] bridge fusion ON: p_bridge={} span=[{},{}] max_colliders={} — wake corrections are non-g57 (polf > 0 expected; docs/NONLOCAL_PHASE_A.md)",
+            args.p_bridge, args.bridge_min_span, args.bridge_max_span, args.bridge_max_colliders
+        );
+    }
     if args.p_twist > 0.0 {
         println!(
             "[fmix] first-class twist rounds ON: p_twist={} (w-twist-* weights serve as type ratios)",
@@ -1182,6 +1229,13 @@ fn main() {
         db_total_terms: args.db_total_terms,
         db_prefixes: args.db_prefixes,
         db_advance: args.db_advance,
+        p_pair: args.p_pair,
+        pair_scan_cap: args.pair_scan_cap,
+        pair_pick_uniform: args.pair_pick_uniform,
+        p_bridge: args.p_bridge,
+        bridge_min_span: args.bridge_min_span,
+        bridge_max_span: args.bridge_max_span,
+        bridge_max_colliders: args.bridge_max_colliders,
         p_mix: args.p_mix,
         s_db_comp: args.s_db_comp,
         p_convex_comp: args.p_convex_comp,

@@ -14,7 +14,6 @@
 //! window to a dense space.  Consequently its output is byte-compatible with
 //! the canonical polynomial keys produced by the legacy g57 path.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use super::xgate::XGate;
 use crate::circuit::circuit::{
     Monomial, Permutation, Polynomial, canonicalize_polys_4, polynomial_from_terms,
@@ -69,10 +68,7 @@ pub enum XPolyError {
         limit: usize,
     },
     CanonicalizationFailed,
-    /// The window's exact ANF degree exceeds the store's maximum, so no stored
-    /// circuit can compute this function. Read off the polynomial rather than
-    /// probed: exact, and free, because canonicalization needs that polynomial
-    /// anyway.
+    /// Exact ANF degree exceeds the maximum represented by the store.
     DegreeExceeded {
         degree: usize,
         limit: usize,
@@ -228,12 +224,14 @@ pub fn xgates_to_polynomial(
             if wire_idx >= num_wires {
                 return Err(XPolyError::WireOutOfRange { wire, num_wires });
             }
-            let literal = if positive {
-                polys[wire_idx].clone()
+            // Positive literals multiply by the wire polynomial directly; only
+            // negation needs a temporary.
+            product = if positive {
+                poly_mul(&product, &polys[wire_idx], budget)?
             } else {
-                poly_not(&polys[wire_idx])
+                let literal = poly_not(&polys[wire_idx]);
+                poly_mul(&product, &literal, budget)?
             };
-            product = poly_mul(&product, &literal, budget)?;
         }
 
         // P[target] ^= PRODUCT(literals) ^ comp.
@@ -285,30 +283,6 @@ fn dense_remap(gates: &[XGate], used: &[u16]) -> Vec<XGate> {
 /// satisfying their invariant (the target is absent from the controls) are
 /// involutions, so this is the inverse-circuit direction used by the legacy
 /// compressor.
-/// Stage timers for the canonicalization path (see the note inside
-/// `canonicalize_xgates_single`). Relaxed atomics: this is instrumentation,
-/// so a lost update is cheaper than a fence on the hot path.
-pub static POLY_NS: AtomicU64 = AtomicU64::new(0);
-pub static CANON_NS: AtomicU64 = AtomicU64::new(0);
-pub static CANON_CALLS: AtomicU64 = AtomicU64::new(0);
-/// Wall nanoseconds inside the DB splice's verification gate.
-pub static VERIFY_NS: AtomicU64 = AtomicU64::new(0);
-/// Wall nanoseconds inside the randomized degree PROBE (xgate_degree_exceeds).
-/// Measured to decide whether the probe earns its place against simply
-/// reading the exact degree off the polynomial canonicalization needs anyway.
-pub static DEGREE_NS: AtomicU64 = AtomicU64::new(0);
-pub static DEGREE_CALLS: AtomicU64 = AtomicU64::new(0);
-
-/// Exact max ANF degree over a polynomial set: the largest number of variables
-/// in any monomial. Monomials are `u64` variable masks, so this is a popcount.
-pub fn polys_max_degree(polys: &[Polynomial]) -> usize {
-    polys
-        .iter()
-        .flat_map(|p| p.iter().map(|m| m.count_ones() as usize))
-        .max()
-        .unwrap_or(0)
-}
-
 pub fn canonicalize_xgates_single(
     gates: &[XGate],
     reversed: bool,
@@ -317,18 +291,22 @@ pub fn canonicalize_xgates_single(
     canonicalize_xgates_single_capped(gates, reversed, budget, 0)
 }
 
-/// As [`canonicalize_xgates_single`], but with `max_degree > 0` the exact ANF
-/// degree is checked BETWEEN the two stages: after composing the polynomial
-/// (2.5us, measured) and before canonicalizing it (1.16ms, measured). A window
-/// above the store's maximum degree cannot match anything, so canonicalizing it
-/// is pure waste.
-///
-/// This replaces a randomized probe over `probes` affine subspaces of dimension
-/// `max_degree + 1`. That probe cost 43us per call -- 17x the polynomial it was
-/// protecting -- rebuilt a window-independent axis table on every call, was
-/// one-sided (it could certify "over" but silently miss it), and threw away
-/// work canonicalization then redid. It never once fired in production
-/// (`dsk=0` across every run). `max_degree = 0` disables the check.
+/// Exact maximum ANF degree over a polynomial set.
+pub fn polys_max_degree(polys: &[Polynomial]) -> usize {
+    polys
+        .iter()
+        .flat_map(|polynomial| {
+            polynomial
+                .iter()
+                .map(|monomial| monomial.count_ones() as usize)
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Canonicalize while rejecting over-degree functions after polynomial
+/// composition but before the much more expensive canonical wire ordering.
+/// A zero cap preserves the historical behavior.
 pub fn canonicalize_xgates_single_capped(
     gates: &[XGate],
     reversed: bool,
@@ -353,39 +331,160 @@ pub fn canonicalize_xgates_single_capped(
     if reversed {
         dense.reverse();
     }
-    // Stage split, measured. The descent recomputes BOTH stages from scratch
-    // at every rung even though consecutive rungs differ by one gate at one
-    // end. Composition is peelable (one gate touches <=3 wires); the canonical
-    // wire ORDER is a global property of the whole polynomial set and is not.
-    // Which stage dominates decides whether peeling is worth building.
-    // Time both stages INCLUDING failures. A window that blows the monomial
-    // budget does most of the work before erroring, and an early `?` would
-    // have hidden exactly the expensive cases.
+    // Everything below is a pure function of (dense, wire count, caps) — the
+    // dense window is independent of the original wire ids — so windows repeat
+    // heavily across the circuit and an exact process-wide cache applies
+    // (mirrors the legacy g57 canon cache in circuit.rs). Both Ok results and
+    // cap/error outcomes are cached; the caps are part of the key so differing
+    // budgets never alias.
+    let num_wires = used_wires.len();
+    let Some(cache) = xpoly_canon_cache() else {
+        let (polys, order) = compose_and_canonicalize(&dense, num_wires, budget, max_degree)?;
+        return Ok(CanonicalXPolys {
+            polys,
+            order,
+            used_wires,
+        });
+    };
+    let key = xpoly_canon_cache_key(&dense, num_wires, budget, max_degree);
+    XPOLY_CANON_CACHE_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Some(entry) = cache.get(&key) {
+        XPOLY_CANON_CACHE_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return match entry.value().as_ref() {
+            Ok((polys, order)) => Ok(CanonicalXPolys {
+                polys: polys.clone(),
+                order: order.clone(),
+                used_wires,
+            }),
+            Err(e) => Err(e.clone()),
+        };
+    }
+    let computed = compose_and_canonicalize(&dense, num_wires, budget, max_degree);
+    let entry_bytes = key.len() as u64
+        + 64
+        + match &computed {
+            Ok((polys, order)) => {
+                (polys.iter().map(|p| p.len()).sum::<usize>() * 8 + order.data.len() * 8) as u64
+            }
+            Err(_) => 16,
+        };
+    if XPOLY_CANON_CACHE_BYTES.fetch_add(entry_bytes, std::sync::atomic::Ordering::Relaxed)
+        + entry_bytes
+        > xpoly_canon_cache_cap_bytes()
+    {
+        cache.clear();
+        XPOLY_CANON_CACHE_BYTES.store(entry_bytes, std::sync::atomic::Ordering::Relaxed);
+    }
+    cache.insert(key, std::sync::Arc::new(computed.clone()));
+    let (polys, order) = computed?;
+    Ok(CanonicalXPolys {
+        polys,
+        order,
+        used_wires,
+    })
+}
+
+/// The cacheable core of [`canonicalize_xgates_single_capped`]: compose the
+/// dense window, apply the degree cap, canonicalize.
+fn compose_and_canonicalize(
+    dense: &[XGate],
+    num_wires: usize,
+    budget: XPolyBudget,
+    max_degree: usize,
+) -> Result<(Vec<Polynomial>, Permutation), XPolyError> {
+    // Time both stages INCLUDING failures (a window that blows the monomial
+    // budget does most of the work before erroring). Cache hits skip this fn
+    // entirely, so the accumulated times cover fresh computations only.
     let t0 = std::time::Instant::now();
-    let poly_res = xgates_to_polynomial(&dense, used_wires.len(), budget);
-    let t1 = std::time::Instant::now();
-    POLY_NS.fetch_add((t1 - t0).as_nanos() as u64, Ordering::Relaxed);
+    let poly_res = xgates_to_polynomial(dense, num_wires, budget);
+    POLY_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     CANON_CALLS.fetch_add(1, Ordering::Relaxed);
     let polys = poly_res?;
     if max_degree > 0 {
-        let deg = polys_max_degree(&polys);
-        if deg > max_degree {
+        let degree = polys_max_degree(&polys);
+        if degree > max_degree {
             return Err(XPolyError::DegreeExceeded {
-                degree: deg,
+                degree,
                 limit: max_degree,
             });
         }
     }
     let t2 = std::time::Instant::now();
     let canon_res = canonicalize_polys_4(polys, true);
-    let t3 = std::time::Instant::now();
-    CANON_NS.fetch_add((t3 - t2).as_nanos() as u64, Ordering::Relaxed);
-    let (polys, order) = canon_res.map_err(|_| XPolyError::CanonicalizationFailed)?;
-    Ok(CanonicalXPolys {
-        polys,
-        order,
-        used_wires,
+    CANON_NS.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    canon_res.map_err(|_| XPolyError::CanonicalizationFailed)
+}
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Fresh-computation stage timers read by the fmix report line (cache hits do
+// not accumulate — they skip both stages).
+pub static POLY_NS: AtomicU64 = AtomicU64::new(0);
+pub static CANON_NS: AtomicU64 = AtomicU64::new(0);
+pub static CANON_CALLS: AtomicU64 = AtomicU64::new(0);
+// Accumulated from the mix loop's local-verify path.
+pub static VERIFY_NS: AtomicU64 = AtomicU64::new(0);
+pub static DEGREE_NS: AtomicU64 = AtomicU64::new(0);
+pub static DEGREE_CALLS: AtomicU64 = AtomicU64::new(0);
+
+type XPolyCanonResult = Result<(Vec<Polynomial>, Permutation), XPolyError>;
+type XPolyCanonMap =
+    dashmap::DashMap<Box<[u8]>, std::sync::Arc<XPolyCanonResult>, rustc_hash::FxBuildHasher>;
+
+pub static XPOLY_CANON_CACHE_HITS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static XPOLY_CANON_CACHE_QUERIES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static XPOLY_CANON_CACHE_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// XPOLY_CANON_CACHE_MB caps the approximate cache footprint (default 1024;
+/// 0 disables). Cap overflow clears the whole map (epoch reset), like the
+/// legacy canon and lookup caches. The default was raised from 256 after a
+/// profiled 200k-move DB run measured 3 epoch resets and a 35% hit rate at
+/// 256MB — the working set of a production phase A does not fit.
+fn xpoly_canon_cache_cap_bytes() -> u64 {
+    static CAP: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("XPOLY_CANON_CACHE_MB")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1024)
+            .saturating_mul(1024 * 1024)
     })
+}
+
+fn xpoly_canon_cache() -> Option<&'static XPolyCanonMap> {
+    static CACHE: std::sync::OnceLock<Option<XPolyCanonMap>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| (xpoly_canon_cache_cap_bytes() > 0).then(XPolyCanonMap::default))
+        .as_ref()
+}
+
+/// Canonical byte encoding of the cache key. Dense wires are < 64 and ctrls
+/// are sorted by wire (XGate invariant), so the encoding is canonical.
+fn xpoly_canon_cache_key(
+    dense: &[XGate],
+    num_wires: usize,
+    budget: XPolyBudget,
+    max_degree: usize,
+) -> Box<[u8]> {
+    let mut k = Vec::with_capacity(40 + dense.len() * 16);
+    k.push(num_wires as u8);
+    k.extend_from_slice(&(budget.max_mul_terms as u64).to_le_bytes());
+    k.extend_from_slice(&(budget.max_poly_terms as u64).to_le_bytes());
+    k.extend_from_slice(&(budget.max_total_terms as u64).to_le_bytes());
+    k.extend_from_slice(&(max_degree as u64).to_le_bytes());
+    for g in dense {
+        k.push(g.target as u8);
+        k.push(g.comp as u8);
+        k.push(g.ctrls.len() as u8);
+        for &(w, p) in &g.ctrls {
+            k.push(w as u8);
+            k.push(p as u8);
+        }
+    }
+    k.into_boxed_slice()
 }
 
 #[cfg(test)]
@@ -441,11 +540,6 @@ mod tests {
 
     #[test]
     fn g57_canonical_keys_match_legacy_in_both_directions() {
-        // KEY-COMPATIBILITY INVARIANT for the frozen-DB move: a window's true
-        // function polynomial (canonicalize_xgates_single) must canonicalize to
-        // the same key the DB was built under (canonicalize_polys_single on the
-        // g57 triples). from_g57 and to_polynomial share the g57 convention, so
-        // a triple decodes with plain from_g57.
         let legacy = CircuitSeq {
             gates: vec![[7, 2, 11], [2, 7, 5], [11, 5, 2], [5, 11, 7]],
         };
@@ -474,6 +568,21 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn exact_degree_cap_rejects_high_degree_and_keeps_low_degree() {
+        let high = vec![XGate::conj(0, [(1, true), (2, true), (3, true), (4, true)]).unwrap()];
+        assert!(matches!(
+            canonicalize_xgates_single_capped(&high, false, XPolyBudget::default(), 3),
+            Err(XPolyError::DegreeExceeded {
+                degree: 4,
+                limit: 3
+            })
+        ));
+
+        let low = vec![XGate::from_g57([0, 1, 2])];
+        assert!(canonicalize_xgates_single_capped(&low, false, XPolyBudget::default(), 2).is_ok());
     }
 
     #[test]
