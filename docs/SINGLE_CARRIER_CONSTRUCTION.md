@@ -539,7 +539,7 @@ Fingerprint each wire's Boolean function at checkpoints (bit-sliced over chosen
 inputs, complements identified), and match fingerprints *across* wires.
 Rolling relocates a variable but preserves its function, so the fingerprint
 follows it for free, and the band separates from the carriers by lifetime
-alone — without ever guessing a wire set. `src/bin/persistence_census`
+alone — without ever guessing a wire set. `red_team_tests/bin/leakage/persistence_census.rs`
 implements the statistic: coverage of a fingerprint is the fraction of
 checkpoints at which it appears on some wire.
 

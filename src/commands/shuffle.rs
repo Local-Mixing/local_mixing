@@ -2,8 +2,8 @@ use std::fs;
 use std::io::Write;
 
 use local_mixing::circuit::CircuitSeq;
-use local_mixing::replace::frozen::FrozenDb;
-use local_mixing::replace::transpositions::{
+use local_mixing::db_mixing::frozen::FrozenDb;
+use local_mixing::db_mixing::transpositions::{
     insert_wire_shuffles_knuth, insert_wire_shuffles_simple, insert_wire_shuffles_x,
 };
 

@@ -4,10 +4,7 @@ use std::time::Instant;
 use xxhash_rust::xxh3::Xxh3Default;
 
 use clap::Parser;
-use local_mixing::{
-    circuit::circuit::{Monomial, Permutation, Polynomial},
-    random::random_data::random_circuit,
-};
+use local_mixing::circuit::{Monomial, Permutation, Polynomial, random_circuit};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]

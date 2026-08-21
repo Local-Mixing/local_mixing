@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use local_mixing::replace::replace::{
+use local_mixing::db_mixing::replace::{
     COMPRESS_FRACTION_PERMILLE, GEN_MODE, GROW_THRESHOLD_PERMILLE, MAX_FANOUT, MAX_PASSES, MIN_GEN,
     MIN_GEN_PERMILLE, MIN_MEDIAN_LEEWAY, PASS_LENGTH, SAMF_TARGET, TARGET_SIZE, TRACK_SURVIVORS,
 };
@@ -87,7 +87,7 @@ pub fn run(sub: &clap::ArgMatches) {
 
     // Optional runtime-pluggable ranking functions (no recompile). Built-in defaults are used
     // when these flags are absent: ParetoOutgoing (#11) and FanoutTargetIncoming (#9).
-    use local_mixing::replace::ranking::{set_incoming, set_outgoing, ScriptRanker};
+    use local_mixing::db_mixing::ranking::{ScriptRanker, set_incoming, set_outgoing};
     if let Some(path) = sub.get_one::<String>("outgoing_rank_script") {
         match ScriptRanker::from_file(path) {
             Ok(r) => {

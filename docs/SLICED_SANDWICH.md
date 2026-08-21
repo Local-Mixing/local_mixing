@@ -97,7 +97,7 @@ Requires `n >= 3` (g57 gates need three distinct wires).
 
 The driver checks the pinned contract (`SandwichSecond` view: second half
 forced to zero, second-half output must equal `C(x)`) after transformation
-and after every mixing round. Unit tests in `src/replace/gadgets.rs`:
+and after every mixing round. Unit tests in `src/preprocessing/gadgets.rs`:
 `sandwich_slice_gates_are_dead_on_the_zero_slice`,
 `sliced_sandwich_computes_c_on_the_second_half_on_the_zero_slice`,
 `sliced_sandwich_inverse_is_dead_slice_and_reveals_d_inverse`.
@@ -116,6 +116,6 @@ The sandwich's two-sided slicing (forward reveals `C`, inverse reveals
 
 Code: `sliced_sandwich_cnot`, `random_g57_xgates`, `sandwich_slice_gates`,
 `random_interleave`, `sandwich_default_m`, `sandwich_default_s` in
-`src/replace/gadgets.rs`; driver branch and `FunctionView::SandwichSecond`
-in `src/replace/main_mix_cnot.rs`; flags in `src/main.rs` /
+`src/preprocessing/gadgets.rs`; driver branch and `FunctionView::SandwichSecond`
+in `src/db_mixing/main_mix_cnot.rs`; flags in `src/main.rs` /
 `src/commands/sss.rs`.

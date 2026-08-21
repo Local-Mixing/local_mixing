@@ -1,7 +1,7 @@
 # The Gray-code CG fold
 
 `--prod-gray-fold 1`. Code: `ProdLedger::fold_cg_gray` and `emit_atom_onto` in
-`src/replace/gadgets.rs`.
+`src/preprocessing/gadgets.rs`.
 
 **The full write-up is `docs/GRAY_FOLD_CG.tex` / `.pdf`** — construction, the
 per-prefix exposure audit, the two silent failure modes, the measurements, and

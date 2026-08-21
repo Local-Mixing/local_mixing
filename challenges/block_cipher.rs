@@ -4,7 +4,7 @@ use entropy::{diehard, dieharder};
 use entropy::{nist, rng::Rng};
 use fastrand::shuffle;
 use local_mixing::circuit::CircuitSeq;
-use local_mixing::random::random_data::random_circuit;
+use local_mixing::circuit::random_circuit;
 use primitive_types::U256 as u256;
 use rayon::prelude::*;
 

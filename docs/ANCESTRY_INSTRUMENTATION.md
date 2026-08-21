@@ -19,7 +19,7 @@ On the restructured menu they all read "nothing has moved": `odiff = 0.0001`,
 the circuit is still, in ancestry layout, the original gate order.
 
 It does not say that. A DB splice over a window spanning **mixed lineage**
-stamps its products `ORIGIN_SYNTH` ([`mix.rs`](../src/postmix/mix.rs), splice
+stamps its products `ORIGIN_SYNTH` ([`mix.rs`](../src/engine/mix.rs), splice
 path), and `origin_diffusion`, `adjacent_origin_autocorr` and
 `origin_displacement` all **skip** those gates. So the three meters are computed
 over the material mixing has *failed to touch*, and they get more selective the

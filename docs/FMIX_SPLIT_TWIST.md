@@ -1,6 +1,8 @@
 # FMIX_SPLIT_TWIST — the split stage of phase B
 
-Status: spec agreed 2026-08-05 (this file), implementation in `src/postmix/mix.rs`.
+Status: spec agreed 2026-08-05 (this file). Production part 1 is implemented in
+`src/postprocessing/splitting.rs`; the part-2 crossing walk is implemented in
+`src/postprocessing/cross_walk.rs`. Both operate on shared `engine::Mixer` state.
 Companion docs: `FMIX_MENU.md` (layer-1 menu), `FMIX_LAYER1.*` (slots), the
 phase-B reframe (2026-08-04): phase B's job is to BREAK the g57 structure
 (anti-inversion) with absolute spread/reach — not to mix state.

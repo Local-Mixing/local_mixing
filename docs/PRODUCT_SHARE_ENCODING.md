@@ -226,7 +226,7 @@ property one wants of an obfuscation.
 
 ## Implementation
 
-- `src/replace/gadgets.rs`: `ProdConfig` / `ProdLedger`
+- `src/preprocessing/gadgets.rs`: `ProdConfig` / `ProdLedger`
 (draw/inject/strip, `fold_cg`, `emit_band_fill`); wired into
 `gadgetize_cnot`, `gadgetize_xgates`, and the
 `slice_zero_ccnot` wrappers. `ProdConfig::off` reproduces the

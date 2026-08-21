@@ -6,12 +6,15 @@
 //! enabled. Asserts the move fires and never breaks equivalence.
 
 use lmdb::Transaction;
-use local_mixing::circuit::circuit::polys_repr_blob;
-use local_mixing::postmix::mix::{MixParams, Mixer};
-use local_mixing::postmix::xgate::{eval_lanes, XGate};
-use local_mixing::postmix::xpoly::{canonicalize_xgates_single, XPolyBudget};
-use local_mixing::replace::frozen::FrozenDb;
-use local_mixing::replace::frozen_build::{stage_tables, stage_validate, stage_write};
+use local_mixing::circuit::polys_repr_blob;
+use local_mixing::circuit::xgate::{XGate, eval_lanes};
+use local_mixing::db_generation::frozen_build::{
+    LmdbShards, stage_tables, stage_validate, stage_write,
+};
+use local_mixing::db_mixing::db_replace::DbMode;
+use local_mixing::db_mixing::frozen::FrozenDb;
+use local_mixing::engine::mix::{MixParams, Mixer};
+use local_mixing::engine::xpoly::{XPolyBudget, canonicalize_xgates_single};
 use xxhash_rust::xxh3::xxh3_128;
 
 fn key_of(window: &[XGate], reversed: bool) -> [u8; 16] {
@@ -59,8 +62,11 @@ fn fmix_db_move_fires_and_preserves_equivalence() {
         .unwrap();
     let dbs: Vec<lmdb::Database> = (0u16..=255)
         .map(|s| {
-            env.create_db(Some(format!("{s:02x}").as_str()), lmdb::DatabaseFlags::empty())
-                .unwrap()
+            env.create_db(
+                Some(format!("{s:02x}").as_str()),
+                lmdb::DatabaseFlags::empty(),
+            )
+            .unwrap()
         })
         .collect();
     {
@@ -82,13 +88,17 @@ fn fmix_db_move_fires_and_preserves_equivalence() {
     // --- convert to the frozen store and byte-exact validate ---
     let ld = lmdb_dir.to_str().unwrap();
     let fd = frz_dir.to_str().unwrap();
-    stage_tables(ld, "", fd, 400_000);
-    stage_write(ld, "", fd);
-    stage_validate(ld, "", fd);
+    let source = LmdbShards::open(ld, "");
+    stage_tables(&source, fd, 400_000);
+    stage_write(&source, fd);
+    stage_validate(&source, fd);
 
     // Sanity: the real store round-trips the key to the friend bytes.
     let db = FrozenDb::open(fd, None);
-    assert_eq!(db.get_regular(&key_of(&window, false)).as_deref(), Some(&value[..]));
+    assert_eq!(
+        db.get_regular(&key_of(&window, false)).as_deref(),
+        Some(&value[..])
+    );
 
     // --- drive a real Mixer with the DB move as the only contraction that can
     // remove this material. Input = 3 anchor gates on disjoint wires {3,4,5}
@@ -124,8 +134,13 @@ fn fmix_db_move_fires_and_preserves_equivalence() {
         w_twist_neg: 0.0,
         w_twist_swap: 0.0,
         w_twist_cnot: 0.0,
-        db_min_window: 2,
-        db_max_window: 2,
+        // Start every DB probe at exactly two contiguous gates. Prefix descent
+        // may inspect a one-gate suffix only after a two-gate miss, so every
+        // successful replacement in this synthetic store is the intended
+        // [p, p] -> [] contraction.
+        s_db: 2,
+        p_convex: 0.0,
+        db_prefixes: true,
         undo_frac: 0.0,
         verify_every: 1_000,
         report_every: 1_000_000,
@@ -145,14 +160,17 @@ fn fmix_db_move_fires_and_preserves_equivalence() {
     // --- (1) COMPRESSING move, verification OFF, with attempt recording ---
     let rec_path = base.join("attempts.log");
     let params = MixParams {
-        w_db: 1.0, // contraction always tries the compressing DB channel first
+        p_comp: 1.0, // every contraction tries the compressing DB channel first
         db_verify: false,
         ..base_params()
     };
     let mut mixer = Mixer::new_with_db(input.clone(), n_wires, params, FrozenDb::open(fd, None));
     mixer.enable_db_record(rec_path.to_str().unwrap());
     mixer.run(); // global_check runs internally; panics if equivalence ever breaks
-    assert!(mixer.counters.db_comp_hits > 0, "compressing DB move never fired");
+    assert!(
+        mixer.counters.db_comp_hits > 0,
+        "compressing DB move never fired"
+    );
     assert!(mixer.counters.db_gates_removed > 0, "no gates removed");
     let out = mixer.arena.to_vec();
     assert!(out.len() < input.len(), "circuit did not contract");
@@ -161,24 +179,33 @@ fn fmix_db_move_fires_and_preserves_equivalence() {
     let rec = std::fs::read_to_string(&rec_path).unwrap();
     assert!(rec.contains("matches="), "record missing match counts");
     assert!(
-        rec.lines().any(|l| l.starts_with("attempt") && l.contains("replaced=1")),
+        rec.lines()
+            .any(|l| l.starts_with("attempt") && l.contains("replaced=1")),
         "record shows no successful replacement"
     );
     assert!(
-        rec.lines().any(|l| l.starts_with("attempt") && (l.contains("smp=ctg") || l.contains("smp=cvx"))),
+        rec.lines()
+            .any(|l| l.starts_with("attempt") && (l.contains("smp=ctg") || l.contains("smp=cvx"))),
         "record missing the sampler tag"
     );
-    assert!(rec.contains("  in  "), "record missing the replacing subcircuit line");
+    assert!(
+        rec.contains("  in  "),
+        "record missing the replacing subcircuit line"
+    );
 
     // --- (2) SIZE-AGNOSTIC move (top-level p_db), verification ON ---
     let params = MixParams {
         p_db: 1.0, // every round is a size-agnostic DB attempt
+        db_mode: DbMode::SizeAgnostic,
         db_verify: true,
         ..base_params()
     };
     let mut mixer = Mixer::new_with_db(input.clone(), n_wires, params, FrozenDb::open(fd, None));
     mixer.run();
-    assert!(mixer.counters.db_agn_hits > 0, "size-agnostic DB move never fired");
+    assert!(
+        mixer.counters.db_agn_hits > 0,
+        "size-agnostic DB move never fired"
+    );
     check_equiv(&mixer.arena.to_vec(), "size-agnostic");
 
     let _ = std::fs::remove_dir_all(&base);

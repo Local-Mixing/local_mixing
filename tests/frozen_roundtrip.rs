@@ -7,8 +7,10 @@
 //! for random absent keys.
 
 use lmdb::Transaction;
-use local_mixing::replace::frozen::FrozenDb;
-use local_mixing::replace::frozen_build::{stage_tables, stage_validate, stage_write};
+use local_mixing::db_generation::frozen_build::{
+    LmdbShards, stage_tables, stage_validate, stage_write,
+};
+use local_mixing::db_mixing::frozen::FrozenDb;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -53,8 +55,11 @@ fn lmdb_to_frozen_roundtrip_preserves_all_lookups() {
         .unwrap();
     let dbs: Vec<lmdb::Database> = (0u16..=255)
         .map(|s| {
-            env.create_db(Some(format!("{s:02x}").as_str()), lmdb::DatabaseFlags::empty())
-                .unwrap()
+            env.create_db(
+                Some(format!("{s:02x}").as_str()),
+                lmdb::DatabaseFlags::empty(),
+            )
+            .unwrap()
         })
         .collect();
     let mut entries: Vec<([u8; 16], Vec<u8>)> = Vec::new();
@@ -66,13 +71,8 @@ fn lmdb_to_frozen_roundtrip_preserves_all_lookups() {
     {
         let mut txn = env.begin_rw_txn().unwrap();
         for (key, value) in &entries {
-            txn.put(
-                dbs[key[0] as usize],
-                key,
-                value,
-                lmdb::WriteFlags::empty(),
-            )
-            .unwrap();
+            txn.put(dbs[key[0] as usize], key, value, lmdb::WriteFlags::empty())
+                .unwrap();
         }
         txn.commit().unwrap();
     }
@@ -81,9 +81,10 @@ fn lmdb_to_frozen_roundtrip_preserves_all_lookups() {
     // --- convert and byte-exact validate against the source ---
     let ld = lmdb_dir.to_str().unwrap();
     let od = out_dir.to_str().unwrap();
-    stage_tables(ld, "", od, 400_000);
-    stage_write(ld, "", od);
-    stage_validate(ld, "", od); // exits nonzero on any mismatch
+    let source = LmdbShards::open(ld, "");
+    stage_tables(&source, od, 400_000);
+    stage_write(&source, od);
+    stage_validate(&source, od); // exits nonzero on any mismatch
 
     // --- every stored key returns the identical bytes; absent keys miss ---
     let db = FrozenDb::open(od, None);
@@ -94,8 +95,7 @@ fn lmdb_to_frozen_roundtrip_preserves_all_lookups() {
             "frozen value differs for key {key:02x?}"
         );
     }
-    let stored: std::collections::HashSet<[u8; 16]> =
-        entries.iter().map(|(k, _)| *k).collect();
+    let stored: std::collections::HashSet<[u8; 16]> = entries.iter().map(|(k, _)| *k).collect();
     for _ in 0..2000 {
         let mut key = [0u8; 16];
         rng.fill(&mut key);
@@ -107,7 +107,7 @@ fn lmdb_to_frozen_roundtrip_preserves_all_lookups() {
     // --- scan_shard's sequential walk sees exactly the stored values ---
     let mut walked: Vec<Vec<u8>> = Vec::new();
     for s in 0..256 {
-        local_mixing::replace::frozen::scan_shard(od, s, &mut |v: &[u8]| walked.push(v.to_vec()));
+        local_mixing::db_mixing::frozen::scan_shard(od, s, &mut |v: &[u8]| walked.push(v.to_vec()));
     }
     let mut want: Vec<Vec<u8>> = entries.iter().map(|(_, v)| v.clone()).collect();
     walked.sort();

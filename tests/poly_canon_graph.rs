@@ -1,5 +1,5 @@
-use local_mixing::circuit::circuit::{CircuitSeq, Permutation, Polynomial, canonicalize_polys_4};
-use local_mixing::circuit::poly_canon_graph::{canonical_form, canonicalize_graph};
+use local_mixing::circuit::{CircuitSeq, Permutation, Polynomial, canonicalize_polys_4};
+use local_mixing::experimental::poly_canon_graph::{canonical_form, canonicalize_graph};
 
 fn sorted_form(polys: &[Polynomial]) -> Vec<Vec<u64>> {
     polys

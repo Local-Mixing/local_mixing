@@ -300,7 +300,7 @@ agreement of 57%, 64%, 78%, 87.5% for
 [2,2,3,3], [2,3,3], [3,3], [3] — while the exact-span plate reports
 meanH≈ 0.498 for all of them.
 
-`src/bin/hmap_stat.rs` measures that directly: per cell and target bit,
+`red_team_tests/bin/heatmaps/hmap_stat.rs` measures that directly: per cell and target bit,
 the best agreement over every single wire and every XOR of two wires (the family
 containing the carrier pair), against a null floor from the same search on a
 random target. At n=128, 31 rows × 64 columns, 8192 samples:
