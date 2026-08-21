@@ -248,6 +248,8 @@ fn main() {
         refill_data: env("PROD_REFILL_DATA", preset.refill_data),
         single: env("PROD_SINGLE", preset.single),
         gray_fold: env("PROD_GRAY_FOLD", preset.gray_fold),
+        swap_refresh: env("PROD_SWAP", preset.swap_refresh),
+        close_slice: env("PROD_CLOSE_SLICE", preset.close_slice),
     };
     assert!(
         prod.gray_fold <= 3,
@@ -263,7 +265,7 @@ fn main() {
     );
     if prod.enabled() {
         println!(
-            "[gen] product-share encoding ON: representation={} k={} deg={} k_hi={} deg_hi={} band(auto)={} max_width={} ladder_cap={} gray_fold={} fill_nl={} roll={}",
+            "[gen] product-share encoding ON: representation={} k={} deg={} k_hi={} deg_hi={} band(auto)={} max_width={} ladder_cap={} gray_fold={} swap_refresh={} close_slice={} fill_nl={} roll={}",
             match carrier_mode {
                 CarrierMode::Single => "single-carrier",
                 CarrierMode::Five => "five-carrier",
@@ -294,6 +296,8 @@ fn main() {
             prod.max_width,
             prod.ladder_cap,
             prod.gray_fold,
+            prod.swap_refresh,
+            prod.close_slice,
             prod.fill_nl,
             prod.roll
         );
@@ -469,6 +473,19 @@ fn main() {
         }
         let mut vrng = StdRng::seed_from_u64(seed ^ 0xA11CE);
         let total_wires = gadget.num_wires.max(sandwich.num_wires);
+        // With the closing zero-slice block, the composite preserves only the
+        // UPPER half of the sandwich state on the honest slice: the closing
+        // guard fires against the mirror fill's band junk and perturbs the
+        // low (forward-junk) half by design. The payload contract is
+        // unchanged — C(x) lives on the upper half (see verify_zero_slice).
+        let verify_lo = if carrier_mode == CarrierMode::Single
+            && prod.single_carrier()
+            && prod.close_slice > 0
+        {
+            sandwich_n / 2
+        } else {
+            0
+        };
         for round in 0..4 {
             use rand::RngCore;
             let mut ga = vec![0u64; total_wires];
@@ -478,14 +495,16 @@ fn main() {
             let mut sa = ga.clone();
             eval_lanes(&gadget.gates, &mut ga);
             eval_lanes(&sandwich.gates, &mut sa);
-            for w in 0..sandwich_n {
+            for w in verify_lo..sandwich_n {
                 assert_eq!(
                     ga[w], sa[w],
                     "gadget-low != sandwich on wire {w}, round {round}"
                 );
             }
         }
-        println!("[gen] verify PASSED (256 bit-sliced samples, low {sandwich_n} wires)");
+        println!(
+            "[gen] verify PASSED (256 bit-sliced samples, wires {verify_lo}..{sandwich_n})"
+        );
     }
 
     write_mpmct(&out, &gadget.gates, gadget.num_wires).expect("write mpmct1");

@@ -142,6 +142,11 @@ pub fn run(sub: &clap::ArgMatches) {
             refill_data: opt("prod_refill_data", preset.refill_data),
             single: opt("prod_single", preset.single),
             gray_fold: opt("prod_gray_fold", preset.gray_fold),
+            // The 2026-08-20 redesign knobs ride the preset (no CLI flags
+            // yet): per-gate mask swap-with-refresh and the closing
+            // zero-slice block.
+            swap_refresh: preset.swap_refresh,
+            close_slice: preset.close_slice,
         };
         assert!(
             prod.gray_fold <= 3,

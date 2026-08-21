@@ -3165,6 +3165,40 @@ pub struct ProdConfig {
     /// that reject this witness should use
     /// [`ProdConfig::production_single_no_gray_phase_a`].
     pub gray_fold: usize,
+    /// Per-gate mask swap-with-refresh (0 = off). At every fold the target
+    /// value and one randomly chosen control value each retire one base-degree
+    /// mask term and gain a freshly drawn one, with the target-side emissions
+    /// interleaved INTERIOR to the fold's own fragment stream.
+    ///
+    /// WHY: with a time-invariant mask set, the masks cancel in every
+    /// before/after XOR across a fold, leaving the exact GF(2) identity
+    /// `carrier(post) ^ carrier(pre) = src(post) ^ src(pre)` (measured 100%
+    /// on linear source gates by flip_match). The refresh puts one
+    /// non-cancelling degree->=2 band monomial on each side of the gate.
+    /// A VERBATIM move of the same monomial between the two values would not
+    /// do: over GF(2) the moved term is emitted once on each wire it changes,
+    /// so the two touched carriers' deltas XOR back to the source delta
+    /// (conservation). Fresh draws are what break that parity.
+    ///
+    /// Swap mode forces the EXPANDED fold: the aggregate/micro/sentinel Gray
+    /// gathers materialize an operand's complete mask sum on one accumulator
+    /// wire as a segment pair, which reconstructs the operand linearly no
+    /// matter how mask ownership is shuffled (see the SECURITY LIMIT above),
+    /// and the gather/strip snapshot cannot tolerate a mid-block registry
+    /// change. It also switches the emitting constructors to the
+    /// target-stable commuting shuffle, so the interior interleave survives
+    /// reordering (same-target XOR writes commute and would otherwise drift).
+    pub swap_refresh: usize,
+    /// Closing zero-slice block (0 = off). The slice-zero wrappers append a
+    /// second, independently drawn slice-guard block at the END of the
+    /// circuit with the same specification as the opening one — identity
+    /// exactly on the zero band slice, every nonzero band slice perturbs the
+    /// data — so a reverse evaluator meets the same structure at their entry
+    /// as a forward evaluator does. Its targets are restricted to the low
+    /// (forward-junk) half of the data wires: the forward-honest run reaches
+    /// it with a junked band, so it FIRES on the honest slice and must only
+    /// ever perturb wires whose contents are already junk.
+    pub close_slice: usize,
 }
 
 impl ProdConfig {
@@ -3193,6 +3227,8 @@ impl ProdConfig {
             refill_data: 0,
             single: 0,
             gray_fold: 0,
+            swap_refresh: 0,
+            close_slice: 0,
         }
     }
 
@@ -3285,6 +3321,15 @@ impl ProdConfig {
             // members' leeway is 1.5x at one rung, 5.4x at four, with 4.5% of
             // fully-laddered ladders having ZERO rigid mobility. Turn it on
             // deliberately with --prod-ladder-cap.
+            //
+            // ⚠ Under swap_refresh (expanded fold) cap 0 leaves the arity-2
+            // product fragments as wide fossils the store cannot re-encode,
+            // and cap 4 MEASURABLY re-opens a small linear flip-match tail
+            // (9/84 linear gates at n=32) through the ladder's borrowed
+            // scratch — the ladder path has not been audited against the
+            // swap redesign's zero-relation contract. Until it is, the
+            // measured-zero configuration is cap 0; recover digestibility
+            // with PROD_POST_FRAGMENT if its own flip-match pass is clean.
             ladder_cap: 0,
             cg_jitter: 50,
             // Spelling variability ON: it is now restricted to the emissions
@@ -3302,7 +3347,20 @@ impl ProdConfig {
             // the [2,3,3] A/B -- more than half the old circuit was material
             // phase A could never re-encode. It is also what makes the mask
             // plan above affordable; see docs/GRAY_FOLD_CG.
+            //
+            // NOTE: with swap_refresh ON (below), fold_cg declines every Gray
+            // mode and takes the expanded path regardless of this field --
+            // the aggregate gather's operand-recovery witness is exactly the
+            // kind of cross-circuit linear equation the swap exists to kill.
+            // PROD_SWAP=0 restores the measured Gray stream byte-for-byte.
             gray_fold: 1,
+            // The 2026-08-20 redesign: per-gate mask swap-with-refresh and the
+            // closing zero-slice block. Together they remove every known GF(2)
+            // linear relation between source wire-segment XORs and gadget
+            // wire-segment XORs, and give reverse evaluation the same
+            // structural entry as forward evaluation.
+            swap_refresh: 1,
+            close_slice: 1,
         }
     }
 
@@ -4921,6 +4979,13 @@ fn normalize_lits(lits: &mut Vec<(u16, bool)>) -> Option<()> {
     Some(())
 }
 
+/// A fragment's atoms contain some wire with both polarities: the product is
+/// identically 0 and would emit nothing.
+fn atoms_contradict(atoms: &[Vec<(u16, bool)>]) -> bool {
+    let mut lits = interleave_atoms(atoms);
+    normalize_lits(&mut lits).is_none()
+}
+
 /// Ledger for the product-share encoding: per-value slot lists + constants.
 /// Sources are frozen band VALUES, so slots are never disturbed by RGs or
 /// CGs — the only emissions are the inject ramp, optional re-source churn,
@@ -4960,6 +5025,15 @@ struct ProdLedger {
     /// Sentinel Gray mode. Quadratic atoms alone visit dirty accumulators;
     /// degree-three-plus atoms remain explicit sentinels in every transition.
     sentinel_gray: bool,
+    /// Per-gate mask swap-with-refresh (see [`ProdConfig::swap_refresh`]).
+    /// Forces the expanded fold: every Gray mode is declined while set.
+    swap_refresh: bool,
+    /// Carrier-sourced band refills draw values below this bound only. Under
+    /// the closing-slice design this is the junk half: a refill that copies a
+    /// payload-half carrier into a band wire stores the payload bit there,
+    /// and the strip tail's half-captured emission windows then expose band
+    /// wires linearly — measured as the last exact flip_match pairs at n=64.
+    refill_value_hi: usize,
     /// Emit DB-eligible fold fragments in the g57/CNOT vocabulary.
     g57_narrow: bool,
     ladder_cap: usize,
@@ -4998,6 +5072,8 @@ struct ProdLedger {
     degenerate_rejects: u64,
     injected: u64,
     resourced: u64,
+    /// Fold-coupled swap-with-refresh operations (one per side per gate).
+    swapped: u64,
     rolled: u64,
     migrated: u64,
     retired: u64,
@@ -5088,6 +5164,8 @@ impl ProdLedger {
             gray_fold: cfg.gray_fold == 1,
             micro_gray: cfg.gray_fold == 2,
             sentinel_gray: cfg.gray_fold == 3,
+            swap_refresh: cfg.swap_refresh > 0,
+            refill_value_hi: if cfg.close_slice > 0 { (n / 2).max(1) } else { n },
             g57_narrow: cfg.g57_narrow > 0,
             ladder_cap: cfg.ladder_cap,
             cg_jitter: cfg.cg_jitter,
@@ -5105,6 +5183,7 @@ impl ProdLedger {
             degenerate_rejects: 0,
             injected: 0,
             resourced: 0,
+            swapped: 0,
             rolled: 0,
             migrated: 0,
             retired: 0,
@@ -5821,6 +5900,59 @@ impl ProdLedger {
         self.resourced += 1;
     }
 
+    /// One side of the fold-coupled swap-with-refresh
+    /// (see [`ProdConfig::swap_refresh`]): retire one base-degree slot of
+    /// `value` and inject a freshly drawn same-degree replacement, emitting
+    /// the two monomials into separate buffers so the caller can place them
+    /// in the fold's fragment stream (inject strictly interior, strip at or
+    /// after it — the inject-first order is `resource`'s never-momentarily-
+    /// bare rule). Returns false, emitting nothing, when the value holds no
+    /// base-degree slot to retire.
+    ///
+    /// The fresh draw takes new band positions, never a polarity re-roll of
+    /// the retired slot: the XOR of two polarity variants of one product is
+    /// degree <= deg-1 in the band wires, whose values are themselves wire
+    /// segments, so a re-roll's delta would sit back inside a linear
+    /// adversary's span.
+    fn swap_refresh_side(
+        &mut self,
+        value: usize,
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        inject_buf: &mut Vec<XGate>,
+        strip_buf: &mut Vec<XGate>,
+    ) -> bool {
+        if self.dist {
+            // Distributed sourcing draws need the fold's write barrier as a
+            // forbidden set; the swap is a banded-production mechanism and
+            // stays off rather than emit an unaudited dist draw.
+            return false;
+        }
+        let deg = self.plan.first().copied().unwrap_or(2);
+        let cands: Vec<usize> = self.slots[value]
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.factors.len() == deg)
+            .map(|(i, _)| i)
+            .collect();
+        if cands.is_empty() {
+            return false;
+        }
+        let old_index = cands[rng.random_range(0..cands.len())];
+        let slot = self.draw_slot(value, deg, rng);
+        let konst = self.emit_slot(value, &slot, state, rng, inject_buf);
+        self.consts[value] ^= konst;
+        self.add_refs(&slot);
+        self.slots[value].push(slot);
+        let old = self.slots[value].remove(old_index);
+        let konst = self.emit_slot(value, &old, state, rng, strip_buf);
+        self.consts[value] ^= konst;
+        self.drop_refs(&old);
+        self.used.remove(&old);
+        self.swapped += 1;
+        true
+    }
+
     /// Retire one band variable and rewrite it, so its Boolean function stops
     /// being a lifetime signature.
     ///
@@ -5886,11 +6018,12 @@ impl ProdLedger {
         // the target wire itself, and then `refill_data` percent is not the
         // rate it claims to be. Carriers are reached through `state.pairs` and
         // band variables through `loc`, which are the two role maps.
+        let refill_value_hi = self.refill_value_hi.min(state.n);
         let mut draw = |rng: &mut dyn rand::RngCore| -> u16 {
             let use_carrier = state.n > 0 && (rng.next_u32() as usize % 100) < refill_data;
             if use_carrier {
                 for _ in 0..64 {
-                    let v = rng.next_u32() as usize % state.n;
+                    let v = rng.next_u32() as usize % refill_value_hi;
                     let (c0, c1) = state.pairs[v];
                     let c = if rng.next_u32() & 1 == 0 { c0 } else { c1 } as u16;
                     if c != wire {
@@ -6157,6 +6290,10 @@ impl ProdLedger {
         self.guard_fold(gate, state, rng, out);
         let t = gate.target as usize;
         debug_assert!(t < state.n);
+        // Fold-coupled swap-with-refresh (see ProdConfig::swap_refresh). While
+        // active, every Gray mode below is declined and the expanded fold's
+        // atom spelling is used.
+        let swapping = self.swap_refresh && !self.dist;
         let mut lists: Vec<Vec<Vec<(u16, bool)>>> = Vec::with_capacity(gate.ctrls.len());
         for &(w, positive) in &gate.ctrls {
             let w = w as usize;
@@ -6175,7 +6312,7 @@ impl ProdLedger {
             // residual is currently expressed by toggling an empty simple
             // atom inside fold_cg_gray.
             let delta = self.consts[w] ^ !positive;
-            let aggregate = self.gray_fold || self.micro_gray;
+            let aggregate = (self.gray_fold || self.micro_gray) && !swapping;
             // Sentinel mode follows the expanded encoding here: absorb the
             // constant into a live linear literal. An empty atom times H would
             // expose the sentinel itself on the target trace.
@@ -6205,16 +6342,40 @@ impl ProdLedger {
             self.consts[t] ^= true;
             self.ledger_consts += 1;
         }
+        // The swap's emissions, buffered so their placement in the fragment
+        // stream is chosen deliberately. The target-side pair writes the
+        // target's carrier and reads only the band, so it interleaves freely
+        // among the fragments; the control-side pair writes the chosen
+        // control's carrier — which every fragment holding that carrier atom
+        // READS — so it must follow the whole fold, and the read/write
+        // collision keeps that order under any correct reordering.
+        let mut swap_t_inject: Vec<XGate> = Vec::new();
+        let mut swap_t_strip: Vec<XGate> = Vec::new();
+        let mut swap_c: Vec<XGate> = Vec::new();
+        if swapping {
+            self.swap_refresh_side(t, state, rng, &mut swap_t_inject, &mut swap_t_strip);
+            if !gate.ctrls.is_empty() {
+                let w = gate.ctrls[rng.random_range(0..gate.ctrls.len())].0 as usize;
+                let mut inj = Vec::new();
+                let mut strip = Vec::new();
+                if self.swap_refresh_side(w, state, rng, &mut inj, &mut strip) {
+                    swap_c.extend(inj);
+                    swap_c.extend(strip);
+                }
+            }
+        }
         // The Gray fold handles the arity-2 blocks -- which is every source
         // gate in the g57 body -- with no wide fragment at all. It declines the
         // shapes it cannot amortize (arity != 2, an operand with no mask terms,
         // no room to borrow); those fall through, and are laddered below rather
         // than left wide, since a single surviving 3-control gate would undo
-        // the point of the exercise.
-        if self.gray_fold && self.fold_cg_gray(t, &lists, state, rng, out) {
+        // the point of the exercise. Swap mode declines every Gray mode: the
+        // gathers materialize an operand's whole mask sum on one accumulator
+        // segment pair, a linear operand recovery no mask shuffle removes.
+        if !swapping && self.gray_fold && self.fold_cg_gray(t, &lists, state, rng, out) {
             return;
         }
-        if self.micro_gray {
+        if !swapping && self.micro_gray {
             let target = self.free_carrier(t, state, rng);
             let (t0, t1) = state.pairs[t];
             let protected = [t0 as u16, t1 as u16];
@@ -6240,7 +6401,7 @@ impl ProdLedger {
                 return;
             }
         }
-        if self.sentinel_gray {
+        if !swapping && self.sentinel_gray {
             let target = self.free_carrier(t, state, rng);
             let (t0, t1) = state.pairs[t];
             let protected = [t0 as u16, t1 as u16];
@@ -6267,13 +6428,19 @@ impl ProdLedger {
                 return;
             }
         }
-        let ladder_cap = if self.gray_fold || self.micro_gray {
+        let ladder_cap = if (self.gray_fold || self.micro_gray) && !swapping {
             usize::MAX
         } else {
             self.ladder_cap
         };
         if self.cap >= 2 {
+            // Narrow mode has no fragment stream to interleave into; the swap
+            // pair brackets the block instead (interior pinning is weaker, and
+            // narrow mode is not the production path).
+            out.extend(swap_t_inject.drain(..));
             self.fold_cg_narrow(t, &lists, state, rng, out);
+            out.extend(swap_t_strip.drain(..));
+            out.extend(swap_c.drain(..));
             return;
         }
         // Odometer over the cartesian product (an empty `lists` — an X/NOT
@@ -6298,6 +6465,11 @@ impl ProdLedger {
             if picked.iter().all(|a| a.is_empty()) {
                 self.consts[t] ^= true;
                 self.ledger_consts += 1;
+            } else if atoms_contradict(&picked) {
+                // The product contains w AND !w across its atoms: the term is
+                // identically 0 and emits nothing. Dropping it HERE (rather
+                // than at emission) keeps the swap's interior placement over
+                // the actually-emitted fragment stream exact.
             } else {
                 frags.push(picked);
             }
@@ -6320,14 +6492,34 @@ impl ProdLedger {
         //
         use rand::seq::SliceRandom;
         frags.shuffle(rng);
-        for atoms in frags {
+        // Interior interleave for the target-side swap: the inject goes
+        // STRICTLY interior (at least one fragment on each side), so every
+        // contiguous window of the target carrier's writes that covers the
+        // whole fold — the only subset whose XOR is the clean operand decode —
+        // necessarily picks up a fresh non-cancelling monomial; the strip may
+        // land anywhere at or after it. Under the target-stable shuffle the
+        // per-wire write order is the emission order, so the pinning is exact
+        // rather than probabilistic.
+        let (inj_pos, strip_pos) = if frags.len() >= 2 {
+            let i = rng.random_range(1..frags.len());
+            (i, rng.random_range(i..=frags.len()))
+        } else {
+            (frags.len(), frags.len())
+        };
+        for (fi, atoms) in frags.iter().enumerate() {
+            if fi == inj_pos {
+                out.extend(swap_t_inject.drain(..));
+            }
+            if fi == strip_pos {
+                out.extend(swap_t_strip.drain(..));
+            }
             let target = self.free_carrier(t, state, rng);
             // Interleaving is only REQUIRED on the ladder path, but a fragment's
             // width is not known until its literals are normalized, and using a
             // different literal ORDER for laddered and unladdered fragments
             // would make the two populations distinguishable by control order
             // alone. Interleave uniformly; a conjunction does not care.
-            let mut lits = interleave_atoms(&atoms);
+            let mut lits = interleave_atoms(atoms);
             if normalize_lits(&mut lits).is_none() {
                 // Contradictory literals (w AND !w): the term is 0.
                 continue;
@@ -6386,7 +6578,7 @@ impl ProdLedger {
                     &self.carrier_wires(state),
                     self.borrow_total(),
                     &forbidden,
-                    &atoms,
+                    atoms,
                     self.rung_menu,
                     rng,
                     out,
@@ -6404,6 +6596,13 @@ impl ProdLedger {
                 self.cg_fragments += 1;
             }
         }
+        // Whatever was not placed inside the stream (strip at the end
+        // position, or a degenerate fold with fewer than two fragments), plus
+        // the control-side pair, which must follow every fragment that reads
+        // the swapped control's carrier.
+        out.extend(swap_t_inject.drain(..));
+        out.extend(swap_t_strip.drain(..));
+        out.extend(swap_c.drain(..));
     }
 
     /// Two dirty accumulator wires for the Gray fold, drawn by ROLE from the
@@ -7267,7 +7466,34 @@ impl ProdLedger {
     /// !u/u fragment pair — no bare X), restoring the plain pair-XOR decode
     /// for the standard bookend.
     fn strip_all(&mut self, state: &GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
-        for value in 0..state.n {
+        self.strip_from(0, state, rng, out);
+    }
+
+    /// `strip_all` for values `lo..n` only. Values below `lo` keep their mask
+    /// terms and pending constants FOREVER — their carriers are never bared.
+    /// Used by the closing-slice design for the sandwich's forward-junk half:
+    /// stripping a junk value creates a stretch of bare junk segments at the
+    /// output port whose local pair-XORs equal the source circuit's own
+    /// wire-segment XORs (measured: the S2 slice gates matched at ~31% even
+    /// with the per-gate swap on, all in the last 10% of the circuit), and
+    /// nothing downstream ever needs to decode a junk value. The payload half
+    /// must still be stripped — the circuit's contract is to output C(x) bare.
+    fn strip_from(
+        &mut self,
+        lo: usize,
+        state: &GadgetState,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        // Values stripped so far (this call bares lo..n progressively): the
+        // constant discharge below reads a helper wire twice, and its two
+        // gates' write deltas are that helper's VALUE (and complement). A
+        // BARE helper hands a payload bit out as a local segment delta —
+        // measured as the last surviving flip_match class after the swap
+        // redesign — so under the closing-slice design (lo > 0, strip runs
+        // after route-home) the helper pool is restricted to wires that are
+        // never bared: the still-masked junk half and the band space.
+        for value in lo..state.n {
             // Strip in plan order (base terms first): the highest-degree
             // tower term covers the value longest at the tail boundary.
             while !self.slots[value].is_empty() {
@@ -7289,8 +7515,17 @@ impl ProdLedger {
                 // and it is live on any two-carrier build (--prod-single 0).
                 let (s0, s1) = state.pairs[value];
                 let sibling = if s0 == target { s1 } else { s0 };
-                let u =
-                    random_wire_except(self.borrow_total(), &[target, sibling], rng) as u16;
+                let u = if lo > 0 {
+                    loop {
+                        let w = rng.random_range(0..self.borrow_total());
+                        if (lo..state.n).contains(&w) || w == target || w == sibling {
+                            continue;
+                        }
+                        break w as u16;
+                    }
+                } else {
+                    random_wire_except(self.borrow_total(), &[target, sibling], rng) as u16
+                };
                 out.push(XGate::conj(target as u16, [(u, false)]).expect("distinct wires"));
                 out.push(XGate::cnot(target as u16, u));
                 self.consts[value] = false;
@@ -7301,7 +7536,7 @@ impl ProdLedger {
     fn report(&self) {
         if self.enabled() {
             println!(
-                "[prod] plan={:?} band={} src={} injected={} resourced={} rolled={} migrated={} retired={} \
+                "[prod] plan={:?} band={} src={} injected={} resourced={} swapped={} rolled={} migrated={} retired={} \
                  degen_rejects={} cg_fragments={} cg_narrow={} laddered={} gray_blocks={} fossils={} \
                  ledger_consts={}{}",
                 self.plan,
@@ -7309,6 +7544,7 @@ impl ProdLedger {
                 if self.dist { "distributed" } else { "band" },
                 self.injected,
                 self.resourced,
+                self.swapped,
                 self.rolled,
                 self.migrated,
                 self.retired,
@@ -8689,9 +8925,20 @@ fn emit_transvection_mixed(
 /// pinned to 0) the band reads exactly <alpha, x>. The band is never written
 /// again, so every registered product term is time-invariant.
 fn emit_band_fill(n: usize, band: &[u16], rng: &mut impl Rng, out: &mut Vec<XGate>) {
+    emit_band_fill_src(n, band, rng, out)
+}
+
+/// [`emit_band_fill`] with the fill sources restricted to data wires below
+/// `src_hi`. The closing-slice design sources BOTH fills from the low data
+/// half: at the input port that is where x lives (the high half is zero, so
+/// nothing is lost), and at the output port the low half is still MASKED —
+/// a fill CNOT reading a bare payload wire writes that payload bit out as a
+/// local segment delta, which is exactly the boundary flip-match class the
+/// redesign is eliminating.
+fn emit_band_fill_src(src_hi: usize, band: &[u16], rng: &mut impl Rng, out: &mut Vec<XGate>) {
     for &band_wire in band {
         loop {
-            let subset: Vec<usize> = (0..n).filter(|_| rng.random_bool(0.5)).collect();
+            let subset: Vec<usize> = (0..src_hi).filter(|_| rng.random_bool(0.5)).collect();
             if subset.len() < 2 {
                 continue;
             }
@@ -8780,6 +9027,20 @@ fn emit_band_fill_nl(
 /// otherwise (the output-side mirror fill targets more wires than there are
 /// data wires, so it cannot carry the guarantee).
 fn emit_band_fill_nl_pivots(
+    n: usize,
+    band: &[u16],
+    fill_nl: usize,
+    reserve: bool,
+    rng: &mut impl Rng,
+    out: &mut Vec<XGate>,
+) {
+    emit_band_fill_nl_pivots_src(n, band, fill_nl, reserve, rng, out)
+}
+
+/// [`emit_band_fill_nl_pivots`] with data sources restricted to wires below
+/// `src_hi` (see [`emit_band_fill_src`] for why the closing-slice design
+/// sources both fills from the low data half).
+fn emit_band_fill_nl_pivots_src(
     n: usize,
     band: &[u16],
     fill_nl: usize,
@@ -8933,11 +9194,20 @@ fn rg_pair_wires(state: &GadgetState, i: usize, j: usize) -> [usize; 4] {
 /// polarities makes the firing supports disjoint. Every hop is an adjacent
 /// commuting swap, so the pass preserves the function exactly.
 fn insertion_pass(order: &mut Vec<u32>, gates: &[XGate], rng: &mut impl Rng) {
+    insertion_pass_by(order, gates, rng, |a, b| XGate::collides(a, b));
+}
+
+fn insertion_pass_by(
+    order: &mut Vec<u32>,
+    gates: &[XGate],
+    rng: &mut impl Rng,
+    collide: impl Fn(&XGate, &XGate) -> bool,
+) {
     let mut out: Vec<u32> = Vec::with_capacity(order.len());
     for &gi in order.iter() {
         let g = &gates[gi as usize];
         let mut span = 0usize;
-        while span < out.len() && !XGate::collides(g, &gates[out[out.len() - 1 - span] as usize]) {
+        while span < out.len() && !collide(g, &gates[out[out.len() - 1 - span] as usize]) {
             span += 1;
         }
         let pos = out.len() - rng.random_range(0..=span);
@@ -8963,6 +9233,37 @@ fn insertion_pass(order: &mut Vec<u32>, gates: &[XGate], rng: &mut impl Rng) {
 /// is sound).
 pub fn commuting_shuffle(gates: &mut Vec<XGate>, rng: &mut impl Rng) {
     commuting_shuffle_order(gates, rng);
+}
+
+/// [`commuting_shuffle`] with one extra constraint: two writes to the SAME
+/// wire keep their emission order (they commute as XOR updates, so the
+/// standard shuffle scatters them freely). The swap-refresh redesign leans on
+/// per-wire write order — the fresh mask monomial is placed strictly interior
+/// to its fold's fragment stream, so no contiguous window of one carrier's
+/// writes XORs to a clean operand decode — and this variant is what makes
+/// that placement survive the reorder exactly instead of probabilistically.
+/// Cross-wire mobility (what dissolves the construction-time block layout) is
+/// untouched.
+pub fn commuting_shuffle_stable_targets(gates: &mut Vec<XGate>, rng: &mut impl Rng) {
+    let m = gates.len();
+    if m < 2 {
+        return;
+    }
+    let collide = |a: &XGate, b: &XGate| a.target == b.target || XGate::collides(a, b);
+    let mut order: Vec<u32> = (0..m as u32).collect();
+    const PASSES: usize = 3;
+    for _ in 0..PASSES {
+        insertion_pass_by(&mut order, gates, rng, collide);
+        order.reverse();
+    }
+    if PASSES % 2 == 1 {
+        order.reverse();
+    }
+    let mut reordered = Vec::with_capacity(m);
+    for &i in &order {
+        reordered.push(gates[i as usize].clone());
+    }
+    *gates = reordered;
 }
 
 /// Like [`commuting_shuffle`], but returns the applied order (new position i
@@ -9197,7 +9498,7 @@ fn emit_value_relocation(
     carrier_total: usize,
     out: &mut Vec<XGate>,
     rng: &mut impl Rng,
-) {
+) -> (usize, usize) {
     let i = rng.random_range(0..state.n);
     let j = loop {
         let j = rng.random_range(0..state.n);
@@ -9212,6 +9513,7 @@ fn emit_value_relocation(
     emit_wire_swap(wi, wj, out);
     state.pairs[i] = (wj, wj);
     state.pairs[j] = (wi, wi);
+    (i, j)
 }
 
 /// Toggle c0 by the nonlinear part of D.  At the input port this encodes a
@@ -10747,7 +11049,41 @@ fn slice_zero_preblock_dims(
     gate_count: usize,
     rng: &mut impl Rng,
 ) -> CnotCircuit {
+    slice_zero_block_dims(n, n, nondata, gate_count, rng)
+}
+
+/// The closing zero-slice block (see [`ProdConfig::close_slice`]): an
+/// independently drawn slice guard with the SAME specification as the opening
+/// one — identity exactly on the zero slice, every nonzero slice perturbs the
+/// data — appended at the output port so a reverse evaluator meets the same
+/// structure at their entry as a forward evaluator does at theirs. Targets
+/// are restricted to the low half of the data wires: on the sandwich
+/// convention that half is forward-junk, and the forward-honest run reaches
+/// the output port with a junked band, so the block FIRES there and must not
+/// touch the live outputs on the upper half.
+fn slice_zero_postblock_dims(
+    n: usize,
+    nondata: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
+    slice_zero_block_dims(n, n / 2, nondata, gate_count, rng)
+}
+
+/// Shared generator for the opening/closing slice blocks: targets are drawn
+/// from `0..target_hi`, slice controls from the `nondata` wires above `n`.
+fn slice_zero_block_dims(
+    n: usize,
+    target_hi: usize,
+    nondata: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> CnotCircuit {
     assert!(n >= 3, "slice_zero_ccnot_preblock requires n >= 3");
+    assert!(
+        (3..=n).contains(&target_hi),
+        "slice block targets need 3 <= target_hi <= n"
+    );
     let total = n + nondata;
     assert!(total <= u16::MAX as usize, "too many wires");
     let band = nondata.saturating_sub(n);
@@ -10769,7 +11105,7 @@ fn slice_zero_preblock_dims(
         slice_ctrl.shuffle(rng);
         let mut gates: Vec<XGate> = Vec::with_capacity(gate_count);
         for (i, &w) in slice_ctrl.iter().enumerate() {
-            let target = rng.random_range(0..n);
+            let target = rng.random_range(0..target_hi);
             let data_ctrls = if i < cnots {
                 0
             } else if i < cnots + ccnots {
@@ -11350,10 +11686,16 @@ pub fn gadgetize_xgates_single(
     assert!(total <= u16::MAX as usize, "too many wires");
 
     let mut out: Vec<XGate> = Vec::new();
+    // Under the closing-slice design both fills source from the LOW data
+    // half: at the input port that is where x lives (the high half is zero),
+    // and at the output port the low half is still masked — a fill CNOT
+    // reading a bare payload wire writes that payload bit out as a local
+    // segment delta (the boundary flip-match class the redesign eliminates).
+    let fill_src_hi = if prod.close_slice > 0 { n / 2 } else { n };
     let band_home: Vec<u16> = (carrier_total..total).map(|w| w as u16).collect();
     if prod.fill_nl > 0 {
-        emit_band_fill_nl_pivots(
-            n,
+        emit_band_fill_nl_pivots_src(
+            fill_src_hi,
             &band_home,
             prod.fill_nl,
             prod.fill_pivots > 0,
@@ -11361,7 +11703,7 @@ pub fn gadgetize_xgates_single(
             &mut out,
         );
     } else {
-        emit_band_fill(n, &band_home, rng, &mut out);
+        emit_band_fill_src(fill_src_hi, &band_home, rng, &mut out);
     }
 
     let mut state = GadgetState {
@@ -11378,7 +11720,26 @@ pub fn gadgetize_xgates_single(
             break;
         }
         for _ in 0..rg_freq {
-            emit_value_relocation(&mut state, carrier_total, &mut out, rng);
+            let (i, j) = emit_value_relocation(&mut state, carrier_total, &mut out, rng);
+            // Relocation-coupled refresh: a relocation moves a value's mask
+            // content WHOLESALE, so a rarely-written value (a payload value
+            // is a fold target exactly once, at its N gate) re-exhibits the
+            // same mask function at every stop, and segment pairs cutting
+            // through two relocations of matching content recover its single
+            // value transition exactly — measured as the last flip_match
+            // residue. Refreshing one monomial of each moved value at every
+            // relocation makes every representation event a fresh function.
+            if prod.swap_refresh > 0 {
+                for value in [i, j] {
+                    let mut inj = Vec::new();
+                    let mut strip = Vec::new();
+                    if prod_ledger.swap_refresh_side(value, &state, rng, &mut inj, &mut strip)
+                    {
+                        out.extend(inj);
+                        out.extend(strip);
+                    }
+                }
+            }
         }
         for _ in 0..prod.rsrc {
             prod_ledger.resource(&state, rng, &mut out);
@@ -11392,14 +11753,27 @@ pub fn gadgetize_xgates_single(
             prod_ledger.retire_refill(&state, prod.refill_data, prod.fill_nl, rng, &mut out);
         }
     }
-    prod_ledger.strip_all(&state, rng, &mut out);
-    prod_ledger.report();
-
-    // Route every value home (rolls can leave one on a former band wire), so
-    // wires 0..n hold the values and n..total hold band junk.
+    // Route every value home BEFORE stripping (rolls can leave one on a
+    // former band wire), so wires 0..n hold the values and n..total hold band
+    // junk. Routing bare values would be a leak in its own right: a wire swap
+    // of two stripped carriers writes their bare values as local segment
+    // deltas at the output port, and a bare payload delta is exactly a source
+    // wire-segment XOR (measured: the N column and the CNOT-shaped S2 gates
+    // matched at 100% through the swap redesign until this was reordered).
+    // Swapping MASKED carriers leaves only mask-polluted deltas behind; the
+    // slots travel with their values (they name band variables, not carrier
+    // wires), so the strip below lands on the home wires unchanged.
     let mut owner: Vec<Option<usize>> = vec![None; total];
     for value in 0..n {
         owner[state.pairs[value].0] = Some(value);
+    }
+    // Wire -> band variable currently living there. Rolls can park a band
+    // variable anywhere, including the carrier space, and the strip below
+    // resolves slot literals through `loc` — so the swaps must carry the
+    // band placement along with the values or the strip reads dead wires.
+    let mut band_at: Vec<Option<usize>> = vec![None; total];
+    for (b, &w) in prod_ledger.loc.iter().enumerate() {
+        band_at[w as usize] = Some(b);
     }
     for value in 0..n {
         let cur = state.pairs[value].0;
@@ -11414,12 +11788,27 @@ pub fn gadgetize_xgates_single(
         }
         owner[value] = Some(value);
         state.pairs[value] = (value, value);
+        if let Some(b) = band_at[cur] {
+            prod_ledger.loc[b] = value as u16;
+        }
+        if let Some(b) = band_at[value] {
+            prod_ledger.loc[b] = cur as u16;
+        }
+        band_at.swap(cur, value);
     }
+
+    // With the closing-slice design, the forward-junk half (values 0..n/2 on
+    // the sandwich convention) keeps its masks: bare junk segments at the
+    // output port would hand their local pair-XORs to the source circuit's
+    // own wire-segment XORs (see strip_from). Only the payload half is bared.
+    let strip_lo = if prod.close_slice > 0 { n / 2 } else { 0 };
+    prod_ledger.strip_from(strip_lo, &state, rng, &mut out);
+    prod_ledger.report();
 
     let band_final: Vec<u16> = (carrier_total..total).map(|w| w as u16).collect();
     if prod.fill_nl > 0 {
-        emit_band_fill_nl_pivots(
-            n,
+        emit_band_fill_nl_pivots_src(
+            fill_src_hi,
             &band_final,
             prod.fill_nl,
             prod.fill_pivots > 0,
@@ -11427,10 +11816,14 @@ pub fn gadgetize_xgates_single(
             &mut out,
         );
     } else {
-        emit_band_fill(n, &band_final, rng, &mut out);
+        emit_band_fill_src(fill_src_hi, &band_final, rng, &mut out);
     }
 
-    commuting_shuffle(&mut out, rng);
+    if prod.swap_refresh > 0 {
+        commuting_shuffle_stable_targets(&mut out, rng);
+    } else {
+        commuting_shuffle(&mut out, rng);
+    }
     CnotCircuit {
         gates: out,
         num_wires: total,
@@ -11453,7 +11846,21 @@ pub fn gadgetize_xgates_with_slice_zero_ccnot_single(
     let gadget = gadgetize_xgates_single(source, n, rg_freq, prod, rng);
     circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
     circuit.gates.extend(gadget.gates);
-    commuting_shuffle(&mut circuit.gates, rng);
+    if prod.close_slice > 0 {
+        // The symmetric closing guard (see slice_zero_postblock_dims). On the
+        // honest forward slice it fires against the mirror fill's band junk
+        // and perturbs only the low (junk) half, so the composite preserves
+        // main's output on the UPPER half of the data wires; a reverse
+        // evaluator entering on a zero band meets it as a dead guard, exactly
+        // as a forward evaluator meets the opening block.
+        let post = slice_zero_postblock_dims(n, band, gate_count.max(band), rng);
+        circuit.gates.extend(post.gates);
+    }
+    if prod.swap_refresh > 0 {
+        commuting_shuffle_stable_targets(&mut circuit.gates, rng);
+    } else {
+        commuting_shuffle(&mut circuit.gates, rng);
+    }
     circuit
 }
 
@@ -14170,6 +14577,8 @@ mod cnot_gadget_tests {
             refill_data: 0,
             single: 0,
             gray_fold: 0,
+            swap_refresh: 0,
+            close_slice: 0,
         };
         let live = carrier_total + band; // the whole wire space: no pinned wires
         let sources: Vec<XGate> = vec![
@@ -15534,6 +15943,8 @@ mod cnot_gadget_tests {
                 refill_data: 0,
                 single: 0,
                 gray_fold: 0,
+                swap_refresh: 0,
+                close_slice: 0,
             };
             let band_writes = |g: &CnotCircuit| -> usize {
                 g.gates
@@ -15600,6 +16011,8 @@ mod cnot_gadget_tests {
             refill_data: 0,
             single: 0,
             gray_fold: 0,
+            swap_refresh: 0,
+            close_slice: 0,
         };
         for seed in 0..3u64 {
             let mut rng = StdRng::seed_from_u64(0xa550_0000 + seed);
@@ -15673,6 +16086,8 @@ mod cnot_gadget_tests {
                 refill_data: 0,
                 single: 0,
                 gray_fold: 0,
+                swap_refresh: 0,
+                close_slice: 0,
             };
             for seed in 0..2u64 {
                 let mut rng = StdRng::seed_from_u64(0x0d15_0000 + seed);
@@ -15742,6 +16157,8 @@ mod cnot_gadget_tests {
                 refill_data: 0,
                 single: 1,
                 gray_fold: 0,
+                swap_refresh: 0,
+                close_slice: 0,
             };
             for seed in 0..3u64 {
                 let mut rng = StdRng::seed_from_u64(0x51_0000 + seed);
@@ -15804,6 +16221,8 @@ mod cnot_gadget_tests {
                 refill_data: 0,
                 single: 1,
                 gray_fold: 0,
+                swap_refresh: 0,
+                close_slice: 0,
             };
             let mut rng = StdRng::seed_from_u64(0x1add_0000 + seed);
             gadgetize_cnot_single(&main, n, 2, &cfg, &mut rng)
@@ -15873,6 +16292,8 @@ mod cnot_gadget_tests {
         // large, deliberate spends (2.2x and +54% gates) whose benefits --
         // store-reachability and the duplicate-pair signature -- are the
         // operator's call, not a silent default. Pinned so a change is visible.
+        // ⚠ cap 4 under swap_refresh re-opened a small linear flip-match tail
+        // through the ladder scratch (unaudited against the swap contract).
         assert_eq!(p.ladder_cap, 0, "laddering is opt-in via --prod-ladder-cap");
         // The Gray fold is ON: the fold emits no wide fragment at all, and
         // store-reachability goes 31.55% -> 95.47% (97.53% at this mask plan).
@@ -15881,6 +16302,12 @@ mod cnot_gadget_tests {
         assert_eq!(p.cg_jitter, 50, "block-count entropy at its maximum");
         assert!(p.epoch > 0, "a frozen band is recoverable by function lifetime");
         assert_eq!(p.fill_pivots, 0, "band = n leaves the pivot block no room");
+        // The 2026-08-20 redesign: without the per-gate swap the masks cancel
+        // in every fold's before/after XOR (carrier delta == source delta,
+        // measured 100% on linear gates); without the closing block the
+        // zero-slice phase exists at the input port only.
+        assert_eq!(p.swap_refresh, 1, "per-gate mask swap-with-refresh is the default");
+        assert_eq!(p.close_slice, 1, "the closing zero-slice block is the default");
     }
 
     #[test]
@@ -15997,6 +16424,8 @@ mod cnot_gadget_tests {
                 refill_data,
                 single: 0,
                 gray_fold: 0,
+                swap_refresh: 0,
+                close_slice: 0,
             };
             for seed in 0..3u64 {
                 let mut rng = StdRng::seed_from_u64(0xbeef_0000 + seed);
@@ -16049,6 +16478,8 @@ mod cnot_gadget_tests {
             refill_data: 0,
             single: 0,
             gray_fold: 0,
+            swap_refresh: 0,
+            close_slice: 0,
         };
         let mut rng = StdRng::seed_from_u64(0x0d16_0001);
         let dist = gadgetize_cnot(&main, n, 2, &MaskConfig::off(), &cfg(1), &mut rng);
@@ -16646,6 +17077,183 @@ mod cnot_gadget_tests {
                 assert!(disturbed, "seed={seed:#x} slice a={a:#x} still computes C");
             }
         }
+    }
+
+    /// A scaled-down production-shaped config for the swap-refresh tests:
+    /// single carrier, [2,2,2,3] plan, band = n, churn on, swap on. Gray is
+    /// left at the production default (1) deliberately — swap mode must
+    /// decline it and still verify.
+    fn swap_test_config() -> ProdConfig {
+        let mut p = ProdConfig::production_single();
+        p.cg_jitter = 0;
+        p.swap_refresh = 1;
+        p.close_slice = 1;
+        // At toy n the auto band (= n) leaves a value's disjointness draw a
+        // single free pair, and the per-gate refresh churn exhausts its four
+        // polarity variants; production bands are orders of magnitude wider.
+        p.band = 24;
+        p
+    }
+
+    fn swap_test_source(n: u16, rng: &mut StdRng) -> Vec<XGate> {
+        // A mix of every source shape the sandwich feeds the gadgetizer:
+        // CNOT, NCNOT, g57, and 2-3-control conjunctions.
+        fn distinct(n: u16, taken: &[u16], rng: &mut StdRng) -> u16 {
+            loop {
+                let w = rng.random_range(0..n);
+                if !taken.contains(&w) {
+                    return w;
+                }
+            }
+        }
+        let mut gates = Vec::new();
+        for _ in 0..60 {
+            let t = rng.random_range(0..n);
+            let a = distinct(n, &[t], rng);
+            let b = distinct(n, &[t, a], rng);
+            let gate = match rng.random_range(0..5) {
+                0 => XGate::cnot(t, a),
+                1 => XGate::conj(t, [(a, false)]).unwrap(),
+                2 => XGate::from_g57([t, a, b]),
+                3 => XGate::conj(t, [(a, true), (b, true)]).unwrap(),
+                _ => {
+                    let c = distinct(n, &[t, a, b], rng);
+                    XGate::conj(t, [(a, true), (b, false), (c, true)]).unwrap()
+                }
+            };
+            gates.push(gate);
+        }
+        gates
+    }
+
+    /// The 2026-08-20 swap-refresh redesign preserves the function exactly:
+    /// on the zero band slice the single-carrier gadget still computes the
+    /// source, while every fold retires and refreshes one mask term on the
+    /// target and on one control.
+    #[test]
+    fn swap_refresh_single_carrier_matches_source_on_the_zero_slice() {
+        let n = 8usize;
+        for seed in 0..4u64 {
+            let mut rng = StdRng::seed_from_u64(0x5a70_0000 + seed);
+            let source = swap_test_source(n as u16, &mut rng);
+            // close_slice off: the builder strips every value and the whole
+            // data range must match the source exactly.
+            let mut prod = swap_test_config();
+            prod.close_slice = 0;
+            let gadget = gadgetize_xgates_single(&source, n, 1, &prod, &mut rng);
+            assert!(gadget.num_wires <= 64, "test sized for u64 evaluation");
+            let mask = (1u64 << n) - 1;
+            for x in 0..=mask {
+                let expected = eval_u64(&source, x) & mask;
+                assert_eq!(
+                    eval_u64(&gadget.gates, x) & mask,
+                    expected,
+                    "seed={seed} x={x:#x}"
+                );
+            }
+        }
+    }
+
+    /// With close_slice on, the builder strips only the payload half: the
+    /// upper half still matches the source exactly, and the junk half stays
+    /// MASKED (bare junk segments at the output port would hand their local
+    /// pair-XORs to the source's own wire-segment XORs).
+    #[test]
+    fn swap_refresh_keeps_the_junk_half_masked_when_close_slice_is_on() {
+        let n = 8usize;
+        let mut rng = StdRng::seed_from_u64(0x5a70_0100);
+        let source = swap_test_source(n as u16, &mut rng);
+        let prod = swap_test_config();
+        let gadget = gadgetize_xgates_single(&source, n, 1, &prod, &mut rng);
+        let mask = (1u64 << n) - 1;
+        let upper = !((1u64 << (n / 2)) - 1) & mask;
+        let mut low_masked = false;
+        for x in 0..=mask {
+            let expected = eval_u64(&source, x) & mask;
+            let got = eval_u64(&gadget.gates, x) & mask;
+            assert_eq!(got & upper, expected & upper, "payload half x={x:#x}");
+            if got & !upper & mask != expected & !upper & mask {
+                low_masked = true;
+            }
+        }
+        assert!(
+            low_masked,
+            "the junk half matched the source everywhere: its masks were stripped"
+        );
+    }
+
+    /// The closing zero-slice block has the opening block's specification —
+    /// identity exactly on the zero slice, every nonzero slice perturbs the
+    /// data — with its targets confined to the low (forward-junk) half.
+    #[test]
+    fn slice_zero_postblock_fixes_only_zero_slice_and_targets_the_low_half() {
+        let n = 6usize;
+        let nondata = 4usize;
+        let mask = (1u64 << n) - 1;
+        for seed in 0..8u64 {
+            let mut rng = StdRng::seed_from_u64(0xc105_0000 + seed);
+            let block = slice_zero_postblock_dims(n, nondata, 3 * nondata, &mut rng);
+            for g in &block.gates {
+                assert!(
+                    (g.target as usize) < n / 2,
+                    "closing-block target {} outside the junk half",
+                    g.target
+                );
+            }
+            for x in 0..=mask {
+                assert_eq!(
+                    eval_u64(&block.gates, x) & mask,
+                    x,
+                    "not identity on the zero slice (seed={seed})"
+                );
+            }
+            for s in 1..(1u64 << nondata) {
+                let disturbed =
+                    (0..=mask).any(|x| eval_u64(&block.gates, x | (s << n)) & mask != x);
+                assert!(disturbed, "slice {s:#x} leaves the data fixed (seed={seed})");
+            }
+        }
+    }
+
+    /// The slice-zero wrapper with the closing block preserves the source on
+    /// the UPPER half of the data wires (the sandwich payload) and fires the
+    /// closing guard into the junk half on the honest forward run.
+    #[test]
+    fn closing_slice_wrapper_preserves_the_upper_half() {
+        let n = 8usize;
+        let mut rng = StdRng::seed_from_u64(0xc105_c105);
+        let source = swap_test_source(n as u16, &mut rng);
+        let prod = swap_test_config();
+        // Several gates per slice wire: at one gate per wire the closing
+        // block's halved target range pigeonholes same-target pure-CNOT
+        // pairs, which cancel exactly on weight-2 slices and starve the
+        // acceptance draw (production runs ~10 gates per slice wire).
+        let slice_gates = 4 * prod.band_size(n);
+        let circuit = gadgetize_xgates_with_slice_zero_ccnot_single(
+            &source,
+            n,
+            1,
+            slice_gates,
+            &prod,
+            &mut rng,
+        );
+        assert!(circuit.num_wires <= 64, "test sized for u64 evaluation");
+        let mask = (1u64 << n) - 1;
+        let mut low_half_diverged = false;
+        for x in 0..=mask {
+            let expected = eval_u64(&source, x) & mask;
+            let got = eval_u64(&circuit.gates, x) & mask;
+            let upper = !((1u64 << (n / 2)) - 1) & mask;
+            assert_eq!(got & upper, expected & upper, "payload half x={x:#x}");
+            if got & !upper & mask != expected & !upper & mask {
+                low_half_diverged = true;
+            }
+        }
+        assert!(
+            low_half_diverged,
+            "closing guard never fired: the low half matches the source everywhere, \
+             so the appended block is not doing its job"
+        );
     }
 
     #[test]

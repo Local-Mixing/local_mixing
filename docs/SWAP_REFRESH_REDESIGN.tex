@@ -1,0 +1,191 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\XOR}{\oplus}
+\title{The Swap-Refresh Gadgetization}
+\author{local\_mixing --- design note}
+\date{2026-08-20}
+\begin{document}
+\maketitle
+
+\noindent
+Redesign of the single-carrier production gadgetizer (the
+\texttt{gen\_sandwich\_gadget} sandwich path): the aggregate-Gray fold is
+replaced by a per-gate \emph{mask swap-with-refresh}, a \emph{closing
+zero-slice block} is appended, and every measured output-port channel is
+closed. The result eliminates all detected linear (and degree-2)
+relations between the two circuits' wire segments \emph{and} is about
+30\% smaller than the construction it replaces.
+
+\section{Goal}
+
+No $\mathrm{GF}(2)$-linear equation should hold in which some variables
+are wire segments of the source (sandwich) circuit and others are wire
+segments of the gadgetized circuit --- except through the public
+boundary (functions of the shared input at the input port, of the shared
+output at the output port), which any correct implementation exhibits.
+
+The prior construction failed this in three measured ways.
+
+\begin{enumerate}
+\item \textbf{Endpoint cancellation.} Every logical value decodes as
+$v = c_v \XOR M_1 \XOR M_2 \XOR M_3 \XOR H \XOR \kappa$, the mask
+monomials $M_i$ (degree 2) and $H$ (degree 3) being products of
+\emph{frozen} band literals. A fold writes the control's decode onto the
+target's carrier and never touches the target's own mask set, so the
+masks cancel in every before/after XOR across the gate:
+\[
+\mathrm{carrier}^{+} \XOR \mathrm{carrier}^{-}
+ \;=\; \mathrm{src}^{+} \XOR \mathrm{src}^{-},
+\]
+an exact cross-circuit linear identity --- measured by
+\texttt{flip\_match} at 100\% of linear source gates and 32.4\% of
+nonlinear ones.
+\item \textbf{The Gray operand witness.} The aggregate-Gray fold gathers
+an operand's complete mask sum onto an accumulator wire and strips it
+back, so the operand is linearly reconstructible from three gadget
+segments: $B = c_b \XOR u^{-} \XOR u^{+} \XOR \kappa$.
+\item \textbf{Port asymmetry.} The zero-slice guard existed only at the
+input port; a reverse evaluator met a structurally different entry.
+\end{enumerate}
+
+\section{Execution}
+
+\subsection{Per-gate mask swap-with-refresh}
+
+At every fold, the \emph{target} value and \emph{one randomly chosen
+control} each retire one base-degree mask monomial and gain a freshly
+drawn one. The target-side inject is emitted \emph{strictly interior} to
+the fold's fragment stream; the control-side pair follows the fold,
+pinned by read/write collisions. No contiguous window of any carrier's
+writes then XORs to a clean operand decode.
+
+Two lemmas fixed the mechanism's shape:
+
+\begin{itemize}
+\item \textbf{Verbatim moves are unsound.} Moving a monomial $M$ between
+two mask sets emits it once on each touched wire, so over
+$\mathrm{GF}(2)$ the two carriers' deltas XOR back to the source delta:
+$\Delta(\text{t-carrier}) \XOR \Delta(\text{c-carrier}) = \Delta T$.
+Conservation makes any exact move leak; arriving monomials must be
+fresh draws.
+\item \textbf{Fresh means fresh band positions.} A polarity re-roll of
+the same product differs from it by a polynomial of degree
+$\le \deg - 1$ in the band wires, whose values are themselves wire
+segments --- back inside a linear adversary's span.
+\end{itemize}
+
+Swap mode \textbf{declines every Gray mode}: the gathers materialize an
+operand's whole mask sum as an accumulator segment pair regardless of
+mask ownership, and the gather/strip snapshot cannot tolerate a
+mid-block registry change. The expanded fold is used instead, under a
+\emph{target-stable commuting shuffle} that preserves per-wire write
+order (same-target XOR writes commute; the standard shuffle re-exposed a
+clean window at ${\sim}14\%$ of arity-1 folds).
+
+\subsection{The closing zero-slice block}
+
+An independently drawn slice guard with the opening block's
+specification --- identity exactly on the zero band slice, every nonzero
+band slice perturbs the data --- is appended after the mirror fill, so a
+reverse evaluator meets the same structure at their entry as a forward
+evaluator does. Its targets are confined to the low (forward-junk) data
+half: the honest forward run reaches the output port with a junked band,
+so the block fires there and must only perturb junk. The composite
+preserves the sandwich on the \emph{upper data half only}, which is the
+payload contract.
+
+\subsection{Output-port hygiene}
+
+Reaching zero required closing four further channels, each found by
+re-running \texttt{flip\_match} after the previous fix:
+the junk half is never stripped (bare junk segments hand their pair-XORs
+to the source's own segment XORs); route-home runs \emph{before} the
+strip, carrying the band-placement map, so routing swaps move masked
+carriers; the strip's constant-discharge helper, both band fills, and
+the epoch refills source exclusively from never-bared wires (a refill
+copying a payload carrier into a band wire stores the payload bit where
+a half-captured emission window can read it back); and every relocation
+also refreshes one monomial of each moved value --- a payload value is a
+fold target exactly once, so its mask function would otherwise recur
+identically at every relocation stop, and a segment pair cutting through
+two matching stops recovers the single value transition exactly.
+
+\section{Why it ended up smaller}
+
+The size reduction was not a goal; it fell out of declining Gray. The
+Gray fold was never cheap --- it was bought for phase-A
+store-reachability (narrow fragments; $31.55\% \to 95.47\%$) at a
+measured $2.38\times$ the gates of the wide fold. Its per-gate machinery
+--- gathering and stripping every mask atom of both operands onto two
+accumulators, plus the four-phase product schedule --- costs more than
+the expanded fold's fragment list at the production plan $[2,2,2,3]$.
+The swap-refresh construction removes all of that and spends back only
+four monomial emissions per fold, two per relocation, and one extra
+slice block:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+$n$ & prior (Gray) & swap-refresh & ratio \\
+\midrule
+32  & 80{,}950  & 57{,}217  & $0.71\times$ \\
+64  & 157{,}586 & 112{,}394 & $0.71\times$ \\
+128 & ${\sim}1.29$M (campaign builds) & 878{,}863 & ${\sim}0.68\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The $n{=}128$ half-sandwich build ($|C|{=}|D|{=}3000$) comes
+to 481{,}070 gates.
+
+The price is paid in a different currency: with the ladder off,
+${\sim}7\%$ of fold fragments remain wide, material phase~A's store
+cannot re-encode. Both measured remedies currently violate the
+zero-relation contract (\texttt{--prod-ladder-cap 4} re-opens a small
+linear tail through its borrowed scratch; \texttt{PROD\_POST\_FRAGMENT}
+a broad one) and are off-limits for deliverables until audited. Store
+reachability under the expanded fold is the open measurement for the
+next mixing campaign.
+
+\section{Verification ($n=128$, production parameters, fresh random seed)}
+
+\begin{itemize}
+\item \textbf{Function}: bit-sliced verify passed (payload half equals
+the sandwich on the honest slice); 317/317 unit tests.
+\item \textbf{Inputs$\leftrightarrow$outputs}: the rank of the 257
+columns $\{1, x, y\}$ over 1024 samples is full ($257/257$) --- no
+affine relation between inputs and outputs (conclusive: a true relation
+forces a rank deficit on every sample set).
+\item \textbf{\texttt{flip\_match}} (local segment-pair XOR vs per-gate
+source deltas, kwin 12/30/60): $0/13{,}568$ source gates matched ---
+down from 100\% linear / 32.4\% nonlinear on the prior build.
+\item \textbf{\texttt{segment\_deduce}, degree 1} (8 cuts, 16{,}384
+samples, fresh-sample verified): 2.91\% of sandwich segments deducible,
+every equation on the shared-input or shared-output cut; \emph{zero}
+interior-cut equations (prior build: ${\sim}50\%$ deducible with
+thousands of interior equations in the gadget-exposure direction).
+\item \textbf{\texttt{segment\_deduce}, degree 2} (four restricted
+windows up to 12{,}881 monomials, both directions, matched degree-1
+controls): degree 2 adds exactly one equation --- an early C-gate output
+that is a quadratic of the \emph{public input}, matched on the input cut
+only. No other verified equation uses a product; the reverse direction's
+interior-labeled hits are the public payload $C(x)$ at the sandwich's
+C/D seam matching the gadget's output, present for any correct
+implementation. Caveats: windows are restricted, and products are
+one-sided (no bilinear $s \cdot g$ cross-terms in the model).
+\end{itemize}
+
+\section{Operation}
+
+\texttt{ProdConfig::production\_single()} now sets
+\texttt{swap\_refresh: 1, close\_slice: 1}; environment overrides
+\texttt{PROD\_SWAP} / \texttt{PROD\_CLOSE\_SLICE} (0/0 restores the
+prior Gray stream byte-for-byte). The gss\_mix pipeline picks the new
+defaults up unchanged. The two-share (\texttt{sss}) and multi-carrier
+paths receive the fold-level swap wherever \texttt{fold\_cg} runs but
+not the output-port hygiene; extending them is future work.
+
+\end{document}

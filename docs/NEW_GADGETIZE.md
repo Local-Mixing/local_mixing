@@ -1,5 +1,11 @@
 # New Gadgetize
 
+> **2026-08-20:** the single-carrier PRODUCTION gadgetizer (the
+> `gen_sandwich_gadget` sandwich path) was redesigned — per-gate mask
+> swap-with-refresh, no aggregate Gray, closing zero-slice block, and an
+> upper-half-only output contract. See `docs/SWAP_REFRESH_REDESIGN.md`.
+> This file still describes the sss two-share path accurately.
+
 **"New gadgetize"** is the canonical name for the current ×2 gadgetization
 recipe (2026-07-20; RG policy + final shuffle revised 2026-07-20b). Use it
 for all new gadget-path runs:

@@ -85,6 +85,8 @@ fn main() {
         cg_jitter: a.get(21).and_then(|s| s.parse().ok()).unwrap_or(0),
         rung_menu: a.get(22).and_then(|s| s.parse().ok()).unwrap_or(0),
         gray_fold: a.get(23).and_then(|s| s.parse().ok()).unwrap_or(0),
+        swap_refresh: a.get(24).and_then(|s| s.parse().ok()).unwrap_or(0),
+        close_slice: 0,
     };
     let mut rng = StdRng::seed_from_u64(seed);
     let g = if prod.single_carrier() {
