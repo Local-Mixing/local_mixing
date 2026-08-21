@@ -1,172 +1,119 @@
-# The Swap-Refresh Gadgetization (2026-08-20)
+# The Swap-Refresh Gadgetization (2026-08-20, symmetric-ports revision 2026-08-21)
 
 Redesign of the single-carrier production gadgetizer — the
-`gen_sandwich_gadget` sandwich path — replacing the aggregate-Gray fold
-with a per-gate **mask swap-with-refresh**, adding a **closing zero-slice
-block**, and closing every measured output-port channel. The result
-eliminates all detected linear (and degree-2) relations between the two
-circuits' wire segments **and** is about 30% smaller than the construction
-it replaces.
+`gen_sandwich_gadget` sandwich path. The aggregate-Gray fold is replaced
+by a per-gate **mask swap-with-refresh**; both ports carry an
+independently drawn **junk-half zero-slice guard**; the tail is
+leak-hygienic; and the composite is **reverse-honest**: the same artifact
+evaluates `C(x)` forward and `D⁻¹(a)` backward, each on its own zero
+slice — the gadget-level mirror of the sandwich's symmetry.
 
 ## 1. Goal
 
 No GF(2)-linear equation should hold in which some variables are wire
 segments of the source (sandwich) circuit and others are wire segments of
-the gadgetized circuit — except through the public boundary (functions of
-the shared input at the input port, of the shared output at the output
-port), which any correct implementation exhibits.
+the gadgetized circuit — except through the public port boundary
+(functions of the shared input at the input port, of the shared outputs
+at the output port), which any correct implementation exhibits. The
+prior construction failed this three ways, all measured: the endpoint
+cancellation (time-invariant masks cancel in every fold's before/after
+XOR; flip_match: 100% of linear source gates), the aggregate-Gray
+operand witness (`B = c_b ⊕ u⁻ ⊕ u⁺ ⊕ κ`), and the one-sided zero-slice
+port.
 
-The prior construction failed this in three ways, all measured:
+Additional requirements adopted during the redesign: the construction
+must be **symmetric under reversal** (backward evaluation on the honest
+reverse slice yields `D⁻¹`), and the emitted stream must remain
+**predominantly g57/CNOT** for phase-A digestion.
 
-1. **Endpoint cancellation.** Every logical value decodes as
-   `v = c_v ⊕ M₁ ⊕ M₂ ⊕ M₃ ⊕ H ⊕ κ` with the mask monomials `Mᵢ`
-   (degree 2) and `H` (degree 3) products of *frozen* band literals. A
-   fold writes the control's decode onto the target's carrier and never
-   touches the target's own mask set, so the masks cancel in every
-   before/after XOR across the gate:
-   `carrier(post) ⊕ carrier(pre) = src(post) ⊕ src(pre)` —
-   an exact cross-circuit linear identity. flip_match measured it at
-   **100%** of linear source gates and 32.4% of nonlinear ones.
-2. **The Gray operand witness.** The aggregate-Gray fold gathers an
-   operand's complete mask sum onto one accumulator wire and strips it
-   back, so the operand's value is linearly reconstructible from three
-   gadget segments: `B = c_b ⊕ u⁻ ⊕ u⁺ ⊕ κ` (the space-time recovery
-   documented in `CARRIER_GADGETIZATION_SUMMARY.tex`).
-3. **Port asymmetry.** The zero-slice guard existed only at the input
-   port; a reverse evaluator met a structurally different entry.
+## 2. The construction
 
-## 2. Execution
+Layout (all under `ProdConfig::production_single()`; `PROD_SWAP=0
+PROD_CLOSE_SLICE=0` restores the prior Gray stream byte-for-byte):
 
-### 2.1 Per-gate mask swap-with-refresh
+```
+[P junk-guard] [W0 fill] [inject] [folds + swap/reloc churn] [route home] [strip ALL] [F' fill] [Q junk-guard]
+```
 
-At every fold, the **target** value and **one randomly chosen control**
-each retire one base-degree mask monomial and gain a freshly drawn one
-(`ProdLedger::swap_refresh_side`). The target-side inject is emitted
-**strictly interior** to the fold's fragment stream; the control-side pair
-follows the fold, pinned by read/write collisions. Consequently no
-contiguous window of any carrier's writes XORs to a clean operand decode:
-every window that covers the fold picks up at least one non-cancelling
-fresh monomial.
+- **Per-gate mask swap-with-refresh**: at every fold the target and one
+  random control each retire one base-degree monomial and gain a fresh
+  draw (fresh band positions — a verbatim move leaks by GF(2)
+  conservation, a polarity re-roll by low-degree difference). The
+  target-side inject is strictly interior to the fold's fragment stream;
+  a target-stable commuting shuffle preserves per-wire write order.
+  Every relocation also refreshes one monomial of each moved value.
+  Gray modes are declined (the gather is a linear operand recovery).
+- **Symmetric ports**: `P` and `Q` are independent draws of one
+  generator — identity exactly on the zero band slice, every nonzero
+  slice perturbs the data, targets confined to the LOW (forward-junk)
+  data half. `Q` fires forward into the junk half (band is junked by
+  then); `P⁻¹` fires backward into the same half. Neither touches the
+  half where the live payload of its direction emerges.
+- **Reverse honesty** (the telescope lemma): a fold reading value *v*
+  compensates *v*'s mask fragments against the carrier's reverse-time
+  content — the XOR of the emissions *after* the fold — which telescopes
+  to *v*'s fold-time slots exactly when the final registry is stripped.
+  So EVERY value's registry is discharged at the tail; keeping the junk
+  half masked (an earlier revision) corrupted `D⁻¹`. Verified: the
+  reversed gadget on `(a, 0, 0-band)` reproduces the reversed sandwich's
+  upper half, bit-sliced, at every size, plus a permanent
+  `reverse verify` in `gen_sandwich_gadget`.
+- **Tail hygiene** (each item closed a measured flip_match class):
+  route-home precedes the strip and carries the band-placement map
+  (`loc`); the strip's constant-discharge helpers are live band
+  VARIABLES via `loc` (the raw band wire range holds displaced carrier
+  states after rolls/route); both band fills source from the low data
+  half; epoch refills are **band-sourced only** (the low half is the
+  payload's birthplace mid-circuit — a carrier-sourced refill at the
+  N-era copies a payload state into the band); the ladder borrows band
+  variables, never live carriers.
 
-Two design lemmas fixed the shape of this mechanism:
+## 3. Vocabulary: the ladder and the g57 share
 
-- **Verbatim moves are unsound.** Moving a monomial `M` between two mask
-  sets emits it once on each touched wire, so over GF(2) the two
-  carriers' deltas XOR back to the source delta:
-  `Δ(t-carrier) ⊕ Δ(c-carrier) = ΔT`. Conservation makes *any* exact
-  move leak; the arriving monomials must be fresh draws.
-- **Fresh means fresh band positions.** A polarity re-roll of the same
-  product differs from it by a polynomial of degree ≤ deg−1 in the band
-  wires, whose values are themselves wire segments — back inside a linear
-  adversary's span.
+The expanded fold's arity-2 product fragments are wide; fmix's store
+speaks g57/CNOT. The selective ladder re-spells them; its scratch is the
+band pool (live-carrier borrows exposed data states — the measured cap-4
+leak). Measured menu at n=128 (production parameters):
 
-Swap mode **declines every Gray mode** (aggregate, micro, sentinel): the
-gathers materialize an operand's whole mask sum as an accumulator segment
-pair regardless of mask ownership, and their gather/strip snapshot cannot
-tolerate a mid-block registry change. The expanded (odometer) fold is used
-instead. A new **target-stable commuting shuffle** preserves per-wire
-write order (same-target XOR writes commute, and the standard shuffle
-would re-expose a clean window at ~14% of arity-1 folds).
+| ladder      | gates      | g57-form | CNOT  | conj-2 | wide  | vs Gray size |
+|-------------|-----------|----------|-------|--------|-------|--------------|
+| cap 0       | 882,768   | 28.7%    | 22.7% | 0.2%   | 48.4% | 0.68× |
+| **cap 3** (default) | **1,687,450** | **45.4%** | **36.2%** | 0.1% | 18.3% | **1.31×** |
+| cap 4       | 3,297,951 | 34.7%    | 26.6% | 35.4%  | 3.3%  | 2.55× |
 
-### 2.2 The closing zero-slice block
+Cap 4's extra narrowness arrives as store-weak plain conj-2 gates at
+twice cap 3's size, so cap 3 is the default (81.6% pure g57+CNOT);
+`PROD_LADDER_CAP` is the campaign A/B lever. (The old Gray build was
+97.6% g57+CNOT at 1,292,677 gates — but carries the operand witness.)
 
-An independently drawn slice guard with the opening block's
-specification — identity exactly on the zero band slice, every nonzero
-band slice perturbs the data — is appended after the mirror fill, so a
-reverse evaluator meets the same structure at their entry as a forward
-evaluator does. Its targets are confined to the low (forward-junk) data
-half: the honest forward run reaches the output port with a junked band,
-so the block fires there and must only perturb junk. The composite
-therefore preserves the sandwich on the **upper data half only** — which
-is the payload contract (`verify_zero_slice` checks wires `n..2n`).
+## 4. Verification status (n=128, fresh random seeds)
 
-### 2.3 Output-port hygiene
+- Function forward AND reverse: bit-sliced verifies pass; 318/318 tests.
+- Inputs↔outputs: affine rank of `{1, x, y}` full (257/257) — no linear
+  relation between inputs and outputs (conclusive).
+- segment_deduce (degree 1 and restricted degree-2 windows, both
+  directions, fresh-sample verified): **zero interior-cut equations**;
+  all deducible segments on the shared input/output cuts.
+- Affine-predictor heatmap vs C: flat at the 0.5 ceiling, port corners
+  only; indistinguishable from the Gray control plate.
+- flip_match (kwin 12/30/60, 8192 samples): body and nonlinear classes
+  at zero in both orientations (forward and reversed). Residual: 0–2
+  exact **seam windows** per build (seed-dependent; 6/2/0/5 matched
+  source gates over four seeds, all ≥99.4% depth), formed by mid-group
+  cuts across the route/strip seam composing mask cancellations; plus
+  occasional port-boundary coincidences (early W0/late F' fill products
+  over public port values equal to early-C/late-D gate deltas). The seam
+  is the region phase-A mixing rewrites most heavily; driving the
+  gadget-level flicker to zero at every seed would need per-wire
+  alternation of fresh material through the seam — an open refinement.
 
-Reaching actual zero required closing four further channels, each found
-by re-running flip_match after the previous fix:
+## 5. History of removed leak channels
 
-- **The junk half is never stripped.** Bare junk segments at the tail
-  hand their local pair-XORs to the source's own segment XORs; nothing
-  downstream decodes a junk value, so its masks stay on forever.
-- **Route-home runs before the strip** (carrying the ledger's band
-  placement map through the swaps), so the routing swaps move masked
-  carriers, never bare payload values.
-- **No never-bared wire is read linearly at the tail**: the strip's
-  constant-discharge helper, both band fills, and the epoch refills all
-  source exclusively from the still-masked junk half and the band space.
-  (A refill that copies a payload carrier into a band wire stores the
-  payload bit where a half-captured emission window can read it back.)
-- **Relocation-coupled refresh.** A payload value is a fold target
-  exactly once (its N gate), so its mask function would otherwise recur
-  identically at every relocation stop, and a segment pair cutting
-  through two matching stops recovers the single value transition
-  exactly. Every relocation now also refreshes one monomial of each moved
-  value: every representation event is a fresh function.
-
-## 3. Why it ended up *smaller*
-
-The size reduction was not a goal; it fell out of declining Gray. The
-Gray fold was never cheap — it was bought for phase-A store-reachability
-(narrow fragments; 31.55% → 95.47%) at a measured **2.38× the gates** of
-the wide fold. Its per-gate machinery — gathering and stripping every
-mask atom of both operands onto two accumulators, plus the four-phase
-product schedule — costs more than the expanded fold's fragment list at
-the production plan `[2,2,2,3]`. The swap-refresh construction removes
-all of that and spends back only: 4 monomial emissions per fold (the
-swap), 2 per relocation (the coupled refresh), and one extra slice block.
-Net, at every size measured (same seed, same sandwich):
-
-| n   | prior (Gray) | swap-refresh | ratio |
-|-----|--------------|--------------|-------|
-| 32  | 80,950       | 57,217       | 0.71× |
-| 64  | 157,586      | 112,394      | 0.71× |
-| 128 | ~1.29M (recorded campaign builds) | **878,863** | ~0.68× |
-
-The n=128 half-sandwich build (|C|=|D|=3000) comes to **481,070** gates.
-
-The price is paid in a different currency: with the ladder off, ~7% of
-fold fragments remain wide (3+ controls), material phase A's store cannot
-re-encode. The two measured remedies both currently violate the
-zero-relation contract (`--prod-ladder-cap 4` re-opens a small linear
-tail through its borrowed scratch; `PROD_POST_FRAGMENT` re-opens a broad
-one) and are **off-limits for deliverables** until audited. Store
-reachability under the expanded fold is the open measurement for the next
-fmix campaign.
-
-## 4. Verification (n=128, production parameters, fresh random seed)
-
-- **Function**: bit-sliced verify passed (payload half equals the
-  sandwich on the honest slice); 317/317 unit tests, including new tests
-  pinning the swap, the closing block's specification, and the
-  upper-half contract.
-- **Inputs↔outputs**: rank of the 257 columns `{1, x, y}` over 1024
-  samples is **full (257/257)** — no affine relation between inputs and
-  outputs (conclusive: a true relation forces a rank deficit on every
-  sample set).
-- **flip_match** (local segment-pair XOR vs per-gate source deltas,
-  kwin 12/30/60): **0 / 13,568 source gates matched** — down from 100%
-  linear / 32.4% nonlinear on the prior build.
-- **segment_deduce degree 1** (8 cuts, 16,384 samples, fresh-sample
-  verified): 2.91% of sandwich segments deducible, every equation on the
-  shared-input or shared-output cut; **zero interior-cut equations**
-  (prior build: ~50% deducible with thousands of interior equations in
-  the gadget-exposure direction).
-- **segment_deduce degree 2** (four restricted windows up to 12,881
-  monomials, both directions, with matched degree-1 controls): degree 2
-  adds exactly **one** equation — an early C-gate output that is a
-  quadratic of the *public input*, matched on the input cut only. No
-  other verified equation uses a product. The reverse direction's
-  interior-labeled hits are the public payload C(x) at the sandwich's
-  C/D seam matching the gadget's output — present for any correct
-  implementation. Caveats: windows are restricted (full-width degree 2 is
-  combinatorially out of reach), and products are one-sided (no bilinear
-  `s·g` cross-terms in the model).
-
-## 5. Operation
-
-`ProdConfig::production_single()` now sets `swap_refresh: 1,
-close_slice: 1`; env overrides `PROD_SWAP` / `PROD_CLOSE_SLICE` (0/0
-restores the prior Gray stream byte-for-byte). The gss_mix pipeline picks
-the new defaults up unchanged. The two-share (`sss`) and multi-carrier
-paths receive the fold-level swap wherever `fold_cg` runs but not the
-output-port hygiene; extending them is future work.
+Endpoint cancellation (swap-refresh); Gray operand witness (expanded
+fold); shuffle window isolation (stable-target shuffle + interior
+interleave + zero-term prefilter); bare-value route swaps (route before
+strip); bare helper reads (band-variable helpers); payload-through-refill
+(band-only refills); relocation mask recurrence (relocation-coupled
+refresh); ladder scratch exposure (band borrows); junk-half masking
+(removed — it broke reverse honesty; its leak was re-closed by the
+above). Each was found and confirmed dead by re-running flip_match.

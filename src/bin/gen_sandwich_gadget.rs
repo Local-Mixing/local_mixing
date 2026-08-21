@@ -505,6 +505,37 @@ fn main() {
         println!(
             "[gen] verify PASSED (256 bit-sliced samples, wires {verify_lo}..{sandwich_n})"
         );
+
+        // Reverse-honesty verify (symmetric ports): the REVERSED gadget on
+        // (a on the low half, zeros elsewhere) must reproduce the REVERSED
+        // sandwich's upper half — the gadget-level mirror of the sandwich's
+        // A^-1(a,0) = (junk, D^-1(a)) contract. Every XGate is an involution,
+        // so the reversed gate list is the inverse circuit.
+        if verify_lo > 0 {
+            let rev_gadget: Vec<local_mixing::postmix::xgate::XGate> =
+                gadget.gates.iter().rev().cloned().collect();
+            let rev_sandwich: Vec<local_mixing::postmix::xgate::XGate> =
+                sandwich.gates.iter().rev().cloned().collect();
+            for round in 0..4 {
+                use rand::RngCore;
+                let mut ga = vec![0u64; total_wires];
+                for w in 0..n {
+                    ga[w] = vrng.next_u64(); // a on the low half, zeros elsewhere
+                }
+                let mut sa = ga.clone();
+                eval_lanes(&rev_gadget, &mut ga);
+                eval_lanes(&rev_sandwich, &mut sa);
+                for w in n..sandwich_n {
+                    assert_eq!(
+                        ga[w], sa[w],
+                        "reverse gadget != reverse sandwich on wire {w}, round {round}"
+                    );
+                }
+            }
+            println!(
+                "[gen] reverse verify PASSED (256 bit-sliced samples, wires {n}..{sandwich_n}: D^-1 emerges under backward evaluation)"
+            );
+        }
     }
 
     write_mpmct(&out, &gadget.gates, gadget.num_wires).expect("write mpmct1");

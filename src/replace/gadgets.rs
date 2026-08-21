@@ -3311,26 +3311,23 @@ impl ProdConfig {
             src_hi: 0,
             fill_pivots: 0,
             g57_narrow: 1,
-            // Laddering OFF by default. It is the single largest lever on
-            // store-reachability (82.40% at cap 3 against 31.98% at cap 0) but
-            // it costs 2.2x the gates, its own output is progressively harder
-            // for the store to reach (reachability PEAKS at cap 4 and declines
-            // after -- at cap 6 the ctrl-cap blocks 0.04% yet 20.30% is
-            // store-blocked), and a ladder is collectively pinned where the
-            // wide gate it replaces is not: rigid float box against its own
-            // members' leeway is 1.5x at one rung, 5.4x at four, with 4.5% of
-            // fully-laddered ladders having ZERO rigid mobility. Turn it on
-            // deliberately with --prod-ladder-cap.
-            //
-            // ⚠ Under swap_refresh (expanded fold) cap 0 leaves the arity-2
-            // product fragments as wide fossils the store cannot re-encode,
-            // and cap 4 MEASURABLY re-opens a small linear flip-match tail
-            // (9/84 linear gates at n=32) through the ladder's borrowed
-            // scratch — the ladder path has not been audited against the
-            // swap redesign's zero-relation contract. Until it is, the
-            // measured-zero configuration is cap 0; recover digestibility
-            // with PROD_POST_FRAGMENT if its own flip-match pass is clean.
-            ladder_cap: 0,
+            // Selective laddering at the measured reachability ceiling
+            // (cap 4). Under swap_refresh the expanded fold would otherwise
+            // leave ~48% of the circuit as wide (3-6 control) fossils the
+            // g57/CNOT store can never re-encode — fmix needs a
+            // predominantly-g57 stream. The earlier cap-4 leak (9/84 linear
+            // flip_match matches at n=32) was the ladder borrowing LIVE
+            // CARRIERS as scratch, exposing data states in its chain deltas;
+            // under swap mode the scratch pool is now the live band
+            // variables (see ladder_borrow_pool), whose values are fill
+            // junk. Cap 3 rather than the historical cap-4 ceiling: under the
+            // expanded fold, cap 4's extra narrowness arrives as plain
+            // 2-control conjunctions (~35% of the circuit — the weak store
+            // shape g57_narrow exists to avoid) at twice cap 3's size, while
+            // cap 3 lands 82.5% of the gates in the pure g57+CNOT vocabulary
+            // (measured n=64: 45.6% g57 + 36.9% CNOT, 0.3% conj-2, 17.2%
+            // wide). The campaign A/B lever is PROD_LADDER_CAP.
+            ladder_cap: 3,
             cg_jitter: 50,
             // Spelling variability ON: it is now restricted to the emissions
             // where the equivalent spellings are the SAME SIZE, so it costs
@@ -5034,6 +5031,11 @@ struct ProdLedger {
     /// and the strip tail's half-captured emission windows then expose band
     /// wires linearly — measured as the last exact flip_match pairs at n=64.
     refill_value_hi: usize,
+    /// Under the closing-slice design the strip's constant-discharge helper
+    /// is drawn from the band space only: the strip bares the data wires
+    /// progressively, and a helper read from a bared wire writes that value
+    /// out as a local segment delta (the payload class flip_match caught).
+    tail_band_helpers: bool,
     /// Emit DB-eligible fold fragments in the g57/CNOT vocabulary.
     g57_narrow: bool,
     ladder_cap: usize,
@@ -5166,6 +5168,7 @@ impl ProdLedger {
             sentinel_gray: cfg.gray_fold == 3,
             swap_refresh: cfg.swap_refresh > 0,
             refill_value_hi: if cfg.close_slice > 0 { (n / 2).max(1) } else { n },
+            tail_band_helpers: cfg.close_slice > 0,
             g57_narrow: cfg.g57_narrow > 0,
             ladder_cap: cfg.ladder_cap,
             cg_jitter: cfg.cg_jitter,
@@ -5492,7 +5495,7 @@ impl ProdLedger {
                 target,
                 &lits,
                 self.cap,
-                &self.carrier_wires(state),
+                &self.ladder_borrow_pool(state),
                 self.borrow_total(),
                 &sib,
                 // A mask slot is ONE atom, so no 2-subset of a degree-3 term
@@ -5523,7 +5526,7 @@ impl ProdLedger {
                 target,
                 &lits,
                 2,
-                &self.carrier_wires(state),
+                &self.ladder_borrow_pool(state),
                 self.borrow_total(),
                 &forbidden,
                 std::slice::from_ref(&lits),
@@ -6019,8 +6022,20 @@ impl ProdLedger {
         // rate it claims to be. Carriers are reached through `state.pairs` and
         // band variables through `loc`, which are the two role maps.
         let refill_value_hi = self.refill_value_hi.min(state.n);
+        // Under the closing-slice design, refills never read carriers at
+        // all: the LOW half is the payload's birthplace (it holds C(x) from
+        // mid-C until the D block junks it), so a carrier-sourced refill at
+        // that era copies a payload state into the band, and the strip
+        // tail's mid-group windows can cancel the accompanying masks and
+        // read the payload back out (measured: an exact all-band-reads
+        // window reconstructing a payload bit at n=32). Band-to-band
+        // refills still break the function-lifetime signature the epoch
+        // exists for.
+        let carriers_allowed = !self.tail_band_helpers;
         let mut draw = |rng: &mut dyn rand::RngCore| -> u16 {
-            let use_carrier = state.n > 0 && (rng.next_u32() as usize % 100) < refill_data;
+            let use_carrier = carriers_allowed
+                && state.n > 0
+                && (rng.next_u32() as usize % 100) < refill_data;
             if use_carrier {
                 for _ in 0..64 {
                     let v = rng.next_u32() as usize % refill_value_hi;
@@ -6575,7 +6590,7 @@ impl ProdLedger {
                     target,
                     &lits,
                     2,
-                    &self.carrier_wires(state),
+                    &self.ladder_borrow_pool(state),
                     self.borrow_total(),
                     &forbidden,
                     atoms,
@@ -7343,6 +7358,23 @@ impl ProdLedger {
         true
     }
 
+    /// The ladder's scratch pool. Under swap mode this is the LIVE BAND
+    /// VARIABLES (via `loc`), not the carriers: a ladder rung toggles its
+    /// borrowed wire mid-chain, and the chain's target writes read it there,
+    /// so a live-carrier borrow exposes data states in the chain's segment
+    /// deltas (measured: 9/84 linear flip_match matches at n=32 under
+    /// `--prod-ladder-cap 4` with carrier borrows). A band variable's value
+    /// is fill junk by construction, wherever rolling has parked it, and the
+    /// borrow/restore pair leaves every straddling mask-emission pair intact
+    /// (read/write collisions keep other readers outside the chain).
+    fn ladder_borrow_pool(&self, state: &GadgetState) -> Vec<u16> {
+        if self.swap_refresh && !self.loc.is_empty() {
+            self.loc.clone()
+        } else {
+            self.carrier_wires(state)
+        }
+    }
+
     /// The wires CURRENTLY holding carriers, resolved by role rather than by
     /// index. Rolling exchanges a band variable with an arbitrary wire, so the
     /// home index range stops describing the carrier set as soon as
@@ -7449,7 +7481,7 @@ impl ProdLedger {
                 target,
                 lits,
                 self.cap,
-                &self.carrier_wires(state),
+                &self.ladder_borrow_pool(state),
                 self.borrow_total(),
                 &forbidden,
                 atoms,
@@ -7485,14 +7517,13 @@ impl ProdLedger {
         rng: &mut impl Rng,
         out: &mut Vec<XGate>,
     ) {
-        // Values stripped so far (this call bares lo..n progressively): the
-        // constant discharge below reads a helper wire twice, and its two
-        // gates' write deltas are that helper's VALUE (and complement). A
-        // BARE helper hands a payload bit out as a local segment delta —
-        // measured as the last surviving flip_match class after the swap
-        // redesign — so under the closing-slice design (lo > 0, strip runs
-        // after route-home) the helper pool is restricted to wires that are
-        // never bared: the still-masked junk half and the band space.
+        // The constant discharge below reads a helper wire twice, and its two
+        // gates' write deltas are that helper's VALUE (and complement). The
+        // strip bares the data wires progressively, and a BARE helper hands
+        // a payload bit out as a local segment delta — measured as a
+        // surviving flip_match class — so under the closing-slice design
+        // (tail_band_helpers; strip runs after route-home) the helper pool
+        // is the band space only, which is never bared.
         for value in lo..state.n {
             // Strip in plan order (base terms first): the highest-degree
             // tower term covers the value longest at the tail boundary.
@@ -7515,10 +7546,19 @@ impl ProdLedger {
                 // and it is live on any two-carrier build (--prod-single 0).
                 let (s0, s1) = state.pairs[value];
                 let sibling = if s0 == target { s1 } else { s0 };
-                let u = if lo > 0 {
+                let u = if self.tail_band_helpers && !self.loc.is_empty() {
+                    // Live band VARIABLES only, resolved through `loc`: the
+                    // raw band WIRE range also holds displaced carrier
+                    // states after rolls and route-home, and a helper read
+                    // from one of those re-injects an old data state as a
+                    // tail segment delta (measured: three exact payload
+                    // pairs at n=128 whose windows closed through a stale
+                    // helper). A band variable's value is fill junk by
+                    // construction, wherever rolling has parked it.
                     loop {
-                        let w = rng.random_range(0..self.borrow_total());
-                        if (lo..state.n).contains(&w) || w == target || w == sibling {
+                        let w =
+                            self.loc[rng.random_range(0..self.loc.len())] as usize;
+                        if w == target || w == sibling {
                             continue;
                         }
                         break w as u16;
@@ -11052,16 +11092,28 @@ fn slice_zero_preblock_dims(
     slice_zero_block_dims(n, n, nondata, gate_count, rng)
 }
 
-/// The closing zero-slice block (see [`ProdConfig::close_slice`]): an
-/// independently drawn slice guard with the SAME specification as the opening
-/// one — identity exactly on the zero slice, every nonzero slice perturbs the
-/// data — appended at the output port so a reverse evaluator meets the same
-/// structure at their entry as a forward evaluator does at theirs. Targets
-/// are restricted to the low half of the data wires: on the sandwich
-/// convention that half is forward-junk, and the forward-honest run reaches
-/// the output port with a junked band, so the block FIRES there and must not
-/// touch the live outputs on the upper half.
-fn slice_zero_postblock_dims(
+/// The junk-half slice guard (see [`ProdConfig::close_slice`]): a slice
+/// block — identity exactly on the zero slice, every nonzero slice perturbs
+/// the data — whose targets are restricted to the LOW half of the data
+/// wires (the sandwich's forward-junk half). Under the symmetric-ports
+/// design this generator is drawn independently for BOTH ports:
+///
+/// - at the OUTPUT port the forward-honest run arrives with a junked band,
+///   so the guard fires and must not touch the live payload on the upper
+///   half;
+/// - at the INPUT port the guard is dead on the honest forward slice
+///   regardless of targets, but its INVERSE runs last under reverse
+///   evaluation and fires on the then-junk band — an upper-half target
+///   there would junk the reverse payload D^-1(a), which by the sandwich's
+///   reverse contract A^-1(a,0) = (junk, D^-1(a)) has just emerged on the
+///   upper half.
+///
+/// With both guards junk-half-only, the composite is REVERSE-HONEST: the
+/// reversed gadget on (a, 0-upper, 0-band) reproduces the reversed source's
+/// upper half (see `symmetric_guards_make_reverse_evaluation_honest`), so
+/// the same artifact evaluates C(x) forward and D^-1(a) backward, each on
+/// its own zero slice — the gadget-level mirror of the sandwich's symmetry.
+fn slice_zero_junk_guard_dims(
     n: usize,
     nondata: usize,
     gate_count: usize,
@@ -11797,12 +11849,19 @@ pub fn gadgetize_xgates_single(
         band_at.swap(cur, value);
     }
 
-    // With the closing-slice design, the forward-junk half (values 0..n/2 on
-    // the sandwich convention) keeps its masks: bare junk segments at the
-    // output port would hand their local pair-XORs to the source circuit's
-    // own wire-segment XORs (see strip_from). Only the payload half is bared.
-    let strip_lo = if prod.close_slice > 0 { n / 2 } else { 0 };
-    prod_ledger.strip_from(strip_lo, &state, rng, &mut out);
+    // EVERY value's registry is discharged — including the junk half. An
+    // undischarged registry leaves the emission telescope open under REVERSE
+    // evaluation: a fold reading value v compensates v's mask fragments
+    // against the carrier's reverse-time content, which is the XOR of the
+    // emissions AFTER the fold; that set telescopes to v's fold-time slots
+    // exactly when the final registry is stripped, and is off by the final
+    // slots otherwise. The N column reads low values into the upper half, so
+    // keeping the junk half masked corrupted the reverse payload D^-1(a).
+    // The bare-junk tail leaks that once motivated masking are closed by the
+    // rest of the tail hygiene: route-home precedes the strip (no bare-value
+    // swaps), the discharge helpers come from the band-only pool, and the
+    // closing guard (wrapper level) re-junks the low half before delivery.
+    prod_ledger.strip_all(&state, rng, &mut out);
     prod_ledger.report();
 
     let band_final: Vec<u16> = (carrier_total..total).map(|w| w as u16).collect();
@@ -11842,18 +11901,28 @@ pub fn gadgetize_xgates_with_slice_zero_ccnot_single(
     rng: &mut impl Rng,
 ) -> CnotCircuit {
     let band = prod.band_size(n);
-    let mut circuit = slice_zero_preblock_dims(n, band, gate_count.max(band), rng);
+    // Symmetric ports (close_slice): BOTH guards are independent draws of
+    // the junk-half generator. The opening guard must avoid the upper half
+    // for reverse honesty — its inverse runs last under reverse evaluation
+    // and fires on the then-junk band, where an upper-half target would
+    // junk the just-emerged reverse payload D^-1(a). See
+    // slice_zero_junk_guard_dims for the full port algebra.
+    let mut circuit = if prod.close_slice > 0 {
+        slice_zero_junk_guard_dims(n, band, gate_count.max(band), rng)
+    } else {
+        slice_zero_preblock_dims(n, band, gate_count.max(band), rng)
+    };
     let gadget = gadgetize_xgates_single(source, n, rg_freq, prod, rng);
     circuit.num_wires = circuit.num_wires.max(gadget.num_wires);
     circuit.gates.extend(gadget.gates);
     if prod.close_slice > 0 {
-        // The symmetric closing guard (see slice_zero_postblock_dims). On the
-        // honest forward slice it fires against the mirror fill's band junk
-        // and perturbs only the low (junk) half, so the composite preserves
-        // main's output on the UPPER half of the data wires; a reverse
-        // evaluator entering on a zero band meets it as a dead guard, exactly
-        // as a forward evaluator meets the opening block.
-        let post = slice_zero_postblock_dims(n, band, gate_count.max(band), rng);
+        // The closing guard: on the honest forward slice it fires against
+        // the mirror fill's band junk and perturbs only the low (junk)
+        // half, so the composite preserves main's output on the UPPER half
+        // of the data wires; a reverse evaluator entering on a zero band
+        // meets it as a dead guard, exactly as a forward evaluator meets
+        // the opening one.
+        let post = slice_zero_junk_guard_dims(n, band, gate_count.max(band), rng);
         circuit.gates.extend(post.gates);
     }
     if prod.swap_refresh > 0 {
@@ -16288,13 +16357,13 @@ mod cnot_gadget_tests {
         assert_eq!(p.fill_nl, 2, "nonlinear band fill");
         assert_eq!(p.roll, 1, "rolling band -- without it the write census separates");
         assert_eq!(p.g57_narrow, 1, "narrow fragments in the store's vocabulary");
-        // Laddering and spelling variability are OFF by default: both are
-        // large, deliberate spends (2.2x and +54% gates) whose benefits --
-        // store-reachability and the duplicate-pair signature -- are the
-        // operator's call, not a silent default. Pinned so a change is visible.
-        // ⚠ cap 4 under swap_refresh re-opened a small linear flip-match tail
-        // through the ladder scratch (unaudited against the swap contract).
-        assert_eq!(p.ladder_cap, 0, "laddering is opt-in via --prod-ladder-cap");
+        // Selective laddering at cap 3: the expanded fold's wide product
+        // fragments must be re-spelled into the g57/CNOT vocabulary for
+        // fmix (cap 4's extra narrowness arrives as store-weak plain conj-2
+        // gates at twice the size), and the ladder's scratch is the band
+        // pool under swap mode (live-carrier borrows exposed data states in
+        // the chain deltas).
+        assert_eq!(p.ladder_cap, 3, "expanded-fold production needs the selective ladder");
         // The Gray fold is ON: the fold emits no wide fragment at all, and
         // store-reachability goes 31.55% -> 95.47% (97.53% at this mask plan).
         assert_eq!(p.gray_fold, 1, "the Gray-code fold is the default CG");
@@ -17154,32 +17223,25 @@ mod cnot_gadget_tests {
         }
     }
 
-    /// With close_slice on, the builder strips only the payload half: the
-    /// upper half still matches the source exactly, and the junk half stays
-    /// MASKED (bare junk segments at the output port would hand their local
-    /// pair-XORs to the source's own wire-segment XORs).
+    /// With close_slice on, the BUILDER (no wrapper guards) still matches
+    /// the source on ALL data wires: every value's registry is discharged —
+    /// an undischarged registry leaves the emission telescope open under
+    /// reverse evaluation and corrupts the reverse payload (see the comment
+    /// at the strip_all call site). The junk-half divergence of the
+    /// delivered composite comes only from the wrapper's closing guard.
     #[test]
-    fn swap_refresh_keeps_the_junk_half_masked_when_close_slice_is_on() {
+    fn swap_refresh_builder_matches_source_fully_even_with_close_slice() {
         let n = 8usize;
         let mut rng = StdRng::seed_from_u64(0x5a70_0100);
         let source = swap_test_source(n as u16, &mut rng);
         let prod = swap_test_config();
         let gadget = gadgetize_xgates_single(&source, n, 1, &prod, &mut rng);
         let mask = (1u64 << n) - 1;
-        let upper = !((1u64 << (n / 2)) - 1) & mask;
-        let mut low_masked = false;
         for x in 0..=mask {
             let expected = eval_u64(&source, x) & mask;
             let got = eval_u64(&gadget.gates, x) & mask;
-            assert_eq!(got & upper, expected & upper, "payload half x={x:#x}");
-            if got & !upper & mask != expected & !upper & mask {
-                low_masked = true;
-            }
+            assert_eq!(got, expected, "x={x:#x}");
         }
-        assert!(
-            low_masked,
-            "the junk half matched the source everywhere: its masks were stripped"
-        );
     }
 
     /// The closing zero-slice block has the opening block's specification —
@@ -17192,7 +17254,7 @@ mod cnot_gadget_tests {
         let mask = (1u64 << n) - 1;
         for seed in 0..8u64 {
             let mut rng = StdRng::seed_from_u64(0xc105_0000 + seed);
-            let block = slice_zero_postblock_dims(n, nondata, 3 * nondata, &mut rng);
+            let block = slice_zero_junk_guard_dims(n, nondata, 3 * nondata, &mut rng);
             for g in &block.gates {
                 assert!(
                     (g.target as usize) < n / 2,
@@ -17211,6 +17273,40 @@ mod cnot_gadget_tests {
                 let disturbed =
                     (0..=mask).any(|x| eval_u64(&block.gates, x | (s << n)) & mask != x);
                 assert!(disturbed, "slice {s:#x} leaves the data fixed (seed={seed})");
+            }
+        }
+    }
+
+    /// Symmetric ports: with both guards junk-half-only, the REVERSED gadget
+    /// on the reverse-honest slice (a on the low half, zero upper half, zero
+    /// band) reproduces the REVERSED source's upper half — the gadget-level
+    /// mirror of the sandwich's A^-1(a,0) = (junk, D^-1(a)) contract. Every
+    /// XGate is an involution, so the reversed gate list IS the inverse.
+    #[test]
+    fn symmetric_guards_make_reverse_evaluation_honest() {
+        let n = 8usize;
+        for seed in 0..3u64 {
+            let mut rng = StdRng::seed_from_u64(0x4e7e_0000 + seed);
+            let source = swap_test_source(n as u16, &mut rng);
+            let prod = swap_test_config();
+            let slice_gates = 4 * prod.band_size(n);
+            let circuit = gadgetize_xgates_with_slice_zero_ccnot_single(
+                &source,
+                n,
+                1,
+                slice_gates,
+                &prod,
+                &mut rng,
+            );
+            let rev_gadget: Vec<XGate> = circuit.gates.iter().rev().cloned().collect();
+            let rev_source: Vec<XGate> = source.iter().rev().cloned().collect();
+            let mask = (1u64 << n) - 1;
+            let low = (1u64 << (n / 2)) - 1;
+            let upper = mask & !low;
+            for a in 0..=low {
+                let expected = eval_u64(&rev_source, a) & upper;
+                let got = eval_u64(&rev_gadget, a) & upper;
+                assert_eq!(got, expected, "seed={seed} a={a:#x}");
             }
         }
     }
