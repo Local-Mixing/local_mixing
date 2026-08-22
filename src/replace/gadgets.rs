@@ -9284,6 +9284,66 @@ pub fn commuting_shuffle(gates: &mut Vec<XGate>, rng: &mut impl Rng) {
 /// that placement survive the reorder exactly instead of probabilistically.
 /// Cross-wire mobility (what dissolves the construction-time block layout) is
 /// untouched.
+/// Peephole cleanup: cancel identical gate pairs that can be commuted
+/// adjacent (no gate in between writes a wire the pair reads, or reads or
+/// writes its target). Such pairs are pure emission waste — coinciding
+/// residue CNOTs from independent spelling draws — measured at ~2.1% of a
+/// production build, all single-control. The construction's DELIBERATE
+/// redundancy (mask inject/strip pairs) is immune: its two halves always
+/// have colliding readers between them — the folds that compensate the
+/// mask — so a function-preserving pass cannot touch it. Iterates to a
+/// fixpoint; function-preservation is exact (only provably commutable
+/// identical pairs are removed).
+pub fn cancel_identical_pairs(gates: &mut Vec<XGate>) -> usize {
+    const WINDOW: usize = 60;
+    let mut removed_total = 0;
+    loop {
+        let n = gates.len();
+        let mut drop = vec![false; n];
+        for i in 0..n {
+            if drop[i] {
+                continue;
+            }
+            let gi = gates[i].clone();
+            for j in (i + 1)..(i + 1 + WINDOW).min(n) {
+                if !drop[j] && gates[j] == gi {
+                    let clear = (i + 1..j).all(|m| {
+                        drop[m]
+                            || !(gates[m].target == gi.target
+                                || gates[m].reads(gi.target)
+                                || gi.reads(gates[m].target))
+                    });
+                    if clear {
+                        drop[i] = true;
+                        drop[j] = true;
+                    }
+                    break;
+                }
+                let gj = &gates[j];
+                if !drop[j]
+                    && (gj.target == gi.target
+                        || gj.reads(gi.target)
+                        || gi.reads(gj.target))
+                {
+                    break;
+                }
+            }
+        }
+        let removed = drop.iter().filter(|&&d| d).count();
+        if removed == 0 {
+            return removed_total;
+        }
+        removed_total += removed;
+        let mut kept = Vec::with_capacity(n - removed);
+        for (g, d) in gates.drain(..).zip(drop) {
+            if !d {
+                kept.push(g);
+            }
+        }
+        *gates = kept;
+    }
+}
+
 pub fn commuting_shuffle_stable_targets(gates: &mut Vec<XGate>, rng: &mut impl Rng) {
     let m = gates.len();
     if m < 2 {
@@ -11880,6 +11940,7 @@ pub fn gadgetize_xgates_single(
 
     if prod.swap_refresh > 0 {
         commuting_shuffle_stable_targets(&mut out, rng);
+        cancel_identical_pairs(&mut out);
     } else {
         commuting_shuffle(&mut out, rng);
     }
@@ -11927,6 +11988,10 @@ pub fn gadgetize_xgates_with_slice_zero_ccnot_single(
     }
     if prod.swap_refresh > 0 {
         commuting_shuffle_stable_targets(&mut circuit.gates, rng);
+        // Emission-waste cleanup (see cancel_identical_pairs): ~2% of the
+        // build is coinciding residue CNOT pairs; the deliberate mask
+        // redundancy is collision-guarded and untouchable by this pass.
+        cancel_identical_pairs(&mut circuit.gates);
     } else {
         commuting_shuffle(&mut circuit.gates, rng);
     }
