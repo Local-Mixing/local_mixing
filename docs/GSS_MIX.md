@@ -161,6 +161,7 @@ For low-level experiments or automation, the Bash interface remains available:
 ```bash
 cargo build --release --bin gen_sandwich_gadget --bin fmix --bin fcompress
 FROZEN_DB_DIR=/absolute/path/to/frozen_regular \
+FROZEN_CURATED_DIR=~/frozen_curated_m1_m11_native \
   bash scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_experiment \
     --gadgetization-mode product-2223
 ```
@@ -345,12 +346,37 @@ parameter is **n**, the wires of the source computation C, and
 conventions are computed and logged by the driver:
 `|C| = |D| = round(n·(log₂n)²)`, slicing budget `s = round(n·log₂n)`,
 `slice_gates = 20n`, `rg_freq = 1`. The default `product-2223` gadgetization
-runs the **production preset** (mask plan [2,2,2,3] + Gray fold, single-carrier decode, nonlinear
-band fill, band roll, retire-refill epochs) — it is the tool's default; no
-`PROD_*` variables are set unless an alternate `PROD_PRESET` is selected
+runs the **production preset**, which since 2026-08-21 is the
+**swap-refresh symmetric construction** (`docs/SWAP_REFRESH_REDESIGN.md`):
+mask plan [2,2,2,3] on a single-carrier decode, per-gate mask
+swap-with-refresh (the target and one control of every fold retire one
+monomial and gain a fresh draw — the Gray fold is declined; its gather is
+a linear operand recovery), expanded fold with the selective ladder at
+cap 3 (≈82% of the stream in pure g57+CNOT vocabulary; scratch and
+discharge helpers come from live band variables, never carriers),
+independently drawn **junk-half zero-slice guards at BOTH ports**,
+nonlinear band fill sourced from the low data half, band roll, and
+retire-refill epochs with split channels (band-only linear pivot;
+carrier sources only inside product terms). Contract changes from the
+Gray era: the gadget preserves S on the **upper data half only** (the
+payload contract — the closing guard deliberately perturbs the junk
+half), and the construction is **reverse-honest** — the reversed gadget
+on `(a, 0, zero band)` yields `D⁻¹(a)` on the upper half, so one
+artifact evaluates C forward and D⁻¹ backward, mirroring the sandwich.
+Measured at n=128: no cross-circuit linear or (windowed) degree-2
+segment relations beyond the public port boundary, up to 0–2
+tail-seam windows per seed; phase-A digestibility at or above the Gray
+baseline (56.5% splice rate, 88.7% curated). Env knobs: `PROD_SWAP` /
+`PROD_CLOSE_SLICE` (0/0 restores the prior Gray stream byte-for-byte),
+`PROD_LADDER_CAP` (0 = 0.68× the Gray size but 48% wide fossils;
+3 = default, 1.31×; 4 = store-weak conj-2 at 2.55×), and the size
+levers `PROD_K` (2 → −18.5%, at 2× the piling-up ε) and
+`PROD_CG_JITTER` (0 → −8.8%; both → −27.3%, e.g. 1.17M gates full /
+639k half at n=128). Alternate `PROD_PRESET`s remain
 (`no-gray-phase-a`, a fold/fragmentation study arm, `five-carrier`,
 `strong-five-carrier`, `six-carrier`, `strong-six-carrier`, or
-`seven-carrier`).
+`seven-carrier`); the multi-carrier presets take the fold-level swap but
+not the output-port hygiene.
 The `nonlinear193` and `nonlinear291` families are experimental and
 capacity-limited; their availability at a requested size is not a production
 acceptance claim.
@@ -362,7 +388,10 @@ value plus per-gate fresh regions; their exact capacity is checked before any
 artifact is written. With derived `mcd`/slice defaults they currently fit only
 through source n=63 under the u16 wire ABI (a smaller explicit `mcd` can permit
 larger n). The tool
-sample-verifies gadget-low ≡ S on the zero slice (256 bit-sliced samples).
+sample-verifies the gadget against S on the zero slice (256 bit-sliced
+samples): under `product-2223` the upper data half forward (the payload
+contract) **and** the reversed gadget against the reversed sandwich
+(the D⁻¹ contract); other modes verify the full low range forward.
 Seeds: C and the sandwich use the master seed, the gadgetization
 `seed+1`. Omit `-s` to obtain a fully fresh production pipeline. Use an
 explicit `-s N` only when paired calibration arms must share the same input;
@@ -374,14 +403,16 @@ the phase-A block (twist-g57, db-advance, pay-random) with the layer-2 size
 profile as the single size authority. The two knobs exposed, per the design:
 
 - `--expand R` — the **max expansion factor** R1 (default 2);
-- `--hold E` — the **stable-stage duration** in effs (default 30).
+- `--hold E` — the **stable-stage duration** in effs (default 27).
 
-The profile is then `N0,N1,N2,R1,R2 = 3, 3+E, 3+E+20, R, 1+(R−1)/2`: the
-expansion leg is fixed at 3 effs, the compression leg at 20 effs, and the
-final factor is halfway back from the peak — the defaults give
-`--profile 3,33,53,2,1.5`, i.e. 53 effs overall ending at 1.5× the GSS
-size. The move budget is a ceiling (`N2 × R1 × gates × 1.3`); the finished
-profile ends the run (`ProfileDone`). Needs `FROZEN_DB_DIR` (hard error
+The profile is then `N0,N1,N2,R1,R2 = 3, 3+E, 3+E, R, R`: the expansion
+leg is fixed at 3 effs and the run ends at the held size — there is **no
+compression leg** (removed 2026-08-17: it only simplified the circuit,
+which made sense when phase A stood alone but is wasted work now that
+phase B follows). The defaults give `--profile 3,30,30,2,2`, i.e. 30 effs
+overall ending at 2× the GSS size. The move budget is a ceiling
+(`N2 × R1 × gates × 1.3`); the finished profile ends the run
+(`ProfileDone`). Needs `FROZEN_DB_DIR` (hard error
 without it; `GSS_MIX_ALLOW_EMPTY_STORE=1` bypasses for plumbing tests
 only — a null store means zero re-encoding). DB guards are pinned:
 degree 9, span 30, terms 1024/2048; CANON caps exported.
@@ -390,7 +421,7 @@ degree 9, span 30, terms 1024/2048; CANON caps exported.
 current shipped defaults: `p_join 0.8`, `split-reach-k 2` (bracket side ∝
 remaining length, farthest of 2), fail-limit 100, 256 canaries, `k_max 12`,
 no DB, no swap-family twists. Runs to g57 exhaustion; expect growth ≈
-1 + comp-fraction (≈2× on a typical phase-A output, i.e. ≈3× the GSS
+1 + comp-fraction (≈2× on a typical phase-A output, i.e. ≈4× the GSS
 size), zero comp gates out, and the stage summary + canary deciles echoed
 into `gss_mix.log`. The production Stage-4 algorithm is in
 `src/postprocessing/splitting.rs`; it operates on the shared `engine::Mixer`
@@ -452,10 +483,10 @@ material historically lands ≳ 90%.
 | stage | size |
 |---|---|
 | sandwich S | ~2·|C| + slicing ≈ 13–15k gates, 256 wires |
-| GSS gadget | ~600–700k gates, 512 wires (production preset) |
-| phase A out | 1.5× GSS ≈ 0.9–1.1M |
-| split out | ≈ 2× phase A ≈ 1.8–2.2M (zero comp) |
-| crossing out | `--xr` × split ≈ 3.6–4.4M at the current default 2 |
+| GSS gadget | ~1.3M gates, 512 wires (production preset, measured 2026-08-17) |
+| phase A out | 2× GSS ≈ 2.6M |
+| split out | ≈ 2× phase A ≈ 5.2M (zero comp) |
+| crossing out | `--xr` × split ≈ 10M at the default 2 |
 | final | ≳ 90% of crossing out |
 
 Runtimes are dominated by stages 3 and 5 (tens of millions of moves);

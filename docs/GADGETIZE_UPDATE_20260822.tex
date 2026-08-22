@@ -1,0 +1,103 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+\title{Gadgetize Update --- Change Summary}
+\author{local\_mixing --- 2026-08-20 $\to$ 2026-08-22}
+\date{2026-08-22}
+\begin{document}
+\maketitle
+
+\noindent What changed in the gadgetization step (the
+\texttt{gen\_sandwich\_gadget} single-carrier production path) across
+this update cycle. The companion design note with the full rationale is
+\texttt{docs/SWAP\_REFRESH\_REDESIGN.pdf}; the operational surface is
+\texttt{docs/GSS\_MIX.md} (stage 1+2).
+
+\section{What was replaced}
+The aggregate-Gray fold era: time-invariant $[2,2,2,3]$ masks whose
+cancellation in every fold's before/after XOR left the exact identity
+$\mathrm{carrier}^{+} \oplus \mathrm{carrier}^{-} = \mathrm{src}^{+}
+\oplus \mathrm{src}^{-}$ (100\% of linear source gates), the Gray
+gather's linear operand-recovery witness, and a zero-slice guard at the
+input port only.
+
+\section{New mechanisms}
+\begin{enumerate}
+\item \textbf{Symmetric junk-half port guards}: both ports carry
+independent draws of one slice-guard generator (identity exactly on the
+zero band slice, every nonzero slice perturbs the data, targets confined
+to the low forward-junk half).
+\item \textbf{Per-gate mask swap-with-refresh}: at every fold the target
+and one random control each retire one base-degree monomial and gain a
+fresh draw (verbatim moves and polarity re-rolls are provably unsound);
+the target-side inject is strictly interior to the fragment stream.
+\item \textbf{Gray declined; expanded fold + selective ladder (cap 3)}:
+the gather materializes an operand's mask sum as an accumulator segment
+pair, so swap mode takes the expanded fold; the ladder re-spells wide
+fragments into g57/CNOT, borrowing scratch from live band variables.
+\item \textbf{Target-stable commuting shuffle}: same-target XOR writes
+keep emission order, making the interior interleave exact.
+\item \textbf{Relocation-coupled refresh}: every relocation refreshes
+one monomial of each moved value.
+\item \textbf{Tail hygiene}: route-home before the strip (carrying the
+band placement map); every registry discharged (the telescope lemma ---
+an undischarged registry breaks reverse evaluation); discharge helpers
+are live band variables via \texttt{loc}; fills source the low half.
+\item \textbf{Split-channel epoch refills}: band-only linear pivot;
+carrier sources only inside degree-2 product terms.
+\item \textbf{Peephole cleanup}: commutable identical pairs cancelled to
+a fixpoint ($-2$ to $-3.5\%$); the deliberate mask redundancy is
+collision-guarded against any function-preserving local pass.
+\end{enumerate}
+
+\section{Contract changes}
+The composite preserves the sandwich on the \emph{upper data half only}
+(payload contract; the closing guard perturbs the junk half), and is
+\emph{reverse-honest}: the reversed gadget on $(a, 0, \text{zero band})$
+yields $D^{-1}(a)$ on the upper half --- one artifact evaluates $C$
+forward and $D^{-1}$ backward. Both properties are verified at
+generation time. \texttt{PROD\_SWAP=0 PROD\_CLOSE\_SLICE=0} reproduces
+the prior Gray stream byte-for-byte.
+
+\section{Parameters and measured sizes ($n=128$)}
+\begin{center}
+\begin{tabular}{llr}
+\toprule
+knob & default & effect \\
+\midrule
+\texttt{PROD\_SWAP}/\texttt{PROD\_CLOSE\_SLICE} & 1/1 & 0/0 = legacy Gray \\
+\texttt{PROD\_LADDER\_CAP} & 3 & 1.62M g, 82\% g57+CNOT (0: 883k/48\% wide; 4: 3.3M) \\
+\texttt{PROD\_K} & 3 & 2 $\to$ $-18.5\%$ at $2\times$ piling-up $\varepsilon$ \\
+\texttt{PROD\_CG\_JITTER} & 50 & 0 $\to$ $-8.8\%$ \\
+both size levers & & $-27.3\%$: 1{,}174{,}130 full / 639{,}317 half \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Baseline comparison: 1{,}616{,}025 full / 879{,}196 half
+versus the Gray build's 1{,}292{,}677 --- $1.25\times$ for the full
+security upgrade.
+
+\section{Measured properties}
+flip\_match: zero body matches in both orientations (residual: 0--2
+exact tail-seam windows per seed at $\ge 99.4\%$ depth, plus occasional
+port-boundary fill coincidences). \texttt{segment\_deduce}: zero
+interior-cut equations at degree 1 and windowed degree 2, both
+directions. Inputs$\leftrightarrow$outputs affine rank full (257/257).
+Affine-predictor heatmap flat at the 0.5 ceiling. Forward and reverse
+verifies green at every size; gadget-family tests 140/140. Phase-A
+digestibility (100k-move server probe): splice rate 56.5\% vs the 53.7\%
+baseline, curated share 88.7\% vs 87.3\%, 6.28 bits/splice; the g57
+share \emph{rises} 46.6\% $\to$ 58.5\% through phase A; the compression
+channel succeeds on 2.1\% of attempts.
+
+\section{Known residuals and cautions}
+The per-seed tail-seam window flicker (accepted; phase A rewrites that
+region first); \texttt{PROD\_POST\_FRAGMENT} re-opens broad linear
+leakage under swap mode (off-limits until audited); multi-carrier
+presets lack the output-port hygiene; mid-body refill balance is a
+measured property, not a theorem.
+
+\end{document}
