@@ -10571,14 +10571,36 @@ fn slice_zero_preblock_dims(
     gate_count: usize,
     rng: &mut impl Rng,
 ) -> CnotCircuit {
-    assert!(n >= 3, "slice_zero_ccnot_preblock requires n >= 3");
-    let total = n + nondata;
-    assert!(total <= u16::MAX as usize, "too many wires");
+    try_slice_zero_preblock_dims(n, nondata, gate_count, rng)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+pub(crate) fn try_slice_zero_preblock_dims(
+    n: usize,
+    nondata: usize,
+    gate_count: usize,
+    rng: &mut impl Rng,
+) -> Result<CnotCircuit, String> {
+    if n < 3 {
+        return Err(format!(
+            "slice_zero_ccnot_preblock requires n >= 3, got {n}"
+        ));
+    }
+    let total = n
+        .checked_add(nondata)
+        .ok_or_else(|| "slice-zero preblock wire-count overflow".to_string())?;
+    if total > u16::MAX as usize {
+        return Err(format!(
+            "slice-zero preblock needs {total} wires; capacity is {}",
+            u16::MAX
+        ));
+    }
     let band = nondata.saturating_sub(n);
-    assert!(
-        gate_count >= nondata,
-        "every non-data wire must be read: needs at least {nondata} gates"
-    );
+    if gate_count < nondata {
+        return Err(format!(
+            "every non-data wire must be read: needs at least {nondata} gates, got {gate_count}"
+        ));
+    }
 
     // Shape mix: a third CNOTs, the rest split between one and two data
     // controls. Two data controls need three distinct wires with the target.
@@ -10619,17 +10641,213 @@ fn slice_zero_preblock_dims(
             slice_preblock_spot_check(&gates, n, total, rng)
         };
         if ok {
-            return CnotCircuit {
+            return Ok(CnotCircuit {
                 gates,
                 num_wires: total,
-            };
+            });
         }
     }
-    panic!(
+    Err(format!(
         "no slice preblock with every nonzero slice disturbed found at n={n} \
          band={band} gates={gate_count} in 1000 draws: {n} data wires may be too \
          few to disturb 2^{nondata} slices distinctly — raise n or lower --prod-band"
-    );
+    ))
+}
+
+/// Nonlinear-GSS counterpart of [`try_slice_zero_preblock_dims`].
+///
+/// The draw and gate-shape policy deliberately matches the established
+/// product-family constructor, but wide-slice validation uses an indexed,
+/// batched checker.  Nonlinear layouts can have tens of thousands of slice
+/// wires, where replaying the whole preblock once per singleton slice is
+/// quadratic and makes an otherwise admissible layout impractical to build.
+/// Keeping this as a separate entry point preserves the product constructor's
+/// byte-for-byte RNG stream and artifacts.
+pub(crate) fn try_nonlinear_slice_zero_preblock_dims(
+    n: usize,
+    nondata: usize,
+    gate_count: usize,
+    fanin_two: bool,
+    scratch: u16,
+    scratch2: u16,
+    rng: &mut impl Rng,
+) -> Result<CnotCircuit, String> {
+    if n < 3 {
+        return Err(format!(
+            "nonlinear slice-zero preblock requires n >= 3, got {n}"
+        ));
+    }
+    if nondata == 0 {
+        return Err("nonlinear slice-zero preblock requires at least one slice wire".to_string());
+    }
+    let total = n
+        .checked_add(nondata)
+        .ok_or_else(|| "nonlinear slice-zero preblock wire-count overflow".to_string())?;
+    if total > u16::MAX as usize {
+        return Err(format!(
+            "nonlinear slice-zero preblock needs {total} wires; capacity is {}",
+            u16::MAX
+        ));
+    }
+    let band = nondata.saturating_sub(n);
+    if gate_count < nondata {
+        return Err(format!(
+            "every non-data wire must be read: needs at least {nondata} gates, got {gate_count}"
+        ));
+    }
+    if fanin_two {
+        for (name, wire) in [("scratch", scratch), ("scratch2", scratch2)] {
+            if !(n..total).contains(&(wire as usize)) {
+                return Err(format!(
+                    "nonlinear fan-in-two preblock {name} wire {wire} must be a non-data wire in {n}..{total}"
+                ));
+            }
+        }
+        if scratch == scratch2 {
+            return Err(format!(
+                "nonlinear fan-in-two preblock scratch wires must be distinct, got {scratch} twice"
+            ));
+        }
+    }
+
+    let cnots = gate_count / 3;
+    let rest = gate_count - cnots;
+    let quads = rest / 2;
+    let ccnots = rest - quads;
+    let emitted_count =
+        if fanin_two {
+            gate_count
+                .checked_add(quads.checked_mul(3).ok_or_else(|| {
+                    "nonlinear preblock decomposed gate-count overflow".to_string()
+                })?)
+                .ok_or_else(|| "nonlinear preblock emitted gate-count overflow".to_string())?
+        } else {
+            gate_count
+        };
+
+    #[derive(Clone, Copy)]
+    struct MacroSpec {
+        target: u16,
+        slice: u16,
+        data: [u16; 2],
+        data_len: u8,
+    }
+
+    for _ in 0..1000 {
+        let mut slice_ctrl = Vec::new();
+        slice_ctrl.try_reserve_exact(gate_count).map_err(|error| {
+            format!("nonlinear preblock slice-control allocation failed: {error}")
+        })?;
+        slice_ctrl.extend((0..gate_count).map(|i| n + i % nondata));
+        slice_ctrl.shuffle(rng);
+        let mut macros = Vec::new();
+        macros
+            .try_reserve_exact(gate_count)
+            .map_err(|error| format!("nonlinear preblock macro allocation failed: {error}"))?;
+        for (i, &w) in slice_ctrl.iter().enumerate() {
+            let target = rng.random_range(0..n);
+            let data_ctrls = if i < cnots {
+                0
+            } else if i < cnots + ccnots {
+                1
+            } else {
+                2
+            };
+            let mut data = [0u16; 2];
+            if data_ctrls >= 1 {
+                data[0] = random_wire_except(n, &[target], rng) as u16;
+            }
+            if data_ctrls == 2 {
+                data[1] = random_wire_except(n, &[target, data[0] as usize], rng) as u16;
+            }
+            macros.push(MacroSpec {
+                target: target as u16,
+                slice: w as u16,
+                data,
+                data_len: data_ctrls as u8,
+            });
+        }
+        macros.shuffle(rng);
+
+        let mut gates = Vec::new();
+        gates
+            .try_reserve_exact(emitted_count)
+            .map_err(|error| format!("nonlinear preblock gate allocation failed: {error}"))?;
+        let bucket_capacity = gate_count / nondata + usize::from(gate_count % nondata != 0);
+        let mut by_slice = Vec::new();
+        by_slice
+            .try_reserve_exact(nondata)
+            .map_err(|error| format!("nonlinear preblock index allocation failed: {error}"))?;
+        for _ in 0..nondata {
+            let mut bucket = Vec::new();
+            bucket.try_reserve_exact(bucket_capacity).map_err(|error| {
+                format!("nonlinear preblock index-bucket allocation failed: {error}")
+            })?;
+            by_slice.push(bucket);
+        }
+        for spec in macros {
+            let start = gates.len();
+            match (fanin_two, spec.data_len) {
+                (_, 0) => gates.push(
+                    XGate::conj(spec.target, [(spec.slice, true)])
+                        .expect("preblock target and slice control are distinct"),
+                ),
+                (_, 1) => gates.push(
+                    XGate::conj(spec.target, [(spec.data[0], true), (spec.slice, true)])
+                        .expect("preblock target and controls are distinct"),
+                ),
+                (false, 2) => gates.push(
+                    XGate::conj(
+                        spec.target,
+                        [
+                            (spec.data[0], true),
+                            (spec.data[1], true),
+                            (spec.slice, true),
+                        ],
+                    )
+                    .expect("preblock target and controls are distinct"),
+                ),
+                (true, 2) => {
+                    // Exact dirty-q decomposition of t ^= a*b*c.  q may start
+                    // arbitrarily and is restored by the contiguous macro:
+                    // q^=ab; t^=qc; q^=ab; t^=qc.
+                    let q = if spec.slice == scratch {
+                        scratch2
+                    } else {
+                        scratch
+                    };
+                    debug_assert_ne!(q, spec.slice);
+                    let build_q = XGate::conj(q, [(spec.data[0], true), (spec.data[1], true)])
+                        .expect("dirty-q wire is non-data and distinct from data controls");
+                    let use_q = XGate::conj(spec.target, [(q, true), (spec.slice, true)])
+                        .expect("dirty-q and slice controls are distinct from the data target");
+                    gates.push(build_q.clone());
+                    gates.push(use_q.clone());
+                    gates.push(build_q);
+                    gates.push(use_q);
+                }
+                (_, other) => unreachable!("unsupported preblock data-control count {other}"),
+            }
+            by_slice[spec.slice as usize - n].push((start, gates.len()));
+        }
+        debug_assert_eq!(gates.len(), emitted_count);
+        let ok = if total <= 20 {
+            slice_preblock_fixes_only_zero_slice(&gates, n, nondata)
+        } else {
+            nonlinear_slice_preblock_spot_check(&gates, &by_slice, n, total, rng)
+        };
+        if ok {
+            return Ok(CnotCircuit {
+                gates,
+                num_wires: total,
+            });
+        }
+    }
+    Err(format!(
+        "no nonlinear slice preblock with every nonzero slice disturbed found at n={n} \
+         band={band} gates={gate_count} in 1000 draws: {n} data wires may be too \
+         few to disturb 2^{nondata} slices distinctly"
+    ))
 }
 
 /// Exhaustive check that only the all-zero slice leaves the data untouched:
@@ -10685,6 +10903,135 @@ fn slice_preblock_spot_check(gates: &[XGate], n: usize, total: usize, rng: &mut 
         let hot: Vec<usize> = (n..total).filter(|_| rng.random_bool(0.5)).collect();
         if !hot.is_empty() && !disturbs(&hot, rng) {
             return false;
+        }
+    }
+    true
+}
+
+/// Scalable wide-slice checker used only by the nonlinear GSS adapter.
+///
+/// Each generated macro has one positive slice control and restores any dirty
+/// decomposition scratch before the next macro. With a singleton or pair
+/// slice, macros controlled by every other slice wire are therefore identities;
+/// indexing the active macro ranges preserves their original order while
+/// reducing each check to roughly ten or twenty logical macros.
+///
+/// The random phase still samples 512 slice values. It packs eight slice
+/// nonzero values into disjoint eight-lane groups per `u64` traversal and gives
+/// each slice eight independent data inputs, accepting it when at least one
+/// lane in its group witnesses a disturbance. This retains the intended per-slice
+/// existential test while bounding the random phase at 64 full traversals.
+fn nonlinear_slice_preblock_spot_check(
+    gates: &[XGate],
+    by_slice: &[Vec<(usize, usize)>],
+    n: usize,
+    total: usize,
+    rng: &mut impl Rng,
+) -> bool {
+    let nondata = total - n;
+    if by_slice.len() != nondata
+        || by_slice
+            .iter()
+            .flatten()
+            .any(|&(start, end)| start >= end || end > gates.len())
+    {
+        return false;
+    }
+
+    let mut state = vec![0u64; total];
+    let mut input = vec![0u64; n];
+    let mut disturbs = |active: &[(usize, usize)], hot: &[usize], rng: &mut dyn rand::RngCore| {
+        for wire in 0..n {
+            state[wire] = rng.next_u64();
+        }
+        input.copy_from_slice(&state[..n]);
+        for &wire in hot {
+            state[wire] = !0u64;
+        }
+        for &(start, end) in active {
+            for gate in &gates[start..end] {
+                gate.apply_lanes(&mut state);
+            }
+        }
+        let changed = (0..n).any(|wire| state[wire] != input[wire]);
+        for &wire in hot {
+            state[wire] = 0;
+        }
+        changed
+    };
+
+    for wire in n..total {
+        if !disturbs(&by_slice[wire - n], &[wire], rng) {
+            return false;
+        }
+    }
+
+    let mut pair_active = Vec::new();
+    if nondata >= 2 {
+        for _ in 0..512 {
+            let a = rng.random_range(n..total);
+            let b = loop {
+                let candidate = rng.random_range(n..total);
+                if candidate != a {
+                    break candidate;
+                }
+            };
+            pair_active.clear();
+            let (left, right) = (&by_slice[a - n], &by_slice[b - n]);
+            let (mut i, mut j) = (0usize, 0usize);
+            while i < left.len() || j < right.len() {
+                if j == right.len() || (i < left.len() && left[i].0 < right[j].0) {
+                    pair_active.push(left[i]);
+                    i += 1;
+                } else {
+                    pair_active.push(right[j]);
+                    j += 1;
+                }
+            }
+            if !disturbs(&pair_active, &[a, b], rng) {
+                return false;
+            }
+        }
+    }
+    drop(disturbs);
+
+    const SLICES_PER_BATCH: usize = 8;
+    const INPUTS_PER_SLICE: usize = 8;
+    let mut batch_state = vec![0u64; total];
+    let mut batch_input = vec![0u64; n];
+    for _ in 0..(512 / SLICES_PER_BATCH) {
+        for wire in 0..n {
+            let value = rng.next_u64();
+            batch_state[wire] = value;
+            batch_input[wire] = value;
+        }
+        batch_state[n..].fill(0);
+        let mut nonempty = [false; SLICES_PER_BATCH];
+        for (group, is_nonempty) in nonempty.iter_mut().enumerate() {
+            let group_mask =
+                u64::MAX >> (u64::BITS as usize - INPUTS_PER_SLICE) << (group * INPUTS_PER_SLICE);
+            while !*is_nonempty {
+                for wire_state in batch_state.iter_mut().take(total).skip(n) {
+                    if rng.random_bool(0.5) {
+                        *wire_state |= group_mask;
+                        *is_nonempty = true;
+                    }
+                }
+            }
+        }
+        for gate in gates {
+            gate.apply_lanes(&mut batch_state);
+        }
+        let changed = (0..n).fold(0u64, |mask, wire| {
+            mask | (batch_state[wire] ^ batch_input[wire])
+        });
+        for (group, &is_nonempty) in nonempty.iter().enumerate() {
+            debug_assert!(is_nonempty);
+            let group_mask =
+                u64::MAX >> (u64::BITS as usize - INPUTS_PER_SLICE) << (group * INPUTS_PER_SLICE);
+            if changed & group_mask == 0 {
+                return false;
+            }
         }
     }
     true
@@ -16135,6 +16482,65 @@ mod cnot_gadget_tests {
         let mask = (1u64 << n) - 1;
         (1..(1u64 << nondata))
             .all(|s| (0..=mask).any(|x| eval_u64(gates, x | (s << n)) & mask != x))
+    }
+
+    #[test]
+    fn nonlinear_preblock_weight2_decomposition_is_exact_and_bounded() {
+        let (n, nondata, logical_gates) = (8usize, 20usize, 200usize);
+        let scratch = n as u16;
+        let scratch2 = (n + 1) as u16;
+        let mut wide_rng = StdRng::seed_from_u64(0xcc88_0001);
+        let wide = try_nonlinear_slice_zero_preblock_dims(
+            n,
+            nondata,
+            logical_gates,
+            false,
+            scratch,
+            scratch2,
+            &mut wide_rng,
+        )
+        .unwrap();
+        let mut weight2_rng = StdRng::seed_from_u64(0xcc88_0001);
+        let weight2 = try_nonlinear_slice_zero_preblock_dims(
+            n,
+            nondata,
+            logical_gates,
+            true,
+            scratch,
+            scratch2,
+            &mut weight2_rng,
+        )
+        .unwrap();
+
+        let quads = (logical_gates - logical_gates / 3) / 2;
+        assert_eq!(wide.gates.len(), logical_gates);
+        assert_eq!(weight2.gates.len(), logical_gates + 3 * quads);
+        assert!(weight2.gates.iter().all(|gate| gate.ctrls.len() <= 2));
+        assert_eq!(wide.num_wires, n + nondata);
+        assert_eq!(weight2.num_wires, n + nondata);
+
+        for input in 0..(1u64 << n) {
+            assert_eq!(eval_u64(&wide.gates, input), input);
+            assert_eq!(eval_u64(&weight2.gates, input), input);
+        }
+
+        let mut state_rng = StdRng::seed_from_u64(0xcc88_0002);
+        let state_mask = (1u64 << (n + nondata)) - 1;
+        let dirty_q_mask = (1u64 << scratch) | (1u64 << scratch2);
+        for _ in 0..512 {
+            let state = rand::RngCore::next_u64(&mut state_rng) & state_mask;
+            let decomposed = eval_u64(&weight2.gates, state);
+            assert_eq!(
+                decomposed,
+                eval_u64(&wide.gates, state),
+                "dirty-q decomposition changed the preblock function"
+            );
+            assert_eq!(
+                decomposed & dirty_q_mask,
+                state & dirty_q_mask,
+                "dirty-q decomposition did not restore its scratch wires"
+            );
+        }
     }
 
     #[test]

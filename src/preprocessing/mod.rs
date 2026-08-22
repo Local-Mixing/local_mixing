@@ -8,6 +8,7 @@
 // A/B probes live under experimental/gss; the standalone wide-fragment
 // wrapper lives under experimental/circuit.
 pub mod gadgets;
+pub mod nonlinear_gss;
 pub mod samf;
 
 // Compatibility path for callers that predate the ownership move.

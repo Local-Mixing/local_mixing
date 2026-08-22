@@ -3,7 +3,8 @@
 # sandwich) circuits. Manual: docs/GSS_MIX.md.
 #
 # Stages:
-#   1+2  generate the sliced sandwich S and Gray-fold gadgetize it
+#   1+2  generate the sliced sandwich S and gadgetize it with the selected
+#        representation family
 #        (gen_sandwich_gadget; |C| = |D| = round(n·(log2 n)^2), the library
 #        convention; the production preset — mask plan [2,2,2,3] + Gray fold —
 #        is the tool default)
@@ -32,6 +33,9 @@ usage: gss_mix.sh -n N -o RUNDIR [options]
                  a deliverable. Pass -s only for CALIBRATION arms that must
                  share an input; label such outputs calibration-only.
   --mcd M        override |C| = |D| gate count            [0 = round(n(log2 n)^2)]
+  --gadgetization-mode MODE
+                  stage-2 representation: product-2223, nonlinear193, or
+                  nonlinear291 [product-2223; legacy alias: 2223]
   --expand R     phase-A max expansion factor R1          [2]
   --hold E       phase-A hold duration in effs            [30]
   --xr R         stage-5 crossing target factor           [2; 2.5 = max-spread point]
@@ -48,13 +52,13 @@ env:
   FROZEN_CURATED_VALUE_CONVENTION=legacy-swapped-controls
                       only for a historical pre-2ed0222a curated store;
                       leave unset for current native stores
-  PROD_PRESET         generation mode: production (default), no-gray-phase-a,
+  PROD_PRESET         product-2223-only preset: production (default), no-gray-phase-a,
                       micro-gray, sentinel-gray, no-gray-post-exact,
                       no-gray-post-native, five-carrier,
                       strong-five-carrier, six-carrier, strong-six-carrier,
                       or seven-carrier
-  PROD_POST_FRAGMENT  optional post-layout wide-gate pass: off, exact, or
-                      native-deep (overrides the named post preset)
+  PROD_POST_FRAGMENT  product-2223-only optional post-layout wide-gate pass:
+                      off, exact, or native-deep (overrides the named preset)
   GSS_MIX_ALLOW_EMPTY_STORE=1  testing only: run stage 3 with no store
   GSS_BIN_DIR         directory containing gen_sandwich_gadget, fmix and
                       fcompress [default: repository target/release]
@@ -63,6 +67,7 @@ EOF
 }
 
 N=""; RUN=""; SEED=""; EXPAND=2; HOLD=30; MCD=0
+GADGETIZATION_MODE=product-2223
 XR=2; XB=3; XC=1; XTDIV=25; XMOVES=""
 STOP_AFTER=6; FORCE_FROM=99
 while [ $# -gt 0 ]; do
@@ -72,6 +77,7 @@ while [ $# -gt 0 ]; do
     -o) RUN=$2; shift 2 ;;
     -s) SEED=$2; shift 2 ;;
     --mcd) MCD=$2; shift 2 ;;
+    --gadgetization-mode) GADGETIZATION_MODE=$2; shift 2 ;;
     --expand) EXPAND=$2; shift 2 ;;
     --hold) HOLD=$2; shift 2 ;;
     --xr) XR=$2; shift 2 ;;
@@ -85,12 +91,33 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$N" ] && [ -n "$RUN" ] || usage
+case "$GADGETIZATION_MODE" in
+  product-2223) ;;
+  2223) GADGETIZATION_MODE=product-2223 ;;
+  nonlinear193|nonlinear291) ;;
+  *)
+    echo "FATAL: --gadgetization-mode must be product-2223, nonlinear193, or nonlinear291 (2223 is a compatibility alias)" >&2
+    exit 2
+    ;;
+esac
+if [ "$GADGETIZATION_MODE" != product-2223 ]; then
+  mapfile -t product_override_names < <(compgen -A variable PROD_ || true)
+  [ "${#product_override_names[@]}" -eq 0 ] || {
+    echo "FATAL: all PROD_* controls must be unset outside --gadgetization-mode product-2223: ${product_override_names[*]}" >&2
+    exit 2
+  }
+fi
 
 BIN=${GSS_BIN_DIR:-$(cd "$(dirname "$0")/.." && pwd)/target/release}
 for b in gen_sandwich_gadget fmix fcompress; do
   [ -x "$BIN/$b" ] || { echo "FATAL: $BIN/$b missing — cargo build --release first"; exit 1; }
 done
 mkdir -p "$RUN"; RUN=$(cd "$RUN" && pwd)
+GADGET=$RUN/gss.mpmct1
+STAGE12_RECIPE_FILE=$RUN/stage12.recipe
+# A missing stage-2 artifact invalidates every downstream artifact, even when
+# the caller did not explicitly request --force-from 2.
+[ -s "$GADGET" ] || FORCE_FROM=2
 LOGALL=$RUN/gss_mix.log
 note() { echo "[gss-mix] $*" | tee -a "$LOGALL"; }
 
@@ -98,6 +125,10 @@ note() { echo "[gss-mix] $*" | tee -a "$LOGALL"; }
 # constant or a counter (docs/GSS_MIX.md, "seeds"). An explicit -s is for
 # calibration arms only.
 SEED_SRC="RANDOM (CSPRNG)"
+if [ "$FORCE_FROM" -gt 2 ] && [ -s "$GADGET" ] && [ ! -s "$RUN/SEED" ]; then
+  echo "FATAL: existing stage-2 artifact has no SEED; use a fresh run directory or --force-from 2" >&2
+  exit 2
+fi
 if [ -n "$SEED" ]; then
   if [ -s "$RUN/SEED" ]; then
     EXISTING_SEED=$(cat "$RUN/SEED")
@@ -129,26 +160,57 @@ l = math.log2(n)
 print(mcd if mcd > 0 else round(n * l * l), max(n, round(n * l)), 10 * 2 * n)
 EOF
 )"
+STAGE12_RECIPE=(
+  "gss_stage12_recipe=1"
+  "gadgetization_mode=$GADGETIZATION_MODE"
+  "n=$N"
+  "m_cd=$M_CD"
+  "s=$S_SL"
+  "slice_gates=$SLICE_G"
+  "rg_freq=1"
+)
+if [ "$FORCE_FROM" -gt 2 ] && [ -s "$GADGET" ]; then
+  [ -s "$STAGE12_RECIPE_FILE" ] || {
+    echo "FATAL: existing stage-2 artifact has no recipe marker; rerun with --force-from 2" >&2
+    exit 2
+  }
+  mapfile -t stored_stage12_recipe < "$STAGE12_RECIPE_FILE"
+  [ "${#stored_stage12_recipe[@]}" -eq "${#STAGE12_RECIPE[@]}" ] || {
+    echo "FATAL: existing stage-2 recipe marker is malformed; rerun with --force-from 2" >&2
+    exit 2
+  }
+  for recipe_index in "${!STAGE12_RECIPE[@]}"; do
+    [ "${stored_stage12_recipe[$recipe_index]}" = "${STAGE12_RECIPE[$recipe_index]}" ] || {
+      echo "FATAL: existing stage-2 recipe does not match the requested mode or dimensions; use a fresh run directory or --force-from 2" >&2
+      exit 2
+    }
+  done
+fi
 gates_of() { python3 -I -c "import sys; print(sum(1 for _ in open(sys.argv[1])) - 1)" "$1"; }
 state_moves() { awk '$1=="moves"{print $2; exit}' "$1"; }
 
-note "run=$RUN n=$N |C|=|D|=$M_CD s=$S_SL slice_gates=$SLICE_G expand=$EXPAND hold=${HOLD}effs x=(r=$XR b=$XB c=$XC tdiv=$XTDIV)"
+note "run=$RUN n=$N gadgetization_mode=$GADGETIZATION_MODE |C|=|D|=$M_CD s=$S_SL slice_gates=$SLICE_G expand=$EXPAND hold=${HOLD}effs x=(r=$XR b=$XB c=$XC tdiv=$XTDIV)"
 # The seed goes to the run dir, NOT to the shared narrative log: it is the
 # secret that regenerates C.
 note "seed source: $SEED_SRC (value in $RUN/SEED)"
 umask 077; printf '%s\n' "$SEED" > "$RUN/SEED"; chmod 600 "$RUN/SEED"
 
-GADGET=$RUN/gss.mpmct1
 PHASEA=$RUN/phaseA.mpmct1
 SPLITB=$RUN/splitB.mpmct1
 CROSSB=$RUN/crossB.mpmct1
 FINAL=$RUN/final.mpmct1
 
-# ---- stages 1+2: sandwich + Gray-fold gadgetization ----
+# ---- stages 1+2: sandwich + selected gadgetization ----
 if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
-  note "stage 1+2: gen_sandwich_gadget (PROD_PRESET=${PROD_PRESET:-production}, PROD_POST_FRAGMENT=${PROD_POST_FRAGMENT:-preset/off})"
+  if [ "$GADGETIZATION_MODE" = product-2223 ]; then
+    note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE, PROD_PRESET=${PROD_PRESET:-production}, PROD_POST_FRAGMENT=${PROD_POST_FRAGMENT:-preset/off})"
+  else
+    note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE; experimental/capacity-limited)"
+  fi
   "$BIN/gen_sandwich_gadget" "$GADGET" "$N" "$M_CD" "$M_CD" "$S_SL" 1 "$SLICE_G" \
-      "$SEED" "$((SEED + 1))" "$SEED" > "$RUN/stage12.log" 2>&1
+      "$SEED" "$((SEED + 1))" "$SEED" "$GADGETIZATION_MODE" > "$RUN/stage12.log" 2>&1
+  printf '%s\n' "${STAGE12_RECIPE[@]}" > "$STAGE12_RECIPE_FILE.tmp"
+  mv "$STAGE12_RECIPE_FILE.tmp" "$STAGE12_RECIPE_FILE"
   note "stage 1+2 done: GSS $(gates_of "$GADGET") gates (S: $(gates_of "$GADGET.sandwich.mpmct1"))"
 else
   note "stage 1+2: $GADGET exists, skipping"

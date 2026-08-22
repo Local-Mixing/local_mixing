@@ -36,6 +36,15 @@ path = "src/postprocessing/bin/fcompress.rs"
 name = "verify_zero_slice"
 path = "tests/manual/gss/verify_zero_slice.rs"
 
+# --- Gauntlet trace generation and leakage audit ---
+[[bin]]
+name = "gauntlet_gen"
+path = "tests/gauntlet/gauntlet_gen.rs"
+
+[[bin]]
+name = "gauntlet_audit"
+path = "tests/gauntlet/gauntlet_audit.rs"
+
 # --- GSS/circuit experiments: not invoked by scripts/gss_mix.sh ---
 [[bin]]
 name = "fragment_wide"

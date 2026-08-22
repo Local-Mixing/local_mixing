@@ -26,7 +26,7 @@ packaging of everything here is \doc{scripts/gss\_mix.sh}; see
 \doc{PIPELINE\_OVERVIEW.md}.}
 
 \begin{center}
-$n \rightarrow$ \textbf{I.~construction} $\rightarrow$ GSS ($4n$ wires)
+$n \rightarrow$ \textbf{I.~construction} $\rightarrow$ GSS
 $\rightarrow$ \textbf{II.~phase A} $\rightarrow$ \textbf{III.~phase B}
 $\rightarrow$ \textbf{IV.~fcompress} $\rightarrow$ deliverable
 \end{center}
@@ -40,21 +40,25 @@ which, and why.
 
 Sample a fresh random \g\ circuit $C$ on $n$ wires; build the sliced
 sandwich $A$ on $2n$ wires (random $D$, keyed slice interleave, N-column
-float) with $A(x,0)=(\mathrm{junk}, C(x))$ on the zero slice; gadgetize to
-$4n$ wires behind a zero-slice preblock with the diversified CG menu,
-nonlinear RGs, the product-share mask encoding, and a final commuting
-shuffle (\doc{SLICED\_SANDWICH.md}, \doc{NEW\_GADGETIZE.md},
-\doc{NONLINEAR\_RG\_CG\_MENU.md}).
+float) with $A(x,0)=(\mathrm{junk}, C(x))$ on the zero slice; apply the
+selected zero-slice gadgetization and a final commuting shuffle.
+\texttt{product-2223} is the production default and uses the diversified CG
+menu, nonlinear RGs, and product-share masks. The experimental
+\texttt{nonlinear193} and \texttt{nonlinear291} modes use two five-wire E
+shares and canonical 193/291 r57 bodies, subject to the u16 capacity check in
+\doc{GSS\_MIX.md} (\doc{SLICED\_SANDWICH.md},
+\doc{NEW\_GADGETIZE.md}, \doc{NONLINEAR\_RG\_CG\_MENU.md}).
 
 \begin{table}[H]\small
 \begin{tabular}{L{3.2cm} L{3.2cm} L{8.2cm}}
 \toprule
 knob & value & rationale \\
 \midrule
+gadgetization mode & \texttt{product-2223} (default); \texttt{nonlinear193}, \texttt{nonlinear291} (experimental) & one normalized switch selects the complete stage-2 representation and is locked into resume provenance \\
 $|C|=|D|$ & $\mathrm{round}(n\log_2^2 n)$ & library convention; $D$ sized like $C$ so neither sandwich side is thin \\
 slicing budget $s$ & $\mathrm{round}(n\log_2 n)$ & enough keyed slice mixing to decorrelate block boundaries \\
 slice gates & $20n$ & zero-slice preblock size, tool default \\
-mask plan & $[2,2,2,3]$ + Gray fold & measured: leak is LINEAR in the piling-up product $\varepsilon$ ($R^2=0.996$); this plan cuts $\varepsilon$ $3\times$ vs $[2,3,3]$ at $-14\%$ gates; disjoint deg-2 piling-up is proved optimal for sparse-ANF masks (\doc{CORRELATING\_TWO\_COMPUTATIONS.md}, \doc{TWISE\_INDEPENDENT\_MASKS.md}, \doc{GRAY\_FOLD\_CG.md}) \\
+product-2223 mask plan & $[2,2,2,3]$ + Gray fold & measured: leak is LINEAR in the piling-up product $\varepsilon$ ($R^2=0.996$); this plan cuts $\varepsilon$ $3\times$ vs $[2,3,3]$ at $-14\%$ gates; disjoint deg-2 piling-up is proved optimal for sparse-ANF masks (\doc{CORRELATING\_TWO\_COMPUTATIONS.md}, \doc{TWISE\_INDEPENDENT\_MASKS.md}, \doc{GRAY\_FOLD\_CG.md}) \\
 Gray fold & on (default) & fold gates $\le 2$ controls $\Rightarrow$ DB reachability $31.6\%\to95.6\%$; judge digestibility by reachability, never match rate \\
 carrier decode & single-carrier & the old $[3,3]$ was really $[1,1,3,3]$: a second linear carrier free to an affine adversary (\doc{SINGLE\_CARRIER\_CONSTRUCTION.md}, \doc{SINGLE\_CARRIER\_DECODE.md}) \\
 band & rolling, nonlinear fill, retire-refill epochs & band-in-slice exact disturbance theorem; rolling $+12\%$; fill must be jointly uniform; band \emph{lifetime}, not width, is the recovery channel (\doc{BAND\_HARDENING.md}, \doc{BAND\_INDEPENDENCE.md}) \\

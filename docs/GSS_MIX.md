@@ -40,7 +40,9 @@ curated_value_convention =
 frozen_filter =
 allow_empty_store =
 
-# Stages 1-2. Blank preset = production; blank post_fragment uses the preset.
+# Stages 1-2. Blank mode = product-2223. Preset and post_fragment apply only
+# to product-2223; leave them blank for nonlinear modes.
+gadgetization_mode =
 production_preset =
 post_fragment =
 mcd =
@@ -83,8 +85,9 @@ Defaults and accepted values:
 | `curated_value_convention` | `native` | `native`, `legacy-swapped-controls` |
 | `frozen_filter` | `auto` (the driver's RAM gate) | `auto`, `on` (requires `filters.bin` in every selected store), `off` |
 | `allow_empty_store` | `false` | `true` only for a no-re-encoding plumbing test |
-| `production_preset` | `production` | `production`, `no-gray-phase-a`, `micro-gray`, `sentinel-gray`, `no-gray-post-exact`, `no-gray-post-native`, `five-carrier`, `strong-five-carrier`, `six-carrier`, `strong-six-carrier`, `seven-carrier` |
-| `post_fragment` | preset behavior | `off`, `exact`, `native-deep` |
+| `gadgetization_mode` | `product-2223` | `product-2223`, `nonlinear193`, `nonlinear291`; `2223` is accepted as a compatibility alias and normalized to `product-2223` |
+| `production_preset` | `production` | product-2223 only: `production`, `no-gray-phase-a`, `micro-gray`, `sentinel-gray`, `no-gray-post-exact`, `no-gray-post-native`, `five-carrier`, `strong-five-carrier`, `six-carrier`, `strong-six-carrier`, `seven-carrier` |
+| `post_fragment` | preset behavior | product-2223 only: `off`, `exact`, `native-deep` |
 | `mcd` | `round(n(log2 n)^2)` | integer `1..=1000000000` |
 | `calibration_only` | `false` | `true`, `false` |
 | `calibration_seed_file` | CSPRNG for a fresh run; `<run>/SEED` for resume | private mode-600 file; requires `calibration_only=true` |
@@ -103,6 +106,20 @@ low-level overrides must not be mistaken for a production GSS run. The `gss`
 command removes inherited `PROD_*`, rewrite/debug, SAT-scoring, and compressor
 override variables and pins the documented canonicalization/cache defaults.
 The direct Bash interface remains available for explicitly labeled experiments.
+
+`product-2223` with `production_preset=production` is the production-accepted
+default (the existing `[2,2,2,3]` product construction). Other presets inside
+that family remain study arms. `nonlinear193` and `nonlinear291`
+are experimental, capacity-limited integration modes: selecting either does
+not imply production acceptance, and the generator may reject sizes that
+exceed its current wire/workspace bounds. `production_preset` and
+`post_fragment` must remain blank for those nonlinear modes and are rejected
+when set rather than silently ignored. The resolved canonical mode is recorded
+in logs and in the resume manifest. These modes establish functional
+zero-slice integration, but their deterministic ingress masks and auxiliary
+endpoint state have not yet been requalified by the GSS gauntlet; evidence for
+the standalone 193/291 bodies must not be treated as evidence for the complete
+adapter.
 
 ## Quick start
 
@@ -144,7 +161,8 @@ For low-level experiments or automation, the Bash interface remains available:
 ```bash
 cargo build --release --bin gen_sandwich_gadget --bin fmix --bin fcompress
 FROZEN_DB_DIR=/absolute/path/to/frozen_regular \
-  bash scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_experiment
+  bash scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_experiment \
+    --gadgetization-mode product-2223
 ```
 
 The driver uses three production entry points:
@@ -302,9 +320,12 @@ claim to hide an accumulator observed in the middle of a complete Gray gather.
 Artifacts land in the run dir: `gss.mpmct1` (+ `.sandwich.mpmct1`,
 `.source_c.g57`), `phaseA.mpmct1`(+`.state`), `splitB.mpmct1`(+`.state`),
 `crossB.mpmct1`(+`.state`), `final.mpmct1`, per-stage logs, and
-`gss_mix.log` (the pinned-parameter narrative). A stage whose artifact
-already exists is skipped. To continue a killed pipeline, invoke the driver
-again with the same `-n`, `-o`, preset, and tuning options, and **omit `-s`**:
+`gss_mix.log` (the pinned-parameter narrative). The direct driver also writes
+`stage12.recipe`, which binds `gss.mpmct1` to its normalized gadgetization
+mode and dimensions. A stage whose artifact already exists is skipped only
+when that recipe still matches. To continue a killed pipeline, invoke the driver
+again with the same `-n`, `-o`, `gadgetization_mode`, preset, and tuning
+options, and **omit `-s`**:
 the driver reloads the original secret from `<run>/SEED`. Do not reuse a run
 directory with a different explicit seed or configuration; use a fresh run
 directory instead. `--force-from K` deliberately rebuilds stage K and every
@@ -318,21 +339,29 @@ an unclean kill during a file write, inspect the stage log/state and use
 
 ## The stages and their parameters
 
-**1+2 — generate + gadgetize** (`gen_sandwich_gadget`). The only free
-parameter is **n**, the wires of the source computation C. Everything else
-is the library convention, computed and logged by the driver:
+**1+2 — generate + gadgetize** (`gen_sandwich_gadget`). The source-size
+parameter is **n**, the wires of the source computation C, and
+`gadgetization_mode` selects the representation family. The remaining size
+conventions are computed and logged by the driver:
 `|C| = |D| = round(n·(log₂n)²)`, slicing budget `s = round(n·log₂n)`,
-`slice_gates = 20n`, `rg_freq = 1`. The gadgetization runs the **production
-preset** (mask plan [2,2,2,3] + Gray fold, single-carrier decode, nonlinear
+`slice_gates = 20n`, `rg_freq = 1`. The default `product-2223` gadgetization
+runs the **production preset** (mask plan [2,2,2,3] + Gray fold, single-carrier decode, nonlinear
 band fill, band roll, retire-refill epochs) — it is the tool's default; no
 `PROD_*` variables are set unless an alternate `PROD_PRESET` is selected
 (`no-gray-phase-a`, a fold/fragmentation study arm, `five-carrier`,
 `strong-five-carrier`, `six-carrier`, `strong-six-carrier`, or
 `seven-carrier`).
-The sandwich S (2n wires) and the source C are
-dumped beside the gadget (4n wires by default, 12n under either five-carrier
-mode, 14n under either six-carrier mode, or 16n under `seven-carrier`) for
-later reconstruction checks. The tool
+The `nonlinear193` and `nonlinear291` families are experimental and
+capacity-limited; their availability at a requested size is not a production
+acceptance claim.
+The sandwich S (2n wires) and the source C are dumped beside the gadget. In
+`product-2223`, the gadget uses 4n wires by default, 12n under either
+five-carrier mode, 14n under either six-carrier mode, or 16n under
+`seven-carrier`. The nonlinear modes use two five-wire E shares per logical
+value plus per-gate fresh regions; their exact capacity is checked before any
+artifact is written. With derived `mcd`/slice defaults they currently fit only
+through source n=63 under the u16 wire ABI (a smaller explicit `mcd` can permit
+larger n). The tool
 sample-verifies gadget-low ≡ S on the zero slice (256 bit-sliced samples).
 Seeds: C and the sandwich use the master seed, the gadgetization
 `seed+1`. Omit `-s` to obtain a fully fresh production pipeline. Use an

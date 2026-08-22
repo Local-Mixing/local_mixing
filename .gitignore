@@ -23,7 +23,10 @@ scripts
 !src/README.md
 !benchmarks/README.md
 !experimental/README.md
+!gadgetization/README.md
 !tests/manual/README.md
+!tests/gauntlet/README.md
+!tests/gauntlet/TESTING_PIPELINE.md
 !red_team_tests/bin/README.md
 old_db
 mixing_tests

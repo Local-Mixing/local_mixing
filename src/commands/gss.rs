@@ -5,6 +5,8 @@
 //! validation, release-binary preparation, and child-process execution.
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use local_mixing::preprocessing::gadgets::{sandwich_default_m, sandwich_default_s};
+use local_mixing::preprocessing::nonlinear_gss::{NonlinearGssMode, nonlinear_gss_resource_plan};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -29,6 +31,7 @@ const KNOWN_KEYS: &[&str] = &[
     "frozen_db_dir",
     "frozen_curated_dir",
     "curated_value_convention",
+    "gadgetization_mode",
     "production_preset",
     "post_fragment",
     "calibration_only",
@@ -204,6 +207,31 @@ enum FrozenFilter {
     Off,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GadgetizationMode {
+    Product2223,
+    Nonlinear193,
+    Nonlinear291,
+}
+
+impl GadgetizationMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Product2223 => "product-2223",
+            Self::Nonlinear193 => "nonlinear193",
+            Self::Nonlinear291 => "nonlinear291",
+        }
+    }
+
+    fn nonlinear(self) -> Option<NonlinearGssMode> {
+        match self {
+            Self::Product2223 => None,
+            Self::Nonlinear193 => Some(NonlinearGssMode::Nonlinear193),
+            Self::Nonlinear291 => Some(NonlinearGssMode::Nonlinear291),
+        }
+    }
+}
+
 /// Deliberately does not derive `Debug`: `calibration_seed` is secret.
 #[derive(Clone)]
 struct ResolvedConfig {
@@ -216,6 +244,7 @@ struct ResolvedConfig {
     frozen_db: SourcedPath,
     frozen_curated: SourcedPath,
     curated_value_convention: String,
+    gadgetization_mode: GadgetizationMode,
     production_preset: String,
     post_fragment: Option<String>,
     calibration_only: bool,
@@ -328,6 +357,34 @@ fn run_inner(sub: &ArgMatches) -> Result<(), GssError> {
             "{} has unverifiable pre-wrapper seed provenance; adopting it requires both `adopt_existing_run = true` and `calibration_only = true`",
             config.run_dir.display()
         )));
+    }
+    let legacy_gadget = config.run_dir.join("gss.mpmct1");
+    let legacy_has_gadget =
+        fs::metadata(&legacy_gadget).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
+    if legacy_resume && legacy_has_gadget && config.force_from.as_deref() != Some("2") {
+        let recipe_path = config.run_dir.join("stage12.recipe");
+        let stored_recipe = fs::read_to_string(&recipe_path).map_err(|error| {
+            GssError::config(format!(
+                "cannot adopt existing stage-2 artifact without a readable {} marker: {error}; set `force_from = 2` to rebuild it",
+                recipe_path.display()
+            ))
+        })?;
+        let stored_mode = stored_recipe
+            .lines()
+            .find_map(|line| line.strip_prefix("gadgetization_mode="))
+            .ok_or_else(|| {
+                GssError::config(format!(
+                    "existing stage-2 recipe {} has no gadgetization_mode; set `force_from = 2` to rebuild it",
+                    recipe_path.display()
+                ))
+            })?;
+        if stored_mode != config.gadgetization_mode.as_str() {
+            return Err(GssError::config(format!(
+                "existing stage-2 artifact is marked {}, but the requested gadgetization_mode is {}; use a fresh run directory or set `force_from = 2`",
+                stored_mode,
+                config.gadgetization_mode.as_str()
+            )));
+        }
     }
     if managed_resume {
         let fingerprints = production_binary_fingerprints(&binary_dir)?;
@@ -577,9 +634,26 @@ where
         "native",
         &["native", "legacy-swapped-controls"],
     )?;
+    let gadgetization_mode = parse_gadgetization_mode(raw)?;
     let production_preset = parse_enum(raw, "production_preset", "production", PRODUCTION_PRESETS)?;
     let post_fragment =
         parse_optional_enum(raw, "post_fragment", &["off", "exact", "native-deep"])?;
+    if gadgetization_mode != GadgetizationMode::Product2223 {
+        if raw.value("production_preset").is_some() {
+            return Err(config_error(
+                raw,
+                "production_preset",
+                "production_preset applies only to `gadgetization_mode = product-2223`; leave it blank for nonlinear modes",
+            ));
+        }
+        if raw.value("post_fragment").is_some() {
+            return Err(config_error(
+                raw,
+                "post_fragment",
+                "post_fragment applies only to `gadgetization_mode = product-2223`; leave it blank for nonlinear modes",
+            ));
+        }
+    }
     let calibration_only = parse_bool(raw, "calibration_only", false)?;
     let calibration_seed_file = raw
         .value("calibration_seed_file")
@@ -597,6 +671,35 @@ where
         .transpose()?;
 
     let mcd = parse_optional_u64(raw, "mcd", 1, 1_000_000_000)?;
+    if let Some(mode) = gadgetization_mode.nonlinear() {
+        let m = mcd
+            .as_deref()
+            .map(|value| value.parse::<usize>().expect("validated mcd"))
+            .unwrap_or_else(|| sandwich_default_m(n));
+        let s = sandwich_default_s(n);
+        let gate_count = m
+            .checked_mul(2)
+            .and_then(|count| count.checked_add(s.checked_mul(2)?))
+            .and_then(|count| count.checked_add(n))
+            .ok_or_else(|| {
+                config_error(raw, "gadgetization_mode", "sandwich gate-count overflow")
+            })?;
+        let logical_n = n.checked_mul(2).ok_or_else(|| {
+            config_error(raw, "gadgetization_mode", "logical wire-count overflow")
+        })?;
+        let slice_gates = logical_n
+            .checked_mul(10)
+            .ok_or_else(|| config_error(raw, "gadgetization_mode", "slice gate-count overflow"))?;
+        nonlinear_gss_resource_plan(logical_n, gate_count, slice_gates, mode).map_err(|error| {
+            config_error(
+                raw,
+                "gadgetization_mode",
+                &format!(
+                    "requested nonlinear layout exceeds the current wire capacity/resource budget: {error}; reduce n or set a smaller mcd"
+                ),
+            )
+        })?;
+    }
     let expand = parse_optional_f64(
         raw,
         "expand",
@@ -650,6 +753,7 @@ where
         frozen_db,
         frozen_curated,
         curated_value_convention,
+        gadgetization_mode,
         production_preset,
         post_fragment,
         calibration_only,
@@ -764,6 +868,21 @@ fn parse_enum(
         ));
     }
     Ok(value.to_owned())
+}
+
+fn parse_gadgetization_mode(raw: &RawConfig) -> Result<GadgetizationMode, String> {
+    match raw.value("gadgetization_mode").unwrap_or("product-2223") {
+        "product-2223" | "2223" => Ok(GadgetizationMode::Product2223),
+        "nonlinear193" => Ok(GadgetizationMode::Nonlinear193),
+        "nonlinear291" => Ok(GadgetizationMode::Nonlinear291),
+        other => Err(config_error(
+            raw,
+            "gadgetization_mode",
+            &format!(
+                "expected product-2223, nonlinear193, or nonlinear291 (2223 is a compatibility alias); got {other:?}"
+            ),
+        )),
+    }
 }
 
 fn parse_optional_enum(
@@ -1159,11 +1278,12 @@ fn recipe_manifest(
     };
     let mut manifest = format!(
         concat!(
-            "gss_command_recipe=1\n",
+            "gss_command_recipe=2\n",
             "n={}\n",
             "frozen_db_dir={}\n",
             "frozen_curated_dir={}\n",
             "curated_value_convention={}\n",
+            "gadgetization_mode={}\n",
             "production_preset={}\n",
             "post_fragment={}\n",
             "mcd={}\n",
@@ -1182,8 +1302,17 @@ fn recipe_manifest(
         path_or_unset(&config.frozen_db.path),
         path_or_unset(&config.frozen_curated.path),
         config.curated_value_convention,
-        config.production_preset,
-        config.post_fragment.as_deref().unwrap_or("preset-default"),
+        config.gadgetization_mode.as_str(),
+        if config.gadgetization_mode == GadgetizationMode::Product2223 {
+            config.production_preset.as_str()
+        } else {
+            "not-applicable"
+        },
+        if config.gadgetization_mode == GadgetizationMode::Product2223 {
+            config.post_fragment.as_deref().unwrap_or("preset-default")
+        } else {
+            "not-applicable"
+        },
         config.mcd.as_deref().unwrap_or("derived"),
         config.expand.as_deref().unwrap_or("2"),
         config.hold.as_deref().unwrap_or("30"),
@@ -1210,6 +1339,8 @@ fn script_args(config: &ResolvedConfig) -> Vec<OsString> {
         OsString::from(config.n.to_string()),
         OsString::from("-o"),
         config.run_dir.as_os_str().to_owned(),
+        OsString::from("--gadgetization-mode"),
+        OsString::from(config.gadgetization_mode.as_str()),
     ];
     push_optional_arg(&mut args, "--mcd", config.mcd.as_deref());
     push_optional_arg(&mut args, "--expand", config.expand.as_deref());
@@ -1238,7 +1369,7 @@ fn push_optional_arg(args: &mut Vec<OsString>, flag: &str, value: Option<&str>) 
 fn configure_environment(command: &mut ProcessCommand, config: &ResolvedConfig, binary_dir: &Path) {
     // Future generator experiments should not silently become supported merely
     // by adding another PROD_* read. Clear the whole namespace first, then set
-    // only the two coherent controls represented in the Markdown schema.
+    // the product-family controls only when that family was selected.
     for (key, _) in std::env::vars_os() {
         let key_text = key.to_string_lossy();
         if key_text.starts_with("PROD_") || key_text.starts_with("SAT_") {
@@ -1265,14 +1396,19 @@ fn configure_environment(command: &mut ProcessCommand, config: &ResolvedConfig, 
     command.env("CANON_CACHE_MB", "256");
     command.env("XPOLY_CANON_CACHE_MB", "1024");
     command.env("LOOKUP_CACHE_MB", "2048");
-    command.env("PROD_PRESET", &config.production_preset);
-    match &config.post_fragment {
-        Some(value) => {
-            command.env("PROD_POST_FRAGMENT", value);
+    if config.gadgetization_mode == GadgetizationMode::Product2223 {
+        command.env("PROD_PRESET", &config.production_preset);
+        match &config.post_fragment {
+            Some(value) => {
+                command.env("PROD_POST_FRAGMENT", value);
+            }
+            None => {
+                command.env_remove("PROD_POST_FRAGMENT");
+            }
         }
-        None => {
-            command.env_remove("PROD_POST_FRAGMENT");
-        }
+    } else {
+        command.env_remove("PROD_PRESET");
+        command.env_remove("PROD_POST_FRAGMENT");
     }
     if config.allow_empty_store {
         command.env("GSS_MIX_ALLOW_EMPTY_STORE", "1");
@@ -1326,11 +1462,23 @@ fn print_resolved(config_path: &Path, config: &ResolvedConfig, binary_dir: &Path
             FrozenFilter::Off => "off",
         }
     );
-    println!("[gss] production preset: {}", config.production_preset);
     println!(
-        "[gss] post fragmentation: {}",
-        config.post_fragment.as_deref().unwrap_or("preset default")
+        "[gss] gadgetization mode: {}",
+        config.gadgetization_mode.as_str()
     );
+    if config.gadgetization_mode == GadgetizationMode::Product2223 {
+        println!("[gss] production preset: {}", config.production_preset);
+        println!(
+            "[gss] post fragmentation: {}",
+            config.post_fragment.as_deref().unwrap_or("preset default")
+        );
+    } else {
+        println!("[gss] production preset/post fragmentation: not applicable");
+        eprintln!(
+            "[gss] WARNING: {} is experimental and capacity-limited; it is not production-accepted",
+            config.gadgetization_mode.as_str()
+        );
+    }
     println!(
         "[gss] seed: {}",
         if config.calibration_seed.is_some() {
@@ -1828,6 +1976,7 @@ mod tests {
         assert!(resolved.generated_run_dir);
         assert!(resolved.run_dir.ends_with("runs/gssmix_n128_test-run"));
         assert!(resolved.build_release);
+        assert_eq!(resolved.gadgetization_mode, GadgetizationMode::Product2223);
         assert_eq!(resolved.production_preset, "production");
         assert!(resolved.calibration_seed.is_none());
         assert!(
@@ -1835,6 +1984,93 @@ mod tests {
                 .iter()
                 .any(|arg| arg == OsStr::new("-s"))
         );
+    }
+
+    #[test]
+    fn gadgetization_modes_are_validated_propagated_and_normalized() {
+        for (value, expected) in [
+            ("product-2223", GadgetizationMode::Product2223),
+            ("2223", GadgetizationMode::Product2223),
+            ("nonlinear193", GadgetizationMode::Nonlinear193),
+            ("nonlinear291", GadgetizationMode::Nonlinear291),
+        ] {
+            let resolved = resolve_for_test(&parse(&format!(
+                "run_dir = runs/mode-test\ngadgetization_mode = {value}\nmcd = 1\nallow_empty_store = true"
+            )))
+            .unwrap();
+            assert_eq!(resolved.gadgetization_mode, expected);
+            let args = script_args(&resolved);
+            let mode_index = args
+                .iter()
+                .position(|arg| arg == OsStr::new("--gadgetization-mode"))
+                .unwrap();
+            assert_eq!(
+                args.get(mode_index + 1),
+                Some(&OsString::from(expected.as_str()))
+            );
+        }
+
+        let canonical = resolve_for_test(&parse(
+            "run_dir = runs/mode-test\ngadgetization_mode = product-2223\nallow_empty_store = true",
+        ))
+        .unwrap();
+        let alias = resolve_for_test(&parse(
+            "run_dir = runs/mode-test\ngadgetization_mode = 2223\nallow_empty_store = true",
+        ))
+        .unwrap();
+        let fingerprints = [("gen_sandwich_gadget", 1u128)];
+        assert_eq!(
+            recipe_manifest(&canonical, &fingerprints, 2),
+            recipe_manifest(&alias, &fingerprints, 2)
+        );
+        assert!(
+            recipe_manifest(&alias, &fingerprints, 2).contains("gadgetization_mode=product-2223\n")
+        );
+    }
+
+    #[test]
+    fn nonlinear_modes_reject_product_only_controls() {
+        for product_setting in [
+            "production_preset = production",
+            "production_preset = micro-gray",
+            "post_fragment = off",
+            "post_fragment = exact",
+        ] {
+            let raw = parse(&format!(
+                "run_dir = runs/mode-test\ngadgetization_mode = nonlinear193\n{product_setting}\nallow_empty_store = true"
+            ));
+            let error = resolve_for_test(&raw).err().unwrap();
+            assert!(error.contains("product-2223"), "unexpected error: {error}");
+        }
+
+        let nonlinear = resolve_for_test(&parse(
+            "run_dir = runs/mode-test\ngadgetization_mode = nonlinear291\nmcd = 1\nallow_empty_store = true",
+        ))
+        .unwrap();
+        let manifest = recipe_manifest(&nonlinear, &[], 1);
+        assert!(manifest.contains("gadgetization_mode=nonlinear291\n"));
+        assert!(manifest.contains("production_preset=not-applicable\n"));
+        assert!(manifest.contains("post_fragment=not-applicable\n"));
+    }
+
+    #[test]
+    fn nonlinear_capacity_is_validated_before_launch() {
+        let too_large = parse(
+            "n = 64\nrun_dir = runs/mode-capacity\ngadgetization_mode = nonlinear291\nallow_empty_store = true",
+        );
+        let error = resolve_for_test(&too_large).err().unwrap();
+        assert!(error.contains("wire capacity"), "{error}");
+        assert!(error.contains("reduce n or set a smaller mcd"), "{error}");
+
+        let derived_fit = parse(
+            "n = 63\nrun_dir = runs/mode-capacity\ngadgetization_mode = nonlinear291\nallow_empty_store = true",
+        );
+        assert!(resolve_for_test(&derived_fit).is_ok());
+
+        let explicit_fit = parse(
+            "n = 128\nrun_dir = runs/mode-capacity\ngadgetization_mode = nonlinear291\nmcd = 1\nallow_empty_store = true",
+        );
+        assert!(resolve_for_test(&explicit_fit).is_ok());
     }
 
     #[test]
@@ -1936,6 +2172,7 @@ mod tests {
             "hold = -1",
             "xtdiv = 0",
             "stop_after = 7",
+            "gadgetization_mode = invented",
             "production_preset = invented",
             "build_release = yes",
             "frozen_filter = maybe",
@@ -2052,11 +2289,11 @@ mod tests {
     #[test]
     fn manifest_comparison_accepts_exact_and_rejects_changed_or_oversized() {
         let path = temp_path("manifest");
-        let desired = "gss_command_recipe=1\nn=128\n";
+        let desired = "gss_command_recipe=2\nn=128\n";
         fs::write(&path, desired).unwrap();
         compare_recipe_manifest(&path, desired).unwrap();
 
-        let mismatch = compare_recipe_manifest(&path, "gss_command_recipe=1\nn=129\n").unwrap_err();
+        let mismatch = compare_recipe_manifest(&path, "gss_command_recipe=2\nn=129\n").unwrap_err();
         assert_eq!(mismatch.exit_code, 2);
         assert!(mismatch.message.contains("mixed-provenance"));
 
@@ -2099,6 +2336,28 @@ mod tests {
             environment.get("GSS_BIN_DIR"),
             Some(&Some("/tmp/gss-bin".to_owned()))
         );
+        assert_eq!(
+            environment.get("PROD_PRESET"),
+            Some(&Some("production".to_owned()))
+        );
+
+        let nonlinear = resolve_for_test(&parse(
+            "run_dir = runs/env-test-nonlinear\ngadgetization_mode = nonlinear193\nmcd = 1\nstop_after = 2\nallow_empty_store = true",
+        ))
+        .unwrap();
+        let mut command = ProcessCommand::new("true");
+        configure_environment(&mut command, &nonlinear, Path::new("/tmp/gss-bin"));
+        let environment: BTreeMap<String, Option<String>> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert_eq!(environment.get("PROD_PRESET"), Some(&None));
+        assert_eq!(environment.get("PROD_POST_FRAGMENT"), Some(&None));
     }
 
     #[test]

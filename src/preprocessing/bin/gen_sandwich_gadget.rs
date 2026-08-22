@@ -4,18 +4,18 @@
 //! Pipeline: fresh random g57 C on n wires -> sliced_sandwich_cnot (samples a
 //! random D, interleaves the two slice blocks, floats the N column) -> a 2n-wire
 //! sandwich A with A(x,0)=(junk, C(x)) on the zero slice ->
-//! the selected zero-slice gadgetizer (single-carrier by default, or the
-//! supplied/strong five/six or seven-carrier nonlinear representation with the matching
-//! `PROD_PRESET`) -> a
+//! the selected zero-slice gadgetizer (`product-2223` by default, or one of
+//! the canonical nonlinear193/nonlinear291 evaluation modes) -> a
 //! gadget whose low 2n output equals A on the gadget's zero slice.
 //!
 //! Usage: gen_sandwich_gadget <out> [n=128] [m_C=3000] [m_D=3000]
 //!                            [s=n*log2 n] [rg_freq=1] [slice_gates=10*2n]
 //!                            [seed=1] [gadget_seed=seed] [sandwich_seed=seed]
+//!                            [gadgetization_mode=product-2223]
 //!
 //! `seed` fixes C only (fastrand); `sandwich_seed` drives D + slicing +
 //! N-float (default = seed); `gadget_seed` drives the gadgetization only.
-//! `PROD_PRESET` selects `production` (default), a fold/fragmentation study
+//! In `product-2223` mode, `PROD_PRESET` selects `production` (default), a fold/fragmentation study
 //! arm, or a supplied/strong carrier preset; individual
 //! `PROD_*` variables override common mask settings. `PROD_POST_FRAGMENT`
 //! optionally applies `exact` or `native-deep` post-layout fragmentation.
@@ -44,6 +44,9 @@ use local_mixing::preprocessing::gadgets::{
     gadgetize_xgates_with_slice_zero_ccnot_strong_six_carrier, sandwich_default_s,
     sliced_sandwich_cnot,
 };
+use local_mixing::preprocessing::nonlinear_gss::{
+    NonlinearGssMode, gadgetize_xgates_nonlinear_gss, nonlinear_gss_resource_plan,
+};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
@@ -69,6 +72,40 @@ enum CarrierMode {
     SevenDistributedPartitionedUnshuffled,
     SevenDistributedPartitionedFloor1024,
     SevenDistributedPartitionedFloor1024Unshuffled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GadgetizationMode {
+    Product2223,
+    Nonlinear193,
+    Nonlinear291,
+}
+
+impl GadgetizationMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "product-2223" | "2223" => Some(Self::Product2223),
+            "nonlinear193" => Some(Self::Nonlinear193),
+            "nonlinear291" => Some(Self::Nonlinear291),
+            _ => None,
+        }
+    }
+
+    fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Product2223 => "product-2223",
+            Self::Nonlinear193 => "nonlinear193",
+            Self::Nonlinear291 => "nonlinear291",
+        }
+    }
+
+    fn nonlinear(self) -> Option<NonlinearGssMode> {
+        match self {
+            Self::Product2223 => None,
+            Self::Nonlinear193 => Some(NonlinearGssMode::Nonlinear193),
+            Self::Nonlinear291 => Some(NonlinearGssMode::Nonlinear291),
+        }
+    }
 }
 
 fn production_preset(name: Option<&str>) -> (ProdConfig, CarrierMode) {
@@ -155,7 +192,7 @@ fn main() {
     let mut a = std::env::args().skip(1);
     let out = a
         .next()
-        .expect("usage: gen_sandwich_gadget <out> [n m_C m_D s rg_freq slice_gates seed]");
+        .expect("usage: gen_sandwich_gadget <out> [n m_C m_D s rg_freq slice_gates seed gadget_seed sandwich_seed gadgetization_mode]");
     let n: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(128);
     let m_c: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(3000);
     let m_d: usize = a.next().and_then(|s| s.parse().ok()).unwrap_or(3000);
@@ -172,9 +209,49 @@ fn main() {
     let seed: u64 = a.next().and_then(|s| s.parse().ok()).unwrap_or(1);
     let gadget_seed: u64 = a.next().and_then(|s| s.parse().ok()).unwrap_or(seed);
     let sandwich_seed: u64 = a.next().and_then(|s| s.parse().ok()).unwrap_or(seed);
+    let gadgetization_mode = a
+        .next()
+        .as_deref()
+        .map(GadgetizationMode::parse)
+        .unwrap_or(Some(GadgetizationMode::Product2223))
+        .unwrap_or_else(|| {
+            panic!(
+                "unknown gadgetization mode; expected product-2223, nonlinear193, or nonlinear291"
+            )
+        });
+    assert!(
+        a.next().is_none(),
+        "too many arguments; gadgetization mode is the final optional argument"
+    );
+    if let Some(mode) = gadgetization_mode.nonlinear() {
+        let sandwich_gate_count = m_c
+            .checked_add(m_d)
+            .and_then(|count| count.checked_add(s.checked_mul(2)?))
+            .and_then(|count| count.checked_add(n))
+            .expect("sandwich gate-count overflow");
+        nonlinear_gss_resource_plan(sandwich_n, sandwich_gate_count, slice_gates, mode)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{} capacity check failed: {error}",
+                    gadgetization_mode.canonical_name()
+                )
+            });
+        let mut overrides: Vec<String> = std::env::vars_os()
+            .filter_map(|(key, _)| key.into_string().ok())
+            .filter(|key| key.starts_with("PROD_"))
+            .collect();
+        overrides.sort();
+        assert!(
+            overrides.is_empty(),
+            "{} does not accept product-share overrides; unset {}",
+            gadgetization_mode.canonical_name(),
+            overrides.join(", ")
+        );
+    }
 
     println!(
-        "[gen] n={n} |C|={m_c} |D|={m_d} s={s} rg_freq={rg_freq} slice_gates={slice_gates} seed={seed} gadget_seed={gadget_seed} sandwich_seed={sandwich_seed}"
+        "[gen] n={n} |C|={m_c} |D|={m_d} s={s} rg_freq={rg_freq} slice_gates={slice_gates} seed={seed} gadget_seed={gadget_seed} sandwich_seed={sandwich_seed} gadgetization_mode={}",
+        gadgetization_mode.canonical_name()
     );
 
     // Fresh random g57 source C (fastrand-seeded, matching sandwich_compare).
@@ -218,7 +295,11 @@ fn main() {
     // then individual environment variables may override fields.  The
     // no-gray-phase-a preset is the measured candidate for deployments that
     // reject Gray's aggregate space-time mask witness.
-    let preset_name = std::env::var("PROD_PRESET").ok();
+    let preset_name = if gadgetization_mode == GadgetizationMode::Product2223 {
+        std::env::var("PROD_PRESET").ok()
+    } else {
+        None
+    };
     let (preset, carrier_mode) = production_preset(preset_name.as_deref());
     let nonlinear_carrier = carrier_mode != CarrierMode::Single;
     assert!(
@@ -261,7 +342,7 @@ fn main() {
         !nonlinear_carrier || !prod.dist(),
         "a nonlinear carrier PROD_PRESET does not support distributed product-mask sourcing"
     );
-    if prod.enabled() {
+    if gadgetization_mode == GadgetizationMode::Product2223 && prod.enabled() {
         println!(
             "[gen] product-share encoding ON: representation={} k={} deg={} k_hi={} deg_hi={} band(auto)={} max_width={} ladder_cap={} gray_fold={} fill_nl={} roll={}",
             match carrier_mode {
@@ -298,7 +379,15 @@ fn main() {
             prod.roll
         );
     }
-    let mut gadget = if carrier_mode == CarrierMode::SevenDistributedPartitionedFloor1024 {
+    let mut gadget = if let Some(mode) = gadgetization_mode.nonlinear() {
+        gadgetize_xgates_nonlinear_gss(&sandwich.gates, sandwich_n, n, slice_gates, mode, &mut rng)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{} gadgetization failed: {error}",
+                    gadgetization_mode.canonical_name()
+                )
+            })
+    } else if carrier_mode == CarrierMode::SevenDistributedPartitionedFloor1024 {
         gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed_partitioned_floor1024_live_prefix(
             &sandwich.gates,
             sandwich_n,
@@ -556,5 +645,28 @@ mod tests {
     #[should_panic(expected = "unknown PROD_PRESET")]
     fn unknown_standalone_preset_is_rejected() {
         let _ = production_preset(Some("not-a-preset"));
+    }
+
+    #[test]
+    fn gadgetization_modes_have_stable_canonical_names() {
+        assert_eq!(
+            GadgetizationMode::parse("2223"),
+            Some(GadgetizationMode::Product2223)
+        );
+        assert_eq!(
+            GadgetizationMode::parse("product-2223")
+                .unwrap()
+                .canonical_name(),
+            "product-2223"
+        );
+        assert_eq!(
+            GadgetizationMode::parse("nonlinear193"),
+            Some(GadgetizationMode::Nonlinear193)
+        );
+        assert_eq!(
+            GadgetizationMode::parse("nonlinear291"),
+            Some(GadgetizationMode::Nonlinear291)
+        );
+        assert_eq!(GadgetizationMode::parse("nonlinear"), None);
     }
 }
