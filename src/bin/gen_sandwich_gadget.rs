@@ -265,7 +265,7 @@ fn main() {
     );
     if prod.enabled() {
         println!(
-            "[gen] product-share encoding ON: representation={} k={} deg={} k_hi={} deg_hi={} band(auto)={} max_width={} ladder_cap={} gray_fold={} swap_refresh={} close_slice={} fill_nl={} roll={}",
+            "[gen] product-share encoding ON: representation={} k={} deg={} k_hi={} deg_hi={} cg_jitter={} band(auto)={} max_width={} ladder_cap={} gray_fold={} swap_refresh={} close_slice={} fill_nl={} roll={}",
             match carrier_mode {
                 CarrierMode::Single => "single-carrier",
                 CarrierMode::Five => "five-carrier",
@@ -292,6 +292,7 @@ fn main() {
             prod.deg,
             prod.k_hi,
             prod.deg_hi,
+            prod.cg_jitter,
             prod.band_size(sandwich_n),
             prod.max_width,
             prod.ladder_cap,
