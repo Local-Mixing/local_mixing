@@ -227,7 +227,7 @@ litter-aligned-churn signal is *measured* today and simply not acted on.
 **What the port needs.**
 
 1. **Tag DB splice products with a shared litter id and size.** The splice path
-   currently sets `event: 0` ([mix.rs:2577](../src/postmix/mix.rs)), so slot 2
+   currently sets `event: 0` ([mix.rs:2577](../src/engine/mix.rs)), so slot 2
    — the dominant channel under this menu — emits untagged material.
 2. **Reject full-litter prefixes in the descent** (§2.2), which composes
    naturally: a rejected prefix just descends one rung further.
@@ -310,11 +310,11 @@ absorption is *always* mathematically available.
 
 `merge_result` currently performs it in only two cases:
 
-- `|S| = 0` → Cancel / XFuse ([mix.rs:90](../src/postmix/mix.rs));
+- `|S| = 0` → Cancel / XFuse ([mix.rs:90](../src/engine/mix.rs));
 - `|S| = 1` → Subsume, absorbing the flip into the literal's **polarity**
   rather than the comp bit (`1 ⊕ x_a^p = x_a^¬p`), so comp is untouched.
 
-For `|S| ≥ 2` it bails at [mix.rs:99](../src/postmix/mix.rs) on `g.comp !=
+For `|S| ≥ 2` it bails at [mix.rs:99](../src/engine/mix.rs) on `g.comp !=
 h.comp`. That guard keeps the fossil count monotone and is correct for
 `h.comp = 0`, where the result would be comp=1 and *create* a fossil. But for
 **`h.comp = 1` the result is comp=0** — fossil-*eroding*, the allowed

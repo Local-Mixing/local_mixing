@@ -3,7 +3,8 @@
 # sandwich) circuits. Manual: docs/GSS_MIX.md.
 #
 # Stages:
-#   1+2  generate the sliced sandwich S and Gray-fold gadgetize it
+#   1+2  generate the sliced sandwich S and gadgetize it with the selected
+#        representation family
 #        (gen_sandwich_gadget; |C| = |D| = round(n·(log2 n)^2), the library
 #        convention; the production preset — mask plan [2,2,2,3] + Gray fold —
 #        is the tool default)
@@ -11,7 +12,8 @@
 #        with R2 = 1 + (R1-1)/2
 #   4    fmix phase B part 1: the split stage, current defaults, to exhaustion
 #   5    fmix phase B part 2: the crossing walk (resumes the split state;
-#        defaults are PROVISIONAL until the X-panel pins them)
+#        numerical defaults reflect the X-panel, but deliverable-promotion
+#        status remains unresolved — see the manual)
 #   6    fcompress
 #
 # Every stage writes its artifact + log into the run dir and is skipped when
@@ -22,6 +24,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 usage: gss_mix.sh -n N -o RUNDIR [options]
+  -h, --help    show this help and exit
   -n N           wires of the source computation C (required)
   -o DIR         run directory (created; all artifacts + logs land here)
   -s SEED        master seed. DEFAULT: a fresh CSPRNG draw — the seed
@@ -30,6 +33,9 @@ usage: gss_mix.sh -n N -o RUNDIR [options]
                  a deliverable. Pass -s only for CALIBRATION arms that must
                  share an input; label such outputs calibration-only.
   --mcd M        override |C| = |D| gate count            [0 = round(n(log2 n)^2)]
+  --gadgetization-mode MODE
+                  stage-2 representation: product-2223, nonlinear193, or
+                  nonlinear291 [product-2223; legacy alias: 2223]
   --expand R     phase-A max expansion factor R1          [2]
   --hold E       phase-A hold duration in effs            [30]
   --xr R         stage-5 crossing target factor           [2; 2.5 = max-spread point]
@@ -43,27 +49,35 @@ usage: gss_mix.sh -n N -o RUNDIR [options]
 env:
   FROZEN_DB_DIR       required for stage 3 (the frozen replacement store)
   FROZEN_CURATED_DIR  recommended for stage 3 (curated-first cascade)
-  PROD_PRESET         generation mode: production (default), no-gray-phase-a,
+  FROZEN_CURATED_VALUE_CONVENTION=legacy-swapped-controls
+                      only for a historical pre-2ed0222a curated store;
+                      leave unset for current native stores
+  PROD_PRESET         product-2223-only preset: production (default), no-gray-phase-a,
                       micro-gray, sentinel-gray, no-gray-post-exact,
                       no-gray-post-native, five-carrier,
                       strong-five-carrier, six-carrier, strong-six-carrier,
                       or seven-carrier
-  PROD_POST_FRAGMENT  optional post-layout wide-gate pass: off, exact, or
-                      native-deep (overrides the named post preset)
+  PROD_POST_FRAGMENT  product-2223-only optional post-layout wide-gate pass:
+                      off, exact, or native-deep (overrides the named preset)
   GSS_MIX_ALLOW_EMPTY_STORE=1  testing only: run stage 3 with no store
+  GSS_BIN_DIR         directory containing gen_sandwich_gadget, fmix and
+                      fcompress [default: repository target/release]
 EOF
-  exit 1
+  exit "${1:-1}"
 }
 
 N=""; RUN=""; SEED=""; EXPAND=2; HOLD=30; MCD=0
+GADGETIZATION_MODE=product-2223
 XR=2; XB=3; XC=1; XTDIV=25; XMOVES=""
 STOP_AFTER=6; FORCE_FROM=99
 while [ $# -gt 0 ]; do
   case "$1" in
+    -h|--help) usage 0 ;;
     -n) N=$2; shift 2 ;;
     -o) RUN=$2; shift 2 ;;
     -s) SEED=$2; shift 2 ;;
     --mcd) MCD=$2; shift 2 ;;
+    --gadgetization-mode) GADGETIZATION_MODE=$2; shift 2 ;;
     --expand) EXPAND=$2; shift 2 ;;
     --hold) HOLD=$2; shift 2 ;;
     --xr) XR=$2; shift 2 ;;
@@ -77,12 +91,33 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$N" ] && [ -n "$RUN" ] || usage
+case "$GADGETIZATION_MODE" in
+  product-2223) ;;
+  2223) GADGETIZATION_MODE=product-2223 ;;
+  nonlinear193|nonlinear291) ;;
+  *)
+    echo "FATAL: --gadgetization-mode must be product-2223, nonlinear193, or nonlinear291 (2223 is a compatibility alias)" >&2
+    exit 2
+    ;;
+esac
+if [ "$GADGETIZATION_MODE" != product-2223 ]; then
+  mapfile -t product_override_names < <(compgen -A variable PROD_ || true)
+  [ "${#product_override_names[@]}" -eq 0 ] || {
+    echo "FATAL: all PROD_* controls must be unset outside --gadgetization-mode product-2223: ${product_override_names[*]}" >&2
+    exit 2
+  }
+fi
 
-BIN=$(cd "$(dirname "$0")/.." && pwd)/target/release
+BIN=${GSS_BIN_DIR:-$(cd "$(dirname "$0")/.." && pwd)/target/release}
 for b in gen_sandwich_gadget fmix fcompress; do
   [ -x "$BIN/$b" ] || { echo "FATAL: $BIN/$b missing — cargo build --release first"; exit 1; }
 done
 mkdir -p "$RUN"; RUN=$(cd "$RUN" && pwd)
+GADGET=$RUN/gss.mpmct1
+STAGE12_RECIPE_FILE=$RUN/stage12.recipe
+# A missing stage-2 artifact invalidates every downstream artifact, even when
+# the caller did not explicitly request --force-from 2.
+[ -s "$GADGET" ] || FORCE_FROM=2
 LOGALL=$RUN/gss_mix.log
 note() { echo "[gss-mix] $*" | tee -a "$LOGALL"; }
 
@@ -90,7 +125,18 @@ note() { echo "[gss-mix] $*" | tee -a "$LOGALL"; }
 # constant or a counter (docs/GSS_MIX.md, "seeds"). An explicit -s is for
 # calibration arms only.
 SEED_SRC="RANDOM (CSPRNG)"
+if [ "$FORCE_FROM" -gt 2 ] && [ -s "$GADGET" ] && [ ! -s "$RUN/SEED" ]; then
+  echo "FATAL: existing stage-2 artifact has no SEED; use a fresh run directory or --force-from 2" >&2
+  exit 2
+fi
 if [ -n "$SEED" ]; then
+  if [ -s "$RUN/SEED" ]; then
+    EXISTING_SEED=$(cat "$RUN/SEED")
+    [ "$SEED" = "$EXISTING_SEED" ] || {
+      echo "FATAL: explicit seed conflicts with the existing $RUN/SEED; use the original seed or a fresh run directory" >&2
+      exit 1
+    }
+  fi
   SEED_SRC="EXPLICIT — calibration only, NOT a deliverable"
 elif [ -s "$RUN/SEED" ]; then
   # A rerun of an existing run dir MUST keep the seed that built the
@@ -101,39 +147,70 @@ else
   # 63-bit draw: the stage seeds are SEED+k, and a full 64-bit value
   # overflows bash's signed arithmetic into a negative number that fmix
   # parses as a flag ("unexpected argument '-8...'").
-  SEED=$(python3 -c "import secrets; print(secrets.randbelow(2**63 - 16))")
+  SEED=$(python3 -I -c "import secrets; print(secrets.randbelow(2**63 - 16))")
 fi
 
 # Derived sizes (the library conventions, computed here so they are pinned in
 # the log): |C| = |D| = round(n (log2 n)^2), s = round(n log2 n),
 # slice_gates = 10 * 2n, rg_freq = 1.
-read -r M_CD S_SL SLICE_G <<< "$(python3 - "$N" "$MCD" <<'EOF'
+read -r M_CD S_SL SLICE_G <<< "$(python3 -I - "$N" "$MCD" <<'EOF'
 import math, sys
 n, mcd = int(sys.argv[1]), int(sys.argv[2])
 l = math.log2(n)
 print(mcd if mcd > 0 else round(n * l * l), max(n, round(n * l)), 10 * 2 * n)
 EOF
 )"
-gates_of() { python3 -c "import sys; print(sum(1 for _ in open(sys.argv[1])) - 1)" "$1"; }
+STAGE12_RECIPE=(
+  "gss_stage12_recipe=1"
+  "gadgetization_mode=$GADGETIZATION_MODE"
+  "n=$N"
+  "m_cd=$M_CD"
+  "s=$S_SL"
+  "slice_gates=$SLICE_G"
+  "rg_freq=1"
+)
+if [ "$FORCE_FROM" -gt 2 ] && [ -s "$GADGET" ]; then
+  [ -s "$STAGE12_RECIPE_FILE" ] || {
+    echo "FATAL: existing stage-2 artifact has no recipe marker; rerun with --force-from 2" >&2
+    exit 2
+  }
+  mapfile -t stored_stage12_recipe < "$STAGE12_RECIPE_FILE"
+  [ "${#stored_stage12_recipe[@]}" -eq "${#STAGE12_RECIPE[@]}" ] || {
+    echo "FATAL: existing stage-2 recipe marker is malformed; rerun with --force-from 2" >&2
+    exit 2
+  }
+  for recipe_index in "${!STAGE12_RECIPE[@]}"; do
+    [ "${stored_stage12_recipe[$recipe_index]}" = "${STAGE12_RECIPE[$recipe_index]}" ] || {
+      echo "FATAL: existing stage-2 recipe does not match the requested mode or dimensions; use a fresh run directory or --force-from 2" >&2
+      exit 2
+    }
+  done
+fi
+gates_of() { python3 -I -c "import sys; print(sum(1 for _ in open(sys.argv[1])) - 1)" "$1"; }
 state_moves() { awk '$1=="moves"{print $2; exit}' "$1"; }
 
-note "run=$RUN n=$N |C|=|D|=$M_CD s=$S_SL slice_gates=$SLICE_G expand=$EXPAND hold=${HOLD}effs x=(r=$XR b=$XB c=$XC tdiv=$XTDIV)"
+note "run=$RUN n=$N gadgetization_mode=$GADGETIZATION_MODE |C|=|D|=$M_CD s=$S_SL slice_gates=$SLICE_G expand=$EXPAND hold=${HOLD}effs x=(r=$XR b=$XB c=$XC tdiv=$XTDIV)"
 # The seed goes to the run dir, NOT to the shared narrative log: it is the
 # secret that regenerates C.
 note "seed source: $SEED_SRC (value in $RUN/SEED)"
-umask 077; printf '%s\n' "$SEED" > "$RUN/SEED"
+umask 077; printf '%s\n' "$SEED" > "$RUN/SEED"; chmod 600 "$RUN/SEED"
 
-GADGET=$RUN/gss.mpmct1
 PHASEA=$RUN/phaseA.mpmct1
 SPLITB=$RUN/splitB.mpmct1
 CROSSB=$RUN/crossB.mpmct1
 FINAL=$RUN/final.mpmct1
 
-# ---- stages 1+2: sandwich + Gray-fold gadgetization ----
+# ---- stages 1+2: sandwich + selected gadgetization ----
 if [ "$FORCE_FROM" -le 2 ] || [ ! -s "$GADGET" ]; then
-  note "stage 1+2: gen_sandwich_gadget (PROD_PRESET=${PROD_PRESET:-production}, PROD_POST_FRAGMENT=${PROD_POST_FRAGMENT:-preset/off})"
+  if [ "$GADGETIZATION_MODE" = product-2223 ]; then
+    note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE, PROD_PRESET=${PROD_PRESET:-production}, PROD_POST_FRAGMENT=${PROD_POST_FRAGMENT:-preset/off})"
+  else
+    note "stage 1+2: gen_sandwich_gadget (mode=$GADGETIZATION_MODE; experimental/capacity-limited)"
+  fi
   "$BIN/gen_sandwich_gadget" "$GADGET" "$N" "$M_CD" "$M_CD" "$S_SL" 1 "$SLICE_G" \
-      "$SEED" "$((SEED + 1))" "$SEED" > "$RUN/stage12.log" 2>&1
+      "$SEED" "$((SEED + 1))" "$SEED" "$GADGETIZATION_MODE" > "$RUN/stage12.log" 2>&1
+  printf '%s\n' "${STAGE12_RECIPE[@]}" > "$STAGE12_RECIPE_FILE.tmp"
+  mv "$STAGE12_RECIPE_FILE.tmp" "$STAGE12_RECIPE_FILE"
   note "stage 1+2 done: GSS $(gates_of "$GADGET") gates (S: $(gates_of "$GADGET.sandwich.mpmct1"))"
 else
   note "stage 1+2: $GADGET exists, skipping"
@@ -147,7 +224,7 @@ if [ "$FORCE_FROM" -le 3 ] || [ ! -s "$PHASEA" ]; then
   fi
   [ -z "${FROZEN_CURATED_DIR:-}" ] && note "WARNING: FROZEN_CURATED_DIR unset — curated-first cascade OFF for phase A"
   G_IN=$(gates_of "$GADGET")
-  read -r PROFILE A_MOVES <<< "$(python3 - "$EXPAND" "$HOLD" "$G_IN" <<'EOF'
+  read -r PROFILE A_MOVES <<< "$(python3 -I - "$EXPAND" "$HOLD" "$G_IN" <<'EOF'
 import sys
 r1, hold, g = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
 n0, comp = 3.0, 20.0
@@ -218,10 +295,10 @@ else
 fi
 [ "$STOP_AFTER" -le 4 ] && { note "stopped after stage 4"; exit 0; }
 
-# ---- stage 5: the crossing walk (phase B part 2) — params TBD by the X-panel ----
+# ---- stage 5: crossing walk (X-panel defaults; promotion status unresolved) ----
 if [ "$FORCE_FROM" -le 5 ] || [ ! -s "$CROSSB" ]; then
   G_S=$(gates_of "$SPLITB")
-  read -r X_TGT X_TEMP X_MOVES_ABS <<< "$(python3 - "$G_S" "$XR" "$XTDIV" "${XMOVES:-0}" "$(state_moves "$RUN/splitB.state")" <<'EOF'
+  read -r X_TGT X_TEMP X_MOVES_ABS <<< "$(python3 -I - "$G_S" "$XR" "$XTDIV" "${XMOVES:-0}" "$(state_moves "$RUN/splitB.state")" <<'EOF'
 import sys
 g, xr, tdiv, xmoves, done = int(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
 tgt = round(g * xr)
@@ -234,7 +311,7 @@ budget = xmoves if xmoves > 0 else 6 * tgt
 print(tgt, temp, done + budget)   # --moves is ABSOLUTE on a resume
 EOF
 )"
-  note "stage 5: crossing walk (resume) target=$X_TGT temp=$X_TEMP b=$XB c=$XC moves(abs)=$X_MOVES_ABS — TBD params, see manual"
+  note "stage 5: crossing walk (resume) target=$X_TGT temp=$X_TEMP b=$XB c=$XC moves(abs)=$X_MOVES_ABS — calibrated defaults; promotion status unresolved, see manual"
   export FMIX_STOP_FLAG=$RUN/stage5.stop FMIX_DUMP_FLAG=$RUN/stage5.dump
   rm -f "$FMIX_STOP_FLAG"
   "$BIN/fmix" --resume "$RUN/splitB.state" \
@@ -254,7 +331,7 @@ if [ "$FORCE_FROM" -le 6 ] || [ ! -s "$FINAL" ]; then
   "$BIN/fcompress" --input "$CROSSB" --output "$FINAL" --seed "$((SEED + 5))" \
       > "$RUN/stage6.log" 2>&1
   G_X=$(gates_of "$CROSSB"); G_F=$(gates_of "$FINAL")
-  note "stage 6 done: $G_X -> $G_F gates (residual $(python3 -c "print(f'{100*$G_F/$G_X:.1f}%')"))"
+  note "stage 6 done: $G_X -> $G_F gates (residual $(python3 -I -c "print(f'{100*$G_F/$G_X:.1f}%')"))"
 else
   note "stage 6: $FINAL exists, skipping"
 fi

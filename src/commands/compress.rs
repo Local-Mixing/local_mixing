@@ -2,8 +2,8 @@ use std::fs;
 use std::io::Write;
 
 use local_mixing::circuit::CircuitSeq;
-use local_mixing::replace::frozen::FrozenDb;
-use local_mixing::replace::replace::{compress_loop, print_compress_timers};
+use local_mixing::db_mixing::frozen::FrozenDb;
+use local_mixing::db_mixing::replace::{compress_loop, print_compress_timers};
 
 /// Run compression on a circuit file against the frozen replacement store.
 pub fn run(sub: &clap::ArgMatches) {

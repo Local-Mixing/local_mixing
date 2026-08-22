@@ -596,7 +596,7 @@ production-scale degree 3 remains untested.
 
 ## 2. The construction under analysis
 
-Implemented in `src/replace/gadgets.rs`, entry point
+Implemented in `src/preprocessing/gadgets.rs`, entry point
 `gadgetize_xgates_with_prod`. Gate type throughout is `XGate`:
 
 ```
@@ -1379,7 +1379,7 @@ floor) is the number that needs the train/holdout rerun, because the max over
 The matched random-target floor controls much of that bias, but not all of it.
 
 **Q3 — correctness and provenance first: yes, unconditionally.** 10.5 is
-independently confirmed: `shoot_random_gate` in `src/random/random_data.rs:873`
+independently confirmed: `shoot_random_gate` in `src/circuit/randomize.rs:46`
 opens `rand::rng()` — the thread RNG — rather than taking the seeded stream, and
 it is on the path of `nonlinear_gadgetize_cnot_with_config`, `gadgetize_cnot`
 and `tdp2n_xgates`. Gadgetization is therefore **not reproducible from its
@@ -1546,7 +1546,7 @@ exist.
 I accept 10.6 as the sequence, with two changes:
 
 - **Step 0 gains an item.** Add the `shoot_random_gate` thread-RNG fix
-  (`src/random/random_data.rs:873`) explicitly — without it no A/B in this
+  (`src/circuit/randomize.rs:46`) explicitly — without it no A/B in this
   document, mine or the addendum's, is replayable.
 - **The helper-gauge test moves from step 4 to step 1.** It is `O(B)`
   evaluations, it is the cheapest attack anyone has proposed, and if the greedy

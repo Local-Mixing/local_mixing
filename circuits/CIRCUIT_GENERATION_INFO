@@ -34,7 +34,7 @@ not cover a file (mostly older June files), that is stated explicitly as
 - **ssg** — the generation-mixing mixer (variant of sss). Shoots/compresses in
   size-thermostatted stages; every gate carries a generation tag; `--min-gen G`
   stops when a fraction of gates reach generation ≥ G. Output is all-g57.
-- **fsplit** — post-mixer (`src/postmix/`, this project). Floats a g57 to a
+- **fsplit** — post-mixer (`src/postprocessing/`, this project). Floats a g57 to a
   collision and splits it past via the R0–R3 commutation rules, growing the
   circuit toward `--size-bound`. Knobs: `--k-max K` (max controls/gate),
   `--split-damp D` ("c"; a c-control gate splits w.p. min(2^-(c-D),1)),
@@ -508,7 +508,7 @@ Pipeline:
   Final: 1428155 gates, 558 wires. Eval on the ZERO SLICE: inject x on wires
   0..127, all other wires (128..557) = 0 -> C(x) on wires 128..255.
 Verification:
-  - verify_zero_slice (new tool, src/bin/verify_zero_slice.rs): PASS 200/200
+  - verify_zero_slice (manual validator, tests/manual/gss/verify_zero_slice.rs): PASS 200/200
     samples against the ORIGINAL C, run twice -- on the server (seed 7) and
     again on the fetched Mac copy (seed 99), so the transfer is covered too.
     This closes the correctness argument directly: fmix only ever verifies a

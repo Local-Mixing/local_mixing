@@ -2,7 +2,7 @@
 
 *2026-07-23 — branch `ssg-gen-mix-clean`. Companion PDF:
 `docs/RIDGE_COVERAGE_EXPERIMENTS.pdf`. Tools committed this session:
-`fmix --gen-snap-every` (`49cee4c8`) and `src/bin/pairfloat_exp.rs`
+`fmix --gen-snap-every` (`49cee4c8`) and `experimental/mixing/pairfloat_exp.rs`
 (`5a9f449c`). Plates: `reports/heatmaps/gen300_20260722/`,
 `reports/heatmaps/pairfloat_20260723/`.*
 
@@ -96,7 +96,7 @@ prediction.)
 
 Free floating stops at the first non-commuting gate (~42 slots). Allow the
 floater to *cross* up to `B` colliders using the exact splitting rules
-(`postmix::rules` R1/R2/R3; g57 colliders are pre-split), paying fragment
+(`engine::rules` R1/R2/R3; g57 colliders are pre-split), paying fragment
 gates. Span grows, but so does size, and half the floaters are consumed as
 colliders:
 

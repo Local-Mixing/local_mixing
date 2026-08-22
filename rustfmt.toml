@@ -1,2 +1,4 @@
+# Keep edition in sync with Cargo.toml (rustfmt does not read Cargo.toml when
+# invoked outside cargo).
 edition = "2024"
 max_width = 100

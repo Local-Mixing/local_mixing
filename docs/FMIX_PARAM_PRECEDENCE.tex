@@ -300,9 +300,9 @@ resumed run picks up the new rule. The banner makes this auditable.
 \begin{center}\small
 \begin{tabular}{ll}
 \toprule
-\code{src/bin/fmix.rs} & \code{DbLayer}, \code{DbLayer::shipped/gss/phase\_a}, the \code{cli.over(\dots)} line, \\
+\code{src/db\_mixing/bin/fmix.rs} & \code{DbLayer}, \code{DbLayer::shipped/gss/phase\_a}, the \code{cli.over(\dots)} line, \\
  & the inert-knob check, the effective-per-mode banner \\
-\code{src/postmix/mix.rs} & \code{MixParams::db\_knobs}, \code{ResolvedDbKnobs}, the \code{active\_*} accessors \\
+\code{src/engine/mix.rs} & \code{MixParams::db\_knobs}, \code{ResolvedDbKnobs}, the \code{active\_*} accessors \\
 \code{docs/POSTMIX\_MANUAL.md} & \S2.1.2 (per-geometry, per-mode), \S2.1.3 (the GSS profile) \\
 tests & \code{db\_knobs\_layering\_rules}, \code{s\_db\_resolves\_by\_mode\_and\_geometry}, \\
  & \code{prefix\_descent\_resolves\_per\_mode} \\

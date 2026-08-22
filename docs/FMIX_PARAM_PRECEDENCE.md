@@ -242,10 +242,10 @@ resumed run picks up the new rule. The banner makes this auditable.
 
 ## Where to look
 
-| `src/bin/fmix.rs` | `DbLayer`, `DbLayer::shipped/gss/phase_a`, the `cli.over(…)` line, |
+| `src/db_mixing/bin/fmix.rs` | `DbLayer`, `DbLayer::shipped/gss/phase_a`, the `cli.over(…)` line, |
 |---|---|
 |  | the inert-knob check, the effective-per-mode banner |
-| `src/postmix/mix.rs` | `MixParams::db_knobs`, `ResolvedDbKnobs`, the `active_*` accessors |
+| `src/engine/mix.rs` | `MixParams::db_knobs`, `ResolvedDbKnobs`, the `active_*` accessors |
 | `docs/POSTMIX_MANUAL.md` | §2.1.2 (per-geometry, per-mode), §2.1.3 (the GSS profile) |
 | tests | `db_knobs_layering_rules`, `s_db_resolves_by_mode_and_geometry`, |
 |  | `prefix_descent_resolves_per_mode` |

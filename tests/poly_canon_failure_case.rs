@@ -1,6 +1,9 @@
-use local_mixing::circuit::circuit::{CircuitSeq, Permutation, Polynomial, canonicalize_polys_4};
-use local_mixing::circuit::poly_canon_graph::{canonical_form, canonicalize_graph};
-use local_mixing::random::random_data::random_circuit;
+//! Regression fixture for the graph-canonicalizer mismatch formerly labeled
+//! failure case 21. The current implementation must keep it invariant.
+
+use local_mixing::circuit::random_circuit;
+use local_mixing::circuit::{CircuitSeq, Permutation, Polynomial, canonicalize_polys_4};
+use local_mixing::experimental::poly_canon_graph::{canonical_form, canonicalize_graph};
 use std::collections::HashMap;
 
 fn dense(circuit: &CircuitSeq) -> CircuitSeq {
@@ -37,7 +40,7 @@ fn sorted_form(polys: &[Polynomial]) -> Vec<Vec<u64>> {
 }
 
 #[test]
-fn reproduce_polycanon_failure_case_21() {
+fn polycanon_regression_case_21_is_rewiring_invariant() {
     let n = 11;
     let seed = 179_275_629_541_752_411u64;
     let shuffle = Permutation::new(vec![4, 7, 3, 10, 6, 9, 0, 5, 8, 1, 2]);
@@ -96,6 +99,6 @@ fn reproduce_polycanon_failure_case_21() {
     println!("functionally equal: {functionally_equal}");
 
     assert_eq!(canon4_original_form, canon4_shuffled_form);
-    assert_ne!(original_form, shuffled_form);
-    assert!(!functionally_equal);
+    assert_eq!(original_form, shuffled_form);
+    assert!(functionally_equal);
 }

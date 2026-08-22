@@ -356,8 +356,8 @@ This forward/inverse implementation does not always need to be used, as we will 
 The selection between forward and inverse canonical forms is implemented by
 [`CircuitSeq::canonicalize_polys()`](../src/circuit/circuit.rs). Runtime
 forward-then-reverse lookup is implemented in
-[`compress_lmdb()`](../src/replace/replace.rs) and the replacement helpers in
-[`src/replace/pairs.rs`](../src/replace/pairs.rs).
+[`compress_lmdb()`](../src/db_mixing/replace.rs) and the replacement helpers in
+[`src/db_mixing/pairs.rs`](../src/db_mixing/pairs.rs).
 
 ### 3.4 Rewiring Replacements
 
@@ -407,7 +407,7 @@ The relevant implementation is in
 [`CircuitSeq::canonicalize_polys_single()` and
 `CircuitSeq::unrewire_subcircuit()`](../src/circuit/circuit.rs), with the
 replacement-side mapping performed by `compress_lmdb()` in
-[`src/replace/replace.rs`](../src/replace/replace.rs).
+[`src/db_mixing/replace.rs`](../src/db_mixing/replace.rs).
 
 ## 4. Rainbow Tables
 
@@ -584,11 +584,11 @@ regular database. Curated lookup itself uses the forward canonical form; the
 regular fallback may also try the reversed form described in Section 3.3.
 
 The database opening and shard naming are implemented in
-[`src/replace/main_mix.rs`](../src/replace/main_mix.rs). The regular
+[`src/db_mixing/main_mix.rs`](../src/db_mixing/main_mix.rs). The regular
 compression and expansion lookups are in
-[`src/replace/replace.rs`](../src/replace/replace.rs), while curated lookup and
+[`src/db_mixing/replace.rs`](../src/db_mixing/replace.rs), while curated lookup and
 candidate selection are in
-[`src/replace/pairs.rs`](../src/replace/pairs.rs).
+[`src/db_mixing/pairs.rs`](../src/db_mixing/pairs.rs).
 
 ## 5. Gadgetization
 
@@ -1001,7 +1001,7 @@ Gadgetized 2n-wire circuit
 Our gadgetized circuit retains functionality on the original $n$ wires, has random output on the latter $n$ wires, and has high algebraic degree throughout the middle of the circuit. 
 
 The implementation is in
-[`gadgetize()` and the SG/RG helpers](../src/replace/gadgets.rs).
+[`gadgetize()` and the SG/RG helpers](../src/preprocessing/gadgets.rs).
 
 ### 5.5 The current gadgetizer (CNOT / product-share path)
 
@@ -1194,7 +1194,7 @@ wire permutation and negations are correctly undone.
 Overall, this gives us an equivalentally functional circuit, but with values slightly randomized with linear transformations in the middle. 
 
 The SAMF generation, tracking, and undo logic is implemented in
-[`src/replace/transpositions.rs`](../src/replace/transpositions.rs), primarily
+[`src/db_mixing/transpositions.rs`](../src/db_mixing/transpositions.rs), primarily
 through `Transpositions` and `apply_unsamf()`.
 
 ## 7. The Collision Game
@@ -1413,7 +1413,7 @@ unsamf is finished.
 
 The collision game is implemented by `shuffled_shooting_game_core()` and
 `shuffled_shooting_game_repeated_core()` in
-[`src/replace/transpositions.rs`](../src/replace/transpositions.rs).
+[`src/db_mixing/transpositions.rs`](../src/db_mixing/transpositions.rs).
 
 ## 8. Plain SAMF Insertion
 
@@ -1578,7 +1578,7 @@ However, the circuit could then also be remixed using that stronger rainbow
 table.
 
 The compression loop and replacement logic are implemented in
-[`src/replace/replace.rs`](../src/replace/replace.rs), primarily through
+[`src/db_mixing/replace.rs`](../src/db_mixing/replace.rs), primarily through
 `compress_loop()`, `compress_big_ancillas()`, and `compress_lmdb()`.
 
 ## 10. One Complete Mixing Round

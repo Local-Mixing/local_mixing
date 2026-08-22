@@ -41,7 +41,7 @@ one chunk × ~100 slow trials.
 
 ## The changes
 
-Both in `src/replace/replace.rs`, both opt-in via environment variable, both
+Both in `src/db_mixing/replace.rs`, both opt-in via environment variable, both
 announce themselves in the log so a run's recipe is auditable afterwards.
 
 ### A. Relative stall rule — `COMPRESS_STALL_FRAC` / `COMPRESS_STALL_WINDOW` (commit `e4d7e33a`)

@@ -18,7 +18,7 @@
 \author{local\_mixing project}
 \date{July 23, 2026 \\ \small branch \code{ssg-gen-mix-clean} --- tools
 \code{fmix --gen-snap-every} (\code{49cee4c8}) and
-\code{src/bin/pairfloat\_exp.rs} (\code{5a9f449c})}
+\code{experimental/mixing/pairfloat\_exp.rs} (\code{5a9f449c})}
 
 \begin{document}
 \maketitle
@@ -123,7 +123,7 @@ $\code{depth}\approx\code{depth}_0\,(1-\text{coverage})$ fits within ${\sim}0.01
 
 \paragraph{4.2 Cross budget $B$ (float past colliders by conjugation).} Free
 floating stops after ${\sim}42$ slots. Crossing up to $B$ colliders via the
-exact splitting rules (\code{postmix::rules} R1/R2/R3) grows span, size, and
+exact splitting rules (\code{engine::rules} R1/R2/R3) grows span, size, and
 loses half the floaters as colliders:
 \begin{center}
 \begin{tabular}{lccccc}

@@ -3,17 +3,66 @@ name = "local_mixing"
 version = "0.1.0"
 edition = "2024"
 default-run = "local_mixing_bin"
+# Every executable is declared below. This prevents an experimental file from
+# becoming a supported command merely because it was placed under src/bin/.
+autobins = false
 
 [lib]
-name = "local_mixing"            
+name = "local_mixing"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "local_mixing_bin"
 path = "src/main.rs"
 
-# Standalone "challenge" binaries (pulled from eb/dev). Not in src/bin so they stay
-# out of the main source tree; explicit paths make them runnable via `cargo run --bin <name>`.
+# --- GSS_MIX production pipeline: the only three binaries the script runs ---
+# Stages 1+2: sliced sandwich and gadgetization.
+[[bin]]
+name = "gen_sandwich_gadget"
+path = "src/preprocessing/bin/gen_sandwich_gadget.rs"
+
+# Stages 3-5: Phase A, split, and resumed crossing modes share fmix.
+[[bin]]
+name = "fmix"
+path = "src/db_mixing/bin/fmix.rs"
+
+# Stage 6: final fixed-point compression.
+[[bin]]
+name = "fcompress"
+path = "src/postprocessing/bin/fcompress.rs"
+
+# --- Manual artifact validators ---
+[[bin]]
+name = "verify_zero_slice"
+path = "tests/manual/gss/verify_zero_slice.rs"
+
+# --- Gauntlet trace generation and leakage audit ---
+[[bin]]
+name = "gauntlet_gen"
+path = "tests/gauntlet/gauntlet_gen.rs"
+
+[[bin]]
+name = "gauntlet_audit"
+path = "tests/gauntlet/gauntlet_audit.rs"
+
+# --- GSS/circuit experiments: not invoked by scripts/gss_mix.sh ---
+[[bin]]
+name = "fragment_wide"
+path = "experimental/circuit/fragment_wide.rs"
+
+[[bin]]
+name = "sandwich_compare"
+path = "experimental/gss/sandwich_compare.rs"
+
+[[bin]]
+name = "check_output"
+path = "experimental/gss/check_output.rs"
+
+[[bin]]
+name = "fsplit"
+path = "experimental/postprocessing/fsplit.rs"
+
+# --- Standalone challenge programs ---
 [[bin]]
 name = "block_cipher"
 path = "challenges/block_cipher.rs"
@@ -30,40 +79,247 @@ path = "challenges/poly_canon.rs"
 name = "newton_feistal"
 path = "challenges/newton_feistal.rs"
 
-[[bin]]
-name = "bench_canon4"
-path = "src/bench/bench_canon4.rs"
-
-[[bin]]
-name = "bench_polycanon"
-path = "src/bench/bench_polycanon.rs"
-
+# --- db_generation: frozen + curated replacement-store construction ---
+# (see src/db_generation/README.md for the end-to-end recipe)
 [[bin]]
 name = "frozen_from_lmdb"
-path = "src/bin/frozen_from_lmdb.rs"
+path = "src/db_generation/bin/frozen_from_lmdb.rs"
+
+[[bin]]
+name = "frozen_filters_build"
+path = "src/db_generation/bin/frozen_filters_build.rs"
+
+[[bin]]
+name = "merge_rocks_parallel"
+path = "src/db_generation/bin/merge_rocks_parallel.rs"
+required-features = ["legacy-db-tools"]
 
 [[bin]]
 name = "build_curated_full"
-path = "src/rainbow_table/bin/build_curated_full.rs"
+path = "src/db_generation/bin/build_curated_full.rs"
 required-features = ["legacy-db-tools"]
 
-[[bin]]
-name = "curated_size_census"
-path = "src/rainbow_table/bin/curated_size_census.rs"
-required-features = ["legacy-db-tools"]
+# --- DB-generation experiments: censuses/probes, not rebuild stages ---
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "curated_size_census"
+# path = "experimental/db_generation/curated_size_census.rs"
+# required-features = ["legacy-db-tools"]
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "curated_recanon_probe"
+# path = "experimental/db_generation/curated_recanon_probe.rs"
+# required-features = ["legacy-db-tools"]
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "curated_key_histogram"
+# path = "experimental/db_generation/curated_key_histogram.rs"
+# required-features = ["legacy-db-tools"]
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "curated_key_structure"
+# path = "experimental/db_generation/curated_key_structure.rs"
+# required-features = ["legacy-db-tools"]
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "curated_key_filter"
+# path = "experimental/db_generation/curated_key_filter.rs"
+# required-features = ["legacy-db-tools"]
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "curated_coverage_census"
+# path = "experimental/db_generation/curated_coverage_census.rs"
+# required-features = ["legacy-db-tools"]
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "identity_shingle_sieve"
+# path = "experimental/db_generation/identity_shingle_sieve.rs"
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "identity_length_census"
+# path = "experimental/db_generation/identity_length_census.rs"
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "cross_gluing_probe"
+# path = "experimental/db_generation/cross_gluing_probe.rs"
+# required-features = ["legacy-db-tools"]
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "frozen_class_census"
+# path = "experimental/db_generation/frozen_class_census.rs"
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "minimal_identity_filter"
+# path = "experimental/db_generation/minimal_identity_filter.rs"
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "minimal_halves_probe"
+# path = "experimental/db_generation/minimal_halves_probe.rs"
+
+# --- Benchmarks: measurement tools, not GSS_MIX stages ---
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "bench_canon4"
+# path = "benchmarks/canonicalization/bench_canon4.rs"
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "bench_polycanon"
+# path = "benchmarks/canonicalization/bench_polycanon.rs"
 
 [[bin]]
-name = "curated_recanon_probe"
-path = "src/rainbow_table/bin/curated_recanon_probe.rs"
-required-features = ["legacy-db-tools"]
+name = "canon_probe"
+path = "benchmarks/canonicalization/canon_probe.rs"
+
+[[bin]]
+name = "fmix_stats"
+path = "benchmarks/mixing/fmix_stats.rs"
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "bench_eval"
+# path = "benchmarks/circuit/bench_eval.rs"
+
+# --- Experiments: reproducible probes with no production support contract ---
+[[bin]]
+name = "blocker_census"
+path = "experimental/db_mixing/blocker_census.rs"
+
+[[bin]]
+name = "db_curated_probe"
+path = "experimental/db_mixing/db_curated_probe.rs"
+
+[[bin]]
+name = "db_match_synth"
+path = "experimental/db_mixing/db_match_synth.rs"
+
+[[bin]]
+name = "far_pair_probe"
+path = "experimental/db_mixing/far_pair_probe.rs"
+
+[[bin]]
+name = "frozen_degree_scan"
+path = "experimental/db_mixing/frozen_degree_scan.rs"
+
+[[bin]]
+name = "window_span_stats"
+path = "experimental/db_mixing/window_span_stats.rs"
+
+[[bin]]
+name = "commute_shuffle_exp"
+path = "experimental/mixing/commute_shuffle_exp.rs"
+
+# MISSING from commit ae160bd5 (path not committed; source only on author machine?)
+# [[bin]]
+# name = "dmr_probe"
+# path = "experimental/mixing/dmr_probe.rs"
+
+[[bin]]
+name = "float_histogram"
+path = "experimental/mixing/float_histogram.rs"
+
+[[bin]]
+name = "ladder_mobility"
+path = "experimental/mixing/ladder_mobility.rs"
+
+[[bin]]
+name = "leeway_by_width"
+path = "experimental/mixing/leeway_by_width.rs"
+
+[[bin]]
+name = "pairfloat_exp"
+path = "experimental/mixing/pairfloat_exp.rs"
+
+[[bin]]
+name = "fsplit_trace"
+path = "experimental/postprocessing/fsplit_trace.rs"
+
+# --- Red-team executables: attacks, leakage measurements, and fixtures ---
+[[bin]]
+name = "fcone"
+path = "red_team_tests/bin/demixing/fcone.rs"
+
+[[bin]]
+name = "fmix_downhill"
+path = "red_team_tests/bin/demixing/fmix_downhill.rs"
+
+[[bin]]
+name = "fmix_gauge_score"
+path = "red_team_tests/bin/demixing/fmix_gauge_score.rs"
+
+[[bin]]
+name = "hmap"
+path = "red_team_tests/bin/heatmaps/hmap.rs"
+
+[[bin]]
+name = "hmap_affine"
+path = "red_team_tests/bin/heatmaps/hmap_affine.rs"
+
+[[bin]]
+name = "hmap_stat"
+path = "red_team_tests/bin/heatmaps/hmap_stat.rs"
+
+[[bin]]
+name = "hmap_trace_affine"
+path = "red_team_tests/bin/heatmaps/hmap_trace_affine.rs"
+
+[[bin]]
+name = "oracle_gate_learn"
+path = "red_team_tests/bin/oracle/oracle_gate_learn.rs"
+
+[[bin]]
+name = "oracle_preimage_game"
+path = "red_team_tests/bin/oracle/oracle_preimage_game.rs"
+
+[[bin]]
+name = "persistence_census"
+path = "red_team_tests/bin/leakage/persistence_census.rs"
+
+[[bin]]
+name = "sampled_trace_support"
+path = "red_team_tests/bin/leakage/sampled_trace_support.rs"
+
+[[bin]]
+name = "source_stats"
+path = "red_team_tests/bin/leakage/source_stats.rs"
+
+[[bin]]
+name = "stress_battery"
+path = "red_team_tests/bin/leakage/stress_battery.rs"
+
+[[bin]]
+name = "prod_grid"
+path = "red_team_tests/bin/fixtures/prod_grid.rs"
+
+[[bin]]
+name = "regen_sandwich_c"
+path = "red_team_tests/bin/fixtures/regen_sandwich_c.rs"
 
 [features]
 default = []
 # Offline import/regeneration tools for the historical replacement databases.
 # Runtime lookup does not pull in RocksDB.
-legacy-db-tools = ["dep:num_cpus", "dep:rocksdb"]
+legacy-db-tools = [
+    "dep:crossbeam-channel",
+    "dep:lru",
+    "dep:num_cpus",
+    "dep:rocksdb",
+]
 
 [profile.release]
+# Explicit (it is also the release default): wrapping arithmetic is relied on in
+# hot paths, while debug builds retain overflow checks for tests.
 overflow-checks = false
 lto = "thin"
 codegen-units = 1
@@ -76,7 +332,6 @@ debug = true
 rand = "0.9.0"
 rayon = "1.10.0"
 serde = { version = "1.0.217", features = ["derive"] }
-lru = "0.12"
 itertools = "0.13"
 once_cell = "1.19"
 dashmap = "6.1.0"
@@ -88,7 +343,6 @@ pyo3 = { version = "0.27.1", features = ["extension-module"] }
 numpy = "0.27.0"
 lmdb = "0.8.0"
 libc = "0.2.178"
-lmdb-sys = "0.8.0"
 signal-hook = "0.3.18"
 primitive-types = "0.14.0"
 uint = "0.10.0"
@@ -98,7 +352,9 @@ rustc-hash = "2"
 # is not part of the frozen-store runtime.
 rocksdb = { version = "0.24.0", optional = true }
 num_cpus = { version = "1.17.0", optional = true }
-# Frozen-table read path (src/replace/frozen.rs): xorf provides the optional
+crossbeam-channel = { version = "0.5.15", optional = true }
+lru = { version = "0.12", optional = true }
+# Frozen-table read path (src/db_mixing/frozen.rs): xorf provides the optional
 # in-RAM BinaryFuse8 miss filter, bincode2 decodes the persisted filters.bin.
 xorf = { version = "0.12", features = ["serde", "bincode"] }
 bincode2 = { package = "bincode", version = "2" }
@@ -108,3 +364,50 @@ rhai = { version = "1.21", features = ["sync"] }
 # Needed by the challenge binaries (block_cipher, poly_canon).
 rng-entropy = "0.5.0"
 cryptography = { package = "cryptography-rs", version = "0.5.0" }
+
+# Tools dropped by the ae160bd5 restructure but still active locally
+# (uncommitted work targets several); re-filed into the new taxonomy.
+
+[[bin]]
+name = "frozen_pool_swap"
+path = "experimental/db_generation/frozen_pool_swap.rs"
+
+[[bin]]
+name = "mgdb_build"
+path = "experimental/db_generation/mgdb_build.rs"
+
+[[bin]]
+name = "sgdb_build"
+path = "experimental/db_generation/sgdb_build.rs"
+
+[[bin]]
+name = "sgdb_substitute"
+path = "experimental/db_generation/sgdb_substitute.rs"
+
+[[bin]]
+name = "frozen_census"
+path = "experimental/db_generation/frozen_census.rs"
+
+[[bin]]
+name = "frozen_find_small"
+path = "experimental/db_generation/frozen_find_small.rs"
+
+[[bin]]
+name = "segment_deduce"
+path = "red_team_tests/bin/leakage/segment_deduce.rs"
+
+[[bin]]
+name = "flip_match"
+path = "experimental/mixing/flip_match.rs"
+
+[[bin]]
+name = "eval_point"
+path = "experimental/circuit/eval_point.rs"
+
+[[bin]]
+name = "gen_random_mpmct"
+path = "experimental/circuit/gen_random_mpmct.rs"
+
+[[bin]]
+name = "shuffle_mpmct"
+path = "experimental/circuit/shuffle_mpmct.rs"

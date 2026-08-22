@@ -2,18 +2,18 @@ use std::fs;
 use std::path::Path;
 
 use local_mixing::circuit::CircuitSeq;
-use local_mixing::replace::frozen::FrozenDb;
-use local_mixing::replace::gadgets::{MaskConfig, ProdConfig};
-use local_mixing::replace::gadgets::{
-    SLICE_ZERO_CCNOT_GATES_PER_WIRE, SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS,
-    SLICE_ZERO_RANDOM_GATES_PER_WIRE, sandwich_default_m, sandwich_default_s,
-};
-use local_mixing::replace::main_mix::main_shuffle_shoot_shuffle;
-use local_mixing::replace::main_mix_cnot::{CnotSssParams, main_shuffle_shoot_shuffle_cnot};
-use local_mixing::replace::mixing::install_kill_handler;
-use local_mixing::replace::replace::{
+use local_mixing::db_mixing::frozen::FrozenDb;
+use local_mixing::db_mixing::main_mix::main_shuffle_shoot_shuffle;
+use local_mixing::db_mixing::main_mix_cnot::{CnotSssParams, main_shuffle_shoot_shuffle_cnot};
+use local_mixing::db_mixing::replace::{
     print_compress_timers, record_finish, record_init, write_compression_histogram,
     write_expansion_histogram, write_expansion_wire_histogram,
+};
+use local_mixing::db_mixing::util::install_kill_handler;
+use local_mixing::preprocessing::gadgets::{MaskConfig, ProdConfig};
+use local_mixing::preprocessing::gadgets::{
+    SLICE_ZERO_CCNOT_GATES_PER_WIRE, SLICE_ZERO_HARDCODED_DEFAULT_ROUNDS,
+    SLICE_ZERO_RANDOM_GATES_PER_WIRE, sandwich_default_m, sandwich_default_s,
 };
 
 /// Shuffle-shoot-shuffle: the main obfuscation+compression game.
@@ -209,7 +209,7 @@ pub fn run(sub: &clap::ArgMatches) {
         record_init(&format!("{}.replacements", d));
     }
     if track_survivors {
-        local_mixing::replace::replace::TRACK_SURVIVORS
+        local_mixing::db_mixing::replace::TRACK_SURVIVORS
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
     main_shuffle_shoot_shuffle(

@@ -1,5 +1,7 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+# Floor 1.7: the first maturin line contemporary with the pyo3 0.2x API the
+# crate builds against.
+requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -7,7 +9,8 @@ name = "local_mixing"
 version = "0.1.0"
 description = "Local mixing for obfuscated reversible circuits — Rust core with a NumPy heatmap extension"
 readme = "README.md"
-requires-python = ">=3.8"
+# The fleet venvs run CPython 3.10 (3.8 is EOL since Oct 2024).
+requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",

@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 
 use local_mixing::circuit::CircuitSeq;
-use local_mixing::random::random_data::shoot_random_gate;
+use local_mixing::circuit::shoot_random_gate;
 
 /// Shoot random gates through a circuit `i` times.
 pub fn run(sub: &clap::ArgMatches) {

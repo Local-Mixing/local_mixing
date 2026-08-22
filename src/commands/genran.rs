@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::Write;
 
-use local_mixing::random::random_data::random_circuit;
+use local_mixing::circuit::random_circuit;
 
 /// Generate a random circuit with `n` wires and `m` gates.
 pub fn run(sub: &clap::ArgMatches) {

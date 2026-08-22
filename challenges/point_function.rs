@@ -4,7 +4,9 @@ use std::ops::Range;
 
 use clap::Parser;
 use itertools::chain;
-use local_mixing::{circuit::CircuitSeq, replace::frozen::FrozenDb, replace::replace::compress_loop};
+use local_mixing::{
+    circuit::CircuitSeq, db_mixing::frozen::FrozenDb, db_mixing::replace::compress_loop,
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]

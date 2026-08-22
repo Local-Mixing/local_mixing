@@ -6,7 +6,7 @@ referenced by filename (all in `docs/` unless noted). The runnable
 packaging of everything here is `scripts/gss_mix.sh` — see `GSS_MIX.md`.*
 
 ```
-n ──▶ [I. construction: sliced sandwich + gadgetization] ──▶ GSS (4n wires)
+n ──▶ [I. construction: sliced sandwich + selected gadgetization] ──▶ GSS
         ──▶ [II. phase A: DB re-encoding mix] ──▶ [III. phase B: structure breaking]
               ──▶ [IV. fcompress] ──▶ deliverable
 ```
@@ -22,20 +22,24 @@ which, and why.
 
 **What.** Sample a fresh random g57 circuit C on n wires; build the sliced
 sandwich A on 2n wires (random D, keyed slice interleave, N-column float)
-with `A(x,0) = (junk, C(x))` on the zero slice; then gadgetize to 4n wires
-behind a zero-slice preblock, using the diversified CG menu, nonlinear
-{RG1,RG2,RG3}, the product-share mask encoding, and a final commuting
-shuffle. (`SLICED_SANDWICH.md`, `NEW_GADGETIZE.md`,
+with `A(x,0) = (junk, C(x))` on the zero slice; then apply the selected
+zero-slice gadgetization and a final commuting shuffle. `product-2223` is the
+production default and uses the diversified CG menu, nonlinear
+{RG1,RG2,RG3}, and product-share masks. The experimental `nonlinear193` and
+`nonlinear291` modes instead use two five-wire E shares and canonical
+193/291 r57 bodies, subject to the u16 capacity check documented in
+`GSS_MIX.md`. (`SLICED_SANDWICH.md`, `NEW_GADGETIZE.md`,
 `NONLINEAR_RG_CG_MENU.md`.)
 
 **Parameters and why:**
 
 | knob | value | rationale |
 |---|---|---|
+| gadgetization mode | `product-2223` (default); `nonlinear193`, `nonlinear291` (experimental) | one normalized switch selects the complete stage-2 representation and is locked into resume provenance |
 | `|C| = |D|` | `round(n·(log₂n)²)` | library convention (`sandwich_default_m`); D sized like C so neither side of the sandwich is the thin one |
 | slicing budget s | `round(n·log₂n)` | `sandwich_default_s`; enough keyed slice mixing to decorrelate block boundaries |
 | slice gates | `20n` | zero-slice preblock size, tool default |
-| mask plan | `[2,2,2,3]` + Gray fold | **measured**: statistical leak is LINEAR in the piling-up product ε (R² = 0.996 across plans); [2,2,2,3]+fold cuts ε 3× vs the old [2,3,3] at −14% gates. Disjoint deg-2 piling-up is PROVED optimal for sparse-ANF masks (`CORRELATING_TWO_COMPUTATIONS.md`, `TWISE_INDEPENDENT_MASKS.md`, `GRAY_FOLD_CG.md`) |
+| product-2223 mask plan | `[2,2,2,3]` + Gray fold | **measured**: statistical leak is LINEAR in the piling-up product ε (R² = 0.996 across plans); [2,2,2,3]+fold cuts ε 3× vs the old [2,3,3] at −14% gates. Disjoint deg-2 piling-up is PROVED optimal for sparse-ANF masks (`CORRELATING_TWO_COMPUTATIONS.md`, `TWISE_INDEPENDENT_MASKS.md`, `GRAY_FOLD_CG.md`) |
 | Gray fold | on (default) | every fold gate ≤2 controls → per-gate DB reachability 31.6% → 95.6% (`GRAY_FOLD_CG.md`; judge digestibility by reachability, never match rate) |
 | carrier decode | single-carrier | the shipped [3,3] was really [1,1,3,3] with a second linear carrier FREE to an affine adversary (`SINGLE_CARRIER_CONSTRUCTION.md`, `SINGLE_CARRIER_DECODE.md`) |
 | band | rolling, nonlinear cascaded fill, retire-refill epochs | band-in-slice exact disturbance theorem; rolling +12%; fill must be jointly uniform (triangular pivot); band lifetime, not width, is the recovery channel (`BAND_HARDENING.md`, `BAND_INDEPENDENCE.md`) |

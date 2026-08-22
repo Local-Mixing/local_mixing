@@ -19,8 +19,10 @@ jobs:
           python-version: "3.x"
 
       # Installs the toolchain pinned in rust-toolchain.toml (rustc + rustfmt + clippy).
+      # `rustup toolchain install` with no args reads rust-toolchain.toml; the old
+      # `rustup show` install side effect was removed in rustup 1.28.
       - name: Install pinned toolchain
-        run: rustup show
+        run: rustup toolchain install
 
       - name: Cache cargo registry and build
         uses: Swatinem/rust-cache@v2
@@ -35,3 +37,10 @@ jobs:
 
       - name: Build
         run: cargo build
+
+      # The RocksDB-backed db_generation builders (build_curated_full,
+      # merge_rocks_parallel, the regular generator, and curated censuses) only
+      # compile with this feature; check-only to keep the librocksdb compile cost
+      # down (rust-cache keeps it warm after the first run).
+      - name: Check legacy-db-tools feature
+        run: cargo check --features legacy-db-tools

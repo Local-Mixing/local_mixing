@@ -13,21 +13,185 @@ n ──1─▶ sliced sandwich S ──2─▶ GSS gadget ──3─▶ phase A
         (2n wires)              (4n default)    (DB mixing)   (g57 → pairs)     (pure growth)      (final)
 ```
 
+## Editable `gss` command configuration
+
+`local_mixing_bin gss` reads only the marked block below. Edit values on the
+right side of `=` and leave any value blank to use its documented default.
+Unknown or duplicate keys are errors, so a typo cannot silently start a long
+run with the wrong setting. Values are literal: do not add shell quotes,
+variable expansion, or inline comments.
+
+<!-- GSS_MIX_CONFIG_BEGIN -->
+```ini
+# Runner and artifacts. Blank n = 128. Blank run_dir makes a fresh unique
+# runs/gssmix_n128_<id> directory; fill an existing directory only to resume.
+n =
+run_dir =
+build_release =
+build_target_dir =
+adopt_existing_run =
+
+# Replacement stores. A blank path inherits the matching FROZEN_* environment
+# variable. The regular store has no unsafe guessed default and is required
+# from stage 3 onward. The curated store is optional but recommended.
+frozen_db_dir =
+frozen_curated_dir =
+curated_value_convention =
+frozen_filter =
+allow_empty_store =
+
+# Stages 1-2. Blank mode = product-2223. Preset and post_fragment apply only
+# to product-2223; leave them blank for nonlinear modes.
+gadgetization_mode =
+production_preset =
+post_fragment =
+mcd =
+
+# A raw seed must never be written in this tracked file. For a paired
+# CALIBRATION ONLY run, set calibration_only=true and point at a private
+# chmod-600 file containing one decimal seed. Leave both blank for production.
+calibration_only =
+calibration_seed_file =
+
+# Stage 3 Phase A. Blank values use expand=2 and hold=30.
+expand =
+hold =
+
+# Stage 5 crossing walk. Blank values use xr=2, xb=3, xc=1, xtdiv=25,
+# and xmoves=6*target.
+xr =
+xb =
+xc =
+xtdiv =
+xmoves =
+
+# Lifecycle. Blank values run through stage 6 and do not force a rebuild.
+stop_after =
+force_from =
+```
+<!-- GSS_MIX_CONFIG_END -->
+
+Defaults and accepted values:
+
+| key | blank/default | accepted nonblank values |
+|---|---|---|
+| `n` | `128` | `3..=4095` |
+| `run_dir` | a fresh unique directory under `runs/` | a new directory, or the exact prior directory when resuming |
+| `build_release` | `true` | `true`, `false` |
+| `build_target_dir` | inherit `CARGO_TARGET_DIR`, otherwise repository `target/` | a dedicated Cargo target directory |
+| `adopt_existing_run` | `false` | `true` once to acknowledge unverifiable provenance when first wrapping an older direct-script run; also requires `calibration_only=true` |
+| `frozen_db_dir` | inherit `FROZEN_DB_DIR`; otherwise stage 3 fails | existing directory |
+| `frozen_curated_dir` | inherit `FROZEN_CURATED_DIR`; otherwise regular-only | existing directory |
+| `curated_value_convention` | `native` | `native`, `legacy-swapped-controls` |
+| `frozen_filter` | `auto` (the driver's RAM gate) | `auto`, `on` (requires `filters.bin` in every selected store), `off` |
+| `allow_empty_store` | `false` | `true` only for a no-re-encoding plumbing test |
+| `gadgetization_mode` | `product-2223` | `product-2223`, `nonlinear193`, `nonlinear291`; `2223` is accepted as a compatibility alias and normalized to `product-2223` |
+| `production_preset` | `production` | product-2223 only: `production`, `no-gray-phase-a`, `micro-gray`, `sentinel-gray`, `no-gray-post-exact`, `no-gray-post-native`, `five-carrier`, `strong-five-carrier`, `six-carrier`, `strong-six-carrier`, `seven-carrier` |
+| `post_fragment` | preset behavior | product-2223 only: `off`, `exact`, `native-deep` |
+| `mcd` | `round(n(log2 n)^2)` | integer `1..=1000000000` |
+| `calibration_only` | `false` | `true`, `false` |
+| `calibration_seed_file` | CSPRNG for a fresh run; `<run>/SEED` for resume | private mode-600 file; requires `calibration_only=true` |
+| `expand`, `hold` | `2`, `30` | expansion `(1,16]`; hold `[0,10000]` |
+| `xr`, `xb`, `xc`, `xtdiv` | `2`, `3`, `1`, `25` | `xr` in `[1,16]`, `xb` in `[1,1000000]`, integer `xc` in `[0,1000000000]`, integer `xtdiv` in `[1,1000000000]` |
+| `xmoves` | `6 * crossing target` | integer `1..=1000000000000` |
+| `stop_after` | `6` | stage `2..=6` |
+| `force_from` | no forced rebuild | stage `2..=6` |
+
+The block contains every **supported GSS run parameter**. Values described
+later as pinned—DB probabilities and guards, controller legs, seed offsets,
+split invariants, verification settings, and compressor limits—define the
+tested recipe rather than an interchangeable configuration surface. Use a
+separate experimental driver when studying those constants; arbitrary
+low-level overrides must not be mistaken for a production GSS run. The `gss`
+command removes inherited `PROD_*`, rewrite/debug, SAT-scoring, and compressor
+override variables and pins the documented canonicalization/cache defaults.
+The direct Bash interface remains available for explicitly labeled experiments.
+
+`product-2223` with `production_preset=production` is the production-accepted
+default (the existing `[2,2,2,3]` product construction). Other presets inside
+that family remain study arms. `nonlinear193` and `nonlinear291`
+are experimental, capacity-limited integration modes: selecting either does
+not imply production acceptance, and the generator may reject sizes that
+exceed its current wire/workspace bounds. `production_preset` and
+`post_fragment` must remain blank for those nonlinear modes and are rejected
+when set rather than silently ignored. The resolved canonical mode is recorded
+in logs and in the resume manifest. These modes establish functional
+zero-slice integration, but their deterministic ingress masks and auxiliary
+endpoint state have not yet been requalified by the GSS gauntlet; evidence for
+the standalone 193/291 bodies must not be treated as evidence for the complete
+adapter.
+
 ## Quick start
 
 ```bash
-cargo build --release
-export FROZEN_DB_DIR=...        # the frozen replacement store (stage 3)
-export FROZEN_CURATED_DIR=...   # recommended: curated-first cascade
-scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_s1 -s 1
+# First fill frozen_db_dir (and preferably frozen_curated_dir) in the block,
+# or export FROZEN_DB_DIR/FROZEN_CURATED_DIR while leaving those lines blank.
+cargo run --release -- gss --dry-run
+cargo run --release -- gss
 ```
+
+The command validates the block, incrementally builds exactly the three
+production executables into the selected target directory, and then runs the
+existing Bash orchestrator. A dry
+run performs no build, creates no run directory, and launches no pipeline
+process. An already-built command can also be invoked as
+`target/release/local_mixing_bin gss`. Use `--config PATH` to read the same
+marked block from another Markdown file.
+
+On launch, the wrapper writes a seed-free `<run>/gss_command.conf` containing
+the complete resolved recipe plus XXH3 fingerprints of the three production
+binaries and `scripts/gss_mix.sh`. A managed resume compares that manifest
+*before building* and reuses the exact recorded binaries; a changed recipe,
+script, or binary is refused rather than mixed with skipped artifacts.
+`stop_after`, `force_from`, filter selection, and build-location controls are
+lifecycle settings and are not locked. All eventual stores and future-stage
+knobs should nevertheless be chosen before the first partial run, because the
+whole future recipe is locked immediately. Frozen stores are identified by
+their canonical path and are operationally required to remain immutable.
+
+An older run made directly by the Bash script has no manifest. To bring it
+under the wrapper, set both `adopt_existing_run = true` and
+`calibration_only = true` once. Its original seed provenance cannot be
+verified, so the wrapper will not relabel it as a deliverable. The manifest
+records the unverified adoption and every later resume repeats that warning.
+Calling the Bash script directly bypasses these provenance guards.
+
+For low-level experiments or automation, the Bash interface remains available:
+
+```bash
+cargo build --release --bin gen_sandwich_gadget --bin fmix --bin fcompress
+FROZEN_DB_DIR=/absolute/path/to/frozen_regular \
+  bash scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_experiment \
+    --gadgetization-mode product-2223
+```
+
+The driver uses three production entry points:
+`src/preprocessing/bin/gen_sandwich_gadget.rs`,
+`src/db_mixing/bin/fmix.rs`, and
+`src/postprocessing/bin/fcompress.rs`. Use `bash`, not `sh` or `zsh`;
+calling the script through `bash` also works in a checkout that did not retain
+its executable bit.
+
+Both frozen directories use `tables.bin` plus `shard_00.frz` through
+`shard_ff.frz`; `filters.bin` is optional. New regular and curated stores use
+the native value convention. Only when serving a historical curated store
+built before commit `2ed0222a`, also set:
+
+```ini
+curated_value_convention = legacy-swapped-controls
+```
+
+When invoking the Bash driver directly, the equivalent is
+`FROZEN_CURATED_VALUE_CONVENTION=legacy-swapped-controls`. Leave the config
+blank for a new native store. The rebuild and value-convention contracts are
+in `src/db_generation/README.md`.
 
 If the aggregate Gray fold is outside the threat model, select the measured
 no-Gray Phase-A preset at generation time:
 
 ```bash
 export PROD_PRESET=no-gray-phase-a
-scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_safe_s1 -s 1
+bash scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_safe
 ```
 
 It expands each source product atom-by-atom and selectively narrows fragments
@@ -69,7 +233,7 @@ standalone-generator preset:
 
 ```bash
 export PROD_PRESET=five-carrier
-scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_five_s1 -s 1
+bash scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_five
 ```
 
 This is the `gen_sandwich_gadget` counterpart of
@@ -102,7 +266,7 @@ The stronger six-carrier variant is selected analogously:
 
 ```bash
 export PROD_PRESET=six-carrier
-scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_six_s1 -s 1
+bash scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_six
 ```
 
 An experimental structural sibling is selected with
@@ -132,7 +296,7 @@ The seven-carrier variant is selected with:
 
 ```bash
 export PROD_PRESET=seven-carrier
-scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_seven_s1 -s 1
+bash scripts/gss_mix.sh -n 128 -o runs/gssmix_n128_seven
 ```
 
 This is also the retained strong-seven/Pareto preset. A bounded search found
@@ -156,32 +320,53 @@ claim to hide an accumulator observed in the middle of a complete Gray gather.
 Artifacts land in the run dir: `gss.mpmct1` (+ `.sandwich.mpmct1`,
 `.source_c.g57`), `phaseA.mpmct1`(+`.state`), `splitB.mpmct1`(+`.state`),
 `crossB.mpmct1`(+`.state`), `final.mpmct1`, per-stage logs, and
-`gss_mix.log` (the pinned-parameter narrative). A stage whose artifact
-already exists is skipped, so a killed pipeline re-invoked with the same
-command continues; `--force-from K` rebuilds from stage K; `--stop-after K`
-ends early. Each fmix stage arms its own `stageN.stop` / `stageN.dump`
-flag files (touch to stop cleanly / snapshot).
+`gss_mix.log` (the pinned-parameter narrative). The direct driver also writes
+`stage12.recipe`, which binds `gss.mpmct1` to its normalized gadgetization
+mode and dimensions. A stage whose artifact already exists is skipped only
+when that recipe still matches. To continue a killed pipeline, invoke the driver
+again with the same `-n`, `-o`, `gadgetization_mode`, preset, and tuning
+options, and **omit `-s`**:
+the driver reloads the original secret from `<run>/SEED`. Do not reuse a run
+directory with a different explicit seed or configuration; use a fresh run
+directory instead. `--force-from K` deliberately rebuilds stage K and every
+later stage; `--stop-after K` ends early. Because the skip check is based on
+the main `.mpmct1` artifact, confirm that `splitB.state` is present before
+resuming into stage 5. Each fmix stage arms its own `stageN.stop` /
+`stageN.dump` flag files (touch to stop cleanly / snapshot).
+The shell driver currently treats a nonempty stage artifact as complete; after
+an unclean kill during a file write, inspect the stage log/state and use
+`force_from` at that stage rather than trusting the skip check.
 
 ## The stages and their parameters
 
-**1+2 — generate + gadgetize** (`gen_sandwich_gadget`). The only free
-parameter is **n**, the wires of the source computation C. Everything else
-is the library convention, computed and logged by the driver:
+**1+2 — generate + gadgetize** (`gen_sandwich_gadget`). The source-size
+parameter is **n**, the wires of the source computation C, and
+`gadgetization_mode` selects the representation family. The remaining size
+conventions are computed and logged by the driver:
 `|C| = |D| = round(n·(log₂n)²)`, slicing budget `s = round(n·log₂n)`,
-`slice_gates = 20n`, `rg_freq = 1`. The gadgetization runs the **production
-preset** (mask plan [2,2,2,3] + Gray fold, single-carrier decode, nonlinear
+`slice_gates = 20n`, `rg_freq = 1`. The default `product-2223` gadgetization
+runs the **production preset** (mask plan [2,2,2,3] + Gray fold, single-carrier decode, nonlinear
 band fill, band roll, retire-refill epochs) — it is the tool's default; no
 `PROD_*` variables are set unless an alternate `PROD_PRESET` is selected
 (`no-gray-phase-a`, a fold/fragmentation study arm, `five-carrier`,
 `strong-five-carrier`, `six-carrier`, `strong-six-carrier`, or
 `seven-carrier`).
-The sandwich S (2n wires) and the source C are
-dumped beside the gadget (4n wires by default, 12n under either five-carrier
-mode, 14n under either six-carrier mode, or 16n under `seven-carrier`) for
-later reconstruction checks. The tool
+The `nonlinear193` and `nonlinear291` families are experimental and
+capacity-limited; their availability at a requested size is not a production
+acceptance claim.
+The sandwich S (2n wires) and the source C are dumped beside the gadget. In
+`product-2223`, the gadget uses 4n wires by default, 12n under either
+five-carrier mode, 14n under either six-carrier mode, or 16n under
+`seven-carrier`. The nonlinear modes use two five-wire E shares per logical
+value plus per-gate fresh regions; their exact capacity is checked before any
+artifact is written. With derived `mcd`/slice defaults they currently fit only
+through source n=63 under the u16 wire ABI (a smaller explicit `mcd` can permit
+larger n). The tool
 sample-verifies gadget-low ≡ S on the zero slice (256 bit-sliced samples).
 Seeds: C and the sandwich use the master seed, the gadgetization
-`seed+1` — vary `-s` for a fully fresh pipeline.
+`seed+1`. Omit `-s` to obtain a fully fresh production pipeline. Use an
+explicit `-s N` only when paired calibration arms must share the same input;
+those outputs are calibration-only.
 
 **3 — fmix phase A** (`--gss --phase-a --profile`). The DB-mixing stage,
 using the GSS DB profile (curated-first, per-mode s_db, g57-preserving) and
@@ -207,12 +392,23 @@ remaining length, farthest of 2), fail-limit 100, 256 canaries, `k_max 12`,
 no DB, no swap-family twists. Runs to g57 exhaustion; expect growth ≈
 1 + comp-fraction (≈2× on a typical phase-A output, i.e. ≈3× the GSS
 size), zero comp gates out, and the stage summary + canary deciles echoed
-into `gss_mix.log`.
+into `gss_mix.log`. The production Stage-4 algorithm is in
+`src/postprocessing/splitting.rs`; it operates on the shared `engine::Mixer`
+state and uses the shared crossing primitive for each joined move's final
+shot. The older `experimental/split_engine.rs` implementation is a standalone
+research walk and is not called by GSS.
 
 **5 — the crossing walk** (phase B part 2). Resumes `splitB.state` — the
 split form's per-gate directions and litters carry over — and runs the pure
-crossing economy (no twists, no DB) under the thermostat. Parameters
-**calibrated by the 2026-08-05 X-panel** (`reports/split_trials_20260805`):
+crossing economy (no twists, no DB) under the thermostat. The production
+crossing, exact-undo, and merge-contraction operations are in
+`src/postprocessing/cross_walk.rs`; the scheduler and resumable state remain in
+`src/engine/mix.rs`. Parameters
+**calibrated by the 2026-08-05 X-panel** (`reports/split_trials_20260805`)
+and shipped as the current numerical defaults. The repository has not yet
+resolved whether those calibrated defaults are promoted for deliverables;
+until that policy decision is recorded, stage-5 outputs remain calibration
+material:
 
 | knob | flag | default | why |
 |---|---|---|---|
@@ -259,7 +455,7 @@ material historically lands ≳ 90%.
 | GSS gadget | ~600–700k gates, 512 wires (production preset) |
 | phase A out | 1.5× GSS ≈ 0.9–1.1M |
 | split out | ≈ 2× phase A ≈ 1.8–2.2M (zero comp) |
-| crossing out | `--xr` × split ≈ 3.6–4.4M at the provisional 2 |
+| crossing out | `--xr` × split ≈ 3.6–4.4M at the current default 2 |
 | final | ≳ 90% of crossing out |
 
 Runtimes are dominated by stages 3 and 5 (tens of millions of moves);
@@ -277,17 +473,31 @@ launch environment (they are read at startup, not from any rc file).
   for CALIBRATION arms that must share an input (paired knob comparisons);
   anything produced that way is calibration material, never a deliverable.
   fmix stages are deterministic per (input, flags, seed) at fixed binary.
+  The current three stage executables still receive master-derived seeds in
+  their process arguments. On a multi-user Linux host those arguments may be
+  visible through `ps` or `/proc`; run production only under a dedicated
+  single-user account/host or with an administrator-enforced `hidepid` policy.
+  The executables also print their received seed into the mode-600 per-stage
+  logs. Treat `stage12.log`, `stage3.log`, `stage4.log`, `stage5.log`, and
+  `stage6.log` as secret material alongside `<run>/SEED`; never attach them to
+  a public issue or report without redacting the seed. A future file-descriptor
+  seed interface and seed-redacted executable logging should replace these
+  limitations.
 - **State v2**: stages 4–5 write resume states; stage 5's resume of the
   ended split stage never re-arms it (the tri-state contract).
 - **Provenance**: a pipeline output promoted into `circuits/` or the
   mixing challenge must get a `CIRCUIT_GENERATION_INFO` entry — record the
-  run dir, n, seed, binary commit, and the stage-5 knobs.
+  run dir, n, binary commit, stage-5 knobs, and that the seed was generated
+  randomly. **Never publish or copy the production seed value** into
+  `CIRCUIT_GENERATION_INFO`, a report, chat, or another shared artifact; keep
+  `<run>/SEED` as protected secret material.
 - **Do not** run stage 3 with an empty store outside plumbing tests, and
   do not port the driver to zsh (word-splitting silently changes flag
   passing).
-- Stage-5 defaults will be updated from the X-panel results
-  (`~/tds/xpanel_20260805` on the second server); until then treat any
-  stage-5 output as calibration material, not a deliverable.
+- Stage-5's numerical defaults reflect the X-panel results, but their
+  deliverable-promotion status is still unresolved. Until that policy is
+  explicitly recorded, treat any stage-5 output as calibration material, not
+  a deliverable.
 - **Stage-5 calibration objective** (2026-08-05): minimize the expansion
   factor `--xr` subject to decent ABSOLUTE spread — descendants per input
   gate and farthest-descendant distance in gates, not circuit fractions

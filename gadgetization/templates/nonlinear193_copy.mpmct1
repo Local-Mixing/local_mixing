@@ -1,0 +1,2 @@
+MISSING-TEMPLATE nonlinear193_copy: commit ae160bd5 references this file but did not include it.
+Restore the generated canonical template from the gadgetization Python package before using the nonlinear GSS modes.

@@ -2,6 +2,18 @@ use clap::{Arg, Command};
 
 mod commands;
 
+fn parse_regular_gate_count(raw: &str) -> Result<usize, String> {
+    let value = raw
+        .parse::<usize>()
+        .map_err(|_| format!("expected an integer in 1..=21, got {raw:?}"))?;
+    if !(1..=21).contains(&value) {
+        return Err(format!(
+            "gate count must be in 1..=21 so 3m fits u64 monomials, got {value}"
+        ));
+    }
+    Ok(value)
+}
+
 // Shared argument set for the `sss` and `ssg` subcommands.
 fn add_shoot_args(c: Command) -> Command {
     c.arg(Arg::new("n").short('n').long("n").required(true).value_parser(clap::value_parser!(usize)))
@@ -839,6 +851,93 @@ fn main() {
                         .help("Use a random input (prints the chosen input)"),
                 ),
         )
+        .subcommand(commands::gss::command())
+        // Offline regular replacement-DB generation. These commands retain
+        // their historical names and working-directory path contract so old
+        // rebuild recipes continue to work.
+        .subcommand(
+            Command::new("rocksdb_1")
+                .hide(!cfg!(feature = "legacy-db-tools"))
+                .about("Build an m-gate RocksDB by extending the (m-1)-gate DB")
+                .arg(
+                    Arg::new("m")
+                        .short('m')
+                        .long("m")
+                        .required(true)
+                        .value_parser(parse_regular_gate_count)
+                        .help("Number of gates (1..=21; 3m must fit u64 monomials)"),
+                )
+                .arg(
+                    Arg::new("min_n")
+                        .long("min_n")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Minimum used-wire count (0 = no lower bound)"),
+                )
+                .arg(
+                    Arg::new("max_n")
+                        .long("max_n")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Maximum used-wire count (0 = no upper bound)"),
+                )
+                .arg(
+                    Arg::new("no_L")
+                        .long("no_L")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Skip candidates whose canonicalization requires Rule L (no effect for m=1)"),
+                ),
+        )
+        .subcommand(
+            Command::new("rocksdb_2")
+                .hide(!cfg!(feature = "legacy-db-tools"))
+                .about("Build an (m1+m2)-gate RocksDB by combining two source DBs")
+                .arg(
+                    Arg::new("m1")
+                        .long("m1")
+                        .required(true)
+                        .value_parser(parse_regular_gate_count)
+                        .help("Gate count of the first source DB"),
+                )
+                .arg(
+                    Arg::new("m2")
+                        .long("m2")
+                        .required(true)
+                        .value_parser(parse_regular_gate_count)
+                        .help("Gate count of the second source DB"),
+                )
+                .arg(
+                    Arg::new("min_n")
+                        .long("min_n")
+                        .required(false)
+                        .default_value("0")
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Minimum used-wire count (0 = no lower bound)"),
+                ),
+        )
+        .subcommand(
+            Command::new("rocks_to_lmdb")
+                .hide(!cfg!(feature = "legacy-db-tools"))
+                .about("Convert a combined RocksDB into 256 sharded LMDB databases")
+                .arg(
+                    Arg::new("source")
+                        .short('s')
+                        .long("source")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Source RocksDB path"),
+                )
+                .arg(
+                    Arg::new("path")
+                        .short('p')
+                        .long("path")
+                        .required(true)
+                        .value_parser(clap::value_parser!(String))
+                        .help("Output LMDB directory"),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -850,6 +949,10 @@ fn main() {
         Some(("shoot", sub)) => commands::shoot::run(sub),
         Some(("equal", sub)) => commands::equal::run(sub),
         Some(("evaluate", sub)) => commands::evaluate::run(sub),
+        Some(("gss", sub)) => commands::gss::run(sub),
+        Some(("rocksdb_1", sub)) => commands::db_generation::run_rocksdb_1(sub),
+        Some(("rocksdb_2", sub)) => commands::db_generation::run_rocksdb_2(sub),
+        Some(("rocks_to_lmdb", sub)) => commands::db_generation::run_rocks_to_lmdb(sub),
         _ => unreachable!("subcommand_required guarantees a match"),
     }
 }
@@ -857,6 +960,15 @@ fn main() {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    #[test]
+    fn regular_gate_count_parser_enforces_the_monomial_abi() {
+        assert_eq!(parse_regular_gate_count("1"), Ok(1));
+        assert_eq!(parse_regular_gate_count("21"), Ok(21));
+        assert!(parse_regular_gate_count("0").is_err());
+        assert!(parse_regular_gate_count("22").is_err());
+        assert!(parse_regular_gate_count("not-a-number").is_err());
+    }
 
     fn parse_shoot_args(extra: &[&str]) -> Result<clap::ArgMatches, clap::Error> {
         let mut args = vec![
@@ -906,12 +1018,8 @@ mod cli_tests {
 
     #[test]
     fn strong_five_carrier_flag_parses_and_conflicts_with_legacy_five() {
-        let matches = parse_shoot_args(&[
-            "--cnot",
-            "--gadgetize",
-            "--strong-five-carrier",
-        ])
-        .unwrap();
+        let matches =
+            parse_shoot_args(&["--cnot", "--gadgetize", "--strong-five-carrier"]).unwrap();
         assert!(matches.get_flag("strong_five_carrier"));
         assert!(
             parse_shoot_args(&[
@@ -948,8 +1056,7 @@ mod cli_tests {
 
     #[test]
     fn strong_six_carrier_flag_parses_and_conflicts_with_legacy_six() {
-        let matches =
-            parse_shoot_args(&["--cnot", "--gadgetize", "--strong-six-carrier"]).unwrap();
+        let matches = parse_shoot_args(&["--cnot", "--gadgetize", "--strong-six-carrier"]).unwrap();
         assert!(matches.get_flag("strong_six_carrier"));
         assert!(
             parse_shoot_args(&[
