@@ -36,12 +36,21 @@ struct Args {
     /// lower-half | explicit list like "0-255,300,510"
     #[arg(long, default_value = "all")]
     live_wires: String,
+    /// Wires promised ZERO at circuit entry (upper-half | lower-half |
+    /// explicit list). Enables input-side specialization; the output then
+    /// equals the input only on that subspace, and the global check samples
+    /// only such entries. Omit for whole-function equality.
+    #[arg(long)]
+    zero_wires: Option<String>,
     #[arg(long, default_value_t = 10)]
     max_iters: usize,
     #[arg(long, default_value_t = 64)]
     group_cap: usize,
-    #[arg(long, default_value_t = 24)]
+    #[arg(long, default_value_t = 40)]
     anf_support_cap: usize,
+    /// Disable the interleaved conjugation-descent (downhill) pass
+    #[arg(long, default_value_t = false)]
+    no_downhill: bool,
     /// Rounds of the 64-lane sampled global check against the input
     #[arg(long, default_value_t = 64)]
     verify_rounds: usize,
@@ -110,23 +119,31 @@ fn main() {
     let n_live = live
         .as_ref()
         .map_or(wires, |v| v.iter().filter(|&&b| b).count());
+    let zero = args.zero_wires.as_ref().map(|spec| {
+        parse_live(spec, wires).expect("--zero-wires needs an explicit wire set, not 'all'")
+    });
+    let n_zero = zero.as_ref().map_or(0, |v| v.iter().filter(|&&b| b).count());
     println!(
-        "[fcompress] input: {} gates ({} lits), {} wires ({} live); max_iters={} group_cap={} anf_cap={} seed={}",
+        "[fcompress] input: {} gates ({} lits), {} wires ({} live, {} zero-in); max_iters={} group_cap={} anf_cap={} downhill={} seed={}",
         gates.len(),
         lits_of(&gates),
         wires,
         n_live,
+        n_zero,
         args.max_iters,
         args.group_cap,
         args.anf_support_cap,
+        !args.no_downhill,
         args.seed
     );
 
     let params = CompressParams {
         live_out: live.clone(),
+        zero_in: zero.clone(),
         max_iters: args.max_iters,
         group_cap: args.group_cap,
         anf_support_cap: args.anf_support_cap,
+        downhill: !args.no_downhill,
         local_verify: !args.no_local_verify,
         seed: args.seed,
     };
@@ -157,10 +174,19 @@ fn main() {
     let (out, out_anc, rep) = compress_anc(gates, anc_sets, wires, &params);
     let secs = t0.elapsed().as_secs_f64();
 
-    // Sampled global check against the untouched input, on live wires only.
+    // Sampled global check against the untouched input, on live wires only,
+    // over entry states inside the promised zero slice (when one is given).
     let mut rng = StdRng::seed_from_u64(args.seed ^ 0xC0FFEE);
     for round in 0..args.verify_rounds {
-        let sa: Vec<u64> = (0..wires).map(|_| rng.random::<u64>()).collect();
+        let sa: Vec<u64> = (0..wires)
+            .map(|w| {
+                if zero.as_ref().is_some_and(|z| z[w]) {
+                    0
+                } else {
+                    rng.random::<u64>()
+                }
+            })
+            .collect();
         let mut sb = sa.clone();
         let mut sa = sa;
         eval_lanes(original.iter(), &mut sa);
@@ -190,6 +216,13 @@ fn main() {
     if let Some(path) = &args.output {
         format::write_mpmct(path, &out, wires).expect("write output");
         println!("[fcompress] wrote {} gates to {}", out.len(), path);
+        if zero.is_some() {
+            println!(
+                "[fcompress] WARNING: --zero-wires output equals the input ONLY on the \
+                 promised zero slice; the mpmct1 header does not record this — do not \
+                 substitute it for the whole-function circuit"
+            );
+        }
     } else {
         println!("[fcompress] no --output given; result discarded after verification");
     }

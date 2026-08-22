@@ -639,10 +639,26 @@ Algorithm, iterated to a fixed point (≤ `--max-iters`):
    right to the close point. Closures cascade; groups emit in ascending
    last-member order.
 2. **Reduce** — each gathered group is `t ^= f1 ⊕ … ⊕ fk`, an ESOP. Apply the
-   pairwise catalogue (§1) to fixed point; if the group's support fits in
-   `--anf-support-cap` bits, also try the exact ANF rewrite (canonical —
-   duplicate monomials annihilate) and keep it when it wins.
-3. **Re-emit** the survivors as consecutive XGates — output stays mpmct1, all
+   pairwise catalogue (§1) to fixed point; for any group of ≥ 2 members whose
+   support fits in `--anf-support-cap` bits (≤ 63), also expand to canonical
+   ANF (duplicate monomials annihilate) and re-express the monomial set as the
+   best of three strategies, kept when it beats the catalogue result on
+   (gates, lits): an **exact minimum ESOP** from BFS witness tables when the
+   support is ≤ 4 wires; **greedy subcube covering** (a cube with k negative
+   literals swallows 2^k monomials at once) plus a **maximum** distance-1
+   matching (Hopcroft-Karp) on the residual; or the maximum matching alone.
+   Complemented results are free here — the parity lands in the first
+   survivor's `comp` bit — which is exactly the move the in-place catalogue
+   must ban (presplit-rejoin, const-XOR-cube).
+3. **Downhill** — one conjugation-descent pass per iteration (the
+   `fmix_downhill` core, shared via `postmix::downhill`):
+   maximal same-target runs are conjugated across an adjacent
+   non-reading gate `h` (the substitution `b ← b ⊕ fire(h)`), accepted only on
+   strict (gates, lits) decrease of the reduced ESOP. This is the exact
+   inverse of the mixer's R1 crossing and collapses case-split ladders that
+   gathering alone can never reach; gathering in turn makes runs contiguous,
+   which is what feeds it. Disable with `--no-downhill`.
+4. **Re-emit** the survivors as consecutive XGates — output stays mpmct1, all
    downstream tooling keeps working. The pass may legitimately create `comp=1`
    gates; the fossil metric is frozen at fmix-end, so record it before
    compressing.
@@ -653,6 +669,17 @@ in the XOR-accumulate model — a gate is deletable iff its target is dead at
 its position; a kept gate makes its controls live, and its target *stays* live
 (XOR never overwrites). Default is `all` (full correctness on every wire);
 keep it that way unless the artifact's contract really is partial.
+
+**Optional zero-slice specialization** (`--zero-wires`), for artifacts whose
+contract promises designated entry wires are zero (the GSS zero-slice): a
+forward three-valued constant-tracking pass folds always-true literals away,
+drops never-firing gates (a dead cube under `comp=1` degrades to a bare X —
+`t ^= comp ⊕ 0`), and forgets a tracked constant at the first surviving
+write. ⚠️ The output then equals the input **only on the promised subspace**
+— the global check samples only such entries — so a `--zero-wires` output is
+a *metric* artifact, not a drop-in replacement for the whole-function
+circuit. For the honest effective size of a released GSS gadget, the right
+call is `--zero-wires 128-511 --live-wires 128-255` (dry run).
 
 **Verification:** per-group checks during the pass (exhaustive on small
 supports), plus `--verify-rounds` × 64 lanes of sampled global equality
@@ -666,18 +693,30 @@ run** — verify and report, discard the result (the evaluator mode).
 | `--input`, `--input-format` | —, `mpmct1` | as in fmix |
 | `--output` | none | output file; omit = dry run (verify + report only) |
 | `--live-wires` | `all` | `all` \| `upper-half` \| `lower-half` \| explicit list `"0-255,300,510"` |
-| `--max-iters` | 10 | gather/reduce cycles (each reduction opens new float paths) |
+| `--zero-wires` | none | wires promised zero at entry (`upper-half` \| `lower-half` \| explicit list); enables subspace specialization — see the warning above |
+| `--max-iters` | 10 | gather/reduce/downhill cycles (each reduction opens new float paths) |
 | `--group-cap` | 64 | close a group proactively at this many members |
-| `--anf-support-cap` | 24 | try the exact ANF rewrite only when the group support fits |
+| `--anf-support-cap` | 40 | try the ANF strategies only when the group support fits (hard cap 63) |
+| `--no-downhill` | off | disable the interleaved conjugation-descent pass |
 | `--verify-rounds` | 64 | rounds of the final 64-lane global check |
-| `--no-local-verify` | off | disable per-group verification |
+| `--no-local-verify` | off | disable per-group and per-swap verification |
 | `--seed` | 0 | seeds the verification sampling only — the pass itself is deterministic |
 
 Log lines: per iteration `gates in -> out | groups= multi= max= catalogue=
-anf_wins= live_dropped=` (groups formed / with ≥2 members / largest;
-catalogue-merge and ANF wins; gates pruned by liveness), then a `done` summary
-with gate and literal percentages. Runtime is single-threaded and scales with
-gates × leeway: **budget ~2¼ h per 3M gates.**
+anf_wins= exact= downhill= live_dropped= zero_killed= vskip=` (groups formed /
+with ≥2 members / largest; catalogue-merge, ANF-strategy and exact-table wins;
+downhill swaps this iteration; gates pruned by liveness / zero
+specialization; identity reductions skipping verify), then a `done` summary
+with gate and literal percentages. Runtime is single-threaded; the 2026-08-22
+pass does noticeably more work per group than the original but converges in
+similar wall-clock (measured: 607K gates ≈ 5½ min, 4.86M gates ≈ 2 min for 10
+iterations — hardened inputs gather smaller groups, so time is
+input-dependent; budget accordingly).
+
+Reference points (2026-08-22 upgrade): A1 bench 607,365 → 575,403 g (94.7%,
+lits 89.4%); run_c nocomp final (already compressed by the pre-upgrade pass,
+i.e. a 100.0% fixed point of it) → 96.5% whole-function, 96.3% under the full
+zero+live contract.
 
 ---
 

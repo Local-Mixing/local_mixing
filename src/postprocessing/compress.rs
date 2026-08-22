@@ -5,11 +5,17 @@
 // (XOR of mixed-polarity cubes) whose canonical form is ANF. This pass
 // gathers same-target gates that can float to a common point, reduces the
 // gathered cube set (pairwise catalogue to fixed point, then an ANF
-// rewrite when it wins), and re-emits the survivors as consecutive XGates,
-// so the output stays in mpmct1 and downstream tooling keeps working.
+// rewrite when it wins: exact minimum ESOP on supports <= 4 wires, greedy
+// multi-negation subcube covering plus maximum distance-1 matching beyond),
+// re-emits the survivors as consecutive XGates, and interleaves one
+// conjugation-descent pass (postprocessing::downhill) per iteration, which
+// collapses R1 case-split ladders that gathering alone cannot touch.
+// Everything stays in mpmct1 and downstream tooling keeps working.
 // Deterministic and attacker-computable, so it never weakens hiding; the
 // compressed size doubles as the honest "effective size" of a mixed
-// circuit.
+// circuit. With zero_in set the pass additionally specializes to the
+// promised known-zero entry wires, and equality (and the size metric) is
+// then relative to that input subspace.
 //
 // Gathering is one forward sweep with an open group per target wire:
 //   - any read of wire t closes t's group (a reader pins the accumulated
@@ -34,16 +40,27 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::OnceLock;
 
 pub struct CompressParams {
     // None = equality required on every wire. Some(mask) = only on wires
     // with mask[w] == true; dead cones are pruned.
     pub live_out: Option<Vec<bool>>,
+    // None = equality required on every input. Some(mask) = wires with
+    // mask[w] == true are promised zero at circuit entry; gates are
+    // specialized to that input subspace (literals on known wires fold,
+    // never-firing gates drop). The output then equals the input circuit
+    // ONLY on the promised subspace.
+    pub zero_in: Option<Vec<bool>>,
     pub max_iters: usize,
     // Groups are closed proactively at this many members.
     pub group_cap: usize,
     // ANF rewrite attempted only when the group support fits (mask bits).
     pub anf_support_cap: usize,
+    // Interleave one conjugation-descent pass (postprocessing::downhill) after each
+    // gather/reduce iteration.
+    pub downhill: bool,
     pub local_verify: bool,
     pub seed: u64,
 }
@@ -52,9 +69,11 @@ impl Default for CompressParams {
     fn default() -> CompressParams {
         CompressParams {
             live_out: None,
+            zero_in: None,
             max_iters: 10,
             group_cap: 64,
-            anf_support_cap: 24,
+            anf_support_cap: 40,
+            downhill: true,
             local_verify: true,
             seed: 0,
         }
@@ -65,11 +84,15 @@ impl Default for CompressParams {
 pub struct CompressReport {
     pub iters: usize,
     pub liveness_dropped: usize,
+    pub zero_killed: usize,
+    pub zero_lits_dropped: u64,
     pub groups: u64,
     pub multi_groups: u64,
     pub max_group: usize,
     pub catalogue_merges: u64,
     pub anf_wins: u64,
+    pub exact_wins: u64,
+    pub downhill_swaps: u64,
     pub verifies_skipped: u64,
     pub gates_in: usize,
     pub gates_out: usize,
@@ -94,6 +117,91 @@ pub fn liveness_prune(gates: Vec<XGate>, live_out: &[bool]) -> (Vec<XGate>, usiz
 // every survivor with the UNION of its members' sets (each emitted cube
 // derives from the whole gathered ESOP), and pruned gates just drop out.
 pub type AncBits = Vec<u64>;
+
+pub(crate) fn or_anc(dst: &mut AncBits, src: &AncBits) {
+    if dst.len() < src.len() {
+        dst.resize(src.len(), 0);
+    }
+    for (d, s) in dst.iter_mut().zip(src.iter()) {
+        *d |= *s;
+    }
+}
+
+// Input-side specialization to the promised zero slice: with zero_in[w] wires
+// known 0 at entry, run three-valued constant tracking (0 / 1 / unknown)
+// forward once. A literal on a known wire either always holds (drop the
+// literal) or never (the cube is dead: t ^= comp XOR 0, so the gate drops
+// when comp=0 and degrades to a bare X when comp=1); a gate folded to an
+// empty cube is an X (flips a known constant, stays) or a no-op comp gate
+// (drops); any surviving write forgets its target's constant. The result
+// equals the input circuit on every wire, but ONLY for entries inside the
+// promised subspace.
+fn zero_specialize_anc(
+    gates: Vec<XGate>,
+    anc: Option<Vec<AncBits>>,
+    zero_in: &[bool],
+    wires: usize,
+) -> (Vec<XGate>, Option<Vec<AncBits>>, usize, u64) {
+    let mut known: Vec<Option<bool>> = (0..wires)
+        .map(|w| if zero_in.get(w) == Some(&true) { Some(false) } else { None })
+        .collect();
+    let n = gates.len();
+    let had_anc = anc.is_some();
+    let mut out: Vec<XGate> = Vec::with_capacity(n);
+    let mut out_anc: Option<Vec<AncBits>> = anc.as_ref().map(|_| Vec::with_capacity(n));
+    let mut killed = 0usize;
+    let mut lits_dropped = 0u64;
+    let anc_iter = anc.unwrap_or_default();
+    let mut anc_it = anc_iter.into_iter();
+    for g in gates {
+        let tag = if had_anc { anc_it.next() } else { None };
+        let mut dead = false;
+        let mut lits: Lits = Lits::new();
+        for &(w, p) in &g.ctrls {
+            match known[w as usize] {
+                Some(v) if v == p => {} // literal always true: fold it away
+                Some(_) => {
+                    dead = true; // literal always false: the cube never fires
+                    break;
+                }
+                None => lits.push((w, p)),
+            }
+        }
+        let t = g.target as usize;
+        if dead {
+            // t ^= comp XOR 0: gone for comp=0, a bare NOT for comp=1.
+            if g.comp {
+                lits_dropped += g.width() as u64;
+                known[t] = known[t].map(|v| !v);
+                out.push(XGate::x_gate(g.target));
+                if let Some(oa) = out_anc.as_mut() {
+                    oa.push(tag.expect("sidecar aligned with gates"));
+                }
+            } else {
+                killed += 1;
+            }
+            continue;
+        }
+        if lits.is_empty() {
+            // t ^= comp XOR 1: an X gate, or a never-firing comp gate.
+            if g.comp {
+                killed += 1;
+                continue;
+            }
+            lits_dropped += g.width() as u64;
+            known[t] = known[t].map(|v| !v);
+            out.push(XGate { target: g.target, comp: false, ctrls: lits });
+        } else {
+            known[t] = None;
+            lits_dropped += (g.width() - lits.len()) as u64;
+            out.push(XGate { target: g.target, comp: g.comp, ctrls: lits });
+        }
+        if let Some(oa) = out_anc.as_mut() {
+            oa.push(tag.expect("sidecar aligned with gates"));
+        }
+    }
+    (out, out_anc, killed, lits_dropped)
+}
 
 fn liveness_prune_anc(
     gates: Vec<XGate>,
@@ -129,19 +237,326 @@ fn liveness_prune_anc(
     (out, anc_out, dropped)
 }
 
+// ---- exact minimum ESOP for supports of at most 4 wires -------------------
+//
+// One table per support size n in 1..=4. State = the function's truth table
+// (2^n bits); edges = XOR one of the 3^n mixed-polarity cubes over exactly
+// those n vars (the all-absent cube is the constant 1). BFS from 0 gives, for
+// every function, a minimum-cube ESOP with a witness via parent pointers.
+// Built lazily once per process; the largest (n=4) is 65536 states x 81 cubes.
+struct ExactTab {
+    from: Vec<u16>,       // parent state on a shortest path to 0
+    via: Vec<u8>,         // cube index applied on that step
+    cubes: Vec<(u8, u8)>, // (pos, neg) variable masks
+}
+
+static EXACT_TABS: OnceLock<[ExactTab; 4]> = OnceLock::new();
+
+fn exact_tab_build(n: usize) -> ExactTab {
+    let nbits = 1usize << n;
+    let states = 1usize << nbits;
+    let vmask = (nbits - 1) as u8; // n low variable bits
+    let mut cubes: Vec<(u8, u8)> = Vec::new();
+    for pos in 0u8..=vmask {
+        for neg in 0u8..=vmask {
+            if pos & neg == 0 {
+                cubes.push((pos, neg));
+            }
+        }
+    }
+    let tts: Vec<u16> = cubes
+        .iter()
+        .map(|&(pos, neg)| {
+            let mut tt: u16 = 0;
+            for a in 0..nbits as u16 {
+                if a as u8 & pos == pos && a as u8 & neg == 0 {
+                    tt |= 1 << a;
+                }
+            }
+            tt
+        })
+        .collect();
+    let mut seen = vec![false; states];
+    let mut from = vec![0u16; states];
+    let mut via = vec![0u8; states];
+    seen[0] = true;
+    let mut q = VecDeque::from([0u16]);
+    while let Some(s) = q.pop_front() {
+        for (ci, &tt) in tts.iter().enumerate() {
+            let t = s ^ tt;
+            if !seen[t as usize] {
+                seen[t as usize] = true;
+                from[t as usize] = s;
+                via[t as usize] = ci as u8;
+                q.push_back(t);
+            }
+        }
+    }
+    debug_assert!(seen.iter().all(|&b| b), "minterm cubes reach every state");
+    ExactTab { from, via, cubes }
+}
+
+// Minimum ESOP of the monomial set over n<=4 support vars: cubes plus a
+// parity flip when the witness uses the constant cube.
+fn exact_small(monos: &[u64], n: usize) -> (Vec<(u64, u64)>, bool) {
+    debug_assert!((1..=4).contains(&n));
+    let tabs = EXACT_TABS.get_or_init(|| {
+        [
+            exact_tab_build(1),
+            exact_tab_build(2),
+            exact_tab_build(3),
+            exact_tab_build(4),
+        ]
+    });
+    let tab = &tabs[n - 1];
+    let nbits = 1u16 << n;
+    let mut f: u16 = 0;
+    for &m in monos {
+        let m = m as u16;
+        for a in 0..nbits {
+            if a & m == m {
+                f ^= 1 << a;
+            }
+        }
+    }
+    let mut cubes: Vec<(u64, u64)> = Vec::new();
+    let mut delta = false;
+    let mut s = f;
+    while s != 0 {
+        let (pos, neg) = tab.cubes[tab.via[s as usize] as usize];
+        if pos == 0 && neg == 0 {
+            delta ^= true;
+        } else {
+            cubes.push((pos as u64, neg as u64));
+        }
+        s = tab.from[s as usize];
+    }
+    (cubes, delta)
+}
+
+// ---- maximum distance-1 matching ------------------------------------------
+//
+// Monomials differing in exactly one variable pair into a single-negation
+// cube: mono(m) XOR mono(m|b) = mono(m) AND NOT b. The pair graph is
+// bipartite by popcount parity, so Hopcroft-Karp finds a maximum matching
+// (the old greedy pairing is kept as the fallback for oversized sets).
+// Returns (cubes from matched pairs, unmatched monomials).
+const MATCH_CAP: usize = 1 << 15;
+
+fn match_pairs(monos: &[u64], nbits: usize) -> (Vec<(u64, u64)>, Vec<u64>) {
+    if monos.len() > MATCH_CAP {
+        return greedy_pairs(monos);
+    }
+    let idx: HashMap<u64, usize> = monos.iter().enumerate().map(|(i, &m)| (m, i)).collect();
+    let lefts: Vec<usize> = (0..monos.len())
+        .filter(|&i| monos[i].count_ones() % 2 == 0)
+        .collect();
+    let adj: Vec<Vec<usize>> = lefts
+        .iter()
+        .map(|&i| {
+            (0..nbits)
+                .filter_map(|b| idx.get(&(monos[i] ^ (1u64 << b))).copied())
+                .collect()
+        })
+        .collect();
+    let mut pair_l: Vec<Option<usize>> = vec![None; lefts.len()]; // left pos -> mono idx
+    let mut pair_r: Vec<Option<usize>> = vec![None; monos.len()]; // mono idx -> left pos
+    loop {
+        // BFS layers from free left vertices.
+        let mut dist: Vec<Option<u32>> = vec![None; lefts.len()];
+        let mut q: VecDeque<usize> = VecDeque::new();
+        for (li, p) in pair_l.iter().enumerate() {
+            if p.is_none() {
+                dist[li] = Some(0);
+                q.push_back(li);
+            }
+        }
+        let mut found = false;
+        while let Some(li) = q.pop_front() {
+            for &v in &adj[li] {
+                match pair_r[v] {
+                    None => found = true,
+                    Some(lj) => {
+                        if dist[lj].is_none() {
+                            dist[lj] = Some(dist[li].expect("queued has dist") + 1);
+                            q.push_back(lj);
+                        }
+                    }
+                }
+            }
+        }
+        if !found {
+            break;
+        }
+        fn dfs(
+            li: usize,
+            adj: &[Vec<usize>],
+            dist: &mut [Option<u32>],
+            pair_l: &mut [Option<usize>],
+            pair_r: &mut [Option<usize>],
+        ) -> bool {
+            let d = dist[li];
+            for vi in 0..adj[li].len() {
+                let v = adj[li][vi];
+                let ok = match pair_r[v] {
+                    None => true,
+                    Some(lj) => {
+                        dist[lj] == d.map(|x| x + 1)
+                            && dfs(lj, adj, dist, pair_l, pair_r)
+                    }
+                };
+                if ok {
+                    pair_l[li] = Some(v);
+                    pair_r[v] = Some(li);
+                    return true;
+                }
+            }
+            dist[li] = None;
+            false
+        }
+        for li in 0..lefts.len() {
+            if pair_l[li].is_none() {
+                dfs(li, &adj, &mut dist, &mut pair_l, &mut pair_r);
+            }
+        }
+    }
+    let mut used = vec![false; monos.len()];
+    let mut cubes = Vec::new();
+    for (li, p) in pair_l.iter().enumerate() {
+        if let Some(v) = *p {
+            let (a, b) = (monos[lefts[li]], monos[v]);
+            used[lefts[li]] = true;
+            used[v] = true;
+            cubes.push((a & b, a ^ b));
+        }
+    }
+    let rest: Vec<u64> = (0..monos.len()).filter(|&i| !used[i]).map(|i| monos[i]).collect();
+    (cubes, rest)
+}
+
+// The pre-2026-08 greedy pairing (pair m with m minus one bit), as the
+// fallback when the monomial set is too large for Hopcroft-Karp.
+fn greedy_pairs(monos: &[u64]) -> (Vec<(u64, u64)>, Vec<u64>) {
+    let mut order: Vec<u64> = monos.to_vec();
+    order.sort_unstable_by_key(|&m| std::cmp::Reverse((m.count_ones(), m)));
+    let pos_of: HashMap<u64, usize> = order.iter().enumerate().map(|(i, &m)| (m, i)).collect();
+    let mut matched = vec![false; order.len()];
+    let mut cubes = Vec::new();
+    let mut rest = Vec::new();
+    for i in 0..order.len() {
+        if matched[i] {
+            continue;
+        }
+        let m = order[i];
+        let mut bits = m;
+        let mut paired = false;
+        while bits != 0 {
+            let b = bits & bits.wrapping_neg();
+            bits &= bits - 1;
+            if let Some(&j) = pos_of.get(&(m & !b)) {
+                if !matched[j] && j != i {
+                    matched[i] = true;
+                    matched[j] = true;
+                    cubes.push((m & !b, b));
+                    paired = true;
+                    break;
+                }
+            }
+        }
+        if !paired {
+            matched[i] = true;
+            rest.push(m);
+        }
+    }
+    (cubes, rest)
+}
+
+// ---- greedy subcube covering ----------------------------------------------
+//
+// A cube with negative-literal mask N replaces the 2^|N| monomials
+// {pos|S : S subset of N} in one gate, so hunting for fully-present subcubes
+// of dimension >= 2 beats any pairing. Best-first (largest dimension each
+// round) up to COVER_EXHAUSTIVE_CAP monomials, single ascending-popcount pass
+// beyond. Returns (cover cubes, residual monomials in input order).
+const COVER_EXHAUSTIVE_CAP: usize = 1024;
+
+fn cover_grow(m: u64, set: &HashSet<u64>, nbits: usize) -> (u64, Vec<u64>) {
+    let mut nmask = 0u64;
+    let mut exp = vec![m];
+    for b in 0..nbits {
+        let bit = 1u64 << b;
+        if m & bit != 0 || nmask & bit != 0 {
+            continue;
+        }
+        if exp.iter().all(|&e| set.contains(&(e | bit))) {
+            let add: Vec<u64> = exp.iter().map(|&e| e | bit).collect();
+            exp.extend(add);
+            nmask |= bit;
+        }
+    }
+    (nmask, exp)
+}
+
+fn greedy_cover(monos: &[u64], nbits: usize) -> (Vec<(u64, u64)>, Vec<u64>) {
+    let mut set: HashSet<u64> = monos.iter().copied().collect();
+    let mut cubes: Vec<(u64, u64)> = Vec::new();
+    if monos.len() <= COVER_EXHAUSTIVE_CAP {
+        loop {
+            let mut best: Option<(u32, u64, u64, Vec<u64>)> = None;
+            for &m in monos {
+                if !set.contains(&m) {
+                    continue;
+                }
+                let (nmask, exp) = cover_grow(m, &set, nbits);
+                let dim = nmask.count_ones();
+                if dim >= 2 && best.as_ref().is_none_or(|b| dim > b.0) {
+                    best = Some((dim, m, nmask, exp));
+                }
+            }
+            let Some((_, base, nmask, exp)) = best else { break };
+            cubes.push((base, nmask));
+            for e in exp {
+                set.remove(&e);
+            }
+        }
+    } else {
+        let mut by_pop: Vec<u64> = monos.to_vec();
+        by_pop.sort_unstable_by_key(|&m| (m.count_ones(), m));
+        for m in by_pop {
+            if !set.contains(&m) {
+                continue;
+            }
+            let (nmask, exp) = cover_grow(m, &set, nbits);
+            if nmask.count_ones() >= 2 {
+                cubes.push((m, nmask));
+                for e in exp {
+                    set.remove(&e);
+                }
+            }
+        }
+    }
+    let residual: Vec<u64> = monos.iter().copied().filter(|m| set.contains(m)).collect();
+    (cubes, residual)
+}
+
 // ANF rewrite of a cube set over its support: expand mixed-polarity cubes
 // into positive monomials (canonical, so all cancellation happens), then
-// greedily re-pair monomials differing in one wire back into single-negation
-// cubes. Returns (cubes, parity_delta) or None when the support or the
+// re-express the monomial set as few cubes as found among: an exact minimum
+// ESOP (support <= 4), greedy subcube covering + maximum matching on the
+// residual, and maximum matching alone (covering can lose when it strands
+// monomials the matching wanted). The zero monomial may be consumed by a
+// cover/pair cube (as a pure-negative cube) or left to the parity delta.
+// Returns (cubes, parity_delta, exact_used) or None when the support or the
 // expansion would be too large.
-fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits>, bool)> {
+fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits>, bool, bool)> {
     let mut support: Vec<u16> = cubes
         .iter()
         .flat_map(|c| c.iter().map(|&(w, _)| w))
         .collect();
     support.sort_unstable();
     support.dedup();
-    if support.len() > support_cap.min(31) {
+    let n = support.len();
+    if n > support_cap.min(63) {
         return None;
     }
     let idx_of: FxHashMap<u16, u32> = support
@@ -149,12 +564,12 @@ fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits>, bool)> {
         .enumerate()
         .map(|(i, &w)| (w, i as u32))
         .collect();
-    let mut budget = 1u64 << 17;
-    let mut anf = FxHashSet::<u32>::default();
+    let mut budget = 1u64 << 18;
+    let mut anf = FxHashSet::<u64>::default();
     for c in cubes {
-        let (mut pos, mut neg) = (0u32, 0u32);
+        let (mut pos, mut neg) = (0u64, 0u64);
         for &(w, p) in c {
-            let b = 1u32 << idx_of[&w];
+            let b = 1u64 << idx_of[&w];
             if p { pos |= b } else { neg |= b }
         }
         let terms = 1u64 << neg.count_ones();
@@ -175,14 +590,46 @@ fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits>, bool)> {
             sub = (sub - 1) & neg;
         }
     }
-    let mut monos: Vec<u32> = anf.into_iter().collect();
-    let parity_delta = monos.iter().any(|&m| m == 0);
-    monos.retain(|&m| m != 0);
-    monos.sort_unstable_by_key(|&m| std::cmp::Reverse((m.count_ones(), m)));
-    let pos_of: FxHashMap<u32, usize> = monos.iter().enumerate().map(|(i, &m)| (m, i)).collect();
-    let mut matched = vec![false; monos.len()];
-    let mut out: Vec<Lits> = Vec::new();
-    let to_lits = |pos: u32, neg: u32| -> Lits {
+    let mut monos: Vec<u64> = anf.into_iter().collect();
+    monos.sort_unstable();
+    if monos.is_empty() {
+        return Some((Vec::new(), false, false));
+    }
+    // Candidate strategies, first-listed wins ties on (cubes, lits).
+    let mut cands: Vec<(Vec<(u64, u64)>, bool, bool)> = Vec::new();
+    if (1..=4).contains(&n) {
+        let (cs, delta) = exact_small(&monos, n);
+        cands.push((cs, delta, true));
+    }
+    {
+        let (mut cs, resid) = greedy_cover(&monos, n);
+        let (pairs, singles) = match_pairs(&resid, n);
+        cs.extend(pairs);
+        let mut delta = false;
+        for &m in &singles {
+            if m == 0 { delta = true } else { cs.push((m, 0)) }
+        }
+        cands.push((cs, delta, false));
+    }
+    {
+        let (mut cs, singles) = match_pairs(&monos, n);
+        let mut delta = false;
+        for &m in &singles {
+            if m == 0 { delta = true } else { cs.push((m, 0)) }
+        }
+        cands.push((cs, delta, false));
+    }
+    let (mut best, delta, exact) = cands
+        .into_iter()
+        .min_by_key(|(cs, _, _)| {
+            (
+                cs.len(),
+                cs.iter().map(|&(p, ng)| (p | ng).count_ones() as u64).sum::<u64>(),
+            )
+        })
+        .expect("at least one strategy");
+    best.sort_unstable_by_key(|&(p, ng)| (std::cmp::Reverse((p | ng).count_ones()), p, ng));
+    let to_lits = |pos: u64, neg: u64| -> Lits {
         let mut l: Lits = Lits::new();
         for (i, &w) in support.iter().enumerate() {
             if pos >> i & 1 == 1 {
@@ -193,33 +640,8 @@ fn anf_reduce(cubes: &[Lits], support_cap: usize) -> Option<(Vec<Lits>, bool)> {
         }
         l
     };
-    for i in 0..monos.len() {
-        if matched[i] {
-            continue;
-        }
-        let m = monos[i];
-        let mut bits = m;
-        let mut paired = false;
-        while bits != 0 {
-            let b = bits & bits.wrapping_neg();
-            bits &= bits - 1;
-            if let Some(&j) = pos_of.get(&(m & !b)) {
-                if !matched[j] && j != i {
-                    // mono(m\b) XOR mono(m) = (m\b) AND NOT b
-                    matched[i] = true;
-                    matched[j] = true;
-                    out.push(to_lits(m & !b, b));
-                    paired = true;
-                    break;
-                }
-            }
-        }
-        if !paired {
-            matched[i] = true;
-            out.push(to_lits(m, 0));
-        }
-    }
-    Some((out, parity_delta))
+    let out: Vec<Lits> = best.iter().map(|&(p, ng)| to_lits(p, ng)).collect();
+    Some((out, delta, exact))
 }
 
 // Reduce one gathered group to a minimal-found cube list and emit as XGates
@@ -290,14 +712,20 @@ fn reduce_group(
         break;
     }
     // ANF alternative: canonical cancellation, kept when strictly smaller.
-    if cubes.len() >= 3 {
-        if let Some((alt, delta)) = anf_reduce(&cubes, p.anf_support_cap) {
+    // Two-member groups belong here too: pairs whose XOR is one COMPLEMENTED
+    // cube (presplit-rejoin, const-XOR-cube) are exactly what the pairwise
+    // catalogue must refuse but the parity slot absorbs for free.
+    if cubes.len() >= 2 {
+        if let Some((alt, delta, exact)) = anf_reduce(&cubes, p.anf_support_cap) {
             let (alt_l, cur_l) = (
                 alt.iter().map(|c| c.len()).sum::<usize>(),
                 cubes.iter().map(|c| c.len()).sum::<usize>(),
             );
             if (alt.len(), alt_l) < (cubes.len(), cur_l) {
                 rep.anf_wins += 1;
+                if exact {
+                    rep.exact_wins += 1;
+                }
                 cubes = alt;
                 parity ^= delta;
             }
@@ -500,15 +928,6 @@ fn gather_reduce_pass(
         }
     };
 
-    let or_into = |dst: &mut AncBits, src: &AncBits| {
-        if dst.len() < src.len() {
-            dst.resize(src.len(), 0);
-        }
-        for (d, s) in dst.iter_mut().zip(src.iter()) {
-            *d |= *s;
-        }
-    };
-
     for (i, g) in gates.iter().enumerate() {
         // Reads close the groups accumulating on the wires they read.
         let mut seed = SmallVec::<[usize; 16]>::new();
@@ -549,7 +968,7 @@ fn gather_reduce_pass(
                     }
                 }
                 grp.members.push(g.clone());
-                or_into(&mut grp.anc, &g_anc);
+                or_anc(&mut grp.anc, &g_anc);
                 grp.last = i;
                 if grp.members.len() >= p.group_cap {
                     close(
@@ -631,8 +1050,17 @@ pub fn compress_anc(
     rep.lits_in = lits_of(&gates);
     let mut cur = gates;
     let mut cur_anc = anc;
+    let mut prev = (cur.len(), lits_of(&cur));
     for iter in 1..=p.max_iters {
         let before = cur.len();
+        if let Some(z) = &p.zero_in {
+            let (kept, kept_anc, killed, lits_dropped) =
+                zero_specialize_anc(cur, cur_anc, z, wires);
+            cur = kept;
+            cur_anc = kept_anc;
+            rep.zero_killed += killed;
+            rep.zero_lits_dropped += lits_dropped;
+        }
         if let Some(lv) = &p.live_out {
             let (kept, kept_anc, dropped) = liveness_prune_anc(cur, cur_anc, lv);
             cur = kept;
@@ -643,9 +1071,18 @@ pub fn compress_anc(
             gather_reduce_pass(&cur, cur_anc.as_deref(), wires, p, &mut rng, &mut rep);
         cur = next;
         cur_anc = next_anc;
+        let mut dh_swaps = 0usize;
+        if p.downhill {
+            let (next, next_anc, swaps) =
+                super::downhill::apply_pass(cur, cur_anc, &mut rng, p.local_verify);
+            cur = next;
+            cur_anc = next_anc;
+            dh_swaps = swaps;
+            rep.downhill_swaps += swaps as u64;
+        }
         rep.iters = iter;
         println!(
-            "[fcompress] iter={} gates {} -> {} | groups={} multi={} max={} | catalogue={} anf_wins={} live_dropped={} vskip={}",
+            "[fcompress] iter={} gates {} -> {} | groups={} multi={} max={} | catalogue={} anf_wins={} exact={} downhill={} live_dropped={} zero_killed={} vskip={}",
             iter,
             before,
             cur.len(),
@@ -654,12 +1091,22 @@ pub fn compress_anc(
             rep.max_group,
             rep.catalogue_merges,
             rep.anf_wins,
+            rep.exact_wins,
+            dh_swaps,
             rep.liveness_dropped,
+            rep.zero_killed,
             rep.verifies_skipped
         );
-        if cur.len() >= before {
+        // Progress = strictly smaller (gates, lits): downhill can shrink lits
+        // at equal gate count, and that still enables later gather wins. No
+        // stage may regress the pair (gather/reduce and the pruners only
+        // shrink; downhill accepts only emitted-form strict decreases).
+        let now = (cur.len(), lits_of(&cur));
+        debug_assert!(now <= prev, "a compression stage regressed (gates, lits)");
+        if now >= prev {
             break;
         }
+        prev = now;
     }
     rep.gates_out = cur.len();
     rep.lits_out = lits_of(&cur);
@@ -863,6 +1310,157 @@ mod compress_tests {
         );
         // Function must be preserved with tags threaded (same pass, same rng).
         assert!(equal_on(&gates, &out, 4, None));
+    }
+
+    #[test]
+    fn two_member_complemented_pair_collapses() {
+        // ab XOR !b = 1 XOR a!b: one comp'd cube. The pairwise catalogue must
+        // refuse this (flipped shared polarity); the ANF path absorbs the
+        // complement into the parity slot. Regression for the old >=3 gate.
+        let gates = vec![
+            conj(0, &[(1, true), (2, true)]),
+            conj(0, &[(2, false)]),
+        ];
+        let (out, rep) = compress(gates.clone(), 3, &CompressParams::default());
+        assert_eq!(out.len(), 1, "pair must collapse to one complemented cube");
+        assert!(out[0].comp, "the complement must land in the comp bit");
+        assert!(equal_on(&gates, &out, 3, None));
+        assert!(rep.anf_wins >= 1);
+    }
+
+    #[test]
+    fn exact_table_beats_pairing() {
+        // a XOR b XOR ab = 1 XOR !a!b: three cubes into one comp'd cube. The
+        // catalogue gets stuck at two (a!b, b); the exact <=4-support table
+        // finds the minimum witness.
+        let gates = vec![
+            conj(0, &[(1, true)]),
+            conj(0, &[(2, true)]),
+            conj(0, &[(1, true), (2, true)]),
+        ];
+        let (out, rep) = compress(gates.clone(), 3, &CompressParams::default());
+        assert_eq!(out.len(), 1, "exact minimum is one complemented cube");
+        assert_eq!(out[0].width(), 2);
+        assert!(out[0].comp);
+        assert!(equal_on(&gates, &out, 3, None));
+        assert!(rep.exact_wins >= 1);
+    }
+
+    #[test]
+    fn random_groups_reduce_and_preserve_function() {
+        // Soak the multi-strategy reducer: random same-target groups across
+        // the exact (<=4), cover/matching, and large-support paths.
+        let mut rng = StdRng::seed_from_u64(0xE50);
+        for case in 0..200usize {
+            let pool = [3u16, 4, 6, 10][case % 4];
+            let n = rng.random_range(2..=10usize);
+            let mut gates: Vec<XGate> = Vec::new();
+            for _ in 0..n {
+                let w = rng.random_range(0..=pool.min(5) as usize);
+                let mut lits: Vec<(u16, bool)> = Vec::new();
+                while lits.len() < w {
+                    let c = rng.random_range(1..=pool);
+                    if lits.iter().all(|&(seen, _)| seen != c) {
+                        lits.push((c, rng.random_bool(0.5)));
+                    }
+                }
+                let mut g = XGate::conj(0, lits).expect("distinct literals");
+                g.comp = rng.random_bool(0.3);
+                gates.push(g);
+            }
+            let (out, _) = compress(gates.clone(), pool as usize + 1, &CompressParams::default());
+            assert!(out.len() <= gates.len());
+            assert!(
+                equal_on(&gates, &out, pool as usize + 1, None),
+                "case {case} changed the function"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_specialization_folds_and_kills() {
+        // zero_in = wire 0. Gate 0 can never fire (positive literal on a zero
+        // wire); gate 1 folds its always-true literal away; the comp=1 gate
+        // with a dead cube still applies t ^= 1 and must DEGRADE to an X, not
+        // vanish, while the comp=1 gate folding to an empty cube is a no-op
+        // and must vanish; the write to wire 0 ends its known-zero status, so
+        // the last gate survives untouched. Equality is only promised on the
+        // zero slice.
+        let dead_comp = {
+            let mut g = conj(5, &[(0, true), (2, true)]);
+            g.comp = true;
+            g
+        };
+        let noop_comp = {
+            let mut g = conj(6, &[(0, false)]);
+            g.comp = true;
+            g
+        };
+        let gates = vec![
+            conj(3, &[(0, true), (1, true)]),
+            conj(3, &[(0, false), (1, true)]),
+            dead_comp,
+            noop_comp,
+            conj(0, &[(1, true)]),
+            conj(4, &[(0, true), (2, true)]),
+        ];
+        let mut zero = vec![false; 7];
+        zero[0] = true;
+        let p = CompressParams {
+            zero_in: Some(zero.clone()),
+            ..Default::default()
+        };
+        let (out, rep) = compress(gates.clone(), 7, &p);
+        assert_eq!(rep.zero_killed, 2, "dead comp=0 gate and no-op comp gate");
+        assert!(rep.zero_lits_dropped >= 1);
+        assert_eq!(out.len(), 4);
+        assert!(out.iter().any(|g| g.target == 3 && g.width() == 1));
+        assert!(out.iter().any(|g| g.target == 4 && g.width() == 2));
+        assert!(
+            out.iter().any(|g| g.target == 5 && g.width() == 0 && !g.comp),
+            "dead comp=1 cube must leave a bare X behind"
+        );
+        assert!(out.iter().all(|g| g.target != 6));
+        // Equal on the promised subspace: zero wires forced to 0 at entry.
+        let mut rng = StdRng::seed_from_u64(7);
+        for _ in 0..64 {
+            let sa: Vec<u64> = (0..7)
+                .map(|w| if zero[w] { 0 } else { rng.random::<u64>() })
+                .collect();
+            let mut sb = sa.clone();
+            let mut sa = sa;
+            eval_lanes(gates.iter(), &mut sa);
+            eval_lanes(out.iter(), &mut sb);
+            assert_eq!(sa, sb, "zero-slice equality violated");
+        }
+    }
+
+    #[test]
+    fn downhill_collapses_crossing_ladder() {
+        // t ^= bx; b ^= c; t ^= bx; t ^= cx computes just b ^= c: the trailing
+        // pair is the case-split ladder of floating the first write across the
+        // CNOT. Gathering alone is stuck (the CNOT pins both sides); the
+        // interleaved downhill pass conjugates the ladder back and the next
+        // iteration cancels everything.
+        let gates = vec![
+            conj(0, &[(1, true), (3, true)]),
+            conj(1, &[(2, true)]),
+            conj(0, &[(1, true), (3, true)]),
+            conj(0, &[(2, true), (3, true)]),
+        ];
+        let (out, rep) = compress(gates.clone(), 4, &CompressParams::default());
+        assert_eq!(out.len(), 1, "everything but the CNOT must vanish");
+        assert_eq!(out[0], conj(1, &[(2, true)]));
+        assert!(rep.downhill_swaps >= 1);
+        assert!(equal_on(&gates, &out, 4, None));
+        // With downhill disabled the ladder must survive: this documents that
+        // the win comes from the conjugation pass, not from gathering.
+        let p = CompressParams {
+            downhill: false,
+            ..Default::default()
+        };
+        let (out2, _) = compress(gates.clone(), 4, &p);
+        assert_eq!(out2.len(), 4);
     }
 
     #[test]

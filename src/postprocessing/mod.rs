@@ -7,4 +7,5 @@
 // greedy Stage-6 compressor. Alternative walks live under `experimental`.
 pub mod compress;
 pub mod cross_walk;
+pub mod downhill;
 pub mod splitting;
