@@ -70,9 +70,14 @@ permanent reverse verify in \texttt{gen\_sandwich\_gadget}.
 the band-placement map; the constant-discharge helpers are live band
 \emph{variables} via \texttt{loc} (the raw band wire range holds
 displaced carrier states); both band fills source from the low data
-half; epoch refills are band-sourced only (the low half is the payload's
-birthplace mid-circuit); the ladder borrows band variables, never live
-carriers.
+half; epoch refills split their channels --- the linear pivot is
+band-sourced only (a carrier-sourced pivot linearly copies a masked
+payload-era state into the band, the measured exact leak, since the low
+half is the payload's birthplace mid-circuit) while the product terms
+readmit carriers at \texttt{refill\_data}\% (degree-2 in the values:
+nothing linearly peelable, refill clusters read across the band/carrier
+partition, genuinely new algebra enters the band, no rank drift); the
+ladder borrows band variables, never live carriers.
 \end{itemize}
 
 \section{Vocabulary: the ladder and the g57 share}

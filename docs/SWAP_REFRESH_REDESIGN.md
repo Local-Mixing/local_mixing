@@ -63,10 +63,14 @@ PROD_CLOSE_SLICE=0` restores the prior Gray stream byte-for-byte):
   (`loc`); the strip's constant-discharge helpers are live band
   VARIABLES via `loc` (the raw band wire range holds displaced carrier
   states after rolls/route); both band fills source from the low data
-  half; epoch refills are **band-sourced only** (the low half is the
-  payload's birthplace mid-circuit — a carrier-sourced refill at the
-  N-era copies a payload state into the band); the ladder borrows band
-  variables, never live carriers.
+  half; epoch refills split their channels — the linear pivot is
+  band-sourced only (a carrier-sourced pivot linearly copies a masked
+  payload-era state into the band, the measured exact leak, since the
+  low half is the payload's birthplace mid-circuit) while the product
+  terms readmit carriers at `refill_data`% (degree-2 in the values:
+  nothing linearly peelable, refill clusters read across the
+  band/carrier partition, genuinely new algebra enters the band, no
+  rank drift); the ladder borrows band variables, never live carriers.
 
 ## 3. Vocabulary: the ladder and the g57 share
 

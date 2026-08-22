@@ -5002,12 +5002,6 @@ struct ProdLedger {
     /// Per-gate mask swap-with-refresh (see [`ProdConfig::swap_refresh`]).
     /// Forces the expanded fold: every Gray mode is declined while set.
     swap_refresh: bool,
-    /// Carrier-sourced band refills draw values below this bound only. Under
-    /// the closing-slice design this is the junk half: a refill that copies a
-    /// payload-half carrier into a band wire stores the payload bit there,
-    /// and the strip tail's half-captured emission windows then expose band
-    /// wires linearly — measured as the last exact flip_match pairs at n=64.
-    refill_value_hi: usize,
     /// Under the closing-slice design the strip's constant-discharge helper
     /// is drawn from the band space only: the strip bares the data wires
     /// progressively, and a helper read from a bared wire writes that value
@@ -5144,7 +5138,6 @@ impl ProdLedger {
             micro_gray: cfg.gray_fold == 2,
             sentinel_gray: cfg.gray_fold == 3,
             swap_refresh: cfg.swap_refresh > 0,
-            refill_value_hi: if cfg.close_slice > 0 { (n / 2).max(1) } else { n },
             tail_band_helpers: cfg.close_slice > 0,
             g57_narrow: cfg.g57_narrow > 0,
             ladder_cap: cfg.ladder_cap,
@@ -6000,24 +5993,36 @@ impl ProdLedger {
         // the target wire itself, and then `refill_data` percent is not the
         // rate it claims to be. Carriers are reached through `state.pairs` and
         // band variables through `loc`, which are the two role maps.
-        let refill_value_hi = self.refill_value_hi.min(state.n);
-        // Under the closing-slice design, refills never read carriers at
-        // all: the LOW half is the payload's birthplace (it holds C(x) from
-        // mid-C until the D block junks it), so a carrier-sourced refill at
-        // that era copies a payload state into the band, and the strip
-        // tail's mid-group windows can cancel the accompanying masks and
-        // read the payload back out (measured: an exact all-band-reads
-        // window reconstructing a payload bit at n=32). Band-to-band
-        // refills still break the function-lifetime signature the epoch
-        // exists for.
-        let carriers_allowed = !self.tail_band_helpers;
-        let mut draw = |rng: &mut dyn rand::RngCore| -> u16 {
-            let use_carrier = carriers_allowed
+        // Refill sourcing (symmetric-ports revision): the channels differ.
+        //
+        // The LINEAR skeleton — the pivot CNOT — is band-sourced ONLY. A
+        // carrier-sourced pivot is a verbatim linear copy of a masked data
+        // state into the band, and the low half is the payload's birthplace
+        // mid-circuit (it holds C(x) from mid-C until the D block junks it);
+        // the strip tail's mid-group windows cancelled the accompanying
+        // masks and read a payload bit back out of exactly such a copy
+        // (measured: exact all-band-reads windows at n=32 and n=128).
+        // Band-sourcing the linear part also keeps it an invertible shear.
+        //
+        // The PRODUCT terms readmit carriers at `refill_data` percent, from
+        // the full value range: a product of two masked carriers is degree-2
+        // in the logical values — nothing a linear adversary can peel — and
+        // carrier products are what keep the band honest three ways at once:
+        // they re-couple its functions to computational progress (band-only
+        // refills leave every future band value inside the algebra generated
+        // by the initial band, with coefficients readable off the gate
+        // list), they inject rank-independent material (band-only mixing can
+        // drift into linear dependence and silently break joint uniformity),
+        // and they make every refill cluster read across the band/carrier
+        // partition (an all-band-reads refill is a transitive band-labeling
+        // channel for a structural adversary).
+        let mut draw = |rng: &mut dyn rand::RngCore, allow_carrier: bool| -> u16 {
+            let use_carrier = allow_carrier
                 && state.n > 0
                 && (rng.next_u32() as usize % 100) < refill_data;
             if use_carrier {
                 for _ in 0..64 {
-                    let v = rng.next_u32() as usize % refill_value_hi;
+                    let v = rng.next_u32() as usize % state.n;
                     let (c0, c1) = state.pairs[v];
                     let c = if rng.next_u32() & 1 == 0 { c0 } else { c1 } as u16;
                     if c != wire {
@@ -6038,13 +6043,13 @@ impl ProdLedger {
         // nonlinear mix. Balance is only approximate here: mid-body there is no
         // pristine input bit to serve as the fill's fresh pivot, so this is a
         // measured property, not the theorem the port-side fill has.
-        let p = draw(rng);
+        let p = draw(rng, false);
         if p != wire {
             out.push(XGate::cnot(wire, p));
         }
         for _ in 0..fill_nl.max(1) {
-            let s1 = draw(rng);
-            let s2 = draw(rng);
+            let s1 = draw(rng, true);
+            let s2 = draw(rng, true);
             if s1 == s2 || s1 == wire || s2 == wire {
                 continue;
             }
