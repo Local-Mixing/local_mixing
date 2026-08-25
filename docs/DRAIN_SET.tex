@@ -1,0 +1,298 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\XOR}{\oplus}
+\title{The Drain Set\\[2pt]\large continuous band refresh by scheduling rather than by payment}
+\author{local\_mixing --- design note}
+\date{2026-08-24}
+\begin{document}
+\maketitle
+
+\noindent
+Branch \texttt{ssg-gen-mix-clean}; all changes in
+\texttt{src/preprocessing/gadgets.rs}. The band-turnover mechanism of the
+swap-refresh gadgetizer is replaced: instead of \emph{paying} to release a
+band variable before rewriting it, retirements the fold is already making are
+\emph{steered} at the variable until it comes free on its own. Measured at
+$n=128$: $2.3\times$ the band turnover for $+0.3\%$ gates.
+
+\section{What changed}
+
+A band variable's value is a \textbf{frozen function of the input}, and that is
+a signature. Rolling relocates a variable between wires, but the wire's Boolean
+function is the same function, so the band population separates from the
+carriers by \textsc{lifetime} alone, with no need to guess a wire set. Band
+width is no defense --- the attack recovers the population, not a subset.
+
+The existing answer was the \texttt{epoch} channel
+(\texttt{retire\_refill}): every few folds, pick a band variable, re-source
+every live mask that names it, then rewrite the wire. It works, and it is
+expensive.
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+ & old (\texttt{epoch}) & new (drain set) \\
+\midrule
+band turnovers, $n=128$ & 6.32 & \textbf{14.72} \\
+gates & 884{,}408 & 886{,}695 \;(\textbf{+0.3\%}) \\
+forward / reverse verify & pass & pass \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Frequent refresh is the point: a band value that changes many times
+during the computation is never a stable function of the input for long enough
+to be tracked, and the intervals over which it \emph{is} stable no longer align
+across the band.
+
+\section{Where the cost actually sits}
+
+Rewriting a band wire is cheap: a band-sourced pivot CNOT plus \texttt{fill\_nl}
+product terms, about \textbf{3 gates}. Everything else is the \emph{release}.
+
+A mask slot names band variables. If a variable's value changes while a live
+slot names it, that slot's strip cancels a different product than its inject
+installed, and the value's decode is wrong. So \texttt{retire\_refill} first
+re-sources every naming slot --- inject a replacement, strip the old one --- at
+\textbf{two emissions per reference}. At production the band is sized to the
+value count, so
+\[
+  R \;=\; \frac{\text{values} \times \text{factors per value}}{\text{band}}
+    \;=\; \text{factors per value} \;\approx\; 10
+\]
+for the $[2,2,2,3]$ plan with 50\% jitter. One refresh is therefore ${\sim}20$
+emissions plus the rewrite --- roughly \textbf{23 gates against ${\sim}112$
+gates per fold}. At \texttt{epoch:\,5} that is ${\sim}2.1\%$ of the circuit for
+6.3 turnovers, and buying 12 turnovers the same way would cost ${\sim}4\%$.
+
+The same arithmetic says why one cannot simply \emph{wait} for a free variable:
+unreferenced variables occur with probability $e^{-R} \approx e^{-10}$. The
+free list is empty, always.
+
+\section{The idea: the release is already being paid for}
+
+\texttt{swap\_refresh} retires mask terms at \emph{every} fold --- that churn
+exists to stop time-invariant masks from cancelling in a fold's before/after
+XOR, and its cost is already in the budget. Those retirements pick their
+victims at random. \textbf{Point them somewhere.}
+
+A rolling set $D$ of band variables is declared \emph{draining}:
+\begin{enumerate}
+\item \textbf{Excluded from every fresh draw} (\texttt{draw\_slot},
+\texttt{inject\_avoiding\_var}), so a member's reference count can only fall.
+This is the load-bearing half --- without it the count random-walks and never
+reaches zero.
+\item \textbf{Preferred by retirement steering.} When
+\texttt{swap\_refresh\_side} picks which slot of a value to retire, and when
+\texttt{resource} picks which value and slot, a slot naming a member wins over
+the ordinary pick.
+\item \textbf{Rewritten on reaching zero references}, then swapped out of $D$
+for a fresh variable.
+\end{enumerate}
+
+Steering changes \emph{which} slot each retirement takes, not \emph{how many}
+retirements happen. The release phase does not get cheaper --- it disappears,
+absorbed into work the fold was doing regardless. At $n=128$, \textbf{91.8\%}
+of all retirements land on a draining variable (36{,}357 of 39{,}598).
+
+\subsection*{Why the arithmetic comes out to nearly zero}
+
+Deleting the \texttt{epoch} channel returns its release emissions; adding one
+retirement side per fold spends a fraction of them. Ledger counters, same seed,
+$n=128$:
+
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+counter & old & new (3 sides) & $\Delta$ \\
+\midrule
+\texttt{injected} & 27{,}616 & 9{,}066 & $-18{,}550$ (the old \texttt{migrated}) \\
+\texttt{swapped} & 31{,}678 & 39{,}598 & $+7{,}920$ (one side $\times$ folds) \\
+rewrite events & 1{,}618 & 3{,}768 & $+2{,}150$ \\
+\midrule
+\textbf{turnovers} & \textbf{6.32} & \textbf{14.72} & $\mathbf{2.3\times}$ \\
+\textbf{gates} & \textbf{884{,}408} & \textbf{886{,}695} & $\mathbf{+0.3\%}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The epoch releases were 18{,}550 injects \emph{and} 18{,}550 matching
+strips --- 37{,}100 emissions. One extra side per fold is 15{,}840. The surplus
+is what buys the extra turnovers; the residue is the $+0.3\%$.
+
+\section{Mechanism details}
+
+\textbf{Both retirement channels are steered.} \texttt{swap\_refresh\_side}
+retires base-degree slots only, by design. But a third of all references live
+in the degree-3 tower term, and a member held there would never come free ---
+the tail alone would cap the turnover rate. So steering drops the degree
+filter, and \texttt{resource} (which can reach \emph{any} value) is steered as
+well. The replacement is always drawn at the \textsc{retired} slot's degree, so
+the per-value degree multiset --- the mask plan, hence the piling-up commitment
+--- is preserved exactly. A test pins this, because plan drift would move the
+security claim without moving anything that reports it.
+
+\medskip\noindent
+\textbf{Cheapest slot first.} Retirement cost is not flat: a base-degree slot
+emits one g57, while a degree-3 tower term is a 3-control conjunction the
+ladder re-spells into ${\sim}4$ gates. Steering therefore takes the
+lowest-degree candidate slot. This never blocks a tower reference --- when a
+variable's remaining references are all in tower terms, those are the only
+candidates --- it just stops paying tower prices for work a base term can do.
+Measured worth: $1.3\%$.
+
+\medskip\noindent
+\textbf{The rewrite is shared.} \texttt{rewrite\_var} is factored out of
+\texttt{retire\_refill} and used by both channels, so they put statistically
+identical material into the band and an A/B between them measures the
+\emph{schedule}, not the algebra. Its channel split is unchanged from the
+symmetric-ports revision: the linear pivot is \textsc{band-sourced only} (a
+carrier-sourced pivot is a verbatim linear copy of a masked payload-era state
+into the band --- the measured exact-window leak), while the product terms
+readmit carriers at \texttt{refill\_data}\%. The rewrite is a \textsc{shear},
+$b \mathrel{\XOR}= \delta$ rather than $b := \delta$, so balance carries over
+from the old value for free and each turnover raises the degree instead of
+resetting it.
+
+\medskip\noindent
+\textbf{Timing.} Rotation fires at fold boundaries only. The ladder borrows
+band wires as scratch mid-chain and restores them at the end of a fragment, so
+a rewrite landing between a borrow and its restore would corrupt the chain.
+
+\medskip\noindent
+$\triangle$~\textbf{The schedule must not become legible.} This is a
+\emph{rolling} set with random membership and one-at-a-time replacement,
+\textsc{not} a fixed partition swept in waves. Disjoint waves would print
+``these $|D|$ wires stopped being read together, then were all written'' ---
+exactly the signal the shuffled \texttt{retire\_queue} exists to avoid on the
+epoch path. Set size is $\min(12 \times \text{sides},\ \text{band}/6) = 42$ at
+$n=128$: large enough that steering finds a candidate, small enough to leave
+the draw pool comfortable.
+
+\section{The one invariant}
+
+\textbf{Nothing may name a variable that is being rewritten.} A stale reference
+count would let a live variable be overwritten, and the failure is silent ---
+the circuit still evaluates, it just computes the wrong thing. Guards, in order
+of strength:
+
+\begin{itemize}
+\item \texttt{rewrite\_var} \textbf{asserts unconditionally} (not
+\texttt{debug\_assert}) that \texttt{var\_refs[var] == 0}. Every passing build
+is evidence.
+\item \texttt{var\_refs} is maintained per band \textsc{variable}, not per
+wire. Slots name variables and rolling moves variables between wires, so a
+wire-indexed count would be wrong the moment \texttt{--prod-roll} fires.
+(\texttt{add\_refs}/\texttt{drop\_refs} now take the holding value and maintain
+a \texttt{var\_holders} reverse index; both were distributed-mode no-ops
+before.)
+\item The mechanism test recounts \texttt{var\_refs} from the live slots after
+a build and checks \texttt{strip\_all} leaves none behind.
+\item Every exactness test in the swap-refresh group runs at the production
+rate with a live drain set --- band variables are rewritten mid-body while
+masks are drawn and retired around them.
+\item \texttt{gen\_sandwich\_gadget}'s permanent forward \emph{and reverse}
+verify.
+\end{itemize}
+
+\section{Measured}
+
+$n=128$, same seed, 7{,}920 source gates, 256 values, 256 band variables, 512
+wires. Baseline is the 2026-08-20 stream (\texttt{PROD\_SWAP=2 PROD\_EPOCH=5
+PROD\_DRAIN=0}). All arms forward+reverse verified; 357/357 tests pass.
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+sides & turnovers & gates & vs baseline & steering hit rate \\
+\midrule
+baseline & 6.32 & 884{,}408 & --- & --- \\
+2 & 10.06 & 825{,}472 & $-6.7\%$ & 79.6\% \\
+\textbf{3 (shipped)} & \textbf{14.72} & \textbf{886{,}695} & $\mathbf{+0.3\%}$ & \textbf{91.8\%} \\
+4 & 18.62 & 940{,}240 & $+6.3\%$ & 95.8\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Two sides --- the \emph{unchanged} retirement rate --- already beats
+the old channel on both axes: 10.1 turnovers against 6.3, at 6.7\% \emph{fewer}
+gates. Everything above that is bought.
+
+\medskip\noindent
+$\triangle$~\textbf{Do not extrapolate the table.} Cost per side is not flat:
+raising the rate pushes an increasing share of retirements onto the expensive
+degree-3 tier, so the marginal side gets steadily worse. The knee is at 3.
+
+\subsection*{Two corrections to the a-priori estimates}
+
+\begin{enumerate}
+\item \textbf{The baseline is ${\sim}884$k gates, not 1.687M} --- ${\sim}112$
+gates per fold, not 213. The larger figure predates the 2026-08-22 peephole
+work.
+\item \textbf{Emissions are not uniform in cost.} Pricing every retirement at
+one g57 underestimated the degree-3 tier by ${\sim}4\times$. Steering blind to
+degree cost $+7.7\%$; the cheapest-slot rule recovered $1.3\%$ of that.
+\end{enumerate}
+
+\noindent In the other direction, turnovers per side came in \emph{higher} than
+predicted (${\sim}4.9$ vs 3.1), because sides 2 and up select the
+\textsc{value} through \texttt{drain\_pick} rather than being confined to the
+fold's own operands.
+
+\section{Knobs}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+setting & effect \\
+\midrule
+\texttt{PROD\_SWAP=n} & retirement \textsc{sides per fold}. Default 3.
+  \texttt{2} = the 2026-08-20 stream, \texttt{0} restores Gray. \\
+\texttt{PROD\_EPOCH=5} & restores the old release-paying channel. Both
+  double-pays. \\
+\texttt{PROD\_DRAIN=k} & drain-set size; \texttt{0} isolates the raised rate
+  as its own arm. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+$\triangle$~\texttt{swap\_refresh} \textbf{changed meaning} --- it was a flag,
+tested only $>0$; it is now a count. \texttt{PROD\_SWAP=1} no longer means what
+it used to.
+
+\medskip\noindent
+Read \texttt{turnovers=} in the \texttt{[prod]} report line, not the configured
+rate. The line also carries \texttt{drained=} (rewrites completed) and
+\texttt{steered=} (retirements that landed on a drain member --- if this is far
+below \texttt{swapped=}, steering is stalling and the rate is being wasted).
+
+\section{Scope}
+
+\textbf{This does not touch the gauntlet's linear correlations, and cannot.}
+Any correct refresh must emit its own delta, and that delta's flip bit is
+exactly the correction a flip-trace adversary needs: inject $m_{\mathrm{old}}$,
+patch $m_{\mathrm{old}} \XOR m_{\mathrm{new}}$, strip $m_{\mathrm{new}}$
+telescope. More generally, in an XOR-target gate set every wire value is affine
+in (init, flips), and the decode is $v = c \XOR \sum_i m_i$ with every $m_i$
+emitted by its own gate --- so additive masking is affinely transparent by
+construction. That is why the unprotected control, the secret-share arm, and
+the production gadget all scored 64 on \texttt{xtrace}. The lever there is the
+decode (see \texttt{ENCODED\_CHAIN\_DESIGN.md}), not the band.
+
+The drain set addresses the \textsc{function-lifetime} axis only. It is a real
+axis --- the elbow lands on the band size, $46 \to 45$ recovered,
+$256 \to 254$ --- but it is not the trace axis.
+
+\medskip\noindent
+\textbf{Not yet measured.} The write census wants re-running:
+\texttt{band = value count} was chosen so the band and carrier per-wire write
+distributions coincide (185/452/847 against 180/428/848 at $n=128$), and that
+was tuned at the old refresh rate. Raising the rate changes band write rates
+materially, and homogeneity is what stops a windowed census from isolating the
+band. \texttt{flip\_match} and \texttt{segment\_deduce} are also unre-run.
+
+\end{document}

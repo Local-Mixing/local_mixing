@@ -3169,10 +3169,33 @@ pub struct ProdConfig {
     /// that reject this witness should use
     /// [`ProdConfig::production_single_no_gray_phase_a`].
     pub gray_fold: usize,
-    /// Per-gate mask swap-with-refresh (0 = off). At every fold the target
-    /// value and one randomly chosen control value each retire one base-degree
-    /// mask term and gain a freshly drawn one, with the target-side emissions
-    /// interleaved INTERIOR to the fold's own fragment stream.
+    /// Per-gate mask swap-with-refresh: RETIREMENT SIDES PER FOLD (0 = off).
+    /// Side 1 is the target value, whose emissions are interleaved INTERIOR to
+    /// the fold's own fragment stream; sides 2.. are additional values (a
+    /// control, or a value steered by the drain set) whose emissions follow the
+    /// whole fold. Each side retires one mask term and gains a freshly drawn
+    /// one of the same degree.
+    ///
+    /// ⚠️ SEMANTICS CHANGED 2026-08-24: this was previously a flag, and the
+    /// fold always did exactly target + one control. `PROD_SWAP=2` reproduces
+    /// that stream; `PROD_SWAP=0` still restores the Gray stream byte-for-byte.
+    /// The rate is now a knob because it is the BANDWIDTH the drain set spends
+    /// (see [`ProdLedger::drain_rotate`]): band turnovers over a circuit are
+    /// `sides * folds / (values * factors-per-value)`. Measured at n=128
+    /// against the 2026-08-20 stream's 884,408 gates / 6.32 turnovers, same
+    /// seed, all arms forward+reverse verified:
+    ///
+    /// | sides | turnovers | gates    | vs baseline |
+    /// |-------|-----------|----------|-------------|
+    /// | 2     | 10.06     |  825,472 | -6.7%       |
+    /// | 3     | 14.72     |  886,695 | +0.3%       |
+    /// | 4     | 18.62     |  940,240 | +6.3%       |
+    ///
+    /// ⚠️ Cost per side is NOT flat, so do not extrapolate the table: a
+    /// base-degree retirement is one g57, a degree-3 tower term is a 3-control
+    /// conjunction the ladder re-spells into ~4 gates. Steering prefers the
+    /// cheaper slot (see `drain_pick_slot`), so raising the rate pushes an
+    /// increasing share of the work onto the expensive tier.
     ///
     /// WHY: with a time-invariant mask set, the masks cancel in every
     /// before/after XOR across a fold, leaving the exact GF(2) identity
@@ -3340,7 +3363,15 @@ impl ProdConfig {
             // pair it breaks is the double sweep's.
             rung_menu: 1,
 
-            epoch: 5,
+            // OFF: the drain set (swap_refresh below) supersedes this channel.
+            // Both do the same job -- turn a band variable's Boolean function
+            // over so it stops being a lifetime signature -- but this one PAYS
+            // to release the variable (~10 live references x 2 emissions =
+            // ~23 gates per event, ~2.1% of the circuit for ~6 turnovers),
+            // while the drain set steers retirements the fold is making anyway
+            // and pays only the rewrite. `PROD_EPOCH=5` restores it for the
+            // A/B; running both double-pays and inflates the turnover count.
+            epoch: 0,
             refill_data: 50,
             single: 1,
             // ON. The fold no longer emits a single wide fragment, and
@@ -3360,7 +3391,14 @@ impl ProdConfig {
             // linear relation between source wire-segment XORs and gadget
             // wire-segment XORs, and give reverse evaluation the same
             // structural entry as forward evaluation.
-            swap_refresh: 1,
+            //
+            // 3 sides, not the redesign's 2: the extra one is what the drain
+            // set spends to reach 14.7 band turnovers instead of the epoch
+            // channel's 6.3 — 2.3x the turnover for +0.3% gates, because
+            // dropping `epoch` above pays for it almost exactly. 4 sides
+            // reaches 18.6 but costs +6.3%, which is the wrong side of the
+            // knee; see the measured table on ProdConfig::swap_refresh.
+            swap_refresh: 3,
             close_slice: 1,
         }
     }
@@ -5014,7 +5052,35 @@ struct ProdLedger {
     rung_menu: usize,
     /// refs[wire] = live slot factors naming that wire. A wire with refs > 0
     /// is "named": nothing may write it until every naming slot is released.
+    /// Distributed sourcing only — the banded build's analogue is `var_refs`,
+    /// which counts band VARIABLES (slots name variables, and rolling moves
+    /// variables between wires, so a wire-indexed count would be wrong the
+    /// moment `--prod-roll` fires).
     refs: Vec<u32>,
+    /// var_refs[var] = live slot factors naming that band variable. Zero means
+    /// the variable's value can be rewritten with no bookkeeping at all: no
+    /// mask reads it, so no carrier has to be patched. That is the whole
+    /// economics of the drain set.
+    var_refs: Vec<u32>,
+    /// var_holders[var] = the values holding a live slot that names `var`, as
+    /// a multiset (a value appears once per naming slot). The reverse index
+    /// that makes retirement steering O(1) instead of a scan over every value.
+    var_holders: Vec<Vec<u32>>,
+    /// The DRAIN SET: band variables excluded from fresh slot draws, so their
+    /// reference counts only fall. Retirement steering prefers slots naming a
+    /// member; a member that reaches zero references is rewritten for a couple
+    /// of gates and swapped out for a fresh variable. See `drain_rotate`.
+    drain: Vec<u16>,
+    /// Target drain-set size (0 = off). Sized off the retirement rate: the set
+    /// has to be big enough that a fold's values usually hold a member's
+    /// reference, or steering stalls and the rate is wasted.
+    drain_cap: usize,
+    /// Retirement sides per fold (see [`ProdConfig::swap_refresh`]).
+    swap_sides: usize,
+    /// Refill channel config, kept here because the drain rewrite shares
+    /// `retire_refill`'s emission shape (see `rewrite_var`).
+    refill_data: usize,
+    fill_nl: usize,
     /// owner[wire] = the value currently carrying on that wire, refreshed
     /// from `GadgetState::pairs` whenever the pairing changes.
     owner: Vec<u32>,
@@ -5050,6 +5116,11 @@ struct ProdLedger {
     rolled: u64,
     migrated: u64,
     retired: u64,
+    /// Drain-set refreshes completed, and retirements that steering placed on
+    /// a drain member (the numerator and the bandwidth behind the turnover
+    /// count `drained / band`).
+    drained: u64,
+    drain_steered: u64,
     next_retire: usize,
     /// Shuffled sweep order for retirement (see `retire_refill`).
     retire_queue: Vec<u16>,
@@ -5073,6 +5144,34 @@ struct ProdLedger {
     distributed_fold_fragments: Vec<usize>,
     distributed_fold_floors: Vec<usize>,
     ledger_consts: u64,
+}
+
+/// Target drain-set size for a config, or 0 when the mechanism is off.
+///
+/// Two competing pressures. Too SMALL and steering stalls: a retirement can
+/// only touch a slot of the value the fold happens to be folding, so the set
+/// has to be broad enough that those values usually hold a member's reference
+/// — with `|D|` members at ~`f` references each spread over `n` values, a
+/// value holds one with probability `1 - exp(-|D|*f/n)`, which wants `|D|` on
+/// the order of the retirement rate times a constant. Too LARGE and the draw
+/// pool shrinks: every member is excluded from `draw_slot`, and the band is
+/// also carrying the disjointness and no-repeat constraints.
+///
+/// `PROD_DRAIN` overrides for the A/B (0 disables the drain set entirely,
+/// leaving the raised retirement rate as an isolated arm).
+fn drain_cap(cfg: &ProdConfig, band_len: usize) -> usize {
+    if !cfg.enabled() || cfg.dist() || cfg.swap_refresh == 0 || band_len == 0 {
+        return 0;
+    }
+    if let Ok(v) = std::env::var("PROD_DRAIN") {
+        if let Ok(v) = v.parse::<usize>() {
+            return v.min(band_len.saturating_sub(cfg.max_deg() + 1));
+        }
+    }
+    // band/6 is the ceiling that keeps the draw pool comfortable at every
+    // sizing that ships (42 of 256 at n=128); 12 per side is what availability
+    // wants at the production reference count.
+    (12 * cfg.swap_refresh).min(band_len / 6)
 }
 
 impl ProdLedger {
@@ -5144,6 +5243,13 @@ impl ProdLedger {
             cg_jitter: cfg.cg_jitter,
             rung_menu: cfg.rung_menu,
             refs: vec![0; carrier_total],
+            var_refs: vec![0; band_len],
+            var_holders: vec![Vec::new(); band_len],
+            drain: Vec::new(),
+            drain_cap: drain_cap(cfg, band_len),
+            swap_sides: cfg.swap_refresh,
+            refill_data: cfg.refill_data,
+            fill_nl: cfg.fill_nl,
             owner: vec![u32::MAX; carrier_total],
             hits,
             cursor: vec![0; n],
@@ -5160,6 +5266,8 @@ impl ProdLedger {
             rolled: 0,
             migrated: 0,
             retired: 0,
+            drained: 0,
+            drain_steered: 0,
             next_retire: 0,
             retire_queue: Vec::new(),
             refill_used_carriers: false,
@@ -5221,18 +5329,42 @@ impl ProdLedger {
         hits.get(*cur).copied().unwrap_or(usize::MAX)
     }
 
-    fn add_refs(&mut self, slot: &ProdSlot) {
+    /// Register a slot's factors. `value` is the holder, which the banded
+    /// build needs for the reverse index (`var_holders`) that retirement
+    /// steering reads; distributed sourcing keeps its wire-indexed count.
+    ///
+    /// ⚠️ Every `slots[value].push` must be paired with this and every
+    /// `slots[value].remove` with `drop_refs`, or `var_refs` goes stale — and
+    /// a stale zero is what would let `rewrite_var` overwrite a LIVE band
+    /// variable and silently break the decode. `emit_slot` debug-asserts the
+    /// invariant from the other side.
+    fn add_refs(&mut self, value: usize, slot: &ProdSlot) {
         if self.dist {
             for w in slot.wires() {
                 self.refs[w] += 1;
             }
+            return;
+        }
+        for &(b, _) in &slot.factors {
+            self.var_refs[b as usize] += 1;
+            self.var_holders[b as usize].push(value as u32);
         }
     }
 
-    fn drop_refs(&mut self, slot: &ProdSlot) {
+    fn drop_refs(&mut self, value: usize, slot: &ProdSlot) {
         if self.dist {
             for w in slot.wires() {
                 self.refs[w] -= 1;
+            }
+            return;
+        }
+        for &(b, _) in &slot.factors {
+            self.var_refs[b as usize] -= 1;
+            let holders = &mut self.var_holders[b as usize];
+            if let Some(p) = holders.iter().position(|&v| v == value as u32) {
+                holders.swap_remove(p);
+            } else {
+                debug_assert!(false, "var_holders[{b}] lost value {value}");
             }
         }
     }
@@ -5414,10 +5546,18 @@ impl ProdLedger {
             && std::env::var("PROD_DISJOINT")
                 .map(|v| v != "0")
                 .unwrap_or(true);
+        // Drain-set members take no new references — that is what lets their
+        // counts fall to zero and makes the rewrite free. Defensive width
+        // check for the same reason `enforce` has one: excluding more of the
+        // band than it can spare would spin the draw loop below forever.
+        let hold_drain = (band_len as usize).saturating_sub(self.drain.len()) >= deg + 1;
         for _ in 0..100_000 {
             let mut vars: Vec<u16> = Vec::with_capacity(deg);
             while vars.len() < deg {
                 let b = rng.random_range(0..band_len);
+                if hold_drain && self.drain.contains(&b) {
+                    continue;
+                }
                 if !vars.contains(&b) && !(enforce && taken.contains(&b)) {
                     vars.push(b);
                 }
@@ -5550,7 +5690,7 @@ impl ProdLedger {
         };
         let konst = self.emit_slot(value, &slot, state, rng, out);
         self.consts[value] ^= konst;
-        self.add_refs(&slot);
+        self.add_refs(value, &slot);
         self.slots[value].push(slot);
         self.injected += 1;
     }
@@ -5592,7 +5732,7 @@ impl ProdLedger {
             let old = self.slots[value].remove(idx);
             let konst = self.emit_slot(value, &old, state, rng, out);
             self.consts[value] ^= konst;
-            self.drop_refs(&old);
+            self.drop_refs(value, &old);
             self.used.remove(&old);
             self.migrated += 1;
         }
@@ -5860,17 +6000,31 @@ impl ProdLedger {
         if !self.enabled() {
             return;
         }
-        let value = rng.random_range(0..state.n);
-        if self.slots[value].is_empty() {
-            return;
-        }
-        let old_index = rng.random_range(0..self.slots[value].len());
+        // Steered at the drain set when one is running: this channel can reach
+        // ANY value, which is what makes it the drain's cover for the tiers
+        // `swap_refresh_side` cannot touch (it retires base-degree slots only,
+        // so a drain member held by the deg-3 tower term would otherwise never
+        // come free and would cap the turnover rate on its own).
+        let steered = self.drain_pick(rng);
+        let (value, old_index) = match steered {
+            Some(vs) => {
+                self.drain_steered += 1;
+                vs
+            }
+            None => {
+                let value = rng.random_range(0..state.n);
+                if self.slots[value].is_empty() {
+                    return;
+                }
+                (value, rng.random_range(0..self.slots[value].len()))
+            }
+        };
         let deg = self.slots[value][old_index].factors.len();
         self.inject(value, deg, state, rng, out);
         let old = self.slots[value].remove(old_index);
         let konst = self.emit_slot(value, &old, state, rng, out);
         self.consts[value] ^= konst;
-        self.drop_refs(&old);
+        self.drop_refs(value, &old);
         self.used.remove(&old);
         self.resourced += 1;
     }
@@ -5882,7 +6036,15 @@ impl ProdLedger {
     /// in the fold's fragment stream (inject strictly interior, strip at or
     /// after it — the inject-first order is `resource`'s never-momentarily-
     /// bare rule). Returns false, emitting nothing, when the value holds no
-    /// base-degree slot to retire.
+    /// slot to retire.
+    ///
+    /// WHICH slot is retired is where the drain set gets its bandwidth: a slot
+    /// naming a draining variable is preferred over the ordinary base-degree
+    /// pick, and the degree filter is dropped for it (the tower term holds
+    /// references too, and leaving them to `resource` alone is what would make
+    /// the drain tail the binding constraint). The replacement is drawn at the
+    /// RETIRED slot's degree either way, so the per-value degree multiset --
+    /// the mask plan a build commits to -- is preserved exactly.
     ///
     /// The fresh draw takes new band positions, never a polarity re-roll of
     /// the retired slot: the XOR of two polarity variants of one product is
@@ -5903,29 +6065,191 @@ impl ProdLedger {
             // stays off rather than emit an unaudited dist draw.
             return false;
         }
-        let deg = self.plan.first().copied().unwrap_or(2);
-        let cands: Vec<usize> = self.slots[value]
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.factors.len() == deg)
-            .map(|(i, _)| i)
-            .collect();
-        if cands.is_empty() {
-            return false;
-        }
-        let old_index = cands[rng.random_range(0..cands.len())];
+        let base = self.plan.first().copied().unwrap_or(2);
+        let old_index = match self.drain_pick_slot(value, rng) {
+            Some(idx) => {
+                self.drain_steered += 1;
+                idx
+            }
+            None => {
+                let cands: Vec<usize> = self.slots[value]
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.factors.len() == base)
+                    .map(|(i, _)| i)
+                    .collect();
+                if cands.is_empty() {
+                    return false;
+                }
+                cands[rng.random_range(0..cands.len())]
+            }
+        };
+        let deg = self.slots[value][old_index].factors.len();
         let slot = self.draw_slot(value, deg, rng);
         let konst = self.emit_slot(value, &slot, state, rng, inject_buf);
         self.consts[value] ^= konst;
-        self.add_refs(&slot);
+        self.add_refs(value, &slot);
         self.slots[value].push(slot);
         let old = self.slots[value].remove(old_index);
         let konst = self.emit_slot(value, &old, state, rng, strip_buf);
         self.consts[value] ^= konst;
-        self.drop_refs(&old);
+        self.drop_refs(value, &old);
         self.used.remove(&old);
         self.swapped += 1;
         true
+    }
+
+    // ---- the drain set -------------------------------------------------
+    //
+    // A band variable is cheap to refresh exactly when nothing reads it: the
+    // wire is overwritten and no carrier has to be patched. Referenced, it
+    // costs ~2 emissions per naming slot to release first (`retire_refill`).
+    // At production the reference count is the factors-per-value figure --
+    // band = value count, so R = sum(plan) ~ 10 -- and an unreferenced
+    // variable essentially never occurs by chance (e^-10).
+    //
+    // So it is arranged instead of waited for. A rolling set D of variables is
+    // excluded from every fresh draw, so its counts only fall; retirement
+    // steering aims the churn `swap_refresh` and `resource` are performing
+    // ANYWAY at slots naming a member; a member that reaches zero is rewritten
+    // and swapped out for a fresh variable. The retirements are not extra work
+    // -- only their TARGETS changed -- so turnover costs the rewrite alone.
+    //
+    // Turnovers over a circuit = sides * folds / (values * factors-per-value).
+    // The rate is `swap_refresh`; at n=128 two sides buy ~6 turnovers and four
+    // buy ~12, which is why the production rate moved to 4.
+    //
+    // ⚠️ The schedule must not become legible. This is a ROLLING set with
+    // random membership and one-at-a-time replacement, not a fixed partition
+    // swept in waves: disjoint waves would print "these |D| wires stopped
+    // being read together, then were all written", the same signal the
+    // shuffled `retire_queue` exists to avoid on the epoch path.
+
+    /// Seed the drain set (lazily, at the first rotation — `new` has no rng).
+    fn drain_init(&mut self, rng: &mut impl Rng) {
+        while self.drain.len() < self.drain_cap {
+            let Some(var) = self.drain_admit(rng) else {
+                break;
+            };
+            self.drain.push(var);
+        }
+    }
+
+    /// A uniformly drawn variable not already draining, or None if the band
+    /// has none to spare.
+    fn drain_admit(&self, rng: &mut impl Rng) -> Option<u16> {
+        let band_len = self.loc.len();
+        if band_len <= self.drain.len() {
+            return None;
+        }
+        for _ in 0..64 {
+            let var = rng.random_range(0..band_len as u16);
+            if !self.drain.contains(&var) {
+                return Some(var);
+            }
+        }
+        (0..band_len as u16).find(|v| !self.drain.contains(v))
+    }
+
+    /// Index of a slot of `value` naming a draining variable, if any.
+    ///
+    /// Among the candidates the CHEAPEST degree wins, because retirement cost
+    /// is not flat: a base-degree slot emits one g57, while a tower term is a
+    /// 3-control conjunction the ladder re-spells into several gates (measured
+    /// at n=128: steering blind to degree cost +7.7% gates, and dropping the
+    /// tower terms to last-resort recovers most of it). This never blocks a
+    /// tower reference — when a variable's remaining references are all in
+    /// tower terms, those are the only candidates and get picked — it just
+    /// stops paying tower prices for work a base term could do.
+    fn drain_pick_slot(&self, value: usize, rng: &mut impl Rng) -> Option<usize> {
+        if self.drain.is_empty() {
+            return None;
+        }
+        let cheapest = self.slots[value]
+            .iter()
+            .filter(|s| s.factors.iter().any(|&(b, _)| self.drain.contains(&b)))
+            .map(|s| s.factors.len())
+            .min()?;
+        let cands: Vec<usize> = self.slots[value]
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                s.factors.len() == cheapest
+                    && s.factors.iter().any(|&(b, _)| self.drain.contains(&b))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        Some(cands[rng.random_range(0..cands.len())])
+    }
+
+    /// A (value, slot index) pair holding a live reference to a draining
+    /// variable, found through the reverse index rather than by scanning every
+    /// value. Members are visited in random order so a stalled member does not
+    /// monopolize the channel.
+    fn drain_pick(&self, rng: &mut impl Rng) -> Option<(usize, usize)> {
+        if self.drain.is_empty() {
+            return None;
+        }
+        let start = rng.random_range(0..self.drain.len());
+        for offset in 0..self.drain.len() {
+            let var = self.drain[(start + offset) % self.drain.len()];
+            let holders = &self.var_holders[var as usize];
+            if holders.is_empty() {
+                continue;
+            }
+            let value = holders[rng.random_range(0..holders.len())] as usize;
+            // Cheapest naming slot, for the reason in `drain_pick_slot`.
+            if let Some(idx) = self.slots[value]
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.factors.iter().any(|&(b, _)| b == var))
+                .min_by_key(|(_, s)| s.factors.len())
+                .map(|(i, _)| i)
+            {
+                return Some((value, idx));
+            }
+            debug_assert!(false, "var_holders[{var}] names value {value} with no slot");
+        }
+        None
+    }
+
+    /// Refresh every drained member and admit replacements.
+    ///
+    /// Emitted at a fold boundary, never inside one: the ladder borrows band
+    /// wires as scratch mid-chain and restores them at the end of a fragment,
+    /// so a rewrite landing between a borrow and its restore would corrupt the
+    /// chain. A drained member is unreferenced by construction, so no live
+    /// mask and therefore no fold fragment reads it.
+    fn drain_rotate(&mut self, state: &GadgetState, rng: &mut impl Rng, out: &mut Vec<XGate>) {
+        if self.drain_cap == 0 || !self.enabled() || self.dist || self.loc.is_empty() {
+            return;
+        }
+        if self.drain.is_empty() {
+            self.drain_init(rng);
+            return;
+        }
+        // Snapshot the due members first. Replacements are admitted as we go,
+        // and a replacement can itself land on an unreferenced variable —
+        // iterating the live vector would then be unbounded. Anything admitted
+        // here that is already free is simply picked up by the next rotation.
+        let due: Vec<u16> = self
+            .drain
+            .iter()
+            .copied()
+            .filter(|&v| self.var_refs[v as usize] == 0)
+            .collect();
+        for var in due {
+            self.rewrite_var(var, state, self.refill_data, self.fill_nl, rng, out);
+            self.drained += 1;
+            // Retire the member BEFORE drawing its replacement, so the draw
+            // cannot hand back the variable just refreshed.
+            if let Some(p) = self.drain.iter().position(|&v| v == var) {
+                self.drain.swap_remove(p);
+            }
+            if let Some(fresh) = self.drain_admit(rng) {
+                self.drain.push(fresh);
+            }
+        }
     }
 
     /// Retire one band variable and rewrite it, so its Boolean function stops
@@ -5978,44 +6302,74 @@ impl ProdLedger {
             // Release the retired slot's wires. Without this refs[] only ever
             // grows on the epoch path, so wires stay permanently "named" and
             // the distributed draw's legal pool shrinks toward empty.
-            self.drop_refs(&old);
+            self.drop_refs(value, &old);
             self.used.remove(&old);
             self.migrated += 1;
         }
 
-        // 2. Rewrite the wire. Sources are other band wires, mixed with
-        //    carriers at `refill_data` percent -- see ProdConfig::refill_data
-        //    for why neither extreme is right.
+        // 2. Rewrite the wire.
+        self.rewrite_var(var, state, refill_data, fill_nl, rng, out);
+        self.retired += 1;
+    }
+
+    /// Rewrite one UNREFERENCED band variable's value: a band-sourced pivot
+    /// CNOT plus `fill_nl` product terms that readmit carriers at
+    /// `refill_data` percent. Shared by the epoch path (`retire_refill`, after
+    /// it has paid to release the variable) and the drain set (`drain_rotate`,
+    /// which waits until the release is free), so the two channels put
+    /// statistically identical material into the band and an A/B between them
+    /// measures the SCHEDULE, not the algebra.
+    ///
+    /// Sources are chosen BY ROLE, not by wire number. Rolling exchanges the
+    /// carrier and band roles, so a numeric range over `0..carrier_total`
+    /// does not mean "a carrier" -- it can land on a band variable, or on
+    /// the target wire itself, and then `refill_data` percent is not the
+    /// rate it claims to be. Carriers are reached through `state.pairs` and
+    /// band variables through `loc`, which are the two role maps.
+    /// Refill sourcing (symmetric-ports revision): the channels differ.
+    ///
+    /// The LINEAR skeleton — the pivot CNOT — is band-sourced ONLY. A
+    /// carrier-sourced pivot is a verbatim linear copy of a masked data
+    /// state into the band, and the low half is the payload's birthplace
+    /// mid-circuit (it holds C(x) from mid-C until the D block junks it);
+    /// the strip tail's mid-group windows cancelled the accompanying
+    /// masks and read a payload bit back out of exactly such a copy
+    /// (measured: exact all-band-reads windows at n=32 and n=128).
+    /// Band-sourcing the linear part also keeps it an invertible shear.
+    ///
+    /// The PRODUCT terms readmit carriers at `refill_data` percent, from
+    /// the full value range: a product of two masked carriers is degree-2
+    /// in the logical values — nothing a linear adversary can peel — and
+    /// carrier products are what keep the band honest three ways at once:
+    /// they re-couple its functions to computational progress (band-only
+    /// refills leave every future band value inside the algebra generated
+    /// by the initial band, with coefficients readable off the gate list),
+    /// they inject rank-independent material (band-only mixing can drift
+    /// into linear dependence and silently break joint uniformity), and
+    /// they make every refill cluster read across the band/carrier partition
+    /// (an all-band-reads refill is a transitive band-labeling channel for a
+    /// structural adversary).
+    ///
+    /// The rewrite is a SHEAR — `b ^= delta`, not `b := delta` — so the
+    /// variable's new function is its old one plus fresh material. Balance
+    /// carries over from the old value for free, and each turnover raises the
+    /// degree rather than resetting it.
+    fn rewrite_var(
+        &mut self,
+        var: u16,
+        state: &GadgetState,
+        refill_data: usize,
+        fill_nl: usize,
+        rng: &mut impl Rng,
+        out: &mut Vec<XGate>,
+    ) {
+        assert_eq!(
+            self.var_refs[var as usize], 0,
+            "rewrite of band variable {var} while {} live mask term(s) still name it: \
+             every naming slot must be released (epoch path) or drained (drain set) first",
+            self.var_refs[var as usize]
+        );
         let wire = self.loc[var as usize];
-        // Sources are chosen BY ROLE, not by wire number. Rolling exchanges the
-        // carrier and band roles, so a numeric range over `0..carrier_total`
-        // does not mean "a carrier" -- it can land on a band variable, or on
-        // the target wire itself, and then `refill_data` percent is not the
-        // rate it claims to be. Carriers are reached through `state.pairs` and
-        // band variables through `loc`, which are the two role maps.
-        // Refill sourcing (symmetric-ports revision): the channels differ.
-        //
-        // The LINEAR skeleton — the pivot CNOT — is band-sourced ONLY. A
-        // carrier-sourced pivot is a verbatim linear copy of a masked data
-        // state into the band, and the low half is the payload's birthplace
-        // mid-circuit (it holds C(x) from mid-C until the D block junks it);
-        // the strip tail's mid-group windows cancelled the accompanying
-        // masks and read a payload bit back out of exactly such a copy
-        // (measured: exact all-band-reads windows at n=32 and n=128).
-        // Band-sourcing the linear part also keeps it an invertible shear.
-        //
-        // The PRODUCT terms readmit carriers at `refill_data` percent, from
-        // the full value range: a product of two masked carriers is degree-2
-        // in the logical values — nothing a linear adversary can peel — and
-        // carrier products are what keep the band honest three ways at once:
-        // they re-couple its functions to computational progress (band-only
-        // refills leave every future band value inside the algebra generated
-        // by the initial band, with coefficients readable off the gate
-        // list), they inject rank-independent material (band-only mixing can
-        // drift into linear dependence and silently break joint uniformity),
-        // and they make every refill cluster read across the band/carrier
-        // partition (an all-band-reads refill is a transitive band-labeling
-        // channel for a structural adversary).
         let mut draw = |rng: &mut dyn rand::RngCore, allow_carrier: bool| -> u16 {
             let use_carrier = allow_carrier
                 && state.n > 0
@@ -6059,7 +6413,6 @@ impl ProdLedger {
         if refill_data > 0 {
             self.refill_used_carriers = true;
         }
-        self.retired += 1;
     }
 
     /// `inject_avoiding_var`: draw a replacement slot that does NOT name the
@@ -6103,10 +6456,17 @@ impl ProdLedger {
             || std::env::var("PROD_DISJOINT")
                 .map(|v| v == "0")
                 .unwrap_or(false);
+        // Same drain-set exclusion as `draw_slot` — this is a slot draw like
+        // any other, and a replacement that named a draining variable would
+        // push its count back up and stall the rotation.
+        let hold_drain = (band_len as usize).saturating_sub(self.drain.len()) >= deg + 1;
         for _ in 0..100_000 {
             let mut vars: Vec<u16> = Vec::with_capacity(deg);
             while vars.len() < deg {
                 let b = rng.random_range(0..band_len);
+                if hold_drain && self.drain.contains(&b) {
+                    continue;
+                }
                 let blocked = if relax { b == avoid } else { busy.contains(&b) };
                 if !blocked && !vars.contains(&b) {
                     vars.push(b);
@@ -6122,15 +6482,12 @@ impl ProdLedger {
                 self.used.insert(slot.clone());
                 let konst = self.emit_slot(value, &slot, state, rng, out);
                 self.consts[value] ^= konst;
-                // Register the new slot's wires, exactly as the ordinary inject
-                // does. Omitting this leaves refs[] under-counting a live slot,
-                // and refs[] is what invariant S is enforced with -- a wire
-                // could then be drawn as a mask source while still named.
-                // Currently masked because retire_refill returns early under
-                // distributed sourcing and add_refs is a no-op otherwise, so
-                // the two guards would have to be lifted together for this to
-                // bite; that is precisely the combination worth not leaving armed.
-                self.add_refs(&slot);
+                // Register the new slot, exactly as the ordinary inject does.
+                // Omitting this under-counts a live slot, which is what
+                // invariant S is enforced with in the distributed build and
+                // what the drain set's zero-test reads in the banded one — a
+                // variable could be rewritten while a mask still names it.
+                self.add_refs(value, &slot);
                 self.slots[value].push(slot);
                 self.injected += 1;
                 return;
@@ -6274,7 +6631,7 @@ impl ProdLedger {
                 let old = self.slots[operand].remove(idx);
                 let konst = self.emit_slot(operand, &old, state, rng, out);
                 self.consts[operand] ^= konst;
-                self.drop_refs(&old);
+                self.drop_refs(operand, &old);
                 self.used.remove(&old);
                 self.migrated += 1;
             }
@@ -6351,12 +6708,24 @@ impl ProdLedger {
         let mut swap_t_strip: Vec<XGate> = Vec::new();
         let mut swap_c: Vec<XGate> = Vec::new();
         if swapping {
+            // Side 1 is the target, interleaved interior to the stream.
             self.swap_refresh_side(t, state, rng, &mut swap_t_inject, &mut swap_t_strip);
-            if !gate.ctrls.is_empty() {
-                let w = gate.ctrls[rng.random_range(0..gate.ctrls.len())].0 as usize;
+            // Sides 2.. follow the whole fold. Each prefers a value holding a
+            // draining reference and falls back to a random control, so the
+            // extra bandwidth goes where the drain set needs it; a side that
+            // lands on a value with nothing to retire simply emits nothing.
+            // Any value is a legal target here — these emissions write that
+            // value's own carrier and read only the band, exactly as `resource`
+            // does between folds.
+            for _ in 1..self.swap_sides {
+                let value = match self.drain_pick(rng) {
+                    Some((value, _)) => value,
+                    None if gate.ctrls.is_empty() => continue,
+                    None => gate.ctrls[rng.random_range(0..gate.ctrls.len())].0 as usize,
+                };
                 let mut inj = Vec::new();
                 let mut strip = Vec::new();
-                if self.swap_refresh_side(w, state, rng, &mut inj, &mut strip) {
+                if self.swap_refresh_side(value, state, rng, &mut inj, &mut strip) {
                     swap_c.extend(inj);
                     swap_c.extend(strip);
                 }
@@ -6425,6 +6794,7 @@ impl ProdLedger {
             self.fold_cg_narrow(t, &lists, state, rng, out);
             out.extend(swap_t_strip.drain(..));
             out.extend(swap_c.drain(..));
+            self.drain_rotate(state, rng, out);
             return;
         }
         // Odometer over the cartesian product (an empty `lists` — an X/NOT
@@ -6587,6 +6957,10 @@ impl ProdLedger {
         out.extend(swap_t_inject.drain(..));
         out.extend(swap_t_strip.drain(..));
         out.extend(swap_c.drain(..));
+        // At the fold boundary, with no ladder chain open and every fragment
+        // placed. The Gray early-returns above cannot reach here, but they are
+        // all guarded by `!swapping` and the drain set requires swap mode.
+        self.drain_rotate(state, rng, out);
     }
 
     /// Two dirty accumulator wires for the Gray fold, drawn by ROLE from the
@@ -7546,7 +7920,7 @@ impl ProdLedger {
                 let slot = self.slots[value].remove(0);
                 let konst = self.emit_slot(value, &slot, state, rng, out);
                 self.consts[value] ^= konst;
-                self.drop_refs(&slot);
+                self.drop_refs(value, &slot);
                 self.used.remove(&slot);
             }
             if self.consts[value] {
@@ -7592,6 +7966,7 @@ impl ProdLedger {
         if self.enabled() {
             println!(
                 "[prod] plan={:?} band={} src={} injected={} resourced={} swapped={} rolled={} migrated={} retired={} \
+                 drained={} turnovers={:.2} steered={} \
                  degen_rejects={} cg_fragments={} cg_narrow={} laddered={} gray_blocks={} fossils={} \
                  ledger_consts={}{}",
                 self.plan,
@@ -7603,6 +7978,15 @@ impl ProdLedger {
                 self.rolled,
                 self.migrated,
                 self.retired,
+                self.drained,
+                // Band turnovers actually achieved: the number the drain-set
+                // rate was chosen for. Read this, not the configured rate.
+                if self.loc.is_empty() {
+                    0.0
+                } else {
+                    self.drained as f64 / self.loc.len() as f64
+                },
+                self.drain_steered,
                 self.degenerate_rejects,
                 self.cg_fragments,
                 self.cg_narrow,
@@ -7610,7 +7994,11 @@ impl ProdLedger {
                 self.cg_gray,
                 self.cg_fossils,
                 self.ledger_consts,
-                if self.retired > 0 && self.refill_used_carriers {
+                // Keyed on the flag alone, not on the epoch counter: the drain
+                // set rewrites through the same carrier-sourced product
+                // channel, so gating this on `retired` would silently drop the
+                // caveat the moment `epoch` went to 0.
+                if self.refill_used_carriers {
                     "  [port-uniformity forfeited: carrier-sourced refills]"
                 } else {
                     ""
@@ -16544,16 +16932,28 @@ mod cnot_gadget_tests {
             "free spelling variability is on -- it costs nothing"
         );
         assert_eq!(p.cg_jitter, 50, "block-count entropy at its maximum");
+        // A frozen band is recoverable by FUNCTION LIFETIME alone, so some
+        // channel must turn the band's functions over. Since 2026-08-24 that
+        // is the drain set rather than `epoch`: it steers retirements the fold
+        // already makes instead of paying to release a live variable, so it
+        // buys ~2x the turnovers for less than `epoch` cost. Exactly one of
+        // the two should be running -- both is double payment, neither is a
+        // frozen band.
         assert!(
-            p.epoch > 0,
-            "a frozen band is recoverable by function lifetime"
+            (p.epoch > 0) ^ (p.swap_refresh > 0 && drain_cap(&p, p.band_size(128)) > 0),
+            "a frozen band is recoverable by function lifetime: run the drain set \
+             (swap_refresh > 0) or the epoch channel, not both and not neither"
         );
         assert_eq!(p.fill_pivots, 0, "band = n leaves the pivot block no room");
         // The 2026-08-20 redesign: without the per-gate swap the masks cancel
         // in every fold's before/after XOR (carrier delta == source delta,
         // measured 100% on linear gates); without the closing block the
         // zero-slice phase exists at the input port only.
-        assert_eq!(p.swap_refresh, 1, "per-gate mask swap-with-refresh is the default");
+        assert_eq!(
+            p.swap_refresh, 3,
+            "per-gate mask swap-with-refresh is the default, at the 3 retirement \
+             sides that buy 14.7 band turnovers for +0.3% gates (2 = the 2026-08-20 stream)"
+        );
         assert_eq!(p.close_slice, 1, "the closing zero-slice block is the default");
     }
 
@@ -17398,7 +17798,11 @@ mod cnot_gadget_tests {
     fn swap_test_config() -> ProdConfig {
         let mut p = ProdConfig::production_single();
         p.cg_jitter = 0;
-        p.swap_refresh = 1;
+        // The production rate, so every exactness test in this group runs with
+        // a LIVE DRAIN SET: band variables are rewritten mid-body while masks
+        // are being drawn and retired around them, which is precisely where a
+        // bookkeeping slip would corrupt the endpoint.
+        p.swap_refresh = 3;
         p.close_slice = 1;
         // At toy n the auto band (= n) leaves a value's disjointness draw a
         // single free pair, and the per-gate refresh churn exhausts its four
@@ -17436,6 +17840,98 @@ mod cnot_gadget_tests {
             gates.push(gate);
         }
         gates
+    }
+
+    /// The drain set turns the band over by SCHEDULING rather than by luck,
+    /// and the turnover count scales with the retirement rate.
+    ///
+    /// Exactness under a live drain set is covered by the zero-slice tests
+    /// below (`swap_test_config` runs at the production rate), so this one
+    /// checks the mechanism: variables actually reach zero references and get
+    /// rewritten, more retirement sides buy more turnovers, and the reference
+    /// bookkeeping the whole thing rests on agrees with the live slots at the
+    /// end. `rewrite_var` asserts unconditionally that nothing names a
+    /// variable it overwrites, so a passing build is also evidence for the one
+    /// invariant that would silently corrupt the decode.
+    #[test]
+    fn drain_set_turns_the_band_over_and_scales_with_the_rate() {
+        let n = 16usize;
+        let mut turnovers: Vec<u64> = Vec::new();
+        for sides in [2usize, 4] {
+            let mut prod = swap_test_config();
+            prod.swap_refresh = sides;
+            prod.band = 48;
+            let band_len = prod.band_size(n);
+            let mut rng = StdRng::seed_from_u64(0xd7a1_0000 + sides as u64);
+            let source = swap_test_source(n as u16, &mut rng);
+            let state = GadgetState {
+                n,
+                pairs: (0..n).map(|w| (w, w)).collect(),
+            };
+            let mut ledger = ProdLedger::new(n, &prod, n, None);
+            let mut out: Vec<XGate> = Vec::new();
+            ledger.inject_all(&state, &mut rng, &mut out);
+            assert!(ledger.drain_cap > 0, "sides={sides} drain set is not running");
+            let plan_before: Vec<Vec<usize>> = (0..n)
+                .map(|v| {
+                    let mut d: Vec<usize> =
+                        ledger.slots[v].iter().map(|s| s.factors.len()).collect();
+                    d.sort_unstable();
+                    d
+                })
+                .collect();
+            for gate in &source {
+                ledger.fold_cg(gate, &state, &mut rng, &mut out);
+            }
+            // Steering retires whatever degree it lands on, so the replacement
+            // MUST be drawn at the retired slot's degree: the per-value degree
+            // multiset is the mask plan, and the piling-up bound a build
+            // commits to is read straight off it. Drift here would move the
+            // security claim without moving anything that reports it.
+            for value in 0..n {
+                let mut after: Vec<usize> = ledger.slots[value]
+                    .iter()
+                    .map(|s| s.factors.len())
+                    .collect();
+                after.sort_unstable();
+                assert_eq!(
+                    after, plan_before[value],
+                    "sides={sides} value {value} mask plan drifted"
+                );
+            }
+            assert!(
+                ledger.drained > 0,
+                "sides={sides} no band variable ever came free: steering is stalled"
+            );
+            // The counts the rewrite guard reads must match the live slots. A
+            // stale ZERO here is the failure that matters -- it would let a
+            // referenced variable be overwritten -- so recount from scratch
+            // rather than trusting the incremental path that produced them.
+            let mut recount = vec![0u32; band_len];
+            for value in 0..n {
+                for slot in &ledger.slots[value] {
+                    for &(b, _) in &slot.factors {
+                        recount[b as usize] += 1;
+                    }
+                }
+            }
+            assert_eq!(
+                ledger.var_refs, recount,
+                "sides={sides} var_refs drifted from the live slots"
+            );
+            ledger.strip_all(&state, &mut rng, &mut out);
+            assert!(
+                ledger.var_refs.iter().all(|&r| r == 0),
+                "sides={sides} strip_all left live references behind"
+            );
+            turnovers.push(ledger.drained);
+        }
+        assert!(
+            turnovers[1] > turnovers[0],
+            "retirement rate is the turnover lever, but 4 sides bought {} against 2 sides' {}",
+            turnovers[1],
+            turnovers[0]
+        );
     }
 
     /// The 2026-08-20 swap-refresh redesign preserves the function exactly:
