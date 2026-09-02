@@ -16,7 +16,9 @@ fn main() {
     if a.len() < 3 {
         eprintln!(
             "usage: blinded_v5_gadgetize <src> <out> [K=16] [R=0(auto=n)] [N=0(floor)] \
-             [seed=1] [blinded|plain] [rerand_dose=0] [discipline=0|1|2] [structural|adaptive]"
+             [seed=1] [blinded|cnot|plain] [rerand_dose=0] [discipline=0|1|2] [structural|adaptive]\n\
+             modes: blinded = t-pin read (k2->k3); cnot = single-CNOT blinded read (leaks d+e at k2); \
+             plain = unmask-read-remask (leaks k1)"
         );
         std::process::exit(2);
     }
@@ -37,7 +39,8 @@ fn main() {
         r,
         n_target,
         seed,
-        blinded: mode == "blinded",
+        blinded: mode == "blinded" || mode == "cnot",
+        tpin: mode == "blinded",
         rerand_dose,
         discipline,
         adaptive_rerand: rerand_mode == "adaptive",

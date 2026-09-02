@@ -26,6 +26,7 @@
 //! read, no rerand.
 
 use crate::circuit::xgate::XGate;
+use crate::preprocessing::gadgets::commuting_shuffle;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashSet;
@@ -46,6 +47,12 @@ pub struct BlindedV5Params {
     /// `true` = cofactor-blinded read (internal k=1 = 0); `false` = plain V5
     /// unmask-read-remask (leaks k=1).
     pub blinded: bool,
+    /// `true` = t-pin blinded read (a fresh pin splits the cofactor into two
+    /// stages so the operand XOR `d+e` is never on a wire; raises the
+    /// comeback degree, k=2 -> k=3, at ~2x the read cost). Only meaningful
+    /// with `blinded`. `false` = the single-CNOT blinded read (leaks `d+e`
+    /// at k=2).
+    pub tpin: bool,
     /// Rerand dose (aux rerandomisation gates). `0` = off.
     pub rerand_dose: usize,
     /// Data/aux discipline level: 0 = off, 1 = bare scratch, 2 = masked scratch.
@@ -66,6 +73,7 @@ impl BlindedV5Params {
             n_target: 0, // floor
             seed,
             blinded: true,
+            tpin: true,
             rerand_dose: 0,
             discipline: 2,
             adaptive_rerand: false,
@@ -152,80 +160,147 @@ fn apply_discipline(
     out
 }
 
-/// 256-lane data output of `gates` (aux start at 0), optionally with `cand`
-/// inserted at position `at`. Returns the np data-wire value vectors.
-fn data_out(
-    gates: &[XGate],
-    at: usize,
-    cand: Option<&XGate>,
-    np: usize,
-    nw: usize,
-    inputs: &[[u64; 4]],
-) -> Vec<[u64; 4]> {
-    let mut st = vec![[0u64; 4]; nw];
-    st[..np].copy_from_slice(&inputs[..np]);
-    for (i, g) in gates.iter().enumerate() {
-        if let (Some(c), true) = (cand, i == at) {
-            c.apply_lanes4(&mut st);
+/// Bit-sliced fire value of `g` on a 4-lane (256-sample) state: comp XOR the AND
+/// of the (possibly negated) control lanes.
+#[inline]
+fn gate_fire(g: &XGate, s: &[[u64; 4]]) -> [u64; 4] {
+    let mut acc = [!0u64; 4];
+    for &(w, p) in &g.ctrls {
+        let v = s[w as usize];
+        if p {
+            for l in 0..4 {
+                acc[l] &= v[l];
+            }
+        } else {
+            for l in 0..4 {
+                acc[l] &= !v[l];
+            }
         }
-        g.apply_lanes4(&mut st);
     }
-    if let (Some(c), true) = (cand, at >= gates.len()) {
-        c.apply_lanes4(&mut st);
+    if g.comp {
+        for l in 0..4 {
+            acc[l] = !acc[l];
+        }
     }
-    st[..np].to_vec()
+    acc
 }
 
-/// CHANGE 2, local-adaptive form: with NO structural knowledge, repeatedly try a
-/// random rerand gate aux_t ^= data_d & aux_c at a random position; keep it iff
-/// the circuit still computes C (256-lane functional check). Rejected candidates
-/// are retried (a "tweak" pass nudges the position a few gates before giving up).
-/// Meant to run AFTER a global gate-location shuffle, so it can't and doesn't use
-/// the mask schedule. Returns (accepted, attempts).
-fn adaptive_rerand(
-    gates: &mut Vec<XGate>,
-    c_out: &[[u64; 4]],
-    inputs: &[[u64; 4]],
+/// Sound, incremental validity check for a candidate rerand gate inserted just
+/// before `fwd[0]`, given the base state `st` at that point. Propagates the
+/// candidate's aux perturbation forward on both the base and perturbed branches
+/// and REJECTS the instant it would reach a DATA wire (0..np); ACCEPTS if the
+/// perturbation stays clear of every data wire through to the end (or fully
+/// reconverges first). An accepted candidate provably preserves the data output
+/// — it only rerandomises aux values the computation never reads downstream, the
+/// data-neutral churn we want after a global float — which is why the check can
+/// stop at the perturbation's forward reach instead of re-simulating the whole
+/// circuit and comparing full states per trial. (Aux that ARE read into a
+/// balanced mask are rejected here: they only rebalance at their unmask and the
+/// safety margin is not worth chasing; the free-aux churn suffices.)
+fn rerand_preserves_data(st: &[[u64; 4]], fwd: &[XGate], cand: &XGate, np: usize) -> bool {
+    let mut sb = st.to_vec(); // base branch
+    let mut sc = st.to_vec(); // candidate branch
+    let f = gate_fire(cand, &sc);
+    let t = cand.target as usize;
+    for l in 0..4 {
+        sc[t][l] ^= f[l];
+    }
+    if sc[t] == sb[t] {
+        return false; // degenerate no-op candidate
+    }
+    let mut ndiff = 1usize; // wires where sb != sc
+    for g in fwd {
+        let tt = g.target as usize;
+        let before = sb[tt] != sc[tt];
+        let fb = gate_fire(g, &sb);
+        let fc = gate_fire(g, &sc);
+        for l in 0..4 {
+            sb[tt][l] ^= fb[l];
+            sc[tt][l] ^= fc[l];
+        }
+        let after = sb[tt] != sc[tt];
+        if before != after {
+            if after {
+                ndiff += 1;
+            } else {
+                ndiff -= 1;
+            }
+        }
+        if tt < np && after {
+            return false; // perturbation reached a data output
+        }
+        if ndiff == 0 {
+            return true; // fully reconverged: data (and all else) provably preserved
+        }
+    }
+    true // reached the end with data never disturbed
+}
+
+/// CHANGE 2, local-adaptive form: with NO structural knowledge, sweep a cursor
+/// forward maintaining the base state; at spread-out positions try a random
+/// rerand gate aux_t ^= data_d & aux_c and keep it iff it provably preserves the
+/// data output ([`rerand_preserves_data`], a 256-sample check). Meant to run
+/// AFTER a global gate-location shuffle so it cannot use the mask schedule.
+/// Returns (rewritten gate list, accepted count).
+fn adaptive_rerand_incremental(
+    gates: &[XGate],
     np: usize,
     nw: usize,
     anc: &[u16],
     dose: usize,
+    inputs: &[[u64; 4]],
     rng: &mut StdRng,
-) -> (usize, usize) {
+) -> (Vec<XGate>, usize) {
     let r = anc.len();
+    let mut st = vec![[0u64; 4]; nw];
+    st[..np].copy_from_slice(&inputs[..np]); // aux start at 0, seeded by the gates
+    let mut out = Vec::with_capacity(gates.len() + dose);
     let mut accepted = 0usize;
-    let mut attempts = 0usize;
-    let cap = dose.saturating_mul(200).max(10_000);
-    while accepted < dose && attempts < cap {
-        attempts += 1;
-        let at0 = rng.random_range(0..=gates.len());
-        let at_anct = anc[rng.random_range(0..r)];
-        let dd = rng.random_range(0..np) as u16;
-        let mut ac = anc[rng.random_range(0..r)];
-        while ac == at_anct {
-            ac = anc[rng.random_range(0..r)];
-        }
-        let cand =
-            XGate::conj(at_anct, [(dd, rng.random_bool(0.5)), (ac, rng.random_bool(0.5))]).unwrap();
-        // try the position, then a few local nudges (the "tweak")
-        let mut placed = None;
-        for delta in [0i64, 1, -1, 2, -2, 3, -3] {
-            let at = at0 as i64 + delta;
-            if at < 0 || at as usize > gates.len() {
-                continue;
+    let len = gates.len();
+    for idx in 0..=len {
+        if accepted < dose {
+            let need = dose - accepted;
+            let remaining = len + 1 - idx;
+            // Attempt at a fraction of positions rising toward the tail (need
+            // per remaining position, oversampled): most positions reject fast
+            // (data diverges on first mask), and accepts land where an aux is
+            // dead-forward to the data. Rejects are cheap so no attempt cap is
+            // needed; the achievable dose is bounded by how many safely
+            // rerandomisable aux positions the floated circuit actually has.
+            let p_try = ((need as f64) / (remaining.max(1) as f64) * 8.0).min(1.0);
+            if rng.random_bool(p_try) {
+                let tgt = anc[rng.random_range(0..r)];
+                let dd = rng.random_range(0..np) as u16;
+                let mut ac = anc[rng.random_range(0..r)];
+                while ac == tgt {
+                    ac = anc[rng.random_range(0..r)];
+                }
+                let cand =
+                    XGate::conj(tgt, [(dd, rng.random_bool(0.5)), (ac, rng.random_bool(0.5))])
+                        .unwrap();
+                if rerand_preserves_data(&st, &gates[idx..], &cand, np) {
+                    let f = gate_fire(&cand, &st);
+                    let tt = cand.target as usize;
+                    for l in 0..4 {
+                        st[tt][l] ^= f[l];
+                    }
+                    out.push(cand);
+                    accepted += 1;
+                }
             }
-            let at = at as usize;
-            if data_out(gates, at, Some(&cand), np, nw, inputs) == *c_out {
-                placed = Some(at);
-                break;
-            }
         }
-        if let Some(at) = placed {
-            gates.insert(at, cand);
-            accepted += 1;
+        if idx == len {
+            break;
         }
+        let g = &gates[idx];
+        let f = gate_fire(g, &st);
+        let tt = g.target as usize;
+        for l in 0..4 {
+            st[tt][l] ^= f[l];
+        }
+        out.push(g.clone());
     }
-    (accepted, attempts)
+    (out, accepted)
 }
 
 fn blinded_pols(p1: bool, p2: bool) -> (bool, bool, bool) {
@@ -355,18 +430,50 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             out.extend(s2.iter().cloned());
             out.extend(live[w2 as usize].iter().cloned());
             live[w2 as usize] = s2.clone();
-            live_cy[w2 as usize] = cy;
+            live_cy[w2 as usize] = cy.clone();
             atoms += 1;
             let (bpol, f1p, f2p) = blinded_pols(p1, p2);
-            out.push(XGate::cnot(w1, w2));
-            out.push(XGate::conj(w2, [(bwire, true), (w1, bpol)]).unwrap());
-            out.extend(s2.iter().cloned());
-            let mut pay = XGate::conj(g.target, [(w1, f1p), (w2, f2p)]).unwrap();
-            pay.comp = g.comp;
-            out.push(pay);
-            out.extend(s2.iter().cloned());
-            out.push(XGate::conj(w2, [(bwire, true), (w1, bpol)]).unwrap());
-            out.push(XGate::cnot(w1, w2));
+            if p.tpin {
+                // t-pin read: a fresh pin `tp_w` (a band wire holding a stable
+                // seeded value w, restored) splits the cofactor S=w1+w2 into two
+                // stages (w+w1),(w+w2), so the operand XOR d+e is never on a
+                // wire. The pin must avoid the shared mask cycle `cy` (its wires
+                // are read to unmask w2) and the blind wire. Stage i uses pin
+                // polarity `tp` = f1p for stage 0 and true for stage 1: the two
+                // stages sum to F1.F2 = (S or !S).F2 for either f1p, and `comp`
+                // is applied once (stage 0).
+                let mut tp_w = anc[rng.random_range(0..r)];
+                while cy.contains(&tp_w) || tp_w == bwire {
+                    tp_w = anc[rng.random_range(0..r)];
+                }
+                for (i, &op) in [w1, w2].iter().enumerate() {
+                    let tp = if i == 0 { f1p } else { true };
+                    out.push(XGate::cnot(tp_w, op)); // t ^= op  (t = w+op+u)
+                    // blind w2 with b.lit(t,!tp) (annihilated by the cofactor lit(t,tp))
+                    out.push(XGate::conj(w2, [(bwire, true), (tp_w, !tp)]).unwrap());
+                    out.extend(s2.iter().cloned()); // unmask w2 (w2 = e)
+                    let mut pay =
+                        XGate::conj(g.target, [(tp_w, tp), (w2, f2p)]).unwrap();
+                    if i == 0 {
+                        pay.comp = g.comp; // complement applied once
+                    }
+                    out.push(pay); // c ^= lit(t,tp) . lit(e,f2p)
+                    out.extend(s2.iter().cloned()); // remask w2
+                    out.push(XGate::conj(w2, [(bwire, true), (tp_w, !tp)]).unwrap()); // unblind
+                    out.push(XGate::cnot(tp_w, op)); // restore t (t = w)
+                }
+            } else {
+                // single-CNOT blinded read (leaks d+e at k=2)
+                out.push(XGate::cnot(w1, w2));
+                out.push(XGate::conj(w2, [(bwire, true), (w1, bpol)]).unwrap());
+                out.extend(s2.iter().cloned());
+                let mut pay = XGate::conj(g.target, [(w1, f1p), (w2, f2p)]).unwrap();
+                pay.comp = g.comp;
+                out.push(pay);
+                out.extend(s2.iter().cloned());
+                out.push(XGate::conj(w2, [(bwire, true), (w1, bpol)]).unwrap());
+                out.push(XGate::cnot(w1, w2));
+            }
         } else {
             for &w in &touched {
                 out.extend(live[w as usize].iter().cloned());
@@ -390,15 +497,19 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         atoms += 1;
     }
 
-    // CHANGE 2, adaptive: local trial-and-error rerand as a post-pass (no
-    // structural knowledge used). Runs before discipline on the np+r-wire circuit.
+    // CHANGE 2, adaptive (RC directive): FIRST float the whole circuit globally
+    // (commuting_shuffle dissolves the construction-time block layout), THEN run
+    // the incremental local-adaptive rerand on the floated circuit. Floating
+    // first is what forces the rerand placement to be local-adaptive: the mask
+    // schedule it would otherwise exploit has been shuffled away.
     if adaptive && rerand_dose > 0 {
+        commuting_shuffle(&mut out, &mut rng);
         let inputs: Vec<[u64; 4]> = (0..np)
             .map(|_| [rng.random(), rng.random(), rng.random(), rng.random()])
             .collect();
-        let c_out = data_out(src, 0, None, np, np, &inputs);
-        let (acc, _att) =
-            adaptive_rerand(&mut out, &c_out, &inputs, np, np + r, &anc, rerand_dose, &mut rng);
+        let (new_out, acc) =
+            adaptive_rerand_incremental(&out, np, np + r, &anc, rerand_dose, &inputs, &mut rng);
+        out = new_out;
         rerand_done = acc;
     }
 
