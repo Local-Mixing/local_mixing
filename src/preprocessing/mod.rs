@@ -7,6 +7,7 @@
 // scripts/gss_mix.sh. Manual validation lives under tests/manual/gss, while
 // A/B probes live under experimental/gss; the standalone wide-fragment
 // wrapper lives under experimental/circuit.
+pub mod blinded_v5;
 pub mod gadgets;
 pub mod nonlinear_gss;
 pub mod samf;

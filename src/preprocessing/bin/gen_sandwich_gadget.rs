@@ -8,6 +8,13 @@
 //! the canonical nonlinear193/nonlinear291 evaluation modes) -> a
 //! gadget whose low 2n output equals A on the gadget's zero slice.
 //!
+//! `gadgetization_mode=blinded-v5` instead applies the blinded-V5
+//! computation stage (persistent LGI additive masking + cofactor-blinded read,
+//! `preprocessing::blinded_v5`) to the whole sandwich with the settled n=256
+//! preset (K=16, R=n, N=floor, masked-scratch discipline). It restores all 2n
+//! data wires exactly (verified on wires 0..2n), so its aux layout is n+R+1,
+//! not the doubled 4n of the zero-slice gadgetizers.
+//!
 //! Usage: gen_sandwich_gadget <out> [n=128] [m_C=3000] [m_D=3000]
 //!                            [s=n*log2 n] [rg_freq=1] [slice_gates=10*2n]
 //!                            [seed=1] [gadget_seed=seed] [sandwich_seed=seed]
@@ -28,8 +35,9 @@ use local_mixing::circuit::U1024;
 use local_mixing::circuit::random_circuit;
 use local_mixing::circuit::wide_fragment::{FragmentStyle, fragment_wide_post_shuffle};
 use local_mixing::engine::format::write_mpmct;
+use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5};
 use local_mixing::preprocessing::gadgets::{
-    MaskConfig, ProdConfig, gadgetize_xgates_with_slice_zero_ccnot,
+    CnotCircuit, MaskConfig, ProdConfig, gadgetize_xgates_with_slice_zero_ccnot,
     gadgetize_xgates_with_slice_zero_ccnot_five_carrier,
     gadgetize_xgates_with_slice_zero_ccnot_seven_carrier,
     gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed,
@@ -79,6 +87,7 @@ enum GadgetizationMode {
     Product2223,
     Nonlinear193,
     Nonlinear291,
+    BlindedV5,
 }
 
 impl GadgetizationMode {
@@ -87,6 +96,7 @@ impl GadgetizationMode {
             "product-2223" | "2223" => Some(Self::Product2223),
             "nonlinear193" => Some(Self::Nonlinear193),
             "nonlinear291" => Some(Self::Nonlinear291),
+            "blinded-v5" | "blinded_v5" => Some(Self::BlindedV5),
             _ => None,
         }
     }
@@ -96,6 +106,7 @@ impl GadgetizationMode {
             Self::Product2223 => "product-2223",
             Self::Nonlinear193 => "nonlinear193",
             Self::Nonlinear291 => "nonlinear291",
+            Self::BlindedV5 => "blinded-v5",
         }
     }
 
@@ -104,6 +115,7 @@ impl GadgetizationMode {
             Self::Product2223 => None,
             Self::Nonlinear193 => Some(NonlinearGssMode::Nonlinear193),
             Self::Nonlinear291 => Some(NonlinearGssMode::Nonlinear291),
+            Self::BlindedV5 => None,
         }
     }
 }
@@ -384,7 +396,21 @@ fn main() {
             prod.roll
         );
     }
-    let mut gadget = if let Some(mode) = gadgetization_mode.nonlinear() {
+    let mut gadget = if gadgetization_mode == GadgetizationMode::BlindedV5 {
+        // Blinded-V5 computation stage (settled n=256 preset: K=16, R=n,
+        // N=floor, masked-scratch discipline, blinded read). Additive LGI
+        // masking over the whole sandwich; the gadget_seed drives it.
+        let params = BlindedV5Params::production(gadget_seed);
+        let bv5 = gadgetize_blinded_v5(&sandwich.gates, sandwich.num_wires, &params);
+        println!(
+            "[gen] blinded-v5 gadget: K={} R={} N=floor discipline={} blinded | {} atoms",
+            params.k, bv5.r_used, params.discipline, bv5.atoms
+        );
+        CnotCircuit {
+            gates: bv5.gates,
+            num_wires: bv5.num_wires,
+        }
+    } else if let Some(mode) = gadgetization_mode.nonlinear() {
         gadgetize_xgates_nonlinear_gss(&sandwich.gates, sandwich_n, n, slice_gates, mode, &mut rng)
             .unwrap_or_else(|error| {
                 panic!(
@@ -568,7 +594,10 @@ fn main() {
         // guard fires against the mirror fill's band junk and perturbs the
         // low (forward-junk) half by design. The payload contract is
         // unchanged — C(x) lives on the upper half (see verify_zero_slice).
-        let verify_lo = if carrier_mode == CarrierMode::Single
+        // Blinded-V5 restores ALL data wires (0..2n) exactly, so verify the
+        // whole low half and skip the slice-zero reverse-honesty contract.
+        let verify_lo = if gadgetization_mode != GadgetizationMode::BlindedV5
+            && carrier_mode == CarrierMode::Single
             && prod.single_carrier()
             && prod.close_slice > 0
         {

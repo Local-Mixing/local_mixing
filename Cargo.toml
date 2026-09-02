@@ -21,6 +21,10 @@ path = "src/main.rs"
 name = "gen_sandwich_gadget"
 path = "src/preprocessing/bin/gen_sandwich_gadget.rs"
 
+[[bin]]
+name = "blinded_v5_gadgetize"
+path = "src/preprocessing/bin/blinded_v5_gadgetize.rs"
+
 # Stages 3-5: Phase A, split, and resumed crossing modes share fmix.
 [[bin]]
 name = "fmix"
