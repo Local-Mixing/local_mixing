@@ -37,7 +37,8 @@ use local_mixing::circuit::wide_fragment::{FragmentStyle, fragment_wide_post_shu
 use local_mixing::engine::format::write_mpmct;
 use local_mixing::preprocessing::blinded_v5::{BlindedV5Params, gadgetize_blinded_v5};
 use local_mixing::preprocessing::gadgets::{
-    CnotCircuit, MaskConfig, ProdConfig, gadgetize_xgates_with_slice_zero_ccnot,
+    CnotCircuit, MaskConfig, ProdConfig, slice_zero_junk_guard_dims,
+    gadgetize_xgates_with_slice_zero_ccnot,
     gadgetize_xgates_with_slice_zero_ccnot_five_carrier,
     gadgetize_xgates_with_slice_zero_ccnot_seven_carrier,
     gadgetize_xgates_with_slice_zero_ccnot_seven_carrier_distributed,
@@ -407,13 +408,29 @@ fn main() {
             ..BlindedV5Params::production(gadget_seed)
         };
         let bv5 = gadgetize_blinded_v5(&sandwich.gates, sandwich.num_wires, &params);
+        // Full 5-step delivery: wrap the compute (parts 2-4) with the junk-half
+        // zero-slice guard (parts 1 & 5), unchanged from the drip delivery. The
+        // guard targets the sandwich's forward-junk half (low n) and is keyed on
+        // the band (n..2n): dead at the input port (band 0 before the compute
+        // seeds it), fires at the output port (band junked) but misses the
+        // payload on the upper half -> the composite is reverse-honest.
+        let np = sandwich.num_wires; // = 2n
+        let nondata = bv5.r_used; // band width
+        let gc = slice_gates.max(nondata);
+        let open = slice_zero_junk_guard_dims(np, nondata, gc, &mut rng);
+        let close = slice_zero_junk_guard_dims(np, nondata, gc, &mut rng);
         println!(
-            "[gen] blinded-v5 gadget: K={} R={} max_open={} active_wires={} | {} atoms",
-            params.k, bv5.r_used, params.max_open, params.active_wires, bv5.atoms
+            "[gen] blinded-v5 gadget: K={} R={} max_open={} active_wires={} | {} atoms, \
+             + {} slice-guard gates each side",
+            params.k, bv5.r_used, params.max_open, params.active_wires, bv5.atoms,
+            open.gates.len()
         );
+        let mut gates = open.gates;
+        gates.extend(bv5.gates);
+        gates.extend(close.gates);
         CnotCircuit {
-            gates: bv5.gates,
-            num_wires: bv5.num_wires,
+            gates,
+            num_wires: bv5.num_wires.max(np + nondata),
         }
     } else if let Some(mode) = gadgetization_mode.nonlinear() {
         gadgetize_xgates_nonlinear_gss(&sandwich.gates, sandwich_n, n, slice_gates, mode, &mut rng)
@@ -594,17 +611,17 @@ fn main() {
         }
         let mut vrng = StdRng::seed_from_u64(seed ^ 0xA11CE);
         let total_wires = gadget.num_wires.max(sandwich.num_wires);
-        // With the closing zero-slice block, the composite preserves only the
+        // With a closing zero-slice guard, the composite preserves only the
         // UPPER half of the sandwich state on the honest slice: the closing
-        // guard fires against the mirror fill's band junk and perturbs the
-        // low (forward-junk) half by design. The payload contract is
-        // unchanged — C(x) lives on the upper half (see verify_zero_slice).
-        // Blinded-V5 restores ALL data wires (0..2n) exactly, so verify the
-        // whole low half and skip the slice-zero reverse-honesty contract.
-        let verify_lo = if gadgetization_mode != GadgetizationMode::BlindedV5
-            && carrier_mode == CarrierMode::Single
-            && prod.single_carrier()
-            && prod.close_slice > 0
+        // guard fires against the junked band and perturbs the low (forward-
+        // junk) half by design. The payload contract is unchanged — C(x) lives
+        // on the upper half (see verify_zero_slice). Blinded-V5 is now wrapped
+        // by the same junk guards, so it too verifies the upper half and runs
+        // the reverse-honesty check.
+        let verify_lo = if gadgetization_mode == GadgetizationMode::BlindedV5
+            || (carrier_mode == CarrierMode::Single
+                && prod.single_carrier()
+                && prod.close_slice > 0)
         {
             sandwich_n / 2
         } else {
