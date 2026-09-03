@@ -19,17 +19,47 @@
 //!   * `discipline` (0/1/2) routes every data-write-with-data-control through a
 //!     scratch aux so data-writes have only aux controls; level 2 masks the
 //!     scratch so the payload delta is never bare.
-//!   * `rerand` (dose, structural or adaptive) rerandomises free aux from data.
+//!   * `rerand` (dose + [`RerandMode`]) refreshes band values from data as the
+//!     computation proceeds.
 //!
 //! The n=256 sliced-sandwich calibration settled on [`BlindedV5Params::production`]:
 //! K=16 (affine knee), R=n (auto), N=floor, masked-scratch discipline, blinded
 //! read, no rerand.
+//!
+//! Note on the output contract: the `np` DATA wires are restored to exactly the
+//! source circuit's outputs, but the ancilla wires are NOT returned to zero —
+//! they are seeded from the input and keep their (possibly refreshed) values.
+//! The surrounding slice stages own clearing them.
 
 use crate::circuit::xgate::XGate;
 use crate::preprocessing::gadgets::commuting_shuffle;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use std::collections::HashSet;
+
+/// How the band-refresh dose is placed (see `rerand_dose`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RerandMode {
+    /// Generation-time refresh with live-mask repair. At source-gate
+    /// boundaries, spread uniformly over the run, emit `b ^= data_d & aux_c`
+    /// bracketed by the `b`-terms of every live mask that reads `b`. That
+    /// mask's `b`-contribution then telescopes to zero across
+    /// apply(`b_old`) / pre-repair(`b_old`) / post-repair(`b_new`) /
+    /// remove(`b_new`), so it still cancels exactly however `b` changed.
+    /// O(1) per update and never blocked, so the dose is always achieved and
+    /// the updates land evenly through the circuit.
+    Repair,
+    /// Post-pass local commutation clearing ([`local_clearing_per_identity`]).
+    /// Correct, but at production scale it costs O(circuit) scans and long
+    /// commutation runs per insert, and only ~0.6% of attempts survive — the
+    /// ones that do are those near the start of the gate list, so it delivers
+    /// endpoint re-seeding rather than the mid-run refresh it was designed
+    /// for. Kept for comparison; prefer `Repair`.
+    Clearing,
+    /// Global commuting float, then structure-blind trial insertion checked by
+    /// forward perturbation propagation. Shuffle-agnostic by construction but
+    /// low-yield: safe churn needs an ancilla that is dead-forward to the data.
+    Adaptive,
+}
 
 /// Configuration for [`gadgetize_blinded_v5`].
 #[derive(Clone, Copy, Debug)]
@@ -53,13 +83,12 @@ pub struct BlindedV5Params {
     /// with `blinded`. `false` = the single-CNOT blinded read (leaks `d+e`
     /// at k=2).
     pub tpin: bool,
-    /// Rerand dose (aux rerandomisation gates). `0` = off.
+    /// Band-refresh dose (`b ^= data & aux` updates). `0` = off.
     pub rerand_dose: usize,
     /// Data/aux discipline level: 0 = off, 1 = bare scratch, 2 = masked scratch.
     pub discipline: usize,
-    /// `true` = local-adaptive rerand (trial-and-error, shuffle-agnostic);
-    /// `false` = structural rerand at mask-free boundaries.
-    pub adaptive_rerand: bool,
+    /// How the dose is placed. See [`RerandMode`].
+    pub rerand_mode: RerandMode,
     /// Seed mask ancillas ONLY from data wires `0..active_wires` — the wires
     /// that carry live input on the honest input distribution. `0` (or
     /// `>= np`) means all `np` data wires. For a 2n-wire sliced sandwich used
@@ -76,14 +105,14 @@ impl BlindedV5Params {
     pub fn production(seed: u64) -> Self {
         Self {
             k: 16,
-            r: 0, // auto = np (R = n)
+            r: 0,        // auto = np (R = n)
             n_target: 0, // floor
             seed,
             blinded: true,
             tpin: true,
             rerand_dose: 0,
             discipline: 2,
-            adaptive_rerand: false,
+            rerand_mode: RerandMode::Repair,
             active_wires: 0, // caller sets = n for a zero-slice sandwich
         }
     }
@@ -97,8 +126,10 @@ pub struct BlindedV5Output {
     pub num_wires: usize,
     /// LGI atoms laid down (masking cost driver).
     pub atoms: usize,
-    /// Rerand gates actually inserted (<= `rerand_dose`).
+    /// Band-refresh updates actually inserted (<= `rerand_dose`).
     pub rerand_done: usize,
+    /// Gates the band refresh cost in total: the updates plus their mask repair.
+    pub rerand_gates: usize,
     /// Effective ancilla pool used (`r`, resolved from the `0`-means-`np` rule).
     pub r_used: usize,
 }
@@ -114,7 +145,19 @@ fn sample_k(anc: &[u16], k: usize, rng: &mut StdRng) -> Vec<u16> {
     pool
 }
 
+/// A fresh permutation of `0..n` (Fisher-Yates on the shared `rng`).
+fn shuffled_indices(n: usize, rng: &mut StdRng) -> Vec<usize> {
+    let mut v: Vec<usize> = (0..n).collect();
+    for i in (1..n).rev() {
+        let j = rng.random_range(0..=i);
+        v.swap(i, j);
+    }
+    v
+}
+
 /// K-cycle LGI half on wire `w` from ancilla sequence `cy`: w ^= a_i & a_{i+1}.
+/// Gate `i` reads `cy[i]` and `cy[i+1 mod k]`, so `cy[j]` appears in exactly
+/// the two gates `j` and `j-1 mod k` — the pair the band refresh repairs.
 fn cycle_on(w: u16, cy: &[u16]) -> Vec<XGate> {
     let k = cy.len();
     (0..k)
@@ -193,62 +236,62 @@ fn gate_fire(g: &XGate, s: &[[u64; 4]]) -> [u64; 4] {
     acc
 }
 
-/// Sound, incremental validity check for a candidate rerand gate inserted just
-/// before `fwd[0]`, given the base state `st` at that point. Propagates the
-/// candidate's aux perturbation forward on both the base and perturbed branches
-/// and REJECTS the instant it would reach a DATA wire (0..np); ACCEPTS if the
-/// perturbation stays clear of every data wire through to the end (or fully
-/// reconverges first). An accepted candidate provably preserves the data output
-/// — it only rerandomises aux values the computation never reads downstream, the
-/// data-neutral churn we want after a global float — which is why the check can
-/// stop at the perturbation's forward reach instead of re-simulating the whole
-/// circuit and comparing full states per trial. (Aux that ARE read into a
-/// balanced mask are rejected here: they only rebalance at their unmask and the
-/// safety margin is not worth chasing; the free-aux churn suffices.)
-fn rerand_preserves_data(st: &[[u64; 4]], fwd: &[XGate], cand: &XGate, np: usize) -> bool {
-    let mut sb = st.to_vec(); // base branch
-    let mut sc = st.to_vec(); // candidate branch
-    let f = gate_fire(cand, &sc);
+/// Validity check for a candidate rerand gate inserted just before `fwd[0]`,
+/// given the base state `st` at that point. ACCEPTS only if the candidate's
+/// perturbation provably cannot reach any DATA wire (`0..np`).
+///
+/// This is a STRUCTURAL over-approximation, deliberately: it tracks the set of
+/// wires that could differ between the base and perturbed runs, ignoring the
+/// values. A wire joins the set when a gate reading a set member writes it, and
+/// never leaves — so "data wire never enters the set" is a sound guarantee for
+/// every input, not just for sampled ones.
+///
+/// The previous formulation propagated two concrete 256-sample branches and
+/// rejected only when a data wire actually differed on those lanes. That is not
+/// a proof, and it does not hold: a divergence that shows up on a rare input is
+/// never sampled, so the candidate is accepted and the gadget silently computes
+/// the wrong function (an audit fuzz over 3000 gadgets, each verified
+/// exhaustively, found 3 wrong circuits — each wrong on only 1-2 of 64 inputs).
+/// A sampled test catches a divergence of probability p with confidence
+/// 1-(1-p)^256, so p = 0.1% slips through 77% of the time.
+///
+/// The cost of soundness is yield: reconvergence (a perturbation that cancels
+/// itself before reaching data) is invisible structurally, so fewer candidates
+/// are accepted. [`RerandMode::Repair`] supersedes this path and achieves the
+/// full dose exactly, so the trade is worth taking.
+fn rerand_preserves_data(_st: &[[u64; 4]], fwd: &[XGate], cand: &XGate, np: usize) -> bool {
+    let mut tainted = vec![false; np + fwd.iter().map(|g| g.target as usize).max().unwrap_or(0) + 1];
     let t = cand.target as usize;
-    for l in 0..4 {
-        sc[t][l] ^= f[l];
+    if t < np {
+        return false; // a candidate that writes data directly is never safe
     }
-    if sc[t] == sb[t] {
-        return false; // degenerate no-op candidate
+    if t >= tainted.len() {
+        tainted.resize(t + 1, false);
     }
-    let mut ndiff = 1usize; // wires where sb != sc
+    tainted[t] = true;
     for g in fwd {
-        let tt = g.target as usize;
-        let before = sb[tt] != sc[tt];
-        let fb = gate_fire(g, &sb);
-        let fc = gate_fire(g, &sc);
-        for l in 0..4 {
-            sb[tt][l] ^= fb[l];
-            sc[tt][l] ^= fc[l];
-        }
-        let after = sb[tt] != sc[tt];
-        if before != after {
-            if after {
-                ndiff += 1;
-            } else {
-                ndiff -= 1;
+        if g.ctrls.iter().any(|&(w, _)| {
+            let w = w as usize;
+            w < tainted.len() && tainted[w]
+        }) {
+            let tt = g.target as usize;
+            if tt < np {
+                return false; // the perturbation could reach a data wire
             }
-        }
-        if tt < np && after {
-            return false; // perturbation reached a data output
-        }
-        if ndiff == 0 {
-            return true; // fully reconverged: data (and all else) provably preserved
+            if tt >= tainted.len() {
+                tainted.resize(tt + 1, false);
+            }
+            tainted[tt] = true;
         }
     }
-    true // reached the end with data never disturbed
+    true // no data wire can ever differ
 }
 
-/// CHANGE 2, local-adaptive form: with NO structural knowledge, sweep a cursor
+/// [`RerandMode::Adaptive`]: with NO structural knowledge, sweep a cursor
 /// forward maintaining the base state; at spread-out positions try a random
-/// rerand gate aux_t ^= data_d & aux_c and keep it iff it provably preserves the
-/// data output ([`rerand_preserves_data`], a 256-sample check). Meant to run
-/// AFTER a global gate-location shuffle so it cannot use the mask schedule.
+/// rerand gate aux_t ^= data_d & aux_c and keep it iff it preserves the data
+/// output ([`rerand_preserves_data`], a 256-sample check). Meant to run AFTER a
+/// global gate-location shuffle so it cannot use the mask schedule.
 /// Returns (rewritten gate list, accepted count).
 fn adaptive_rerand_incremental(
     gates: &[XGate],
@@ -320,19 +363,20 @@ fn blinded_pols(p1: bool, p2: bool) -> (bool, bool, bool) {
     }
 }
 
-/// Local-clearing band refresh (RC's algorithm, 2026-09-03): sprinkle `dose`
-/// band-update gates `b ^= data_d & aux_c` MID-computation to continuously
-/// refresh the band values as the computation proceeds. Each update is inserted
-/// at a random point P and made safe PER-IDENTITY: only the identities (an LGI
-/// mask's apply+remove, or a read-gadget block, tagged by `id_of`) whose uses of
-/// `b` straddle P have those uses commuted to one side — every other identity is
-/// left in place, so identities before P keep the old `b` and identities after
-/// see the new `b`, and `b` genuinely evolves through the run. (Consolidating
-/// ALL of b's uses instead would shove the update to b's lifetime edge and
-/// refresh nothing — the rejected "all-one-side" variant.) `b` is chosen light
-/// (fewest control-gates) so few gates move; a commutation blocker aborts the
-/// attempt (the partial, commutation-valid moves keep the circuit ≡) and retries.
-/// `id_of` is kept parallel to `gates` through every swap. Returns (accepted, blockers).
+/// [`RerandMode::Clearing`]: RC's original post-pass formulation of the band
+/// refresh. Insert `dose` band updates `b ^= data_d & aux_c` at random points
+/// P, made safe PER-IDENTITY: only the identities (an LGI mask's apply+remove,
+/// or a read-gadget block, tagged by `id_of`) whose uses of `b` straddle P have
+/// those uses commuted to one side, so identities before P keep the old `b` and
+/// identities after see the new one. `b` is chosen light (fewest control-gates)
+/// so few gates move; a commutation blocker aborts the attempt (the partial,
+/// commutation-valid moves keep the circuit equivalent) and retries. `id_of` is
+/// kept parallel to `gates` through every swap. Returns (accepted, blockers).
+///
+/// Measured on the production n=256 half sandwich (1.125M gates): ~0.8 s per
+/// accepted insert, ~0.6% of attempts survive, and the survivors sit at median
+/// 0.2% into the gate list — so in practice this re-seeds the band at the start
+/// rather than refreshing it mid-run. [`RerandMode::Repair`] is the usable path.
 fn local_clearing_per_identity(
     gates: &mut Vec<XGate>,
     id_of: &mut Vec<i64>,
@@ -341,9 +385,8 @@ fn local_clearing_per_identity(
     dose: usize,
     rng: &mut StdRng,
 ) -> (usize, usize) {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     const SENT: u16 = u16::MAX; // sentinel marks the insert point (replaced before return)
-    let band_lo = band.iter().copied().min().unwrap_or(0);
     // Precompute each band wire's control-gate count ONCE, then keep it current
     // incrementally (each accepted update adds one control-use of its `c` wire).
     let mut counts: HashMap<u16, usize> = band.iter().map(|&w| (w, 0usize)).collect();
@@ -354,7 +397,6 @@ fn local_clearing_per_identity(
             }
         }
     }
-    let _ = band_lo;
     let mut accepted = 0usize;
     let mut blockers = 0usize;
     let cap = dose.saturating_mul(60).max(dose + 30_000);
@@ -395,11 +437,15 @@ fn local_clearing_per_identity(
                 }
             }
         }
-        let straddle: HashSet<i64> = sides
+        // Sorted, not a HashSet: the clearing order decides which gates move
+        // and therefore which attempts survive, so leaving it to hash iteration
+        // order would make the artifact differ run to run at a fixed seed.
+        let mut straddle: Vec<i64> = sides
             .iter()
             .filter(|(_, (bf, af))| *bf && *af)
             .map(|(id, _)| *id)
             .collect();
+        straddle.sort_unstable();
         let mut good = true;
         for &id in &straddle {
             // b-gates of this identity, split by the CURRENT sentinel position
@@ -486,15 +532,38 @@ fn local_clearing_per_identity(
 
 /// Gadgetize `src` (a circuit on wires `0..np`) with persistent LGI masking and
 /// the blinded/plain read. See [`BlindedV5Params`]. The output computes the same
-/// function as `src` on its `np` data wires (aux start and end at 0).
+/// function as `src` on its `np` data wires; the ancillas are left dirty (see
+/// the module note).
 pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> BlindedV5Output {
     let k = p.k;
     let r = if p.r == 0 { np } else { p.r };
     let n_target = p.n_target;
     let discipline = p.discipline;
-    let adaptive = p.adaptive_rerand;
     let rerand_dose = p.rerand_dose;
     assert!(r >= k, "R must be >= K");
+    // The t-pin read draws its pin from outside the shared cycle and distinct
+    // from `bwire`; with fewer spare wires than that the draw spins forever.
+    assert!(
+        !(p.blinded && p.tpin) || r >= k + 2,
+        "the t-pin read needs R >= K + 2 (a pin outside the shared cycle and != bwire)"
+    );
+    // k = 2 emits `w ^= a0 & a1` twice (i=0 and i=1 give the same monomial), so
+    // the two gates cancel and the "mask" is identically zero: the wire ends up
+    // unmasked with no other symptom. Reject it rather than silently unmask.
+    assert!(k != 2, "K = 2 makes cycle_on emit a self-cancelling (zero) mask");
+    assert!(k >= 1, "K must be >= 1");
+    // Several draws below are rejection samples that need at least two choices.
+    assert!(r >= 2, "R must be >= 2");
+    assert!(
+        p.active_wires != 1 && np >= 2,
+        "at least two active data wires are needed to seed an ancilla"
+    );
+    // `local_clearing_per_identity` marks its insert point with a sentinel gate
+    // on wire u16::MAX and finds it by target, so no real wire may collide.
+    assert!(
+        np + r + 1 < u16::MAX as usize,
+        "wire count must stay below the u16::MAX clearing sentinel"
+    );
 
     // Seed mask ancillas only from the honest-input active wires (0..active),
     // so none are seeded from wires that are constant on the actual usage.
@@ -511,10 +580,10 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     let mut out: Vec<XGate> = Vec::new();
     let mut atoms = 0usize;
 
-    // Identity tag per emitted gate (for the local-clearing band refresh). A
+    // Identity tag per emitted gate (used by [`RerandMode::Clearing`]). A
     // persistent mask (apply + its later remove, re-emissions of the same cycle)
     // shares one id via `live_id[w]`; each blinded/plain read gadget is one block
-    // id; seeds and structural rerand are untagged (-1). `emit`/`emitn` push a
+    // id; seeds and band updates are untagged (-1). `emit`/`emitn` push a
     // gate + its tag in lock-step so `id_of` stays parallel to `out`.
     let mut id_of: Vec<i64> = Vec::new();
     let mut next_id: i64 = 0;
@@ -546,6 +615,22 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
 
     let mut live: Vec<Vec<XGate>> = vec![Vec::new(); np];
     let mut live_cy: Vec<Vec<u16>> = vec![Vec::new(); np]; // ancilla set per live cycle
+    // How many live cycles currently read each ancilla, kept current by
+    // `set_cycle!`. The band refresh repairs 4 gates per reader, so this lets
+    // it pick a `b` that is cheap to refresh.
+    let mut holders: Vec<u32> = vec![0; r];
+    macro_rules! set_cycle {
+        ($w:expr, $cy:expr) => {{
+            let w_ = $w as usize;
+            for &a in &live_cy[w_] {
+                holders[a as usize - np] -= 1;
+            }
+            for &a in $cy.iter() {
+                holders[a as usize - np] += 1;
+            }
+        }};
+    }
+
     for w in 0..np {
         let cy = sample_k(&anc, k, &mut rng);
         let h = cycle_on(w as u16, &cy);
@@ -553,6 +638,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         next_id += 1;
         emitn!(h, id);
         live[w] = h;
+        set_cycle!(w, cy);
         live_cy[w] = cy;
         live_id[w] = id;
         atoms += 1;
@@ -562,39 +648,100 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
     let extra = n_target.saturating_sub(base_est);
     let slots = src.len() + 1;
     let churn_per_slot = extra as f64 / slots as f64;
-    // rerand is a post-pass now (clearing by default, adaptive if selected); the
-    // old inline free-aux structural rerand is disabled (superseded).
-    let rerand_per_slot = 0.0f64;
     let mut churn_acc = 0.0f64;
-    let mut rerand_acc = 0.0f64;
+
+    // Band refresh dose, spread uniformly over the source-gate boundaries so
+    // the band evolves throughout the run rather than at its edges. Only
+    // `Repair` is emitted inline; the other modes run as post-passes. The
+    // split is integer-exact (slot i gets `dose*(i+1)/slots - dose*i/slots`)
+    // so the dose is hit precisely -- a float accumulator drops the last
+    // update to rounding.
+    let refresh_total = if p.rerand_mode == RerandMode::Repair {
+        rerand_dose
+    } else {
+        0
+    };
     let mut rerand_done = 0usize;
+    let mut rerand_gates = 0usize;
 
     let bwire = anc[0];
 
     // main loop
     for gi in 0..=src.len() {
-        // change 2: rerandomize free aux at this boundary
-        rerand_acc += rerand_per_slot;
-        let mut want = rerand_acc as usize;
-        rerand_acc -= want as f64;
-        if want > 0 {
-            let committed: HashSet<u16> = live_cy.iter().flatten().copied().collect();
-            let free: Vec<u16> = anc.iter().copied().filter(|w| !committed.contains(w)).collect();
-            want = want.min(free.len());
-            for &at in free.iter().take(want) {
-                let dd = rng.random_range(0..np) as u16;
-                // control aux != at
-                let mut ac = anc[rng.random_range(0..r)];
-                while ac == at {
-                    ac = anc[rng.random_range(0..r)];
+        // ---- band refresh at this boundary --------------------------------
+        // Emitting `[b-terms of every live mask reading b] ; b ^= d & c ;
+        // [the same b-terms]` leaves each such mask's b-contribution as
+        //   b_old (apply) ^ b_old (pre) ^ b_new (post) ^ b_new (remove) = 0,
+        // so the mask still cancels exactly whatever the update did to b, and
+        // every other identity is untouched. No gate moves, nothing to block.
+        // A source-gate boundary is used because no read gadget is in flight
+        // there: the pin toggles and blind/unblind pairs are all closed, so the
+        // live masks are the only structure holding a band value.
+        let nrf = refresh_total * (gi + 1) / slots - refresh_total * gi / slots;
+        for _ in 0..nrf {
+            // best-of-8: cheap to repair, while still reaching the whole pool.
+            // (Taking the global argmin instead is ~40% cheaper per update but
+            // starves a third of the band, which defeats the refresh.)
+            let mut bi = rng.random_range(0..r);
+            for _ in 1..8 {
+                let cand = rng.random_range(0..r);
+                if holders[cand] < holders[bi] {
+                    bi = cand;
                 }
-                emit!(
-                    XGate::conj(at, [(dd, rng.random_bool(0.5)), (ac, rng.random_bool(0.5))])
-                        .unwrap(),
-                    -1
-                );
-                rerand_done += 1;
             }
+            let b = anc[bi];
+            let mut repair: Vec<(XGate, i64)> = Vec::new();
+            let mut affected = vec![false; np];
+            for w in 0..np {
+                if let Some(j) = live_cy[w].iter().position(|&a| a == b) {
+                    affected[w] = true;
+                    let kk = live_cy[w].len();
+                    let j2 = (j + kk - 1) % kk;
+                    repair.push((live[w][j].clone(), live_id[w]));
+                    if j2 != j {
+                        // k = 1 degenerates to a single b-term
+                        repair.push((live[w][j2].clone(), live_id[w]));
+                    }
+                }
+            }
+            // Prefer a data source the repair is not currently perturbing.
+            // Correctness does not depend on this (the telescoping holds for
+            // any update value), so give up after a few tries rather than spin.
+            let mut d = rng.random_range(0..active);
+            for _ in 0..8 {
+                if !affected[d] {
+                    break;
+                }
+                d = rng.random_range(0..active);
+            }
+            let mut c = anc[rng.random_range(0..r)];
+            while c == b {
+                c = anc[rng.random_range(0..r)];
+            }
+            // The repair gates commute with each other (distinct data targets,
+            // ancilla controls only), so order each side independently and the
+            // block is not a literal palindrome around the update.
+            let pre = shuffled_indices(repair.len(), &mut rng);
+            let post = shuffled_indices(repair.len(), &mut rng);
+            for &i in &pre {
+                emit!(repair[i].0.clone(), repair[i].1);
+            }
+            emit!(
+                XGate::conj(
+                    b,
+                    [
+                        (d as u16, rng.random_bool(0.5)),
+                        (c, rng.random_bool(0.5))
+                    ]
+                )
+                .unwrap(),
+                -1
+            );
+            for &i in &post {
+                emit!(repair[i].0.clone(), repair[i].1);
+            }
+            rerand_done += 1;
+            rerand_gates += 2 * repair.len() + 1;
         }
 
         // churn refreshes (change-2 N density)
@@ -610,6 +757,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             emitn!(nh, id); // apply new mask
             emitn!(live[w], live_id[w]); // remove old mask (shares its id)
             live[w] = nh;
+            set_cycle!(w, cy);
             live_cy[w] = cy;
             live_id[w] = id;
             atoms += 1;
@@ -637,6 +785,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             emitn!(s1, id1); // new mask on w1
             emitn!(live[w1 as usize], live_id[w1 as usize]); // remove old w1 mask
             live[w1 as usize] = s1;
+            set_cycle!(w1, cy);
             live_cy[w1 as usize] = cy.clone();
             live_id[w1 as usize] = id1;
             atoms += 1;
@@ -645,6 +794,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
             emitn!(s2, id2); // new mask on w2
             emitn!(live[w2 as usize], live_id[w2 as usize]); // remove old w2 mask
             live[w2 as usize] = s2.clone();
+            set_cycle!(w2, cy);
             live_cy[w2 as usize] = cy.clone();
             live_id[w2 as usize] = id2;
             atoms += 1;
@@ -706,6 +856,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
                 next_id += 1;
                 emitn!(h, id); // remask
                 live[w as usize] = h;
+                set_cycle!(w, cy);
                 live_cy[w as usize] = cy;
                 live_id[w as usize] = id;
                 atoms += 1;
@@ -719,24 +870,49 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         atoms += 1;
     }
 
-    // CHANGE 2 (band refresh): sprinkle rerand gates through the compute. Default
-    // = the local-clearing PER-IDENTITY pass (mid-computation refresh, uses the
-    // `id_of` identity tags). `adaptive` selects the older shuffle-then-incremental
-    // path instead (float first, then a structure-blind sound check — lower yield).
+    // The non-inline band-refresh modes run as post-passes.
     if rerand_dose > 0 {
-        if adaptive {
-            commuting_shuffle(&mut out, &mut rng);
-            let inputs: Vec<[u64; 4]> = (0..np)
-                .map(|_| [rng.random(), rng.random(), rng.random(), rng.random()])
-                .collect();
-            let (new_out, acc) =
-                adaptive_rerand_incremental(&out, np, np + r, &anc, rerand_dose, &inputs, &mut rng);
-            out = new_out;
-            rerand_done = acc;
-        } else {
-            let (acc, _blk) =
-                local_clearing_per_identity(&mut out, &mut id_of, np, &anc, rerand_dose, &mut rng);
-            rerand_done = acc;
+        match p.rerand_mode {
+            RerandMode::Repair => {} // already emitted, spread through the run
+            RerandMode::Clearing => {
+                // `bwire` is excluded from the clearing band. It is the blind
+                // wire of EVERY read gadget, and the blind/unblind pair
+                // `w2 ^= bwire & lit(tp_w,!tp)` shares `tp_w` with the payload
+                // at the opposite polarity -- so `XGate::collides` (correctly)
+                // exempts them and the clearing is free to slide an unblind
+                // back next to its blind, where the identical pair annihilates
+                // and the payload then runs on a bare, unmasked operand. That
+                // is exactly the k=1 exposure the blinded read exists to
+                // prevent, and it grows linearly with the dose.
+                let (acc, _blk) = local_clearing_per_identity(
+                    &mut out,
+                    &mut id_of,
+                    np,
+                    &anc[1..],
+                    rerand_dose,
+                    &mut rng,
+                );
+                rerand_done = acc;
+                rerand_gates = acc;
+            }
+            RerandMode::Adaptive => {
+                commuting_shuffle(&mut out, &mut rng);
+                let inputs: Vec<[u64; 4]> = (0..np)
+                    .map(|_| [rng.random(), rng.random(), rng.random(), rng.random()])
+                    .collect();
+                let (new_out, acc) = adaptive_rerand_incremental(
+                    &out,
+                    np,
+                    np + r,
+                    &anc,
+                    rerand_dose,
+                    &inputs,
+                    &mut rng,
+                );
+                out = new_out;
+                rerand_done = acc;
+                rerand_gates = acc;
+            }
         }
     }
 
@@ -749,6 +925,7 @@ pub fn gadgetize_blinded_v5(src: &[XGate], np: usize, p: &BlindedV5Params) -> Bl
         num_wires: nw,
         atoms,
         rerand_done,
+        rerand_gates,
         r_used: r,
     }
 }
