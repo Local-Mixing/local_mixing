@@ -397,20 +397,19 @@ fn main() {
         );
     }
     let mut gadget = if gadgetization_mode == GadgetizationMode::BlindedV5 {
-        // Blinded-V5 computation stage (settled n=256 preset: K=16, R=n,
-        // N=floor, masked-scratch discipline, blinded read). Additive LGI
-        // masking over the whole sandwich; the gadget_seed drives it.
-        // active_wires = n: the sandwich's honest input is the zero slice
-        // (x on the low n wires, zeros on the high n), so seed masks only from
-        // the low n or ~half the aux collapse to 0 on the actual usage.
+        // Blinded-V5 computation stage (preset: K=16, R=n, max_open=3, no
+        // rerand). LGI-scaffold masking over the whole sandwich; the gadget_seed
+        // drives it. active_wires = n: the sandwich's honest input is the zero
+        // slice (x on the low n wires, zeros on the high n), so seed the band
+        // only from the low n or ~half the band collapses to 0 on the usage.
         let params = BlindedV5Params {
             active_wires: n,
             ..BlindedV5Params::production(gadget_seed)
         };
         let bv5 = gadgetize_blinded_v5(&sandwich.gates, sandwich.num_wires, &params);
         println!(
-            "[gen] blinded-v5 gadget: K={} R={} N=floor discipline={} blinded active_wires={} | {} atoms",
-            params.k, bv5.r_used, params.discipline, params.active_wires, bv5.atoms
+            "[gen] blinded-v5 gadget: K={} R={} max_open={} active_wires={} | {} atoms",
+            params.k, bv5.r_used, params.max_open, params.active_wires, bv5.atoms
         );
         CnotCircuit {
             gates: bv5.gates,
