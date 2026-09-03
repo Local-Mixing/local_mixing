@@ -403,9 +403,17 @@ fn main() {
         // drives it. active_wires = n: the sandwich's honest input is the zero
         // slice (x on the low n wires, zeros on the high n), so seed the band
         // only from the low n or ~half the band collapses to 0 on the usage.
+        // Sweep overrides (testing): BV5_K, BV5_RERAND, BV5_MAX_OPEN.
+        let envu = |k: &str, d: usize| {
+            std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+        };
+        let base = BlindedV5Params::production(gadget_seed);
         let params = BlindedV5Params {
             active_wires: n,
-            ..BlindedV5Params::production(gadget_seed)
+            k: envu("BV5_K", base.k),
+            rerand_level: envu("BV5_RERAND", base.rerand_level),
+            max_open: envu("BV5_MAX_OPEN", base.max_open),
+            ..base
         };
         let bv5 = gadgetize_blinded_v5(&sandwich.gates, sandwich.num_wires, &params);
         // Full 5-step delivery: wrap the compute (parts 2-4) with the junk-half
